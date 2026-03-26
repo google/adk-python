@@ -1,0 +1,41 @@
+# Runs release-please to create/update a PR with version bump and changelog for v2.
+# Triggered only by workflow_dispatch (from release-v2-cut.yml).
+# Does NOT auto-run on push to preserve manual changelog edits after cherry-picks.
+name: "Release v2: Please"
+
+on:
+  # Only run via workflow_dispatch (triggered by release-v2-cut.yml)
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  release-please:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check if release/v2-candidate still exists
+        id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh api repos/${{ github.repository }}/branches/release/v2-candidate --silent 2>/dev/null; then
+            echo "exists=true" >> $GITHUB_OUTPUT
+          else
+            echo "release/v2-candidate branch no longer exists, skipping"
+            echo "exists=false" >> $GITHUB_OUTPUT
+          fi
+
+      - uses: actions/checkout@v6
+        if: steps.check.outputs.exists == 'true'
+        with:
+          ref: release/v2-candidate
+
+      - uses: googleapis/release-please-action@v4
+        if: steps.check.outputs.exists == 'true'
+        with:
+          token: ${{ secrets.RELEASE_PAT }}
+          config-file: .github/release-please-config-v2.json
+          manifest-file: .github/.release-please-manifest-v2.json
+          target-branch: release/v2-candidate

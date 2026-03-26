@@ -13,6 +13,7 @@
 # limitations under the License.
 
 import asyncio
+from contextlib import asynccontextmanager
 from datetime import datetime
 from datetime import timezone
 import enum
@@ -151,6 +152,74 @@ def test_database_session_service_respects_pool_pre_ping_override():
   assert captured_kwargs.get('pool_pre_ping') is False
 
 
+def test_database_session_service_creates_read_only_engine_for_spanner():
+  captured_binds = []
+  fake_engine = mock.Mock()
+  fake_engine.dialect.name = 'spanner+spanner'
+  fake_engine.sync_engine = mock.Mock()
+  read_only_engine = mock.Mock()
+  fake_engine.execution_options.return_value = read_only_engine
+
+  def fake_async_sessionmaker(*, bind, expire_on_commit, **kwargs):
+    del expire_on_commit
+    del kwargs
+    captured_binds.append(bind)
+    return mock.Mock()
+
+  with (
+      mock.patch.object(
+          database_session_service,
+          'create_async_engine',
+          return_value=fake_engine,
+      ),
+      mock.patch.object(
+          database_session_service,
+          'async_sessionmaker',
+          side_effect=fake_async_sessionmaker,
+      ),
+  ):
+    database_session_service.DatabaseSessionService(
+        'spanner+spanner:///projects/test/instances/test/databases/test'
+    )
+
+  assert captured_binds == [fake_engine, read_only_engine]
+  fake_engine.execution_options.assert_called_once_with(read_only=True)
+
+
+def test_database_session_service_creates_read_only_engine_for_other_dialects():
+  captured_binds = []
+  fake_engine = mock.Mock()
+  fake_engine.dialect.name = 'postgresql'
+  fake_engine.sync_engine = mock.Mock()
+  read_only_engine = mock.Mock()
+  fake_engine.execution_options.return_value = read_only_engine
+
+  def fake_async_sessionmaker(*, bind, expire_on_commit, **kwargs):
+    del expire_on_commit
+    del kwargs
+    captured_binds.append(bind)
+    return mock.Mock()
+
+  with (
+      mock.patch.object(
+          database_session_service,
+          'create_async_engine',
+          return_value=fake_engine,
+      ),
+      mock.patch.object(
+          database_session_service,
+          'async_sessionmaker',
+          side_effect=fake_async_sessionmaker,
+      ),
+  ):
+    database_session_service.DatabaseSessionService(
+        'postgresql+psycopg2://user:pass@localhost:5432/db'
+    )
+
+  assert captured_binds == [fake_engine, read_only_engine]
+  fake_engine.execution_options.assert_called_once_with(read_only=True)
+
+
 @pytest.mark.asyncio
 async def test_sqlite_session_service_accepts_sqlite_urls(
     tmp_path, monkeypatch
@@ -196,6 +265,67 @@ async def test_get_empty_session(session_service):
   assert not await session_service.get_session(
       app_name='my_app', user_id='test_user', session_id='123'
   )
+
+
+@pytest.mark.asyncio
+async def test_database_session_service_get_session_uses_read_only_factory():
+  service = DatabaseSessionService('sqlite+aiosqlite:///:memory:')
+  service._prepare_tables = mock.AsyncMock()
+
+  read_only_session = mock.AsyncMock()
+  read_only_session.get = mock.AsyncMock(return_value=None)
+
+  @asynccontextmanager
+  async def fake_read_only_session():
+    yield read_only_session
+
+  service.database_session_factory = mock.Mock(
+      side_effect=AssertionError('write session factory should not be used')
+  )
+  service._read_only_database_session_factory = mock.Mock(
+      return_value=fake_read_only_session()
+  )
+
+  session = await service.get_session(
+      app_name='my_app', user_id='test_user', session_id='123'
+  )
+
+  assert session is None
+  service._read_only_database_session_factory.assert_called_once_with()
+  service.database_session_factory.assert_not_called()
+
+  await service.close()
+
+
+@pytest.mark.asyncio
+async def test_database_session_service_list_sessions_uses_read_only_factory():
+  service = DatabaseSessionService('sqlite+aiosqlite:///:memory:')
+  service._prepare_tables = mock.AsyncMock()
+
+  read_only_session = mock.AsyncMock()
+  empty_result = mock.Mock()
+  empty_result.scalars.return_value.all.return_value = []
+  read_only_session.execute = mock.AsyncMock(return_value=empty_result)
+  read_only_session.get = mock.AsyncMock(return_value=None)
+
+  @asynccontextmanager
+  async def fake_read_only_session():
+    yield read_only_session
+
+  service.database_session_factory = mock.Mock(
+      side_effect=AssertionError('write session factory should not be used')
+  )
+  service._read_only_database_session_factory = mock.Mock(
+      return_value=fake_read_only_session()
+  )
+
+  response = await service.list_sessions(app_name='my_app', user_id='test_user')
+
+  assert response.sessions == []
+  service._read_only_database_session_factory.assert_called_once_with()
+  service.database_session_factory.assert_not_called()
+
+  await service.close()
 
 
 @pytest.mark.asyncio
@@ -657,28 +787,27 @@ async def test_append_event_to_stale_session():
     assert len(original_session.events) == 1
     assert 'sk2' not in original_session.state
 
-    # Appending another event to stale original_session
+    # Appending another event to stale original_session should be rejected.
     event3 = Event(
         invocation_id='inv3',
         author='user',
         timestamp=current_time + 3,
         actions=EventActions(state_delta={'sk3': 'v3'}),
     )
-    await session_service.append_event(original_session, event3)
+    with pytest.raises(ValueError, match='modified in storage'):
+      await session_service.append_event(original_session, event3)
 
-    # If we fetch session from DB, it should contain all 3 events and all state
-    # changes.
+    # If we fetch session from DB, it should only contain the committed events.
     session_final = await session_service.get_session(
         app_name=app_name, user_id=user_id, session_id=original_session.id
     )
-    assert len(session_final.events) == 3
+    assert len(session_final.events) == 2
     assert session_final.state.get('sk1') == 'v1'
     assert session_final.state.get('sk2') == 'v2'
-    assert session_final.state.get('sk3') == 'v3'
+    assert session_final.state.get('sk3') is None
     assert [e.invocation_id for e in session_final.events] == [
         'inv1',
         'inv2',
-        'inv3',
     ]
 
 
@@ -738,7 +867,7 @@ async def test_append_event_raises_if_user_state_row_missing():
 
 
 @pytest.mark.asyncio
-async def test_append_event_concurrent_stale_sessions_preserve_all_state():
+async def test_append_event_concurrent_stale_sessions_reject_stale_writer():
   session_service = get_session_service(
       service_type=SessionServiceType.DATABASE
   )
@@ -771,19 +900,103 @@ async def test_append_event_concurrent_stale_sessions_preserve_all_state():
           actions=EventActions(state_delta={f'sk{i}-2': f'v{i}-2'}),
       )
 
-      await asyncio.gather(
+      results = await asyncio.gather(
           session_service.append_event(stale_session_1, event_1),
           session_service.append_event(stale_session_2, event_2),
+          return_exceptions=True,
       )
+      errors = [result for result in results if isinstance(result, Exception)]
+      successes = [
+          result for result in results if not isinstance(result, Exception)
+      ]
+      assert len(successes) == 1
+      assert len(errors) == 1
+      assert isinstance(errors[0], ValueError)
+      assert 'modified in storage' in str(errors[0])
 
     session_final = await session_service.get_session(
         app_name=app_name, user_id=user_id, session_id=session.id
     )
 
     for i in range(iteration_count):
-      assert session_final.state.get(f'sk{i}-1') == f'v{i}-1'
-      assert session_final.state.get(f'sk{i}-2') == f'v{i}-2'
-    assert len(session_final.events) == iteration_count * 2
+      event_values = {
+          session_final.state.get(f'sk{i}-1'),
+          session_final.state.get(f'sk{i}-2'),
+      }
+      assert event_values & {f'v{i}-1', f'v{i}-2'}
+      assert None in event_values
+    assert len(session_final.events) == iteration_count
+
+
+@pytest.mark.asyncio
+async def test_append_event_allows_timestamp_drift_for_current_session():
+  service = DatabaseSessionService('sqlite+aiosqlite:///:memory:')
+  try:
+    session = await service.create_session(
+        app_name='my_app', user_id='user', session_id='s1'
+    )
+    event1 = Event(
+        invocation_id='inv1',
+        author='user',
+        timestamp=session.last_update_time + 10,
+    )
+    await service.append_event(session, event1)
+
+    # Simulate a float round-trip mismatch without changing the persisted
+    # session revision.
+    session.last_update_time -= 0.0001
+
+    event2 = Event(
+        invocation_id='inv2',
+        author='user',
+        timestamp=event1.timestamp + 10,
+    )
+    await service.append_event(session, event2)
+
+    refreshed_session = await service.get_session(
+        app_name='my_app', user_id='user', session_id=session.id
+    )
+    assert [event.invocation_id for event in refreshed_session.events] == [
+        'inv1',
+        'inv2',
+    ]
+  finally:
+    await service.close()
+
+
+@pytest.mark.asyncio
+async def test_append_event_allows_markerless_current_session():
+  service = DatabaseSessionService('sqlite+aiosqlite:///:memory:')
+  try:
+    session = await service.create_session(
+        app_name='my_app', user_id='user', session_id='s1'
+    )
+    event1 = Event(
+        invocation_id='inv1',
+        author='user',
+        timestamp=session.last_update_time + 10,
+    )
+    await service.append_event(session, event1)
+
+    session._storage_update_marker = None
+    session.last_update_time -= 0.0001
+
+    event2 = Event(
+        invocation_id='inv2',
+        author='user',
+        timestamp=event1.timestamp + 10,
+    )
+    await service.append_event(session, event2)
+
+    refreshed_session = await service.get_session(
+        app_name='my_app', user_id='user', session_id=session.id
+    )
+    assert [event.invocation_id for event in refreshed_session.events] == [
+        'inv1',
+        'inv2',
+    ]
+  finally:
+    await service.close()
 
 
 @pytest.mark.asyncio
@@ -1153,6 +1366,137 @@ async def test_prepare_tables_serializes_schema_detection_and_creation():
     )
     assert session is not None
     assert session.id == 's1'
+  finally:
+    await service.close()
+
+
+@pytest.mark.asyncio
+async def test_get_or_create_state_returns_existing_row():
+  """_get_or_create_state returns an existing row without inserting."""
+  service = DatabaseSessionService('sqlite+aiosqlite:///:memory:')
+  try:
+    await service._prepare_tables()
+    schema = service._get_schema_classes()
+
+    # Pre-create the app_state row.
+    async with service.database_session_factory() as sql_session:
+      sql_session.add(schema.StorageAppState(app_name='app1', state={'k': 'v'}))
+      await sql_session.commit()
+
+    # _get_or_create_state should find and return it.
+    async with service.database_session_factory() as sql_session:
+      row = await database_session_service._get_or_create_state(
+          sql_session=sql_session,
+          state_model=schema.StorageAppState,
+          primary_key='app1',
+          defaults={'app_name': 'app1', 'state': {}},
+      )
+      assert row.app_name == 'app1'
+      assert row.state == {'k': 'v'}
+  finally:
+    await service.close()
+
+
+@pytest.mark.asyncio
+async def test_get_or_create_state_creates_new_row():
+  """_get_or_create_state creates a row when none exists."""
+  service = DatabaseSessionService('sqlite+aiosqlite:///:memory:')
+  try:
+    await service._prepare_tables()
+    schema = service._get_schema_classes()
+
+    async with service.database_session_factory() as sql_session:
+      row = await database_session_service._get_or_create_state(
+          sql_session=sql_session,
+          state_model=schema.StorageAppState,
+          primary_key='new_app',
+          defaults={'app_name': 'new_app', 'state': {}},
+      )
+      await sql_session.commit()
+      assert row.app_name == 'new_app'
+      assert row.state == {}
+
+    # Verify the row was actually persisted.
+    async with service.database_session_factory() as sql_session:
+      persisted = await sql_session.get(schema.StorageAppState, 'new_app')
+      assert persisted is not None
+  finally:
+    await service.close()
+
+
+@pytest.mark.asyncio
+async def test_get_or_create_state_handles_race_condition():
+  """_get_or_create_state recovers when a concurrent INSERT wins the race.
+
+  Simulates the race from https://github.com/google/adk-python/issues/4954:
+  the initial SELECT returns None (another caller hasn't committed yet), but
+  by the time we INSERT, the other caller has committed — so the INSERT fails
+  with IntegrityError and we fall back to re-fetching.
+  """
+  service = DatabaseSessionService('sqlite+aiosqlite:///:memory:')
+  try:
+    await service._prepare_tables()
+    schema = service._get_schema_classes()
+
+    # Pre-create the row to guarantee the INSERT will fail.
+    async with service.database_session_factory() as sql_session:
+      sql_session.add(schema.StorageAppState(app_name='race_app', state={}))
+      await sql_session.commit()
+
+    # Patch session.get to return None on the first call (simulating the
+    # race window), then fall through to the real implementation.
+    async with service.database_session_factory() as sql_session:
+      original_get = sql_session.get
+      call_count = 0
+
+      async def patched_get(*args, **kwargs):
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+          return None  # Simulate: row not yet visible
+        return await original_get(*args, **kwargs)
+
+      sql_session.get = patched_get
+
+      row = await database_session_service._get_or_create_state(
+          sql_session=sql_session,
+          state_model=schema.StorageAppState,
+          primary_key='race_app',
+          defaults={'app_name': 'race_app', 'state': {}},
+      )
+      assert row.app_name == 'race_app'
+      # The function should have called get twice: once before the INSERT
+      # (patched to return None) and once after the IntegrityError.
+      assert call_count == 2
+  finally:
+    await service.close()
+
+
+@pytest.mark.asyncio
+async def test_create_session_sequential_same_app_name():
+  """Sequential create_session calls for the same app_name work correctly.
+
+  The second call reuses the existing app_states row.
+  """
+  service = DatabaseSessionService('sqlite+aiosqlite:///:memory:')
+  try:
+    s1 = await service.create_session(
+        app_name='shared', user_id='u1', session_id='s1'
+    )
+    s2 = await service.create_session(
+        app_name='shared', user_id='u2', session_id='s2'
+    )
+    assert s1.app_name == 'shared'
+    assert s2.app_name == 'shared'
+
+    got1 = await service.get_session(
+        app_name='shared', user_id='u1', session_id='s1'
+    )
+    got2 = await service.get_session(
+        app_name='shared', user_id='u2', session_id='s2'
+    )
+    assert got1 is not None
+    assert got2 is not None
   finally:
     await service.close()
 

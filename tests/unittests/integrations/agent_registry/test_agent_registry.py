@@ -197,6 +197,48 @@ class TestAgentRegistry:
     assert len(agent._agent_card.skills) == 1
     assert agent._agent_card.skills[0].name == "Skill 1"
 
+  @patch("httpx.Client")
+  def test_get_remote_a2a_agent_with_card(self, mock_httpx, registry):
+    mock_response = MagicMock()
+    mock_response.json.return_value = {
+        "name": "projects/p/locations/l/agents/a",
+        "card": {
+            "type": "A2A_AGENT_CARD",
+            "content": {
+                "name": "CardName",
+                "description": "CardDesc",
+                "version": "2.0",
+                "url": "https://card-url.com",
+                "skills": [{
+                    "id": "s1",
+                    "name": "S1",
+                    "description": "D1",
+                    "tags": ["t1"],
+                }],
+                "capabilities": {"streaming": True, "polling": False},
+                "defaultInputModes": ["text"],
+                "defaultOutputModes": ["text"],
+            },
+        },
+    }
+    mock_response.raise_for_status = MagicMock()
+    mock_httpx.return_value.__enter__.return_value.get.return_value = (
+        mock_response
+    )
+
+    registry._credentials.token = "token"
+    registry._credentials.refresh = MagicMock()
+
+    agent = registry.get_remote_a2a_agent("test-agent")
+    assert isinstance(agent, RemoteA2aAgent)
+    assert agent.name == "CardName"
+    assert agent.description == "CardDesc"
+    assert agent._agent_card.version == "2.0"
+    assert agent._agent_card.url == "https://card-url.com"
+    assert agent._agent_card.capabilities.streaming is True
+    assert len(agent._agent_card.skills) == 1
+    assert agent._agent_card.skills[0].name == "S1"
+
   def test_get_auth_headers(self, registry):
     registry._credentials.token = "fake-token"
     registry._credentials.refresh = MagicMock()
