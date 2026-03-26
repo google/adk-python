@@ -1,6 +1,8 @@
 # Changelog
 
 ## [1.28.0](https://github.com/google/adk-python/compare/v1.27.5...v1.28.0) (2026-03-26)
+
+
 ### Features
 
 * **a2a:** add lifespan parameter to to_a2a() ([0f4c807](https://github.com/google/adk-python/commit/0f4c8073e5a180a220f88928d67ee8d521486f03)), closes [#4701](https://github.com/google/adk-python/issues/4701)
@@ -27,6 +29,8 @@
 
 ### Bug Fixes
 
+* add agent name validation to prevent arbitrary module imports ([116f75d](https://github.com/google/adk-python/commit/116f75d))
+* add protection for arbitrary module imports ([995cd1c](https://github.com/google/adk-python/commit/995cd1c)), closes [#4947](https://github.com/google/adk-python/issues/4947)
 * Add read-only session support in DatabaseSessionService ([f6ea58b](https://github.com/google/adk-python/commit/f6ea58b5939b33afad5a2d2f8fb395150120ae07)), closes [#4771](https://github.com/google/adk-python/issues/4771)
 * Allow snake case for skill name ([b157276](https://github.com/google/adk-python/commit/b157276cbb3c4f7f7b97e338e9d9df63d9c949cd))
 * **bigquery:** use valid dataplex OAuth scope ([4010716](https://github.com/google/adk-python/commit/4010716470fc83918dc367c5971342ff551401c8))
@@ -61,9 +65,10 @@
 * Update import and version for k8s-agent-sandbox ([1ee0623](https://github.com/google/adk-python/commit/1ee062312813e9564fdff693f883f57987e18c6a)), closes [#4883](https://github.com/google/adk-python/issues/4883)
 * Update list_agents to only list directories, not validate agent definitions ([5020954](https://github.com/google/adk-python/commit/50209549206256abe5d1c5d84ab2b14dfdf80d66))
 
-### Code Refactoring
 
+### Code Refactoring
 * rename agent simulator to environment simulation. Also add tracing into environment simulation ([99a31bf](https://github.com/google/adk-python/commit/99a31bf77ea6fb2c53c313094734611dcb87b1e2))
+
 
 ### Documentation
 
