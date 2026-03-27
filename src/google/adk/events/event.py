@@ -36,7 +36,7 @@ class Event(LlmResponse):
   """
 
   model_config = ConfigDict(
-      extra='forbid',
+      extra='ignore',
       ser_json_bytes='base64',
       val_json_bytes='base64',
       alias_generator=alias_generators.to_camel,
