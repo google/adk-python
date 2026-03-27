@@ -1151,12 +1151,10 @@ def __build_response_event(
 
 
 def deep_merge_dicts(d1: dict, d2: dict) -> dict:
-  """Recursively merges d2 into d1, extending lists where keys collide."""
+  """Recursively merges d2 into d1."""
   for key, value in d2.items():
     if key in d1 and isinstance(d1[key], dict) and isinstance(value, dict):
       d1[key] = deep_merge_dicts(d1[key], value)
-    elif key in d1 and isinstance(d1[key], list) and isinstance(value, list):
-      d1[key].extend(value)
     else:
       d1[key] = value
   return d1
@@ -1197,7 +1195,7 @@ def merge_parallel_function_response_events(
       author=base_event.author,
       branch=base_event.branch,
       content=types.Content(role='user', parts=merged_parts),
-      actions=merged_actions,  # Aggregated from all parallel events
+      actions=merged_actions,  # Optionally merge actions if required
   )
 
   # Use the base_event as the timestamp
