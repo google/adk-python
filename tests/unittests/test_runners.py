@@ -173,17 +173,18 @@ class MockPlugin(BasePlugin):
   ) -> Optional[Event]:
     if not self.enable_event_callback:
       return None
-    return Event(
-        invocation_id="",
-        author="",
-        content=types.Content(
-            parts=[
-                types.Part(
-                    text=self.ON_EVENT_CALLBACK_MSG,
-                )
-            ],
-            role=event.content.role,
-        ),
+    return event.model_copy(
+        deep=True,
+        update={
+            "content": types.Content(
+                parts=[
+                    types.Part(
+                        text=self.ON_EVENT_CALLBACK_MSG,
+                    )
+                ],
+                role=event.content.role,
+            ),
+        },
     )
 
 
@@ -746,6 +747,15 @@ class TestRunnerWithPlugins:
     modified_event_message = generated_event.content.parts[0].text
 
     assert modified_event_message == MockPlugin.ON_EVENT_CALLBACK_MSG
+
+    session = await self.session_service.get_session(
+        app_name=TEST_APP_ID, user_id=TEST_USER_ID, session_id=TEST_SESSION_ID
+    )
+    persisted_event = session.events[1]
+    assert (
+        persisted_event.content.parts[0].text
+        == MockPlugin.ON_EVENT_CALLBACK_MSG
+    )
 
   @pytest.mark.asyncio
   async def test_runner_close_calls_plugin_close(self):

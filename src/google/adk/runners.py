@@ -812,6 +812,27 @@ class Runner:
 
     plugin_manager = invocation_context.plugin_manager
 
+    async def _process_event(
+        event: Event,
+        *,
+        should_append_event: bool,
+    ) -> Event:
+      """Applies event callbacks before persisting the final event."""
+      modified_event = await plugin_manager.run_on_event_callback(
+          invocation_context=invocation_context, event=event
+      )
+      final_event = modified_event or event
+      if modified_event:
+        _apply_run_config_custom_metadata(
+            final_event, invocation_context.run_config
+        )
+      if should_append_event:
+        await self.session_service.append_event(
+            session=session,
+            event=final_event,
+        )
+      return final_event
+
     # Step 1: Run the before_run callbacks to see if we should early exit.
     early_exit_result = await plugin_manager.run_before_run_callback(
         invocation_context=invocation_context
@@ -854,6 +875,7 @@ class Runner:
           _apply_run_config_custom_metadata(
               event, invocation_context.run_config
           )
+          should_append_event = False
           if is_live_call:
             if event.partial and _is_transcription(event):
               is_transcribing = True
@@ -879,43 +901,39 @@ class Runner:
                 logger.debug(
                     'Appending transcription finished event: %s', event
                 )
-                if self._should_append_event(event, is_live_call):
-                  await self.session_service.append_event(
-                      session=session, event=event
-                  )
+                yield await _process_event(
+                    event,
+                    should_append_event=self._should_append_event(
+                        event, is_live_call
+                    ),
+                )
 
                 for buffered_event in buffered_events:
                   logger.debug('Appending buffered event: %s', buffered_event)
-                  await self.session_service.append_event(
-                      session=session, event=buffered_event
+                  yield await _process_event(
+                      buffered_event,
+                      should_append_event=self._should_append_event(
+                          buffered_event, is_live_call
+                      ),
                   )
-                  yield buffered_event  # yield buffered events to caller
                 buffered_events = []
+                continue
               else:
                 # non-transcription event or empty transcription event, for
                 # example, event that stores blob reference, should be appended.
-                if self._should_append_event(event, is_live_call):
+                should_append_event = self._should_append_event(
+                    event, is_live_call
+                )
+                if should_append_event:
                   logger.debug('Appending non-buffered event: %s', event)
-                  await self.session_service.append_event(
-                      session=session, event=event
-                  )
           else:
-            if event.partial is not True:
-              await self.session_service.append_event(
-                  session=session, event=event
-              )
+            should_append_event = event.partial is not True
 
-          # Step 3: Run the on_event callbacks to optionally modify the event.
-          modified_event = await plugin_manager.run_on_event_callback(
-              invocation_context=invocation_context, event=event
+          # Step 3: Run the on_event callbacks and persist the final event.
+          yield await _process_event(
+              event,
+              should_append_event=should_append_event,
           )
-          if modified_event:
-            _apply_run_config_custom_metadata(
-                modified_event, invocation_context.run_config
-            )
-            yield modified_event
-          else:
-            yield event
 
     # Step 4: Run the after_run callbacks to perform global cleanup tasks or
     # finalizing logs and metrics data.
