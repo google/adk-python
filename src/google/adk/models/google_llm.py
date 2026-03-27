@@ -19,12 +19,7 @@ import contextlib
 import copy
 from functools import cached_property
 import logging
-from typing import Any
-from typing import AsyncGenerator
-from typing import cast
-from typing import Optional
-from typing import TYPE_CHECKING
-from typing import Union
+from typing import Any, AsyncGenerator, cast, Optional, TYPE_CHECKING, Union
 
 from google.genai import types
 from google.genai.errors import ClientError
@@ -39,6 +34,7 @@ from .base_llm import BaseLlm
 from .base_llm_connection import BaseLlmConnection
 from .gemini_llm_connection import GeminiLlmConnection
 from .llm_response import LlmResponse
+
 
 if TYPE_CHECKING:
   from google.genai import Client
@@ -334,12 +330,23 @@ class Gemini(BaseLlm):
 
   @cached_property
   def _live_api_client(self) -> Client:
+    import os
+
     from google.genai import Client
 
+    kwargs = {}
+    if os.environ.get('GOOGLE_GENAI_USE_VERTEXAI', '').lower() in ('1', 'true'):
+      from google.cloud.aiplatform import initializer
+
+      kwargs['location'] = initializer.global_config.location
+      kwargs['project'] = initializer.global_config.project
     return Client(
+        **kwargs,
         http_options=types.HttpOptions(
-            headers=self._tracking_headers(), api_version=self._live_api_version
-        )
+            headers=self._tracking_headers(),
+            api_version=self._live_api_version,
+            base_url=self.base_url,
+        ),
     )
 
   @contextlib.asynccontextmanager
