@@ -36,18 +36,44 @@ class Session(BaseModel):
   )
   """The pydantic model config."""
 
-  id: str
+  id: str = Field(
+      description="Unique identifier of the session.",
+      examples=["session-abc123"],
+  )
   """The unique identifier of the session."""
-  app_name: str
+  app_name: str = Field(
+      description="Application name that owns the session.",
+      examples=["hello_world"],
+  )
   """The name of the app."""
-  user_id: str
+  user_id: str = Field(
+      description="User ID that owns the session.",
+      examples=["user-123"],
+  )
   """The id of the user."""
-  state: dict[str, Any] = Field(default_factory=dict)
+  state: dict[str, Any] = Field(
+      default_factory=dict,
+      description="Current persisted session state.",
+      examples=[{"locale": "en-US"}],
+  )
   """The state of the session."""
-  events: list[Event] = Field(default_factory=list)
+  events: list[Event] = Field(
+      default_factory=list,
+      description=(
+          "Ordered event history for the session, including user, model, and"
+          " tool events."
+      ),
+      examples=[[]],
+  )
   """The events of the session, e.g. user input, model response, function
   call/response, etc."""
-  last_update_time: float = 0.0
+  last_update_time: float = Field(
+      default=0.0,
+      description=(
+          "Unix timestamp in seconds for the most recent session update."
+      ),
+      examples=[1_742_000_000.0],
+  )
   """The last update time of the session."""
 
   _storage_update_marker: str | None = PrivateAttr(default=None)
