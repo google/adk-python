@@ -16,6 +16,7 @@ from __future__ import annotations
 
 from abc import ABC
 import asyncio
+import random
 import inspect
 import logging
 from typing import AsyncGenerator
@@ -69,6 +70,11 @@ _ADK_AGENT_NAME_LABEL_KEY = 'adk_agent_name'
 # Timing configuration
 DEFAULT_TRANSFER_AGENT_DELAY = 1.0
 DEFAULT_TASK_COMPLETION_DELAY = 1.0
+
+# Reconnection configuration
+MAX_RECONNECT_ATTEMPTS = 10
+RECONNECT_BASE_DELAY = 1.0  # seconds
+RECONNECT_MAX_DELAY = 30.0  # seconds
 
 # Statistics configuration
 DEFAULT_ENABLE_CACHE_STATISTICS = False
@@ -595,11 +601,29 @@ class BaseLlmFlow(ABC):
               await send_task
             except asyncio.CancelledError:
               pass
+          # Reset attempt counter on successful connection.
+          attempt = 1
       except (ConnectionClosed, ConnectionClosedOK) as e:
         if invocation_context.live_session_resumption_handle:
+          if attempt > MAX_RECONNECT_ATTEMPTS:
+            logger.error(
+                'Max reconnection attempts (%d) reached, giving up.',
+                MAX_RECONNECT_ATTEMPTS,
+            )
+            raise
+          delay = min(
+              RECONNECT_BASE_DELAY * (2 ** (attempt - 1)),
+              RECONNECT_MAX_DELAY,
+          ) + random.uniform(0, 1)
           logger.info(
-              'Connection closed (%s), reconnecting with session handle.', e
+              'Connection closed (%s), reconnecting in %.1fs (attempt'
+              ' %d/%d).',
+              e,
+              delay,
+              attempt,
+              MAX_RECONNECT_ATTEMPTS,
           )
+          await asyncio.sleep(delay)
           continue
         logger.error('Connection closed: %s.', e)
         raise
@@ -608,9 +632,25 @@ class BaseLlmFlow(ABC):
             invocation_context.live_session_resumption_handle
             and isinstance(e, genai_errors.APIError)
         ):
+          if attempt > MAX_RECONNECT_ATTEMPTS:
+            logger.error(
+                'Max reconnection attempts (%d) reached, giving up.',
+                MAX_RECONNECT_ATTEMPTS,
+            )
+            raise
+          delay = min(
+              RECONNECT_BASE_DELAY * (2 ** (attempt - 1)),
+              RECONNECT_MAX_DELAY,
+          ) + random.uniform(0, 1)
           logger.info(
-              'Connection lost (%s), reconnecting with session handle.', e
+              'Connection lost (%s), reconnecting in %.1fs (attempt'
+              ' %d/%d).',
+              e,
+              delay,
+              attempt,
+              MAX_RECONNECT_ATTEMPTS,
           )
+          await asyncio.sleep(delay)
           continue
         logger.error(
             'An unexpected error occurred in live flow: %s', e, exc_info=True

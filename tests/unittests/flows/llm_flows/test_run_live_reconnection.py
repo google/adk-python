@@ -28,6 +28,7 @@ from google.adk.agents.invocation_context import InvocationContext
 from google.adk.agents.live_request_queue import LiveRequestQueue
 from google.adk.agents.llm_agent import LlmAgent
 from google.adk.events.event import Event
+from google.adk.flows.llm_flows.base_llm_flow import MAX_RECONNECT_ATTEMPTS
 from google.adk.models.base_llm_connection import BaseLlmConnection
 from google.adk.models.llm_response import LlmResponse
 from google.adk.utils.context_utils import Aclosing
@@ -36,6 +37,14 @@ from websockets.exceptions import ConnectionClosedOK
 import pytest
 
 from ... import testing_utils
+
+# Patch target for asyncio.sleep inside base_llm_flow.
+_SLEEP_PATCH = 'google.adk.flows.llm_flows.base_llm_flow.asyncio.sleep'
+
+
+async def _noop_sleep(_delay):
+  """No-op replacement for asyncio.sleep in tests."""
+  pass
 
 
 class _LoopBreak(Exception):
@@ -147,13 +156,14 @@ async def test_reconnects_on_connection_closed_with_handle():
       # 3rd: _LoopBreak auto-raised
   ])
 
-  with mock.patch.object(
-      type(agent.canonical_model), 'connect', side_effect=mock_connect
-  ):
-    with pytest.raises(_LoopBreak):
-      async with Aclosing(flow.run_live(ctx)) as agen:
-        async for event in agen:
-          pass
+  with mock.patch(_SLEEP_PATCH, side_effect=_noop_sleep):
+    with mock.patch.object(
+        type(agent.canonical_model), 'connect', side_effect=mock_connect
+    ):
+      with pytest.raises(_LoopBreak):
+        async with Aclosing(flow.run_live(ctx)) as agen:
+          async for event in agen:
+            pass
 
   # Verify the reconnection happened: 1st failed, 2nd succeeded, 3rd broke
   assert mock_connect.call_count() == 3
@@ -172,15 +182,68 @@ async def test_reconnects_on_api_error_with_handle():
       stub_conn,
   ])
 
-  with mock.patch.object(
-      type(agent.canonical_model), 'connect', side_effect=mock_connect
-  ):
-    with pytest.raises(_LoopBreak):
-      async with Aclosing(flow.run_live(ctx)) as agen:
-        async for event in agen:
-          pass
+  with mock.patch(_SLEEP_PATCH, side_effect=_noop_sleep):
+    with mock.patch.object(
+        type(agent.canonical_model), 'connect', side_effect=mock_connect
+    ):
+      with pytest.raises(_LoopBreak):
+        async with Aclosing(flow.run_live(ctx)) as agen:
+          async for event in agen:
+            pass
 
   assert mock_connect.call_count() == 3
+
+
+@pytest.mark.asyncio
+async def test_raises_after_max_retries_connection_closed():
+  """ConnectionClosedOK should propagate after MAX_RECONNECT_ATTEMPTS."""
+  agent = LlmAgent(name='test', model=testing_utils.MockModel.create([]))
+  ctx = await _create_live_context(agent, resumption_handle='test-handle')
+  flow = _setup_flow(agent)
+
+  # Generate MAX_RECONNECT_ATTEMPTS + 1 errors to exhaust retries.
+  errors = [
+      ConnectionClosedOK(None, None)
+      for _ in range(MAX_RECONNECT_ATTEMPTS + 1)
+  ]
+  mock_connect = _make_connect_fn(errors)
+
+  with mock.patch(_SLEEP_PATCH, side_effect=_noop_sleep):
+    with mock.patch.object(
+        type(agent.canonical_model), 'connect', side_effect=mock_connect
+    ):
+      with pytest.raises(ConnectionClosedOK):
+        async with Aclosing(flow.run_live(ctx)) as agen:
+          async for event in agen:
+            pass
+
+  # Should have attempted MAX_RECONNECT_ATTEMPTS times before giving up.
+  assert mock_connect.call_count() == MAX_RECONNECT_ATTEMPTS
+
+
+@pytest.mark.asyncio
+async def test_raises_after_max_retries_api_error():
+  """APIError should propagate after MAX_RECONNECT_ATTEMPTS."""
+  agent = LlmAgent(name='test', model=testing_utils.MockModel.create([]))
+  ctx = await _create_live_context(agent, resumption_handle='test-handle')
+  flow = _setup_flow(agent)
+
+  errors = [
+      genai_errors.APIError(503, {'error': 'down'})
+      for _ in range(MAX_RECONNECT_ATTEMPTS + 1)
+  ]
+  mock_connect = _make_connect_fn(errors)
+
+  with mock.patch(_SLEEP_PATCH, side_effect=_noop_sleep):
+    with mock.patch.object(
+        type(agent.canonical_model), 'connect', side_effect=mock_connect
+    ):
+      with pytest.raises(genai_errors.APIError):
+        async with Aclosing(flow.run_live(ctx)) as agen:
+          async for event in agen:
+            pass
+
+  assert mock_connect.call_count() == MAX_RECONNECT_ATTEMPTS
 
 
 @pytest.mark.asyncio
