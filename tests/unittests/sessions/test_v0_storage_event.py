@@ -125,3 +125,24 @@ def test_from_event_preserves_short_error_message():
   storage_event = StorageEvent.from_event(session, event)
 
   assert storage_event.error_message == short_error
+
+
+def test_from_event_with_none_error_message():
+  session = Session(
+      app_name="app",
+      user_id="user",
+      id="session_id",
+      state={},
+      events=[],
+      last_update_time=0.0,
+  )
+  event = Event(
+      id="event_id",
+      invocation_id="inv_id",
+      author="agent",
+      timestamp=1.0,
+  )
+
+  storage_event = StorageEvent.from_event(session, event)
+
+  assert storage_event.error_message is None
