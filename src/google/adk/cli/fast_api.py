@@ -291,7 +291,7 @@ def get_fast_api_app(
     def _has_parent_reference(path: str) -> bool:
       return any(part == ".." for part in path.split("/"))
 
-    _ALLOWED_UPLOAD_EXTENSIONS = frozenset({".yaml", ".yml"})
+    _ALLOWED_EXTENSIONS = frozenset({".yaml", ".yml"})
 
     def _parse_upload_filename(filename: Optional[str]) -> tuple[str, str]:
       if not filename:
@@ -307,10 +307,10 @@ def get_fast_api_app(
       if _has_parent_reference(rel_path):
         raise ValueError(f"Path traversal rejected: {filename!r}")
       ext = os.path.splitext(rel_path)[1].lower()
-      if ext not in _ALLOWED_UPLOAD_EXTENSIONS:
+      if ext not in _ALLOWED_EXTENSIONS:
         raise ValueError(
             f"File type not allowed: {rel_path!r}"
-            f" (allowed: {', '.join(sorted(_ALLOWED_UPLOAD_EXTENSIONS))})"
+            f" (allowed: {', '.join(sorted(_ALLOWED_EXTENSIONS))})"
         )
       return app_name, rel_path
 
@@ -322,6 +322,12 @@ def get_fast_api_app(
         raise ValueError(f"Absolute file_path rejected: {file_path!r}")
       if _has_parent_reference(file_path):
         raise ValueError(f"Path traversal rejected: {file_path!r}")
+      ext = os.path.splitext(file_path)[1].lower()
+      if ext not in _ALLOWED_EXTENSIONS:
+        raise ValueError(
+            f"File type not allowed: {file_path!r}"
+            f" (allowed: {', '.join(sorted(_ALLOWED_EXTENSIONS))})"
+        )
       return file_path
 
     def _resolve_under_dir(root_dir: Path, rel_path: str) -> Path:

@@ -1,5 +1,6 @@
 # Step 6 (v2): Builds and publishes the v2 package to PyPI from a release/v{version} branch.
-# Converts semver pre-release version to PEP 440 format before building.
+# Reads version from .release-please-manifest-v2.json, converts to PEP 440,
+# updates version.py, then builds and publishes.
 # Creates a merge-back PR (step 7) to sync release changes to v2.
 name: "Release v2: Publish to PyPi"
 
@@ -17,15 +18,16 @@ jobs:
       - name: Validate branch
         run: |
           if [[ ! "${GITHUB_REF_NAME}" =~ ^release/v[0-9]+\.[0-9]+\.[0-9]+ ]]; then
-            echo "Error: Must run from a release/v* branch (e.g., release/v2.0.0-alpha.1)"
+            echo "Error: Must run from a release/v* branch (e.g., release/v2.0.0-alpha.2)"
             exit 1
           fi
 
-      - name: Extract and convert version to PEP 440
+      - uses: actions/checkout@v6
+
+      - name: Extract version from manifest and convert to PEP 440
         id: version
         run: |
-          VERSION="${GITHUB_REF_NAME}"
-          VERSION="${VERSION#release/v}"
+          VERSION=$(jq -r '.["."]' .github/.release-please-manifest-v2.json)
           echo "semver=$VERSION" >> $GITHUB_OUTPUT
           echo "Semver version: $VERSION"
 
@@ -38,8 +40,6 @@ jobs:
           echo "pep440=$PEP440" >> $GITHUB_OUTPUT
           echo "PEP 440 version: $PEP440"
 
-      - uses: actions/checkout@v6
-
       - name: Install uv
         uses: astral-sh/setup-uv@v4
         with:
@@ -50,13 +50,13 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Update pyproject.toml with PEP 440 version
+      - name: Update version.py with PEP 440 version
         env:
           PEP440_VERSION: ${{ steps.version.outputs.pep440 }}
         run: |
-          # Update version in pyproject.toml if it differs from PEP 440
-          sed -i "s/^version = .*/version = \"${PEP440_VERSION}\"/" pyproject.toml
-          echo "Updated pyproject.toml version to ${PEP440_VERSION}"
+          sed -i "s/^__version__ = .*/__version__ = \"${PEP440_VERSION}\"/" src/google/adk/version.py
+          echo "Updated version.py to ${PEP440_VERSION}"
+          grep __version__ src/google/adk/version.py
 
       - name: Build package
         run: uv build
