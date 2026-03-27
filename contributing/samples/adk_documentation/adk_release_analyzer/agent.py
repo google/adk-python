@@ -29,6 +29,7 @@ State keys used:
 - recommendations: Accumulated recommendations from all groups
 """
 
+import copy
 import os
 import sys
 from typing import Any
@@ -114,6 +115,7 @@ def get_next_file_group(tool_context: ToolContext) -> dict[str, Any]:
   current_index = tool_context.state.get("current_group_index", 0)
 
   if current_index >= len(file_groups):
+    print(f"[Progress] All {len(file_groups)} groups processed.")
     return {
         "status": "complete",
         "message": "All file groups have been processed.",
@@ -122,7 +124,11 @@ def get_next_file_group(tool_context: ToolContext) -> dict[str, Any]:
     }
 
   current_group = file_groups[current_index]
-  tool_context.state["current_group_index"] = current_index + 1
+  file_paths = [f.get("relative_path", "?") for f in current_group]
+  print(
+      f"[Progress] Starting group {current_index + 1}/{len(file_groups)}:"
+      f" {file_paths}"
+  )
 
   return {
       "status": "success",
@@ -157,6 +163,16 @@ def save_group_recommendations(
   all_recommendations = tool_context.state.get("recommendations", [])
   all_recommendations.extend(recommendations)
   tool_context.state["recommendations"] = all_recommendations
+  # Advance index only after recommendations are saved, so interrupted
+  # groups get retried on resume instead of being skipped.
+  tool_context.state["current_group_index"] = group_index + 1
+
+  total_groups = len(tool_context.state.get("file_groups", []))
+  print(
+      f"[Progress] Group {group_index + 1}/{total_groups} done."
+      f" +{len(recommendations)} recommendations"
+      f" ({len(all_recommendations)} total)"
+  )
 
   return {
       "status": "success",
@@ -179,6 +195,11 @@ def get_all_recommendations(tool_context: ToolContext) -> dict[str, Any]:
   start_tag = tool_context.state.get("start_tag", "unknown")
   end_tag = tool_context.state.get("end_tag", "unknown")
   compare_url = tool_context.state.get("compare_url", "")
+
+  print(
+      f"[Summary] Retrieving recommendations: {len(recommendations)} total,"
+      f" release {start_tag} → {end_tag}"
+  )
 
   return {
       "status": "success",
@@ -225,6 +246,12 @@ def save_release_info(
   tool_context.state["recommendations"] = []
   tool_context.state["release_summary"] = release_summary
   tool_context.state["all_changed_files"] = all_changed_files
+
+  total_files = sum(len(group) for group in file_groups)
+  print(
+      f"[Planning] Release {start_tag} → {end_tag}:"
+      f" {total_files} files in {len(file_groups)} groups"
+  )
 
   return {
       "status": "success",
@@ -404,10 +431,13 @@ files and finding related documentation that needs updating.
 4. For EACH significant change, call `search_local_git_repo` to find related docs
    in {LOCAL_REPOS_DIR_PATH}/{DOC_REPO}/docs/
    - Search for the feature name, class name, or related keywords
+   - **ALWAYS** pass `ignored_dirs=["api-reference"]` to skip auto-generated API
+     reference docs (they are updated automatically by code, not manually)
    - If no docs found, recommend creating new documentation
 
 5. Call `read_local_git_repo_file_content` to read the relevant doc files
    and check if they need updating.
+   - **SKIP** any files under `docs/api-reference/` — these are auto-generated.
 
 6. For each documentation update needed, create a recommendation with:
    - summary: Brief summary of what needs to change
@@ -446,6 +476,7 @@ file_group_analyzer = Agent(
         "Analyzes a group of changed files and generates recommendations."
     ),
     instruction=file_analyzer_instruction,
+    include_contents="none",
     tools=[
         get_next_file_group,
         get_release_context,  # Get global context to avoid duplicates
@@ -550,6 +581,26 @@ analysis_pipeline = SequentialAgent(
         planner_agent,
         file_analysis_loop,
         summary_agent,
+    ],
+)
+
+
+# Resume pipeline: skips planner, continues from where loop left off.
+# Deep copy agents since ADK agents can only have one parent.
+_resume_loop = copy.deepcopy(file_analysis_loop)
+_resume_loop.parent_agent = None
+_resume_summary = copy.deepcopy(summary_agent)
+_resume_summary.parent_agent = None
+
+resume_pipeline = SequentialAgent(
+    name="resume_pipeline",
+    description=(
+        "Resumes the release analysis pipeline from the file analysis loop,"
+        " skipping the planning phase."
+    ),
+    sub_agents=[
+        _resume_loop,
+        _resume_summary,
     ],
 )
 
