@@ -212,7 +212,7 @@ async def test_raises_after_max_retries_connection_closed():
     with mock.patch.object(
         type(agent.canonical_model), 'connect', side_effect=mock_connect
     ):
-      with pytest.raises(ConnectionClosedOK):
+      with pytest.raises(ConnectionError, match='reconnection failed after'):
         async with Aclosing(flow.run_live(ctx)) as agen:
           async for event in agen:
             pass
@@ -238,7 +238,7 @@ async def test_raises_after_max_retries_api_error():
     with mock.patch.object(
         type(agent.canonical_model), 'connect', side_effect=mock_connect
     ):
-      with pytest.raises(genai_errors.APIError):
+      with pytest.raises(ConnectionError, match='reconnection failed after'):
         async with Aclosing(flow.run_live(ctx)) as agen:
           async for event in agen:
             pass

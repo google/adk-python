@@ -610,7 +610,10 @@ class BaseLlmFlow(ABC):
                 'Max reconnection attempts (%d) reached, giving up.',
                 MAX_RECONNECT_ATTEMPTS,
             )
-            raise
+            raise ConnectionError(
+                'Live session reconnection failed after'
+                f' {MAX_RECONNECT_ATTEMPTS} attempts'
+            ) from e
           delay = min(
               RECONNECT_BASE_DELAY * (2 ** (attempt - 1)),
               RECONNECT_MAX_DELAY,
@@ -637,7 +640,10 @@ class BaseLlmFlow(ABC):
                 'Max reconnection attempts (%d) reached, giving up.',
                 MAX_RECONNECT_ATTEMPTS,
             )
-            raise
+            raise ConnectionError(
+                'Live session reconnection failed after'
+                f' {MAX_RECONNECT_ATTEMPTS} attempts'
+            ) from e
           delay = min(
               RECONNECT_BASE_DELAY * (2 ** (attempt - 1)),
               RECONNECT_MAX_DELAY,
