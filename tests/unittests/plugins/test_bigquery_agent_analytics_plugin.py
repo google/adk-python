@@ -1766,6 +1766,63 @@ class TestBigQueryAgentAnalyticsPlugin:
     assert log_entry["status"] == "ERROR"
 
   @pytest.mark.asyncio
+  async def test_on_agent_error_callback_logs_correctly(
+      self,
+      bq_plugin_inst,
+      mock_write_client,
+      mock_agent,
+      callback_context,
+      dummy_arrow_schema,
+  ):
+    error = RuntimeError("Agent crashed")
+    bigquery_agent_analytics_plugin.TraceManager.push_span(
+        callback_context, "agent"
+    )
+    await bq_plugin_inst.on_agent_error_callback(
+        agent=mock_agent,
+        callback_context=callback_context,
+        error=error,
+    )
+    await asyncio.sleep(0.01)
+    log_entry = await _get_captured_event_dict_async(
+        mock_write_client, dummy_arrow_schema
+    )
+    _assert_common_fields(log_entry, "AGENT_ERROR")
+    assert log_entry["error_message"] == "Agent crashed"
+    assert log_entry["status"] == "ERROR"
+    content_dict = json.loads(log_entry["content"])
+    assert "error_traceback" in content_dict
+    assert "RuntimeError: Agent crashed" in content_dict["error_traceback"]
+
+  @pytest.mark.asyncio
+  async def test_on_run_error_callback_logs_correctly(
+      self,
+      bq_plugin_inst,
+      mock_write_client,
+      invocation_context,
+      callback_context,
+      dummy_arrow_schema,
+  ):
+    error = ValueError("Invocation failed")
+    bigquery_agent_analytics_plugin.TraceManager.push_span(
+        callback_context, "invocation"
+    )
+    await bq_plugin_inst.on_run_error_callback(
+        invocation_context=invocation_context,
+        error=error,
+    )
+    await asyncio.sleep(0.01)
+    log_entry = await _get_captured_event_dict_async(
+        mock_write_client, dummy_arrow_schema
+    )
+    _assert_common_fields(log_entry, "INVOCATION_ERROR")
+    assert log_entry["error_message"] == "Invocation failed"
+    assert log_entry["status"] == "ERROR"
+    content_dict = json.loads(log_entry["content"])
+    assert "error_traceback" in content_dict
+    assert "ValueError: Invocation failed" in content_dict["error_traceback"]
+
+  @pytest.mark.asyncio
   async def test_table_creation_options(
       self,
       mock_auth_default,
@@ -5147,6 +5204,31 @@ class TestAnalyticsViews:
       view_name = "v_" + event_type.lower()
       assert view_name in all_sql, f"View {view_name} not found in SQL"
 
+  def test_error_views_contain_traceback_column(self):
+    """AGENT_ERROR and INVOCATION_ERROR views extract error_traceback."""
+    plugin = self._make_plugin(create_views=True)
+    plugin.client.get_table.side_effect = cloud_exceptions.NotFound("not found")
+    mock_query_job = mock.MagicMock()
+    plugin.client.query.return_value = mock_query_job
+
+    plugin._ensure_schema_exists()
+
+    calls = plugin.client.query.call_args_list
+    view_sqls = {c[0][0]: c[0][0] for c in calls}
+
+    # Find the AGENT_ERROR and INVOCATION_ERROR view SQLs.
+    agent_error_sqls = [sql for sql in view_sqls if "v_agent_error" in sql]
+    invocation_error_sqls = [
+        sql for sql in view_sqls if "v_invocation_error" in sql
+    ]
+
+    assert len(agent_error_sqls) == 1
+    assert "error_traceback" in agent_error_sqls[0]
+    assert "total_ms" in agent_error_sqls[0]
+
+    assert len(invocation_error_sqls) == 1
+    assert "error_traceback" in invocation_error_sqls[0]
+
   def test_config_create_views_default_true(self):
     """Config create_views defaults to True."""
     config = bigquery_agent_analytics_plugin.BigQueryLoggerConfig()
@@ -6173,6 +6255,71 @@ class TestAfterRunCleanupExceptionSafety:
         # the finally block must still execute.
         await bq_plugin_inst.after_run_callback(
             invocation_context=invocation_context
+        )
+
+      # All invocation state must be cleaned up despite the error.
+      records = bigquery_agent_analytics_plugin._span_records_ctx.get()
+      assert records == [] or records is None
+      assert (
+          bigquery_agent_analytics_plugin._active_invocation_id_ctx.get()
+          is None
+      )
+      assert bigquery_agent_analytics_plugin._root_agent_name_ctx.get() is None
+
+    provider.shutdown()
+
+
+class TestRunErrorCallbackCleanupSafety:
+  """on_run_error_callback cleanup must execute even if _log_event fails."""
+
+  @pytest.mark.asyncio
+  async def test_cleanup_runs_when_log_event_raises(
+      self,
+      bq_plugin_inst,
+      mock_write_client,
+      invocation_context,
+      callback_context,
+      mock_agent,
+  ):
+    """Stale state is cleared even when _log_event raises in error cb."""
+    from opentelemetry.sdk.trace import TracerProvider as SdkProvider
+    from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+    from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
+
+    provider = SdkProvider()
+    provider.add_span_processor(SimpleSpanProcessor(InMemorySpanExporter()))
+    real_tracer = provider.get_tracer("test")
+
+    with mock.patch.object(
+        bigquery_agent_analytics_plugin, "tracer", real_tracer
+    ):
+      bigquery_agent_analytics_plugin._span_records_ctx.set(None)
+      bigquery_agent_analytics_plugin._active_invocation_id_ctx.set(None)
+      bigquery_agent_analytics_plugin._root_agent_name_ctx.set(None)
+
+      # Run before_run to initialise state.
+      await bq_plugin_inst.before_run_callback(
+          invocation_context=invocation_context
+      )
+
+      # Verify state is populated.
+      assert bigquery_agent_analytics_plugin._span_records_ctx.get()
+      assert (
+          bigquery_agent_analytics_plugin._active_invocation_id_ctx.get()
+          is not None
+      )
+
+      # Make _log_event raise inside on_run_error_callback.
+      with mock.patch.object(
+          bq_plugin_inst,
+          "_log_event",
+          side_effect=RuntimeError("boom"),
+      ):
+        # _safe_callback swallows the exception, but cleanup in
+        # the finally block must still execute.
+        await bq_plugin_inst.on_run_error_callback(
+            invocation_context=invocation_context,
+            error=ValueError("crash"),
         )
 
       # All invocation state must be cleaned up despite the error.

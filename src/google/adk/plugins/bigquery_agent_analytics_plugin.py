@@ -1766,10 +1766,13 @@ _EVENT_VIEW_DEFS: dict[str, list[str]] = {
     ],
     "AGENT_ERROR": [
         "CAST(JSON_VALUE(latency_ms, '$.total_ms') AS INT64) AS total_ms",
+        "JSON_VALUE(content, '$.error_traceback') AS error_traceback",
     ],
     "INVOCATION_STARTING": [],
     "INVOCATION_COMPLETED": [],
-    "INVOCATION_ERROR": [],
+    "INVOCATION_ERROR": [
+        "JSON_VALUE(content, '$.error_traceback') AS error_traceback",
+    ],
     "STATE_DELTA": [
         "JSON_QUERY(attributes, '$.state_delta') AS state_delta",
     ],
