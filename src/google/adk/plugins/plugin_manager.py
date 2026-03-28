@@ -341,29 +341,29 @@ class PluginManager:
   ) -> None:
     """Executes a notification-only callback for all registered plugins.
 
-    Unlike ``_run_callbacks``, this method **always iterates all plugins**
-    regardless of return values.  It is intended for error callbacks where
-    every plugin must be notified (the return value is discarded).
+    Unlike ``_run_callbacks``, this method is **best-effort**: it always
+    iterates all plugins regardless of return values or exceptions.  If a
+    plugin's callback raises, the error is logged and iteration continues
+    so that every plugin gets notified.  This is critical for error
+    callbacks where the caller holds an original application exception
+    that must remain the primary error.
 
     Args:
       callback_name: The name of the callback method to execute.
       **kwargs: Keyword arguments to be passed to the callback method.
-
-    Raises:
-      RuntimeError: If a plugin encounters an unhandled exception during
-        execution. The original exception is chained.
     """
     for plugin in self.plugins:
       callback_method = getattr(plugin, callback_name)
       try:
         await callback_method(**kwargs)
       except Exception as e:
-        error_message = (
-            f"Error in plugin '{plugin.name}' during '{callback_name}'"
-            f" callback: {e}"
+        logger.error(
+            "Error in plugin '%s' during '%s' callback: %s",
+            plugin.name,
+            callback_name,
+            e,
+            exc_info=True,
         )
-        logger.error(error_message, exc_info=True)
-        raise RuntimeError(error_message) from e
 
   async def close(self) -> None:
     """Calls the close method on all registered plugins concurrently.

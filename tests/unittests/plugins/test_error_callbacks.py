@@ -500,3 +500,72 @@ class TestPluginManagerErrorCallbackDispatch:
     # Both plugins must be called even though p1 returns non-None.
     assert p1.run_error_called
     assert p2.run_error_called
+
+  @pytest.mark.asyncio
+  async def test_plugin_callback_failure_does_not_mask_app_error(self):
+    """When a plugin's error callback raises, iteration continues
+    and the original application exception is what the caller sees."""
+
+    class _FailingPlugin(BasePlugin):
+      __test__ = False
+
+      def __init__(self, name):
+        super().__init__(name)
+        self.agent_error_called = False
+        self.run_error_called = False
+
+      async def on_agent_error_callback(self, **kwargs):
+        self.agent_error_called = True
+        raise ValueError("plugin boom")
+
+      async def on_run_error_callback(self, **kwargs):
+        self.run_error_called = True
+        raise ValueError("plugin boom")
+
+    p1 = _FailingPlugin(name="p1")
+    p2 = _ErrorTrackingPlugin(name="p2")
+    pm = PluginManager(plugins=[p1, p2])
+
+    # Agent error callback: p1 raises, p2 must still be notified.
+    mock_agent = Mock(spec=BaseAgent)
+    mock_agent.name = "test_agent"
+    await pm.run_on_agent_error_callback(
+        agent=mock_agent,
+        callback_context=Mock(spec=CallbackContext),
+        error=RuntimeError("app crash"),
+    )
+    assert p1.agent_error_called
+    assert len(p2.agent_errors) == 1
+
+    # Run error callback: same behavior.
+    await pm.run_on_run_error_callback(
+        invocation_context=Mock(spec=InvocationContext),
+        error=RuntimeError("app crash"),
+    )
+    assert p1.run_error_called
+    assert len(p2.run_errors) == 1
+
+  @pytest.mark.asyncio
+  async def test_original_exception_propagates_despite_plugin_failure(
+      self,
+  ):
+    """End-to-end: a crashing plugin error callback does not mask
+    the original agent exception seen by the caller."""
+
+    class _FailingPlugin(BasePlugin):
+      __test__ = False
+
+      def __init__(self, name):
+        super().__init__(name)
+
+      async def on_agent_error_callback(self, **kwargs):
+        raise ValueError("plugin internal error")
+
+    plugin = _FailingPlugin(name="bad_plugin")
+    agent = _CrashingAgent(name="crash_agent")
+    ctx = await _create_ctx(agent, plugins=[plugin])
+
+    # The caller must see the original RuntimeError("agent crashed"),
+    # NOT the plugin's ValueError.
+    with pytest.raises(RuntimeError, match="agent crashed"):
+      _ = [e async for e in agent.run_async(ctx)]
