@@ -22,6 +22,7 @@ from .llm_agent import LlmAgent
 from .loop_agent import LoopAgent
 from .mcp_instruction_provider import McpInstructionProvider
 from .parallel_agent import ParallelAgent
+from .router_agent import RouterAgent
 from .run_config import RunConfig
 from .sequential_agent import SequentialAgent
 
@@ -33,6 +34,7 @@ __all__ = [
     'LoopAgent',
     'McpInstructionProvider',
     'ParallelAgent',
+    'RouterAgent',
     'SequentialAgent',
     'InvocationContext',
     'LiveRequest',
