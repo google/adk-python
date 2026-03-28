@@ -94,6 +94,65 @@ class SafetyEvaluatorV1MetricInfoProvider(MetricInfoProvider):
     )
 
 
+class MultiTurnTaskSuccessV1MetricInfoProvider(MetricInfoProvider):
+  """Metric info provider for MultiTurnTaskSuccessV1."""
+
+  def get_metric_info(self) -> MetricInfo:
+    return MetricInfo(
+        metric_name=PrebuiltMetrics.MULTI_TURN_TASK_SUCCESS_V1.value,
+        description=(
+            "Evaluates if the agent was able to achieve the goal or goals of"
+            " the conversation."
+            " Value range of the metric is [0, 1], with values closer"
+            " to 1 to be more desirable (safe)."
+        ),
+        metric_value_info=MetricValueInfo(
+            interval=Interval(min_value=0.0, max_value=1.0)
+        ),
+    )
+
+
+class MultiTurnTrajectoryQualityV1MetricInfoProvider(MetricInfoProvider):
+  """Metric info provider for MultiTurnTrajectoryQualityV1."""
+
+  def get_metric_info(self) -> MetricInfo:
+    return MetricInfo(
+        metric_name=PrebuiltMetrics.MULTI_TURN_TRAJECTORY_QUALITY_V1.value,
+        description=(
+            "Evaluates the overall trajectory of the conversation. Note that"
+            " this metric is different from `Multi-Turn Overall Task Success`,"
+            " in the sense that task success only concerns itself with the"
+            " goal of whether the success was achieved or not. How that was"
+            " achieved is not its concern. This metric on the other hand does"
+            " care about the path that agent took to achieve the goal. This is"
+            " a reference free metric."
+            " Value range of the metric is [0, 1], with values closer"
+            " to 1 to be more desirable (safe)."
+        ),
+        metric_value_info=MetricValueInfo(
+            interval=Interval(min_value=0.0, max_value=1.0)
+        ),
+    )
+
+
+class MultiTurnToolUseQualityV1MetricInfoProvider(MetricInfoProvider):
+  """Metric info provider for MultiTurnToolUseQualityV1."""
+
+  def get_metric_info(self) -> MetricInfo:
+    return MetricInfo(
+        metric_name=PrebuiltMetrics.MULTI_TURN_TOOL_USE_QUALITY_V1.value,
+        description=(
+            "Evaluates the function calls made during a multi-turn"
+            " conversation. This is a reference free metric."
+            " Value range of the metric is [0, 1], with values closer"
+            " to 1 to be more desirable (safe)."
+        ),
+        metric_value_info=MetricValueInfo(
+            interval=Interval(min_value=0.0, max_value=1.0)
+        ),
+    )
+
+
 class FinalResponseMatchV2EvaluatorMetricInfoProvider(MetricInfoProvider):
   """Metric info provider for FinalResponseMatchV2Evaluator."""
 

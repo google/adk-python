@@ -21,6 +21,7 @@ from fastapi.openapi.models import OAuth2
 from fastapi.openapi.models import OAuthFlowAuthorizationCode
 from fastapi.openapi.models import OAuthFlowImplicit
 from fastapi.openapi.models import OAuthFlows
+from google.adk.agents.callback_context import CallbackContext
 from google.adk.agents.invocation_context import InvocationContext
 from google.adk.agents.llm_agent import Agent
 from google.adk.auth.auth_credential import AuthCredential
@@ -32,6 +33,7 @@ from google.adk.auth.auth_schemes import AuthScheme
 from google.adk.auth.auth_schemes import AuthSchemeType
 from google.adk.auth.auth_schemes import ExtendedOAuth2
 from google.adk.auth.auth_tool import AuthConfig
+from google.adk.auth.base_auth_provider import BaseAuthProvider
 from google.adk.auth.credential_manager import CredentialManager
 from google.adk.auth.credential_manager import ServiceAccountCredentialExchanger
 from google.adk.auth.oauth2_discovery import AuthorizationServerMetadata
@@ -64,12 +66,114 @@ class TestCredentialManager:
     tool_context.request_credential.assert_called_once_with(auth_config)
 
   @pytest.mark.asyncio
+  async def test_get_auth_credential_uses_registered_provider(self, mocker):
+    """Test get_auth_credential uses registered provider if available."""
+    credential = AuthCredential(
+        auth_type=AuthCredentialTypes.API_KEY, api_key="test-key"
+    )
+    provider = mocker.AsyncMock(spec=BaseAuthProvider)
+    provider.get_auth_credential.return_value = credential
+    manager = CredentialManager(
+        mocker.Mock(spec=AuthConfig, auth_scheme="scheme")
+    )
+    mocker.patch.object(
+        manager._auth_provider_registry, "get_provider", return_value=provider
+    )
+    mock_context = mocker.Mock(spec=CallbackContext)
+
+    received_credential = await manager.get_auth_credential(mock_context)
+
+    assert received_credential is credential
+
+  @pytest.mark.asyncio
+  async def test_get_auth_credential_fallback_when_no_provider(self, mocker):
+    """Test fallback to standard flow when no provider is registered."""
+    api_key_cred = AuthCredential(
+        auth_type=AuthCredentialTypes.API_KEY,
+        api_key="fallback-key-no-provider",
+    )
+
+    auth_scheme = mocker.Mock(spec=AuthScheme)
+    auth_scheme.type_ = AuthSchemeType.apiKey
+
+    auth_config = mocker.Mock(spec=AuthConfig)
+    auth_config.auth_scheme = auth_scheme
+    auth_config.raw_auth_credential = api_key_cred
+    auth_config.exchanged_auth_credential = None
+
+    manager = CredentialManager(auth_config)
+
+    # Setup registry to return None (no provider found)
+    mocker.patch.object(
+        manager._auth_provider_registry, "get_provider", return_value=None
+    )
+
+    result = await manager.get_auth_credential(mocker.Mock())
+
+    assert result == api_key_cred
+
+  @pytest.mark.asyncio
+  async def test_get_auth_credential_raises_error_when_provider_returns_none(
+      self, mocker
+  ):
+    """Test that a ValueError is raised when registered provider returns None."""
+    api_key_cred = AuthCredential(
+        auth_type=AuthCredentialTypes.API_KEY, api_key="fallback-key"
+    )
+
+    auth_scheme = mocker.Mock(spec=AuthScheme)
+    auth_scheme.type_ = AuthSchemeType.apiKey
+
+    auth_config = mocker.Mock(spec=AuthConfig)
+    auth_config.auth_scheme = auth_scheme
+    auth_config.raw_auth_credential = api_key_cred
+    auth_config.exchanged_auth_credential = None
+
+    manager = CredentialManager(auth_config)
+
+    # Setup provider to return None
+    provider = mocker.AsyncMock(spec=BaseAuthProvider)
+    provider.get_auth_credential.return_value = None
+    mocker.patch.object(
+        manager._auth_provider_registry, "get_provider", return_value=provider
+    )
+    mock_context = mocker.Mock(spec=CallbackContext)
+
+    with pytest.raises(
+        ValueError, match="AuthProvider did not return a credential."
+    ):
+      await manager.get_auth_credential(mock_context)
+
+  @pytest.mark.asyncio
+  async def test_get_auth_credential_triggers_user_consent_when_provider_returns_auth_uri(
+      self, mocker
+  ):
+    """Test get_auth_credential triggers user consent when provider returns oauth2 credential with auth_uri."""
+    credential = mocker.Mock(spec=AuthCredential)
+    credential.oauth2 = mocker.Mock(auth_uri="http://auth", access_token=None)
+
+    provider = mocker.AsyncMock(spec=BaseAuthProvider)
+    provider.get_auth_credential.return_value = credential
+
+    manager = CredentialManager(
+        mocker.Mock(spec=AuthConfig, auth_scheme="scheme")
+    )
+    mocker.patch.object(
+        manager._auth_provider_registry, "get_provider", return_value=provider
+    )
+    mock_context = mocker.Mock(spec=CallbackContext)
+
+    assert await manager.get_auth_credential(mock_context) is None
+    assert manager._auth_config.exchanged_auth_credential is credential
+
+  @pytest.mark.asyncio
   async def test_load_auth_credentials_success(self):
     """Test load_auth_credential with successful flow."""
     # Create mocks
     auth_config = Mock(spec=AuthConfig)
     auth_config.raw_auth_credential = None
     auth_config.exchanged_auth_credential = None
+    auth_config.auth_scheme = Mock(spec=AuthScheme)
 
     # Mock the credential that will be returned
     mock_credential = Mock(spec=AuthCredential)
