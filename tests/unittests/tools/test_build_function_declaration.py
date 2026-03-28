@@ -124,6 +124,65 @@ def test_basemodel_input():
   )
 
 
+def test_basemodel_required_fields():
+  class SearchRequest(BaseModel):
+    query: str
+    max_results: int
+    filter: str = ''
+
+  def search(request: SearchRequest) -> list:
+    return []
+
+  function_decl = _automatic_function_calling_util.build_function_declaration(
+      func=search
+  )
+
+  inner = function_decl.parameters.properties['request']
+  assert set(inner.required) == {'query', 'max_results'}
+  assert 'filter' not in (inner.required or [])
+
+
+def test_basemodel_all_optional_fields_no_required():
+  class Config(BaseModel):
+    timeout: int = 30
+    retries: int = 3
+
+  def run(config: Config) -> str:
+    return ''
+
+  function_decl = _automatic_function_calling_util.build_function_declaration(
+      func=run
+  )
+
+  inner = function_decl.parameters.properties['config']
+  assert not inner.required
+
+
+def test_nested_basemodel_required_fields():
+  class Inner(BaseModel):
+    x: int
+    y: int = 0
+
+  class Outer(BaseModel):
+    inner: Inner
+    label: str = ''
+
+  def process(data: Outer) -> str:
+    return ''
+
+  function_decl = _automatic_function_calling_util.build_function_declaration(
+      func=process
+  )
+
+  outer = function_decl.parameters.properties['data']
+  assert set(outer.required) == {'inner'}
+  assert 'label' not in (outer.required or [])
+
+  inner = outer.properties['inner']
+  assert set(inner.required) == {'x'}
+  assert 'y' not in (inner.required or [])
+
+
 def test_toolcontext_ignored():
   def simple_function(input_str: str, tool_context: ToolContext) -> str:
     return {'result': input_str}
