@@ -17,13 +17,19 @@
 Regression tests for https://github.com/google/adk-python/issues/4851.
 """
 
+from typing import AsyncGenerator
 from typing import Optional
 
 from google.adk.agents.callback_context import CallbackContext
 from google.adk.agents.llm_agent import Agent
+from google.adk.agents.run_config import RunConfig
+from google.adk.agents.run_config import StreamingMode
+from google.adk.events.event import Event
+from google.adk.flows.llm_flows.base_llm_flow import BaseLlmFlow
 from google.adk.models.llm_request import LlmRequest
 from google.adk.models.llm_response import LlmResponse
 from google.adk.plugins.base_plugin import BasePlugin
+from google.adk.utils.context_utils import Aclosing
 from google.genai import types
 from google.genai.errors import ClientError
 from opentelemetry import trace
@@ -247,6 +253,134 @@ def test_all_three_callbacks_share_span_on_error():
   assert (
       plugin.before_capture.span_id == plugin.after_capture.span_id
   ), 'before and after callbacks saw different spans on error recovery'
+
+
+# ---------------------------------------------------------------------------
+# Tests: CFC (Controlled Function Calling) / live path
+# ---------------------------------------------------------------------------
+
+
+class _CfcTestFlow(BaseLlmFlow):
+  """BaseLlmFlow subclass that stubs run_live for CFC testing."""
+
+  def __init__(self, live_responses: list[LlmResponse]):
+    self._live_responses = live_responses
+
+  async def run_live(
+      self, invocation_context
+  ) -> AsyncGenerator[LlmResponse, None]:
+    for resp in self._live_responses:
+      yield resp
+
+
+@pytest.mark.asyncio
+async def test_cfc_before_and_after_callbacks_share_same_span():
+  """CFC path: before_model_callback and after_model_callback share span."""
+  plugin = SpanCapturingPlugin()
+  mock_model = testing_utils.MockModel.create(responses=['unused'])
+  agent = Agent(name='root_agent', model=mock_model)
+
+  live_response = LlmResponse(
+      content=testing_utils.ModelContent(
+          [types.Part.from_text(text='live_hello')]
+      ),
+      turn_complete=True,
+  )
+  flow = _CfcTestFlow(live_responses=[live_response])
+
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent,
+      user_content='test',
+      run_config=RunConfig(
+          support_cfc=True,
+          streaming_mode=StreamingMode.SSE,
+      ),
+      plugins=[plugin],
+  )
+  model_response_event = Event(
+      id=Event.new_id(),
+      invocation_id=invocation_context.invocation_id,
+      author='root_agent',
+  )
+
+  responses = []
+  async with Aclosing(
+      flow._call_llm_async(
+          invocation_context,
+          LlmRequest(model='mock'),
+          model_response_event,
+      )
+  ) as agen:
+    async for resp in agen:
+      responses.append(resp)
+
+  assert len(responses) >= 1
+  assert (
+      plugin.before_capture.span_id != _SPAN_ID_INVALID
+  ), 'CFC: before_model_callback did not observe a valid span'
+  assert (
+      plugin.after_capture.span_id != _SPAN_ID_INVALID
+  ), 'CFC: after_model_callback did not observe a valid span'
+  assert plugin.before_capture.span_id == plugin.after_capture.span_id, (
+      'CFC: before_model_callback and after_model_callback saw different'
+      f' spans: before={plugin.before_capture.span_id:#x},'
+      f' after={plugin.after_capture.span_id:#x}'
+  )
+
+
+@pytest.mark.asyncio
+async def test_cfc_error_callback_shares_span():
+  """CFC path: on_model_error_callback shares span with before callback."""
+  plugin = SpanCapturingPlugin()
+  mock_model = testing_utils.MockModel.create(responses=['unused'])
+  agent = Agent(name='root_agent', model=mock_model)
+
+  # Flow whose run_live raises an error.
+  class _ErrorCfcFlow(BaseLlmFlow):
+
+    async def run_live(self, invocation_context):
+      # Make this a proper async generator that raises.
+      if False:
+        yield  # pragma: no cover — makes this an async generator
+      raise _MOCK_ERROR
+
+  flow = _ErrorCfcFlow()
+
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent,
+      user_content='test',
+      run_config=RunConfig(
+          support_cfc=True,
+          streaming_mode=StreamingMode.SSE,
+      ),
+      plugins=[plugin],
+  )
+  model_response_event = Event(
+      id=Event.new_id(),
+      invocation_id=invocation_context.invocation_id,
+      author='root_agent',
+  )
+
+  responses = []
+  async with Aclosing(
+      flow._call_llm_async(
+          invocation_context,
+          LlmRequest(model='mock'),
+          model_response_event,
+      )
+  ) as agen:
+    async for resp in agen:
+      responses.append(resp)
+
+  assert (
+      plugin.before_capture.span_id != _SPAN_ID_INVALID
+  ), 'CFC error: before_model_callback did not observe a valid span'
+  assert (
+      plugin.error_capture.span_id != _SPAN_ID_INVALID
+  ), 'CFC error: on_model_error_callback did not observe a valid span'
+  assert (
+      plugin.before_capture.span_id == plugin.error_capture.span_id
+  ), 'CFC error: before and error callbacks saw different spans'
 
 
 if __name__ == '__main__':
