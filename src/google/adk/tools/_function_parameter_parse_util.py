@@ -399,8 +399,17 @@ def _parse_schema_from_parameter(
           ),
           func_name,
       )
+
+    required_fields = [
+        field_name
+        for field_name, field_info in param.annotation.model_fields.items()
+        if field_info.is_required()
+    ]
+    if required_fields:
+      schema.required = required_fields
     _raise_if_schema_unsupported(variant, schema)
     return schema
+
   if inspect.isclass(param.annotation) and issubclass(
       param.annotation, ToolContext
   ):
