@@ -443,9 +443,9 @@ class TestPluginManagerErrorCallbackDispatch:
     assert len(plugin2.run_errors) == 1
 
   @pytest.mark.asyncio
-  async def test_error_callbacks_do_not_short_circuit(self):
-    """Error callbacks are notification-only: a non-None return from
-    one plugin does NOT skip subsequent plugins."""
+  async def test_agent_error_callback_does_not_short_circuit(self):
+    """on_agent_error_callback is notification-only: a non-None return
+    from one plugin does NOT skip subsequent plugins."""
 
     class _ReturningPlugin(BasePlugin):
       __test__ = False
@@ -453,11 +453,36 @@ class TestPluginManagerErrorCallbackDispatch:
       def __init__(self, name):
         super().__init__(name)
         self.agent_error_called = False
-        self.run_error_called = False
 
       async def on_agent_error_callback(self, **kwargs):
         self.agent_error_called = True
         return "should be ignored"
+
+    p1 = _ReturningPlugin(name="p1")
+    p2 = _ReturningPlugin(name="p2")
+    pm = PluginManager(plugins=[p1, p2])
+
+    await pm.run_on_agent_error_callback(
+        agent=Mock(spec=BaseAgent),
+        callback_context=Mock(spec=CallbackContext),
+        error=RuntimeError("x"),
+    )
+
+    # Both plugins must be called even though p1 returns non-None.
+    assert p1.agent_error_called
+    assert p2.agent_error_called
+
+  @pytest.mark.asyncio
+  async def test_run_error_callback_does_not_short_circuit(self):
+    """on_run_error_callback is notification-only: a non-None return
+    from one plugin does NOT skip subsequent plugins."""
+
+    class _ReturningPlugin(BasePlugin):
+      __test__ = False
+
+      def __init__(self, name):
+        super().__init__(name)
+        self.run_error_called = False
 
       async def on_run_error_callback(self, **kwargs):
         self.run_error_called = True
@@ -467,21 +492,11 @@ class TestPluginManagerErrorCallbackDispatch:
     p2 = _ReturningPlugin(name="p2")
     pm = PluginManager(plugins=[p1, p2])
 
-    # The _run_callbacks early-exit logic returns on non-None,
-    # but for notification-only callbacks the base class returns None.
-    # However, if a plugin DOES return non-None, the current
-    # _run_callbacks stops. This test documents that behavior.
-    # The base class default returns None (pass), so in practice
-    # all plugins are always called.
-    await pm.run_on_agent_error_callback(
-        agent=Mock(spec=BaseAgent),
-        callback_context=Mock(spec=CallbackContext),
+    await pm.run_on_run_error_callback(
+        invocation_context=Mock(spec=InvocationContext),
         error=RuntimeError("x"),
     )
 
-    # p1 returns non-None which triggers early exit in _run_callbacks.
-    # This is an inherent behavior of the generic dispatch.
-    assert p1.agent_error_called
-    # Note: p2 may or may not be called depending on _run_callbacks
-    # early-exit. Since base class returns None (pass), normal usage
-    # always calls all plugins. This test just verifies p1 was called.
+    # Both plugins must be called even though p1 returns non-None.
+    assert p1.run_error_called
+    assert p2.run_error_called
