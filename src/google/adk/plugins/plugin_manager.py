@@ -52,6 +52,8 @@ PluginCallbackName = Literal[
     "after_model_callback",
     "on_tool_error_callback",
     "on_model_error_callback",
+    "on_agent_error_callback",
+    "on_run_error_callback",
 ]
 
 logger = logging.getLogger("google_adk." + __name__)
@@ -254,6 +256,34 @@ class PluginManager:
         tool=tool,
         tool_args=tool_args,
         tool_context=tool_context,
+        error=error,
+    )
+
+  async def run_on_agent_error_callback(
+      self,
+      *,
+      agent: BaseAgent,
+      callback_context: CallbackContext,
+      error: Exception,
+  ) -> None:
+    """Runs the `on_agent_error_callback` for all plugins."""
+    await self._run_callbacks(
+        "on_agent_error_callback",
+        agent=agent,
+        callback_context=callback_context,
+        error=error,
+    )
+
+  async def run_on_run_error_callback(
+      self,
+      *,
+      invocation_context: InvocationContext,
+      error: Exception,
+  ) -> None:
+    """Runs the `on_run_error_callback` for all plugins."""
+    await self._run_callbacks(
+        "on_run_error_callback",
+        invocation_context=invocation_context,
         error=error,
     )
 

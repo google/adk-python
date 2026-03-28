@@ -370,3 +370,45 @@ class BasePlugin(ABC):
       allows the original error to be raised.
     """
     pass
+
+  async def on_agent_error_callback(
+      self,
+      *,
+      agent: BaseAgent,
+      callback_context: CallbackContext,
+      error: Exception,
+  ) -> None:
+    """Callback executed when an unhandled exception escapes agent execution.
+
+    This is a notification-only callback. The exception is always re-raised
+    after all registered plugins have been notified. Plugins should NOT
+    suppress the exception.
+
+    Unlike ``on_model_error_callback`` which can return a replacement
+    response, this callback has no return value — there is no meaningful
+    recovery action at the agent level that a plugin can provide.
+
+    Args:
+      agent: The agent instance that encountered the error.
+      callback_context: The callback context for the agent invocation.
+      error: The exception that was raised during agent execution.
+    """
+    pass
+
+  async def on_run_error_callback(
+      self,
+      *,
+      invocation_context: InvocationContext,
+      error: Exception,
+  ) -> None:
+    """Callback executed when an unhandled exception escapes runner execution.
+
+    This is a notification-only callback. The exception is always re-raised
+    after all registered plugins have been notified. Plugins should NOT
+    suppress the exception.
+
+    Args:
+      invocation_context: The context for the entire invocation.
+      error: The exception that was raised during runner execution.
+    """
+    pass

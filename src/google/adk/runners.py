@@ -849,77 +849,88 @@ class Runner:
       buffered_events: list[Event] = []
       is_transcribing: bool = False
 
-      async with Aclosing(execute_fn(invocation_context)) as agen:
-        async for event in agen:
-          _apply_run_config_custom_metadata(
-              event, invocation_context.run_config
-          )
-          if is_live_call:
-            if event.partial and _is_transcription(event):
-              is_transcribing = True
-            if is_transcribing and _is_tool_call_or_response(event):
-              # only buffer function call and function response event which is
-              # non-partial
-              buffered_events.append(event)
-              continue
-            # Note for live/bidi: for audio response, it's considered as
-            # non-partial event(event.partial=None)
-            # event.partial=False and event.partial=None are considered as
-            # non-partial event; event.partial=True is considered as partial
-            # event.
-            if event.partial is not True:
-              if _is_transcription(event) and (
-                  _has_non_empty_transcription_text(event.input_transcription)
-                  or _has_non_empty_transcription_text(
-                      event.output_transcription
-                  )
-              ):
-                # transcription end signal, append buffered events
-                is_transcribing = False
-                logger.debug(
-                    'Appending transcription finished event: %s', event
-                )
-                if self._should_append_event(event, is_live_call):
-                  await self.session_service.append_event(
-                      session=session, event=event
-                  )
-
-                for buffered_event in buffered_events:
-                  logger.debug('Appending buffered event: %s', buffered_event)
-                  await self.session_service.append_event(
-                      session=session, event=buffered_event
-                  )
-                  yield buffered_event  # yield buffered events to caller
-                buffered_events = []
-              else:
-                # non-transcription event or empty transcription event, for
-                # example, event that stores blob reference, should be appended.
-                if self._should_append_event(event, is_live_call):
-                  logger.debug('Appending non-buffered event: %s', event)
-                  await self.session_service.append_event(
-                      session=session, event=event
-                  )
-          else:
-            if event.partial is not True:
-              await self.session_service.append_event(
-                  session=session, event=event
-              )
-
-          # Step 3: Run the on_event callbacks to optionally modify the event.
-          modified_event = await plugin_manager.run_on_event_callback(
-              invocation_context=invocation_context, event=event
-          )
-          if modified_event:
+      try:
+        async with Aclosing(execute_fn(invocation_context)) as agen:
+          async for event in agen:
             _apply_run_config_custom_metadata(
-                modified_event, invocation_context.run_config
+                event, invocation_context.run_config
             )
-            yield modified_event
-          else:
-            yield event
+            if is_live_call:
+              if event.partial and _is_transcription(event):
+                is_transcribing = True
+              if is_transcribing and _is_tool_call_or_response(event):
+                # only buffer function call and function response event which
+                # is non-partial
+                buffered_events.append(event)
+                continue
+              # Note for live/bidi: for audio response, it's considered as
+              # non-partial event(event.partial=None)
+              # event.partial=False and event.partial=None are considered as
+              # non-partial event; event.partial=True is considered as partial
+              # event.
+              if event.partial is not True:
+                if _is_transcription(event) and (
+                    _has_non_empty_transcription_text(event.input_transcription)
+                    or _has_non_empty_transcription_text(
+                        event.output_transcription
+                    )
+                ):
+                  # transcription end signal, append buffered events
+                  is_transcribing = False
+                  logger.debug(
+                      'Appending transcription finished event: %s', event
+                  )
+                  if self._should_append_event(event, is_live_call):
+                    await self.session_service.append_event(
+                        session=session, event=event
+                    )
+
+                  for buffered_event in buffered_events:
+                    logger.debug('Appending buffered event: %s', buffered_event)
+                    await self.session_service.append_event(
+                        session=session, event=buffered_event
+                    )
+                    yield buffered_event  # yield buffered events to caller
+                  buffered_events = []
+                else:
+                  # non-transcription event or empty transcription event, for
+                  # example, event that stores blob reference, should be
+                  # appended.
+                  if self._should_append_event(event, is_live_call):
+                    logger.debug('Appending non-buffered event: %s', event)
+                    await self.session_service.append_event(
+                        session=session, event=event
+                    )
+            else:
+              if event.partial is not True:
+                await self.session_service.append_event(
+                    session=session, event=event
+                )
+
+            # Step 3: Run the on_event callbacks to optionally modify the
+            # event.
+            modified_event = await plugin_manager.run_on_event_callback(
+                invocation_context=invocation_context, event=event
+            )
+            if modified_event:
+              _apply_run_config_custom_metadata(
+                  modified_event, invocation_context.run_config
+              )
+              yield modified_event
+            else:
+              yield event
+      except Exception as e:
+        # Step 3b: Notify plugins of the unhandled execution error.
+        # This is notification-only; the exception is always re-raised.
+        await plugin_manager.run_on_run_error_callback(
+            invocation_context=invocation_context,
+            error=e,
+        )
+        raise
 
     # Step 4: Run the after_run callbacks to perform global cleanup tasks or
     # finalizing logs and metrics data.
-    # This does NOT emit any event.
+    # This does NOT emit any event. Only runs on success (not in finally).
     await plugin_manager.run_after_run_callback(
         invocation_context=invocation_context
     )
