@@ -265,7 +265,7 @@ class TestMCPSessionManager:
 
     # Should be deterministic hash
     headers_json = json.dumps(headers1, sort_keys=True)
-    expected_hash = hashlib.md5(headers_json.encode()).hexdigest()
+    expected_hash = hashlib.sha256(headers_json.encode()).hexdigest()
     assert key1 == f"session_{expected_hash}"
 
   def test_merge_headers_stdio(self):

@@ -278,7 +278,7 @@ class MCPSessionManager:
     # For SSE and StreamableHTTP connections, use merged headers
     if merged_headers:
       headers_json = json.dumps(merged_headers, sort_keys=True)
-      headers_hash = hashlib.md5(headers_json.encode()).hexdigest()
+      headers_hash = hashlib.sha256(headers_json.encode()).hexdigest()
       return f'session_{headers_hash}'
     else:
       return 'session_no_headers'
