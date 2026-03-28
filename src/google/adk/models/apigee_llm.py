@@ -220,6 +220,9 @@ class ApigeeLlm(Gemini):
     Returns:
       The api client.
     """
+    if self.client:
+      return self.client
+
     from google.genai import Client
 
     kwargs_for_http_options = {}

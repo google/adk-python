@@ -359,6 +359,9 @@ class AnthropicLlm(BaseLlm):
   model: str = "claude-sonnet-4-20250514"
   max_tokens: int = 8192
 
+  client: Optional[Any] = None
+  """An optional pre-configured Anthropic client."""
+
   @classmethod
   @override
   def supported_models(cls) -> list[str]:
@@ -495,6 +498,8 @@ class AnthropicLlm(BaseLlm):
 
   @cached_property
   def _anthropic_client(self) -> AsyncAnthropic:
+    if self.client:
+      return self.client
     return AsyncAnthropic()
 
 
