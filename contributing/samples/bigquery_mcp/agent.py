@@ -13,26 +13,15 @@
 # limitations under the License.
 
 from google.adk.agents.llm_agent import LlmAgent
-from google.adk.tools.mcp_tool.mcp_session_manager import StreamableHTTPConnectionParams
-from google.adk.tools.mcp_tool.mcp_toolset import McpToolset
-import google.auth
+from google.adk.tools.mcp_tool.google_managed_mcp_toolset import (
+    GoogleManagedMcpToolset,
+)
 
 BIGQUERY_AGENT_NAME = "adk_sample_bigquery_mcp_agent"
-BIGQUERY_MCP_ENDPOINT = "https://bigquery.googleapis.com/mcp"
-BIGQUERY_SCOPE = "https://www.googleapis.com/auth/bigquery"
 
-# Initialize the tools to use the application default credentials.
-# https://cloud.google.com/docs/authentication/provide-credentials-adc
-credentials, project_id = google.auth.default(scopes=[BIGQUERY_SCOPE])
-credentials.refresh(google.auth.transport.requests.Request())
-oauth_token = credentials.token
-
-bigquery_mcp_toolset = McpToolset(
-    connection_params=StreamableHTTPConnectionParams(
-        url=BIGQUERY_MCP_ENDPOINT,
-        headers={"Authorization": f"Bearer {oauth_token}"},
-    )
-)
+# GoogleManagedMcpToolset handles auth (ADC with auto-refresh) and
+# endpoint URL resolution automatically.
+bigquery_mcp_toolset = GoogleManagedMcpToolset(product="bigquery")
 
 # The variable name `root_agent` determines what your root agent is for the
 # debug CLI
@@ -49,3 +38,4 @@ root_agent = LlmAgent(
     """,
     tools=[bigquery_mcp_toolset],
 )
+

@@ -37,6 +37,13 @@ try:
       'StreamableHTTPConnectionParams',
   ])
 
+  try:
+    from .google_managed_mcp_toolset import GoogleManagedMcpToolset
+
+    __all__.append('GoogleManagedMcpToolset')
+  except ImportError:
+    pass
+
 except ImportError as e:
   import logging
 
