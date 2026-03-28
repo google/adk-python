@@ -26,9 +26,8 @@ from typing import Optional
 from typing import TYPE_CHECKING
 from typing import Union
 
-with contextlib.suppress(ImportError):
-  from google.genai import Client
-  from google.genai import types
+from google.genai import Client
+from google.genai import types
 from google.genai.errors import ClientError
 from typing_extensions import override
 
@@ -93,7 +92,7 @@ class Gemini(BaseLlm):
 
   model: str = 'gemini-2.5-flash'
 
-  client: Optional[Any] = None
+  client: Optional[Client] = None
   """An optional pre-configured google-genai Client.
 
   When provided, this client will be used for all API calls instead of

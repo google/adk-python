@@ -359,7 +359,7 @@ class AnthropicLlm(BaseLlm):
   model: str = "claude-sonnet-4-20250514"
   max_tokens: int = 8192
 
-  client: Optional[Any] = None
+  client: Optional[Union[AsyncAnthropic, AsyncAnthropicVertex]] = None
   """An optional pre-configured Anthropic client."""
 
   @classmethod
