@@ -390,9 +390,18 @@ class TestLocalEvalSetsManager:
       self, local_eval_sets_manager
   ):
     app_name = "test_app"
-    eval_set_id = "invalid-id"
+    eval_set_id = "invalid/id"
 
     with pytest.raises(ValueError, match="Invalid Eval Set ID"):
+      local_eval_sets_manager.create_eval_set(app_name, eval_set_id)
+
+  def test_local_eval_sets_manager_create_eval_set_invalid_app_name(
+      self, local_eval_sets_manager
+  ):
+    app_name = "../test_app"
+    eval_set_id = "test_eval_set"
+
+    with pytest.raises(ValueError, match="Invalid App Name"):
       local_eval_sets_manager.create_eval_set(app_name, eval_set_id)
 
   def test_local_eval_sets_manager_create_eval_set_already_exists(

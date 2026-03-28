@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 
 from typing_extensions import override
 
@@ -67,6 +68,7 @@ class LocalEvalSetResultsManager(EvalSetResultsManager):
       self, app_name: str, eval_set_result_id: str
   ) -> EvalSetResult:
     """Returns an EvalSetResult identified by app_name and eval_set_result_id."""
+    self._validate_id("Eval Set Result ID", eval_set_result_id)
     # Load the eval set result file data.
     maybe_eval_result_file_path = (
         os.path.join(
@@ -97,4 +99,12 @@ class LocalEvalSetResultsManager(EvalSetResultsManager):
     return eval_result_files
 
   def _get_eval_history_dir(self, app_name: str) -> str:
+    self._validate_id("App Name", app_name)
     return os.path.join(self._agents_dir, app_name, _ADK_EVAL_HISTORY_DIR)
+
+  def _validate_id(self, id_name: str, id_value: str):
+    pattern = r"^[a-zA-Z0-9_\-\.]+$"
+    if not bool(re.fullmatch(pattern, id_value)) or ".." in id_value:
+      raise ValueError(
+          f"Invalid {id_name}. {id_name} should have the `{pattern}` format and not contain `..`",
+      )

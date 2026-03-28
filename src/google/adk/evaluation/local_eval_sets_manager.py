@@ -201,7 +201,7 @@ class LocalEvalSetsManager(EvalSetsManager):
     try:
       eval_set_file_path = self._get_eval_set_file_path(app_name, eval_set_id)
       return load_eval_set_from_file(eval_set_file_path, eval_set_id)
-    except FileNotFoundError:
+    except (FileNotFoundError, ValueError):
       return None
 
   @override
@@ -211,8 +211,6 @@ class LocalEvalSetsManager(EvalSetsManager):
     Raises:
       ValueError: If Eval Set ID is not valid or an eval set already exists.
     """
-    self._validate_id(id_name="Eval Set ID", id_value=eval_set_id)
-
     # Define the file path
     new_eval_set_path = self._get_eval_set_file_path(app_name, eval_set_id)
 
@@ -247,6 +245,7 @@ class LocalEvalSetsManager(EvalSetsManager):
     Raises:
       NotFoundError: If the eval directory for the app is not found.
     """
+    self._validate_id("App Name", app_name)
     eval_set_file_path = os.path.join(self._agents_dir, app_name)
     eval_sets = []
     try:
@@ -266,6 +265,7 @@ class LocalEvalSetsManager(EvalSetsManager):
       self, app_name: str, eval_set_id: str, eval_case_id: str
   ) -> Optional[EvalCase]:
     """Returns an EvalCase if found; otherwise, None."""
+    self._validate_id("Eval Case ID", eval_case_id)
     eval_set = self.get_eval_set(app_name, eval_set_id)
     if not eval_set:
       return None
@@ -310,6 +310,8 @@ class LocalEvalSetsManager(EvalSetsManager):
     self._save_eval_set(app_name, eval_set_id, updated_eval_set)
 
   def _get_eval_set_file_path(self, app_name: str, eval_set_id: str) -> str:
+    self._validate_id("App Name", app_name)
+    self._validate_id("Eval Set ID", eval_set_id)
     return os.path.join(
         self._agents_dir,
         app_name,
@@ -317,10 +319,10 @@ class LocalEvalSetsManager(EvalSetsManager):
     )
 
   def _validate_id(self, id_name: str, id_value: str):
-    pattern = r"^[a-zA-Z0-9_]+$"
-    if not bool(re.fullmatch(pattern, id_value)):
+    pattern = r"^[a-zA-Z0-9_\-\.]+$"
+    if not bool(re.fullmatch(pattern, id_value)) or ".." in id_value:
       raise ValueError(
-          f"Invalid {id_name}. {id_name} should have the `{pattern}` format",
+          f"Invalid {id_name}. {id_name} should have the `{pattern}` format and not contain `..`",
       )
 
   def _write_eval_set_to_path(self, eval_set_path: str, eval_set: EvalSet):

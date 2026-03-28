@@ -174,3 +174,11 @@ class TestLocalEvalSetResultsManager:
     # No eval set results saved for the app
     results = self.manager.list_eval_set_results(self.app_name)
     assert results == []
+
+  def test_get_eval_history_dir_invalid_app_name(self):
+    with pytest.raises(ValueError, match="Invalid App Name"):
+      self.manager.list_eval_set_results("../invalid")
+
+  def test_get_eval_set_result_invalid_id(self):
+    with pytest.raises(ValueError, match="Invalid Eval Set Result ID"):
+      self.manager.get_eval_set_result(self.app_name, "../invalid_id")
