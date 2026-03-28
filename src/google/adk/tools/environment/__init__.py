@@ -12,5 +12,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# version: major.minor.patch
-__version__ = "1.28.0"
+"""Environment toolset for command execution and file I/O."""
+
+from __future__ import annotations
+
+from ._environment_toolset import EnvironmentToolset
+
+__all__ = [
+    'EnvironmentToolset',
+]

@@ -2239,6 +2239,17 @@ def cli_deploy_agent_engine(
     help="Optional. Set the logging level",
 )
 @click.option(
+    "--service_type",
+    type=click.Choice(["ClusterIP", "LoadBalancer"], case_sensitive=True),
+    default="ClusterIP",
+    show_default=True,
+    help=(
+        "Optional. The Kubernetes Service type for the deployed agent."
+        " ClusterIP (default) keeps the service cluster-internal;"
+        " use LoadBalancer to expose a public IP."
+    ),
+)
+@click.option(
     "--temp_folder",
     type=str,
     default=os.path.join(
@@ -2281,6 +2292,7 @@ def cli_deploy_gke(
     otel_to_cloud: bool,
     with_ui: bool,
     adk_version: str,
+    service_type: str,
     log_level: Optional[str] = None,
     session_service_uri: Optional[str] = None,
     artifact_service_uri: Optional[str] = None,
@@ -2312,6 +2324,7 @@ def cli_deploy_gke(
         with_ui=with_ui,
         log_level=log_level,
         adk_version=adk_version,
+        service_type=service_type,
         session_service_uri=session_service_uri,
         artifact_service_uri=artifact_service_uri,
         memory_service_uri=memory_service_uri,
