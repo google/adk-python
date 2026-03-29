@@ -102,6 +102,53 @@ def test_dict_input():
   assert function_decl.name == 'simple_function'
   assert function_decl.parameters.type == 'OBJECT'
   assert function_decl.parameters.properties['input_str'].type == 'OBJECT'
+  assert (
+      function_decl.parameters.properties[
+          'input_str'
+      ].additional_properties.type
+      == 'STRING'
+  )
+
+
+def test_dict_input_with_int_values():
+  def simple_function(input_str: dict[str, int]) -> str:
+    return {'result': input_str}
+
+  function_decl = _automatic_function_calling_util.build_function_declaration(
+      func=simple_function
+  )
+
+  assert function_decl.name == 'simple_function'
+  assert function_decl.parameters.type == 'OBJECT'
+  assert function_decl.parameters.properties['input_str'].type == 'OBJECT'
+  assert (
+      function_decl.parameters.properties[
+          'input_str'
+      ].additional_properties.type
+      == 'INTEGER'
+  )
+
+
+def test_list_of_dict_input():
+  """Test list[dict[str, str]] emits proper schema with additional_properties."""
+
+  def simple_function(fruits: list[dict[str, str]]) -> str:
+    return str(fruits)
+
+  function_decl = _automatic_function_calling_util.build_function_declaration(
+      func=simple_function
+  )
+
+  assert function_decl.name == 'simple_function'
+  assert function_decl.parameters.type == 'OBJECT'
+  assert function_decl.parameters.properties['fruits'].type == 'ARRAY'
+  assert function_decl.parameters.properties['fruits'].items.type == 'OBJECT'
+  assert (
+      function_decl.parameters.properties[
+          'fruits'
+      ].items.additional_properties.type
+      == 'STRING'
+  )
 
 
 def test_basemodel_input():
@@ -279,6 +326,12 @@ def test_list():
   assert function_decl.parameters.properties['input_str'].items.type == 'STRING'
   assert function_decl.parameters.properties['input_dir'].type == 'ARRAY'
   assert function_decl.parameters.properties['input_dir'].items.type == 'OBJECT'
+  assert (
+      function_decl.parameters.properties[
+          'input_dir'
+      ].items.additional_properties.type
+      == 'STRING'
+  )
 
 
 def test_enums():
