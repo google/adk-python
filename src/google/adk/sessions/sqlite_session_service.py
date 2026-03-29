@@ -35,6 +35,8 @@ from ..events.event import Event
 from .base_session_service import BaseSessionService
 from .base_session_service import GetSessionConfig
 from .base_session_service import ListSessionsResponse
+from .base_session_service import SessionPagination
+from .base_session_service import _encode_page_token
 from .session import Session
 from .state import State
 
@@ -292,23 +294,54 @@ class SqliteSessionService(BaseSessionService):
 
   @override
   async def list_sessions(
-      self, *, app_name: str, user_id: Optional[str] = None
+      self,
+      *,
+      app_name: str,
+      user_id: Optional[str] = None,
+      pagination: Optional[SessionPagination] = None,
   ) -> ListSessionsResponse:
     sessions_list = []
     async with self._get_db_connection() as db:
-      # Fetch sessions
-      if user_id:
-        session_rows = await db.execute_fetchall(
-            "SELECT id, user_id, state, update_time FROM sessions WHERE"
-            " app_name=? AND user_id=?",
-            (app_name, user_id),
-        )
+      # Fetch sessions with ORDER BY and optional LIMIT / OFFSET
+      if pagination is not None:
+        page_size = pagination.effective_page_size
+        offset = pagination.offset
+        if user_id:
+          session_rows = await db.execute_fetchall(
+              "SELECT id, user_id, state, update_time FROM sessions WHERE"
+              " app_name=? AND user_id=?"
+              " ORDER BY update_time DESC LIMIT ? OFFSET ?",
+              (app_name, user_id, page_size + 1, offset),
+          )
+        else:
+          session_rows = await db.execute_fetchall(
+              "SELECT id, user_id, state, update_time FROM sessions WHERE"
+              " app_name=?"
+              " ORDER BY update_time DESC LIMIT ? OFFSET ?",
+              (app_name, page_size + 1, offset),
+          )
       else:
-        session_rows = await db.execute_fetchall(
-            "SELECT id, user_id, state, update_time FROM sessions WHERE"
-            " app_name=?",
-            (app_name,),
-        )
+        if user_id:
+          session_rows = await db.execute_fetchall(
+              "SELECT id, user_id, state, update_time FROM sessions WHERE"
+              " app_name=? AND user_id=?"
+              " ORDER BY update_time DESC",
+              (app_name, user_id),
+          )
+        else:
+          session_rows = await db.execute_fetchall(
+              "SELECT id, user_id, state, update_time FROM sessions WHERE"
+              " app_name=?"
+              " ORDER BY update_time DESC",
+              (app_name,),
+          )
+
+      has_next_page = (
+          pagination is not None
+          and len(session_rows) > pagination.effective_page_size
+      )
+      if has_next_page and pagination is not None:
+        session_rows = session_rows[: pagination.effective_page_size]
 
       # Fetch app state
       app_state = await self._get_app_state(db, app_name)
@@ -343,7 +376,15 @@ class SqliteSessionService(BaseSessionService):
                 last_update_time=row["update_time"],
             )
         )
-    return ListSessionsResponse(sessions=sessions_list)
+
+    next_page_token = (
+        _encode_page_token(pagination.offset + pagination.effective_page_size)
+        if has_next_page and pagination is not None
+        else None
+    )
+    return ListSessionsResponse(
+        sessions=sessions_list, next_page_token=next_page_token
+    )
 
   @override
   async def delete_session(

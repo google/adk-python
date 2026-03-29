@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import abc
+import base64
 from typing import Any
 from typing import Optional
 
@@ -24,6 +25,48 @@ from pydantic import Field
 from ..events.event import Event
 from .session import Session
 from .state import State
+
+_MAX_PAGE_SIZE = 100
+
+
+def _encode_page_token(offset: int) -> str:
+  return base64.b64encode(str(offset).encode()).decode()
+
+
+def _decode_page_token(token: Optional[str]) -> int:
+  if not token:
+    return 0
+  try:
+    return max(0, int(base64.b64decode(token).decode()))
+  except (ValueError, TypeError):
+    return 0
+
+
+class SessionPagination(BaseModel):
+  """Pagination configuration for ``list_sessions``.
+
+  When passed to ``list_sessions``, only ``page_size`` results are returned
+  per call. When omitted, all sessions are returned at once (no pagination).
+  """
+
+  page_size: int = 20
+  """Maximum number of sessions per page (1–100, clamped automatically)."""
+
+  page_token: Optional[str] = None
+  """Opaque token returned by a previous call to fetch the next page."""
+
+  page_offset: Optional[int] = None
+  """Optional 0-based starting offset. Takes precedence over ``page_token``."""
+
+  @property
+  def effective_page_size(self) -> int:
+    return max(1, min(self.page_size, _MAX_PAGE_SIZE))
+
+  @property
+  def offset(self) -> int:
+    if self.page_offset is not None:
+      return max(0, self.page_offset)
+    return _decode_page_token(self.page_token)
 
 
 class GetSessionConfig(BaseModel):
@@ -40,6 +83,7 @@ class ListSessionsResponse(BaseModel):
   """
 
   sessions: list[Session] = Field(default_factory=list)
+  next_page_token: Optional[str] = None
 
 
 class BaseSessionService(abc.ABC):
@@ -83,17 +127,24 @@ class BaseSessionService(abc.ABC):
 
   @abc.abstractmethod
   async def list_sessions(
-      self, *, app_name: str, user_id: Optional[str] = None
+      self,
+      *,
+      app_name: str,
+      user_id: Optional[str] = None,
+      pagination: Optional[SessionPagination] = None,
   ) -> ListSessionsResponse:
-    """Lists all the sessions for a user.
+    """Lists sessions, optionally filtered by user, with pagination.
 
     Args:
       app_name: The name of the app.
       user_id: The ID of the user. If not provided, lists all sessions for all
         users.
+      pagination: Optional pagination configuration. If not provided, all
+        sessions are returned at once.
 
     Returns:
-      A ListSessionsResponse containing the sessions.
+      A ListSessionsResponse containing the sessions and an optional
+      ``next_page_token`` for fetching subsequent pages.
     """
 
   @abc.abstractmethod
