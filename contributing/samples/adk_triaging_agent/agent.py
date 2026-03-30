@@ -43,7 +43,7 @@ LABEL_TO_OWNER = {
 }
 
 
-LABEL_TO_GTECH = ["klateefa", "llalitkumarrr", "surajksharma07"]
+LABEL_TO_GTECH = ["klateefa", "llalitkumarrr", "surajksharma07", "sanketpatil06"]
 
 LABEL_GUIDELINES = """
       Label rubric and disambiguation rules:
