@@ -139,3 +139,30 @@ def is_gemini_3_1_flash_live(model_string: Optional[str]) -> bool:
   if not model_string:
     return False
   return model_string.startswith('gemini-3.1-flash-live')
+
+def is_gemini_3_or_above(model_string: Optional[str]) -> bool:
+  """Check if the model is a Gemini 3.0 or newer model using semantic versions.
+
+  Args:
+    model_string: Either a simple model name or path-based model name
+
+  Returns:
+    True if it's a Gemini 3.0+ model, False otherwise
+  """
+  if not model_string:
+    return False
+
+  model_name = extract_model_name(model_string)
+  if not model_name.startswith('gemini-'):
+    return False
+
+  version_string = model_name[len('gemini-'):].split('-', 1)[0]
+  if not version_string:
+    return False
+
+  try:
+    parsed_version = Version(version_string)
+  except InvalidVersion:
+    return False
+
+  return parsed_version.major >= 3

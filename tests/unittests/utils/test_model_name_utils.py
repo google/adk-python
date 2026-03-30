@@ -17,6 +17,7 @@
 from google.adk.utils.model_name_utils import extract_model_name
 from google.adk.utils.model_name_utils import is_gemini_1_model
 from google.adk.utils.model_name_utils import is_gemini_2_or_above
+from google.adk.utils.model_name_utils import is_gemini_3_or_above
 from google.adk.utils.model_name_utils import is_gemini_model
 from google.adk.utils.model_name_utils import is_gemini_model_id_check_disabled
 
@@ -234,6 +235,40 @@ class TestIsGemini2Model:
     assert is_gemini_2_or_above('gemini-2.') is False  # Missing version number
     assert is_gemini_2_or_above('gemini-0.9-test') is False
     assert is_gemini_2_or_above('gemini-one') is False
+
+
+class TestIsGemini3OrAbove:
+  """Test the is_gemini_3_or_above function."""
+
+  def test_is_gemini_3_or_above_simple_names(self):
+    """Test Gemini 3.0+ model detection with simple model names."""
+    assert is_gemini_3_or_above('gemini-3.0-pro') is True
+    assert is_gemini_3_or_above('gemini-3.1-pro-preview') is True
+    assert is_gemini_3_or_above('gemini-3-flash-preview') is True
+    assert is_gemini_3_or_above('gemini-4.0-pro') is True
+    assert is_gemini_3_or_above('gemini-2.5-pro') is False
+    assert is_gemini_3_or_above('gemini-2.0-flash') is False
+    assert is_gemini_3_or_above('gemini-1.5-flash') is False
+    assert is_gemini_3_or_above('claude-3-sonnet') is False
+
+  def test_is_gemini_3_or_above_path_based_names(self):
+    """Test Gemini 3.0+ model detection with path-based model names."""
+    gemini_3_path = 'projects/12345/locations/us-east1/publishers/google/models/gemini-3.0-pro'
+    assert is_gemini_3_or_above(gemini_3_path) is True
+
+    gemini_3_path_2 = 'projects/12345/locations/us-east1/publishers/google/models/gemini-3.1-pro-preview'
+    assert is_gemini_3_or_above(gemini_3_path_2) is True
+
+    gemini_2_path = 'projects/265104255505/locations/us-central1/publishers/google/models/gemini-2.5-pro'
+    assert is_gemini_3_or_above(gemini_2_path) is False
+
+  def test_is_gemini_3_or_above_edge_cases(self):
+    """Test edge cases for Gemini 3.0+ model detection."""
+    assert is_gemini_3_or_above(None) is False
+    assert is_gemini_3_or_above('') is False
+    assert is_gemini_3_or_above('gemini-3.') is False
+    assert is_gemini_3_or_above('gemini-one') is False
+    assert is_gemini_3_or_above('my-gemini-3.0-model') is False
 
 
 class TestModelNameUtilsIntegration:
