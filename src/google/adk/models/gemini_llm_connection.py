@@ -20,6 +20,7 @@ from typing import Union
 
 from google.genai import types
 
+from ..utils import model_name_utils
 from ..utils.content_utils import filter_audio_parts
 from ..utils.context_utils import Aclosing
 from ..utils.variant_utils import GoogleLLMVariant
@@ -99,7 +100,6 @@ class GeminiLlmConnection(BaseLlmConnection):
     Args:
       content: The content to send to the model.
     """
-
     assert content.parts
     if content.parts[0].function_response:
       # All parts have to be function responses.
@@ -112,12 +112,30 @@ class GeminiLlmConnection(BaseLlmConnection):
       )
     else:
       logger.debug('Sending LLM new content %s', content)
-      await self._gemini_session.send(
-          input=types.LiveClientContent(
-              turns=[content],
-              turn_complete=True,
-          )
+      is_gemini_31 = model_name_utils.is_gemini_3_1_flash_live(
+          self._model_version
       )
+      is_gemini_api = self._api_backend == GoogleLLMVariant.GEMINI_API
+
+      # As of now, Gemini 3.1 Flash Live is only available in Gemini API, not
+      # Vertex AI.
+      if (
+          is_gemini_31
+          and is_gemini_api
+          and len(content.parts) == 1
+          and content.parts[0].text
+      ):
+        logger.debug('Using send_realtime_input for Gemini 3.1 text input')
+        await self._gemini_session.send_realtime_input(
+            text=content.parts[0].text
+        )
+      else:
+        await self._gemini_session.send(
+            input=types.LiveClientContent(
+                turns=[content],
+                turn_complete=True,
+            )
+        )
 
   async def send_realtime(self, input: RealtimeInput):
     """Sends a chunk of audio or a frame of video to the model in realtime.
@@ -128,7 +146,26 @@ class GeminiLlmConnection(BaseLlmConnection):
     if isinstance(input, types.Blob):
       # The blob is binary and is very large. So let's not log it.
       logger.debug('Sending LLM Blob.')
-      await self._gemini_session.send_realtime_input(media=input)
+      is_gemini_31 = model_name_utils.is_gemini_3_1_flash_live(
+          self._model_version
+      )
+      is_gemini_api = self._api_backend == GoogleLLMVariant.GEMINI_API
+
+      # As of now, Gemini 3.1 Flash Live is only available in Gemini API, not
+      # Vertex AI.
+      if is_gemini_31 and is_gemini_api:
+        if input.mime_type and input.mime_type.startswith('audio/'):
+          await self._gemini_session.send_realtime_input(audio=input)
+        elif input.mime_type and input.mime_type.startswith('image/'):
+          await self._gemini_session.send_realtime_input(video=input)
+        else:
+          logger.warning(
+              'Blob not sent. Unknown or empty mime type for'
+              ' send_realtime_input: %s',
+              input.mime_type,
+          )
+      else:
+        await self._gemini_session.send_realtime_input(media=input)
 
     elif isinstance(input, types.ActivityStart):
       logger.debug('Sending LLM activity start signal.')
