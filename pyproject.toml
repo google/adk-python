@@ -174,6 +174,8 @@ toolbox = ["toolbox-adk>=1.0.0, <2.0.0"]
 
 slack = ["slack-bolt>=1.22.0"]
 
+oci = ["oci>=2.126.0"]                          # For OCI Generative AI model support
+
 [tool.pyink]
 # Format py files following Google style-guide
 line-length = 80

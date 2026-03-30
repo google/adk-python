@@ -63,3 +63,13 @@ try:
 except Exception:
   # Gemma3Ollama requires LiteLLM: pip install google-adk[extensions]
   pass
+
+# Optionally register OCIGenAILlm if oci package is installed
+try:
+  from .oci_genai_llm import OCIGenAILlm
+
+  LLMRegistry.register(OCIGenAILlm)
+  __all__.append('OCIGenAILlm')
+except Exception:
+  # OCI support requires: pip install google-adk[oci]
+  pass
