@@ -51,6 +51,7 @@ from opentelemetry.sdk.trace import SpanProcessor
 from opentelemetry.sdk.trace import TracerProvider
 from pydantic import Field
 from pydantic import ValidationError
+from pydantic import field_validator
 from starlette.types import Lifespan
 from typing_extensions import deprecated
 from typing_extensions import override
@@ -365,6 +366,29 @@ class RunAgentRequest(common.BaseModel):
   function_call_event_id: Optional[str] = None
   # for resume long-running functions
   invocation_id: Optional[str] = None
+
+  @field_validator("app_name")
+  @classmethod
+  def validate_app_name(cls, v: str) -> str:
+    """Validate app_name to prevent path traversal attacks.
+
+    Args:
+        v: The app_name value to validate.
+
+    Returns:
+        The validated app_name.
+
+    Raises:
+        ValueError: If the app_name contains path traversal characters.
+    """
+    if not v:
+      raise ValueError("app_name cannot be empty")
+    # Check for path traversal attempts
+    if ".." in v or "/" in v or "\\" in v:
+      raise ValueError(
+          f"Invalid app_name: {v!r}. Path traversal characters are not allowed."
+      )
+    return v
 
 
 class CreateSessionRequest(common.BaseModel):

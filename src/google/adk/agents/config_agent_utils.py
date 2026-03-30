@@ -30,6 +30,21 @@ from .base_agent_config import BaseAgentConfig
 from .common_configs import AgentRefConfig
 from .common_configs import CodeConfig
 
+# Allowlist for safe module prefixes that can be imported from YAML config
+_SAFE_MODULE_PREFIXES = frozenset({"google.adk."})
+
+
+def _is_safe_module_import(name: str) -> bool:
+  """Check if a module import is from a safe/allowed namespace.
+
+  Args:
+      name: The fully qualified module name to check.
+
+  Returns:
+      True if the module is in a safe namespace, False otherwise.
+  """
+  return any(name.startswith(prefix) for prefix in _SAFE_MODULE_PREFIXES)
+
 
 @experimental(FeatureName.AGENT_CONFIG)
 def from_config(config_path: str) -> BaseAgent:
@@ -105,10 +120,34 @@ def _load_config_from_path(config_path: str) -> AgentConfig:
 
 @experimental(FeatureName.AGENT_CONFIG)
 def resolve_fully_qualified_name(name: str) -> Any:
+  """Resolve a fully qualified name to a Python object.
+
+  Args:
+      name: The fully qualified name (e.g., 'google.adk.agents.LlmAgent').
+
+  Returns:
+      The resolved Python object.
+
+  Raises:
+      ValueError: If the name is not in a safe namespace or cannot be resolved.
+  """
   try:
     module_path, obj_name = name.rsplit(".", 1)
+
+    # Security check: only allow imports from safe namespaces
+    if not _is_safe_module_import(module_path):
+      raise ValueError(
+          f"Module reference '{name}' is outside the allowed namespace. "
+          "Only google.adk.* references are permitted in YAML config."
+      )
+
     module = importlib.import_module(module_path)
     return getattr(module, obj_name)
+  except ValueError as e:
+    # Re-raise ValueError from security check without wrapping
+    if "outside the allowed namespace" in str(e):
+      raise e
+    raise ValueError(f"Invalid fully qualified name: {name}") from e
   except Exception as e:
     raise ValueError(f"Invalid fully qualified name: {name}") from e
 
@@ -153,12 +192,20 @@ def _resolve_agent_code_reference(code: str) -> Any:
     The resolved agent instance.
 
   Raises:
-    ValueError: If the agent reference cannot be resolved.
+    ValueError: If the agent reference cannot be resolved or is outside allowed namespace.
   """
   if "." not in code:
     raise ValueError(f"Invalid code reference: {code}")
 
   module_path, obj_name = code.rsplit(".", 1)
+
+  # Security check: only allow imports from safe namespaces
+  if not _is_safe_module_import(module_path):
+    raise ValueError(
+        f"Code reference '{code}' is outside the allowed namespace. "
+        "Only google.adk.* references are permitted in YAML config."
+    )
+
   module = importlib.import_module(module_path)
   obj = getattr(module, obj_name)
 
@@ -182,12 +229,20 @@ def resolve_code_reference(code_config: CodeConfig) -> Any:
     The resolved Python object.
 
   Raises:
-    ValueError: If the code reference cannot be resolved.
+    ValueError: If the code reference cannot be resolved or is outside allowed namespace.
   """
   if not code_config or not code_config.name:
     raise ValueError("Invalid CodeConfig.")
 
   module_path, obj_name = code_config.name.rsplit(".", 1)
+
+  # Security check: only allow imports from safe namespaces
+  if not _is_safe_module_import(module_path):
+    raise ValueError(
+        f"Code reference '{code_config.name}' is outside the allowed namespace. "
+        "Only google.adk.* references are permitted in YAML config."
+    )
+
   module = importlib.import_module(module_path)
   obj = getattr(module, obj_name)
 

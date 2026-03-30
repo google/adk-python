@@ -167,6 +167,8 @@ class AgentLoader(BaseAgentLoader):
   def _load_from_yaml_config(
       self, agent_name: str, agents_dir: str
   ) -> Optional[BaseAgent]:
+    # Validate agent_name doesn't escape agents_dir
+    self._validate_agent_path(agents_dir, agent_name)
     # Load from the config file at agents_dir/{agent_name}/root_agent.yaml
     config_path = os.path.join(agents_dir, agent_name, "root_agent.yaml")
     try:
@@ -187,6 +189,31 @@ class AgentLoader(BaseAgentLoader):
           f"Fail to load '{config_path}' config. {e.args[0] if e.args else ''}",
       ) + e.args[1:]
       raise e
+
+  def _validate_agent_path(self, agents_dir: str, agent_name: str) -> None:
+    """Validate that the agent path resolves within agents_dir.
+
+    Args:
+        agents_dir: The base directory for agents.
+        agent_name: The agent name/path to validate.
+
+    Raises:
+        ValueError: If the resolved path would escape agents_dir.
+    """
+    # Normalize paths to absolute, resolved paths
+    base_path = Path(agents_dir).resolve()
+    # Handle both forward and backward slashes by using Path
+    agent_path = base_path / agent_name
+    resolved_path = agent_path.resolve()
+
+    # Check if the resolved path is still within the base directory
+    try:
+      resolved_path.relative_to(base_path)
+    except ValueError as e:
+      raise ValueError(
+          f"Agent '{agent_name}' resolves outside agents_dir. "
+          "Path traversal is not permitted."
+      ) from e
 
   _VALID_AGENT_NAME_RE = re.compile(r"^[a-zA-Z0-9_]+$")
 
