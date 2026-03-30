@@ -21,9 +21,9 @@ from typing import Dict
 from pydantic import ConfigDict
 from pydantic import Field
 
-from ..agents.base_agent_config import BaseAgentConfig
 from ..features import experimental
 from ..features import FeatureName
+from .base_agent_config import BaseAgentConfig
 
 
 @experimental(FeatureName.AGENT_CONFIG)

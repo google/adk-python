@@ -18,7 +18,11 @@ from __future__ import annotations
 
 import json
 import logging
-from typing import Any, AsyncGenerator, ClassVar, Dict, Type
+from typing import Any
+from typing import AsyncGenerator
+from typing import ClassVar
+from typing import Dict
+from typing import Type
 
 from pydantic import Field
 from typing_extensions import override
