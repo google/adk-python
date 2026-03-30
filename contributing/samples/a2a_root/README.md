@@ -39,6 +39,7 @@ The A2A Root sample consists of:
 
 ### 4. **Simple Deployment Pattern**
 - Uses the `to_a2a()` utility to convert a standard ADK agent to an A2A service
+- Publishes the agent card URL with a single `service_url` string
 - Minimal configuration required for remote agent deployment
 
 ## Setup and Usage
