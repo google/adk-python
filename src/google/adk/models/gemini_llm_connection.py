@@ -53,9 +53,6 @@ class GeminiLlmConnection(BaseLlmConnection):
   def _is_gemini_31_live(self) -> bool:
     mv = (self._model_version or '').lower()
     return 'gemini-3.1' in mv and 'live' in mv
-  
-  def _is_gemini_31_live(self) -> bool:
-    return self._isgemini_31_live()
 
   async def send_history(self, history: list[types.Content]):
     """Sends the conversation history to the gemini model.
