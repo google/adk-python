@@ -397,11 +397,9 @@ class VertexAiMemoryBankService(BaseMemoryService):
     """
     import vertexai
 
-    return vertexai.Client(
-        project=self._project,
-        location=self._location,
-        api_key=self._express_mode_api_key,
-    ).aio
+    if self._express_mode_api_key:
+      return vertexai.Client(api_key=self._express_mode_api_key).aio
+    return vertexai.Client(project=self._project, location=self._location).aio
 
 
 def _should_filter_out_event(content: types.Content) -> bool:
