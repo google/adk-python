@@ -12,6 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+
+from unittest.mock import AsyncMock
 from unittest.mock import MagicMock
 from unittest.mock import patch
 
@@ -19,8 +21,12 @@ from a2a.types import TransportProtocol as A2ATransport
 from google.adk.agents.remote_a2a_agent import RemoteA2aAgent
 from google.adk.integrations.agent_registry import _ProtocolType
 from google.adk.integrations.agent_registry import AgentRegistry
+from google.adk.telemetry.tracing import GCP_MCP_SERVER_DESTINATION_ID
 from google.adk.tools.mcp_tool.mcp_toolset import McpToolset
 import httpx
+from mcp import ClientSession
+from mcp.types import ListToolsResult
+from mcp.types import Tool
 import pytest
 
 
@@ -30,6 +36,130 @@ class TestAgentRegistry:
   def registry(self):
     with patch("google.auth.default", return_value=(MagicMock(), "project-id")):
       return AgentRegistry(project_id="test-project", location="global")
+
+  @pytest.mark.asyncio
+  @patch("httpx.Client")
+  @patch(
+      "google.adk.tools.mcp_tool.mcp_session_manager.MCPSessionManager.create_session",
+      new_callable=AsyncMock,
+  )
+  async def test_get_mcp_toolset_adds_destination_id(
+      self, mock_create_session, mock_httpx, registry
+  ):
+    """Test that tools from get_mcp_toolset have the destination ID."""
+    # Arrange
+    mcp_server_name = "test-mcp-server"
+    mock_api_response = MagicMock()
+    mock_api_response.json.return_value = {
+        "displayName": "TestPrefix",
+        "mcpServerId": (
+            "urn:mcp:googleapis.com:projects:1234:locations:global:bigquery"
+        ),
+        "interfaces": [{
+            "url": "https://mcp.com",
+            "protocolBinding": A2ATransport.jsonrpc,
+        }],
+    }
+    mock_httpx.return_value.__enter__.return_value.get.return_value = (
+        mock_api_response
+    )
+
+    registry._credentials.token = "token"
+    registry._credentials.refresh = MagicMock()
+
+    mock_session = AsyncMock(spec=ClientSession)
+    mock_create_session.return_value = mock_session
+
+    # Mock the tools returned by list_tools
+    mock_session.list_tools.return_value = ListToolsResult(
+        tools=[
+            Tool(
+                name="tool1",
+                description="d1",
+                inputs={},
+                outputs={},
+                inputSchema={},
+            ),
+            Tool(
+                name="tool2",
+                description="d2",
+                inputs={},
+                outputs={},
+                inputSchema={},
+            ),
+        ]
+    )
+
+    # Act
+    toolset = registry.get_mcp_toolset(mcp_server_name)
+    tools = await toolset.get_tools()
+
+    # Assert
+    assert isinstance(toolset, McpToolset)
+    mock_session.list_tools.assert_called_once_with()
+    assert len(tools) == 2
+    for tool in tools:
+      assert tool.custom_metadata is not None
+      assert (
+          tool.custom_metadata.get(GCP_MCP_SERVER_DESTINATION_ID)
+          == "urn:mcp:googleapis.com:projects:1234:locations:global:bigquery"
+      )
+
+  @pytest.mark.asyncio
+  @patch("httpx.Client")
+  @patch(
+      "google.adk.tools.mcp_tool.mcp_session_manager.MCPSessionManager.create_session",
+      new_callable=AsyncMock,
+  )
+  async def test_get_mcp_toolset_handles_missing_destination_id(
+      self, mock_create_session, mock_httpx, registry
+  ):
+    """Test get_mcp_toolset when the destination ID is missing."""
+    # Arrange
+    mcp_server_name = "test-mcp-server"
+    mock_api_response = MagicMock()
+    mock_api_response.json.return_value = {
+        "displayName": "TestPrefix",
+        # "mcpServerId" is intentionally omitted
+        "interfaces": [{
+            "url": "https://mcp.com",
+            "protocolBinding": A2ATransport.jsonrpc,
+        }],
+    }
+    mock_httpx.return_value.__enter__.return_value.get.return_value = (
+        mock_api_response
+    )
+
+    registry._credentials.token = "token"
+    registry._credentials.refresh = MagicMock()
+
+    mock_session = AsyncMock(spec=ClientSession)
+    mock_create_session.return_value = mock_session
+
+    # Mock the tools returned by list_tools
+    mock_session.list_tools.return_value = ListToolsResult(
+        tools=[
+            Tool(
+                name="tool1",
+                description="d1",
+                inputs={},
+                outputs={},
+                inputSchema={},
+            ),
+        ]
+    )
+
+    # Act
+    toolset = registry.get_mcp_toolset(mcp_server_name)
+    tools = await toolset.get_tools()
+
+    # Assert
+    assert isinstance(toolset, McpToolset)
+    mock_session.list_tools.assert_called_once_with()
+    assert len(tools) == 1
+    for tool in tools:
+      # The custom_metadata shouldn't have been added
+      assert tool.custom_metadata is None
 
   def test_init_raises_value_error_if_params_missing(self):
     with pytest.raises(
