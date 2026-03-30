@@ -299,6 +299,8 @@ ini_options.testpaths = [ "tests" ]
 ini_options.asyncio_default_fixture_loop_scope = "function"
 ini_options.asyncio_mode = "auto"
 
+oci = ["oci>=2.126.0"]                          # For OCI Generative AI model support
+
 [tool.pyink]
 line-length = 80
 unstable = true

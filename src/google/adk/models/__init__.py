@@ -33,6 +33,7 @@ if TYPE_CHECKING:
   from .gemma_llm import Gemma3Ollama
   from .google_llm import Gemini
   from .lite_llm import LiteLlm
+  from .oci_genai_llm import OCIGenAILlm
 
 __all__ = [
     'ApigeeLlm',
@@ -43,6 +44,7 @@ __all__ = [
     'Gemma3Ollama',
     'LLMRegistry',
     'LiteLlm',
+    'OCIGenAILlm',
 ]
 
 _LAZY_PROVIDERS: dict[str, tuple[list[str], str]] = {
@@ -83,6 +85,18 @@ _LAZY_PROVIDERS: dict[str, tuple[list[str], str]] = {
             r'ai21/.*',
         ],
         'lite_llm',
+    ),
+    'OCIGenAILlm': (
+        [
+            r'meta\.llama-.*',
+            r'google\.gemini-.*',
+            r'google\.gemma-.*',
+            r'xai\.grok-.*',
+            r'mistralai\.mistral-.*',
+            r'mistralai\.mixtral-.*',
+            r'nvidia\..*',
+        ],
+        'oci_genai_llm',
     ),
 }
 
