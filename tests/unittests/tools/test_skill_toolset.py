@@ -12,17 +12,17 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# pylint: disable=redefined-outer-name,g-import-not-at-top,protected-access
-
-
+import logging
 from unittest import mock
 
+from google.adk.agents.readonly_context import ReadonlyContext
 from google.adk.code_executors.base_code_executor import BaseCodeExecutor
 from google.adk.code_executors.code_execution_utils import CodeExecutionResult
 from google.adk.models import llm_request as llm_request_model
 from google.adk.skills import models
 from google.adk.tools import skill_toolset
 from google.adk.tools import tool_context
+from google.genai import types
 import pytest
 
 
@@ -62,11 +62,15 @@ def mock_skill1(mock_skill1_frontmatter):
   def get_ref(name):
     if name == "ref1.md":
       return "ref content 1"
+    if name == "doc.pdf":
+      return b"fake pdf content"
     return None
 
   def get_asset(name):
     if name == "asset1.txt":
       return "asset content 1"
+    if name == "image.png":
+      return b"fake image content"
     return None
 
   def get_script(name):
@@ -81,8 +85,8 @@ def mock_skill1(mock_skill1_frontmatter):
   skill.resources.get_reference.side_effect = get_ref
   skill.resources.get_asset.side_effect = get_asset
   skill.resources.get_script.side_effect = get_script
-  skill.resources.list_references.return_value = ["ref1.md"]
-  skill.resources.list_assets.return_value = ["asset1.txt"]
+  skill.resources.list_references.return_value = ["ref1.md", "doc.pdf"]
+  skill.resources.list_assets.return_value = ["asset1.txt", "image.png"]
   skill.resources.list_scripts.return_value = [
       "setup.sh",
       "run.py",
@@ -145,7 +149,13 @@ def mock_skill2(mock_skill2_frontmatter):
 @pytest.fixture
 def tool_context_instance():
   """Fixture for tool context."""
-  return mock.create_autospec(tool_context.ToolContext, instance=True)
+  ctx = mock.create_autospec(tool_context.ToolContext, instance=True)
+  ctx._invocation_context = mock.MagicMock()
+  ctx._invocation_context.agent = mock.MagicMock()
+  ctx._invocation_context.agent.name = "test_agent"
+  ctx._invocation_context.agent_states = {}
+  ctx.agent_name = "test_agent"
+  return ctx
 
 
 # SkillToolset tests
@@ -247,6 +257,28 @@ async def test_load_skill_run_async(
             },
         ),
         (
+            {"skill_name": "skill1", "path": "references/doc.pdf"},
+            {
+                "skill_name": "skill1",
+                "path": "references/doc.pdf",
+                "status": (
+                    "Binary file detected. The content has been injected into"
+                    " the conversation history for you to analyze."
+                ),
+            },
+        ),
+        (
+            {"skill_name": "skill1", "path": "assets/image.png"},
+            {
+                "skill_name": "skill1",
+                "path": "assets/image.png",
+                "status": (
+                    "Binary file detected. The content has been injected into"
+                    " the conversation history for you to analyze."
+                ),
+            },
+        ),
+        (
             {"skill_name": "skill1", "path": "scripts/setup.sh"},
             {
                 "skill_name": "skill1",
@@ -307,6 +339,56 @@ async def test_load_resource_run_async(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "resource_path, expected_mime, fake_content",
+    [
+        ("references/doc.pdf", "application/pdf", b"fake pdf content"),
+        ("assets/image.png", "image/png", b"fake image content"),
+    ],
+)
+async def test_load_resource_process_llm_request_binary(
+    mock_skill1,
+    tool_context_instance,
+    resource_path,
+    expected_mime,
+    fake_content,
+):
+  toolset = skill_toolset.SkillToolset([mock_skill1])
+  tool = skill_toolset.LoadSkillResourceTool(toolset)
+
+  llm_req = mock.create_autospec(llm_request_model.LlmRequest, instance=True)
+
+  part = types.Part.from_function_response(
+      name=tool.name,
+      response={
+          "skill_name": "skill1",
+          "path": resource_path,
+          "status": (
+              "Binary file detected. The content has been injected into the"
+              " conversation history for you to analyze."
+          ),
+      },
+  )
+  content = types.Content(role="model", parts=[part])
+  llm_req.contents = [content]
+
+  await tool.process_llm_request(
+      tool_context=tool_context_instance, llm_request=llm_req
+  )
+
+  assert len(llm_req.contents) == 2
+  injected_content = llm_req.contents[1]
+  assert injected_content.role == "user"
+  assert len(injected_content.parts) == 2
+  assert (
+      f"The content of binary file '{resource_path}' is:"
+      in injected_content.parts[0].text
+  )
+  assert injected_content.parts[1].inline_data.data == fake_content
+  assert injected_content.parts[1].inline_data.mime_type == expected_mime
+
+
+@pytest.mark.asyncio
 async def test_process_llm_request(
     mock_skill1, mock_skill2, tool_context_instance
 ):
@@ -361,6 +443,10 @@ def _make_tool_context_with_agent(agent=None):
   ctx = mock.MagicMock(spec=tool_context.ToolContext)
   ctx._invocation_context = mock.MagicMock()
   ctx._invocation_context.agent = agent or mock.MagicMock()
+  ctx._invocation_context.agent.name = "test_agent"
+  ctx._invocation_context.agent_states = {}
+  ctx.agent_name = "test_agent"
+  ctx.state = {}
   return ctx
 
 
@@ -1202,3 +1288,111 @@ async def test_execute_script_binary_content_packaged():
   assert "b'\\x00\\x01\\x02'" in code_input.code
   # Wrapper code handles binary with 'wb' mode
   assert "'wb' if isinstance(content, bytes)" in code_input.code
+
+
+@pytest.mark.asyncio
+async def test_skill_toolset_dynamic_tool_resolution(mock_skill1, mock_skill2):
+  # Set up skills with additional_tools in metadata
+  mock_skill1.frontmatter.metadata = {
+      "adk_additional_tools": ["my_custom_tool", "my_func", "shared_tool"]
+  }
+  mock_skill1.name = "skill1"
+
+  mock_skill2.frontmatter.metadata = {
+      "adk_additional_tools": [
+          "skill2_tool",
+          "shared_tool",
+          "prefixed_mock_tool",
+      ]
+  }
+  mock_skill2.name = "skill2"
+
+  # Prepare additional tools
+  custom_tool = mock.create_autospec(skill_toolset.BaseTool, instance=True)
+  custom_tool.name = "my_custom_tool"
+
+  skill2_tool = mock.create_autospec(skill_toolset.BaseTool, instance=True)
+  skill2_tool.name = "skill2_tool"
+
+  shared_tool = mock.create_autospec(skill_toolset.BaseTool, instance=True)
+  shared_tool.name = "shared_tool"
+
+  def my_func():
+    """My function description."""
+    pass
+
+  # Setup prefixed toolset
+  mock_tool = mock.create_autospec(skill_toolset.BaseTool, instance=True)
+  mock_tool.name = "prefixed_mock_tool"
+  prefixed_set = mock.create_autospec(skill_toolset.BaseToolset, instance=True)
+  prefixed_set.get_tools_with_prefix.return_value = [mock_tool]
+
+  toolset = skill_toolset.SkillToolset(
+      [mock_skill1, mock_skill2],
+      additional_tools=[
+          custom_tool,
+          skill2_tool,
+          shared_tool,
+          my_func,
+          prefixed_set,
+      ],
+  )
+
+  ctx = _make_tool_context_with_agent()
+  # Initial tools (only core)
+  tools = await toolset.get_tools(readonly_context=ctx)
+  assert len(tools) == 4
+
+  # Activate skills
+  load_tool = skill_toolset.LoadSkillTool(toolset)
+  await load_tool.run_async(args={"name": "skill1"}, tool_context=ctx)
+  await load_tool.run_async(args={"name": "skill2"}, tool_context=ctx)
+
+  # Dynamic tools should now be resolved
+  tools = await toolset.get_tools(readonly_context=ctx)
+  tool_names = {t.name for t in tools}
+
+  # Core tools
+  assert "list_skills" in tool_names
+  assert "load_skill" in tool_names
+  assert "load_skill_resource" in tool_names
+  assert "run_skill_script" in tool_names
+
+  # Skill 1 tools
+  assert "my_custom_tool" in tool_names
+  assert "my_func" in tool_names
+
+  # Skill 2 tools
+  assert "skill2_tool" in tool_names
+
+  # Shared tool (should only appear once)
+  assert "shared_tool" in tool_names
+  assert len([t for t in tools if t.name == "shared_tool"]) == 1
+
+  # Prefixed toolset tool
+  assert "prefixed_mock_tool" in tool_names
+
+  # Check specific tool resolution details
+  my_func_tool = next(t for t in tools if t.name == "my_func")
+  assert isinstance(my_func_tool, skill_toolset.FunctionTool)
+  assert my_func_tool.description == "My function description."
+
+
+@pytest.mark.asyncio
+async def test_skill_toolset_resolution_error_handling(mock_skill1, caplog):
+  mock_skill1.frontmatter.metadata = {
+      "adk_additional_tools": ["nonexistent_tool"]
+  }
+  mock_skill1.name = "skill1"
+  toolset = skill_toolset.SkillToolset([mock_skill1])
+  ctx = _make_tool_context_with_agent()
+
+  # Activate skill
+  load_tool = skill_toolset.LoadSkillTool(toolset)
+  await load_tool.run_async(args={"name": "skill1"}, tool_context=ctx)
+
+  with caplog.at_level(logging.WARNING):
+    tools = await toolset.get_tools(readonly_context=ctx)
+
+  # Should still return basic skill tools
+  assert len(tools) == 4

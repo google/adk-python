@@ -20,6 +20,7 @@ from pydantic import alias_generators
 from pydantic import BaseModel
 from pydantic import ConfigDict
 from pydantic import Field
+from pydantic import PrivateAttr
 
 from ..events.event import Event
 
@@ -48,3 +49,6 @@ class Session(BaseModel):
   call/response, etc."""
   last_update_time: float = 0.0
   """The last update time of the session."""
+
+  _storage_update_marker: str | None = PrivateAttr(default=None)
+  """Internal storage revision marker used for stale-session detection."""

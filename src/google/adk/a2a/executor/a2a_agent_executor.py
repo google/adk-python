@@ -21,7 +21,6 @@ import logging
 from typing import Awaitable
 from typing import Callable
 from typing import Optional
-import uuid
 
 from a2a.server.agent_execution import AgentExecutor
 from a2a.server.agent_execution.context import RequestContext
@@ -34,10 +33,13 @@ from a2a.types import TaskState
 from a2a.types import TaskStatus
 from a2a.types import TaskStatusUpdateEvent
 from a2a.types import TextPart
+from google.adk.platform import time as platform_time
+from google.adk.platform import uuid as platform_uuid
 from google.adk.runners import Runner
 from typing_extensions import override
 
 from ...utils.context_utils import Aclosing
+from ..agent.interceptors.new_integration_extension import _NEW_A2A_ADK_INTEGRATION_EXTENSION
 from ..converters.request_converter import AgentRunRequest
 from ..converters.utils import _get_adk_metadata_key
 from ..experimental import a2a_experimental
@@ -61,7 +63,9 @@ class A2aAgentExecutor(AgentExecutor):
   Args:
     runner: The runner to use for the agent.
     config: The config to use for the executor.
-    use_legacy: Whether to use the legacy executor implementation.
+    use_legacy: If true, force the legacy implementation.
+    force_new_version: If true, force the new implementation regardless of the
+      extension.
   """
 
   def __init__(
@@ -69,15 +73,15 @@ class A2aAgentExecutor(AgentExecutor):
       *,
       runner: Runner | Callable[..., Runner | Awaitable[Runner]],
       config: Optional[A2aAgentExecutorConfig] = None,
-      use_legacy: bool = True,
+      use_legacy: bool = False,
+      force_new_version: bool = False,
   ):
     super().__init__()
-    if not use_legacy:
-      self._executor_impl = ExecutorImpl(runner=runner, config=config)
-    else:
-      self._executor_impl = None
-      self._runner = runner
-      self._config = config or A2aAgentExecutorConfig()
+    self._runner = runner
+    self._config = config or A2aAgentExecutorConfig()
+    self._use_legacy = use_legacy
+    self._force_new_version = force_new_version
+    self._executor_impl = None
 
   async def _resolve_runner(self) -> Runner:
     """Resolve the runner, handling cases where it's a callable that returns a Runner."""
@@ -128,7 +132,16 @@ class A2aAgentExecutor(AgentExecutor):
     * Converts the ADK output events into A2A task updates
     * Publishes the updates back to A2A server via event queue
     """
-    if self._executor_impl:
+    should_use_new_impl = not self._use_legacy and (
+        self._force_new_version or self._check_new_version_extension(context)
+    )
+
+    if should_use_new_impl:
+      if self._executor_impl is None:
+        self._executor_impl = ExecutorImpl(
+            runner=self._runner,
+            config=self._config,
+        )
       await self._executor_impl.execute(context, event_queue)
       return
 
@@ -147,7 +160,9 @@ class A2aAgentExecutor(AgentExecutor):
               status=TaskStatus(
                   state=TaskState.submitted,
                   message=context.message,
-                  timestamp=datetime.now(timezone.utc).isoformat(),
+                  timestamp=datetime.fromtimestamp(
+                      platform_time.get_time(), tz=timezone.utc
+                  ).isoformat(),
               ),
               context_id=context.context_id,
               final=False,
@@ -166,9 +181,11 @@ class A2aAgentExecutor(AgentExecutor):
                 task_id=context.task_id,
                 status=TaskStatus(
                     state=TaskState.failed,
-                    timestamp=datetime.now(timezone.utc).isoformat(),
+                    timestamp=datetime.fromtimestamp(
+                        platform_time.get_time(), tz=timezone.utc
+                    ).isoformat(),
                     message=Message(
-                        message_id=str(uuid.uuid4()),
+                        message_id=platform_uuid.new_uuid(),
                         role=Role.agent,
                         parts=[TextPart(text=str(e))],
                     ),
@@ -219,7 +236,9 @@ class A2aAgentExecutor(AgentExecutor):
             task_id=context.task_id,
             status=TaskStatus(
                 state=TaskState.working,
-                timestamp=datetime.now(timezone.utc).isoformat(),
+                timestamp=datetime.fromtimestamp(
+                    platform_time.get_time(), tz=timezone.utc
+                ).isoformat(),
             ),
             context_id=context.context_id,
             final=False,
@@ -267,7 +286,7 @@ class A2aAgentExecutor(AgentExecutor):
               last_chunk=True,
               context_id=context.context_id,
               artifact=Artifact(
-                  artifact_id=str(uuid.uuid4()),
+                  artifact_id=platform_uuid.new_uuid(),
                   parts=task_result_aggregator.task_status_message.parts,
               ),
           )
@@ -277,7 +296,9 @@ class A2aAgentExecutor(AgentExecutor):
           task_id=context.task_id,
           status=TaskStatus(
               state=TaskState.completed,
-              timestamp=datetime.now(timezone.utc).isoformat(),
+              timestamp=datetime.fromtimestamp(
+                  platform_time.get_time(), tz=timezone.utc
+              ).isoformat(),
           ),
           context_id=context.context_id,
           final=True,
@@ -287,7 +308,9 @@ class A2aAgentExecutor(AgentExecutor):
           task_id=context.task_id,
           status=TaskStatus(
               state=task_result_aggregator.task_state,
-              timestamp=datetime.now(timezone.utc).isoformat(),
+              timestamp=datetime.fromtimestamp(
+                  platform_time.get_time(), tz=timezone.utc
+              ).isoformat(),
               message=task_result_aggregator.task_status_message,
           ),
           context_id=context.context_id,
@@ -327,3 +350,10 @@ class A2aAgentExecutor(AgentExecutor):
       run_request.session_id = session.id
 
     return session
+
+  def _check_new_version_extension(self, context: RequestContext):
+    """Check if the extension for the new version is requested and activate it."""
+    if _NEW_A2A_ADK_INTEGRATION_EXTENSION in context.requested_extensions:
+      context.add_activated_extension(_NEW_A2A_ADK_INTEGRATION_EXTENSION)
+      return True
+    return False

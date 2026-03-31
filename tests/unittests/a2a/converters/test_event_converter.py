@@ -462,7 +462,7 @@ class TestEventConverter:
     with patch(
         "google.adk.a2a.converters.event_converter.datetime"
     ) as mock_datetime:
-      mock_datetime.now.return_value.isoformat.return_value = (
+      mock_datetime.fromtimestamp.return_value.isoformat.return_value = (
           "2023-01-01T00:00:00"
       )
 
@@ -526,7 +526,7 @@ class TestEventConverter:
     with patch(
         "google.adk.a2a.converters.event_converter.datetime"
     ) as mock_datetime:
-      mock_datetime.now.return_value.isoformat.return_value = (
+      mock_datetime.fromtimestamp.return_value.isoformat.return_value = (
           "2023-01-01T00:00:00"
       )
 
@@ -742,7 +742,7 @@ class TestA2AToEventConverters:
     assert result.branch == "test-branch"
     assert result.invocation_id == "test-invocation-id"
 
-  @patch("google.adk.a2a.converters.event_converter.uuid.uuid4")
+  @patch("google.adk.a2a.converters.event_converter.platform_uuid.new_uuid")
   def test_convert_a2a_task_to_event_default_author(self, mock_uuid):
     """Test converting A2A task with default author and no invocation context."""
     from google.adk.a2a.converters.event_converter import convert_a2a_task_to_event
@@ -974,7 +974,7 @@ class TestA2AToEventConverters:
     # Parts will be empty since conversion returned None
     assert len(result.content.parts) == 0
 
-  @patch("google.adk.a2a.converters.event_converter.uuid.uuid4")
+  @patch("google.adk.a2a.converters.event_converter.platform_uuid.new_uuid")
   def test_convert_a2a_message_to_event_default_author(self, mock_uuid):
     """Test conversion with default author and no invocation context."""
     from google.adk.a2a.converters.event_converter import convert_a2a_message_to_event

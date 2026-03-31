@@ -82,8 +82,12 @@ class BigQueryToolConfig(BaseModel):
   By default, no particular application name will be set in the BigQuery
   interaction. But if the tool user (agent builder) wants to differentiate
   their application/agent for tracking or support purpose, they can set this
-  field. If set, this value will be added to the user_agent in BigQuery API calls, and also to the BigQuery job labels with the key
+  field. If set, this value will be added to the user_agent in BigQuery API
+  calls, and also to the BigQuery job labels with the key
   "adk-bigquery-application-name".
+
+  Note: This field is for usage discovery and tracking purposes only and should
+  not be used for security-sensitive decisions.
   """
 
   compute_project_id: Optional[str] = None
@@ -108,8 +112,13 @@ class BigQueryToolConfig(BaseModel):
   These labels will be added to all BigQuery jobs executed by the tools.
   Labels must be key-value pairs where both keys and values are strings.
   Labels can be used for billing, monitoring, and resource organization.
-  For more information about labels, see 
+  For more information about labels, see
   https://cloud.google.com/bigquery/docs/labels-intro.
+
+  Note: These labels are for usage discovery and tracking purposes only and
+  should not be used for security-sensitive decisions. The number of
+  user-provided labels is restricted to 20, and keys starting with
+  "adk-bigquery-" are reserved for internal usage.
   """
 
   @field_validator('maximum_bytes_billed')
@@ -136,9 +145,16 @@ class BigQueryToolConfig(BaseModel):
   @field_validator('job_labels')
   @classmethod
   def validate_job_labels(cls, v):
-    """Validate that job_labels keys are not empty."""
+    """Validate the job labels."""
     if v is not None:
+      if len(v) > 20:
+        raise ValueError('Only up to 20 job labels can be provided')
       for key in v.keys():
         if not key:
           raise ValueError('Label keys cannot be empty.')
+        if key.startswith('adk-bigquery-'):
+          raise ValueError(
+              'Label key cannot start with "adk-bigquery-" as it is'
+              f' reserved for internal usage, found "{key}".'
+          )
     return v
