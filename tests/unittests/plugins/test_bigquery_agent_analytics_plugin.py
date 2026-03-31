@@ -4437,6 +4437,73 @@ class TestToolProvenance:
     )
     assert result == "TRANSFER_AGENT"
 
+  @pytest.mark.asyncio
+  async def test_before_tool_callback_emits_transfer_a2a_in_row(
+      self,
+      bq_plugin_inst,
+      mock_write_client,
+      tool_context,
+      dummy_arrow_schema,
+  ):
+    """End-to-end: before_tool_callback emits tool_origin=TRANSFER_A2A."""
+    from google.adk.tools.transfer_to_agent_tool import TransferToAgentTool
+
+    tool = TransferToAgentTool(
+        agent_names=["local", "remote"],
+        target_origin_by_name={
+            "local": "TRANSFER_AGENT",
+            "remote": "TRANSFER_A2A",
+        },
+    )
+    bigquery_agent_analytics_plugin.TraceManager.push_span(tool_context)
+    await bq_plugin_inst.before_tool_callback(
+        tool=tool,
+        tool_args={"agent_name": "remote"},
+        tool_context=tool_context,
+    )
+    await asyncio.sleep(0.01)
+    log_entry = await _get_captured_event_dict_async(
+        mock_write_client, dummy_arrow_schema
+    )
+    _assert_common_fields(log_entry, "TOOL_STARTING")
+    content_dict = json.loads(log_entry["content"])
+    assert content_dict["tool"] == "transfer_to_agent"
+    assert content_dict["tool_origin"] == "TRANSFER_A2A"
+
+  @pytest.mark.asyncio
+  async def test_after_tool_callback_emits_transfer_a2a_in_row(
+      self,
+      bq_plugin_inst,
+      mock_write_client,
+      tool_context,
+      dummy_arrow_schema,
+  ):
+    """End-to-end: after_tool_callback emits tool_origin=TRANSFER_A2A."""
+    from google.adk.tools.transfer_to_agent_tool import TransferToAgentTool
+
+    tool = TransferToAgentTool(
+        agent_names=["local", "remote"],
+        target_origin_by_name={
+            "local": "TRANSFER_AGENT",
+            "remote": "TRANSFER_A2A",
+        },
+    )
+    bigquery_agent_analytics_plugin.TraceManager.push_span(tool_context)
+    await bq_plugin_inst.after_tool_callback(
+        tool=tool,
+        tool_args={"agent_name": "remote"},
+        tool_context=tool_context,
+        result={},
+    )
+    await asyncio.sleep(0.01)
+    log_entry = await _get_captured_event_dict_async(
+        mock_write_client, dummy_arrow_schema
+    )
+    _assert_common_fields(log_entry, "TOOL_COMPLETED")
+    content_dict = json.loads(log_entry["content"])
+    assert content_dict["tool"] == "transfer_to_agent"
+    assert content_dict["tool_origin"] == "TRANSFER_A2A"
+
 
 class TestHITLTracing:
   """Tests for HITL-specific event emission via on_event_callback.
