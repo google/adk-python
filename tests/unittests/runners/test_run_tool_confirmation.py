@@ -502,6 +502,86 @@ class TestHITLConfirmationFlowWithResumableApp:
         == expected_parts_final
     )
 
+  @pytest.mark.asyncio
+  async def test_pause_and_resume_on_request_confirmation_without_invocation_id(
+      self,
+      runner: testing_utils.InMemoryRunner,
+      agent: LlmAgent,
+  ):
+    """Tests HITL flow where all tool calls are confirmed."""
+    events = runner.run("test user query")
+
+    # Verify that the invocation is paused when tool confirmation is requested.
+    # The tool call returns error response, and summarization was skipped.
+    assert testing_utils.simplify_resumable_app_events(
+        copy.deepcopy(events)
+    ) == [
+        (
+            agent.name,
+            Part(function_call=FunctionCall(name=agent.tools[0].name, args={})),
+        ),
+        (
+            agent.name,
+            Part(
+                function_call=FunctionCall(
+                    name=REQUEST_CONFIRMATION_FUNCTION_CALL_NAME,
+                    args={
+                        "originalFunctionCall": {
+                            "name": agent.tools[0].name,
+                            "id": mock.ANY,
+                            "args": {},
+                        },
+                        "toolConfirmation": {
+                            "hint": HINT_TEXT,
+                            "confirmed": False,
+                        },
+                    },
+                )
+            ),
+        ),
+        (
+            agent.name,
+            Part(
+                function_response=FunctionResponse(
+                    name=agent.tools[0].name, response=TOOL_CALL_ERROR_RESPONSE
+                )
+            ),
+        ),
+    ]
+    ask_for_confirmation_function_call_id = (
+        events[1].content.parts[0].function_call.id
+    )
+    invocation_id = events[1].invocation_id
+    user_confirmation = testing_utils.UserContent(
+        Part(
+            function_response=FunctionResponse(
+                id=ask_for_confirmation_function_call_id,
+                name=REQUEST_CONFIRMATION_FUNCTION_CALL_NAME,
+                response={"confirmed": True},
+            )
+        )
+    )
+    events = await runner.run_async(user_confirmation)
+    expected_parts_final = [
+        (
+            agent.name,
+            Part(
+                function_response=FunctionResponse(
+                    name=agent.tools[0].name,
+                    response={"result": "confirmed=True"},
+                )
+            ),
+        ),
+        (agent.name, "test llm response after tool call"),
+        (agent.name, testing_utils.END_OF_AGENT),
+    ]
+    for event in events:
+      assert event.invocation_id == invocation_id
+    assert (
+        testing_utils.simplify_resumable_app_events(copy.deepcopy(events))
+        == expected_parts_final
+    )
+
 
 class TestHITLConfirmationFlowWithSequentialAgentAndResumableApp:
   """Tests the HITL confirmation flow with a resumable sequential agent app."""

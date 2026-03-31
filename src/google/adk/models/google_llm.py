@@ -54,7 +54,7 @@ _EXCLUDED_PART_FIELD = {'inline_data': {'data'}}
 _RESOURCE_EXHAUSTED_POSSIBLE_FIX_MESSAGE = """
 On how to mitigate this issue, please refer to:
 
-https://google.github.io/adk-docs/agents/models/#error-code-429-resource_exhausted
+https://google.github.io/adk-docs/agents/models/google-gemini/#error-code-429-resource_exhausted
 """
 
 
@@ -90,6 +90,9 @@ class Gemini(BaseLlm):
   """
 
   model: str = 'gemini-2.5-flash'
+
+  base_url: Optional[str] = None
+  """The base URL for the AI platform service endpoint."""
 
   speech_config: Optional[types.SpeechConfig] = None
 
@@ -305,6 +308,7 @@ class Gemini(BaseLlm):
         http_options=types.HttpOptions(
             headers=self._tracking_headers(),
             retry_options=self.retry_options,
+            base_url=self.base_url,
         )
     )
 

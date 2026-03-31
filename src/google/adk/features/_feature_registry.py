@@ -26,6 +26,8 @@ from ..utils.env_utils import is_env_enabled
 class FeatureName(str, Enum):
   """Feature names."""
 
+  AGENT_CONFIG = "AGENT_CONFIG"
+  AGENT_STATE = "AGENT_STATE"
   AUTHENTICATED_FUNCTION_TOOL = "AUTHENTICATED_FUNCTION_TOOL"
   BASE_AUTHENTICATED_TOOL = "BASE_AUTHENTICATED_TOOL"
   BIG_QUERY_TOOLSET = "BIG_QUERY_TOOLSET"
@@ -35,17 +37,22 @@ class FeatureName(str, Enum):
   COMPUTER_USE = "COMPUTER_USE"
   DATA_AGENT_TOOL_CONFIG = "DATA_AGENT_TOOL_CONFIG"
   DATA_AGENT_TOOLSET = "DATA_AGENT_TOOLSET"
+  ENVIRONMENT_SIMULATION = "ENVIRONMENT_SIMULATION"
   GOOGLE_CREDENTIALS_CONFIG = "GOOGLE_CREDENTIALS_CONFIG"
   GOOGLE_TOOL = "GOOGLE_TOOL"
   JSON_SCHEMA_FOR_FUNC_DECL = "JSON_SCHEMA_FOR_FUNC_DECL"
   PROGRESSIVE_SSE_STREAMING = "PROGRESSIVE_SSE_STREAMING"
   PUBSUB_TOOL_CONFIG = "PUBSUB_TOOL_CONFIG"
   PUBSUB_TOOLSET = "PUBSUB_TOOLSET"
+  SKILL_TOOLSET = "SKILL_TOOLSET"
   SPANNER_TOOLSET = "SPANNER_TOOLSET"
+  SPANNER_ADMIN_TOOLSET = "SPANNER_ADMIN_TOOLSET"
   SPANNER_TOOL_SETTINGS = "SPANNER_TOOL_SETTINGS"
   SPANNER_VECTOR_STORE = "SPANNER_VECTOR_STORE"
   TOOL_CONFIG = "TOOL_CONFIG"
   TOOL_CONFIRMATION = "TOOL_CONFIRMATION"
+  PLUGGABLE_AUTH = "PLUGGABLE_AUTH"
+  SNAKE_CASE_SKILL_NAME = "SNAKE_CASE_SKILL_NAME"
 
 
 class FeatureStage(Enum):
@@ -78,6 +85,12 @@ class FeatureConfig:
 
 # Central registry: FeatureName -> FeatureConfig
 _FEATURE_REGISTRY: dict[FeatureName, FeatureConfig] = {
+    FeatureName.AGENT_CONFIG: FeatureConfig(
+        FeatureStage.EXPERIMENTAL, default_on=True
+    ),
+    FeatureName.AGENT_STATE: FeatureConfig(
+        FeatureStage.EXPERIMENTAL, default_on=True
+    ),
     FeatureName.AUTHENTICATED_FUNCTION_TOOL: FeatureConfig(
         FeatureStage.EXPERIMENTAL, default_on=True
     ),
@@ -105,6 +118,9 @@ _FEATURE_REGISTRY: dict[FeatureName, FeatureConfig] = {
     FeatureName.DATA_AGENT_TOOLSET: FeatureConfig(
         FeatureStage.EXPERIMENTAL, default_on=True
     ),
+    FeatureName.ENVIRONMENT_SIMULATION: FeatureConfig(
+        FeatureStage.EXPERIMENTAL, default_on=True
+    ),
     FeatureName.GOOGLE_CREDENTIALS_CONFIG: FeatureConfig(
         FeatureStage.EXPERIMENTAL, default_on=True
     ),
@@ -123,6 +139,12 @@ _FEATURE_REGISTRY: dict[FeatureName, FeatureConfig] = {
     FeatureName.PUBSUB_TOOLSET: FeatureConfig(
         FeatureStage.EXPERIMENTAL, default_on=True
     ),
+    FeatureName.SKILL_TOOLSET: FeatureConfig(
+        FeatureStage.EXPERIMENTAL, default_on=True
+    ),
+    FeatureName.SPANNER_ADMIN_TOOLSET: FeatureConfig(
+        FeatureStage.EXPERIMENTAL, default_on=True
+    ),
     FeatureName.SPANNER_TOOLSET: FeatureConfig(
         FeatureStage.EXPERIMENTAL, default_on=True
     ),
@@ -137,6 +159,12 @@ _FEATURE_REGISTRY: dict[FeatureName, FeatureConfig] = {
     ),
     FeatureName.TOOL_CONFIRMATION: FeatureConfig(
         FeatureStage.EXPERIMENTAL, default_on=True
+    ),
+    FeatureName.PLUGGABLE_AUTH: FeatureConfig(
+        FeatureStage.EXPERIMENTAL, default_on=True
+    ),
+    FeatureName.SNAKE_CASE_SKILL_NAME: FeatureConfig(
+        FeatureStage.EXPERIMENTAL, default_on=False
     ),
 }
 

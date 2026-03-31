@@ -21,6 +21,77 @@ Please do not rely on the implementation details.
 from __future__ import annotations
 
 from contextlib import aclosing
+import inspect
+import typing
+from typing import Any
+from typing import Callable
+from typing import get_args
+from typing import get_origin
+from typing import Union
 
 # Re-export aclosing for backward compatibility
 Aclosing = aclosing
+
+
+def _is_context_type(annotation: Any) -> bool:
+  """Check if an annotation is the Context type.
+
+  This checks if the annotation is exactly Context or a type alias of Context
+  (e.g., ToolContext, CallbackContext). Also handles Optional[Context] types.
+
+  Args:
+    annotation: The type annotation to check.
+
+  Returns:
+    True if the annotation is the Context type, False otherwise.
+  """
+  from ..agents.context import Context
+
+  if annotation is inspect.Parameter.empty:
+    return False
+
+  # Handle Optional[Context] and Union types
+  origin = get_origin(annotation)
+  if origin is Union:
+    args = get_args(annotation)
+    return any(
+        _is_context_type(arg) for arg in args if not isinstance(arg, type(None))
+    )
+
+  # Check if it's exactly the Context type (or an alias like ToolContext)
+  return annotation is Context
+
+
+def find_context_parameter(func: Callable[..., Any]) -> str | None:
+  """Find the parameter name that has a Context type annotation.
+
+  This function inspects the signature of a callable and returns the name
+  of the first parameter that is annotated with Context or a type alias of
+  Context (e.g., ToolContext, CallbackContext).
+
+  Args:
+    func: The callable to inspect.
+
+  Returns:
+    The parameter name if found, None otherwise.
+  """
+  if func is None:
+    return None
+  try:
+    signature = inspect.signature(func)
+  except (ValueError, TypeError):
+    return None
+  # Resolve string annotations (e.g., 'Context')
+  try:
+    type_hints = typing.get_type_hints(func)
+  except Exception:
+    # get_type_hints can fail for various reasons (e.g., unresolvable forward
+    # references). In such cases, we fall back to inspecting the parameter
+    # annotations directly.
+    type_hints = {}
+
+  for name, param in signature.parameters.items():
+    annotation = type_hints.get(name, param.annotation)
+    if _is_context_type(annotation):
+      return name
+  return None

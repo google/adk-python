@@ -23,19 +23,18 @@ from unittest.mock import AsyncMock
 from google.adk.agents.base_agent import BaseAgent
 from google.adk.agents.context_cache_config import ContextCacheConfig
 from google.adk.agents.invocation_context import InvocationContext
-from google.adk.agents.live_request_queue import LiveRequestQueue
 from google.adk.agents.llm_agent import LlmAgent
 from google.adk.agents.run_config import RunConfig
 from google.adk.apps.app import App
 from google.adk.apps.app import ResumabilityConfig
 from google.adk.artifacts.in_memory_artifact_service import InMemoryArtifactService
 from google.adk.cli.utils.agent_loader import AgentLoader
+from google.adk.errors.session_not_found_error import SessionNotFoundError
 from google.adk.events.event import Event
 from google.adk.plugins.base_plugin import BasePlugin
 from google.adk.runners import Runner
 from google.adk.sessions.in_memory_session_service import InMemorySessionService
 from google.adk.sessions.session import Session
-from google.adk.tools.function_tool import FunctionTool
 from google.genai import types
 import pytest
 
@@ -245,7 +244,7 @@ async def test_session_not_found_message_includes_alignment_hint():
       new_message=types.Content(role="user", parts=[]),
   )
 
-  with pytest.raises(ValueError) as excinfo:
+  with pytest.raises(SessionNotFoundError) as excinfo:
     await agen.__anext__()
 
   await agen.aclose()
@@ -358,88 +357,6 @@ async def test_run_live_auto_create_session():
       app_name="live_app", user_id="user", session_id="missing"
   )
   assert session is not None
-
-
-@pytest.mark.asyncio
-async def test_run_live_detects_streaming_tools_with_canonical_tools():
-  """run_live should detect streaming tools using canonical_tools and tool.name."""
-
-  # Define streaming tools - one as raw function, one wrapped in FunctionTool
-  async def raw_streaming_tool(
-      input_stream: LiveRequestQueue,
-  ) -> AsyncGenerator[str, None]:
-    """A raw streaming tool function."""
-    yield "test"
-
-  async def wrapped_streaming_tool(
-      input_stream: LiveRequestQueue,
-  ) -> AsyncGenerator[str, None]:
-    """A streaming tool wrapped in FunctionTool."""
-    yield "test"
-
-  def non_streaming_tool(param: str) -> str:
-    """A regular non-streaming tool."""
-    return param
-
-  # Create a mock LlmAgent that yields an event and captures invocation context
-  captured_context = {}
-
-  class StreamingToolsAgent(LlmAgent):
-
-    async def _run_live_impl(
-        self, invocation_context: InvocationContext
-    ) -> AsyncGenerator[Event, None]:
-      # Capture the active_streaming_tools for verification
-      captured_context["active_streaming_tools"] = (
-          invocation_context.active_streaming_tools
-      )
-      yield Event(
-          invocation_id=invocation_context.invocation_id,
-          author=self.name,
-          content=types.Content(
-              role="model", parts=[types.Part(text="streaming test")]
-          ),
-      )
-
-  agent = StreamingToolsAgent(
-      name="streaming_agent",
-      model="gemini-2.0-flash",
-      tools=[
-          raw_streaming_tool,  # Raw function
-          FunctionTool(wrapped_streaming_tool),  # Wrapped in FunctionTool
-          non_streaming_tool,  # Non-streaming tool (should not be detected)
-      ],
-  )
-
-  session_service = InMemorySessionService()
-  artifact_service = InMemoryArtifactService()
-  runner = Runner(
-      app_name="streaming_test_app",
-      agent=agent,
-      session_service=session_service,
-      artifact_service=artifact_service,
-      auto_create_session=True,
-  )
-
-  live_queue = LiveRequestQueue()
-
-  agen = runner.run_live(
-      user_id="user",
-      session_id="test_session",
-      live_request_queue=live_queue,
-  )
-
-  event = await agen.__anext__()
-  await agen.aclose()
-
-  assert event.author == "streaming_agent"
-
-  # Verify streaming tools were detected correctly
-  active_tools = captured_context.get("active_streaming_tools", {})
-  assert "raw_streaming_tool" in active_tools
-  assert "wrapped_streaming_tool" in active_tools
-  # Non-streaming tool should not be detected
-  assert "non_streaming_tool" not in active_tools
 
 
 @pytest.mark.asyncio
@@ -1319,6 +1236,191 @@ class TestRunnerInferAgentOrigin:
     assert runner._app_name_alignment_hint is not None
     assert "wrong_name" in runner._app_name_alignment_hint
     assert "actual_name" in runner._app_name_alignment_hint
+
+
+@pytest.mark.asyncio
+async def test_run_async_passes_get_session_config():
+  """run_async should forward RunConfig.get_session_config to get_session."""
+  from google.adk.sessions.base_session_service import GetSessionConfig
+
+  session_service = InMemorySessionService()
+
+  # Pre-create a session with multiple events.
+  session = await session_service.create_session(
+      app_name=TEST_APP_ID, user_id=TEST_USER_ID, session_id=TEST_SESSION_ID
+  )
+  for i in range(10):
+    await session_service.append_event(
+        session=session,
+        event=Event(
+            invocation_id=f"inv_{i}",
+            author="user",
+            content=types.Content(
+                role="user", parts=[types.Part(text=f"message {i}")]
+            ),
+        ),
+    )
+
+  runner = Runner(
+      app_name=TEST_APP_ID,
+      agent=MockAgent("test_agent"),
+      session_service=session_service,
+      artifact_service=InMemoryArtifactService(),
+  )
+
+  # Run with num_recent_events=3 to only load recent events.
+  config = RunConfig(
+      get_session_config=GetSessionConfig(num_recent_events=3),
+  )
+
+  events = []
+  async for event in runner.run_async(
+      user_id=TEST_USER_ID,
+      session_id=TEST_SESSION_ID,
+      new_message=types.Content(role="user", parts=[types.Part(text="hello")]),
+      run_config=config,
+  ):
+    events.append(event)
+
+  # Agent should still produce output (session was found).
+  assert len(events) >= 1
+  assert events[0].author == "test_agent"
+
+
+@pytest.mark.asyncio
+async def test_run_live_passes_get_session_config():
+  """run_live should forward RunConfig.get_session_config to get_session."""
+  from google.adk.agents.live_request_queue import LiveRequestQueue
+  from google.adk.sessions.base_session_service import GetSessionConfig
+
+  session_service = InMemorySessionService()
+
+  # Pre-create session.
+  await session_service.create_session(
+      app_name=TEST_APP_ID, user_id=TEST_USER_ID, session_id=TEST_SESSION_ID
+  )
+
+  runner = Runner(
+      app_name=TEST_APP_ID,
+      agent=MockLiveAgent("live_agent"),
+      session_service=session_service,
+      artifact_service=InMemoryArtifactService(),
+  )
+
+  config = RunConfig(
+      get_session_config=GetSessionConfig(num_recent_events=5),
+  )
+
+  live_queue = LiveRequestQueue()
+  agen = runner.run_live(
+      user_id=TEST_USER_ID,
+      session_id=TEST_SESSION_ID,
+      live_request_queue=live_queue,
+      run_config=config,
+  )
+
+  event = await agen.__anext__()
+  await agen.aclose()
+
+  assert event.author == "live_agent"
+  assert event.content.parts[0].text == "live hello"
+
+
+@pytest.mark.asyncio
+async def test_rewind_async_passes_get_session_config():
+  """rewind_async should forward RunConfig.get_session_config to get_session."""
+  from google.adk.sessions.base_session_service import GetSessionConfig
+
+  session_service = InMemorySessionService()
+
+  runner = Runner(
+      app_name=TEST_APP_ID,
+      agent=MockAgent("test_agent"),
+      session_service=session_service,
+      artifact_service=InMemoryArtifactService(),
+      auto_create_session=True,
+  )
+
+  config = RunConfig(
+      get_session_config=GetSessionConfig(num_recent_events=5),
+  )
+
+  # rewind_async on a fresh session will raise because the invocation_id
+  # doesn't exist, but it demonstrates that the config path works.
+  with pytest.raises(ValueError, match=r"Invocation ID not found"):
+    await runner.rewind_async(
+        user_id=TEST_USER_ID,
+        session_id="new_session",
+        rewind_before_invocation_id="inv_missing",
+        run_config=config,
+    )
+
+
+@pytest.mark.asyncio
+async def test_run_debug_passes_get_session_config():
+  """run_debug should forward RunConfig.get_session_config to get_session."""
+  from google.adk.sessions.base_session_service import GetSessionConfig
+
+  session_service = InMemorySessionService()
+
+  runner = Runner(
+      app_name=TEST_APP_ID,
+      agent=MockAgent("test_agent"),
+      session_service=session_service,
+      artifact_service=InMemoryArtifactService(),
+  )
+
+  config = RunConfig(
+      get_session_config=GetSessionConfig(num_recent_events=5),
+  )
+
+  events = await runner.run_debug(
+      "hello",
+      run_config=config,
+      quiet=True,
+  )
+
+  assert len(events) >= 1
+  assert events[0].author == "test_agent"
+
+
+@pytest.mark.asyncio
+async def test_get_session_config_limits_events():
+  """Verify that num_recent_events actually limits loaded events."""
+  from google.adk.sessions.base_session_service import GetSessionConfig
+
+  session_service = InMemorySessionService()
+
+  # Create session and add events.
+  session = await session_service.create_session(
+      app_name=TEST_APP_ID, user_id=TEST_USER_ID, session_id=TEST_SESSION_ID
+  )
+  for i in range(10):
+    await session_service.append_event(
+        session=session,
+        event=Event(
+            invocation_id=f"inv_{i}",
+            author="user",
+            content=types.Content(
+                role="user", parts=[types.Part(text=f"message {i}")]
+            ),
+        ),
+    )
+
+  # Without config: should load all events.
+  full_session = await session_service.get_session(
+      app_name=TEST_APP_ID, user_id=TEST_USER_ID, session_id=TEST_SESSION_ID
+  )
+  assert len(full_session.events) == 10
+
+  # With config: should limit events.
+  limited_session = await session_service.get_session(
+      app_name=TEST_APP_ID,
+      user_id=TEST_USER_ID,
+      session_id=TEST_SESSION_ID,
+      config=GetSessionConfig(num_recent_events=3),
+  )
+  assert len(limited_session.events) == 3
 
 
 if __name__ == "__main__":

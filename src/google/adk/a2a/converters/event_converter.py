@@ -22,7 +22,6 @@ from typing import Any
 from typing import Dict
 from typing import List
 from typing import Optional
-import uuid
 
 from a2a.server.events import Event as A2AEvent
 from a2a.types import DataPart
@@ -34,6 +33,8 @@ from a2a.types import TaskState
 from a2a.types import TaskStatus
 from a2a.types import TaskStatusUpdateEvent
 from a2a.types import TextPart
+from google.adk.platform import time as platform_time
+from google.adk.platform import uuid as platform_uuid
 from google.genai import types as genai_types
 
 from ...agents.invocation_context import InvocationContext
@@ -254,7 +255,7 @@ def convert_a2a_task_to_event(
         invocation_id=(
             invocation_context.invocation_id
             if invocation_context
-            else str(uuid.uuid4())
+            else platform_uuid.new_uuid()
         ),
         author=author or "a2a agent",
         branch=invocation_context.branch if invocation_context else None,
@@ -299,7 +300,7 @@ def convert_a2a_message_to_event(
         invocation_id=(
             invocation_context.invocation_id
             if invocation_context
-            else str(uuid.uuid4())
+            else platform_uuid.new_uuid()
         ),
         author=author or "a2a agent",
         branch=invocation_context.branch if invocation_context else None,
@@ -349,7 +350,7 @@ def convert_a2a_message_to_event(
         invocation_id=(
             invocation_context.invocation_id
             if invocation_context
-            else str(uuid.uuid4())
+            else platform_uuid.new_uuid()
         ),
         author=author or "a2a agent",
         branch=invocation_context.branch if invocation_context else None,
@@ -370,7 +371,7 @@ def convert_a2a_message_to_event(
 @a2a_experimental
 def convert_event_to_a2a_message(
     event: Event,
-    invocation_context: InvocationContext,
+    invocation_context: InvocationContext | None = None,
     role: Role = Role.agent,
     part_converter: GenAIPartToA2APartConverter = convert_genai_part_to_a2a_part,
 ) -> Optional[Message]:
@@ -390,8 +391,6 @@ def convert_event_to_a2a_message(
   """
   if not event:
     raise ValueError("Event cannot be None")
-  if not invocation_context:
-    raise ValueError("Invocation context cannot be None")
 
   if not event.content or not event.content.parts:
     return None
@@ -408,7 +407,7 @@ def convert_event_to_a2a_message(
 
     if output_parts:
       return Message(
-          message_id=str(uuid.uuid4()), role=role, parts=output_parts
+          message_id=platform_uuid.new_uuid(), role=role, parts=output_parts
       )
 
   except Exception as e:
@@ -449,7 +448,7 @@ def _create_error_status_event(
       status=TaskStatus(
           state=TaskState.failed,
           message=Message(
-              message_id=str(uuid.uuid4()),
+              message_id=platform_uuid.new_uuid(),
               role=Role.agent,
               parts=[TextPart(text=error_message)],
               metadata={
@@ -458,7 +457,9 @@ def _create_error_status_event(
               if event.error_code
               else {},
           ),
-          timestamp=datetime.now(timezone.utc).isoformat(),
+          timestamp=datetime.fromtimestamp(
+              platform_time.get_time(), tz=timezone.utc
+          ).isoformat(),
       ),
       final=False,
   )
@@ -486,7 +487,9 @@ def _create_status_update_event(
   status = TaskStatus(
       state=TaskState.working,
       message=message,
-      timestamp=datetime.now(timezone.utc).isoformat(),
+      timestamp=datetime.fromtimestamp(
+          platform_time.get_time(), tz=timezone.utc
+      ).isoformat(),
   )
 
   if any(

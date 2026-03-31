@@ -13,6 +13,7 @@
 # limitations under the License.
 
 import asyncio
+import json
 import os
 from pathlib import Path
 import sys
@@ -43,6 +44,24 @@ def list_directory(dirpath: str) -> list:
 def get_cwd() -> str:
   """Return the current working directory."""
   return str(Path.cwd())
+
+
+# Add a resource for testing with JSON data
+@mcp.resource(
+    name="sample_data",
+    uri="file:///sample_data.json",
+    mime_type="application/json",
+)
+def sample_data() -> str:
+  data = {
+      "users": [
+          {"id": 1, "name": "Alice", "role": "admin"},
+          {"id": 2, "name": "Bob", "role": "user"},
+          {"id": 3, "name": "Charlie", "role": "user"},
+      ],
+      "settings": {"theme": "dark", "notifications": True},
+  }
+  return json.dumps(data, indent=2)
 
 
 # Graceful shutdown handler

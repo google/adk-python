@@ -22,6 +22,7 @@ from google.adk.cli.adk_web_server import AdkWebServer
 from google.adk.events.event import Event
 from google.adk.sessions.in_memory_session_service import InMemorySessionService
 import pytest
+from starlette.websockets import WebSocketDisconnect
 
 
 class _DummyAgent(BaseAgent):
@@ -203,3 +204,75 @@ def test_run_live_defaults_and_individual_options(
         run_config.session_resumption.transparent
         is expected_session_resumption_transparent
     )
+
+
+_WS_BASE_URL = (
+    "/run_live"
+    "?app_name=test_app"
+    "&user_id=user"
+    "&session_id=session"
+    "&modalities=AUDIO"
+)
+
+
+def _build_ws_client():
+  """Build a TestClient wired to a capturing runner."""
+  session_service = InMemorySessionService()
+  asyncio.run(
+      session_service.create_session(
+          app_name="test_app",
+          user_id="user",
+          session_id="session",
+          state={},
+      )
+  )
+
+  runner = _CapturingRunner()
+  adk_web_server = AdkWebServer(
+      agent_loader=_DummyAgentLoader(),
+      session_service=session_service,
+      memory_service=types.SimpleNamespace(),
+      artifact_service=types.SimpleNamespace(),
+      credential_service=types.SimpleNamespace(),
+      eval_sets_manager=types.SimpleNamespace(),
+      eval_set_results_manager=types.SimpleNamespace(),
+      agents_dir=".",
+  )
+
+  async def _get_runner_async(_self, _app_name: str):
+    return runner
+
+  adk_web_server.get_runner_async = _get_runner_async.__get__(adk_web_server)  # pytype: disable=attribute-error
+
+  fast_api_app = adk_web_server.get_fast_api_app(
+      setup_observer=lambda _observer, _server: None,
+      tear_down_observer=lambda _observer, _server: None,
+  )
+  return TestClient(fast_api_app)
+
+
+def test_run_live_rejects_disallowed_origin():
+  client = _build_ws_client()
+  with pytest.raises(WebSocketDisconnect) as exc_info:
+    with client.websocket_connect(
+        _WS_BASE_URL,
+        headers={"origin": "https://evil.com"},
+    ) as ws:
+      ws.receive_text()
+  assert exc_info.value.code == 1008
+
+
+def test_run_live_allows_matching_origin():
+  client = _build_ws_client()
+  with client.websocket_connect(
+      _WS_BASE_URL,
+      headers={"origin": "http://testserver"},
+  ) as ws:
+    _ = ws.receive_text()
+
+
+def test_run_live_allows_no_origin_header():
+  """Non-browser clients (curl, wscat, SDKs) send no Origin header."""
+  client = _build_ws_client()
+  with client.websocket_connect(_WS_BASE_URL) as ws:
+    _ = ws.receive_text()
