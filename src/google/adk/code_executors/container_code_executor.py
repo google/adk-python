@@ -17,6 +17,7 @@ from __future__ import annotations
 import atexit
 import logging
 import os
+import threading
 from typing import Optional
 
 import docker
@@ -125,24 +126,62 @@ class ContainerCodeExecutor(BaseCodeExecutor):
       invocation_context: InvocationContext,
       code_execution_input: CodeExecutionInput,
   ) -> CodeExecutionResult:
-    output = ''
-    error = ''
-    exec_result = self._container.exec_run(
+    logger.debug('Executing code:\n```\n%s\n```', code_execution_input.code)
+
+    timeout = self.timeout_seconds
+    exec_id = self._client.api.exec_create(
+        self._container.id,
         ['python3', '-c', code_execution_input.code],
-        demux=True,
+    )['Id']
+
+    # exec_start blocks until the command finishes — run in a daemon
+    # thread so we can enforce timeout.
+    result_holder = {}
+
+    def _run():
+      try:
+        result_holder['data'] = self._client.api.exec_start(exec_id, demux=True)
+      except Exception as e:
+        result_holder['error'] = e
+
+    t = threading.Thread(target=_run, daemon=True)
+    t.start()
+
+    if timeout is not None:
+      t.join(timeout=timeout)
+    else:
+      t.join()
+
+    if t.is_alive():
+      # Timeout: best-effort kill of the exec process inside the
+      # container. NOTE: the blocked daemon thread may linger on the
+      # Docker socket until the container is cleaned up. Repeated
+      # timeouts can accumulate such threads. This is acceptable as
+      # a first-pass fix; a stronger approach would restart the
+      # container on timeout.
+      try:
+        inspect = self._client.api.exec_inspect(exec_id)
+        pid = inspect.get('Pid')
+        if pid:
+          self._container.exec_run(['kill', '-9', str(pid)])
+      except Exception:
+        pass
+      return CodeExecutionResult(
+          stdout='',
+          stderr=f'Code execution timed out after {timeout} seconds.',
+          output_files=[],
+      )
+
+    # Propagate exceptions from exec_start (e.g. Docker API errors).
+    if 'error' in result_holder:
+      raise result_holder['error']
+
+    data = result_holder.get('data', (None, None))
+    output = data[0].decode('utf-8') if data and data[0] else ''
+    error = (
+        data[1].decode('utf-8') if data and len(data) > 1 and data[1] else ''
     )
-    logger.debug('Executed code:\n```\n%s\n```', code_execution_input.code)
 
-    if exec_result.output and exec_result.output[0]:
-      output = exec_result.output[0].decode('utf-8')
-    if (
-        exec_result.output
-        and len(exec_result.output) > 1
-        and exec_result.output[1]
-    ):
-      error = exec_result.output[1].decode('utf-8')
-
-    # Collect the final result.
     return CodeExecutionResult(
         stdout=output,
         stderr=error,

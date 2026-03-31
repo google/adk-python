@@ -493,6 +493,7 @@ class _SkillScriptCodeExecutor:
         "import sys",
         "import json as _json",
         "import subprocess",
+        "import signal",
         "import runpy",
         f"_files = {files_dict!r}",
         "def _materialize_and_run():",
@@ -512,13 +513,29 @@ class _SkillScriptCodeExecutor:
       argv_list = [script_path]
       for k, v in script_args.items():
         argv_list.extend([f"--{k}", str(v)])
+      timeout = self._script_timeout
       code_lines.extend([
           f"      sys.argv = {argv_list!r}",
+          "      if hasattr(signal, 'SIGALRM'):",
+          "        def _timeout_handler(*_args):",
+          (
+              "          raise TimeoutError("
+              f"'Python script timed out after {timeout}s')"
+          ),
+          (
+              "        _prev_handler = signal.signal("
+              "signal.SIGALRM, _timeout_handler)"
+          ),
+          f"        signal.alarm({timeout})",
           "      try:",
           f"        runpy.run_path({script_path!r}, run_name='__main__')",
           "      except SystemExit as e:",
           "        if e.code is not None and e.code != 0:",
           "          raise e",
+          "      finally:",
+          "        if hasattr(signal, 'SIGALRM'):",
+          "          signal.alarm(0)",
+          "          signal.signal(signal.SIGALRM, _prev_handler)",
       ])
     elif ext in ("sh", "bash"):
       arr = ["bash", script_path]
@@ -684,9 +701,11 @@ class SkillToolset(BaseToolset):
     Args:
       skills: List of skills to register.
       code_executor: Optional code executor for script execution.
-      script_timeout: Timeout in seconds for shell script execution via
-        subprocess.run. Defaults to 300 seconds. Does not apply to Python
-        scripts executed via exec().
+      script_timeout: Timeout in seconds for script execution. Applies to
+        shell scripts (via subprocess.run) and Python scripts (via
+        signal.SIGALRM on POSIX). On platforms without SIGALRM the Python
+        timeout is best-effort and depends on the underlying code executor's
+        own timeout. Defaults to 300 seconds.
     """
     super().__init__()
 

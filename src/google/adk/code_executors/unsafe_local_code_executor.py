@@ -55,7 +55,27 @@ def _prepare_globals(code: str, globals_: dict[str, Any]) -> None:
 
 
 class UnsafeLocalCodeExecutor(BaseCodeExecutor):
-  """A code executor that unsafely execute code in the current local context."""
+  """A code executor that runs LLM-generated code on the local machine.
+
+  .. warning::
+      **Security notice** -- This executor runs arbitrary code in a
+      spawned process with the *same* OS-level privileges as the host
+      application. It provides **no sandboxing, filesystem isolation,
+      or network restrictions**.
+
+      Recommended only for:
+      - Local development and prototyping
+      - Trusted, pre-reviewed code
+      - Environments where the host is already disposable (CI runners,
+        ephemeral VMs)
+
+      For production workloads, prefer ``ContainerCodeExecutor`` (Docker
+      isolation) or Vertex AI code execution for stronger boundaries.
+
+  Timeout enforcement is handled via ``multiprocessing`` with
+  ``queue.get(timeout=self.timeout_seconds)``. The spawned process is
+  terminated if it exceeds the configured ``timeout_seconds``.
+  """
 
   # Overrides the BaseCodeExecutor attribute: this executor cannot be stateful.
   stateful: bool = Field(default=False, frozen=True, exclude=True)

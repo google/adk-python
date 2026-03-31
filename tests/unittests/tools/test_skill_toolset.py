@@ -840,6 +840,68 @@ async def test_execute_script_shell_includes_timeout(mock_skill1):
 
 
 @pytest.mark.asyncio
+async def test_execute_script_python_includes_timeout(mock_skill1):
+  """Python wrapper includes guarded signal.alarm timeout."""
+  executor = _make_mock_executor(stdout="ok\n")
+  toolset = skill_toolset.SkillToolset(
+      [mock_skill1], code_executor=executor, script_timeout=120
+  )
+  tool = skill_toolset.RunSkillScriptTool(toolset)
+  ctx = _make_tool_context_with_agent()
+  result = await tool.run_async(
+      args={"skill_name": "skill1", "script_path": "run.py"},
+      tool_context=ctx,
+  )
+  assert result["status"] == "success"
+  call_args = executor.execute_code.call_args
+  code = call_args[0][1].code
+  # Verify timeout wiring
+  assert "signal.alarm(120)" in code
+  assert "hasattr(signal, 'SIGALRM')" in code
+  # Verify cleanup (alarm cancel + handler restore) in finally block
+  assert "signal.alarm(0)" in code
+
+
+import signal as _signal_mod
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(
+    not hasattr(_signal_mod, "SIGALRM"),
+    reason="Python wrapper timeout requires SIGALRM (POSIX only)",
+)
+async def test_python_script_timeout_fires_with_real_executor():
+  """Python skill script that sleeps is killed by SIGALRM timeout."""
+  from google.adk.code_executors.unsafe_local_code_executor import UnsafeLocalCodeExecutor
+
+  # Build a skill with a Python script that sleeps forever
+  skill = _make_skill_with_script(
+      "sleeper",
+      "hang.py",
+      models.Script(src="import time\ntime.sleep(9999)"),
+  )
+  executor = UnsafeLocalCodeExecutor(timeout_seconds=30)
+  toolset = skill_toolset.SkillToolset(
+      [skill], code_executor=executor, script_timeout=2
+  )
+  tool = skill_toolset.RunSkillScriptTool(toolset)
+  ctx = _make_tool_context_with_agent()
+  import time as _time
+
+  t0 = _time.monotonic()
+  result = await tool.run_async(
+      args={"skill_name": "sleeper", "script_path": "hang.py"},
+      tool_context=ctx,
+  )
+  elapsed = _time.monotonic() - t0
+  # Should complete well under 30s (the executor timeout)
+  # thanks to the 2s SIGALRM in the wrapper
+  assert elapsed < 10
+  assert result["status"] == "error"
+  assert "timed out" in result["stderr"].lower()
+
+
+@pytest.mark.asyncio
 async def test_execute_script_extensionless_unsupported(mock_skill1):
   """Files without extensions should return UNSUPPORTED_SCRIPT_TYPE."""
   # Add a script with no extension to the mock
