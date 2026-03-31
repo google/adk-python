@@ -364,18 +364,13 @@ class AgentLoader(BaseAgentLoader):
   def list_agents(self) -> list[str]:
     """Lists all agents available in the agent loader (sorted alphabetically)."""
     base_path = Path.cwd() / self.agents_dir
-    agent_names = []
-    for x in os.listdir(base_path):
-      if (
-          os.path.isdir(os.path.join(base_path, x))
-          and not x.startswith(".")
-          and x != "__pycache__"
-      ):
-        try:
-          self._determine_agent_language(x)
-          agent_names.append(x)
-        except ValueError:
-          continue
+    agent_names = [
+        x
+        for x in os.listdir(base_path)
+        if os.path.isdir(os.path.join(base_path, x))
+        and not x.startswith(".")
+        and x != "__pycache__"
+    ]
     agent_names.sort()
     return agent_names
 

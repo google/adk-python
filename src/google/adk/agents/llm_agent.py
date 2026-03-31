@@ -181,7 +181,15 @@ async def _convert_tool_union_to_tools(
     return [FunctionTool(func=tool_union)]
 
   # At this point, tool_union must be a BaseToolset
-  return await tool_union.get_tools_with_prefix(ctx)
+  try:
+    return await tool_union.get_tools_with_prefix(ctx)
+  except Exception as e:
+    logger.warning(
+        'Failed to get tools from toolset %s: %s',
+        type(tool_union).__name__,
+        e,
+    )
+    return []
 
 
 class LlmAgent(BaseAgent):

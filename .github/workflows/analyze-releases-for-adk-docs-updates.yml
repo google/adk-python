@@ -6,6 +6,20 @@ on:
     types: [published]
   # Manual trigger for testing and retrying.
   workflow_dispatch:
+    inputs:
+      resume:
+        description: 'Resume from the last failed/interrupted run'
+        required: false
+        type: boolean
+        default: false
+      start_tag:
+        description: 'Older release tag (base), e.g. v1.26.0'
+        required: false
+        type: string
+      end_tag:
+        description: 'Newer release tag (head), e.g. v1.27.0'
+        required: false
+        type: string
 
 jobs:
   analyze-new-release-for-adk-docs-updates:
@@ -33,6 +47,13 @@ jobs:
           python -m pip install --upgrade pip
           pip install requests google-adk
 
+      - name: Restore session DB from cache
+        if: ${{ github.event.inputs.resume == 'true' }}
+        uses: actions/cache/restore@v4
+        with:
+          path: contributing/samples/adk_documentation/adk_release_analyzer/sessions.db
+          key: analyzer-session-db
+
       - name: Run Analyzing Script
         env:
           GITHUB_TOKEN: ${{ secrets.ADK_TRIAGE_AGENT }}
@@ -44,4 +65,15 @@ jobs:
           CODE_REPO: 'adk-python'
           INTERACTIVE: 0
           PYTHONPATH: contributing/samples/adk_documentation
-        run: python -m adk_release_analyzer.main
+        run: >-
+          python -m adk_release_analyzer.main
+          ${{ github.event.inputs.resume == 'true' && '--resume' || '' }}
+          ${{ github.event.inputs.start_tag && format('--start-tag {0}', github.event.inputs.start_tag) || '' }}
+          ${{ github.event.inputs.end_tag && format('--end-tag {0}', github.event.inputs.end_tag) || '' }}
+
+      - name: Save session DB to cache
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: contributing/samples/adk_documentation/adk_release_analyzer/sessions.db
+          key: analyzer-session-db

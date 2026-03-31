@@ -472,6 +472,40 @@ class TestCanonicalTools:
     assert tools[0].name == '_tool_1'
     assert tools[1].name == '_tool_2'
 
+  async def test_canonical_tools_graceful_degradation_on_toolset_error(self):
+    """Test that canonical_tools returns tools from working toolsets when one fails."""
+    from google.adk.tools.base_tool import BaseTool
+    from google.adk.tools.base_toolset import BaseToolset
+
+    class FailingToolset(BaseToolset):
+
+      async def get_tools(self, readonly_context=None):
+        raise ConnectionError('MCP server unavailable')
+
+    class WorkingToolset(BaseToolset):
+
+      async def get_tools(self, readonly_context=None):
+        tool = mock.MagicMock(spec=BaseTool)
+        tool.name = 'working_tool'
+        tool._get_declaration = mock.MagicMock(return_value=None)
+        return [tool]
+
+    def _regular_tool():
+      pass
+
+    agent = LlmAgent(
+        name='test_agent',
+        model='gemini-pro',
+        tools=[_regular_tool, FailingToolset(), WorkingToolset()],
+    )
+    ctx = await _create_readonly_context(agent)
+    tools = await agent.canonical_tools(ctx)
+
+    # Should have the regular tool + working toolset tool, but not crash
+    assert len(tools) == 2
+    assert tools[0].name == '_regular_tool'
+    assert tools[1].name == 'working_tool'
+
 
 # Tests for multi-provider model support via string model names
 @pytest.mark.parametrize(
