@@ -508,7 +508,7 @@ def test_to_gke_happy_path(
   assert "image: gcr.io/gke-proj/gke-svc" in yaml_content
   assert f"containerPort: 9090" in yaml_content
   assert f"targetPort: 9090" in yaml_content
-  assert "type: LoadBalancer" in yaml_content
+  assert "type: ClusterIP" in yaml_content
 
   # 4. Verify cleanup
   assert str(rmtree_recorder.get_last_call_args()[0]) == str(tmp_path)

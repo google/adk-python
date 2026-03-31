@@ -183,18 +183,24 @@ def read_local_git_repo_file_content(file_path: str) -> Dict[str, Any]:
       commit hash.
   """
   print(f"Attempting to read file from path: {file_path}")
-  dir_path = os.path.dirname(file_path)
-  head_commit_sha = _find_head_commit_sha(dir_path)
+  if not os.path.isabs(file_path):
+    return error_response(
+        f"file_path must be an absolute path, got: {file_path}"
+    )
 
   try:
-    # Open and read the file content
+    dir_path = os.path.dirname(file_path)
+    head_commit_sha = _find_head_commit_sha(dir_path)
+  except (FileNotFoundError, subprocess.CalledProcessError):
+    head_commit_sha = "unknown"
+
+  try:
     with open(file_path, "r", encoding="utf-8") as f:
       content = f.read()
 
-      # Add line numbers to the content
-      lines = content.splitlines()
-      numbered_lines = [f"{i + 1}: {line}" for i, line in enumerate(lines)]
-      numbered_content = "\n".join(numbered_lines)
+    lines = content.splitlines()
+    numbered_lines = [f"{i + 1}: {line}" for i, line in enumerate(lines)]
+    numbered_content = "\n".join(numbered_lines)
 
     return {
         "status": "success",
@@ -204,7 +210,7 @@ def read_local_git_repo_file_content(file_path: str) -> Dict[str, Any]:
     }
   except FileNotFoundError:
     return error_response(f"Error: File not found at {file_path}")
-  except IOError as e:
+  except (IOError, OSError) as e:
     return error_response(f"An unexpected error occurred: {e}")
 
 

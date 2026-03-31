@@ -376,11 +376,15 @@ class VertexAiSessionService(BaseSessionService):
     """
     import vertexai
 
+    if self._express_mode_api_key:
+      return vertexai.Client(
+          http_options=self._api_client_http_options_override(),
+          api_key=self._express_mode_api_key,
+      ).aio
     return vertexai.Client(
         project=self._project,
         location=self._location,
         http_options=self._api_client_http_options_override(),
-        api_key=self._express_mode_api_key,
     ).aio
 
 

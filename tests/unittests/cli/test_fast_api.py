@@ -593,7 +593,7 @@ def builder_test_client(
         session_service_uri="",
         artifact_service_uri="",
         memory_service_uri="",
-        allow_origins=["*"],
+        allow_origins=None,
         a2a=False,
         host="127.0.0.1",
         port=8000,
@@ -1560,15 +1560,17 @@ def test_patch_memory(test_app, create_test_session, mock_memory_service):
   logger.info("Add session to memory test completed successfully")
 
 
-def test_builder_final_save_preserves_tools_and_cleans_tmp(
+def test_builder_final_save_preserves_files_and_cleans_tmp(
     builder_test_client, tmp_path
 ):
   files = [
-      ("files", ("app/__init__.py", b"from . import agent\n", "text/plain")),
-      ("files", ("app/tools.py", b"def tool():\n  return 1\n", "text/plain")),
       (
           "files",
           ("app/root_agent.yaml", b"name: app\n", "application/x-yaml"),
+      ),
+      (
+          "files",
+          ("app/sub_agent.yaml", b"name: sub\n", "application/x-yaml"),
       ),
   ]
   response = builder_test_client.post("/builder/save?tmp=true", files=files)
@@ -1589,10 +1591,50 @@ def test_builder_final_save_preserves_tools_and_cleans_tmp(
   assert response.status_code == 200
   assert response.json() is True
 
-  assert (tmp_path / "app" / "tools.py").is_file()
+  assert (tmp_path / "app" / "sub_agent.yaml").is_file()
   assert not (tmp_path / "app" / "tmp" / "app").exists()
   tmp_dir = tmp_path / "app" / "tmp"
   assert not tmp_dir.exists() or not any(tmp_dir.iterdir())
+
+
+def test_builder_save_rejects_cross_origin_post(builder_test_client, tmp_path):
+  response = builder_test_client.post(
+      "/builder/save?tmp=true",
+      headers={"origin": "https://evil.com"},
+      files=[(
+          "files",
+          ("app/root_agent.yaml", b"name: app\n", "application/x-yaml"),
+      )],
+  )
+
+  assert response.status_code == 403
+  assert response.text == "Forbidden: origin not allowed"
+  assert not (tmp_path / "app" / "tmp" / "app").exists()
+
+
+def test_builder_save_allows_same_origin_post(builder_test_client, tmp_path):
+  response = builder_test_client.post(
+      "/builder/save?tmp=true",
+      headers={"origin": "http://testserver"},
+      files=[(
+          "files",
+          ("app/root_agent.yaml", b"name: app\n", "application/x-yaml"),
+      )],
+  )
+
+  assert response.status_code == 200
+  assert response.json() is True
+  assert (tmp_path / "app" / "tmp" / "app" / "root_agent.yaml").is_file()
+
+
+def test_builder_get_allows_cross_origin_get(builder_test_client):
+  response = builder_test_client.get(
+      "/builder/app/missing?tmp=true",
+      headers={"origin": "https://evil.com"},
+  )
+
+  assert response.status_code == 200
+  assert response.text == ""
 
 
 def test_builder_cancel_deletes_tmp_idempotent(builder_test_client, tmp_path):
@@ -1656,6 +1698,146 @@ def test_builder_save_rejects_traversal(builder_test_client, tmp_path):
   assert response.json() is False
   assert not (tmp_path / "escape.yaml").exists()
   assert not (tmp_path / "app" / "tmp" / "escape.yaml").exists()
+
+
+def test_builder_save_rejects_py_files(builder_test_client, tmp_path):
+  """Uploading .py files via /builder/save is rejected."""
+  response = builder_test_client.post(
+      "/builder/save?tmp=true",
+      files=[(
+          "files",
+          ("app/agent.py", b"import os\nos.system('id')\n", "text/plain"),
+      )],
+  )
+  assert response.status_code == 200
+  assert response.json() is False
+  assert not (tmp_path / "app" / "tmp" / "app" / "agent.py").exists()
+
+
+def test_builder_save_rejects_non_yaml_extensions(
+    builder_test_client, tmp_path
+):
+  """Uploading non-YAML files (.json, .txt, .sh, etc.) is rejected."""
+  for ext, content in [
+      (".py", b"print('hi')"),
+      (".json", b"{}"),
+      (".txt", b"hello"),
+      (".sh", b"#!/bin/bash"),
+      (".pth", b"import os"),
+  ]:
+    response = builder_test_client.post(
+        "/builder/save?tmp=true",
+        files=[(
+            "files",
+            (f"app/file{ext}", content, "application/octet-stream"),
+        )],
+    )
+    assert response.status_code == 200, f"Expected 200 for {ext}"
+    assert response.json() is False, f"Expected False for {ext}"
+
+
+def test_builder_save_allows_yaml_files(builder_test_client, tmp_path):
+  """Uploading .yaml and .yml files is allowed."""
+  response = builder_test_client.post(
+      "/builder/save?tmp=true",
+      files=[(
+          "files",
+          ("app/root_agent.yaml", b"name: app\n", "application/x-yaml"),
+      )],
+  )
+  assert response.status_code == 200
+  assert response.json() is True
+
+  response = builder_test_client.post(
+      "/builder/save?tmp=true",
+      files=[(
+          "files",
+          ("app/sub_agent.yml", b"name: sub\n", "application/x-yaml"),
+      )],
+  )
+  assert response.status_code == 200
+  assert response.json() is True
+
+
+def test_builder_get_rejects_non_yaml_file_paths(builder_test_client, tmp_path):
+  """GET /builder/app/{app_name}?file_path=... rejects non-YAML extensions."""
+  app_root = tmp_path / "app"
+  app_root.mkdir(parents=True, exist_ok=True)
+  (app_root / ".env").write_text("SECRET=supersecret\n")
+  (app_root / "agent.py").write_text("root_agent = None\n")
+  (app_root / "config.json").write_text("{}\n")
+
+  for file_path in [".env", "agent.py", "config.json"]:
+    response = builder_test_client.get(
+        f"/builder/app/app?file_path={file_path}"
+    )
+    assert response.status_code == 200, f"Expected 200 for {file_path}"
+    assert response.text == "", f"Expected empty response for {file_path}"
+
+
+def test_builder_get_allows_yaml_file_paths(builder_test_client, tmp_path):
+  """GET /builder/app/{app_name}?file_path=... allows YAML extensions."""
+  app_root = tmp_path / "app"
+  app_root.mkdir(parents=True, exist_ok=True)
+  (app_root / "sub_agent.yaml").write_text("name: sub\n")
+  (app_root / "tool.yml").write_text("name: tool\n")
+
+  response = builder_test_client.get(
+      "/builder/app/app?file_path=sub_agent.yaml"
+  )
+  assert response.status_code == 200
+  assert response.text == "name: sub\n"
+
+  response = builder_test_client.get("/builder/app/app?file_path=tool.yml")
+  assert response.status_code == 200
+  assert response.text == "name: tool\n"
+
+
+def test_builder_endpoints_not_registered_without_web(
+    mock_session_service,
+    mock_artifact_service,
+    mock_memory_service,
+    mock_agent_loader,
+    mock_eval_sets_manager,
+    mock_eval_set_results_manager,
+):
+  """Builder endpoints must not be registered when web=False (e.g. deploy)."""
+  client = _create_test_client(
+      mock_session_service,
+      mock_artifact_service,
+      mock_memory_service,
+      mock_agent_loader,
+      mock_eval_sets_manager,
+      mock_eval_set_results_manager,
+      web=False,
+  )
+  # /builder/save should return 404/405, not 200
+  response = client.post(
+      "/builder/save",
+      files=[
+          ("files", ("app/agent.yaml", b"name: test\n", "application/x-yaml"))
+      ],
+  )
+  assert response.status_code in (404, 405)
+
+  # /builder/app/{name}/cancel should also be absent
+  response = client.post("/builder/app/app/cancel")
+  assert response.status_code in (404, 405)
+
+  # /builder/app/{name} GET should also be absent
+  response = client.get("/builder/app/app")
+  assert response.status_code in (404, 405)
+
+
+def test_builder_endpoints_registered_with_web(builder_test_client):
+  """Builder endpoints are available when web=True."""
+  response = builder_test_client.post(
+      "/builder/save?tmp=true",
+      files=[
+          ("files", ("app/agent.yaml", b"name: test\n", "application/x-yaml"))
+      ],
+  )
+  assert response.status_code == 200
 
 
 def test_agent_run_resume_without_message_success(
