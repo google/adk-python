@@ -105,12 +105,21 @@ class GeminiLlmConnection(BaseLlmConnection):
       # All parts have to be function responses.
       function_responses = [part.function_response for part in content.parts]
       logger.debug('Sending LLM function response: %s', function_responses)
-      await self._gemini_session.send(
-          input=types.LiveClientToolResponse(
-              function_responses=function_responses
-          ),
+      await self._gemini_session.send_tool_response(
+          function_responses=function_responses
       )
     else:
+      # 3.1 models reject LiveClientContent for mid-conversation text
+      if self._model_version and '3.1' in self._model_version:
+        text_parts = [p.text for p in content.parts if p.text]
+        if text_parts:
+          combined = ' '.join(text_parts)
+          logger.debug(
+              'Sending text via realtime input for 3.1 model: %s',
+              combined[:100],
+          )
+          await self._gemini_session.send_realtime_input(text=combined)
+          return
       logger.debug('Sending LLM new content %s', content)
       await self._gemini_session.send(
           input=types.LiveClientContent(
@@ -128,7 +137,7 @@ class GeminiLlmConnection(BaseLlmConnection):
     if isinstance(input, types.Blob):
       # The blob is binary and is very large. So let's not log it.
       logger.debug('Sending LLM Blob.')
-      await self._gemini_session.send_realtime_input(media=input)
+      await self._gemini_session.send_realtime_input(audio=input)
 
     elif isinstance(input, types.ActivityStart):
       logger.debug('Sending LLM activity start signal.')

@@ -401,6 +401,16 @@ class Gemini(BaseLlm):
             ' backend. Please use Vertex AI backend.'
         )
     llm_request.live_connect_config.tools = llm_request.config.tools
+
+    # 3.1 models require history_config for session history to work
+    model_name = llm_request.model or ''
+    if '3.1' in model_name and not getattr(
+        llm_request.live_connect_config, 'history_config', None
+    ):
+      llm_request.live_connect_config.history_config = types.HistoryConfig(
+          initial_history_in_client_content=True
+      )
+
     logger.debug('Connecting to live with llm_request:%s', llm_request)
     logger.debug('Live connect config: %s', llm_request.live_connect_config)
     async with self._live_api_client.aio.live.connect(
