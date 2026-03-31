@@ -122,6 +122,25 @@ def test_transfer_to_agent_tool_maintains_inheritance():
   assert hasattr(tool, 'process_llm_request')
 
 
+def test_target_origin_by_name_default_empty():
+  """Test that _target_origin_by_name defaults to empty dict."""
+  tool = TransferToAgentTool(agent_names=['agent_a'])
+  assert tool._target_origin_by_name == {}
+
+
+def test_target_origin_by_name_stored():
+  """Test that _target_origin_by_name stores the provided mapping."""
+  origin_map = {
+      'local_agent': 'TRANSFER_AGENT',
+      'remote_agent': 'TRANSFER_A2A',
+  }
+  tool = TransferToAgentTool(
+      agent_names=['local_agent', 'remote_agent'],
+      target_origin_by_name=origin_map,
+  )
+  assert tool._target_origin_by_name == origin_map
+
+
 def test_transfer_to_agent_tool_handles_parameters_json_schema():
   """Test that TransferToAgentTool handles parameters_json_schema format."""
   agent_names = ['agent_x', 'agent_y', 'agent_z']

@@ -49,19 +49,30 @@ class TransferToAgentTool(FunctionTool):
 
   Attributes:
     agent_names: List of valid agent names that can be transferred to.
+    target_origin_by_name: Optional mapping from agent name to its origin
+        category (e.g. ``"TRANSFER_AGENT"`` or ``"TRANSFER_A2A"``).
+        Used by analytics plugins to distinguish remote A2A transfers
+        from local ones at call time.
   """
 
   def __init__(
       self,
       agent_names: list[str],
+      *,
+      target_origin_by_name: Optional[dict[str, str]] = None,
   ):
     """Initialize the TransferToAgentTool.
 
     Args:
       agent_names: List of valid agent names that can be transferred to.
+      target_origin_by_name: Optional mapping from agent name to its
+          origin category. When provided, analytics plugins can resolve
+          per-call origin (e.g. ``"TRANSFER_A2A"``) from the selected
+          target name.
     """
     super().__init__(func=transfer_to_agent)
     self._agent_names = agent_names
+    self._target_origin_by_name = target_origin_by_name or {}
 
   @override
   def _get_declaration(self) -> Optional[types.FunctionDeclaration]:

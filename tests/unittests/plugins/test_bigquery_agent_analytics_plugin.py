@@ -4371,6 +4371,72 @@ class TestToolProvenance:
     result = bigquery_agent_analytics_plugin._get_tool_origin(tool)
     assert result == "UNKNOWN"
 
+  def test_transfer_tool_remote_target_returns_transfer_a2a(self):
+    from google.adk.tools.transfer_to_agent_tool import TransferToAgentTool
+
+    tool = TransferToAgentTool(
+        agent_names=["local", "remote"],
+        target_origin_by_name={
+            "local": "TRANSFER_AGENT",
+            "remote": "TRANSFER_A2A",
+        },
+    )
+    result = bigquery_agent_analytics_plugin._resolve_transfer_origin(
+        tool, "TRANSFER_AGENT", {"agent_name": "remote"}
+    )
+    assert result == "TRANSFER_A2A"
+
+  def test_transfer_tool_local_target_returns_transfer_agent(self):
+    from google.adk.tools.transfer_to_agent_tool import TransferToAgentTool
+
+    tool = TransferToAgentTool(
+        agent_names=["local", "remote"],
+        target_origin_by_name={
+            "local": "TRANSFER_AGENT",
+            "remote": "TRANSFER_A2A",
+        },
+    )
+    result = bigquery_agent_analytics_plugin._resolve_transfer_origin(
+        tool, "TRANSFER_AGENT", {"agent_name": "local"}
+    )
+    assert result == "TRANSFER_AGENT"
+
+  def test_transfer_tool_no_tool_args_returns_transfer_agent(self):
+    from google.adk.tools.transfer_to_agent_tool import TransferToAgentTool
+
+    tool = TransferToAgentTool(
+        agent_names=["remote"],
+        target_origin_by_name={"remote": "TRANSFER_A2A"},
+    )
+    result = bigquery_agent_analytics_plugin._resolve_transfer_origin(
+        tool, "TRANSFER_AGENT", None
+    )
+    assert result == "TRANSFER_AGENT"
+
+  def test_transfer_tool_missing_agent_name_returns_transfer_agent(self):
+    from google.adk.tools.transfer_to_agent_tool import TransferToAgentTool
+
+    tool = TransferToAgentTool(
+        agent_names=["remote"],
+        target_origin_by_name={"remote": "TRANSFER_A2A"},
+    )
+    result = bigquery_agent_analytics_plugin._resolve_transfer_origin(
+        tool, "TRANSFER_AGENT", {"other": "val"}
+    )
+    assert result == "TRANSFER_AGENT"
+
+  def test_transfer_tool_unknown_name_returns_transfer_agent(self):
+    from google.adk.tools.transfer_to_agent_tool import TransferToAgentTool
+
+    tool = TransferToAgentTool(
+        agent_names=["remote"],
+        target_origin_by_name={"remote": "TRANSFER_A2A"},
+    )
+    result = bigquery_agent_analytics_plugin._resolve_transfer_origin(
+        tool, "TRANSFER_AGENT", {"agent_name": "unknown"}
+    )
+    assert result == "TRANSFER_AGENT"
+
 
 class TestHITLTracing:
   """Tests for HITL-specific event emission via on_event_callback.

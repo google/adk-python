@@ -296,3 +296,60 @@ async def test_agent_transfer_no_instructions_when_no_transfer_targets():
   instructions = llm_request.config.system_instruction or ''
   assert '**NOTE**:' not in instructions
   assert 'transfer_to_agent' not in instructions
+
+
+@pytest.mark.asyncio
+async def test_transfer_tool_preserves_a2a_target_origin():
+  """Test that TransferToAgentTool metadata distinguishes A2A from local."""
+  try:
+    from google.adk.agents.remote_a2a_agent import RemoteA2aAgent
+  except ImportError:
+    pytest.skip('RemoteA2aAgent not available')
+
+  mockModel = testing_utils.MockModel.create(responses=[])
+
+  local_agent = Agent(
+      name='local_agent',
+      model=mockModel,
+      description='Local agent',
+  )
+
+  # Minimal subclass that satisfies isinstance() without needing
+  # full A2A dependencies (agent_card, httpx, etc.).
+  class _StubRemoteA2aAgent(RemoteA2aAgent):
+
+    model_config = {'arbitrary_types_allowed': True}
+
+    def __init__(self, **kwargs):
+      # Bypass RemoteA2aAgent.__init__; call BaseAgent directly.
+      from google.adk.agents.base_agent import BaseAgent
+
+      BaseAgent.__init__(self, **kwargs)
+
+  remote_agent = _StubRemoteA2aAgent(
+      name='remote_agent',
+      description='Remote A2A agent',
+  )
+
+  main_agent = Agent(
+      name='main_agent',
+      model=mockModel,
+      sub_agents=[local_agent, remote_agent],
+      description='Main agent',
+  )
+
+  invocation_context = await create_test_invocation_context(main_agent)
+  llm_request = LlmRequest()
+
+  async for _ in agent_transfer.request_processor.run_async(
+      invocation_context, llm_request
+  ):
+    pass
+
+  # Retrieve the TransferToAgentTool that was added to the request
+  tool = llm_request.tools_dict.get('transfer_to_agent')
+  assert tool is not None, 'transfer_to_agent tool not found in llm_request'
+
+  origin_map = tool._target_origin_by_name
+  assert origin_map['local_agent'] == 'TRANSFER_AGENT'
+  assert origin_map['remote_agent'] == 'TRANSFER_A2A'

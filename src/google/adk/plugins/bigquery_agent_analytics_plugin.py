@@ -208,6 +208,30 @@ def _get_tool_origin(tool: "BaseTool") -> str:
   return "UNKNOWN"
 
 
+def _resolve_transfer_origin(
+    tool: "BaseTool",
+    tool_origin: str,
+    tool_args: Optional[dict[str, Any]],
+) -> str:
+  """Refine transfer-tool origin using the selected target name.
+
+  For ``TransferToAgentTool`` calls, resolves the per-call origin
+  (e.g. ``TRANSFER_A2A``) from the tool's ``_target_origin_by_name``
+  metadata and the ``agent_name`` in ``tool_args``.
+
+  Returns ``tool_origin`` unchanged for non-transfer tools or when
+  the selected target is not in the metadata map.
+  """
+  if (
+      tool_origin == "TRANSFER_AGENT"
+      and tool_args
+      and "agent_name" in tool_args
+  ):
+    origin_map = getattr(tool, "_target_origin_by_name", {})
+    return origin_map.get(tool_args["agent_name"], tool_origin)
+  return tool_origin
+
+
 def _recursive_smart_truncate(
     obj: Any, max_len: int, seen: Optional[set[int]] = None
 ) -> tuple[Any, bool]:
@@ -3175,7 +3199,9 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
     args_truncated, is_truncated = _recursive_smart_truncate(
         tool_args, self.config.max_content_length
     )
-    tool_origin = _get_tool_origin(tool)
+    tool_origin = _resolve_transfer_origin(
+        tool, _get_tool_origin(tool), tool_args
+    )
     content_dict = {
         "tool": tool.name,
         "args": args_truncated,
@@ -3209,7 +3235,9 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
     resp_truncated, is_truncated = _recursive_smart_truncate(
         result, self.config.max_content_length
     )
-    tool_origin = _get_tool_origin(tool)
+    tool_origin = _resolve_transfer_origin(
+        tool, _get_tool_origin(tool), tool_args
+    )
     content_dict = {
         "tool": tool.name,
         "result": resp_truncated,
@@ -3254,7 +3282,9 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
     args_truncated, is_truncated = _recursive_smart_truncate(
         tool_args, self.config.max_content_length
     )
-    tool_origin = _get_tool_origin(tool)
+    tool_origin = _resolve_transfer_origin(
+        tool, _get_tool_origin(tool), tool_args
+    )
     content_dict = {
         "tool": tool.name,
         "args": args_truncated,

@@ -48,8 +48,23 @@ class _AgentTransferLlmRequestProcessor(BaseLlmRequestProcessor):
     if not transfer_targets:
       return
 
+    try:
+      from ...agents.remote_a2a_agent import RemoteA2aAgent
+    except ImportError:
+      RemoteA2aAgent = None
+
+    target_origin_by_name = {
+        agent.name: (
+            'TRANSFER_A2A'
+            if RemoteA2aAgent is not None and isinstance(agent, RemoteA2aAgent)
+            else 'TRANSFER_AGENT'
+        )
+        for agent in transfer_targets
+    }
+
     transfer_to_agent_tool = TransferToAgentTool(
-        agent_names=[agent.name for agent in transfer_targets]
+        agent_names=[agent.name for agent in transfer_targets],
+        target_origin_by_name=target_origin_by_name,
     )
 
     llm_request.append_instructions([
