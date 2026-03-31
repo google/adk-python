@@ -124,7 +124,7 @@ def is_gemini_2_or_above(model_string: Optional[str]) -> bool:
   except InvalidVersion:
     return False
 
-  return parsed_version.major >= 2
+  return bool(parsed_version.major >= 2)
 
 
 def is_gemini_3_1_flash_live(model_string: Optional[str]) -> bool:
@@ -156,7 +156,7 @@ def is_gemini_3_or_above(model_string: Optional[str]) -> bool:
   if not model_name.startswith('gemini-'):
     return False
 
-  version_string = model_name[len('gemini-'):].split('-', 1)[0]
+  version_string = model_name[len('gemini-') :].split('-', 1)[0]
   if not version_string:
     return False
 
@@ -165,4 +165,4 @@ def is_gemini_3_or_above(model_string: Optional[str]) -> bool:
   except InvalidVersion:
     return False
 
-  return parsed_version.major >= 3
+  return bool(parsed_version.major >= 3)
