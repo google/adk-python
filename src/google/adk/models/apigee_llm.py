@@ -90,6 +90,7 @@ class ApigeeLlm(Gemini):
       custom_headers: dict[str, str] | None = None,
       retry_options: Optional[types.HttpRetryOptions] = None,
       api_type: ApiType | str = ApiType.UNKNOWN,
+      client: Optional['Client'] = None,
   ):
     """Initializes the Apigee LLM backend.
 
@@ -121,9 +122,10 @@ class ApigeeLlm(Gemini):
         authorization headers in Vertex AI and Gemini API calls.
       retry_options: Allow google-genai to retry failed responses.
       api_type: The type of API to use. One of `ApiType` or string.
+      client: An optional pre-configured google-genai Client.
     """  # fmt: skip
 
-    super().__init__(model=model, retry_options=retry_options)
+    super().__init__(model=model, retry_options=retry_options, client=client)
     # Validate the model string. Create a helper method to validate the model
     # string.
     if not _validate_model_string(model):

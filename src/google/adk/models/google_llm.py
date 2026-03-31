@@ -26,9 +26,9 @@ from typing import Optional
 from typing import TYPE_CHECKING
 from typing import Union
 
-from google.genai import Client
 from google.genai import types
 from google.genai.errors import ClientError
+from pydantic import Field
 from typing_extensions import override
 
 from ..utils._google_client_headers import get_tracking_headers
@@ -92,7 +92,7 @@ class Gemini(BaseLlm):
 
   model: str = 'gemini-2.5-flash'
 
-  client: Optional[Client] = None
+  client: Optional[Any] = Field(default=None, exclude=True)
   """An optional pre-configured google-genai Client.
 
   When provided, this client will be used for all API calls instead of
@@ -345,6 +345,9 @@ class Gemini(BaseLlm):
 
   @cached_property
   def _live_api_client(self) -> Client:
+    if self.client:
+      return self.client
+
     from google.genai import Client
 
     return Client(

@@ -38,6 +38,7 @@ from anthropic import NotGiven
 from anthropic import types as anthropic_types
 from google.genai import types
 from pydantic import BaseModel
+from pydantic import Field
 from typing_extensions import override
 
 from ..utils._google_client_headers import get_tracking_headers
@@ -359,7 +360,9 @@ class AnthropicLlm(BaseLlm):
   model: str = "claude-sonnet-4-20250514"
   max_tokens: int = 8192
 
-  client: Optional[Union[AsyncAnthropic, AsyncAnthropicVertex]] = None
+  client: Optional[Union[AsyncAnthropic, AsyncAnthropicVertex]] = Field(
+      default=None, exclude=True
+  )
   """An optional pre-configured Anthropic client."""
 
   @classmethod
