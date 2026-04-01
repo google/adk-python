@@ -29,7 +29,7 @@ class Session(BaseModel):
   """Represents a series of interactions between a user and agents."""
 
   model_config = ConfigDict(
-      extra='forbid',
+      extra="forbid",
       arbitrary_types_allowed=True,
       alias_generator=alias_generators.to_camel,
       populate_by_name=True,
