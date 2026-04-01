@@ -410,6 +410,7 @@ class Gemini(BaseLlm):
           live_session,
           api_backend=self._api_backend,
           model_version=llm_request.model,
+          live_config=llm_request.live_connect_config,
       )
 
   async def _adapt_computer_use_tool(self, llm_request: LlmRequest) -> None:

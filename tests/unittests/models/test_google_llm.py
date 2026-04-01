@@ -726,6 +726,7 @@ async def test_connect_without_custom_headers(gemini_llm, llm_request):
             mock_live_session,
             api_backend=gemini_llm._api_backend,
             model_version=llm_request.model,
+            live_config=llm_request.live_connect_config,
         )
 
 

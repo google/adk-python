@@ -54,16 +54,37 @@ def test_blob():
   return types.Blob(data=b'\x00\xFF\x00\xFF', mime_type='audio/pcm')
 
 
+@pytest.fixture
+def test_fallback_blob():
+  """Test blob for unknown media data."""
+  return types.Blob(data=b'\x01\x02', mime_type='application/pdf')
+
+
 @pytest.mark.asyncio
-async def test_send_realtime_default_behavior(
+async def test_send_realtime_audio_routing(
     gemini_connection, mock_gemini_session, test_blob
 ):
-  """Test send_realtime with default automatic_activity_detection value (True)."""
+  """Test send_realtime explicitly routing audio mimetypes to the audio parameter."""
   await gemini_connection.send_realtime(test_blob)
 
   # Should call send once
   mock_gemini_session.send_realtime_input.assert_called_once_with(
-      media=test_blob
+      audio=test_blob
+  )
+  # Should not call .send function
+  mock_gemini_session.send.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_send_realtime_media_fallback_routing(
+    gemini_connection, mock_gemini_session, test_fallback_blob
+):
+  """Test send_realtime falling back to media for non-audio/video mimetypes."""
+  await gemini_connection.send_realtime(test_fallback_blob)
+
+  # Should call send once
+  mock_gemini_session.send_realtime_input.assert_called_once_with(
+      media=test_fallback_blob
   )
   # Should not call .send function
   mock_gemini_session.send.assert_not_called()
@@ -90,7 +111,12 @@ async def test_send_history(gemini_connection, mock_gemini_session):
 
 @pytest.mark.asyncio
 async def test_send_content_text(gemini_connection, mock_gemini_session):
-  """Test send_content with text content."""
+  """Test send_content with text content when audio is inactive.
+  
+  Note: gemini_connection._audio_active is False by default.
+  """
+  assert gemini_connection._audio_active is False
+  
   content = types.Content(
       role='user', parts=[types.Part.from_text(text='Hello')]
   )
@@ -102,6 +128,21 @@ async def test_send_content_text(gemini_connection, mock_gemini_session):
   assert 'input' in call_args
   assert call_args['input'].turns == [content]
   assert call_args['input'].turn_complete is True
+
+
+@pytest.mark.asyncio
+async def test_send_content_text_audio_active(gemini_connection, mock_gemini_session):
+  """Test send_content routes to send_realtime_input when audio is active."""
+  gemini_connection._audio_active = True
+  
+  content = types.Content(
+      role='user', parts=[types.Part.from_text(text='Hello')]
+  )
+
+  await gemini_connection.send_content(content)
+
+  mock_gemini_session.send_realtime_input.assert_called_once_with(text='Hello')
+  mock_gemini_session.send.assert_not_called()
 
 
 @pytest.mark.asyncio
