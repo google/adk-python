@@ -322,7 +322,8 @@ class LocalEvalSetsManager(EvalSetsManager):
     pattern = r"^[a-zA-Z0-9_\-\.]+$"
     if not bool(re.fullmatch(pattern, id_value)) or ".." in id_value:
       raise ValueError(
-          f"Invalid {id_name}. {id_name} should have the `{pattern}` format and not contain `..`",
+          f"Invalid {id_name}. {id_name} should have the `{pattern}` format and"
+          " not contain `..`",
       )
 
   def _write_eval_set_to_path(self, eval_set_path: str, eval_set: EvalSet):

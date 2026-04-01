@@ -106,5 +106,6 @@ class LocalEvalSetResultsManager(EvalSetResultsManager):
     pattern = r"^[a-zA-Z0-9_\-\.]+$"
     if not bool(re.fullmatch(pattern, id_value)) or ".." in id_value:
       raise ValueError(
-          f"Invalid {id_name}. {id_name} should have the `{pattern}` format and not contain `..`",
+          f"Invalid {id_name}. {id_name} should have the `{pattern}` format and"
+          " not contain `..`",
       )
