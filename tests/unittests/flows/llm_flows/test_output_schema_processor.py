@@ -19,10 +19,13 @@ from unittest import mock
 from google.adk.agents.invocation_context import InvocationContext
 from google.adk.agents.llm_agent import LlmAgent
 from google.adk.agents.run_config import RunConfig
+from google.adk.events.event import Event
+from google.adk.flows.llm_flows._output_schema_processor import _MAX_TOOL_ROUNDS
 from google.adk.flows.llm_flows.single_flow import SingleFlow
 from google.adk.models.llm_request import LlmRequest
 from google.adk.sessions.in_memory_session_service import InMemorySessionService
 from google.adk.tools.function_tool import FunctionTool
+from google.genai import types
 from pydantic import BaseModel
 from pydantic import Field
 import pytest
@@ -520,3 +523,251 @@ async def test_flow_yields_only_function_response_for_normal_tools():
   assert first_event.get_function_responses()[0].response == {
       'result': 'Searched for: test query'
   }
+
+
+def _make_function_response_event(tool_name: str = 'dummy_tool') -> Event:
+  """Helper to create a function response event for round counting."""
+  return Event(
+      author='test_agent',
+      content=types.Content(
+          role='user',
+          parts=[
+              types.Part(
+                  function_response=types.FunctionResponse(
+                      name=tool_name, response={'result': 'ok'}
+                  )
+              )
+          ],
+      ),
+  )
+
+
+@pytest.mark.asyncio
+async def test_type_aware_instruction_basemodel(mocker):
+  """Test that BaseModel schema gets a softer instruction."""
+  from google.adk.flows.llm_flows._output_schema_processor import _OutputSchemaRequestProcessor
+
+  agent = LlmAgent(
+      name='test_agent',
+      model='gemini-1.5-flash',
+      output_schema=PersonSchema,
+      tools=[FunctionTool(func=dummy_tool)],
+  )
+  invocation_context = await _create_invocation_context(agent)
+  llm_request = LlmRequest()
+  processor = _OutputSchemaRequestProcessor()
+
+  mocker.patch(
+      'google.adk.flows.llm_flows._output_schema_processor.can_use_output_schema_with_tools',
+      return_value=False,
+  )
+
+  async for _ in processor.run_async(invocation_context, llm_request):
+    pass
+
+  assert (
+      'After completing any needed tool calls'
+      in llm_request.config.system_instruction
+  )
+  assert 'IMPORTANT' not in llm_request.config.system_instruction
+
+
+@pytest.mark.asyncio
+async def test_type_aware_instruction_primitive(mocker):
+  """Test that primitive schema (str) gets a stronger instruction."""
+  from google.adk.flows.llm_flows._output_schema_processor import _OutputSchemaRequestProcessor
+
+  agent = LlmAgent(
+      name='test_agent',
+      model='gemini-1.5-flash',
+      output_schema=str,
+      tools=[FunctionTool(func=dummy_tool)],
+  )
+  invocation_context = await _create_invocation_context(agent)
+  llm_request = LlmRequest()
+  processor = _OutputSchemaRequestProcessor()
+
+  mocker.patch(
+      'google.adk.flows.llm_flows._output_schema_processor.can_use_output_schema_with_tools',
+      return_value=False,
+  )
+
+  async for _ in processor.run_async(invocation_context, llm_request):
+    pass
+
+  assert 'IMPORTANT' in llm_request.config.system_instruction
+  assert 'MUST call' in llm_request.config.system_instruction
+
+
+@pytest.mark.asyncio
+async def test_hard_cutoff_at_max_rounds(mocker):
+  """Test that invocation is terminated at _MAX_TOOL_ROUNDS."""
+  from google.adk.flows.llm_flows._output_schema_processor import _OutputSchemaRequestProcessor
+
+  agent = LlmAgent(
+      name='test_agent',
+      model='gemini-1.5-flash',
+      output_schema=PersonSchema,
+      tools=[FunctionTool(func=dummy_tool)],
+  )
+  invocation_context = await _create_invocation_context(agent)
+  llm_request = LlmRequest()
+  processor = _OutputSchemaRequestProcessor()
+
+  mocker.patch(
+      'google.adk.flows.llm_flows._output_schema_processor.can_use_output_schema_with_tools',
+      return_value=False,
+  )
+
+  # Simulate _MAX_TOOL_ROUNDS function response events.
+  fake_events = [
+      _make_function_response_event() for _ in range(_MAX_TOOL_ROUNDS)
+  ]
+  mocker.patch.object(
+      invocation_context,
+      '_get_events',
+      return_value=fake_events,
+  )
+
+  async for _ in processor.run_async(invocation_context, llm_request):
+    pass
+
+  assert invocation_context.end_invocation is True
+  # Should NOT have added set_model_response tool.
+  assert 'set_model_response' not in llm_request.tools_dict
+
+
+@pytest.mark.asyncio
+async def test_force_tool_choice_at_penultimate_round(mocker):
+  """Test that tool_choice is forced on round N-1."""
+  from google.adk.flows.llm_flows._output_schema_processor import _OutputSchemaRequestProcessor
+
+  agent = LlmAgent(
+      name='test_agent',
+      model='gemini-1.5-flash',
+      output_schema=PersonSchema,
+      tools=[FunctionTool(func=dummy_tool)],
+  )
+  invocation_context = await _create_invocation_context(agent)
+  llm_request = LlmRequest()
+  processor = _OutputSchemaRequestProcessor()
+
+  mocker.patch(
+      'google.adk.flows.llm_flows._output_schema_processor.can_use_output_schema_with_tools',
+      return_value=False,
+  )
+
+  # Simulate _MAX_TOOL_ROUNDS - 1 function response events.
+  fake_events = [
+      _make_function_response_event() for _ in range(_MAX_TOOL_ROUNDS - 1)
+  ]
+  mocker.patch.object(
+      invocation_context,
+      '_get_events',
+      return_value=fake_events,
+  )
+
+  async for _ in processor.run_async(invocation_context, llm_request):
+    pass
+
+  # Should still add the tool.
+  assert 'set_model_response' in llm_request.tools_dict
+
+  # Should have forced tool_choice.
+  tool_config = llm_request.config.tool_config
+  assert tool_config is not None
+  fc_config = tool_config.function_calling_config
+  assert fc_config.mode == types.FunctionCallingConfigMode.ANY
+  assert fc_config.allowed_function_names == ['set_model_response']
+
+
+@pytest.mark.asyncio
+async def test_no_force_tool_choice_on_normal_rounds(mocker):
+  """Test that tool_choice is NOT forced on normal rounds."""
+  from google.adk.flows.llm_flows._output_schema_processor import _OutputSchemaRequestProcessor
+
+  agent = LlmAgent(
+      name='test_agent',
+      model='gemini-1.5-flash',
+      output_schema=PersonSchema,
+      tools=[FunctionTool(func=dummy_tool)],
+  )
+  invocation_context = await _create_invocation_context(agent)
+  llm_request = LlmRequest()
+  processor = _OutputSchemaRequestProcessor()
+
+  mocker.patch(
+      'google.adk.flows.llm_flows._output_schema_processor.can_use_output_schema_with_tools',
+      return_value=False,
+  )
+
+  # Simulate a few normal rounds.
+  fake_events = [_make_function_response_event() for _ in range(3)]
+  mocker.patch.object(
+      invocation_context,
+      '_get_events',
+      return_value=fake_events,
+  )
+
+  async for _ in processor.run_async(invocation_context, llm_request):
+    pass
+
+  # Should have added the tool but NOT forced tool_choice.
+  assert 'set_model_response' in llm_request.tools_dict
+  assert llm_request.config.tool_config is None
+
+
+@pytest.mark.asyncio
+async def test_set_model_response_skips_transfer_to_agent():
+  """Test that return after set_model_response prevents transfer_to_agent."""
+  from google.adk.flows.llm_flows.base_llm_flow import BaseLlmFlow
+  from google.adk.tools.set_model_response_tool import SetModelResponseTool
+
+  # Create a sub_agent that would be the transfer target.
+  sub_agent = LlmAgent(name='sub_agent', model='gemini-1.5-flash')
+  agent = LlmAgent(
+      name='test_agent',
+      model='gemini-1.5-flash',
+      output_schema=PersonSchema,
+      sub_agents=[sub_agent],
+  )
+
+  invocation_context = await _create_invocation_context(agent)
+  flow = BaseLlmFlow()
+
+  set_response_tool = SetModelResponseTool(PersonSchema)
+  llm_request = LlmRequest()
+  llm_request.tools_dict['set_model_response'] = set_response_tool
+
+  # Create a function call event that includes BOTH set_model_response
+  # AND a transfer_to_agent action on the response.
+  function_call_event = Event(
+      author='test_agent',
+      content=types.Content(
+          role='model',
+          parts=[
+              types.Part(
+                  function_call=types.FunctionCall(
+                      name='set_model_response',
+                      args={
+                          'name': 'Test User',
+                          'age': 30,
+                          'city': 'Test City',
+                      },
+                  )
+              )
+          ],
+      ),
+  )
+
+  events = []
+  async for event in flow._postprocess_handle_function_calls_async(
+      invocation_context, function_call_event, llm_request
+  ):
+    events.append(event)
+
+  # Should yield exactly 2 events (function response + final model response)
+  # and NOT attempt to run sub_agent via transfer_to_agent.
+  assert len(events) == 2
+  assert events[1].content.role == 'model'
+  assert '"Test User"' in events[1].content.parts[0].text
