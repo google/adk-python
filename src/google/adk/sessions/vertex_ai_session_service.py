@@ -14,6 +14,7 @@
 from __future__ import annotations
 
 import asyncio
+import copy
 import datetime
 import json
 import logging
@@ -266,72 +267,11 @@ class VertexAiSessionService(BaseSessionService):
 
     reasoning_engine_id = self._get_reasoning_engine_id(session.app_name)
 
-    config = {}
-    if event.content:
-      config['content'] = event.content.model_dump(
-          exclude_none=True, mode='json'
-      )
-    if event.actions:
-      config['actions'] = {
-          'skip_summarization': event.actions.skip_summarization,
-          'state_delta': event.actions.state_delta,
-          'artifact_delta': event.actions.artifact_delta,
-          'transfer_agent': event.actions.transfer_to_agent,
-          'escalate': event.actions.escalate,
-          'requested_auth_configs': {
-              k: json.loads(v.model_dump_json(exclude_none=True, by_alias=True))
-              for k, v in event.actions.requested_auth_configs.items()
-          },
-          # TODO: add requested_tool_confirmations, agent_state once
-          # they are available in the API.
-          # Note: compaction is stored via event_metadata.custom_metadata.
-      }
-    if event.error_code:
-      config['error_code'] = event.error_code
-    if event.error_message:
-      config['error_message'] = event.error_message
-
-    metadata_dict = {
-        'partial': event.partial,
-        'turn_complete': event.turn_complete,
-        'interrupted': event.interrupted,
-        'branch': event.branch,
-        'custom_metadata': event.custom_metadata,
-        'long_running_tool_ids': (
-            list(event.long_running_tool_ids)
-            if event.long_running_tool_ids
-            else None
-        ),
-    }
-    if event.grounding_metadata:
-      metadata_dict['grounding_metadata'] = event.grounding_metadata.model_dump(
-          exclude_none=True, mode='json'
-      )
-    # Store compaction data in custom_metadata since the Vertex AI service
-    # does not yet support the compaction field.
-    # TODO: Stop writing to custom_metadata once the Vertex AI service
-    # supports the compaction field natively in EventActions.
-    if event.actions and event.actions.compaction:
-      compaction_dict = event.actions.compaction.model_dump(
-          exclude_none=True, mode='json'
-      )
-      _set_internal_custom_metadata(
-          metadata_dict,
-          key=_COMPACTION_CUSTOM_METADATA_KEY,
-          value=compaction_dict,
-      )
-    # Store usage_metadata in custom_metadata since the Vertex AI service
-    # does not persist it in EventMetadata.
-    if event.usage_metadata:
-      usage_dict = event.usage_metadata.model_dump(
-          exclude_none=True, mode='json'
-      )
-      _set_internal_custom_metadata(
-          metadata_dict,
-          key=_USAGE_METADATA_CUSTOM_METADATA_KEY,
-          value=usage_dict,
-      )
-    config['event_metadata'] = metadata_dict
+    raw_event_dict = event.model_dump(
+        exclude_none=True,
+        mode='json',
+        by_alias=True,
+    )
 
     async with self._get_api_client() as api_client:
       await api_client.agent_engines.sessions.events.append(
@@ -341,7 +281,7 @@ class VertexAiSessionService(BaseSessionService):
           timestamp=datetime.datetime.fromtimestamp(
               event.timestamp, tz=datetime.timezone.utc
           ),
-          config=config,
+          config={'raw_event': raw_event_dict},
       )
     return event
 
@@ -376,16 +316,36 @@ class VertexAiSessionService(BaseSessionService):
     """
     import vertexai
 
+    if self._express_mode_api_key:
+      return vertexai.Client(
+          http_options=self._api_client_http_options_override(),
+          api_key=self._express_mode_api_key,
+      ).aio
     return vertexai.Client(
         project=self._project,
         location=self._location,
         http_options=self._api_client_http_options_override(),
-        api_key=self._express_mode_api_key,
     ).aio
 
 
 def _from_api_event(api_event_obj: vertexai.types.SessionEvent) -> Event:
   """Converts an API event object to an Event object."""
+  # Read event data from raw_event first before falling back to top level
+  # fields.
+  raw_event_dict = getattr(
+      api_event_obj, 'raw_event', getattr(api_event_obj, 'rawEvent', None)
+  )
+  if raw_event_dict:
+    event_dict = copy.deepcopy(raw_event_dict)
+    timestamp_obj = getattr(api_event_obj, 'timestamp', None)
+    event_dict.update({
+        'id': api_event_obj.name.split('/')[-1],
+        'invocation_id': getattr(api_event_obj, 'invocation_id', None),
+        'author': getattr(api_event_obj, 'author', None),
+        'timestamp': timestamp_obj.timestamp() if timestamp_obj else None,
+    })
+    return Event.model_validate(event_dict)
+
   actions = getattr(api_event_obj, 'actions', None)
   event_metadata = getattr(api_event_obj, 'event_metadata', None)
   if event_metadata:

@@ -1179,13 +1179,24 @@ def merge_parallel_function_response_events(
 
   # Merge actions from all events
   merged_actions_data: dict[str, Any] = {}
+  aggregated_ui_widgets = []
   for event in function_response_events:
     if event.actions:
+      actions_dict = event.actions.model_dump(exclude_none=True, by_alias=True)
+      ui_widgets = actions_dict.pop(
+          'renderUiWidgets', None
+      ) or actions_dict.pop('render_ui_widgets', None)
+      if ui_widgets:
+        aggregated_ui_widgets.extend(ui_widgets)
+
       # Use `by_alias=True` because it converts the model to a dictionary while respecting field aliases, ensuring that the enum fields are correctly handled without creating a duplicate.
       merged_actions_data = deep_merge_dicts(
           merged_actions_data,
-          event.actions.model_dump(exclude_none=True, by_alias=True),
+          actions_dict,
       )
+
+  if aggregated_ui_widgets:
+    merged_actions_data['renderUiWidgets'] = aggregated_ui_widgets
 
   merged_actions = EventActions.model_validate(merged_actions_data)
 
@@ -1195,7 +1206,7 @@ def merge_parallel_function_response_events(
       author=base_event.author,
       branch=base_event.branch,
       content=types.Content(role='user', parts=merged_parts),
-      actions=merged_actions,  # Optionally merge actions if required
+      actions=merged_actions,  # Aggregated from all parallel events
   )
 
   # Use the base_event as the timestamp

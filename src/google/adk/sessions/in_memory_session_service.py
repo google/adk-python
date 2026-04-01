@@ -242,15 +242,14 @@ class InMemorySessionService(BaseSessionService):
     sessions_without_events = []
 
     if user_id is None:
-      for user_id in self.sessions[app_name]:
-        for session_id in self.sessions[app_name][user_id]:
-          session = self.sessions[app_name][user_id][session_id]
+      for uid in list(self.sessions[app_name].keys()):
+        for session in list(self.sessions[app_name][uid].values()):
           copied_session = copy.deepcopy(session)
           copied_session.events = []
-          copied_session = self._merge_state(app_name, user_id, copied_session)
+          copied_session = self._merge_state(app_name, uid, copied_session)
           sessions_without_events.append(copied_session)
     else:
-      for session in self.sessions[app_name][user_id].values():
+      for session in list(self.sessions[app_name][user_id].values()):
         copied_session = copy.deepcopy(session)
         copied_session.events = []
         copied_session = self._merge_state(app_name, user_id, copied_session)

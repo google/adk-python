@@ -384,6 +384,39 @@ def test_recursive_smart_truncate_with_dataclasses():
   assert truncated["result"]["kpi_missed"][0]["kpi"] == "latency"
 
 
+def test_recursive_smart_truncate_redaction():
+  """Test that sensitive keys and temp: state keys are redacted."""
+  obj = {
+      "client_secret": "super-secret-123",
+      "access_token": "ya29.blah",
+      "refresh_token": "1//0g",
+      "id_token": "eyJhb",
+      "api_key": "AIza",
+      "password": "my-password",
+      "safe_key": "safe-value",
+      "temp:auth_state": "some-auth-state",
+      "nested": {
+          "CLIENT_SECRET": "nested-secret",
+          "normal": "value",
+      },
+  }
+  max_len = 1000
+  truncated, is_truncated = (
+      bigquery_agent_analytics_plugin._recursive_smart_truncate(obj, max_len)
+  )
+  assert not is_truncated
+  assert truncated["client_secret"] == "[REDACTED]"
+  assert truncated["access_token"] == "[REDACTED]"
+  assert truncated["refresh_token"] == "[REDACTED]"
+  assert truncated["id_token"] == "[REDACTED]"
+  assert truncated["api_key"] == "[REDACTED]"
+  assert truncated["password"] == "[REDACTED]"
+  assert truncated["safe_key"] == "safe-value"
+  assert truncated["temp:auth_state"] == "[REDACTED]"
+  assert truncated["nested"]["CLIENT_SECRET"] == "[REDACTED]"
+  assert truncated["nested"]["normal"] == "value"
+
+
 class TestBigQueryAgentAnalyticsPlugin:
   """Tests for the BigQueryAgentAnalyticsPlugin."""
 

@@ -33,6 +33,7 @@ from sqlalchemy import select
 from sqlalchemy.engine import Connection
 from sqlalchemy.engine import make_url
 from sqlalchemy.exc import ArgumentError
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import async_sessionmaker
 from sqlalchemy.ext.asyncio import AsyncEngine
 from sqlalchemy.ext.asyncio import AsyncSession as DatabaseSessionFactory
@@ -101,6 +102,35 @@ async def _select_required_state(
   if state_row is None:
     raise ValueError(missing_message)
   return state_row
+
+
+async def _get_or_create_state(
+    *,
+    sql_session: DatabaseSessionFactory,
+    state_model: type[_StorageStateT],
+    primary_key: Any,
+    defaults: dict[str, Any],
+) -> _StorageStateT:
+  """Returns an existing state row or creates one, handling concurrent inserts.
+
+  Uses a SAVEPOINT so that an IntegrityError from a racing INSERT does not
+  invalidate the outer transaction.
+  """
+  row = await sql_session.get(state_model, primary_key)
+  if row is not None:
+    return row
+  try:
+    async with sql_session.begin_nested():
+      row = state_model(**defaults)
+      sql_session.add(row)
+    return row
+  except IntegrityError:
+    # Another concurrent caller inserted the row first.
+    # The savepoint was rolled back, so re-fetch the winner's row.
+    row = await sql_session.get(state_model, primary_key)
+    if row is None:
+      raise
+    return row
 
 
 def _set_sqlite_pragma(dbapi_connection, connection_record):
@@ -401,23 +431,19 @@ class DatabaseSessionService(BaseSessionService):
         raise AlreadyExistsError(
             f"Session with id {session_id} already exists."
         )
-      # Fetch app and user states from storage
-      storage_app_state = await sql_session.get(
-          schema.StorageAppState, (app_name)
+      # Get or create state rows, handling concurrent insert races.
+      storage_app_state = await _get_or_create_state(
+          sql_session=sql_session,
+          state_model=schema.StorageAppState,
+          primary_key=app_name,
+          defaults={"app_name": app_name, "state": {}},
       )
-      storage_user_state = await sql_session.get(
-          schema.StorageUserState, (app_name, user_id)
+      storage_user_state = await _get_or_create_state(
+          sql_session=sql_session,
+          state_model=schema.StorageUserState,
+          primary_key=(app_name, user_id),
+          defaults={"app_name": app_name, "user_id": user_id, "state": {}},
       )
-
-      # Create state tables if not exist
-      if not storage_app_state:
-        storage_app_state = schema.StorageAppState(app_name=app_name, state={})
-        sql_session.add(storage_app_state)
-      if not storage_user_state:
-        storage_user_state = schema.StorageUserState(
-            app_name=app_name, user_id=user_id, state={}
-        )
-        sql_session.add(storage_user_state)
 
       # Extract state deltas
       state_deltas = _session_util.extract_state_delta(state)

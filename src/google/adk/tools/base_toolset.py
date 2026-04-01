@@ -80,6 +80,8 @@ class BaseToolset(ABC):
     """
     self.tool_filter = tool_filter
     self.tool_name_prefix = tool_name_prefix
+    self._cached_invocation_id: Optional[str] = None
+    self._cached_prefixed_tools: Optional[list[BaseTool]] = None
 
   @abstractmethod
   async def get_tools(
@@ -112,9 +114,19 @@ class BaseToolset(ABC):
     Returns:
       list[BaseTool]: A list of tools with prefixed names if tool_name_prefix is provided.
     """
+    invocation_id = readonly_context.invocation_id if readonly_context else None
+
+    if (
+        self._cached_prefixed_tools is not None
+        and self._cached_invocation_id == invocation_id
+    ):
+      return self._cached_prefixed_tools
+
     tools = await self.get_tools(readonly_context)
 
     if not self.tool_name_prefix:
+      self._cached_invocation_id = invocation_id
+      self._cached_prefixed_tools = tools
       return tools
 
     prefix = self.tool_name_prefix
@@ -147,6 +159,8 @@ class BaseToolset(ABC):
       tool_copy._get_declaration = _create_prefixed_declaration()
       prefixed_tools.append(tool_copy)
 
+    self._cached_invocation_id = invocation_id
+    self._cached_prefixed_tools = prefixed_tools
     return prefixed_tools
 
   async def close(self) -> None:
