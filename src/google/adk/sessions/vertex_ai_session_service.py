@@ -43,6 +43,7 @@ from .session import Session
 logger = logging.getLogger('google_adk.' + __name__)
 
 _COMPACTION_CUSTOM_METADATA_KEY = '_compaction'
+_REWIND_CUSTOM_METADATA_KEY = '_rewind_before_invocation_id'
 _USAGE_METADATA_CUSTOM_METADATA_KEY = '_usage_metadata'
 
 
@@ -282,12 +283,10 @@ class VertexAiSessionService(BaseSessionService):
               k: json.loads(v.model_dump_json(exclude_none=True, by_alias=True))
               for k, v in event.actions.requested_auth_configs.items()
           },
-          'rewind_before_invocation_id': (
-              event.actions.rewind_before_invocation_id
-          ),
           # TODO: add requested_tool_confirmations, agent_state once
           # they are available in the API.
-          # Note: compaction is stored via event_metadata.custom_metadata.
+          # Note: compaction and rewind_before_invocation_id are stored via
+          # event_metadata.custom_metadata.
       }
     if event.error_code:
       config['error_code'] = event.error_code
@@ -322,6 +321,16 @@ class VertexAiSessionService(BaseSessionService):
           metadata_dict,
           key=_COMPACTION_CUSTOM_METADATA_KEY,
           value=compaction_dict,
+      )
+    # Store rewind_before_invocation_id in custom_metadata since the Vertex AI
+    # service does not yet support the field in EventActions.
+    # TODO: Stop writing to custom_metadata once the Vertex AI service
+    # supports rewind_before_invocation_id natively in EventActions.
+    if event.actions and event.actions.rewind_before_invocation_id:
+      _set_internal_custom_metadata(
+          metadata_dict,
+          key=_REWIND_CUSTOM_METADATA_KEY,
+          value=event.actions.rewind_before_invocation_id,
       )
     # Store usage_metadata in custom_metadata since the Vertex AI service
     # does not persist it in EventMetadata.
@@ -408,14 +417,19 @@ def _from_api_event(api_event_obj: vertexai.types.SessionEvent) -> Event:
     # written before native compaction support store compaction data
     # in custom_metadata under the compaction metadata key.
     compaction_data = None
+    rewind_data = None
     usage_metadata_data = None
     if custom_metadata and (
         _COMPACTION_CUSTOM_METADATA_KEY in custom_metadata
+        or _REWIND_CUSTOM_METADATA_KEY in custom_metadata
         or _USAGE_METADATA_CUSTOM_METADATA_KEY in custom_metadata
     ):
       custom_metadata = dict(custom_metadata)  # avoid mutating the API response
       compaction_data = custom_metadata.pop(
           _COMPACTION_CUSTOM_METADATA_KEY, None
+      )
+      rewind_data = custom_metadata.pop(
+          _REWIND_CUSTOM_METADATA_KEY, None
       )
       usage_metadata_data = custom_metadata.pop(
           _USAGE_METADATA_CUSTOM_METADATA_KEY, None
@@ -434,6 +448,7 @@ def _from_api_event(api_event_obj: vertexai.types.SessionEvent) -> Event:
     branch = None
     custom_metadata = None
     compaction_data = None
+    rewind_data = None
     usage_metadata_data = None
     grounding_metadata = None
 
@@ -445,11 +460,18 @@ def _from_api_event(api_event_obj: vertexai.types.SessionEvent) -> Event:
     }
     if compaction_data:
       renamed_actions_dict['compaction'] = compaction_data
+    if rewind_data:
+      renamed_actions_dict['rewind_before_invocation_id'] = rewind_data
     event_actions = EventActions.model_validate(renamed_actions_dict)
   else:
-    if compaction_data:
+    if compaction_data or rewind_data:
       event_actions = EventActions(
-          compaction=EventCompaction.model_validate(compaction_data)
+          compaction=(
+              EventCompaction.model_validate(compaction_data)
+              if compaction_data
+              else None
+          ),
+          rewind_before_invocation_id=rewind_data,
       )
     else:
       event_actions = EventActions()
