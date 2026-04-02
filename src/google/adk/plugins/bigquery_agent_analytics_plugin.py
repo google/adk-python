@@ -499,6 +499,17 @@ class BigQueryLoggerConfig:
       shutdown_timeout: Max time to wait for shutdown.
       queue_max_size: Max size of the in-memory queue.
       content_formatter: Optional custom formatter for content.
+      gcs_bucket_name: GCS bucket for offloading large content.
+      connection_id: BigQuery connection ID for ObjectRef columns.
+      log_session_metadata: Whether to log session metadata.
+      custom_tags: Static custom tags to attach to every event.
+      auto_schema_upgrade: Whether to auto-add new columns on
+          schema evolution.
+      create_views: Whether to auto-create per-event-type views.
+      view_prefix: Prefix for auto-created view names. Default
+          ``"v"`` produces views like ``v_llm_request``. Set a
+          distinct prefix per table when multiple plugin instances
+          share one dataset to avoid view-name collisions.
   """
 
   enabled: bool = True
