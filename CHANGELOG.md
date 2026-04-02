@@ -1,5 +1,18 @@
 # Changelog
 
+## [1.29.0](https://github.com/google/adk-python/compare/v1.28.0...v1.29.0) (2026-04-02)
+
+
+### Features
+
+* **live:** support live for `gemini-3.1-flash-live-preview` model ([ee69661](https://github.com/google/adk-python/commit/ee69661a616056fa89e0ec2188aaa59bd714d8c9))
+
+
+### Bug Fixes
+
+* Disallow args on /builder and Add warning about Web UI usage to CLI help ([f037f68](https://github.com/google/adk-python/commit/f037f68d67ae1bd16b00df0c7523fb67cbd1e911))
+* **live:** Buffer tool calls and emit them together upon turn completion ([081adbd](https://github.com/google/adk-python/commit/081adbdfa41490e4868b028a1cdabceb811a7505))
+
 ## [1.28.0](https://github.com/google/adk-python/compare/v1.27.5...v1.28.0) (2026-03-26)
 
 
