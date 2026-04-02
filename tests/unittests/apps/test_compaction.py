@@ -1002,7 +1002,9 @@ class TestCompaction(unittest.IsolatedAsyncioTestCase):
         result_contents[1].parts[0].function_call.name,
         'tool',
     )
-    self.assertEqual(result_contents[2].parts[0].text, 'e3')
+    # Auto-healing injects a synthetic response for the orphaned call
+    self.assertIsNotNone(result_contents[2].parts[0].function_response)
+    self.assertEqual(result_contents[3].parts[0].text, 'e3')
 
   async def test_token_threshold_excludes_pending_function_call_events(self):
     """Token-threshold compaction stays contiguous before pending calls."""
@@ -1087,7 +1089,9 @@ class TestCompaction(unittest.IsolatedAsyncioTestCase):
         result_contents[1].parts[0].function_call.name,
         'tool',
     )
-    self.assertEqual(result_contents[2].parts[0].text, 'e3')
+    # Auto-healing injects a synthetic response for the orphaned call
+    self.assertIsNotNone(result_contents[2].parts[0].function_response)
+    self.assertEqual(result_contents[3].parts[0].text, 'e3')
 
   async def test_completed_function_call_pair_is_still_compacted(self):
     """Completed function call/response pairs must still be compacted."""
