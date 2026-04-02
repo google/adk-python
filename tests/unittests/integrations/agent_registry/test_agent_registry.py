@@ -273,6 +273,37 @@ class TestAgentRegistry:
     assert server == {"name": "test-mcp"}
 
   @patch("httpx.Client")
+  def test_list_endpoints(self, mock_httpx, registry):
+    mock_response = MagicMock()
+    mock_response.json.return_value = {"endpoints": []}
+    mock_response.raise_for_status = MagicMock()
+    mock_httpx.return_value.__enter__.return_value.get.return_value = (
+        mock_response
+    )
+
+    # Mock auth refresh
+    registry._credentials.token = "token"
+    registry._credentials.refresh = MagicMock()
+
+    endpoints = registry.list_endpoints()
+    assert endpoints == {"endpoints": []}
+
+  @patch("httpx.Client")
+  def test_get_endpoint(self, mock_httpx, registry):
+    mock_response = MagicMock()
+    mock_response.json.return_value = {"name": "test-endpoint"}
+    mock_response.raise_for_status = MagicMock()
+    mock_httpx.return_value.__enter__.return_value.get.return_value = (
+        mock_response
+    )
+
+    registry._credentials.token = "token"
+    registry._credentials.refresh = MagicMock()
+
+    server = registry.get_endpoint("test-endpoint")
+    assert server == {"name": "test-endpoint"}
+
+  @patch("httpx.Client")
   def test_get_mcp_toolset(self, mock_httpx, registry):
     mock_response = MagicMock()
     mock_response.json.return_value = {
@@ -420,3 +451,41 @@ class TestAgentRegistry:
 
     with pytest.raises(RuntimeError, match="API request failed: Generic error"):
       registry._make_request("test-path")
+
+  @patch.object(AgentRegistry, "get_endpoint")
+  def test_get_model_name_starts_with_projects(
+      self, mock_get_endpoint, registry
+  ):
+    mock_get_endpoint.return_value = {
+        "interfaces": [{"url": "projects/p1/locations/l1/models/m1"}]
+    }
+    model_name = registry.get_model_name("test-endpoint")
+    assert model_name == "projects/p1/locations/l1/models/m1"
+
+  @patch.object(AgentRegistry, "get_endpoint")
+  def test_get_model_name_contains_projects(self, mock_get_endpoint, registry):
+    mock_get_endpoint.return_value = {
+        "interfaces": [{
+            "url": (
+                "https://vertexai.googleapis.com/v1/projects/p1/locations/l1/models/m1"
+            )
+        }]
+    }
+    model_name = registry.get_model_name("test-endpoint")
+    assert model_name == "projects/p1/locations/l1/models/m1"
+
+  @patch.object(AgentRegistry, "get_endpoint")
+  def test_get_model_name_strips_suffix(self, mock_get_endpoint, registry):
+    mock_get_endpoint.return_value = {
+        "interfaces": [{"url": "projects/p1/locations/l1/models/m1:predict"}]
+    }
+    model_name = registry.get_model_name("test-endpoint")
+    assert model_name == "projects/p1/locations/l1/models/m1"
+
+  @patch.object(AgentRegistry, "get_endpoint")
+  def test_get_model_name_raises_value_error_if_no_uri(
+      self, mock_get_endpoint, registry
+  ):
+    mock_get_endpoint.return_value = {}
+    with pytest.raises(ValueError, match="Connection URI not found"):
+      registry.get_model_name("test-endpoint")
