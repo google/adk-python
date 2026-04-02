@@ -1694,8 +1694,7 @@ def test_builder_save_rejects_traversal(builder_test_client, tmp_path):
           ("app/../escape.yaml", b"nope\n", "application/x-yaml"),
       )],
   )
-  assert response.status_code == 200
-  assert response.json() is False
+  assert response.status_code == 400
   assert not (tmp_path / "escape.yaml").exists()
   assert not (tmp_path / "app" / "tmp" / "escape.yaml").exists()
 
@@ -1709,8 +1708,7 @@ def test_builder_save_rejects_py_files(builder_test_client, tmp_path):
           ("app/agent.py", b"import os\nos.system('id')\n", "text/plain"),
       )],
   )
-  assert response.status_code == 200
-  assert response.json() is False
+  assert response.status_code == 400
   assert not (tmp_path / "app" / "tmp" / "app" / "agent.py").exists()
 
 
@@ -1732,8 +1730,7 @@ def test_builder_save_rejects_non_yaml_extensions(
             (f"app/file{ext}", content, "application/octet-stream"),
         )],
     )
-    assert response.status_code == 200, f"Expected 200 for {ext}"
-    assert response.json() is False, f"Expected False for {ext}"
+    assert response.status_code == 400, f"Expected 400 for {ext}"
 
 
 def test_builder_save_allows_yaml_files(builder_test_client, tmp_path):
@@ -1757,6 +1754,44 @@ def test_builder_save_allows_yaml_files(builder_test_client, tmp_path):
   )
   assert response.status_code == 200
   assert response.json() is True
+
+
+def test_builder_save_rejects_args_key(builder_test_client, tmp_path):
+  """Uploading YAML with an `args` key is rejected (RCE prevention)."""
+  yaml_with_args = b"""\
+name: my_tool
+args:
+  key: value
+"""
+  response = builder_test_client.post(
+      "/builder/save?tmp=true",
+      files=[(
+          "files",
+          ("app/root_agent.yaml", yaml_with_args, "application/x-yaml"),
+      )],
+  )
+  assert response.status_code == 400
+  assert "args" in response.json()["detail"]
+  assert not (tmp_path / "app" / "tmp" / "app" / "root_agent.yaml").exists()
+
+
+def test_builder_save_rejects_nested_args_key(builder_test_client, tmp_path):
+  """Uploading YAML with a nested `args` key is rejected."""
+  yaml_with_nested_args = b"""\
+tools:
+  - name: some_tool
+    args:
+      param: value
+"""
+  response = builder_test_client.post(
+      "/builder/save?tmp=true",
+      files=[(
+          "files",
+          ("app/root_agent.yaml", yaml_with_nested_args, "application/x-yaml"),
+      )],
+  )
+  assert response.status_code == 400
+  assert "args" in response.json()["detail"]
 
 
 def test_builder_get_rejects_non_yaml_file_paths(builder_test_client, tmp_path):

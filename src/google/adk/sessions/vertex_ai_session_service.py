@@ -172,13 +172,19 @@ class VertexAiSessionService(BaseSessionService):
         }
 
       try:
-        get_session_response, events_iterator = await asyncio.gather(
-            api_client.agent_engines.sessions.get(name=session_resource_name),
-            api_client.agent_engines.sessions.events.list(
-                name=session_resource_name,
-                **list_events_kwargs,
-            ),
-        )
+        if config and config.num_recent_events == 0:
+          get_session_response = await api_client.agent_engines.sessions.get(
+              name=session_resource_name
+          )
+          events_iterator = []
+        else:
+          get_session_response, events_iterator = await asyncio.gather(
+              api_client.agent_engines.sessions.get(name=session_resource_name),
+              api_client.agent_engines.sessions.events.list(
+                  name=session_resource_name,
+                  **list_events_kwargs,
+              ),
+          )
       except ClientError as e:
         if e.code == 404:
           logger.debug(

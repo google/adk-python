@@ -700,6 +700,7 @@ class SkillToolset(BaseToolset):
     self._skills = {skill.name: skill for skill in skills}
     self._code_executor = code_executor
     self._script_timeout = script_timeout
+    self._use_invocation_cache = False
 
     self._provided_tools_by_name = {}
     self._provided_toolsets = []
