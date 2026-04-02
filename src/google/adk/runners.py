@@ -66,6 +66,18 @@ from .utils.context_utils import Aclosing
 
 logger = logging.getLogger('google_adk.' + __name__)
 
+class StopSignal:
+  def __init__(self):
+    self.stopped = False
+  
+  def stop(self):
+    self.stopped = True
+
+  def reset(self):
+    self.stopped = False
+  
+  def is_set(self) -> bool:
+    return self.stopped
 
 def _is_tool_call_or_response(event: Event) -> bool:
   return bool(event.get_function_calls() or event.get_function_responses())
@@ -508,6 +520,7 @@ class Runner:
       new_message: Optional[types.Content] = None,
       state_delta: Optional[dict[str, Any]] = None,
       run_config: Optional[RunConfig] = None,
+      stop_signal: Optional[StopSignal] = None,
   ) -> AsyncGenerator[Event, None]:
     """Main entry method to run the agent in this runner.
 
@@ -614,6 +627,13 @@ class Runner:
             )
         ) as agen:
           async for event in agen:
+            # If an interruption is called, return an event that signifies
+            # as such, and then stop run_async
+            if stop_signal and stop_signal.is_set():
+              event.interrupted = True
+              yield event
+              return
+            
             yield event
         # Run compaction after all events are yielded from the agent.
         # (We don't compact in the middle of an invocation, we only compact at
