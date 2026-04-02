@@ -1,6 +1,6 @@
 # Changelog
 
-## [1.29.0](https://github.com/google/adk-python/compare/v1.28.0...v1.29.0) (2026-04-02)
+## [1.28.1](https://github.com/google/adk-python/compare/v1.28.0...v1.28.1) (2026-04-02)
 
 
 ### Features
