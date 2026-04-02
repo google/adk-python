@@ -624,17 +624,13 @@ class Runner:
                 session=session,
                 execute_fn=execute,
                 is_live_call=False,
+                stop_signal=stop_signal
             )
         ) as agen:
           async for event in agen:
-            # If an interruption is called, return an event that signifies
-            # as such, and then stop run_async
-            if stop_signal and stop_signal.is_set():
-              event.interrupted = True
-              yield event
-              return
-            
             yield event
+            if event.interrupted:
+              return
         # Run compaction after all events are yielded from the agent.
         # (We don't compact in the middle of an invocation, we only compact at
         # the end of an invocation.)
@@ -856,6 +852,8 @@ class Runner:
       session: Session,
       execute_fn: Callable[[InvocationContext], AsyncGenerator[Event, None]],
       is_live_call: bool = False,
+      *,
+      stop_signal: Optional[StopSignal] = None
   ) -> AsyncGenerator[Event, None]:
     """Wraps execution with plugin callbacks.
 
@@ -890,6 +888,15 @@ class Runner:
             event=early_exit_event,
         )
       yield early_exit_event
+    elif stop_signal and stop_signal.is_set():
+      # See if the run_async execution is interrupted
+      # If an interruption is called, return an event that signifies as such
+      interrupted_event = Event(
+          invocation_id=invocation_context.invocation_id,
+          author='model',
+          interrupted=True,
+      )
+      yield interrupted_event
     else:
       # Step 2: Otherwise continue with normal execution
       # Note for live/bidi:
