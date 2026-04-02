@@ -14,6 +14,7 @@
 
 import inspect
 from unittest.mock import AsyncMock
+from unittest.mock import create_autospec
 from unittest.mock import Mock
 from unittest.mock import patch
 
@@ -414,6 +415,44 @@ class TestMCPTool:
 
     expected_encoded = base64.b64encode(b"user:pass").decode()
     assert headers == {"Authorization": f"Basic {expected_encoded}"}
+
+  @pytest.mark.asyncio
+  @pytest.mark.parametrize(
+      "token, expected_headers",
+      [
+          (
+              "some-token",
+              {
+                  "Authorization": "some-scheme some-token",
+                  "X-Custom-Header": "custom-value",
+              },
+          ),
+          (
+              None,
+              {"X-Custom-Header": "custom-value"},
+          ),
+      ],
+  )
+  async def test_get_headers_http_adds_additional_headers(
+      self, token, expected_headers
+  ):
+    tool = MCPTool(
+        mcp_tool=self.mock_mcp_tool,
+        mcp_session_manager=self.mock_session_manager,
+    )
+    http_auth = HttpAuth(
+        scheme="some-scheme",
+        credentials=HttpCredentials(token=token),
+        additional_headers={"X-Custom-Header": "custom-value"},
+    )
+    credential = AuthCredential(
+        auth_type=AuthCredentialTypes.HTTP, http=http_auth
+    )
+
+    tool_context = create_autospec(ToolContext, instance=True)
+    headers = await tool._get_headers(tool_context, credential)
+
+    assert headers == expected_headers
 
   @pytest.mark.asyncio
   async def test_get_headers_api_key_with_valid_header_scheme(self):
