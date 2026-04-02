@@ -215,6 +215,7 @@ class GeminiLlmConnection(BaseLlmConnection):
     """
 
     text = ''
+    tool_call_parts = []
     async with Aclosing(self._gemini_session.receive()) as agen:
       # TODO(b/440101573): Reuse StreamingResponseAggregator to accumulate
       # partial content and emit responses as needed.
@@ -344,6 +345,13 @@ class GeminiLlmConnection(BaseLlmConnection):
             if text:
               yield self.__build_full_text_response(text)
               text = ''
+            if tool_call_parts:
+              logger.debug('Returning aggregated tool_call_parts')
+              yield LlmResponse(
+                  content=types.Content(role='model', parts=tool_call_parts),
+                  model_version=self._model_version,
+              )
+              tool_call_parts = []
             yield LlmResponse(
                 turn_complete=True,
                 interrupted=message.server_content.interrupted,
@@ -365,17 +373,14 @@ class GeminiLlmConnection(BaseLlmConnection):
                   model_version=self._model_version,
               )
         if message.tool_call:
+          logger.debug('Received tool call: %s', message.tool_call)
           if text:
             yield self.__build_full_text_response(text)
             text = ''
-          parts = [
+          tool_call_parts.extend([
               types.Part(function_call=function_call)
               for function_call in message.tool_call.function_calls
-          ]
-          yield LlmResponse(
-              content=types.Content(role='model', parts=parts),
-              model_version=self._model_version,
-          )
+          ])
         if message.session_resumption_update:
           logger.debug('Received session resumption message: %s', message)
           yield (
@@ -384,6 +389,12 @@ class GeminiLlmConnection(BaseLlmConnection):
                   model_version=self._model_version,
               )
           )
+      if tool_call_parts:
+        logger.debug('Exited loop with pending tool_call_parts')
+        yield LlmResponse(
+            content=types.Content(role='model', parts=tool_call_parts),
+            model_version=self._model_version,
+        )
 
   async def close(self):
     """Closes the llm server connection."""

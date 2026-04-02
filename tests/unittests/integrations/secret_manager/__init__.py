@@ -11,19 +11,3 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-
-from __future__ import annotations
-
-import warnings
-
-try:
-  from google.adk.integrations.secret_manager.secret_client import SecretManagerClient
-
-  warnings.warn(
-      "SecretManagerClient has been moved to"
-      " google.adk.integrations.secret_manager. Please update your imports.",
-      DeprecationWarning,
-      stacklevel=2,
-  )
-except ImportError:
-  pass
