@@ -133,6 +133,31 @@ def _resolve_scoped_artifact_path(
   return candidate, relative
 
 
+def _validate_path_segment(parent: Path, segment: str, label: str) -> Path:
+  """Validates that a path segment does not escape its parent directory.
+
+  Args:
+    parent: The directory the segment must stay within.
+    segment: Caller-supplied value used as a single path component.
+    label: Human-readable name for error messages (e.g. ``"User ID"``).
+
+  Returns:
+    The resolved path ``parent / segment``.
+
+  Raises:
+    InputValidationError: If the resulting path escapes ``parent``.
+  """
+  parent_resolved = parent.resolve(strict=False)
+  candidate = (parent_resolved / segment).resolve(strict=False)
+  try:
+    candidate.relative_to(parent_resolved)
+  except ValueError as exc:
+    raise InputValidationError(
+        f"{label} {segment!r} resolves outside storage directory."
+    ) from exc
+  return candidate
+
+
 def _is_user_scoped(session_id: Optional[str], filename: str) -> bool:
   """Determines whether artifacts should be stored in the user namespace."""
   return session_id is None or _file_has_user_namespace(filename)
@@ -145,7 +170,11 @@ def _user_artifacts_dir(base_root: Path) -> Path:
 
 def _session_artifacts_dir(base_root: Path, session_id: str) -> Path:
   """Returns the path that stores session-scoped artifacts."""
-  return base_root / "sessions" / session_id / "artifacts"
+  sessions_dir = base_root / "sessions"
+  return (
+      _validate_path_segment(sessions_dir, session_id, "Session ID")
+      / "artifacts"
+  )
 
 
 def _versions_dir(artifact_dir: Path) -> Path:
@@ -220,7 +249,8 @@ class FileArtifactService(BaseArtifactService):
 
   def _base_root(self, user_id: str, /) -> Path:
     """Returns the artifacts root directory for a user."""
-    return self.root_dir / "users" / user_id
+    users_dir = self.root_dir / "users"
+    return _validate_path_segment(users_dir, user_id, "User ID")
 
   def _scope_root(
       self,

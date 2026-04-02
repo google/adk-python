@@ -896,3 +896,62 @@ async def test_save_artifact_with_snake_case_dict(
   assert loaded is not None
   assert loaded.inline_data is not None
   assert loaded.inline_data.mime_type == "text/plain"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "user_id",
+    [
+        "../../escape",
+        "../sibling",
+        "valid/../../../etc",
+    ],
+)
+async def test_file_save_rejects_traversal_user_id(tmp_path, user_id):
+  """FileArtifactService rejects user_id values that escape the storage root."""
+  artifact_service = FileArtifactService(root_dir=tmp_path / "artifacts")
+  part = types.Part(text="content")
+  with pytest.raises(InputValidationError):
+    await artifact_service.save_artifact(
+        app_name="myapp",
+        user_id=user_id,
+        session_id="sess1",
+        filename="file.txt",
+        artifact=part,
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "session_id",
+    [
+        "../../escape",
+        "../sibling",
+        "valid/../../../tmp",
+    ],
+)
+async def test_file_save_rejects_traversal_session_id(tmp_path, session_id):
+  """FileArtifactService rejects session_id values that escape the storage root."""
+  artifact_service = FileArtifactService(root_dir=tmp_path / "artifacts")
+  part = types.Part(text="content")
+  with pytest.raises(InputValidationError):
+    await artifact_service.save_artifact(
+        app_name="myapp",
+        user_id="user1",
+        session_id=session_id,
+        filename="file.txt",
+        artifact=part,
+    )
+
+
+@pytest.mark.asyncio
+async def test_file_delete_rejects_traversal_session_id(tmp_path):
+  """Traversal session_id is caught before shutil.rmtree can be reached."""
+  artifact_service = FileArtifactService(root_dir=tmp_path / "artifacts")
+  with pytest.raises(InputValidationError):
+    await artifact_service.delete_artifact(
+        app_name="myapp",
+        user_id="user1",
+        session_id="../../escape",
+        filename="file.txt",
+    )
