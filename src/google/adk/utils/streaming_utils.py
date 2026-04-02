@@ -36,6 +36,8 @@ class StreamingResponseAggregator:
     self._text = ''
     self._thought_text = ''
     self._usage_metadata = None
+    self._grounding_metadata: Optional[types.GroundingMetadata] = None
+    self._citation_metadata: Optional[types.CitationMetadata] = None
     self._response = None
 
     # For progressive SSE streaming mode: accumulate parts in order
@@ -223,6 +225,13 @@ class StreamingResponseAggregator:
     if fc.partial_args or fc.will_continue:
       # Streaming function call arguments
 
+      # Generate ID on first chunk if not provided by LLM
+      if not fc.id and not self._current_fc_id:
+        # Lazy import to avoid circular dependency
+        from ..flows.llm_flows.functions import generate_client_function_call_id
+
+        fc.id = generate_client_function_call_id()
+
       # Save thought_signature from the part (first chunk should have it)
       if part.thought_signature and not self._current_thought_signature:
         self._current_thought_signature = part.thought_signature
@@ -231,6 +240,12 @@ class StreamingResponseAggregator:
       # Non-streaming function call (standard format with args)
       # Skip empty function calls (used as streaming end markers)
       if fc.name:
+        # Generate ID if not provided by LLM
+        if not fc.id:
+          # Lazy import to avoid circular dependency
+          from ..flows.llm_flows.functions import generate_client_function_call_id
+
+          fc.id = generate_client_function_call_id()
         # Flush any buffered text first, then add the FC part
         self._flush_text_buffer_to_sequence()
         self._parts_sequence.append(part)
@@ -251,6 +266,10 @@ class StreamingResponseAggregator:
     self._response = response
     llm_response = LlmResponse.create(response)
     self._usage_metadata = llm_response.usage_metadata
+    if llm_response.grounding_metadata:
+      self._grounding_metadata = llm_response.grounding_metadata
+    if llm_response.citation_metadata:
+      self._citation_metadata = llm_response.citation_metadata
 
     # ========== Progressive SSE Streaming (new feature) ==========
     # Save finish_reason for final aggregation
@@ -347,6 +366,8 @@ class StreamingResponseAggregator:
 
           return LlmResponse(
               content=types.ModelContent(parts=final_parts),
+              grounding_metadata=self._grounding_metadata,
+              citation_metadata=self._citation_metadata,
               error_code=None
               if finish_reason == types.FinishReason.STOP
               else finish_reason,
@@ -374,6 +395,8 @@ class StreamingResponseAggregator:
       candidate = self._response.candidates[0]
       return LlmResponse(
           content=types.ModelContent(parts=parts),
+          grounding_metadata=self._grounding_metadata,
+          citation_metadata=self._citation_metadata,
           error_code=None
           if candidate.finish_reason == types.FinishReason.STOP
           else candidate.finish_reason,

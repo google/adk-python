@@ -218,3 +218,94 @@ def test_openapi_toolset_header_provider_none_by_default(
 
   # Verify all tools have no header_provider
   assert all(tool._header_provider is None for tool in toolset._tools)
+
+
+def test_openapi_toolset_preserve_property_names(openapi_spec: Dict[str, Any]):
+  """Test that preserve_property_names keeps original camelCase names."""
+  toolset = OpenAPIToolset(
+      spec_dict=openapi_spec,
+      preserve_property_names=True,
+  )
+  tool = toolset.get_tool("calendar_calendars_get")
+  assert tool is not None
+
+  # The calendarId parameter should keep its original camelCase name
+  params = tool._operation_parser.get_parameters()
+  param_names = [p.py_name for p in params]
+  assert "calendarId" in param_names
+
+  # The JSON schema should also use the original name
+  schema = tool._operation_parser.get_json_schema()
+  assert "calendarId" in schema["properties"]
+
+
+def test_openapi_toolset_default_snake_case_conversion(
+    openapi_spec: Dict[str, Any],
+):
+  """Test that default behavior still converts to snake_case."""
+  toolset = OpenAPIToolset(spec_dict=openapi_spec)
+  tool = toolset.get_tool("calendar_calendars_get")
+  assert tool is not None
+
+  # The calendarId parameter should be converted to snake_case by default
+  params = tool._operation_parser.get_parameters()
+  param_names = [p.py_name for p in params]
+  assert "calendar_id" in param_names
+  assert "calendarId" not in param_names
+
+  # The JSON schema should also use snake_case
+  schema = tool._operation_parser.get_json_schema()
+  assert "calendar_id" in schema["properties"]
+  assert "calendarId" not in schema["properties"]
+
+
+def test_openapi_toolset_preserve_property_names_body_params():
+  """Test preserve_property_names with request body properties."""
+  spec = {
+      "openapi": "3.0.0",
+      "info": {"title": "Test API", "version": "1.0"},
+      "servers": [{"url": "https://api.example.com"}],
+      "paths": {
+          "/users": {
+              "post": {
+                  "operationId": "createUser",
+                  "requestBody": {
+                      "content": {
+                          "application/json": {
+                              "schema": {
+                                  "type": "object",
+                                  "properties": {
+                                      "firstName": {"type": "string"},
+                                      "lastName": {"type": "string"},
+                                      "emailAddress": {"type": "string"},
+                                  },
+                              }
+                          }
+                      }
+                  },
+                  "responses": {"200": {"description": "OK"}},
+              }
+          }
+      },
+  }
+
+  # With preserve_property_names=True
+  toolset = OpenAPIToolset(
+      spec_dict=spec,
+      preserve_property_names=True,
+  )
+  tool = toolset.get_tool("create_user")
+  params = tool._operation_parser.get_parameters()
+  param_names = [p.py_name for p in params]
+  assert "firstName" in param_names
+  assert "lastName" in param_names
+  assert "emailAddress" in param_names
+
+  # Without preserve_property_names (default)
+  toolset_default = OpenAPIToolset(spec_dict=spec)
+  tool_default = toolset_default.get_tool("create_user")
+  params_default = tool_default._operation_parser.get_parameters()
+  param_names_default = [p.py_name for p in params_default]
+  assert "first_name" in param_names_default
+  assert "last_name" in param_names_default
+  assert "email_address" in param_names_default

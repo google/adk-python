@@ -28,6 +28,8 @@ from ..agents.common_configs import AgentRefConfig
 from ..features import FeatureName
 from ..features import is_feature_enabled
 from ..memory.in_memory_memory_service import InMemoryMemoryService
+from ..utils._schema_utils import SchemaType
+from ..utils._schema_utils import validate_schema
 from ..utils.context_utils import Aclosing
 from ._forwarding_artifact_service import ForwardingArtifactService
 from .base_tool import BaseTool
@@ -64,7 +66,7 @@ def _get_input_schema(agent: BaseAgent) -> Optional[type[BaseModel]]:
   return None
 
 
-def _get_output_schema(agent: BaseAgent) -> Optional[type[BaseModel]]:
+def _get_output_schema(agent: BaseAgent) -> Optional[SchemaType]:
   """Extracts the output_schema from an agent.
 
   For LlmAgent, returns its output_schema directly.
@@ -111,10 +113,12 @@ class AgentTool(BaseTool):
       skip_summarization: bool = False,
       *,
       include_plugins: bool = True,
+      propagate_grounding_metadata: bool = False,
   ):
     self.agent = agent
     self.skip_summarization: bool = skip_summarization
     self.include_plugins = include_plugins
+    self.propagate_grounding_metadata = propagate_grounding_metadata
 
     super().__init__(name=agent.name, description=agent.description)
 
@@ -245,6 +249,7 @@ class AgentTool(BaseTool):
     )
 
     last_content = None
+    last_grounding_metadata = None
     async with Aclosing(
         runner.run_async(
             user_id=session.user_id, session_id=session.id, new_message=content
@@ -256,6 +261,7 @@ class AgentTool(BaseTool):
           tool_context.state.update(event.actions.state_delta)
         if event.content:
           last_content = event.content
+          last_grounding_metadata = event.grounding_metadata
 
     # Clean up runner resources (especially MCP sessions)
     # to avoid "Attempted to exit cancel scope in a different task" errors
@@ -268,11 +274,15 @@ class AgentTool(BaseTool):
     )
     output_schema = _get_output_schema(self.agent)
     if output_schema:
-      tool_result = output_schema.model_validate_json(merged_text).model_dump(
-          exclude_none=True
-      )
+      tool_result = validate_schema(output_schema, merged_text)
     else:
       tool_result = merged_text
+
+    if self.propagate_grounding_metadata and last_grounding_metadata:
+      tool_context.state['temp:_adk_grounding_metadata'] = (
+          last_grounding_metadata
+      )
+
     return tool_result
 
   @override

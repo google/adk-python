@@ -22,6 +22,7 @@ import subprocess
 import sys
 import traceback
 from typing import Final
+from typing import Literal
 from typing import Optional
 import warnings
 
@@ -1061,12 +1062,20 @@ def to_agent_engine(
 
     import vertexai
 
+    from ..utils._google_client_headers import get_tracking_headers
+
     if project and region:
       click.echo('Initializing Vertex AI...')
-      client = vertexai.Client(project=project, location=region)
+      client = vertexai.Client(
+          project=project,
+          location=region,
+          http_options={'headers': get_tracking_headers()},
+      )
     elif api_key:
       click.echo('Initializing Vertex AI in Express Mode with API key...')
-      client = vertexai.Client(api_key=api_key)
+      client = vertexai.Client(
+          api_key=api_key, http_options={'headers': get_tracking_headers()}
+      )
     else:
       click.echo(
           'No project/region or api_key provided. '
@@ -1162,6 +1171,9 @@ def to_gke(
     memory_service_uri: Optional[str] = None,
     use_local_storage: bool = False,
     a2a: bool = False,
+    service_type: Literal[
+        'ClusterIP', 'NodePort', 'LoadBalancer'
+    ] = 'ClusterIP',
 ):
   """Deploys an agent to Google Kubernetes Engine(GKE).
 
@@ -1189,6 +1201,7 @@ def to_gke(
     artifact_service_uri: The URI of the artifact service.
     memory_service_uri: The URI of the memory service.
     use_local_storage: Whether to use local .adk storage in the container.
+    service_type: The Kubernetes Service type (default: ClusterIP).
   """
   click.secho(
       '\n🚀 Starting ADK Agent Deployment to GKE...', fg='cyan', bold=True
@@ -1326,7 +1339,7 @@ kind: Service
 metadata:
   name: {service_name}
 spec:
-  type: LoadBalancer
+  type: {service_type}
   selector:
     app: {service_name}
   ports:
@@ -1380,3 +1393,11 @@ spec:
   click.secho(
       '\n🎉 Deployment to GKE finished successfully!', fg='cyan', bold=True
   )
+  if service_type == 'ClusterIP':
+    click.echo(
+        '\nThe service is only reachable from within the cluster.'
+        ' To access it locally, run:'
+        f'\n  kubectl port-forward svc/{service_name} {port}:{port}'
+        '\n\nTo expose the service externally, add a Gateway or'
+        ' re-deploy with --service_type=LoadBalancer.'
+    )

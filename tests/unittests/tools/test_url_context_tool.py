@@ -191,6 +191,27 @@ class TestUrlContextTool:
       )
 
   @pytest.mark.asyncio
+  async def test_process_llm_request_with_non_gemini_model_and_disabled_check(
+      self, monkeypatch
+  ):
+    """Test non-Gemini model can pass when model-id check is disabled."""
+    monkeypatch.setenv('ADK_DISABLE_GEMINI_MODEL_ID_CHECK', 'true')
+    tool = UrlContextTool()
+    tool_context = await _create_tool_context()
+
+    llm_request = LlmRequest(
+        model='internal-model-v1', config=types.GenerateContentConfig()
+    )
+
+    await tool.process_llm_request(
+        tool_context=tool_context, llm_request=llm_request
+    )
+
+    assert llm_request.config.tools is not None
+    assert len(llm_request.config.tools) == 1
+    assert llm_request.config.tools[0].url_context is not None
+
+  @pytest.mark.asyncio
   async def test_process_llm_request_with_path_based_non_gemini_model_raises_error(
       self,
   ):

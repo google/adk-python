@@ -19,6 +19,7 @@ from unittest.mock import AsyncMock
 
 from google.adk.agents.llm_agent import Agent
 from google.adk.events.event import Event
+from google.adk.flows.llm_flows.base_llm_flow import _handle_after_model_callback
 from google.adk.flows.llm_flows.base_llm_flow import BaseLlmFlow
 from google.adk.models.google_llm import Gemini
 from google.adk.models.llm_request import LlmRequest
@@ -283,9 +284,8 @@ async def test_handle_after_model_callback_grounding_with_no_callbacks(
       invocation_id=invocation_context.invocation_id,
       author=agent.name,
   )
-  flow = BaseLlmFlowForTesting()
 
-  result = await flow._handle_after_model_callback(
+  result = await _handle_after_model_callback(
       invocation_context, llm_response, event
   )
 
@@ -340,9 +340,8 @@ async def test_handle_after_model_callback_grounding_with_callback_override(
       invocation_id=invocation_context.invocation_id,
       author=agent.name,
   )
-  flow = BaseLlmFlowForTesting()
 
-  result = await flow._handle_after_model_callback(
+  result = await _handle_after_model_callback(
       invocation_context, llm_response, event
   )
 
@@ -402,9 +401,8 @@ async def test_handle_after_model_callback_grounding_with_plugin_override(
       invocation_id=invocation_context.invocation_id,
       author=agent.name,
   )
-  flow = BaseLlmFlowForTesting()
 
-  result = await flow._handle_after_model_callback(
+  result = await _handle_after_model_callback(
       invocation_context, llm_response, event
   )
 
@@ -429,6 +427,7 @@ async def test_handle_after_model_callback_caches_canonical_tools():
 
       def __init__(self):
         super().__init__(name='google_search_agent', description='Mock search')
+        self.propagate_grounding_metadata = True
 
       async def call(self, **kwargs):
         return 'mock result'
@@ -458,16 +457,15 @@ async def test_handle_after_model_callback_caches_canonical_tools():
         invocation_id=invocation_context.invocation_id,
         author=agent.name,
     )
-    flow = BaseLlmFlowForTesting()
 
     # Call _handle_after_model_callback multiple times with the same context
-    result1 = await flow._handle_after_model_callback(
+    result1 = await _handle_after_model_callback(
         invocation_context, llm_response, event
     )
-    result2 = await flow._handle_after_model_callback(
+    result2 = await _handle_after_model_callback(
         invocation_context, llm_response, event
     )
-    result3 = await flow._handle_after_model_callback(
+    result3 = await _handle_after_model_callback(
         invocation_context, llm_response, event
     )
 

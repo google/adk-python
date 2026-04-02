@@ -27,6 +27,7 @@ from typing import Optional
 
 import httpx
 
+from ...artifacts.base_artifact_service import ArtifactVersion
 from ...events.event import Event
 from ...sessions.session import Session
 from ..adk_web_server import RunAgentRequest
@@ -206,6 +207,17 @@ class AdkWebServerClient:
       response.raise_for_status()
       return Session.model_validate(response.json())
 
+  async def get_version_data(self) -> Dict[str, str]:
+    """Retrieve version data from the ADK web server.
+
+    Returns:
+      Dictionary containing version information
+    """
+    async with self._get_client() as client:
+      response = await client.get("/version")
+      response.raise_for_status()
+      return response.json()
+
   async def run_agent(
       self,
       request: RunAgentRequest,
@@ -225,7 +237,8 @@ class AdkWebServerClient:
       Event objects streamed from the agent execution
 
     Raises:
-      ValueError: If mode is provided but test_case_dir or user_message_index is None
+      ValueError: If mode is not supported, or if mode is provided but
+        test_case_dir or user_message_index is None
       httpx.HTTPStatusError: If the request fails
       json.JSONDecodeError: If event data cannot be parsed
       RuntimeError: If the server streams an error payload
@@ -247,11 +260,25 @@ class AdkWebServerClient:
             "dir": str(test_case_dir),
             "user_message_index": user_message_index,
         }
-      else:  # record mode
+        if request.streaming:
+          request.state_delta["_adk_replay_config"]["streaming_mode"] = "sse"
+        else:
+          request.state_delta["_adk_replay_config"]["streaming_mode"] = "none"
+      elif mode == "record":
         request.state_delta["_adk_recordings_config"] = {
             "dir": str(test_case_dir),
             "user_message_index": user_message_index,
         }
+        if request.streaming:
+          request.state_delta["_adk_recordings_config"][
+              "streaming_mode"
+          ] = "sse"
+        else:
+          request.state_delta["_adk_recordings_config"][
+              "streaming_mode"
+          ] = "none"
+      else:
+        raise ValueError(f"Unsupported mode: {mode}")
 
     async with self._get_client() as client:
       async with client.stream(
@@ -268,3 +295,38 @@ class AdkWebServerClient:
             yield Event.model_validate(event_data)
           else:
             logger.debug("Non data line received: %s", line)
+
+  async def get_artifact_version_metadata(
+      self,
+      *,
+      app_name: str,
+      user_id: str,
+      session_id: str,
+      artifact_name: str,
+      version: int,
+  ) -> ArtifactVersion:
+    """Retrieve metadata for a specific artifact version."""
+    async with self._get_client() as client:
+      response = await client.get((
+          f"/apps/{app_name}/users/{user_id}/sessions/{session_id}"
+          f"/artifacts/{artifact_name}/versions/{version}/metadata"
+      ))
+      response.raise_for_status()
+      return ArtifactVersion.model_validate(response.json())
+
+  async def list_artifact_versions_metadata(
+      self,
+      *,
+      app_name: str,
+      user_id: str,
+      session_id: str,
+      artifact_name: str,
+  ) -> list[ArtifactVersion]:
+    """List metadata for all versions of an artifact."""
+    async with self._get_client() as client:
+      response = await client.get((
+          f"/apps/{app_name}/users/{user_id}/sessions/{session_id}"
+          f"/artifacts/{artifact_name}/versions/metadata"
+      ))
+      response.raise_for_status()
+      return [ArtifactVersion.model_validate(item) for item in response.json()]

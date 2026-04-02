@@ -23,6 +23,7 @@ from ..tool_context import ToolContext
 from .config import DataAgentToolConfig
 
 BASE_URL = "https://geminidataanalytics.googleapis.com/v1beta"
+_GDA_CLIENT_ID = "GOOGLE_ADK"
 
 
 def _get_http_headers(
@@ -41,6 +42,7 @@ def _get_http_headers(
   return {
       "Authorization": f"Bearer {credentials.token}",
       "Content-Type": "application/json",
+      "X-Goog-API-Client": _GDA_CLIENT_ID,
   }
 
 
@@ -294,7 +296,7 @@ def ask_data_agent(
         "dataAgentContext": {
             "dataAgent": data_agent_name,
         },
-        "clientIdEnum": "GOOGLE_ADK",
+        "clientIdEnum": _GDA_CLIENT_ID,
     }
     resp = _get_stream(
         chat_url,

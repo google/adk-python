@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License
 
+import base64
 import contextlib
 import json
 import logging
@@ -21,17 +22,23 @@ import tempfile
 import unittest
 from unittest.mock import ANY
 from unittest.mock import AsyncMock
+from unittest.mock import MagicMock
 from unittest.mock import Mock
 import warnings
 
 from google.adk.models.lite_llm import _append_fallback_user_content_if_missing
 from google.adk.models.lite_llm import _content_to_message_param
+from google.adk.models.lite_llm import _convert_reasoning_value_to_parts
+from google.adk.models.lite_llm import _enforce_strict_openai_schema
+from google.adk.models.lite_llm import _extract_reasoning_value
+from google.adk.models.lite_llm import _extract_thought_signature_from_tool_call
 from google.adk.models.lite_llm import _FILE_ID_REQUIRED_PROVIDERS
 from google.adk.models.lite_llm import _FINISH_REASON_MAPPING
 from google.adk.models.lite_llm import _function_declaration_to_tool_param
 from google.adk.models.lite_llm import _get_completion_inputs
 from google.adk.models.lite_llm import _get_content
 from google.adk.models.lite_llm import _get_provider_from_model
+from google.adk.models.lite_llm import _is_anthropic_model
 from google.adk.models.lite_llm import _message_to_generate_content_response
 from google.adk.models.lite_llm import _MISSING_TOOL_RESULT_MESSAGE
 from google.adk.models.lite_llm import _model_response_to_chunk
@@ -40,11 +47,13 @@ from google.adk.models.lite_llm import _parse_tool_calls_from_text
 from google.adk.models.lite_llm import _redirect_litellm_loggers_to_stdout
 from google.adk.models.lite_llm import _schema_to_dict
 from google.adk.models.lite_llm import _split_message_content_and_tool_calls
+from google.adk.models.lite_llm import _THOUGHT_SIGNATURE_SEPARATOR
 from google.adk.models.lite_llm import _to_litellm_response_format
 from google.adk.models.lite_llm import _to_litellm_role
 from google.adk.models.lite_llm import FunctionChunk
 from google.adk.models.lite_llm import LiteLlm
 from google.adk.models.lite_llm import LiteLLMClient
+from google.adk.models.lite_llm import ReasoningChunk
 from google.adk.models.lite_llm import TextChunk
 from google.adk.models.lite_llm import UsageMetadataChunk
 from google.adk.models.llm_request import LlmRequest
@@ -57,6 +66,7 @@ from litellm.types.utils import ChatCompletionDeltaToolCall
 from litellm.types.utils import Choices
 from litellm.types.utils import Delta
 from litellm.types.utils import ModelResponse
+from litellm.types.utils import ModelResponseStream
 from litellm.types.utils import StreamingChoices
 from pydantic import BaseModel
 from pydantic import Field
@@ -129,7 +139,7 @@ FILE_BYTES_TEST_CASES = [
 ]
 
 STREAMING_MODEL_RESPONSE = [
-    ModelResponse(
+    ModelResponseStream(
         model="test_model",
         choices=[
             StreamingChoices(
@@ -141,7 +151,7 @@ STREAMING_MODEL_RESPONSE = [
             )
         ],
     ),
-    ModelResponse(
+    ModelResponseStream(
         model="test_model",
         choices=[
             StreamingChoices(
@@ -153,7 +163,7 @@ STREAMING_MODEL_RESPONSE = [
             )
         ],
     ),
-    ModelResponse(
+    ModelResponseStream(
         model="test_model",
         choices=[
             StreamingChoices(
@@ -165,7 +175,7 @@ STREAMING_MODEL_RESPONSE = [
             )
         ],
     ),
-    ModelResponse(
+    ModelResponseStream(
         model="test_model",
         choices=[
             StreamingChoices(
@@ -187,7 +197,7 @@ STREAMING_MODEL_RESPONSE = [
             )
         ],
     ),
-    ModelResponse(
+    ModelResponseStream(
         model="test_model",
         choices=[
             StreamingChoices(
@@ -209,7 +219,7 @@ STREAMING_MODEL_RESPONSE = [
             )
         ],
     ),
-    ModelResponse(
+    ModelResponseStream(
         model="test_model",
         choices=[
             StreamingChoices(
@@ -392,6 +402,145 @@ def test_to_litellm_response_format_with_dict_schema_for_openai():
   assert formatted["json_schema"]["schema"]["additionalProperties"] is False
 
 
+class _InnerModel(BaseModel):
+  value: str = Field(description="A value")
+  optional_field: str | None = Field(default=None, description="Optional")
+
+
+class _OuterModel(BaseModel):
+  inner: _InnerModel = Field(description="Nested model")
+  name: str
+
+
+class _WithList(BaseModel):
+  items: list[_InnerModel] = Field(description="List of items")
+  label: str
+
+
+def test_enforce_strict_openai_schema_adds_additional_properties_recursively():
+  """additionalProperties: false must appear on all object schemas."""
+  schema = _OuterModel.model_json_schema()
+
+  _enforce_strict_openai_schema(schema)
+
+  # Root level
+  assert schema["additionalProperties"] is False
+  # Nested model in $defs
+  inner_def = schema["$defs"]["_InnerModel"]
+  assert inner_def["additionalProperties"] is False
+
+
+def test_enforce_strict_openai_schema_marks_all_properties_required():
+  """All properties must appear in 'required', including optional fields."""
+  schema = _InnerModel.model_json_schema()
+
+  _enforce_strict_openai_schema(schema)
+
+  assert sorted(schema["required"]) == ["optional_field", "value"]
+
+
+def test_enforce_strict_openai_schema_strips_ref_sibling_keywords():
+  """$ref nodes must have no sibling keywords like 'description'."""
+  schema = _OuterModel.model_json_schema()
+  # Pydantic v2 generates {"$ref": "...", "description": "..."} for nested models
+  inner_prop = schema["properties"]["inner"]
+  assert "$ref" in inner_prop, "Expected Pydantic to generate a $ref property"
+  assert len(inner_prop) > 1, "Expected sibling keywords alongside $ref"
+
+  _enforce_strict_openai_schema(schema)
+
+  inner_prop = schema["properties"]["inner"]
+  assert list(inner_prop.keys()) == ["$ref"]
+
+
+def test_enforce_strict_openai_schema_handles_array_items():
+  """Array item schemas should also be recursively transformed."""
+  schema = _WithList.model_json_schema()
+
+  _enforce_strict_openai_schema(schema)
+
+  assert schema["additionalProperties"] is False
+  inner_def = schema["$defs"]["_InnerModel"]
+  assert inner_def["additionalProperties"] is False
+  assert sorted(inner_def["required"]) == ["optional_field", "value"]
+
+
+def test_enforce_strict_openai_schema_preserves_anyof_and_default():
+  """anyOf structure and default value for Optional fields must be preserved."""
+  schema = _InnerModel.model_json_schema()
+
+  _enforce_strict_openai_schema(schema)
+
+  opt_prop = schema["properties"]["optional_field"]
+  assert opt_prop["anyOf"] == [{"type": "string"}, {"type": "null"}]
+  assert opt_prop["default"] is None
+
+
+def test_to_litellm_response_format_dict_input_not_mutated():
+  """Passing a raw dict should not mutate the caller's original dict."""
+  schema = {
+      "type": "object",
+      "properties": {
+          "nested": {
+              "type": "object",
+              "properties": {"x": {"type": "string"}},
+          }
+      },
+  }
+  import copy
+
+  original = copy.deepcopy(schema)
+
+  _to_litellm_response_format(schema, model="gpt-4o")
+
+  assert schema == original, "Caller's input dict was mutated"
+
+
+def test_to_litellm_response_format_instance_input_for_openai():
+  """Passing a BaseModel instance should produce a valid strict schema."""
+  instance = _OuterModel(
+      inner=_InnerModel(value="test", optional_field=None), name="foo"
+  )
+
+  formatted = _to_litellm_response_format(instance, model="gpt-4o")
+
+  assert formatted["type"] == "json_schema"
+  schema = formatted["json_schema"]["schema"]
+  assert schema["additionalProperties"] is False
+  inner_def = schema["$defs"]["_InnerModel"]
+  assert inner_def["additionalProperties"] is False
+  assert sorted(inner_def["required"]) == ["optional_field", "value"]
+
+
+def test_to_litellm_response_format_nested_pydantic_for_openai():
+  """Nested Pydantic model should produce a valid OpenAI strict schema."""
+  formatted = _to_litellm_response_format(_OuterModel, model="gpt-4o")
+
+  assert formatted["type"] == "json_schema"
+  assert formatted["json_schema"]["strict"] is True
+
+  schema = formatted["json_schema"]["schema"]
+  assert schema["additionalProperties"] is False
+  assert sorted(schema["required"]) == ["inner", "name"]
+
+  # $defs inner model must also be strict
+  inner_def = schema["$defs"]["_InnerModel"]
+  assert inner_def["additionalProperties"] is False
+  assert sorted(inner_def["required"]) == ["optional_field", "value"]
+
+
+def test_to_litellm_response_format_nested_pydantic_for_gemini_unchanged():
+  """Gemini models should NOT get the strict OpenAI transformations."""
+  formatted = _to_litellm_response_format(
+      _OuterModel, model="gemini/gemini-2.0-flash"
+  )
+
+  assert formatted["type"] == "json_object"
+  schema = formatted["response_schema"]
+  # Gemini path should pass through the raw Pydantic schema untouched
+  assert schema == _OuterModel.model_json_schema()
+
+
 async def test_get_completion_inputs_uses_openai_format_for_openai_model():
   """Test that _get_completion_inputs produces OpenAI-compatible format."""
   llm_request = LlmRequest(
@@ -532,7 +681,7 @@ def test_schema_to_dict_filters_none_enum_values():
 
 
 MULTIPLE_FUNCTION_CALLS_STREAM = [
-    ModelResponse(
+    ModelResponseStream(
         choices=[
             StreamingChoices(
                 finish_reason=None,
@@ -553,7 +702,7 @@ MULTIPLE_FUNCTION_CALLS_STREAM = [
             )
         ]
     ),
-    ModelResponse(
+    ModelResponseStream(
         choices=[
             StreamingChoices(
                 finish_reason=None,
@@ -574,7 +723,7 @@ MULTIPLE_FUNCTION_CALLS_STREAM = [
             )
         ]
     ),
-    ModelResponse(
+    ModelResponseStream(
         choices=[
             StreamingChoices(
                 finish_reason=None,
@@ -595,7 +744,7 @@ MULTIPLE_FUNCTION_CALLS_STREAM = [
             )
         ]
     ),
-    ModelResponse(
+    ModelResponseStream(
         choices=[
             StreamingChoices(
                 finish_reason=None,
@@ -616,7 +765,7 @@ MULTIPLE_FUNCTION_CALLS_STREAM = [
             )
         ]
     ),
-    ModelResponse(
+    ModelResponseStream(
         choices=[
             StreamingChoices(
                 finish_reason="tool_calls",
@@ -627,7 +776,7 @@ MULTIPLE_FUNCTION_CALLS_STREAM = [
 
 
 STREAM_WITH_EMPTY_CHUNK = [
-    ModelResponse(
+    ModelResponseStream(
         choices=[
             StreamingChoices(
                 finish_reason=None,
@@ -648,7 +797,7 @@ STREAM_WITH_EMPTY_CHUNK = [
             )
         ]
     ),
-    ModelResponse(
+    ModelResponseStream(
         choices=[
             StreamingChoices(
                 finish_reason=None,
@@ -670,7 +819,7 @@ STREAM_WITH_EMPTY_CHUNK = [
         ]
     ),
     # This is the problematic empty chunk that should be ignored.
-    ModelResponse(
+    ModelResponseStream(
         choices=[
             StreamingChoices(
                 finish_reason=None,
@@ -691,7 +840,7 @@ STREAM_WITH_EMPTY_CHUNK = [
             )
         ]
     ),
-    ModelResponse(
+    ModelResponseStream(
         choices=[StreamingChoices(finish_reason="tool_calls", delta=Delta())]
     ),
 ]
@@ -727,7 +876,7 @@ def mock_response():
 # indices all 0
 # finish_reason stop instead of tool_calls
 NON_COMPLIANT_MULTIPLE_FUNCTION_CALLS_STREAM = [
-    ModelResponse(
+    ModelResponseStream(
         choices=[
             StreamingChoices(
                 finish_reason=None,
@@ -748,7 +897,7 @@ NON_COMPLIANT_MULTIPLE_FUNCTION_CALLS_STREAM = [
             )
         ]
     ),
-    ModelResponse(
+    ModelResponseStream(
         choices=[
             StreamingChoices(
                 finish_reason=None,
@@ -769,7 +918,7 @@ NON_COMPLIANT_MULTIPLE_FUNCTION_CALLS_STREAM = [
             )
         ]
     ),
-    ModelResponse(
+    ModelResponseStream(
         choices=[
             StreamingChoices(
                 finish_reason=None,
@@ -790,7 +939,7 @@ NON_COMPLIANT_MULTIPLE_FUNCTION_CALLS_STREAM = [
             )
         ]
     ),
-    ModelResponse(
+    ModelResponseStream(
         choices=[
             StreamingChoices(
                 finish_reason=None,
@@ -811,7 +960,7 @@ NON_COMPLIANT_MULTIPLE_FUNCTION_CALLS_STREAM = [
             )
         ]
     ),
-    ModelResponse(
+    ModelResponseStream(
         choices=[
             StreamingChoices(
                 finish_reason="stop",
@@ -1512,6 +1661,7 @@ async def test_generate_content_async_with_usage_metadata(
           "completion_tokens": 5,
           "total_tokens": 15,
           "cached_tokens": 8,
+          "completion_tokens_details": {"reasoning_tokens": 5},
       },
   )
   mock_acompletion.return_value = mock_response_with_usage_metadata
@@ -1533,6 +1683,7 @@ async def test_generate_content_async_with_usage_metadata(
     assert response.usage_metadata.candidates_token_count == 5
     assert response.usage_metadata.total_token_count == 15
     assert response.usage_metadata.cached_content_token_count == 8
+    assert response.usage_metadata.thoughts_token_count == 5
 
   mock_acompletion.assert_called_once()
 
@@ -2143,6 +2294,352 @@ def test_model_response_to_generate_content_response_reasoning_content():
   assert response.content.parts[1].text == "Answer"
 
 
+def test_message_to_generate_content_response_reasoning_field():
+  """Test that the 'reasoning' field is supported (LM Studio, vLLM)."""
+  message = {
+      "role": "assistant",
+      "content": "Final answer",
+      "reasoning": "Thinking process",
+  }
+  response = _message_to_generate_content_response(message)
+
+  assert len(response.content.parts) == 2
+  thought_part = response.content.parts[0]
+  text_part = response.content.parts[1]
+  assert thought_part.text == "Thinking process"
+  assert thought_part.thought is True
+  assert text_part.text == "Final answer"
+
+
+def test_model_response_to_generate_content_response_reasoning_field():
+  """Test that 'reasoning' field is supported in ModelResponse."""
+  model_response = ModelResponse(
+      model="test-model",
+      choices=[{
+          "message": {
+              "role": "assistant",
+              "content": "Result",
+              "reasoning": "Chain of thought",
+          },
+          "finish_reason": "stop",
+      }],
+  )
+
+  response = _model_response_to_generate_content_response(model_response)
+
+  assert response.content.parts[0].text == "Chain of thought"
+  assert response.content.parts[0].thought is True
+  assert response.content.parts[1].text == "Result"
+
+
+def test_reasoning_content_takes_precedence_over_reasoning():
+  """Test that 'reasoning_content' is prioritized over 'reasoning'."""
+  message = {
+      "role": "assistant",
+      "content": "Answer",
+      "reasoning_content": "LiteLLM standard reasoning",
+      "reasoning": "Alternative reasoning",
+  }
+  response = _message_to_generate_content_response(message)
+
+  assert len(response.content.parts) == 2
+  thought_part = response.content.parts[0]
+  assert thought_part.text == "LiteLLM standard reasoning"
+  assert thought_part.thought is True
+
+
+def test_extract_reasoning_value_from_reasoning_content():
+  """Test extraction from reasoning_content (LiteLLM standard)."""
+  message = ChatCompletionAssistantMessage(
+      role="assistant",
+      content="Answer",
+      reasoning_content="LiteLLM reasoning",
+  )
+  result = _extract_reasoning_value(message)
+  assert result == "LiteLLM reasoning"
+
+
+def test_extract_reasoning_value_from_reasoning():
+  """Test extraction from reasoning (LM Studio, vLLM)."""
+
+  class MockMessage:
+
+    def __init__(self):
+      self.role = "assistant"
+      self.content = "Answer"
+      self.reasoning = "Alternative reasoning"
+
+    def get(self, key, default=None):
+      return getattr(self, key, default)
+
+  message = MockMessage()
+  result = _extract_reasoning_value(message)
+  assert result == "Alternative reasoning"
+
+
+def test_extract_reasoning_value_dict_reasoning_content():
+  """Test extraction from dict with reasoning_content field."""
+  message = {
+      "role": "assistant",
+      "content": "Answer",
+      "reasoning_content": "Dict reasoning content",
+  }
+  result = _extract_reasoning_value(message)
+  assert result == "Dict reasoning content"
+
+
+def test_extract_reasoning_value_dict_reasoning():
+  """Test extraction from dict with reasoning field."""
+  message = {
+      "role": "assistant",
+      "content": "Answer",
+      "reasoning": "Dict reasoning",
+  }
+  result = _extract_reasoning_value(message)
+  assert result == "Dict reasoning"
+
+
+def test_extract_reasoning_value_dict_prefers_reasoning_content():
+  """Test that reasoning_content takes precedence over reasoning in dicts."""
+  message = {
+      "role": "assistant",
+      "content": "Answer",
+      "reasoning_content": "Primary",
+      "reasoning": "Secondary",
+  }
+  result = _extract_reasoning_value(message)
+  assert result == "Primary"
+
+
+def test_extract_reasoning_value_none_message():
+  """Test that None message returns None."""
+  result = _extract_reasoning_value(None)
+  assert result is None
+
+
+def test_extract_reasoning_value_no_reasoning_fields():
+  """Test that None is returned when no reasoning fields exist."""
+  message = {
+      "role": "assistant",
+      "content": "Answer only",
+  }
+  result = _extract_reasoning_value(message)
+  assert result is None
+
+
+def test_extract_thought_signature_from_extra_content():
+  """Extracts thought_signature from extra_content (OpenAI-compatible path)."""
+  sig_b64 = base64.b64encode(b"test_signature").decode("utf-8")
+  tc = ChatCompletionMessageToolCall(
+      type="function",
+      id="call_123",
+      function=Function(name="test_fn", arguments="{}"),
+      extra_content={"google": {"thought_signature": sig_b64}},
+  )
+  result = _extract_thought_signature_from_tool_call(tc)
+  assert result == b"test_signature"
+
+
+def test_extract_thought_signature_from_provider_specific_fields():
+  """Extracts thought_signature from provider_specific_fields (Vertex path)."""
+  sig_b64 = base64.b64encode(b"vertex_sig").decode("utf-8")
+  tc = ChatCompletionMessageToolCall(
+      type="function",
+      id="call_456",
+      function=Function(name="test_fn", arguments="{}"),
+      provider_specific_fields={"thought_signature": sig_b64},
+  )
+  result = _extract_thought_signature_from_tool_call(tc)
+  assert result == b"vertex_sig"
+
+
+def test_extract_thought_signature_from_function_provider_fields():
+  """Extracts thought_signature from function's provider_specific_fields.
+
+  When provider_specific_fields is set directly on the function object
+  (e.g. by litellm internals), the extraction should find it.
+  """
+  sig_b64 = base64.b64encode(b"func_sig").decode("utf-8")
+  tc = ChatCompletionMessageToolCall(
+      type="function",
+      id="call_func",
+      function=Function(name="test_fn", arguments="{}"),
+  )
+  # Simulate litellm setting provider_specific_fields on the function
+  tc.function.provider_specific_fields = {
+      "thought_signature": sig_b64,
+  }
+  result = _extract_thought_signature_from_tool_call(tc)
+  assert result == b"func_sig"
+
+
+def test_extract_thought_signature_from_id():
+  """Extracts thought_signature from tool call ID (__thought__ separator)."""
+  sig_b64 = base64.b64encode(b"id_sig").decode("utf-8")
+  tc = ChatCompletionMessageToolCall(
+      type="function",
+      id=f"call_789{_THOUGHT_SIGNATURE_SEPARATOR}{sig_b64}",
+      function=Function(name="test_fn", arguments="{}"),
+  )
+  result = _extract_thought_signature_from_tool_call(tc)
+  assert result == b"id_sig"
+
+
+def test_extract_thought_signature_returns_none_when_absent():
+  """Returns None when no thought_signature is present."""
+  tc = ChatCompletionMessageToolCall(
+      type="function",
+      id="call_plain",
+      function=Function(name="test_fn", arguments="{}"),
+  )
+  result = _extract_thought_signature_from_tool_call(tc)
+  assert result is None
+
+
+def test_extract_thought_signature_corrupted_base64_returns_none():
+  """Returns None gracefully for corrupted base64 signatures."""
+  tc = ChatCompletionMessageToolCall(
+      type="function",
+      id="call_bad",
+      function=Function(name="test_fn", arguments="{}"),
+      extra_content={"google": {"thought_signature": "!!!not_valid_base64!!!"}},
+  )
+  result = _extract_thought_signature_from_tool_call(tc)
+  assert result is None
+
+
+def test_message_to_generate_content_response_preserves_thought_signature():
+  """thought_signature from tool call is preserved on the output Part."""
+  sig_b64 = base64.b64encode(b"round_trip_sig").decode("utf-8")
+  message = ChatCompletionAssistantMessage(
+      role="assistant",
+      content=None,
+      tool_calls=[
+          ChatCompletionMessageToolCall(
+              type="function",
+              id="call_ts_1",
+              function=Function(
+                  name="load_skill",
+                  arguments='{"skill": "my_skill"}',
+              ),
+              extra_content={"google": {"thought_signature": sig_b64}},
+          )
+      ],
+  )
+
+  response = _message_to_generate_content_response(message)
+  fc_part = response.content.parts[0]
+  assert fc_part.function_call.name == "load_skill"
+  assert fc_part.function_call.id == "call_ts_1"
+  assert fc_part.thought_signature == b"round_trip_sig"
+
+
+def test_message_to_generate_content_response_no_thought_signature():
+  """Parts without thought_signature have thought_signature=None."""
+  message = ChatCompletionAssistantMessage(
+      role="assistant",
+      content=None,
+      tool_calls=[
+          ChatCompletionMessageToolCall(
+              type="function",
+              id="call_no_ts",
+              function=Function(
+                  name="plain_tool",
+                  arguments="{}",
+              ),
+          )
+      ],
+  )
+
+  response = _message_to_generate_content_response(message)
+  fc_part = response.content.parts[0]
+  assert fc_part.function_call.name == "plain_tool"
+  assert fc_part.thought_signature is None
+
+
+@pytest.mark.asyncio
+async def test_content_to_message_param_preserves_thought_signature():
+  """thought_signature on Part is emitted on both tool call metadata paths."""
+  sig_bytes = b"preserved_sig"
+  sig_b64 = base64.b64encode(sig_bytes).decode("utf-8")
+  content = types.Content(
+      role="model",
+      parts=[
+          types.Part(
+              function_call=types.FunctionCall(
+                  name="load_skill",
+                  args={"skill": "my_skill"},
+                  id="call_rt",
+              ),
+              thought_signature=sig_bytes,
+          ),
+      ],
+  )
+
+  message = await _content_to_message_param(content)
+  assert message["role"] == "assistant"
+  tc = message["tool_calls"][0]
+  assert tc["function"]["name"] == "load_skill"
+  assert tc["id"] == "call_rt"
+  assert tc["provider_specific_fields"] == {"thought_signature": sig_b64}
+  assert tc["extra_content"] == {"google": {"thought_signature": sig_b64}}
+
+
+@pytest.mark.asyncio
+async def test_content_to_message_param_no_thought_signature():
+  """Tool calls without thought_signature have no signature metadata."""
+  content = types.Content(
+      role="model",
+      parts=[
+          types.Part.from_function_call(name="plain_tool", args={"key": "val"}),
+      ],
+  )
+  content.parts[0].function_call.id = "call_plain"
+
+  message = await _content_to_message_param(content)
+  tc = message["tool_calls"][0]
+  assert tc["id"] == "call_plain"
+  assert "provider_specific_fields" not in tc
+  assert "extra_content" not in tc
+
+
+@pytest.mark.asyncio
+async def test_thought_signature_round_trip():
+  """thought_signature survives a full round trip through ADK conversions.
+
+  Simulates the flow: litellm response → types.Part → litellm request.
+  """
+  sig_b64 = base64.b64encode(b"full_round_trip").decode("utf-8")
+
+  # Step 1: Incoming litellm message with thought_signature
+  incoming_message = ChatCompletionAssistantMessage(
+      role="assistant",
+      content=None,
+      tool_calls=[
+          ChatCompletionMessageToolCall(
+              type="function",
+              id="call_round",
+              function=Function(
+                  name="load_skill",
+                  arguments='{"skill_name": "test"}',
+              ),
+              extra_content={"google": {"thought_signature": sig_b64}},
+          )
+      ],
+  )
+
+  # Step 2: Convert to ADK internal format (types.Content)
+  llm_response = _message_to_generate_content_response(incoming_message)
+  fc_part = llm_response.content.parts[0]
+  assert fc_part.thought_signature == b"full_round_trip"
+
+  # Step 3: Convert back to litellm format
+  outgoing_message = await _content_to_message_param(llm_response.content)
+  out_tc = outgoing_message["tool_calls"][0]
+  assert out_tc["provider_specific_fields"] == {"thought_signature": sig_b64}
+  assert out_tc["extra_content"] == {"google": {"thought_signature": sig_b64}}
+
+
 def test_parse_tool_calls_from_text_multiple_calls():
   text = (
       '{"name":"alpha","arguments":{"value":1}}\n'
@@ -2677,7 +3174,12 @@ def test_to_litellm_role():
                             "content": "this is a test",
                         }
                     }
-                ]
+                ],
+                usage={
+                    "prompt_tokens": 0,
+                    "completion_tokens": 0,
+                    "total_tokens": 0,
+                },
             ),
             [TextChunk(text="this is a test")],
             UsageMetadataChunk(
@@ -2707,7 +3209,7 @@ def test_to_litellm_role():
             "stop",
         ),
         (
-            ModelResponse(
+            ModelResponseStream(
                 choices=[
                     StreamingChoices(
                         finish_reason=None,
@@ -2729,24 +3231,30 @@ def test_to_litellm_role():
                 ]
             ),
             [FunctionChunk(id="1", name="test_function", args='{"key": "va')],
-            UsageMetadataChunk(
-                prompt_tokens=0, completion_tokens=0, total_tokens=0
-            ),
             None,
+            # LiteLLM 1.81+ defaults finish_reason to "stop" for partial chunks,
+            # older versions return None. Both are valid for streaming chunks.
+            (None, "stop"),
         ),
         (
             ModelResponse(choices=[{"finish_reason": "tool_calls"}]),
             [None],
-            UsageMetadataChunk(
-                prompt_tokens=0, completion_tokens=0, total_tokens=0
+            (
+                None,
+                UsageMetadataChunk(
+                    prompt_tokens=0, completion_tokens=0, total_tokens=0
+                ),
             ),
             "tool_calls",
         ),
         (
             ModelResponse(choices=[{}]),
             [None],
-            UsageMetadataChunk(
-                prompt_tokens=0, completion_tokens=0, total_tokens=0
+            (
+                None,
+                UsageMetadataChunk(
+                    prompt_tokens=0, completion_tokens=0, total_tokens=0
+                ),
             ),
             "stop",
         ),
@@ -2813,6 +3321,40 @@ def test_to_litellm_role():
             ),
             "tool_calls",
         ),
+        (
+            ModelResponseStream(
+                choices=[
+                    StreamingChoices(
+                        finish_reason=None,
+                        delta=Delta(role="assistant", content="Hello"),
+                    )
+                ],
+                usage=None,
+            ),
+            [TextChunk(text="Hello")],
+            None,
+            (None, "stop"),
+        ),
+        (
+            ModelResponseStream(
+                choices=[
+                    StreamingChoices(
+                        finish_reason="stop",
+                        delta=Delta(
+                            role="assistant", reasoning_content="thinking..."
+                        ),
+                    )
+                ],
+                usage=None,
+            ),
+            [
+                ReasoningChunk(
+                    parts=[types.Part(text="thinking...", thought=True)]
+                )
+            ],
+            None,
+            "stop",
+        ),
     ],
 )
 def test_model_response_to_chunk(
@@ -2836,13 +3378,50 @@ def test_model_response_to_chunk(
     else:
       assert isinstance(chunk, type(expected_chunk))
       assert chunk == expected_chunk
-    assert finished == expected_finished
+    if isinstance(expected_finished, tuple):
+      assert finished in expected_finished
+    else:
+      assert finished == expected_finished
 
-  if expected_usage_chunk is None:
+  if isinstance(expected_usage_chunk, tuple):
+    assert usage_chunk in expected_usage_chunk
+  elif expected_usage_chunk is None:
     assert usage_chunk is None
   else:
     assert usage_chunk is not None
     assert usage_chunk == expected_usage_chunk
+
+
+def test_model_response_to_chunk_does_not_mutate_delta_object():
+  """Verify that _model_response_to_chunk doesn't mutate the Delta object.
+
+  In real streaming responses, LiteLLM's StreamingChoices only has 'delta'
+  (message is explicitly popped in StreamingChoices constructor). The delta
+  object itself carries reasoning_content when present.
+  """
+  delta = Delta(
+      role="assistant", content="Hello", reasoning_content="thinking..."
+  )
+  response = ModelResponseStream(
+      choices=[StreamingChoices(delta=delta, finish_reason=None)]
+  )
+
+  chunks = [chunk for chunk, _ in _model_response_to_chunk(response) if chunk]
+
+  assert (
+      ReasoningChunk(parts=[types.Part(text="thinking...", thought=True)])
+      in chunks
+  )
+  assert TextChunk(text="Hello") in chunks
+
+  # Verify we don't accidentally mutate the original delta object.
+  assert delta.content == "Hello"
+  assert delta.reasoning_content == "thinking..."
+
+
+def test_model_response_to_chunk_rejects_dict_response():
+  with pytest.raises(TypeError):
+    list(_model_response_to_chunk({"choices": []}))
 
 
 @pytest.mark.asyncio
@@ -3056,7 +3635,7 @@ async def test_generate_content_async_stream_sets_finish_reason(
     mock_completion, lite_llm_instance
 ):
   mock_completion.return_value = iter([
-      ModelResponse(
+      ModelResponseStream(
           model="test_model",
           choices=[
               StreamingChoices(
@@ -3065,7 +3644,7 @@ async def test_generate_content_async_stream_sets_finish_reason(
               )
           ],
       ),
-      ModelResponse(
+      ModelResponseStream(
           model="test_model",
           choices=[
               StreamingChoices(
@@ -3074,7 +3653,7 @@ async def test_generate_content_async_stream_sets_finish_reason(
               )
           ],
       ),
-      ModelResponse(
+      ModelResponseStream(
           model="test_model",
           choices=[StreamingChoices(finish_reason="stop", delta=Delta())],
       ),
@@ -3107,11 +3686,12 @@ async def test_generate_content_async_stream_with_usage_metadata(
 
   streaming_model_response_with_usage_metadata = [
       *STREAMING_MODEL_RESPONSE,
-      ModelResponse(
+      ModelResponseStream(
           usage={
               "prompt_tokens": 10,
               "completion_tokens": 5,
               "total_tokens": 15,
+              "completion_tokens_details": {"reasoning_tokens": 5},
           },
           choices=[
               StreamingChoices(
@@ -3149,6 +3729,7 @@ async def test_generate_content_async_stream_with_usage_metadata(
   assert responses[3].usage_metadata.prompt_token_count == 10
   assert responses[3].usage_metadata.candidates_token_count == 5
   assert responses[3].usage_metadata.total_token_count == 15
+  assert responses[3].usage_metadata.thoughts_token_count == 5
 
   mock_completion.assert_called_once()
 
@@ -3176,12 +3757,13 @@ async def test_generate_content_async_stream_with_usage_metadata(
   """Tests that cached prompt tokens are propagated in streaming mode."""
   streaming_model_response_with_usage_metadata = [
       *STREAMING_MODEL_RESPONSE,
-      ModelResponse(
+      ModelResponseStream(
           usage={
               "prompt_tokens": 10,
               "completion_tokens": 5,
               "total_tokens": 15,
               "cached_tokens": 8,
+              "completion_tokens_details": {"reasoning_tokens": 5},
           },
           choices=[
               StreamingChoices(
@@ -3206,6 +3788,7 @@ async def test_generate_content_async_stream_with_usage_metadata(
   assert responses[3].usage_metadata.candidates_token_count == 5
   assert responses[3].usage_metadata.total_token_count == 15
   assert responses[3].usage_metadata.cached_content_token_count == 8
+  assert responses[3].usage_metadata.thoughts_token_count == 5
 
 
 @pytest.mark.asyncio
@@ -3381,6 +3964,156 @@ async def test_generate_content_async_stream_with_empty_chunk(
   assert function_call.name == "test_function"
   assert function_call.id == "call_abc"
   assert function_call.args == {"test_arg": "value"}
+
+
+@pytest.mark.asyncio
+async def test_streaming_tool_call_truncated_by_max_tokens(
+    mock_completion, lite_llm_instance
+):
+  """Tests that truncated tool calls with finish_reason='length' yield an error LlmResponse."""
+  stream_chunks = [
+      ModelResponseStream(
+          choices=[
+              StreamingChoices(
+                  finish_reason=None,
+                  delta=Delta(
+                      role="assistant",
+                      tool_calls=[
+                          ChatCompletionDeltaToolCall(
+                              type="function",
+                              id="call_123",
+                              function=Function(
+                                  name="test_function",
+                                  arguments='{"test_arg":',
+                              ),
+                              index=0,
+                          )
+                      ],
+                  ),
+              )
+          ]
+      ),
+      ModelResponseStream(
+          choices=[StreamingChoices(finish_reason="length", delta=Delta())]
+      ),
+  ]
+  mock_completion.return_value = iter(stream_chunks)
+
+  responses = [
+      response
+      async for response in lite_llm_instance.generate_content_async(
+          LLM_REQUEST_WITH_FUNCTION_DECLARATION, stream=True
+      )
+  ]
+
+  assert len(responses) == 1
+  error_response = responses[0]
+  assert error_response.error_code == types.FinishReason.MAX_TOKENS
+  assert error_response.finish_reason == types.FinishReason.MAX_TOKENS
+  assert "truncated" in error_response.error_message
+  assert "max_output_tokens" in error_response.error_message
+
+
+@pytest.mark.asyncio
+async def test_streaming_tool_call_complete_with_length_finish_reason(
+    mock_completion, lite_llm_instance
+):
+  """Tests that complete tool calls with finish_reason='length' are yielded normally."""
+  stream_chunks = [
+      ModelResponseStream(
+          choices=[
+              StreamingChoices(
+                  finish_reason=None,
+                  delta=Delta(
+                      role="assistant",
+                      tool_calls=[
+                          ChatCompletionDeltaToolCall(
+                              type="function",
+                              id="call_456",
+                              function=Function(
+                                  name="test_function",
+                                  arguments='{"test_arg": "value"}',
+                              ),
+                              index=0,
+                          )
+                      ],
+                  ),
+              )
+          ]
+      ),
+      ModelResponseStream(
+          choices=[StreamingChoices(finish_reason="length", delta=Delta())]
+      ),
+  ]
+  mock_completion.return_value = iter(stream_chunks)
+
+  responses = [
+      response
+      async for response in lite_llm_instance.generate_content_async(
+          LLM_REQUEST_WITH_FUNCTION_DECLARATION, stream=True
+      )
+  ]
+
+  assert len(responses) == 1
+  final_response = responses[0]
+  assert final_response.content.role == "model"
+  assert len(final_response.content.parts) == 1
+
+  function_call = final_response.content.parts[0].function_call
+  assert function_call.name == "test_function"
+  assert function_call.id == "call_456"
+  assert function_call.args == {"test_arg": "value"}
+  assert final_response.finish_reason == types.FinishReason.MAX_TOKENS
+  assert final_response.error_code == types.FinishReason.MAX_TOKENS
+
+
+@pytest.mark.asyncio
+async def test_streaming_text_truncated_by_max_tokens(
+    mock_completion, lite_llm_instance
+):
+  """Tests that text responses with finish_reason='length' set MAX_TOKENS error."""
+  stream_chunks = [
+      ModelResponseStream(
+          choices=[
+              StreamingChoices(
+                  finish_reason=None,
+                  delta=Delta(
+                      role="assistant",
+                      content="Hello, I am",
+                  ),
+              )
+          ]
+      ),
+      ModelResponseStream(
+          choices=[StreamingChoices(finish_reason="length", delta=Delta())]
+      ),
+  ]
+  mock_completion.return_value = iter(stream_chunks)
+
+  llm_request = LlmRequest(
+      contents=[
+          types.Content(
+              role="user", parts=[types.Part.from_text(text="Say hello")]
+          )
+      ],
+  )
+
+  responses = [
+      response
+      async for response in lite_llm_instance.generate_content_async(
+          llm_request, stream=True
+      )
+  ]
+
+  partial_responses = [r for r in responses if r.partial]
+  aggregated_responses = [r for r in responses if not r.partial]
+
+  assert len(partial_responses) == 1
+  assert len(aggregated_responses) == 1
+  aggregated = aggregated_responses[0]
+  assert aggregated.finish_reason == types.FinishReason.MAX_TOKENS
+  assert aggregated.error_code == types.FinishReason.MAX_TOKENS
+  assert "Maximum tokens reached" in aggregated.error_message
 
 
 @pytest.mark.asyncio
@@ -3657,18 +4390,26 @@ async def test_finish_reason_propagation(
 async def test_finish_reason_unknown_maps_to_other(
     mock_acompletion, lite_llm_instance
 ):
-  """Test that unknown finish_reason values map to FinishReason.OTHER."""
-  mock_response = ModelResponse(
-      choices=[
-          Choices(
-              message=ChatCompletionAssistantMessage(
-                  role="assistant",
-                  content="Test response",
-              ),
-              finish_reason="unknown_reason_type",
-          )
-      ]
-  )
+  """Test that unmapped finish_reason values map to FinishReason.OTHER."""
+  # LiteLLM's Choices model normalizes finish_reason values (e.g., "eos" ->
+  # "stop") before ADK processes them. To test ADK's own fallback mapping,
+  # construct a mock response that bypasses LiteLLM's normalization and
+  # returns a raw unmapped finish_reason string.
+  mock_choice = MagicMock()
+  mock_choice.get = lambda key, default=None: {
+      "message": ChatCompletionAssistantMessage(
+          role="assistant",
+          content="Test response",
+      ),
+      "finish_reason": "totally_unknown_reason",
+  }.get(key, default)
+
+  mock_response = MagicMock()
+  mock_response.get = lambda key, default=None: {
+      "choices": [mock_choice],
+  }.get(key, default)
+  mock_response.model = "test_model"
+
   mock_acompletion.return_value = mock_response
 
   llm_request = LlmRequest(
@@ -3943,3 +4684,213 @@ def test_handles_litellm_logger_names(logger_name):
   finally:
     # Clean up
     test_logger.removeHandler(handler)
+
+
+# ── Anthropic thinking_blocks tests ─────────────────────────────
+
+
+@pytest.mark.parametrize(
+    "model_string,expected",
+    [
+        ("anthropic/claude-4-sonnet", True),
+        ("anthropic/claude-3-5-sonnet-20241022", True),
+        ("Anthropic/Claude-4-Opus", True),
+        ("bedrock/anthropic.claude-3-5-sonnet", True),
+        ("bedrock/us.anthropic.claude-3-5-sonnet-20241022-v2:0", True),
+        ("bedrock/claude-3-5-sonnet", True),
+        ("vertex_ai/claude-3-5-sonnet@20241022", True),
+        ("openai/gpt-4o", False),
+        ("gemini/gemini-2.5-pro", False),
+        ("vertex_ai/gemini-2.5-flash", False),
+        ("bedrock/amazon.titan-text-express-v1", False),
+    ],
+    ids=[
+        "anthropic-prefix",
+        "anthropic-versioned",
+        "anthropic-uppercase",
+        "bedrock-anthropic-dot",
+        "bedrock-us-anthropic",
+        "bedrock-claude",
+        "vertex-claude",
+        "openai-no-match",
+        "gemini-no-match",
+        "vertex-gemini-no-match",
+        "bedrock-non-anthropic",
+    ],
+)
+def test_is_anthropic_model(model_string, expected):
+  assert _is_anthropic_model(model_string) is expected
+
+
+def test_extract_reasoning_value_prefers_thinking_blocks():
+  """thinking_blocks takes precedence over reasoning_content."""
+  thinking_blocks = [
+      {"type": "thinking", "thinking": "deep thought", "signature": "sig123"},
+  ]
+  message = {
+      "role": "assistant",
+      "content": "Answer",
+      "thinking_blocks": thinking_blocks,
+      "reasoning_content": "flat reasoning",
+  }
+  result = _extract_reasoning_value(message)
+  assert result is thinking_blocks
+
+
+def test_extract_reasoning_value_falls_back_without_thinking_blocks():
+  """When thinking_blocks is absent, falls back to reasoning_content."""
+  message = {
+      "role": "assistant",
+      "content": "Answer",
+      "reasoning_content": "flat reasoning",
+  }
+  result = _extract_reasoning_value(message)
+  assert result == "flat reasoning"
+
+
+def test_convert_reasoning_value_to_parts_thinking_blocks_preserves_signature():
+  """thinking_blocks format produces parts with thought_signature."""
+  thinking_blocks = [
+      {"type": "thinking", "thinking": "step 1", "signature": "sig_abc"},
+      {"type": "thinking", "thinking": "step 2", "signature": "sig_def"},
+  ]
+  parts = _convert_reasoning_value_to_parts(thinking_blocks)
+  assert len(parts) == 2
+  assert parts[0].text == "step 1"
+  assert parts[0].thought is True
+  assert parts[0].thought_signature == b"sig_abc"
+  assert parts[1].text == "step 2"
+  assert parts[1].thought_signature == b"sig_def"
+
+
+def test_convert_reasoning_value_to_parts_skips_redacted_blocks():
+  """Redacted thinking blocks are excluded from parts."""
+  thinking_blocks = [
+      {"type": "thinking", "thinking": "visible", "signature": "sig1"},
+      {"type": "redacted", "data": "hidden"},
+  ]
+  parts = _convert_reasoning_value_to_parts(thinking_blocks)
+  assert len(parts) == 1
+  assert parts[0].text == "visible"
+
+
+def test_convert_reasoning_value_to_parts_skips_empty_thinking():
+  """Blocks with empty thinking text are excluded."""
+  thinking_blocks = [
+      {"type": "thinking", "thinking": "", "signature": "sig1"},
+      {"type": "thinking", "thinking": "real thought", "signature": "sig2"},
+  ]
+  parts = _convert_reasoning_value_to_parts(thinking_blocks)
+  assert len(parts) == 1
+  assert parts[0].text == "real thought"
+
+
+def test_convert_reasoning_value_to_parts_flat_string_unchanged():
+  """Flat string reasoning still produces thought parts without signature."""
+  parts = _convert_reasoning_value_to_parts("simple reasoning text")
+  assert len(parts) == 1
+  assert parts[0].text == "simple reasoning text"
+  assert parts[0].thought is True
+  assert parts[0].thought_signature is None
+
+
+@pytest.mark.asyncio
+async def test_content_to_message_param_anthropic_outputs_thinking_blocks():
+  """For Anthropic models, thinking_blocks are output instead of reasoning_content."""
+  content = types.Content(
+      role="model",
+      parts=[
+          types.Part(
+              text="deep thought",
+              thought=True,
+              thought_signature=b"sig_round_trip",
+          ),
+          types.Part(text="Hello!"),
+      ],
+  )
+  result = await _content_to_message_param(
+      content, model="anthropic/claude-4-sonnet"
+  )
+  assert result["role"] == "assistant"
+  assert "thinking_blocks" in result
+  assert result.get("reasoning_content") is None
+  blocks = result["thinking_blocks"]
+  assert len(blocks) == 1
+  assert blocks[0]["type"] == "thinking"
+  assert blocks[0]["thinking"] == "deep thought"
+  assert blocks[0]["signature"] == "sig_round_trip"
+  assert result["content"] == "Hello!"
+
+
+@pytest.mark.asyncio
+async def test_content_to_message_param_non_anthropic_uses_reasoning_content():
+  """For non-Anthropic models, reasoning_content is used as before."""
+  content = types.Content(
+      role="model",
+      parts=[
+          types.Part(text="thinking text", thought=True),
+          types.Part(text="Answer"),
+      ],
+  )
+  result = await _content_to_message_param(content, model="openai/gpt-4o")
+  assert result["role"] == "assistant"
+  assert result.get("reasoning_content") == "thinking text"
+  assert "thinking_blocks" not in result
+
+
+@pytest.mark.asyncio
+async def test_anthropic_thinking_blocks_round_trip():
+  """End-to-end: thinking_blocks in response → Part → thinking_blocks out."""
+  # Simulate LiteLLM response with thinking_blocks
+  response_message = {
+      "role": "assistant",
+      "content": "Final answer",
+      "thinking_blocks": [
+          {
+              "type": "thinking",
+              "thinking": "Let me reason...",
+              "signature": "abc123signature",
+          },
+      ],
+  }
+
+  # Step 1: Extract reasoning value
+  reasoning_value = _extract_reasoning_value(response_message)
+  assert isinstance(reasoning_value, list)
+
+  # Step 2: Convert to parts (preserves signature)
+  parts = _convert_reasoning_value_to_parts(reasoning_value)
+  assert len(parts) == 1
+  assert parts[0].thought_signature == b"abc123signature"
+
+  # Step 3: Build Content for history
+  all_parts = parts + [types.Part(text="Final answer")]
+  content = types.Content(role="model", parts=all_parts)
+
+  # Step 4: Convert back to message param for Anthropic
+  result = await _content_to_message_param(
+      content, model="anthropic/claude-4-sonnet"
+  )
+  blocks = result["thinking_blocks"]
+  assert len(blocks) == 1
+  assert blocks[0]["type"] == "thinking"
+  assert blocks[0]["thinking"] == "Let me reason..."
+  assert blocks[0]["signature"] == "abc123signature"
+
+
+@pytest.mark.asyncio
+async def test_content_to_message_param_anthropic_no_signature_falls_back():
+  """Anthropic model with thought parts but no signatures uses reasoning_content."""
+  content = types.Content(
+      role="model",
+      parts=[
+          types.Part(text="thinking without sig", thought=True),
+          types.Part(text="Response"),
+      ],
+  )
+  result = await _content_to_message_param(
+      content, model="anthropic/claude-4-sonnet"
+  )
+  # Falls back to reasoning_content when no signatures present
+  assert result.get("reasoning_content") == "thinking without sig"
+  assert "thinking_blocks" not in result

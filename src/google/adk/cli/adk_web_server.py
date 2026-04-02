@@ -20,6 +20,8 @@ import importlib
 import json
 import logging
 import os
+import re
+import sys
 import time
 import traceback
 import typing
@@ -67,6 +69,7 @@ from ..auth.credential_service.base_credential_service import BaseCredentialServ
 from ..errors.already_exists_error import AlreadyExistsError
 from ..errors.input_validation_error import InputValidationError
 from ..errors.not_found_error import NotFoundError
+from ..errors.session_not_found_error import SessionNotFoundError
 from ..evaluation.base_eval_service import InferenceConfig
 from ..evaluation.base_eval_service import InferenceRequest
 from ..evaluation.constants import MISSING_EVAL_DEPENDENCIES_MESSAGE
@@ -88,6 +91,7 @@ from ..runners import Runner
 from ..sessions.base_session_service import BaseSessionService
 from ..sessions.session import Session
 from ..utils.context_utils import Aclosing
+from ..version import __version__
 from .cli_eval import EVAL_SESSION_ID_PREFIX
 from .utils import cleanup
 from .utils import common
@@ -133,6 +137,158 @@ def _parse_cors_origins(
 
   combined_regex = "|".join(regex_patterns) if regex_patterns else None
   return literal_origins, combined_regex
+
+
+def _is_origin_allowed(
+    origin: str,
+    allowed_literal_origins: list[str],
+    allowed_origin_regex: Optional[re.Pattern[str]],
+) -> bool:
+  """Check whether the given origin matches the allowed origins."""
+  if "*" in allowed_literal_origins:
+    return True
+  if origin in allowed_literal_origins:
+    return True
+  if allowed_origin_regex is not None:
+    return allowed_origin_regex.fullmatch(origin) is not None
+  return False
+
+
+def _normalize_origin_scheme(scheme: str) -> str:
+  """Normalize request schemes to the browser Origin scheme space."""
+  if scheme == "ws":
+    return "http"
+  if scheme == "wss":
+    return "https"
+  return scheme
+
+
+def _strip_optional_quotes(value: str) -> str:
+  """Strip a single pair of wrapping quotes from a header value."""
+  if len(value) >= 2 and value[0] == '"' and value[-1] == '"':
+    return value[1:-1]
+  return value
+
+
+def _get_scope_header(
+    scope: dict[str, Any], header_name: bytes
+) -> Optional[str]:
+  """Return the first matching header value from an ASGI scope."""
+  for candidate_name, candidate_value in scope.get("headers", []):
+    if candidate_name == header_name:
+      return candidate_value.decode("latin-1").split(",", 1)[0].strip()
+  return None
+
+
+def _get_request_origin(scope: dict[str, Any]) -> Optional[str]:
+  """Compute the effective origin for the current HTTP/WebSocket request."""
+  forwarded = _get_scope_header(scope, b"forwarded")
+  if forwarded is not None:
+    proto = None
+    host = None
+    for element in forwarded.split(",", 1)[0].split(";"):
+      if "=" not in element:
+        continue
+      name, value = element.split("=", 1)
+      if name.strip().lower() == "proto":
+        proto = _strip_optional_quotes(value.strip())
+      elif name.strip().lower() == "host":
+        host = _strip_optional_quotes(value.strip())
+    if proto is not None and host is not None:
+      return f"{_normalize_origin_scheme(proto)}://{host}"
+
+  host = _get_scope_header(scope, b"x-forwarded-host")
+  if host is None:
+    host = _get_scope_header(scope, b"host")
+  if host is None:
+    return None
+
+  proto = _get_scope_header(scope, b"x-forwarded-proto")
+  if proto is None:
+    proto = scope.get("scheme", "http")
+  return f"{_normalize_origin_scheme(proto)}://{host}"
+
+
+def _is_request_origin_allowed(
+    origin: str,
+    scope: dict[str, Any],
+    allowed_literal_origins: list[str],
+    allowed_origin_regex: Optional[re.Pattern[str]],
+    has_configured_allowed_origins: bool,
+) -> bool:
+  """Validate an Origin header against explicit config or same-origin."""
+  if has_configured_allowed_origins and _is_origin_allowed(
+      origin, allowed_literal_origins, allowed_origin_regex
+  ):
+    return True
+
+  request_origin = _get_request_origin(scope)
+  if request_origin is None:
+    return False
+  return origin == request_origin
+
+
+_SAFE_HTTP_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
+
+
+class _OriginCheckMiddleware:
+  """ASGI middleware that blocks cross-origin state-changing requests."""
+
+  def __init__(
+      self,
+      app: Any,
+      has_configured_allowed_origins: bool,
+      allowed_origins: list[str],
+      allowed_origin_regex: Optional[re.Pattern[str]],
+  ) -> None:
+    self._app = app
+    self._has_configured_allowed_origins = has_configured_allowed_origins
+    self._allowed_origins = allowed_origins
+    self._allowed_origin_regex = allowed_origin_regex
+
+  async def __call__(
+      self,
+      scope: dict[str, Any],
+      receive: Any,
+      send: Any,
+  ) -> None:
+    if scope["type"] != "http":
+      await self._app(scope, receive, send)
+      return
+
+    method = scope.get("method", "GET")
+    if method in _SAFE_HTTP_METHODS:
+      await self._app(scope, receive, send)
+      return
+
+    origin = _get_scope_header(scope, b"origin")
+    if origin is None:
+      await self._app(scope, receive, send)
+      return
+
+    if _is_request_origin_allowed(
+        origin,
+        scope,
+        self._allowed_origins,
+        self._allowed_origin_regex,
+        self._has_configured_allowed_origins,
+    ):
+      await self._app(scope, receive, send)
+      return
+
+    response_body = b"Forbidden: origin not allowed"
+    await send({
+        "type": "http.response.start",
+        "status": 403,
+        "headers": [
+            (b"content-type", b"text/plain"),
+            (b"content-length", str(len(response_body)).encode()),
+        ],
+    })
+    await send({
+        "type": "http.response.body",
+        "body": response_body,
+    })
 
 
 class ApiServerSpanExporter(export_lib.SpanExporter):
@@ -202,9 +358,11 @@ class RunAgentRequest(common.BaseModel):
   app_name: str
   user_id: str
   session_id: str
-  new_message: types.Content
+  new_message: Optional[types.Content] = None
   streaming: bool = False
   state_delta: Optional[dict[str, Any]] = None
+  # for long-running function resume requests (e.g., OAuth callback)
+  function_call_event_id: Optional[str] = None
   # for resume long-running functions
   invocation_id: Optional[str] = None
 
@@ -492,6 +650,7 @@ class AdkWebServer:
       logo_text: Optional[str] = None,
       logo_image_url: Optional[str] = None,
       url_prefix: Optional[str] = None,
+      auto_create_session: bool = False,
   ):
     self.agent_loader = agent_loader
     self.session_service = session_service
@@ -509,6 +668,7 @@ class AdkWebServer:
     self.current_app_name_ref: SharedValue[str] = SharedValue(value="")
     self.runner_dict = {}
     self.url_prefix = url_prefix
+    self.auto_create_session = auto_create_session
 
   async def get_runner_async(self, app_name: str) -> Runner:
     """Returns the cached runner for the given app."""
@@ -558,6 +718,7 @@ class AdkWebServer:
         session_service=self.session_service,
         memory_service=self.memory_service,
         credential_service=self.credential_service,
+        auto_create_session=self.auto_create_session,
     )
 
   def _instantiate_extra_plugins(self) -> list[BasePlugin]:
@@ -582,7 +743,8 @@ class AdkWebServer:
     """Import a plugin object (class or instance) from a fully qualified name.
 
     Args:
-      qualified_name: Fully qualified name (e.g., 'my_package.my_plugin.MyPlugin')
+      qualified_name: Fully qualified name (e.g.,
+        'my_package.my_plugin.MyPlugin')
 
     Returns:
       The imported object, which can be either a class or an instance.
@@ -682,6 +844,7 @@ class AdkWebServer:
       ] = lambda o, s: None,
       register_processors: Callable[[TracerProvider], None] = lambda o: None,
       otel_to_cloud: bool = False,
+      with_ui: bool = False,
   ):
     """Creates a FastAPI app for the ADK web server.
 
@@ -694,7 +857,8 @@ class AdkWebServer:
       lifespan: The lifespan of the FastAPI app.
       allow_origins: The origins that are allowed to make cross-origin requests.
         Entries can be literal origins (e.g., 'https://example.com') or regex
-        patterns prefixed with 'regex:' (e.g., 'regex:https://.*\\.example\\.com').
+        patterns prefixed with 'regex:' (e.g.,
+        'regex:https://.*\\.example\\.com').
       web_assets_dir: The directory containing the web assets to serve.
       setup_observer: Callback for setting up the file system observer.
       tear_down_observer: Callback for cleaning up the file system observer.
@@ -746,8 +910,12 @@ class AdkWebServer:
     # Run the FastAPI server.
     app = FastAPI(lifespan=internal_lifespan)
 
+    has_configured_allowed_origins = bool(allow_origins)
     if allow_origins:
       literal_origins, combined_regex = _parse_cors_origins(allow_origins)
+      compiled_origin_regex = (
+          re.compile(combined_regex) if combined_regex is not None else None
+      )
       app.add_middleware(
           CORSMiddleware,
           allow_origins=literal_origins,
@@ -756,6 +924,30 @@ class AdkWebServer:
           allow_methods=["*"],
           allow_headers=["*"],
       )
+    else:
+      literal_origins = []
+      compiled_origin_regex = None
+
+    app.add_middleware(
+        _OriginCheckMiddleware,
+        has_configured_allowed_origins=has_configured_allowed_origins,
+        allowed_origins=literal_origins,
+        allowed_origin_regex=compiled_origin_regex,
+    )
+
+    @app.get("/health")
+    async def health() -> dict[str, str]:
+      return {"status": "ok"}
+
+    @app.get("/version")
+    async def version() -> dict[str, str]:
+      return {
+          "version": __version__,
+          "language": "python",
+          "language_version": (
+              f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}"
+          ),
+      }
 
     @app.get("/list-apps")
     async def list_apps(
@@ -774,6 +966,94 @@ class AdkWebServer:
       if event_dict is None:
         raise HTTPException(status_code=404, detail="Trace not found")
       return event_dict
+
+    if web_assets_dir:
+
+      @app.get("/dev/build_graph/{app_name}")
+      async def get_app_info(app_name: str) -> Any:
+        runner = await self.get_runner_async(app_name)
+
+        if not runner.app:
+          raise HTTPException(
+              status_code=404, detail=f"App not found: {app_name}"
+          )
+
+        def serialize_agent(agent: BaseAgent) -> dict[str, Any]:
+          """Recursively serialize an agent, excluding non-serializable fields."""
+          agent_dict = {}
+
+          for field_name, field_info in agent.__class__.model_fields.items():
+            # Skip non-serializable fields
+            if field_name in [
+                "parent_agent",
+                "before_agent_callback",
+                "after_agent_callback",
+                "before_model_callback",
+                "after_model_callback",
+                "on_model_error_callback",
+                "before_tool_callback",
+                "after_tool_callback",
+                "on_tool_error_callback",
+            ]:
+              continue
+
+            value = getattr(agent, field_name, None)
+
+            # Handle sub_agents recursively
+            if field_name == "sub_agents" and value:
+              agent_dict[field_name] = [
+                  serialize_agent(sub_agent) for sub_agent in value
+              ]
+            elif value is None or field_name == "tools":
+              continue
+            else:
+              try:
+                if isinstance(value, (str, int, float, bool, list, dict)):
+                  agent_dict[field_name] = value
+                elif hasattr(value, "model_dump"):
+                  agent_dict[field_name] = value.model_dump(
+                      mode="python", exclude_none=True
+                  )
+                else:
+                  agent_dict[field_name] = str(value)
+              except Exception:
+                pass
+
+          return agent_dict
+
+        app_info = {
+            "name": runner.app.name,
+            "root_agent": serialize_agent(runner.app.root_agent),
+        }
+
+        # Add optional fields if present
+        if runner.app.plugins:
+          app_info["plugins"] = [
+              {"name": getattr(plugin, "name", type(plugin).__name__)}
+              for plugin in runner.app.plugins
+          ]
+
+        if runner.app.context_cache_config:
+          try:
+            app_info["context_cache_config"] = (
+                runner.app.context_cache_config.model_dump(
+                    mode="python", exclude_none=True
+                )
+            )
+          except Exception:
+            pass
+
+        if runner.app.resumability_config:
+          try:
+            app_info["resumability_config"] = (
+                runner.app.resumability_config.model_dump(
+                    mode="python", exclude_none=True
+                )
+            )
+          except Exception:
+            pass
+
+        return app_info
 
     @app.get("/debug/trace/session/{session_id}", tags=[TAG_DEBUG])
     async def get_session_trace(session_id: str) -> Any:
@@ -1348,6 +1628,24 @@ class AdkWebServer:
       return artifact
 
     @app.get(
+        "/apps/{app_name}/users/{user_id}/sessions/{session_id}/artifacts/{artifact_name}/versions/metadata",
+        response_model=list[ArtifactVersion],
+        response_model_exclude_none=True,
+    )
+    async def list_artifact_versions_metadata(
+        app_name: str,
+        user_id: str,
+        session_id: str,
+        artifact_name: str,
+    ) -> list[ArtifactVersion]:
+      return await self.artifact_service.list_artifact_versions(
+          app_name=app_name,
+          user_id=user_id,
+          session_id=session_id,
+          filename=artifact_name,
+      )
+
+    @app.get(
         "/apps/{app_name}/users/{user_id}/sessions/{session_id}/artifacts/{artifact_name}/versions/{version_id}",
         response_model_exclude_none=True,
     )
@@ -1417,6 +1715,31 @@ class AdkWebServer:
       return artifact_version
 
     @app.get(
+        "/apps/{app_name}/users/{user_id}/sessions/{session_id}/artifacts/{artifact_name}/versions/{version_id}/metadata",
+        response_model=ArtifactVersion,
+        response_model_exclude_none=True,
+    )
+    async def get_artifact_version_metadata(
+        app_name: str,
+        user_id: str,
+        session_id: str,
+        artifact_name: str,
+        version_id: int,
+    ) -> ArtifactVersion:
+      artifact_version = await self.artifact_service.get_artifact_version(
+          app_name=app_name,
+          user_id=user_id,
+          session_id=session_id,
+          filename=artifact_name,
+          version=version_id,
+      )
+      if not artifact_version:
+        raise HTTPException(
+            status_code=404, detail="Artifact version not found"
+        )
+      return artifact_version
+
+    @app.get(
         "/apps/{app_name}/users/{user_id}/sessions/{session_id}/artifacts",
         response_model_exclude_none=True,
     )
@@ -1466,7 +1789,8 @@ class AdkWebServer:
           update_memory_request: The memory request for the update
 
       Raises:
-          HTTPException: If the memory service is not configured or the request is invalid.
+          HTTPException: If the memory service is not configured or the request
+          is invalid.
       """
       if not self.memory_service:
         raise HTTPException(
@@ -1491,52 +1815,60 @@ class AdkWebServer:
 
     @app.post("/run", response_model_exclude_none=True)
     async def run_agent(req: RunAgentRequest) -> list[Event]:
-      session = await self.session_service.get_session(
-          app_name=req.app_name, user_id=req.user_id, session_id=req.session_id
-      )
-      if not session:
-        raise HTTPException(status_code=404, detail="Session not found")
       runner = await self.get_runner_async(req.app_name)
-      async with Aclosing(
-          runner.run_async(
-              user_id=req.user_id,
-              session_id=req.session_id,
-              new_message=req.new_message,
-              state_delta=req.state_delta,
-              invocation_id=req.invocation_id,
-          )
-      ) as agen:
-        events = [event async for event in agen]
+      try:
+        async with Aclosing(
+            runner.run_async(
+                user_id=req.user_id,
+                session_id=req.session_id,
+                new_message=req.new_message,
+                state_delta=req.state_delta,
+                invocation_id=req.invocation_id,
+            )
+        ) as agen:
+          events = [event async for event in agen]
+      except SessionNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e)) from e
       logger.info("Generated %s events in agent run", len(events))
       logger.debug("Events generated: %s", events)
       return events
 
     @app.post("/run_sse")
     async def run_agent_sse(req: RunAgentRequest) -> StreamingResponse:
-      # SSE endpoint
-      session = await self.session_service.get_session(
-          app_name=req.app_name, user_id=req.user_id, session_id=req.session_id
-      )
-      if not session:
-        raise HTTPException(status_code=404, detail="Session not found")
+      stream_mode = StreamingMode.SSE if req.streaming else StreamingMode.NONE
+      runner = await self.get_runner_async(req.app_name)
+
+      # Validate session existence before starting the stream.
+      # We check directly here instead of eagerly advancing the
+      # runner's async generator with anext(), because splitting
+      # generator consumption across two asyncio Tasks (request
+      # handler vs StreamingResponse) breaks OpenTelemetry context
+      # detachment.
+      if not runner.auto_create_session:
+        session = await self.session_service.get_session(
+            app_name=req.app_name,
+            user_id=req.user_id,
+            session_id=req.session_id,
+        )
+        if not session:
+          raise HTTPException(
+              status_code=404,
+              detail=f"Session not found: {req.session_id}",
+          )
 
       # Convert the events to properly formatted SSE
       async def event_generator():
-        try:
-          stream_mode = (
-              StreamingMode.SSE if req.streaming else StreamingMode.NONE
-          )
-          runner = await self.get_runner_async(req.app_name)
-          async with Aclosing(
-              runner.run_async(
-                  user_id=req.user_id,
-                  session_id=req.session_id,
-                  new_message=req.new_message,
-                  state_delta=req.state_delta,
-                  run_config=RunConfig(streaming_mode=stream_mode),
-                  invocation_id=req.invocation_id,
-              )
-          ) as agen:
+        async with Aclosing(
+            runner.run_async(
+                user_id=req.user_id,
+                session_id=req.session_id,
+                new_message=req.new_message,
+                state_delta=req.state_delta,
+                run_config=RunConfig(streaming_mode=stream_mode),
+                invocation_id=req.invocation_id,
+            )
+        ) as agen:
+          try:
             async for event in agen:
               # ADK Web renders artifacts from `actions.artifactDelta`
               # during part processing *and* during action processing
@@ -1544,7 +1876,8 @@ class AdkWebServer:
               # 2) a content-less "action-only" event carrying `artifactDelta`
               events_to_stream = [event]
               if (
-                  event.actions.artifact_delta
+                  not req.function_call_event_id
+                  and event.actions.artifact_delta
                   and event.content
                   and event.content.parts
               ):
@@ -1563,9 +1896,9 @@ class AdkWebServer:
                     "Generated event in agent run streaming: %s", sse_event
                 )
                 yield f"data: {sse_event}\n\n"
-        except Exception as e:
-          logger.exception("Error in event_generator: %s", e)
-          yield f"data: {json.dumps({'error': str(e)})}\n\n"
+          except Exception as e:
+            logger.exception("Error in event_generator: %s", e)
+            yield f"data: {json.dumps({'error': str(e)})}\n\n"
 
       # Returns a streaming response with the proper media type for SSE
       return StreamingResponse(
@@ -1636,14 +1969,23 @@ class AdkWebServer:
         enable_affective_dialog: bool | None = Query(default=None),
         enable_session_resumption: bool | None = Query(default=None),
     ) -> None:
+      ws_origin = websocket.headers.get("origin")
+      if ws_origin is not None and not _is_request_origin_allowed(
+          ws_origin,
+          websocket.scope,
+          literal_origins,
+          compiled_origin_regex,
+          has_configured_allowed_origins,
+      ):
+        await websocket.close(code=1008, reason="Origin not allowed")
+        return
+
       await websocket.accept()
 
       session = await self.session_service.get_session(
           app_name=app_name, user_id=user_id, session_id=session_id
       )
       if not session:
-        # Accept first so that the client is aware of connection establishment,
-        # then close with a specific code.
         await websocket.close(code=1002, reason="Session not found")
         return
 

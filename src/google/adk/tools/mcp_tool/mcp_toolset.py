@@ -29,7 +29,9 @@ from typing import TypeVar
 from typing import Union
 import warnings
 
+from mcp import SamplingCapability
 from mcp import StdioServerParameters
+from mcp.client.session import SamplingFnT
 from mcp.shared.session import ProgressFnT
 from mcp.types import ListResourcesResult
 from mcp.types import ListToolsResult
@@ -114,6 +116,8 @@ class McpToolset(BaseToolset):
           Union[ProgressFnT, ProgressCallbackFactory]
       ] = None,
       use_mcp_resources: Optional[bool] = False,
+      sampling_callback: Optional[SamplingFnT] = None,
+      sampling_capabilities: Optional[SamplingCapability] = None,
   ):
     """Initializes the McpToolset.
 
@@ -139,23 +143,26 @@ class McpToolset(BaseToolset):
       header_provider: A callable that takes a ReadonlyContext and returns a
         dictionary of headers to be used for the MCP session.
       progress_callback: Optional callback to receive progress notifications
-        from MCP server during long-running tool execution. Can be either:
-
-        - A ``ProgressFnT`` callback that receives (progress, total, message).
-          This callback will be shared by all tools in the toolset.
-
-        - A ``ProgressCallbackFactory`` that creates per-tool callbacks. The
-          factory receives (tool_name, callback_context, **kwargs) and returns
-          a ProgressFnT or None. This allows different tools to have different
-          progress handling logic and access/modify session state via the
-          CallbackContext. The **kwargs parameter allows for future
-          extensibility.
+        from MCP server during long-running tool execution. Can be either:  - A
+        ``ProgressFnT`` callback that receives (progress, total, message). This
+        callback will be shared by all tools in the toolset.  - A
+        ``ProgressCallbackFactory`` that creates per-tool callbacks. The factory
+        receives (tool_name, callback_context, **kwargs) and returns a
+        ProgressFnT or None. This allows different tools to have different
+        progress handling logic and access/modify session state via the
+        CallbackContext. The **kwargs parameter allows for future extensibility.
       use_mcp_resources: Whether the agent should have access to MCP resources.
         This will add a `load_mcp_resource` tool to the toolset and include
         available resources in the agent context. Defaults to False.
+      sampling_callback: Optional callback to handle sampling requests from the
+        MCP server.
+      sampling_capabilities: Optional capabilities for sampling.
     """
 
     super().__init__(tool_filter=tool_filter, tool_name_prefix=tool_name_prefix)
+
+    self._sampling_callback = sampling_callback
+    self._sampling_capabilities = sampling_capabilities
 
     if not connection_params:
       raise ValueError("Missing connection params in McpToolset.")
@@ -169,6 +176,8 @@ class McpToolset(BaseToolset):
     self._mcp_session_manager = MCPSessionManager(
         connection_params=self._connection_params,
         errlog=self._errlog,
+        sampling_callback=self._sampling_callback,
+        sampling_capabilities=self._sampling_capabilities,
     )
     self._auth_scheme = auth_scheme
     self._auth_credential = auth_credential
@@ -231,6 +240,10 @@ class McpToolset(BaseToolset):
                 f"{credential.http.scheme} {credential.http.credentials.token}"
             )
         }
+
+      if credential.http.additional_headers:
+        headers = headers or {}
+        headers.update(credential.http.additional_headers)
     elif credential.api_key:
       # For API key, use the auth scheme to determine header name
       if self._auth_config.auth_scheme:
@@ -284,6 +297,9 @@ class McpToolset(BaseToolset):
           coroutine_func(session), timeout=timeout_in_seconds
       )
     except Exception as e:
+      logger.exception(
+          f"Exception during MCP session execution: {error_message}: {e}"
+      )
       raise ConnectionError(f"{error_message}: {e}") from e
 
   @retry_on_errors

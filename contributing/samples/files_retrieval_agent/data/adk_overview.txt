@@ -1,0 +1,23 @@
+Agent Development Kit (ADK) Overview
+
+ADK is a Python framework for building AI agents powered by large language models.
+It provides a structured way to create agents that can reason, use tools, and
+collaborate with other agents.
+
+Key Features:
+- Multi-agent orchestration with sequential, parallel, and loop patterns
+- Built-in tool support including function tools, retrieval, and code execution
+- Session management for maintaining conversation state
+- Memory services for long-term recall across sessions
+- Support for multiple LLM backends including Gemini, Anthropic, and Ollama
+
+Architecture:
+The core abstractions are Agent, Runner, Tool, Session, and Memory.
+The Runner orchestrates the reason-act loop, processing user turns and
+streaming events back to the caller.
+
+Agent Types:
+- LlmAgent: Main agent with LLM integration
+- SequentialAgent: Runs sub-agents in sequence
+- ParallelAgent: Runs sub-agents in parallel
+- LoopAgent: Runs sub-agents in a loop
