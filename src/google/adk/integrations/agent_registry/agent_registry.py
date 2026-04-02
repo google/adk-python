@@ -24,8 +24,10 @@ from typing import Any
 from typing import Callable
 from typing import Dict
 from typing import List
+from typing import Mapping
 from typing import Optional
 from typing import Sequence
+from typing import TypedDict
 from typing import Union
 from urllib.parse import parse_qs
 from urllib.parse import urlparse
@@ -107,6 +109,26 @@ class _ProtocolType(str, Enum):
   TYPE_UNSPECIFIED = "TYPE_UNSPECIFIED"
   A2A_AGENT = "A2A_AGENT"
   CUSTOM = "CUSTOM"
+
+
+class Interface(TypedDict, total=False):
+  """Details for a single connection interface."""
+
+  url: str
+  protocolBinding: str
+
+
+class Endpoint(TypedDict, total=False):
+  """Full metadata for a registered Endpoint."""
+
+  name: str
+  endpointId: str
+  displayName: str
+  description: str
+  interfaces: List[Interface]
+  createTime: str
+  updateTime: str
+  attributes: Dict[str, Any]
 
 
 class AgentRegistry:
@@ -194,7 +216,7 @@ class AgentRegistry:
 
   def _get_connection_uri(
       self,
-      resource_details: Dict[str, Any],
+      resource_details: Mapping[str, Any],
       protocol_type: Optional[_ProtocolType] = None,
       protocol_binding: Optional[A2ATransport] = None,
   ) -> Optional[str]:
@@ -272,6 +294,56 @@ class AgentRegistry:
         tool_name_prefix=name,
         header_provider=self._header_provider,
     )
+
+  # --- Endpoint Methods ---
+
+  def list_endpoints(
+      self,
+      filter_str: Optional[str] = None,
+      page_size: Optional[int] = None,
+      page_token: Optional[str] = None,
+  ) -> Dict[str, Any]:
+    """Fetches a list of Endpoints."""
+    params = {}
+    if filter_str:
+      params["filter"] = filter_str
+    if page_size:
+      params["pageSize"] = str(page_size)
+    if page_token:
+      params["pageToken"] = page_token
+    return self._make_request("endpoints", params=params)
+
+  def get_endpoint(self, name: str) -> Endpoint:
+    """Retrieves details of a specific Endpoint."""
+    return self._make_request(name)  # type: ignore
+
+  def get_model_name(self, endpoint_name: str) -> str:
+    """Retrieves and parses an endpoint into a model resource name.
+
+    Args:
+      endpoint_name: The full resource name of the endpoint.
+
+    Returns:
+      The resolved model resource name string (e.g.
+      projects/.../locations/.../publishers/google/models/...).
+    """
+    endpoint_details = self.get_endpoint(endpoint_name)
+    uri = self._get_connection_uri(endpoint_details)
+    if not uri:
+      raise ValueError(
+          f"Connection URI not found for endpoint: {endpoint_name}"
+      )
+
+    uri = re.sub(r":\w+$", "", uri)
+
+    if uri.startswith("projects/"):
+      return uri
+
+    match = re.search(r"(projects/.+)", uri)
+    if match:
+      return match.group(1)
+
+    return uri
 
   # --- Agent Methods ---
 
