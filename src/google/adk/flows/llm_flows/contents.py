@@ -159,16 +159,11 @@ def _rearrange_events_for_async_function_responses_in_history(
       if not function_response_events_indices and not orphaned_calls:
         continue
       if function_response_events_indices:
-        if len(function_response_events_indices) == 1:
-          result_events.append(
-              events[next(iter(function_response_events_indices))]
-          )
-        else:  # Merge all async function_response as one response event
-          result_events.append(
-              _merge_function_response_events(
-                  [events[i] for i in sorted(function_response_events_indices)]
-              )
-          )
+        result_events.append(
+            _merge_function_response_events(
+                [events[i] for i in sorted(function_response_events_indices)]
+            )
+        )
       # Inject synthetic responses for orphaned calls (issue #3971)
       if orphaned_calls:
         result_events.append(

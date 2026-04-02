@@ -26,6 +26,17 @@ import pytest
 from ... import testing_utils
 
 
+@pytest.fixture
+async def healing_test_setup():
+  """Provides a common setup for auto-healing tests."""
+  agent = Agent(model="gemini-2.5-flash", name="test_agent")
+  llm_request = LlmRequest(model="gemini-2.5-flash")
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent
+  )
+  return agent, llm_request, invocation_context
+
+
 @pytest.mark.asyncio
 async def test_basic_function_call_response_processing():
   """Test basic function call/response processing without rearrangement."""
@@ -595,7 +606,7 @@ async def test_error_when_function_response_without_matching_call():
 
 
 @pytest.mark.asyncio
-async def test_auto_healing_single_orphaned_function_call():
+async def test_auto_healing_single_orphaned_function_call(healing_test_setup):
   """Test auto-healing injects synthetic response for orphaned function call.
 
   When a session is interrupted after a function call but before the response
@@ -607,11 +618,7 @@ async def test_auto_healing_single_orphaned_function_call():
   - Synthetic error responses are injected with correct format
   - Session can continue without crashing
   """
-  agent = Agent(model="gemini-2.5-flash", name="test_agent")
-  llm_request = LlmRequest(model="gemini-2.5-flash")
-  invocation_context = await testing_utils.create_invocation_context(
-      agent=agent
-  )
+  agent, llm_request, invocation_context = healing_test_setup
 
   orphaned_call = types.FunctionCall(
       id="orphaned_123", name="get_weather", args={"location": "Seoul"}
@@ -652,13 +659,11 @@ async def test_auto_healing_single_orphaned_function_call():
 
 
 @pytest.mark.asyncio
-async def test_auto_healing_multiple_orphaned_function_calls():
+async def test_auto_healing_multiple_orphaned_function_calls(
+    healing_test_setup,
+):
   """Test auto-healing handles multiple orphaned function calls in one event."""
-  agent = Agent(model="gemini-2.5-flash", name="test_agent")
-  llm_request = LlmRequest(model="gemini-2.5-flash")
-  invocation_context = await testing_utils.create_invocation_context(
-      agent=agent
-  )
+  agent, llm_request, invocation_context = healing_test_setup
 
   orphaned_call_1 = types.FunctionCall(
       id="orphaned_1", name="tool_a", args={"arg": "value1"}
@@ -703,17 +708,15 @@ async def test_auto_healing_multiple_orphaned_function_calls():
 
 
 @pytest.mark.asyncio
-async def test_auto_healing_partial_orphaned_function_calls():
+async def test_auto_healing_partial_orphaned_function_calls(
+    healing_test_setup,
+):
   """Test auto-healing only heals calls without responses.
 
   When some function calls have responses and others don't, only the orphaned
   ones should receive synthetic responses.
   """
-  agent = Agent(model="gemini-2.5-flash", name="test_agent")
-  llm_request = LlmRequest(model="gemini-2.5-flash")
-  invocation_context = await testing_utils.create_invocation_context(
-      agent=agent
-  )
+  agent, llm_request, invocation_context = healing_test_setup
 
   completed_call = types.FunctionCall(
       id="completed_123", name="tool_complete", args={}
@@ -775,13 +778,11 @@ async def test_auto_healing_partial_orphaned_function_calls():
 
 
 @pytest.mark.asyncio
-async def test_auto_healing_no_healing_when_responses_exist():
+async def test_auto_healing_no_healing_when_responses_exist(
+    healing_test_setup,
+):
   """Test that no healing occurs when all function calls have responses."""
-  agent = Agent(model="gemini-2.5-flash", name="test_agent")
-  llm_request = LlmRequest(model="gemini-2.5-flash")
-  invocation_context = await testing_utils.create_invocation_context(
-      agent=agent
-  )
+  agent, llm_request, invocation_context = healing_test_setup
 
   function_call = types.FunctionCall(
       id="complete_call", name="search_tool", args={"query": "test"}
@@ -828,13 +829,9 @@ async def test_auto_healing_no_healing_when_responses_exist():
 
 
 @pytest.mark.asyncio
-async def test_auto_healing_logs_warning(caplog):
+async def test_auto_healing_logs_warning(healing_test_setup, caplog):
   """Test that auto-healing logs a warning for each orphaned call."""
-  agent = Agent(model="gemini-2.5-flash", name="test_agent")
-  llm_request = LlmRequest(model="gemini-2.5-flash")
-  invocation_context = await testing_utils.create_invocation_context(
-      agent=agent
-  )
+  agent, llm_request, invocation_context = healing_test_setup
 
   orphaned_call = types.FunctionCall(
       id="log_test_123", name="test_tool", args={}
@@ -870,18 +867,14 @@ async def test_auto_healing_logs_warning(caplog):
 
 
 @pytest.mark.asyncio
-async def test_long_running_tool_not_detected_as_orphaned():
+async def test_long_running_tool_not_detected_as_orphaned(healing_test_setup):
   """Test that long-running tool calls are NOT treated as orphaned.
 
   Long-running tools (e.g., human-in-the-loop) intentionally don't produce
   immediate function_response events. They should be excluded from orphaned
   call detection.
   """
-  agent = Agent(model="gemini-2.5-flash", name="test_agent")
-  llm_request = LlmRequest(model="gemini-2.5-flash")
-  invocation_context = await testing_utils.create_invocation_context(
-      agent=agent
-  )
+  agent, llm_request, invocation_context = healing_test_setup
 
   long_running_call = types.FunctionCall(
       id="long_running_123", name="request_human_approval", args={}
