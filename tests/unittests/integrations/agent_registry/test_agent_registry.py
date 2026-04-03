@@ -18,7 +18,10 @@ from unittest.mock import MagicMock
 from unittest.mock import patch
 
 from a2a.types import TransportProtocol as A2ATransport
+from fastapi.openapi.models import OAuth2
 from google.adk.agents.remote_a2a_agent import RemoteA2aAgent
+from google.adk.auth.auth_credential import AuthCredential
+from google.adk.auth.auth_credential import OAuth2Auth
 from google.adk.integrations.agent_registry import _ProtocolType
 from google.adk.integrations.agent_registry import AgentRegistry
 from google.adk.telemetry.tracing import GCP_MCP_SERVER_DESTINATION_ID
@@ -273,6 +276,37 @@ class TestAgentRegistry:
     assert server == {"name": "test-mcp"}
 
   @patch("httpx.Client")
+  def test_list_endpoints(self, mock_httpx, registry):
+    mock_response = MagicMock()
+    mock_response.json.return_value = {"endpoints": []}
+    mock_response.raise_for_status = MagicMock()
+    mock_httpx.return_value.__enter__.return_value.get.return_value = (
+        mock_response
+    )
+
+    # Mock auth refresh
+    registry._credentials.token = "token"
+    registry._credentials.refresh = MagicMock()
+
+    endpoints = registry.list_endpoints()
+    assert endpoints == {"endpoints": []}
+
+  @patch("httpx.Client")
+  def test_get_endpoint(self, mock_httpx, registry):
+    mock_response = MagicMock()
+    mock_response.json.return_value = {"name": "test-endpoint"}
+    mock_response.raise_for_status = MagicMock()
+    mock_httpx.return_value.__enter__.return_value.get.return_value = (
+        mock_response
+    )
+
+    registry._credentials.token = "token"
+    registry._credentials.refresh = MagicMock()
+
+    server = registry.get_endpoint("test-endpoint")
+    assert server == {"name": "test-endpoint"}
+
+  @patch("httpx.Client")
   def test_get_mcp_toolset(self, mock_httpx, registry):
     mock_response = MagicMock()
     mock_response.json.return_value = {
@@ -293,6 +327,39 @@ class TestAgentRegistry:
     toolset = registry.get_mcp_toolset("test-mcp")
     assert isinstance(toolset, McpToolset)
     assert toolset.tool_name_prefix == "TestPrefix"
+
+  @patch("httpx.Client")
+  def test_get_mcp_toolset_with_auth(self, mock_httpx, registry):
+    mock_response = MagicMock()
+    mock_response.json.return_value = {
+        "displayName": "TestPrefix",
+        "interfaces": [{
+            "url": "https://mcp.com",
+            "protocolBinding": A2ATransport.jsonrpc,
+        }],
+    }
+    mock_response.raise_for_status = MagicMock()
+    mock_httpx.return_value.__enter__.return_value.get.return_value = (
+        mock_response
+    )
+
+    registry._credentials.token = "token"
+    registry._credentials.refresh = MagicMock()
+
+    auth_scheme = OAuth2(flows={})
+    auth_credential = AuthCredential(
+        auth_type="oauth2",
+        oauth2=OAuth2Auth(client_id="test_id", client_secret="test_secret"),
+    )
+
+    toolset = registry.get_mcp_toolset(
+        "test-mcp", auth_scheme=auth_scheme, auth_credential=auth_credential
+    )
+    assert isinstance(toolset, McpToolset)
+    auth_config = toolset.get_auth_config()
+    assert auth_config is not None
+    assert auth_config.auth_scheme == auth_scheme
+    assert auth_config.raw_auth_credential == auth_credential
 
   @patch("httpx.Client")
   def test_get_remote_a2a_agent(self, mock_httpx, registry):
@@ -420,3 +487,41 @@ class TestAgentRegistry:
 
     with pytest.raises(RuntimeError, match="API request failed: Generic error"):
       registry._make_request("test-path")
+
+  @patch.object(AgentRegistry, "get_endpoint")
+  def test_get_model_name_starts_with_projects(
+      self, mock_get_endpoint, registry
+  ):
+    mock_get_endpoint.return_value = {
+        "interfaces": [{"url": "projects/p1/locations/l1/models/m1"}]
+    }
+    model_name = registry.get_model_name("test-endpoint")
+    assert model_name == "projects/p1/locations/l1/models/m1"
+
+  @patch.object(AgentRegistry, "get_endpoint")
+  def test_get_model_name_contains_projects(self, mock_get_endpoint, registry):
+    mock_get_endpoint.return_value = {
+        "interfaces": [{
+            "url": (
+                "https://vertexai.googleapis.com/v1/projects/p1/locations/l1/models/m1"
+            )
+        }]
+    }
+    model_name = registry.get_model_name("test-endpoint")
+    assert model_name == "projects/p1/locations/l1/models/m1"
+
+  @patch.object(AgentRegistry, "get_endpoint")
+  def test_get_model_name_strips_suffix(self, mock_get_endpoint, registry):
+    mock_get_endpoint.return_value = {
+        "interfaces": [{"url": "projects/p1/locations/l1/models/m1:predict"}]
+    }
+    model_name = registry.get_model_name("test-endpoint")
+    assert model_name == "projects/p1/locations/l1/models/m1"
+
+  @patch.object(AgentRegistry, "get_endpoint")
+  def test_get_model_name_raises_value_error_if_no_uri(
+      self, mock_get_endpoint, registry
+  ):
+    mock_get_endpoint.return_value = {}
+    with pytest.raises(ValueError, match="Connection URI not found"):
+      registry.get_model_name("test-endpoint")

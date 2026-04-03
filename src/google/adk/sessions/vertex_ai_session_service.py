@@ -190,13 +190,19 @@ class VertexAiSessionService(BaseSessionService):
         }
 
       try:
-        get_session_response, events_iterator = await asyncio.gather(
-            api_client.agent_engines.sessions.get(name=session_resource_name),
-            api_client.agent_engines.sessions.events.list(
-                name=session_resource_name,
-                **list_events_kwargs,
-            ),
-        )
+        if config and config.num_recent_events == 0:
+          get_session_response = await api_client.agent_engines.sessions.get(
+              name=session_resource_name
+          )
+          events_iterator = None
+        else:
+          get_session_response, events_iterator = await asyncio.gather(
+              api_client.agent_engines.sessions.get(name=session_resource_name),
+              api_client.agent_engines.sessions.events.list(
+                  name=session_resource_name,
+                  **list_events_kwargs,
+              ),
+          )
       except ClientError as e:
         if e.code == 404:
           logger.debug(
@@ -222,8 +228,9 @@ class VertexAiSessionService(BaseSessionService):
       # to discard events written milliseconds after the session resource was
       # updated. Clock skew between those writes can otherwise drop tool_result
       # events and permanently break the replayed conversation.
-      async for event in events_iterator:
-        session.events.append(_from_api_event(event))
+      if events_iterator is not None:
+        async for event in events_iterator:
+          session.events.append(_from_api_event(event))
 
     if config:
       # Filter events based on num_recent_events.

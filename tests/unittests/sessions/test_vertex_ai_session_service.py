@@ -698,6 +698,20 @@ async def test_get_session_with_many_events(mock_api_client_instance):
 
 @pytest.mark.asyncio
 @pytest.mark.usefixtures('mock_get_api_client')
+async def test_get_session_with_num_recent_events_zero():
+  session_service = mock_vertex_ai_session_service()
+  session = await session_service.get_session(
+      app_name='123',
+      user_id='user',
+      session_id='2',
+      config=GetSessionConfig(num_recent_events=0),
+  )
+  assert session is not None
+  assert len(session.events) == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures('mock_get_api_client')
 async def test_list_sessions():
   session_service = mock_vertex_ai_session_service()
   sessions = await session_service.list_sessions(app_name='123', user_id='user')
