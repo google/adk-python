@@ -181,8 +181,12 @@ class BaseAgent(BaseModel):
     """
     if ctx.agent_states is None or self.name not in ctx.agent_states:
       return None
-    else:
-      return state_type.model_validate(ctx.agent_states.get(self.name))
+
+    raw_state = ctx.agent_states.get(self.name)
+    if raw_state == {} and state_type is not BaseAgentState:
+      return None
+
+    return state_type.model_validate(raw_state)
 
   def _create_agent_state_event(
       self,

@@ -17,6 +17,7 @@
 from typing import AsyncGenerator
 
 from google.adk.agents.base_agent import BaseAgent
+from google.adk.agents.base_agent import BaseAgentState
 from google.adk.agents.invocation_context import InvocationContext
 from google.adk.agents.sequential_agent import SequentialAgent
 from google.adk.agents.sequential_agent import SequentialAgentState
@@ -178,6 +179,43 @@ async def test_resume_async(request: pytest.FixtureRequest):
 
   assert events[1].author == sequential_agent.name
   assert events[1].actions.end_of_agent
+
+
+@pytest.mark.asyncio
+async def test_resume_async_ignores_base_placeholder_state(
+    request: pytest.FixtureRequest,
+):
+  agent_1 = _TestingAgent(name=f'{request.function.__name__}_test_agent_1')
+  agent_2 = _TestingAgent(name=f'{request.function.__name__}_test_agent_2')
+  sequential_agent = SequentialAgent(
+      name=f'{request.function.__name__}_test_agent',
+      sub_agents=[
+          agent_1,
+          agent_2,
+      ],
+  )
+  parent_ctx = await _create_parent_invocation_context(
+      request.function.__name__, sequential_agent, resumable=True
+  )
+  parent_ctx.agent_states[sequential_agent.name] = BaseAgentState().model_dump(
+      mode='json'
+  )
+
+  events = [e async for e in sequential_agent.run_async(parent_ctx)]
+
+  assert len(events) == 5
+  assert events[0].author == sequential_agent.name
+  assert events[0].actions.agent_state == SequentialAgentState(
+      current_sub_agent=agent_1.name
+  ).model_dump(mode='json')
+  assert events[1].author == agent_1.name
+  assert events[2].author == sequential_agent.name
+  assert events[2].actions.agent_state == SequentialAgentState(
+      current_sub_agent=agent_2.name
+  ).model_dump(mode='json')
+  assert events[3].author == agent_2.name
+  assert events[4].author == sequential_agent.name
+  assert events[4].actions.end_of_agent
 
 
 @pytest.mark.asyncio

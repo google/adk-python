@@ -1021,6 +1021,26 @@ async def test_load_agent_state_with_resume():
 
 
 @pytest.mark.asyncio
+async def test_load_agent_state_ignores_base_placeholder_for_custom_state():
+  agent = BaseAgent(name='test_agent')
+  session_service = InMemorySessionService()
+  session = await session_service.create_session(
+      app_name='test_app', user_id='test_user'
+  )
+  ctx = InvocationContext(
+      invocation_id='test_invocation',
+      agent=agent,
+      session=session,
+      session_service=session_service,
+      resumability_config=ResumabilityConfig(is_resumable=True),
+  )
+  ctx.agent_states[agent.name] = BaseAgentState().model_dump(mode='json')
+
+  state = agent._load_agent_state(ctx, _TestAgentState)
+  assert state is None
+
+
+@pytest.mark.asyncio
 async def test_create_agent_state_event():
   agent = BaseAgent(name='test_agent')
   session_service = InMemorySessionService()
