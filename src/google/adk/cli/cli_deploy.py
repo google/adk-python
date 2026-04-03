@@ -949,6 +949,13 @@ def to_agent_engine(
 
     click.echo('Resolving files and dependencies...')
     agent_config = {}
+    if agent_engine_config_file and not os.path.exists(
+        agent_engine_config_file
+    ):
+      raise click.ClickException(
+          'Agent engine config file not found: '
+          f'{parent_folder}/{agent_engine_config_file}'
+      )
     if not agent_engine_config_file:
       # Attempt to read the agent engine config from .agent_engine_config.json in the dir (if any).
       agent_engine_config_file = os.path.join(
