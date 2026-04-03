@@ -371,9 +371,7 @@ def test_parse_external_ref_raises_error(openapi_spec_generator):
                           "content": {
                               "application/json": {
                                   "schema": {
-                                      "$ref": (
-                                          "external_file.json#/components/schemas/ExternalSchema"
-                                      )
+                                      "$ref": "external_file.json#/components/schemas/ExternalSchema"
                                   }
                               }
                           },

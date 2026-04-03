@@ -341,30 +341,18 @@ class TestSearchCatalog(parameterized.TestCase):
     # Mock the results that the API would return for this semantic query
     mock_api_results = [
         {
-            "name": (
-                "projects/sports-analytics/locations/europe-west1/entryGroups/@bigquery/entries/fb1"
-            ),
+            "name": "projects/sports-analytics/locations/europe-west1/entryGroups/@bigquery/entries/fb1",
             "display_name": "uk_football_premiership",
-            "entry_type": (
-                "projects/655216118709/locations/global/entryTypes/bigquery-table"
-            ),
-            "linked_resource": (
-                "//bigquery.googleapis.com/projects/sports-analytics/datasets/uk/tables/premiership"
-            ),
+            "entry_type": "projects/655216118709/locations/global/entryTypes/bigquery-table",
+            "linked_resource": "//bigquery.googleapis.com/projects/sports-analytics/datasets/uk/tables/premiership",
             "description": "Stats for UK Premier League matches.",
             "location": "europe-west1",
         },
         {
-            "name": (
-                "projects/sports-analytics/locations/europe-west1/entryGroups/@bigquery/entries/fb2"
-            ),
+            "name": "projects/sports-analytics/locations/europe-west1/entryGroups/@bigquery/entries/fb2",
             "display_name": "serie_a_matches",
-            "entry_type": (
-                "projects/655216118709/locations/global/entryTypes/bigquery-table"
-            ),
-            "linked_resource": (
-                "//bigquery.googleapis.com/projects/sports-analytics/datasets/italy/tables/serie_a"
-            ),
+            "entry_type": "projects/655216118709/locations/global/entryTypes/bigquery-table",
+            "linked_resource": "//bigquery.googleapis.com/projects/sports-analytics/datasets/italy/tables/serie_a",
             "description": "Italian Serie A football results.",
             "location": "europe-west1",
         },

@@ -116,32 +116,50 @@ class VertexAiSessionService(BaseSessionService):
       The created session.
     """
 
-    if session_id:
-      raise ValueError(
-          'User-provided Session id is not supported for'
-          ' VertexAISessionService.'
-      )
-
     reasoning_engine_id = self._get_reasoning_engine_id(app_name)
 
-    config = {'session_state': state} if state else {}
+    config: dict[str, Any] = {'session_state': state} if state else {}
+    if session_id:
+      config['session_id'] = session_id
     config.update(kwargs)
     async with self._get_api_client() as api_client:
-      api_response = await api_client.agent_engines.sessions.create(
-          name=f'reasoningEngines/{reasoning_engine_id}',
-          user_id=user_id,
-          config=config,
-      )
-      logger.debug('Create session response: %s', api_response)
-      get_session_response = api_response.response
-      session_id = get_session_response.name.split('/')[-1]
+      try:
+        api_response = await api_client.agent_engines.sessions.create(
+            name=f'reasoningEngines/{reasoning_engine_id}',
+            user_id=user_id,
+            config=config,
+        )
+        logger.debug('Create session response: %s', api_response)
+        get_session_response = api_response.response
+        session_id = get_session_response.name.split('/')[-1]
+        session_state = (
+            getattr(get_session_response, 'session_state', None) or {}
+        )
+        last_update_time = get_session_response.update_time.timestamp()
+      except ClientError as e:
+        if (
+            session_id
+            and e.code == 400
+            and 'not a documented LRO Parent ID' in str(e)
+        ):
+          logger.warning(
+              'Vertex AI LRO polling failed for custom session ID %s. The'
+              ' session was created successfully. Ignoring error.',
+              session_id,
+          )
+          session_state = state or {}
+          last_update_time = datetime.datetime.now(
+              datetime.timezone.utc
+          ).timestamp()
+        else:
+          raise
 
     session = Session(
         app_name=app_name,
         user_id=user_id,
         id=session_id,
-        state=getattr(get_session_response, 'session_state', None) or {},
-        last_update_time=get_session_response.update_time.timestamp(),
+        state=session_state,
+        last_update_time=last_update_time,
     )
     return session
 

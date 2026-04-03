@@ -755,16 +755,27 @@ async def test_create_session():
 
 @pytest.mark.asyncio
 @pytest.mark.usefixtures('mock_get_api_client')
-async def test_create_session_with_custom_session_id():
+async def test_create_session_with_custom_session_id(mock_api_client_instance):
   session_service = mock_vertex_ai_session_service()
 
-  with pytest.raises(ValueError) as excinfo:
-    await session_service.create_session(
-        app_name='123', user_id='user', session_id='1'
-    )
-  assert str(excinfo.value) == (
-      'User-provided Session id is not supported for VertexAISessionService.'
+  # Simulate the LRO bug from Vertex AI API gateway where polling GET fails
+  mock_api_client_instance.agent_engines.sessions.create.side_effect = ClientError(
+      code=400,
+      response_json={
+          'message': (
+              'Since the idType "sessions" is not a documented LRO Parent ID,'
+              ' the associated value must be a Long, but was instead:'
+              ' custom-123'
+          )
+      },
+      response=None,
   )
+
+  session = await session_service.create_session(
+      app_name='123', user_id='user', session_id='custom-123'
+  )
+  assert session.id == 'custom-123'
+  assert session.user_id == 'user'
 
 
 @pytest.mark.asyncio

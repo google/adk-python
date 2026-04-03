@@ -195,11 +195,9 @@ async def get_instance_config(
     replicas = [
         {
             "location": r.location,
-            "type": (
-                spanner_admin_instance_v1.types.ReplicaInfo.ReplicaType(
-                    r.type
-                ).name
-            ),
+            "type": spanner_admin_instance_v1.types.ReplicaInfo.ReplicaType(
+                r.type
+            ).name,
             "default_leader_location": r.default_leader_location,
         }
         for r in config.replicas

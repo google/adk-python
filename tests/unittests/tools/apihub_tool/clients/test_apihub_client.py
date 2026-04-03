@@ -489,9 +489,7 @@ class TestAPIHubClient:
         MagicMock(
             status_code=200,
             json=lambda: {
-                "name": (
-                    "projects/test-project/locations/us-central1/apis/api1/versions/v1"
-                ),
+                "name": "projects/test-project/locations/us-central1/apis/api1/versions/v1",
                 "specs": [],
             },
         ),  # No specs
