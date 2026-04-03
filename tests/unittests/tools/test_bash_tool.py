@@ -13,6 +13,7 @@
 # limitations under the License.
 
 import asyncio
+import signal
 from unittest import mock
 
 from google.adk.tools import bash_tool
@@ -203,6 +204,8 @@ class TestExecuteBashTool:
   async def test_timeout(self, workspace, tool_context_confirmed):
     tool = bash_tool.ExecuteBashTool(workspace=workspace)
     mock_process = mock.AsyncMock()
+    mock_process.pid = 12345
+    mock_process.communicate.return_value = (b"", b"")
     with (
         mock.patch.object(
             asyncio,
@@ -213,14 +216,15 @@ class TestExecuteBashTool:
         mock.patch.object(
             asyncio, "wait_for", autospec=True, side_effect=asyncio.TimeoutError
         ),
+        mock.patch("os.killpg") as mock_killpg,
     ):
       result = await tool.run_async(
           args={"command": "python scripts/do_thing.py"},
           tool_context=tool_context_confirmed,
       )
+      mock_killpg.assert_called_with(12345, signal.SIGKILL)
     assert "error" in result
     assert "timed out" in result["error"].lower()
-    mock_process.kill.assert_called_once()
 
   @pytest.mark.asyncio
   async def test_cwd_is_workspace(self, workspace, tool_context_confirmed):

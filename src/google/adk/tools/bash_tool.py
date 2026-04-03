@@ -18,8 +18,11 @@ from __future__ import annotations
 
 import asyncio
 import dataclasses
+import logging
+import os
 import pathlib
 import shlex
+import signal
 from typing import Any
 from typing import Optional
 
@@ -132,26 +135,74 @@ class ExecuteBashTool(BaseTool):
     elif not tool_context.tool_confirmation.confirmed:
       return {"error": "This tool call is rejected."}
 
-    process = await asyncio.create_subprocess_exec(
-        *shlex.split(command),
-        cwd=str(self._workspace),
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-    )
+    stdout = None
+    stderr = None
     try:
-      stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=30)
+      process = await asyncio.create_subprocess_exec(
+          *shlex.split(command),
+          cwd=str(self._workspace),
+          stdout=asyncio.subprocess.PIPE,
+          stderr=asyncio.subprocess.PIPE,
+          start_new_session=True,
+      )
+
+      try:
+        stdout, stderr = await asyncio.wait_for(
+            process.communicate(), timeout=30
+        )
+      except asyncio.TimeoutError:
+        try:
+          os.killpg(process.pid, signal.SIGKILL)
+        except ProcessLookupError:
+          pass
+        stdout, stderr = await process.communicate()
+        return {
+            "error": "Command timed out after 30 seconds.",
+            "stdout": (
+                stdout.decode(errors="replace")
+                if stdout
+                else "<no stdout captured>"
+            ),
+            "stderr": (
+                stderr.decode(errors="replace")
+                if stderr
+                else "<no stderr captured>"
+            ),
+            "returncode": process.returncode,
+        }
+      finally:
+        try:
+          if process.pid:
+            os.killpg(process.pid, signal.SIGKILL)
+        except ProcessLookupError:
+          pass
+
       return {
           "stdout": (
-              stdout.decode() if stdout is not None else "<No stdout captured>"
+              stdout.decode(errors="replace")
+              if stdout
+              else "<no stdout captured>"
           ),
           "stderr": (
-              stderr.decode() if stderr is not None else "<No stderr captured>"
+              stderr.decode(errors="replace")
+              if stderr
+              else "<no stderr captured>"
           ),
           "returncode": process.returncode,
       }
-    except asyncio.TimeoutError:
-      try:
-        process.kill()
-      except ProcessLookupError:
-        pass
-      return {"error": "Command timed out after 30 seconds."}
+    except Exception as e:  # pylint: disable=broad-except
+      logger = logging.getLogger("google_adk." + __name__)
+      logger.exception("ExecuteBashTool execution failed")
+
+      stdout_res = (
+          stdout.decode(errors="replace") if stdout else "<no stdout captured>"
+      )
+      stderr_res = (
+          stderr.decode(errors="replace") if stderr else "<no stderr captured>"
+      )
+
+      return {
+          "error": f"Execution failed: {str(e)}",
+          "stdout": stdout_res,
+          "stderr": stderr_res,
+      }
