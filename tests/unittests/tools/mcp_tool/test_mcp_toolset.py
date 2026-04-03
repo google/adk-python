@@ -23,8 +23,13 @@ from unittest.mock import MagicMock
 from unittest.mock import Mock
 from unittest.mock import patch
 
+from fastapi.openapi.models import OAuth2
 from google.adk.agents.readonly_context import ReadonlyContext
 from google.adk.auth.auth_credential import AuthCredential
+from google.adk.auth.auth_credential import AuthCredentialTypes
+from google.adk.auth.auth_credential import HttpAuth
+from google.adk.auth.auth_credential import HttpCredentials
+from google.adk.auth.auth_tool import AuthConfig
 from google.adk.tools.load_mcp_resource_tool import LoadMcpResourceTool
 from google.adk.tools.mcp_tool.mcp_session_manager import MCPSessionManager
 from google.adk.tools.mcp_tool.mcp_session_manager import SseConnectionParams
@@ -646,3 +651,26 @@ class TestMcpToolset:
     assert called["value"] is True
     assert result["role"] == "assistant"
     assert result["content"]["text"] == "sampling response"
+
+  @pytest.mark.asyncio
+  async def test_get_auth_headers_includes_additional_headers(self):
+    credential = AuthCredential(
+        auth_type=AuthCredentialTypes.HTTP,
+        http=HttpAuth(
+            scheme="bearer",
+            credentials=HttpCredentials(token="token"),
+            additional_headers={"X-API-Key": "secret"},
+        ),
+    )
+    auth_config = AuthConfig(
+        auth_scheme=OAuth2(flows={}),
+        raw_auth_credential=credential,
+    )
+    auth_config.exchanged_auth_credential = credential
+    toolset = McpToolset(connection_params=self.mock_stdio_params)
+    toolset._auth_config = auth_config
+
+    headers = toolset._get_auth_headers()
+
+    assert headers["Authorization"] == "Bearer token"
+    assert headers["X-API-Key"] == "secret"

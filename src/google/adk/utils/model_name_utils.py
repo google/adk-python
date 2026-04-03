@@ -125,3 +125,21 @@ def is_gemini_2_or_above(model_string: Optional[str]) -> bool:
     return False
 
   return parsed_version.major >= 2
+
+
+def is_gemini_3_1_flash_live(model_string: Optional[str]) -> bool:
+  """Check if the model is a Gemini 3.1 Flash Live model.
+
+  Note: This is a very specific model name for live bidi streaming, so we check
+  for exact match.
+
+  Args:
+    model_string: The model name
+
+  Returns:
+    True if it's a Gemini 3.1 Flash Live model, False otherwise
+  """
+  if not model_string:
+    return False
+
+  return model_string == 'gemini-3.1-flash-live-preview'

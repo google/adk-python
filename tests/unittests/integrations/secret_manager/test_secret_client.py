@@ -18,7 +18,7 @@ import json
 from unittest.mock import MagicMock
 from unittest.mock import patch
 
-from google.adk.tools.apihub_tool.clients.secret_client import SecretManagerClient
+from google.adk.integrations.secret_manager.secret_client import SecretManagerClient
 import pytest
 
 import google
@@ -29,7 +29,7 @@ class TestSecretManagerClient:
 
   @patch("google.cloud.secretmanager.SecretManagerServiceClient")
   @patch(
-      "google.adk.tools.apihub_tool.clients.secret_client.default_service_credential"
+      "google.adk.integrations.secret_manager.secret_client.default_service_credential"
   )
   def test_init_with_default_credentials(
       self, mock_default_service_credential, mock_secret_manager_client
@@ -112,7 +112,7 @@ class TestSecretManagerClient:
       assert client._client == mock_secret_manager_client.return_value
 
   @patch(
-      "google.adk.tools.apihub_tool.clients.secret_client.default_service_credential"
+      "google.adk.integrations.secret_manager.secret_client.default_service_credential"
   )
   def test_init_with_default_credentials_error(
       self, mock_default_service_credential
@@ -136,7 +136,7 @@ class TestSecretManagerClient:
 
   @patch("google.cloud.secretmanager.SecretManagerServiceClient")
   @patch(
-      "google.adk.tools.apihub_tool.clients.secret_client.default_service_credential"
+      "google.adk.integrations.secret_manager.secret_client.default_service_credential"
   )
   def test_get_secret(
       self, mock_default_service_credential, mock_secret_manager_client
@@ -170,7 +170,7 @@ class TestSecretManagerClient:
 
   @patch("google.cloud.secretmanager.SecretManagerServiceClient")
   @patch(
-      "google.adk.tools.apihub_tool.clients.secret_client.default_service_credential"
+      "google.adk.integrations.secret_manager.secret_client.default_service_credential"
   )
   def test_get_secret_error(
       self, mock_default_service_credential, mock_secret_manager_client

@@ -97,6 +97,41 @@ def llm_request():
   )
 
 
+def test_claude_anthropic_client_creation():
+  # Test with environment variables
+  with mock.patch.dict(
+      os.environ,
+      {
+          "GOOGLE_CLOUD_PROJECT": "env-project",
+          "GOOGLE_CLOUD_LOCATION": "env-location",
+      },
+  ):
+    model = Claude(model="claude-3-5-sonnet-v2@20241022")
+    with mock.patch(
+        "google.adk.models.anthropic_llm.AsyncAnthropicVertex", autospec=True
+    ) as mock_client_class:
+      _ = model._anthropic_client
+      mock_client_class.assert_called_once()
+      _, kwargs = mock_client_class.call_args
+      assert kwargs["project_id"] == "env-project"
+      assert kwargs["region"] == "env-location"
+
+
+def test_claude_anthropic_client_creation_with_full_resource_name():
+  # Test with full resource name in model string
+  model = Claude(
+      model="projects/test-project/locations/test-location/publishers/anthropic/models/claude-3-5-sonnet-v2@20241022"
+  )
+  with mock.patch(
+      "google.adk.models.anthropic_llm.AsyncAnthropicVertex", autospec=True
+  ) as mock_client_class:
+    _ = model._anthropic_client
+    mock_client_class.assert_called_once()
+    _, kwargs = mock_client_class.call_args
+    assert kwargs["project_id"] == "test-project"
+    assert kwargs["region"] == "test-location"
+
+
 def test_supported_models():
   models = Claude.supported_models()
   assert len(models) == 2

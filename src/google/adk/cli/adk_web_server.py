@@ -1907,6 +1907,37 @@ class AdkWebServer:
       )
 
     @app.get(
+        "/dev/{app_name}/graph",
+        response_model_exclude_none=True,
+        tags=[TAG_DEBUG],
+    )
+    async def get_app_graph_dot(
+        app_name: str, dark_mode: bool = False
+    ) -> GetEventGraphResult | dict:
+      """Returns the base agent graph in DOT format without any highlights.
+
+      This endpoint allows the frontend to fetch the graph structure once
+      and compute highlights client-side for better performance.
+
+      Args:
+        app_name: The name of the agent/app
+        dark_mode: Whether to use dark theme background color
+      """
+      agent_or_app = self.agent_loader.load_agent(app_name)
+      root_agent = self._get_root_agent(agent_or_app)
+
+      # Get graph with NO highlights (empty list) and specified theme
+      dot_graph = await agent_graph.get_agent_graph(
+          root_agent, [], dark_mode=dark_mode
+      )
+
+      if dot_graph and isinstance(dot_graph, graphviz.Digraph):
+        return GetEventGraphResult(dot_src=dot_graph.source)
+      else:
+        return {}
+
+    # TODO: This endpoint can be removed once we update adk web to stop consuming it
+    @app.get(
         "/apps/{app_name}/users/{user_id}/sessions/{session_id}/events/{event_id}/graph",
         response_model_exclude_none=True,
         tags=[TAG_DEBUG],

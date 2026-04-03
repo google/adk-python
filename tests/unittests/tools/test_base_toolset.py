@@ -438,3 +438,13 @@ async def test_get_tools_with_prefix_caching():
   assert len(tools3) == 1
   assert tools3 is not tools1  # Should be a new list instance
   assert tools3[0].name == 'test_tool1'
+
+  # Test disabling caching
+  toolset._use_invocation_cache = False
+  tools4 = await toolset.get_tools_with_prefix(
+      readonly_context=readonly_context2
+  )
+  tools5 = await toolset.get_tools_with_prefix(
+      readonly_context=readonly_context2
+  )
+  assert tools4 is not tools5

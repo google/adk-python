@@ -933,33 +933,142 @@ async def test_receive_tool_call_and_grounding_metadata_with_native_audio(
   mock_metadata_msg.tool_call = None
   mock_metadata_msg.session_resumption_update = None
 
+  # 3. Message with turn_complete
+  mock_turn_complete_content = mock.create_autospec(
+      types.LiveServerContent, instance=True
+  )
+  mock_turn_complete_content.model_turn = None
+  mock_turn_complete_content.grounding_metadata = None
+  mock_turn_complete_content.turn_complete = True
+  mock_turn_complete_content.interrupted = False
+  mock_turn_complete_content.input_transcription = None
+  mock_turn_complete_content.output_transcription = None
+
+  mock_turn_complete_msg = mock.create_autospec(
+      types.LiveServerMessage, instance=True
+  )
+  mock_turn_complete_msg.usage_metadata = None
+  mock_turn_complete_msg.server_content = mock_turn_complete_content
+  mock_turn_complete_msg.tool_call = None
+  mock_turn_complete_msg.session_resumption_update = None
+
   async def mock_receive_generator():
     yield mock_tool_call_msg
     yield mock_metadata_msg
+    yield mock_turn_complete_msg
 
   receive_mock = mock.Mock(return_value=mock_receive_generator())
   mock_gemini_session.receive = receive_mock
 
   responses = [resp async for resp in connection.receive()]
 
-  assert len(responses) == 2
+  assert len(responses) == 3
 
-  # First response: the tool call
+  # First response: the audio content and grounding metadata
+  assert responses[0].grounding_metadata == grounding_metadata
+  assert responses[0].content == mock_content
   assert responses[0].content is not None
   assert responses[0].content.parts is not None
-  assert responses[0].content.parts[0].function_call is not None
-  assert (
-      responses[0].content.parts[0].function_call.name
-      == 'enterprise_web_search'
-  )
-  assert responses[0].content.parts[0].function_call.args == {
-      'query': 'Google stock price today'
-  }
-  assert responses[0].grounding_metadata is None
+  assert responses[0].content.parts[0].inline_data == audio_blob
 
-  # Second response: the audio content and grounding metadata
-  assert responses[1].grounding_metadata == grounding_metadata
-  assert responses[1].content == mock_content
+  # Second response: the tool call, buffered until turn_complete
   assert responses[1].content is not None
   assert responses[1].content.parts is not None
-  assert responses[1].content.parts[0].inline_data == audio_blob
+  assert responses[1].content.parts[0].function_call is not None
+  assert (
+      responses[1].content.parts[0].function_call.name
+      == 'enterprise_web_search'
+  )
+  assert responses[1].content.parts[0].function_call.args == {
+      'query': 'Google stock price today'
+  }
+  assert responses[1].grounding_metadata is None
+
+  # Third response: the turn_complete
+  assert responses[2].turn_complete is True
+
+
+@pytest.mark.asyncio
+async def test_receive_multiple_tool_calls_buffered_until_turn_complete(
+    gemini_connection, mock_gemini_session
+):
+  """Test receive buffers multiple tool call messages until turn complete."""
+  # First tool call message
+  mock_tool_call_msg1 = mock.create_autospec(
+      types.LiveServerMessage, instance=True
+  )
+  mock_tool_call_msg1.usage_metadata = None
+  mock_tool_call_msg1.server_content = None
+  mock_tool_call_msg1.session_resumption_update = None
+
+  function_call1 = types.FunctionCall(
+      name='tool_1',
+      args={'arg': 'value1'},
+  )
+  mock_tool_call1 = mock.create_autospec(
+      types.LiveServerToolCall, instance=True
+  )
+  mock_tool_call1.function_calls = [function_call1]
+  mock_tool_call_msg1.tool_call = mock_tool_call1
+
+  # Second tool call message
+  mock_tool_call_msg2 = mock.create_autospec(
+      types.LiveServerMessage, instance=True
+  )
+  mock_tool_call_msg2.usage_metadata = None
+  mock_tool_call_msg2.server_content = None
+  mock_tool_call_msg2.session_resumption_update = None
+
+  function_call2 = types.FunctionCall(
+      name='tool_2',
+      args={'arg': 'value2'},
+  )
+  mock_tool_call2 = mock.create_autospec(
+      types.LiveServerToolCall, instance=True
+  )
+  mock_tool_call2.function_calls = [function_call2]
+  mock_tool_call_msg2.tool_call = mock_tool_call2
+
+  # Turn complete message
+  mock_turn_complete_content = mock.create_autospec(
+      types.LiveServerContent, instance=True
+  )
+  mock_turn_complete_content.model_turn = None
+  mock_turn_complete_content.grounding_metadata = None
+  mock_turn_complete_content.turn_complete = True
+  mock_turn_complete_content.interrupted = False
+  mock_turn_complete_content.input_transcription = None
+  mock_turn_complete_content.output_transcription = None
+
+  mock_turn_complete_msg = mock.create_autospec(
+      types.LiveServerMessage, instance=True
+  )
+  mock_turn_complete_msg.usage_metadata = None
+  mock_turn_complete_msg.server_content = mock_turn_complete_content
+  mock_turn_complete_msg.tool_call = None
+  mock_turn_complete_msg.session_resumption_update = None
+
+  async def mock_receive_generator():
+    yield mock_tool_call_msg1
+    yield mock_tool_call_msg2
+    yield mock_turn_complete_msg
+
+  receive_mock = mock.Mock(return_value=mock_receive_generator())
+  mock_gemini_session.receive = receive_mock
+
+  responses = [resp async for resp in gemini_connection.receive()]
+
+  # Expected: One LlmResponse with both tool calls, then one with turn_complete
+  assert len(responses) == 2
+
+  # First response: single LlmResponse carrying both function calls
+  assert responses[0].content is not None
+  parts = responses[0].content.parts
+  assert len(parts) == 2
+  assert parts[0].function_call.name == 'tool_1'
+  assert parts[0].function_call.args == {'arg': 'value1'}
+  assert parts[1].function_call.name == 'tool_2'
+  assert parts[1].function_call.args == {'arg': 'value2'}
+
+  # Second response: turn_complete True
+  assert responses[1].turn_complete is True

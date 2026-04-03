@@ -12,18 +12,25 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from __future__ import annotations
 
-import warnings
+from google.adk.agents.llm_agent import Agent
 
-try:
-  from google.adk.integrations.secret_manager.secret_client import SecretManagerClient
 
-  warnings.warn(
-      "SecretManagerClient has been moved to"
-      " google.adk.integrations.secret_manager. Please update your imports.",
-      DeprecationWarning,
-      stacklevel=2,
-  )
-except ImportError:
-  pass
+def turn_on_lights():
+  """Turn on the lights."""
+  print("turn_on_lights")
+  return {"status": "OK"}
+
+
+def turn_on_tv():
+  """Turn on the tv."""
+  print("turn_on_tv")
+  return {"status": "OK"}
+
+
+root_agent = Agent(
+    model="gemini-live-2.5-flash-native-audio",
+    name="Home_helper",
+    instruction="Be polite and answer all user's questions.",
+    tools=[turn_on_lights, turn_on_tv],
+)
