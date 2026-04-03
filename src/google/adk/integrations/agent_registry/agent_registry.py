@@ -25,10 +25,8 @@ from typing import Callable
 from typing import Dict
 from typing import List
 from typing import Mapping
-from typing import Optional
 from typing import Sequence
 from typing import TypedDict
-from typing import Union
 from urllib.parse import parse_qs
 from urllib.parse import urlparse
 
@@ -39,6 +37,8 @@ from a2a.types import AgentSkill
 from a2a.types import TransportProtocol as A2ATransport
 from google.adk.agents.readonly_context import ReadonlyContext
 from google.adk.agents.remote_a2a_agent import RemoteA2aAgent
+from google.adk.auth.auth_credential import AuthCredential
+from google.adk.auth.auth_schemes import AuthScheme
 from google.adk.telemetry.tracing import GCP_MCP_SERVER_DESTINATION_ID
 from google.adk.tools.base_tool import BaseTool
 from google.adk.tools.mcp_tool.mcp_session_manager import SseConnectionParams
@@ -75,11 +75,15 @@ class AgentRegistrySingleMcpToolset(McpToolset):
       header_provider: (
           Callable[[ReadonlyContext], Dict[str, str]] | None
       ) = None,
+      auth_scheme: AuthScheme | None = None,
+      auth_credential: AuthCredential | None = None,
   ):
     super().__init__(
         connection_params=connection_params,
         tool_name_prefix=tool_name_prefix,
         header_provider=header_provider,
+        auth_scheme=auth_scheme,
+        auth_credential=auth_credential,
     )
     self.destination_resource_id = destination_resource_id
 
@@ -143,11 +147,11 @@ class AgentRegistry:
 
   def __init__(
       self,
-      project_id: Optional[str] = None,
-      location: Optional[str] = None,
-      header_provider: Optional[
-          Callable[[ReadonlyContext], Dict[str, str]]
-      ] = None,
+      project_id: str | None = None,
+      location: str | None = None,
+      header_provider: (
+          Callable[[ReadonlyContext], Dict[str, str]] | None
+      ) = None,
   ):
     """Initializes the AgentRegistry client.
 
@@ -190,7 +194,7 @@ class AgentRegistry:
       ) from e
 
   def _make_request(
-      self, path: str, params: Optional[Dict[str, Any]] = None
+      self, path: str, params: Dict[str, Any] | None = None
   ) -> Dict[str, Any]:
     """Helper function to make GET requests to the Agent Registry API."""
     if path.startswith("projects/"):
@@ -217,9 +221,9 @@ class AgentRegistry:
   def _get_connection_uri(
       self,
       resource_details: Mapping[str, Any],
-      protocol_type: Optional[_ProtocolType] = None,
-      protocol_binding: Optional[A2ATransport] = None,
-  ) -> Optional[str]:
+      protocol_type: _ProtocolType | None = None,
+      protocol_binding: A2ATransport | None = None,
+  ) -> str | None:
     """Extracts the first matching URI based on type and binding filters."""
     protocols = list(resource_details.get("protocols", []))
     if "interfaces" in resource_details:
@@ -249,9 +253,9 @@ class AgentRegistry:
 
   def list_mcp_servers(
       self,
-      filter_str: Optional[str] = None,
-      page_size: Optional[int] = None,
-      page_token: Optional[str] = None,
+      filter_str: str | None = None,
+      page_size: int | None = None,
+      page_token: str | None = None,
   ) -> Dict[str, Any]:
     """Fetches a list of MCP Servers."""
     params = {}
@@ -267,7 +271,12 @@ class AgentRegistry:
     """Retrieves details of a specific MCP Server."""
     return self._make_request(name)
 
-  def get_mcp_toolset(self, mcp_server_name: str) -> McpToolset:
+  def get_mcp_toolset(
+      self,
+      mcp_server_name: str,
+      auth_scheme: AuthScheme | None = None,
+      auth_credential: AuthCredential | None = None,
+  ) -> McpToolset:
     """Constructs an McpToolset instance from a registered MCP Server."""
     server_details = self.get_mcp_server(mcp_server_name)
     name = self._clean_name(server_details.get("displayName", mcp_server_name))
@@ -293,15 +302,17 @@ class AgentRegistry:
         connection_params=connection_params,
         tool_name_prefix=name,
         header_provider=self._header_provider,
+        auth_scheme=auth_scheme,
+        auth_credential=auth_credential,
     )
 
   # --- Endpoint Methods ---
 
   def list_endpoints(
       self,
-      filter_str: Optional[str] = None,
-      page_size: Optional[int] = None,
-      page_token: Optional[str] = None,
+      filter_str: str | None = None,
+      page_size: int | None = None,
+      page_token: str | None = None,
   ) -> Dict[str, Any]:
     """Fetches a list of Endpoints."""
     params = {}
@@ -349,9 +360,9 @@ class AgentRegistry:
 
   def list_agents(
       self,
-      filter_str: Optional[str] = None,
-      page_size: Optional[int] = None,
-      page_token: Optional[str] = None,
+      filter_str: str | None = None,
+      page_size: int | None = None,
+      page_token: str | None = None,
   ) -> Dict[str, Any]:
     """Fetches a list of registered A2A Agents."""
     params = {}

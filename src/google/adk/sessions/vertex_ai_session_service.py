@@ -176,7 +176,7 @@ class VertexAiSessionService(BaseSessionService):
           get_session_response = await api_client.agent_engines.sessions.get(
               name=session_resource_name
           )
-          events_iterator = []
+          events_iterator = None
         else:
           get_session_response, events_iterator = await asyncio.gather(
               api_client.agent_engines.sessions.get(name=session_resource_name),
@@ -210,8 +210,9 @@ class VertexAiSessionService(BaseSessionService):
       # to discard events written milliseconds after the session resource was
       # updated. Clock skew between those writes can otherwise drop tool_result
       # events and permanently break the replayed conversation.
-      async for event in events_iterator:
-        session.events.append(_from_api_event(event))
+      if events_iterator is not None:
+        async for event in events_iterator:
+          session.events.append(_from_api_event(event))
 
     if config:
       # Filter events based on num_recent_events.
