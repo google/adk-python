@@ -100,6 +100,26 @@ def _is_pdf_part(part: types.Part) -> bool:
   )
 
 
+def _sanitize_tool_use_id(tool_id: Optional[str]) -> str:
+  """Sanitize a tool_use ID to match Anthropic's required pattern.
+
+  Anthropic requires tool_use IDs to match ^[a-zA-Z0-9_-]+$.
+  If the ID is None, empty, or contains invalid characters, generate
+  a valid fallback ID.
+
+  Args:
+    tool_id: The original tool_use ID.
+
+  Returns:
+    A valid tool_use ID string.
+  """
+  if tool_id and re.fullmatch(r"[a-zA-Z0-9_-]+", tool_id):
+    return tool_id
+  import uuid
+
+  return "toolu_" + uuid.uuid4().hex[:24]
+
+
 def part_to_message_block(
     part: types.Part,
 ) -> Union[
@@ -115,7 +135,7 @@ def part_to_message_block(
     assert part.function_call.name
 
     return anthropic_types.ToolUseBlockParam(
-        id=part.function_call.id or "",
+        id=_sanitize_tool_use_id(part.function_call.id),
         name=part.function_call.name,
         input=part.function_call.args,
         type="tool_use",
@@ -155,7 +175,7 @@ def part_to_message_block(
       content = json.dumps(response_data)
 
     return anthropic_types.ToolResultBlockParam(
-        tool_use_id=part.function_response.id or "",
+        tool_use_id=_sanitize_tool_use_id(part.function_response.id),
         type="tool_result",
         content=content,
         is_error=False,

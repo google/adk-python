@@ -15,6 +15,7 @@
 import base64
 import json
 import os
+import re
 import sys
 from unittest import mock
 from unittest.mock import AsyncMock
@@ -1350,3 +1351,63 @@ async def test_non_streaming_does_not_pass_stream_param():
   mock_client.messages.create.assert_called_once()
   _, kwargs = mock_client.messages.create.call_args
   assert "stream" not in kwargs
+
+
+# --- Tests for _sanitize_tool_use_id ---
+
+
+def test_sanitize_tool_use_id_valid_id_unchanged():
+  """A valid tool_use ID should pass through unchanged."""
+  from google.adk.models.anthropic_llm import _sanitize_tool_use_id
+
+  assert _sanitize_tool_use_id("toolu_abc123") == "toolu_abc123"
+  assert _sanitize_tool_use_id("my-tool_id-99") == "my-tool_id-99"
+
+
+def test_sanitize_tool_use_id_none_generates_valid():
+  """None ID should be replaced with a valid generated ID."""
+  from google.adk.models.anthropic_llm import _sanitize_tool_use_id
+
+  result = _sanitize_tool_use_id(None)
+  assert result.startswith("toolu_")
+  assert re.fullmatch(r"[a-zA-Z0-9_-]+", result)
+
+
+def test_sanitize_tool_use_id_empty_string_generates_valid():
+  """Empty string ID should be replaced with a valid generated ID."""
+  from google.adk.models.anthropic_llm import _sanitize_tool_use_id
+
+  result = _sanitize_tool_use_id("")
+  assert result.startswith("toolu_")
+  assert re.fullmatch(r"[a-zA-Z0-9_-]+", result)
+
+
+def test_sanitize_tool_use_id_invalid_chars_generates_valid():
+  """ID with invalid characters should be replaced."""
+  from google.adk.models.anthropic_llm import _sanitize_tool_use_id
+
+  result = _sanitize_tool_use_id("invalid id with spaces!")
+  assert result.startswith("toolu_")
+  assert re.fullmatch(r"[a-zA-Z0-9_-]+", result)
+
+
+def test_part_to_message_block_function_call_none_id():
+  """Function call with None ID should get a valid generated ID."""
+  part = types.Part.from_function_call(
+      name="test_tool", args={"key": "value"}
+  )
+  part.function_call.id = None
+
+  result = part_to_message_block(part)
+  assert re.fullmatch(r"[a-zA-Z0-9_-]+", result["id"])
+
+
+def test_part_to_message_block_function_response_none_id():
+  """Function response with None ID should get a valid generated ID."""
+  part = types.Part.from_function_response(
+      name="test_tool", response={"result": "ok"}
+  )
+  part.function_response.id = None
+
+  result = part_to_message_block(part)
+  assert re.fullmatch(r"[a-zA-Z0-9_-]+", result["tool_use_id"])

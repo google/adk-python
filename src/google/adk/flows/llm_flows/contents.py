@@ -41,13 +41,16 @@ class _ContentLlmRequestProcessor(BaseLlmRequestProcessor):
   async def run_async(
       self, invocation_context: InvocationContext, llm_request: LlmRequest
   ) -> AsyncGenerator[Event, None]:
+    from ...models.anthropic_llm import AnthropicLlm
     from ...models.google_llm import Gemini
 
     agent = invocation_context.agent
     preserve_function_call_ids = False
     if hasattr(agent, 'canonical_model'):
       canonical_model = agent.canonical_model
-      preserve_function_call_ids = (
+      preserve_function_call_ids = isinstance(
+          canonical_model, AnthropicLlm
+      ) or (
           isinstance(canonical_model, Gemini)
           and canonical_model.use_interactions_api
       )
