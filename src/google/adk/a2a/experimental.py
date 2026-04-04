@@ -23,10 +23,11 @@ a2a_experimental = _make_feature_decorator(
     default_message=(
         "ADK Implementation for A2A support (A2aAgentExecutor, RemoteA2aAgent "
         "and corresponding supporting components etc.) is in experimental mode "
-        "and is subjected to breaking changes. A2A protocol and SDK are"
+        "and is subject to breaking changes. A2A protocol and SDK are "
         "themselves not experimental. Once it's stable enough the experimental "
         "mode will be removed. Your feedback is welcome."
     ),
+    bypass_env_var="ADK_SUPPRESS_A2A_EXPERIMENTAL_FEATURE_WARNINGS",
 )
 """Mark a class or function as experimental A2A feature.
 

@@ -145,3 +145,43 @@ def test_vertex_rag_retrieval_for_gemini_2_x():
       )
   ]
   assert 'rag_retrieval' not in mockModel.requests[0].tools_dict
+
+
+def test_vertex_rag_retrieval_for_non_gemini_with_disabled_check(monkeypatch):
+  monkeypatch.setenv('ADK_DISABLE_GEMINI_MODEL_ID_CHECK', 'true')
+  responses = [
+      'response1',
+  ]
+  mockModel = testing_utils.MockModel.create(responses=responses)
+  mockModel.model = 'internal-model-v1'
+
+  agent = Agent(
+      name='root_agent',
+      model=mockModel,
+      tools=[
+          VertexAiRagRetrieval(
+              name='rag_retrieval',
+              description='rag_retrieval',
+              rag_corpora=[
+                  'projects/123456789/locations/us-central1/ragCorpora/1234567890'
+              ],
+          )
+      ],
+  )
+  runner = testing_utils.InMemoryRunner(agent)
+  runner.run('test1')
+
+  assert len(mockModel.requests) == 1
+  assert len(mockModel.requests[0].config.tools) == 1
+  assert mockModel.requests[0].config.tools == [
+      types.Tool(
+          retrieval=types.Retrieval(
+              vertex_rag_store=types.VertexRagStore(
+                  rag_corpora=[
+                      'projects/123456789/locations/us-central1/ragCorpora/1234567890'
+                  ]
+              )
+          )
+      )
+  ]
+  assert 'rag_retrieval' not in mockModel.requests[0].tools_dict

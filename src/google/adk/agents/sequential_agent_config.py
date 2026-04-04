@@ -19,11 +19,12 @@ from __future__ import annotations
 from pydantic import ConfigDict
 from pydantic import Field
 
-from ..agents.base_agent import experimental
 from ..agents.base_agent_config import BaseAgentConfig
+from ..features import experimental
+from ..features import FeatureName
 
 
-@experimental
+@experimental(FeatureName.AGENT_CONFIG)
 class SequentialAgentConfig(BaseAgentConfig):
   """The config for the YAML schema of a SequentialAgent."""
 

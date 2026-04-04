@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import logging
+from typing import Any
 from typing import AsyncGenerator
 from typing import TYPE_CHECKING
 
@@ -37,6 +38,65 @@ if TYPE_CHECKING:
 logger = logging.getLogger('google_adk.' + __name__)
 
 
+def _parse_tool_confirmation(response: dict[str, Any]) -> ToolConfirmation:
+  """Parse ToolConfirmation from a function response dict.
+
+  Handles both the direct dict format and the ADK client's
+  ``{'response': json_string}`` wrapper format.
+
+  """
+  if response and len(response.values()) == 1 and 'response' in response.keys():
+    return ToolConfirmation.model_validate(json.loads(response['response']))
+  return ToolConfirmation.model_validate(response)
+
+
+def _resolve_confirmation_targets(
+    events: list[Event],
+    confirmation_fc_ids: set[str],
+    confirmations_by_fc_id: dict[str, ToolConfirmation],
+) -> tuple[dict[str, ToolConfirmation], dict[str, types.FunctionCall]]:
+  """Find original function calls for confirmed tools.
+
+  Scans events for ``adk_request_confirmation`` function calls whose IDs
+  are in *confirmation_fc_ids*, extracts the ``originalFunctionCall`` from
+  their args, and maps each confirmation to the original FC ID.
+
+  Args:
+    events: Session events to scan.
+    confirmation_fc_ids: IDs of ``adk_request_confirmation`` function calls.
+    confirmations_by_fc_id: Mapping of confirmation FC ID ->
+      ``ToolConfirmation``.
+
+  Returns:
+    Tuple of ``(tool_confirmation_dict, original_fcs_dict)`` where both
+    are keyed by the ORIGINAL function call IDs.
+  """
+  tool_confirmation_dict: dict[str, ToolConfirmation] = {}
+  original_fcs_dict: dict[str, types.FunctionCall] = {}
+
+  for event in events:
+    event_function_calls = event.get_function_calls()
+    if not event_function_calls:
+      continue
+
+    for function_call in event_function_calls:
+      if function_call.id not in confirmation_fc_ids:
+        continue
+
+      args = function_call.args
+      if 'originalFunctionCall' not in args:
+        continue
+      original_function_call = types.FunctionCall(
+          **args['originalFunctionCall']
+      )
+      tool_confirmation_dict[original_function_call.id] = (
+          confirmations_by_fc_id[function_call.id]
+      )
+      original_fcs_dict[original_function_call.id] = original_function_call
+
+  return tool_confirmation_dict, original_fcs_dict
+
+
 class _RequestConfirmationLlmRequestProcessor(BaseLlmRequestProcessor):
   """Handles tool confirmation information to build the LLM request."""
 
@@ -53,14 +113,12 @@ class _RequestConfirmationLlmRequestProcessor(BaseLlmRequestProcessor):
     if not events:
       return
 
-    request_confirmation_function_responses = (
-        dict()
-    )  # {function call id, tool confirmation}
-
+    # Step 1: Find the last user-authored event and parse confirmation
+    # responses from it.
+    confirmations_by_fc_id: dict[str, ToolConfirmation] = {}
     confirmation_event_index = -1
     for k in range(len(events) - 1, -1, -1):
       event = events[k]
-      # Find the first event authored by user
       if not event.author or event.author != 'user':
         continue
       responses = event.get_function_responses()
@@ -70,101 +128,58 @@ class _RequestConfirmationLlmRequestProcessor(BaseLlmRequestProcessor):
       for function_response in responses:
         if function_response.name != REQUEST_CONFIRMATION_FUNCTION_CALL_NAME:
           continue
-
-        # Find the FunctionResponse event that contains the user provided tool
-        # confirmation
-        if (
+        confirmations_by_fc_id[function_response.id] = _parse_tool_confirmation(
             function_response.response
-            and len(function_response.response.values()) == 1
-            and 'response' in function_response.response.keys()
-        ):
-          # ADK client must send a resuming run request with a function response
-          # that always encapsulate the confirmation result with a 'response'
-          # key
-          tool_confirmation = ToolConfirmation.model_validate(
-              json.loads(function_response.response['response'])
-          )
-        else:
-          tool_confirmation = ToolConfirmation.model_validate(
-              function_response.response
-          )
-        request_confirmation_function_responses[function_response.id] = (
-            tool_confirmation
         )
       confirmation_event_index = k
       break
 
-    if not request_confirmation_function_responses:
+    if not confirmations_by_fc_id:
       return
 
-    for i in range(len(events) - 2, -1, -1):
+    # Step 2: Resolve confirmation targets using extracted helper.
+    confirmation_fc_ids = set(confirmations_by_fc_id.keys())
+    tools_to_resume_with_confirmation, tools_to_resume_with_args = (
+        _resolve_confirmation_targets(
+            events, confirmation_fc_ids, confirmations_by_fc_id
+        )
+    )
+
+    if not tools_to_resume_with_confirmation:
+      return
+
+    # Step 3: Remove tools that have already been confirmed (dedup).
+    for i in range(len(events) - 1, confirmation_event_index, -1):
       event = events[i]
-      # Find the system generated FunctionCall event requesting the tool
-      # confirmation
-      function_calls = event.get_function_calls()
-      if not function_calls:
+      fr_list = event.get_function_responses()
+      if not fr_list:
         continue
 
-      tools_to_resume_with_confirmation = (
-          dict()
-      )  # {Function call id, tool confirmation}
-      tools_to_resume_with_args = dict()  # {Function call id, function calls}
-
-      for function_call in function_calls:
-        if (
-            function_call.id
-            not in request_confirmation_function_responses.keys()
-        ):
-          continue
-
-        args = function_call.args
-        if 'originalFunctionCall' not in args:
-          continue
-        original_function_call = types.FunctionCall(
-            **args['originalFunctionCall']
-        )
-        tools_to_resume_with_confirmation[original_function_call.id] = (
-            request_confirmation_function_responses[function_call.id]
-        )
-        tools_to_resume_with_args[original_function_call.id] = (
-            original_function_call
-        )
+      for function_response in fr_list:
+        if function_response.id in tools_to_resume_with_confirmation:
+          tools_to_resume_with_confirmation.pop(function_response.id)
+          tools_to_resume_with_args.pop(function_response.id)
       if not tools_to_resume_with_confirmation:
-        continue
+        break
 
-      # Remove the tools that have already been confirmed.
-      for i in range(len(events) - 1, confirmation_event_index, -1):
-        event = events[i]
-        function_response = event.get_function_responses()
-        if not function_response:
-          continue
-
-        for function_response in event.get_function_responses():
-          if function_response.id in tools_to_resume_with_confirmation:
-            tools_to_resume_with_confirmation.pop(function_response.id)
-            tools_to_resume_with_args.pop(function_response.id)
-        if not tools_to_resume_with_confirmation:
-          break
-
-      if not tools_to_resume_with_confirmation:
-        continue
-
-      if function_response_event := await functions.handle_function_call_list_async(
-          invocation_context,
-          tools_to_resume_with_args.values(),
-          {
-              tool.name: tool
-              for tool in await agent.canonical_tools(
-                  ReadonlyContext(invocation_context)
-              )
-          },
-          # There could be parallel function calls that require input
-          # response would be a dict keyed by function call id
-          tools_to_resume_with_confirmation.keys(),
-          tools_to_resume_with_confirmation,
-      ):
-        yield function_response_event
+    if not tools_to_resume_with_confirmation:
       return
+
+    # Step 4: Re-execute the confirmed tools.
+    if function_response_event := await functions.handle_function_call_list_async(
+        invocation_context,
+        tools_to_resume_with_args.values(),
+        {
+            tool.name: tool
+            for tool in await agent.canonical_tools(
+                ReadonlyContext(invocation_context)
+            )
+        },
+        tools_to_resume_with_confirmation.keys(),
+        tools_to_resume_with_confirmation,
+    ):
+      yield function_response_event
+    return
 
 
 request_processor = _RequestConfirmationLlmRequestProcessor()

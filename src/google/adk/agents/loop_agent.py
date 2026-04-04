@@ -26,8 +26,9 @@ from typing import Optional
 from typing_extensions import override
 
 from ..events.event import Event
+from ..features import experimental
+from ..features import FeatureName
 from ..utils.context_utils import Aclosing
-from ..utils.feature_decorator import experimental
 from .base_agent import BaseAgent
 from .base_agent import BaseAgentState
 from .base_agent_config import BaseAgentConfig
@@ -37,7 +38,7 @@ from .loop_agent_config import LoopAgentConfig
 logger = logging.getLogger('google_adk.' + __name__)
 
 
-@experimental
+@experimental(FeatureName.AGENT_STATE)
 class LoopAgentState(BaseAgentState):
   """State for LoopAgent."""
 
@@ -153,7 +154,7 @@ class LoopAgent(BaseAgent):
 
   @override
   @classmethod
-  @experimental
+  @experimental(FeatureName.AGENT_CONFIG)
   def _parse_config(
       cls: type[LoopAgent],
       config: LoopAgentConfig,
