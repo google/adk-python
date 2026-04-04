@@ -118,6 +118,22 @@ class InMemorySessionService(BaseSessionService):
         app_name=app_name, user_id=user_id, session_id=session_id
     ):
       raise AlreadyExistsError(f'Session with id {session_id} already exists.')
+
+    session_id = (
+        session_id.strip()
+        if session_id and session_id.strip()
+        else platform_uuid.new_uuid()
+    )
+
+    # Seed secret state into the process-local cache before
+    # extract_state_delta, which would otherwise drop secret keys.
+    state = self._seed_secret_state_on_create(
+        app_name=app_name,
+        user_id=user_id,
+        session_id=session_id,
+        state=state,
+    )
+
     state_deltas = _session_util.extract_state_delta(state)
     app_state_delta = state_deltas['app']
     user_state_delta = state_deltas['user']
@@ -129,11 +145,6 @@ class InMemorySessionService(BaseSessionService):
           user_state_delta
       )
 
-    session_id = (
-        session_id.strip()
-        if session_id and session_id.strip()
-        else platform_uuid.new_uuid()
-    )
     session = Session(
         app_name=app_name,
         user_id=user_id,
@@ -149,7 +160,9 @@ class InMemorySessionService(BaseSessionService):
     self.sessions[app_name][user_id][session_id] = session
 
     copied_session = _copy_session(session)
-    return self._merge_state(app_name, user_id, copied_session)
+    merged = self._merge_state(app_name, user_id, copied_session)
+    self._restore_secret_state(merged)
+    return merged
 
   @override
   async def get_session(
@@ -219,7 +232,9 @@ class InMemorySessionService(BaseSessionService):
           copied_session.events = copied_session.events[i + 1 :]
 
     # Return a copy of the session object with merged state.
-    return self._merge_state(app_name, user_id, copied_session)
+    merged = self._merge_state(app_name, user_id, copied_session)
+    self._restore_secret_state(merged)
+    return merged
 
   def _merge_state(
       self, app_name: str, user_id: str, copied_session: Session
@@ -311,6 +326,7 @@ class InMemorySessionService(BaseSessionService):
       return
 
     self.sessions[app_name][user_id].pop(session_id)
+    self._evict_secret_state(app_name, user_id, session_id)
 
   @override
   async def append_event(self, session: Session, event: Event) -> Event:

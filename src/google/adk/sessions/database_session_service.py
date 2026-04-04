@@ -445,6 +445,21 @@ class DatabaseSessionService(BaseSessionService):
           defaults={"app_name": app_name, "user_id": user_id, "state": {}},
       )
 
+      # Extract secret keys before they are dropped by
+      # extract_state_delta; we'll seed the cache after the session
+      # is committed and has a final ID.
+      secret_keys = {}
+      if state:
+        secret_keys = {
+            k: v for k, v in state.items() if k.startswith(State.SECRET_PREFIX)
+        }
+        if secret_keys:
+          state = {
+              k: v
+              for k, v in state.items()
+              if not k.startswith(State.SECRET_PREFIX)
+          }
+
       # Extract state deltas
       state_deltas = _session_util.extract_state_delta(state)
       app_state_delta = state_deltas["app"]
@@ -482,6 +497,13 @@ class DatabaseSessionService(BaseSessionService):
       session = storage_session.to_session(
           state=merged_state, is_sqlite=is_sqlite
       )
+
+    # Seed secret state into the cache now that session.id is resolved.
+    if secret_keys:
+      cache_key = (app_name, user_id, session.id)
+      self._secret_state_cache.setdefault(cache_key, {}).update(secret_keys)
+      for key, value in secret_keys.items():
+        session.state[key] = value
     return session
 
   @override
@@ -547,6 +569,7 @@ class DatabaseSessionService(BaseSessionService):
       session = storage_session.to_session(
           state=merged_state, events=events, is_sqlite=is_sqlite
       )
+    self._restore_secret_state(session)
     return session
 
   @override
@@ -615,6 +638,7 @@ class DatabaseSessionService(BaseSessionService):
       )
       await sql_session.execute(stmt)
       await sql_session.commit()
+    self._evict_secret_state(app_name, user_id, session_id)
 
   @override
   async def append_event(self, session: Session, event: Event) -> Event:
@@ -627,6 +651,9 @@ class DatabaseSessionService(BaseSessionService):
     self._apply_temp_state(session, event)
     # Trim temp state before persisting
     event = self._trim_temp_delta_state(event)
+    # Apply secret state to in-memory session and process cache.
+    self._apply_secret_state(session, event)
+    event = self._trim_secret_delta_state(event)
 
     # 1. Validate the session has not gone stale.
     # 2. Update session attributes based on event config.

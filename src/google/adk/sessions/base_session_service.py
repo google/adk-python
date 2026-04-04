@@ -57,6 +57,22 @@ class BaseSessionService(abc.ABC):
   The service provides a set of methods for managing sessions and events.
   """
 
+  @property
+  def _secret_state_cache(
+      self,
+  ) -> dict[tuple[str, str, str], dict[str, Any]]:
+    """Process-local cache for secret-scoped state.
+
+    Keyed by (app_name, user_id, session_id).
+    Lazily initialized to avoid requiring subclasses to call
+    super().__init__().
+    """
+    try:
+      return self.__secret_state_cache
+    except AttributeError:
+      self.__secret_state_cache: dict[tuple[str, str, str], dict[str, Any]] = {}
+      return self.__secret_state_cache
+
   @abc.abstractmethod
   async def create_session(
       self,
@@ -120,6 +136,10 @@ class BaseSessionService(abc.ABC):
     # read temp values (e.g. output_key='temp:my_key' in SequentialAgent).
     self._apply_temp_state(session, event)
     event = self._trim_temp_delta_state(event)
+    # Apply secret-scoped state to in-memory session and process cache
+    # BEFORE trimming, so the session retains secret values across turns.
+    self._apply_secret_state(session, event)
+    event = self._trim_secret_delta_state(event)
     self._update_session_state(session, event)
     session.events.append(event)
     return event
@@ -153,6 +173,73 @@ class BaseSessionService(abc.ABC):
         if not key.startswith(State.TEMP_PREFIX)
     }
     return event
+
+  def _apply_secret_state(self, session: Session, event: Event) -> None:
+    """Applies secret-scoped state to in-memory session and process cache.
+
+    Secret state survives across turns (via the process-local cache) but
+    is never persisted to storage. The event delta is trimmed separately
+    by _trim_secret_delta_state.
+    """
+    if not event.actions or not event.actions.state_delta:
+      return
+    cache_key = (session.app_name, session.user_id, session.id)
+    for key, value in event.actions.state_delta.items():
+      if key.startswith(State.SECRET_PREFIX):
+        session.state[key] = value
+        self._secret_state_cache.setdefault(cache_key, {})[key] = value
+
+  def _trim_secret_delta_state(self, event: Event) -> Event:
+    """Removes secret-scoped keys from event delta before persistence."""
+    if not event.actions or not event.actions.state_delta:
+      return event
+    event.actions.state_delta = {
+        key: value
+        for key, value in event.actions.state_delta.items()
+        if not key.startswith(State.SECRET_PREFIX)
+    }
+    return event
+
+  def _seed_secret_state_on_create(
+      self,
+      *,
+      app_name: str,
+      user_id: str,
+      session_id: str,
+      state: Optional[dict[str, Any]],
+  ) -> Optional[dict[str, Any]]:
+    """Extracts secret-scoped keys from initial state into the cache.
+
+    Returns the state dict with secret keys removed (for persistence)
+    but seeds them in the process-local cache so get_session() can
+    restore them.
+    """
+    if not state:
+      return state
+    secret_keys = {
+        k: v for k, v in state.items() if k.startswith(State.SECRET_PREFIX)
+    }
+    if not secret_keys:
+      return state
+    cache_key = (app_name, user_id, session_id)
+    self._secret_state_cache.setdefault(cache_key, {}).update(secret_keys)
+    return {
+        k: v for k, v in state.items() if not k.startswith(State.SECRET_PREFIX)
+    }
+
+  def _restore_secret_state(self, session: Session) -> None:
+    """Merges cached secret state into an in-memory session."""
+    cache_key = (session.app_name, session.user_id, session.id)
+    secret_state = self._secret_state_cache.get(cache_key, {})
+    for key, value in secret_state.items():
+      session.state[key] = value
+
+  def _evict_secret_state(
+      self, app_name: str, user_id: str, session_id: str
+  ) -> None:
+    """Removes cached secret state for a deleted session."""
+    cache_key = (app_name, user_id, session_id)
+    self._secret_state_cache.pop(cache_key, None)
 
   def _update_session_state(self, session: Session, event: Event) -> None:
     """Updates the session state based on the event."""

@@ -39,6 +39,7 @@ from .base_session_service import BaseSessionService
 from .base_session_service import GetSessionConfig
 from .base_session_service import ListSessionsResponse
 from .session import Session
+from .state import State
 
 logger = logging.getLogger('google_adk.' + __name__)
 
@@ -117,6 +118,19 @@ class VertexAiSessionService(BaseSessionService):
     """
     reasoning_engine_id = self._get_reasoning_engine_id(app_name)
 
+    # Strip secret keys before sending state to the API.
+    secret_keys = {}
+    if state:
+      secret_keys = {
+          k: v for k, v in state.items() if k.startswith(State.SECRET_PREFIX)
+      }
+      if secret_keys:
+        state = {
+            k: v
+            for k, v in state.items()
+            if not k.startswith(State.SECRET_PREFIX)
+        }
+
     config = {'session_state': state} if state else {}
     if session_id:
       config['session_id'] = session_id
@@ -138,6 +152,13 @@ class VertexAiSessionService(BaseSessionService):
         state=getattr(get_session_response, 'session_state', None) or {},
         last_update_time=get_session_response.update_time.timestamp(),
     )
+
+    # Seed secret state into the cache now that session.id is resolved.
+    if secret_keys:
+      cache_key = (app_name, user_id, session.id)
+      self._secret_state_cache.setdefault(cache_key, {}).update(secret_keys)
+      for key, value in secret_keys.items():
+        session.state[key] = value
     return session
 
   @override
@@ -214,6 +235,7 @@ class VertexAiSessionService(BaseSessionService):
       if config.num_recent_events:
         session.events = session.events[-config.num_recent_events :]
 
+    self._restore_secret_state(session)
     return session
 
   @override
@@ -260,6 +282,7 @@ class VertexAiSessionService(BaseSessionService):
       except Exception as e:
         logger.error('Error deleting session %s: %s', session_id, e)
         raise
+    self._evict_secret_state(app_name, user_id, session_id)
 
   @override
   async def append_event(self, session: Session, event: Event) -> Event:

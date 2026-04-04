@@ -218,6 +218,24 @@ _SENSITIVE_KEYS = frozenset({
 })
 
 
+def _is_sensitive_json_string(value: str) -> bool:
+  """Checks if a string is a JSON blob containing sensitive keys.
+
+  This catches opaque JSON-encoded strings (e.g. serialized credential
+  caches) whose inner keys would not be caught by the dict-level
+  _SENSITIVE_KEYS check.
+  """
+  if not value or value[0] not in ("{", "["):
+    return False
+  try:
+    parsed = json.loads(value)
+  except (json.JSONDecodeError, ValueError):
+    return False
+  if isinstance(parsed, dict):
+    return bool(_SENSITIVE_KEYS & {k.lower() for k in parsed})
+  return False
+
+
 def _recursive_smart_truncate(
     obj: Any, max_len: int, seen: Optional[set[int]] = None
 ) -> tuple[Any, bool]:
@@ -266,9 +284,18 @@ def _recursive_smart_truncate(
       for k, v in obj.items():
         if isinstance(k, str):
           k_lower = k.lower()
-          if k_lower in _SENSITIVE_KEYS or k_lower.startswith("temp:"):
+          if (
+              k_lower in _SENSITIVE_KEYS
+              or k_lower.startswith("temp:")
+              or k_lower.startswith("secret:")
+          ):
             new_dict[k] = "[REDACTED]"
             continue
+
+        # Detect JSON-encoded strings that contain sensitive keys.
+        if isinstance(v, str) and _is_sensitive_json_string(v):
+          new_dict[k] = "[REDACTED]"
+          continue
 
         val, trunc = _recursive_smart_truncate(v, max_len, seen)
         if trunc:

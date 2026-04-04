@@ -179,6 +179,15 @@ class SqliteSessionService(BaseSessionService):
               f"Session with id {session_id} already exists."
           )
 
+      # Seed secret state into the process-local cache before
+      # extract_state_delta, which would otherwise drop secret keys.
+      state = self._seed_secret_state_on_create(
+          app_name=app_name,
+          user_id=user_id,
+          session_id=session_id,
+          state=state,
+      )
+
       # Extract state deltas
       state_deltas = _session_util.extract_state_delta(state)
       app_state_delta = state_deltas["app"]
@@ -218,7 +227,7 @@ class SqliteSessionService(BaseSessionService):
       merged_state = _merge_state(
           storage_app_state, storage_user_state, session_state
       )
-      return Session(
+      session = Session(
           app_name=app_name,
           user_id=user_id,
           id=session_id,
@@ -226,6 +235,8 @@ class SqliteSessionService(BaseSessionService):
           events=[],
           last_update_time=now,
       )
+      self._restore_secret_state(session)
+      return session
 
   @override
   async def get_session(
@@ -284,7 +295,7 @@ class SqliteSessionService(BaseSessionService):
           for event_data in reversed(storage_events_data)
       ]
 
-      return Session(
+      session = Session(
           app_name=app_name,
           user_id=user_id,
           id=session_id,
@@ -292,6 +303,8 @@ class SqliteSessionService(BaseSessionService):
           events=events,
           last_update_time=last_update_time,
       )
+      self._restore_secret_state(session)
+      return session
 
   @override
   async def list_sessions(
@@ -358,6 +371,7 @@ class SqliteSessionService(BaseSessionService):
           (app_name, user_id, session_id),
       )
       await db.commit()
+    self._evict_secret_state(app_name, user_id, session_id)
 
   @override
   async def append_event(self, session: Session, event: Event) -> Event:
@@ -369,6 +383,9 @@ class SqliteSessionService(BaseSessionService):
     self._apply_temp_state(session, event)
     # Trim temp state before persisting
     event = self._trim_temp_delta_state(event)
+    # Apply secret state to in-memory session and process cache.
+    self._apply_secret_state(session, event)
+    event = self._trim_secret_delta_state(event)
     event_timestamp = event.timestamp
 
     async with self._get_db_connection() as db:

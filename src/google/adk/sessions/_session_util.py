@@ -45,6 +45,8 @@ def extract_state_delta(
         deltas["app"][key.removeprefix(State.APP_PREFIX)] = state[key]
       elif key.startswith(State.USER_PREFIX):
         deltas["user"][key.removeprefix(State.USER_PREFIX)] = state[key]
-      elif not key.startswith(State.TEMP_PREFIX):
+      elif not key.startswith(State.TEMP_PREFIX) and not key.startswith(
+          State.SECRET_PREFIX
+      ):
         deltas["session"][key] = state[key]
   return deltas

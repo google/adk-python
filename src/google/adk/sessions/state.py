@@ -23,6 +23,7 @@ class State:
   APP_PREFIX = "app:"
   USER_PREFIX = "user:"
   TEMP_PREFIX = "temp:"
+  SECRET_PREFIX = "secret:"
 
   def __init__(self, value: dict[str, Any], delta: dict[str, Any]):
     """
