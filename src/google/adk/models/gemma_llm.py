@@ -205,7 +205,7 @@ class Gemma(GemmaFunctionCallingMixin, Gemini):
     """
 
     return [
-        r'gemma-3.*',
+        r'gemma-.*',
     ]
 
   @cached_property
