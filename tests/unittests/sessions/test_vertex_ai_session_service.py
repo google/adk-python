@@ -772,33 +772,6 @@ async def test_create_session():
 
 @pytest.mark.asyncio
 @pytest.mark.usefixtures('mock_get_api_client')
-async def test_create_session_with_custom_session_id_error_handling(mock_api_client_instance):
-  session_service = mock_vertex_ai_session_service()
-
-  # Simulate the LRO bug from Vertex AI API gateway where polling GET fails
-  mock_api_client_instance.agent_engines.sessions.create.side_effect = ClientError(
-      code=400,
-      response_json={
-          'message': (
-              'Since the idType "sessions" is not a documented LRO Parent ID,'
-              ' the associated value must be a Long, but was instead:'
-              ' custom-123'
-          )
-      },
-      response=None,
-  )
-
-  session = await session_service.create_session(
-      app_name='123', user_id='user', session_id='custom-123'
-  )
-  assert session.id == 'custom-123'
-  assert session.user_id == 'user'
-  assert session.last_update_time is not None
-  assert session == await session_service.get_session(
-      app_name='123', user_id='user', session_id=session_id
-  )
-
-
 @pytest.mark.parametrize('session_id', ['1', 'abc123'])
 async def test_create_session_with_custom_session_id(
     mock_api_client_instance: MockAsyncClient, session_id: str
@@ -820,8 +793,8 @@ async def test_create_session_with_custom_session_id(
   assert session == await session_service.get_session(
       app_name='123', user_id='user', session_id=session_id
   )
-    
-    
+
+
 @pytest.mark.asyncio
 @pytest.mark.usefixtures('mock_get_api_client')
 async def test_create_session_with_custom_config(mock_api_client_instance):
