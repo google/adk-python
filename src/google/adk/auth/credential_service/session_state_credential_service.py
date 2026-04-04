@@ -19,6 +19,7 @@ from typing import Optional
 from typing_extensions import override
 
 from ...agents.callback_context import CallbackContext
+from ...sessions.state import State
 from ...utils.feature_decorator import experimental
 from ..auth_credential import AuthCredential
 from ..auth_tool import AuthConfig
@@ -54,7 +55,20 @@ class SessionStateCredentialService(BaseCredentialService):
         Optional[AuthCredential]: the credential saved in the store.
 
     """
-    return callback_context.state.get(auth_config.credential_key)
+    secret_key = State.SECRET_PREFIX + auth_config.credential_key
+    # Use `in` (not truthiness) so an explicit None is respected.
+    if secret_key in callback_context.state:
+      return callback_context.state[secret_key]
+    # Fall back to legacy unprefixed key, then migrate: copy into
+    # secret: scope and clear the legacy key so it is removed from
+    # persistent storage on the next state delta flush.
+    legacy_key = auth_config.credential_key
+    if legacy_key in callback_context.state:
+      value = callback_context.state[legacy_key]
+      callback_context.state[secret_key] = value
+      callback_context.state[legacy_key] = None
+      return value
+    return None
 
   @override
   async def save_credential(
@@ -78,6 +92,6 @@ class SessionStateCredentialService(BaseCredentialService):
         None
     """
 
-    callback_context.state[auth_config.credential_key] = (
+    callback_context.state[State.SECRET_PREFIX + auth_config.credential_key] = (
         auth_config.exchanged_auth_credential
     )

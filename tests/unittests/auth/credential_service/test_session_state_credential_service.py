@@ -23,6 +23,7 @@ from google.adk.auth.auth_credential import AuthCredentialTypes
 from google.adk.auth.auth_credential import OAuth2Auth
 from google.adk.auth.auth_tool import AuthConfig
 from google.adk.auth.credential_service.session_state_credential_service import SessionStateCredentialService
+from google.adk.sessions.state import State
 import pytest
 
 
@@ -265,10 +266,11 @@ class TestSessionStateCredentialService:
     # Save credential
     await credential_service.save_credential(auth_config, callback_context)
 
-    # Verify state contains the credential
-    assert auth_config.credential_key in callback_context.state
+    # Verify state contains the credential under secret: prefix
+    secret_key = State.SECRET_PREFIX + auth_config.credential_key
+    assert secret_key in callback_context.state
     assert (
-        callback_context.state[auth_config.credential_key]
+        callback_context.state[secret_key]
         == auth_config.exchanged_auth_credential
     )
 
@@ -279,9 +281,9 @@ class TestSessionStateCredentialService:
     assert result is not None
 
     # Verify state still contains the credential
-    assert auth_config.credential_key in callback_context.state
+    assert secret_key in callback_context.state
     assert (
-        callback_context.state[auth_config.credential_key]
+        callback_context.state[secret_key]
         == auth_config.exchanged_auth_credential
     )
 
@@ -300,7 +302,7 @@ class TestSessionStateCredentialService:
     await credential_service.save_credential(auth_config, callback_context)
 
     # Verify state was updated
-    assert callback_context.state[auth_config.credential_key] == new_credential
+    assert callback_context.state[secret_key] == new_credential
 
   @pytest.mark.asyncio
   async def test_credential_key_uniqueness(
@@ -344,13 +346,12 @@ class TestSessionStateCredentialService:
     await credential_service.save_credential(auth_config1, callback_context)
     await credential_service.save_credential(auth_config2, callback_context)
 
-    # Verify both exist in state with different keys
-    assert "unique_key_1" in callback_context.state
-    assert "unique_key_2" in callback_context.state
-    assert (
-        callback_context.state["unique_key_1"]
-        != callback_context.state["unique_key_2"]
-    )
+    # Verify both exist in state with secret-prefixed keys
+    sk1 = State.SECRET_PREFIX + "unique_key_1"
+    sk2 = State.SECRET_PREFIX + "unique_key_2"
+    assert sk1 in callback_context.state
+    assert sk2 in callback_context.state
+    assert callback_context.state[sk1] != callback_context.state[sk2]
 
     # Load and verify both credentials
     result1 = await credential_service.load_credential(
@@ -379,10 +380,89 @@ class TestSessionStateCredentialService:
             redirect_uri="https://direct.com/callback",
         ),
     )
-    callback_context.state[auth_config.credential_key] = test_credential
+    callback_context.state[State.SECRET_PREFIX + auth_config.credential_key] = (
+        test_credential
+    )
 
     # Load using the service
     result = await credential_service.load_credential(
         auth_config, callback_context
     )
     assert result == test_credential
+
+  @pytest.mark.asyncio
+  async def test_load_falls_back_to_legacy_unprefixed_key(
+      self, credential_service, auth_config, callback_context
+  ):
+    """Credentials stored under the old unprefixed key are still found."""
+    legacy_cred = AuthCredential(
+        auth_type=AuthCredentialTypes.OAUTH2,
+        oauth2=OAuth2Auth(
+            client_id="legacy_client",
+            client_secret="legacy_secret",
+        ),
+    )
+    # Simulate a session persisted before the secret: migration
+    callback_context.state[auth_config.credential_key] = legacy_cred
+
+    result = await credential_service.load_credential(
+        auth_config, callback_context
+    )
+    assert result is not None
+    assert result.oauth2.client_id == "legacy_client"
+    # Legacy key should be migrated: secret key populated, legacy cleared
+    secret_key = State.SECRET_PREFIX + auth_config.credential_key
+    assert secret_key in callback_context.state
+    assert callback_context.state[secret_key] == legacy_cred
+    assert callback_context.state[auth_config.credential_key] is None
+
+  @pytest.mark.asyncio
+  async def test_secret_key_takes_precedence_over_legacy(
+      self, credential_service, auth_config, callback_context
+  ):
+    """When both keys exist, the secret-prefixed key wins."""
+    old_cred = AuthCredential(
+        auth_type=AuthCredentialTypes.OAUTH2,
+        oauth2=OAuth2Auth(
+            client_id="old_client",
+            client_secret="old_secret",
+        ),
+    )
+    new_cred = AuthCredential(
+        auth_type=AuthCredentialTypes.OAUTH2,
+        oauth2=OAuth2Auth(
+            client_id="new_client",
+            client_secret="new_secret",
+        ),
+    )
+    callback_context.state[auth_config.credential_key] = old_cred
+    callback_context.state[State.SECRET_PREFIX + auth_config.credential_key] = (
+        new_cred
+    )
+
+    result = await credential_service.load_credential(
+        auth_config, callback_context
+    )
+    assert result.oauth2.client_id == "new_client"
+
+  @pytest.mark.asyncio
+  async def test_explicit_none_secret_key_not_revived_by_legacy(
+      self, credential_service, auth_config, callback_context
+  ):
+    """Explicit None in secret: key must not fall back to legacy key."""
+    old_cred = AuthCredential(
+        auth_type=AuthCredentialTypes.OAUTH2,
+        oauth2=OAuth2Auth(
+            client_id="stale_client",
+            client_secret="stale_secret",
+        ),
+    )
+    callback_context.state[auth_config.credential_key] = old_cred
+    callback_context.state[State.SECRET_PREFIX + auth_config.credential_key] = (
+        None
+    )
+
+    result = await credential_service.load_credential(
+        auth_config, callback_context
+    )
+    assert result is None

@@ -18,7 +18,7 @@ from ...features import experimental
 from ...features import FeatureName
 from .._google_credentials import BaseGoogleCredentialsConfig
 
-BIGQUERY_TOKEN_CACHE_KEY = "bigquery_token_cache"
+BIGQUERY_TOKEN_CACHE_KEY = "secret:bigquery_token_cache"
 BIGQUERY_SCOPES = [
     "https://www.googleapis.com/auth/bigquery",
     "https://www.googleapis.com/auth/dataplex.read-write",

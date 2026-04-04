@@ -171,11 +171,17 @@ class GoogleCredentialsManager:
             f" {self.credentials_config.external_access_token_key}."
         )
     # First, try to get credentials from the tool context
-    creds_json = (
-        tool_context.state.get(self.credentials_config._token_cache_key, None)
-        if self.credentials_config._token_cache_key
-        else None
-    )
+    cache_key = self.credentials_config._token_cache_key
+    creds_json = tool_context.state.get(cache_key, None) if cache_key else None
+    # Fall back to legacy unprefixed key, then migrate: copy into
+    # secret: scope and clear the legacy key so it is removed from
+    # persistent storage on the next state delta flush.
+    if creds_json is None and cache_key and cache_key.startswith("secret:"):
+      legacy_key = cache_key[len("secret:") :]
+      creds_json = tool_context.state.get(legacy_key, None)
+      if creds_json is not None:
+        tool_context.state[cache_key] = creds_json
+        tool_context.state[legacy_key] = None
     creds = (
         google.oauth2.credentials.Credentials.from_authorized_user_info(
             json.loads(creds_json), self.credentials_config.scopes
