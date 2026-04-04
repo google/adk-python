@@ -268,6 +268,10 @@ class GcsArtifactService(BaseArtifactService):
     artifact_bytes = blob.download_as_bytes()
     if not artifact_bytes:
       return None
+    # Restore text artifacts with the .text attribute rather than
+    # inline_data so that round-tripping Part.from_text() works correctly.
+    if blob.content_type and blob.content_type.startswith("text/plain"):
+      return types.Part(text=artifact_bytes.decode("utf-8"))
     artifact = types.Part.from_bytes(
         data=artifact_bytes, mime_type=blob.content_type
     )

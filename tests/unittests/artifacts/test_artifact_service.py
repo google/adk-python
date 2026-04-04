@@ -959,3 +959,49 @@ async def test_save_artifact_with_snake_case_dict(
   assert loaded is not None
   assert loaded.inline_data is not None
   assert loaded.inline_data.mime_type == "text/plain"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "service_type",
+    [
+        ArtifactServiceType.IN_MEMORY,
+        ArtifactServiceType.GCS,
+        ArtifactServiceType.FILE,
+    ],
+)
+async def test_text_artifact_roundtrip(service_type, artifact_service_factory):
+  """Text artifacts saved via Part.from_text() should preserve .text on load.
+
+  Regression test for https://github.com/google/adk-python/issues/3157
+  """
+  artifact_service = artifact_service_factory(service_type)
+  app_name = "app0"
+  user_id = "user0"
+  session_id = "sess0"
+  filename = "report.txt"
+  text_content = '{"status": "success", "report": "Sunny, 25C"}'
+
+  artifact = types.Part.from_text(text=text_content)
+  assert artifact.text == text_content  # sanity check
+
+  version = await artifact_service.save_artifact(
+      app_name=app_name,
+      user_id=user_id,
+      session_id=session_id,
+      filename=filename,
+      artifact=artifact,
+  )
+  assert version == 0
+
+  loaded = await artifact_service.load_artifact(
+      app_name=app_name,
+      user_id=user_id,
+      session_id=session_id,
+      filename=filename,
+  )
+  assert loaded is not None
+  assert loaded.text == text_content, (
+      f"Expected .text='{text_content}', got .text={loaded.text!r} "
+      f"(inline_data={loaded.inline_data!r})"
+  )
