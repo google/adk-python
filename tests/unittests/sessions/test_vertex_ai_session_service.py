@@ -324,7 +324,10 @@ class MockAsyncClient:
       self, name: str, user_id: str, config: dict[str, Any]
   ):
     self.last_create_session_config = config
-    new_session_id = '4'
+    if 'session_id' in config:
+      new_session_id = config['session_id']
+    else:
+      new_session_id = '4'
     self.session_dict[new_session_id] = {
         'name': (
             'projects/test-project/locations/test-location/'
@@ -343,7 +346,7 @@ class MockAsyncClient:
             + '/operations/111'
         ),
         'done': True,
-        'response': self.session_dict['4'],
+        'response': self.session_dict[new_session_id],
     })
 
   async def _list_events(self, name: str, **kwargs):
@@ -698,6 +701,20 @@ async def test_get_session_with_many_events(mock_api_client_instance):
 
 @pytest.mark.asyncio
 @pytest.mark.usefixtures('mock_get_api_client')
+async def test_get_session_with_num_recent_events_zero():
+  session_service = mock_vertex_ai_session_service()
+  session = await session_service.get_session(
+      app_name='123',
+      user_id='user',
+      session_id='2',
+      config=GetSessionConfig(num_recent_events=0),
+  )
+  assert session is not None
+  assert len(session.events) == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures('mock_get_api_client')
 async def test_list_sessions():
   session_service = mock_vertex_ai_session_service()
   sessions = await session_service.list_sessions(app_name='123', user_id='user')
@@ -755,15 +772,26 @@ async def test_create_session():
 
 @pytest.mark.asyncio
 @pytest.mark.usefixtures('mock_get_api_client')
-async def test_create_session_with_custom_session_id():
+@pytest.mark.parametrize('session_id', ['1', 'abc123'])
+async def test_create_session_with_custom_session_id(
+    mock_api_client_instance: MockAsyncClient, session_id: str
+):
   session_service = mock_vertex_ai_session_service()
 
-  with pytest.raises(ValueError) as excinfo:
-    await session_service.create_session(
-        app_name='123', user_id='user', session_id='1'
-    )
-  assert str(excinfo.value) == (
-      'User-provided Session id is not supported for VertexAISessionService.'
+  mock_api_client_instance.event_dict[session_id] = (
+      [],
+      None,
+  )
+
+  session = await session_service.create_session(
+      app_name='123', user_id='user', session_id=session_id
+  )
+  assert session.id == session_id
+  assert session.app_name == '123'
+  assert session.user_id == 'user'
+  assert session.last_update_time is not None
+  assert session == await session_service.get_session(
+      app_name='123', user_id='user', session_id=session_id
   )
 
 

@@ -115,16 +115,11 @@ class VertexAiSessionService(BaseSessionService):
     Returns:
       The created session.
     """
-
-    if session_id:
-      raise ValueError(
-          'User-provided Session id is not supported for'
-          ' VertexAISessionService.'
-      )
-
     reasoning_engine_id = self._get_reasoning_engine_id(app_name)
 
     config = {'session_state': state} if state else {}
+    if session_id:
+      config['session_id'] = session_id
     config.update(kwargs)
     async with self._get_api_client() as api_client:
       api_response = await api_client.agent_engines.sessions.create(
@@ -176,7 +171,7 @@ class VertexAiSessionService(BaseSessionService):
           get_session_response = await api_client.agent_engines.sessions.get(
               name=session_resource_name
           )
-          events_iterator = []
+          events_iterator = None
         else:
           get_session_response, events_iterator = await asyncio.gather(
               api_client.agent_engines.sessions.get(name=session_resource_name),
@@ -210,8 +205,9 @@ class VertexAiSessionService(BaseSessionService):
       # to discard events written milliseconds after the session resource was
       # updated. Clock skew between those writes can otherwise drop tool_result
       # events and permanently break the replayed conversation.
-      async for event in events_iterator:
-        session.events.append(_from_api_event(event))
+      if events_iterator is not None:
+        async for event in events_iterator:
+          session.events.append(_from_api_event(event))
 
     if config:
       # Filter events based on num_recent_events.
