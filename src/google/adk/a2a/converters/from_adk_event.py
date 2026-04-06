@@ -17,6 +17,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from datetime import datetime
 from datetime import timezone
+import json
 import logging
 from typing import Any
 from typing import Dict
@@ -265,6 +266,14 @@ def _serialize_value(value: Any) -> Optional[Any]:
     except Exception as e:
       logger.warning("Failed to serialize Pydantic model, falling back: %s", e)
       return str(value)
+
+  if isinstance(value, (dict, list, str, bool, int, float)):
+    return value
+
+  try:
+    return json.loads(json.dumps(value))
+  except (TypeError, ValueError):
+    pass
 
   return str(value)
 

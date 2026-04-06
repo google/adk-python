@@ -23,8 +23,10 @@ from a2a.types import TaskArtifactUpdateEvent
 from a2a.types import TaskStatusUpdateEvent
 from google.adk.a2a.converters.from_adk_event import convert_event_to_a2a_events
 from google.adk.a2a.converters.from_adk_event import create_error_status_event
+from google.adk.a2a.converters.to_adk_event import _parse_adk_metadata_value
 from google.adk.a2a.converters.to_adk_event import convert_a2a_artifact_update_to_event
 from google.adk.a2a.converters.to_adk_event import convert_a2a_status_update_to_event
+from google.adk.a2a.converters.utils import _get_adk_metadata_key
 from google.adk.agents.invocation_context import InvocationContext
 from google.adk.events.event import Event
 from google.genai import types as genai_types
@@ -206,3 +208,43 @@ def test_round_trip_function_response_event():
   assert restored_event.content.parts[0].function_response.response == {
       "result": "success"
   }
+
+
+def test_round_trip_custom_metadata_preserves_structured_values():
+  original_custom_metadata = {
+      "flag": True,
+      "count": 42,
+      "nested": {"key": "val"},
+      "tags": ["a", "b"],
+  }
+  original_event = Event(
+      invocation_id="test_invocation",
+      author="test_agent",
+      branch="main",
+      content=genai_types.Content(
+          role="model",
+          parts=[genai_types.Part.from_text(text="Hello world!")],
+      ),
+      custom_metadata=original_custom_metadata,
+  )
+  agents_artifacts: Dict[str, str] = {}
+
+  a2a_events = convert_event_to_a2a_events(
+      event=original_event,
+      agents_artifacts=agents_artifacts,
+      task_id="task1",
+      context_id="context1",
+  )
+
+  assert len(a2a_events) == 1
+  a2a_event = a2a_events[0]
+  assert isinstance(a2a_event, TaskArtifactUpdateEvent)
+
+  serialized_metadata = a2a_event.artifact.metadata[
+      _get_adk_metadata_key("custom_metadata")
+  ]
+
+  assert not isinstance(serialized_metadata, str)
+  assert (
+      _parse_adk_metadata_value(serialized_metadata) == original_custom_metadata
+  )
