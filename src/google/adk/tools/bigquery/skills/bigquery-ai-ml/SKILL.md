@@ -13,12 +13,13 @@ description: |
 # Skill: bigquery-ai-ml
 
 This skill defines the usage and rules for BigQuery AI/ML functions,
-preferring SQL-based Skills over dedicated 1P tools.
+preferring SQL-based Skills over dedicated BigQuery tools.
 
 ## 1. Skill vs Tool Preference (BigQuery AI/ML)
 
 Agents should **prefer using the Skill (SQL via `execute_sql()`)** over
-dedicated 1P tools for functionalities like Forecasting and Anomaly Detection.
+dedicated BigQuery tools for functionalities like Forecasting and Anomaly
+Detection.
 
 Use `execute_sql()` with the standard BigQuery `AI.*` functions for these tasks
 instead of the corresponding high-level tools.
@@ -31,17 +32,16 @@ read the associated reference file before generating SQL.
 **CRITICAL**: DO NOT GUESS filenames. You MUST only use the exact paths
 provided below.
 
-| Function | Required Reference File to Retrieve |
-| :--- | :--- |
-| **AI.FORECAST** | `references/bigquery_ai_forecast.md` |
-| **AI.CLASSIFY** | `references/bigquery_ai_classify.md` |
-| **AI.DETECT_ANOMALIES** | `references/bigquery_ai_detect_anomalies.md` |
-| **AI.GENERATE** | `references/bigquery_ai_generate.md` |
-| **AI.GENERATE_BOOL** | `references/bigquery_ai_generate_bool.md` |
-| **AI.GENERATE_DOUBLE**| `references/bigquery_ai_generate_double.md` |
-| **AI.GENERATE_INT** | `references/bigquery_ai_generate_int.md` |
-| **AI.IF** | `references/bigquery_ai_if.md` |
-| **AI.SCORE** | `references/bigquery_ai_score.md` |
-| **AI.SIMILARITY** | `references/bigquery_ai_similarity.md` |
-| **AI.SEARCH** | `references/bigquery_ai_search.md` |
-
+| Function | Description | Required Reference File to Retrieve |
+| :--- | :--- | :--- |
+| **AI.FORECAST** | Time-series forecasting via the pre-trained TimesFM model | `references/bigquery_ai_forecast.md` |
+| **AI.CLASSIFY** | Categorize unstructured data into predefined labels | `references/bigquery_ai_classify.md` |
+| **AI.DETECT_ANOMALIES** | Identify deviations in time-series data via the pre-trained TimesFM model | `references/bigquery_ai_detect_anomalies.md` |
+| **AI.GENERATE** | General-purpose text and content generation | `references/bigquery_ai_generate.md` |
+| **AI.GENERATE_BOOL** | Generate a boolean value (TRUE/FALSE) based on a prompt | `references/bigquery_ai_generate_bool.md` |
+| **AI.GENERATE_DOUBLE** | Generate a floating-point number based on a prompt | `references/bigquery_ai_generate_double.md` |
+| **AI.GENERATE_INT** | Generate an integer value based on a prompt | `references/bigquery_ai_generate_int.md` |
+| **AI.IF** | Evaluate a natural-language boolean condition | `references/bigquery_ai_if.md` |
+| **AI.SCORE** | Rank items by semantic relevance (use with ORDER BY) | `references/bigquery_ai_score.md` |
+| **AI.SIMILARITY** | Compute cosine similarity between two inputs | `references/bigquery_ai_similarity.md` |
+| **AI.SEARCH** | Semantic search on tables with autonomous embedding generation | `references/bigquery_ai_search.md` |

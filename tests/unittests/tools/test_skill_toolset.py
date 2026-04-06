@@ -1340,8 +1340,8 @@ async def test_skill_toolset_dynamic_tool_resolution(mock_skill1, mock_skill2):
 
   ctx = _make_tool_context_with_agent()
   # Initial tools (only core)
-  tools = await toolset.get_tools(readonly_context=ctx)
-  assert len(tools) == 4
+  tools1 = await toolset.get_tools_with_prefix(readonly_context=ctx)
+  assert len(tools1) == 4
 
   # Activate skills
   load_tool = skill_toolset.LoadSkillTool(toolset)
@@ -1349,7 +1349,8 @@ async def test_skill_toolset_dynamic_tool_resolution(mock_skill1, mock_skill2):
   await load_tool.run_async(args={"name": "skill2"}, tool_context=ctx)
 
   # Dynamic tools should now be resolved
-  tools = await toolset.get_tools(readonly_context=ctx)
+  tools = await toolset.get_tools_with_prefix(readonly_context=ctx)
+  assert tools is not tools1
   tool_names = {t.name for t in tools}
 
   # Core tools

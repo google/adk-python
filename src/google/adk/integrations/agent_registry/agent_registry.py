@@ -24,9 +24,9 @@ from typing import Any
 from typing import Callable
 from typing import Dict
 from typing import List
-from typing import Optional
+from typing import Mapping
 from typing import Sequence
-from typing import Union
+from typing import TypedDict
 from urllib.parse import parse_qs
 from urllib.parse import urlparse
 
@@ -37,6 +37,8 @@ from a2a.types import AgentSkill
 from a2a.types import TransportProtocol as A2ATransport
 from google.adk.agents.readonly_context import ReadonlyContext
 from google.adk.agents.remote_a2a_agent import RemoteA2aAgent
+from google.adk.auth.auth_credential import AuthCredential
+from google.adk.auth.auth_schemes import AuthScheme
 from google.adk.telemetry.tracing import GCP_MCP_SERVER_DESTINATION_ID
 from google.adk.tools.base_tool import BaseTool
 from google.adk.tools.mcp_tool.mcp_session_manager import SseConnectionParams
@@ -73,11 +75,15 @@ class AgentRegistrySingleMcpToolset(McpToolset):
       header_provider: (
           Callable[[ReadonlyContext], Dict[str, str]] | None
       ) = None,
+      auth_scheme: AuthScheme | None = None,
+      auth_credential: AuthCredential | None = None,
   ):
     super().__init__(
         connection_params=connection_params,
         tool_name_prefix=tool_name_prefix,
         header_provider=header_provider,
+        auth_scheme=auth_scheme,
+        auth_credential=auth_credential,
     )
     self.destination_resource_id = destination_resource_id
 
@@ -109,6 +115,26 @@ class _ProtocolType(str, Enum):
   CUSTOM = "CUSTOM"
 
 
+class Interface(TypedDict, total=False):
+  """Details for a single connection interface."""
+
+  url: str
+  protocolBinding: str
+
+
+class Endpoint(TypedDict, total=False):
+  """Full metadata for a registered Endpoint."""
+
+  name: str
+  endpointId: str
+  displayName: str
+  description: str
+  interfaces: List[Interface]
+  createTime: str
+  updateTime: str
+  attributes: Dict[str, Any]
+
+
 class AgentRegistry:
   """Client for interacting with the Google Cloud Agent Registry service.
 
@@ -121,11 +147,11 @@ class AgentRegistry:
 
   def __init__(
       self,
-      project_id: Optional[str] = None,
-      location: Optional[str] = None,
-      header_provider: Optional[
-          Callable[[ReadonlyContext], Dict[str, str]]
-      ] = None,
+      project_id: str | None = None,
+      location: str | None = None,
+      header_provider: (
+          Callable[[ReadonlyContext], Dict[str, str]] | None
+      ) = None,
   ):
     """Initializes the AgentRegistry client.
 
@@ -168,7 +194,7 @@ class AgentRegistry:
       ) from e
 
   def _make_request(
-      self, path: str, params: Optional[Dict[str, Any]] = None
+      self, path: str, params: Dict[str, Any] | None = None
   ) -> Dict[str, Any]:
     """Helper function to make GET requests to the Agent Registry API."""
     if path.startswith("projects/"):
@@ -194,10 +220,10 @@ class AgentRegistry:
 
   def _get_connection_uri(
       self,
-      resource_details: Dict[str, Any],
-      protocol_type: Optional[_ProtocolType] = None,
-      protocol_binding: Optional[A2ATransport] = None,
-  ) -> Optional[str]:
+      resource_details: Mapping[str, Any],
+      protocol_type: _ProtocolType | None = None,
+      protocol_binding: A2ATransport | None = None,
+  ) -> str | None:
     """Extracts the first matching URI based on type and binding filters."""
     protocols = list(resource_details.get("protocols", []))
     if "interfaces" in resource_details:
@@ -227,9 +253,9 @@ class AgentRegistry:
 
   def list_mcp_servers(
       self,
-      filter_str: Optional[str] = None,
-      page_size: Optional[int] = None,
-      page_token: Optional[str] = None,
+      filter_str: str | None = None,
+      page_size: int | None = None,
+      page_token: str | None = None,
   ) -> Dict[str, Any]:
     """Fetches a list of MCP Servers."""
     params = {}
@@ -245,7 +271,12 @@ class AgentRegistry:
     """Retrieves details of a specific MCP Server."""
     return self._make_request(name)
 
-  def get_mcp_toolset(self, mcp_server_name: str) -> McpToolset:
+  def get_mcp_toolset(
+      self,
+      mcp_server_name: str,
+      auth_scheme: AuthScheme | None = None,
+      auth_credential: AuthCredential | None = None,
+  ) -> McpToolset:
     """Constructs an McpToolset instance from a registered MCP Server."""
     server_details = self.get_mcp_server(mcp_server_name)
     name = self._clean_name(server_details.get("displayName", mcp_server_name))
@@ -271,15 +302,67 @@ class AgentRegistry:
         connection_params=connection_params,
         tool_name_prefix=name,
         header_provider=self._header_provider,
+        auth_scheme=auth_scheme,
+        auth_credential=auth_credential,
     )
+
+  # --- Endpoint Methods ---
+
+  def list_endpoints(
+      self,
+      filter_str: str | None = None,
+      page_size: int | None = None,
+      page_token: str | None = None,
+  ) -> Dict[str, Any]:
+    """Fetches a list of Endpoints."""
+    params = {}
+    if filter_str:
+      params["filter"] = filter_str
+    if page_size:
+      params["pageSize"] = str(page_size)
+    if page_token:
+      params["pageToken"] = page_token
+    return self._make_request("endpoints", params=params)
+
+  def get_endpoint(self, name: str) -> Endpoint:
+    """Retrieves details of a specific Endpoint."""
+    return self._make_request(name)  # type: ignore
+
+  def get_model_name(self, endpoint_name: str) -> str:
+    """Retrieves and parses an endpoint into a model resource name.
+
+    Args:
+      endpoint_name: The full resource name of the endpoint.
+
+    Returns:
+      The resolved model resource name string (e.g.
+      projects/.../locations/.../publishers/google/models/...).
+    """
+    endpoint_details = self.get_endpoint(endpoint_name)
+    uri = self._get_connection_uri(endpoint_details)
+    if not uri:
+      raise ValueError(
+          f"Connection URI not found for endpoint: {endpoint_name}"
+      )
+
+    uri = re.sub(r":\w+$", "", uri)
+
+    if uri.startswith("projects/"):
+      return uri
+
+    match = re.search(r"(projects/.+)", uri)
+    if match:
+      return match.group(1)
+
+    return uri
 
   # --- Agent Methods ---
 
   def list_agents(
       self,
-      filter_str: Optional[str] = None,
-      page_size: Optional[int] = None,
-      page_token: Optional[str] = None,
+      filter_str: str | None = None,
+      page_size: int | None = None,
+      page_token: str | None = None,
   ) -> Dict[str, Any]:
     """Fetches a list of registered A2A Agents."""
     params = {}
