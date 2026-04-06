@@ -32,7 +32,8 @@ from typing import Optional
 from typing import TYPE_CHECKING
 from typing import Union
 
-from anthropic import AnthropicVertex
+from anthropic import AsyncAnthropic
+from anthropic import AsyncAnthropicVertex
 from anthropic import NOT_GIVEN
 from anthropic import NotGiven
 from anthropic import types as anthropic_types
@@ -47,7 +48,7 @@ from .llm_response import LlmResponse
 if TYPE_CHECKING:
   from .llm_request import LlmRequest
 
-__all__ = ["Claude"]
+__all__ = ["AnthropicLlm", "Claude"]
 
 logger = logging.getLogger("google_adk." + __name__)
 
@@ -107,7 +108,6 @@ def part_to_message_block(
     anthropic_types.DocumentBlockParam,
     anthropic_types.ToolUseBlockParam,
     anthropic_types.ToolResultBlockParam,
-    anthropic_types.DocumentBlockParam,  # For PDF document blocks
 ]:
   if part.text:
     return anthropic_types.TextBlockParam(text=part.text, type="text")
@@ -349,15 +349,15 @@ def function_declaration_to_tool_param(
   )
 
 
-class Claude(BaseLlm):
-  """Integration with Claude models served from Vertex AI.
+class AnthropicLlm(BaseLlm):
+  """Integration with Claude models via the Anthropic API.
 
   Attributes:
     model: The name of the Claude model.
     max_tokens: The maximum number of tokens to generate.
   """
 
-  model: str = "claude-3-5-sonnet-v2@20241022"
+  model: str = "claude-sonnet-4-20250514"
   max_tokens: int = 8192
 
   @classmethod

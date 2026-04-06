@@ -23,6 +23,7 @@ from unittest.mock import MagicMock
 from anthropic import types as anthropic_types
 from google.adk import version as adk_version
 from google.adk.models import anthropic_llm
+from google.adk.models.anthropic_llm import AnthropicLlm
 from google.adk.models.anthropic_llm import Claude
 from google.adk.models.anthropic_llm import content_to_message_param
 from google.adk.models.anthropic_llm import function_declaration_to_tool_param
