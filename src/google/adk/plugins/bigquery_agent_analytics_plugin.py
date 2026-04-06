@@ -499,6 +499,16 @@ class BigQueryLoggerConfig:
       shutdown_timeout: Max time to wait for shutdown.
       queue_max_size: Max size of the in-memory queue.
       content_formatter: Optional custom formatter for content.
+      gcs_bucket_name: GCS bucket for offloading large content.
+      connection_id: BigQuery connection ID for ObjectRef columns.
+      log_session_metadata: Whether to log session metadata.
+      custom_tags: Static custom tags to attach to every event.
+      auto_schema_upgrade: Whether to auto-add new columns on schema evolution.
+      create_views: Whether to auto-create per-event-type views.
+      view_prefix: Prefix for auto-created view names. Default ``"v"`` produces
+        views like ``v_llm_request``. Set a distinct prefix per table when
+        multiple plugin instances share one dataset to avoid view-name
+        collisions.
   """
 
   enabled: bool = True
@@ -538,6 +548,12 @@ class BigQueryLoggerConfig:
   # Automatically create per-event-type BigQuery views that unnest
   # JSON columns into typed, queryable columns.
   create_views: bool = True
+  # Prefix for auto-created per-event-type view names.
+  # Default "v" produces views like ``v_llm_request``.  Set a distinct
+  # prefix per table when multiple plugin instances share one dataset
+  # to avoid view-name collisions (e.g. ``"v_staging"`` →
+  # ``v_staging_llm_request``).
+  view_prefix: str = "v"
 
 
 # ==============================================================================
@@ -1878,6 +1894,9 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
       else:
         logger.warning(f"Unknown configuration parameter: {key}")
 
+    if not self.config.view_prefix:
+      raise ValueError("view_prefix must be a non-empty string.")
+
     self.table_id = table_id or self.config.table_id
     self.location = location
 
@@ -2314,7 +2333,7 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
     Errors are logged but never raised.
     """
     for event_type, extra_cols in _EVENT_VIEW_DEFS.items():
-      view_name = "v_" + event_type.lower()
+      view_name = self.config.view_prefix + "_" + event_type.lower()
       columns = ",\n  ".join(list(_VIEW_COMMON_COLUMNS) + extra_cols)
       sql = _VIEW_SQL_TEMPLATE.format(
           project=self.project_id,

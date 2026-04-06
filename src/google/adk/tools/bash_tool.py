@@ -21,6 +21,7 @@ import dataclasses
 import logging
 import os
 import pathlib
+import resource
 import shlex
 import signal
 from typing import Any
@@ -32,16 +33,25 @@ from .. import features
 from .base_tool import BaseTool
 from .tool_context import ToolContext
 
+logger = logging.getLogger("google_adk." + __name__)
+
 
 @dataclasses.dataclass(frozen=True)
 class BashToolPolicy:
-  """Configuration for allowed bash commands based on prefix matching.
+  """Configuration for allowed bash commands and resource limits.
 
   Set allowed_command_prefixes to ("*",) to allow all commands (default),
   or explicitly list allowed prefixes.
+
+  Values for max_memory_bytes, max_file_size_bytes, and max_child_processes
+  will be enforced upon the spawned subprocess.
   """
 
   allowed_command_prefixes: tuple[str, ...] = ("*",)
+  timeout_seconds: Optional[int] = 30
+  max_memory_bytes: Optional[int] = None
+  max_file_size_bytes: Optional[int] = None
+  max_child_processes: Optional[int] = None
 
 
 def _validate_command(command: str, policy: BashToolPolicy) -> Optional[str]:
@@ -59,6 +69,29 @@ def _validate_command(command: str, policy: BashToolPolicy) -> Optional[str]:
 
   allowed = ", ".join(policy.allowed_command_prefixes)
   return f"Command blocked. Permitted prefixes are: {allowed}"
+
+
+def _set_resource_limits(policy: BashToolPolicy) -> None:
+  """Sets resource limits for the subprocess based on the provided policy."""
+  try:
+    resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
+    if policy.max_memory_bytes:
+      resource.setrlimit(
+          resource.RLIMIT_AS,
+          (policy.max_memory_bytes, policy.max_memory_bytes),
+      )
+    if policy.max_file_size_bytes:
+      resource.setrlimit(
+          resource.RLIMIT_FSIZE,
+          (policy.max_file_size_bytes, policy.max_file_size_bytes),
+      )
+    if policy.max_child_processes:
+      resource.setrlimit(
+          resource.RLIMIT_NPROC,
+          (policy.max_child_processes, policy.max_child_processes),
+      )
+  except (ValueError, OSError) as e:
+    logger.warning("Failed to set resource limits: %s", e)
 
 
 @features.experimental(features.FeatureName.SKILL_TOOLSET)
@@ -144,20 +177,25 @@ class ExecuteBashTool(BaseTool):
           stdout=asyncio.subprocess.PIPE,
           stderr=asyncio.subprocess.PIPE,
           start_new_session=True,
+          preexec_fn=lambda: _set_resource_limits(self._policy),
       )
 
       try:
         stdout, stderr = await asyncio.wait_for(
-            process.communicate(), timeout=30
+            process.communicate(), timeout=self._policy.timeout_seconds
         )
       except asyncio.TimeoutError:
         try:
-          os.killpg(process.pid, signal.SIGKILL)
+          if process.pid:
+            os.killpg(process.pid, signal.SIGKILL)
         except ProcessLookupError:
           pass
         stdout, stderr = await process.communicate()
         return {
-            "error": "Command timed out after 30 seconds.",
+            "error": (
+                f"Command timed out after {self._policy.timeout_seconds}"
+                " seconds."
+            ),
             "stdout": (
                 stdout.decode(errors="replace")
                 if stdout
@@ -176,7 +214,6 @@ class ExecuteBashTool(BaseTool):
             os.killpg(process.pid, signal.SIGKILL)
         except ProcessLookupError:
           pass
-
       return {
           "stdout": (
               stdout.decode(errors="replace")
@@ -191,7 +228,6 @@ class ExecuteBashTool(BaseTool):
           "returncode": process.returncode,
       }
     except Exception as e:  # pylint: disable=broad-except
-      logger = logging.getLogger("google_adk." + __name__)
       logger.exception("ExecuteBashTool execution failed")
 
       stdout_res = (

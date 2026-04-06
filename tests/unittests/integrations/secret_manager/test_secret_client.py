@@ -50,7 +50,7 @@ class TestSecretManagerClient:
         scopes=["https://www.googleapis.com/auth/cloud-platform"]
     )
     mock_secret_manager_client.assert_called_once_with(
-        credentials=mock_credentials
+        credentials=mock_credentials, client_options=None
     )
     assert client._credentials == mock_credentials
     assert client._client == mock_secret_manager_client.return_value
@@ -80,7 +80,7 @@ class TestSecretManagerClient:
         json.loads(service_account_json)
     )
     mock_secret_manager_client.assert_called_once_with(
-        credentials=mock_credentials
+        credentials=mock_credentials, client_options=None
     )
     assert client._credentials == mock_credentials
     assert client._client == mock_secret_manager_client.return_value
@@ -106,10 +106,37 @@ class TestSecretManagerClient:
       # Verify
       mock_credentials.refresh.assert_called_once()
       mock_secret_manager_client.assert_called_once_with(
-          credentials=mock_credentials
+          credentials=mock_credentials, client_options=None
       )
       assert client._credentials == mock_credentials
       assert client._client == mock_secret_manager_client.return_value
+
+  @patch("google.cloud.secretmanager.SecretManagerServiceClient")
+  @patch(
+      "google.adk.integrations.secret_manager.secret_client.default_service_credential"
+  )
+  def test_init_with_location(
+      self, mock_default_service_credential, mock_secret_manager_client
+  ):
+    """Test initialization with a specific location."""
+    # Setup
+    mock_credentials = MagicMock()
+    mock_default_service_credential.return_value = (
+        mock_credentials,
+        "test-project",
+    )
+    location = "us-central1"
+
+    # Execute
+    SecretManagerClient(location=location)
+
+    # Verify
+    mock_secret_manager_client.assert_called_once_with(
+        credentials=mock_credentials,
+        client_options={
+            "api_endpoint": f"secretmanager.{location}.rep.googleapis.com"
+        },
+    )
 
   @patch(
       "google.adk.integrations.secret_manager.secret_client.default_service_credential"
