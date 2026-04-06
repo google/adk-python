@@ -60,7 +60,15 @@ def _extract_event_id_from_interaction_event(
     event: 'InteractionSSEEvent',
 ) -> Optional[str]:
   """Extract the SDK event identifier from an interactions SSE event."""
-  return getattr(event, 'event_id', None) or getattr(event, 'id', None)
+  event_id = getattr(event, 'event_id', None)
+  if isinstance(event_id, str):
+    return event_id
+
+  legacy_event_id = getattr(event, 'id', None)
+  if isinstance(legacy_event_id, str):
+    return legacy_event_id
+
+  return None
 
 
 def _extract_interaction_id_from_event(
@@ -68,15 +76,19 @@ def _extract_interaction_id_from_event(
 ) -> Optional[str]:
   """Extract the interaction chain identifier from an SSE event."""
   interaction = getattr(event, 'interaction', None)
-  if interaction and getattr(interaction, 'id', None):
-    return interaction.id
-
-  interaction_id = getattr(event, 'interaction_id', None)
-  if interaction_id:
+  interaction_id = getattr(interaction, 'id', None)
+  if isinstance(interaction_id, str):
     return interaction_id
 
-  # Fall back to legacy field names when older SDK shapes are in play.
-  return getattr(event, 'id', None)
+  event_interaction_id = getattr(event, 'interaction_id', None)
+  if isinstance(event_interaction_id, str):
+    return event_interaction_id
+
+  legacy_interaction_id = getattr(event, 'id', None)
+  if isinstance(legacy_interaction_id, str):
+    return legacy_interaction_id
+
+  return None
 
 
 def convert_part_to_interaction_content(part: types.Part) -> Optional[dict]:
@@ -177,12 +189,12 @@ def convert_part_to_interaction_content(part: types.Part) -> Optional[dict]:
   elif part.thought:
     # part.thought is a boolean indicating this is a thought part
     # ThoughtContentParam expects 'signature' (base64 encoded bytes)
-    result: dict[str, Any] = {'type': 'thought'}
+    thought_content: dict[str, Any] = {'type': 'thought'}
     if part.thought_signature is not None:
-      result['signature'] = base64.b64encode(part.thought_signature).decode(
-          'utf-8'
-      )
-    return result
+      thought_content['signature'] = base64.b64encode(
+          part.thought_signature
+      ).decode('utf-8')
+    return thought_content
   elif part.code_execution_result is not None:
     is_error = part.code_execution_result.outcome in (
         types.Outcome.OUTCOME_FAILED,
