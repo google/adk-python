@@ -16,6 +16,7 @@
 
 from __future__ import annotations
 
+import logging
 import subprocess
 from typing import Any
 from typing import Dict
@@ -30,7 +31,11 @@ from google.auth.transport.requests import Request
 from google.cloud import resourcemanager_v3
 import requests
 
-_VERTEX_AI_ENDPOINT = "https://{location}-aiplatform.googleapis.com/v1beta1"
+logger = logging.getLogger("google_adk." + __name__)
+
+_VERTEX_AI_ENDPOINT = (
+    "https://{location}-staging-aiplatform.sandbox.googleapis.com/v1beta1"
+)
 
 
 def check_adc() -> bool:
@@ -89,6 +94,7 @@ def _call_vertex_express_api(
     raise ValueError(f"Unsupported method: {method}")
 
   response.raise_for_status()
+  logging.info("API Response: %s", response.text)
   return response.json()
 
 
@@ -126,7 +132,7 @@ def check_express_eligibility(
     result = _call_vertex_express_api(
         "GET", "/Eligibility:check", location=location
     )
-    return result.get("eligibility") == "IN_SCOPE"
+    return result.get("eligibility") in ["IN_SCOPE", "ELIGIBLE"]
   except (requests.exceptions.HTTPError, KeyError) as e:
     return False
 
