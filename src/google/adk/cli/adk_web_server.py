@@ -60,6 +60,8 @@ from . import agent_graph
 from ..agents.base_agent import BaseAgent
 from ..agents.live_request_queue import LiveRequest
 from ..agents.live_request_queue import LiveRequestQueue
+from ..agents.llm_agent import LlmAgent
+from ..agents.llm_agent import ToolUnion
 from ..agents.run_config import RunConfig
 from ..agents.run_config import StreamingMode
 from ..apps.app import App
@@ -90,7 +92,10 @@ from ..plugins.base_plugin import BasePlugin
 from ..runners import Runner
 from ..sessions.base_session_service import BaseSessionService
 from ..sessions.session import Session
+from ..utils.agent_info import AgentInfo
+from ..utils.agent_info import get_agents_dict
 from ..utils.context_utils import Aclosing
+from ..utils.feature_decorator import experimental
 from ..version import __version__
 from .cli_eval import EVAL_SESSION_ID_PREFIX
 from .utils import cleanup
@@ -489,6 +494,7 @@ class AppInfo(common.BaseModel):
   description: str
   language: Literal["yaml", "python"]
   is_computer_use: bool = False
+  agents: Optional[dict[str, AgentInfo]] = None
 
 
 class ListAppsResponse(common.BaseModel):
@@ -959,6 +965,25 @@ class AdkWebServer:
         apps_info = self.agent_loader.list_agents_detailed()
         return ListAppsResponse(apps=[AppInfo(**app) for app in apps_info])
       return self.agent_loader.list_agents()
+
+    @experimental
+    @app.get("/apps/{app_name}/app-info", response_model_exclude_none=True)
+    async def get_adk_app_info(app_name: str) -> AppInfo:
+      """Returns the detailed info for a given ADK app."""
+      agent_or_app = self.agent_loader.load_agent(app_name)
+      root_agent = self._get_root_agent(agent_or_app)
+      if isinstance(root_agent, LlmAgent):
+        return AppInfo(
+            name=app_name,
+            root_agent_name=root_agent.name,
+            description=root_agent.description,
+            language="python",
+            agents=get_agents_dict(root_agent),
+        )
+      else:
+        raise HTTPException(
+            status_code=400, detail="Root agent is not an LlmAgent"
+        )
 
     @app.get("/debug/trace/{event_id}", tags=[TAG_DEBUG])
     async def get_trace_dict(event_id: str) -> Any:
