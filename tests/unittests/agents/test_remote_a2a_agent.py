@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -12,71 +12,44 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import copy
 import json
 from pathlib import Path
-import sys
 import tempfile
 from unittest.mock import AsyncMock
 from unittest.mock import create_autospec
 from unittest.mock import Mock
 from unittest.mock import patch
 
+from a2a.client.client import ClientConfig
+from a2a.client.client_factory import ClientFactory
+from a2a.client.middleware import ClientCallContext
+from a2a.types import AgentCapabilities
+from a2a.types import AgentCard
+from a2a.types import AgentSkill
+from a2a.types import Artifact
+from a2a.types import Message as A2AMessage
+from a2a.types import Task as A2ATask
+from a2a.types import TaskArtifactUpdateEvent
+from a2a.types import TaskState
+from a2a.types import TaskStatus as A2ATaskStatus
+from a2a.types import TaskStatusUpdateEvent
+from a2a.types import TextPart
+from google.adk.a2a.agent import ParametersConfig
+from google.adk.a2a.agent import RequestInterceptor
+from google.adk.a2a.agent.config import A2aRemoteAgentConfig
+from google.adk.a2a.agent.utils import execute_after_request_interceptors
+from google.adk.a2a.agent.utils import execute_before_request_interceptors
+from google.adk.agents.invocation_context import InvocationContext
+from google.adk.agents.remote_a2a_agent import A2A_METADATA_PREFIX
+from google.adk.agents.remote_a2a_agent import AgentCardResolutionError
+from google.adk.agents.remote_a2a_agent import RemoteA2aAgent
+import google.adk.agents.remote_a2a_agent as remote_a2a_agent
 from google.adk.events.event import Event
 from google.adk.sessions.session import Session
 from google.genai import types as genai_types
 import httpx
 import pytest
-
-# Skip all tests in this module if Python version is less than 3.10
-pytestmark = pytest.mark.skipif(
-    sys.version_info < (3, 10), reason="A2A requires Python 3.10+"
-)
-
-# Import dependencies with version checking
-try:
-  from a2a.client.client import ClientConfig
-  from a2a.client.client import Consumer
-  from a2a.client.client_factory import ClientFactory
-  from a2a.types import AgentCapabilities
-  from a2a.types import AgentCard
-  from a2a.types import AgentSkill
-  from a2a.types import Artifact
-  from a2a.types import Message as A2AMessage
-  from a2a.types import Part as A2ATaskStatus
-  from a2a.types import SendMessageSuccessResponse
-  from a2a.types import Task as A2ATask
-  from a2a.types import TaskArtifactUpdateEvent
-  from a2a.types import TaskState
-  from a2a.types import TaskStatus
-  from a2a.types import TaskStatusUpdateEvent
-  from a2a.types import TextPart
-  from google.adk.agents.invocation_context import InvocationContext
-  from google.adk.agents.remote_a2a_agent import A2A_METADATA_PREFIX
-  from google.adk.agents.remote_a2a_agent import AgentCardResolutionError
-  from google.adk.agents.remote_a2a_agent import RemoteA2aAgent
-except ImportError as e:
-  if sys.version_info < (3, 10):
-    # Create dummy classes to prevent NameError during module compilation.
-    # These are needed because the module has type annotations and module-level
-    # helper functions that reference imported types.
-    class DummyTypes:
-      pass
-
-    AgentCapabilities = DummyTypes()
-    AgentCard = DummyTypes()
-    AgentSkill = DummyTypes()
-    A2AMessage = DummyTypes()
-    SendMessageSuccessResponse = DummyTypes()
-    A2ATask = DummyTypes()
-    TaskStatusUpdateEvent = DummyTypes()
-    Artifact = DummyTypes()
-    TaskArtifactUpdateEvent = DummyTypes()
-    InvocationContext = DummyTypes()
-    RemoteA2aAgent = DummyTypes()
-    AgentCardResolutionError = Exception
-    A2A_METADATA_PREFIX = ""
-  else:
-    raise e
 
 
 # Helper function to create a proper AgentCard for testing
@@ -610,7 +583,7 @@ class TestRemoteA2aAgentMessageHandling:
           "google.adk.agents.remote_a2a_agent.convert_event_to_a2a_message"
       ) as mock_convert:
         # Create a proper mock A2A message
-        mock_a2a_message = Mock(spec=A2AMessage)
+        mock_a2a_message = create_autospec(A2AMessage, instance=True)
         mock_a2a_message.task_id = None  # Will be set by the method
         mock_convert.return_value = mock_a2a_message
 
@@ -696,6 +669,169 @@ class TestRemoteA2aAgentMessageHandling:
     assert parts == []
     assert context_id is None
 
+  def test_construct_message_parts_from_session_stops_on_agent_reply(self):
+    """Test message parts construction stops on agent reply by default."""
+    part1 = Mock()
+    part1.text = "User 1"
+    content1 = Mock()
+    content1.parts = [part1]
+    user1 = Mock()
+    user1.content = content1
+    user1.author = "user"
+    user1.custom_metadata = None
+
+    part2 = Mock()
+    part2.text = "Agent 1"
+    content2 = Mock()
+    content2.parts = [part2]
+    agent1 = Mock()
+    agent1.content = content2
+    agent1.author = self.agent.name
+    agent1.custom_metadata = {
+        A2A_METADATA_PREFIX + "response": True,
+    }
+
+    agent2 = Mock()
+    agent2.content = None
+    agent2.author = self.agent.name
+    # Just actions, no content. Not marked as a response.
+    agent2.actions = Mock()
+    agent2.custom_metadata = None
+
+    part3 = Mock()
+    part3.text = "User 2"
+    content3 = Mock()
+    content3.parts = [part3]
+    user2 = Mock()
+    user2.content = content3
+    user2.author = "user"
+    user2.custom_metadata = None
+
+    self.mock_session.events = [user1, agent1, user2, agent2]
+
+    def mock_converter(part):
+      mock_a2a_part = Mock()
+      mock_a2a_part.text = part.text
+      return mock_a2a_part
+
+    self.mock_genai_part_converter.side_effect = mock_converter
+
+    with patch(
+        "google.adk.agents.remote_a2a_agent._present_other_agent_message"
+    ) as mock_present:
+      mock_present.side_effect = lambda event: event
+      parts, context_id = self.agent._construct_message_parts_from_session(
+          self.mock_context
+      )
+      assert len(parts) == 1
+      assert parts[0].text == "User 2"
+      assert context_id is None
+
+  def test_construct_message_parts_from_session_stateless_full_history(self):
+    """Test full history for stateless agent when enabled."""
+    self.agent._full_history_when_stateless = True
+    part1 = Mock()
+    part1.text = "User 1"
+    content1 = Mock()
+    content1.parts = [part1]
+    user1 = Mock()
+    user1.content = content1
+    user1.author = "user"
+    user1.custom_metadata = None
+
+    part2 = Mock()
+    part2.text = "Agent 1"
+    content2 = Mock()
+    content2.parts = [part2]
+    agent1 = Mock()
+    agent1.content = content2
+    agent1.author = self.agent.name
+    agent1.custom_metadata = None
+
+    part3 = Mock()
+    part3.text = "User 2"
+    content3 = Mock()
+    content3.parts = [part3]
+    user2 = Mock()
+    user2.content = content3
+    user2.author = "user"
+    user2.custom_metadata = None
+
+    self.mock_session.events = [user1, agent1, user2]
+
+    def mock_converter(part):
+      mock_a2a_part = Mock()
+      mock_a2a_part.text = part.text
+      return mock_a2a_part
+
+    self.mock_genai_part_converter.side_effect = mock_converter
+
+    with patch(
+        "google.adk.agents.remote_a2a_agent._present_other_agent_message"
+    ) as mock_present:
+      mock_present.side_effect = lambda event: event
+      parts, context_id = self.agent._construct_message_parts_from_session(
+          self.mock_context
+      )
+      assert len(parts) == 3
+      assert parts[0].text == "User 1"
+      assert parts[1].text == "Agent 1"
+      assert parts[2].text == "User 2"
+      assert context_id is None
+
+  def test_construct_message_parts_from_session_stateful_partial_history(self):
+    """Test partial history for stateful agent when full history is enabled."""
+    self.agent._full_history_when_stateless = True
+    part1 = Mock()
+    part1.text = "User 1"
+    content1 = Mock()
+    content1.parts = [part1]
+    user1 = Mock()
+    user1.content = content1
+    user1.author = "user"
+    user1.custom_metadata = None
+
+    part2 = Mock()
+    part2.text = "Agent 1"
+    content2 = Mock()
+    content2.parts = [part2]
+    agent1 = Mock()
+    agent1.content = content2
+    agent1.author = self.agent.name
+    agent1.custom_metadata = {
+        A2A_METADATA_PREFIX + "response": True,
+        A2A_METADATA_PREFIX + "context_id": "ctx-1",
+    }
+
+    part3 = Mock()
+    part3.text = "User 2"
+    content3 = Mock()
+    content3.parts = [part3]
+    user2 = Mock()
+    user2.content = content3
+    user2.author = "user"
+    user2.custom_metadata = None
+
+    self.mock_session.events = [user1, agent1, user2]
+
+    def mock_converter(part):
+      mock_a2a_part = Mock()
+      mock_a2a_part.text = part.text
+      return mock_a2a_part
+
+    self.mock_genai_part_converter.side_effect = mock_converter
+
+    with patch(
+        "google.adk.agents.remote_a2a_agent._present_other_agent_message"
+    ) as mock_present:
+      mock_present.side_effect = lambda event: event
+      parts, context_id = self.agent._construct_message_parts_from_session(
+          self.mock_context
+      )
+      assert len(parts) == 1
+      assert parts[0].text == "User 2"
+      assert context_id == "ctx-1"
+
   @pytest.mark.asyncio
   async def test_handle_a2a_response_success_with_message(self):
     """Test successful A2A response handling with message."""
@@ -747,8 +883,10 @@ class TestRemoteA2aAgentMessageHandling:
         content=genai_types.Content(role="model", parts=[mock_a2a_part]),
     )
 
-    with patch(
-        "google.adk.agents.remote_a2a_agent.convert_a2a_task_to_event"
+    with patch.object(
+        remote_a2a_agent,
+        "convert_a2a_task_to_event",
+        autospec=True,
     ) as mock_convert:
       mock_convert.return_value = mock_event
 
@@ -852,8 +990,107 @@ class TestRemoteA2aAgentMessageHandling:
         content=genai_types.Content(role="model", parts=[mock_a2a_part]),
     )
 
-    with patch(
-        "google.adk.agents.remote_a2a_agent.convert_a2a_task_to_event"
+    with patch.object(
+        remote_a2a_agent,
+        "convert_a2a_task_to_event",
+        autospec=True,
+    ) as mock_convert:
+      mock_convert.return_value = mock_event
+
+      result = await self.agent._handle_a2a_response(
+          (mock_a2a_task, None), self.mock_context
+      )
+
+      assert result == mock_event
+      mock_convert.assert_called_once_with(
+          mock_a2a_task,
+          self.agent.name,
+          self.mock_context,
+          self.mock_a2a_part_converter,
+      )
+      # Check the parts are updated as Thought
+      assert result.content.parts[0].thought is True
+      assert result.content.parts[0].thought_signature is None
+      # Check that metadata was added
+      assert result.custom_metadata is not None
+      assert A2A_METADATA_PREFIX + "task_id" in result.custom_metadata
+      assert A2A_METADATA_PREFIX + "context_id" in result.custom_metadata
+
+  @pytest.mark.asyncio
+  @pytest.mark.parametrize(
+      "task_state,event_content",
+      [
+          pytest.param(
+              TaskState.submitted,
+              genai_types.Content(role="model", parts=[]),
+              id="submitted_empty_parts",
+          ),
+          pytest.param(
+              TaskState.working,
+              None,
+              id="working_no_content",
+          ),
+      ],
+  )
+  async def test_handle_a2a_response_with_task_missing_content(
+      self, task_state, event_content
+  ):
+    """Test streaming A2A response handling when content/parts are missing.
+
+    This verifies the fix for issue #3769 where the code could raise when it
+    tried to read parts[0] without checking for empty/missing content.
+    """
+    mock_a2a_task = create_autospec(A2ATask, instance=True)
+    mock_a2a_task.id = "task-123"
+    mock_a2a_task.context_id = "context-123"
+    mock_a2a_task.status = create_autospec(A2ATaskStatus, instance=True)
+    mock_a2a_task.status.state = task_state
+
+    mock_event = Event(
+        author=self.agent.name,
+        invocation_id=self.mock_context.invocation_id,
+        branch=self.mock_context.branch,
+        content=event_content,
+    )
+
+    with patch.object(
+        remote_a2a_agent,
+        "convert_a2a_task_to_event",
+        autospec=True,
+    ) as mock_convert:
+      mock_convert.return_value = mock_event
+
+      result = await self.agent._handle_a2a_response(
+          (mock_a2a_task, None), self.mock_context
+      )
+
+      assert result == mock_event
+      assert result.custom_metadata is not None
+      assert A2A_METADATA_PREFIX + "task_id" in result.custom_metadata
+      assert A2A_METADATA_PREFIX + "context_id" in result.custom_metadata
+
+  @pytest.mark.asyncio
+  async def test_handle_a2a_response_with_task_working_and_no_update(self):
+    """Test successful A2A response handling with streaming task and no update."""
+    mock_a2a_task = Mock(spec=A2ATask)
+    mock_a2a_task.id = "task-123"
+    mock_a2a_task.context_id = "context-123"
+    mock_a2a_task.status = Mock(spec=A2ATaskStatus)
+    mock_a2a_task.status.state = TaskState.working
+
+    # Create a proper Event mock that can handle custom_metadata
+    mock_a2a_part = Mock(spec=TextPart)
+    mock_event = Event(
+        author=self.agent.name,
+        invocation_id=self.mock_context.invocation_id,
+        branch=self.mock_context.branch,
+        content=genai_types.Content(role="model", parts=[mock_a2a_part]),
+    )
+
+    with patch.object(
+        remote_a2a_agent,
+        "convert_a2a_task_to_event",
+        autospec=True,
     ) as mock_convert:
       mock_convert.return_value = mock_event
 
@@ -885,7 +1122,7 @@ class TestRemoteA2aAgentMessageHandling:
 
     mock_a2a_message = Mock(spec=A2AMessage)
     mock_update = Mock(spec=TaskStatusUpdateEvent)
-    mock_update.status = Mock(TaskStatus)
+    mock_update.status = Mock(A2ATaskStatus)
     mock_update.status.state = TaskState.completed
     mock_update.status.message = mock_a2a_message
 
@@ -931,7 +1168,7 @@ class TestRemoteA2aAgentMessageHandling:
 
     mock_a2a_message = Mock(spec=A2AMessage)
     mock_update = Mock(spec=TaskStatusUpdateEvent)
-    mock_update.status = Mock(TaskStatus)
+    mock_update.status = Mock(A2ATaskStatus)
     mock_update.status.state = TaskState.working
     mock_update.status.message = mock_a2a_message
 
@@ -973,7 +1210,7 @@ class TestRemoteA2aAgentMessageHandling:
     mock_a2a_task.id = "task-123"
 
     mock_update = Mock(spec=TaskStatusUpdateEvent)
-    mock_update.status = Mock(TaskStatus)
+    mock_update.status = Mock(A2ATaskStatus)
     mock_update.status.state = TaskState.completed
     mock_update.status.message = None
 
@@ -1003,8 +1240,10 @@ class TestRemoteA2aAgentMessageHandling:
         branch=self.mock_context.branch,
     )
 
-    with patch(
-        "google.adk.agents.remote_a2a_agent.convert_a2a_task_to_event"
+    with patch.object(
+        remote_a2a_agent,
+        "convert_a2a_task_to_event",
+        autospec=True,
     ) as mock_convert:
       mock_convert.return_value = mock_event
 
@@ -1211,8 +1450,10 @@ class TestRemoteA2aAgentMessageHandlingFromFactory:
         content=genai_types.Content(role="model", parts=[mock_a2a_part]),
     )
 
-    with patch(
-        "google.adk.agents.remote_a2a_agent.convert_a2a_task_to_event"
+    with patch.object(
+        remote_a2a_agent,
+        "convert_a2a_task_to_event",
+        autospec=True,
     ) as mock_convert:
       mock_convert.return_value = mock_event
 
@@ -1252,8 +1493,10 @@ class TestRemoteA2aAgentMessageHandlingFromFactory:
         content=genai_types.Content(role="model", parts=[mock_a2a_part]),
     )
 
-    with patch(
-        "google.adk.agents.remote_a2a_agent.convert_a2a_task_to_event"
+    with patch.object(
+        remote_a2a_agent,
+        "convert_a2a_task_to_event",
+        autospec=True,
     ) as mock_convert:
       mock_convert.return_value = mock_event
 
@@ -1285,7 +1528,7 @@ class TestRemoteA2aAgentMessageHandlingFromFactory:
 
     mock_a2a_message = Mock(spec=A2AMessage)
     mock_update = Mock(spec=TaskStatusUpdateEvent)
-    mock_update.status = Mock(TaskStatus)
+    mock_update.status = Mock(A2ATaskStatus)
     mock_update.status.state = TaskState.completed
     mock_update.status.message = mock_a2a_message
 
@@ -1331,7 +1574,7 @@ class TestRemoteA2aAgentMessageHandlingFromFactory:
 
     mock_a2a_message = Mock(spec=A2AMessage)
     mock_update = Mock(spec=TaskStatusUpdateEvent)
-    mock_update.status = Mock(TaskStatus)
+    mock_update.status = Mock(A2ATaskStatus)
     mock_update.status.state = TaskState.working
     mock_update.status.message = mock_a2a_message
 
@@ -1373,7 +1616,7 @@ class TestRemoteA2aAgentMessageHandlingFromFactory:
     mock_a2a_task.id = "task-123"
 
     mock_update = Mock(spec=TaskStatusUpdateEvent)
-    mock_update.status = Mock(TaskStatus)
+    mock_update.status = Mock(A2ATaskStatus)
     mock_update.status.state = TaskState.completed
     mock_update.status.message = None
 
@@ -1403,8 +1646,10 @@ class TestRemoteA2aAgentMessageHandlingFromFactory:
         branch=self.mock_context.branch,
     )
 
-    with patch(
-        "google.adk.agents.remote_a2a_agent.convert_a2a_task_to_event"
+    with patch.object(
+        remote_a2a_agent,
+        "convert_a2a_task_to_event",
+        autospec=True,
     ) as mock_convert:
       mock_convert.return_value = mock_event
 
@@ -1442,6 +1687,236 @@ class TestRemoteA2aAgentMessageHandlingFromFactory:
     assert result is None
 
 
+class TestRemoteA2aAgentMessageHandlingV2:
+  """Test _handle_a2a_response_impl functionality."""
+
+  def setup_method(self):
+    """Setup test fixtures."""
+    from google.adk.a2a.agent.config import A2aRemoteAgentConfig
+
+    self.agent_card = create_test_agent_card()
+    self.mock_config = Mock(spec=A2aRemoteAgentConfig)
+    self.mock_config.a2a_part_converter = Mock()
+    self.mock_config.a2a_task_converter = Mock()
+    self.mock_config.a2a_status_update_converter = Mock()
+    self.mock_config.a2a_artifact_update_converter = Mock()
+    self.mock_config.a2a_message_converter = Mock()
+
+    self.agent = RemoteA2aAgent(
+        name="test_agent",
+        agent_card=self.agent_card,
+        config=self.mock_config,
+    )
+
+    # Mock session and context
+    self.mock_session = Mock(spec=Session)
+    self.mock_session.id = "session-123"
+    self.mock_session.events = []
+
+    self.mock_context = Mock(spec=InvocationContext)
+    self.mock_context.session = self.mock_session
+    self.mock_context.invocation_id = "invocation-123"
+    self.mock_context.branch = "main"
+
+  @pytest.mark.asyncio
+  async def test_handle_a2a_response_impl_with_message(self):
+    """Test _handle_a2a_response_impl with A2AMessage."""
+    mock_a2a_message = Mock(spec=A2AMessage)
+    mock_a2a_message.metadata = {}
+    mock_a2a_message.metadata = {}
+    mock_a2a_message.context_id = "context-123"
+
+    mock_event = Event(
+        author=self.agent.name,
+        invocation_id=self.mock_context.invocation_id,
+        branch=self.mock_context.branch,
+    )
+    self.mock_config.a2a_message_converter.return_value = mock_event
+
+    result = await self.agent._handle_a2a_response_v2(
+        mock_a2a_message, self.mock_context
+    )
+
+    assert result == mock_event
+    self.mock_config.a2a_message_converter.assert_called_once_with(
+        mock_a2a_message,
+        self.agent.name,
+        self.mock_context,
+        self.mock_config.a2a_part_converter,
+    )
+    assert result.custom_metadata is not None
+    assert A2A_METADATA_PREFIX + "context_id" in result.custom_metadata
+    assert (
+        result.custom_metadata[A2A_METADATA_PREFIX + "context_id"]
+        == "context-123"
+    )
+
+  @pytest.mark.asyncio
+  async def test_handle_a2a_response_impl_with_task_and_no_update(self):
+    """Test _handle_a2a_response_impl with Task and no update."""
+    mock_a2a_task = Mock(spec=A2ATask)
+    mock_a2a_task.id = "task-123"
+    mock_a2a_task.context_id = "context-123"
+
+    mock_event = Event(
+        author=self.agent.name,
+        invocation_id=self.mock_context.invocation_id,
+        branch=self.mock_context.branch,
+    )
+    self.mock_config.a2a_task_converter.return_value = mock_event
+
+    result = await self.agent._handle_a2a_response_v2(
+        (mock_a2a_task, None), self.mock_context
+    )
+
+    assert result == mock_event
+    self.mock_config.a2a_task_converter.assert_called_once_with(
+        mock_a2a_task,
+        self.agent.name,
+        self.mock_context,
+        self.mock_config.a2a_part_converter,
+    )
+    assert result.custom_metadata is not None
+    assert A2A_METADATA_PREFIX + "task_id" in result.custom_metadata
+    assert result.custom_metadata[A2A_METADATA_PREFIX + "task_id"] == "task-123"
+    assert A2A_METADATA_PREFIX + "context_id" in result.custom_metadata
+    assert (
+        result.custom_metadata[A2A_METADATA_PREFIX + "context_id"]
+        == "context-123"
+    )
+
+  @pytest.mark.asyncio
+  async def test_handle_a2a_response_impl_with_task_status_update(self):
+    """Test _handle_a2a_response_impl with TaskStatusUpdateEvent."""
+    mock_a2a_task = Mock(spec=A2ATask)
+    mock_a2a_task.id = "task-123"
+    mock_a2a_task.context_id = None
+
+    mock_update = Mock(spec=TaskStatusUpdateEvent)
+
+    mock_event = Event(
+        author=self.agent.name,
+        invocation_id=self.mock_context.invocation_id,
+        branch=self.mock_context.branch,
+    )
+    self.mock_config.a2a_status_update_converter.return_value = mock_event
+
+    result = await self.agent._handle_a2a_response_v2(
+        (mock_a2a_task, mock_update), self.mock_context
+    )
+
+    assert result == mock_event
+    self.mock_config.a2a_status_update_converter.assert_called_once_with(
+        mock_update,
+        self.agent.name,
+        self.mock_context,
+        self.mock_config.a2a_part_converter,
+    )
+    assert result.custom_metadata is not None
+    assert A2A_METADATA_PREFIX + "task_id" in result.custom_metadata
+    assert result.custom_metadata[A2A_METADATA_PREFIX + "task_id"] == "task-123"
+    assert A2A_METADATA_PREFIX + "context_id" not in result.custom_metadata
+
+  @pytest.mark.asyncio
+  async def test_handle_a2a_response_impl_with_task_artifact_update(self):
+    """Test _handle_a2a_response_impl with TaskArtifactUpdateEvent."""
+    mock_a2a_task = Mock(spec=A2ATask)
+    mock_a2a_task.id = "task-123"
+    mock_a2a_task.context_id = "context-123"
+
+    mock_update = Mock(spec=TaskArtifactUpdateEvent)
+
+    mock_event = Event(
+        author=self.agent.name,
+        invocation_id=self.mock_context.invocation_id,
+        branch=self.mock_context.branch,
+    )
+    self.mock_config.a2a_artifact_update_converter.return_value = mock_event
+
+    result = await self.agent._handle_a2a_response_v2(
+        (mock_a2a_task, mock_update), self.mock_context
+    )
+
+    assert result == mock_event
+    self.mock_config.a2a_artifact_update_converter.assert_called_once_with(
+        mock_update,
+        self.agent.name,
+        self.mock_context,
+        self.mock_config.a2a_part_converter,
+    )
+    assert result.custom_metadata is not None
+    assert A2A_METADATA_PREFIX + "task_id" in result.custom_metadata
+    assert result.custom_metadata[A2A_METADATA_PREFIX + "task_id"] == "task-123"
+    assert A2A_METADATA_PREFIX + "context_id" in result.custom_metadata
+    assert (
+        result.custom_metadata[A2A_METADATA_PREFIX + "context_id"]
+        == "context-123"
+    )
+
+  @pytest.mark.asyncio
+  async def test_handle_a2a_response_impl_update_converter_returns_none(self):
+    """Test _handle_a2a_response_impl when converter returns None."""
+    mock_a2a_task = Mock(spec=A2ATask)
+    mock_a2a_task.id = "task-123"
+
+    mock_update = Mock(spec=TaskArtifactUpdateEvent)
+
+    self.mock_config.a2a_artifact_update_converter.return_value = None
+
+    result = await self.agent._handle_a2a_response_v2(
+        (mock_a2a_task, mock_update), self.mock_context
+    )
+
+    assert result is None
+    self.mock_config.a2a_artifact_update_converter.assert_called_once_with(
+        mock_update,
+        self.agent.name,
+        self.mock_context,
+        self.mock_config.a2a_part_converter,
+    )
+
+  @pytest.mark.asyncio
+  async def test_handle_a2a_response_impl_unknown_response_type(self):
+    """Test _handle_a2a_response_impl with unknown response type."""
+    unknown_response = object()
+
+    result = await self.agent._handle_a2a_response_v2(
+        unknown_response, self.mock_context
+    )
+
+    assert result is not None
+    assert result.author == self.agent.name
+    assert result.error_message == "Unknown A2A response type"
+    assert result.invocation_id == self.mock_context.invocation_id
+    assert result.branch == self.mock_context.branch
+
+  @pytest.mark.asyncio
+  async def test_handle_a2a_response_impl_handles_client_error(self):
+    """Test _handle_a2a_response_impl catches A2AClientError."""
+    mock_a2a_message = Mock(spec=A2AMessage)
+    mock_a2a_message.metadata = {}
+    mock_a2a_message.metadata = {}
+
+    from google.adk.agents.remote_a2a_agent import A2AClientError
+
+    self.mock_config.a2a_message_converter.side_effect = A2AClientError(
+        "Test client error"
+    )
+
+    result = await self.agent._handle_a2a_response_v2(
+        mock_a2a_message, self.mock_context
+    )
+
+    assert result is not None
+    assert result.author == self.agent.name
+    assert (
+        "Failed to process A2A response: Test client error"
+        in result.error_message
+    )
+    assert result.invocation_id == self.mock_context.invocation_id
+    assert result.branch == self.mock_context.branch
+
+
 class TestRemoteA2aAgentExecution:
   """Test agent execution functionality."""
 
@@ -1461,6 +1936,7 @@ class TestRemoteA2aAgentExecution:
     self.mock_session = Mock(spec=Session)
     self.mock_session.id = "session-123"
     self.mock_session.events = []
+    self.mock_session.state = {}
 
     self.mock_context = Mock(spec=InvocationContext)
     self.mock_context.session = self.mock_session
@@ -1529,7 +2005,7 @@ class TestRemoteA2aAgentExecution:
 
           # Mock A2A client
           mock_a2a_client = create_autospec(spec=A2AClient, instance=True)
-          mock_response = Mock()
+          mock_response = Mock(metadata={})
           mock_send_message = AsyncMock()
           mock_send_message.__aiter__.return_value = [mock_response]
           mock_a2a_client.send_message.return_value = mock_send_message
@@ -1668,7 +2144,7 @@ class TestRemoteA2aAgentExecution:
 
           # Mock A2A client
           mock_a2a_client = create_autospec(spec=A2AClient, instance=True)
-          mock_response = Mock()
+          mock_response = Mock(metadata={})
           mock_send_message = AsyncMock()
           mock_send_message.__aiter__.return_value = [mock_response]
           mock_a2a_client.send_message.return_value = mock_send_message
@@ -1714,6 +2190,7 @@ class TestRemoteA2aAgentExecution:
                   mock_a2a_client.send_message.assert_called_once_with(
                       request=mock_message,
                       request_metadata=request_metadata,
+                      context=ClientCallContext(state=self.mock_session.state),
                   )
 
 
@@ -1735,6 +2212,7 @@ class TestRemoteA2aAgentExecutionFromFactory:
     self.mock_session = Mock(spec=Session)
     self.mock_session.id = "session-123"
     self.mock_session.events = []
+    self.mock_session.state = {}
 
     self.mock_context = Mock(spec=InvocationContext)
     self.mock_context.session = self.mock_session
@@ -1803,7 +2281,7 @@ class TestRemoteA2aAgentExecutionFromFactory:
 
           # Mock A2A client
           mock_a2a_client = create_autospec(spec=A2AClient, instance=True)
-          mock_response = Mock()
+          mock_response = Mock(metadata={})
           mock_send_message = AsyncMock()
           mock_send_message.__aiter__.return_value = [mock_response]
           mock_a2a_client.send_message.return_value = mock_send_message
@@ -2021,6 +2499,7 @@ class TestRemoteA2aAgentIntegration:
     mock_session = Mock(spec=Session)
     mock_session.id = "session-123"
     mock_session.events = [mock_event]
+    mock_session.state = {}
 
     mock_context = Mock(spec=InvocationContext)
     mock_context.session = mock_session
@@ -2048,6 +2527,7 @@ class TestRemoteA2aAgentIntegration:
           with patch.object(agent, "_a2a_client") as mock_a2a_client:
             mock_a2a_message = create_autospec(spec=A2AMessage, instance=True)
             mock_a2a_message.context_id = "context-123"
+            mock_a2a_message.metadata = {}
             mock_response = mock_a2a_message
 
             mock_send_message = AsyncMock()
@@ -2116,6 +2596,7 @@ class TestRemoteA2aAgentIntegration:
     mock_session = Mock(spec=Session)
     mock_session.id = "session-123"
     mock_session.events = [mock_event]
+    mock_session.state = {}
 
     mock_context = Mock(spec=InvocationContext)
     mock_context.session = mock_session
@@ -2143,6 +2624,7 @@ class TestRemoteA2aAgentIntegration:
           with patch.object(agent, "_a2a_client") as mock_a2a_client:
             mock_a2a_message = create_autospec(spec=A2AMessage, instance=True)
             mock_a2a_message.context_id = "context-123"
+            mock_a2a_message.metadata = {}
             mock_response = mock_a2a_message
 
             mock_send_message = AsyncMock()
@@ -2186,3 +2668,228 @@ class TestRemoteA2aAgentIntegration:
 
                   # Verify A2A client was called
                   mock_a2a_client.send_message.assert_called_once()
+
+
+class TestRemoteA2aAgentInterceptors:
+
+  @pytest.fixture
+  def mock_context(self):
+    ctx = Mock(spec=InvocationContext)
+    ctx.session = Mock()
+    ctx.session.state = {"key": "value"}
+    return ctx
+
+  @pytest.mark.asyncio
+  async def test_execute_before_request_interceptors_none(self, mock_context):
+    request = Mock(spec=A2AMessage)
+    result_req, params = await execute_before_request_interceptors(
+        None, mock_context, request
+    )
+    assert result_req is request
+    assert params.client_call_context.state == {"key": "value"}
+
+  @pytest.mark.asyncio
+  async def test_execute_before_request_interceptors_empty(self, mock_context):
+    request = Mock(spec=A2AMessage)
+    result_req, params = await execute_before_request_interceptors(
+        [], mock_context, request
+    )
+    assert result_req is request
+    assert params.client_call_context.state == {"key": "value"}
+
+  @pytest.mark.asyncio
+  async def test_execute_before_request_interceptors_success(
+      self, mock_context
+  ):
+    request = Mock(spec=A2AMessage)
+    new_request = Mock(spec=A2AMessage)
+
+    interceptor1 = Mock(spec=RequestInterceptor)
+    interceptor1.before_request = AsyncMock(
+        return_value=(
+            new_request,
+            ParametersConfig(
+                client_call_context=ClientCallContext(state={"updated": "true"})
+            ),
+        )
+    )
+
+    result_req, params = await execute_before_request_interceptors(
+        [interceptor1], mock_context, request
+    )
+
+    assert result_req is new_request
+    assert params.client_call_context.state == {"updated": "true"}
+    interceptor1.before_request.assert_called_once()
+
+  @pytest.mark.asyncio
+  async def test_execute_before_request_interceptors_returns_event(
+      self, mock_context
+  ):
+    request = Mock(spec=A2AMessage)
+    event = Mock(spec=Event)
+
+    interceptor1 = Mock(spec=RequestInterceptor)
+    interceptor1.before_request = AsyncMock(
+        return_value=(
+            event,
+            ParametersConfig(
+                client_call_context=ClientCallContext(state={"updated": "true"})
+            ),
+        )
+    )
+
+    interceptor2 = Mock(spec=RequestInterceptor)
+    interceptor2.before_request = AsyncMock()
+
+    result, params = await execute_before_request_interceptors(
+        [interceptor1, interceptor2], mock_context, request
+    )
+
+    assert result is event
+    assert params.client_call_context.state == {"updated": "true"}
+    interceptor1.before_request.assert_called_once()
+    interceptor2.before_request.assert_not_called()
+
+  @pytest.mark.asyncio
+  async def test_execute_before_request_interceptors_no_before_request(
+      self, mock_context
+  ):
+    request = Mock(spec=A2AMessage)
+
+    interceptor1 = Mock(spec=RequestInterceptor)
+    interceptor1.before_request = None
+
+    result_req, params = await execute_before_request_interceptors(
+        [interceptor1], mock_context, request
+    )
+
+    assert result_req is request
+    assert params.client_call_context.state == {"key": "value"}
+
+  @pytest.mark.asyncio
+  async def test_execute_after_request_interceptors_none(self, mock_context):
+    response = Mock(spec=A2AMessage)
+    event = Mock(spec=Event)
+    result = await execute_after_request_interceptors(
+        None, mock_context, response, event
+    )
+    assert result is event
+
+  @pytest.mark.asyncio
+  async def test_execute_after_request_interceptors_empty(self, mock_context):
+    response = Mock(spec=A2AMessage)
+    event = Mock(spec=Event)
+    result = await execute_after_request_interceptors(
+        [], mock_context, response, event
+    )
+    assert result is event
+
+  @pytest.mark.asyncio
+  async def test_execute_after_request_interceptors_success(self, mock_context):
+    response = Mock(spec=A2AMessage)
+    event = Mock(spec=Event)
+    new_event = Mock(spec=Event)
+
+    interceptor1 = Mock(spec=RequestInterceptor)
+    interceptor1.after_request = AsyncMock(return_value=new_event)
+
+    result = await execute_after_request_interceptors(
+        [interceptor1], mock_context, response, event
+    )
+
+    assert result is new_event
+    interceptor1.after_request.assert_called_once_with(
+        mock_context, response, event
+    )
+
+  @pytest.mark.asyncio
+  async def test_execute_after_request_interceptors_reverse_order(
+      self, mock_context
+  ):
+    response = Mock(spec=A2AMessage)
+    event = Mock(spec=Event)
+    event1 = Mock(spec=Event)
+    event2 = Mock(spec=Event)
+
+    interceptor1 = Mock(spec=RequestInterceptor)
+    interceptor1.after_request = AsyncMock(return_value=event1)
+
+    interceptor2 = Mock(spec=RequestInterceptor)
+    interceptor2.after_request = AsyncMock(return_value=event2)
+
+    result = await execute_after_request_interceptors(
+        [interceptor1, interceptor2], mock_context, response, event
+    )
+
+    assert result is event1
+    interceptor2.after_request.assert_called_once_with(
+        mock_context, response, event
+    )
+    interceptor1.after_request.assert_called_once_with(
+        mock_context, response, event2
+    )
+
+  @pytest.mark.asyncio
+  async def test_execute_after_request_interceptors_returns_none(
+      self, mock_context
+  ):
+    response = Mock(spec=A2AMessage)
+    event = Mock(spec=Event)
+
+    interceptor1 = Mock(spec=RequestInterceptor)
+    interceptor1.after_request = AsyncMock()
+
+    interceptor2 = Mock(spec=RequestInterceptor)
+    interceptor2.after_request = AsyncMock(return_value=None)
+
+    result = await execute_after_request_interceptors(
+        [interceptor1, interceptor2], mock_context, response, event
+    )
+
+    assert result is None
+    interceptor2.after_request.assert_called_once_with(
+        mock_context, response, event
+    )
+    interceptor1.after_request.assert_not_called()
+
+  @pytest.mark.asyncio
+  async def test_execute_after_request_interceptors_no_after_request(
+      self, mock_context
+  ):
+    response = Mock(spec=A2AMessage)
+    event = Mock(spec=Event)
+
+    interceptor1 = Mock(spec=RequestInterceptor)
+    interceptor1.after_request = None
+
+    result = await execute_after_request_interceptors(
+        [interceptor1], mock_context, response, event
+    )
+
+    assert result is event
+
+
+class TestRemoteA2aAgentDeepcopy:
+  """Test deepcopy functionality for RemoteA2aAgent and its config."""
+
+  def test_deepcopy_config(self):
+    """Test that A2aRemoteAgentConfig can be deepcopied with interceptors."""
+    config = A2aRemoteAgentConfig()
+    mock_interceptor = Mock()
+    config.request_interceptors = [mock_interceptor]
+
+    copied_config = copy.deepcopy(config)
+    assert copied_config is not None
+
+    # Verify that functions are shared (by reference)
+    assert copied_config.a2a_message_converter is config.a2a_message_converter
+
+    # Verify that request_interceptors list was copied
+    assert copied_config.request_interceptors is not None
+    assert len(copied_config.request_interceptors) == 1
+    # Standard objects inside lists should be deepcopied (new instances)
+    assert (
+        copied_config.request_interceptors[0]
+        is not config.request_interceptors[0]
+    )

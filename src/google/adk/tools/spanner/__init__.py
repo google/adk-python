@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -31,10 +31,12 @@ Spanner database and tables.
 """
 
 from . import spanner_credentials
+from .admin_toolset import SpannerAdminToolset
 from .spanner_toolset import SpannerToolset
 
 SpannerCredentialsConfig = spanner_credentials.SpannerCredentialsConfig
 __all__ = [
     "SpannerToolset",
+    "SpannerAdminToolset",
     "SpannerCredentialsConfig",
 ]

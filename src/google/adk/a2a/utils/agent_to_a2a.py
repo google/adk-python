@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -14,31 +14,24 @@
 
 from __future__ import annotations
 
+from contextlib import asynccontextmanager
 import logging
-import sys
-
-try:
-  from a2a.server.apps import A2AStarletteApplication
-  from a2a.server.request_handlers import DefaultRequestHandler
-  from a2a.server.tasks import InMemoryTaskStore
-  from a2a.types import AgentCard
-except ImportError as e:
-  if sys.version_info < (3, 10):
-    raise ImportError(
-        "A2A requires Python 3.10 or above. Please upgrade your Python version."
-    ) from e
-  else:
-    raise e
-
+from typing import AsyncIterator
+from typing import Callable
 from typing import Optional
 from typing import Union
 
+from a2a.server.apps import A2AStarletteApplication
+from a2a.server.request_handlers import DefaultRequestHandler
+from a2a.server.tasks import InMemoryPushNotificationConfigStore
+from a2a.server.tasks import InMemoryTaskStore
+from a2a.server.tasks import PushNotificationConfigStore
+from a2a.types import AgentCard
 from starlette.applications import Starlette
 
 from ...agents.base_agent import BaseAgent
 from ...artifacts.in_memory_artifact_service import InMemoryArtifactService
 from ...auth.credential_service.in_memory_credential_service import InMemoryCredentialService
-from ...cli.utils.logs import setup_adk_logger
 from ...memory.in_memory_memory_service import InMemoryMemoryService
 from ...runners import Runner
 from ...sessions.in_memory_session_service import InMemorySessionService
@@ -90,7 +83,9 @@ def to_a2a(
     port: int = 8000,
     protocol: str = "http",
     agent_card: Optional[Union[AgentCard, str]] = None,
+    push_config_store: Optional[PushNotificationConfigStore] = None,
     runner: Optional[Runner] = None,
+    lifespan: Optional[Callable[[Starlette], AsyncIterator[None]]] = None,
 ) -> Starlette:
   """Convert an ADK agent to a A2A Starlette application.
 
@@ -102,8 +97,16 @@ def to_a2a(
       agent_card: Optional pre-built AgentCard object or path to agent card
                   JSON. If not provided, will be built automatically from the
                   agent.
+      push_config_store: Optional A2A push notification config store. If not
+        provided, an in-memory store will be created so push-notification
+        config RPC methods are supported.
       runner: Optional pre-built Runner object. If not provided, a default
               runner will be created using in-memory services.
+      lifespan: Optional async context manager for Starlette lifespan
+        events. Use this to run startup/shutdown logic (e.g. initializing
+        database connections or loading resources). The context manager
+        receives the Starlette app instance and can set state on
+        ``app.state``.
 
   Returns:
       A Starlette application that can be run with uvicorn
@@ -115,9 +118,19 @@ def to_a2a(
 
       # Or with custom agent card:
       app = to_a2a(agent, agent_card=my_custom_agent_card)
+
+      # Or with lifespan:
+      @asynccontextmanager
+      async def lifespan(app):
+          app.state.db = await init_db()
+          yield
+          await app.state.db.close()
+
+      app = to_a2a(agent, lifespan=lifespan)
   """
   # Set up ADK logging to ensure logs are visible when using uvicorn directly
-  setup_adk_logger(logging.INFO)
+  adk_logger = logging.getLogger("google_adk")
+  adk_logger.setLevel(logging.INFO)
 
   async def create_runner() -> Runner:
     """Create a runner for the agent."""
@@ -138,8 +151,13 @@ def to_a2a(
       runner=runner or create_runner,
   )
 
+  if push_config_store is None:
+    push_config_store = InMemoryPushNotificationConfigStore()
+
   request_handler = DefaultRequestHandler(
-      agent_executor=agent_executor, task_store=task_store
+      agent_executor=agent_executor,
+      task_store=task_store,
+      push_config_store=push_config_store,
   )
 
   # Use provided agent card or build one from the agent
@@ -151,11 +169,8 @@ def to_a2a(
       rpc_url=rpc_url,
   )
 
-  # Create a Starlette app that will be configured during startup
-  app = Starlette()
-
-  # Add startup handler to build the agent card and configure A2A routes
-  async def setup_a2a():
+  # Build the agent card and configure A2A routes
+  async def setup_a2a(app: Starlette):
     # Use provided agent card or build one asynchronously
     if provided_agent_card is not None:
       final_agent_card = provided_agent_card
@@ -173,7 +188,19 @@ def to_a2a(
         app,
     )
 
-  # Store the setup function to be called during startup
-  app.add_event_handler("startup", setup_a2a)
+  # Compose a lifespan that runs A2A setup and the user's lifespan
+  @asynccontextmanager
+  async def _combined_lifespan(
+      app: Starlette,
+  ) -> AsyncIterator[None]:
+    await setup_a2a(app)
+    if lifespan:
+      async with lifespan(app):
+        yield
+    else:
+      yield
+
+  # Create a Starlette app with the composed lifespan
+  app = Starlette(lifespan=_combined_lifespan)
 
   return app

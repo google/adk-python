@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -74,6 +74,25 @@ async def test_process_llm_request_failure_with_non_gemini_models():
         tool_context=tool_context, llm_request=llm_request
     )
   assert 'is not supported for model' in str(exc_info.value)
+
+
+@pytest.mark.asyncio
+async def test_process_llm_request_non_gemini_with_disabled_check(monkeypatch):
+  monkeypatch.setenv('ADK_DISABLE_GEMINI_MODEL_ID_CHECK', 'true')
+  tool = EnterpriseWebSearchTool()
+  llm_request = LlmRequest(
+      model='internal-model-v1', config=types.GenerateContentConfig()
+  )
+  tool_context = await _create_tool_context()
+
+  await tool.process_llm_request(
+      tool_context=tool_context, llm_request=llm_request
+  )
+
+  assert (
+      llm_request.config.tools[0].enterprise_web_search
+      == types.EnterpriseWebSearch()
+  )
 
 
 @pytest.mark.asyncio

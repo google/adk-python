@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from google.adk import models
 from google.adk.models.gemma_llm import Gemma
 from google.adk.models.llm_request import LlmRequest
 from google.adk.models.llm_response import LlmResponse
@@ -504,3 +505,35 @@ def test_process_response_last_json_object():
   assert part.function_call.name == "second_call"
   assert part.function_call.args == {"b": 2}
   assert part.text is None
+
+
+# Tests for Gemma3Ollama (only run when LiteLLM is installed)
+try:
+  from google.adk.models.gemma_llm import Gemma3Ollama
+  from google.adk.models.lite_llm import LiteLlm
+
+  def test_gemma3_ollama_supported_models():
+    assert Gemma3Ollama.supported_models() == [r"ollama/gemma3.*"]
+
+  def test_gemma3_ollama_registry_resolution():
+    assert models.LLMRegistry.resolve("ollama/gemma3:12b") is Gemma3Ollama
+
+  def test_non_gemma_ollama_registry_resolution():
+    assert models.LLMRegistry.resolve("ollama/llama3.2") is LiteLlm
+
+  @pytest.mark.parametrize(
+      "model_arg,expected_model",
+      [
+          (None, "ollama/gemma3:12b"),
+          ("ollama/gemma3:27b", "ollama/gemma3:27b"),
+      ],
+  )
+  def test_gemma3_ollama_model(model_arg, expected_model):
+    model = (
+        Gemma3Ollama() if model_arg is None else Gemma3Ollama(model=model_arg)
+    )
+    assert model.model == expected_model
+
+except ImportError:
+  # LiteLLM not installed, skip Gemma3Ollama tests
+  pass

@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -37,8 +37,8 @@ class LlmRecording(BaseModel):
   llm_request: Optional[LlmRequest] = None
   """Required. The LLM request."""
 
-  llm_response: Optional[LlmResponse] = None
-  """Required. The LLM response."""
+  llm_responses: Optional[list[LlmResponse]] = None
+  """Required. The list of LLM responses."""
 
 
 class ToolRecording(BaseModel):

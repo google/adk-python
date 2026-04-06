@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -27,11 +27,13 @@ from google.adk.auth import auth_schemes
 from google.adk.auth.auth_tool import AuthConfig
 from google.adk.events.event import Event
 from google.adk.events.event_actions import EventActions
+from google.adk.events.event_actions import EventCompaction
 from google.adk.sessions.base_session_service import GetSessionConfig
 from google.adk.sessions.session import Session
 from google.adk.sessions.vertex_ai_session_service import VertexAiSessionService
 from google.api_core import exceptions as api_core_exceptions
 from google.genai import types as genai_types
+from google.genai.errors import ClientError
 import pytest
 
 MOCK_SESSION_JSON_1 = {
@@ -299,20 +301,20 @@ class MockAsyncClient:
     if user_id_match:
       user_id = user_id_match.group(1)
       if user_id == 'user_with_pages':
-        return [
+        return to_async_iterator([
             _convert_to_object(MOCK_SESSION_JSON_PAGE1),
             _convert_to_object(MOCK_SESSION_JSON_PAGE2),
-        ]
-      return [
+        ])
+      return to_async_iterator([
           _convert_to_object(session)
           for session in self.session_dict.values()
           if session['user_id'] == user_id
-      ]
+      ])
 
     # No user filter, return all sessions
-    return [
-        _convert_to_object(session) for session in self.session_dict.values()
-    ]
+    return to_async_iterator(
+        [_convert_to_object(session) for session in self.session_dict.values()]
+    )
 
   async def _delete_session(self, name: str):
     session_id = name.split('/')[-1]
@@ -322,7 +324,10 @@ class MockAsyncClient:
       self, name: str, user_id: str, config: dict[str, Any]
   ):
     self.last_create_session_config = config
-    new_session_id = '4'
+    if 'session_id' in config:
+      new_session_id = config['session_id']
+    else:
+      new_session_id = '4'
     self.session_dict[new_session_id] = {
         'name': (
             'projects/test-project/locations/test-location/'
@@ -341,7 +346,7 @@ class MockAsyncClient:
             + '/operations/111'
         ),
         'done': True,
-        'response': self.session_dict['4'],
+        'response': self.session_dict[new_session_id],
     })
 
   async def _list_events(self, name: str, **kwargs):
@@ -395,6 +400,103 @@ class MockAsyncClient:
       self.event_dict[session_id][0].append(event_json)
     else:
       self.event_dict[session_id] = ([event_json], None)
+
+
+class MockAsyncClientWithPagination:
+  """Mock client that simulates pagination requiring an open client connection.
+
+  This mock tracks whether the client context is active and raises RuntimeError
+  if iteration occurs outside the context, simulating the real httpx behavior.
+  """
+
+  def __init__(self, session_data: dict, events_pages: list[list[dict]]):
+    self._session_data = session_data
+    self._events_pages = events_pages
+    self._context_active = False
+    self.agent_engines = mock.AsyncMock()
+    self.agent_engines.sessions.get.side_effect = self._get_session
+    self.agent_engines.sessions.events.list.side_effect = self._list_events
+
+  async def __aenter__(self):
+    self._context_active = True
+    return self
+
+  async def __aexit__(self, exc_type, exc_val, exc_tb):
+    self._context_active = False
+
+  async def _get_session(self, name: str):
+    return _convert_to_object(self._session_data)
+
+  async def _list_events(self, name: str, **kwargs):
+    return self._paginated_events_iterator()
+
+  async def _paginated_events_iterator(self):
+    for page in self._events_pages:
+      for event in page:
+        if not self._context_active:
+          raise RuntimeError(
+              'Cannot send a request, as the client has been closed.'
+          )
+        yield _convert_to_object(event)
+
+
+def _generate_events_for_page(session_id: str, start_idx: int, count: int):
+  events = []
+  start_time = isoparse('2024-12-12T12:12:12.123456Z')
+  for i in range(count):
+    idx = start_idx + i
+    event_time = start_time + datetime.timedelta(microseconds=idx * 1000)
+    events.append({
+        'name': (
+            'projects/test-project/locations/test-location/'
+            f'reasoningEngines/123/sessions/{session_id}/events/{idx}'
+        ),
+        'invocation_id': f'invocation_{idx}',
+        'author': 'pagination_user',
+        'timestamp': event_time.isoformat().replace('+00:00', 'Z'),
+    })
+  return events
+
+
+@pytest.mark.asyncio
+async def test_get_session_pagination_keeps_client_open():
+  """Regression test: event iteration must occur inside the api_client context.
+
+  This test verifies that get_session() keeps the API client open while
+  iterating through paginated events. Before the fix, the events_iterator
+  was consumed outside the async with block, causing RuntimeError when
+  fetching subsequent pages.
+  """
+  session_data = {
+      'name': (
+          'projects/test-project/locations/test-location/'
+          'reasoningEngines/123/sessions/pagination_test'
+      ),
+      'update_time': '2024-12-12T12:12:12.123456Z',
+      'user_id': 'pagination_user',
+  }
+  page1_events = _generate_events_for_page('pagination_test', 0, 100)
+  page2_events = _generate_events_for_page('pagination_test', 100, 100)
+  page3_events = _generate_events_for_page('pagination_test', 200, 50)
+
+  mock_client = MockAsyncClientWithPagination(
+      session_data=session_data,
+      events_pages=[page1_events, page2_events, page3_events],
+  )
+
+  session_service = mock_vertex_ai_session_service()
+
+  with mock.patch.object(
+      session_service, '_get_api_client', return_value=mock_client
+  ):
+    session = await session_service.get_session(
+        app_name='123', user_id='pagination_user', session_id='pagination_test'
+    )
+
+  assert session is not None
+  assert len(session.events) == 250
+  assert session.events[0].invocation_id == 'invocation_0'
+  assert session.events[249].invocation_id == 'invocation_249'
 
 
 def mock_vertex_ai_session_service(
@@ -453,6 +555,31 @@ async def test_initialize_with_project_location_and_api_key_error():
       ' project and location, or just the express_mode_api_key.'
       in str(excinfo.value)
   )
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures('mock_get_api_client')
+async def test_get_session_returns_none_when_invalid_argument(
+    mock_api_client_instance,
+):
+  session_service = mock_vertex_ai_session_service()
+  # Simulate the API raising a session not found exception.
+  mock_api_client_instance.agent_engines.sessions.get.side_effect = ClientError(
+      code=404,
+      response_json={
+          'message': (
+              'Session (projectNumber: 123, reasoningEngineId: 123, sessionId:'
+              ' 123) not found.'
+          )
+      },
+      response=None,
+  )
+
+  session = await session_service.get_session(
+      app_name='123', user_id='user', session_id='missing'
+  )
+
+  assert session is None
 
 
 @pytest.mark.asyncio
@@ -574,6 +701,20 @@ async def test_get_session_with_many_events(mock_api_client_instance):
 
 @pytest.mark.asyncio
 @pytest.mark.usefixtures('mock_get_api_client')
+async def test_get_session_with_num_recent_events_zero():
+  session_service = mock_vertex_ai_session_service()
+  session = await session_service.get_session(
+      app_name='123',
+      user_id='user',
+      session_id='2',
+      config=GetSessionConfig(num_recent_events=0),
+  )
+  assert session is not None
+  assert len(session.events) == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures('mock_get_api_client')
 async def test_list_sessions():
   session_service = mock_vertex_ai_session_service()
   sessions = await session_service.list_sessions(app_name='123', user_id='user')
@@ -631,15 +772,26 @@ async def test_create_session():
 
 @pytest.mark.asyncio
 @pytest.mark.usefixtures('mock_get_api_client')
-async def test_create_session_with_custom_session_id():
+@pytest.mark.parametrize('session_id', ['1', 'abc123'])
+async def test_create_session_with_custom_session_id(
+    mock_api_client_instance: MockAsyncClient, session_id: str
+):
   session_service = mock_vertex_ai_session_service()
 
-  with pytest.raises(ValueError) as excinfo:
-    await session_service.create_session(
-        app_name='123', user_id='user', session_id='1'
-    )
-  assert str(excinfo.value) == (
-      'User-provided Session id is not supported for VertexAISessionService.'
+  mock_api_client_instance.event_dict[session_id] = (
+      [],
+      None,
+  )
+
+  session = await session_service.create_session(
+      app_name='123', user_id='user', session_id=session_id
+  )
+  assert session.id == session_id
+  assert session.app_name == '123'
+  assert session.user_id == 'user'
+  assert session.last_update_time is not None
+  assert session == await session_service.get_session(
+      app_name='123', user_id='user', session_id=session_id
   )
 
 
@@ -703,3 +855,215 @@ async def test_append_event():
   assert len(retrieved_session.events) == 2
   event_to_append.id = retrieved_session.events[1].id
   assert retrieved_session.events[1] == event_to_append
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures('mock_get_api_client')
+async def test_append_event_with_compaction():
+  """Compaction data round-trips through append_event and get_session."""
+  session_service = mock_vertex_ai_session_service()
+  session = await session_service.get_session(
+      app_name='123', user_id='user', session_id='1'
+  )
+  assert session is not None
+
+  compaction = EventCompaction(
+      start_timestamp=1000.0,
+      end_timestamp=2000.0,
+      compacted_content=genai_types.Content(
+          parts=[genai_types.Part(text='compacted summary')]
+      ),
+  )
+  event_to_append = Event(
+      invocation_id='compaction_invocation',
+      author='model',
+      timestamp=1734005534.0,
+      actions=EventActions(compaction=compaction),
+  )
+
+  await session_service.append_event(session, event_to_append)
+
+  retrieved_session = await session_service.get_session(
+      app_name='123', user_id='user', session_id='1'
+  )
+  assert retrieved_session is not None
+
+  appended_event = retrieved_session.events[-1]
+  assert appended_event.actions.compaction is not None
+  assert appended_event.actions.compaction.start_timestamp == 1000.0
+  assert appended_event.actions.compaction.end_timestamp == 2000.0
+  assert appended_event.actions.compaction.compacted_content.parts[0].text == (
+      'compacted summary'
+  )
+  # custom_metadata should remain None when only compaction was stored
+  assert appended_event.custom_metadata is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures('mock_get_api_client')
+async def test_append_event_with_compaction_and_custom_metadata():
+  """Both compaction and user custom_metadata survive the round-trip."""
+  session_service = mock_vertex_ai_session_service()
+  session = await session_service.get_session(
+      app_name='123', user_id='user', session_id='1'
+  )
+  assert session is not None
+
+  compaction = EventCompaction(
+      start_timestamp=100.0,
+      end_timestamp=200.0,
+      compacted_content=genai_types.Content(
+          parts=[genai_types.Part(text='summary')]
+      ),
+  )
+  event_to_append = Event(
+      invocation_id='compaction_and_meta_invocation',
+      author='model',
+      timestamp=1734005535.0,
+      actions=EventActions(compaction=compaction),
+      custom_metadata={'user_key': 'user_value'},
+  )
+
+  await session_service.append_event(session, event_to_append)
+
+  retrieved_session = await session_service.get_session(
+      app_name='123', user_id='user', session_id='1'
+  )
+  assert retrieved_session is not None
+
+  appended_event = retrieved_session.events[-1]
+  # Compaction is restored
+  assert appended_event.actions.compaction is not None
+  assert appended_event.actions.compaction.start_timestamp == 100.0
+  assert appended_event.actions.compaction.end_timestamp == 200.0
+  # User custom_metadata is preserved without the internal _compaction key
+  assert appended_event.custom_metadata == {'user_key': 'user_value'}
+  assert '_compaction' not in (appended_event.custom_metadata or {})
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures('mock_get_api_client')
+async def test_append_event_with_usage_metadata():
+  """usage_metadata round-trips through append_event and get_session."""
+  session_service = mock_vertex_ai_session_service()
+  session = await session_service.get_session(
+      app_name='123', user_id='user', session_id='1'
+  )
+  assert session is not None
+
+  event_to_append = Event(
+      invocation_id='usage_invocation',
+      author='model',
+      timestamp=1734005536.0,
+      usage_metadata=genai_types.GenerateContentResponseUsageMetadata(
+          prompt_token_count=150,
+          candidates_token_count=50,
+          total_token_count=200,
+      ),
+  )
+
+  await session_service.append_event(session, event_to_append)
+
+  retrieved_session = await session_service.get_session(
+      app_name='123', user_id='user', session_id='1'
+  )
+  assert retrieved_session is not None
+
+  appended_event = retrieved_session.events[-1]
+  assert appended_event.usage_metadata is not None
+  assert appended_event.usage_metadata.prompt_token_count == 150
+  assert appended_event.usage_metadata.candidates_token_count == 50
+  assert appended_event.usage_metadata.total_token_count == 200
+  # custom_metadata should remain None when only usage_metadata was stored
+  assert appended_event.custom_metadata is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures('mock_get_api_client')
+async def test_append_event_with_usage_metadata_and_custom_metadata():
+  """Both usage_metadata and user custom_metadata survive the round-trip."""
+  session_service = mock_vertex_ai_session_service()
+  session = await session_service.get_session(
+      app_name='123', user_id='user', session_id='1'
+  )
+  assert session is not None
+
+  event_to_append = Event(
+      invocation_id='usage_and_meta_invocation',
+      author='model',
+      timestamp=1734005537.0,
+      usage_metadata=genai_types.GenerateContentResponseUsageMetadata(
+          prompt_token_count=300,
+          total_token_count=400,
+      ),
+      custom_metadata={'my_key': 'my_value'},
+  )
+
+  await session_service.append_event(session, event_to_append)
+
+  retrieved_session = await session_service.get_session(
+      app_name='123', user_id='user', session_id='1'
+  )
+  assert retrieved_session is not None
+
+  appended_event = retrieved_session.events[-1]
+  # usage_metadata is restored
+  assert appended_event.usage_metadata is not None
+  assert appended_event.usage_metadata.prompt_token_count == 300
+  assert appended_event.usage_metadata.total_token_count == 400
+  # User custom_metadata is preserved without internal keys
+  assert appended_event.custom_metadata == {'my_key': 'my_value'}
+  assert '_usage_metadata' not in (appended_event.custom_metadata or {})
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures('mock_get_api_client')
+async def test_append_event_with_usage_metadata_and_compaction():
+  """usage_metadata, compaction, and user custom_metadata all coexist."""
+  session_service = mock_vertex_ai_session_service()
+  session = await session_service.get_session(
+      app_name='123', user_id='user', session_id='1'
+  )
+  assert session is not None
+
+  compaction = EventCompaction(
+      start_timestamp=500.0,
+      end_timestamp=600.0,
+      compacted_content=genai_types.Content(
+          parts=[genai_types.Part(text='compacted')]
+      ),
+  )
+  event_to_append = Event(
+      invocation_id='all_three_invocation',
+      author='model',
+      timestamp=1734005538.0,
+      actions=EventActions(compaction=compaction),
+      usage_metadata=genai_types.GenerateContentResponseUsageMetadata(
+          prompt_token_count=1000,
+          candidates_token_count=250,
+          total_token_count=1250,
+      ),
+      custom_metadata={'extra': 'info'},
+  )
+
+  await session_service.append_event(session, event_to_append)
+
+  retrieved_session = await session_service.get_session(
+      app_name='123', user_id='user', session_id='1'
+  )
+  assert retrieved_session is not None
+
+  appended_event = retrieved_session.events[-1]
+  # Compaction is restored
+  assert appended_event.actions.compaction is not None
+  assert appended_event.actions.compaction.start_timestamp == 500.0
+  assert appended_event.actions.compaction.end_timestamp == 600.0
+  # usage_metadata is restored
+  assert appended_event.usage_metadata is not None
+  assert appended_event.usage_metadata.prompt_token_count == 1000
+  assert appended_event.usage_metadata.candidates_token_count == 250
+  assert appended_event.usage_metadata.total_token_count == 1250
+  # User custom_metadata is preserved without internal keys
+  assert appended_event.custom_metadata == {'extra': 'info'}
+  assert '_compaction' not in (appended_event.custom_metadata or {})
+  assert '_usage_metadata' not in (appended_event.custom_metadata or {})

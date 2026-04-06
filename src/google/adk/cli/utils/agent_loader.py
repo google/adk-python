@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -19,6 +19,7 @@ import importlib.util
 import logging
 import os
 from pathlib import Path
+import re
 import sys
 from typing import Any
 from typing import Literal
@@ -32,6 +33,7 @@ from . import envs
 from ...agents import config_agent_utils
 from ...agents.base_agent import BaseAgent
 from ...apps.app import App
+from ...tools.computer_use.computer_use_toolset import ComputerUseToolset
 from ...utils.feature_decorator import experimental
 from .base_agent_loader import BaseAgentLoader
 
@@ -186,8 +188,36 @@ class AgentLoader(BaseAgentLoader):
       ) + e.args[1:]
       raise e
 
+  _VALID_AGENT_NAME_RE = re.compile(r"^[a-zA-Z0-9_]+$")
+
+  def _validate_agent_name(self, agent_name: str) -> None:
+    """Validate agent name to prevent arbitrary module imports."""
+    # Strip the special agent prefix for validation
+    if agent_name.startswith("__"):
+      name_to_check = agent_name[2:]
+      check_dir = os.path.abspath(SPECIAL_AGENTS_DIR)
+    else:
+      name_to_check = agent_name
+      check_dir = self.agents_dir
+
+    if not self._VALID_AGENT_NAME_RE.match(name_to_check):
+      raise ValueError(
+          f"Invalid agent name: {agent_name!r}. Agent names must be valid"
+          " Python identifiers (letters, digits, and underscores only)."
+      )
+
+    # Verify the agent exists on disk before allowing import
+    agent_path = Path(check_dir) / name_to_check
+    agent_file = Path(check_dir) / f"{name_to_check}.py"
+    if not (agent_path.is_dir() or agent_file.is_file()):
+      raise ValueError(
+          f"Agent not found: {agent_name!r}. No matching directory or module"
+          f" exists in '{os.path.join(check_dir, name_to_check)}'."
+      )
+
   def _perform_load(self, agent_name: str) -> Union[BaseAgent, App]:
     """Internal logic to load an agent"""
+    self._validate_agent_name(agent_name)
     # Determine the directory to use for loading
     if agent_name.startswith("__"):
       # Special agent: use special agents directory
@@ -358,12 +388,17 @@ class AgentLoader(BaseAgentLoader):
           agent = loaded
 
         language = self._determine_agent_language(agent_name)
+        is_computer_use = any(
+            isinstance(t, ComputerUseToolset)
+            for t in getattr(agent, "tools", [])
+        )
 
         app_info = {
             "name": agent_name,
             "root_agent_name": agent.name,
             "description": agent.description,
             "language": language,
+            "is_computer_use": is_computer_use,
         }
         apps_info.append(app_info)
 

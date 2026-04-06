@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -621,6 +621,25 @@ class TestConnectionsClient:
     with mock.patch(
         "google.adk.tools.application_integration_tool.clients.connections_client.default_service_credential",
         return_value=(None, None),
+    ):
+      with pytest.raises(
+          ValueError,
+          match=(
+              "Please provide a service account that has the required"
+              " permissions"
+          ),
+      ):
+        client._get_access_token()
+
+  def test_get_access_token_default_credentials_error(
+      self, project, location, connection_name
+  ):
+    client = ConnectionsClient(project, location, connection_name, None)
+    with mock.patch(
+        "google.adk.tools.application_integration_tool.clients.connections_client.default_service_credential",
+        side_effect=google.auth.exceptions.DefaultCredentialsError(
+            "ADC not found"
+        ),
     ):
       with pytest.raises(
           ValueError,

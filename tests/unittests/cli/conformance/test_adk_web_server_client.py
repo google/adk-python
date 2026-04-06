@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -17,6 +17,7 @@ from unittest.mock import AsyncMock
 from unittest.mock import MagicMock
 from unittest.mock import patch
 
+from google.adk.artifacts.base_artifact_service import ArtifactVersion
 from google.adk.cli.adk_web_server import RunAgentRequest
 from google.adk.cli.conformance.adk_web_server_client import AdkWebServerClient
 from google.adk.events.event import Event
@@ -222,6 +223,122 @@ async def test_run_agent():
     assert all(isinstance(event, Event) for event in events)
     assert events[0].invocation_id == "test_invocation_1"
     assert events[1].invocation_id == "test_invocation_2"
+
+
+@pytest.mark.asyncio
+async def test_run_agent_raises_on_streamed_error():
+  client = AdkWebServerClient()
+
+  class MockStreamResponse:
+
+    def raise_for_status(self):
+      pass
+
+    async def aiter_lines(self):
+      yield 'data: {"error": "boom"}'
+
+    async def __aenter__(self):
+      return self
+
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+      pass
+
+  def mock_stream(*_args, **_kwargs):
+    return MockStreamResponse()
+
+  with patch("httpx.AsyncClient") as mock_client_class:
+    mock_client = AsyncMock()
+    mock_client.stream = mock_stream
+    mock_client_class.return_value = mock_client
+
+    request = RunAgentRequest(
+        app_name="test_app",
+        user_id="test_user",
+        session_id="test_session",
+        new_message=types.Content(role="user", parts=[types.Part(text="Hi")]),
+    )
+
+    with pytest.raises(RuntimeError, match="boom"):
+      async for _ in client.run_agent(request):
+        pass
+
+
+@pytest.mark.asyncio
+async def test_get_artifact_version_metadata():
+  client = AdkWebServerClient()
+  mock_response = MagicMock()
+  mock_response.json.return_value = {
+      "version": 2,
+      "canonicalUri": (
+          "artifact://apps/app/users/user/sessions/session/"
+          "artifacts/report/versions/2"
+      ),
+      "customMetadata": {"foo": "bar"},
+      "createTime": 123.4,
+      "mimeType": "text/plain",
+  }
+
+  with patch("httpx.AsyncClient") as mock_client_class:
+    mock_client = AsyncMock()
+    mock_client.get.return_value = mock_response
+    mock_client_class.return_value = mock_client
+
+    metadata = await client.get_artifact_version_metadata(
+        app_name="app",
+        user_id="user",
+        session_id="session",
+        artifact_name="report",
+        version=2,
+    )
+
+    assert isinstance(metadata, ArtifactVersion)
+    assert metadata.version == 2
+    assert metadata.custom_metadata == {"foo": "bar"}
+    mock_client.get.assert_called_once_with(
+        "/apps/app/users/user/sessions/session/artifacts/report/versions/2/metadata"
+    )
+    mock_response.raise_for_status.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_list_artifact_versions_metadata():
+  client = AdkWebServerClient()
+  mock_response = MagicMock()
+  mock_response.json.return_value = [
+      {
+          "version": 0,
+          "canonicalUri": "artifact://.../versions/0",
+          "customMetadata": {},
+          "createTime": 100.0,
+      },
+      {
+          "version": 1,
+          "canonicalUri": "artifact://.../versions/1",
+          "customMetadata": {"foo": "bar"},
+          "createTime": 200.0,
+          "mimeType": "application/json",
+      },
+  ]
+
+  with patch("httpx.AsyncClient") as mock_client_class:
+    mock_client = AsyncMock()
+    mock_client.get.return_value = mock_response
+    mock_client_class.return_value = mock_client
+
+    metadata_list = await client.list_artifact_versions_metadata(
+        app_name="app",
+        user_id="user",
+        session_id="session",
+        artifact_name="report",
+    )
+
+    assert len(metadata_list) == 2
+    assert all(isinstance(item, ArtifactVersion) for item in metadata_list)
+    assert metadata_list[1].custom_metadata == {"foo": "bar"}
+    mock_client.get.assert_called_once_with(
+        "/apps/app/users/user/sessions/session/artifacts/report/versions/metadata"
+    )
+    mock_response.raise_for_status.assert_called_once()
 
 
 @pytest.mark.asyncio

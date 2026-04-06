@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -25,6 +25,7 @@ if TYPE_CHECKING:
   from .apihub_tool.apihub_toolset import APIHubToolset
   from .base_tool import BaseTool
   from .discovery_engine_search_tool import DiscoveryEngineSearchTool
+  from .discovery_engine_search_tool import SearchResultMode
   from .enterprise_search_tool import enterprise_web_search_tool as enterprise_web_search
   from .example_tool import ExampleTool
   from .exit_loop_tool import exit_loop
@@ -54,6 +55,10 @@ _LAZY_MAPPING = {
     'DiscoveryEngineSearchTool': (
         '.discovery_engine_search_tool',
         'DiscoveryEngineSearchTool',
+    ),
+    'SearchResultMode': (
+        '.discovery_engine_search_tool',
+        'SearchResultMode',
     ),
     'enterprise_web_search': (
         '.enterprise_search_tool',

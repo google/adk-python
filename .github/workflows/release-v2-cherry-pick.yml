@@ -1,0 +1,43 @@
+# Step 3 (v2, optional): Cherry-picks a commit from v2 to the release/v2-candidate branch.
+# Use between step 1 and step 4 to include bug fixes in an in-progress release.
+# Note: Does NOT auto-trigger release-please to preserve manual changelog edits.
+name: "Release v2: Cherry-pick"
+
+on:
+  workflow_dispatch:
+    inputs:
+      commit_sha:
+        description: 'Commit SHA to cherry-pick'
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  cherry-pick:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: release/v2-candidate
+          fetch-depth: 0
+
+      - name: Configure git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Cherry-pick commit
+        run: |
+          echo "Cherry-picking ${INPUTS_COMMIT_SHA} to release/v2-candidate"
+          git cherry-pick ${INPUTS_COMMIT_SHA}
+        env:
+          INPUTS_COMMIT_SHA: ${{ inputs.commit_sha }}
+
+      - name: Push changes
+        run: |
+          git push origin release/v2-candidate
+          echo "Successfully cherry-picked commit to release/v2-candidate"
+          echo "Note: Release Please is NOT auto-triggered to preserve manual changelog edits."
+          echo "Run release-v2-please.yml manually if you want to regenerate the changelog."

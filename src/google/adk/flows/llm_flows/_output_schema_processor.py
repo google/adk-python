@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -45,7 +45,7 @@ class _OutputSchemaRequestProcessor(BaseLlmRequestProcessor):
     if (
         not agent.output_schema
         or not agent.tools
-        or can_use_output_schema_with_tools(agent.model)
+        or can_use_output_schema_with_tools(agent.canonical_model)
     ):
       return
 
@@ -110,8 +110,12 @@ def get_structured_model_response(function_response_event: Event) -> str | None:
 
   for func_response in function_response_event.get_function_responses():
     if func_response.name == 'set_model_response':
-      # Convert dict to JSON string
-      return json.dumps(func_response.response, ensure_ascii=False)
+      # Extract the actual result from the wrapped response.
+      # Tool results are wrapped as {'result': ...} when not already a dict.
+      response = func_response.response
+      if isinstance(response, dict) and 'result' in response:
+        response = response['result']
+      return json.dumps(response, ensure_ascii=False)
 
   return None
 

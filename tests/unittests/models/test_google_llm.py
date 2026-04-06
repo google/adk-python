@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -31,6 +31,7 @@ from google.adk.models.llm_request import LlmRequest
 from google.adk.models.llm_response import LlmResponse
 from google.adk.utils._client_labels_utils import _AGENT_ENGINE_TELEMETRY_ENV_VARIABLE_NAME
 from google.adk.utils._client_labels_utils import _AGENT_ENGINE_TELEMETRY_TAG
+from google.adk.utils._google_client_headers import get_tracking_headers
 from google.adk.utils.variant_utils import GoogleLLMVariant
 from google.genai import types
 from google.genai.errors import ClientError
@@ -152,6 +153,32 @@ def test_supported_models():
       models[3]
       == r"projects\/.+\/locations\/.+\/publishers\/google\/models\/gemini.+"
   )
+
+
+def test_gemini_api_client_creation_with_projects_prefix():
+  model = Gemini(
+      model="projects/test-project/locations/test-location/publishers/google/models/gemini-1.5-pro"
+  )
+  with mock.patch("google.genai.Client", autospec=True) as mock_client:
+    _ = model.api_client
+    mock_client.assert_called_once()
+    _, kwargs = mock_client.call_args
+    assert kwargs["vertexai"] is True
+    assert "project" not in kwargs
+    assert "location" not in kwargs
+
+
+def test_gemini_live_api_client_creation_with_projects_prefix():
+  model = Gemini(
+      model="projects/test-project/locations/test-location/publishers/google/models/gemini-1.5-pro"
+  )
+  with mock.patch("google.genai.Client", autospec=True) as mock_client:
+    _ = model._live_api_client
+    assert mock_client.call_count == 2
+
+    # Second call is for _live_api_client
+    _, kwargs = mock_client.call_args_list[1]
+    assert kwargs["vertexai"] is True
 
 
 def test_client_version_header():
@@ -469,7 +496,7 @@ async def test_generate_content_async_with_custom_headers(
   """Test that tracking headers are updated when custom headers are provided."""
   # Add custom headers to the request config
   custom_headers = {"custom-header": "custom-value"}
-  tracking_headers = gemini_llm._tracking_headers()
+  tracking_headers = get_tracking_headers()
   for key in tracking_headers:
     custom_headers[key] = "custom " + tracking_headers[key]
   llm_request.config.http_options = types.HttpOptions(headers=custom_headers)
@@ -494,7 +521,7 @@ async def test_generate_content_async_with_custom_headers(
     config_arg = call_args.kwargs["config"]
 
     for key, value in config_arg.http_options.headers.items():
-      tracking_headers = gemini_llm._tracking_headers()
+      tracking_headers = get_tracking_headers()
       if key in tracking_headers:
         assert value == tracking_headers[key] + " custom"
       else:
@@ -545,7 +572,7 @@ async def test_generate_content_async_stream_with_custom_headers(
     config_arg = call_args.kwargs["config"]
 
     expected_headers = custom_headers.copy()
-    expected_headers.update(gemini_llm._tracking_headers())
+    expected_headers.update(get_tracking_headers())
     assert config_arg.http_options.headers == expected_headers
 
     assert len(responses) == 2
@@ -599,7 +626,7 @@ async def test_generate_content_async_patches_tracking_headers(
     assert final_config.http_options is not None
     assert (
         final_config.http_options.headers["x-goog-api-client"]
-        == gemini_llm._tracking_headers()["x-goog-api-client"]
+        == get_tracking_headers()["x-goog-api-client"]
     )
 
     assert len(responses) == 2 if stream else 1
@@ -633,7 +660,7 @@ def test_live_api_client_properties(gemini_llm):
     assert http_options.api_version == "v1beta1"
 
     # Check that tracking headers are included
-    tracking_headers = gemini_llm._tracking_headers()
+    tracking_headers = get_tracking_headers()
     for key, value in tracking_headers.items():
       assert key in http_options.headers
       assert value in http_options.headers[key]
@@ -671,7 +698,7 @@ async def test_connect_with_custom_headers(gemini_llm, llm_request):
 
       # Verify that tracking headers were merged with custom headers
       expected_headers = custom_headers.copy()
-      expected_headers.update(gemini_llm._tracking_headers())
+      expected_headers.update(get_tracking_headers())
       assert config_arg.http_options.headers == expected_headers
 
       # Verify that API version was set
@@ -705,20 +732,27 @@ async def test_connect_without_custom_headers(gemini_llm, llm_request):
 
     mock_live_client.aio.live.connect.return_value = MockLiveConnect()
 
-    async with gemini_llm.connect(llm_request) as connection:
-      # Verify that the connect method was called with the right config
-      mock_live_client.aio.live.connect.assert_called_once()
-      call_args = mock_live_client.aio.live.connect.call_args
-      config_arg = call_args.kwargs["config"]
+    with mock.patch(
+        "google.adk.models.google_llm.GeminiLlmConnection"
+    ) as MockGeminiLlmConnection:
+      async with gemini_llm.connect(llm_request) as connection:
+        # Verify that the connect method was called with the right config
+        mock_live_client.aio.live.connect.assert_called_once()
+        call_args = mock_live_client.aio.live.connect.call_args
+        config_arg = call_args.kwargs["config"]
 
-      # Verify that http_options remains None since no custom headers were provided
-      assert config_arg.http_options is None
+        # Verify that http_options remains None since no custom headers were provided
+        assert config_arg.http_options is None
 
-      # Verify that system instruction and tools were still set
-      assert config_arg.system_instruction is not None
-      assert config_arg.tools == llm_request.config.tools
+        # Verify that system instruction and tools were still set
+        assert config_arg.system_instruction is not None
+        assert config_arg.tools == llm_request.config.tools
 
-      assert isinstance(connection, GeminiLlmConnection)
+        MockGeminiLlmConnection.assert_called_once_with(
+            mock_live_session,
+            api_backend=gemini_llm._api_backend,
+            model_version=llm_request.model,
+        )
 
 
 @pytest.mark.parametrize(
@@ -1116,10 +1150,16 @@ async def test_generate_content_async_stream_no_aggregated_content_without_text(
         )
     ]
 
-    # Should have only 1 response (no aggregated content generated)
-    assert len(responses) == 1
-    # Verify it's a function call, not text
+    # With progressive SSE streaming enabled by default, we get 2 responses:
+    # 1. Partial response with function call
+    # 2. Final aggregated response with function call
+    assert len(responses) == 2
+    # First response is partial
+    assert responses[0].partial is True
     assert responses[0].content.parts[0].function_call is not None
+    # Second response is the final aggregated response
+    assert responses[1].partial is False
+    assert responses[1].content.parts[0].function_call is not None
 
 
 @pytest.mark.asyncio
@@ -1194,37 +1234,33 @@ async def test_generate_content_async_stream_mixed_text_function_call_text():
         )
     ]
 
-    # Should have multiple responses:
+    # With progressive SSE streaming enabled, we get 4 responses:
     # 1. Partial text "First text"
-    # 2. Aggregated "First text" when function call interrupts
-    # 3. Function call
-    # 4. Partial text " second text"
-    # 5. Final aggregated " second text"
-    assert len(responses) == 5
+    # 2. Partial function call
+    # 3. Partial text " second text"
+    # 4. Final aggregated response with all parts (text + FC + text)
+    assert len(responses) == 4
 
     # First partial text
     assert responses[0].partial is True
     assert responses[0].content.parts[0].text == "First text"
 
-    # Aggregated first text (when function call interrupts)
-    assert responses[1].content.parts[0].text == "First text"
-    assert (
-        responses[1].partial is None
-    )  # Aggregated responses don't have partial flag
+    # Partial function call
+    assert responses[1].partial is True
+    assert responses[1].content.parts[0].function_call is not None
+    assert responses[1].content.parts[0].function_call.name == "test_func"
 
-    # Function call
-    assert responses[2].content.parts[0].function_call is not None
-    assert responses[2].content.parts[0].function_call.name == "test_func"
+    # Partial second text
+    assert responses[2].partial is True
+    assert responses[2].content.parts[0].text == " second text"
 
-    # Second partial text
-    assert responses[3].partial is True
-    assert responses[3].content.parts[0].text == " second text"
-
-    # Final aggregated text with error info
-    assert responses[4].content.parts[0].text == " second text"
-    assert (
-        responses[4].error_code is None
-    )  # STOP finish reason should have None error_code
+    # Final aggregated response with all parts
+    assert responses[3].partial is False
+    assert len(responses[3].content.parts) == 3
+    assert responses[3].content.parts[0].text == "First text"
+    assert responses[3].content.parts[1].function_call.name == "test_func"
+    assert responses[3].content.parts[2].text == " second text"
+    assert responses[3].error_code is None  # STOP finish reason
 
 
 @pytest.mark.asyncio
@@ -1376,28 +1412,27 @@ async def test_generate_content_async_stream_complex_mixed_thought_text_function
         )
     ]
 
-    # Should properly separate thought and regular text across aggregations
-    assert len(responses) > 5  # Multiple partial + aggregated responses
+    # With progressive SSE streaming, we get 6 responses:
+    # 5 partial responses + 1 final aggregated response
+    assert len(responses) == 6
 
-    # Verify we get both thought and regular text parts in aggregated responses
-    aggregated_responses = [
-        r
-        for r in responses
-        if r.partial is None and r.content and len(r.content.parts) > 1
-    ]
-    assert (
-        len(aggregated_responses) > 0
-    )  # Should have at least one aggregated response with multiple parts
+    # All but the last should be partial
+    for i in range(5):
+      assert responses[i].partial is True
 
-    # Final aggregated response should have both thought and text
+    # Final aggregated response should have all parts
     final_response = responses[-1]
-    assert (
-        final_response.error_code is None
-    )  # STOP finish reason should have None error_code
-    assert len(final_response.content.parts) == 2  # thought part + text part
+    assert final_response.partial is False
+    assert final_response.error_code is None  # STOP finish reason
+    # Final response aggregates: thought + text + FC + thought + text
+    assert len(final_response.content.parts) == 5
     assert final_response.content.parts[0].thought is True
-    assert "More thinking..." in final_response.content.parts[0].text
-    assert final_response.content.parts[1].text == " and conclusion"
+    assert "Thinking..." in final_response.content.parts[0].text
+    assert final_response.content.parts[1].text == "Here's my answer"
+    assert final_response.content.parts[2].function_call.name == "lookup"
+    assert final_response.content.parts[3].thought is True
+    assert "More thinking..." in final_response.content.parts[3].text
+    assert final_response.content.parts[4].text == " and conclusion"
 
 
 @pytest.mark.asyncio
@@ -1491,44 +1526,23 @@ async def test_generate_content_async_stream_two_separate_text_aggregations():
         )
     ]
 
-    # Find the aggregated text responses (non-partial, text-only)
-    aggregated_text_responses = [
-        r
-        for r in responses
-        if (
-            r.partial is None
-            and r.content
-            and r.content.parts
-            and r.content.parts[0].text
-            and not r.content.parts[0].function_call
-        )
-    ]
+    # With progressive SSE streaming, we get 6 responses:
+    # 5 partial responses + 1 final aggregated response
+    assert len(responses) == 6
 
-    # Should have two separate text aggregations: "First chunk" and "Second chunk"
-    assert len(aggregated_text_responses) >= 2
+    # All but the last should be partial
+    for i in range(5):
+      assert responses[i].partial is True
 
-    # First aggregation should contain "First chunk"
-    first_aggregation = aggregated_text_responses[0]
-    assert first_aggregation.content.parts[0].text == "First chunk"
-
-    # Final aggregation should contain "Second chunk" and have error info
-    final_aggregation = aggregated_text_responses[-1]
-    assert final_aggregation.content.parts[0].text == "Second chunk"
-    assert (
-        final_aggregation.error_code is None
-    )  # STOP finish reason should have None error_code
-
-    # Verify the function call is preserved between aggregations
-    function_call_responses = [
-        r
-        for r in responses
-        if (r.content and r.content.parts and r.content.parts[0].function_call)
-    ]
-    assert len(function_call_responses) == 1
-    assert (
-        function_call_responses[0].content.parts[0].function_call.name
-        == "divide"
-    )
+    # Final response should be aggregated with all parts
+    final_response = responses[-1]
+    assert final_response.partial is False
+    assert final_response.error_code is None  # STOP finish reason
+    # Final response aggregates: text1 + text2 + FC + text3 + text4
+    assert len(final_response.content.parts) == 3
+    assert final_response.content.parts[0].text == "First chunk"
+    assert final_response.content.parts[1].function_call.name == "divide"
+    assert final_response.content.parts[2].text == "Second chunk"
 
 
 @pytest.mark.asyncio

@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -91,6 +91,7 @@ def create_oauth2_session(
           scope=" ".join(scopes),
           redirect_uri=auth_credential.oauth2.redirect_uri,
           state=auth_credential.oauth2.state,
+          token_endpoint_auth_method=auth_credential.oauth2.token_endpoint_auth_method,
       ),
       token_endpoint,
   )
@@ -106,11 +107,13 @@ def update_credential_with_tokens(
       auth_credential: The authentication credential to update.
       tokens: The OAuth2Token object containing new token information.
   """
-  auth_credential.oauth2.access_token = tokens.get("access_token")
-  auth_credential.oauth2.refresh_token = tokens.get("refresh_token")
-  auth_credential.oauth2.expires_at = (
-      int(tokens.get("expires_at")) if tokens.get("expires_at") else None
-  )
-  auth_credential.oauth2.expires_in = (
-      int(tokens.get("expires_in")) if tokens.get("expires_in") else None
-  )
+  if auth_credential.oauth2 and tokens:
+    auth_credential.oauth2.access_token = tokens.get("access_token")
+    auth_credential.oauth2.refresh_token = tokens.get("refresh_token")
+    auth_credential.oauth2.id_token = tokens.get("id_token")
+    auth_credential.oauth2.expires_at = (
+        int(tokens.get("expires_at")) if tokens.get("expires_at") else None
+    )
+    auth_credential.oauth2.expires_in = (
+        int(tokens.get("expires_in")) if tokens.get("expires_in") else None
+    )

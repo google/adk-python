@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -18,6 +18,7 @@ from google.adk.utils.model_name_utils import extract_model_name
 from google.adk.utils.model_name_utils import is_gemini_1_model
 from google.adk.utils.model_name_utils import is_gemini_2_or_above
 from google.adk.utils.model_name_utils import is_gemini_model
+from google.adk.utils.model_name_utils import is_gemini_model_id_check_disabled
 
 
 class TestExtractModelName:
@@ -41,6 +42,24 @@ class TestExtractModelName:
 
     path_model_3 = 'projects/test-project/locations/europe-west1/publishers/google/models/claude-3-sonnet'
     assert extract_model_name(path_model_3) == 'claude-3-sonnet'
+
+    path_model_4 = 'apigee/gemini-2.5-flash'
+    assert extract_model_name(path_model_4) == 'gemini-2.5-flash'
+
+    path_model_5 = 'apigee/v1/gemini-2.5-flash'
+    assert extract_model_name(path_model_5) == 'gemini-2.5-flash'
+
+    path_model_6 = 'apigee/gemini/gemini-2.5-flash'
+    assert extract_model_name(path_model_6) == 'gemini-2.5-flash'
+
+    path_model_7 = 'apigee/vertex_ai/gemini-2.5-flash'
+    assert extract_model_name(path_model_7) == 'gemini-2.5-flash'
+
+    path_model_8 = 'apigee/gemini/v1/gemini-2.5-flash'
+    assert extract_model_name(path_model_8) == 'gemini-2.5-flash'
+
+    path_model_9 = 'apigee/vertex_ai/v1beta/gemini-2.5-flash'
+    assert extract_model_name(path_model_9) == 'gemini-2.5-flash'
 
   def test_extract_model_name_with_models_prefix(self):
     """Test extraction of model names with 'models/' prefix."""
@@ -300,3 +319,15 @@ class TestModelNameUtilsIntegration:
           f'Inconsistent Gemini 2.0+ classification for {simple_model} vs'
           f' {path_model}'
       )
+
+
+class TestGeminiModelIdCheckFlag:
+  """Tests for Gemini model-id check override flag."""
+
+  def test_default_is_disabled(self, monkeypatch):
+    monkeypatch.delenv('ADK_DISABLE_GEMINI_MODEL_ID_CHECK', raising=False)
+    assert is_gemini_model_id_check_disabled() is False
+
+  def test_true_enables_check_bypass(self, monkeypatch):
+    monkeypatch.setenv('ADK_DISABLE_GEMINI_MODEL_ID_CHECK', 'true')
+    assert is_gemini_model_id_check_disabled() is True

@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -39,15 +39,7 @@ try:
 
 except ImportError as e:
   import logging
-  import sys
 
   logger = logging.getLogger('google_adk.' + __name__)
-
-  if sys.version_info < (3, 10):
-    logger.warning(
-        'MCP Tool requires Python 3.10 or above. Please upgrade your Python'
-        ' version.'
-    )
-  else:
-    logger.debug('MCP Tool is not installed')
-    logger.debug(e)
+  logger.debug('MCP Tool is not installed')
+  logger.debug(e)

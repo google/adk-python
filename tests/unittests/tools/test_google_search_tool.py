@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -269,6 +269,27 @@ class TestGoogleSearchTool:
       )
 
   @pytest.mark.asyncio
+  async def test_process_llm_request_with_non_gemini_model_and_disabled_check(
+      self, monkeypatch
+  ):
+    """Test non-Gemini model can pass when model-id check is disabled."""
+    monkeypatch.setenv('ADK_DISABLE_GEMINI_MODEL_ID_CHECK', 'true')
+    tool = GoogleSearchTool()
+    tool_context = await _create_tool_context()
+
+    llm_request = LlmRequest(
+        model='internal-model-v1', config=types.GenerateContentConfig()
+    )
+
+    await tool.process_llm_request(
+        tool_context=tool_context, llm_request=llm_request
+    )
+
+    assert llm_request.config.tools is not None
+    assert len(llm_request.config.tools) == 1
+    assert llm_request.config.tools[0].google_search is not None
+
+  @pytest.mark.asyncio
   async def test_process_llm_request_with_path_based_non_gemini_model_raises_error(
       self,
   ):
@@ -432,3 +453,46 @@ class TestGoogleSearchTool:
       assert len(llm_request.config.tools) == 1
       assert llm_request.config.tools[0].google_search is not None
       assert llm_request.config.tools[0].google_search_retrieval is None
+
+  @pytest.mark.asyncio
+  @pytest.mark.parametrize(
+      (
+          'tool_model',
+          'request_model',
+          'expected_model',
+      ),
+      [
+          (
+              'gemini-2.5-flash-lite',
+              'gemini-2.5-flash',
+              'gemini-2.5-flash-lite',
+          ),
+          (
+              None,
+              'gemini-2.5-flash',
+              'gemini-2.5-flash',
+          ),
+      ],
+      ids=['with_custom_model', 'without_custom_model'],
+  )
+  async def test_process_llm_request_custom_model_behavior(
+      self,
+      tool_model,
+      request_model,
+      expected_model,
+  ):
+    """Tests custom model parameter behavior in process_llm_request."""
+    tool = GoogleSearchTool(model=tool_model)
+    tool_context = await _create_tool_context()
+
+    llm_request = LlmRequest(
+        model=request_model, config=types.GenerateContentConfig()
+    )
+
+    await tool.process_llm_request(
+        tool_context=tool_context, llm_request=llm_request
+    )
+
+    assert llm_request.model == expected_model
+    assert llm_request.config.tools is not None
+    assert len(llm_request.config.tools) == 1

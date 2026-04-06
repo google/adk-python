@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -29,6 +29,11 @@ def concat_number_and_string(num: int, s: str) -> str:
   return str(num) + ': ' + s
 
 
+def write_document(document: str) -> dict[str, str]:
+  """Write a document."""
+  return {'status': 'ok'}
+
+
 root_agent = Agent(
     model='gemini-3-pro-preview',
     name='hello_world_stream_fc_args',
@@ -38,9 +43,14 @@ root_agent = Agent(
       You can use the `concat_number_and_string` tool to concatenate a number and a string.
       You should always call the concat_number_and_string tool to concatenate a number and a string.
       You should never concatenate on your own.
+
+      You can use the `write_document` tool to write a document.
+      You should always call the write_document tool to write a document.
+      You should never write a document on your own.
     """,
     tools=[
         concat_number_and_string,
+        write_document,
     ],
     generate_content_config=types.GenerateContentConfig(
         automatic_function_calling=types.AutomaticFunctionCallingConfig(

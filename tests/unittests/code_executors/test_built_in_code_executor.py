@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -95,6 +95,22 @@ def test_process_llm_request_non_gemini_2_model(
       "Gemini code execution tool is not supported for model gemini-1.5-flash"
       in str(excinfo.value)
   )
+
+
+def test_process_llm_request_non_gemini_2_model_with_disabled_check(
+    built_in_executor: BuiltInCodeExecutor,
+    monkeypatch,
+):
+  """Tests non-Gemini models pass when model-id check is disabled."""
+  monkeypatch.setenv("ADK_DISABLE_GEMINI_MODEL_ID_CHECK", "true")
+  llm_request = LlmRequest(model="internal-model-v1")
+
+  built_in_executor.process_llm_request(llm_request)
+
+  assert llm_request.config is not None
+  assert llm_request.config.tools == [
+      types.Tool(code_execution=types.ToolCodeExecution())
+  ]
 
 
 def test_process_llm_request_no_model_name(

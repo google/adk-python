@@ -18,7 +18,7 @@ This example demonstrates an agent using a long-running tool (`ask_for_approval`
     # Example: After external approval
     updated_tool_output_data = {
         "status": "approved",
-        "ticket-id": ticket_id, # from original call
+        "ticketId": ticket_id, # from original call
         # ... other relevant updated data
     }
 
@@ -31,12 +31,13 @@ This example demonstrates an agent using a long-running tool (`ask_for_approval`
     )
 
     # Send this back to the agent
-    await runner.run_async(
+    async for _ in runner.run_async(
         # ... session_id, user_id ...
         new_message=types.Content(
             parts=[updated_function_response_part], role="user"
         ),
-    )
+    ):
+        pass  # exhaust generator (or handle events)
     ```
 6.  **Agent Acts on Update**: The agent receives this message containing the `types.FunctionResponse` and, based on its instructions, proceeds with the next steps (e.g., calling another tool like `reimburse`).
 

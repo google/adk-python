@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -282,9 +282,12 @@ async def build_graph(
       draw_edge(agent.name, get_node_name(tool))
 
 
-async def get_agent_graph(root_agent, highlights_pairs, image=False):
+async def get_agent_graph(
+    root_agent, highlights_pairs, image=False, dark_mode=True
+):
+  bg_color = '#333537' if dark_mode else '#ffffff'
   graph = graphviz.Digraph(
-      graph_attr={'rankdir': 'LR', 'bgcolor': '#333537'}, strict=True
+      graph_attr={'rankdir': 'LR', 'bgcolor': bg_color}, strict=True
   )
   await build_graph(graph, root_agent, highlights_pairs)
   if image:

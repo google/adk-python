@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -21,7 +21,8 @@ from pydantic import BaseModel
 from pydantic import ConfigDict
 from pydantic import field_validator
 
-from ...utils.feature_decorator import experimental
+from ...features import experimental
+from ...features import FeatureName
 
 
 class WriteMode(Enum):
@@ -47,7 +48,7 @@ class WriteMode(Enum):
   """All write operations are allowed."""
 
 
-@experimental('Config defaults may have breaking change in the future.')
+@experimental(FeatureName.BIG_QUERY_TOOL_CONFIG)
 class BigQueryToolConfig(BaseModel):
   """Configuration for BigQuery tools."""
 
@@ -81,8 +82,12 @@ class BigQueryToolConfig(BaseModel):
   By default, no particular application name will be set in the BigQuery
   interaction. But if the tool user (agent builder) wants to differentiate
   their application/agent for tracking or support purpose, they can set this
-  field. If set, this value will be added to the user_agent in BigQuery API calls, and also to the BigQuery job labels with the key
+  field. If set, this value will be added to the user_agent in BigQuery API
+  calls, and also to the BigQuery job labels with the key
   "adk-bigquery-application-name".
+
+  Note: This field is for usage discovery and tracking purposes only and should
+  not be used for security-sensitive decisions.
   """
 
   compute_project_id: Optional[str] = None
@@ -99,6 +104,21 @@ class BigQueryToolConfig(BaseModel):
   particular BigQuery location. If not set, then location would be automatically
   determined based on the data location in the query. For all supported
   locations, see https://cloud.google.com/bigquery/docs/locations.
+  """
+
+  job_labels: Optional[dict[str, str]] = None
+  """Labels to apply to BigQuery jobs for tracking and monitoring.
+
+  These labels will be added to all BigQuery jobs executed by the tools.
+  Labels must be key-value pairs where both keys and values are strings.
+  Labels can be used for billing, monitoring, and resource organization.
+  For more information about labels, see
+  https://cloud.google.com/bigquery/docs/labels-intro.
+
+  Note: These labels are for usage discovery and tracking purposes only and
+  should not be used for security-sensitive decisions. The number of
+  user-provided labels is restricted to 20, and keys starting with
+  "adk-bigquery-" are reserved for internal usage.
   """
 
   @field_validator('maximum_bytes_billed')
@@ -120,4 +140,21 @@ class BigQueryToolConfig(BaseModel):
     """Validate the application name."""
     if v and ' ' in v:
       raise ValueError('Application name should not contain spaces.')
+    return v
+
+  @field_validator('job_labels')
+  @classmethod
+  def validate_job_labels(cls, v):
+    """Validate the job labels."""
+    if v is not None:
+      if len(v) > 20:
+        raise ValueError('Only up to 20 job labels can be provided')
+      for key in v.keys():
+        if not key:
+          raise ValueError('Label keys cannot be empty.')
+        if key.startswith('adk-bigquery-'):
+          raise ValueError(
+              'Label key cannot start with "adk-bigquery-" as it is'
+              f' reserved for internal usage, found "{key}".'
+          )
     return v

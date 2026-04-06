@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -36,7 +36,9 @@ from ... import testing_utils
 async def test_builtin_code_executor_image_artifact_creation(mock_datetime):
   """Test BuiltInCodeExecutor creates artifacts for images in response."""
   mock_now = datetime.datetime(2025, 1, 1, 12, 0, 0)
-  mock_datetime.datetime.now.return_value.astimezone.return_value = mock_now
+  mock_datetime.datetime.fromtimestamp.return_value.astimezone.return_value = (
+      mock_now
+  )
   code_executor = BuiltInCodeExecutor()
   agent = Agent(name='test_agent', code_executor=code_executor)
   invocation_context = await testing_utils.create_invocation_context(

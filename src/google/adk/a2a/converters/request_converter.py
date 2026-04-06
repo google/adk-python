@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -15,23 +15,12 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-import sys
 from typing import Any
 from typing import Optional
 
-from pydantic import BaseModel
-
-try:
-  from a2a.server.agent_execution import RequestContext
-except ImportError as e:
-  if sys.version_info < (3, 10):
-    raise ImportError(
-        'A2A requires Python 3.10 or above. Please upgrade your Python version.'
-    ) from e
-  else:
-    raise e
-
+from a2a.server.agent_execution import RequestContext
 from google.genai import types as genai_types
+from pydantic import BaseModel
 
 from ...runners import RunConfig
 from ..experimental import a2a_experimental

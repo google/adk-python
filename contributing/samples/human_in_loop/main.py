@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -113,8 +113,8 @@ async def main():
       updated_tool_output_data = {
           "status": "approved",
           "ticketId": ticket_id,
-          "approver_feedback": "Approved by manager at " + str(
-              asyncio.get_event_loop().time()
+          "approver_feedback": (
+              "Approved by manager at " + str(asyncio.get_event_loop().time())
           ),
       }
 

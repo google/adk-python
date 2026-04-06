@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -14,7 +14,8 @@
 
 from __future__ import annotations
 
-from ...utils.feature_decorator import experimental
+from ...features import experimental
+from ...features import FeatureName
 from .._google_credentials import BaseGoogleCredentialsConfig
 
 SPANNER_TOKEN_CACHE_KEY = "spanner_token_cache"
@@ -24,7 +25,7 @@ SPANNER_DEFAULT_SCOPE = [
 ]
 
 
-@experimental
+@experimental(FeatureName.GOOGLE_CREDENTIALS_CONFIG)
 class SpannerCredentialsConfig(BaseGoogleCredentialsConfig):
   """Spanner Credentials Configuration for Google API tools (Experimental).
 

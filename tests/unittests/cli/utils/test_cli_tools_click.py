@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -14,7 +14,6 @@
 
 """Tests for utilities in cli_tool_click."""
 
-
 from __future__ import annotations
 
 import builtins
@@ -24,6 +23,7 @@ from types import SimpleNamespace
 from typing import Any
 from typing import Dict
 from typing import List
+from typing import Optional
 from typing import Tuple
 from unittest import mock
 
@@ -130,7 +130,7 @@ def test_cli_create_cmd_invokes_run_cmd(
 
 # cli run
 @pytest.mark.parametrize(
-    "cli_args,expected_session_uri,expected_artifact_uri",
+    "cli_args,expected_session_uri,expected_artifact_uri,expected_memory_uri",
     [
         pytest.param(
             [
@@ -138,13 +138,17 @@ def test_cli_create_cmd_invokes_run_cmd(
                 "memory://",
                 "--artifact_service_uri",
                 "memory://",
+                "--memory_service_uri",
+                "memory://",
             ],
+            "memory://",
             "memory://",
             "memory://",
             id="memory_scheme_uris",
         ),
         pytest.param(
             [],
+            None,
             None,
             None,
             id="default_uris_none",
@@ -155,8 +159,9 @@ def test_cli_run_service_uris(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     cli_args: list,
-    expected_session_uri: str,
-    expected_artifact_uri: str,
+    expected_session_uri: Optional[str],
+    expected_artifact_uri: Optional[str],
+    expected_memory_uri: Optional[str],
 ) -> None:
   """`adk run` should forward service URIs correctly to run_cli."""
   agent_dir = tmp_path / "agent"
@@ -187,6 +192,7 @@ def test_cli_run_service_uris(
   coro_locals = captured_locals[0]
   assert coro_locals.get("session_service_uri") == expected_session_uri
   assert coro_locals.get("artifact_service_uri") == expected_artifact_uri
+  assert coro_locals.get("memory_service_uri") == expected_memory_uri
   assert coro_locals["agent_folder_name"] == "agent"
 
 
@@ -400,8 +406,6 @@ def test_cli_deploy_agent_engine_success(
           "test-proj",
           "--region",
           "us-central1",
-          "--staging_bucket",
-          "gs://mybucket",
           str(agent_dir),
       ],
   )
@@ -410,7 +414,38 @@ def test_cli_deploy_agent_engine_success(
   called_kwargs = rec.calls[0][1]
   assert called_kwargs.get("project") == "test-proj"
   assert called_kwargs.get("region") == "us-central1"
-  assert called_kwargs.get("staging_bucket") == "gs://mybucket"
+
+
+# cli deploy agent_engine with --otel_to_cloud
+def test_cli_deploy_agent_engine_otel_to_cloud_success(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+  """Successful path should call cli_deploy.to_agent_engine with --otel_to_cloud."""
+  rec = _Recorder()
+  monkeypatch.setattr(cli_tools_click.cli_deploy, "to_agent_engine", rec)
+
+  agent_dir = tmp_path / "agent_ae"
+  agent_dir.mkdir()
+  runner = CliRunner()
+  result = runner.invoke(
+      cli_tools_click.main,
+      [
+          "deploy",
+          "agent_engine",
+          "--project",
+          "test-proj",
+          "--region",
+          "us-central1",
+          "--otel_to_cloud",
+          str(agent_dir),
+      ],
+  )
+  assert result.exit_code == 0
+  assert rec.calls, "cli_deploy.to_agent_engine must be invoked"
+  called_kwargs = rec.calls[0][1]
+  assert called_kwargs.get("project") == "test-proj"
+  assert called_kwargs.get("region") == "us-central1"
+  assert called_kwargs.get("otel_to_cloud")
 
 
 # cli deploy gke
@@ -735,7 +770,7 @@ def test_cli_add_eval_case_with_session(tmp_path: Path):
     eval_set_data = json.load(f)
   assert len(eval_set_data["eval_cases"]) == 1
   eval_case = eval_set_data["eval_cases"][0]
-  assert eval_case["eval_id"] == "0a1a5048"
+  assert eval_case["eval_id"] == "734909ff"
   assert eval_case["session_input"]["app_name"] == "test_app_add_2"
 
 
