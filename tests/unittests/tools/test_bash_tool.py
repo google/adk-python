@@ -13,6 +13,7 @@
 # limitations under the License.
 
 import asyncio
+import resource
 import signal
 from unittest import mock
 
@@ -241,3 +242,34 @@ class TestExecuteBashTool:
     result = await tool.run_async(args={}, tool_context=tool_context_confirmed)
     assert "error" in result
     assert "required" in result["error"].lower()
+
+  @pytest.mark.asyncio
+  async def test_resource_limits_set(self, workspace, tool_context_confirmed):
+    policy = bash_tool.BashToolPolicy(
+        max_memory_bytes=100 * 1024 * 1024,
+        max_file_size_bytes=50 * 1024 * 1024,
+        max_child_processes=10,
+    )
+    tool = bash_tool.ExecuteBashTool(workspace=workspace, policy=policy)
+    mock_process = mock.AsyncMock()
+    mock_process.communicate.return_value = (b"", b"")
+    mock_exec = mock.AsyncMock(return_value=mock_process)
+
+    with mock.patch("asyncio.create_subprocess_exec", mock_exec):
+      await tool.run_async(
+          args={"command": "ls"},
+          tool_context=tool_context_confirmed,
+      )
+      assert "preexec_fn" in mock_exec.call_args.kwargs
+      preexec_fn = mock_exec.call_args.kwargs["preexec_fn"]
+
+      mock_setrlimit = mock.create_autospec(resource.setrlimit, instance=True)
+      with mock.patch("resource.setrlimit", mock_setrlimit):
+        preexec_fn()
+        mock_setrlimit.assert_any_call(resource.RLIMIT_CORE, (0, 0))
+        mock_setrlimit.assert_any_call(
+            resource.RLIMIT_AS, (100 * 1024 * 1024, 100 * 1024 * 1024)
+        )
+        mock_setrlimit.assert_any_call(
+            resource.RLIMIT_FSIZE, (50 * 1024 * 1024, 50 * 1024 * 1024)
+        )
