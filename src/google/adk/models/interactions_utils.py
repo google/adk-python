@@ -56,6 +56,29 @@ logger = logging.getLogger('google_adk.' + __name__)
 _NEW_LINE = '\n'
 
 
+def _extract_event_id_from_interaction_event(
+    event: 'InteractionSSEEvent',
+) -> Optional[str]:
+  """Extract the SDK event identifier from an interactions SSE event."""
+  return getattr(event, 'event_id', None) or getattr(event, 'id', None)
+
+
+def _extract_interaction_id_from_event(
+    event: 'InteractionSSEEvent',
+) -> Optional[str]:
+  """Extract the interaction chain identifier from an SSE event."""
+  interaction = getattr(event, 'interaction', None)
+  if interaction and getattr(interaction, 'id', None):
+    return interaction.id
+
+  interaction_id = getattr(event, 'interaction_id', None)
+  if interaction_id:
+    return interaction_id
+
+  # Fall back to legacy field names when older SDK shapes are in play.
+  return getattr(event, 'id', None)
+
+
 def convert_part_to_interaction_content(part: types.Part) -> Optional[dict]:
   """Convert a types.Part to an interaction content dict.
 
@@ -487,6 +510,7 @@ def convert_interaction_event_to_llm_response(
   from .llm_response import LlmResponse
 
   event_type = getattr(event, 'event_type', None)
+  interaction_id = interaction_id or _extract_interaction_id_from_event(event)
 
   if event_type == 'content.delta':
     delta = event.delta
@@ -565,9 +589,10 @@ def convert_interaction_event_to_llm_response(
           interaction_id=interaction_id,
       )
 
-  elif event_type == 'interaction':
-    # Final interaction event with complete data
-    return convert_interaction_to_llm_response(event)
+  elif event_type in ('interaction.complete', 'interaction'):
+    # Final interaction event with complete data.
+    interaction = getattr(event, 'interaction', event)
+    return convert_interaction_to_llm_response(interaction)
 
   elif event_type == 'interaction.status_update':
     status = getattr(event, 'status', None)
@@ -834,7 +859,7 @@ def build_interactions_event_log(event: InteractionSSEEvent) -> str:
     A formatted log string describing the event.
   """
   event_type = getattr(event, 'event_type', 'unknown')
-  event_id = getattr(event, 'id', None)
+  event_id = _extract_event_id_from_interaction_event(event)
 
   details = []
 
@@ -1014,8 +1039,9 @@ async def generate_content_via_interactions(
       logger.debug(build_interactions_event_log(event))
 
       # Extract interaction ID from event if available
-      if hasattr(event, 'id') and event.id:
-        current_interaction_id = event.id
+      current_interaction_id = (
+          _extract_interaction_id_from_event(event) or current_interaction_id
+      )
       llm_response = convert_interaction_event_to_llm_response(
           event, aggregated_parts, current_interaction_id
       )

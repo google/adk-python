@@ -16,11 +16,36 @@
 
 import base64
 import json
+from unittest.mock import AsyncMock
 from unittest.mock import MagicMock
 
 from google.adk.models import interactions_utils
 from google.adk.models.llm_request import LlmRequest
 from google.genai import types
+from google.genai._interactions.types import ContentDelta
+from google.genai._interactions.types import ContentStop
+from google.genai._interactions.types import Interaction
+from google.genai._interactions.types import InteractionCompleteEvent
+from google.genai._interactions.types import InteractionStartEvent
+from google.genai._interactions.types import InteractionStatusUpdate
+from google.genai._interactions.types.content_delta import DeltaFunctionCall
+import pytest
+
+
+class _MockAsyncIterator:
+  """Simple async iterator for streaming test events."""
+
+  def __init__(self, values):
+    self._iterator = iter(values)
+
+  def __aiter__(self):
+    return self
+
+  async def __anext__(self):
+    try:
+      return next(self._iterator)
+    except StopIteration as exc:
+      raise StopAsyncIteration from exc
 
 
 class TestConvertPartToInteractionContent:
@@ -955,3 +980,100 @@ class TestConvertInteractionEventToLlmResponse:
 
     assert result is None
     assert not aggregated_parts
+
+  def test_interaction_complete_event(self):
+    """Test converting an interaction.complete event."""
+    interaction = Interaction(
+        id='int_complete',
+        created='2026-04-07T00:00:00Z',
+        updated='2026-04-07T00:00:01Z',
+        status='completed',
+        outputs=[{'type': 'text', 'text': 'Done'}],
+    )
+    event = InteractionCompleteEvent(
+        event_type='interaction.complete',
+        interaction=interaction,
+    )
+
+    result = interactions_utils.convert_interaction_event_to_llm_response(
+        event, aggregated_parts=[]
+    )
+
+    assert result is not None
+    assert result.interaction_id == 'int_complete'
+    assert result.content.parts[0].text == 'Done'
+    assert result.turn_complete is True
+
+
+class TestGenerateContentViaInteractions:
+  """Tests for generate_content_via_interactions."""
+
+  @pytest.mark.asyncio
+  async def test_stream_uses_interaction_start_id_for_function_calls(self):
+    """Test that streaming function calls retain the interaction chain ID."""
+    interaction = Interaction(
+        id='int_stream_123',
+        created='2026-04-07T00:00:00Z',
+        updated='2026-04-07T00:00:01Z',
+        status='requires_action',
+    )
+    stream_events = [
+        InteractionStartEvent(
+            event_type='interaction.start',
+            interaction=interaction,
+        ),
+        ContentDelta(
+            event_type='content.delta',
+            index=0,
+            delta=DeltaFunctionCall(
+                type='function_call',
+                id='fc_123',
+                name='get_weather',
+                arguments={'city': 'Tokyo'},
+            ),
+        ),
+        ContentStop(event_type='content.stop', index=0),
+        InteractionStatusUpdate(
+            event_type='interaction.status_update',
+            interaction_id='int_stream_123',
+            status='requires_action',
+        ),
+    ]
+    api_client = MagicMock()
+    api_client.aio.interactions.create = AsyncMock(
+        return_value=_MockAsyncIterator(stream_events)
+    )
+    llm_request = LlmRequest(
+        model='gemini-2.5-flash',
+        contents=[
+            types.Content(
+                role='user',
+                parts=[types.Part.from_text(text='Weather in Tokyo?')],
+            )
+        ],
+        config=types.GenerateContentConfig(),
+    )
+
+    responses = [
+        response
+        async for response in (
+            interactions_utils.generate_content_via_interactions(
+                api_client=api_client,
+                llm_request=llm_request,
+                stream=True,
+            )
+        )
+    ]
+
+    function_call_response = next(
+        response
+        for response in responses
+        if response.content
+        and response.content.parts
+        and response.content.parts[0].function_call
+    )
+
+    assert function_call_response.interaction_id == 'int_stream_123'
+    assert function_call_response.content.parts[0].function_call.name == (
+        'get_weather'
+    )
