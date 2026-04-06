@@ -1393,9 +1393,7 @@ def test_sanitize_tool_use_id_invalid_chars_generates_valid():
 
 def test_part_to_message_block_function_call_none_id():
   """Function call with None ID should get a valid generated ID."""
-  part = types.Part.from_function_call(
-      name="test_tool", args={"key": "value"}
-  )
+  part = types.Part.from_function_call(name="test_tool", args={"key": "value"})
   part.function_call.id = None
 
   result = part_to_message_block(part)
