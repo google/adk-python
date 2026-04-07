@@ -233,10 +233,6 @@ def _get_provider_from_model(model: str) -> str:
   return ""
 
 
-# Default MIME type when none can be inferred
-_DEFAULT_MIME_TYPE = "application/octet-stream"
-
-
 def _infer_mime_type_from_uri(uri: str) -> Optional[str]:
   """Attempts to infer MIME type from a URI's path extension.
 
@@ -811,6 +807,7 @@ async def _content_to_message_param(
     follow_up = await _content_to_message_param(
         types.Content(role=content.role, parts=non_tool_parts),
         provider=provider,
+        model=model,
     )
     follow_up_messages = (
         follow_up if isinstance(follow_up, list) else [follow_up]
@@ -1081,27 +1078,27 @@ async def _get_content(
         })
         continue
 
-      # Determine MIME type: use explicit value, infer from URI, or use default.
+      # Determine MIME type: use explicit value, infer from URI, or fail fast
+      # only when a file block still needs to be constructed.
       mime_type = part.file_data.mime_type
       if not mime_type:
         mime_type = _infer_mime_type_from_uri(part.file_data.file_uri)
       if not mime_type and part.file_data.display_name:
         guessed_mime_type, _ = mimetypes.guess_type(part.file_data.display_name)
         mime_type = guessed_mime_type
-      if not mime_type:
-        # LiteLLM's Vertex AI backend requires format for GCS URIs.
-        mime_type = _DEFAULT_MIME_TYPE
-        logger.debug(
-            "Could not determine MIME type for file_uri %s, using default: %s",
-            part.file_data.file_uri,
-            mime_type,
-        )
-      mime_type = _normalize_mime_type(mime_type)
+
+      normalized_mime_type = (
+          _normalize_mime_type(mime_type) if mime_type else None
+      )
 
       if provider in _FILE_ID_REQUIRED_PROVIDERS and _is_http_url(
           part.file_data.file_uri
       ):
-        url_content_type = _media_url_content_type(mime_type)
+        url_content_type = (
+            _media_url_content_type(normalized_mime_type)
+            if normalized_mime_type
+            else None
+        )
         if url_content_type:
           content_objects.append({
               "type": url_content_type,
@@ -1125,10 +1122,21 @@ async def _get_content(
         })
         continue
 
+      if not normalized_mime_type:
+        logger.warning(
+            "Could not determine MIME type for file_uri %s",
+            part.file_data.file_uri,
+        )
+        raise ValueError(
+            "Cannot determine MIME type for file_uri "
+            f"'{part.file_data.file_uri}'. Please set `file_data.mime_type` "
+            "explicitly or use a file URI with a recognizable extension."
+        )
+
       file_object: ChatCompletionFileUrlObject = {
           "file_id": part.file_data.file_uri,
       }
-      file_object["format"] = mime_type
+      file_object["format"] = normalized_mime_type
       content_objects.append({
           "type": "file",
           "file": file_object,
