@@ -26,6 +26,29 @@ __all__ = [
 
 logger = logging.getLogger('google_adk.' + __name__)
 
+_MISSING = object()
+
+
+def _resolve_nested(state, path: str, optional: bool = False):
+  """Traverse a nested dict/State using a dot-separated path.
+
+  Args:
+    state: The state mapping to traverse.
+    path: A dot-separated key path, e.g. "user.profile.name".
+    optional: If True, return _MISSING for missing keys instead of raising.
+
+  Returns:
+    The resolved value, or _MISSING if not found and optional is True.
+  """
+  keys = path.split('.')
+  value = state
+  for key in keys:
+    if isinstance(value, dict) and key in value:
+      value = value[key]
+    else:
+      return _MISSING
+  return value
+
 
 async def inject_session_state(
     template: str,
@@ -36,6 +59,13 @@ async def inject_session_state(
   This method is intended to be used in InstructionProvider based instruction
   and global_instruction which are called with readonly_context.
 
+  Supports dot-separated paths for nested state values, e.g.
+  ``{user.profile.name}`` resolves to
+  ``session.state['user']['profile']['name']``.
+
+  Use ``?`` suffix for optional variables that may not exist, e.g.
+  ``{user.preferences?}`` returns empty string if not found.
+
   e.g.
   ```
   ...
@@ -45,7 +75,8 @@ async def inject_session_state(
       readonly_context: ReadonlyContext,
   ) -> str:
     return await inject_session_state(
-        'You can inject a state variable like {var_name} or an artifact '
+        'You can inject a state variable like {var_name} or a nested '
+        'value like {user.profile.name} or an artifact '
         '{artifact.file_name} into the instruction template.',
         readonly_context,
     )
@@ -106,12 +137,16 @@ async def inject_session_state(
     else:
       if not _is_valid_state_name(var_name):
         return match.group()
-      if var_name in invocation_context.session.state:
-        value = invocation_context.session.state[var_name]
-        if value is None:
-          return ''
-        return str(value)
+      state = invocation_context.session.state
+      if '.' in var_name and not var_name.startswith(
+          (State.APP_PREFIX, State.USER_PREFIX, State.TEMP_PREFIX)
+      ):
+        value = _resolve_nested(state, var_name, optional)
+      elif var_name in state:
+        value = state[var_name]
       else:
+        value = _MISSING
+      if value is _MISSING:
         if optional:
           logger.debug(
               'Context variable %s not found, replacing with empty string',
@@ -120,6 +155,9 @@ async def inject_session_state(
           return ''
         else:
           raise KeyError(f'Context variable not found: `{var_name}`.')
+      if value is None:
+        return ''
+      return str(value)
 
   return await _async_sub(r'{+[^{}]*}+', _replace_match, template)
 
@@ -129,6 +167,7 @@ def _is_valid_state_name(var_name):
 
   Valid state is either:
     - Valid identifier
+    - Dot-separated valid identifiers (e.g. "user.profile.name")
     - <Valid prefix>:<Valid identifier>
   All the others will just return as it is.
 
@@ -140,7 +179,8 @@ def _is_valid_state_name(var_name):
   """
   parts = var_name.split(':')
   if len(parts) == 1:
-    return var_name.isidentifier()
+    # Support dot-separated nested paths like "user.profile.name"
+    return all(seg.isidentifier() for seg in var_name.split('.'))
 
   if len(parts) == 2:
     prefixes = [State.APP_PREFIX, State.USER_PREFIX, State.TEMP_PREFIX]

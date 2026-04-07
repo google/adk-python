@@ -267,3 +267,77 @@ async def test_inject_session_state_with_optional_missing_state_returns_empty():
       instruction_template, invocation_context
   )
   assert populated_instruction == "Optional value: "
+
+
+@pytest.mark.asyncio
+async def test_inject_session_state_with_nested_value():
+  instruction_template = "Hello {user.profile.name}, age {user.profile.age}."
+  invocation_context = await _create_test_readonly_context(
+      state={"user": {"profile": {"name": "Alice", "age": 30}}}
+  )
+
+  populated_instruction = await instructions_utils.inject_session_state(
+      instruction_template, invocation_context
+  )
+  assert populated_instruction == "Hello Alice, age 30."
+
+
+@pytest.mark.asyncio
+async def test_inject_session_state_with_nested_missing_raises_key_error():
+  instruction_template = "Value: {user.missing.key}"
+  invocation_context = await _create_test_readonly_context(
+      state={"user": {"profile": {"name": "Alice"}}}
+  )
+
+  with pytest.raises(
+      KeyError, match="Context variable not found: `user.missing.key`."
+  ):
+    await instructions_utils.inject_session_state(
+        instruction_template, invocation_context
+    )
+
+
+@pytest.mark.asyncio
+async def test_inject_session_state_with_nested_optional_missing():
+  instruction_template = "Value: {user.missing.key?}"
+  invocation_context = await _create_test_readonly_context(
+      state={"user": {"profile": {"name": "Alice"}}}
+  )
+
+  populated_instruction = await instructions_utils.inject_session_state(
+      instruction_template, invocation_context
+  )
+  assert populated_instruction == "Value: "
+
+
+@pytest.mark.asyncio
+async def test_inject_session_state_nested_does_not_conflict_with_artifact():
+  instruction_template = (
+      "Name: {user.name}, Artifact: {artifact.my_file}"
+  )
+  mock_artifact_service = MockArtifactService(
+      {"my_file": "artifact content"}
+  )
+  invocation_context = await _create_test_readonly_context(
+      state={"user": {"name": "Bob"}},
+      artifact_service=mock_artifact_service,
+  )
+
+  populated_instruction = await instructions_utils.inject_session_state(
+      instruction_template, invocation_context
+  )
+  assert populated_instruction == "Name: Bob, Artifact: artifact content"
+
+
+@pytest.mark.asyncio
+async def test_inject_session_state_flat_key_still_works():
+  """Flat keys still work even when nested is supported."""
+  instruction_template = "Value: {simple_key}"
+  invocation_context = await _create_test_readonly_context(
+      state={"simple_key": "flat_value"}
+  )
+
+  populated_instruction = await instructions_utils.inject_session_state(
+      instruction_template, invocation_context
+  )
+  assert populated_instruction == "Value: flat_value"
