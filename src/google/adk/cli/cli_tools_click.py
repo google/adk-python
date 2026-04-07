@@ -1064,6 +1064,7 @@ def cli_optimize(
     from .cli_eval import _collect_eval_results
     from .cli_eval import _collect_inferences
     from .cli_eval import get_root_agent
+
   except ModuleNotFoundError as mnf:
     raise click.ClickException(MISSING_EVAL_DEPENDENCIES_MESSAGE) from mnf
 
@@ -1199,6 +1200,7 @@ def cli_add_eval_case(
     from ..evaluation.eval_case import EvalCase
     from ..evaluation.eval_case import SessionInput
     from .cli_eval import get_eval_sets_manager
+
   except ModuleNotFoundError as mnf:
     raise click.ClickException(MISSING_EVAL_DEPENDENCIES_MESSAGE) from mnf
 
@@ -1245,6 +1247,127 @@ def cli_add_eval_case(
         )
   except Exception as e:
     raise click.ClickException(f"Failed to add eval case(s): {e}") from e
+
+
+@eval_set.command("generate_eval_cases", cls=HelpfulCommand)
+@click.argument(
+    "agent_module_file_path",
+    type=click.Path(
+        exists=True, dir_okay=True, file_okay=False, resolve_path=True
+    ),
+)
+@click.argument("eval_set_id", type=str, required=True)
+@click.option(
+    "--user_simulation_config_file",
+    type=click.Path(
+        exists=True, dir_okay=False, file_okay=True, resolve_path=True
+    ),
+    help=(
+        "A path to file containing JSON serialized "
+        "UserScenarioGenerationConfig dict."
+    ),
+    required=True,
+)
+@eval_options()
+def cli_generate_eval_cases(
+    agent_module_file_path: str,
+    eval_set_id: str,
+    user_simulation_config_file: str,
+    eval_storage_uri: Optional[str] = None,
+    log_level: str = "INFO",
+):
+  """Generates eval cases dynamically and adds them to the given eval set.
+
+  Uses Vertex AI Eval SDK to generate conversation scenarios based on an
+  Agent's info and definitions. It will automatically create the empty eval_set
+  if it has not been created in advance.
+
+  Args:
+    agent_module_file_path: The path to the agent module file.
+    eval_set_id: The id of the eval set to generate cases for.
+    user_simulation_config_file: The path to the user simulation config file.
+    eval_storage_uri: The eval storage uri.
+    log_level: The log level.
+  """
+  logs.setup_adk_logger(getattr(logging, log_level.upper()))
+  try:
+    from ..evaluation._vertex_ai_scenario_generation_facade import ScenarioGenerator
+    from ..evaluation.conversation_scenarios import ConversationGenerationConfig
+    from ..evaluation.eval_case import EvalCase
+    from ..evaluation.eval_case import SessionInput
+    from .cli_eval import get_eval_sets_manager
+    from .cli_eval import get_root_agent
+    from .utils.state import create_empty_state
+
+  except ModuleNotFoundError as mnf:
+    raise click.ClickException(MISSING_EVAL_DEPENDENCIES_MESSAGE) from mnf
+
+  app_name = os.path.basename(agent_module_file_path)
+  agents_dir = os.path.dirname(agent_module_file_path)
+
+  try:
+    eval_sets_manager = get_eval_sets_manager(eval_storage_uri, agents_dir)
+    root_agent = get_root_agent(agent_module_file_path)
+
+    # Try to create if it doesn't already exist.
+    if (
+        eval_sets_manager.get_eval_set(
+            app_name=app_name, eval_set_id=eval_set_id
+        )
+        is None
+    ):
+      eval_sets_manager.create_eval_set(
+          app_name=app_name, eval_set_id=eval_set_id
+      )
+      click.echo(f"Eval set '{eval_set_id}' created for app '{app_name}'.")
+    else:
+      click.echo(f"Eval set '{eval_set_id}' already exists.")
+
+    with open(user_simulation_config_file, "r") as f:
+      config = ConversationGenerationConfig.model_validate_json(f.read())
+
+    generator = ScenarioGenerator()
+    click.echo("Generating scenarios utilizing Vertex AI Eval SDK...")
+    scenarios = generator.generate_scenarios(root_agent, config)
+
+    # TODO(pthodoroff): Expose initial session state when simulation library
+    # supports it.
+    initial_session_state = create_empty_state(root_agent)
+
+    session_input = SessionInput(
+        app_name=app_name, user_id="test_user_id", state=initial_session_state
+    )
+
+    for scenario in scenarios:
+      scenario_str = json.dumps(scenario.model_dump(), sort_keys=True)
+      eval_id = hashlib.sha256(scenario_str.encode("utf-8")).hexdigest()[:8]
+      eval_case = EvalCase(
+          eval_id=eval_id,
+          conversation_scenario=scenario,
+          session_input=session_input,
+          creation_timestamp=datetime.now().timestamp(),
+      )
+
+      if (
+          eval_sets_manager.get_eval_case(
+              app_name=app_name, eval_set_id=eval_set_id, eval_case_id=eval_id
+          )
+          is None
+      ):
+        eval_sets_manager.add_eval_case(
+            app_name=app_name, eval_set_id=eval_set_id, eval_case=eval_case
+        )
+        click.echo(
+            f"Eval case '{eval_case.eval_id}' added to eval set"
+            f" '{eval_set_id}'."
+        )
+      else:
+        click.echo(
+            f"Eval case '{eval_case.eval_id}' already exists in eval set"
+            f" '{eval_set_id}', skipped adding."
+        )
+  except Exception as e:
+    raise click.ClickException(f"Failed to generate eval case(s): {e}") from e
 
 
 def web_options():

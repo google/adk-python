@@ -252,6 +252,7 @@ class TestExecuteBashTool:
     )
     tool = bash_tool.ExecuteBashTool(workspace=workspace, policy=policy)
     mock_process = mock.AsyncMock()
+    mock_process.pid = None  # Ensure finally block doesn't try to kill it
     mock_process.communicate.return_value = (b"", b"")
     mock_exec = mock.AsyncMock(return_value=mock_process)
 
