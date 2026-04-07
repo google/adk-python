@@ -138,16 +138,18 @@ def _resolve_pydantic_refs(schema: Dict[str, Any]) -> Dict[str, Any]:
   schema = copy.deepcopy(schema)
   defs = schema.get("$defs", {})
 
-  def resolve_ref(ref_string: str) -> Optional[Dict]:
+  def resolve_ref(ref_string: str) -> Optional[Dict[str, Any]]:
     """Resolve a $ref string like '#/$defs/Person'."""
     if not ref_string.startswith("#/$defs/"):
       return None
     def_name = ref_string.split("/")[-1]
-    return defs.get(def_name)
+    resolved: Optional[Dict[str, Any]] = defs.get(def_name)
+    return resolved
 
   def resolve_property(
-      prop_schema: Dict, seen_refs: Optional[set] = None
-  ) -> Dict:
+      prop_schema: Dict[str, Any],
+      seen_refs: Optional[set[str]] = None,
+  ) -> Dict[str, Any]:
     """Recursively resolve $ref in a property schema.
 
     Args:
@@ -203,9 +205,16 @@ def _resolve_pydantic_refs(schema: Dict[str, Any]) -> Dict[str, Any]:
       if ref_string not in seen_refs:
         seen_refs_copy = seen_refs.copy()
         seen_refs_copy.add(ref_string)
+
+        # Preserve parameter-level description (takes precedence over model docstring)
+        param_description = prop_schema.get("description")
+
         resolved = resolve_ref(ref_string)
         if resolved:
-          return resolve_property(copy.deepcopy(resolved), seen_refs_copy)
+          result = resolve_property(copy.deepcopy(resolved), seen_refs_copy)
+          if param_description:
+            result["description"] = param_description
+          return result
 
     # Recursively resolve nested properties (for already-inlined objects)
     if "properties" in prop_schema:
@@ -346,7 +355,7 @@ def _remove_title(schema: Dict):
     property_schema.pop("title", None)
 
 
-def _get_pydantic_schema(func: Callable) -> Dict:
+def _get_pydantic_schema(func: Callable) -> Dict[str, Any]:
   from ..utils.context_utils import find_context_parameter
 
   fields_dict = _get_fields_dict(func)
@@ -355,12 +364,25 @@ def _get_pydantic_schema(func: Callable) -> Dict:
   if context_param in fields_dict.keys():
     fields_dict.pop(context_param)
 
+  # Capture per-parameter descriptions before schema generation, because
+  # Pydantic may replace them with model docstrings for nested BaseModel types.
+  param_descriptions: Dict[str, str] = {}
+  for name, (_, field_info) in fields_dict.items():
+    if field_info.description:
+      param_descriptions[name] = field_info.description
+
   schema = pydantic.create_model(
       func.__name__, **fields_dict
   ).model_json_schema()
 
   # Resolve $ref for nested Pydantic models to inline Field descriptions
   schema = _resolve_pydantic_refs(schema)
+
+  # Re-apply per-parameter descriptions that may have been lost during
+  # schema generation (Pydantic uses model docstrings for nested models).
+  for name, description in param_descriptions.items():
+    if name in schema.get("properties", {}):
+      schema["properties"][name]["description"] = description
 
   return schema
 
@@ -530,6 +552,8 @@ def from_function_with_options(
   except TypeError:
     # This can happen if func is a mock object
     annotation_under_future = {}
+  # Collect Annotated field descriptions to apply after schema generation.
+  annotated_descriptions: Dict[str, str] = {}
   try:
     for name, param in inspect.signature(func).parameters.items():
       if param.kind in (
@@ -541,9 +565,19 @@ def from_function_with_options(
             param, annotation_under_future, name
         )
 
+        # Unwrap Annotated[T, Field(...)] so the parser sees the base type.
+        field_info = _extract_field_info_from_annotated(param.annotation)
+        if field_info and field_info.description:
+          annotated_descriptions[name] = field_info.description
+        base_type = _extract_base_type_from_annotated(param.annotation)
+        if base_type is not param.annotation:
+          param = param.replace(annotation=base_type)
+
         schema = _function_parameter_parse_util._parse_schema_from_parameter(
             variant, param, func.__name__
         )
+        if name in annotated_descriptions:
+          schema.description = annotated_descriptions[name]
         parameters_properties[name] = schema
   except ValueError:
     # If the function has complex parameter types that fail in _parse_schema_from_parameter,
@@ -563,15 +597,24 @@ def from_function_with_options(
               param, annotation_under_future, name
           )
 
+          # Unwrap Annotated[T, Field(...)] for the fallback path too.
+          field_info = _extract_field_info_from_annotated(param.annotation)
+          if field_info and field_info.description:
+            annotated_descriptions[name] = field_info.description
+          base_type = _extract_base_type_from_annotated(param.annotation)
+          if base_type is not param.annotation:
+            param = param.replace(annotation=base_type)
+
           _function_parameter_parse_util._raise_for_invalid_enum_value(param)
 
           json_schema_dict = _function_parameter_parse_util._generate_json_schema_for_parameter(
               param
           )
 
-          parameters_json_schema[name] = types.Schema.model_validate(
-              json_schema_dict
-          )
+          schema_obj = types.Schema.model_validate(json_schema_dict)
+          if name in annotated_descriptions:
+            schema_obj.description = annotated_descriptions[name]
+          parameters_json_schema[name] = schema_obj
         except Exception as e:
           _function_parameter_parse_util._raise_for_unsupported_param(
               param, func.__name__, e
