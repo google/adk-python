@@ -2711,3 +2711,73 @@ async def test_generate_auth_event_mirrors_the_tool_response_role():
       auth_event.content.role == function_response_event.content.role == 'user'
   )
   assert auth_event.author == agent.name
+
+
+def test_deep_merge_dicts_concatenates_lists():
+  """Test that deep_merge_dicts concatenates list values instead of overwriting."""
+  d1 = {"state_delta": {"items": ["a"]}}
+  d2 = {"state_delta": {"items": ["b"]}}
+  result = deep_merge_dicts(d1, d2)
+  assert result["state_delta"]["items"] == ["a", "b"]
+
+
+def test_deep_merge_dicts_overwrites_non_list_non_dict():
+  """Test that deep_merge_dicts still overwrites scalar values."""
+  d1 = {"key": "old"}
+  d2 = {"key": "new"}
+  result = deep_merge_dicts(d1, d2)
+  assert result["key"] == "new"
+
+
+def test_deep_merge_dicts_merges_nested_dicts():
+  """Test that deep_merge_dicts recursively merges nested dicts."""
+  d1 = {"a": {"b": 1, "c": 2}}
+  d2 = {"a": {"b": 3, "d": 4}}
+  result = deep_merge_dicts(d1, d2)
+  assert result == {"a": {"b": 3, "c": 2, "d": 4}}
+
+
+def test_deep_merge_dicts_handles_mixed_list_and_non_list():
+  """Test that deep_merge_dicts overwrites when types differ (list vs non-list)."""
+  d1 = {"key": "not_a_list"}
+  d2 = {"key": ["a", "b"]}
+  result = deep_merge_dicts(d1, d2)
+  assert result["key"] == ["a", "b"]
+
+  d1 = {"key": ["a", "b"]}
+  d2 = {"key": "not_a_list"}
+  result = deep_merge_dicts(d1, d2)
+  assert result["key"] == "not_a_list"
+
+
+def test_merge_parallel_function_response_events_merges_state_delta_lists():
+  """Test that parallel events with list state_delta values are concatenated, not overwritten."""
+  invocation_id = "base_invocation_123"
+
+  event1 = Event(
+      invocation_id=invocation_id,
+      author="tool",
+      content=types.Content(
+          role="user",
+          parts=[types.Part(function_response=types.FunctionResponse(
+              name="func_1", response={"result": "ok"},
+          ))],
+      ),
+      actions=EventActions(state_delta={"items": ["a"]}),
+  )
+
+  event2 = Event(
+      invocation_id=invocation_id,
+      author="tool",
+      content=types.Content(
+          role="user",
+          parts=[types.Part(function_response=types.FunctionResponse(
+              name="func_2", response={"result": "ok"},
+          ))],
+      ),
+      actions=EventActions(state_delta={"items": ["b"]}),
+  )
+
+  merged_event = merge_parallel_function_response_events([event1, event2])
+
+  assert merged_event.actions.state_delta == {"items": ["a", "b"]}
