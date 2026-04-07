@@ -35,6 +35,7 @@ from a2a.types import TaskState
 from a2a.types import TaskStatus as A2ATaskStatus
 from a2a.types import TaskStatusUpdateEvent
 from a2a.types import TextPart
+from a2a.types import TransportProtocol as A2ATransport
 from google.adk.a2a.agent import ParametersConfig
 from google.adk.a2a.agent import RequestInterceptor
 from google.adk.a2a.agent.config import A2aRemoteAgentConfig
@@ -198,6 +199,10 @@ class TestRemoteA2aAgentResolution:
     assert client is not None
     assert agent._httpx_client == client
     assert agent._httpx_client_needs_cleanup is True
+    assert agent._a2a_client_factory._config.supported_transports == [
+        A2ATransport.jsonrpc,
+        A2ATransport.http_json,
+    ]
 
   @pytest.mark.asyncio
   async def test_ensure_httpx_client_reuses_existing_client(self):

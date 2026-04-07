@@ -510,8 +510,15 @@ class _SkillScriptCodeExecutor:
 
     if ext == "py":
       argv_list = [script_path]
-      for k, v in script_args.items():
+      for k, v in script_args.get("args", {}).items():
         argv_list.extend([f"--{k}", str(v)])
+      for k, v in script_args.get("short_options", {}).items():
+        argv_list.extend([f"-{k}", str(v)])
+      positional_args = script_args.get("positional_args", [])
+      if positional_args:
+        argv_list.append("--")
+        for v in positional_args:
+          argv_list.append(str(v))
       code_lines.extend([
           f"      sys.argv = {argv_list!r}",
           "      try:",
@@ -522,8 +529,15 @@ class _SkillScriptCodeExecutor:
       ])
     elif ext in ("sh", "bash"):
       arr = ["bash", script_path]
-      for k, v in script_args.items():
+      for k, v in script_args.get("args", {}).items():
         arr.extend([f"--{k}", str(v)])
+      for k, v in script_args.get("short_options", {}).items():
+        arr.extend([f"-{k}", str(v)])
+      positional_args = script_args.get("positional_args", [])
+      if positional_args:
+        arr.append("--")
+        for v in positional_args:
+          arr.append(str(v))
       timeout = self._script_timeout
       code_lines.extend([
           "      try:",
@@ -590,8 +604,23 @@ class RunSkillScriptTool(BaseTool):
                 "args": {
                     "type": "object",
                     "description": (
-                        "Optional arguments to pass to the script as key-value"
-                        " pairs."
+                        "Optional arguments to pass as long options (e.g.,"
+                        " {'n': 5} becomes --n 5)."
+                    ),
+                },
+                "short_options": {
+                    "type": "object",
+                    "description": (
+                        "Optional SHORT options to pass (e.g., {'n': 5}"
+                        " becomes -n 5)."
+                    ),
+                },
+                "positional_args": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": (
+                        "Optional list of positional arguments in exact order"
+                        " (e.g., ['input.txt', 'output.txt'])."
                     ),
                 },
             },
@@ -604,14 +633,36 @@ class RunSkillScriptTool(BaseTool):
   ) -> Any:
     skill_name = args.get("skill_name")
     script_path = args.get("script_path")
-    script_args = args.get("args", {})
-    if not isinstance(script_args, dict):
+    script_args = {
+        "args": args.get("args", {}),
+        "short_options": args.get("short_options", {}),
+        "positional_args": args.get("positional_args", []),
+    }
+    if not isinstance(script_args["args"], dict):
       return {
           "error": (
               "'args' must be a JSON object (key-value pairs),"
-              f" got {type(script_args).__name__}."
+              f" got {type(script_args['args']).__name__}."
           ),
           "error_code": "INVALID_ARGS_TYPE",
+      }
+
+    if not isinstance(script_args["short_options"], dict):
+      return {
+          "error": (
+              "'short_options' must be a JSON object (key-value pairs),"
+              f" got {type(script_args['short_options']).__name__}."
+          ),
+          "error_code": "INVALID_SHORT_OPTIONS_TYPE",
+      }
+
+    if not isinstance(script_args["positional_args"], list):
+      return {
+          "error": (
+              "'positional_args' must be a JSON array (list),"
+              f" got {type(script_args['positional_args']).__name__}."
+          ),
+          "error_code": "INVALID_POSITIONAL_ARGS_TYPE",
       }
 
     if not skill_name:
