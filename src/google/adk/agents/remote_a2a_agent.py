@@ -476,6 +476,8 @@ class RemoteA2aAgent(BaseAgent):
           event = convert_a2a_message_to_event(
               update.status.message, self.name, ctx, self._a2a_part_converter
           )
+          if not event:
+            return None
           if event.content is not None and update.status.state in (
               TaskState.submitted,
               TaskState.working,
@@ -501,6 +503,8 @@ class RemoteA2aAgent(BaseAgent):
           # for now.
           return None
 
+        if not event:
+          return None
         event.custom_metadata = event.custom_metadata or {}
         event.custom_metadata[A2A_METADATA_PREFIX + "task_id"] = task.id
         if task.context_id:
@@ -513,6 +517,8 @@ class RemoteA2aAgent(BaseAgent):
         event = convert_a2a_message_to_event(
             a2a_response, self.name, ctx, self._a2a_part_converter
         )
+        if not event:
+          return None
         event.custom_metadata = event.custom_metadata or {}
 
         if a2a_response.context_id:
@@ -583,6 +589,8 @@ class RemoteA2aAgent(BaseAgent):
         event = self._config.a2a_message_converter(
             a2a_response, self.name, ctx, self._config.a2a_part_converter
         )
+        if not event:
+          return None
         event.custom_metadata = event.custom_metadata or {}
 
         if a2a_response.context_id:
