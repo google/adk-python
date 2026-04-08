@@ -16,21 +16,26 @@ from __future__ import annotations
 
 from collections.abc import Callable
 import functools
-import os
 from typing import Any
 from typing import cast
-from typing import Optional
 from typing import TypeVar
 import warnings
+
+from .env_utils import is_env_truthy
 
 T = TypeVar("T")
 
 
-def _is_truthy_env(var_name: str) -> bool:
-  value = os.environ.get(var_name)
-  if value is None:
+def _should_bypass_warning(
+    bypass_env_var: str | tuple[str, ...] | None,
+) -> bool:
+  if bypass_env_var is None:
     return False
-  return value.strip().lower() in ("1", "true", "yes", "on")
+
+  env_var_names = (
+      (bypass_env_var,) if isinstance(bypass_env_var, str) else bypass_env_var
+  )
+  return any(is_env_truthy(env_var_name) for env_var_name in env_var_names)
 
 
 def _make_feature_decorator(
@@ -38,7 +43,7 @@ def _make_feature_decorator(
     label: str,
     default_message: str,
     block_usage: bool = False,
-    bypass_env_var: Optional[str] = None,
+    bypass_env_var: str | tuple[str, ...] | None = None,
 ) -> Callable[..., Any]:
   def decorator_factory(message_or_obj: Any = None) -> Any:
     # Case 1: Used as @decorator without parentheses
@@ -61,7 +66,10 @@ def _make_feature_decorator(
 
 
 def _create_decorator(
-    message: str, label: str, block_usage: bool, bypass_env_var: Optional[str]
+    message: str,
+    label: str,
+    block_usage: bool,
+    bypass_env_var: str | tuple[str, ...] | None,
 ) -> Callable[[T], T]:
   def decorator(obj: T) -> T:
     obj_name = getattr(obj, "__name__", type(obj).__name__)
@@ -74,9 +82,7 @@ def _create_decorator(
       @functools.wraps(orig_init)
       def new_init(self: Any, *args: Any, **kwargs: Any) -> Any:
         # Check if usage should be bypassed via environment variable at call time
-        should_bypass = bypass_env_var is not None and _is_truthy_env(
-            bypass_env_var
-        )
+        should_bypass = _should_bypass_warning(bypass_env_var)
 
         if should_bypass:
           # Bypass completely - no warning, no error
@@ -96,9 +102,7 @@ def _create_decorator(
       @functools.wraps(func)
       def wrapper(*args: Any, **kwargs: Any) -> Any:
         # Check if usage should be bypassed via environment variable at call time
-        should_bypass = bypass_env_var is not None and _is_truthy_env(
-            bypass_env_var
-        )
+        should_bypass = _should_bypass_warning(bypass_env_var)
 
         if should_bypass:
           # Bypass completely - no warning, no error

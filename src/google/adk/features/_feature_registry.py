@@ -20,6 +20,7 @@ from enum import Enum
 from typing import Generator
 import warnings
 
+from ..utils.env_utils import is_experimental_warning_suppressed
 from ..utils.env_utils import is_env_enabled
 
 
@@ -304,6 +305,12 @@ def _emit_non_stable_warning_once(
     feature_name: The feature name.
     feature_stage: The feature stage.
   """
+  if (
+      feature_stage == FeatureStage.EXPERIMENTAL
+      and is_experimental_warning_suppressed()
+  ):
+    return
+
   if feature_name not in _WARNED_FEATURES:
     _WARNED_FEATURES.add(feature_name)
     full_message = (

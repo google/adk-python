@@ -68,7 +68,11 @@ def reset_env_and_registry(monkeypatch):
   """Reset environment variables and registry before each test."""
   # Clean up environment variables
   for key in list(os.environ.keys()):
-    if key.startswith("ADK_ENABLE_") or key.startswith("ADK_DISABLE_"):
+    if (
+        key.startswith("ADK_ENABLE_")
+        or key.startswith("ADK_DISABLE_")
+        or key == "ADK_SUPPRESS_EXPERIMENTAL_FEATURE_WARNINGS"
+    ):
       monkeypatch.delenv(key, raising=False)
 
   # Add an existing feature to the registry
@@ -168,6 +172,20 @@ def test_disabled_experimental_class_bypass_with_env_var(monkeypatch):
     )
 
 
+def test_disabled_experimental_class_suppresses_warning_with_general_env_var(
+    monkeypatch,
+):
+  """General suppression env var silences decorator-backed class warnings."""
+  monkeypatch.setenv("ADK_ENABLE_EXPERIMENTAL_CLASS", "true")
+  monkeypatch.setenv("ADK_SUPPRESS_EXPERIMENTAL_FEATURE_WARNINGS", "yes")
+
+  with warnings.catch_warnings(record=True) as w:
+    warnings.simplefilter("always")
+    feature = ExperimentalClass()
+    assert feature.run() == "running"
+    assert not w
+
+
 def test_enabled_experimental_function_does_not_raise_error():
   """Test that enabled experimental function does not raise error."""
 
@@ -177,6 +195,18 @@ def test_enabled_experimental_function_does_not_raise_error():
     assert "[EXPERIMENTAL] feature EXPERIMENTAL_FUNCTION is enabled." in str(
         w[0].message
     )
+
+
+def test_enabled_experimental_function_suppresses_warning_with_general_env_var(
+    monkeypatch,
+):
+  """General suppression env var silences decorator-backed function warnings."""
+  monkeypatch.setenv("ADK_SUPPRESS_EXPERIMENTAL_FEATURE_WARNINGS", "on")
+
+  with warnings.catch_warnings(record=True) as w:
+    warnings.simplefilter("always")
+    assert experimental_function() == "executing"
+    assert not w
 
 
 def test_enabled_experimental_function_disabled_by_env_var(monkeypatch):

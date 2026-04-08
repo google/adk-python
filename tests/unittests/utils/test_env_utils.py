@@ -12,6 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from google.adk.utils.env_utils import is_env_truthy
+from google.adk.utils.env_utils import is_experimental_warning_suppressed
 from google.adk.utils.env_utils import is_env_enabled
 import pytest
 
@@ -47,3 +49,38 @@ def test_is_env_enabled_with_defaults(monkeypatch, default, expected):
   """Test is_env_enabled when env var is not set with different defaults."""
   monkeypatch.delenv('TEST_FLAG', raising=False)
   assert is_env_enabled('TEST_FLAG', default=default) is expected
+
+
+@pytest.mark.parametrize(
+    'env_value,expected',
+    [
+        ('true', True),
+        (' YES ', True),
+        ('on', True),
+        ('1', True),
+        ('false', False),
+        ('off', False),
+        ('0', False),
+        ('', False),
+    ],
+)
+def test_is_env_truthy(monkeypatch, env_value, expected):
+  """Test the permissive truthy parsing used by warning suppression."""
+  monkeypatch.setenv('TEST_FLAG', env_value)
+  assert is_env_truthy('TEST_FLAG') is expected
+
+
+def test_is_experimental_warning_suppressed_checks_general_env(monkeypatch):
+  """General suppression env var disables experimental warnings."""
+  monkeypatch.setenv('ADK_SUPPRESS_EXPERIMENTAL_FEATURE_WARNINGS', 'yes')
+  assert is_experimental_warning_suppressed()
+
+
+def test_is_experimental_warning_suppressed_checks_additional_env(monkeypatch):
+  """Additional env vars can opt warning surfaces into the same suppression."""
+  monkeypatch.delenv('ADK_SUPPRESS_EXPERIMENTAL_FEATURE_WARNINGS', raising=False)
+  monkeypatch.setenv('ADK_SUPPRESS_A2A_EXPERIMENTAL_FEATURE_WARNINGS', 'on')
+
+  assert is_experimental_warning_suppressed(
+      'ADK_SUPPRESS_A2A_EXPERIMENTAL_FEATURE_WARNINGS'
+  )

@@ -22,6 +22,11 @@ from __future__ import annotations
 
 import os
 
+_EXTENDED_TRUTHY_ENV_VALUES = frozenset({'1', 'true', 'yes', 'on'})
+_EXPERIMENTAL_WARNING_SUPPRESSION_ENV_VAR = (
+    'ADK_SUPPRESS_EXPERIMENTAL_FEATURE_WARNINGS'
+)
+
 
 def is_env_enabled(env_var_name: str, default: str = '0') -> bool:
   """Check if an environment variable is enabled.
@@ -57,3 +62,41 @@ def is_env_enabled(env_var_name: str, default: str = '0') -> bool:
     True
   """
   return os.environ.get(env_var_name, default).lower() in ['true', '1']
+
+
+def is_env_truthy(env_var_name: str) -> bool:
+  """Check if an environment variable uses ADK's permissive truthy values.
+
+  This helper preserves the historical parsing used for experimental warning
+  suppression and accepts ``1``, ``true``, ``yes``, and ``on``.
+
+  Args:
+    env_var_name: The name of the environment variable to check.
+
+  Returns:
+    True if the environment variable is set to a truthy value, False otherwise.
+  """
+  value = os.environ.get(env_var_name)
+  if value is None:
+    return False
+  return value.strip().lower() in _EXTENDED_TRUTHY_ENV_VALUES
+
+
+def is_experimental_warning_suppressed(
+    *additional_env_var_names: str,
+) -> bool:
+  """Check whether experimental warnings should be suppressed.
+
+  Args:
+    *additional_env_var_names: Optional warning-specific env vars that should
+      also suppress experimental warnings.
+
+  Returns:
+    True if the general experimental warning suppression env var, or any
+    provided additional env var, is truthy.
+  """
+  env_var_names = (
+      _EXPERIMENTAL_WARNING_SUPPRESSION_ENV_VAR,
+      *additional_env_var_names,
+  )
+  return any(is_env_truthy(env_var_name) for env_var_name in env_var_names)

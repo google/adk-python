@@ -43,7 +43,11 @@ def reset_env_and_registry(monkeypatch):
   """Reset environment variables, registry and overrides before each test."""
   # Clean up environment variables
   for key in list(os.environ.keys()):
-    if key.startswith("ADK_ENABLE_") or key.startswith("ADK_DISABLE_"):
+    if (
+        key.startswith("ADK_ENABLE_")
+        or key.startswith("ADK_DISABLE_")
+        or key == "ADK_SUPPRESS_EXPERIMENTAL_FEATURE_WARNINGS"
+    ):
       monkeypatch.delenv(key, raising=False)
 
   # Reset warned features set
@@ -117,6 +121,49 @@ class TestIsFeatureEnabled:
       assert "[EXPERIMENTAL] feature EXP_ENABLED is enabled." in str(
           w[0].message
       )
+
+  def test_experimental_warning_suppressed_by_general_env_var(self, monkeypatch):
+    """General suppression env var silences registry experimental warnings."""
+    _register_feature("SUPPRESSED_EXP", FEATURE_CONFIG_EXPERIMENTAL_ENABLED)
+    monkeypatch.setenv("ADK_SUPPRESS_EXPERIMENTAL_FEATURE_WARNINGS", "yes")
+
+    with warnings.catch_warnings(record=True) as w:
+      warnings.simplefilter("always")
+      assert is_feature_enabled("SUPPRESSED_EXP")
+      assert not w
+
+  def test_enable_env_warning_suppressed_by_general_env_var(self, monkeypatch):
+    """Suppression also applies when an experimental feature is env-enabled."""
+    _register_feature("ENV_ENABLED_EXP", FEATURE_CONFIG_EXPERIMENTAL_DISABLED)
+    monkeypatch.setenv("ADK_ENABLE_ENV_ENABLED_EXP", "true")
+    monkeypatch.setenv("ADK_SUPPRESS_EXPERIMENTAL_FEATURE_WARNINGS", "on")
+
+    with warnings.catch_warnings(record=True) as w:
+      warnings.simplefilter("always")
+      assert is_feature_enabled("ENV_ENABLED_EXP")
+      assert not w
+
+  def test_override_warning_suppressed_by_general_env_var(self, monkeypatch):
+    """Suppression also applies to programmatic overrides."""
+    _register_feature("OVERRIDE_ENABLED_EXP", FEATURE_CONFIG_EXPERIMENTAL_DISABLED)
+    override_feature_enabled("OVERRIDE_ENABLED_EXP", True)
+    monkeypatch.setenv("ADK_SUPPRESS_EXPERIMENTAL_FEATURE_WARNINGS", "1")
+
+    with warnings.catch_warnings(record=True) as w:
+      warnings.simplefilter("always")
+      assert is_feature_enabled("OVERRIDE_ENABLED_EXP")
+      assert not w
+
+  def test_wip_warning_not_suppressed_by_general_env_var(self, monkeypatch):
+    """The experimental suppression flag must not suppress WIP warnings."""
+    _register_feature("SUPPRESSED_WIP", FeatureConfig(FeatureStage.WIP, True))
+    monkeypatch.setenv("ADK_SUPPRESS_EXPERIMENTAL_FEATURE_WARNINGS", "true")
+
+    with warnings.catch_warnings(record=True) as w:
+      warnings.simplefilter("always")
+      assert is_feature_enabled("SUPPRESSED_WIP")
+      assert len(w) == 1
+      assert "[WIP] feature SUPPRESSED_WIP is enabled." in str(w[0].message)
 
   def test_stable_feature_enabled(self):
     """Stable features are enabled."""
