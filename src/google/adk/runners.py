@@ -45,9 +45,11 @@ from .artifacts.base_artifact_service import BaseArtifactService
 from .artifacts.in_memory_artifact_service import InMemoryArtifactService
 from .auth.credential_service.base_credential_service import BaseCredentialService
 from .code_executors.built_in_code_executor import BuiltInCodeExecutor
+from .errors.session_not_found_error import SessionNotFoundError
 from .events.event import Event
 from .events.event import EventActions
 from .flows.llm_flows import contents
+from .flows.llm_flows.functions import find_event_by_function_call_id
 from .flows.llm_flows.functions import find_matching_function_call
 from .memory.base_memory_service import BaseMemoryService
 from .memory.in_memory_memory_service import InMemoryMemoryService
@@ -55,6 +57,7 @@ from .platform.thread import create_thread
 from .plugins.base_plugin import BasePlugin
 from .plugins.plugin_manager import PluginManager
 from .sessions.base_session_service import BaseSessionService
+from .sessions.base_session_service import GetSessionConfig
 from .sessions.in_memory_session_service import InMemorySessionService
 from .sessions.session import Session
 from .telemetry.tracing import tracer
@@ -67,6 +70,16 @@ logger = logging.getLogger('google_adk.' + __name__)
 
 def _is_tool_call_or_response(event: Event) -> bool:
   return bool(event.get_function_calls() or event.get_function_responses())
+
+
+def _get_function_responses_from_content(
+    content: types.Content,
+) -> list[types.FunctionResponse]:
+  if not content:
+    return []
+  return [
+      part.function_response for part in content.parts if part.function_response
+  ]
 
 
 def _is_transcription(event: Event) -> bool:
@@ -340,6 +353,35 @@ class Runner:
     self._app_name_alignment_hint = f'{mismatch_details} {resolution}'
     logger.warning('App name mismatch detected. %s', mismatch_details)
 
+  def _resolve_invocation_id(
+      self,
+      session: Session,
+      new_message: Optional[types.Content],
+      invocation_id: Optional[str],
+  ) -> Optional[str]:
+    """Infers invocation_id from new_message if it is a function response."""
+    function_responses = _get_function_responses_from_content(new_message)
+    if not function_responses:
+      return invocation_id
+
+    fc_event = find_event_by_function_call_id(
+        session.events, function_responses[0].id
+    )
+    if not fc_event:
+      raise ValueError(
+          'Function call event not found for function response id:'
+          f' {function_responses[0].id}'
+      )
+
+    if invocation_id and invocation_id != fc_event.invocation_id:
+      logger.warning(
+          'Provided invocation_id %s is ignored because new_message has a '
+          'function response with invocation_id %s.',
+          invocation_id,
+          fc_event.invocation_id,
+      )
+    return fc_event.invocation_id
+
   def _format_session_not_found_message(self, session_id: str) -> str:
     message = f'Session not found: {session_id}'
     if not self._app_name_alignment_hint:
@@ -352,26 +394,36 @@ class Runner:
     )
 
   async def _get_or_create_session(
-      self, *, user_id: str, session_id: str
+      self,
+      *,
+      user_id: str,
+      session_id: str,
+      get_session_config: Optional[GetSessionConfig] = None,
   ) -> Session:
     """Gets the session or creates it if auto-creation is enabled.
 
     This helper first attempts to retrieve the session. If not found and
     auto_create_session is True, it creates a new session with the provided
-    identifiers. Otherwise, it raises a ValueError with a helpful message.
+    identifiers. Otherwise, it raises a SessionNotFoundError.
 
     Args:
       user_id: The user ID of the session.
       session_id: The session ID of the session.
+      get_session_config: Optional configuration for controlling which events
+        are fetched from session storage.
 
     Returns:
       The existing or newly created `Session`.
 
     Raises:
-      ValueError: If the session is not found and auto_create_session is False.
+      SessionNotFoundError: If the session is not found and
+        auto_create_session is False.
     """
     session = await self.session_service.get_session(
-        app_name=self.app_name, user_id=user_id, session_id=session_id
+        app_name=self.app_name,
+        user_id=user_id,
+        session_id=session_id,
+        config=get_session_config,
     )
     if not session:
       if self.auto_create_session:
@@ -380,7 +432,7 @@ class Runner:
         )
       else:
         message = self._format_session_not_found_message(session_id)
-        raise ValueError(message)
+        raise SessionNotFoundError(message)
     return session
 
   def run(
@@ -493,8 +545,11 @@ class Runner:
     ) -> AsyncGenerator[Event, None]:
       with tracer.start_as_current_span('invocation'):
         session = await self._get_or_create_session(
-            user_id=user_id, session_id=session_id
+            user_id=user_id,
+            session_id=session_id,
+            get_session_config=run_config.get_session_config,
         )
+
         if not invocation_id and not new_message:
           raise ValueError(
               'Running an agent requires either a new_message or an '
@@ -502,35 +557,49 @@ class Runner:
               f'Session: {session_id}, User: {user_id}'
           )
 
-        if invocation_id:
-          if (
-              not self.resumability_config
-              or not self.resumability_config.is_resumable
-          ):
-            raise ValueError(
-                f'invocation_id: {invocation_id} is provided but the app is not'
-                ' resumable.'
-            )
-          invocation_context = await self._setup_context_for_resumed_invocation(
-              session=session,
-              new_message=new_message,
-              invocation_id=invocation_id,
-              run_config=run_config,
-              state_delta=state_delta,
+        is_resumable = (
+            self.resumability_config and self.resumability_config.is_resumable
+        )
+        if not is_resumable and not new_message:
+          raise ValueError(
+              'Running an agent requires a new_message or a resumable app. '
+              f'Session: {session_id}, User: {user_id}'
           )
-          if invocation_context.end_of_agents.get(
-              invocation_context.agent.name
-          ):
-            # Directly return if the current agent in invocation context is
-            # already final.
-            return
-        else:
+
+        if not is_resumable:
           invocation_context = await self._setup_context_for_new_invocation(
               session=session,
-              new_message=new_message,  # new_message is not None.
+              new_message=new_message,
               run_config=run_config,
               state_delta=state_delta,
           )
+        else:
+          invocation_id = self._resolve_invocation_id(
+              session, new_message, invocation_id
+          )
+          if not invocation_id:
+            invocation_context = await self._setup_context_for_new_invocation(
+                session=session,
+                new_message=new_message,
+                run_config=run_config,
+                state_delta=state_delta,
+            )
+          else:
+            invocation_context = (
+                await self._setup_context_for_resumed_invocation(
+                    session=session,
+                    new_message=new_message,
+                    invocation_id=invocation_id,
+                    run_config=run_config,
+                    state_delta=state_delta,
+                )
+            )
+            if invocation_context.end_of_agents.get(
+                invocation_context.agent.name
+            ):
+              # Directly return if the current agent in invocation context is
+              # already final.
+              return
 
         async def execute(ctx: InvocationContext) -> AsyncGenerator[Event]:
           async with Aclosing(ctx.agent.run_async(ctx)) as agen:
@@ -553,7 +622,10 @@ class Runner:
         if self.app and self.app.events_compaction_config:
           logger.debug('Running event compactor.')
           await _run_compaction_for_sliding_window(
-              self.app, session, self.session_service
+              self.app,
+              session,
+              self.session_service,
+              skip_token_compaction=invocation_context.token_compaction_checked,
           )
 
     async with Aclosing(_run_with_trace(new_message, invocation_id)) as agen:
@@ -566,10 +638,14 @@ class Runner:
       user_id: str,
       session_id: str,
       rewind_before_invocation_id: str,
+      run_config: Optional[RunConfig] = None,
   ) -> None:
     """Rewinds the session to before the specified invocation."""
+    run_config = run_config or RunConfig()
     session = await self._get_or_create_session(
-        user_id=user_id, session_id=session_id
+        user_id=user_id,
+        session_id=session_id,
+        get_session_config=run_config.get_session_config,
     )
     rewind_event_index = -1
     for i, event in enumerate(session.events):
@@ -1000,7 +1076,9 @@ class Runner:
       )
     if not session:
       session = await self._get_or_create_session(
-          user_id=user_id, session_id=session_id
+          user_id=user_id,
+          session_id=session_id,
+          get_session_config=run_config.get_session_config,
       )
     invocation_context = self._new_invocation_context_for_live(
         session,
@@ -1171,8 +1249,12 @@ class Runner:
         - Performance optimization
         Please use run_async() with proper configuration.
     """
+    run_config = run_config or RunConfig()
     session = await self.session_service.get_session(
-        app_name=self.app_name, user_id=user_id, session_id=session_id
+        app_name=self.app_name,
+        user_id=user_id,
+        session_id=session_id,
+        config=run_config.get_session_config,
     )
     if not session:
       session = await self.session_service.create_session(
@@ -1321,6 +1403,10 @@ class Runner:
         return event.content
     return None
 
+  def _create_invocation_context(self, **kwargs) -> InvocationContext:
+    """Creates an InvocationContext instance."""
+    return InvocationContext(**kwargs)
+
   def _new_invocation_context(
       self,
       session: Session,
@@ -1355,13 +1441,16 @@ class Runner:
       if not isinstance(self.agent.code_executor, BuiltInCodeExecutor):
         self.agent.code_executor = BuiltInCodeExecutor()
 
-    return InvocationContext(
+    return self._create_invocation_context(
         artifact_service=self.artifact_service,
         session_service=self.session_service,
         memory_service=self.memory_service,
         credential_service=self.credential_service,
         plugin_manager=self.plugin_manager,
         context_cache_config=self.context_cache_config,
+        events_compaction_config=(
+            self.app.events_compaction_config if self.app else None
+        ),
         invocation_id=invocation_id,
         agent=self.agent,
         session=session,

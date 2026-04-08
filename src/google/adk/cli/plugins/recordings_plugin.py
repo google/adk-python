@@ -98,7 +98,8 @@ class RecordingsPlugin(BasePlugin):
 
     if (state := self._get_invocation_state(callback_context)) is None:
       raise ValueError(
-          "Recording state not initialized. Ensure before_run created it."
+          "Recording state not initialized. Ensure before_run_callback"
+          " created it."
       )
 
     pending_recording = Recording(
@@ -106,7 +107,7 @@ class RecordingsPlugin(BasePlugin):
         agent_name=callback_context.agent_name,
         llm_recording=LlmRecording(
             llm_request=llm_request,
-            llm_response=None,
+            llm_responses=[],
         ),
     )
 
@@ -132,17 +133,25 @@ class RecordingsPlugin(BasePlugin):
     """Complete pending LLM recording for the invocation specified in session state."""
     if not self._is_record_mode_on(callback_context):
       return None
-
     if (state := self._get_invocation_state(callback_context)) is None:
       raise ValueError(
-          "Recording state not initialized. Ensure before_run created it."
+          "Recording state not initialized. Ensure before_run_callback"
+          " created it."
       )
 
     agent_name = callback_context.agent_name
-    if pending_recording := state.pending_llm_recordings.pop(agent_name, None):
-      if pending_recording.llm_recording is not None:
-        pending_recording.llm_recording.llm_response = llm_response
-        logger.debug("Completed LLM recording for agent %s", agent_name)
+    if pending_recording := state.pending_llm_recordings.get(agent_name, None):
+      if (
+          pending_recording.llm_recording is not None
+          and pending_recording.llm_recording.llm_responses is not None
+      ):
+        pending_recording.llm_recording.llm_responses.append(llm_response)
+        logger.debug(
+            "Appended LLM response to recording for agent %s", agent_name
+        )
+        # Only remove from pending dict when response is complete
+        if not llm_response.partial:
+          state.pending_llm_recordings.pop(agent_name)
     else:
       logger.warning(
           "No pending LLM recording found for agent %s, skipping response",
@@ -172,7 +181,8 @@ class RecordingsPlugin(BasePlugin):
 
     if (state := self._get_invocation_state(tool_context)) is None:
       raise ValueError(
-          "Recording state not initialized. Ensure before_run created it."
+          "Recording state not initialized. Ensure before_run_callback"
+          " created it."
       )
 
     pending_recording = Recording(
@@ -222,7 +232,8 @@ class RecordingsPlugin(BasePlugin):
 
     if (state := self._get_invocation_state(tool_context)) is None:
       raise ValueError(
-          "Recording state not initialized. Ensure before_run created it."
+          "Recording state not initialized. Ensure before_run_callback"
+          " created it."
       )
 
     if pending_recording := state.pending_tool_recordings.pop(
@@ -266,7 +277,8 @@ class RecordingsPlugin(BasePlugin):
 
     if (state := self._get_invocation_state(tool_context)) is None:
       raise ValueError(
-          "Recording state not initialized. Ensure before_run created it."
+          "Recording state not initialized. Ensure before_run_callback"
+          " created it."
       )
 
     logger.debug(
@@ -289,13 +301,14 @@ class RecordingsPlugin(BasePlugin):
 
     if (state := self._get_invocation_state(ctx)) is None:
       raise ValueError(
-          "Recording state not initialized. Ensure before_run created it."
+          "Recording state not initialized. Ensure before_run_callback"
+          " created it."
       )
 
     try:
       for pending in state.pending_recordings_order:
         if pending.llm_recording is not None:
-          if pending.llm_recording.llm_response is not None:
+          if pending.llm_recording.llm_responses:
             state.records.recordings.append(pending)
           else:
             logger.warning(
@@ -310,16 +323,24 @@ class RecordingsPlugin(BasePlugin):
                 "Incomplete tool recording for agent %s, skipping",
                 pending.agent_name,
             )
+      if self._streaming_mode == "sse":
+        recordings_file = (
+            f"{state.test_case_path}/generated-recordings-sse.yaml"
+        )
+      elif self._streaming_mode == "none":
+        recordings_file = f"{state.test_case_path}/generated-recordings.yaml"
+      else:
+        raise ValueError(f"Unsupported streaming mode: {self._streaming_mode}")
 
       dump_pydantic_to_yaml(
           state.records,
-          f"{state.test_case_path}/generated-recordings.yaml",
+          recordings_file,
           sort_keys=False,
       )
       logger.info(
-          "Saved %d recordings to %s/generated-recordings.yaml",
+          "Saved %d recordings to %s",
           len(state.records.recordings),
-          state.test_case_path,
+          recordings_file,
       )
     except Exception as e:
       logger.error("Failed to save interactions: %s", e)
@@ -364,12 +385,18 @@ class RecordingsPlugin(BasePlugin):
     config = session_state.get("_adk_recordings_config", {})
     case_dir = config.get("dir")
     msg_index = config.get("user_message_index")
+    self._streaming_mode = config.get("streaming_mode", "")
 
     if not case_dir or msg_index is None:
       raise ValueError("Recording parameters are missing from session state")
 
     # Load or create recordings
-    recordings_file = Path(case_dir) / "generated-recordings.yaml"
+    if self._streaming_mode == "sse":
+      recordings_file = Path(case_dir) / "generated-recordings-sse.yaml"
+    elif self._streaming_mode == "none":
+      recordings_file = Path(case_dir) / "generated-recordings.yaml"
+    else:
+      raise ValueError(f"Unsupported streaming mode: {self._streaming_mode}")
 
     if recordings_file.exists():
       try:

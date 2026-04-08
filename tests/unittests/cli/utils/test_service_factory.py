@@ -252,6 +252,15 @@ def test_create_memory_service_defaults_to_in_memory(tmp_path: Path):
   assert isinstance(service, InMemoryMemoryService)
 
 
+def test_create_memory_service_supports_memory_uri(tmp_path: Path):
+  service = service_factory.create_memory_service_from_options(
+      base_dir=tmp_path,
+      memory_service_uri="memory://",
+  )
+
+  assert isinstance(service, InMemoryMemoryService)
+
+
 def test_create_memory_service_raises_on_unknown_scheme(
     tmp_path: Path, monkeypatch
 ):

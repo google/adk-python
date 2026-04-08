@@ -1,0 +1,79 @@
+# Step 6 (v2): Builds and publishes the v2 package to PyPI from a release/v{version} branch.
+# Reads version from .release-please-manifest-v2.json, converts to PEP 440,
+# updates version.py, then builds and publishes.
+# Creates a merge-back PR (step 7) to sync release changes to v2.
+name: "Release v2: Publish to PyPi"
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Validate branch
+        run: |
+          if [[ ! "${GITHUB_REF_NAME}" =~ ^release/v[0-9]+\.[0-9]+\.[0-9]+ ]]; then
+            echo "Error: Must run from a release/v* branch (e.g., release/v2.0.0-alpha.2)"
+            exit 1
+          fi
+
+      - uses: actions/checkout@v6
+
+      - name: Extract version from manifest and convert to PEP 440
+        id: version
+        run: |
+          VERSION=$(jq -r '.["."]' .github/.release-please-manifest-v2.json)
+          echo "semver=$VERSION" >> $GITHUB_OUTPUT
+          echo "Semver version: $VERSION"
+
+          # Convert semver pre-release to PEP 440:
+          #   2.0.0-alpha.1 -> 2.0.0a1
+          #   2.0.0-beta.1  -> 2.0.0b1
+          #   2.0.0-rc.1    -> 2.0.0rc1
+          #   2.0.0         -> 2.0.0 (no change for stable)
+          PEP440=$(echo "$VERSION" | sed -E 's/-alpha\./a/; s/-beta\./b/; s/-rc\./rc/')
+          echo "pep440=$PEP440" >> $GITHUB_OUTPUT
+          echo "PEP 440 version: $PEP440"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+        with:
+          version: "latest"
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Update version.py with PEP 440 version
+        env:
+          PEP440_VERSION: ${{ steps.version.outputs.pep440 }}
+        run: |
+          sed -i "s/^__version__ = .*/__version__ = \"${PEP440_VERSION}\"/" src/google/adk/version.py
+          echo "Updated version.py to ${PEP440_VERSION}"
+          grep __version__ src/google/adk/version.py
+
+      - name: Build package
+        run: uv build
+
+      - name: Publish to PyPI
+        env:
+          UV_PUBLISH_TOKEN: ${{ secrets.PYPI_TOKEN }}
+        run: uv publish
+
+      - name: Create merge-back PR
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_PAT }}
+          SEMVER_VERSION: ${{ steps.version.outputs.semver }}
+          PEP440_VERSION: ${{ steps.version.outputs.pep440 }}
+        run: |
+          gh pr create \
+            --base v2 \
+            --head "${GITHUB_REF_NAME}" \
+            --title "chore: merge release v${PEP440_VERSION} to v2" \
+            --body "Syncs version bump and CHANGELOG from release v${SEMVER_VERSION} to v2."

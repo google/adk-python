@@ -29,6 +29,7 @@ from urllib.parse import unquote
 from urllib.parse import urlparse
 
 from google.adk.artifacts.base_artifact_service import ArtifactVersion
+from google.adk.artifacts.base_artifact_service import ensure_part
 from google.adk.artifacts.file_artifact_service import FileArtifactService
 from google.adk.artifacts.gcs_artifact_service import GcsArtifactService
 from google.adk.artifacts.in_memory_artifact_service import InMemoryArtifactService
@@ -418,9 +419,9 @@ async def test_list_artifact_versions_and_get_artifact_version(
   ]
 
   with patch(
-      "google.adk.artifacts.base_artifact_service.datetime"
-  ) as mock_datetime:
-    mock_datetime.now.return_value = FIXED_DATETIME
+      "google.adk.artifacts.base_artifact_service.platform_time"
+  ) as mock_platform_time:
+    mock_platform_time.get_time.return_value = FIXED_DATETIME.timestamp()
 
     for i in range(4):
       custom_metadata = {"key": "value" + str(i)}
@@ -505,9 +506,9 @@ async def test_list_artifact_versions_with_user_prefix(
   ]
 
   with patch(
-      "google.adk.artifacts.base_artifact_service.datetime"
-  ) as mock_datetime:
-    mock_datetime.now.return_value = FIXED_DATETIME
+      "google.adk.artifacts.base_artifact_service.platform_time"
+  ) as mock_platform_time:
+    mock_platform_time.get_time.return_value = FIXED_DATETIME.timestamp()
 
     for i in range(4):
       custom_metadata = {"key": "value" + str(i)}
@@ -766,3 +767,132 @@ async def test_file_save_artifact_rejects_absolute_path_within_scope(tmp_path):
         filename=str(absolute_in_scope),
         artifact=part,
     )
+
+
+class TestEnsurePart:
+  """Tests for the ensure_part normalization helper."""
+
+  def test_returns_part_unchanged(self):
+    """A types.Part instance passes through without modification."""
+    part = types.Part.from_bytes(data=b"hello", mime_type="text/plain")
+    result = ensure_part(part)
+    assert result is part
+
+  def test_converts_camel_case_dict(self):
+    """A camelCase dict (Agentspace format) is converted to types.Part."""
+    raw = {"inlineData": {"mimeType": "image/png", "data": "dGVzdA=="}}
+    result = ensure_part(raw)
+    assert isinstance(result, types.Part)
+    assert result.inline_data is not None
+    assert result.inline_data.mime_type == "image/png"
+
+  def test_converts_snake_case_dict(self):
+    """A snake_case dict is converted to types.Part."""
+    raw = {"inline_data": {"mime_type": "text/plain", "data": "aGVsbG8="}}
+    result = ensure_part(raw)
+    assert isinstance(result, types.Part)
+    assert result.inline_data is not None
+    assert result.inline_data.mime_type == "text/plain"
+
+  def test_converts_text_dict(self):
+    """A dict with 'text' key is converted to types.Part."""
+    raw = {"text": "hello world"}
+    result = ensure_part(raw)
+    assert isinstance(result, types.Part)
+    assert result.text == "hello world"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "service_type",
+    [
+        ArtifactServiceType.IN_MEMORY,
+        ArtifactServiceType.GCS,
+        ArtifactServiceType.FILE,
+    ],
+)
+async def test_save_artifact_with_camel_case_dict(
+    service_type, artifact_service_factory
+):
+  """Artifact services accept camelCase dicts (Agentspace format).
+
+  Regression test for https://github.com/google/adk-python/issues/2886
+  """
+  artifact_service = artifact_service_factory(service_type)
+  app_name = "app0"
+  user_id = "user0"
+  session_id = "sess0"
+  filename = "uploaded.png"
+
+  # Simulate what Agentspace sends: a plain dict with camelCase keys.
+  raw_artifact = {
+      "inlineData": {
+          "mimeType": "image/png",
+          "data": "dGVzdF9pbWFnZV9kYXRh",
+      }
+  }
+
+  version = await artifact_service.save_artifact(
+      app_name=app_name,
+      user_id=user_id,
+      session_id=session_id,
+      filename=filename,
+      artifact=raw_artifact,
+  )
+  assert version == 0
+
+  loaded = await artifact_service.load_artifact(
+      app_name=app_name,
+      user_id=user_id,
+      session_id=session_id,
+      filename=filename,
+  )
+  assert loaded is not None
+  assert loaded.inline_data is not None
+  assert loaded.inline_data.mime_type == "image/png"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "service_type",
+    [
+        ArtifactServiceType.IN_MEMORY,
+        ArtifactServiceType.GCS,
+        ArtifactServiceType.FILE,
+    ],
+)
+async def test_save_artifact_with_snake_case_dict(
+    service_type, artifact_service_factory
+):
+  """Artifact services accept snake_case dicts."""
+  artifact_service = artifact_service_factory(service_type)
+  app_name = "app0"
+  user_id = "user0"
+  session_id = "sess0"
+  filename = "uploaded.txt"
+
+  raw_artifact = {
+      "inline_data": {
+          "mime_type": "text/plain",
+          "data": "aGVsbG8=",
+      }
+  }
+
+  version = await artifact_service.save_artifact(
+      app_name=app_name,
+      user_id=user_id,
+      session_id=session_id,
+      filename=filename,
+      artifact=raw_artifact,
+  )
+  assert version == 0
+
+  loaded = await artifact_service.load_artifact(
+      app_name=app_name,
+      user_id=user_id,
+      session_id=session_id,
+      filename=filename,
+  )
+  assert loaded is not None
+  assert loaded.inline_data is not None
+  assert loaded.inline_data.mime_type == "text/plain"
