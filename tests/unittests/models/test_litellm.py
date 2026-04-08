@@ -4894,3 +4894,56 @@ async def test_content_to_message_param_anthropic_no_signature_falls_back():
   # Falls back to reasoning_content when no signatures present
   assert result.get("reasoning_content") == "thinking without sig"
   assert "thinking_blocks" not in result
+
+
+@pytest.mark.asyncio
+async def test_content_to_message_param_file_uri_mime_fallback_logs_warning(
+    caplog,
+):
+  """Test that falling back to application/octet-stream logs a warning."""
+  file_part = types.Part(
+      file_data=types.FileData(
+          file_uri="gs://bucket/artifact/0"
+      )
+  )
+  content = types.Content(
+      role="user",
+      parts=[file_part],
+  )
+
+  with caplog.at_level(logging.WARNING, logger="google.adk.models.lite_llm"):
+    await _content_to_message_param(content)
+
+  assert any(
+      "Could not determine MIME type" in record.message
+      for record in caplog.records
+  ), "Expected a warning about MIME type fallback"
+
+
+@pytest.mark.asyncio
+async def test_content_to_message_param_function_response_with_extra_parts_propagates_model():
+  """Test that model parameter is propagated in recursive calls for mixed parts."""
+  tool_part = types.Part.from_function_response(
+      name="load_image",
+      response={"status": "success"},
+  )
+  tool_part.function_response.id = "tool_call_1"
+
+  text_part = types.Part.from_text(text="Here is the result")
+
+  content = types.Content(
+      role="user",
+      parts=[tool_part, text_part],
+  )
+
+  # Call with model parameter — should not raise and should produce valid output
+  messages = await _content_to_message_param(
+      content, provider="anthropic", model="anthropic/claude-4-sonnet"
+  )
+  assert isinstance(messages, list)
+  assert len(messages) == 2
+  # First message is tool response
+  assert messages[0]["role"] == "tool"
+  assert messages[0]["tool_call_id"] == "tool_call_1"
+  # Second message is the text follow-up
+  assert messages[1]["role"] == "user"

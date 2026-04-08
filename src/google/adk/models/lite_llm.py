@@ -811,6 +811,7 @@ async def _content_to_message_param(
     follow_up = await _content_to_message_param(
         types.Content(role=content.role, parts=non_tool_parts),
         provider=provider,
+        model=model,
     )
     follow_up_messages = (
         follow_up if isinstance(follow_up, list) else [follow_up]
@@ -1091,7 +1092,7 @@ async def _get_content(
       if not mime_type:
         # LiteLLM's Vertex AI backend requires format for GCS URIs.
         mime_type = _DEFAULT_MIME_TYPE
-        logger.debug(
+        logger.warning(
             "Could not determine MIME type for file_uri %s, using default: %s",
             part.file_data.file_uri,
             mime_type,
