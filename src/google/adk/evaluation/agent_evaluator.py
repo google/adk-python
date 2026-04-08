@@ -90,7 +90,7 @@ class _EvalMetricResultWithInvocation(BaseModel):
   """
 
   actual_invocation: Invocation
-  expected_invocation: Invocation
+  expected_invocation: Optional[Invocation] = None
   eval_metric_result: EvalMetricResult
 
 
@@ -438,15 +438,21 @@ class AgentEvaluator:
           "threshold": threshold,
           "prompt": AgentEvaluator._convert_content_to_text(
               per_invocation_result.expected_invocation.user_content
+              if per_invocation_result.expected_invocation
+              else per_invocation_result.actual_invocation.user_content
           ),
           "expected_response": AgentEvaluator._convert_content_to_text(
               per_invocation_result.expected_invocation.final_response
+              if per_invocation_result.expected_invocation
+              else None
           ),
           "actual_response": AgentEvaluator._convert_content_to_text(
               per_invocation_result.actual_invocation.final_response
           ),
           "expected_tool_calls": AgentEvaluator._convert_tool_calls_to_text(
               per_invocation_result.expected_invocation.intermediate_data
+              if per_invocation_result.expected_invocation
+              else None
           ),
           "actual_tool_calls": AgentEvaluator._convert_tool_calls_to_text(
               per_invocation_result.actual_invocation.intermediate_data
