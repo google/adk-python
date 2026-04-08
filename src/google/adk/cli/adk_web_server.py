@@ -92,6 +92,7 @@ from ..plugins.base_plugin import BasePlugin
 from ..runners import Runner
 from ..sessions.base_session_service import BaseSessionService
 from ..sessions.session import Session
+from ..sessions.state import State
 from ..utils.agent_info import AgentInfo
 from ..utils.agent_info import get_agents_dict
 from ..utils.context_utils import Aclosing
@@ -1915,6 +1916,21 @@ class AdkWebServer:
                 events_to_stream = [content_event, artifact_event]
 
               for event_to_stream in events_to_stream:
+                # Filter temp-scoped state keys before SSE serialization.
+                # Temp state (prefix "temp:") can contain non-serializable
+                # objects such as FunctionTool instances stored by
+                # _call_llm_node.  _trim_temp_delta_state() handles this
+                # for persistence in append_event(), but SSE events are
+                # serialized before reaching that path.
+                if (
+                    event_to_stream.actions
+                    and event_to_stream.actions.state_delta
+                ):
+                  event_to_stream.actions.state_delta = {
+                      k: v
+                      for k, v in event_to_stream.actions.state_delta.items()
+                      if not k.startswith(State.TEMP_PREFIX)
+                  }
                 sse_event = event_to_stream.model_dump_json(
                     exclude_none=True,
                     by_alias=True,

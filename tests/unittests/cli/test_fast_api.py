@@ -1391,6 +1391,85 @@ def test_agent_run_sse_yields_error_object_on_exception(
   assert sse_events == [{"error": "boom"}]
 
 
+def test_agent_run_sse_filters_temp_state_keys(
+    test_app, create_test_session, monkeypatch
+):
+  """Test /run_sse strips temp-scoped state keys before serialization.
+
+  Temp state (e.g. ``temp:tools_dict``) can hold non-serializable objects
+  such as ``FunctionTool`` instances.  ``_trim_temp_delta_state`` filters
+  these for persistence, but SSE events are serialized earlier.  This test
+  verifies that the SSE generator applies the same filtering so that
+  ``model_dump_json`` does not crash.
+
+  Regression test for https://github.com/google/adk-python/issues/5051
+  """
+  info = create_test_session
+
+  # An object that is intentionally not JSON-serializable, mimicking
+  # the FunctionTool instances that _call_llm_node stores in temp state.
+  class _NotSerializable:
+    pass
+
+  async def run_async_with_temp_state(
+      self,
+      *,
+      user_id: str,
+      session_id: str,
+      invocation_id: Optional[str] = None,
+      new_message: Optional[types.Content] = None,
+      state_delta: Optional[dict[str, Any]] = None,
+      run_config: Optional[RunConfig] = None,
+  ):
+    del user_id, session_id, invocation_id, new_message, state_delta, run_config
+    yield Event(
+        author="dummy agent",
+        invocation_id="invocation_id",
+        content=types.Content(
+            role="model", parts=[types.Part(text="hello")]
+        ),
+        actions=EventActions(
+            state_delta={
+                "user_request": "hi",
+                "temp:tools_dict": {"greet": _NotSerializable()},
+                "temp:other": _NotSerializable(),
+            }
+        ),
+    )
+
+  monkeypatch.setattr(Runner, "run_async", run_async_with_temp_state)
+
+  payload = {
+      "app_name": info["app_name"],
+      "user_id": info["user_id"],
+      "session_id": info["session_id"],
+      "new_message": {"role": "user", "parts": [{"text": "Hello agent"}]},
+      "streaming": True,
+  }
+
+  response = test_app.post("/run_sse", json=payload)
+  assert response.status_code == 200
+
+  sse_events = [
+      json.loads(line.removeprefix("data: "))
+      for line in response.text.splitlines()
+      if line.startswith("data: ")
+  ]
+
+  assert len(sse_events) == 1
+  event_data = sse_events[0]
+
+  # Content should be intact.
+  assert event_data["content"]["parts"][0]["text"] == "hello"
+
+  # Non-temp state key should survive.
+  assert event_data["actions"]["stateDelta"]["user_request"] == "hi"
+
+  # Temp-scoped keys must be stripped.
+  assert "temp:tools_dict" not in event_data["actions"]["stateDelta"]
+  assert "temp:other" not in event_data["actions"]["stateDelta"]
+
+
 def test_list_artifact_names(test_app, create_test_session):
   """Test listing artifact names for a session."""
   info = create_test_session
