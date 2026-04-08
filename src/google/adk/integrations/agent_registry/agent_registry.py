@@ -16,6 +16,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Generator
 from enum import Enum
 import logging
 import os
@@ -54,6 +55,12 @@ from typing_extensions import override
 logger = logging.getLogger("google_adk." + __name__)
 
 AGENT_REGISTRY_BASE_URL = "https://agentregistry.googleapis.com/v1alpha"
+
+_TRANSPORT_MAPPING = {
+    "HTTP_JSON": A2ATransport.http_json,
+    "JSONRPC": A2ATransport.jsonrpc,
+    "GRPC": A2ATransport.grpc,
+}
 
 
 # An MCPToolset for a single registered MCP server. Adds the special
@@ -232,13 +239,15 @@ class AgentRegistry:
     for p in protocols:
       if protocol_type and p.get("type") != protocol_type:
         continue
+      protocol_version = p.get("protocolVersion")
       for i in p.get("interfaces", []):
-        if protocol_binding and i.get("protocolBinding") != protocol_binding:
+        mapped_binding = _TRANSPORT_MAPPING.get(i.get("protocolBinding"))
+        if protocol_binding and mapped_binding != protocol_binding:
           continue
         if url := i.get("url"):
-          return url
+          return url, protocol_version, mapped_binding
 
-    return None
+    return None, None, None
 
   def _clean_name(self, name: str) -> str:
     """Cleans a string to be a valid Python identifier for agent names."""
@@ -284,11 +293,13 @@ class AgentRegistry:
     if not isinstance(mcp_server_id, str):
       mcp_server_id = None
 
-    endpoint_uri = self._get_connection_uri(
+    endpoint_uri, _, _ = self._get_connection_uri(
         server_details, protocol_binding=A2ATransport.jsonrpc
-    ) or self._get_connection_uri(
-        server_details, protocol_binding=A2ATransport.http_json
     )
+    if not endpoint_uri:
+      endpoint_uri, _, _ = self._get_connection_uri(
+          server_details, protocol_binding=A2ATransport.http_json
+      )
     if not endpoint_uri:
       raise ValueError(
           f"MCP Server endpoint URI not found for: {mcp_server_name}"
@@ -339,7 +350,7 @@ class AgentRegistry:
       projects/.../locations/.../publishers/google/models/...).
     """
     endpoint_details = self.get_endpoint(endpoint_name)
-    uri = self._get_connection_uri(endpoint_details)
+    uri, _, _ = self._get_connection_uri(endpoint_details)
     if not uri:
       raise ValueError(
           f"Connection URI not found for endpoint: {endpoint_name}"
@@ -378,7 +389,12 @@ class AgentRegistry:
     """Retrieves detailed metadata of a specific A2A Agent."""
     return self._make_request(name)
 
-  def get_remote_a2a_agent(self, agent_name: str) -> RemoteA2aAgent:
+  def get_remote_a2a_agent(
+      self,
+      agent_name: str,
+      *,
+      httpx_client: httpx.AsyncClient | None = None,
+  ) -> RemoteA2aAgent:
     """Creates a RemoteA2aAgent instance for a registered A2A Agent."""
     agent_info = self.get_agent_info(agent_name)
 
@@ -389,17 +405,19 @@ class AgentRegistry:
       agent_card = AgentCard(**card_content)
       # Clean the name to be a valid identifier
       name = self._clean_name(agent_card.name)
+
       return RemoteA2aAgent(
           name=name,
           agent_card=agent_card,
           description=agent_card.description,
+          httpx_client=httpx_client,
       )
 
     name = self._clean_name(agent_info.get("displayName", agent_name))
     description = agent_info.get("description", "")
     version = agent_info.get("version", "")
 
-    url = self._get_connection_uri(
+    url, protocol_version, protocol_binding = self._get_connection_uri(
         agent_info, protocol_type=_ProtocolType.A2A_AGENT
     )
     if not url:
@@ -421,6 +439,8 @@ class AgentRegistry:
         name=name,
         description=description,
         version=version,
+        preferredTransport=protocol_binding or A2ATransport.http_json,
+        protocolVersion=protocol_version or "0.3.0",
         url=url,
         skills=skills,
         capabilities=AgentCapabilities(streaming=False, polling=False),
@@ -432,4 +452,5 @@ class AgentRegistry:
         name=name,
         agent_card=agent_card,
         description=description,
+        httpx_client=httpx_client,
     )

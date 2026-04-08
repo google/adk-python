@@ -98,6 +98,8 @@ class TestValidateCommand:
     assert bash_tool._validate_command("rm -rf /", policy) is None
     assert bash_tool._validate_command("cat /etc/passwd", policy) is None
     assert bash_tool._validate_command("sudo curl", policy) is None
+    assert bash_tool._validate_command("echo hello | grep h", policy) is None
+    assert bash_tool._validate_command("ls ; rm -rf /", policy) is None
 
   def test_restricted_policy_allows_prefixes(self):
     policy = bash_tool.BashToolPolicy(allowed_command_prefixes=("ls", "cat"))
@@ -110,6 +112,20 @@ class TestValidateCommand:
     assert bash_tool._validate_command("tree", policy) is not None
     assert "Permitted prefixes are: ls, cat" in bash_tool._validate_command(
         "tree", policy
+    )
+
+  def test_blocked_operators_validation(self):
+    policy = bash_tool.BashToolPolicy(
+        allowed_command_prefixes=("*",),
+        blocked_operators=("|", ";", "$(", "`", "&&", "||"),
+    )
+    assert (
+        bash_tool._validate_command("echo hello | grep h", policy)
+        == "Command contains blocked operator: |"
+    )
+    assert (
+        bash_tool._validate_command("ls ; rm -rf /", policy)
+        == "Command contains blocked operator: ;"
     )
 
 
@@ -252,6 +268,7 @@ class TestExecuteBashTool:
     )
     tool = bash_tool.ExecuteBashTool(workspace=workspace, policy=policy)
     mock_process = mock.AsyncMock()
+    mock_process.pid = None  # Ensure finally block doesn't try to kill it
     mock_process.communicate.return_value = (b"", b"")
     mock_exec = mock.AsyncMock(return_value=mock_process)
 

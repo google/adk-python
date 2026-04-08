@@ -64,8 +64,9 @@ https://google.github.io/adk-docs/agents/models
 
 _EXPRESS_TOS_MSG = """
 Google Cloud Express Mode Terms of Service: https://cloud.google.com/terms/google-cloud-express
-By continuing, you agree to the Terms of Service for Vertex AI Express Mode.
-Would you like to proceed? (yes/no)
+By using this application, you agree to the Google Cloud Express Mode terms of service and any
+applicable services and APIs: https://console.cloud.google.com/terms. You also agree to only use
+this application for your trade, business, craft, or profession.
 """
 
 _NOT_ELIGIBLE_MSG = """

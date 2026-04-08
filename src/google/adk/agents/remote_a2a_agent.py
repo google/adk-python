@@ -233,7 +233,7 @@ class RemoteA2aAgent(BaseAgent):
           httpx_client=self._httpx_client,
           streaming=False,
           polling=False,
-          supported_transports=[A2ATransport.jsonrpc],
+          supported_transports=[A2ATransport.jsonrpc, A2ATransport.http_json],
       )
       self._a2a_client_factory = A2AClientFactory(config=client_config)
     return self._httpx_client
