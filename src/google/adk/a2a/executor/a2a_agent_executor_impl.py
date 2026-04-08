@@ -38,6 +38,7 @@ from a2a.types import TextPart
 from typing_extensions import override
 
 from ...runners import Runner
+from ...sessions import base_session_service
 from ...utils.context_utils import Aclosing
 from ..agent.interceptors.new_integration_extension import _NEW_A2A_ADK_INTEGRATION_EXTENSION
 from ..converters.from_adk_event import create_error_status_event
@@ -287,6 +288,8 @@ class _A2aAgentExecutor(AgentExecutor):
         app_name=runner.app_name,
         user_id=user_id,
         session_id=session_id,
+        # Checking existence doesn't require event history.
+        config=base_session_service.GetSessionConfig(num_recent_events=0),
     )
     if session is None:
       session = await runner.session_service.create_session(

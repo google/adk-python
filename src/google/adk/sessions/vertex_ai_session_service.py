@@ -14,6 +14,7 @@
 from __future__ import annotations
 
 import asyncio
+import copy
 import datetime
 import json
 import logging
@@ -25,6 +26,7 @@ from typing import Union
 
 from google.genai import types
 from google.genai.errors import ClientError
+import pydantic
 from typing_extensions import override
 
 if TYPE_CHECKING:
@@ -115,16 +117,11 @@ class VertexAiSessionService(BaseSessionService):
     Returns:
       The created session.
     """
-
-    if session_id:
-      raise ValueError(
-          'User-provided Session id is not supported for'
-          ' VertexAISessionService.'
-      )
-
     reasoning_engine_id = self._get_reasoning_engine_id(app_name)
 
     config = {'session_state': state} if state else {}
+    if session_id:
+      config['session_id'] = session_id
     config.update(kwargs)
     async with self._get_api_client() as api_client:
       api_response = await api_client.agent_engines.sessions.create(
@@ -172,13 +169,19 @@ class VertexAiSessionService(BaseSessionService):
         }
 
       try:
-        get_session_response, events_iterator = await asyncio.gather(
-            api_client.agent_engines.sessions.get(name=session_resource_name),
-            api_client.agent_engines.sessions.events.list(
-                name=session_resource_name,
-                **list_events_kwargs,
-            ),
-        )
+        if config and config.num_recent_events == 0:
+          get_session_response = await api_client.agent_engines.sessions.get(
+              name=session_resource_name
+          )
+          events_iterator = None
+        else:
+          get_session_response, events_iterator = await asyncio.gather(
+              api_client.agent_engines.sessions.get(name=session_resource_name),
+              api_client.agent_engines.sessions.events.list(
+                  name=session_resource_name,
+                  **list_events_kwargs,
+              ),
+          )
       except ClientError as e:
         if e.code == 404:
           logger.debug(
@@ -204,8 +207,9 @@ class VertexAiSessionService(BaseSessionService):
       # to discard events written milliseconds after the session resource was
       # updated. Clock skew between those writes can otherwise drop tool_result
       # events and permanently break the replayed conversation.
-      async for event in events_iterator:
-        session.events.append(_from_api_event(event))
+      if events_iterator is not None:
+        async for event in events_iterator:
+          session.events.append(_from_api_event(event))
 
     if config:
       # Filter events based on num_recent_events.
@@ -332,17 +336,41 @@ class VertexAiSessionService(BaseSessionService):
           value=usage_dict,
       )
     config['event_metadata'] = metadata_dict
+    config['raw_event'] = event.model_dump(
+        exclude_none=True,
+        mode='json',
+        by_alias=True,
+    )
 
+    # Retry without raw_event if client side validation fails for older SDK
+    # versions.
     async with self._get_api_client() as api_client:
-      await api_client.agent_engines.sessions.events.append(
-          name=f'reasoningEngines/{reasoning_engine_id}/sessions/{session.id}',
-          author=event.author,
-          invocation_id=event.invocation_id,
-          timestamp=datetime.datetime.fromtimestamp(
-              event.timestamp, tz=datetime.timezone.utc
-          ),
-          config=config,
-      )
+      try:
+        await api_client.agent_engines.sessions.events.append(
+            name=(
+                f'reasoningEngines/{reasoning_engine_id}/sessions/{session.id}'
+            ),
+            author=event.author,
+            invocation_id=event.invocation_id,
+            timestamp=datetime.datetime.fromtimestamp(
+                event.timestamp, tz=datetime.timezone.utc
+            ),
+            config=config,
+        )
+      except pydantic.ValidationError:
+        if 'raw_event' in config:
+          del config['raw_event']
+        await api_client.agent_engines.sessions.events.append(
+            name=(
+                f'reasoningEngines/{reasoning_engine_id}/sessions/{session.id}'
+            ),
+            author=event.author,
+            invocation_id=event.invocation_id,
+            timestamp=datetime.datetime.fromtimestamp(
+                event.timestamp, tz=datetime.timezone.utc
+            ),
+            config=config,
+        )
     return event
 
   def _get_reasoning_engine_id(self, app_name: str):
@@ -376,16 +404,45 @@ class VertexAiSessionService(BaseSessionService):
     """
     import vertexai
 
+    if self._express_mode_api_key:
+      return vertexai.Client(
+          http_options=self._api_client_http_options_override(),
+          api_key=self._express_mode_api_key,
+      ).aio
     return vertexai.Client(
         project=self._project,
         location=self._location,
         http_options=self._api_client_http_options_override(),
-        api_key=self._express_mode_api_key,
     ).aio
+
+
+def _get_raw_event(api_event_obj: Any) -> dict[str, Any] | None:
+  """Extracts raw_event dict from SessionEvent object safely."""
+  try:
+    return api_event_obj.raw_event
+  except AttributeError:
+    try:
+      return api_event_obj.rawEvent
+    except AttributeError:
+      return None
 
 
 def _from_api_event(api_event_obj: vertexai.types.SessionEvent) -> Event:
   """Converts an API event object to an Event object."""
+  # Read event data from raw_event first before falling back to top level
+  # fields.
+  raw_event_dict = _get_raw_event(api_event_obj)
+  if raw_event_dict:
+    event_dict = copy.deepcopy(raw_event_dict)
+    timestamp_obj = getattr(api_event_obj, 'timestamp', None)
+    event_dict.update({
+        'id': api_event_obj.name.split('/')[-1],
+        'invocation_id': getattr(api_event_obj, 'invocation_id', None),
+        'author': getattr(api_event_obj, 'author', None),
+        'timestamp': timestamp_obj.timestamp() if timestamp_obj else None,
+    })
+    return Event.model_validate(event_dict)
+
   actions = getattr(api_event_obj, 'actions', None)
   event_metadata = getattr(api_event_obj, 'event_metadata', None)
   if event_metadata:

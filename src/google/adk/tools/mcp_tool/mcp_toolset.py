@@ -240,6 +240,10 @@ class McpToolset(BaseToolset):
                 f"{credential.http.scheme} {credential.http.credentials.token}"
             )
         }
+
+      if credential.http.additional_headers:
+        headers = headers or {}
+        headers.update(credential.http.additional_headers)
     elif credential.api_key:
       # For API key, use the auth scheme to determine header name
       if self._auth_config.auth_scheme:
