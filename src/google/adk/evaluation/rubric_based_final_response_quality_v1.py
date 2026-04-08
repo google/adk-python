@@ -280,10 +280,7 @@ class RubricBasedFinalResponseQualityV1Evaluator(RubricBasedEvaluator):
     # the final response. This is useful for agents that stream text, call
     # tools, then stream more text within a single invocation.
     criterion = self._eval_metric.criterion
-    evaluate_full = (
-        isinstance(criterion, RubricsBasedCriterion)
-        and criterion.evaluate_full_response
-    )
+    evaluate_full = getattr(criterion, "evaluate_full_response", False)
 
     if evaluate_full:
       final_response = self._get_full_response_text(actual_invocation)
