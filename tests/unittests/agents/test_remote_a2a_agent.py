@@ -18,6 +18,7 @@ from pathlib import Path
 import tempfile
 from unittest.mock import AsyncMock
 from unittest.mock import create_autospec
+from unittest.mock import MagicMock
 from unittest.mock import Mock
 from unittest.mock import patch
 
@@ -1011,7 +1012,7 @@ class TestRemoteA2aAgentMessageHandling:
           mock_a2a_task,
           self.agent.name,
           self.mock_context,
-          self.mock_a2a_part_converter,
+          self.agent._a2a_part_converter,
       )
       # Check the parts are updated as Thought
       assert result.content.parts[0].thought is True
