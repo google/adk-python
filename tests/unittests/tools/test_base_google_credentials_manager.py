@@ -105,15 +105,16 @@ class TestGoogleCredentialsManager:
       ],
   )
   @pytest.mark.asyncio
+  @patch.object(_google_credentials, "Request", autospec=True)
   async def test_get_valid_credentials_with_existing_non_oauth_creds(
-      self, manager, mock_tool_context, valid
+      self, mock_request_class, manager, mock_tool_context, valid
   ):
-    """Test that existing non-oauth credentials are returned immediately.
+    """Test that existing non-oauth credentials handle refresh logic correctly.
 
-    When credentials are of non-oauth type, no refresh or OAuth flow
-    is triggered irrespective of whether or not it is valid.
+    When credentials are of non-oauth type, a refresh is triggered if they
+    are invalid. No OAuth flow is ever triggered.
     """
-    # Create mock credentials that are already valid
+    # Create mock credentials with the specified validity
     mock_creds = create_autospec(AuthCredentials, instance=True)
     mock_creds.valid = valid
     manager.credentials_config.credentials = mock_creds
@@ -121,9 +122,38 @@ class TestGoogleCredentialsManager:
     result = await manager.get_valid_credentials(mock_tool_context)
 
     assert result == mock_creds
+    # Verify refresh behavior
+    if valid:
+      mock_creds.refresh.assert_not_called()
+    else:
+      mock_creds.refresh.assert_called_once_with(
+          mock_request_class.return_value
+      )
+
     # Verify no OAuth flow was triggered
     mock_tool_context.get_auth_response.assert_not_called()
     mock_tool_context.request_credential.assert_not_called()
+
+  @pytest.mark.asyncio
+  @patch.object(_google_credentials, "Request", autospec=True)
+  async def test_get_valid_credentials_with_non_oauth_refresh_failure(
+      self, mock_request_class, manager, mock_tool_context
+  ):
+    """Test that non-oauth refresh failures are caught gracefully.
+
+    Even if refresh fails, we should still return the credentials as they
+    might work for some downstream libraries.
+    """
+    mock_creds = create_autospec(AuthCredentials, instance=True)
+    mock_creds.valid = False
+    mock_creds.refresh.side_effect = Exception("Refresh failed")
+    manager.credentials_config.credentials = mock_creds
+
+    result = await manager.get_valid_credentials(mock_tool_context)
+
+    # Credentials should still be returned
+    assert result == mock_creds
+    mock_creds.refresh.assert_called_once_with(mock_request_class.return_value)
 
   @pytest.mark.asyncio
   async def test_get_credentials_from_cache_when_none_in_manager(
