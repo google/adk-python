@@ -274,7 +274,21 @@ class RubricBasedFinalResponseQualityV1Evaluator(RubricBasedEvaluator):
     """Returns the autorater prompt."""
     self.create_effective_rubrics_list(actual_invocation.rubrics)
     user_input = get_text_from_content(actual_invocation.user_content)
-    final_response = get_text_from_content(actual_invocation.final_response)
+
+    # When evaluate_full_response is enabled, include text from intermediate
+    # invocation events (e.g. text emitted before tool calls) in addition to
+    # the final response. This is useful for agents that stream text, call
+    # tools, then stream more text within a single invocation.
+    criterion = self._eval_metric.criterion
+    evaluate_full = (
+        isinstance(criterion, RubricsBasedCriterion)
+        and criterion.evaluate_full_response
+    )
+
+    if evaluate_full:
+      final_response = self._get_full_response_text(actual_invocation)
+    else:
+      final_response = get_text_from_content(actual_invocation.final_response)
 
     rubrics_text = "\n".join([
         f"*  {r.rubric_content.text_property}"
@@ -310,3 +324,25 @@ class RubricBasedFinalResponseQualityV1Evaluator(RubricBasedEvaluator):
     )
 
     return auto_rater_prompt
+
+  @staticmethod
+  def _get_full_response_text(invocation: Invocation) -> str:
+    """Concatenates all NL text from invocation events and the final response.
+
+    When an agent emits text before a tool call (e.g. presenting a plan),
+    that text is stored in intermediate_data.invocation_events but not in
+    final_response. This method collects text from both sources to give the
+    judge a complete picture of the agent's output.
+    """
+    parts = []
+    if invocation.intermediate_data and isinstance(
+        invocation.intermediate_data, InvocationEvents
+    ):
+      for evt in invocation.intermediate_data.invocation_events:
+        text = get_text_from_content(evt.content)
+        if text:
+          parts.append(text)
+    final_text = get_text_from_content(invocation.final_response)
+    if final_text:
+      parts.append(final_text)
+    return "\n\n".join(parts)
