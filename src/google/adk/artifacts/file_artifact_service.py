@@ -62,6 +62,25 @@ def _file_uri_to_path(uri: str) -> Optional[Path]:
   return Path(unquote(parsed.path))
 
 
+def _validate_path_segment(value: str, name: str) -> None:
+  """Validates that a value is safe for use as a single path segment.
+
+  Args:
+    value: The string to validate (e.g. a user_id or session_id).
+    name: A human-readable label used in error messages.
+
+  Raises:
+    InputValidationError: If the value contains path separators or traversal
+      sequences.
+  """
+  if not value:
+    raise InputValidationError(f"{name} must not be empty.")
+  if any(sep in value for sep in ("/", "\\", "..")):
+    raise InputValidationError(
+        f"{name} contains invalid characters: {value!r}"
+    )
+
+
 _USER_NAMESPACE_PREFIX = "user:"
 
 
@@ -145,6 +164,7 @@ def _user_artifacts_dir(base_root: Path) -> Path:
 
 def _session_artifacts_dir(base_root: Path, session_id: str) -> Path:
   """Returns the path that stores session-scoped artifacts."""
+  _validate_path_segment(session_id, "session_id")
   return base_root / "sessions" / session_id / "artifacts"
 
 
@@ -220,6 +240,7 @@ class FileArtifactService(BaseArtifactService):
 
   def _base_root(self, user_id: str, /) -> Path:
     """Returns the artifacts root directory for a user."""
+    _validate_path_segment(user_id, "user_id")
     return self.root_dir / "users" / user_id
 
   def _scope_root(

@@ -769,6 +769,34 @@ async def test_file_save_artifact_rejects_absolute_path_within_scope(tmp_path):
     )
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("user_id", "session_id"),
+    [
+        ("../escape", "sess123"),
+        ("user/../../etc", "sess123"),
+        ("user\\\\..\\\\secret", "sess123"),
+        ("valid_user", "../escape"),
+        ("valid_user", "sess/../../etc"),
+        ("valid_user", "sess\\\\..\\\\secret"),
+    ],
+)
+async def test_file_save_artifact_rejects_path_traversal_in_ids(
+    tmp_path, user_id, session_id
+):
+  """FileArtifactService rejects user_id/session_id with path traversal."""
+  artifact_service = FileArtifactService(root_dir=tmp_path / "artifacts")
+  part = types.Part(text="content")
+  with pytest.raises(InputValidationError):
+    await artifact_service.save_artifact(
+        app_name="myapp",
+        user_id=user_id,
+        session_id=session_id,
+        filename="safe.txt",
+        artifact=part,
+    )
+
+
 class TestEnsurePart:
   """Tests for the ensure_part normalization helper."""
 
