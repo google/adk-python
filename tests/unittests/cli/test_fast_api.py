@@ -26,6 +26,7 @@ from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 from google.adk.agents.base_agent import BaseAgent
+from google.adk.agents.llm_agent import LlmAgent
 from google.adk.agents.run_config import RunConfig
 from google.adk.apps.app import App
 from google.adk.artifacts.base_artifact_service import ArtifactVersion
@@ -799,6 +800,198 @@ def test_list_apps_detailed(test_app):
     assert not app["isComputerUse"]
 
   logger.info(f"Listed apps: {data}")
+
+
+def test_get_adk_app_info_llm_agent(test_app, mock_agent_loader):
+  """Test retrieving app info when root agent is an LlmAgent."""
+  agent = LlmAgent(
+      name="test_llm_agent", description="test description", model="test_model"
+  )
+  with patch.object(mock_agent_loader, "load_agent", return_value=agent):
+    response = test_app.get("/apps/test_app/app-info")
+    assert response.status_code == 200
+    data = response.json()
+    assert data["name"] == "test_app"
+    assert data["rootAgentName"] == "test_llm_agent"
+    assert data["description"] == "test description"
+    assert data["language"] == "python"
+    assert "agents" in data
+    assert "test_llm_agent" in data["agents"]
+
+
+def test_get_adk_app_info_llm_agent_with_subagents(test_app, mock_agent_loader):
+  """Test retrieving app info when root agent is an LlmAgent with sub_agents and tools."""
+
+  def sub_tool1(a: int) -> str:
+    """Sub tool 1."""
+    return str(a)
+
+  def sub_tool2(b: str) -> str:
+    """Sub tool 2."""
+    return b
+
+  sub_agent1 = LlmAgent(
+      name="sub_agent1",
+      description="sub description 1",
+      model="test_model",
+      tools=[sub_tool1],
+  )
+  sub_agent2 = LlmAgent(
+      name="sub_agent2",
+      description="sub description 2",
+      model="test_model",
+      tools=[sub_tool2],
+  )
+  agent = LlmAgent(
+      name="test_llm_agent",
+      description="test description",
+      model="test_model",
+      sub_agents=[sub_agent1, sub_agent2],
+  )
+  with patch.object(mock_agent_loader, "load_agent", return_value=agent):
+    response = test_app.get("/apps/test_app/app-info")
+    assert response.status_code == 200
+    data = response.json()
+    assert data["rootAgentName"] == "test_llm_agent"
+    assert "test_llm_agent" in data["agents"]
+    assert "sub_agent1" in data["agents"]
+    assert "sub_agent2" in data["agents"]
+
+    # Verify tools for sub_agent1
+    agent1_info = data["agents"]["sub_agent1"]
+    assert "tools" in agent1_info
+    assert len(agent1_info["tools"]) == 1
+    tool1 = agent1_info["tools"][0]
+    field_name1 = (
+        "functionDeclarations"
+        if "functionDeclarations" in tool1
+        else "function_declarations"
+    )
+    assert field_name1 in tool1
+    assert tool1[field_name1][0]["name"] == "sub_tool1"
+
+    # Verify tools for sub_agent2
+    agent2_info = data["agents"]["sub_agent2"]
+    assert "tools" in agent2_info
+    assert len(agent2_info["tools"]) == 1
+    tool2 = agent2_info["tools"][0]
+    field_name2 = (
+        "functionDeclarations"
+        if "functionDeclarations" in tool2
+        else "function_declarations"
+    )
+    assert field_name2 in tool2
+    assert tool2[field_name2][0]["name"] == "sub_tool2"
+
+
+def test_get_adk_app_info_triple_nested_agents_with_tools(
+    test_app, mock_agent_loader
+):
+  """Test retrieving app info when there are triple nested agents with tools."""
+
+  def tool1(a: int) -> str:
+    """Tool 1."""
+    return str(a)
+
+  def tool2(b: str) -> str:
+    """Tool 2."""
+    return b
+
+  def tool3(c: float) -> str:
+    """Tool 3."""
+    return str(c)
+
+  # Level 3 (deepest)
+  agent3 = LlmAgent(
+      name="agent3",
+      description="Level 3 agent",
+      model="test_model",
+      tools=[tool3],
+  )
+
+  # Level 2
+  agent2 = LlmAgent(
+      name="agent2",
+      description="Level 2 agent",
+      model="test_model",
+      tools=[tool2],
+      sub_agents=[agent3],
+  )
+
+  # Level 1 (root)
+  root_agent = LlmAgent(
+      name="root_agent",
+      description="Level 1 agent",
+      model="test_model",
+      tools=[tool1],
+      sub_agents=[agent2],
+  )
+
+  with patch.object(mock_agent_loader, "load_agent", return_value=root_agent):
+    response = test_app.get("/apps/test_app/app-info")
+    assert response.status_code == 200
+    data = response.json()
+    assert data["rootAgentName"] == "root_agent"
+    assert "root_agent" in data["agents"]
+    assert "agent2" in data["agents"]
+    assert "agent3" in data["agents"]
+
+    # Verify each has its tools
+    for agent_name, exp_tool_name in [
+        ("root_agent", "tool1"),
+        ("agent2", "tool2"),
+        ("agent3", "tool3"),
+    ]:
+      ai = data["agents"][agent_name]
+      assert len(ai["tools"]) == 1
+      tool = ai["tools"][0]
+      field_name = (
+          "functionDeclarations"
+          if "functionDeclarations" in tool
+          else "function_declarations"
+      )
+      assert tool[field_name][0]["name"] == exp_tool_name
+
+
+def test_get_adk_app_info_llm_agent_with_function_tool(
+    test_app, mock_agent_loader
+):
+  """Test retrieving app info when root agent has tools."""
+
+  def my_tool(a: int, b: str) -> str:
+    """A dummy tool function."""
+    return f"{a} {b}"
+
+  agent = LlmAgent(
+      name="test_llm_agent",
+      description="test description",
+      model="test_model",
+      tools=[my_tool],
+  )
+  with patch.object(mock_agent_loader, "load_agent", return_value=agent):
+    response = test_app.get("/apps/test_app/app-info")
+    assert response.status_code == 200
+    data = response.json()
+    assert data["rootAgentName"] == "test_llm_agent"
+    assert "test_llm_agent" in data["agents"]
+    agent_info = data["agents"]["test_llm_agent"]
+    assert "tools" in agent_info
+    assert len(agent_info["tools"]) == 1
+
+    # Verify tool serialization
+    tool = agent_info["tools"][0]
+    func_decls = tool["functionDeclarations"]
+    assert len(func_decls) == 1
+    assert func_decls[0]["name"] == "my_tool"
+
+
+def test_get_adk_app_info_non_llm_agent(test_app, mock_agent_loader):
+  """Test retrieving app info when root agent is not an LlmAgent raises 400."""
+  agent = DummyAgent("dummy_agent")
+  with patch.object(mock_agent_loader, "load_agent", return_value=agent):
+    response = test_app.get("/apps/test_app/app-info")
+    assert response.status_code == 400
+    assert "Root agent is not an LlmAgent" in response.json()["detail"]
 
 
 def test_create_session_with_id(test_app, test_session_info):
@@ -1694,8 +1887,7 @@ def test_builder_save_rejects_traversal(builder_test_client, tmp_path):
           ("app/../escape.yaml", b"nope\n", "application/x-yaml"),
       )],
   )
-  assert response.status_code == 200
-  assert response.json() is False
+  assert response.status_code == 400
   assert not (tmp_path / "escape.yaml").exists()
   assert not (tmp_path / "app" / "tmp" / "escape.yaml").exists()
 
@@ -1709,8 +1901,7 @@ def test_builder_save_rejects_py_files(builder_test_client, tmp_path):
           ("app/agent.py", b"import os\nos.system('id')\n", "text/plain"),
       )],
   )
-  assert response.status_code == 200
-  assert response.json() is False
+  assert response.status_code == 400
   assert not (tmp_path / "app" / "tmp" / "app" / "agent.py").exists()
 
 
@@ -1732,8 +1923,7 @@ def test_builder_save_rejects_non_yaml_extensions(
             (f"app/file{ext}", content, "application/octet-stream"),
         )],
     )
-    assert response.status_code == 200, f"Expected 200 for {ext}"
-    assert response.json() is False, f"Expected False for {ext}"
+    assert response.status_code == 400, f"Expected 400 for {ext}"
 
 
 def test_builder_save_allows_yaml_files(builder_test_client, tmp_path):
@@ -1757,6 +1947,44 @@ def test_builder_save_allows_yaml_files(builder_test_client, tmp_path):
   )
   assert response.status_code == 200
   assert response.json() is True
+
+
+def test_builder_save_rejects_args_key(builder_test_client, tmp_path):
+  """Uploading YAML with an `args` key is rejected (RCE prevention)."""
+  yaml_with_args = b"""\
+name: my_tool
+args:
+  key: value
+"""
+  response = builder_test_client.post(
+      "/builder/save?tmp=true",
+      files=[(
+          "files",
+          ("app/root_agent.yaml", yaml_with_args, "application/x-yaml"),
+      )],
+  )
+  assert response.status_code == 400
+  assert "args" in response.json()["detail"]
+  assert not (tmp_path / "app" / "tmp" / "app" / "root_agent.yaml").exists()
+
+
+def test_builder_save_rejects_nested_args_key(builder_test_client, tmp_path):
+  """Uploading YAML with a nested `args` key is rejected."""
+  yaml_with_nested_args = b"""\
+tools:
+  - name: some_tool
+    args:
+      param: value
+"""
+  response = builder_test_client.post(
+      "/builder/save?tmp=true",
+      files=[(
+          "files",
+          ("app/root_agent.yaml", yaml_with_nested_args, "application/x-yaml"),
+      )],
+  )
+  assert response.status_code == 400
+  assert "args" in response.json()["detail"]
 
 
 def test_builder_get_rejects_non_yaml_file_paths(builder_test_client, tmp_path):

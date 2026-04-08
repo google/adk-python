@@ -384,6 +384,39 @@ def test_recursive_smart_truncate_with_dataclasses():
   assert truncated["result"]["kpi_missed"][0]["kpi"] == "latency"
 
 
+def test_recursive_smart_truncate_redaction():
+  """Test that sensitive keys and temp: state keys are redacted."""
+  obj = {
+      "client_secret": "super-secret-123",
+      "access_token": "ya29.blah",
+      "refresh_token": "1//0g",
+      "id_token": "eyJhb",
+      "api_key": "AIza",
+      "password": "my-password",
+      "safe_key": "safe-value",
+      "temp:auth_state": "some-auth-state",
+      "nested": {
+          "CLIENT_SECRET": "nested-secret",
+          "normal": "value",
+      },
+  }
+  max_len = 1000
+  truncated, is_truncated = (
+      bigquery_agent_analytics_plugin._recursive_smart_truncate(obj, max_len)
+  )
+  assert not is_truncated
+  assert truncated["client_secret"] == "[REDACTED]"
+  assert truncated["access_token"] == "[REDACTED]"
+  assert truncated["refresh_token"] == "[REDACTED]"
+  assert truncated["id_token"] == "[REDACTED]"
+  assert truncated["api_key"] == "[REDACTED]"
+  assert truncated["password"] == "[REDACTED]"
+  assert truncated["safe_key"] == "safe-value"
+  assert truncated["temp:auth_state"] == "[REDACTED]"
+  assert truncated["nested"]["CLIENT_SECRET"] == "[REDACTED]"
+  assert truncated["nested"]["normal"] == "value"
+
+
 class TestBigQueryAgentAnalyticsPlugin:
   """Tests for the BigQueryAgentAnalyticsPlugin."""
 
@@ -5054,18 +5087,19 @@ class TestForkGrpcSafety:
 class TestAnalyticsViews:
   """Tests for auto-created per-event-type BigQuery views."""
 
-  def _make_plugin(self, create_views=True):
+  def _make_plugin(self, create_views=True, view_prefix="v", table_id=TABLE_ID):
     config = bigquery_agent_analytics_plugin.BigQueryLoggerConfig(
         create_views=create_views,
+        view_prefix=view_prefix,
     )
     plugin = bigquery_agent_analytics_plugin.BigQueryAgentAnalyticsPlugin(
         project_id=PROJECT_ID,
         dataset_id=DATASET_ID,
-        table_id=TABLE_ID,
+        table_id=table_id,
         config=config,
     )
     plugin.client = mock.MagicMock()
-    plugin.full_table_id = f"{PROJECT_ID}.{DATASET_ID}.{TABLE_ID}"
+    plugin.full_table_id = f"{PROJECT_ID}.{DATASET_ID}.{table_id}"
     plugin._schema = bigquery_agent_analytics_plugin._get_events_schema()
     return plugin
 
@@ -5151,6 +5185,7 @@ class TestAnalyticsViews:
     """Config create_views defaults to True."""
     config = bigquery_agent_analytics_plugin.BigQueryLoggerConfig()
     assert config.create_views is True
+    assert config.view_prefix == "v"
 
   @pytest.mark.asyncio
   async def test_create_analytics_views_ensures_started(
@@ -5208,6 +5243,77 @@ class TestAnalyticsViews:
       # Root cause should be chained for debuggability
       assert exc_info.value.__cause__ is not None
       assert "client boom" in str(exc_info.value.__cause__)
+
+  def test_custom_view_prefix(self):
+    """Custom view_prefix namespaces view names."""
+    plugin = self._make_plugin(view_prefix="v_staging")
+    plugin.client.get_table.side_effect = cloud_exceptions.NotFound("not found")
+    mock_query_job = mock.MagicMock()
+    plugin.client.query.return_value = mock_query_job
+
+    plugin._ensure_schema_exists()
+
+    calls = plugin.client.query.call_args_list
+    all_sql = " ".join(c[0][0] for c in calls)
+    # All views should use the custom prefix
+    for event_type in bigquery_agent_analytics_plugin._EVENT_VIEW_DEFS:
+      expected_name = "v_staging_" + event_type.lower()
+      assert expected_name in all_sql, f"View {expected_name} not found in SQL"
+    # Default prefix should NOT appear
+    assert ".v_llm_request" not in all_sql
+
+  def test_default_view_prefix_preserves_names(self):
+    """Default view_prefix='v' produces the same names as before."""
+    plugin = self._make_plugin()  # default view_prefix="v"
+    plugin.client.get_table.side_effect = cloud_exceptions.NotFound("not found")
+    mock_query_job = mock.MagicMock()
+    plugin.client.query.return_value = mock_query_job
+
+    plugin._ensure_schema_exists()
+
+    calls = plugin.client.query.call_args_list
+    all_sql = " ".join(c[0][0] for c in calls)
+    for event_type in bigquery_agent_analytics_plugin._EVENT_VIEW_DEFS:
+      view_name = "v_" + event_type.lower()
+      assert view_name in all_sql
+
+  def test_distinct_tables_and_prefixes_no_collision(self):
+    """Two plugins targeting different tables produce disjoint views."""
+    plugin_a = self._make_plugin(
+        table_id="agent_events_prod", view_prefix="v_prod"
+    )
+    plugin_b = self._make_plugin(
+        table_id="agent_events_staging", view_prefix="v_staging"
+    )
+
+    for plugin in (plugin_a, plugin_b):
+      plugin.client.get_table.side_effect = cloud_exceptions.NotFound(
+          "not found"
+      )
+      mock_query_job = mock.MagicMock()
+      plugin.client.query.return_value = mock_query_job
+      plugin._ensure_schema_exists()
+
+    sql_a = " ".join(c[0][0] for c in plugin_a.client.query.call_args_list)
+    sql_b = " ".join(c[0][0] for c in plugin_b.client.query.call_args_list)
+
+    # View names use their own prefix
+    assert "v_prod_llm_request" in sql_a
+    assert "v_staging_llm_request" in sql_b
+    # No cross-contamination
+    assert "v_staging_" not in sql_a
+    assert "v_prod_" not in sql_b
+
+    # FROM clauses point at the correct table
+    assert "agent_events_prod" in sql_a
+    assert "agent_events_staging" not in sql_a
+    assert "agent_events_staging" in sql_b
+    assert "agent_events_prod" not in sql_b
+
+  def test_empty_view_prefix_raises(self):
+    """Empty view_prefix is rejected at init."""
+    with pytest.raises(ValueError, match="view_prefix"):
+      self._make_plugin(view_prefix="")
 
 
 # ==============================================================================

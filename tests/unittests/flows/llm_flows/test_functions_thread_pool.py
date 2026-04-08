@@ -15,6 +15,7 @@
 """Tests for thread pool execution of tools in Live API mode."""
 
 import asyncio
+import contextvars
 import threading
 import time
 
@@ -348,6 +349,54 @@ class TestCallToolInThreadPool:
     # Verify the pool was created with custom max_workers
     pool = _get_tool_thread_pool(max_workers=12)
     assert pool is not None
+
+  @pytest.mark.asyncio
+  async def test_contextvars_propagation_sync_tool(self):
+    """Test that contextvars propagate to sync tools in thread pool."""
+    test_var = contextvars.ContextVar('test_var', default='default')
+    test_var.set('main_thread_value')
+
+    def sync_func() -> dict[str, str]:
+      return {'value': test_var.get()}
+
+    tool = FunctionTool(sync_func)
+    model = testing_utils.MockModel.create(responses=[])
+    agent = Agent(name='test_agent', model=model, tools=[tool])
+    invocation_context = await testing_utils.create_invocation_context(
+        agent=agent, user_content=''
+    )
+    tool_context = ToolContext(
+        invocation_context=invocation_context,
+        function_call_id='test_id',
+    )
+
+    result = await _call_tool_in_thread_pool(tool, {}, tool_context)
+
+    assert result == {'value': 'main_thread_value'}
+
+  @pytest.mark.asyncio
+  async def test_contextvars_propagation_async_tool(self):
+    """Test that contextvars propagate to async tools in thread pool."""
+    test_var = contextvars.ContextVar('test_var', default='default')
+    test_var.set('main_thread_value')
+
+    async def async_func() -> dict[str, str]:
+      return {'value': test_var.get()}
+
+    tool = FunctionTool(async_func)
+    model = testing_utils.MockModel.create(responses=[])
+    agent = Agent(name='test_agent', model=model, tools=[tool])
+    invocation_context = await testing_utils.create_invocation_context(
+        agent=agent, user_content=''
+    )
+    tool_context = ToolContext(
+        invocation_context=invocation_context,
+        function_call_id='test_id',
+    )
+
+    result = await _call_tool_in_thread_pool(tool, {}, tool_context)
+
+    assert result == {'value': 'main_thread_value'}
 
 
 class TestToolThreadPoolConfig:

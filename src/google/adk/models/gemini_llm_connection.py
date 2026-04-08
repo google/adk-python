@@ -20,6 +20,7 @@ from typing import Union
 
 from google.genai import types
 
+from ..utils import model_name_utils
 from ..utils.content_utils import filter_audio_parts
 from ..utils.context_utils import Aclosing
 from ..utils.variant_utils import GoogleLLMVariant
@@ -99,7 +100,6 @@ class GeminiLlmConnection(BaseLlmConnection):
     Args:
       content: The content to send to the model.
     """
-
     assert content.parts
     if content.parts[0].function_response:
       # All parts have to be function responses.
@@ -112,12 +112,30 @@ class GeminiLlmConnection(BaseLlmConnection):
       )
     else:
       logger.debug('Sending LLM new content %s', content)
-      await self._gemini_session.send(
-          input=types.LiveClientContent(
-              turns=[content],
-              turn_complete=True,
-          )
+      is_gemini_31 = model_name_utils.is_gemini_3_1_flash_live(
+          self._model_version
       )
+      is_gemini_api = self._api_backend == GoogleLLMVariant.GEMINI_API
+
+      # As of now, Gemini 3.1 Flash Live is only available in Gemini API, not
+      # Vertex AI.
+      if (
+          is_gemini_31
+          and is_gemini_api
+          and len(content.parts) == 1
+          and content.parts[0].text
+      ):
+        logger.debug('Using send_realtime_input for Gemini 3.1 text input')
+        await self._gemini_session.send_realtime_input(
+            text=content.parts[0].text
+        )
+      else:
+        await self._gemini_session.send(
+            input=types.LiveClientContent(
+                turns=[content],
+                turn_complete=True,
+            )
+        )
 
   async def send_realtime(self, input: RealtimeInput):
     """Sends a chunk of audio or a frame of video to the model in realtime.
@@ -128,7 +146,26 @@ class GeminiLlmConnection(BaseLlmConnection):
     if isinstance(input, types.Blob):
       # The blob is binary and is very large. So let's not log it.
       logger.debug('Sending LLM Blob.')
-      await self._gemini_session.send_realtime_input(media=input)
+      is_gemini_31 = model_name_utils.is_gemini_3_1_flash_live(
+          self._model_version
+      )
+      is_gemini_api = self._api_backend == GoogleLLMVariant.GEMINI_API
+
+      # As of now, Gemini 3.1 Flash Live is only available in Gemini API, not
+      # Vertex AI.
+      if is_gemini_31 and is_gemini_api:
+        if input.mime_type and input.mime_type.startswith('audio/'):
+          await self._gemini_session.send_realtime_input(audio=input)
+        elif input.mime_type and input.mime_type.startswith('image/'):
+          await self._gemini_session.send_realtime_input(video=input)
+        else:
+          logger.warning(
+              'Blob not sent. Unknown or empty mime type for'
+              ' send_realtime_input: %s',
+              input.mime_type,
+          )
+      else:
+        await self._gemini_session.send_realtime_input(media=input)
 
     elif isinstance(input, types.ActivityStart):
       logger.debug('Sending LLM activity start signal.')
@@ -166,6 +203,7 @@ class GeminiLlmConnection(BaseLlmConnection):
     """
 
     text = ''
+    tool_call_parts = []
     async with Aclosing(self._gemini_session.receive()) as agen:
       # TODO(b/440101573): Reuse StreamingResponseAggregator to accumulate
       # partial content and emit responses as needed.
@@ -295,6 +333,13 @@ class GeminiLlmConnection(BaseLlmConnection):
             if text:
               yield self.__build_full_text_response(text)
               text = ''
+            if tool_call_parts:
+              logger.debug('Returning aggregated tool_call_parts')
+              yield LlmResponse(
+                  content=types.Content(role='model', parts=tool_call_parts),
+                  model_version=self._model_version,
+              )
+              tool_call_parts = []
             yield LlmResponse(
                 turn_complete=True,
                 interrupted=message.server_content.interrupted,
@@ -316,17 +361,14 @@ class GeminiLlmConnection(BaseLlmConnection):
                   model_version=self._model_version,
               )
         if message.tool_call:
+          logger.debug('Received tool call: %s', message.tool_call)
           if text:
             yield self.__build_full_text_response(text)
             text = ''
-          parts = [
+          tool_call_parts.extend([
               types.Part(function_call=function_call)
               for function_call in message.tool_call.function_calls
-          ]
-          yield LlmResponse(
-              content=types.Content(role='model', parts=parts),
-              model_version=self._model_version,
-          )
+          ])
         if message.session_resumption_update:
           logger.debug('Received session resumption message: %s', message)
           yield (
@@ -335,6 +377,12 @@ class GeminiLlmConnection(BaseLlmConnection):
                   model_version=self._model_version,
               )
           )
+      if tool_call_parts:
+        logger.debug('Exited loop with pending tool_call_parts')
+        yield LlmResponse(
+            content=types.Content(role='model', parts=tool_call_parts),
+            model_version=self._model_version,
+        )
 
   async def close(self):
     """Closes the llm server connection."""

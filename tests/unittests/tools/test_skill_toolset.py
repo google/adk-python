@@ -654,6 +654,61 @@ async def test_execute_script_with_input_args_shell(mock_skill1):
 
 
 @pytest.mark.asyncio
+async def test_execute_script_with_short_options_and_positional_args_python(
+    mock_skill1,
+):
+  executor = _make_mock_executor(stdout="done\n")
+  toolset = skill_toolset.SkillToolset([mock_skill1], code_executor=executor)
+  tool = skill_toolset.RunSkillScriptTool(toolset)
+  ctx = _make_tool_context_with_agent()
+  result = await tool.run_async(
+      args={
+          "skill_name": "skill1",
+          "script_path": "run.py",
+          "args": {"verbose": True},
+          "short_options": {"n": "5"},
+          "positional_args": ["input.txt"],
+      },
+      tool_context=ctx,
+  )
+  assert result["status"] == "success"
+
+  call_args = executor.execute_code.call_args
+  code_input = call_args[0][1]
+  assert (
+      "['scripts/run.py', '--verbose', 'True', '-n', '5', '--', 'input.txt']"
+      in code_input.code
+  )
+
+
+@pytest.mark.asyncio
+async def test_execute_script_with_short_options_and_positional_args_shell(
+    mock_skill1,
+):
+  executor = _make_mock_executor(stdout="done\n")
+  toolset = skill_toolset.SkillToolset([mock_skill1], code_executor=executor)
+  tool = skill_toolset.RunSkillScriptTool(toolset)
+  ctx = _make_tool_context_with_agent()
+  result = await tool.run_async(
+      args={
+          "skill_name": "skill1",
+          "script_path": "setup.sh",
+          "short_options": {"n": "5"},
+          "positional_args": ["input.txt"],
+      },
+      tool_context=ctx,
+  )
+  assert result["status"] == "success"
+
+  call_args = executor.execute_code.call_args
+  code_input = call_args[0][1]
+  assert (
+      "['bash', 'scripts/setup.sh', '-n', '5', '--', 'input.txt']"
+      in code_input.code
+  )
+
+
+@pytest.mark.asyncio
 async def test_execute_script_scripts_prefix_stripping(mock_skill1):
   executor = _make_mock_executor(stdout="setup\n")
   toolset = skill_toolset.SkillToolset([mock_skill1], code_executor=executor)
@@ -1244,6 +1299,66 @@ async def test_execute_script_invalid_args_type(mock_skill1, bad_args):
   executor.execute_code.assert_not_called()
 
 
+@pytest.mark.parametrize(
+    "bad_short_options",
+    [
+        "not a dict",
+        42,
+        True,
+        ["list"],
+    ],
+)
+@pytest.mark.asyncio
+async def test_execute_script_invalid_short_options_type(
+    mock_skill1, bad_short_options
+):
+  """Non-dict short_options should return INVALID_SHORT_OPTIONS_TYPE, not crash."""
+  executor = _make_mock_executor()
+  toolset = skill_toolset.SkillToolset([mock_skill1], code_executor=executor)
+  tool = skill_toolset.RunSkillScriptTool(toolset)
+  ctx = _make_tool_context_with_agent()
+  result = await tool.run_async(
+      args={
+          "skill_name": "skill1",
+          "script_path": "run.py",
+          "short_options": bad_short_options,
+      },
+      tool_context=ctx,
+  )
+  assert result["error_code"] == "INVALID_SHORT_OPTIONS_TYPE"
+  executor.execute_code.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "bad_positional_args",
+    [
+        "not a list",
+        42,
+        True,
+        {"dict": 1},
+    ],
+)
+@pytest.mark.asyncio
+async def test_execute_script_invalid_positional_args_type(
+    mock_skill1, bad_positional_args
+):
+  """Non-list positional_args should return INVALID_POSITIONAL_ARGS_TYPE, not crash."""
+  executor = _make_mock_executor()
+  toolset = skill_toolset.SkillToolset([mock_skill1], code_executor=executor)
+  tool = skill_toolset.RunSkillScriptTool(toolset)
+  ctx = _make_tool_context_with_agent()
+  result = await tool.run_async(
+      args={
+          "skill_name": "skill1",
+          "script_path": "run.py",
+          "positional_args": bad_positional_args,
+      },
+      tool_context=ctx,
+  )
+  assert result["error_code"] == "INVALID_POSITIONAL_ARGS_TYPE"
+  executor.execute_code.assert_not_called()
+
+
 # ── Finding 4: binary file content is handled in wrapper ──
 
 
@@ -1340,8 +1455,8 @@ async def test_skill_toolset_dynamic_tool_resolution(mock_skill1, mock_skill2):
 
   ctx = _make_tool_context_with_agent()
   # Initial tools (only core)
-  tools = await toolset.get_tools(readonly_context=ctx)
-  assert len(tools) == 4
+  tools1 = await toolset.get_tools_with_prefix(readonly_context=ctx)
+  assert len(tools1) == 4
 
   # Activate skills
   load_tool = skill_toolset.LoadSkillTool(toolset)
@@ -1349,7 +1464,8 @@ async def test_skill_toolset_dynamic_tool_resolution(mock_skill1, mock_skill2):
   await load_tool.run_async(args={"name": "skill2"}, tool_context=ctx)
 
   # Dynamic tools should now be resolved
-  tools = await toolset.get_tools(readonly_context=ctx)
+  tools = await toolset.get_tools_with_prefix(readonly_context=ctx)
+  assert tools is not tools1
   tool_names = {t.name for t in tools}
 
   # Core tools
