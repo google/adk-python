@@ -177,15 +177,17 @@ def _create_event(
     actions: Optional[EventActions] = None,
     long_running_function_ids: Optional[set[str]] = None,
     partial: bool = False,
+    event_metadata: Optional[dict[str, Any]] = None,
 ) -> Optional[Event]:
   """Creates an ADK event from parts and metadata."""
   event_actions = actions or EventActions()
-  if not output_parts and not event_actions.model_dump(
-      exclude_none=True, exclude_defaults=True
-  ):
+  has_actions = bool(
+      event_actions.model_dump(exclude_none=True, exclude_defaults=True)
+  )
+  if not output_parts and not has_actions and not event_metadata:
     return None
 
-  event = Event(
+  event_kwargs: dict[str, Any] = dict(
       invocation_id=(
           invocation_context.invocation_id
           if invocation_context
@@ -208,7 +210,10 @@ def _create_event(
       partial=partial,
   )
 
-  return event
+  if event_metadata:
+    event_kwargs.update(event_metadata)
+
+  return Event(**event_kwargs)
 
 
 def _parse_adk_metadata_value(value: Any) -> Any:
@@ -246,6 +251,74 @@ def _extract_event_actions(
   except ValidationError as error:
     logger.warning("Ignoring invalid ADK actions metadata: %s", error)
     return EventActions()
+
+
+def _extract_event_metadata(
+    metadata: Optional[dict[str, Any]],
+) -> dict[str, Any]:
+  """Extracts ADK event metadata fields from A2A metadata.
+
+  Restores fields like custom_metadata, usage_metadata, error_code, and
+  grounding_metadata that were serialized into A2A metadata by the outbound
+  converter.
+
+  Args:
+    metadata: The A2A metadata dictionary.
+
+  Returns:
+    A dictionary of event keyword arguments to apply to the Event.
+  """
+  if not metadata:
+    return {}
+
+  event_kwargs: dict[str, Any] = {}
+
+  # Simple fields that can be restored directly
+  simple_fields = ["error_code"]
+  for field_name in simple_fields:
+    raw_value = metadata.get(_get_adk_metadata_key(field_name))
+    if raw_value is not None:
+      event_kwargs[field_name] = _parse_adk_metadata_value(raw_value)
+
+  # Dict fields that need parsing
+  dict_fields = ["custom_metadata"]
+  for field_name in dict_fields:
+    raw_value = metadata.get(_get_adk_metadata_key(field_name))
+    if raw_value is not None:
+      parsed = _parse_adk_metadata_value(raw_value)
+      if isinstance(parsed, dict):
+        event_kwargs[field_name] = parsed
+      else:
+        logger.warning(
+            "Ignoring invalid ADK %s metadata of type %s",
+            field_name,
+            type(parsed).__name__,
+        )
+
+  # Pydantic model fields that need validation
+  model_fields = {
+      "usage_metadata": genai_types.GenerateContentResponseUsageMetadata,
+      "grounding_metadata": genai_types.GroundingMetadata,
+  }
+  for field_name, model_class in model_fields.items():
+    raw_value = metadata.get(_get_adk_metadata_key(field_name))
+    if raw_value is not None:
+      parsed = _parse_adk_metadata_value(raw_value)
+      if isinstance(parsed, dict):
+        try:
+          event_kwargs[field_name] = model_class(**parsed)
+        except (ValidationError, TypeError) as error:
+          logger.warning(
+              "Ignoring invalid ADK %s metadata: %s", field_name, error
+          )
+      else:
+        logger.warning(
+            "Ignoring invalid ADK %s metadata of type %s",
+            field_name,
+            type(parsed).__name__,
+        )
+
+  return event_kwargs
 
 
 def _merge_top_level_dicts(
@@ -304,6 +377,7 @@ def convert_a2a_task_to_event(
 
   try:
     event_actions = EventActions()
+    event_metadata: dict[str, Any] = {}
     output_parts = []
     long_running_function_ids = set()
     if a2a_task.artifacts:
@@ -314,6 +388,7 @@ def convert_a2a_task_to_event(
         event_actions = _merge_event_actions(
             event_actions, _extract_event_actions(artifact.metadata)
         )
+        event_metadata.update(_extract_event_metadata(artifact.metadata))
       output_parts, _ = _convert_a2a_parts_to_adk_parts(
           artifact_parts, part_converter
       )
@@ -324,6 +399,9 @@ def convert_a2a_task_to_event(
       event_actions = _merge_event_actions(
           event_actions,
           _extract_event_actions(a2a_task.status.message.metadata),
+      )
+      event_metadata.update(
+          _extract_event_metadata(a2a_task.status.message.metadata)
       )
       parts, ids = _convert_a2a_parts_to_adk_parts(
           a2a_task.status.message.parts, part_converter
@@ -337,6 +415,7 @@ def convert_a2a_task_to_event(
         author,
         event_actions,
         long_running_function_ids,
+        event_metadata=event_metadata or None,
     )
 
   except Exception as e:
@@ -380,6 +459,7 @@ def convert_a2a_message_to_event(
         invocation_context,
         author,
         _extract_event_actions(a2a_message.metadata),
+        event_metadata=_extract_event_metadata(a2a_message.metadata),
     )
 
   except Exception as e:
@@ -412,9 +492,14 @@ def convert_a2a_status_update_to_event(
     output_parts = []
     long_running_function_ids = set()
     event_actions = EventActions()
+    event_metadata: Optional[dict[str, Any]] = None
     if a2a_status_update.status.message:
       event_actions = _extract_event_actions(
           a2a_status_update.status.message.metadata
+      )
+      event_metadata = (
+          _extract_event_metadata(a2a_status_update.status.message.metadata)
+          or None
       )
       parts, ids = _convert_a2a_parts_to_adk_parts(
           a2a_status_update.status.message.parts, part_converter
@@ -428,6 +513,7 @@ def convert_a2a_status_update_to_event(
         author,
         event_actions,
         long_running_function_ids,
+        event_metadata=event_metadata,
     )
   except Exception as e:
     logger.error("Failed to convert A2A status update to event: %s", e)
@@ -466,6 +552,10 @@ def convert_a2a_artifact_update_to_event(
         author,
         _extract_event_actions(a2a_artifact_update.artifact.metadata),
         partial=not a2a_artifact_update.last_chunk,
+        event_metadata=_extract_event_metadata(
+            a2a_artifact_update.artifact.metadata
+        )
+        or None,
     )
   except Exception as e:
     logger.error("Failed to convert A2A artifact update to event: %s", e)
