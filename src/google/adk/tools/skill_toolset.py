@@ -57,21 +57,34 @@ _BINARY_FILE_DETECTED_MSG = (
     " conversation history for you to analyze."
 )
 
-_DEFAULT_SKILL_SYSTEM_INSTRUCTION = """You can use specialized 'skills' to help you with complex tasks. You MUST use the skill tools to interact with these skills.
-
-Skills are folders of instructions and resources that extend your capabilities for specialized tasks. Each skill folder contains:
-- **SKILL.md** (required): The main instruction file with skill metadata and detailed markdown instructions.
-- **references/** (Optional): Additional documentation or examples for skill usage.
-- **assets/** (Optional): Templates, scripts or other resources used by the skill.
-- **scripts/** (Optional): Executable scripts that can be run via bash.
-
-This is very important:
-
-1. If a skill seems relevant to the current user query, you MUST use the `load_skill` tool with `name="<SKILL_NAME>"` to read its full instructions before proceeding.
-2. Once you have read the instructions, follow them exactly as documented before replying to the user. For example, If the instruction lists multiple steps, please make sure you complete all of them in order.
-3. The `load_skill_resource` tool is for viewing files within a skill's directory (e.g., `references/*`, `assets/*`, `scripts/*`). Do NOT use other tools to access these files.
-4. Use `run_skill_script` to run scripts from a skill's `scripts/` directory. Use `load_skill_resource` to view script content first if needed.
-"""
+_DEFAULT_SKILL_SYSTEM_INSTRUCTION = (
+    "You can use specialized 'skills' to help you with complex tasks. "
+    "You MUST use the skill tools to interact with these skills.\n\n"
+    "Skills are folders of instructions and resources that extend your "
+    "capabilities for specialized tasks. Each skill folder contains:\n"
+    "- **SKILL.md** (required): The main instruction file with skill "
+    "metadata and detailed markdown instructions.\n"
+    "- **references/** (Optional): Additional documentation or examples for "
+    "skill usage.\n"
+    "- **assets/** (Optional): Templates, scripts or other resources used by "
+    "the skill.\n"
+    "- **scripts/** (Optional): Executable scripts that can be run via "
+    "bash.\n\n"
+    "This is very important:\n\n"
+    "1. If a skill seems relevant to the current user query, you MUST use "
+    'the `load_skill` tool with `skill_name="<SKILL_NAME>"` to read '
+    "its full instructions before proceeding.\n"
+    "2. Once you have read the instructions, follow them exactly as "
+    "documented before replying to the user. For example, If the "
+    "instruction lists multiple steps, please make sure you complete all "
+    "of them in order.\n"
+    "3. The `load_skill_resource` tool is for viewing files within a "
+    "skill's directory (e.g., `references/*`, `assets/*`, `scripts/*`). "
+    "Do NOT use other tools to access these files.\n"
+    "4. Use `run_skill_script` to run scripts from a skill's `scripts/` "
+    "directory. Use `load_skill_resource` to view script content first if "
+    "needed.\n"
+)
 
 
 @experimental(FeatureName.SKILL_TOOLSET)
@@ -122,23 +135,23 @@ class LoadSkillTool(BaseTool):
         parameters_json_schema={
             "type": "object",
             "properties": {
-                "name": {
+                "skill_name": {
                     "type": "string",
                     "description": "The name of the skill to load.",
                 },
             },
-            "required": ["name"],
+            "required": ["skill_name"],
         },
     )
 
   async def run_async(
       self, *, args: dict[str, Any], tool_context: ToolContext
   ) -> Any:
-    skill_name = args.get("name")
+    skill_name = args.get("skill_name")
     if not skill_name:
       return {
-          "error": "Skill name is required.",
-          "error_code": "MISSING_SKILL_NAME",
+          "error": "Argument 'skill_name' is required.",
+          "error_code": "INVALID_ARGUMENTS",
       }
 
     skill = self._toolset._get_skill(skill_name)
@@ -189,7 +202,7 @@ class LoadSkillResourceTool(BaseTool):
                     "type": "string",
                     "description": "The name of the skill.",
                 },
-                "path": {
+                "file_path": {
                     "type": "string",
                     "description": (
                         "The relative path to the resource (e.g.,"
@@ -198,7 +211,7 @@ class LoadSkillResourceTool(BaseTool):
                     ),
                 },
             },
-            "required": ["skill_name", "path"],
+            "required": ["skill_name", "file_path"],
         },
     )
 
@@ -206,17 +219,18 @@ class LoadSkillResourceTool(BaseTool):
       self, *, args: dict[str, Any], tool_context: ToolContext
   ) -> Any:
     skill_name = args.get("skill_name")
-    resource_path = args.get("path")
+    file_path = args.get("file_path")
 
+    errors = []
     if not skill_name:
+      errors.append("Argument 'skill_name' is required.")
+    if not file_path:
+      errors.append("Argument 'file_path' is required.")
+
+    if errors:
       return {
-          "error": "Skill name is required.",
-          "error_code": "MISSING_SKILL_NAME",
-      }
-    if not resource_path:
-      return {
-          "error": "Resource path is required.",
-          "error_code": "MISSING_RESOURCE_PATH",
+          "error": "\n".join(errors),
+          "error_code": "INVALID_ARGUMENTS",
       }
 
     skill = self._toolset._get_skill(skill_name)
@@ -227,14 +241,14 @@ class LoadSkillResourceTool(BaseTool):
       }
 
     content = None
-    if resource_path.startswith("references/"):
-      ref_name = resource_path[len("references/") :]
+    if file_path.startswith("references/"):
+      ref_name = file_path[len("references/") :]
       content = skill.resources.get_reference(ref_name)
-    elif resource_path.startswith("assets/"):
-      asset_name = resource_path[len("assets/") :]
+    elif file_path.startswith("assets/"):
+      asset_name = file_path[len("assets/") :]
       content = skill.resources.get_asset(asset_name)
-    elif resource_path.startswith("scripts/"):
-      script_name = resource_path[len("scripts/") :]
+    elif file_path.startswith("scripts/"):
+      script_name = file_path[len("scripts/") :]
       script = skill.resources.get_script(script_name)
       if script is not None:
         content = script.src
@@ -248,22 +262,20 @@ class LoadSkillResourceTool(BaseTool):
 
     if content is None:
       return {
-          "error": (
-              f"Resource '{resource_path}' not found in skill '{skill_name}'."
-          ),
+          "error": f"Resource '{file_path}' not found in skill '{skill_name}'.",
           "error_code": "RESOURCE_NOT_FOUND",
       }
 
     if isinstance(content, bytes):
       return {
           "skill_name": skill_name,
-          "path": resource_path,
+          "file_path": file_path,
           "status": _BINARY_FILE_DETECTED_MSG,
       }
 
     return {
         "skill_name": skill_name,
-        "path": resource_path,
+        "file_path": file_path,
         "content": content,
     }
 
@@ -289,8 +301,8 @@ class LoadSkillResourceTool(BaseTool):
         continue
 
       skill_name = response.get("skill_name")
-      resource_path = response.get("path")
-      if not skill_name or not resource_path:
+      file_path = response.get("file_path")
+      if not skill_name or not file_path:
         continue
 
       skill = self._toolset._get_skill(skill_name)
@@ -299,18 +311,18 @@ class LoadSkillResourceTool(BaseTool):
 
       # Find the binary content
       content = None
-      if resource_path.startswith("references/"):
-        ref_name = resource_path[len("references/") :]
+      if file_path.startswith("references/"):
+        ref_name = file_path[len("references/") :]
         content = skill.resources.get_reference(ref_name)
-      elif resource_path.startswith("assets/"):
-        asset_name = resource_path[len("assets/") :]
+      elif file_path.startswith("assets/"):
+        asset_name = file_path[len("assets/") :]
         content = skill.resources.get_asset(asset_name)
 
       if not isinstance(content, bytes):
         continue
 
       # Determine mime type based on extension
-      mime_type, _ = mimetypes.guess_type(resource_path)
+      mime_type, _ = mimetypes.guess_type(file_path)
       if not mime_type:
         mime_type = "application/octet-stream"
 
@@ -320,7 +332,7 @@ class LoadSkillResourceTool(BaseTool):
               role="user",
               parts=[
                   types.Part.from_text(
-                      text=f"The content of binary file '{resource_path}' is:"
+                      text=f"The content of binary file '{file_path}' is:"
                   ),
                   types.Part(
                       inline_data=types.Blob(
@@ -347,14 +359,32 @@ class _SkillScriptCodeExecutor:
       self,
       invocation_context: Any,
       skill: models.Skill,
-      script_path: str,
-      script_args: dict[str, Any],
+      file_path: str,
+      script_args: dict[str, Any] | list[str] | None,
+      short_options: dict[str, Any] | None = None,
+      positional_args: list[str] | None = None,
   ) -> dict[str, Any]:
-    """Prepares and executes the script using the base executor."""
-    code = self._build_wrapper_code(skill, script_path, script_args)
+    """Prepares and executes the script using the base executor.
+
+    Args:
+      invocation_context: The context for execution.
+      skill: The skill containing the script.
+      file_path: Relative path to the script file (e.g., 'scripts/myscript.py'
+        or 'myscript.py').
+      script_args: Optional arguments to pass to the script. Can be a dict of
+        long options or a list of strings.
+      short_options: Optional short options (single hyphen) as key-value pairs.
+      positional_args: Optional positional arguments.
+
+    Returns:
+      A dictionary containing execution results (stdout, stderr, status).
+    """
+    code = self._build_wrapper_code(
+        skill, file_path, script_args, short_options, positional_args
+    )
     if code is None:
-      if "." in script_path:
-        ext_msg = f"'.{script_path.rsplit('.', 1)[-1]}'"
+      if "." in file_path:
+        ext_msg = f"'.{file_path.rsplit('.', 1)[-1]}'"
       else:
         ext_msg = "(no extension)"
       return {
@@ -379,9 +409,10 @@ class _SkillScriptCodeExecutor:
       # Shell scripts serialize both streams as JSON
       # through stdout; parse the envelope if present.
       rc = 0
-      is_shell = "." in script_path and script_path.rsplit(".", 1)[
-          -1
-      ].lower() in ("sh", "bash")
+      is_shell = "." in file_path and file_path.rsplit(".", 1)[-1].lower() in (
+          "sh",
+          "bash",
+      )
       if is_shell and stdout:
         try:
           parsed = json.loads(stdout)
@@ -404,7 +435,7 @@ class _SkillScriptCodeExecutor:
 
       return {
           "skill_name": skill.name,
-          "script_path": script_path,
+          "file_path": file_path,
           "stdout": stdout,
           "stderr": stderr,
           "status": status,
@@ -413,14 +444,14 @@ class _SkillScriptCodeExecutor:
       if e.code in (None, 0):
         return {
             "skill_name": skill.name,
-            "script_path": script_path,
+            "file_path": file_path,
             "stdout": "",
             "stderr": "",
             "status": "success",
         }
       return {
           "error": (
-              f"Failed to execute script '{script_path}':"
+              f"Failed to execute script '{file_path}':"
               f" exited with code {e.code}"
           ),
           "error_code": "EXECUTION_ERROR",
@@ -428,7 +459,7 @@ class _SkillScriptCodeExecutor:
     except Exception as e:  # pylint: disable=broad-exception-caught
       logger.exception(
           "Error executing script '%s' from skill '%s'",
-          script_path,
+          file_path,
           skill.name,
       )
       short_msg = str(e)
@@ -437,7 +468,7 @@ class _SkillScriptCodeExecutor:
       return {
           "error": (
               "Failed to execute script"
-              f" '{script_path}':\n{type(e).__name__}:"
+              f" '{file_path}':\n{type(e).__name__}:"
               f" {short_msg}"
           ),
           "error_code": "EXECUTION_ERROR",
@@ -446,16 +477,18 @@ class _SkillScriptCodeExecutor:
   def _build_wrapper_code(
       self,
       skill: models.Skill,
-      script_path: str,
-      script_args: dict[str, Any],
+      file_path: str,
+      script_args: dict[str, Any] | list[str] | None,
+      short_options: dict[str, Any] | None = None,
+      positional_args: list[str] | None = None,
   ) -> str | None:
     """Builds a self-extracting Python script."""
     ext = ""
-    if "." in script_path:
-      ext = script_path.rsplit(".", 1)[-1].lower()
+    if "." in file_path:
+      ext = file_path.rsplit(".", 1)[-1].lower()
 
-    if not script_path.startswith("scripts/"):
-      script_path = f"scripts/{script_path}"
+    if not file_path.startswith("scripts/"):
+      file_path = f"scripts/{file_path}"
 
     files_dict = {}
     for ref_name in skill.resources.list_references():
@@ -509,35 +542,46 @@ class _SkillScriptCodeExecutor:
     ]
 
     if ext == "py":
-      argv_list = [script_path]
-      for k, v in script_args.get("args", {}).items():
-        argv_list.extend([f"--{k}", str(v)])
-      for k, v in script_args.get("short_options", {}).items():
-        argv_list.extend([f"-{k}", str(v)])
-      positional_args = script_args.get("positional_args", [])
-      if positional_args:
-        argv_list.append("--")
-        for v in positional_args:
-          argv_list.append(str(v))
+      argv_list = [file_path]
+      if isinstance(script_args, list):
+        argv_list.extend(str(v) for v in script_args)
+      else:
+        if isinstance(script_args, dict):
+          for k, v in script_args.items():
+            argv_list.extend([f"--{k}", str(v)])
+
+        if short_options:
+          for k, v in short_options.items():
+            argv_list.extend([f"-{k}", str(v)])
+
+        if positional_args:
+          argv_list.append("--")
+          argv_list.extend(str(v) for v in positional_args)
+
       code_lines.extend([
           f"      sys.argv = {argv_list!r}",
           "      try:",
-          f"        runpy.run_path({script_path!r}, run_name='__main__')",
+          f"        runpy.run_path({file_path!r}, run_name='__main__')",
           "      except SystemExit as e:",
           "        if e.code is not None and e.code != 0:",
           "          raise e",
       ])
     elif ext in ("sh", "bash"):
-      arr = ["bash", script_path]
-      for k, v in script_args.get("args", {}).items():
-        arr.extend([f"--{k}", str(v)])
-      for k, v in script_args.get("short_options", {}).items():
-        arr.extend([f"-{k}", str(v)])
-      positional_args = script_args.get("positional_args", [])
-      if positional_args:
-        arr.append("--")
-        for v in positional_args:
-          arr.append(str(v))
+      arr = ["bash", file_path]
+      if isinstance(script_args, list):
+        arr.extend(str(v) for v in script_args)
+      else:
+        if isinstance(script_args, dict):
+          for k, v in script_args.items():
+            arr.extend([f"--{k}", str(v)])
+
+        if short_options:
+          for k, v in short_options.items():
+            arr.extend([f"-{k}", str(v)])
+
+        if positional_args:
+          arr.append("--")
+          arr.extend(positional_args)
       timeout = self._script_timeout
       code_lines.extend([
           "      try:",
@@ -594,7 +638,7 @@ class RunSkillScriptTool(BaseTool):
                     "type": "string",
                     "description": "The name of the skill.",
                 },
-                "script_path": {
+                "file_path": {
                     "type": "string",
                     "description": (
                         "The relative path to the script (e.g.,"
@@ -602,78 +646,83 @@ class RunSkillScriptTool(BaseTool):
                     ),
                 },
                 "args": {
-                    "type": "object",
+                    "anyOf": [
+                        {"type": "object"},
+                        {"type": "array", "items": {"type": "string"}},
+                    ],
                     "description": (
-                        "Optional arguments to pass as long options (e.g.,"
-                        " {'n': 5} becomes --n 5)."
+                        "Optional arguments to pass to the script as key-value"
+                        " pairs (long options) or as a list of strings. If"
+                        " specified as a list, it is treated as the complete"
+                        " list of arguments, and 'short_options' and"
+                        " 'positional_args' must not be provided."
                     ),
                 },
                 "short_options": {
                     "type": "object",
                     "description": (
-                        "Optional SHORT options to pass (e.g., {'n': 5}"
-                        " becomes -n 5)."
+                        "Optional short options (single hyphen) to pass to the"
+                        " script as key-value pairs. Must not be provided if"
+                        " 'args' is a list."
                     ),
                 },
                 "positional_args": {
                     "type": "array",
                     "items": {"type": "string"},
                     "description": (
-                        "Optional list of positional arguments in exact order"
-                        " (e.g., ['input.txt', 'output.txt'])."
+                        "Optional positional arguments to pass to the script."
+                        " Must not be provided if 'args' is a list."
                     ),
                 },
             },
-            "required": ["skill_name", "script_path"],
+            "required": ["skill_name", "file_path"],
         },
     )
 
   async def run_async(
       self, *, args: dict[str, Any], tool_context: ToolContext
   ) -> Any:
+    # Standardized arguments: skill_name and file_path.
     skill_name = args.get("skill_name")
-    script_path = args.get("script_path")
-    script_args = {
-        "args": args.get("args", {}),
-        "short_options": args.get("short_options", {}),
-        "positional_args": args.get("positional_args", []),
-    }
-    if not isinstance(script_args["args"], dict):
-      return {
-          "error": (
-              "'args' must be a JSON object (key-value pairs),"
-              f" got {type(script_args['args']).__name__}."
-          ),
-          "error_code": "INVALID_ARGS_TYPE",
-      }
+    file_path = args.get("file_path")
+    script_args = args.get("args")
+    short_options = args.get("short_options")
+    positional_args = args.get("positional_args")
 
-    if not isinstance(script_args["short_options"], dict):
-      return {
-          "error": (
-              "'short_options' must be a JSON object (key-value pairs),"
-              f" got {type(script_args['short_options']).__name__}."
-          ),
-          "error_code": "INVALID_SHORT_OPTIONS_TYPE",
-      }
-
-    if not isinstance(script_args["positional_args"], list):
-      return {
-          "error": (
-              "'positional_args' must be a JSON array (list),"
-              f" got {type(script_args['positional_args']).__name__}."
-          ),
-          "error_code": "INVALID_POSITIONAL_ARGS_TYPE",
-      }
-
+    errors = []
     if not skill_name:
+      errors.append("Argument 'skill_name' is required.")
+    if not file_path:
+      errors.append("Argument 'file_path' is required.")
+
+    if script_args is not None and not isinstance(script_args, (dict, list)):
+      errors.append(
+          "'args' must be a JSON object (dict) or a list of strings,"
+          f" got {type(script_args).__name__}."
+      )
+
+    if short_options is not None and not isinstance(short_options, dict):
+      errors.append(
+          "'short_options' must be a JSON object (dict),"
+          f" got {type(short_options).__name__}."
+      )
+
+    if positional_args is not None and not isinstance(positional_args, list):
+      errors.append(
+          "'positional_args' must be a list of strings,"
+          f" got {type(positional_args).__name__}."
+      )
+
+    if isinstance(script_args, list) and (short_options or positional_args):
+      errors.append(
+          "Cannot specify 'short_options' or 'positional_args' when 'args' is"
+          " a list."
+      )
+
+    if errors:
       return {
-          "error": "Skill name is required.",
-          "error_code": "MISSING_SKILL_NAME",
-      }
-    if not script_path:
-      return {
-          "error": "Script path is required.",
-          "error_code": "MISSING_SCRIPT_PATH",
+          "error": "\n".join(errors),
+          "error_code": "INVALID_ARGUMENTS",
       }
 
     skill = self._toolset._get_skill(skill_name)
@@ -684,14 +733,14 @@ class RunSkillScriptTool(BaseTool):
       }
 
     script = None
-    if script_path.startswith("scripts/"):
-      script = skill.resources.get_script(script_path[len("scripts/") :])
+    if file_path.startswith("scripts/"):
+      script = skill.resources.get_script(file_path[len("scripts/") :])
     else:
-      script = skill.resources.get_script(script_path)
+      script = skill.resources.get_script(file_path)
 
     if script is None:
       return {
-          "error": f"Script '{script_path}' not found in skill '{skill_name}'.",
+          "error": f"Script '{file_path}' not found in skill '{skill_name}'.",
           "error_code": "SCRIPT_NOT_FOUND",
       }
 
@@ -714,7 +763,12 @@ class RunSkillScriptTool(BaseTool):
         code_executor, self._toolset._script_timeout  # pylint: disable=protected-access
     )
     return await script_executor.execute_script_async(
-        tool_context._invocation_context, skill, script_path, script_args  # pylint: disable=protected-access
+        tool_context._invocation_context,  # pylint: disable=protected-access
+        skill,
+        file_path,
+        script_args,
+        short_options,
+        positional_args,  # pylint: disable=protected-access
     )
 
 
@@ -835,9 +889,9 @@ class SkillToolset(BaseToolset):
 
     return resolved_tools
 
-  def _get_skill(self, name: str) -> models.Skill | None:
+  def _get_skill(self, skill_name: str) -> models.Skill | None:
     """Retrieves a skill by name."""
-    return self._skills.get(name)
+    return self._skills.get(skill_name)
 
   def _list_skills(self) -> list[models.Skill]:
     """Lists all available skills."""

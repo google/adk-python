@@ -55,6 +55,7 @@ from starlette.types import Lifespan
 from typing_extensions import deprecated
 from typing_extensions import override
 from watchdog.observers import Observer
+import yaml
 
 from . import agent_graph
 from ..agents.base_agent import BaseAgent
@@ -89,6 +90,7 @@ from ..evaluation.eval_sets_manager import EvalSetsManager
 from ..events.event import Event
 from ..memory.base_memory_service import BaseMemoryService
 from ..plugins.base_plugin import BasePlugin
+from ..plugins.bigquery_agent_analytics_plugin import BigQueryAgentAnalyticsPlugin
 from ..runners import Runner
 from ..sessions.base_session_service import BaseSessionService
 from ..sessions.session import Session
@@ -697,16 +699,54 @@ class AdkWebServer:
     # Instantiate extra plugins if configured
     extra_plugins_instances = self._instantiate_extra_plugins()
 
+    plugins_yaml_path = os.path.join(self.agents_dir, app_name, "plugins.yaml")
+    bq_analytics_config = None
+    if os.path.exists(plugins_yaml_path):
+      with open(plugins_yaml_path, "r", encoding="utf-8") as f:
+        plugins_config = yaml.safe_load(f)
+        if plugins_config and isinstance(plugins_config, dict):
+          bq_analytics_config = plugins_config.get("bigquery_agent_analytics")
+
+    # Determine if the agent was loaded from YAML based on the agent loader info
+    is_visual_builder = False
+    detailed_agents = self.agent_loader.list_agents_detailed()
+    for agent_info in detailed_agents:
+      if agent_info.get("name") == app_name:
+        if agent_info.get("language") == "yaml":
+          is_visual_builder = True
+        break
+
     if isinstance(agent_or_app, BaseAgent):
+      plugins = extra_plugins_instances
+
+      # Handle BigQuery Analytics Plugin injection
+      if bq_analytics_config and all([
+          bq_analytics_config.get("project_id"),
+          bq_analytics_config.get("dataset_id"),
+          bq_analytics_config.get("dataset_location"),
+      ]):
+        plugins.append(
+            BigQueryAgentAnalyticsPlugin(
+                project_id=bq_analytics_config.get("project_id"),
+                dataset_id=bq_analytics_config.get("dataset_id"),
+                table_id=bq_analytics_config.get("table_id"),
+                location=bq_analytics_config.get("dataset_location"),
+            )
+        )
+
       agentic_app = App(
           name=app_name,
           root_agent=agent_or_app,
-          plugins=extra_plugins_instances,
+          plugins=plugins,
       )
     else:
       # Combine existing plugins with extra plugins
       agent_or_app.plugins = agent_or_app.plugins + extra_plugins_instances
       agentic_app = agent_or_app
+
+    # If the root agent was loaded from YAML, we treat it as being from Visual Builder
+    if is_visual_builder:
+      object.__setattr__(agentic_app, "_is_visual_builder_app", True)
 
     runner = self._create_runner(agentic_app)
     self.runner_dict[app_name] = runner
@@ -1840,9 +1880,20 @@ class AdkWebServer:
         raise HTTPException(status_code=404, detail="Session not found")
       await self.memory_service.add_session_to_memory(session)
 
+    def _set_telemetry_context_if_needed(runner: Runner):
+      """Helper to set contextvars for the current request task."""
+      app = getattr(runner, "app", None)
+      from ..utils._telemetry_context import _is_visual_builder
+
+      if app and getattr(app, "_is_visual_builder_app", False):
+        _is_visual_builder.set(True)
+      else:
+        _is_visual_builder.set(False)
+
     @app.post("/run", response_model_exclude_none=True)
     async def run_agent(req: RunAgentRequest) -> list[Event]:
       runner = await self.get_runner_async(req.app_name)
+      _set_telemetry_context_if_needed(runner)
       try:
         async with Aclosing(
             runner.run_async(
@@ -1864,6 +1915,7 @@ class AdkWebServer:
     async def run_agent_sse(req: RunAgentRequest) -> StreamingResponse:
       stream_mode = StreamingMode.SSE if req.streaming else StreamingMode.NONE
       runner = await self.get_runner_async(req.app_name)
+      _set_telemetry_context_if_needed(runner)
 
       # Validate session existence before starting the stream.
       # We check directly here instead of eagerly advancing the
@@ -2039,6 +2091,8 @@ class AdkWebServer:
         return
 
       await websocket.accept()
+      runner_for_context = await self.get_runner_async(app_name)
+      _set_telemetry_context_if_needed(runner_for_context)
 
       session = await self.session_service.get_session(
           app_name=app_name, user_id=user_id, session_id=session_id
