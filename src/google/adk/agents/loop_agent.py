@@ -26,8 +26,10 @@ from typing import Optional
 from typing_extensions import override
 
 from ..events.event import Event
+from ..events.event_actions import EventActions
 from ..features import experimental
 from ..features import FeatureName
+from ..termination.termination_condition import TerminationCondition
 from ..utils.context_utils import Aclosing
 from .base_agent import BaseAgent
 from .base_agent import BaseAgentState
@@ -66,12 +68,27 @@ class LoopAgent(BaseAgent):
   escalates.
   """
 
+  termination_condition: Optional[TerminationCondition] = None
+  """An optional termination condition that controls when the loop stops.
+
+  The condition is evaluated after each event emitted by a sub-agent. When
+  it fires, the loop yields a final event with
+  ``actions.termination_reason`` set and ``actions.escalate`` set to
+  ``True``, then stops.
+
+  The condition is automatically reset at the start of each ``_run_async_impl``
+  call, so the same instance can be reused across multiple runs.
+  """
+
   @override
   async def _run_async_impl(
       self, ctx: InvocationContext
   ) -> AsyncGenerator[Event, None]:
     if not self.sub_agents:
       return
+
+    if self.termination_condition:
+      await self.termination_condition.reset()
 
     agent_state = self._load_agent_state(ctx, LoopAgentState)
     is_resuming_at_current_agent = agent_state is not None
@@ -102,6 +119,21 @@ class LoopAgent(BaseAgent):
             yield event
             if event.actions.escalate:
               should_exit = True
+
+            if self.termination_condition and not should_exit:
+              result = await self.termination_condition.check([event])
+              if result:
+                termination_event = Event(
+                    invocation_id=ctx.invocation_id,
+                    author=self.name,
+                    actions=EventActions(
+                        escalate=True,
+                        termination_reason=result.reason,
+                    ),
+                )
+                yield termination_event
+                return
+
             if ctx.should_pause_invocation(event):
               pause_invocation = True
 

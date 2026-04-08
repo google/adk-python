@@ -112,3 +112,7 @@ class EventActions(BaseModel):
 
   render_ui_widgets: Optional[list[UiWidget]] = None
   """List of UI widgets to be rendered by the UI."""
+
+  termination_reason: Optional[str] = None
+  """The human-readable reason the conversation was terminated by a
+  TerminationCondition. Only set on synthetic termination events."""

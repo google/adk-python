@@ -24,6 +24,8 @@ from google.adk.apps import ResumabilityConfig
 from google.adk.events.event import Event
 from google.adk.events.event_actions import EventActions
 from google.adk.sessions.in_memory_session_service import InMemorySessionService
+from google.adk.termination.max_iterations_termination import MaxIterationsTermination
+from google.adk.termination.text_mention_termination import TextMentionTermination
 from google.genai import types
 import pytest
 from typing_extensions import override
@@ -249,3 +251,84 @@ async def test_run_async_with_escalate_action(
         ),
     ]
   assert simplified_events == expected_events
+
+
+@pytest.mark.asyncio
+async def test_run_async_with_termination_condition_stops_loop(
+    request: pytest.FixtureRequest,
+):
+  """Termination condition fires after first event and stops the loop."""
+  agent = _TestingAgent(name=f'{request.function.__name__}_agent')
+  loop_agent = LoopAgent(
+      name=f'{request.function.__name__}_loop',
+      max_iterations=5,
+      sub_agents=[agent],
+      termination_condition=MaxIterationsTermination(1),
+  )
+  parent_ctx = await _create_parent_invocation_context(
+      request.function.__name__, loop_agent
+  )
+
+  events = [e async for e in loop_agent.run_async(parent_ctx)]
+
+  # The sub-agent emits one text event, then the loop emits a termination event.
+  assert len(events) == 2
+  text_event, termination_event = events
+  assert text_event.author == agent.name
+  assert termination_event.author == loop_agent.name
+  assert termination_event.actions.escalate is True
+  assert termination_event.actions.termination_reason is not None
+
+
+@pytest.mark.asyncio
+async def test_run_async_with_termination_condition_text_mention(
+    request: pytest.FixtureRequest,
+):
+  """TextMentionTermination fires when the keyword appears in an event."""
+  agent = _TestingAgent(name=f'{request.function.__name__}_agent')
+  loop_agent = LoopAgent(
+      name=f'{request.function.__name__}_loop',
+      max_iterations=10,
+      sub_agents=[agent],
+      # 'Hello' appears in the sub-agent's response, so it should fire at once.
+      termination_condition=TextMentionTermination('Hello'),
+  )
+  parent_ctx = await _create_parent_invocation_context(
+      request.function.__name__, loop_agent
+  )
+
+  events = [e async for e in loop_agent.run_async(parent_ctx)]
+
+  termination_event = events[-1]
+  assert termination_event.author == loop_agent.name
+  assert termination_event.actions.escalate is True
+  assert termination_event.actions.termination_reason is not None
+
+
+@pytest.mark.asyncio
+async def test_run_async_termination_condition_resets_between_runs(
+    request: pytest.FixtureRequest,
+):
+  """The termination condition is reset at the start of each run."""
+  agent = _TestingAgent(name=f'{request.function.__name__}_agent')
+  condition = MaxIterationsTermination(1)
+  loop_agent = LoopAgent(
+      name=f'{request.function.__name__}_loop',
+      max_iterations=5,
+      sub_agents=[agent],
+      termination_condition=condition,
+  )
+
+  # First run – condition fires and gets reset automatically.
+  parent_ctx = await _create_parent_invocation_context(
+      request.function.__name__, loop_agent
+  )
+  events_first = [e async for e in loop_agent.run_async(parent_ctx)]
+  assert events_first[-1].actions.termination_reason is not None
+
+  # Second run – condition must have been reset; should fire again identically.
+  parent_ctx2 = await _create_parent_invocation_context(
+      request.function.__name__ + '_2', loop_agent
+  )
+  events_second = [e async for e in loop_agent.run_async(parent_ctx2)]
+  assert events_second[-1].actions.termination_reason is not None
