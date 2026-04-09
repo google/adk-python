@@ -418,3 +418,249 @@ class TestToAdk:
     """Test convert_a2a_artifact_update_to_event with None."""
     with pytest.raises(ValueError, match="A2A artifact update cannot be None"):
       convert_a2a_artifact_update_to_event(None)
+
+  # --- Regression tests for issue #5185 ---
+
+  def test_convert_a2a_message_metadata_only_returns_event(self):
+    """Metadata-only message (no parts, no actions) must not return None."""
+    message = Message(
+        message_id="msg-1",
+        role="agent",
+        parts=[],
+        metadata={
+            _get_adk_metadata_key("custom_metadata"): {"flag": True}
+        },
+    )
+
+    event = convert_a2a_message_to_event(
+        message,
+        author="agent",
+        invocation_context=self.mock_context,
+        part_converter=Mock(),
+    )
+
+    assert event is not None
+    assert event.content is None
+    assert event.custom_metadata == {"flag": True}
+
+  def test_convert_a2a_message_restores_custom_metadata(self):
+    """custom_metadata must be restored on content-bearing events."""
+    a2a_part = Mock(spec=A2APart)
+    a2a_part.root = Mock(spec=TextPart)
+    a2a_part.root.metadata = {}
+    message = Message(
+        message_id="msg-1",
+        role="agent",
+        parts=[a2a_part],
+        metadata={
+            _get_adk_metadata_key("custom_metadata"): {
+                "trace_id": "abc-123",
+                "score": 0.95,
+            }
+        },
+    )
+
+    mock_genai_part = genai_types.Part.from_text(text="hello")
+    event = convert_a2a_message_to_event(
+        message,
+        author="agent",
+        invocation_context=self.mock_context,
+        part_converter=Mock(return_value=[mock_genai_part]),
+    )
+
+    assert event is not None
+    assert event.custom_metadata == {"trace_id": "abc-123", "score": 0.95}
+    assert event.content is not None
+
+  def test_convert_a2a_message_restores_error_code(self):
+    """error_code must be restored from A2A metadata."""
+    message = Message(
+        message_id="msg-1",
+        role="agent",
+        parts=[],
+        metadata={
+            _get_adk_metadata_key("error_code"): "RESOURCE_EXHAUSTED"
+        },
+    )
+
+    event = convert_a2a_message_to_event(
+        message,
+        author="agent",
+        invocation_context=self.mock_context,
+        part_converter=Mock(),
+    )
+
+    assert event is not None
+    assert event.error_code == "RESOURCE_EXHAUSTED"
+    assert event.content is None
+
+  def test_convert_a2a_message_restores_usage_metadata(self):
+    """usage_metadata must be restored from A2A metadata."""
+    usage_dict = {"promptTokenCount": 10, "candidatesTokenCount": 20}
+    message = Message(
+        message_id="msg-1",
+        role="agent",
+        parts=[],
+        metadata={
+            _get_adk_metadata_key("usage_metadata"): usage_dict,
+        },
+    )
+
+    event = convert_a2a_message_to_event(
+        message,
+        author="agent",
+        invocation_context=self.mock_context,
+        part_converter=Mock(),
+    )
+
+    assert event is not None
+    assert event.usage_metadata is not None
+    assert event.usage_metadata.prompt_token_count == 10
+    assert event.usage_metadata.candidates_token_count == 20
+
+  def test_convert_a2a_message_restores_all_metadata_fields(self):
+    """All metadata fields must be restored together."""
+    message = Message(
+        message_id="msg-1",
+        role="agent",
+        parts=[],
+        metadata={
+            _get_adk_metadata_key("custom_metadata"): {"key": "value"},
+            _get_adk_metadata_key("error_code"): "INVALID_ARGUMENT",
+            _get_adk_metadata_key("usage_metadata"): {
+                "promptTokenCount": 5,
+            },
+            _get_adk_metadata_key("actions"): {
+                "stateDelta": {"x": 1}
+            },
+        },
+    )
+
+    event = convert_a2a_message_to_event(
+        message,
+        author="agent",
+        invocation_context=self.mock_context,
+        part_converter=Mock(),
+    )
+
+    assert event is not None
+    assert event.custom_metadata == {"key": "value"}
+    assert event.error_code == "INVALID_ARGUMENT"
+    assert event.usage_metadata.prompt_token_count == 5
+    assert event.actions.state_delta == {"x": 1}
+
+  def test_convert_a2a_message_no_parts_no_metadata_returns_none(self):
+    """Empty message with no parts, no actions, no metadata still returns None."""
+    message = Message(
+        message_id="msg-1",
+        role="agent",
+        parts=[],
+    )
+
+    event = convert_a2a_message_to_event(
+        message,
+        author="agent",
+        invocation_context=self.mock_context,
+        part_converter=Mock(),
+    )
+
+    assert event is None
+
+  def test_convert_a2a_task_restores_metadata_from_artifact(self):
+    """Task conversion must restore event metadata from artifact metadata."""
+    task = Task(
+        id="task-1",
+        status=TaskStatus(
+            state=TaskState.submitted, timestamp="2024-01-01T00:00:00Z"
+        ),
+        context_id="context-1",
+        artifacts=[
+            Artifact(
+                artifact_id="art-1",
+                artifact_type="message",
+                parts=[],
+                metadata={
+                    _get_adk_metadata_key("custom_metadata"): {
+                        "source": "agent-x"
+                    },
+                    _get_adk_metadata_key("error_code"): "TIMEOUT",
+                },
+            )
+        ],
+    )
+
+    event = convert_a2a_task_to_event(
+        task,
+        author="test-author",
+        invocation_context=self.mock_context,
+        part_converter=Mock(),
+    )
+
+    assert event is not None
+    assert event.custom_metadata == {"source": "agent-x"}
+    assert event.error_code == "TIMEOUT"
+    assert event.content is None
+
+  def test_convert_a2a_status_update_restores_metadata(self):
+    """Status update conversion must restore event metadata."""
+    update = TaskStatusUpdateEvent(
+        task_id="task-1",
+        status=TaskStatus(
+            state=TaskState.working,
+            timestamp="now",
+            message=Message(
+                message_id="m1",
+                role="agent",
+                parts=[],
+                metadata={
+                    _get_adk_metadata_key("custom_metadata"): {
+                        "progress": 50
+                    },
+                },
+            ),
+        ),
+        context_id="context-1",
+        final=False,
+    )
+
+    event = convert_a2a_status_update_to_event(
+        update,
+        author="test-author",
+        invocation_context=self.mock_context,
+        part_converter=Mock(),
+    )
+
+    assert event is not None
+    assert event.custom_metadata == {"progress": 50}
+
+  def test_convert_a2a_artifact_update_restores_metadata(self):
+    """Artifact update conversion must restore event metadata."""
+    a2a_part = Mock(spec=A2APart)
+    a2a_part.root = Mock(spec=TextPart)
+    a2a_part.root.metadata = {}
+    update = TaskArtifactUpdateEvent(
+        task_id="task-1",
+        artifact=Artifact(
+            artifact_id="art-1",
+            artifact_type="message",
+            parts=[a2a_part],
+            metadata={
+                _get_adk_metadata_key("custom_metadata"): {"tag": "v1"},
+            },
+        ),
+        append=False,
+        context_id="context-1",
+        last_chunk=True,
+    )
+
+    mock_genai_part = genai_types.Part.from_text(text="artifact text")
+    event = convert_a2a_artifact_update_to_event(
+        update,
+        author="test-author",
+        invocation_context=self.mock_context,
+        part_converter=Mock(return_value=[mock_genai_part]),
+    )
+
+    assert event is not None
+    assert event.custom_metadata == {"tag": "v1"}
+    assert event.content is not None
