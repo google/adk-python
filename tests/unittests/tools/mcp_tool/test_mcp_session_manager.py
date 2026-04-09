@@ -134,6 +134,49 @@ class TestMCPSessionManager:
 
     assert manager._connection_params == sse_params
 
+  @patch("google.adk.tools.mcp_tool.mcp_session_manager.sse_client")
+  def test_init_with_sse_custom_httpx_factory(self, mock_sse_client):
+    """Test that sse_client is called with custom httpx_client_factory."""
+    custom_httpx_factory = Mock()
+
+    sse_params = SseConnectionParams(
+        url="https://example.com/mcp",
+        timeout=10.0,
+        httpx_client_factory=custom_httpx_factory,
+    )
+    manager = MCPSessionManager(sse_params)
+
+    manager._create_client()
+
+    mock_sse_client.assert_called_once_with(
+        url="https://example.com/mcp",
+        headers=None,
+        timeout=10.0,
+        sse_read_timeout=300.0,
+        httpx_client_factory=custom_httpx_factory,
+    )
+
+  @patch("google.adk.tools.mcp_tool.mcp_session_manager.sse_client")
+  def test_init_with_sse_default_httpx_factory(self, mock_sse_client):
+    """Test that sse_client is called with default httpx_client_factory."""
+    sse_params = SseConnectionParams(
+        url="https://example.com/mcp",
+        timeout=10.0,
+    )
+    manager = MCPSessionManager(sse_params)
+
+    manager._create_client()
+
+    mock_sse_client.assert_called_once_with(
+        url="https://example.com/mcp",
+        headers=None,
+        timeout=10.0,
+        sse_read_timeout=300.0,
+        httpx_client_factory=SseConnectionParams.model_fields[
+            "httpx_client_factory"
+        ].get_default(),
+    )
+
   def test_init_with_streamable_http_params(self):
     """Test initialization with StreamableHTTPConnectionParams."""
     http_params = StreamableHTTPConnectionParams(
@@ -606,6 +649,39 @@ class TestMCPSessionManager:
     exit_stack1.aclose.assert_called_once()
     exit_stack2.aclose.assert_not_called()
     assert len(manager._sessions) == 0
+
+  @pytest.mark.asyncio
+  async def test_pickle_mcp_session_manager(self):
+    """Verify that MCPSessionManager can be pickled and unpickled."""
+    import pickle
+
+    manager = MCPSessionManager(self.mock_stdio_connection_params)
+
+    # Access the lock to ensure it's initialized
+    lock = manager._session_lock
+    assert isinstance(lock, asyncio.Lock)
+
+    # Add a mock session to verify it's cleared on pickling
+    manager._sessions["test"] = (Mock(), Mock(), asyncio.get_running_loop())
+
+    # Pickle and unpickle
+    pickled = pickle.dumps(manager)
+    unpickled = pickle.loads(pickled)
+
+    # Verify basics are restored
+    assert unpickled._connection_params == manager._connection_params
+
+    # Verify transient/unpicklable members are re-initialized or cleared
+    assert unpickled._sessions == {}
+    assert unpickled._session_lock_map == {}
+    assert isinstance(unpickled._lock_map_lock, type(manager._lock_map_lock))
+    assert unpickled._lock_map_lock is not manager._lock_map_lock
+    assert unpickled._errlog == sys.stderr
+
+    # Verify we can still get a lock in the new instance
+    new_lock = unpickled._session_lock
+    assert isinstance(new_lock, asyncio.Lock)
+    assert new_lock is not lock
 
 
 @pytest.mark.asyncio

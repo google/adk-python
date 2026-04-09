@@ -23,8 +23,11 @@
 
 from __future__ import annotations
 
+import asyncio
+from collections.abc import AsyncIterator
 from collections.abc import Iterator
 from collections.abc import Mapping
+from contextlib import asynccontextmanager
 from contextlib import contextmanager
 import json
 import logging
@@ -53,14 +56,21 @@ from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GEN_A
 from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GEN_AI_USAGE_OUTPUT_TOKENS
 from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GenAiSystemValues
 from opentelemetry.semconv._incubating.attributes.user_attributes import USER_ID
+from opentelemetry.semconv.attributes.error_attributes import ERROR_TYPE
 from opentelemetry.semconv.schemas import Schemas
 from opentelemetry.trace import Span
 from opentelemetry.util.types import AnyValue
 from opentelemetry.util.types import AttributeValue
 from pydantic import BaseModel
+from typing_extensions import deprecated
 
 from .. import version
 from ..utils.model_name_utils import is_gemini_model
+from ._experimental_semconv import is_experimental_semconv
+from ._experimental_semconv import maybe_log_completion_details
+from ._experimental_semconv import set_operation_details_attributes_from_request
+from ._experimental_semconv import set_operation_details_attributes_from_response
+from ._experimental_semconv import set_operation_details_common_attributes
 
 # By default some ADK spans include attributes with potential PII data.
 # This env, when set to false, allows to disable populating those attributes.
@@ -72,6 +82,11 @@ OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT = (
 )
 
 USER_CONTENT_ELIDED = '<elided>'
+
+# Used to associate a span with a destination resource for AppHub. Tools with
+# this key in their BaseTool.custom_metadata will have the mapping added as a
+# span attribute
+GCP_MCP_SERVER_DESTINATION_ID = 'gcp.mcp.server.destination.id'
 
 # Needed to avoid circular imports
 if TYPE_CHECKING:
@@ -104,7 +119,8 @@ def _safe_json_serialize(obj) -> str:
     obj: The object to serialize.
 
   Returns:
-    The JSON-serialized object string or <non-serializable> if the object cannot be serialized.
+    The JSON-serialized object string or <non-serializable> if the object cannot
+    be serialized.
   """
 
   try:
@@ -153,6 +169,7 @@ def trace_tool_call(
     tool: BaseTool,
     args: dict[str, Any],
     function_response_event: Event | None,
+    error: Exception | None = None,
 ):
   """Traces tool call.
 
@@ -160,6 +177,7 @@ def trace_tool_call(
     tool: The tool that was called.
     args: The arguments to the tool call.
     function_response_event: The event with the function response details.
+    error: The exception raised during tool execution, if any.
   """
   span = trace.get_current_span()
 
@@ -170,6 +188,20 @@ def trace_tool_call(
 
   # e.g. FunctionTool
   span.set_attribute(GEN_AI_TOOL_TYPE, tool.__class__.__name__)
+
+  if error is not None:
+    if hasattr(error, 'error_type') and error.error_type is not None:
+      span.set_attribute(ERROR_TYPE, str(error.error_type))
+    else:
+      span.set_attribute(ERROR_TYPE, type(error).__name__)
+
+  # Special case for client side association with a remote tool call
+  if (
+      tool.custom_metadata
+      and GCP_MCP_SERVER_DESTINATION_ID in tool.custom_metadata
+  ):
+    destination_id = tool.custom_metadata[GCP_MCP_SERVER_DESTINATION_ID]
+    span.set_attribute(GCP_MCP_SERVER_DESTINATION_ID, destination_id)
 
   # Setting empty llm request and response (as UI expect these) while not
   # applicable for tool_response.
@@ -312,6 +344,17 @@ def trace_call_llm(
           'gen_ai.request.max_tokens',
           llm_request.config.max_output_tokens,
       )
+    try:
+      if (
+          llm_request.config.thinking_config
+          and llm_request.config.thinking_config.thinking_budget is not None
+      ):
+        span.set_attribute(
+            'gen_ai.usage.experimental.reasoning_tokens_limit',
+            llm_request.config.thinking_config.thinking_budget,
+        )
+    except AttributeError:
+      pass
 
   try:
     llm_response_json = llm_response.model_dump_json(exclude_none=True)
@@ -337,6 +380,22 @@ def trace_call_llm(
           'gen_ai.usage.output_tokens',
           llm_response.usage_metadata.candidates_token_count,
       )
+    try:
+      if llm_response.usage_metadata.thoughts_token_count is not None:
+        span.set_attribute(
+            'gen_ai.usage.experimental.reasoning_tokens',
+            llm_response.usage_metadata.thoughts_token_count,
+        )
+    except AttributeError:
+      pass
+    try:
+      if llm_response.usage_metadata.system_instruction_tokens is not None:
+        span.set_attribute(
+            'gen_ai.usage.experimental.system_instruction_tokens',
+            llm_response.usage_metadata.system_instruction_tokens,
+        )
+    except AttributeError:
+      pass
   if llm_response.finish_reason:
     try:
       finish_reason_str = llm_response.finish_reason.value.lower()
@@ -427,6 +486,7 @@ def _should_add_request_response_to_spans() -> bool:
   return not disabled_via_env_var
 
 
+@deprecated('Replaced by use_inference_span to support experimental semconv.')
 @contextmanager
 def use_generate_content_span(
     llm_request: LlmRequest,
@@ -453,11 +513,57 @@ def use_generate_content_span(
     with _use_extra_generate_content_attributes(common_attributes):
       yield
   else:
-    with _use_native_generate_content_span(
+    with _use_native_generate_content_span_stable_semconv(
         llm_request=llm_request,
         common_attributes=common_attributes,
     ) as span:
-      yield span
+      yield span.span
+
+
+@asynccontextmanager
+async def use_inference_span(
+    llm_request: LlmRequest,
+    invocation_context: InvocationContext,
+    model_response_event: Event,
+) -> AsyncIterator[GenerateContentSpan | None]:
+  """Context manager encompassing `generate_content {model.name}` span.
+
+  When an external library for inference instrumentation is installed (e.g.
+  opentelemetry-instrumentation-google-genai),
+  span creation is delegated to said library.
+  """
+
+  common_attributes = {
+      GEN_AI_AGENT_NAME: invocation_context.agent.name,
+      GEN_AI_CONVERSATION_ID: invocation_context.session.id,
+      USER_ID: invocation_context.session.user_id,
+      'gcp.vertex.agent.event_id': model_response_event.id,
+      'gcp.vertex.agent.invocation_id': invocation_context.invocation_id,
+  }
+  if (
+      _is_gemini_agent(invocation_context.agent)
+      and _instrumented_with_opentelemetry_instrumentation_google_genai()
+  ):
+    with _use_extra_generate_content_attributes(common_attributes):
+      yield
+  else:
+    async with _use_native_generate_content_span(
+        llm_request=llm_request,
+        common_attributes=common_attributes,
+    ) as gc_span:
+      if is_experimental_semconv():
+        set_operation_details_common_attributes(
+            gc_span.operation_details_common_attributes, common_attributes
+        )
+      try:
+        yield gc_span
+      finally:
+        maybe_log_completion_details(
+            gc_span.span,
+            otel_logger,
+            gc_span.operation_details_attributes,
+            gc_span.operation_details_common_attributes,
+        )
 
 
 def _should_log_prompt_response_content() -> bool:
@@ -467,6 +573,8 @@ def _should_log_prompt_response_content() -> bool:
 
 
 def _serialize_content(content: types.ContentUnion) -> AnyValue:
+  if content is None:
+    return None
   if isinstance(content, BaseModel):
     return content.model_dump()
   if isinstance(content, str):
@@ -540,18 +648,29 @@ def _is_gemini_agent(agent: BaseAgent) -> bool:
   return isinstance(agent.model, Gemini)
 
 
-@contextmanager
-def _use_native_generate_content_span(
+def _set_common_generate_content_attributes(
+    span: Span,
     llm_request: LlmRequest,
     common_attributes: Mapping[str, AttributeValue],
-) -> Iterator[Span]:
+):
+  span.set_attribute(GEN_AI_OPERATION_NAME, 'generate_content')
+  span.set_attribute(GEN_AI_REQUEST_MODEL, llm_request.model or '')
+  span.set_attributes(common_attributes)
+
+
+@contextmanager
+def _use_native_generate_content_span_stable_semconv(
+    llm_request: LlmRequest,
+    common_attributes: Mapping[str, AttributeValue],
+) -> Iterator[GenerateContentSpan]:
   with tracer.start_as_current_span(
       f"generate_content {llm_request.model or ''}"
   ) as span:
     span.set_attribute(GEN_AI_SYSTEM, _guess_gemini_system_name())
-    span.set_attribute(GEN_AI_OPERATION_NAME, 'generate_content')
-    span.set_attribute(GEN_AI_REQUEST_MODEL, llm_request.model or '')
-    span.set_attributes(common_attributes)
+    _set_common_generate_content_attributes(
+        span, llm_request, common_attributes
+    )
+    gc_span = GenerateContentSpan(span)
 
     otel_logger.emit(
         LogRecord(
@@ -564,7 +683,6 @@ def _use_native_generate_content_span(
             attributes={GEN_AI_SYSTEM: _guess_gemini_system_name()},
         )
     )
-
     for content in llm_request.contents:
       otel_logger.emit(
           LogRecord(
@@ -574,9 +692,51 @@ def _use_native_generate_content_span(
           )
       )
 
-    yield span
+    yield gc_span
 
 
+@asynccontextmanager
+async def _use_native_generate_content_span(
+    llm_request: LlmRequest,
+    common_attributes: Mapping[str, AttributeValue],
+) -> AsyncIterator[GenerateContentSpan]:
+  if not is_experimental_semconv():
+    with _use_native_generate_content_span_stable_semconv(
+        llm_request, common_attributes
+    ) as gc_span:
+      yield gc_span
+    return
+
+  with tracer.start_as_current_span(
+      f"generate_content {llm_request.model or ''}"
+  ) as span:
+
+    _set_common_generate_content_attributes(
+        span, llm_request, common_attributes
+    )
+    gc_span = GenerateContentSpan(span)
+
+    await set_operation_details_attributes_from_request(
+        gc_span.operation_details_attributes, llm_request
+    )
+    yield gc_span
+
+
+class GenerateContentSpan:
+  """Manages tracing within a `generate_content` OpenTelemetry span.
+
+  This class provides attributes for the experimental semantic convention.
+  """
+
+  def __init__(self, span: Span):
+    self.span = span
+    self.operation_details_attributes = {}
+    self.operation_details_common_attributes = {}
+
+
+@deprecated(
+    'Replaced by trace_inference_result to support experimental semconv.'
+)
 def trace_generate_content_result(span: Span | None, llm_response: LlmResponse):
   """Trace result of the inference in generate_content span."""
 
@@ -611,6 +771,61 @@ def trace_generate_content_result(span: Span | None, llm_response: LlmResponse):
           attributes={GEN_AI_SYSTEM: _guess_gemini_system_name()},
       )
   )
+
+
+def trace_inference_result(
+    span: Span | None | GenerateContentSpan,
+    llm_response: LlmResponse,
+):
+  """Trace result of the inference in generate_content span."""
+  gc_span = None
+  if isinstance(span, GenerateContentSpan):
+    gc_span = span
+    span = gc_span.span
+
+  if span is None:
+    return
+
+  if llm_response.partial:
+    return
+
+  if finish_reason := llm_response.finish_reason:
+    span.set_attribute(GEN_AI_RESPONSE_FINISH_REASONS, [finish_reason.lower()])
+  if usage_metadata := llm_response.usage_metadata:
+    if usage_metadata.prompt_token_count is not None:
+      span.set_attribute(
+          GEN_AI_USAGE_INPUT_TOKENS, usage_metadata.prompt_token_count
+      )
+    if usage_metadata.candidates_token_count is not None:
+      span.set_attribute(
+          GEN_AI_USAGE_OUTPUT_TOKENS, usage_metadata.candidates_token_count
+      )
+
+  if is_experimental_semconv() and isinstance(gc_span, GenerateContentSpan):
+    set_operation_details_attributes_from_response(
+        llm_response,
+        gc_span.operation_details_attributes,
+        gc_span.operation_details_common_attributes,
+    )
+
+  else:
+    otel_logger.emit(
+        LogRecord(
+            event_name='gen_ai.choice',
+            body={
+                'content': _serialize_content_with_elision(
+                    llm_response.content
+                ),
+                'index': 0,  # ADK always returns a single candidate
+            }
+            | (
+                {'finish_reason': llm_response.finish_reason.value}
+                if llm_response.finish_reason is not None
+                else {}
+            ),
+            attributes={GEN_AI_SYSTEM: _guess_gemini_system_name()},
+        )
+    )
 
 
 def _guess_gemini_system_name() -> str:

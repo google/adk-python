@@ -15,8 +15,9 @@
 from __future__ import annotations
 
 from . import version
+from .agents.context import Context
 from .agents.llm_agent import Agent
 from .runners import Runner
 
 __version__ = version.__version__
-__all__ = ["Agent", "Runner"]
+__all__ = ["Agent", "Context", "Runner"]

@@ -31,7 +31,9 @@ if TYPE_CHECKING:
   from ..auth.auth_tool import AuthConfig
   from ..events.event import Event
   from ..events.event_actions import EventActions
+  from ..events.ui_widget import UiWidget
   from ..memory.base_memory_service import SearchMemoryResponse
+  from ..memory.memory_entry import MemoryEntry
   from ..sessions.state import State
   from ..tools.tool_confirmation import ToolConfirmation
   from .invocation_context import InvocationContext
@@ -345,7 +347,8 @@ class Context(ReadonlyContext):
 
     Args:
       events: Explicit events to add to memory.
-      custom_metadata: Optional standard metadata for memory generation.
+      custom_metadata: Optional metadata forwarded to the configured memory
+        service. Supported keys are implementation-specific.
 
     Raises:
       ValueError: If memory service is not available.
@@ -359,6 +362,33 @@ class Context(ReadonlyContext):
         user_id=self._invocation_context.session.user_id,
         session_id=self._invocation_context.session.id,
         events=events,
+        custom_metadata=custom_metadata,
+    )
+
+  async def add_memory(
+      self,
+      *,
+      memories: Sequence[MemoryEntry],
+      custom_metadata: Mapping[str, object] | None = None,
+  ) -> None:
+    """Adds explicit memory items directly to the memory service.
+
+    Uses this callback's current session identifiers as memory scope.
+
+    Args:
+      memories: Explicit memory items to add.
+      custom_metadata: Optional metadata forwarded to the configured memory
+        service. Supported keys are implementation-specific.
+
+    Raises:
+      ValueError: If memory service is not available.
+    """
+    if self._invocation_context.memory_service is None:
+      raise ValueError("Cannot add memory: memory service is not available.")
+    await self._invocation_context.memory_service.add_memory(
+        app_name=self._invocation_context.session.app_name,
+        user_id=self._invocation_context.session.user_id,
+        memories=memories,
         custom_metadata=custom_metadata,
     )
 
@@ -381,3 +411,29 @@ class Context(ReadonlyContext):
         user_id=self._invocation_context.user_id,
         query=query,
     )
+
+  # ============================================================================
+  # UI Widget methods
+  # ============================================================================
+
+  def render_ui_widget(self, ui_widget: UiWidget) -> None:
+    """Adds a UI widget to the current event's actions for the UI to render.
+
+    UI widgets provide rendering payload/metadata that the UI Host uses to
+    display rich interactive components (e.g., MCP App iframes) alongside agent
+    responses.
+
+    Args:
+      ui_widget: A ``UiWidget`` instance.
+    """
+    if self._event_actions.render_ui_widgets is None:
+      self._event_actions.render_ui_widgets = []
+
+    for existing_widget in self._event_actions.render_ui_widgets:
+      if existing_widget.id == ui_widget.id:
+        raise ValueError(
+            f"UI widget with ID '{ui_widget.id}' already exists in the current"
+            " event actions."
+        )
+
+    self._event_actions.render_ui_widgets.append(ui_widget)
