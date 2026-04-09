@@ -377,6 +377,13 @@ class GeminiLlmConnection(BaseLlmConnection):
                   model_version=self._model_version,
               )
           )
+        if message.go_away:
+          logger.debug('Received GoAway message: %s', message.go_away)
+          yield LlmResponse(
+              go_away=message.go_away,
+              model_version=self._model_version,
+          )
+
       if tool_call_parts:
         logger.debug('Exited loop with pending tool_call_parts')
         yield LlmResponse(

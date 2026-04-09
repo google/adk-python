@@ -90,7 +90,6 @@ from ..evaluation.eval_sets_manager import EvalSetsManager
 from ..events.event import Event
 from ..memory.base_memory_service import BaseMemoryService
 from ..plugins.base_plugin import BasePlugin
-from ..plugins.bigquery_agent_analytics_plugin import BigQueryAgentAnalyticsPlugin
 from ..runners import Runner
 from ..sessions.base_session_service import BaseSessionService
 from ..sessions.session import Session
@@ -725,6 +724,8 @@ class AdkWebServer:
           bq_analytics_config.get("dataset_id"),
           bq_analytics_config.get("dataset_location"),
       ]):
+        from ..plugins.bigquery_agent_analytics_plugin import BigQueryAgentAnalyticsPlugin
+
         plugins.append(
             BigQueryAgentAnalyticsPlugin(
                 project_id=bq_analytics_config.get("project_id"),

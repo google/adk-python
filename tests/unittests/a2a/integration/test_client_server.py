@@ -21,6 +21,7 @@ from a2a.types import TaskState
 from a2a.types import TextPart
 from google.adk.agents.remote_a2a_agent import A2A_METADATA_PREFIX
 from google.adk.events.event import Event
+from google.adk.events.event_actions import EventActions
 from google.adk.platform import uuid as platform_uuid
 from google.adk.runners import Runner
 from google.adk.sessions.in_memory_session_service import InMemorySessionService
@@ -46,6 +47,11 @@ def create_streaming_mock_run_async(received_requests: list):
         author="FakeAgent",
         content=types.Content(parts=[types.Part(text=" world")]),
         partial=True,
+    )
+    yield Event(
+        author="FakeAgent",
+        partial=True,
+        actions=EventActions(artifact_delta={"file1": 1}),
     )
     yield Event(
         author="FakeAgent",
@@ -92,6 +98,7 @@ async def test_streaming_adk_to_streaming_a2a():
   new_message = types.Content(parts=[types.Part(text="Hi")], role="user")
 
   texts = []
+  actions = []
   async for event in client_runner.run_async(
       user_id="test_user", session_id="test_session", new_message=new_message
   ):
@@ -99,11 +106,15 @@ async def test_streaming_adk_to_streaming_a2a():
       for p in event.content.parts:
         if p.text:
           texts.append(p.text)
+    if event.actions and event.actions.artifact_delta:
+      actions.append(event.actions)
 
   assert len(received_requests) == 1
   assert received_requests[0]["session_id"] is not None
 
   assert texts == ["Hello", " world", "Hello world"]
+  assert len(actions) == 1
+  assert actions[0].artifact_delta == {"file1": 1}
 
 
 @pytest.mark.asyncio
