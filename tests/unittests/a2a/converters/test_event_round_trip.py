@@ -248,3 +248,43 @@ def test_round_trip_custom_metadata_preserves_structured_values():
   assert (
       _parse_adk_metadata_value(serialized_metadata) == original_custom_metadata
   )
+
+
+def test_serialize_value_handles_non_serializable_nested_types():
+  """Regression: non-JSON-native types inside dicts/lists must not crash."""
+  from datetime import datetime
+  from datetime import timezone
+
+  from google.adk.a2a.converters.from_adk_event import _serialize_value
+
+  ts = datetime(2026, 1, 15, 12, 0, 0, tzinfo=timezone.utc)
+  value = {
+      "created_at": ts,
+      "tags": {"alpha", "beta"},
+      "normal": 42,
+      "nested_list": [True, ts],
+  }
+
+  result = _serialize_value(value)
+
+  # Result must be fully JSON-serializable (no crash)
+  import json
+
+  json_str = json.dumps(result)
+  parsed = json.loads(json_str)
+
+  # Leaf types preserved
+  assert parsed["normal"] == 42
+
+  # datetime falls back to str representation
+  assert isinstance(parsed["created_at"], str)
+  assert "2026" in parsed["created_at"]
+
+  # set becomes a sorted list of strings
+  assert isinstance(parsed["tags"], list)
+  assert set(parsed["tags"]) == {"alpha", "beta"}
+
+  # nested list with mixed types
+  assert parsed["nested_list"][0] is True
+  assert isinstance(parsed["nested_list"][1], str)
+

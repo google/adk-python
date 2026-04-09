@@ -267,11 +267,24 @@ def _serialize_value(value: Any) -> Optional[Any]:
       logger.warning("Failed to serialize Pydantic model, falling back: %s", e)
       return str(value)
 
-  if isinstance(value, (dict, list, str, bool, int, float)):
+  # JSON-native leaf types — return as-is
+  if isinstance(value, (str, bool, int, float)):
     return value
 
+  # Containers — recurse so nested non-serializable values are handled
+  if isinstance(value, dict):
+    return {str(k): _serialize_value(v) for k, v in value.items()}
+
+  if isinstance(value, (list, tuple)):
+    return [_serialize_value(item) for item in value]
+
+  # Common Python types with no JSON equivalent
+  if isinstance(value, (set, frozenset)):
+    return [_serialize_value(item) for item in sorted(value, key=str)]
+
+  # Other objects — try JSON normalization, then str() fallback
   try:
-    return json.loads(json.dumps(value))
+    return json.loads(json.dumps(value, default=str))
   except (TypeError, ValueError):
     pass
 
