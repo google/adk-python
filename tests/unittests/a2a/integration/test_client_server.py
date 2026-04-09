@@ -19,6 +19,8 @@ from a2a.types import Part as A2APart
 from a2a.types import Task
 from a2a.types import TaskState
 from a2a.types import TextPart
+from google.adk.a2a.executor.config import A2aAgentExecutorConfig
+from google.adk.a2a.executor.interceptors.include_artifacts_in_a2a_event import include_artifacts_in_a2a_event_interceptor
 from google.adk.agents.remote_a2a_agent import A2A_METADATA_PREFIX
 from google.adk.events.event import Event
 from google.adk.events.event_actions import EventActions
@@ -586,3 +588,51 @@ async def test_user_follow_up():
   )
 
   assert last_event is not None
+
+
+@pytest.mark.asyncio
+async def test_include_artifacts_in_a2a_event():
+  """Test that artifacts are included in A2A events when the interceptor is enabled."""
+
+  async def mock_run_async(**kwargs):
+    yield Event(
+        actions=EventActions(artifact_delta={"artifact1": 1, "artifact2": 1}),
+        author="agent",
+        content=types.Content(
+            parts=[types.Part(text="Here are the artifacts")]
+        ),
+    )
+
+  config = A2aAgentExecutorConfig(
+      execute_interceptors=[include_artifacts_in_a2a_event_interceptor]
+  )
+  built_app = create_server_app(mock_run_async, config=config)
+
+  a2a_client = create_a2a_client(built_app, streaming=False)
+
+  request = A2AMessage(
+      message_id="test_message_id",
+      parts=[A2APart(root=TextPart(text="Hi"))],
+      role="user",
+  )
+
+  events = []
+  async for event in a2a_client.send_message(request=request):
+    events.append(event)
+
+  assert len(events) == 1
+
+  task = events[0][0]
+  assert isinstance(task, Task)
+  assert task.artifacts is not None
+  assert len(task.artifacts) == 3
+
+  assert task.artifacts[0].parts[0].root.text == "Here are the artifacts"
+
+  assert task.artifacts[1].artifact_id == "artifact1_1"
+  assert task.artifacts[1].name == "artifact1"
+  assert task.artifacts[1].parts[0].root.text == "artifact content"
+
+  assert task.artifacts[2].artifact_id == "artifact2_1"
+  assert task.artifacts[2].name == "artifact2"
+  assert task.artifacts[2].parts[0].root.text == "artifact content"
