@@ -2289,7 +2289,7 @@ def cli_deploy_agent_engine(
     agent_engine_config_file: str,
     validate_agent_import: bool = False,
     skip_agent_import_validation_alias: bool = False,
-):
+) -> None:
   """Deploys an agent to Agent Engine.
 
   Example:
