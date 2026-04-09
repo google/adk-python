@@ -1882,14 +1882,13 @@ async def test_content_to_message_param_user_message_file_uri_only(
 
 @pytest.mark.asyncio
 async def test_content_to_message_param_user_message_file_uri_without_mime_type():
-  """Test handling of file_data without mime_type (GcsArtifactService scenario).
+  """Test that file_data without determinable MIME type raises ValueError.
 
   When using GcsArtifactService, artifacts may have file_uri (gs://...) but
-  without mime_type set. LiteLLM's Vertex AI backend requires the format
-  field to be present, so we infer MIME type from the URI extension or use
-  a default fallback to ensure compatibility.
+  without mime_type set and no recognizable extension. A clear error should
+  be raised so the developer can set file_data.mime_type explicitly.
 
-  See: https://github.com/google/adk-python/issues/3787
+  See: https://github.com/google/adk-python/issues/5184
   """
   file_part = types.Part(
       file_data=types.FileData(
@@ -1904,22 +1903,8 @@ async def test_content_to_message_param_user_message_file_uri_without_mime_type(
       ],
   )
 
-  message = await _content_to_message_param(content)
-  assert message == {
-      "role": "user",
-      "content": [
-          {"type": "text", "text": "Analyze this file."},
-          {
-              "type": "file",
-              "file": {
-                  "file_id": (
-                      "gs://agent-artifact-bucket/app/user/session/artifact/0"
-                  ),
-                  "format": "application/octet-stream",
-              },
-          },
-      ],
-  }
+  with pytest.raises(ValueError, match="Cannot determine MIME type"):
+    await _content_to_message_param(content)
 
 
 @pytest.mark.asyncio
@@ -3097,27 +3082,125 @@ async def test_get_content_file_uri_infers_from_display_name():
 
 @pytest.mark.asyncio
 async def test_get_content_file_uri_default_mime_type():
-  """Test that file_uri without extension uses default MIME type.
+  """Test that file_uri without extension raises ValueError.
 
   When file_data has a file_uri without a recognizable extension and no explicit
-  mime_type, a default MIME type should be used to ensure compatibility with
-  LiteLLM backends.
+  mime_type, a ValueError should be raised to prevent silent misconfiguration.
 
-  See: https://github.com/google/adk-python/issues/3787
+  See: https://github.com/google/adk-python/issues/5184
   """
-  # Use Part constructor directly to create file_data without mime_type
-  # (types.Part.from_uri requires a valid mime_type when it can't infer)
   parts = [
       types.Part(file_data=types.FileData(file_uri="gs://bucket/artifact/0"))
   ]
-  content = await _get_content(parts)
-  assert content[0] == {
-      "type": "file",
-      "file": {
-          "file_id": "gs://bucket/artifact/0",
-          "format": "application/octet-stream",
-      },
-  }
+  with pytest.raises(ValueError, match="Cannot determine MIME type"):
+    await _get_content(parts)
+
+
+@pytest.mark.asyncio
+async def test_get_content_file_uri_no_mime_text_fallback_still_works():
+  """Text fallback for unsupported providers works without MIME type.
+
+  When a provider requires text fallback (e.g., anthropic), file_data
+  without a determinable MIME type should produce a text reference
+  rather than raising a ValueError.
+
+  See: https://github.com/google/adk-python/issues/5184
+  """
+  parts = [
+      types.Part(
+          file_data=types.FileData(
+              file_uri="gs://bucket/artifact/0",
+              display_name="my_artifact",
+          )
+      )
+  ]
+  content = await _get_content(parts, provider="anthropic")
+  assert content == [
+      {"type": "text", "text": '[File reference: "my_artifact"]'},
+  ]
+
+
+@pytest.mark.asyncio
+async def test_content_to_message_param_recursive_model_propagation():
+  """Recursive _content_to_message_param calls propagate model parameter.
+
+  When a Content has mixed function_response + file parts, the recursive
+  call for non-tool parts must forward model= so provider-specific behavior
+  (e.g., Vertex AI Gemini file block support) works correctly.
+
+  See: https://github.com/google/adk-python/issues/5184
+  """
+  tool_part = types.Part.from_function_response(
+      name="fetch_file",
+      response={"status": "ok"},
+  )
+  tool_part.function_response.id = "call_1"
+
+  file_part = types.Part(
+      file_data=types.FileData(
+          file_uri="gs://bucket/data.csv",
+          mime_type="text/csv",
+      )
+  )
+
+  content = types.Content(
+      role="user",
+      parts=[tool_part, file_part],
+  )
+
+  # vertex_ai + gemini model should keep the file block (not text fallback)
+  messages = await _content_to_message_param(
+      content, provider="vertex_ai", model="vertex_ai/gemini-1.5-pro"
+  )
+  assert isinstance(messages, list)
+  assert len(messages) == 2
+  assert messages[0]["role"] == "tool"
+  # The follow-up user message must contain a file block, not text fallback
+  user_msg = messages[1]
+  assert user_msg["role"] == "user"
+  file_content = user_msg["content"]
+  assert any(
+      item.get("type") == "file" for item in file_content
+  ), "file block expected when model is propagated for vertex_ai/gemini"
+
+
+@pytest.mark.asyncio
+async def test_content_to_message_param_recursive_model_propagation_fallback():
+  """Without model propagation, vertex_ai non-gemini would use text fallback.
+
+  Verify that vertex_ai with a non-gemini model correctly falls back to text.
+  """
+  tool_part = types.Part.from_function_response(
+      name="fetch_file",
+      response={"status": "ok"},
+  )
+  tool_part.function_response.id = "call_1"
+
+  file_part = types.Part(
+      file_data=types.FileData(
+          file_uri="gs://bucket/data.csv",
+          mime_type="text/csv",
+      )
+  )
+
+  content = types.Content(
+      role="user",
+      parts=[tool_part, file_part],
+  )
+
+  # vertex_ai + non-gemini model should use text fallback
+  messages = await _content_to_message_param(
+      content, provider="vertex_ai", model="vertex_ai/claude-3-sonnet"
+  )
+  assert isinstance(messages, list)
+  user_msg = messages[1]
+  assert user_msg["role"] == "user"
+  file_content = user_msg["content"]
+  assert any(
+      item.get("type") == "text"
+      and "File reference" in item.get("text", "")
+      for item in file_content
+  ), "text fallback expected for vertex_ai non-gemini model"
 
 
 @pytest.mark.asyncio

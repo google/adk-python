@@ -811,6 +811,7 @@ async def _content_to_message_param(
     follow_up = await _content_to_message_param(
         types.Content(role=content.role, parts=non_tool_parts),
         provider=provider,
+        model=model,
     )
     follow_up_messages = (
         follow_up if isinstance(follow_up, list) else [follow_up]
@@ -1081,24 +1082,17 @@ async def _get_content(
         })
         continue
 
-      # Determine MIME type: use explicit value, infer from URI, or use default.
+      # Determine MIME type: use explicit value, infer from URI, or fail.
       mime_type = part.file_data.mime_type
       if not mime_type:
         mime_type = _infer_mime_type_from_uri(part.file_data.file_uri)
       if not mime_type and part.file_data.display_name:
         guessed_mime_type, _ = mimetypes.guess_type(part.file_data.display_name)
         mime_type = guessed_mime_type
-      if not mime_type:
-        # LiteLLM's Vertex AI backend requires format for GCS URIs.
-        mime_type = _DEFAULT_MIME_TYPE
-        logger.debug(
-            "Could not determine MIME type for file_uri %s, using default: %s",
-            part.file_data.file_uri,
-            mime_type,
-        )
-      mime_type = _normalize_mime_type(mime_type)
+      if mime_type:
+        mime_type = _normalize_mime_type(mime_type)
 
-      if provider in _FILE_ID_REQUIRED_PROVIDERS and _is_http_url(
+      if mime_type and provider in _FILE_ID_REQUIRED_PROVIDERS and _is_http_url(
           part.file_data.file_uri
       ):
         url_content_type = _media_url_content_type(mime_type)
@@ -1124,6 +1118,13 @@ async def _get_content(
             "text": f'[File reference: "{identifier}"]',
         })
         continue
+
+      if not mime_type:
+        raise ValueError(
+            f"Cannot determine MIME type for file_uri"
+            f" '{part.file_data.file_uri}'. Set file_data.mime_type"
+            f" explicitly."
+        )
 
       file_object: ChatCompletionFileUrlObject = {
           "file_id": part.file_data.file_uri,
