@@ -23,6 +23,7 @@ from functools import cached_property
 import json
 import logging
 import os
+import re
 from typing import Any
 from typing import AsyncGenerator
 from typing import Iterable
@@ -364,10 +365,23 @@ class AnthropicLlm(BaseLlm):
   def supported_models(cls) -> list[str]:
     return [r"claude-3-.*", r"claude-.*-4.*"]
 
+  def _resolve_model_name(self, model: Optional[str]) -> str:
+    if not model:
+      return self.model
+    if model.startswith("projects/"):
+      match = re.search(
+          r"projects/[^/]+/locations/[^/]+/(?:publishers/anthropic/models|endpoints)/([^/:]+)",
+          model,
+      )
+      if match:
+        return match.group(1)
+    return model
+
   @override
   async def generate_content_async(
       self, llm_request: LlmRequest, stream: bool = False
   ) -> AsyncGenerator[LlmResponse, None]:
+    model_to_use = self._resolve_model_name(llm_request.model)
     messages = [
         content_to_message_param(content)
         for content in llm_request.contents or []
@@ -390,7 +404,7 @@ class AnthropicLlm(BaseLlm):
 
     if not stream:
       message = await self._anthropic_client.messages.create(
-          model=llm_request.model,
+          model=model_to_use,
           system=llm_request.config.system_instruction,
           messages=messages,
           tools=tools,
@@ -416,8 +430,9 @@ class AnthropicLlm(BaseLlm):
     Yields partial LlmResponse objects as content arrives, followed by
     a final aggregated LlmResponse with all content.
     """
+    model_to_use = self._resolve_model_name(llm_request.model)
     raw_stream = await self._anthropic_client.messages.create(
-        model=llm_request.model,
+        model=model_to_use,
         system=llm_request.config.system_instruction,
         messages=messages,
         tools=tools,
@@ -511,17 +526,26 @@ class Claude(AnthropicLlm):
   @cached_property
   @override
   def _anthropic_client(self) -> AsyncAnthropicVertex:
-    if (
-        "GOOGLE_CLOUD_PROJECT" not in os.environ
-        or "GOOGLE_CLOUD_LOCATION" not in os.environ
-    ):
+    project_id = os.environ.get("GOOGLE_CLOUD_PROJECT")
+    location = os.environ.get("GOOGLE_CLOUD_LOCATION")
+
+    if self.model.startswith("projects/"):
+      match = re.search(
+          r"projects/([^/]+)/locations/([^/]+)/",
+          self.model,
+      )
+      if match:
+        project_id = match.group(1)
+        location = match.group(2)
+
+    if not project_id or not location:
       raise ValueError(
           "GOOGLE_CLOUD_PROJECT and GOOGLE_CLOUD_LOCATION must be set for using"
           " Anthropic on Vertex."
       )
 
     return AsyncAnthropicVertex(
-        project_id=os.environ["GOOGLE_CLOUD_PROJECT"],
-        region=os.environ["GOOGLE_CLOUD_LOCATION"],
+        project_id=project_id,
+        region=location,
         default_headers=get_tracking_headers(),
     )

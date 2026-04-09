@@ -20,6 +20,7 @@ import asyncio
 import base64
 import binascii
 from concurrent.futures import ThreadPoolExecutor
+import contextvars
 import copy
 import functools
 import inspect
@@ -140,6 +141,7 @@ async def _call_tool_in_thread_pool(
   """
   from ...tools.function_tool import FunctionTool
 
+  ctx = contextvars.copy_context()
   loop = asyncio.get_running_loop()
   executor = _get_tool_thread_pool(max_workers)
 
@@ -160,7 +162,9 @@ async def _call_tool_in_thread_pool(
         # For other sync tool types, we can't easily run them in thread pool
         return None
 
-    result = await loop.run_in_executor(executor, run_sync_tool)
+    result = await loop.run_in_executor(
+        executor, lambda: ctx.run(run_sync_tool)
+    )
     if result is not None:
       return result
   else:
@@ -171,7 +175,9 @@ async def _call_tool_in_thread_pool(
       # Create a new event loop for this thread
       return asyncio.run(tool.run_async(args=args, tool_context=tool_context))
 
-    return await loop.run_in_executor(executor, run_async_tool_in_new_loop)
+    return await loop.run_in_executor(
+        executor, lambda: ctx.run(run_async_tool_in_new_loop)
+    )
 
   # Fall back to normal async execution for non-FunctionTool sync tools
   return await tool.run_async(args=args, tool_context=tool_context)
@@ -1179,13 +1185,24 @@ def merge_parallel_function_response_events(
 
   # Merge actions from all events
   merged_actions_data: dict[str, Any] = {}
+  aggregated_ui_widgets = []
   for event in function_response_events:
     if event.actions:
+      actions_dict = event.actions.model_dump(exclude_none=True, by_alias=True)
+      ui_widgets = actions_dict.pop(
+          'renderUiWidgets', None
+      ) or actions_dict.pop('render_ui_widgets', None)
+      if ui_widgets:
+        aggregated_ui_widgets.extend(ui_widgets)
+
       # Use `by_alias=True` because it converts the model to a dictionary while respecting field aliases, ensuring that the enum fields are correctly handled without creating a duplicate.
       merged_actions_data = deep_merge_dicts(
           merged_actions_data,
-          event.actions.model_dump(exclude_none=True, by_alias=True),
+          actions_dict,
       )
+
+  if aggregated_ui_widgets:
+    merged_actions_data['renderUiWidgets'] = aggregated_ui_widgets
 
   merged_actions = EventActions.model_validate(merged_actions_data)
 
@@ -1195,7 +1212,7 @@ def merge_parallel_function_response_events(
       author=base_event.author,
       branch=base_event.branch,
       content=types.Content(role='user', parts=merged_parts),
-      actions=merged_actions,  # Optionally merge actions if required
+      actions=merged_actions,  # Aggregated from all parallel events
   )
 
   # Use the base_event as the timestamp

@@ -16,7 +16,7 @@
 
 # Runs all unit tests for adk codebase. Sets up test environment according to
 # CONTRIBUTING.md.
-# Usage: ./unittests.sh [--version <version>]
+# Usage: ./unittests.sh [--version <version>] [pytest_args]
 
 set -euo pipefail
 
@@ -27,25 +27,33 @@ cd ..
 # Argument Parsing
 ALL_VERSIONS=("3.10" "3.11" "3.12" "3.13" "3.14")
 versions_to_run=()
+PYTEST_ARGS=()
 
-if [[ $# -eq 0 ]]; then
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --version)
+      if [[ -z "${2:-}" ]]; then
+        echo "Error: Missing version for --version flag." >&2
+        echo "Usage: $0 [--version <version>] [pytest_args]" >&2
+        exit 1
+      fi
+      # Validate version
+      if ! [[ " ${ALL_VERSIONS[*]} " =~ " $2 " ]]; then
+        echo "Error: Invalid version '$2'. Supported versions: ${ALL_VERSIONS[*]}" >&2
+        exit 1
+      fi
+      versions_to_run=("$2")
+      shift 2
+      ;;
+    *)
+      PYTEST_ARGS+=("$1")
+      shift
+      ;;
+  esac
+done
+
+if [[ ${#versions_to_run[@]} -eq 0 ]]; then
   versions_to_run=("${ALL_VERSIONS[@]}")
-elif [[ "$1" == "--version" ]]; then
-  if [[ -z "${2:-}" ]]; then
-    echo "Error: Missing version for --version flag." >&2
-    echo "Usage: $0 --version <version>" >&2
-    exit 1
-  fi
-  # Validate version
-  if ! [[ " ${ALL_VERSIONS[*]} " =~ " $2 " ]]; then
-    echo "Error: Invalid version '$2'. Supported versions: ${ALL_VERSIONS[*]}" >&2
-    exit 1
-  fi
-  versions_to_run=("$2")
-else
-  echo "Error: Unknown argument '$1'." >&2
-  echo "Usage: $0 [--version <version>]" >&2
-  exit 1
 fi
 
 
@@ -104,10 +112,19 @@ for version in "${versions_to_run[@]}"; do
     echo "Setting up test environment in $VENV_DIR..."
     uv sync --extra test --active --frozen
 
+    # Determine if PYTEST_ARGS contains explicit test targets (e.g. file, dir, or node ID)
+    HAS_TEST_TARGET=false
+    for arg in "${PYTEST_ARGS[@]:-}"; do
+        [[ "$arg" == *.py || -d "$arg" || "$arg" == *::* ]] && HAS_TEST_TARGET=true && break
+    done
+
     echo "Running unit tests..."
     TEST_EXIT_CODE=0
-    pytest ./tests/unittests || TEST_EXIT_CODE=$?
-
+    if [[ "$HAS_TEST_TARGET" == true ]]; then
+        pytest "${PYTEST_ARGS[@]}" || TEST_EXIT_CODE=$?
+    else
+        pytest ./tests/unittests "${PYTEST_ARGS[@]:-}" || TEST_EXIT_CODE=$?
+    fi
     # 4. report the unit tests status as is
     if [[ $TEST_EXIT_CODE -ne 0 ]]; then
         echo ""
