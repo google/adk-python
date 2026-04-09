@@ -12,5 +12,18 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# version: major.minor.patch
-__version__ = "1.29.0"
+import argparse
+
+
+def get_humidity(location: str) -> str:
+  """Fetch live humidity for a given location. (Simulated)"""
+  print(f"Fetching live humidity for {location}...")
+  return "45% (Simulated)"
+
+
+if __name__ == "__main__":
+  parser = argparse.ArgumentParser()
+  parser.add_argument("--location", type=str, default="Mountain View")
+  args = parser.parse_args()
+
+  print(get_humidity(args.location))
