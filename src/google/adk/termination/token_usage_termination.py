@@ -69,9 +69,7 @@ class TokenUsageTermination(TerminationCondition):
   def terminated(self) -> bool:
     return self._terminated
 
-  async def check(
-      self, events: Sequence[Event]
-  ) -> Optional[TerminationResult]:
+  async def check(self, events: Sequence[Event]) -> Optional[TerminationResult]:
     if self._terminated:
       return None
 
@@ -116,7 +114,7 @@ class TokenUsageTermination(TerminationCondition):
         self._terminated = True
         return TerminationResult(
             reason=(
-                f'Token limit exceeded:'
+                'Token limit exceeded:'
                 f' completion_tokens={self._completion_tokens}'
                 f' >= max_completion_tokens={self._max_completion_tokens}'
             )

@@ -56,9 +56,7 @@ class TerminationCondition(abc.ABC):
     """Whether this termination condition has been reached."""
 
   @abc.abstractmethod
-  async def check(
-      self, events: Sequence[Event]
-  ) -> Optional[TerminationResult]:
+  async def check(self, events: Sequence[Event]) -> Optional[TerminationResult]:
     """Checks whether the termination condition is met.
 
     Called after each event emitted by the agent. Returns a
@@ -117,9 +115,7 @@ class AndTerminationCondition(TerminationCondition):
   def terminated(self) -> bool:
     return self._terminated
 
-  async def check(
-      self, events: Sequence[Event]
-  ) -> Optional[TerminationResult]:
+  async def check(self, events: Sequence[Event]) -> Optional[TerminationResult]:
     if self._terminated:
       return None
     # Forward to both children so each accumulates its own state.
@@ -153,9 +149,7 @@ class OrTerminationCondition(TerminationCondition):
   def terminated(self) -> bool:
     return self._terminated
 
-  async def check(
-      self, events: Sequence[Event]
-  ) -> Optional[TerminationResult]:
+  async def check(self, events: Sequence[Event]) -> Optional[TerminationResult]:
     if self._terminated:
       return None
 

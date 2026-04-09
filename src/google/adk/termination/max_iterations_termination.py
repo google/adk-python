@@ -44,9 +44,7 @@ class MaxIterationsTermination(TerminationCondition):
   def terminated(self) -> bool:
     return self._terminated
 
-  async def check(
-      self, events: Sequence[Event]
-  ) -> Optional[TerminationResult]:
+  async def check(self, events: Sequence[Event]) -> Optional[TerminationResult]:
     if self._terminated:
       return None
     self._count += len(events)

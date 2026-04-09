@@ -60,24 +60,17 @@ class TextMentionTermination(TerminationCondition):
   def terminated(self) -> bool:
     return self._terminated
 
-  async def check(
-      self, events: Sequence[Event]
-  ) -> Optional[TerminationResult]:
+  async def check(self, events: Sequence[Event]) -> Optional[TerminationResult]:
     if self._terminated:
       return None
 
     for event in events:
-      if (
-          self._sources
-          and (event.author or '') not in self._sources
-      ):
+      if self._sources and (event.author or '') not in self._sources:
         continue
 
       if self._text in _stringify_event_content(event):
         self._terminated = True
-        return TerminationResult(
-            reason=f"Text '{self._text}' mentioned"
-        )
+        return TerminationResult(reason=f"Text '{self._text}' mentioned")
     return None
 
   async def reset(self) -> None:

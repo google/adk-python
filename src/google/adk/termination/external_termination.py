@@ -55,9 +55,7 @@ class ExternalTermination(TerminationCondition):
     """Signals that the conversation should terminate at the next check."""
     self._terminated = True
 
-  async def check(
-      self, events: Sequence[Event]
-  ) -> Optional[TerminationResult]:
+  async def check(self, events: Sequence[Event]) -> Optional[TerminationResult]:
     if self._terminated:
       return TerminationResult(reason='Externally terminated')
     return None
