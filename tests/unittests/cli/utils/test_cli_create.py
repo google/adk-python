@@ -356,17 +356,51 @@ def test_handle_login_with_google_select_gcp_project(
   assert region == "us-east1"
 
 
-def test_handle_login_with_google_express_signup(
+def test_handle_login_with_google_manual_project(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-  """Handler should sign up for Express if eligible and user accepts TOS."""
+  """Handler should allow manual project ID entry when '0' is selected."""
+  monkeypatch.setattr(gcp_utils, "check_adc", lambda: True)
+  monkeypatch.setattr(gcp_utils, "retrieve_express_project", lambda: None)
+  monkeypatch.setattr(
+      gcp_utils, "list_gcp_projects", lambda limit: [("p1", "Project 1")]
+  )
+  prompts = iter([0, "manual-proj", "us-east1"])
+  monkeypatch.setattr(click, "prompt", lambda *a, **k: next(prompts))
+
+  api_key, proj, region = cli_create._handle_login_with_google()
+  assert api_key is None
+  assert proj == "manual-proj"
+  assert region == "us-east1"
+
+
+def test_handle_login_with_google_option_1(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+  """User selects 1, enters project ID and region."""
+  monkeypatch.setattr(gcp_utils, "check_adc", lambda: True)
+  monkeypatch.setattr(gcp_utils, "retrieve_express_project", lambda: None)
+  monkeypatch.setattr(gcp_utils, "list_gcp_projects", lambda limit: [])
+  prompts = iter(["1", "test-proj", "us-east1"])
+  monkeypatch.setattr(click, "prompt", lambda *a, **k: next(prompts))
+
+  api_key, proj, region = cli_create._handle_login_with_google()
+  assert api_key is None
+  assert proj == "test-proj"
+  assert region == "us-east1"
+
+
+def test_handle_login_with_google_option_2(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+  """User selects 2, goes through express sign up."""
   monkeypatch.setattr(gcp_utils, "check_adc", lambda: True)
   monkeypatch.setattr(gcp_utils, "retrieve_express_project", lambda: None)
   monkeypatch.setattr(gcp_utils, "list_gcp_projects", lambda limit: [])
   monkeypatch.setattr(gcp_utils, "check_express_eligibility", lambda: True)
-  confirms = iter([False, True])
-  monkeypatch.setattr(click, "confirm", lambda *a, **k: next(confirms))
-  monkeypatch.setattr(click, "prompt", lambda *a, **k: "1")
+  monkeypatch.setattr(click, "confirm", lambda *a, **k: True)
+  prompts = iter(["2", "1"])
+  monkeypatch.setattr(click, "prompt", lambda *a, **k: next(prompts))
   monkeypatch.setattr(
       gcp_utils,
       "sign_up_express",
@@ -381,6 +415,17 @@ def test_handle_login_with_google_express_signup(
   assert api_key == "new-key"
   assert proj == "new-proj"
   assert region == "us-central1"
+
+
+def test_handle_login_with_google_option_3(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+  """User selects 3, aborts."""
+  monkeypatch.setattr(gcp_utils, "retrieve_express_project", lambda: None)
+  monkeypatch.setattr(gcp_utils, "list_gcp_projects", lambda limit: [])
+  monkeypatch.setattr(click, "prompt", lambda *a, **k: "3")
+  with pytest.raises(click.Abort):
+    cli_create._handle_login_with_google()
 
 
 # prompt_str
@@ -416,42 +461,3 @@ def test_get_gcp_region_from_gcloud_fail(
       ),
   )
   assert cli_create._get_gcp_region_from_gcloud() == ""
-
-
-def test_handle_login_with_google_manual_project(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-  """Handler should allow manual project ID entry when '0' is selected."""
-  monkeypatch.setattr(gcp_utils, "check_adc", lambda: True)
-  monkeypatch.setattr(gcp_utils, "retrieve_express_project", lambda: None)
-  monkeypatch.setattr(
-      gcp_utils, "list_gcp_projects", lambda limit: [("p1", "Project 1")]
-  )
-  # First prompt is for project selection (0), second is for manual ID entry,
-  # third is for region selection.
-  prompts = iter([0, "manual-proj", "us-east1"])
-  monkeypatch.setattr(click, "prompt", lambda *a, **k: next(prompts))
-
-  api_key, proj, region = cli_create._handle_login_with_google()
-  assert api_key is None
-  assert proj == "manual-proj"
-  assert region == "us-east1"
-
-
-def test_handle_login_with_google_empty_projects_manual_entry(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-  """Handler should allow manual entry if no projects are found and user accepts."""
-  monkeypatch.setattr(gcp_utils, "check_adc", lambda: True)
-  monkeypatch.setattr(gcp_utils, "retrieve_express_project", lambda: None)
-  monkeypatch.setattr(gcp_utils, "list_gcp_projects", lambda limit: [])
-
-  # User says Yes to "enter manually", then provides project ID and region
-  prompts = iter(["manual-proj", "us-east1"])
-  monkeypatch.setattr(click, "confirm", lambda *a, **k: True)
-  monkeypatch.setattr(click, "prompt", lambda *a, **k: next(prompts))
-
-  api_key, proj, region = cli_create._handle_login_with_google()
-  assert api_key is None
-  assert proj == "manual-proj"
-  assert region == "us-east1"
