@@ -47,7 +47,6 @@
 * Disable tool caching for skill toolset ([064f0d2](https://github.com/google/adk-python/commit/064f0d278e55e1e9fd6db1b6ccf3d1cb95cba47b))
 * Disallow args on /builder and Add warning about Web UI usage to CLI help ([dcee290](https://github.com/google/adk-python/commit/dcee2902729e178b41086c4039a3828917bbb9f3))
 * empty events_iterator assignment ([898c4e5](https://github.com/google/adk-python/commit/898c4e5f78b60c4c4732c7cd19ff2da9a64964a1))
-* Enhance ADK release analyzer with resume functionality and better session management ([5f69e19](https://github.com/google/adk-python/commit/5f69e19f8285ba828c7491014eda6a348fc11724))
 * **environment:** fix package references ([add8e86](https://github.com/google/adk-python/commit/add8e8664bd2ae9257c8b37a5e602d0c7aae7625))
 * Fix RemoteA2AAgent deepcopy errors ([6f29775](https://github.com/google/adk-python/commit/6f29775f4bf7172b1378b17856534f95b9d4eeb6))
 * Fixes for initializing RemoteA2aAgent - passing in preferred transport, protocol version, and auth headers ([0f3850f](https://github.com/google/adk-python/commit/0f3850f56c857dfb86c7ad8de372bcc7fe495968))
@@ -55,7 +54,6 @@
 * Handle merging lists in deep_merge_dicts ([cdb3ff4](https://github.com/google/adk-python/commit/cdb3ff4e1f155c357f8cf720132d09bbc1446075))
 * In memory session service to evaluate dictionary keys and value into an isolated snapshot sequence before starting loop ([f75de59](https://github.com/google/adk-python/commit/f75de59362e07c0cce0ead723ceea3102081af4d))
 * include intermediate subagent final response events in evaluation intermediate data ([f8a6bd7](https://github.com/google/adk-python/commit/f8a6bd7fc0ca4b37cac4dc93c725c8973a1c9027))
-* **live:** Buffer tool calls and emit them together upon turn completion ([7fa13ed](https://github.com/google/adk-python/commit/7fa13edacda3dee1b56edb5bdc634712b3c5218b))
 * **live:** Handle live session resumption and GoAway signal ([6b1600f](https://github.com/google/adk-python/commit/6b1600fbf53bcf634c5fe4793f02921bc0b75125)), closes [#4996](https://github.com/google/adk-python/issues/4996)
 * move BigQueryAgentAnalyticsPlugin import inside get_runner_async ([6fd0f85](https://github.com/google/adk-python/commit/6fd0f85191dea17b7c6b033473bd39764250265b))
 * Safer fix for UI widget merging in ADK ([0e71985](https://github.com/google/adk-python/commit/0e71985501c00682eff0f0c5328a3d429f2bdc68))
@@ -64,7 +62,6 @@
 * **tools:** handle toolset errors gracefully in canonical_tools ([5df03f1](https://github.com/google/adk-python/commit/5df03f1f412e3ab55a5a6ceac892ba6b985a8036)), closes [#3341](https://github.com/google/adk-python/issues/3341)
 * truncate error_message in v0 schema to prevent VARCHAR overflow ([62daf4f](https://github.com/google/adk-python/commit/62daf4f61b14aee7bca9d8dec479bfd940bbb955)), closes [#4993](https://github.com/google/adk-python/issues/4993)
 * update toolbox-adk and toolbox server versions ([1486925](https://github.com/google/adk-python/commit/14869253d072e901d530fd3b7ee8ef67fbe5ddbc))
-* Update v2 release workflow to be dispatched from v2 branch ([446575f](https://github.com/google/adk-python/commit/446575fdf55dbaea126d3634a46e3318de2ce3cc))
 
 
 ### Code Refactoring
@@ -76,7 +73,6 @@
 ### Documentation
 
 * **adk:** clean up remote triggers README to remove internal references ([ccac461](https://github.com/google/adk-python/commit/ccac461b2ab6291ecd09577ca0553833eaff71b9))
-* Auto-Assignment GitHub Action for Issues ([6a1c90b](https://github.com/google/adk-python/commit/6a1c90bd9d6a5837f8c491697fdf93e1d9dbf16e))
 * Update the MCP Toolbox docsite with the new URL ([a60baca](https://github.com/google/adk-python/commit/a60baca3ddfe2541159b32d67b738a836d2395e7))
 
 ## [1.28.0](https://github.com/google/adk-python/compare/v1.27.5...v1.28.0) (2026-03-26)
