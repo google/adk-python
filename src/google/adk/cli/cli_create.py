@@ -22,6 +22,7 @@ from typing import Tuple
 import click
 
 from ..apps.app import validate_app_name
+from .utils import gcp_utils
 
 _INIT_PY_TEMPLATE = """\
 from . import agent
@@ -61,11 +62,27 @@ Please see below guide to configure other models:
 https://google.github.io/adk-docs/agents/models
 """
 
+_EXPRESS_TOS_MSG = """
+Google Cloud Express Mode Terms of Service: https://cloud.google.com/terms/google-cloud-express
+By using this application, you agree to the Google Cloud Express Mode terms of service and any
+applicable services and APIs: https://console.cloud.google.com/terms. You also agree to only use
+this application for your trade, business, craft, or profession.
+"""
+
+_NOT_ELIGIBLE_MSG = """
+You are not eligible for Express Mode.
+Please follow these instructions to set up a full Google Cloud project:
+https://google.github.io/adk-docs/get-started/quickstart/#gemini---google-cloud-vertex-ai
+"""
+
 _SUCCESS_MSG_CODE = """
 Agent created in {agent_folder}:
 - .env
 - __init__.py
 - agent.py
+
+⚠️  WARNING: Secrets (like GOOGLE_API_KEY) are stored in .env.
+Please ensure .env is added to your .gitignore to avoid committing secrets to version control.
 """
 
 _SUCCESS_MSG_CONFIG = """
@@ -73,6 +90,9 @@ Agent created in {agent_folder}:
 - .env
 - __init__.py
 - root_agent.yaml
+
+⚠️  WARNING: Secrets (like GOOGLE_API_KEY) are stored in .env.
+Please ensure .env is added to your .gitignore to avoid committing secrets to version control.
 """
 
 
@@ -187,10 +207,10 @@ def _generate_files(
 
   with open(dotenv_file_path, "w", encoding="utf-8") as f:
     lines = []
-    if google_api_key:
-      lines.append("GOOGLE_GENAI_USE_VERTEXAI=0")
-    elif google_cloud_project and google_cloud_region:
+    if google_cloud_project and google_cloud_region:
       lines.append("GOOGLE_GENAI_USE_VERTEXAI=1")
+    elif google_api_key:
+      lines.append("GOOGLE_GENAI_USE_VERTEXAI=0")
     if google_api_key:
       lines.append(f"GOOGLE_API_KEY={google_api_key}")
     if google_cloud_project:
@@ -247,8 +267,8 @@ def _prompt_to_choose_backend(
     A tuple of (google_api_key, google_cloud_project, google_cloud_region).
   """
   backend_choice = click.prompt(
-      "1. Google AI\n2. Vertex AI\nChoose a backend",
-      type=click.Choice(["1", "2"]),
+      "1. Google AI\n2. Vertex AI\n3. Login with Google\nChoose a backend",
+      type=click.Choice(["1", "2", "3"]),
   )
   if backend_choice == "1":
     google_api_key = _prompt_for_google_api_key(google_api_key)
@@ -256,7 +276,112 @@ def _prompt_to_choose_backend(
     click.secho(_GOOGLE_CLOUD_SETUP_MSG, fg="green")
     google_cloud_project = _prompt_for_google_cloud(google_cloud_project)
     google_cloud_region = _prompt_for_google_cloud_region(google_cloud_region)
+  elif backend_choice == "3":
+    google_api_key, google_cloud_project, google_cloud_region = (
+        _handle_login_with_google()
+    )
   return google_api_key, google_cloud_project, google_cloud_region
+
+
+def _handle_login_with_google() -> (
+    Tuple[Optional[str], Optional[str], Optional[str]]
+):
+  """Handles the "Login with Google" flow."""
+  if not gcp_utils.check_adc():
+    click.secho(
+        "No Application Default Credentials found. "
+        "Opening browser for login...",
+        fg="yellow",
+    )
+    try:
+      gcp_utils.login_adc()
+    except RuntimeError as e:
+      click.secho(str(e), fg="red")
+      raise click.Abort()
+
+  # Check for existing Express project
+  express_project = gcp_utils.retrieve_express_project()
+  if express_project:
+    api_key = express_project.get("api_key")
+    project_id = express_project.get("project_id")
+    region = express_project.get("region", "us-central1")
+    if project_id:
+      click.secho(f"Using existing Express project: {project_id}", fg="green")
+      return api_key, project_id, region
+
+  # Check for existing full GCP projects
+  projects = gcp_utils.list_gcp_projects(limit=20)
+  if projects:
+    click.secho("Recently created Google Cloud projects found:", fg="green")
+    click.echo("0. Enter project ID manually")
+    for i, (p_id, p_name) in enumerate(projects, 1):
+      click.echo(f"{i}. {p_name} ({p_id})")
+
+    project_index = click.prompt(
+        "Select a project",
+        type=click.IntRange(0, len(projects)),
+    )
+    if project_index == 0:
+      selected_project_id = _prompt_for_google_cloud(None)
+    else:
+      selected_project_id = projects[project_index - 1][0]
+    region = _prompt_for_google_cloud_region(None)
+    return None, selected_project_id, region
+
+  click.secho(
+      "A Google Cloud project is required to continue. You can enter an"
+      " existing project ID or create an Express Mode project. Learn more:"
+      " https://cloud.google.com/resources/cloud-express-faqs",
+      fg="green",
+  )
+  action = click.prompt(
+      "1. Enter an existing Google Cloud project ID\n"
+      "2. Create a new project (Express Mode)\n"
+      "3. Abandon\n"
+      "Choose an action",
+      type=click.Choice(["1", "2", "3"]),
+  )
+
+  if action == "3":
+    raise click.Abort()
+
+  if action == "1":
+    google_cloud_project = _prompt_for_google_cloud(None)
+    google_cloud_region = _prompt_for_google_cloud_region(None)
+    return None, google_cloud_project, google_cloud_region
+
+  elif action == "2":
+    if gcp_utils.check_express_eligibility():
+      click.secho(_EXPRESS_TOS_MSG, fg="yellow")
+      if click.confirm("Do you accept the Terms of Service?", default=False):
+        selected_region = click.prompt(
+            """\
+Choose a region for Express Mode:
+1. us-central1
+2. europe-west1
+3. asia-southeast1
+Choose region""",
+            type=click.Choice(["1", "2", "3"]),
+            default="1",
+        )
+        region_map = {
+            "1": "us-central1",
+            "2": "europe-west1",
+            "3": "asia-southeast1",
+        }
+        region = region_map[selected_region]
+        express_info = gcp_utils.sign_up_express(location=region)
+        api_key = express_info.get("api_key")
+        project_id = express_info.get("project_id")
+        region = express_info.get("region", region)
+        click.secho(
+            f"Express Mode project created: {project_id}",
+            fg="green",
+        )
+        return api_key, project_id, region
+
+    click.secho(_NOT_ELIGIBLE_MSG, fg="red")
+    raise click.Abort()
 
 
 def _prompt_to_choose_type() -> str:

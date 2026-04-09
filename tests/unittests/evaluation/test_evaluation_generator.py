@@ -204,6 +204,28 @@ class TestConvertEventsToEvalInvocation:
     assert events[2].author == "sub_agent_1"
     assert events[3].author == "sub_agent_2"
 
+  def test_convert_multi_agent_final_responses(
+      self,
+  ):
+    """Tests that only the last final response is excluded from intermediate data."""
+    events = [
+        _build_event("user", [types.Part(text="Hello")], "inv1"),
+        _build_event("agent1", [types.Part(text="First response")], "inv1"),
+        _build_event("agent2", [types.Part(text="Second response")], "inv1"),
+    ]
+
+    invocations = EvaluationGenerator.convert_events_to_eval_invocations(events)
+
+    assert len(invocations) == 1
+    invocation = invocations[0]
+    assert invocation.final_response.parts[0].text == "Second response"
+
+    intermediate_events = invocation.intermediate_data.invocation_events
+    # agent1 is included because it is not the final_event (which is agent2)
+    assert len(intermediate_events) == 1
+    assert intermediate_events[0].author == "agent1"
+    assert intermediate_events[0].content.parts[0].text == "First response"
+
 
 class TestGetAppDetailsByInvocationId:
   """Test cases for EvaluationGenerator._get_app_details_by_invocation_id method."""
