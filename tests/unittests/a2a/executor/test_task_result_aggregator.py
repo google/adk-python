@@ -313,3 +313,90 @@ class TestTaskResultAggregator:
     assert (
         self.aggregator.task_status_message == auth_message
     )  # Message unchanged because task state is not working
+
+  # ── Regression tests for issue #5188 ──────────────────────────────────
+
+  def test_delta_text_accumulation(self):
+    """Successive working events with TextPart chunks are concatenated."""
+    for chunk in ["Hello", " world", "!"]:
+      event = TaskStatusUpdateEvent(
+          task_id="t",
+          context_id="c",
+          status=TaskStatus(
+              state=TaskState.working,
+              message=Message(
+                  message_id="m",
+                  role=Role.agent,
+                  parts=[Part(root=TextPart(text=chunk))],
+              ),
+          ),
+          final=False,
+      )
+      self.aggregator.process_event(event)
+
+    msg = self.aggregator.task_status_message
+    assert msg is not None
+    assert len(msg.parts) == 1
+    assert msg.parts[0].root.text == "Hello world!"
+
+  def test_metadata_merged_across_working_events(self):
+    """Metadata from successive working messages is merged (later wins)."""
+    ev1 = TaskStatusUpdateEvent(
+        task_id="t",
+        context_id="c",
+        status=TaskStatus(
+            state=TaskState.working,
+            message=Message(
+                message_id="m1",
+                role=Role.agent,
+                parts=[Part(root=TextPart(text="a"))],
+                metadata={"k1": "v1", "k2": "old"},
+            ),
+        ),
+        final=False,
+    )
+    ev2 = TaskStatusUpdateEvent(
+        task_id="t",
+        context_id="c",
+        status=TaskStatus(
+            state=TaskState.working,
+            message=Message(
+                message_id="m2",
+                role=Role.agent,
+                parts=[Part(root=TextPart(text="b"))],
+                metadata={"k2": "new", "k3": "v3"},
+            ),
+        ),
+        final=False,
+    )
+    self.aggregator.process_event(ev1)
+    self.aggregator.process_event(ev2)
+
+    meta = self.aggregator.task_status_message.metadata
+    assert meta == {"k1": "v1", "k2": "new", "k3": "v3"}
+
+  def test_accumulation_with_none_message_is_noop(self):
+    """A working event with message=None after prior messages does not clear state."""
+    ev1 = TaskStatusUpdateEvent(
+        task_id="t",
+        context_id="c",
+        status=TaskStatus(
+            state=TaskState.working,
+            message=Message(
+                message_id="m",
+                role=Role.agent,
+                parts=[Part(root=TextPart(text="keep"))],
+            ),
+        ),
+        final=False,
+    )
+    ev2 = TaskStatusUpdateEvent(
+        task_id="t",
+        context_id="c",
+        status=TaskStatus(state=TaskState.working, message=None),
+        final=False,
+    )
+    self.aggregator.process_event(ev1)
+    self.aggregator.process_event(ev2)
+
+    assert self.aggregator.task_status_message.parts[0].root.text == "keep"

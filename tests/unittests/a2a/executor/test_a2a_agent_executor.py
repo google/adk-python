@@ -23,6 +23,8 @@ from a2a.types import Message
 from a2a.types import Part
 from a2a.types import Role
 from a2a.types import TaskState
+from a2a.types import TaskStatus
+from a2a.types import TaskStatusUpdateEvent
 from a2a.types import TextPart
 from google.adk.a2a.converters.request_converter import AgentRunRequest
 from google.adk.a2a.executor.a2a_agent_executor import A2aAgentExecutor
@@ -143,9 +145,9 @@ class TestA2aAgentExecutor:
     final_event = self.mock_event_queue.enqueue_event.call_args_list[-1][0][0]
     assert final_event.final == True
     # The TaskResultAggregator is created with default state (working), and since no messages
-    # are processed, it will publish a status event with the current state
+    # are processed, the agent completed normally so the terminal state is completed
     assert hasattr(final_event.status, "message")
-    assert final_event.status.state == TaskState.working
+    assert final_event.status.state == TaskState.completed
 
   @pytest.mark.asyncio
   async def test_execute_no_message_error(self):
@@ -218,9 +220,9 @@ class TestA2aAgentExecutor:
     final_event = self.mock_event_queue.enqueue_event.call_args_list[-1][0][0]
     assert final_event.final == True
     # The TaskResultAggregator is created with default state (working), and since no messages
-    # are processed, it will publish a status event with the current state
+    # are processed, the agent completed normally so the terminal state is completed
     assert hasattr(final_event.status, "message")
-    assert final_event.status.state == TaskState.working
+    assert final_event.status.state == TaskState.completed
 
   @pytest.mark.asyncio
   async def test_prepare_session_new_session(self):
@@ -443,9 +445,9 @@ class TestA2aAgentExecutor:
     final_event = self.mock_event_queue.enqueue_event.call_args_list[-1][0][0]
     assert final_event.final == True
     # The TaskResultAggregator is created with default state (working), and since no messages
-    # are processed, it will publish a status event with the current state
+    # are processed, the agent completed normally so the terminal state is completed
     assert hasattr(final_event.status, "message")
-    assert final_event.status.state == TaskState.working
+    assert final_event.status.state == TaskState.completed
 
   @pytest.mark.asyncio
   async def test_execute_with_async_callable_runner(self):
@@ -502,9 +504,9 @@ class TestA2aAgentExecutor:
     final_event = self.mock_event_queue.enqueue_event.call_args_list[-1][0][0]
     assert final_event.final == True
     # The TaskResultAggregator is created with default state (working), and since no messages
-    # are processed, it will publish a status event with the current state
+    # are processed, the agent completed normally so the terminal state is completed
     assert hasattr(final_event.status, "message")
-    assert final_event.status.state == TaskState.working
+    assert final_event.status.state == TaskState.completed
 
   @pytest.mark.asyncio
   async def test_handle_request_integration(self):
@@ -580,8 +582,8 @@ class TestA2aAgentExecutor:
       assert len(final_events) >= 1
       final_event = final_events[-1]  # Get the last final event
       assert final_event.status.message == mock_aggregator.task_status_message
-      # When aggregator state is working but no message, final event should be working
-      assert final_event.status.state == TaskState.working
+      # When aggregator state is working but no message, final event should be completed
+      assert final_event.status.state == TaskState.completed
 
   @pytest.mark.asyncio
   async def test_cancel_with_task_id(self):
@@ -803,6 +805,7 @@ class TestA2aAgentExecutor:
     test_message.message_id = "test-message-id"
     test_message.role = Role.agent
     test_message.parts = [Part(root=TextPart(text="test content"))]
+    test_message.metadata = None
 
     # Setup detailed mocks
     self.mock_request_converter.return_value = AgentRunRequest(
@@ -1072,3 +1075,200 @@ class TestA2aAgentExecutor:
     assert (
         modified_a2a_event in enqueued_events
     ), "The modified event should have been enqueued"
+
+  # ── Regression tests for issue #5188 ──────────────────────────────────
+
+  @pytest.mark.asyncio
+  async def test_metadata_only_response_completes(self):
+    """A response with metadata but no text parts should finalize as completed, not working."""
+    from a2a.types import TaskArtifactUpdateEvent
+
+    self.mock_context.task_id = "task-meta"
+    self.mock_context.context_id = "ctx-meta"
+    self.mock_context.current_task = Mock()
+
+    self.mock_request_converter.return_value = AgentRunRequest(
+        user_id="u",
+        session_id="s",
+        new_message=Mock(spec=Content),
+        run_config=Mock(spec=RunConfig),
+    )
+
+    mock_session = Mock()
+    mock_session.id = "s"
+    self.mock_runner.session_service.get_session = AsyncMock(
+        return_value=mock_session
+    )
+    self.mock_runner._new_invocation_context.return_value = Mock()
+
+    # The agent yields one event whose converted A2A event has a message
+    # with metadata but NO parts (metadata-only response).
+    meta_message = Message(
+        message_id="m1",
+        role=Role.agent,
+        parts=[],
+        metadata={"intent": "greeting"},
+    )
+    a2a_status_event = TaskStatusUpdateEvent(
+        task_id="task-meta",
+        context_id="ctx-meta",
+        status=TaskStatus(state=TaskState.working, message=meta_message),
+        final=False,
+    )
+    self.mock_event_converter.return_value = [a2a_status_event]
+
+    adk_event = Mock(spec=Event)
+
+    async def mock_run_async(**kwargs):
+      yield adk_event
+
+    self.mock_runner.run_async = mock_run_async
+
+    await self.executor.execute(self.mock_context, self.mock_event_queue)
+
+    enqueued = [
+        c[0][0] for c in self.mock_event_queue.enqueue_event.call_args_list
+    ]
+    final_events = [
+        e for e in enqueued
+        if isinstance(e, TaskStatusUpdateEvent) and e.final
+    ]
+    assert len(final_events) == 1
+    assert final_events[0].status.state == TaskState.completed
+
+    # No artifact event should be emitted (no parts to wrap).
+    artifact_events = [
+        e for e in enqueued if isinstance(e, TaskArtifactUpdateEvent)
+    ]
+    assert len(artifact_events) == 0
+
+  @pytest.mark.asyncio
+  async def test_streamed_text_accumulated_in_final_artifact(self):
+    """Delta text chunks should be concatenated in the synthesized final artifact."""
+    from a2a.types import TaskArtifactUpdateEvent
+
+    self.mock_context.task_id = "task-stream"
+    self.mock_context.context_id = "ctx-stream"
+    self.mock_context.current_task = Mock()
+
+    self.mock_request_converter.return_value = AgentRunRequest(
+        user_id="u",
+        session_id="s",
+        new_message=Mock(spec=Content),
+        run_config=Mock(spec=RunConfig),
+    )
+    mock_session = Mock()
+    mock_session.id = "s"
+    self.mock_runner.session_service.get_session = AsyncMock(
+        return_value=mock_session
+    )
+    self.mock_runner._new_invocation_context.return_value = Mock()
+
+    chunks = ["Hello", " world", "!"]
+    adk_events = [Mock(spec=Event) for _ in chunks]
+
+    # Each ADK event converts to a status update with one text chunk.
+    call_index = 0
+
+    def event_converter(adk_ev, inv_ctx, task_id, ctx_id, converter):
+      nonlocal call_index
+      text = chunks[call_index]
+      call_index += 1
+      return [
+          TaskStatusUpdateEvent(
+              task_id=task_id,
+              context_id=ctx_id,
+              status=TaskStatus(
+                  state=TaskState.working,
+                  message=Message(
+                      message_id="m",
+                      role=Role.agent,
+                      parts=[Part(root=TextPart(text=text))],
+                  ),
+              ),
+              final=False,
+          )
+      ]
+
+    self.mock_event_converter.side_effect = event_converter
+
+    async def mock_run_async(**kwargs):
+      for ev in adk_events:
+        yield ev
+
+    self.mock_runner.run_async = mock_run_async
+
+    await self.executor.execute(self.mock_context, self.mock_event_queue)
+
+    enqueued = [
+        c[0][0] for c in self.mock_event_queue.enqueue_event.call_args_list
+    ]
+    artifacts = [
+        e for e in enqueued if isinstance(e, TaskArtifactUpdateEvent)
+    ]
+    assert len(artifacts) == 1
+    assert artifacts[0].artifact.parts[0].root.text == "Hello world!"
+
+    finals = [
+        e for e in enqueued
+        if isinstance(e, TaskStatusUpdateEvent) and e.final
+    ]
+    assert len(finals) == 1
+    assert finals[0].status.state == TaskState.completed
+
+  @pytest.mark.asyncio
+  async def test_metadata_propagated_to_synthesized_artifact(self):
+    """Message metadata should be carried into the synthesized Artifact."""
+    from a2a.types import TaskArtifactUpdateEvent
+
+    self.mock_context.task_id = "task-mp"
+    self.mock_context.context_id = "ctx-mp"
+    self.mock_context.current_task = Mock()
+
+    self.mock_request_converter.return_value = AgentRunRequest(
+        user_id="u",
+        session_id="s",
+        new_message=Mock(spec=Content),
+        run_config=Mock(spec=RunConfig),
+    )
+    mock_session = Mock()
+    mock_session.id = "s"
+    self.mock_runner.session_service.get_session = AsyncMock(
+        return_value=mock_session
+    )
+    self.mock_runner._new_invocation_context.return_value = Mock()
+
+    msg_with_meta = Message(
+        message_id="m1",
+        role=Role.agent,
+        parts=[Part(root=TextPart(text="result"))],
+        metadata={"source": "agent-x", "confidence": "0.95"},
+    )
+    a2a_event = TaskStatusUpdateEvent(
+        task_id="task-mp",
+        context_id="ctx-mp",
+        status=TaskStatus(state=TaskState.working, message=msg_with_meta),
+        final=False,
+    )
+    self.mock_event_converter.return_value = [a2a_event]
+
+    adk_event = Mock(spec=Event)
+
+    async def mock_run_async(**kwargs):
+      yield adk_event
+
+    self.mock_runner.run_async = mock_run_async
+
+    await self.executor.execute(self.mock_context, self.mock_event_queue)
+
+    enqueued = [
+        c[0][0] for c in self.mock_event_queue.enqueue_event.call_args_list
+    ]
+    artifacts = [
+        e for e in enqueued if isinstance(e, TaskArtifactUpdateEvent)
+    ]
+    assert len(artifacts) == 1
+    assert artifacts[0].artifact.metadata == {
+        "source": "agent-x",
+        "confidence": "0.95",
+    }

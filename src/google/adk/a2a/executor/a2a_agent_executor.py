@@ -273,10 +273,11 @@ class A2aAgentExecutor(AgentExecutor):
           await event_queue.enqueue_event(a2a_event)
 
     # publish the task result event - this is final
+    agg_message = task_result_aggregator.task_status_message
     if (
         task_result_aggregator.task_state == TaskState.working
-        and task_result_aggregator.task_status_message is not None
-        and task_result_aggregator.task_status_message.parts
+        and agg_message is not None
+        and agg_message.parts
     ):
       # if task is still working properly, publish the artifact update event as
       # the final result according to a2a protocol.
@@ -287,7 +288,8 @@ class A2aAgentExecutor(AgentExecutor):
               context_id=context.context_id,
               artifact=Artifact(
                   artifact_id=platform_uuid.new_uuid(),
-                  parts=task_result_aggregator.task_status_message.parts,
+                  parts=agg_message.parts,
+                  metadata=agg_message.metadata or None,
               ),
           )
       )
@@ -304,14 +306,22 @@ class A2aAgentExecutor(AgentExecutor):
           final=True,
       )
     else:
+      # Resolve terminal state: working → completed (agent finished
+      # without error); other states (failed, auth_required, etc.)
+      # are preserved as-is.
+      final_state = (
+          TaskState.completed
+          if task_result_aggregator.task_state == TaskState.working
+          else task_result_aggregator.task_state
+      )
       final_event = TaskStatusUpdateEvent(
           task_id=context.task_id,
           status=TaskStatus(
-              state=task_result_aggregator.task_state,
+              state=final_state,
               timestamp=datetime.fromtimestamp(
                   platform_time.get_time(), tz=timezone.utc
               ).isoformat(),
-              message=task_result_aggregator.task_status_message,
+              message=agg_message,
           ),
           context_id=context.context_id,
           final=True,

@@ -18,6 +18,7 @@ from a2a.server.events import Event
 from a2a.types import Message
 from a2a.types import TaskState
 from a2a.types import TaskStatusUpdateEvent
+from a2a.types import TextPart
 
 from ..experimental import a2a_experimental
 
@@ -59,8 +60,49 @@ class TaskResultAggregator:
       # always working because other state may terminate the event aggregation
       # in a2a request handler
       elif self._task_state == TaskState.working:
-        self._task_status_message = event.status.message
+        self._accumulate_message(event.status.message)
       event.status.state = TaskState.working
+
+  def _accumulate_message(self, new_message: Message | None):
+    """Accumulate content from a new message into the running result.
+
+    For delta-style streaming, successive TextPart texts are concatenated
+    rather than replaced.  Metadata dicts are merged (later values win).
+    """
+    if new_message is None:
+      return
+
+    if self._task_status_message is None:
+      self._task_status_message = new_message
+      return
+
+    # Accumulate parts
+    if new_message.parts:
+      if not self._task_status_message.parts:
+        self._task_status_message.parts = list(new_message.parts)
+      else:
+        for new_part in new_message.parts:
+          new_root = getattr(new_part, 'root', new_part)
+          if isinstance(new_root, TextPart):
+            # Concatenate into the last existing TextPart if one exists
+            appended = False
+            for existing_part in reversed(self._task_status_message.parts):
+              existing_root = getattr(existing_part, 'root', existing_part)
+              if isinstance(existing_root, TextPart):
+                existing_root.text += new_root.text
+                appended = True
+                break
+            if not appended:
+              self._task_status_message.parts.append(new_part)
+          else:
+            self._task_status_message.parts.append(new_part)
+
+    # Merge metadata
+    if new_message.metadata:
+      if self._task_status_message.metadata is None:
+        self._task_status_message.metadata = dict(new_message.metadata)
+      else:
+        self._task_status_message.metadata.update(new_message.metadata)
 
   @property
   def task_state(self) -> TaskState:
