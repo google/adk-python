@@ -39,6 +39,7 @@ from .part_converter import A2A_DATA_PART_METADATA_IS_LONG_RUNNING_KEY
 from .part_converter import A2APartToGenAIPartConverter
 from .part_converter import convert_a2a_part_to_genai_part
 from .utils import _get_adk_metadata_key
+from .utils import a2a_role_to_genai_role
 
 # Logger
 logger = logging.getLogger("google_adk." + __name__)
@@ -177,6 +178,7 @@ def _create_event(
     actions: Optional[EventActions] = None,
     long_running_function_ids: Optional[set[str]] = None,
     partial: bool = False,
+    role: str = "model",
 ) -> Optional[Event]:
   """Creates an ADK event from parts and metadata."""
   event_actions = actions or EventActions()
@@ -199,7 +201,7 @@ def _create_event(
       ),
       content=(
           genai_types.Content(
-              role="model",
+              role=role,
               parts=output_parts,
           )
           if output_parts
@@ -380,6 +382,7 @@ def convert_a2a_message_to_event(
         invocation_context,
         author,
         _extract_event_actions(a2a_message.metadata),
+        role=a2a_role_to_genai_role(a2a_message.role),
     )
 
   except Exception as e:

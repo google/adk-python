@@ -37,6 +37,8 @@ from google.adk.platform import time as platform_time
 from google.adk.platform import uuid as platform_uuid
 from google.genai import types as genai_types
 
+from .utils import a2a_role_to_genai_role
+
 from ...agents.invocation_context import InvocationContext
 from ...events.event import Event
 from ...flows.llm_flows.functions import REQUEST_EUC_FUNCTION_CALL_NAME
@@ -238,7 +240,13 @@ def convert_a2a_task_to_event(
     ):
       message = a2a_task.status.message
     elif a2a_task.history:
-      message = a2a_task.history[-1]
+      # Only pick agent-role messages from history; a trailing user
+      # message should not be misattributed as agent output.
+      agent_messages = [
+          m for m in a2a_task.history if m.role == Role.agent
+      ]
+      if agent_messages:
+        message = agent_messages[-1]
 
     # Convert message if available
     if message:
@@ -292,6 +300,8 @@ def convert_a2a_message_to_event(
   if a2a_message is None:
     raise ValueError("A2A message cannot be None")
 
+  genai_role = a2a_role_to_genai_role(a2a_message.role)
+
   if not a2a_message.parts:
     logger.warning(
         "A2A message has no parts, creating event with empty content"
@@ -304,7 +314,7 @@ def convert_a2a_message_to_event(
         ),
         author=author or "a2a agent",
         branch=invocation_context.branch if invocation_context else None,
-        content=genai_types.Content(role="model", parts=[]),
+        content=genai_types.Content(role=genai_role, parts=[]),
     )
 
   try:
@@ -358,7 +368,7 @@ def convert_a2a_message_to_event(
         if long_running_tool_ids
         else None,
         content=genai_types.Content(
-            role="model",
+            role=genai_role,
             parts=output_parts,
         ),
     )

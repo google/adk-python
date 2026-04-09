@@ -418,3 +418,58 @@ class TestToAdk:
     """Test convert_a2a_artifact_update_to_event with None."""
     with pytest.raises(ValueError, match="A2A artifact update cannot be None"):
       convert_a2a_artifact_update_to_event(None)
+
+
+class TestToAdkRoleMappingRegression:
+  """Regression tests for issue #5186: role mapping in to_adk_event."""
+
+  def setup_method(self):
+    self.mock_context = Mock(spec=InvocationContext)
+    self.mock_context.invocation_id = "test-invocation"
+    self.mock_context.branch = "test-branch"
+
+  def test_user_role_message_maps_to_user_content_role(self):
+    """A2A Role.user must produce content.role='user', not 'model'."""
+    from a2a.types import Role
+
+    a2a_part = Mock(spec=A2APart)
+    a2a_part.root = Mock(spec=TextPart)
+    a2a_part.root.metadata = {}
+    message = Message(
+        message_id="msg-1",
+        role=Role.user,
+        parts=[a2a_part],
+    )
+
+    mock_genai_part = genai_types.Part.from_text(text="user says hi")
+    event = convert_a2a_message_to_event(
+        message,
+        author="test-author",
+        invocation_context=self.mock_context,
+        part_converter=Mock(return_value=[mock_genai_part]),
+    )
+
+    assert event.content.role == "user"
+
+  def test_agent_role_message_maps_to_model_content_role(self):
+    """A2A Role.agent must produce content.role='model'."""
+    from a2a.types import Role
+
+    a2a_part = Mock(spec=A2APart)
+    a2a_part.root = Mock(spec=TextPart)
+    a2a_part.root.metadata = {}
+    message = Message(
+        message_id="msg-1",
+        role=Role.agent,
+        parts=[a2a_part],
+    )
+
+    mock_genai_part = genai_types.Part.from_text(text="agent reply")
+    event = convert_a2a_message_to_event(
+        message,
+        author="test-author",
+        invocation_context=self.mock_context,
+        part_converter=Mock(return_value=[mock_genai_part]),
+    )
+
+    assert event.content.role == "model"

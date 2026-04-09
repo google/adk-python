@@ -697,6 +697,7 @@ class TestA2AToEventConverters:
 
     # Create mock message and task
     mock_message = Mock(spec=Message)
+    mock_message.role = Role.agent
     mock_task = Mock(spec=Task)
     mock_task.artifacts = None
     mock_task.status = None
@@ -799,6 +800,7 @@ class TestA2AToEventConverters:
     mock_convert_part = Mock(return_value=mock_genai_part)
 
     mock_message = Mock(spec=Message, parts=[mock_a2a_part])
+    mock_message.role = Role.agent
 
     result = convert_a2a_message_to_event(
         mock_message,
@@ -828,6 +830,7 @@ class TestA2AToEventConverters:
     mock_convert_part = Mock(return_value=[mock_genai_part1, mock_genai_part2])
 
     mock_message = Mock(spec=Message, parts=[mock_a2a_part])
+    mock_message.role = Role.agent
 
     # Act
     result = convert_a2a_message_to_event(
@@ -850,6 +853,7 @@ class TestA2AToEventConverters:
 
     # Create mock parts and message
     mock_message = Mock(spec=Message, parts=[Mock()])
+    mock_message.role = Role.agent
 
     # Mock the part conversion to return None to simulate long-running tool detection logic
     mock_convert_part = Mock(return_value=None)
@@ -876,6 +880,7 @@ class TestA2AToEventConverters:
     from google.adk.a2a.converters.event_converter import convert_a2a_message_to_event
 
     mock_message = Mock(spec=Message, parts=[])
+    mock_message.role = Role.agent
 
     result = convert_a2a_message_to_event(
         mock_message, "test-author", self.mock_invocation_context
@@ -903,6 +908,7 @@ class TestA2AToEventConverters:
     mock_convert_part = Mock(return_value=None)
 
     mock_message = Mock(spec=Message, parts=[mock_a2a_part])
+    mock_message.role = Role.agent
 
     result = convert_a2a_message_to_event(
         mock_message,
@@ -935,6 +941,7 @@ class TestA2AToEventConverters:
     )
 
     mock_message = Mock(spec=Message, parts=[mock_a2a_part1, mock_a2a_part2])
+    mock_message.role = Role.agent
 
     result = convert_a2a_message_to_event(
         mock_message,
@@ -956,6 +963,7 @@ class TestA2AToEventConverters:
 
     # Create mock parts and message
     mock_message = Mock(spec=Message, parts=[Mock()])
+    mock_message.role = Role.agent
 
     # Mock the part conversion to return None
     mock_convert_part = Mock(return_value=None)
@@ -980,6 +988,7 @@ class TestA2AToEventConverters:
     from google.adk.a2a.converters.event_converter import convert_a2a_message_to_event
 
     mock_message = Mock(spec=Message, parts=[])
+    mock_message.role = Role.agent
 
     # Mock UUID generation
     mock_uuid.return_value = "generated-uuid"
@@ -990,3 +999,132 @@ class TestA2AToEventConverters:
     assert result.author == "a2a agent"
     assert result.branch is None
     assert result.invocation_id == "generated-uuid"
+
+
+class TestRoleMappingRegression:
+  """Regression tests for issue #5186: role mapping in A2A→ADK conversion."""
+
+  def setup_method(self):
+    """Set up test fixtures."""
+    self.mock_invocation_context = Mock(spec=InvocationContext)
+    self.mock_invocation_context.invocation_id = "test-invocation-id"
+    self.mock_invocation_context.branch = "test-branch"
+
+  def test_user_role_message_maps_to_user_content_role(self):
+    """A2A Role.user must produce content.role='user', not 'model'."""
+    from a2a.types import Part
+    from a2a.types import TextPart
+    from google.adk.a2a.converters.event_converter import convert_a2a_message_to_event
+
+    message = Message(
+        message_id="msg-1",
+        role=Role.user,
+        parts=[Part(root=TextPart(text="user says hi"))],
+    )
+
+    event = convert_a2a_message_to_event(
+        message, "test-author", self.mock_invocation_context
+    )
+
+    assert event.content.role == "user"
+
+  def test_agent_role_message_maps_to_model_content_role(self):
+    """A2A Role.agent must produce content.role='model'."""
+    from a2a.types import Part
+    from a2a.types import TextPart
+    from google.adk.a2a.converters.event_converter import convert_a2a_message_to_event
+
+    message = Message(
+        message_id="msg-1",
+        role=Role.agent,
+        parts=[Part(root=TextPart(text="agent reply"))],
+    )
+
+    event = convert_a2a_message_to_event(
+        message, "test-author", self.mock_invocation_context
+    )
+
+    assert event.content.role == "model"
+
+  def test_empty_parts_user_message_preserves_user_role(self):
+    """Even with empty parts, Role.user must map to content.role='user'."""
+    from google.adk.a2a.converters.event_converter import convert_a2a_message_to_event
+
+    message = Message(message_id="msg-1", role=Role.user, parts=[])
+
+    event = convert_a2a_message_to_event(
+        message, "test-author", self.mock_invocation_context
+    )
+
+    assert event.content.role == "user"
+
+  def test_task_history_fallback_skips_trailing_user_message(self):
+    """History fallback must not return a user-role trailing message."""
+    from a2a.types import Part
+    from a2a.types import TaskStatus
+    from a2a.types import TextPart
+
+    agent_msg = Message(
+        message_id="m1",
+        role=Role.agent,
+        parts=[Part(root=TextPart(text="agent reply"))],
+    )
+    user_msg = Message(
+        message_id="m2",
+        role=Role.user,
+        parts=[Part(root=TextPart(text="follow-up question"))],
+    )
+
+    task = Task(
+        id="task-1",
+        status=TaskStatus(
+            state=TaskState.submitted, timestamp="2024-01-01T00:00:00Z"
+        ),
+        context_id="ctx-1",
+        history=[agent_msg, user_msg],
+    )
+
+    with patch(
+        "google.adk.a2a.converters.event_converter.convert_a2a_message_to_event"
+    ) as mock_convert:
+      mock_event = Mock(spec=Event)
+      mock_convert.return_value = mock_event
+
+      convert_a2a_task_to_event(
+          task, "test-author", self.mock_invocation_context
+      )
+
+      # Must be called with the agent message, not the trailing user message
+      mock_convert.assert_called_once()
+      called_message = mock_convert.call_args[0][0]
+      assert called_message.role == Role.agent
+      assert called_message.message_id == "m1"
+
+  def test_task_history_fallback_only_user_messages_creates_minimal_event(self):
+    """History with only user messages must produce a minimal event."""
+    from a2a.types import Part
+    from a2a.types import TaskStatus
+    from a2a.types import TextPart
+
+    user_msg = Message(
+        message_id="m1",
+        role=Role.user,
+        parts=[Part(root=TextPart(text="question"))],
+    )
+
+    task = Task(
+        id="task-1",
+        status=TaskStatus(
+            state=TaskState.submitted, timestamp="2024-01-01T00:00:00Z"
+        ),
+        context_id="ctx-1",
+        history=[user_msg],
+    )
+
+    result = convert_a2a_task_to_event(
+        task, "test-author", self.mock_invocation_context
+    )
+
+    # No agent message to convert → minimal event (no content)
+    assert result.author == "test-author"
+    assert result.content is None

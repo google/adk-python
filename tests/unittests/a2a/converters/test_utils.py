@@ -15,6 +15,7 @@
 from google.adk.a2a.converters.utils import _from_a2a_context_id
 from google.adk.a2a.converters.utils import _get_adk_metadata_key
 from google.adk.a2a.converters.utils import _to_a2a_context_id
+from google.adk.a2a.converters.utils import a2a_role_to_genai_role
 from google.adk.a2a.converters.utils import ADK_CONTEXT_ID_PREFIX
 from google.adk.a2a.converters.utils import ADK_METADATA_KEY_PREFIX
 import pytest
@@ -202,3 +203,26 @@ class TestUtilsFunctions:
     assert app_name == "test-app@2024"
     assert user_id == "user_123"
     assert session_id == "session-456"
+
+
+class TestA2ARoleToGenaiRole:
+  """Tests for a2a_role_to_genai_role helper."""
+
+  def test_agent_role_maps_to_model(self):
+    from a2a.types import Role
+
+    assert a2a_role_to_genai_role(Role.agent) == "model"
+
+  def test_user_role_maps_to_user(self):
+    from a2a.types import Role
+
+    assert a2a_role_to_genai_role(Role.user) == "user"
+
+  def test_string_agent_maps_to_model(self):
+    assert a2a_role_to_genai_role("agent") == "model"
+
+  def test_string_user_maps_to_user(self):
+    assert a2a_role_to_genai_role("user") == "user"
+
+  def test_unknown_string_falls_back_to_model(self):
+    assert a2a_role_to_genai_role("unknown") == "model"

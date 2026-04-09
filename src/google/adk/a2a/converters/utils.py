@@ -14,9 +14,36 @@
 
 from __future__ import annotations
 
+from typing import Union
+
+from a2a.types import Role
+
 ADK_METADATA_KEY_PREFIX = "adk_"
 ADK_CONTEXT_ID_PREFIX = "ADK"
 ADK_CONTEXT_ID_SEPARATOR = "/"
+
+_A2A_ROLE_TO_GENAI_ROLE = {
+    Role.agent: "model",
+    Role.user: "user",
+}
+
+
+def a2a_role_to_genai_role(role: Union[Role, str]) -> str:
+  """Maps an A2A Role to the corresponding GenAI content role.
+
+  Args:
+    role: An A2A Role enum value or its string equivalent.
+
+  Returns:
+    ``"model"`` for ``Role.agent``, ``"user"`` for ``Role.user``.
+    Falls back to ``"model"`` for unrecognised values.
+  """
+  if isinstance(role, str):
+    try:
+      role = Role(role)
+    except ValueError:
+      return "model"
+  return _A2A_ROLE_TO_GENAI_ROLE.get(role, "model")
 
 
 def _get_adk_metadata_key(key: str) -> str:
