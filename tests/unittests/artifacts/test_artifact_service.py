@@ -783,7 +783,7 @@ async def test_file_save_artifact_rejects_absolute_path_within_scope(tmp_path):
 )
 async def test_file_save_artifact_rejects_path_traversal_in_ids(
     tmp_path, user_id, session_id
-):
+) -> None:
   """FileArtifactService rejects user_id/session_id with path traversal."""
   artifact_service = FileArtifactService(root_dir=tmp_path / "artifacts")
   part = types.Part(text="content")

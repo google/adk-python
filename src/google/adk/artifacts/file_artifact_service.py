@@ -76,9 +76,7 @@ def _validate_path_segment(value: str, name: str) -> None:
   if not value:
     raise InputValidationError(f"{name} must not be empty.")
   if any(sep in value for sep in ("/", "\\", "..")):
-    raise InputValidationError(
-        f"{name} contains invalid characters: {value!r}"
-    )
+    raise InputValidationError(f"{name} contains invalid characters: {value!r}")
 
 
 _USER_NAMESPACE_PREFIX = "user:"
