@@ -218,6 +218,23 @@ def convert_event_to_a2a_events(
               ),
           )
       )
+    elif _serialize_value(event.actions) is not None:
+      a2a_events.append(
+          TaskStatusUpdateEvent(
+              task_id=task_id,
+              context_id=context_id,
+              status=TaskStatus(
+                  state=TaskState.working,
+                  message=Message(
+                      message_id=str(uuid.uuid4()),
+                      role=Role.agent,
+                      parts=[],
+                  ),
+                  timestamp=datetime.now(timezone.utc).isoformat(),
+              ),
+              final=False,
+          )
+      )
 
     a2a_events = _add_event_metadata(event, a2a_events)
     return a2a_events
@@ -280,7 +297,10 @@ def _add_event_metadata(
       metadata[_get_adk_metadata_key(field_name)] = value
 
   for a2a_event in a2a_events:
-    if isinstance(a2a_event, TaskStatusUpdateEvent):
+    if (
+        isinstance(a2a_event, TaskStatusUpdateEvent)
+        and a2a_event.status.message
+    ):
       a2a_event.status.message.metadata = metadata.copy()
     elif isinstance(a2a_event, TaskArtifactUpdateEvent):
       a2a_event.artifact.metadata = metadata.copy()
