@@ -4899,7 +4899,7 @@ async def test_content_to_message_param_anthropic_no_signature_falls_back():
 @pytest.mark.asyncio
 async def test_content_to_message_param_file_uri_mime_fallback_logs_warning(
     caplog,
-):
+) -> None:
   """Test that falling back to application/octet-stream logs a warning."""
   file_part = types.Part(
       file_data=types.FileData(
@@ -4921,7 +4921,7 @@ async def test_content_to_message_param_file_uri_mime_fallback_logs_warning(
 
 
 @pytest.mark.asyncio
-async def test_content_to_message_param_function_response_with_extra_parts_propagates_model():
+async def test_content_to_message_param_function_response_with_extra_parts_propagates_model() -> None:
   """Test that model parameter is propagated in recursive calls for mixed parts."""
   tool_part = types.Part.from_function_response(
       name="load_image",
