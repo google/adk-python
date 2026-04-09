@@ -5,8 +5,6 @@
 
 ### Features
 
-* Add /apps/{app_name}/app-info endpoint to ADK CLI web server ([da438fa](https://github.com/google/adk-python/commit/da438fafd8a9dfa7cd3cb4c95b558046ac3905bb))
-* add ADK trigger endpoints to ADK Web Server ([e2d970f](https://github.com/google/adk-python/commit/e2d970ff9428a76ea21db6ec951ddf7af3a986ad))
 * Add auth scheme/credential support to MCP toolsets in Agent Registry ([7913a3b](https://github.com/google/adk-python/commit/7913a3b76432caf16953ea7b2a2cf4872baad417))
 * Add blacklist for shell metacharacters in BashTool ([23bd95b](https://github.com/google/adk-python/commit/23bd95bcf23367a8df3342ca4bb9d17f0b3b0d8f))
 * add configurable resource limits for subprocesses in BashTool ([1b05842](https://github.com/google/adk-python/commit/1b0584241f6418fd5fe9bd05fa666d03c310b8ae))
