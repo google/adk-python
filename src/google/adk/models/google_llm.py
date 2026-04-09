@@ -304,13 +304,19 @@ class Gemini(BaseLlm):
     """
     from google.genai import Client
 
-    return Client(
-        http_options=types.HttpOptions(
+    base_url = self.base_url
+
+    kwargs: dict[str, Any] = {
+        'http_options': types.HttpOptions(
             headers=self._tracking_headers(),
             retry_options=self.retry_options,
-            base_url=self.base_url,
+            base_url=base_url,
         )
-    )
+    }
+    if self.model.startswith('projects/'):
+      kwargs['vertexai'] = True
+
+    return Client(**kwargs)
 
   @cached_property
   def _api_backend(self) -> GoogleLLMVariant:
@@ -336,11 +342,19 @@ class Gemini(BaseLlm):
   def _live_api_client(self) -> Client:
     from google.genai import Client
 
-    return Client(
-        http_options=types.HttpOptions(
-            headers=self._tracking_headers(), api_version=self._live_api_version
+    base_url = self.base_url
+
+    kwargs: dict[str, Any] = {
+        'http_options': types.HttpOptions(
+            headers=self._tracking_headers(),
+            api_version=self._live_api_version,
+            base_url=base_url,
         )
-    )
+    }
+    if self.model.startswith('projects/'):
+      kwargs['vertexai'] = True
+
+    return Client(**kwargs)
 
   @contextlib.asynccontextmanager
   async def connect(self, llm_request: LlmRequest) -> BaseLlmConnection:

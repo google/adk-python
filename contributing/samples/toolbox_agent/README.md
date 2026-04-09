@@ -1,6 +1,6 @@
 # Toolbox Agent
 
-This agent utilizes [MCP toolbox for database](https://googleapis.github.io/genai-toolbox/getting-started/introduction/) to assist end users based on information stored in a database.
+This agent utilizes [MCP toolbox for database](https://mcp-toolbox.dev) to assist end users based on information stored in a database.
 
 Follow the steps below to run this agent.
 

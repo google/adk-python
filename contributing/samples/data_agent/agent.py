@@ -51,6 +51,10 @@ else:
   # Initialize the tools to use the application default credentials.
   # https://cloud.google.com/docs/authentication/provide-credentials-adc
   application_default_credentials, _ = google.auth.default()
+  if not application_default_credentials.valid:
+    application_default_credentials.refresh(
+        google.auth.transport.requests.Request()
+    )
   credentials_config = DataAgentCredentialsConfig(
       credentials=application_default_credentials
   )

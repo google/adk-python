@@ -14,7 +14,9 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 import logging
+import threading
 from typing import Optional
 
 from fastapi.openapi.models import OAuth2
@@ -25,10 +27,13 @@ from ..utils.feature_decorator import experimental
 from .auth_credential import AuthCredential
 from .auth_credential import AuthCredentialTypes
 from .auth_provider_registry import AuthProviderRegistry
+from .auth_schemes import AuthScheme
 from .auth_schemes import AuthSchemeType
+from .auth_schemes import CustomAuthScheme
 from .auth_schemes import ExtendedOAuth2
 from .auth_schemes import OpenIdConnectWithConfig
 from .auth_tool import AuthConfig
+from .base_auth_provider import BaseAuthProvider
 from .exchanger.base_credential_exchanger import BaseCredentialExchanger
 from .exchanger.base_credential_exchanger import ExchangeResult
 from .exchanger.credential_exchanger_registry import CredentialExchangerRegistry
@@ -36,6 +41,25 @@ from .oauth2_discovery import OAuth2DiscoveryManager
 from .refresher.credential_refresher_registry import CredentialRefresherRegistry
 
 logger = logging.getLogger("google_adk." + __name__)
+
+
+def _rehydrate_custom_scheme(
+    scheme: CustomAuthScheme, supported_schemes: Sequence[type[AuthScheme]]
+) -> CustomAuthScheme:
+  """Rehydrate a CustomAuthScheme into one of the given supported_schemes."""
+  incoming_type = scheme.type_
+  for scheme_class in supported_schemes:
+    type_field = scheme_class.model_fields.get("type_")
+    # Custom AuthScheme classes must define a `default` for their `type_` field
+    # to be rehydrated correctly.
+    if type_field and type_field.default == incoming_type:
+      data = scheme.model_dump(by_alias=True)
+      if scheme.model_extra:
+        data.update(scheme.model_extra)
+      return scheme_class.model_validate(data)
+  raise ValueError(
+      f"Cannot rehydrate: no registered scheme matches type '{incoming_type}'"
+  )
 
 
 @experimental
@@ -77,12 +101,32 @@ class CredentialManager:
       ```
   """
 
+  _auth_provider_registry = AuthProviderRegistry()
+  _registry_lock = threading.Lock()
+
+  @classmethod
+  def register_auth_provider(cls, provider: BaseAuthProvider) -> None:
+    """Public API for developers to register custom auth providers."""
+    with cls._registry_lock:
+      for scheme_type in provider.supported_auth_schemes:
+        existing_provider = cls._auth_provider_registry.get_provider(
+            scheme_type
+        )
+        if existing_provider is not None:
+          if existing_provider is not provider:
+            logger.warning(
+                "An auth provider is already registered for scheme %s. "
+                "Ignoring the new provider.",
+                scheme_type,
+            )
+            continue
+        cls._auth_provider_registry.register(scheme_type, provider)
+
   def __init__(
       self,
       auth_config: AuthConfig,
   ):
     self._auth_config = auth_config
-    self._auth_provider_registry = AuthProviderRegistry()
     self._exchanger_registry = CredentialExchangerRegistry()
     self._refresher_registry = CredentialRefresherRegistry()
     self._discovery_manager = OAuth2DiscoveryManager()
@@ -139,6 +183,20 @@ class CredentialManager:
   ) -> Optional[AuthCredential]:
     """Load and prepare authentication credential through a structured workflow."""
 
+    # Pydantic may have deserialized an unknown scheme into a generic
+    # CustomAuthScheme. If so, rehydrate it first into a specific subclass.
+    # Note: Custom authentication scheme classes must have been imported into
+    # the Python runtime before get_auth_credential is called for their
+    # subclasses to be registered. This is fine as developer will anyway import
+    # them while registering the auth providers.
+    # Note: `__subclasses__()` only returns immediate subclasses, if there is a
+    # subclass of a subclass of CustomAuthScheme then it will not be returned.
+    # pylint: disable=unidiomatic-typecheck Needs exact class matching.
+    if type(self._auth_config.auth_scheme) is CustomAuthScheme:
+      self._auth_config.auth_scheme = _rehydrate_custom_scheme(
+          self._auth_config.auth_scheme,
+          CustomAuthScheme.__subclasses__(),
+      )
     # First, check if a registered auth provider is available before attempting
     # to retrieve tokens natively.
     provider = self._auth_provider_registry.get_provider(
