@@ -19,19 +19,15 @@ from __future__ import annotations
 from collections.abc import Generator
 from enum import Enum
 import logging
-import os
 import re
 from typing import Any
 from typing import Callable
 from typing import Dict
 from typing import List
 from typing import Mapping
-from typing import Sequence
 from typing import TypedDict
-from urllib.parse import parse_qs
 from urllib.parse import urlparse
 
-from a2a.client.client_factory import minimal_agent_card
 from a2a.types import AgentCapabilities
 from a2a.types import AgentCard
 from a2a.types import AgentSkill
@@ -140,6 +136,17 @@ class Endpoint(TypedDict, total=False):
   createTime: str
   updateTime: str
   attributes: Dict[str, Any]
+
+
+def _is_google_api(url: str) -> bool:
+  """Checks if the given URL points to a Google API endpoint."""
+  parsed_url = urlparse(url)
+  if not parsed_url.hostname:
+    return False
+  return (
+      parsed_url.hostname == "googleapis.com"
+      or parsed_url.hostname.endswith(".googleapis.com")
+  )
 
 
 class AgentRegistry:
@@ -305,8 +312,10 @@ class AgentRegistry:
           f"MCP Server endpoint URI not found for: {mcp_server_name}"
       )
 
+    headers = self._get_auth_headers() if _is_google_api(endpoint_uri) else None
     connection_params = StreamableHTTPConnectionParams(
-        url=endpoint_uri, headers=self._get_auth_headers()
+        url=endpoint_uri,
+        headers=headers,
     )
     return AgentRegistrySingleMcpToolset(
         destination_resource_id=mcp_server_id,
