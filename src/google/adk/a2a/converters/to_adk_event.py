@@ -384,9 +384,7 @@ def convert_a2a_message_to_event(
     output_parts, _ = _convert_a2a_parts_to_adk_parts(
         a2a_message.parts, part_converter
     )
-    content_role = _a2a_role_to_content_role(
-        getattr(a2a_message, "role", None)
-    )
+    content_role = _a2a_role_to_content_role(getattr(a2a_message, "role", None))
     return _create_event(
         output_parts,
         invocation_context,
