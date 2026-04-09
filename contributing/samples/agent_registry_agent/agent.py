@@ -18,6 +18,7 @@ import os
 
 from google.adk.agents.llm_agent import LlmAgent
 from google.adk.integrations.agent_registry import AgentRegistry
+from google.adk.models.google_llm import Gemini
 
 # Project and location can be set via environment variables:
 # GOOGLE_CLOUD_PROJECT and GOOGLE_CLOUD_LOCATION
@@ -27,6 +28,8 @@ location = os.environ.get("GOOGLE_CLOUD_LOCATION", "global")
 # Initialize Agent Registry client
 registry = AgentRegistry(project_id=project_id, location=location)
 
+# List agents, MCP servers, and endpoints resource names from the registry.
+# They can be used to initialize the agent, toolset, and model below.
 print(f"Listing agents in {project_id}/{location}...")
 agents = registry.list_agents()
 for agent in agents.get("agents", []):
@@ -36,6 +39,11 @@ print(f"\nListing MCP servers in {project_id}/{location}...")
 mcp_servers = registry.list_mcp_servers()
 for server in mcp_servers.get("mcpServers", []):
   print(f"- MCP Server: {server.get('displayName')} ({server.get('name')})")
+
+print(f"\nListing endpoints in {project_id}/{location}...")
+endpoints = registry.list_endpoints()
+for endpoint in endpoints.get("endpoints", []):
+  print(f"- Endpoint: {endpoint.get('displayName')} ({endpoint.get('name')})")
 
 # Example of using a specific agent or MCP server from the registry:
 # (Note: These names should be full resource names as returned by list methods)
@@ -52,8 +60,19 @@ mcp_toolset = registry.get_mcp_toolset(
     f"projects/{project_id}/locations/{location}/mcpServers/MCP_SERVER_NAME"
 )
 
+# 3. Getting a specific model endpoint configuration
+# This returns a string like:
+# "projects/adk12345/locations/us-central1/publishers/google/models/gemini-2.5-flash"
+# TODO: Replace ENDPOINT_NAME with your endpoint name
+model_name = registry.get_model_name(
+    f"projects/{project_id}/locations/{location}/endpoints/ENDPOINT_NAME"
+)
+
+# Initialize the model using the resolved model name from registry.
+gemini_model = Gemini(model=model_name)
+
 root_agent = LlmAgent(
-    model="gemini-2.5-flash",
+    model=gemini_model,
     name="discovery_agent",
     instruction=(
         "You have access to tools and sub-agents discovered via Registry."
