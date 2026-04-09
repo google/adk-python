@@ -2198,6 +2198,16 @@ def cli_migrate_session(
     ),
 )
 @click.option(
+    "--agent_module",
+    type=str,
+    default=None,
+    help=(
+        "Optional. Python module name (without .py) containing the agent"
+        " object. Use this when your entry point is not named `agent.py`"
+        " (e.g. `core` or `adk_agent`). (default: `agent`)"
+    ),
+)
+@click.option(
     "--env_file",
     type=str,
     default="",
@@ -2271,6 +2281,7 @@ def cli_deploy_agent_engine(
     description: str,
     adk_app: str,
     adk_app_object: Optional[str],
+    agent_module: Optional[str],
     temp_folder: Optional[str],
     env_file: str,
     requirements_file: str,
@@ -2308,6 +2319,7 @@ def cli_deploy_agent_engine(
         otel_to_cloud=otel_to_cloud,
         api_key=api_key,
         adk_app_object=adk_app_object,
+        agent_module=agent_module,
         display_name=display_name,
         description=description,
         adk_app=adk_app,

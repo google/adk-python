@@ -112,7 +112,7 @@ if {is_config_agent}:
   config_path = os.path.join(os.path.dirname(__file__), "root_agent.yaml")
   root_agent = config_agent_utils.from_config(config_path)
 else:
-  from .agent import {adk_app_object}
+  from .{agent_module} import {adk_app_object}
 
 if {express_mode}: # Whether or not to use Express Mode
   vertexai.init(api_key=os.environ.get("GOOGLE_API_KEY"))
@@ -473,6 +473,7 @@ def _validate_agent_import(
     agent_src_path: str,
     adk_app_object: str,
     is_config_agent: bool,
+    agent_module: str = 'agent',
 ) -> None:
   """Validates that the agent module can be imported successfully.
 
@@ -485,6 +486,8 @@ def _validate_agent_import(
     agent_src_path: Path to the staged agent source code.
     adk_app_object: The Python object name to import ('root_agent' or 'app').
     is_config_agent: Whether this is a config-based agent.
+    agent_module: The Python module name containing the agent object.
+      Defaults to 'agent'.
 
   Raises:
     click.ClickException: If the agent module cannot be imported.
@@ -493,11 +496,12 @@ def _validate_agent_import(
     # Config agents are loaded from YAML, skip Python import validation
     return
 
-  agent_module_path = os.path.join(agent_src_path, 'agent.py')
+  agent_module_path = os.path.join(agent_src_path, f'{agent_module}.py')
   if not os.path.exists(agent_module_path):
     raise click.ClickException(
         f'Agent module not found at {agent_module_path}. '
-        'Please ensure your agent folder contains an agent.py file.'
+        f'Please ensure your agent folder contains a {agent_module}.py file,'
+        ' or use --agent_module to specify a different module name.'
     )
 
   # Add the parent directory to sys.path temporarily for import resolution
@@ -818,6 +822,7 @@ def to_agent_engine(
     otel_to_cloud: Optional[bool] = None,
     api_key: Optional[str] = None,
     adk_app_object: Optional[str] = None,
+    agent_module: Optional[str] = None,
     agent_engine_id: Optional[str] = None,
     absolutize_imports: bool = True,
     project: Optional[str] = None,
@@ -868,6 +873,9 @@ def to_agent_engine(
       will be used. It will only be used if GOOGLE_GENAI_USE_VERTEXAI is true.
     adk_app_object (str): Optional. The Python object corresponding to the root
       ADK agent or app. Defaults to `root_agent` if not specified.
+    agent_module (str): Optional. The Python module name (without .py) that
+      contains the agent object. Defaults to `agent`. Use this when your entry
+      point is not named `agent.py` (e.g., `core.py` or `adk_agent.py`).
     agent_engine_id (str): Optional. The ID of the Agent Engine instance to
       update. If not specified, a new Agent Engine instance will be created.
     absolutize_imports (bool): Optional. Default is True. Whether to absolutize
@@ -900,6 +908,7 @@ def to_agent_engine(
   display_name = display_name or app_name
   parent_folder = os.path.dirname(agent_folder)
   adk_app_object = adk_app_object or 'root_agent'
+  agent_module = agent_module or 'agent'
   if adk_app_object not in ['root_agent', 'app']:
     click.echo(
         f'Invalid adk_app_object: {adk_app_object}. Please use "root_agent"'
@@ -1105,7 +1114,9 @@ def to_agent_engine(
     # Validate that the agent module can be imported before deployment.
     if not skip_agent_import_validation:
       click.echo('Validating agent module...')
-      _validate_agent_import(agent_src_path, adk_app_object, is_config_agent)
+      _validate_agent_import(
+          agent_src_path, adk_app_object, is_config_agent, agent_module
+      )
 
     adk_app_file = os.path.join(temp_folder, f'{adk_app}.py')
     if adk_app_object == 'root_agent':
@@ -1126,6 +1137,7 @@ def to_agent_engine(
               is_config_agent=is_config_agent,
               agent_folder=f'./{temp_folder}',
               adk_app_object=adk_app_object,
+              agent_module=agent_module,
               adk_app_type=adk_app_type,
               express_mode=api_key is not None,
           )
