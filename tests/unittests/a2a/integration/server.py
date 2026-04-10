@@ -14,6 +14,7 @@
 
 """A2A Server for integration tests."""
 
+from unittest.mock import AsyncMock
 from unittest.mock import Mock
 
 from a2a.server.apps.jsonrpc.fastapi_app import A2AFastAPIApplication
@@ -23,9 +24,12 @@ from a2a.types import AgentCapabilities
 from a2a.types import AgentCard
 from a2a.types import AgentSkill
 from google.adk.a2a.executor.a2a_agent_executor import A2aAgentExecutor
+from google.adk.a2a.executor.config import A2aAgentExecutorConfig
+from google.adk.a2a.executor.interceptors.include_artifacts_in_a2a_event import include_artifacts_in_a2a_event_interceptor
 from google.adk.agents.base_agent import BaseAgent
 from google.adk.runners import Runner
 from google.adk.sessions.in_memory_session_service import InMemorySessionService
+from google.genai import types
 
 
 class FakeRunner(Runner):
@@ -42,6 +46,12 @@ class FakeRunner(Runner):
         session_service=session_service,
     )
     self.run_async_fn = run_async_fn
+
+    mock_artifact_service = Mock()
+    mock_artifact_service.load_artifact = AsyncMock(
+        return_value=types.Part(text="artifact content")
+    )
+    self.artifact_service = mock_artifact_service
 
   async def run_async(self, **kwargs):
     async for event in self.run_async_fn(**kwargs):
@@ -63,18 +73,21 @@ agent_card = AgentCard(
 )
 
 
-def create_server_app(run_async_fn):
+def create_server_app(
+    run_async_fn=None, config: A2aAgentExecutorConfig | None = None
+):
   """Creates an A2A FastAPI application with a mocked runner.
 
   Args:
     run_async_fn: A generator function that takes **kwargs and yields Event
       objects.
+    include_artifacts: Whether to include artifacts in A2A events.
 
   Returns:
     A FastAPI application instance.
   """
   runner = FakeRunner(run_async_fn)
-  executor = A2aAgentExecutor(runner=runner)
+  executor = A2aAgentExecutor(runner=runner, config=config)
   task_store = InMemoryTaskStore()
   handler = DefaultRequestHandler(
       agent_executor=executor, task_store=task_store
