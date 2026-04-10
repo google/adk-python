@@ -12,5 +12,14 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# version: major.minor.patch
-__version__ = "1.29.0"
+"""Context variables for internal telemetry use."""
+
+from __future__ import annotations
+
+import contextvars
+
+# Internal context variable for Visual Builder usage tracking.
+# True if the current execution is within a Visual Builder context.
+_is_visual_builder: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "_is_visual_builder", default=False
+)

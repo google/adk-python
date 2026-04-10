@@ -327,48 +327,61 @@ def _handle_login_with_google() -> (
       selected_project_id = projects[project_index - 1][0]
     region = _prompt_for_google_cloud_region(None)
     return None, selected_project_id, region
-  else:
-    if click.confirm(
-        "No projects found automatically. Would you like to enter one"
-        " manually?",
-        default=False,
-    ):
-      selected_project_id = _prompt_for_google_cloud(None)
-      region = _prompt_for_google_cloud_region(None)
-      return None, selected_project_id, region
 
-  # Check Express eligibility
-  if gcp_utils.check_express_eligibility():
-    click.secho(_EXPRESS_TOS_MSG, fg="yellow")
-    if click.confirm("Do you accept the Terms of Service?", default=False):
-      selected_region = click.prompt(
-          """\
+  click.secho(
+      "A Google Cloud project is required to continue. You can enter an"
+      " existing project ID or create an Express Mode project. Learn more:"
+      " https://cloud.google.com/resources/cloud-express-faqs",
+      fg="green",
+  )
+  action = click.prompt(
+      "1. Enter an existing Google Cloud project ID\n"
+      "2. Create a new project (Express Mode)\n"
+      "3. Abandon\n"
+      "Choose an action",
+      type=click.Choice(["1", "2", "3"]),
+  )
+
+  if action == "3":
+    raise click.Abort()
+
+  if action == "1":
+    google_cloud_project = _prompt_for_google_cloud(None)
+    google_cloud_region = _prompt_for_google_cloud_region(None)
+    return None, google_cloud_project, google_cloud_region
+
+  elif action == "2":
+    if gcp_utils.check_express_eligibility():
+      click.secho(_EXPRESS_TOS_MSG, fg="yellow")
+      if click.confirm("Do you accept the Terms of Service?", default=False):
+        selected_region = click.prompt(
+            """\
 Choose a region for Express Mode:
 1. us-central1
 2. europe-west1
 3. asia-southeast1
 Choose region""",
-          type=click.Choice(["1", "2", "3"]),
-          default="1",
-      )
-      region_map = {
-          "1": "us-central1",
-          "2": "europe-west1",
-          "3": "asia-southeast1",
-      }
-      region = region_map[selected_region]
-      express_info = gcp_utils.sign_up_express(location=region)
-      api_key = express_info.get("api_key")
-      project_id = express_info.get("project_id")
-      region = express_info.get("region", region)
-      click.secho(
-          f"Express Mode project created: {project_id}",
-          fg="green",
-      )
-      return api_key, project_id, region
+            type=click.Choice(["1", "2", "3"]),
+            default="1",
+        )
+        region_map = {
+            "1": "us-central1",
+            "2": "europe-west1",
+            "3": "asia-southeast1",
+        }
+        region = region_map[selected_region]
+        express_info = gcp_utils.sign_up_express(location=region)
+        api_key = express_info.get("api_key")
+        project_id = express_info.get("project_id")
+        region = express_info.get("region", region)
+        click.secho(
+            f"Express Mode project created: {project_id}",
+            fg="green",
+        )
+        return api_key, project_id, region
 
-  click.secho(_NOT_ELIGIBLE_MSG, fg="red")
-  raise click.Abort()
+    click.secho(_NOT_ELIGIBLE_MSG, fg="red")
+    raise click.Abort()
 
 
 def _prompt_to_choose_type() -> str:

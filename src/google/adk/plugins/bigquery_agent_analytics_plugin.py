@@ -67,6 +67,7 @@ from ..models.llm_request import LlmRequest
 from ..models.llm_response import LlmResponse
 from ..tools.base_tool import BaseTool
 from ..tools.tool_context import ToolContext
+from ..utils._telemetry_context import _is_visual_builder
 from ..version import __version__
 from .base_plugin import BasePlugin
 
@@ -922,6 +923,9 @@ class BatchProcessor:
     self.flush_interval = flush_interval
     self.retry_config = retry_config
     self.shutdown_timeout = shutdown_timeout
+
+    self._visual_builder = _is_visual_builder.get()
+
     self._queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue(
         maxsize=queue_max_size
     )
@@ -1092,9 +1096,15 @@ class BatchProcessor:
       serialized_schema = self.arrow_schema.serialize().to_pybytes()
       serialized_batch = arrow_batch.serialize().to_pybytes()
 
+      trace_id_prefix = (
+          "google-adk-bq-logger-visual-builder"
+          if self._visual_builder
+          else "google-adk-bq-logger"
+      )
+
       req = bq_storage_types.AppendRowsRequest(
           write_stream=self.write_stream,
-          trace_id=f"google-adk-bq-logger/{__version__}",
+          trace_id=f"{trace_id_prefix}/{__version__}",
       )
       req.arrow_rows.writer_schema.serialized_schema = serialized_schema
       req.arrow_rows.rows.serialized_record_batch = serialized_batch
@@ -1900,6 +1910,8 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
     self.table_id = table_id or self.config.table_id
     self.location = location
 
+    self._visual_builder = _is_visual_builder.get()
+
     self._started = False
     self._startup_error: Optional[Exception] = None
     self._is_shutting_down = False
@@ -2030,9 +2042,12 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
         if quota_project_id
         else None
     )
-    client_info = gapic_client_info.ClientInfo(
-        user_agent=f"google-adk-bq-logger/{__version__}"
-    )
+
+    user_agents = [f"google-adk-bq-logger/{__version__}"]
+    if self._visual_builder:
+      user_agents.append(f"google-adk-visual-builder/{__version__}")
+
+    client_info = gapic_client_info.ClientInfo(user_agent=" ".join(user_agents))
 
     write_client = BigQueryWriteAsyncClient(
         credentials=creds,
