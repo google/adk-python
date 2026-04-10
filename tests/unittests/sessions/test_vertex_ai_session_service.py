@@ -13,6 +13,7 @@
 # limitations under the License.
 import copy
 import datetime
+import json
 import re
 import types
 from typing import Any
@@ -374,6 +375,7 @@ class MockAsyncClient:
     self.agent_engines.sessions.events.list.side_effect = self._list_events
     self.agent_engines.sessions.events.append.side_effect = self._append_event
     self.last_create_session_config: dict[str, Any] = {}
+    self.last_list_sessions_config: dict[str, Any] = {}
 
   async def __aenter__(self):
     """Enters the asynchronous context."""
@@ -390,6 +392,7 @@ class MockAsyncClient:
     raise api_core_exceptions.NotFound(f'Session not found: {session_id}')
 
   async def _list_sessions(self, name: str, config: dict[str, Any]):
+    self.last_list_sessions_config = config
     filter_val = config.get('filter', '')
     user_id_match = re.search(r'user_id="([^"]+)"', filter_val)
     if user_id_match:
@@ -873,6 +876,20 @@ async def test_list_sessions_all_users():
       '3',
       'page1',
       'page2',
+  }
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures('mock_get_api_client')
+async def test_list_sessions_quotes_user_id_filter(mock_api_client_instance):
+  session_service = mock_vertex_ai_session_service()
+  payload = 'attacker" OR user_id!=""'
+
+  sessions = await session_service.list_sessions(app_name='123', user_id=payload)
+
+  assert sessions.sessions == []
+  assert mock_api_client_instance.last_list_sessions_config == {
+      'filter': f'user_id={json.dumps(payload)}'
   }
 
 
