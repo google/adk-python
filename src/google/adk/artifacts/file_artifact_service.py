@@ -90,6 +90,14 @@ def _to_posix_path(path_value: str) -> PurePosixPath:
   return PurePosixPath(path_value)
 
 
+def _is_absolute_path(path_value: str) -> bool:
+  """Returns whether the value is absolute on POSIX or Windows."""
+  return (
+      PurePosixPath(path_value).is_absolute()
+      or PureWindowsPath(path_value).is_absolute()
+  )
+
+
 def _resolve_scoped_artifact_path(
     scope_root: Path, filename: str
 ) -> tuple[Path, Path]:
@@ -114,7 +122,7 @@ def _resolve_scoped_artifact_path(
   pure_path = _to_posix_path(stripped)
 
   scope_root_resolved = scope_root.resolve(strict=False)
-  if pure_path.is_absolute():
+  if _is_absolute_path(stripped) or pure_path.is_absolute():
     raise InputValidationError(
         f"Absolute artifact filename {filename!r} is not permitted; "
         "provide a path relative to the storage scope."
