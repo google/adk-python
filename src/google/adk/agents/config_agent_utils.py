@@ -36,7 +36,7 @@ def from_config(config_path: str) -> BaseAgent:
   """Build agent from a configfile path.
 
   Args:
-    config: the path to a YAML config file.
+    config_path: the path to a YAML config file.
 
   Returns:
     The created agent instance.

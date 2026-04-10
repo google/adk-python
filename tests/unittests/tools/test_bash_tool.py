@@ -13,6 +13,8 @@
 # limitations under the License.
 
 import asyncio
+import resource
+import signal
 from unittest import mock
 
 from google.adk.tools import bash_tool
@@ -96,6 +98,8 @@ class TestValidateCommand:
     assert bash_tool._validate_command("rm -rf /", policy) is None
     assert bash_tool._validate_command("cat /etc/passwd", policy) is None
     assert bash_tool._validate_command("sudo curl", policy) is None
+    assert bash_tool._validate_command("echo hello | grep h", policy) is None
+    assert bash_tool._validate_command("ls ; rm -rf /", policy) is None
 
   def test_restricted_policy_allows_prefixes(self):
     policy = bash_tool.BashToolPolicy(allowed_command_prefixes=("ls", "cat"))
@@ -108,6 +112,20 @@ class TestValidateCommand:
     assert bash_tool._validate_command("tree", policy) is not None
     assert "Permitted prefixes are: ls, cat" in bash_tool._validate_command(
         "tree", policy
+    )
+
+  def test_blocked_operators_validation(self):
+    policy = bash_tool.BashToolPolicy(
+        allowed_command_prefixes=("*",),
+        blocked_operators=("|", ";", "$(", "`", "&&", "||"),
+    )
+    assert (
+        bash_tool._validate_command("echo hello | grep h", policy)
+        == "Command contains blocked operator: |"
+    )
+    assert (
+        bash_tool._validate_command("ls ; rm -rf /", policy)
+        == "Command contains blocked operator: ;"
     )
 
 
@@ -203,6 +221,8 @@ class TestExecuteBashTool:
   async def test_timeout(self, workspace, tool_context_confirmed):
     tool = bash_tool.ExecuteBashTool(workspace=workspace)
     mock_process = mock.AsyncMock()
+    mock_process.pid = 12345
+    mock_process.communicate.return_value = (b"", b"")
     with (
         mock.patch.object(
             asyncio,
@@ -213,14 +233,15 @@ class TestExecuteBashTool:
         mock.patch.object(
             asyncio, "wait_for", autospec=True, side_effect=asyncio.TimeoutError
         ),
+        mock.patch("os.killpg") as mock_killpg,
     ):
       result = await tool.run_async(
           args={"command": "python scripts/do_thing.py"},
           tool_context=tool_context_confirmed,
       )
+      mock_killpg.assert_called_with(12345, signal.SIGKILL)
     assert "error" in result
     assert "timed out" in result["error"].lower()
-    mock_process.kill.assert_called_once()
 
   @pytest.mark.asyncio
   async def test_cwd_is_workspace(self, workspace, tool_context_confirmed):
@@ -237,3 +258,35 @@ class TestExecuteBashTool:
     result = await tool.run_async(args={}, tool_context=tool_context_confirmed)
     assert "error" in result
     assert "required" in result["error"].lower()
+
+  @pytest.mark.asyncio
+  async def test_resource_limits_set(self, workspace, tool_context_confirmed):
+    policy = bash_tool.BashToolPolicy(
+        max_memory_bytes=100 * 1024 * 1024,
+        max_file_size_bytes=50 * 1024 * 1024,
+        max_child_processes=10,
+    )
+    tool = bash_tool.ExecuteBashTool(workspace=workspace, policy=policy)
+    mock_process = mock.AsyncMock()
+    mock_process.pid = None  # Ensure finally block doesn't try to kill it
+    mock_process.communicate.return_value = (b"", b"")
+    mock_exec = mock.AsyncMock(return_value=mock_process)
+
+    with mock.patch("asyncio.create_subprocess_exec", mock_exec):
+      await tool.run_async(
+          args={"command": "ls"},
+          tool_context=tool_context_confirmed,
+      )
+      assert "preexec_fn" in mock_exec.call_args.kwargs
+      preexec_fn = mock_exec.call_args.kwargs["preexec_fn"]
+
+      mock_setrlimit = mock.create_autospec(resource.setrlimit, instance=True)
+      with mock.patch("resource.setrlimit", mock_setrlimit):
+        preexec_fn()
+        mock_setrlimit.assert_any_call(resource.RLIMIT_CORE, (0, 0))
+        mock_setrlimit.assert_any_call(
+            resource.RLIMIT_AS, (100 * 1024 * 1024, 100 * 1024 * 1024)
+        )
+        mock_setrlimit.assert_any_call(
+            resource.RLIMIT_FSIZE, (50 * 1024 * 1024, 50 * 1024 * 1024)
+        )

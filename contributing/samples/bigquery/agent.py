@@ -21,6 +21,7 @@ from google.adk.tools.bigquery.bigquery_toolset import BigQueryToolset
 from google.adk.tools.bigquery.config import BigQueryToolConfig
 from google.adk.tools.bigquery.config import WriteMode
 import google.auth
+import google.auth.transport.requests
 
 # Define the desired credential type.
 # By default use Application Default Credentials (ADC) from the local
@@ -57,6 +58,8 @@ elif CREDENTIALS_TYPE == AuthCredentialTypes.SERVICE_ACCOUNT:
   # service account key file
   # https://cloud.google.com/iam/docs/service-account-creds#user-managed-keys
   creds, _ = google.auth.load_credentials_from_file("service_account_key.json")
+  if not creds.valid:
+    creds.refresh(google.auth.transport.requests.Request())
   credentials_config = BigQueryCredentialsConfig(credentials=creds)
 elif CREDENTIALS_TYPE == AuthCredentialTypes.HTTP:
   # Initialize the tools to use the externally provided access token. One such
@@ -73,6 +76,10 @@ else:
   # Initialize the tools to use the application default credentials.
   # https://cloud.google.com/docs/authentication/provide-credentials-adc
   application_default_credentials, _ = google.auth.default()
+  if not application_default_credentials.valid:
+    application_default_credentials.refresh(
+        google.auth.transport.requests.Request()
+    )
   credentials_config = BigQueryCredentialsConfig(
       credentials=application_default_credentials
   )
