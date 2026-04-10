@@ -67,6 +67,7 @@ from ..models.llm_request import LlmRequest
 from ..models.llm_response import LlmResponse
 from ..tools.base_tool import BaseTool
 from ..tools.tool_context import ToolContext
+from ..utils._telemetry_context import _is_visual_builder
 from ..version import __version__
 from .base_plugin import BasePlugin
 
@@ -208,10 +209,23 @@ def _get_tool_origin(tool: "BaseTool") -> str:
   return "UNKNOWN"
 
 
+_SENSITIVE_KEYS = frozenset({
+    "client_secret",
+    "access_token",
+    "refresh_token",
+    "id_token",
+    "api_key",
+    "password",
+})
+
+
 def _recursive_smart_truncate(
     obj: Any, max_len: int, seen: Optional[set[int]] = None
 ) -> tuple[Any, bool]:
   """Recursively truncates string values within a dict or list.
+
+  Redacts sensitive keys corresponding to OAuth tokens and secrets
+  prior to serialization into BigQuery JSON strings.
 
   Args:
       obj: The object to truncate.
@@ -251,6 +265,12 @@ def _recursive_smart_truncate(
       # but explicit loop is fine for clarity given recursive nature.
       new_dict = {}
       for k, v in obj.items():
+        if isinstance(k, str):
+          k_lower = k.lower()
+          if k_lower in _SENSITIVE_KEYS or k_lower.startswith("temp:"):
+            new_dict[k] = "[REDACTED]"
+            continue
+
         val, trunc = _recursive_smart_truncate(v, max_len, seen)
         if trunc:
           truncated_any = True
@@ -480,6 +500,16 @@ class BigQueryLoggerConfig:
       shutdown_timeout: Max time to wait for shutdown.
       queue_max_size: Max size of the in-memory queue.
       content_formatter: Optional custom formatter for content.
+      gcs_bucket_name: GCS bucket for offloading large content.
+      connection_id: BigQuery connection ID for ObjectRef columns.
+      log_session_metadata: Whether to log session metadata.
+      custom_tags: Static custom tags to attach to every event.
+      auto_schema_upgrade: Whether to auto-add new columns on schema evolution.
+      create_views: Whether to auto-create per-event-type views.
+      view_prefix: Prefix for auto-created view names. Default ``"v"`` produces
+        views like ``v_llm_request``. Set a distinct prefix per table when
+        multiple plugin instances share one dataset to avoid view-name
+        collisions.
   """
 
   enabled: bool = True
@@ -519,6 +549,12 @@ class BigQueryLoggerConfig:
   # Automatically create per-event-type BigQuery views that unnest
   # JSON columns into typed, queryable columns.
   create_views: bool = True
+  # Prefix for auto-created per-event-type view names.
+  # Default "v" produces views like ``v_llm_request``.  Set a distinct
+  # prefix per table when multiple plugin instances share one dataset
+  # to avoid view-name collisions (e.g. ``"v_staging"`` →
+  # ``v_staging_llm_request``).
+  view_prefix: str = "v"
 
 
 # ==============================================================================
@@ -887,6 +923,9 @@ class BatchProcessor:
     self.flush_interval = flush_interval
     self.retry_config = retry_config
     self.shutdown_timeout = shutdown_timeout
+
+    self._visual_builder = _is_visual_builder.get()
+
     self._queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue(
         maxsize=queue_max_size
     )
@@ -1057,9 +1096,15 @@ class BatchProcessor:
       serialized_schema = self.arrow_schema.serialize().to_pybytes()
       serialized_batch = arrow_batch.serialize().to_pybytes()
 
+      trace_id_prefix = (
+          "google-adk-bq-logger-visual-builder"
+          if self._visual_builder
+          else "google-adk-bq-logger"
+      )
+
       req = bq_storage_types.AppendRowsRequest(
           write_stream=self.write_stream,
-          trace_id=f"google-adk-bq-logger/{__version__}",
+          trace_id=f"{trace_id_prefix}/{__version__}",
       )
       req.arrow_rows.writer_schema.serialized_schema = serialized_schema
       req.arrow_rows.rows.serialized_record_batch = serialized_batch
@@ -1859,8 +1904,13 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
       else:
         logger.warning(f"Unknown configuration parameter: {key}")
 
+    if not self.config.view_prefix:
+      raise ValueError("view_prefix must be a non-empty string.")
+
     self.table_id = table_id or self.config.table_id
     self.location = location
+
+    self._visual_builder = _is_visual_builder.get()
 
     self._started = False
     self._startup_error: Optional[Exception] = None
@@ -1992,9 +2042,12 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
         if quota_project_id
         else None
     )
-    client_info = gapic_client_info.ClientInfo(
-        user_agent=f"google-adk-bq-logger/{__version__}"
-    )
+
+    user_agents = [f"google-adk-bq-logger/{__version__}"]
+    if self._visual_builder:
+      user_agents.append(f"google-adk-visual-builder/{__version__}")
+
+    client_info = gapic_client_info.ClientInfo(user_agent=" ".join(user_agents))
 
     write_client = BigQueryWriteAsyncClient(
         credentials=creds,
@@ -2295,7 +2348,7 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
     Errors are logged but never raised.
     """
     for event_type, extra_cols in _EVENT_VIEW_DEFS.items():
-      view_name = "v_" + event_type.lower()
+      view_name = self.config.view_prefix + "_" + event_type.lower()
       columns = ",\n  ".join(list(_VIEW_COMMON_COLUMNS) + extra_cols)
       sql = _VIEW_SQL_TEMPLATE.format(
           project=self.project_id,

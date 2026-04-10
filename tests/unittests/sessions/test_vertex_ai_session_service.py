@@ -28,6 +28,7 @@ from google.adk.auth.auth_tool import AuthConfig
 from google.adk.events.event import Event
 from google.adk.events.event_actions import EventActions
 from google.adk.events.event_actions import EventCompaction
+from google.adk.models.cache_metadata import CacheMetadata
 from google.adk.sessions.base_session_service import GetSessionConfig
 from google.adk.sessions.session import Session
 from google.adk.sessions.vertex_ai_session_service import VertexAiSessionService
@@ -91,6 +92,7 @@ MOCK_EVENT_JSON = [
             'branch': '',
             'long_running_tool_ids': ['tool1'],
         },
+        'raw_event': {},
     },
 ]
 MOCK_EVENT_JSON_2 = [
@@ -161,6 +163,96 @@ def _generate_mock_events_for_session_5(num_events):
 
 MANY_EVENTS_COUNT = 200
 MOCK_EVENTS_JSON_5 = _generate_mock_events_for_session_5(MANY_EVENTS_COUNT)
+
+MOCK_EVENT_WITH_OVERRIDE_JSON = [{
+    'name': (
+        'projects/test-project/locations/test-location/'
+        'reasoningEngines/123/sessions/override/events/1'
+    ),
+    'invocationId': 'override_invoke',
+    'author': 'user_with_override',
+    'timestamp': '2024-12-12T12:12:12.123456Z',
+    'content': {
+        'parts': [
+            {'text': 'top_level_content'},
+        ],
+    },
+    'actions': {
+        'transferToAgent': 'top_level_agent',
+    },
+    'eventMetadata': {
+        'partial': True,
+        'turnComplete': False,
+        'interrupted': False,
+        'branch': 'top_level_branch',
+    },
+    'errorCode': '111',
+    'errorMessage': 'top_level_error',
+    'rawEvent': {
+        'invocationId': 'wrong_invocation_id',
+        'author': 'wrong_author',
+        'content': {
+            'parts': [
+                {'text': 'raw_event_content'},
+            ],
+        },
+        'actions': {
+            'transferToAgent': 'raw_event_agent',
+        },
+        'partial': False,
+        'turnComplete': True,
+        'interrupted': True,
+        'branch': 'raw_event_branch',
+        'errorCode': '222',
+        'errorMessage': 'raw_event_error',
+    },
+}]
+
+MOCK_EVENT_WITH_OVERRIDE_JSON_2 = [{
+    'name': (
+        'projects/test-project/locations/test-location/'
+        'reasoningEngines/123/sessions/override/events/1'
+    ),
+    'invocationId': 'override_invoke',
+    'author': 'user_with_override',
+    'content': {},
+    'actions': {},
+    'timestamp': '2024-12-12T12:12:12.123456Z',
+    'rawEvent': {
+        'invocationId': 'wrong_invocation_id',
+        'author': 'wrong_author',
+        'content': {
+            'parts': [
+                {'text': 'raw_event_content'},
+            ],
+        },
+        'actions': {
+            'skipSummarization': None,
+            'stateDelta': {},
+            'artifactDelta': {},
+            'transferToAgent': 'raw_event_agent',
+            'escalate': None,
+            'requestedAuthConfigs': {},
+        },
+        'errorCode': '222',
+        'errorMessage': 'raw_event_error',
+        'partial': False,
+        'turnComplete': True,
+        'interrupted': True,
+        'branch': 'raw_event_branch',
+        'customMetadata': None,
+        'longRunningToolIds': None,
+    },
+}]
+
+MOCK_SESSION_WITH_OVERRIDE_JSON = {
+    'name': (
+        'projects/test-project/locations/test-location/'
+        'reasoningEngines/123/sessions/override'
+    ),
+    'update_time': '2024-12-12T12:12:12.123456Z',
+    'user_id': 'user_with_override',
+}
 
 MOCK_SESSION = Session(
     app_name='123',
@@ -249,6 +341,8 @@ def _convert_to_object(data):
           'artifact_delta',
           'custom_metadata',
           'requested_auth_configs',
+          'rawEvent',
+          'raw_event',
       ]:
         kwargs[key] = value
       else:
@@ -324,7 +418,10 @@ class MockAsyncClient:
       self, name: str, user_id: str, config: dict[str, Any]
   ):
     self.last_create_session_config = config
-    new_session_id = '4'
+    if 'session_id' in config:
+      new_session_id = config['session_id']
+    else:
+      new_session_id = '4'
     self.session_dict[new_session_id] = {
         'name': (
             'projects/test-project/locations/test-location/'
@@ -343,7 +440,7 @@ class MockAsyncClient:
             + '/operations/111'
         ),
         'done': True,
-        'response': self.session_dict['4'],
+        'response': self.session_dict[new_session_id],
     })
 
   async def _list_events(self, name: str, **kwargs):
@@ -682,6 +779,38 @@ async def test_get_session_keeps_events_newer_than_update_time(
 
 @pytest.mark.asyncio
 @pytest.mark.usefixtures('mock_get_api_client')
+@pytest.mark.parametrize(
+    'mock_event_json',
+    [MOCK_EVENT_WITH_OVERRIDE_JSON, MOCK_EVENT_WITH_OVERRIDE_JSON_2],
+)
+async def test_get_session_from_raw_event(
+    mock_api_client_instance: MockAsyncClient,
+    mock_event_json,
+) -> None:
+  mock_api_client_instance.session_dict['6'] = MOCK_SESSION_WITH_OVERRIDE_JSON
+  mock_api_client_instance.event_dict['6'] = (
+      copy.deepcopy(mock_event_json),
+      None,
+  )
+  session_service = mock_vertex_ai_session_service()
+  session = await session_service.get_session(
+      app_name='123', user_id='user_with_override', session_id='6'
+  )
+  assert session is not None
+  assert len(session.events) == 1
+  event = session.events[0]
+  assert event.content.parts[0].text == 'raw_event_content'
+  assert event.actions.transfer_to_agent == 'raw_event_agent'
+  assert not event.partial
+  assert event.turn_complete
+  assert event.interrupted
+  assert event.branch == 'raw_event_branch'
+  assert event.error_code == '222'
+  assert event.error_message == 'raw_event_error'
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures('mock_get_api_client')
 async def test_get_session_with_many_events(mock_api_client_instance):
   mock_api_client_instance.session_dict['5'] = MOCK_SESSION_JSON_5
   mock_api_client_instance.event_dict['5'] = (
@@ -694,6 +823,20 @@ async def test_get_session_with_many_events(mock_api_client_instance):
   )
   assert session is not None
   assert len(session.events) == MANY_EVENTS_COUNT
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures('mock_get_api_client')
+async def test_get_session_with_num_recent_events_zero():
+  session_service = mock_vertex_ai_session_service()
+  session = await session_service.get_session(
+      app_name='123',
+      user_id='user',
+      session_id='2',
+      config=GetSessionConfig(num_recent_events=0),
+  )
+  assert session is not None
+  assert len(session.events) == 0
 
 
 @pytest.mark.asyncio
@@ -755,15 +898,26 @@ async def test_create_session():
 
 @pytest.mark.asyncio
 @pytest.mark.usefixtures('mock_get_api_client')
-async def test_create_session_with_custom_session_id():
+@pytest.mark.parametrize('session_id', ['1', 'abc123'])
+async def test_create_session_with_custom_session_id(
+    mock_api_client_instance: MockAsyncClient, session_id: str
+):
   session_service = mock_vertex_ai_session_service()
 
-  with pytest.raises(ValueError) as excinfo:
-    await session_service.create_session(
-        app_name='123', user_id='user', session_id='1'
-    )
-  assert str(excinfo.value) == (
-      'User-provided Session id is not supported for VertexAISessionService.'
+  mock_api_client_instance.event_dict[session_id] = (
+      [],
+      None,
+  )
+
+  session = await session_service.create_session(
+      app_name='123', user_id='user', session_id=session_id
+  )
+  assert session.id == session_id
+  assert session.app_name == '123'
+  assert session.user_id == 'user'
+  assert session.last_update_time is not None
+  assert session == await session_service.get_session(
+      app_name='123', user_id='user', session_id=session_id
   )
 
 
@@ -816,6 +970,36 @@ async def test_append_event():
       branch='test_branch',
       custom_metadata={'custom': 'data'},
       long_running_tool_ids={'tool2'},
+      input_transcription=genai_types.Transcription(
+          text='test_input_transcription'
+      ),
+      output_transcription=genai_types.Transcription(
+          text='test_output_transcription'
+      ),
+      model_version='test_model_version',
+      avg_logprobs=0.5,
+      logprobs_result=genai_types.LogprobsResult(
+          chosen_candidates=[
+              genai_types.LogprobsResultCandidate(
+                  log_probability=0.5,
+                  token='test_token',
+                  token_id=0,
+              )
+          ]
+      ),
+      cache_metadata=CacheMetadata(
+          cache_name='test_cache_name',
+          fingerprint='test_fingerprint',
+          contents_count=1,
+      ),
+      citation_metadata=genai_types.CitationMetadata(
+          citations=[
+              genai_types.Citation(
+                  uri='http://test.com',
+                  title='test_title',
+              )
+          ]
+      ),
   )
 
   await session_service.append_event(session_before_append, event_to_append)

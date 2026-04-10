@@ -24,8 +24,8 @@ from typing import TYPE_CHECKING
 from google.genai import types
 from typing_extensions import override
 
-from ...environments._base_environment import BaseEnvironment
-from ...environments._base_environment import ExecutionResult
+from ...environment._base_environment import BaseEnvironment
+from ...environment._base_environment import ExecutionResult
 from ...utils.feature_decorator import experimental
 from ..base_tool import BaseTool
 from ._constants import DEFAULT_TIMEOUT

@@ -260,17 +260,15 @@ class A2aAgentExecutor(AgentExecutor):
             context.context_id,
             self._config.gen_ai_part_converter,
         ):
-          a2a_event = await execute_after_event_interceptors(
+          a2a_events = await execute_after_event_interceptors(
               a2a_event,
               executor_context,
               adk_event,
               self._config.execute_interceptors,
           )
-          if a2a_event is None:
-            continue
-
-          task_result_aggregator.process_event(a2a_event)
-          await event_queue.enqueue_event(a2a_event)
+          for e in a2a_events:
+            task_result_aggregator.process_event(e)
+            await event_queue.enqueue_event(e)
 
     # publish the task result event - this is final
     if (
