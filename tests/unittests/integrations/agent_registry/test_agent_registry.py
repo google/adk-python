@@ -320,13 +320,23 @@ class TestAgentRegistry:
     server = registry.get_endpoint("test-endpoint")
     assert server == {"name": "test-endpoint"}
 
+  @pytest.mark.parametrize(
+      "url, expected_auth",
+      [
+          ("https://mcp.com", False),
+          ("https://mcp.googleapis.com/v1", True),
+          ("https://example.com/googleapis/v1", False),
+      ],
+  )
   @patch("httpx.Client")
-  def test_get_mcp_toolset(self, mock_httpx, registry):
+  def test_get_mcp_toolset_auth_headers(
+      self, mock_httpx, registry, url, expected_auth
+  ):
     mock_response = MagicMock()
     mock_response.json.return_value = {
         "displayName": "TestPrefix",
         "interfaces": [{
-            "url": "https://mcp.com",
+            "url": url,
             "protocolBinding": "JSONRPC",
         }],
     }
@@ -341,6 +351,13 @@ class TestAgentRegistry:
     toolset = registry.get_mcp_toolset("test-mcp")
     assert isinstance(toolset, McpToolset)
     assert toolset.tool_name_prefix == "TestPrefix"
+    if expected_auth:
+      assert toolset._connection_params.headers is not None
+      assert (
+          toolset._connection_params.headers["Authorization"] == "Bearer token"
+      )
+    else:
+      assert toolset._connection_params.headers is None
 
   @patch("httpx.Client")
   def test_get_mcp_toolset_with_auth(self, mock_httpx, registry):

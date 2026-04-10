@@ -12,5 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# version: major.minor.patch
-__version__ = "1.29.0"
+from .include_artifacts_in_a2a_event import include_artifacts_in_a2a_event_interceptor
+
+__all__ = [
+    "include_artifacts_in_a2a_event_interceptor",
+]

@@ -87,6 +87,16 @@ def llm_request_with_tools():
   )
 
 
+def test_supported_models_matches_gemma4():
+  """Gemma 4 model strings must resolve to the Gemma class via the registry."""
+  assert models.LLMRegistry.resolve("gemma-4-31b-it") is Gemma
+
+
+def test_supported_models_matches_gemma3():
+  """Gemma 3 model strings must continue to resolve to the Gemma class."""
+  assert models.LLMRegistry.resolve("gemma-3-27b-it") is Gemma
+
+
 @pytest.mark.asyncio
 async def test_not_gemma_model():
   llm = Gemma()
