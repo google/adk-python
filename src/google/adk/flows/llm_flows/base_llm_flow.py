@@ -756,6 +756,7 @@ class BaseLlmFlow(ABC):
             # We proactively raise ConnectionClosed to trigger the reconnection
             # logic in run_live, which will use the latest session handle.
             raise ConnectionClosed(None, None)
+
           model_response_event = Event(
               id=Event.new_id(),
               invocation_id=invocation_context.invocation_id,
@@ -1030,7 +1031,16 @@ class BaseLlmFlow(ABC):
         and not llm_response.input_transcription
         and not llm_response.output_transcription
         and not llm_response.usage_metadata
+        and not llm_response.live_session_resumption_update
     ):
+      return
+
+    # Handle session resumption updates for cross-connection resumption
+    if llm_response.live_session_resumption_update:
+      model_response_event.live_session_resumption_update = (
+          llm_response.live_session_resumption_update
+      )
+      yield model_response_event
       return
 
     # Handle transcription events ONCE per llm_response, outside the event loop

@@ -49,6 +49,7 @@ from ..converters.utils import _get_adk_metadata_key
 from ..experimental import a2a_experimental
 from .config import A2aAgentExecutorConfig
 from .executor_context import ExecutorContext
+from .interceptors.include_artifacts_in_a2a_event import include_artifacts_in_a2a_event_interceptor
 from .utils import execute_after_agent_interceptors
 from .utils import execute_after_event_interceptors
 from .utils import execute_before_agent_interceptors
@@ -221,15 +222,14 @@ class _A2aAgentExecutor(AgentExecutor):
             self._config.gen_ai_part_converter,
         ):
           a2a_event.metadata = self._get_invocation_metadata(executor_context)
-          a2a_event = await execute_after_event_interceptors(
+          a2a_events = await execute_after_event_interceptors(
               a2a_event,
               executor_context,
               adk_event,
               self._config.execute_interceptors,
           )
-          if not a2a_event:
-            continue
-          await event_queue.enqueue_event(a2a_event)
+          for e in a2a_events:
+            await event_queue.enqueue_event(e)
 
     if error_event:
       final_event = error_event

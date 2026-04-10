@@ -893,3 +893,35 @@ async def test_run_live_reconnect_reset_attempt():
       # We expect 2 successful attempts + DEFAULT_MAX_RECONNECT_ATTEMPTS failed attempts
       # Total calls = 2 + 5 = 7
       assert mock_connect.call_count == DEFAULT_MAX_RECONNECT_ATTEMPTS + 2
+
+
+@pytest.mark.asyncio
+async def test_postprocess_live_session_resumption_update():
+  """Test that _postprocess_live yields live_session_resumption_update."""
+  agent = Agent(name='test_agent')
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent
+  )
+  flow = BaseLlmFlowForTesting()
+
+  llm_request = LlmRequest()
+  llm_response = LlmResponse(
+      live_session_resumption_update=types.LiveServerSessionResumptionUpdate(
+          new_handle='test_handle'
+      )
+  )
+  model_response_event = Event(
+      id=Event.new_id(),
+      invocation_id=invocation_context.invocation_id,
+      author=agent.name,
+  )
+
+  events = []
+  async for event in flow._postprocess_live(
+      invocation_context, llm_request, llm_response, model_response_event
+  ):
+    events.append(event)
+
+  assert len(events) == 1
+  assert events[0].live_session_resumption_update is not None
+  assert events[0].live_session_resumption_update.new_handle == 'test_handle'
