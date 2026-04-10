@@ -30,3 +30,6 @@ REPO = os.getenv("REPO", "adk-python")
 PULL_REQUEST_NUMBER = os.getenv("PULL_REQUEST_NUMBER")
 
 IS_INTERACTIVE = os.environ.get("INTERACTIVE", "1").lower() in ["true", "1"]
+
+# The current PR number being triaged, parsed to int for validation.
+CURRENT_PR_NUMBER = int(PULL_REQUEST_NUMBER) if PULL_REQUEST_NUMBER else None

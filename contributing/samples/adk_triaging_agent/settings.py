@@ -33,3 +33,6 @@ ISSUE_BODY = os.getenv("ISSUE_BODY")
 ISSUE_COUNT_TO_PROCESS = os.getenv("ISSUE_COUNT_TO_PROCESS")
 
 IS_INTERACTIVE = os.environ.get("INTERACTIVE", "1").lower() in ["true", "1"]
+
+# The current issue number being triaged (for single-issue mode).
+CURRENT_ISSUE_NUMBER = int(ISSUE_NUMBER) if ISSUE_NUMBER else None
