@@ -17,7 +17,6 @@
 from __future__ import annotations
 
 import logging
-import shlex
 from typing import Any
 from typing import Optional
 from typing import TYPE_CHECKING
@@ -102,26 +101,6 @@ class ReadFileTool(BaseTool):
       return {'status': 'error', 'error': '`path` is required.'}
     start_line = args.get('start_line')
     end_line = args.get('end_line')
-
-    # Use `sed` to read the file if start_line or end_line are specified.
-    if (start_line and start_line > 1) or end_line:
-      start = start_line or 1
-      if end_line:
-        sed_range = f'{start},{end_line}'
-      else:
-        sed_range = f'{start},$'
-      path_arg = shlex.quote(path)
-      sed_arg = shlex.quote(f'{sed_range}p')
-      cmd = f'cat -n {path_arg} | sed -n {sed_arg}'
-      res = await self._environment.execute(cmd)
-      if res.exit_code == 0:
-        return {
-            'status': 'ok',
-            'content': _truncate(
-                res.stdout,
-                limit=self._max_output_chars,
-            ),
-        }
 
     try:
       data_bytes = await self._environment.read_file(path)
