@@ -15,6 +15,8 @@
 
 from __future__ import annotations
 
+import base64
+import binascii
 from collections import OrderedDict
 import json
 import os
@@ -33,6 +35,58 @@ from .memory_entry import MemoryEntry
 if TYPE_CHECKING:
   from ..events.event import Event
   from ..sessions.session import Session
+
+
+_SOURCE_DISPLAY_NAME_PREFIX = "adk-memory-v1."
+
+
+def _encode_source_display_name_part(value: str) -> str:
+  return (
+      base64.urlsafe_b64encode(value.encode("utf-8"))
+      .decode("ascii")
+      .rstrip("=")
+  )
+
+
+def _decode_source_display_name_part(value: str) -> str:
+  padded_value = value + "=" * (-len(value) % 4)
+  return base64.b64decode(
+      padded_value.encode("ascii"), altchars=b"-_", validate=True
+  ).decode("utf-8")
+
+
+def _build_source_display_name(
+    app_name: str, user_id: str, session_id: str
+) -> str:
+  return _SOURCE_DISPLAY_NAME_PREFIX + ".".join([
+      _encode_source_display_name_part(app_name),
+      _encode_source_display_name_part(user_id),
+      _encode_source_display_name_part(session_id),
+  ])
+
+
+def _parse_source_display_name(
+    source_display_name: str,
+) -> tuple[str, str, str] | None:
+  if source_display_name.startswith(_SOURCE_DISPLAY_NAME_PREFIX):
+    parts = source_display_name[len(_SOURCE_DISPLAY_NAME_PREFIX) :].split(".")
+    if len(parts) != 3:
+      return None
+    try:
+      return (
+          _decode_source_display_name_part(parts[0]),
+          _decode_source_display_name_part(parts[1]),
+          _decode_source_display_name_part(parts[2]),
+      )
+    except (binascii.Error, UnicodeDecodeError, UnicodeEncodeError):
+      return None
+
+  # Legacy display names were dot-delimited. Only the exact three-part form is
+  # unambiguous, so dotted app/user/session IDs are intentionally ignored.
+  parts = source_display_name.split(".")
+  if len(parts) != 3:
+    return None
+  return parts[0], parts[1], parts[2]
 
 
 class VertexAiRagMemoryService(BaseMemoryService):
@@ -63,7 +117,7 @@ class VertexAiRagMemoryService(BaseMemoryService):
     )
 
   @override
-  async def add_session_to_memory(self, session: Session):
+  async def add_session_to_memory(self, session: Session) -> None:
     with tempfile.NamedTemporaryFile(
         mode="w", delete=False, suffix=".txt"
     ) as temp_file:
@@ -100,7 +154,9 @@ class VertexAiRagMemoryService(BaseMemoryService):
           path=temp_file_path,
           # this is the temp workaround as upload file does not support
           # adding metadata, thus use display_name to store the session info.
-          display_name=f"{session.app_name}.{session.user_id}.{session.id}",
+          display_name=_build_source_display_name(
+              session.app_name, session.user_id, session.id
+          ),
       )
 
     os.remove(temp_file_path)
@@ -122,13 +178,19 @@ class VertexAiRagMemoryService(BaseMemoryService):
     )
 
     memory_results = []
-    session_events_map = OrderedDict()
+    session_events_map: OrderedDict[str, list[list[Event]]] = OrderedDict()
     for context in response.contexts.contexts:
       # filter out context that is not related
       # TODO: Add server side filtering by app_name and user_id.
-      if not context.source_display_name.startswith(f"{app_name}.{user_id}."):
+      source_display_name = getattr(context, "source_display_name", "")
+      if not isinstance(source_display_name, str):
         continue
-      session_id = context.source_display_name.split(".")[-1]
+      session_info = _parse_source_display_name(source_display_name)
+      if not session_info:
+        continue
+      source_app_name, source_user_id, session_id = session_info
+      if source_app_name != app_name or source_user_id != user_id:
+        continue
       events = []
       if context.text:
         lines = context.text.split("\n")
