@@ -2440,6 +2440,144 @@ tools:
   assert "args" in response.json()["detail"]
 
 
+def test_builder_save_rejects_external_tool_reference(
+    builder_test_client, tmp_path
+):
+  """Uploading YAML with an external dotted tool reference is rejected."""
+  yaml_with_external_tool = b"""\
+agent_class: LlmAgent
+name: app
+model: gemini-2.5-flash
+instruction: test
+tools:
+  - name: os.system
+"""
+  response = builder_test_client.post(
+      "/builder/save?tmp=true",
+      files=[(
+          "files",
+          (
+              "app/root_agent.yaml",
+              yaml_with_external_tool,
+              "application/x-yaml",
+          ),
+      )],
+  )
+  assert response.status_code == 400
+  assert "os.system" in response.json()["detail"]
+  assert not (tmp_path / "app" / "tmp" / "app" / "root_agent.yaml").exists()
+
+
+def test_builder_save_allows_project_tool_reference(
+    builder_test_client, tmp_path
+):
+  """Project-local dotted tool references are allowed."""
+  yaml_with_project_tool = b"""\
+agent_class: LlmAgent
+name: app
+model: gemini-2.5-flash
+instruction: test
+tools:
+  - name: app.tools.safe_tool.run
+"""
+  response = builder_test_client.post(
+      "/builder/save?tmp=true",
+      files=[(
+          "files",
+          (
+              "app/root_agent.yaml",
+              yaml_with_project_tool,
+              "application/x-yaml",
+          ),
+      )],
+  )
+  assert response.status_code == 200
+  assert response.json() is True
+  assert (tmp_path / "app" / "tmp" / "app" / "root_agent.yaml").is_file()
+
+
+def test_builder_save_rejects_stdlib_named_project_reference(
+    builder_test_client, tmp_path
+):
+  """Stdlib app names cannot make stdlib imports look project-local."""
+  yaml_with_stdlib_tool = b"""\
+agent_class: LlmAgent
+name: os
+model: gemini-2.5-flash
+instruction: test
+tools:
+  - name: os.system
+"""
+  response = builder_test_client.post(
+      "/builder/save?tmp=true",
+      files=[(
+          "files",
+          (
+              "os/root_agent.yaml",
+              yaml_with_stdlib_tool,
+              "application/x-yaml",
+          ),
+      )],
+  )
+  assert response.status_code == 400
+  assert "os.system" in response.json()["detail"]
+  assert not (tmp_path / "os" / "tmp" / "os" / "root_agent.yaml").exists()
+
+
+def test_builder_save_rejects_external_callback_reference(
+    builder_test_client, tmp_path
+):
+  """Uploading YAML with an external callback reference is rejected."""
+  yaml_with_external_callback = b"""\
+agent_class: LlmAgent
+name: app
+model: gemini-2.5-flash
+instruction: test
+before_agent_callbacks:
+  - name: os.system
+"""
+  response = builder_test_client.post(
+      "/builder/save?tmp=true",
+      files=[(
+          "files",
+          (
+              "app/root_agent.yaml",
+              yaml_with_external_callback,
+              "application/x-yaml",
+          ),
+      )],
+  )
+  assert response.status_code == 400
+  assert "os.system" in response.json()["detail"]
+  assert not (tmp_path / "app" / "tmp" / "app" / "root_agent.yaml").exists()
+
+
+def test_builder_save_rejects_external_agent_ref_code(
+    builder_test_client, tmp_path
+):
+  """Uploading YAML with an external sub-agent code reference is rejected."""
+  yaml_with_external_sub_agent = b"""\
+agent_class: SequentialAgent
+name: app
+sub_agents:
+  - code: os.system
+"""
+  response = builder_test_client.post(
+      "/builder/save?tmp=true",
+      files=[(
+          "files",
+          (
+              "app/root_agent.yaml",
+              yaml_with_external_sub_agent,
+              "application/x-yaml",
+          ),
+      )],
+  )
+  assert response.status_code == 400
+  assert "os.system" in response.json()["detail"]
+  assert not (tmp_path / "app" / "tmp" / "app" / "root_agent.yaml").exists()
+
+
 def test_builder_get_rejects_non_yaml_file_paths(builder_test_client, tmp_path):
   """GET /dev/apps/{app_name}/builder?file_path=... rejects non-YAML extensions."""
   app_root = tmp_path / "app"

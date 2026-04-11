@@ -134,8 +134,134 @@ def _register_builder_endpoints(app: FastAPI, web: bool, agents_dir: str):
   _ALLOWED_EXTENSIONS = frozenset({".yaml", ".yml"})
 
   _BLOCKED_YAML_KEYS = frozenset({"args"})
+  _BUILDER_BUILT_IN_AGENT_CLASSES = frozenset({
+      "LlmAgent",
+      "LoopAgent",
+      "ParallelAgent",
+      "SequentialAgent",
+      "google.adk.agents.LlmAgent",
+      "google.adk.agents.LoopAgent",
+      "google.adk.agents.ParallelAgent",
+      "google.adk.agents.SequentialAgent",
+      "google.adk.agents.llm_agent.LlmAgent",
+      "google.adk.agents.loop_agent.LoopAgent",
+      "google.adk.agents.parallel_agent.ParallelAgent",
+      "google.adk.agents.sequential_agent.SequentialAgent",
+  })
+  _BUILDER_CODE_CONFIG_KEYS = frozenset({
+      "after_agent_callbacks",
+      "after_model_callbacks",
+      "after_tool_callbacks",
+      "before_agent_callbacks",
+      "before_model_callbacks",
+      "before_tool_callbacks",
+      "input_schema",
+      "model_code",
+      "output_schema",
+  })
+  _BUILDER_RESERVED_TOP_LEVEL_MODULES = frozenset({"google"})
 
-  def _check_yaml_for_blocked_keys(content: bytes, filename: str) -> None:
+  def _app_name_conflicts_with_importable_module(app_name: str) -> bool:
+    """Return whether app_name would make project references ambiguous."""
+    stdlib_module_names: frozenset[str] = getattr(
+        sys, "stdlib_module_names", frozenset()
+    )
+    return (
+        app_name in sys.builtin_module_names
+        or app_name in stdlib_module_names
+        or app_name in _BUILDER_RESERVED_TOP_LEVEL_MODULES
+    )
+
+  def _check_project_code_reference(
+      reference: str,
+      *,
+      app_name: str,
+      filename: str,
+      field_name: str,
+      allow_short_builtin_tool: bool = False,
+  ) -> None:
+    """Validate that builder YAML cannot import arbitrary external code."""
+    if "." not in reference:
+      if allow_short_builtin_tool:
+        return
+      raise ValueError(
+          f"Invalid code reference {reference!r} in {filename!r}. "
+          f"The '{field_name}' field must use a project-local dotted path."
+      )
+
+    if not reference.startswith(f"{app_name}."):
+      raise ValueError(
+          f"Blocked code reference {reference!r} in {filename!r}. "
+          f"The '{field_name}' field must reference code under "
+          f"'{app_name}.*'."
+      )
+
+    if _app_name_conflicts_with_importable_module(app_name):
+      raise ValueError(
+          f"Blocked code reference {reference!r} in {filename!r}. "
+          f"The app name {app_name!r} conflicts with an importable Python "
+          "module, so project-local code references would be ambiguous."
+      )
+
+  def _check_agent_class_reference(
+      value: Any, *, app_name: str, filename: str
+  ) -> None:
+    if not isinstance(value, str):
+      return
+    if value in _BUILDER_BUILT_IN_AGENT_CLASSES:
+      return
+    _check_project_code_reference(
+        value,
+        app_name=app_name,
+        filename=filename,
+        field_name="agent_class",
+    )
+
+  def _check_code_config_reference(
+      value: Any, *, app_name: str, filename: str, field_name: str
+  ) -> None:
+    if isinstance(value, list):
+      for item in value:
+        _check_code_config_reference(
+            item,
+            app_name=app_name,
+            filename=filename,
+            field_name=field_name,
+        )
+      return
+    if not isinstance(value, dict):
+      return
+
+    name = value.get("name")
+    if isinstance(name, str):
+      _check_project_code_reference(
+          name,
+          app_name=app_name,
+          filename=filename,
+          field_name=field_name,
+      )
+
+  def _check_tool_references(
+      value: Any, *, app_name: str, filename: str
+  ) -> None:
+    if not isinstance(value, list):
+      return
+    for item in value:
+      if not isinstance(item, dict):
+        continue
+      name = item.get("name")
+      if isinstance(name, str):
+        _check_project_code_reference(
+            name,
+            app_name=app_name,
+            filename=filename,
+            field_name="tools.name",
+            allow_short_builtin_tool=True,
+        )
+
+  def _check_yaml_for_blocked_keys(
+      content: bytes, filename: str, app_name: str
+  ) -> None:
     try:
       docs = list(yaml.safe_load_all(content))
     except yaml.YAMLError as exc:
@@ -149,6 +275,27 @@ def _register_builder_endpoints(app: FastAPI, web: bool, agents_dir: str):
                 f"Blocked key {key!r} found in {filename!r}. "
                 f"The '{key}' field is not allowed in builder uploads "
                 "because it can execute arbitrary code."
+            )
+          if key == "agent_class":
+            _check_agent_class_reference(
+                value, app_name=app_name, filename=filename
+            )
+          elif key == "code":
+            if isinstance(value, str):
+              _check_project_code_reference(
+                  value,
+                  app_name=app_name,
+                  filename=filename,
+                  field_name="code",
+              )
+          elif key == "tools":
+            _check_tool_references(value, app_name=app_name, filename=filename)
+          elif key in _BUILDER_CODE_CONFIG_KEYS:
+            _check_code_config_reference(
+                value,
+                app_name=app_name,
+                filename=filename,
+                field_name=key,
             )
           _walk(value)
       elif isinstance(node, list):
@@ -313,7 +460,9 @@ def _register_builder_endpoints(app: FastAPI, web: bool, agents_dir: str):
       app_name = next(iter(app_names))
 
       for rel_path, content in uploads:
-        _check_yaml_for_blocked_keys(content, f"{app_name}/{rel_path}")
+        _check_yaml_for_blocked_keys(
+            content, f"{app_name}/{rel_path}", app_name
+        )
 
       if tmp:
         app_root = _get_app_root(app_name)
@@ -669,6 +818,7 @@ def get_fast_api_app(
   _register_builder_endpoints(app, web, agents_dir)
 
   if a2a and a2a_task_store is not None:
+  if a2a:
     from a2a.server.apps import A2AStarletteApplication
     from a2a.server.request_handlers import DefaultRequestHandler
     from a2a.server.tasks import InMemoryPushNotificationConfigStore
