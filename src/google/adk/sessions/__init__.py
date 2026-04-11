@@ -22,12 +22,16 @@ __all__ = [
     'DatabaseSessionService',
     'InMemorySessionService',
     'Session',
+    'SessionDataTransformer',
     'State',
     'VertexAiSessionService',
 ]
 
 
 def __getattr__(name: str):
+  if name == 'SessionDataTransformer':
+    from .session_data_transformer import SessionDataTransformer
+    return SessionDataTransformer
   if name == 'DatabaseSessionService':
     try:
       from .database_session_service import DatabaseSessionService

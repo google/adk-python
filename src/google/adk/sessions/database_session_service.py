@@ -60,6 +60,7 @@ from .schemas.v1 import StorageMetadata
 from .schemas.v1 import StorageSession as StorageSessionV1
 from .schemas.v1 import StorageUserState as StorageUserStateV1
 from .session import Session
+from .session_data_transformer import SessionDataTransformer
 from .state import State
 
 logger = logging.getLogger("google_adk." + __name__)
@@ -188,7 +189,13 @@ class _SchemaClasses:
 class DatabaseSessionService(BaseSessionService):
   """A session service that uses a database for storage."""
 
-  def __init__(self, db_url: str, **kwargs: Any):
+  def __init__(
+      self,
+      db_url: str,
+      *,
+      transformer: Optional[SessionDataTransformer] = None,
+      **kwargs: Any,
+  ):
     """Initializes the database session service with a database URL."""
     # 1. Create DB engine for db connection
     # 2. Create all tables based on schema
@@ -248,6 +255,7 @@ class DatabaseSessionService(BaseSessionService):
     self._session_locks: dict[_SessionLockKey, asyncio.Lock] = {}
     self._session_lock_ref_count: dict[_SessionLockKey, int] = {}
     self._session_locks_guard = asyncio.Lock()
+    self.transformer = transformer
 
   def _get_schema_classes(self) -> _SchemaClasses:
     return _SchemaClasses(self._db_schema_version)
@@ -446,7 +454,12 @@ class DatabaseSessionService(BaseSessionService):
       )
 
       # Extract state deltas
-      state_deltas = _session_util.extract_state_delta(state)
+      transformed_state = (
+          self.transformer.before_persist_state(state)
+          if self.transformer and state is not None
+          else state
+      )
+      state_deltas = _session_util.extract_state_delta(transformed_state)
       app_state_delta = state_deltas["app"]
       user_state_delta = state_deltas["user"]
       session_state = state_deltas["session"]
@@ -479,6 +492,8 @@ class DatabaseSessionService(BaseSessionService):
       merged_state = _merge_state(
           storage_app_state.state, storage_user_state.state, session_state
       )
+      if self.transformer:
+        merged_state = self.transformer.after_load_state(merged_state)
       session = storage_session.to_session(
           state=merged_state, is_sqlite=is_sqlite
       )
@@ -540,9 +555,16 @@ class DatabaseSessionService(BaseSessionService):
 
       # Merge states
       merged_state = _merge_state(app_state, user_state, session_state)
+      if self.transformer:
+        merged_state = self.transformer.after_load_state(merged_state)
 
       # Convert storage session to session
-      events = [e.to_event() for e in reversed(storage_events)]
+      events = []
+      for e in reversed(storage_events):
+        evt = e.to_event()
+        if self.transformer:
+          evt = self.transformer.after_load_event(evt)
+        events.append(evt)
       is_sqlite = self.db_engine.dialect.name == _SQLITE_DIALECT
       session = storage_session.to_session(
           state=merged_state, events=events, is_sqlite=is_sqlite
@@ -596,6 +618,8 @@ class DatabaseSessionService(BaseSessionService):
         session_state = storage_session.state
         user_state = user_states_map.get(storage_session.user_id, {})
         merged_state = _merge_state(app_state, user_state, session_state)
+        if self.transformer:
+          merged_state = self.transformer.after_load_state(merged_state)
         sessions.append(
             storage_session.to_session(state=merged_state, is_sqlite=is_sqlite)
         )
@@ -640,6 +664,8 @@ class DatabaseSessionService(BaseSessionService):
         if event.actions and event.actions.state_delta
         else {}
     )
+    if self.transformer:
+      state_delta = self.transformer.before_persist_state(state_delta)
     state_deltas = _session_util.extract_state_delta(state_delta)
     has_app_delta = bool(state_deltas["app"])
     has_user_delta = bool(state_deltas["user"])
@@ -735,7 +761,13 @@ class DatabaseSessionService(BaseSessionService):
         else:
           update_time = datetime.fromtimestamp(event.timestamp)
         storage_session.update_time = update_time
-        sql_session.add(schema.StorageEvent.from_event(session, event))
+        
+        transformed_event = (
+            self.transformer.before_persist_event(event)
+            if self.transformer
+            else event
+        )
+        sql_session.add(schema.StorageEvent.from_event(session, transformed_event))
 
         await sql_session.commit()
 
