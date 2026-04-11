@@ -67,6 +67,13 @@ logger = logging.getLogger('google_adk.' + __name__)
 _TOOL_THREAD_POOLS: dict[int, ThreadPoolExecutor] = {}
 _TOOL_THREAD_POOL_LOCK = threading.Lock()
 
+# Sentinel object used to distinguish a FunctionTool that legitimately returns
+# None from a non-FunctionTool sync tool that skips thread-pool execution.
+# Using None as a sentinel would cause tools whose underlying function has no
+# explicit return statement (implicit None) to fall through to the async
+# fallback path and execute a second time.
+_SYNC_TOOL_RESULT_UNSET = object()
+
 
 def _detect_error_type_for_telemetry(
     tool: BaseTool,
