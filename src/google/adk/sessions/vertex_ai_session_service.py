@@ -50,7 +50,8 @@ _USAGE_METADATA_CUSTOM_METADATA_KEY = '_usage_metadata'
 
 def _quote_filter_literal(value: str) -> str:
   """Quotes filter values so embedded metacharacters stay inside the literal."""
-  return json.dumps(value)
+  escaped_value = value.replace('\\', '\\\\').replace('"', '\\"')
+  return f'"{escaped_value}"'
 
 
 def _set_internal_custom_metadata(

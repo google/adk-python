@@ -13,7 +13,6 @@
 # limitations under the License.
 import copy
 import datetime
-import json
 import re
 import types
 from typing import Any
@@ -394,7 +393,7 @@ class MockAsyncClient:
   async def _list_sessions(self, name: str, config: dict[str, Any]):
     self.last_list_sessions_config = config
     filter_val = config.get('filter', '')
-    user_id_match = re.search(r'user_id="([^"]+)"', filter_val)
+    user_id_match = re.search(r'user_id="((?:\\.|[^"])*)"', filter_val)
     if user_id_match:
       user_id = user_id_match.group(1)
       if user_id == 'user_with_pages':
@@ -881,15 +880,24 @@ async def test_list_sessions_all_users():
 
 @pytest.mark.asyncio
 @pytest.mark.usefixtures('mock_get_api_client')
-async def test_list_sessions_quotes_user_id_filter(mock_api_client_instance):
+@pytest.mark.parametrize(
+    ('payload', 'expected_filter'),
+    [
+        ('attacker" OR user_id!=""', 'user_id="attacker\\" OR user_id!=\\"\\""'),
+        ('\\', 'user_id="\\\\"'),
+        ('', 'user_id=""'),
+    ],
+)
+async def test_list_sessions_quotes_user_id_filter(
+    mock_api_client_instance, payload, expected_filter
+):
   session_service = mock_vertex_ai_session_service()
-  payload = 'attacker" OR user_id!=""'
 
   sessions = await session_service.list_sessions(app_name='123', user_id=payload)
 
   assert sessions.sessions == []
   assert mock_api_client_instance.last_list_sessions_config == {
-      'filter': f'user_id={json.dumps(payload)}'
+      'filter': expected_filter
   }
 
 
