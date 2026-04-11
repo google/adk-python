@@ -21,6 +21,7 @@ from __future__ import annotations
 import asyncio
 from contextlib import asynccontextmanager
 import importlib
+import ipaddress
 import json
 import logging
 import os
@@ -216,6 +217,77 @@ def _is_request_origin_allowed(
 _SAFE_HTTP_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
 
 
+def _host_without_port(host: str) -> str:
+  """Return the host name from an HTTP Host header value."""
+  host = _strip_optional_quotes(host.split(",", 1)[0].strip())
+  if host.startswith("["):
+    end_bracket = host.find("]")
+    if end_bracket != -1:
+      return host[1:end_bracket]
+  if host.count(":") == 1:
+    return host.rsplit(":", 1)[0]
+  return host
+
+
+def _is_loopback_host(host: str) -> bool:
+  """Return whether the Host header targets a loopback host."""
+  hostname = _host_without_port(host).rstrip(".").lower()
+  if hostname == "localhost":
+    return True
+  try:
+    return ipaddress.ip_address(hostname).is_loopback
+  except ValueError:
+    return False
+
+
+async def _send_forbidden_response(
+    send: Any, response_body: bytes, status: int = 403
+) -> None:
+  """Send a plain text forbidden response."""
+  await send({
+      "type": "http.response.start",
+      "status": status,
+      "headers": [
+          (b"content-type", b"text/plain"),
+          (b"content-length", str(len(response_body)).encode()),
+      ],
+  })
+  await send({
+      "type": "http.response.body",
+      "body": response_body,
+  })
+
+
+class _LoopbackHostCheckMiddleware:
+  """Blocks requests to loopback servers with untrusted Host values."""
+
+  def __init__(
+      self,
+      app: Any,
+      enabled: bool,
+  ) -> None:
+    self._app = app
+    self._enabled = enabled
+
+  async def __call__(
+      self,
+      scope: dict[str, Any],
+      receive: Any,
+      send: Any,
+  ) -> None:
+    if not self._enabled or scope["type"] != "http":
+      await self._app(scope, receive, send)
+      return
+
+    host = _get_scope_header(scope, b"host")
+    if host is not None and _is_loopback_host(host):
+      await self._app(scope, receive, send)
+      return
+
+    response_body = b"Forbidden: host not allowed"
+    await _send_forbidden_response(send, response_body)
+
+
 class _OriginCheckMiddleware:
   """ASGI middleware that blocks cross-origin state-changing requests."""
 
@@ -262,18 +334,7 @@ class _OriginCheckMiddleware:
       return
 
     response_body = b"Forbidden: origin not allowed"
-    await send({
-        "type": "http.response.start",
-        "status": 403,
-        "headers": [
-            (b"content-type", b"text/plain"),
-            (b"content-length", str(len(response_body)).encode()),
-        ],
-    })
-    await send({
-        "type": "http.response.body",
-        "body": response_body,
-    })
+    await _send_forbidden_response(send, response_body)
 
 
 class _DefaultAppRewriteMiddleware:
@@ -873,6 +934,7 @@ class ApiServer:
       self,
       lifespan: Optional[Lifespan[FastAPI]] = None,
       allow_origins: Optional[list[str]] = None,
+      enforce_loopback_host_check: bool = False,
       web_assets_dir: Optional[str] = None,
       setup_observer: Callable[
           [Observer, "ApiServer"], None
@@ -897,6 +959,8 @@ class ApiServer:
         Entries can be literal origins (e.g., 'https://example.com') or regex
         patterns prefixed with 'regex:' (e.g.,
         'regex:https://.*\\.example\\.com').
+      enforce_loopback_host_check: Whether to reject non-loopback Host headers
+        before origin checks when the server is bound to loopback.
       web_assets_dir: The directory containing the web assets to serve.
       setup_observer: Callback for setting up the file system observer.
       tear_down_observer: Callback for cleaning up the file system observer.
@@ -972,6 +1036,11 @@ class ApiServer:
         has_configured_allowed_origins=has_configured_allowed_origins,
         allowed_origins=literal_origins,
         allowed_origin_regex=compiled_origin_regex,
+    )
+
+    app.add_middleware(
+        _LoopbackHostCheckMiddleware,
+        enabled=enforce_loopback_host_check,
     )
 
     app.add_middleware(

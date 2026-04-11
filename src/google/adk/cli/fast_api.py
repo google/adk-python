@@ -54,6 +54,7 @@ from ..runners import Runner
 from ..telemetry._agent_engine import get_propagated_context
 from ..telemetry._agent_engine import TopSpanProcessor
 from .api_server import ApiServer
+from .api_server import _is_loopback_host
 from .cli_deploy import _AGENT_ENGINE_CLASS_METHODS
 from .dev_server import DevServer
 from .service_registry import load_services_module
@@ -662,6 +663,7 @@ def get_fast_api_app(
       lifespan=lifespan,
       allow_origins=allow_origins,
       otel_to_cloud=otel_to_cloud,
+      enforce_loopback_host_check=_is_loopback_host(host),
       **extra_fast_api_args,
   )
 

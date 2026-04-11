@@ -538,7 +538,7 @@ def _create_test_client(
       ),
   ):
     app = get_fast_api_app(**defaults)
-    return TestClient(app)
+    return TestClient(app, base_url="http://localhost")
 
 
 def test_agent_with_bigquery_analytics_plugin(
@@ -759,7 +759,7 @@ def builder_test_client(
         host="127.0.0.1",
         port=8000,
     )
-    return TestClient(app)
+    return TestClient(app, base_url="http://localhost")
 
 
 @pytest.fixture
@@ -921,7 +921,7 @@ def test_app_with_a2a(
         port=8000,
     )
 
-    client = TestClient(app)
+    client = TestClient(app, base_url="http://localhost")
     yield client
 
 
@@ -2246,7 +2246,7 @@ def test_builder_final_save_preserves_files_and_cleans_tmp(
 def test_builder_save_rejects_cross_origin_post(builder_test_client, tmp_path):
   response = builder_test_client.post(
       "/dev/apps/app/builder/save?tmp=true",
-      headers={"origin": "https://evil.com"},
+      headers={"host": "localhost", "origin": "https://evil.com"},
       files=[(
           "files",
           ("app/root_agent.yaml", b"name: app\n", "application/x-yaml"),
@@ -2258,10 +2258,28 @@ def test_builder_save_rejects_cross_origin_post(builder_test_client, tmp_path):
   assert not (tmp_path / "app" / "tmp" / "app").exists()
 
 
+def test_builder_save_rejects_dns_rebound_host(builder_test_client, tmp_path):
+  response = builder_test_client.post(
+      "/builder/save?tmp=true",
+      headers={
+          "host": "rebind.attacker.example:8000",
+          "origin": "http://rebind.attacker.example:8000",
+      },
+      files=[(
+          "files",
+          ("app/root_agent.yaml", b"name: app\n", "application/x-yaml"),
+      )],
+  )
+
+  assert response.status_code == 403
+  assert response.text == "Forbidden: host not allowed"
+  assert not (tmp_path / "app" / "tmp" / "app").exists()
+
+
 def test_builder_save_allows_same_origin_post(builder_test_client, tmp_path):
   response = builder_test_client.post(
       "/dev/apps/app/builder/save?tmp=true",
-      headers={"origin": "http://testserver"},
+      headers={"host": "localhost", "origin": "http://localhost"},
       files=[(
           "files",
           ("app/root_agent.yaml", b"name: app\n", "application/x-yaml"),
@@ -2276,7 +2294,7 @@ def test_builder_save_allows_same_origin_post(builder_test_client, tmp_path):
 def test_builder_get_allows_cross_origin_get(builder_test_client):
   response = builder_test_client.get(
       "/dev/apps/missing/builder?tmp=true",
-      headers={"origin": "https://evil.com"},
+      headers={"host": "localhost", "origin": "https://evil.com"},
   )
 
   assert response.status_code == 200
@@ -2734,7 +2752,7 @@ async def test_independent_telemetry_context(
 
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(
-        transport=transport, base_url="http://test"
+        transport=transport, base_url="http://localhost"
     ) as client:
       # Send concurrent requests
       req1 = client.post(
