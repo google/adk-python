@@ -50,6 +50,29 @@ def _parse_tool_confirmation(response: dict[str, Any]) -> ToolConfirmation:
   return ToolConfirmation.model_validate(response)
 
 
+def _has_matching_original_function_call(
+    events: list[Event], original_function_call: types.FunctionCall
+) -> bool:
+  for event in events:
+    for function_call in event.get_function_calls():
+      if (
+          function_call.id == original_function_call.id
+          and function_call.name == original_function_call.name
+          and (function_call.args or {}) == (original_function_call.args or {})
+      ):
+        return True
+  return False
+
+
+def _has_requested_tool_confirmation(
+    events: list[Event], function_call_id: str
+) -> bool:
+  return any(
+      function_call_id in event.actions.requested_tool_confirmations
+      for event in events
+  )
+
+
 def _resolve_confirmation_targets(
     events: list[Event],
     confirmation_fc_ids: set[str],
@@ -82,6 +105,13 @@ def _resolve_confirmation_targets(
     for function_call in event_function_calls:
       if function_call.id not in confirmation_fc_ids:
         continue
+      if function_call.name != REQUEST_CONFIRMATION_FUNCTION_CALL_NAME:
+        continue
+      if (
+          not event.long_running_tool_ids
+          or function_call.id not in event.long_running_tool_ids
+      ):
+        continue
 
       args = function_call.args
       if 'originalFunctionCall' not in args:
@@ -89,6 +119,14 @@ def _resolve_confirmation_targets(
       original_function_call = types.FunctionCall(
           **args['originalFunctionCall']
       )
+      if not _has_matching_original_function_call(
+          events, original_function_call
+      ):
+        continue
+      if not _has_requested_tool_confirmation(
+          events, original_function_call.id
+      ):
+        continue
       tool_confirmation_dict[original_function_call.id] = (
           confirmations_by_fc_id[function_call.id]
       )
@@ -139,9 +177,10 @@ class _RequestConfirmationLlmRequestProcessor(BaseLlmRequestProcessor):
 
     # Step 2: Resolve confirmation targets using extracted helper.
     confirmation_fc_ids = set(confirmations_by_fc_id.keys())
+    prior_events = events[:confirmation_event_index]
     tools_to_resume_with_confirmation, tools_to_resume_with_args = (
         _resolve_confirmation_targets(
-            events, confirmation_fc_ids, confirmations_by_fc_id
+            prior_events, confirmation_fc_ids, confirmations_by_fc_id
         )
     )
 

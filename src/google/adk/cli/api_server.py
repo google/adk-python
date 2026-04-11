@@ -400,8 +400,46 @@ class CreateSessionRequest(common.BaseModel):
   )
   events: Optional[list[Event]] = Field(
       default=None,
-      description="A list of events to initialize the session with.",
+      description=(
+          "A list of non-runtime events to initialize the session with."
+      ),
   )
+
+
+def _contains_runtime_event_data(event: Event) -> bool:
+  """Returns whether a client-supplied event contains ADK runtime data."""
+  if event.get_function_calls() or event.get_function_responses():
+    return True
+  if event.long_running_tool_ids:
+    return True
+
+  actions = event.actions
+  return bool(
+      actions.skip_summarization is not None
+      or actions.artifact_delta
+      or actions.transfer_to_agent is not None
+      or actions.escalate is not None
+      or actions.requested_auth_configs
+      or actions.requested_tool_confirmations
+      or actions.compaction is not None
+      or actions.end_of_agent is not None
+      or actions.agent_state is not None
+      or actions.rewind_before_invocation_id is not None
+      or actions.render_ui_widgets is not None
+  )
+
+
+def _validate_session_initialization_events(events: list[Event]) -> None:
+  for event_index, event in enumerate(events):
+    if _contains_runtime_event_data(event):
+      raise HTTPException(
+          status_code=400,
+          detail=(
+              "Session initialization event "
+              f"{event_index} cannot include function calls, function "
+              "responses, or ADK runtime action fields."
+          ),
+      )
 
 
 class SaveArtifactRequest(common.BaseModel):
@@ -1146,6 +1184,9 @@ class ApiServer:
     ) -> Session:
       if not req:
         return await self._create_session(app_name=app_name, user_id=user_id)
+
+      if req.events:
+        _validate_session_initialization_events(req.events)
 
       session = await self._create_session(
           app_name=app_name,
