@@ -278,6 +278,70 @@ class TestCallToolInThreadPool:
     ), f'Event loop should have ticked at least 5 times, got {event_loop_ticks}'
 
   @pytest.mark.asyncio
+  async def test_sync_tool_returning_none_executes_exactly_once(self):
+    """Test that a sync FunctionTool returning None is not double-executed.
+
+    Regression test for https://github.com/google/adk-python/issues/5284.
+    A FunctionTool whose underlying function returns None (e.g. side-effect-
+    only tools with no explicit return statement) must execute exactly once.
+    Previously the None return was mistaken for the internal sentinel used to
+    signal 'non-FunctionTool, fall back to run_async', causing a second
+    invocation via tool.run_async().
+    """
+    call_count = 0
+
+    def side_effect_only() -> None:
+      nonlocal call_count
+      call_count += 1
+      # No return statement — implicit None.
+
+    tool = FunctionTool(side_effect_only)
+    model = testing_utils.MockModel.create(responses=[])
+    agent = Agent(name='test_agent', model=model, tools=[tool])
+    invocation_context = await testing_utils.create_invocation_context(
+        agent=agent, user_content=''
+    )
+    tool_context = ToolContext(
+        invocation_context=invocation_context,
+        function_call_id='test_id',
+    )
+
+    result = await _call_tool_in_thread_pool(tool, {}, tool_context)
+
+    assert result is None
+    assert call_count == 1, (
+        f'Tool function executed {call_count} time(s); expected exactly 1.'
+    )
+
+  @pytest.mark.asyncio
+  async def test_sync_tool_returning_explicit_none_executes_exactly_once(self):
+    """Test that explicit None return from FunctionTool is not double-executed."""
+    call_count = 0
+
+    def explicit_none_return() -> None:
+      nonlocal call_count
+      call_count += 1
+      return None  # Explicit None return.
+
+    tool = FunctionTool(explicit_none_return)
+    model = testing_utils.MockModel.create(responses=[])
+    agent = Agent(name='test_agent', model=model, tools=[tool])
+    invocation_context = await testing_utils.create_invocation_context(
+        agent=agent, user_content=''
+    )
+    tool_context = ToolContext(
+        invocation_context=invocation_context,
+        function_call_id='test_id',
+    )
+
+    result = await _call_tool_in_thread_pool(tool, {}, tool_context)
+
+    assert result is None
+    assert call_count == 1, (
+        f'Tool function executed {call_count} time(s); expected exactly 1.'
+    )
+
+  @pytest.mark.asyncio
   async def test_sync_tool_exception_propagates(self):
     """Test that exceptions from sync tools propagate correctly."""
 

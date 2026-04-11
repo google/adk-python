@@ -68,6 +68,13 @@ logger = logging.getLogger('google_adk.' + __name__)
 _TOOL_THREAD_POOLS: dict[int, ThreadPoolExecutor] = {}
 _TOOL_THREAD_POOL_LOCK = threading.Lock()
 
+# Sentinel object used to distinguish a FunctionTool that legitimately returns
+# None from a non-FunctionTool sync tool that skips thread-pool execution.
+# Using None as a sentinel would cause tools whose underlying function has no
+# explicit return statement (implicit None) to fall through to the async
+# fallback path and execute a second time.
+_SYNC_TOOL_RESULT_UNSET = object()
+
 
 def _is_live_request_queue_annotation(param: inspect.Parameter) -> bool:
   """Check whether a parameter is annotated as LiveRequestQueue.
@@ -159,13 +166,14 @@ async def _call_tool_in_thread_pool(
         }
         return tool.func(**args_to_call)
       else:
-        # For other sync tool types, we can't easily run them in thread pool
-        return None
+        # For other sync tool types, we can't easily run them in thread pool.
+        # Return the sentinel so the caller knows to fall back to run_async.
+        return _SYNC_TOOL_RESULT_UNSET
 
     result = await loop.run_in_executor(
         executor, lambda: ctx.run(run_sync_tool)
     )
-    if result is not None:
+    if result is not _SYNC_TOOL_RESULT_UNSET:
       return result
   else:
     # For async tools, run them in a new event loop in a background thread.
