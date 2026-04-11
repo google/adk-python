@@ -17,6 +17,7 @@ from __future__ import annotations
 import importlib
 import inspect
 import os
+import sys
 from typing import Any
 from typing import List
 
@@ -103,10 +104,33 @@ def _load_config_from_path(config_path: str) -> AgentConfig:
   return AgentConfig.model_validate(config_data)
 
 
+def _validate_module_path(module_path: str) -> None:
+  """Block imports of standard library modules from YAML agent configs.
+
+  This is a defense-in-depth measure to prevent arbitrary code execution
+  when agent YAML configs are loaded from untrusted sources (e.g. via the
+  /builder/save endpoint). Only project-level and third-party modules are
+  permitted.
+
+  Args:
+    module_path: The dotted module path to validate.
+
+  Raises:
+    ValueError: If the module belongs to the Python standard library.
+  """
+  top_level = module_path.split('.')[0]
+  if top_level in sys.stdlib_module_names:
+    raise ValueError(
+        f"Importing from standard library module '{top_level}' is not"
+        f" allowed in agent YAML configuration for security reasons."
+    )
+
+
 @experimental(FeatureName.AGENT_CONFIG)
 def resolve_fully_qualified_name(name: str) -> Any:
   try:
     module_path, obj_name = name.rsplit(".", 1)
+    _validate_module_path(module_path)
     module = importlib.import_module(module_path)
     return getattr(module, obj_name)
   except Exception as e:
@@ -159,6 +183,7 @@ def _resolve_agent_code_reference(code: str) -> Any:
     raise ValueError(f"Invalid code reference: {code}")
 
   module_path, obj_name = code.rsplit(".", 1)
+  _validate_module_path(module_path)
   module = importlib.import_module(module_path)
   obj = getattr(module, obj_name)
 
@@ -188,6 +213,7 @@ def resolve_code_reference(code_config: CodeConfig) -> Any:
     raise ValueError("Invalid CodeConfig.")
 
   module_path, obj_name = code_config.name.rsplit(".", 1)
+  _validate_module_path(module_path)
   module = importlib.import_module(module_path)
   obj = getattr(module, obj_name)
 
