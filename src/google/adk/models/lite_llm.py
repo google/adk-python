@@ -1173,14 +1173,20 @@ def _is_ollama_chat_provider(
   return False
 
 
+_MEDIA_BLOCK_TYPES = {"image_url", "video_url", "audio_url"}
+
+
 def _flatten_ollama_content(
     content: OpenAIMessageContent | str | None,
-) -> str | None:
+) -> OpenAIMessageContent | str | None:
   """Flattens multipart content to text for ollama_chat compatibility.
 
-  Ollama's chat endpoint rejects arrays for `content`. We keep textual parts,
-  join them with newlines, and fall back to a JSON string for non-text content.
-  If both text and non-text parts are present, only the text parts are kept.
+  Ollama's chat endpoint rejects arrays for `content` when only text is
+  present. However, LiteLLM's Ollama handler can convert multipart arrays
+  that contain media blocks (image_url, video_url, audio_url) into Ollama's
+  native format (e.g. the ``images`` field). So we only flatten to a plain
+  string when the content is text-only; mixed content with media blocks is
+  returned as-is so LiteLLM can handle the conversion.
   """
   if content is None or isinstance(content, str):
     return content
@@ -1197,6 +1203,15 @@ def _flatten_ollama_content(
     blocks = list(content)
   except TypeError:
     return str(content)
+
+  # If any block carries media data, keep the full multipart list so
+  # LiteLLM can convert it to Ollama's native format.
+  has_media = any(
+      isinstance(b, dict) and b.get("type") in _MEDIA_BLOCK_TYPES
+      for b in blocks
+  )
+  if has_media:
+    return blocks
 
   text_parts = []
   for block in blocks:
