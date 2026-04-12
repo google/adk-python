@@ -57,7 +57,7 @@ async def fetch_specific_issue_details(issue_number: int):
 
     # Determine what actions are needed
     needs_component_label = not has_component
-    needs_owner = has_planned and not has_assignee
+    needs_owner = not has_assignee
 
     if needs_component_label or needs_owner:
       print(

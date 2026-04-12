@@ -33,6 +33,7 @@ from google.adk.sessions import base_session_service as base_session_service_lib
 from google.adk.sessions import session as session_lib
 from google.adk.tools import base_tool as base_tool_lib
 from google.adk.tools import tool_context as tool_context_lib
+from google.adk.utils._telemetry_context import _is_visual_builder
 from google.adk.version import __version__
 import google.auth
 from google.auth import exceptions as auth_exceptions
@@ -279,7 +280,8 @@ async def _get_captured_event_dict_async(mock_write_client, expected_schema):
   assert len(requests) == 1
   request = requests[0]
   assert request.write_stream == DEFAULT_STREAM_NAME
-  assert request.trace_id == f"google-adk-bq-logger/{__version__}"
+  assert request.trace_id.startswith("google-adk-bq-logger")
+  assert request.trace_id.endswith(f"/{__version__}")
   # Parse the Arrow batch back to a dict for verification
   try:
     reader = pa.ipc.open_stream(request.arrow_rows.rows.serialized_record_batch)
@@ -2245,6 +2247,118 @@ class TestBigQueryAgentAnalyticsPlugin:
       assert finished_spans[0].name == "test_span"
       assert format(finished_spans[0].context.span_id, "016x") == span_id
       assert format(finished_spans[0].context.trace_id, "032x") == trace_id
+
+  @pytest.mark.asyncio
+  async def test_keyword_identifiers_emission_default(
+      self,
+      mock_auth_default,
+      mock_bq_client,
+      callback_context,
+  ):
+    """Verify the default keyword flow for User-Agent and Trace-ID."""
+    keyword = "google-adk-bq-logger"
+    mock_write_client = mock.AsyncMock()
+
+    # 1. Verify User-Agent contains default keyword.
+    with mock.patch(
+        "google.adk.plugins.bigquery_agent_analytics_plugin.BigQueryWriteAsyncClient",
+        autospec=True,
+    ) as mock_write_cls:
+      mock_write_cls.return_value = mock_write_client
+      async with managed_plugin(PROJECT_ID, DATASET_ID) as plugin:
+        await plugin._ensure_started()
+
+        _, kwargs = mock_write_cls.call_args
+        client_info = kwargs.get("client_info")
+        assert f"{keyword}/{__version__}" in client_info.user_agent
+
+    # 2. Verify Trace ID contains default keyword.
+    with mock.patch(
+        "google.adk.plugins.bigquery_agent_analytics_plugin.BigQueryWriteAsyncClient",
+        autospec=True,
+    ) as mock_write_cls:
+      mock_write_cls.return_value = mock_write_client
+      async with managed_plugin(PROJECT_ID, DATASET_ID) as plugin:
+        await plugin._ensure_started()
+        mock_write_client.append_rows.reset_mock()
+
+        llm_request = llm_request_lib.LlmRequest(
+            model="gemini-pro",
+            contents=[types.Content(parts=[types.Part(text="Hi")])],
+        )
+        await plugin.before_model_callback(
+            callback_context=callback_context, llm_request=llm_request
+        )
+        await plugin.flush()
+
+        call_args = mock_write_client.append_rows.call_args
+        requests_iter = call_args.args[0]
+        requests = []
+        async for req in requests_iter:
+          requests.append(req)
+
+        assert requests[0].trace_id.startswith(keyword)
+        assert requests[0].trace_id.endswith(f"/{__version__}")
+
+  @pytest.mark.asyncio
+  async def test_visual_builder_identifiers_flow(
+      self,
+      mock_auth_default,
+      mock_bq_client,
+      callback_context,
+      dummy_arrow_schema,
+  ):
+    """Verify visual-builder keyword flow via contextvars."""
+    keyword = "google-adk-visual-builder"
+    mock_write_client = mock.AsyncMock()
+
+    # Simulate setting the internal flag via contextvars
+    token = _is_visual_builder.set(True)
+    try:
+      # 1. Verify Client User-Agent
+      with mock.patch(
+          "google.adk.plugins.bigquery_agent_analytics_plugin.BigQueryWriteAsyncClient",
+          autospec=True,
+      ) as mock_write_cls:
+        mock_write_cls.return_value = mock_write_client
+        async with managed_plugin(PROJECT_ID, DATASET_ID) as plugin:
+          await plugin._ensure_started()
+
+          _, kwargs = mock_write_cls.call_args
+          client_info = kwargs.get("client_info")
+          assert keyword in client_info.user_agent
+
+      # 2. Verify Request Trace ID
+      with mock.patch(
+          "google.adk.plugins.bigquery_agent_analytics_plugin.BigQueryWriteAsyncClient",
+          autospec=True,
+      ) as mock_write_cls:
+        mock_write_cls.return_value = mock_write_client
+        async with managed_plugin(PROJECT_ID, DATASET_ID) as plugin:
+          await plugin._ensure_started()
+          mock_write_client.append_rows.reset_mock()
+
+          llm_request = llm_request_lib.LlmRequest(
+              model="gemini-pro",
+              contents=[types.Content(parts=[types.Part(text="Hi")])],
+          )
+          await plugin.before_model_callback(
+              callback_context=callback_context, llm_request=llm_request
+          )
+          await plugin.flush()
+
+          call_args = mock_write_client.append_rows.call_args
+          requests_iter = call_args.args[0]
+          requests = []
+          async for req in requests_iter:
+            requests.append(req)
+
+          assert requests[0].trace_id.startswith(
+              "google-adk-bq-logger-visual-builder"
+          )
+          assert requests[0].trace_id.endswith(f"/{__version__}")
+    finally:
+      _is_visual_builder.reset(token)
 
   @pytest.mark.asyncio
   async def test_flush_mechanism(

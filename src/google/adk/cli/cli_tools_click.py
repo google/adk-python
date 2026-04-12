@@ -1452,6 +1452,7 @@ def fast_api_common_options():
   """Decorator to add common fast api options to click commands."""
 
   def decorator(func):
+
     @click.option(
         "--host",
         type=str,
@@ -1556,6 +1557,17 @@ def fast_api_common_options():
         ),
         default=None,
     )
+    # Parsed into list[str] by the wrapper below (server commands need a list).
+    @click.option(
+        "--trigger_sources",
+        type=str,
+        help=(
+            "Optional. Comma-separated list of trigger sources to enable"
+            " (e.g., 'pubsub,eventarc'). Registers /apps/{app_name}/trigger/*"
+            " endpoints for batch and event-driven agent invocations."
+        ),
+        default=None,
+    )
     @functools.wraps(func)
     @click.pass_context
     def wrapper(ctx, *args, **kwargs):
@@ -1566,6 +1578,13 @@ def fast_api_common_options():
           and log_level_source == ParameterSource.DEFAULT
       ):
         kwargs["log_level"] = "DEBUG"
+
+      # Parse comma-separated trigger_sources into a list.
+      trigger_sources = kwargs.get("trigger_sources")
+      if trigger_sources is not None:
+        kwargs["trigger_sources"] = [
+            s.strip() for s in trigger_sources.split(",") if s.strip()
+        ]
 
       return func(*args, **kwargs)
 
@@ -1609,6 +1628,7 @@ def cli_web(
     extra_plugins: Optional[list[str]] = None,
     logo_text: Optional[str] = None,
     logo_image_url: Optional[str] = None,
+    trigger_sources: Optional[list[str]] = None,
 ):
   """Starts a FastAPI server with Web UI for agents.
 
@@ -1665,6 +1685,7 @@ def cli_web(
       extra_plugins=extra_plugins,
       logo_text=logo_text,
       logo_image_url=logo_image_url,
+      trigger_sources=trigger_sources,
   )
   config = uvicorn.Config(
       app,
@@ -1720,6 +1741,7 @@ def cli_api_server(
     reload_agents: bool = False,
     extra_plugins: Optional[list[str]] = None,
     auto_create_session: bool = False,
+    trigger_sources: Optional[list[str]] = None,
 ):
   """Starts a FastAPI server for agents.
 
@@ -1753,6 +1775,7 @@ def cli_api_server(
           reload_agents=reload_agents,
           extra_plugins=extra_plugins,
           auto_create_session=auto_create_session,
+          trigger_sources=trigger_sources,
       ),
       host=host,
       port=port,
@@ -1887,6 +1910,17 @@ def cli_api_server(
     default=False,
     help="Optional. Whether to enable A2A endpoint.",
 )
+# Kept as raw str (not parsed to list) — interpolated directly into Dockerfile CMD.
+@click.option(
+    "--trigger_sources",
+    type=str,
+    help=(
+        "Optional. Comma-separated list of trigger sources to enable"
+        " (e.g., 'pubsub,eventarc'). Registers /trigger/* endpoints"
+        " for batch and event-driven agent invocations."
+    ),
+    default=None,
+)
 @click.option(
     "--allow_origins",
     help=(
@@ -1923,6 +1957,7 @@ def cli_deploy_cloud_run(
     session_db_url: Optional[str] = None,  # Deprecated
     artifact_storage_uri: Optional[str] = None,  # Deprecated
     a2a: bool = False,
+    trigger_sources: Optional[str] = None,
 ):
   """Deploys an agent to Cloud Run.
 
@@ -2000,6 +2035,7 @@ def cli_deploy_cloud_run(
         memory_service_uri=memory_service_uri,
         use_local_storage=use_local_storage,
         a2a=a2a,
+        trigger_sources=trigger_sources,
         extra_gcloud_args=tuple(gcloud_args),
     )
   except Exception as e:
@@ -2397,6 +2433,17 @@ def cli_deploy_agent_engine(
         " version in the dev environment)"
     ),
 )
+# Kept as raw str (not parsed to list) — interpolated directly into Dockerfile CMD.
+@click.option(
+    "--trigger_sources",
+    type=str,
+    help=(
+        "Optional. Comma-separated list of trigger sources to enable"
+        " (e.g., 'pubsub,eventarc'). Registers /trigger/* endpoints"
+        " for batch and event-driven agent invocations."
+    ),
+    default=None,
+)
 @adk_services_options(default_use_local_storage=False)
 @click.argument(
     "agent",
@@ -2423,6 +2470,7 @@ def cli_deploy_gke(
     artifact_service_uri: Optional[str] = None,
     memory_service_uri: Optional[str] = None,
     use_local_storage: bool = False,
+    trigger_sources: Optional[str] = None,
 ):
   """Deploys an agent to GKE.
 
@@ -2454,6 +2502,7 @@ def cli_deploy_gke(
         artifact_service_uri=artifact_service_uri,
         memory_service_uri=memory_service_uri,
         use_local_storage=use_local_storage,
+        trigger_sources=trigger_sources,
     )
   except Exception as e:
     click.secho(f"Deploy failed: {e}", fg="red", err=True)
