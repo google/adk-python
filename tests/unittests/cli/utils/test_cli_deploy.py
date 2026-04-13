@@ -306,6 +306,34 @@ def test_to_agent_engine_happy_path(
   assert str(rmtree_recorder.get_last_call_args()[0]) == str(tmp_dir)
 
 
+def test_to_agent_engine_raises_when_explicit_config_file_missing(
+    monkeypatch: pytest.MonkeyPatch,
+    agent_dir: Callable[[bool, bool], Path],
+    tmp_path: Path,
+) -> None:
+  """It should fail with a clear error when --agent_engine_config_file is missing."""
+  monkeypatch.setattr(shutil, "rmtree", lambda *a, **k: None)
+  src_dir = agent_dir(False, False)
+  missing_config = tmp_path / "no_such_agent_engine_config.json"
+  expected_abs = str(missing_config.resolve())
+
+  with pytest.raises(click.ClickException) as exc_info:
+    cli_deploy.to_agent_engine(
+        agent_folder=str(src_dir),
+        temp_folder="tmp",
+        adk_app="my_adk_app",
+        trace_to_cloud=True,
+        project="my-gcp-project",
+        region="us-central1",
+        display_name="My Test Agent",
+        description="A test agent.",
+        agent_engine_config_file=str(missing_config),
+    )
+
+  assert "Agent engine config file not found" in str(exc_info.value)
+  assert expected_abs in str(exc_info.value)
+
+
 def test_to_agent_engine_skips_agent_import_validation_by_default(
     monkeypatch: pytest.MonkeyPatch,
     agent_dir: Callable[[bool, bool], Path],

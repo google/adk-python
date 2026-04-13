@@ -18,8 +18,12 @@ from __future__ import annotations
 
 import asyncio
 import dataclasses
+import logging
+import os
 import pathlib
+import resource
 import shlex
+import signal
 from typing import Any
 from typing import Optional
 
@@ -29,16 +33,26 @@ from .. import features
 from .base_tool import BaseTool
 from .tool_context import ToolContext
 
+logger = logging.getLogger("google_adk." + __name__)
+
 
 @dataclasses.dataclass(frozen=True)
 class BashToolPolicy:
-  """Configuration for allowed bash commands based on prefix matching.
+  """Configuration for allowed bash commands and resource limits.
 
   Set allowed_command_prefixes to ("*",) to allow all commands (default),
   or explicitly list allowed prefixes.
+
+  Values for max_memory_bytes, max_file_size_bytes, and max_child_processes
+  will be enforced upon the spawned subprocess.
   """
 
   allowed_command_prefixes: tuple[str, ...] = ("*",)
+  blocked_operators: tuple[str, ...] = ()
+  timeout_seconds: Optional[int] = 30
+  max_memory_bytes: Optional[int] = None
+  max_file_size_bytes: Optional[int] = None
+  max_child_processes: Optional[int] = None
 
 
 def _validate_command(command: str, policy: BashToolPolicy) -> Optional[str]:
@@ -46,6 +60,10 @@ def _validate_command(command: str, policy: BashToolPolicy) -> Optional[str]:
   stripped = command.strip()
   if not stripped:
     return "Command is required."
+
+  for op in policy.blocked_operators:
+    if op in command:
+      return f"Command contains blocked operator: {op}"
 
   if "*" in policy.allowed_command_prefixes:
     return None
@@ -56,6 +74,29 @@ def _validate_command(command: str, policy: BashToolPolicy) -> Optional[str]:
 
   allowed = ", ".join(policy.allowed_command_prefixes)
   return f"Command blocked. Permitted prefixes are: {allowed}"
+
+
+def _set_resource_limits(policy: BashToolPolicy) -> None:
+  """Sets resource limits for the subprocess based on the provided policy."""
+  try:
+    resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
+    if policy.max_memory_bytes:
+      resource.setrlimit(
+          resource.RLIMIT_AS,
+          (policy.max_memory_bytes, policy.max_memory_bytes),
+      )
+    if policy.max_file_size_bytes:
+      resource.setrlimit(
+          resource.RLIMIT_FSIZE,
+          (policy.max_file_size_bytes, policy.max_file_size_bytes),
+      )
+    if policy.max_child_processes:
+      resource.setrlimit(
+          resource.RLIMIT_NPROC,
+          (policy.max_child_processes, policy.max_child_processes),
+      )
+  except (ValueError, OSError) as e:
+    logger.warning("Failed to set resource limits: %s", e)
 
 
 @features.experimental(features.FeatureName.SKILL_TOOLSET)
@@ -132,26 +173,77 @@ class ExecuteBashTool(BaseTool):
     elif not tool_context.tool_confirmation.confirmed:
       return {"error": "This tool call is rejected."}
 
-    process = await asyncio.create_subprocess_exec(
-        *shlex.split(command),
-        cwd=str(self._workspace),
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-    )
+    stdout = None
+    stderr = None
     try:
-      stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=30)
+      process = await asyncio.create_subprocess_exec(
+          *shlex.split(command),
+          cwd=str(self._workspace),
+          stdout=asyncio.subprocess.PIPE,
+          stderr=asyncio.subprocess.PIPE,
+          start_new_session=True,
+          preexec_fn=lambda: _set_resource_limits(self._policy),
+      )
+
+      try:
+        stdout, stderr = await asyncio.wait_for(
+            process.communicate(), timeout=self._policy.timeout_seconds
+        )
+      except asyncio.TimeoutError:
+        try:
+          if process.pid:
+            os.killpg(process.pid, signal.SIGKILL)
+        except ProcessLookupError:
+          pass
+        stdout, stderr = await process.communicate()
+        return {
+            "error": (
+                f"Command timed out after {self._policy.timeout_seconds}"
+                " seconds."
+            ),
+            "stdout": (
+                stdout.decode(errors="replace")
+                if stdout
+                else "<no stdout captured>"
+            ),
+            "stderr": (
+                stderr.decode(errors="replace")
+                if stderr
+                else "<no stderr captured>"
+            ),
+            "returncode": process.returncode,
+        }
+      finally:
+        try:
+          if process.pid:
+            os.killpg(process.pid, signal.SIGKILL)
+        except ProcessLookupError:
+          pass
       return {
           "stdout": (
-              stdout.decode() if stdout is not None else "<No stdout captured>"
+              stdout.decode(errors="replace")
+              if stdout
+              else "<no stdout captured>"
           ),
           "stderr": (
-              stderr.decode() if stderr is not None else "<No stderr captured>"
+              stderr.decode(errors="replace")
+              if stderr
+              else "<no stderr captured>"
           ),
           "returncode": process.returncode,
       }
-    except asyncio.TimeoutError:
-      try:
-        process.kill()
-      except ProcessLookupError:
-        pass
-      return {"error": "Command timed out after 30 seconds."}
+    except Exception as e:  # pylint: disable=broad-except
+      logger.exception("ExecuteBashTool execution failed")
+
+      stdout_res = (
+          stdout.decode(errors="replace") if stdout else "<no stdout captured>"
+      )
+      stderr_res = (
+          stderr.decode(errors="replace") if stderr else "<no stderr captured>"
+      )
+
+      return {
+          "error": f"Execution failed: {str(e)}",
+          "stdout": stdout_res,
+          "stderr": stderr_res,
+      }
