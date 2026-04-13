@@ -378,6 +378,27 @@ Choose region""",
             f"Express Mode project created: {project_id}",
             fg="green",
         )
+        current_proj = _get_gcp_project_from_gcloud()
+        if current_proj and current_proj != project_id:
+          click.secho(
+              "Warning: Your default gcloud project is set to"
+              f" '{current_proj}'. This might conflict with or override your"
+              f" Express Mode project '{project_id}'. We recommend"
+              " unsetting it.",
+              fg="yellow",
+          )
+          if click.confirm("Run 'gcloud config unset project'?", default=True):
+            try:
+              subprocess.run(
+                  ["gcloud", "config", "unset", "project"],
+                  check=True,
+                  capture_output=True,
+              )
+              click.secho("Unset default gcloud project.", fg="green")
+            except Exception:
+              click.secho(
+                  "Failed to unset project. Please do it manually.", fg="red"
+              )
         return api_key, project_id, region
 
     click.secho(_NOT_ELIGIBLE_MSG, fg="red")
