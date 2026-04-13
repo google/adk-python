@@ -883,7 +883,10 @@ async def test_list_sessions_all_users():
 @pytest.mark.parametrize(
     ('payload', 'expected_filter'),
     [
-        ('attacker" OR user_id!=""', 'user_id="attacker\\" OR user_id!=\\"\\""'),
+        (
+            'attacker" OR user_id!=""',
+            'user_id="attacker\\" OR user_id!=\\"\\""',
+        ),
         ('\\', 'user_id="\\\\"'),
         ('', 'user_id=""'),
     ],
@@ -893,7 +896,9 @@ async def test_list_sessions_quotes_user_id_filter(
 ):
   session_service = mock_vertex_ai_session_service()
 
-  sessions = await session_service.list_sessions(app_name='123', user_id=payload)
+  sessions = await session_service.list_sessions(
+      app_name='123', user_id=payload
+  )
 
   assert sessions.sessions == []
   assert mock_api_client_instance.last_list_sessions_config == {
