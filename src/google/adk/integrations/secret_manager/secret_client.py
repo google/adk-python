@@ -42,6 +42,7 @@ class SecretManagerClient:
       self,
       service_account_json: Optional[str] = None,
       auth_token: Optional[str] = None,
+      location: Optional[str] = None,
   ):
     """Initializes the SecretManagerClient.
 
@@ -49,6 +50,8 @@ class SecretManagerClient:
         service_account_json:  The content of a service account JSON keyfile (as
           a string), not the file path.  Must be valid JSON.
         auth_token: An existing Google Cloud authorization token.
+        location: The Google Cloud location (region) to use for the Secret
+          Manager service. If not provided, the global endpoint is used.
 
     Raises:
         ValueError: If neither `service_account_json` nor `auth_token` is
@@ -92,8 +95,15 @@ class SecretManagerClient:
       )
 
     self._credentials = credentials
+
+    client_options = None
+    if location:
+      client_options = {
+          "api_endpoint": f"secretmanager.{location}.rep.googleapis.com"
+      }
+
     self._client = secretmanager.SecretManagerServiceClient(
-        credentials=self._credentials
+        credentials=self._credentials, client_options=client_options
     )
 
   def get_secret(self, resource_name: str) -> str:
