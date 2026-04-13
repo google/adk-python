@@ -33,6 +33,7 @@ from google.adk.sessions import base_session_service as base_session_service_lib
 from google.adk.sessions import session as session_lib
 from google.adk.tools import base_tool as base_tool_lib
 from google.adk.tools import tool_context as tool_context_lib
+from google.adk.utils._telemetry_context import _is_visual_builder
 from google.adk.version import __version__
 import google.auth
 from google.auth import exceptions as auth_exceptions
@@ -279,7 +280,8 @@ async def _get_captured_event_dict_async(mock_write_client, expected_schema):
   assert len(requests) == 1
   request = requests[0]
   assert request.write_stream == DEFAULT_STREAM_NAME
-  assert request.trace_id == f"google-adk-bq-logger/{__version__}"
+  assert request.trace_id.startswith("google-adk-bq-logger")
+  assert request.trace_id.endswith(f"/{__version__}")
   # Parse the Arrow batch back to a dict for verification
   try:
     reader = pa.ipc.open_stream(request.arrow_rows.rows.serialized_record_batch)
@@ -382,6 +384,39 @@ def test_recursive_smart_truncate_with_dataclasses():
   assert truncated["result"]["id"] == "inc-123"
   assert isinstance(truncated["result"]["kpi_missed"][0], dict)
   assert truncated["result"]["kpi_missed"][0]["kpi"] == "latency"
+
+
+def test_recursive_smart_truncate_redaction():
+  """Test that sensitive keys and temp: state keys are redacted."""
+  obj = {
+      "client_secret": "super-secret-123",
+      "access_token": "ya29.blah",
+      "refresh_token": "1//0g",
+      "id_token": "eyJhb",
+      "api_key": "AIza",
+      "password": "my-password",
+      "safe_key": "safe-value",
+      "temp:auth_state": "some-auth-state",
+      "nested": {
+          "CLIENT_SECRET": "nested-secret",
+          "normal": "value",
+      },
+  }
+  max_len = 1000
+  truncated, is_truncated = (
+      bigquery_agent_analytics_plugin._recursive_smart_truncate(obj, max_len)
+  )
+  assert not is_truncated
+  assert truncated["client_secret"] == "[REDACTED]"
+  assert truncated["access_token"] == "[REDACTED]"
+  assert truncated["refresh_token"] == "[REDACTED]"
+  assert truncated["id_token"] == "[REDACTED]"
+  assert truncated["api_key"] == "[REDACTED]"
+  assert truncated["password"] == "[REDACTED]"
+  assert truncated["safe_key"] == "safe-value"
+  assert truncated["temp:auth_state"] == "[REDACTED]"
+  assert truncated["nested"]["CLIENT_SECRET"] == "[REDACTED]"
+  assert truncated["nested"]["normal"] == "value"
 
 
 class TestBigQueryAgentAnalyticsPlugin:
@@ -2212,6 +2247,118 @@ class TestBigQueryAgentAnalyticsPlugin:
       assert finished_spans[0].name == "test_span"
       assert format(finished_spans[0].context.span_id, "016x") == span_id
       assert format(finished_spans[0].context.trace_id, "032x") == trace_id
+
+  @pytest.mark.asyncio
+  async def test_keyword_identifiers_emission_default(
+      self,
+      mock_auth_default,
+      mock_bq_client,
+      callback_context,
+  ):
+    """Verify the default keyword flow for User-Agent and Trace-ID."""
+    keyword = "google-adk-bq-logger"
+    mock_write_client = mock.AsyncMock()
+
+    # 1. Verify User-Agent contains default keyword.
+    with mock.patch(
+        "google.adk.plugins.bigquery_agent_analytics_plugin.BigQueryWriteAsyncClient",
+        autospec=True,
+    ) as mock_write_cls:
+      mock_write_cls.return_value = mock_write_client
+      async with managed_plugin(PROJECT_ID, DATASET_ID) as plugin:
+        await plugin._ensure_started()
+
+        _, kwargs = mock_write_cls.call_args
+        client_info = kwargs.get("client_info")
+        assert f"{keyword}/{__version__}" in client_info.user_agent
+
+    # 2. Verify Trace ID contains default keyword.
+    with mock.patch(
+        "google.adk.plugins.bigquery_agent_analytics_plugin.BigQueryWriteAsyncClient",
+        autospec=True,
+    ) as mock_write_cls:
+      mock_write_cls.return_value = mock_write_client
+      async with managed_plugin(PROJECT_ID, DATASET_ID) as plugin:
+        await plugin._ensure_started()
+        mock_write_client.append_rows.reset_mock()
+
+        llm_request = llm_request_lib.LlmRequest(
+            model="gemini-pro",
+            contents=[types.Content(parts=[types.Part(text="Hi")])],
+        )
+        await plugin.before_model_callback(
+            callback_context=callback_context, llm_request=llm_request
+        )
+        await plugin.flush()
+
+        call_args = mock_write_client.append_rows.call_args
+        requests_iter = call_args.args[0]
+        requests = []
+        async for req in requests_iter:
+          requests.append(req)
+
+        assert requests[0].trace_id.startswith(keyword)
+        assert requests[0].trace_id.endswith(f"/{__version__}")
+
+  @pytest.mark.asyncio
+  async def test_visual_builder_identifiers_flow(
+      self,
+      mock_auth_default,
+      mock_bq_client,
+      callback_context,
+      dummy_arrow_schema,
+  ):
+    """Verify visual-builder keyword flow via contextvars."""
+    keyword = "google-adk-visual-builder"
+    mock_write_client = mock.AsyncMock()
+
+    # Simulate setting the internal flag via contextvars
+    token = _is_visual_builder.set(True)
+    try:
+      # 1. Verify Client User-Agent
+      with mock.patch(
+          "google.adk.plugins.bigquery_agent_analytics_plugin.BigQueryWriteAsyncClient",
+          autospec=True,
+      ) as mock_write_cls:
+        mock_write_cls.return_value = mock_write_client
+        async with managed_plugin(PROJECT_ID, DATASET_ID) as plugin:
+          await plugin._ensure_started()
+
+          _, kwargs = mock_write_cls.call_args
+          client_info = kwargs.get("client_info")
+          assert keyword in client_info.user_agent
+
+      # 2. Verify Request Trace ID
+      with mock.patch(
+          "google.adk.plugins.bigquery_agent_analytics_plugin.BigQueryWriteAsyncClient",
+          autospec=True,
+      ) as mock_write_cls:
+        mock_write_cls.return_value = mock_write_client
+        async with managed_plugin(PROJECT_ID, DATASET_ID) as plugin:
+          await plugin._ensure_started()
+          mock_write_client.append_rows.reset_mock()
+
+          llm_request = llm_request_lib.LlmRequest(
+              model="gemini-pro",
+              contents=[types.Content(parts=[types.Part(text="Hi")])],
+          )
+          await plugin.before_model_callback(
+              callback_context=callback_context, llm_request=llm_request
+          )
+          await plugin.flush()
+
+          call_args = mock_write_client.append_rows.call_args
+          requests_iter = call_args.args[0]
+          requests = []
+          async for req in requests_iter:
+            requests.append(req)
+
+          assert requests[0].trace_id.startswith(
+              "google-adk-bq-logger-visual-builder"
+          )
+          assert requests[0].trace_id.endswith(f"/{__version__}")
+    finally:
+      _is_visual_builder.reset(token)
 
   @pytest.mark.asyncio
   async def test_flush_mechanism(
@@ -5054,18 +5201,19 @@ class TestForkGrpcSafety:
 class TestAnalyticsViews:
   """Tests for auto-created per-event-type BigQuery views."""
 
-  def _make_plugin(self, create_views=True):
+  def _make_plugin(self, create_views=True, view_prefix="v", table_id=TABLE_ID):
     config = bigquery_agent_analytics_plugin.BigQueryLoggerConfig(
         create_views=create_views,
+        view_prefix=view_prefix,
     )
     plugin = bigquery_agent_analytics_plugin.BigQueryAgentAnalyticsPlugin(
         project_id=PROJECT_ID,
         dataset_id=DATASET_ID,
-        table_id=TABLE_ID,
+        table_id=table_id,
         config=config,
     )
     plugin.client = mock.MagicMock()
-    plugin.full_table_id = f"{PROJECT_ID}.{DATASET_ID}.{TABLE_ID}"
+    plugin.full_table_id = f"{PROJECT_ID}.{DATASET_ID}.{table_id}"
     plugin._schema = bigquery_agent_analytics_plugin._get_events_schema()
     return plugin
 
@@ -5151,6 +5299,7 @@ class TestAnalyticsViews:
     """Config create_views defaults to True."""
     config = bigquery_agent_analytics_plugin.BigQueryLoggerConfig()
     assert config.create_views is True
+    assert config.view_prefix == "v"
 
   @pytest.mark.asyncio
   async def test_create_analytics_views_ensures_started(
@@ -5208,6 +5357,77 @@ class TestAnalyticsViews:
       # Root cause should be chained for debuggability
       assert exc_info.value.__cause__ is not None
       assert "client boom" in str(exc_info.value.__cause__)
+
+  def test_custom_view_prefix(self):
+    """Custom view_prefix namespaces view names."""
+    plugin = self._make_plugin(view_prefix="v_staging")
+    plugin.client.get_table.side_effect = cloud_exceptions.NotFound("not found")
+    mock_query_job = mock.MagicMock()
+    plugin.client.query.return_value = mock_query_job
+
+    plugin._ensure_schema_exists()
+
+    calls = plugin.client.query.call_args_list
+    all_sql = " ".join(c[0][0] for c in calls)
+    # All views should use the custom prefix
+    for event_type in bigquery_agent_analytics_plugin._EVENT_VIEW_DEFS:
+      expected_name = "v_staging_" + event_type.lower()
+      assert expected_name in all_sql, f"View {expected_name} not found in SQL"
+    # Default prefix should NOT appear
+    assert ".v_llm_request" not in all_sql
+
+  def test_default_view_prefix_preserves_names(self):
+    """Default view_prefix='v' produces the same names as before."""
+    plugin = self._make_plugin()  # default view_prefix="v"
+    plugin.client.get_table.side_effect = cloud_exceptions.NotFound("not found")
+    mock_query_job = mock.MagicMock()
+    plugin.client.query.return_value = mock_query_job
+
+    plugin._ensure_schema_exists()
+
+    calls = plugin.client.query.call_args_list
+    all_sql = " ".join(c[0][0] for c in calls)
+    for event_type in bigquery_agent_analytics_plugin._EVENT_VIEW_DEFS:
+      view_name = "v_" + event_type.lower()
+      assert view_name in all_sql
+
+  def test_distinct_tables_and_prefixes_no_collision(self):
+    """Two plugins targeting different tables produce disjoint views."""
+    plugin_a = self._make_plugin(
+        table_id="agent_events_prod", view_prefix="v_prod"
+    )
+    plugin_b = self._make_plugin(
+        table_id="agent_events_staging", view_prefix="v_staging"
+    )
+
+    for plugin in (plugin_a, plugin_b):
+      plugin.client.get_table.side_effect = cloud_exceptions.NotFound(
+          "not found"
+      )
+      mock_query_job = mock.MagicMock()
+      plugin.client.query.return_value = mock_query_job
+      plugin._ensure_schema_exists()
+
+    sql_a = " ".join(c[0][0] for c in plugin_a.client.query.call_args_list)
+    sql_b = " ".join(c[0][0] for c in plugin_b.client.query.call_args_list)
+
+    # View names use their own prefix
+    assert "v_prod_llm_request" in sql_a
+    assert "v_staging_llm_request" in sql_b
+    # No cross-contamination
+    assert "v_staging_" not in sql_a
+    assert "v_prod_" not in sql_b
+
+    # FROM clauses point at the correct table
+    assert "agent_events_prod" in sql_a
+    assert "agent_events_staging" not in sql_a
+    assert "agent_events_staging" in sql_b
+    assert "agent_events_prod" not in sql_b
+
+  def test_empty_view_prefix_raises(self):
+    """Empty view_prefix is rejected at init."""
+    with pytest.raises(ValueError, match="view_prefix"):
+      self._make_plugin(view_prefix="")
 
 
 # ==============================================================================

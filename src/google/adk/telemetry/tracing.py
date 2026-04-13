@@ -83,7 +83,10 @@ OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT = (
 
 USER_CONTENT_ELIDED = '<elided>'
 
-GEN_AI_AGENT_VERSION = 'gen_ai.agent.version'
+# Used to associate a span with a destination resource for AppHub. Tools with
+# this key in their BaseTool.custom_metadata will have the mapping added as a
+# span attribute
+GCP_MCP_SERVER_DESTINATION_ID = 'gcp.mcp.server.destination.id'
 
 # Needed to avoid circular imports
 if TYPE_CHECKING:
@@ -159,7 +162,6 @@ def trace_agent_invocation(
   span.set_attribute(GEN_AI_AGENT_DESCRIPTION, agent.description)
 
   span.set_attribute(GEN_AI_AGENT_NAME, agent.name)
-  span.set_attribute(GEN_AI_AGENT_VERSION, agent.version)
   span.set_attribute(GEN_AI_CONVERSATION_ID, ctx.session.id)
 
 
@@ -192,6 +194,14 @@ def trace_tool_call(
       span.set_attribute(ERROR_TYPE, str(error.error_type))
     else:
       span.set_attribute(ERROR_TYPE, type(error).__name__)
+
+  # Special case for client side association with a remote tool call
+  if (
+      tool.custom_metadata
+      and GCP_MCP_SERVER_DESTINATION_ID in tool.custom_metadata
+  ):
+    destination_id = tool.custom_metadata[GCP_MCP_SERVER_DESTINATION_ID]
+    span.set_attribute(GCP_MCP_SERVER_DESTINATION_ID, destination_id)
 
   # Setting empty llm request and response (as UI expect these) while not
   # applicable for tool_response.
@@ -495,7 +505,6 @@ def use_generate_content_span(
       USER_ID: invocation_context.session.user_id,
       'gcp.vertex.agent.event_id': model_response_event.id,
       'gcp.vertex.agent.invocation_id': invocation_context.invocation_id,
-      GEN_AI_AGENT_VERSION: invocation_context.agent.version,
   }
   if (
       _is_gemini_agent(invocation_context.agent)
@@ -530,7 +539,6 @@ async def use_inference_span(
       USER_ID: invocation_context.session.user_id,
       'gcp.vertex.agent.event_id': model_response_event.id,
       'gcp.vertex.agent.invocation_id': invocation_context.invocation_id,
-      GEN_AI_AGENT_VERSION: invocation_context.agent.version,
   }
   if (
       _is_gemini_agent(invocation_context.agent)

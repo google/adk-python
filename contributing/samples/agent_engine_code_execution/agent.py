@@ -89,6 +89,6 @@ When plotting trends, you should make sure to sort and order the data by the x-a
         # "projects/vertex-agent-loadtest/locations/us-central1/reasoningEngines/6842889780301135872/sandboxEnvironments/6545148628569161728",
         sandbox_resource_name=None,
         # Replace with agent engine resource name used for creating sandbox environment.
-        agent_engine_resource_name="AGENT_ENGINE_RESOURCE_NAME",
+        agent_engine_resource_name=None,
     ),
 )

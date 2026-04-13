@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import base64
+import binascii
 import copy
 import importlib.util
 import json
@@ -142,6 +143,11 @@ _MISSING_TOOL_RESULT_MESSAGE = (
     "Error: Missing tool result (tool execution may have been interrupted "
     "before a response was recorded)."
 )
+
+# Separator LiteLLM uses to embed thought_signature in tool call IDs.
+# Gemini's thoughtSignature requirement is documented here:
+# https://ai.google.dev/gemini-api/docs/thought-signatures
+_THOUGHT_SIGNATURE_SEPARATOR = "__thought__"
 
 _LITELLM_IMPORTED = False
 _LITELLM_GLOBAL_SYMBOLS = (
@@ -378,8 +384,42 @@ def _iter_reasoning_texts(reasoning_value: Any) -> Iterable[str]:
     yield str(reasoning_value)
 
 
+def _is_thinking_blocks_format(reasoning_value: Any) -> bool:
+  """Returns True if reasoning_value is Anthropic thinking_blocks format.
+
+  Anthropic thinking_blocks is a list of dicts, each with 'type', 'thinking',
+  and 'signature' keys.
+  """
+  if not isinstance(reasoning_value, list) or not reasoning_value:
+    return False
+  first = reasoning_value[0]
+  return isinstance(first, dict) and "signature" in first
+
+
 def _convert_reasoning_value_to_parts(reasoning_value: Any) -> List[types.Part]:
-  """Converts provider reasoning payloads into Gemini thought parts."""
+  """Converts provider reasoning payloads into Gemini thought parts.
+
+  Handles Anthropic thinking_blocks (list of dicts with type/thinking/signature)
+  by preserving the signature on each part's thought_signature field. This is
+  required for Anthropic to maintain thinking across tool call boundaries.
+  """
+  if _is_thinking_blocks_format(reasoning_value):
+    parts: List[types.Part] = []
+    for block in reasoning_value:
+      if not isinstance(block, dict):
+        continue
+      block_type = block.get("type", "")
+      if block_type == "redacted":
+        continue
+      thinking_text = block.get("thinking", "")
+      signature = block.get("signature", "")
+      if not thinking_text:
+        continue
+      part = types.Part(text=thinking_text, thought=True)
+      if signature:
+        part.thought_signature = signature.encode("utf-8")
+      parts.append(part)
+    return parts
   return [
       types.Part(text=text, thought=True)
       for text in _iter_reasoning_texts(reasoning_value)
@@ -390,12 +430,19 @@ def _convert_reasoning_value_to_parts(reasoning_value: Any) -> List[types.Part]:
 def _extract_reasoning_value(message: Message | Delta | None) -> Any:
   """Fetches the reasoning payload from a LiteLLM message.
 
-  Checks for both 'reasoning_content' (LiteLLM standard, used by Azure/Foundry,
-  Ollama via LiteLLM) and 'reasoning' (used by LM Studio, vLLM).
-  Prioritizes 'reasoning_content' when both are present.
+  Checks for 'thinking_blocks' (Anthropic structured format with signatures),
+  'reasoning_content' (LiteLLM standard, used by Azure/Foundry, Ollama via
+  LiteLLM) and 'reasoning' (used by LM Studio, vLLM).
+  Prioritizes 'thinking_blocks' when present (Anthropic models), then
+  'reasoning_content', then 'reasoning'.
   """
   if message is None:
     return None
+  # Anthropic models return thinking_blocks with type/thinking/signature fields.
+  # This must be preserved to maintain thinking across tool call boundaries.
+  thinking_blocks = message.get("thinking_blocks")
+  if thinking_blocks is not None:
+    return thinking_blocks
   reasoning_content = message.get("reasoning_content")
   if reasoning_content is not None:
     return reasoning_content
@@ -602,6 +649,27 @@ def _extract_cached_prompt_tokens(usage: Any) -> int:
   return 0
 
 
+def _decode_thought_signature(value: Any) -> Optional[bytes]:
+  """Safely decodes a thought_signature value to bytes.
+
+  Args:
+    value: A base64 string or raw bytes thought_signature.
+
+  Returns:
+    The decoded bytes, or None if decoding fails.
+  """
+  if isinstance(value, bytes):
+    return value
+  try:
+    return base64.b64decode(value, validate=True)
+  except (binascii.Error, TypeError, ValueError):
+    logger.debug(
+        "Failed to decode thought_signature of type %s.",
+        type(value).__name__,
+    )
+    return None
+
+
 def _extract_reasoning_tokens(usage: Any) -> int:
   """Extracts reasoning tokens from LiteLLM usage.
 
@@ -635,6 +703,64 @@ def _extract_reasoning_tokens(usage: Any) -> int:
     logger.debug("Error extracting reasoning tokens: %s", e)
 
   return 0
+
+
+def _extract_thought_signature_from_tool_call(
+    tool_call: ChatCompletionMessageToolCall,
+) -> Optional[bytes]:
+  """Extracts thought_signature from a litellm tool call if present.
+
+  Gemini thinking models attach a thought_signature to function call parts.
+  See https://ai.google.dev/gemini-api/docs/thought-signatures.
+  This signature may appear in several locations depending on the
+  provider path:
+  1. extra_content.google.thought_signature (OpenAI-compatible API).
+  2. provider_specific_fields on the tool call or function (Vertex).
+  3. Embedded in the tool call ID via __thought__ separator.
+
+  Args:
+    tool_call: A litellm tool call object.
+
+  Returns:
+    The thought_signature as bytes, or None if not present.
+  """
+  # Check extra_content.google.thought_signature (OpenAI format)
+  extra_content = tool_call.get("extra_content")
+  if isinstance(extra_content, dict):
+    google_fields = extra_content.get("google")
+    if isinstance(google_fields, dict):
+      signature = google_fields.get("thought_signature")
+      if signature:
+        return _decode_thought_signature(signature)
+
+  # Check provider_specific_fields on the tool call
+  provider_fields = tool_call.get("provider_specific_fields")
+  if isinstance(provider_fields, dict):
+    signature = provider_fields.get("thought_signature")
+    if signature:
+      return _decode_thought_signature(signature)
+
+  # Check provider_specific_fields on the function
+  function = tool_call.get("function")
+  if function:
+    func_provider_fields = None
+    if isinstance(function, dict):
+      func_provider_fields = function.get("provider_specific_fields")
+    elif hasattr(function, "provider_specific_fields"):
+      func_provider_fields = function.provider_specific_fields
+    if isinstance(func_provider_fields, dict):
+      signature = func_provider_fields.get("thought_signature")
+      if signature:
+        return _decode_thought_signature(signature)
+
+  # Check if thought signature is embedded in the tool call ID
+  tool_call_id = tool_call.get("id") or ""
+  if _THOUGHT_SIGNATURE_SEPARATOR in tool_call_id:
+    parts = tool_call_id.split(_THOUGHT_SIGNATURE_SEPARATOR, 1)
+    if len(parts) == 2:
+      return _decode_thought_signature(parts[1])
+
+  return None
 
 
 async def _content_to_message_param(
@@ -706,16 +832,31 @@ async def _content_to_message_param(
     reasoning_parts: list[types.Part] = []
     for part in content.parts:
       if part.function_call:
-        tool_calls.append(
-            ChatCompletionAssistantToolCall(
-                type="function",
-                id=part.function_call.id,
-                function=Function(
-                    name=part.function_call.name,
-                    arguments=_safe_json_serialize(part.function_call.args),
-                ),
-            )
-        )
+        tool_call_id = part.function_call.id or ""
+        tool_call_dict: ChatCompletionAssistantToolCall = {
+            "type": "function",
+            "id": tool_call_id,
+            "function": {
+                "name": part.function_call.name,
+                "arguments": _safe_json_serialize(part.function_call.args),
+            },
+        }
+        # Preserve thought_signature for Gemini thinking models.
+        # LiteLLM's Gemini prompt conversion reads provider_specific_fields,
+        # while the OpenAI-compatible Gemini endpoint path expects the
+        # extra_content.google.thought_signature payload to survive.
+        # See https://ai.google.dev/gemini-api/docs/thought-signatures.
+        if part.thought_signature:
+          sig = part.thought_signature
+          if isinstance(sig, bytes):
+            sig = base64.b64encode(sig).decode("utf-8")
+          tool_call_dict["provider_specific_fields"] = {
+              "thought_signature": sig
+          }
+          tool_call_dict["extra_content"] = {
+              "google": {"thought_signature": sig}
+          }
+        tool_calls.append(tool_call_dict)
       elif part.thought:
         reasoning_parts.append(part)
       else:
@@ -734,6 +875,30 @@ async def _content_to_message_param(
           if final_content[0].get("type", None) == "text"
           else final_content
       )
+
+    # For Anthropic models, rebuild thinking_blocks with signatures so that
+    # thinking is preserved across tool call boundaries. Without this,
+    # Anthropic silently drops thinking after the first turn.
+    if model and _is_anthropic_model(model) and reasoning_parts:
+      thinking_blocks = []
+      for part in reasoning_parts:
+        if part.text and part.thought_signature:
+          sig = part.thought_signature
+          if isinstance(sig, bytes):
+            sig = sig.decode("utf-8")
+          thinking_blocks.append({
+              "type": "thinking",
+              "thinking": part.text,
+              "signature": sig,
+          })
+      if thinking_blocks:
+        msg = ChatCompletionAssistantMessage(
+            role=role,
+            content=final_content,
+            tool_calls=tool_calls or None,
+        )
+        msg["thinking_blocks"] = thinking_blocks  # type: ignore[typeddict-unknown-key]
+        return msg
 
     reasoning_texts = []
     for part in reasoning_parts:
@@ -1524,11 +1689,14 @@ def _message_to_generate_content_response(
   if tool_calls:
     for tool_call in tool_calls:
       if tool_call.type == "function":
+        thought_signature = _extract_thought_signature_from_tool_call(tool_call)
         part = types.Part.from_function_call(
             name=tool_call.function.name,
             args=json.loads(tool_call.function.arguments or "{}"),
         )
         part.function_call.id = tool_call.id
+        if thought_signature:
+          part.thought_signature = thought_signature
         parts.append(part)
 
   return LlmResponse(
@@ -1838,6 +2006,31 @@ Functions:
 {_NEW_LINE.join(function_logs)}
 -----------------------------------------------------------
 """
+
+
+def _is_anthropic_model(model_string: str) -> bool:
+  """Check if the model is an Anthropic Claude model accessed via LiteLLM.
+
+  Detects models using the anthropic/ provider prefix, bedrock/ models that
+  contain 'anthropic' or 'claude', and vertex_ai/ models that contain 'claude'.
+
+  Args:
+    model_string: A LiteLLM model string (e.g., "anthropic/claude-4-sonnet",
+      "bedrock/anthropic.claude-3-5-sonnet", "vertex_ai/claude-4-sonnet")
+
+  Returns:
+    True if it's an Anthropic Claude model, False otherwise.
+  """
+  lower = model_string.lower()
+  if lower.startswith("anthropic/"):
+    return True
+  if lower.startswith("bedrock/"):
+    model_part = lower.split("/", 1)[1]
+    return "anthropic" in model_part or "claude" in model_part
+  if lower.startswith("vertex_ai/"):
+    model_part = lower.split("/", 1)[1]
+    return "claude" in model_part
+  return False
 
 
 def _is_litellm_vertex_model(model_string: str) -> bool:

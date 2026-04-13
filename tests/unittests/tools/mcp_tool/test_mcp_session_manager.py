@@ -134,6 +134,49 @@ class TestMCPSessionManager:
 
     assert manager._connection_params == sse_params
 
+  @patch("google.adk.tools.mcp_tool.mcp_session_manager.sse_client")
+  def test_init_with_sse_custom_httpx_factory(self, mock_sse_client):
+    """Test that sse_client is called with custom httpx_client_factory."""
+    custom_httpx_factory = Mock()
+
+    sse_params = SseConnectionParams(
+        url="https://example.com/mcp",
+        timeout=10.0,
+        httpx_client_factory=custom_httpx_factory,
+    )
+    manager = MCPSessionManager(sse_params)
+
+    manager._create_client()
+
+    mock_sse_client.assert_called_once_with(
+        url="https://example.com/mcp",
+        headers=None,
+        timeout=10.0,
+        sse_read_timeout=300.0,
+        httpx_client_factory=custom_httpx_factory,
+    )
+
+  @patch("google.adk.tools.mcp_tool.mcp_session_manager.sse_client")
+  def test_init_with_sse_default_httpx_factory(self, mock_sse_client):
+    """Test that sse_client is called with default httpx_client_factory."""
+    sse_params = SseConnectionParams(
+        url="https://example.com/mcp",
+        timeout=10.0,
+    )
+    manager = MCPSessionManager(sse_params)
+
+    manager._create_client()
+
+    mock_sse_client.assert_called_once_with(
+        url="https://example.com/mcp",
+        headers=None,
+        timeout=10.0,
+        sse_read_timeout=300.0,
+        httpx_client_factory=SseConnectionParams.model_fields[
+            "httpx_client_factory"
+        ].get_default(),
+    )
+
   def test_init_with_streamable_http_params(self):
     """Test initialization with StreamableHTTPConnectionParams."""
     http_params = StreamableHTTPConnectionParams(

@@ -33,6 +33,30 @@ class TestFindContextParameter:
 
     assert find_context_parameter(my_tool) == 'ctx'
 
+  def test_find_context_parameter_with_string_annotation(self):
+    """Test detection of string annotation 'Context'."""
+
+    def my_tool(query: str, ctx: 'Context') -> str:
+      return query
+
+    assert find_context_parameter(my_tool) == 'ctx'
+
+  def test_find_context_parameter_with_string_tool_context(self):
+    """Test detection of string annotation 'ToolContext'."""
+
+    def my_tool(query: str, ctx: 'ToolContext') -> str:
+      return query
+
+    assert find_context_parameter(my_tool) == 'ctx'
+
+  def test_find_context_parameter_with_string_optional_context(self):
+    """Test detection of string annotation 'Optional[Context]'."""
+
+    def my_tool(query: str, ctx: 'Optional[Context]' = None) -> str:
+      return query
+
+    assert find_context_parameter(my_tool) == 'ctx'
+
   def test_find_context_parameter_with_tool_context_type(self):
     """Test detection of ToolContext type annotation."""
 

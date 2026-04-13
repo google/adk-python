@@ -1,6 +1,6 @@
 # Toolbox Agent
 
-This agent utilizes [MCP toolbox for database](https://googleapis.github.io/genai-toolbox/getting-started/introduction/) to assist end users based on information stored in a database.
+This agent utilizes [MCP toolbox for database](https://mcp-toolbox.dev) to assist end users based on information stored in a database.
 
 Follow the steps below to run this agent.
 
@@ -19,7 +19,7 @@ Run the following command to download and install the MCP Toolbox binary.
 
 ```bash
 export OS="linux/amd64" # one of linux/amd64, darwin/arm64, darwin/amd64, or windows/amd64
-curl -O https://storage.googleapis.com/genai-toolbox/v0.28.0/$OS/toolbox
+curl -O https://storage.googleapis.com/genai-toolbox/v0.31.0/$OS/toolbox
 chmod +x toolbox
 ```
 

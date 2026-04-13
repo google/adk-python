@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+import json
 import logging
 from typing import Any
 from typing import List
@@ -28,9 +29,11 @@ from a2a.types import TaskArtifactUpdateEvent
 from a2a.types import TaskState
 from a2a.types import TaskStatusUpdateEvent
 from google.genai import types as genai_types
+from pydantic import ValidationError
 
 from ...agents.invocation_context import InvocationContext
 from ...events.event import Event
+from ...events.event_actions import EventActions
 from ..experimental import a2a_experimental
 from .part_converter import A2A_DATA_PART_METADATA_IS_LONG_RUNNING_KEY
 from .part_converter import A2APartToGenAIPartConverter
@@ -171,11 +174,15 @@ def _create_event(
     output_parts: List[genai_types.Part],
     invocation_context: Optional[InvocationContext],
     author: Optional[str],
+    actions: Optional[EventActions] = None,
     long_running_function_ids: Optional[set[str]] = None,
     partial: bool = False,
 ) -> Optional[Event]:
   """Creates an ADK event from parts and metadata."""
-  if not output_parts:
+  event_actions = actions or EventActions()
+  if not output_parts and not event_actions.model_dump(
+      exclude_none=True, exclude_defaults=True
+  ):
     return None
 
   event = Event(
@@ -186,17 +193,87 @@ def _create_event(
       ),
       author=author or "a2a agent",
       branch=invocation_context.branch if invocation_context else None,
+      actions=event_actions,
       long_running_tool_ids=(
           long_running_function_ids if long_running_function_ids else None
       ),
-      content=genai_types.Content(
-          role="model",
-          parts=output_parts,
+      content=(
+          genai_types.Content(
+              role="model",
+              parts=output_parts,
+          )
+          if output_parts
+          else None
       ),
       partial=partial,
   )
 
   return event
+
+
+def _parse_adk_metadata_value(value: Any) -> Any:
+  """Parses ADK metadata values serialized through A2A."""
+  if not isinstance(value, str):
+    return value
+
+  try:
+    return json.loads(value)
+  except json.JSONDecodeError:
+    return value
+
+
+def _extract_event_actions(
+    metadata: Optional[dict[str, Any]],
+) -> EventActions:
+  """Extracts ADK event actions from A2A metadata."""
+  if not metadata:
+    return EventActions()
+
+  raw_actions = metadata.get(_get_adk_metadata_key("actions"))
+  if raw_actions is None:
+    return EventActions()
+
+  parsed_actions = _parse_adk_metadata_value(raw_actions)
+  if not isinstance(parsed_actions, dict):
+    logger.warning(
+        "Ignoring invalid ADK actions metadata of type %s",
+        type(parsed_actions).__name__,
+    )
+    return EventActions()
+
+  try:
+    return EventActions.model_validate(parsed_actions)
+  except ValidationError as error:
+    logger.warning("Ignoring invalid ADK actions metadata: %s", error)
+    return EventActions()
+
+
+def _merge_top_level_dicts(
+    base: dict[str, Any], new_values: dict[str, Any]
+) -> dict[str, Any]:
+  """Merges dictionaries while preserving top-level overwrite semantics."""
+  merged = dict(base)
+  for key, value in new_values.items():
+    if (
+        key in merged
+        and isinstance(merged[key], dict)
+        and isinstance(value, dict)
+    ):
+      merged[key] = {**merged[key], **value}
+    else:
+      merged[key] = value
+  return merged
+
+
+def _merge_event_actions(
+    existing_actions: EventActions, new_actions: EventActions
+) -> EventActions:
+  """Merges action metadata from multiple A2A sources."""
+  merged_actions_data = _merge_top_level_dicts(
+      existing_actions.model_dump(exclude_none=True, by_alias=True),
+      new_actions.model_dump(exclude_none=True, by_alias=True),
+  )
+  return EventActions.model_validate(merged_actions_data)
 
 
 @a2a_experimental
@@ -226,12 +303,17 @@ def convert_a2a_task_to_event(
     raise ValueError("A2A task cannot be None")
 
   try:
+    event_actions = EventActions()
     output_parts = []
     long_running_function_ids = set()
     if a2a_task.artifacts:
       artifact_parts = [
           part for artifact in a2a_task.artifacts for part in artifact.parts
       ]
+      for artifact in a2a_task.artifacts:
+        event_actions = _merge_event_actions(
+            event_actions, _extract_event_actions(artifact.metadata)
+        )
       output_parts, _ = _convert_a2a_parts_to_adk_parts(
           artifact_parts, part_converter
       )
@@ -239,6 +321,10 @@ def convert_a2a_task_to_event(
         a2a_task.status.message
         and a2a_task.status.state == TaskState.input_required
     ):
+      event_actions = _merge_event_actions(
+          event_actions,
+          _extract_event_actions(a2a_task.status.message.metadata),
+      )
       parts, ids = _convert_a2a_parts_to_adk_parts(
           a2a_task.status.message.parts, part_converter
       )
@@ -249,6 +335,7 @@ def convert_a2a_task_to_event(
         output_parts,
         invocation_context,
         author,
+        event_actions,
         long_running_function_ids,
     )
 
@@ -288,7 +375,12 @@ def convert_a2a_message_to_event(
     output_parts, _ = _convert_a2a_parts_to_adk_parts(
         a2a_message.parts, part_converter
     )
-    return _create_event(output_parts, invocation_context, author)
+    return _create_event(
+        output_parts,
+        invocation_context,
+        author,
+        _extract_event_actions(a2a_message.metadata),
+    )
 
   except Exception as e:
     logger.error("Failed to convert A2A message to event: %s", e)
@@ -319,7 +411,11 @@ def convert_a2a_status_update_to_event(
   try:
     output_parts = []
     long_running_function_ids = set()
+    event_actions = EventActions()
     if a2a_status_update.status.message:
+      event_actions = _extract_event_actions(
+          a2a_status_update.status.message.metadata
+      )
       parts, ids = _convert_a2a_parts_to_adk_parts(
           a2a_status_update.status.message.parts, part_converter
       )
@@ -330,6 +426,7 @@ def convert_a2a_status_update_to_event(
         output_parts,
         invocation_context,
         author,
+        event_actions,
         long_running_function_ids,
     )
   except Exception as e:
@@ -367,6 +464,7 @@ def convert_a2a_artifact_update_to_event(
         output_parts,
         invocation_context,
         author,
+        _extract_event_actions(a2a_artifact_update.artifact.metadata),
         partial=not a2a_artifact_update.last_chunk,
     )
   except Exception as e:

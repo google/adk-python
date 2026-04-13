@@ -33,7 +33,9 @@ from typing import TextIO
 from typing import Union
 
 from mcp import ClientSession
+from mcp import SamplingCapability
 from mcp import StdioServerParameters
+from mcp.client.session import SamplingFnT
 from mcp.client.sse import sse_client
 from mcp.client.stdio import stdio_client
 from mcp.client.streamable_http import create_mcp_http_client
@@ -97,12 +99,17 @@ class SseConnectionParams(BaseModel):
         server.
       sse_read_timeout: Timeout in seconds for reading data from the MCP SSE
         server.
+      httpx_client_factory: Factory function to create a custom HTTPX client. If
+        not provided, a default factory will be used.
   """
+
+  model_config = ConfigDict(arbitrary_types_allowed=True)
 
   url: str
   headers: dict[str, Any] | None = None
   timeout: float = 5.0
   sse_read_timeout: float = 60 * 5.0
+  httpx_client_factory: CheckableMcpHttpClientFactory = create_mcp_http_client
 
 
 @runtime_checkable
@@ -195,6 +202,9 @@ class MCPSessionManager:
           StreamableHTTPConnectionParams,
       ],
       errlog: TextIO = sys.stderr,
+      *,
+      sampling_callback: Optional[SamplingFnT] = None,
+      sampling_capabilities: Optional[SamplingCapability] = None,
   ):
     """Initializes the MCP session manager.
 
@@ -204,7 +214,13 @@ class MCPSessionManager:
           parameters but it's not configurable for now.
         errlog: (Optional) TextIO stream for error logging. Use only for
           initializing a local stdio MCP session.
+        sampling_callback: Optional callback to handle sampling requests from the
+          MCP server.
+        sampling_capabilities: Optional capabilities for sampling.
     """
+    self._sampling_callback = sampling_callback
+    self._sampling_capabilities = sampling_capabilities
+
     if isinstance(connection_params, StdioServerParameters):
       # So far timeout is not configurable. Given MCP is still evolving, we
       # would expect stdio_client to evolve to accept timeout parameter like
@@ -387,6 +403,7 @@ class MCPSessionManager:
           headers=merged_headers,
           timeout=self._connection_params.timeout,
           sse_read_timeout=self._connection_params.sse_read_timeout,
+          httpx_client_factory=self._connection_params.httpx_client_factory,
       )
     elif isinstance(self._connection_params, StreamableHTTPConnectionParams):
       client = streamablehttp_client(
@@ -475,6 +492,8 @@ class MCPSessionManager:
                     timeout=timeout_in_seconds,
                     sse_read_timeout=sse_read_timeout_in_seconds,
                     is_stdio=is_stdio,
+                    sampling_callback=self._sampling_callback,
+                    sampling_capabilities=self._sampling_capabilities,
                 )
             ),
             timeout=timeout_in_seconds,
