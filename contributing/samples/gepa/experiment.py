@@ -43,7 +43,6 @@ from tau_bench.run import display_metrics
 from tau_bench.types import EnvRunResult
 from tau_bench.types import RunConfig
 import tau_bench_agent as tau_bench_agent_lib
-
 import utils
 
 
