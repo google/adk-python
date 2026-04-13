@@ -163,8 +163,8 @@ class GemmaFunctionCallModel(BaseModel):
 class Gemma(GemmaFunctionCallingMixin, Gemini):
   """Integration for Gemma models exposed via the Gemini API.
 
-  Only Gemma 3 models are supported at this time. For agentic use cases,
-  use of gemma-3-27b-it and gemma-3-12b-it are strongly recommended.
+  For agentic use cases, use of gemma-3-27b-it, gemma-3-12b-it, and
+  gemma-4-31b-it are strongly recommended.
 
   For full documentation, see: https://ai.google.dev/gemma/docs/core/
 
@@ -205,7 +205,7 @@ class Gemma(GemmaFunctionCallingMixin, Gemini):
     """
 
     return [
-        r'gemma-3.*',
+        r'gemma-.*',
     ]
 
   @cached_property
