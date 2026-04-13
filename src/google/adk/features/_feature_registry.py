@@ -99,10 +99,10 @@ _FEATURE_REGISTRY: dict[FeatureName, FeatureConfig] = {
         FeatureStage.EXPERIMENTAL, default_on=True
     ),
     FeatureName.BIG_QUERY_TOOLSET: FeatureConfig(
-        FeatureStage.EXPERIMENTAL, default_on=True
+        FeatureStage.STABLE, default_on=True
     ),
     FeatureName.BIG_QUERY_TOOL_CONFIG: FeatureConfig(
-        FeatureStage.EXPERIMENTAL, default_on=True
+        FeatureStage.STABLE, default_on=True
     ),
     FeatureName.BIGTABLE_TOOL_SETTINGS: FeatureConfig(
         FeatureStage.EXPERIMENTAL, default_on=True

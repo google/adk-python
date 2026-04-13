@@ -126,7 +126,7 @@ def check_express_eligibility(
     result = _call_vertex_express_api(
         "GET", "/Eligibility:check", location=location
     )
-    return result.get("eligibility") == "IN_SCOPE"
+    return result.get("eligibility") in ("ELIGIBLE", "IN_SCOPE")
   except (requests.exceptions.HTTPError, KeyError) as e:
     return False
 

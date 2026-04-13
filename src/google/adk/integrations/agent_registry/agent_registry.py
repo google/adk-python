@@ -16,21 +16,18 @@
 
 from __future__ import annotations
 
+from collections.abc import Generator
 from enum import Enum
 import logging
-import os
 import re
 from typing import Any
 from typing import Callable
 from typing import Dict
 from typing import List
 from typing import Mapping
-from typing import Sequence
 from typing import TypedDict
-from urllib.parse import parse_qs
 from urllib.parse import urlparse
 
-from a2a.client.client_factory import minimal_agent_card
 from a2a.types import AgentCapabilities
 from a2a.types import AgentCard
 from a2a.types import AgentSkill
@@ -39,6 +36,7 @@ from google.adk.agents.readonly_context import ReadonlyContext
 from google.adk.agents.remote_a2a_agent import RemoteA2aAgent
 from google.adk.auth.auth_credential import AuthCredential
 from google.adk.auth.auth_schemes import AuthScheme
+from google.adk.integrations.agent_identity.gcp_auth_provider_scheme import GcpAuthProviderScheme
 from google.adk.telemetry.tracing import GCP_MCP_SERVER_DESTINATION_ID
 from google.adk.tools.base_tool import BaseTool
 from google.adk.tools.mcp_tool.mcp_session_manager import SseConnectionParams
@@ -54,6 +52,12 @@ from typing_extensions import override
 logger = logging.getLogger("google_adk." + __name__)
 
 AGENT_REGISTRY_BASE_URL = "https://agentregistry.googleapis.com/v1alpha"
+
+_TRANSPORT_MAPPING = {
+    "HTTP_JSON": A2ATransport.http_json,
+    "JSONRPC": A2ATransport.jsonrpc,
+    "GRPC": A2ATransport.grpc,
+}
 
 
 # An MCPToolset for a single registered MCP server. Adds the special
@@ -133,6 +137,17 @@ class Endpoint(TypedDict, total=False):
   createTime: str
   updateTime: str
   attributes: Dict[str, Any]
+
+
+def _is_google_api(url: str) -> bool:
+  """Checks if the given URL points to a Google API endpoint."""
+  parsed_url = urlparse(url)
+  if not parsed_url.hostname:
+    return False
+  return (
+      parsed_url.hostname == "googleapis.com"
+      or parsed_url.hostname.endswith(".googleapis.com")
+  )
 
 
 class AgentRegistry:
@@ -232,13 +247,15 @@ class AgentRegistry:
     for p in protocols:
       if protocol_type and p.get("type") != protocol_type:
         continue
+      protocol_version = p.get("protocolVersion")
       for i in p.get("interfaces", []):
-        if protocol_binding and i.get("protocolBinding") != protocol_binding:
+        mapped_binding = _TRANSPORT_MAPPING.get(i.get("protocolBinding"))
+        if protocol_binding and mapped_binding != protocol_binding:
           continue
         if url := i.get("url"):
-          return url
+          return url, protocol_version, mapped_binding
 
-    return None
+    return None, None, None
 
   def _clean_name(self, name: str) -> str:
     """Cleans a string to be a valid Python identifier for agent names."""
@@ -276,26 +293,63 @@ class AgentRegistry:
       mcp_server_name: str,
       auth_scheme: AuthScheme | None = None,
       auth_credential: AuthCredential | None = None,
+      *,
+      continue_uri: str | None = None,
   ) -> McpToolset:
-    """Constructs an McpToolset instance from a registered MCP Server."""
+    """Constructs an McpToolset from a registered MCP Server.
+
+    If `auth_scheme` is omitted, it is automatically resolved from the server's
+    IAM bindings via `GcpAuthProviderScheme`.
+
+    Args:
+      mcp_server_name: Resource name of the MCP Server.
+      auth_scheme: Optional auth scheme. Resolved via bindings if omitted.
+      auth_credential: Optional auth credential.
+      continue_uri: Optional continue URI to override what is in the auth
+        provider.
+
+    Returns:
+      An McpToolset for the MCP server.
+    """
     server_details = self.get_mcp_server(mcp_server_name)
     name = self._clean_name(server_details.get("displayName", mcp_server_name))
     mcp_server_id = server_details.get("mcpServerId")
     if not isinstance(mcp_server_id, str):
       mcp_server_id = None
 
-    endpoint_uri = self._get_connection_uri(
+    endpoint_uri, _, _ = self._get_connection_uri(
         server_details, protocol_binding=A2ATransport.jsonrpc
-    ) or self._get_connection_uri(
-        server_details, protocol_binding=A2ATransport.http_json
     )
+    if not endpoint_uri:
+      endpoint_uri, _, _ = self._get_connection_uri(
+          server_details, protocol_binding=A2ATransport.http_json
+      )
     if not endpoint_uri:
       raise ValueError(
           f"MCP Server endpoint URI not found for: {mcp_server_name}"
       )
 
+    headers = self._get_auth_headers() if _is_google_api(endpoint_uri) else None
+    if mcp_server_id and not auth_scheme:
+      try:
+        bindings_data = self._make_request("bindings")
+        for b in bindings_data.get("bindings", []):
+          target_id = b.get("target", {}).get("identifier", "")
+          if target_id.endswith(mcp_server_id):
+            auth_provider = b.get("authProviderBinding", {}).get("authProvider")
+            if auth_provider:
+              auth_scheme = GcpAuthProviderScheme(
+                  name=auth_provider, continue_uri=continue_uri
+              )
+              break
+      except Exception as e:
+        logger.warning(
+            f"Failed to fetch bindings for MCP Server {mcp_server_name}: {e}"
+        )
+
     connection_params = StreamableHTTPConnectionParams(
-        url=endpoint_uri, headers=self._get_auth_headers()
+        url=endpoint_uri,
+        headers=headers,
     )
     return AgentRegistrySingleMcpToolset(
         destination_resource_id=mcp_server_id,
@@ -339,7 +393,7 @@ class AgentRegistry:
       projects/.../locations/.../publishers/google/models/...).
     """
     endpoint_details = self.get_endpoint(endpoint_name)
-    uri = self._get_connection_uri(endpoint_details)
+    uri, _, _ = self._get_connection_uri(endpoint_details)
     if not uri:
       raise ValueError(
           f"Connection URI not found for endpoint: {endpoint_name}"
@@ -378,7 +432,12 @@ class AgentRegistry:
     """Retrieves detailed metadata of a specific A2A Agent."""
     return self._make_request(name)
 
-  def get_remote_a2a_agent(self, agent_name: str) -> RemoteA2aAgent:
+  def get_remote_a2a_agent(
+      self,
+      agent_name: str,
+      *,
+      httpx_client: httpx.AsyncClient | None = None,
+  ) -> RemoteA2aAgent:
     """Creates a RemoteA2aAgent instance for a registered A2A Agent."""
     agent_info = self.get_agent_info(agent_name)
 
@@ -389,17 +448,19 @@ class AgentRegistry:
       agent_card = AgentCard(**card_content)
       # Clean the name to be a valid identifier
       name = self._clean_name(agent_card.name)
+
       return RemoteA2aAgent(
           name=name,
           agent_card=agent_card,
           description=agent_card.description,
+          httpx_client=httpx_client,
       )
 
     name = self._clean_name(agent_info.get("displayName", agent_name))
     description = agent_info.get("description", "")
     version = agent_info.get("version", "")
 
-    url = self._get_connection_uri(
+    url, protocol_version, protocol_binding = self._get_connection_uri(
         agent_info, protocol_type=_ProtocolType.A2A_AGENT
     )
     if not url:
@@ -421,6 +482,8 @@ class AgentRegistry:
         name=name,
         description=description,
         version=version,
+        preferredTransport=protocol_binding or A2ATransport.http_json,
+        protocolVersion=protocol_version or "0.3.0",
         url=url,
         skills=skills,
         capabilities=AgentCapabilities(streaming=False, polling=False),
@@ -432,4 +495,5 @@ class AgentRegistry:
         name=name,
         agent_card=agent_card,
         description=description,
+        httpx_client=httpx_client,
     )
