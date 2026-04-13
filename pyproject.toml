@@ -123,6 +123,7 @@ test = [
   "a2a-sdk>=0.3.0,<0.4.0",
   "anthropic>=0.43.0",                            # For anthropic model tests
   "crewai[tools];python_version>='3.11' and python_version<'3.12'",         # For CrewaiTool tests; chromadb/pypika fail on 3.12+
+  "google-cloud-iamconnectorcredentials>=0.1.0, <0.2.0",
   "google-cloud-parametermanager>=0.4.0, <1.0.0",
   "kubernetes>=29.0.0",                           # For GkeCodeExecutor
   "langchain-community>=0.3.17",
@@ -175,6 +176,10 @@ otel-gcp = ["opentelemetry-instrumentation-google-genai>=0.6b0, <1.0.0"]
 toolbox = ["toolbox-adk>=1.0.0, <2.0.0"]
 
 slack = ["slack-bolt>=1.22.0"]
+
+agent-identity = [
+  "google-cloud-iamconnectorcredentials>=0.1.0, <0.2.0",
+]
 
 [tool.pyink]
 # Format py files following Google style-guide
