@@ -745,6 +745,69 @@ async def test_file_save_artifact_rejects_out_of_scope_paths(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "user_id",
+    [
+        "../escape",
+        "../../etc",
+        "foo/../../bar",
+        "valid/../..",
+        "..",
+        ".",
+        "has/slash",
+        "back\\slash",
+        "null\x00byte",
+        "",
+    ],
+)
+async def test_file_save_artifact_rejects_traversal_in_user_id(
+    tmp_path, user_id
+):
+  """FileArtifactService rejects user_id values that escape root_dir."""
+  artifact_service = FileArtifactService(root_dir=tmp_path / "artifacts")
+  part = types.Part(text="content")
+  with pytest.raises(InputValidationError):
+    await artifact_service.save_artifact(
+        app_name="myapp",
+        user_id=user_id,
+        session_id="sess123",
+        filename="safe.txt",
+        artifact=part,
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "session_id",
+    [
+        "../escape",
+        "../../tmp",
+        "foo/../../bar",
+        "..",
+        ".",
+        "has/slash",
+        "back\\slash",
+        "null\x00byte",
+        "",
+    ],
+)
+async def test_file_save_artifact_rejects_traversal_in_session_id(
+    tmp_path, session_id
+):
+  """FileArtifactService rejects session_id values that escape root_dir."""
+  artifact_service = FileArtifactService(root_dir=tmp_path / "artifacts")
+  part = types.Part(text="content")
+  with pytest.raises(InputValidationError):
+    await artifact_service.save_artifact(
+        app_name="myapp",
+        user_id="user123",
+        session_id=session_id,
+        filename="safe.txt",
+        artifact=part,
+    )
+
+
+@pytest.mark.asyncio
 async def test_file_save_artifact_rejects_absolute_path_within_scope(tmp_path):
   """Absolute filenames are rejected even when they point inside the scope."""
   artifact_service = FileArtifactService(root_dir=tmp_path / "artifacts")
