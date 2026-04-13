@@ -1632,8 +1632,12 @@ def cli_web(
 ):
   """Starts a FastAPI server with Web UI for agents.
 
-  AGENTS_DIR: The directory of agents, where each subdirectory is a single
-  agent, containing at least `__init__.py` and `agent.py` files.
+  AGENTS_DIR: The directory of agents. Each subdirectory (or file) can contain an agent
+  loaded via multiple formats:
+    - `{agent_name}/agent.py` (module with `root_agent`)
+    - `{agent_name}.py` (module with `root_agent`)
+    - `{agent_name}/__init__.py` (package with `root_agent` or `app`)
+    - `{agent_name}/root_agent.yaml` (YAML config folder)
 
   Example:
 
@@ -1745,8 +1749,12 @@ def cli_api_server(
 ):
   """Starts a FastAPI server for agents.
 
-  AGENTS_DIR: The directory of agents, where each subdirectory is a single
-  agent, containing at least `__init__.py` and `agent.py` files.
+  AGENTS_DIR: The directory of agents. Each subdirectory (or file) can contain an agent
+  loaded via multiple formats:
+    - `{agent_name}/agent.py` (module with `root_agent`)
+    - `{agent_name}.py` (module with `root_agent`)
+    - `{agent_name}/__init__.py` (package with `root_agent` or `app`)
+    - `{agent_name}/root_agent.yaml` (YAML config folder)
 
   Example:
 
