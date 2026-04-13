@@ -808,6 +808,24 @@ def to_cloud_run(
     shutil.rmtree(temp_folder)
 
 
+def _print_agent_engine_url(resource_name: str) -> None:
+  """Prints the Google Cloud Console URL for the deployed agent."""
+  parts = resource_name.split('/')
+  if len(parts) >= 6 and parts[0] == 'projects' and parts[2] == 'locations':
+    project_id = parts[1]
+    region = parts[3]
+    engine_id = parts[5]
+
+    url = (
+        'https://console.cloud.google.com/agent-platform/runtimes'
+        f'/locations/{region}/agent-engines/{engine_id}/playground'
+        f'?project={project_id}'
+    )
+    click.secho(
+        f'\n🎉 View your deployed agent here:\n{url}\n', fg='cyan', bold=True
+    )
+
+
 def to_agent_engine(
     *,
     agent_folder: str,
@@ -1150,11 +1168,13 @@ def to_agent_engine(
           f'✅ Created agent engine: {agent_engine.api_resource.name}',
           fg='green',
       )
+      _print_agent_engine_url(agent_engine.api_resource.name)
     else:
       if project and region and not agent_engine_id.startswith('projects/'):
         agent_engine_id = f'projects/{project}/locations/{region}/reasoningEngines/{agent_engine_id}'
       client.agent_engines.update(name=agent_engine_id, config=agent_config)
       click.secho(f'✅ Updated agent engine: {agent_engine_id}', fg='green')
+      _print_agent_engine_url(agent_engine_id)
   finally:
     click.echo(f'Cleaning up the temp folder: {temp_folder}')
     shutil.rmtree(agent_src_path)
