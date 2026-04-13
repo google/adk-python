@@ -1050,7 +1050,7 @@ def test_part_to_message_block_run_skill_script_response():
       name="run_skill_script",
       response={
           "skill_name": "my_skill",
-          "script_path": "scripts/setup.py",
+          "file_path": "scripts/setup.py",
           "stdout": "Done.",
           "stderr": "",
           "status": "success",

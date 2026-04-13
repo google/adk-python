@@ -20,6 +20,7 @@ import asyncio
 import base64
 import binascii
 from concurrent.futures import ThreadPoolExecutor
+import contextvars
 import copy
 import functools
 import inspect
@@ -140,6 +141,7 @@ async def _call_tool_in_thread_pool(
   """
   from ...tools.function_tool import FunctionTool
 
+  ctx = contextvars.copy_context()
   loop = asyncio.get_running_loop()
   executor = _get_tool_thread_pool(max_workers)
 
@@ -160,7 +162,9 @@ async def _call_tool_in_thread_pool(
         # For other sync tool types, we can't easily run them in thread pool
         return None
 
-    result = await loop.run_in_executor(executor, run_sync_tool)
+    result = await loop.run_in_executor(
+        executor, lambda: ctx.run(run_sync_tool)
+    )
     if result is not None:
       return result
   else:
@@ -171,7 +175,9 @@ async def _call_tool_in_thread_pool(
       # Create a new event loop for this thread
       return asyncio.run(tool.run_async(args=args, tool_context=tool_context))
 
-    return await loop.run_in_executor(executor, run_async_tool_in_new_loop)
+    return await loop.run_in_executor(
+        executor, lambda: ctx.run(run_async_tool_in_new_loop)
+    )
 
   # Fall back to normal async execution for non-FunctionTool sync tools
   return await tool.run_async(args=args, tool_context=tool_context)

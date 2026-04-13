@@ -15,13 +15,11 @@
 import asyncio
 import base64
 from io import StringIO
-import json
+import pickle
 import sys
-import unittest
 from unittest.mock import AsyncMock
 from unittest.mock import MagicMock
 from unittest.mock import Mock
-from unittest.mock import patch
 
 from fastapi.openapi.models import OAuth2
 from google.adk.agents.readonly_context import ReadonlyContext
@@ -674,3 +672,10 @@ class TestMcpToolset:
 
     assert headers["Authorization"] == "Bearer token"
     assert headers["X-API-Key"] == "secret"
+
+  def test_pickle_mcp_toolset(self):
+    toolset = McpToolset(connection_params=self.mock_stdio_params)
+    pickled = pickle.dumps(toolset)
+    unpickled = pickle.loads(pickled)
+    assert unpickled._connection_params == self.mock_stdio_params
+    assert unpickled._errlog == sys.stderr

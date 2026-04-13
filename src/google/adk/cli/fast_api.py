@@ -22,6 +22,7 @@ from pathlib import Path
 import shutil
 import sys
 from typing import Any
+from typing import Literal
 from typing import Mapping
 from typing import Optional
 
@@ -95,6 +96,7 @@ def get_fast_api_app(
     logo_text: Optional[str] = None,
     logo_image_url: Optional[str] = None,
     auto_create_session: bool = False,
+    trigger_sources: Optional[list[Literal["pubsub", "eventarc"]]] = None,
 ) -> FastAPI:
   """Constructs and returns a FastAPI application for serving ADK agents.
 
@@ -136,8 +138,11 @@ def get_fast_api_app(
     extra_plugins: List of extra plugin names to load.
     logo_text: Text to display in the web UI logo area.
     logo_image_url: URL for an image to display in the web UI logo area.
-    auto_create_session: Whether to automatically create a session when
-      not found.
+    auto_create_session: Whether to automatically create a session when not
+      found.
+    trigger_sources: List of trigger sources to enable (e.g. ["pubsub",
+      "eventarc"]). When set, registers /trigger/* endpoints for batch and
+      event-driven agent invocations. None disables all trigger endpoints.
 
   Returns:
     The configured FastAPI application instance.
@@ -206,6 +211,7 @@ def get_fast_api_app(
       logo_image_url=logo_image_url,
       url_prefix=url_prefix,
       auto_create_session=auto_create_session,
+      trigger_sources=trigger_sources,
   )
 
   # Callbacks & other optional args for when constructing the FastAPI instance
