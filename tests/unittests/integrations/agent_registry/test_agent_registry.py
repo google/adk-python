@@ -637,3 +637,48 @@ class TestAgentRegistry:
     mock_get_endpoint.return_value = {}
     with pytest.raises(ValueError, match="Connection URI not found"):
       registry.get_model_name("test-endpoint")
+
+  @patch.object(AgentRegistry, "_make_request")
+  def test_get_mcp_toolset_with_binding(self, mock_make_request, registry):
+    def side_effect(*args, **kwargs):
+      if args[0] == "test-mcp":
+        return {
+            "displayName": "TestPrefix",
+            "mcpServerId": "server-456",
+            "interfaces": [{
+                "url": "https://mcp.com",
+                "protocolBinding": "JSONRPC",
+            }],
+        }
+      if args[0] == "bindings":
+        return {
+            "bindings": [{
+                "target": {
+                    "identifier": (
+                        "urn:mcp:projects-123:projects:123:locations:l:mcpServers:server-456"
+                    )
+                },
+                "authProviderBinding": {
+                    "authProvider": (
+                        "projects/123/locations/l/authProviders/ap-789"
+                    )
+                },
+            }]
+        }
+      return {}
+
+    mock_make_request.side_effect = side_effect
+
+    registry._credentials.token = "token"
+    registry._credentials.refresh = MagicMock()
+
+    toolset = registry.get_mcp_toolset(
+        "test-mcp", continue_uri="https://override.com/continue"
+    )
+    assert isinstance(toolset, McpToolset)
+    assert toolset._auth_scheme is not None
+    assert (
+        toolset._auth_scheme.name
+        == "projects/123/locations/l/authProviders/ap-789"
+    )
+    assert toolset._auth_scheme.continue_uri == "https://override.com/continue"
