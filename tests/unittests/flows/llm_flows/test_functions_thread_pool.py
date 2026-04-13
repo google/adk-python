@@ -281,12 +281,12 @@ class TestCallToolInThreadPool:
   @pytest.mark.parametrize(
       'return_value,use_implicit_return',
       [
-          (None, True),   # implicit None (no return statement)
+          (None, True),  # implicit None (no return statement)
           (None, False),  # explicit `return None`
-          (0, False),     # falsy int
-          ('', False),    # falsy str
-          ({}, False),    # falsy dict
-          (False, False), # falsy bool
+          (0, False),  # falsy int
+          ('', False),  # falsy str
+          ({}, False),  # falsy dict
+          (False, False),  # falsy bool
       ],
   )
   async def test_sync_tool_falsy_return_executes_exactly_once(
@@ -323,9 +323,9 @@ class TestCallToolInThreadPool:
     result = await _call_tool_in_thread_pool(tool, {}, tool_context)
 
     assert result == return_value
-    assert call_count == 1, (
-        f'Tool function executed {call_count} time(s); expected exactly 1.'
-    )
+    assert (
+        call_count == 1
+    ), f'Tool function executed {call_count} time(s); expected exactly 1.'
 
   @pytest.mark.asyncio
   async def test_sync_tool_exception_propagates(self):
