@@ -48,6 +48,7 @@ class BashToolPolicy:
   """
 
   allowed_command_prefixes: tuple[str, ...] = ("*",)
+  blocked_operators: tuple[str, ...] = ()
   timeout_seconds: Optional[int] = 30
   max_memory_bytes: Optional[int] = None
   max_file_size_bytes: Optional[int] = None
@@ -59,6 +60,10 @@ def _validate_command(command: str, policy: BashToolPolicy) -> Optional[str]:
   stripped = command.strip()
   if not stripped:
     return "Command is required."
+
+  for op in policy.blocked_operators:
+    if op in command:
+      return f"Command contains blocked operator: {op}"
 
   if "*" in policy.allowed_command_prefixes:
     return None

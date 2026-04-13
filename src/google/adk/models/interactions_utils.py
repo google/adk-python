@@ -56,6 +56,36 @@ logger = logging.getLogger('google_adk.' + __name__)
 _NEW_LINE = '\n'
 
 
+def _extract_stream_interaction_id(
+    event: 'InteractionSSEEvent',
+) -> Optional[str]:
+  """Extract the interaction ID from an Interactions SSE event.
+
+  Different SSE lifecycle events expose the interaction ID on different
+  attributes. We normalize them here so streamed ADK responses consistently
+  carry the chain identifier needed for follow-up tool calls. Older
+  google-genai builds may also yield a legacy ``interaction`` event with a
+  top-level ``id``.
+  """
+  from google.genai._interactions.types.interaction_complete_event import InteractionCompleteEvent
+  from google.genai._interactions.types.interaction_start_event import InteractionStartEvent
+  from google.genai._interactions.types.interaction_status_update import InteractionStatusUpdate
+
+  if isinstance(event, InteractionStatusUpdate):
+    return event.interaction_id
+
+  if isinstance(event, (InteractionStartEvent, InteractionCompleteEvent)):
+    return event.interaction.id
+
+  try:
+    if event.event_type == 'interaction':
+      return event.id
+  except AttributeError:
+    pass
+
+  return None
+
+
 def convert_part_to_interaction_content(part: types.Part) -> Optional[dict]:
   """Convert a types.Part to an interaction content dict.
 
@@ -1013,9 +1043,9 @@ async def generate_content_via_interactions(
       # Log the streaming event
       logger.debug(build_interactions_event_log(event))
 
-      # Extract interaction ID from event if available
-      if hasattr(event, 'id') and event.id:
-        current_interaction_id = event.id
+      interaction_id = _extract_stream_interaction_id(event)
+      if interaction_id:
+        current_interaction_id = interaction_id
       llm_response = convert_interaction_event_to_llm_response(
           event, aggregated_parts, current_interaction_id
       )
