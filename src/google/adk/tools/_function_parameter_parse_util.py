@@ -390,7 +390,7 @@ def _parse_schema_from_parameter(
     schema.type = types.Type.OBJECT
     schema.properties = {}
     for field_name, field_info in param.annotation.model_fields.items():
-      schema.properties[field_name] = _parse_schema_from_parameter(
+      field_schema = _parse_schema_from_parameter(
           variant,
           inspect.Parameter(
               field_name,
@@ -399,6 +399,9 @@ def _parse_schema_from_parameter(
           ),
           func_name,
       )
+      if field_info.description:
+        field_schema.description = field_info.description
+      schema.properties[field_name] = field_schema
 
     required_fields = [
         field_name
