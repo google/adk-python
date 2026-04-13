@@ -14,7 +14,6 @@
 
 from __future__ import annotations
 
-from ...features import experimental
 from ...features import FeatureName
 from .._google_credentials import BaseGoogleCredentialsConfig
 
@@ -26,9 +25,8 @@ BIGQUERY_SCOPES = [
 BIGQUERY_DEFAULT_SCOPE = ["https://www.googleapis.com/auth/bigquery"]
 
 
-@experimental(FeatureName.GOOGLE_CREDENTIALS_CONFIG)
 class BigQueryCredentialsConfig(BaseGoogleCredentialsConfig):
-  """BigQuery Credentials Configuration for Google API tools (Experimental).
+  """BigQuery Credentials Configuration for Google API tools.
 
   Please do not use this in production, as it may be deprecated later.
   """

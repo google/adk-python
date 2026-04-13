@@ -110,6 +110,9 @@ class LlmResponse(BaseModel):
   ] = None
   """The session resumption update of the LlmResponse"""
 
+  go_away: Optional[types.LiveServerGoAway] = None
+  """The GoAway signal from the Live model."""
+
   input_transcription: Optional[types.Transcription] = None
   """Audio transcription of user input."""
 
