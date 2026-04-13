@@ -818,7 +818,6 @@ def get_fast_api_app(
   _register_builder_endpoints(app, web, agents_dir)
 
   if a2a and a2a_task_store is not None:
-  if a2a:
     from a2a.server.apps import A2AStarletteApplication
     from a2a.server.request_handlers import DefaultRequestHandler
     from a2a.server.tasks import InMemoryPushNotificationConfigStore
