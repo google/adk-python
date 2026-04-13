@@ -791,34 +791,6 @@ class Runner:
       return False
     return True
 
-  def _get_output_event(
-      self,
-      *,
-      original_event: Event,
-      modified_event: Event | None,
-      run_config: RunConfig | None,
-  ) -> Event:
-    """Returns the event that should be persisted and yielded.
-
-    Plugins may return a replacement event that only overrides a subset of
-    fields. Merge those changes onto the original event so the streamed event
-    and the persisted event stay aligned without losing the original event
-    identity.
-    """
-    if modified_event is None:
-      return original_event
-
-    _apply_run_config_custom_metadata(modified_event, run_config)
-    update = {}
-    for field_name in modified_event.model_fields_set:
-      if field_name in {'id', 'invocation_id', 'timestamp'}:
-        continue
-      update[field_name] = modified_event.__dict__[field_name]
-    output_event = original_event.model_copy(update=update)
-    if not output_event.author:
-      output_event.author = original_event.author
-    return output_event
-
   async def _exec_with_plugin(
       self,
       invocation_context: InvocationContext,
@@ -853,12 +825,26 @@ class Runner:
       _apply_run_config_custom_metadata(
           early_exit_event, invocation_context.run_config
       )
-      if self._should_append_event(early_exit_event, is_live_call):
+      # Step 3: Run the on_event callbacks to optionally modify the event.
+      # This MUST run before append_event so modifications are persisted.
+      modified_early_exit_event = await plugin_manager.run_on_event_callback(
+          invocation_context=invocation_context, event=early_exit_event
+      )
+      if modified_early_exit_event:
+        _apply_run_config_custom_metadata(
+            modified_early_exit_event, invocation_context.run_config
+        )
+        event_to_append = modified_early_exit_event
+      else:
+        event_to_append = early_exit_event
+      # Step 4: Append the (possibly modified) event to the database.
+      if self._should_append_event(event_to_append, is_live_call):
         await self.session_service.append_event(
             session=session,
-            event=early_exit_event,
+            event=event_to_append,
         )
-      yield early_exit_event
+      # Step 5: Yield the modified event to the client.
+      yield modified_early_exit_event if modified_early_exit_event else early_exit_event
     else:
       # Step 2: Otherwise continue with normal execution
       # Note for live/bidi:
@@ -882,24 +868,13 @@ class Runner:
           _apply_run_config_custom_metadata(
               event, invocation_context.run_config
           )
-          # Step 3: Run the on_event callbacks before persisting so callback
-          # changes are stored in the session and match the streamed event.
-          modified_event = await plugin_manager.run_on_event_callback(
-              invocation_context=invocation_context, event=event
-          )
-          output_event = self._get_output_event(
-              original_event=event,
-              modified_event=modified_event,
-              run_config=invocation_context.run_config,
-          )
-
           if is_live_call:
             if event.partial and _is_transcription(event):
               is_transcribing = True
             if is_transcribing and _is_tool_call_or_response(event):
               # only buffer function call and function response event which is
               # non-partial
-              buffered_events.append(output_event)
+              buffered_events.append(event)
               continue
             # Note for live/bidi: for audio response, it's considered as
             # non-partial event(event.partial=None)
@@ -907,6 +882,17 @@ class Runner:
             # non-partial event; event.partial=True is considered as partial
             # event.
             if event.partial is not True:
+              # Step 3: Run the on_event callbacks to optionally modify the event.
+              # This MUST run before append_event so modifications are persisted.
+              modified_event = await plugin_manager.run_on_event_callback(
+                  invocation_context=invocation_context, event=event
+              )
+              if modified_event:
+                _apply_run_config_custom_metadata(
+                    modified_event, invocation_context.run_config
+                )
+                event = modified_event  # Use modified event for appending
+
               if _is_transcription(event) and (
                   _has_non_empty_transcription_text(event.input_transcription)
                   or _has_non_empty_transcription_text(
@@ -920,7 +906,7 @@ class Runner:
                 )
                 if self._should_append_event(event, is_live_call):
                   await self.session_service.append_event(
-                      session=session, event=output_event
+                      session=session, event=event
                   )
 
                 for buffered_event in buffered_events:
@@ -936,15 +922,28 @@ class Runner:
                 if self._should_append_event(event, is_live_call):
                   logger.debug('Appending non-buffered event: %s', event)
                   await self.session_service.append_event(
-                      session=session, event=output_event
+                      session=session, event=event
                   )
+            # Step 5: Yield the event to the caller.
+            yield event
           else:
+            # Step 3: Run the on_event callbacks to optionally modify the event.
+            # This MUST run before append_event so modifications are persisted.
+            modified_event = await plugin_manager.run_on_event_callback(
+                invocation_context=invocation_context, event=event
+            )
+            if modified_event:
+              _apply_run_config_custom_metadata(
+                  modified_event, invocation_context.run_config
+              )
+              event = modified_event  # Use modified event for appending and yielding
+            # Step 4: Append the event to the database (after on_event_callback).
             if event.partial is not True:
               await self.session_service.append_event(
-                  session=session, event=output_event
+                  session=session, event=event
               )
-
-          yield output_event
+            # Step 5: Yield the event to the caller.
+            yield event
 
     # Step 4: Run the after_run callbacks to perform global cleanup tasks or
     # finalizing logs and metrics data.
