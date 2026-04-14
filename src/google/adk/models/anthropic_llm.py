@@ -31,6 +31,7 @@ from typing import Literal
 from typing import Optional
 from typing import TYPE_CHECKING
 from typing import Union
+import uuid
 
 from anthropic import AsyncAnthropic
 from anthropic import AsyncAnthropicVertex
@@ -101,22 +102,9 @@ def _is_pdf_part(part: types.Part) -> bool:
 
 
 def _sanitize_tool_use_id(tool_id: Optional[str]) -> str:
-  """Sanitize a tool_use ID to match Anthropic's required pattern.
-
-  Anthropic requires tool_use IDs to match ^[a-zA-Z0-9_-]+$.
-  If the ID is None, empty, or contains invalid characters, generate
-  a valid fallback ID.
-
-  Args:
-    tool_id: The original tool_use ID.
-
-  Returns:
-    A valid tool_use ID string.
-  """
+  """Sanitize a tool_use ID to match Anthropic's required ^[a-zA-Z0-9_-]+$ pattern."""
   if tool_id and re.fullmatch(r"[a-zA-Z0-9_-]+", tool_id):
     return tool_id
-  import uuid
-
   return "toolu_" + uuid.uuid4().hex[:24]
 
 
