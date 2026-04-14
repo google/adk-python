@@ -22,6 +22,8 @@ from sqlalchemy.dialects import postgresql
 from sqlalchemy.types import DateTime
 from sqlalchemy.types import TypeDecorator
 
+from google.adk.utils import serialization_utils
+
 DEFAULT_MAX_KEY_LENGTH = 128
 DEFAULT_MAX_VARCHAR_LENGTH = 256
 
@@ -53,6 +55,41 @@ class DynamicJSON(TypeDecorator):
       else:
         return json.loads(value)  # Deserialize from JSON string for TEXT
     return value
+
+
+class JsonEncodedType(DynamicJSON):
+  """A JSON-encoded type with hybrid support for secure legacy pickles.
+
+  New data is always stored as JSON. When reading, it first attempts to
+  decode JSON. If that fails and the value is binary, it attempts to
+  deserialize using serialization_utils.secure_loads (HMAC-verified).
+  """
+
+  def process_result_value(self, value, dialect: Dialect):
+    if value is None:
+      return None
+
+    # Try JSON first (for new data or PostgreSQL JSONB)
+    if dialect.name == "postgresql":
+      return value
+
+    if isinstance(value, str):
+      try:
+        return json.loads(value)
+      except json.JSONDecodeError:
+        # If it's a string that's not JSON, it might be a corrupted entry
+        # or an unexpected format. Logic continues to check for binary.
+        pass
+
+    # If JSON failed, check if it's binary legacy data (HMAC signed)
+    if isinstance(value, bytes):
+      try:
+        return serialization_utils.secure_loads(value)
+      except serialization_utils.SecurityError:
+        # If both JSON and secure_loads fail, re-raise or handle as Error
+        raise
+
+    return super().process_result_value(value, dialect)
 
 
 class PreciseTimestamp(TypeDecorator):

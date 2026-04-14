@@ -2071,18 +2071,36 @@ def migrate():
     default="INFO",
     help="Optional. Set the logging level",
 )
+@click.option(
+    "--force-untrusted-source",
+    is_flag=True,
+    default=False,
+    help=(
+        "Optional. Force migration from untrusted or remote database sources "
+        "(e.g., SMB shares or external IPs). Use with CAUTION as it poses RCE "
+        "risks if the source is malicious."
+    ),
+)
+@click.pass_context
 def cli_migrate_session(
-    *, source_db_url: str, dest_db_url: str, log_level: str
+    ctx,
+    *,
+    source_db_url: str,
+    dest_db_url: str,
+    log_level: str,
+    force_untrusted_source: bool,
 ):
   """Migrates a session database to the latest schema version."""
   logs.setup_adk_logger(getattr(logging, log_level.upper()))
   try:
     from ..sessions.migration import migration_runner
-
-    migration_runner.upgrade(source_db_url, dest_db_url)
+    migration_runner.upgrade(
+        source_db_url, dest_db_url, force_untrusted_source
+    )
     click.secho("Migration check and upgrade process finished.", fg="green")
   except Exception as e:
     click.secho(f"Migration failed: {e}", fg="red", err=True)
+    ctx.exit(1)
 
 
 @deploy.command("agent_engine")

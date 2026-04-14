@@ -16,9 +16,11 @@
 
 from __future__ import annotations
 
+import ipaddress
 import logging
 import os
 import tempfile
+from urllib.parse import urlparse
 
 from google.adk.sessions.migration import _schema_check_utils
 from google.adk.sessions.migration import migrate_from_sqlalchemy_pickle
@@ -39,10 +41,64 @@ MIGRATIONS = {
 }
 # The most recent schema version. The migration process stops once this version
 # is reached.
+#Reached.
 LATEST_VERSION = _schema_check_utils.LATEST_SCHEMA_VERSION
 
 
-def upgrade(source_db_url: str, dest_db_url: str):
+class SecurityError(Exception):
+  """Raised when a security policy is violated during migration."""
+
+  pass
+
+
+def _is_trusted_url(db_url: str) -> bool:
+  r"""Checks if a database URL points to a trusted local source.
+
+  Trusted sources include:
+  - Localhost (127.0.0.1, ::1, 'localhost')
+  - Private network addresses (if explicitly allowed in future, but blocked now for safety)
+  - Local file paths (sqlite:///path/to/db)
+
+  Untrusted sources include:
+  - External IPs.
+  - Remote hostnames.
+  - Windows UNC paths (\\host\share).
+  """
+  try:
+    parsed = urlparse(db_url)
+    host = parsed.hostname
+
+    # SQLite local paths (sqlite:///path) have no hostname in urlparse usually
+    if not host:
+      # Check for Windows UNC paths in the path component
+      # sqlite:///\\host\share -> path starts with /\\
+      if parsed.path.startswith("/\\\\") or parsed.path.startswith("//"):
+        return False
+      return True
+
+    # Check for localhost/loopback
+    if host.lower() in ("localhost", "127.0.0.1", "::1"):
+      return True
+
+    # Check if host is an IP and if it's a loopback IP
+    try:
+      ip = ipaddress.ip_address(host)
+      return ip.is_loopback
+    except ValueError:
+      # Not an IP address, probably a hostname.
+      # If it's not 'localhost', we treat it as untrusted for safety.
+      return False
+
+  except Exception:
+    # On parsing error, fail closed
+    return False
+
+
+def upgrade(
+    source_db_url: str,
+    dest_db_url: str,
+    force_untrusted_source: bool = False,
+):
   """Migrates a database from its current version to the latest version.
 
   If the source database schema is older than the latest version, this
@@ -70,6 +126,15 @@ def upgrade(source_db_url: str, dest_db_url: str):
     raise RuntimeError(
         "In-place migration is not supported. "
         "Please provide a different URL for dest_db_url."
+    )
+
+  if not _is_trusted_url(source_db_url) and not force_untrusted_source:
+    raise SecurityError(
+        f"Untrusted source database URL detected: {source_db_url}\n"
+        "Migrating from remote or untrusted sources (e.g., SMB shares or "
+        "external IPs) poses a SIGNIFICANT Remote Code Execution (RCE) "
+        "risk if the source data is malicious.\n"
+        "To proceed anyway, use the --force-untrusted-source flag."
     )
 
   current_version = _schema_check_utils.get_db_schema_version(source_db_url)
