@@ -20,7 +20,6 @@ from datetime import datetime
 from datetime import timezone
 import json
 import logging
-import pickle
 import sys
 from typing import Any
 
@@ -29,6 +28,7 @@ from google.adk.events.event_actions import EventActions
 from google.adk.sessions import _session_util
 from google.adk.sessions.migration import _schema_check_utils
 from google.adk.sessions.schemas import v1
+from google.adk.utils import serialization_utils
 from google.genai import types
 import sqlalchemy
 from sqlalchemy import create_engine
@@ -59,7 +59,7 @@ def _row_to_event(row: dict) -> Event:
   if actions_val is not None:
     try:
       if isinstance(actions_val, bytes):
-        actions = pickle.loads(actions_val)
+        actions = serialization_utils.secure_loads(actions_val)
       else:  # for spanner - it might return object directly
         actions = actions_val
     except Exception as e:

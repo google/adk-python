@@ -30,11 +30,11 @@ from datetime import datetime
 from datetime import timezone
 import json
 import logging
-import pickle
 from typing import Any
 from typing import Optional
 
 from google.adk.platform import uuid as platform_uuid
+from google.adk.utils import serialization_utils
 from google.genai import types
 from sqlalchemy import Boolean
 from sqlalchemy import desc
@@ -107,14 +107,14 @@ class DynamicPickleType(TypeDecorator):
     """Ensures the pickled value is a bytes object before passing it to the database dialect."""
     if value is not None:
       if dialect.name in ("spanner+spanner", "mysql"):
-        return pickle.dumps(value)
+        return serialization_utils.secure_dumps(value)
     return value
 
   def process_result_value(self, value, dialect):
     """Ensures the raw bytes from the database are unpickled back into a Python object."""
     if value is not None:
       if dialect.name in ("spanner+spanner", "mysql"):
-        return pickle.loads(value)
+        return serialization_utils.secure_loads(value)
     return value
 
 
