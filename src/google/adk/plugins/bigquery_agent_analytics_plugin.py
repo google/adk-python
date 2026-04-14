@@ -1875,6 +1875,25 @@ _EVENT_VIEW_DEFS: dict[str, list[str]] = {
         "JSON_VALUE(content, '$.tool') AS tool_name",
         "JSON_QUERY(content, '$.args') AS tool_args",
     ],
+    "A2A_INTERACTION": [
+        "content AS response_content",
+        (
+            "JSON_VALUE(attributes,"
+            " '$.a2a_metadata.\"a2a:task_id\"') AS a2a_task_id"
+        ),
+        (
+            "JSON_VALUE(attributes,"
+            " '$.a2a_metadata.\"a2a:context_id\"') AS a2a_context_id"
+        ),
+        (
+            "JSON_QUERY(attributes,"
+            " '$.a2a_metadata.\"a2a:request\"') AS a2a_request"
+        ),
+        (
+            "JSON_QUERY(attributes,"
+            " '$.a2a_metadata.\"a2a:response\"') AS a2a_response"
+        ),
+    ],
 }
 
 _VIEW_SQL_TEMPLATE = """\
