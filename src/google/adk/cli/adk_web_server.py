@@ -50,8 +50,8 @@ from opentelemetry.sdk.trace import ReadableSpan
 from opentelemetry.sdk.trace import SpanProcessor
 from opentelemetry.sdk.trace import TracerProvider
 from pydantic import Field
-from pydantic import ValidationError
 from pydantic import field_validator
+from pydantic import ValidationError
 from starlette.types import Lifespan
 from typing_extensions import deprecated
 from typing_extensions import override
@@ -389,10 +389,11 @@ class RunAgentRequest(common.BaseModel):
     """
     if not v:
       raise ValueError("app_name cannot be empty")
-    # Check for path traversal attempts
-    if ".." in v or "/" in v or "\\" in v:
+    # Check for path traversal attempts and ensure it is a valid identifier
+    if not re.match(r"^[a-zA-Z0-9_]+$", v):
       raise ValueError(
-          f"Invalid app_name: {v!r}. Path traversal characters are not allowed."
+          f"Invalid app_name: {v!r}. "
+          "Must contain only letters, digits, and underscores."
       )
     return v
 

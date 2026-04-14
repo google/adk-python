@@ -17,6 +17,7 @@ from __future__ import annotations
 import importlib
 import inspect
 import os
+from types import ModuleType
 from typing import Any
 from typing import List
 
@@ -31,7 +32,7 @@ from .common_configs import AgentRefConfig
 from .common_configs import CodeConfig
 
 # Allowlist for safe module prefixes that can be imported from YAML config
-_SAFE_MODULE_PREFIXES = frozenset({"google.adk."})
+_SAFE_MODULE_PREFIXES: frozenset[str] = frozenset({"google.adk."})
 
 
 def _is_safe_module_import(name: str) -> bool:
@@ -43,7 +44,17 @@ def _is_safe_module_import(name: str) -> bool:
   Returns:
       True if the module is in a safe namespace, False otherwise.
   """
-  return any(name.startswith(prefix) for prefix in _SAFE_MODULE_PREFIXES)
+  # Must start with google.adk. (the dot ensures it's not a partial name spoof)
+  if not any(name.startswith(p) for p in _SAFE_MODULE_PREFIXES):
+    return False
+
+  # Ensure each segment is a valid Python identifier
+  segments = name.split(".")
+  for s in segments:
+    if not s or not s.isidentifier():
+      return False
+
+  return True
 
 
 @experimental(FeatureName.AGENT_CONFIG)
@@ -132,16 +143,22 @@ def resolve_fully_qualified_name(name: str) -> Any:
       ValueError: If the name is not in a safe namespace or cannot be resolved.
   """
   try:
-    module_path, obj_name = name.rsplit(".", 1)
-
-    # Security check: only allow imports from safe namespaces
-    if not _is_safe_module_import(module_path):
+    if "." not in name:
       raise ValueError(
           f"Module reference '{name}' is outside the allowed namespace. "
           "Only google.adk.* references are permitted in YAML config."
       )
 
-    module = importlib.import_module(module_path)
+    module_path, obj_name = name.rsplit(".", 1)
+
+    # Security check: only allow imports from safe namespaces and valid identifiers
+    if not obj_name.isidentifier() or not _is_safe_module_import(module_path):
+      raise ValueError(
+          f"Module reference '{name}' is outside the allowed namespace. "
+          "Only google.adk.* references are permitted in YAML config."
+      )
+
+    module: ModuleType = importlib.import_module(module_path)
     return getattr(module, obj_name)
   except ValueError as e:
     # Re-raise ValueError from security check without wrapping
@@ -206,7 +223,7 @@ def _resolve_agent_code_reference(code: str) -> Any:
         "Only google.adk.* references are permitted in YAML config."
     )
 
-  module = importlib.import_module(module_path)
+  module: ModuleType = importlib.import_module(module_path)
   obj = getattr(module, obj_name)
 
   if callable(obj):
@@ -239,11 +256,11 @@ def resolve_code_reference(code_config: CodeConfig) -> Any:
   # Security check: only allow imports from safe namespaces
   if not _is_safe_module_import(module_path):
     raise ValueError(
-        f"Code reference '{code_config.name}' is outside the allowed namespace. "
-        "Only google.adk.* references are permitted in YAML config."
+        f"Code reference '{code_config.name}' is outside the allowed namespace."
+        " Only google.adk.* references are permitted in YAML config."
     )
 
-  module = importlib.import_module(module_path)
+  module: ModuleType = importlib.import_module(module_path)
   obj = getattr(module, obj_name)
 
   if code_config.args and callable(obj):

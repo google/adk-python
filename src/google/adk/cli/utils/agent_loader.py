@@ -116,7 +116,7 @@ class AgentLoader(BaseAgentLoader):
 
   def _load_from_submodule(
       self, agent_name: str
-  ) -> Optional[Union[BaseAgent], App]:
+  ) -> Optional[Union[BaseAgent, App]]:
     # Load for case: Import "{agent_name}.agent" and look for "root_agent"
     # Covers structure: agents_dir/{agent_name}/agent.py (with root_agent defined in the module)
     try:
@@ -215,7 +215,7 @@ class AgentLoader(BaseAgentLoader):
           "Path traversal is not permitted."
       ) from e
 
-  _VALID_AGENT_NAME_RE = re.compile(r"^[a-zA-Z0-9_]+$")
+  _VALID_AGENT_NAME_RE: re.Pattern[str] = re.compile(r"^[a-zA-Z0-9_]+$")
 
   def _validate_agent_name(self, agent_name: str) -> None:
     """Validate agent name to prevent arbitrary module imports."""
@@ -450,7 +450,7 @@ class AgentLoader(BaseAgentLoader):
 
     raise ValueError(f"Could not determine agent type for '{agent_name}'.")
 
-  def remove_agent_from_cache(self, agent_name: str):
+  def remove_agent_from_cache(self, agent_name: str) -> None:
     # Clear module cache for the agent and its submodules
     keys_to_delete = [
         module_name
