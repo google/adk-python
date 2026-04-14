@@ -3357,7 +3357,7 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
     args_truncated, is_truncated = _recursive_smart_truncate(
         tool_args, self.config.max_content_length
     )
-    tool_origin = _get_tool_origin(tool)
+    tool_origin = _get_tool_origin(tool, tool_args, tool_context)
     content_dict = {
         "tool": tool.name,
         "args": args_truncated,

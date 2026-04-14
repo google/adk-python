@@ -4631,6 +4631,83 @@ class TestToolProvenance:
     )
     assert result == "TRANSFER_AGENT"
 
+  @pytest.mark.asyncio
+  async def test_tool_error_callback_classifies_a2a_transfer(
+      self,
+      mock_auth_default,
+      mock_bq_client,
+      mock_write_client,
+      mock_to_arrow_schema,
+      dummy_arrow_schema,
+      mock_asyncio_to_thread,
+  ):
+    """on_tool_error_callback produces TRANSFER_A2A for RemoteA2aAgent."""
+    from google.adk.tools.transfer_to_agent_tool import TransferToAgentTool
+
+    try:
+      from google.adk.agents.remote_a2a_agent import RemoteA2aAgent
+    except ImportError:
+      pytest.skip("A2A agent not available")
+
+    remote_agent = mock.MagicMock(spec=RemoteA2aAgent)
+    remote_agent.name = "remote_a2a"
+
+    mock_agent = mock.MagicMock(spec=base_agent.BaseAgent)
+    mock_agent.name = "root"
+    mock_agent.instruction = ""
+    mock_agent.sub_agents = [remote_agent]
+    mock_agent.parent_agent = None
+
+    mock_s = mock.create_autospec(
+        session_lib.Session, instance=True, spec_set=True
+    )
+    type(mock_s).id = mock.PropertyMock(return_value="sess-1")
+    type(mock_s).user_id = mock.PropertyMock(return_value="user-1")
+    type(mock_s).app_name = mock.PropertyMock(return_value="test_app")
+    type(mock_s).state = mock.PropertyMock(return_value={})
+
+    inv_ctx = InvocationContext(
+        agent=mock_agent,
+        session=mock_s,
+        invocation_id="inv-err",
+        session_service=mock.create_autospec(
+            base_session_service_lib.BaseSessionService,
+            instance=True,
+            spec_set=True,
+        ),
+        plugin_manager=mock.create_autospec(
+            plugin_manager_lib.PluginManager,
+            instance=True,
+            spec_set=True,
+        ),
+    )
+    tool_ctx = tool_context_lib.ToolContext(invocation_context=inv_ctx)
+    tool = TransferToAgentTool(agent_names=["remote_a2a"])
+
+    async with managed_plugin(
+        PROJECT_ID, DATASET_ID, table_id=TABLE_ID
+    ) as plugin:
+      await plugin._ensure_started()
+      mock_write_client.append_rows.reset_mock()
+
+      bigquery_agent_analytics_plugin.TraceManager.push_span(tool_ctx, "tool")
+      await plugin.on_tool_error_callback(
+          tool=tool,
+          tool_args={"agent_name": "remote_a2a"},
+          tool_context=tool_ctx,
+          error=RuntimeError("connection refused"),
+      )
+      await asyncio.sleep(0.01)
+
+      rows = await _get_captured_rows_async(
+          mock_write_client, dummy_arrow_schema
+      )
+
+    assert len(rows) == 1
+    assert rows[0]["event_type"] == "TOOL_ERROR"
+    content = json.loads(rows[0]["content"])
+    assert content["tool_origin"] == "TRANSFER_A2A"
+
   def test_mcp_tool_returns_mcp(self):
     try:
       from google.adk.tools.mcp_tool.mcp_tool import McpTool
