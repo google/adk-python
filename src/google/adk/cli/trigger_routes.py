@@ -537,8 +537,8 @@ class TriggerRouter:
                     "ce-id": req.id or request.headers.get("ce-id"),
                     "ce-type": req.type or request.headers.get("ce-type"),
                     "ce-source": req.source or request.headers.get("ce-source"),
-                    "ce-specversion": (
-                        req.specversion or request.headers.get("ce-specversion")
+                    "ce-specversion": req.specversion or request.headers.get(
+                        "ce-specversion"
                     ),
                 },
             })
@@ -550,8 +550,8 @@ class TriggerRouter:
                   "ce-id": req.id or request.headers.get("ce-id"),
                   "ce-type": req.type or request.headers.get("ce-type"),
                   "ce-source": req.source or request.headers.get("ce-source"),
-                  "ce-specversion": (
-                      req.specversion or request.headers.get("ce-specversion")
+                  "ce-specversion": req.specversion or request.headers.get(
+                      "ce-specversion"
                   ),
               },
           })
