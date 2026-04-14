@@ -285,7 +285,7 @@ class RubricBasedFinalResponseQualityV1Evaluator(RubricBasedEvaluator):
     if evaluate_full:
       final_response = self._get_full_response_text(actual_invocation)
     else:
-      final_response = get_text_from_content(actual_invocation.final_response)
+      final_response = get_text_from_content(actual_invocation.final_response) or ""
 
     rubrics_text = "\n".join([
         f"*  {r.rubric_content.text_property}"
