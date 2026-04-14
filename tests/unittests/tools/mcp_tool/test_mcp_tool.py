@@ -14,6 +14,7 @@
 
 import inspect
 from unittest.mock import AsyncMock
+from unittest.mock import create_autospec
 from unittest.mock import Mock
 from unittest.mock import patch
 
@@ -46,9 +47,11 @@ class MockMCPTool:
       name="test_tool",
       description="Test tool description",
       outputSchema=None,
+      meta=None,
   ):
     self.name = name
     self.description = description
+    self.meta = meta
     self.inputSchema = {
         "type": "object",
         "properties": {
@@ -213,7 +216,8 @@ class TestMCPTool:
     )
     self.mock_session.call_tool = AsyncMock(return_value=mcp_response)
 
-    tool_context = Mock(spec=ToolContext)
+    tool_context = ToolContext(invocation_context=Mock())
+    tool_context.function_call_id = "test-call-id"
     args = {"param1": "test_value"}
 
     result = await tool._run_async_impl(
@@ -229,6 +233,42 @@ class TestMCPTool:
     self.mock_session.call_tool.assert_called_once_with(
         "test_tool", arguments=args, progress_callback=None, meta=None
     )
+
+  @pytest.mark.asyncio
+  async def test_run_async_impl_adds_ui_widget(self):
+    """Test running tool adds UiWidget to actions."""
+    meta = {"ui": {"resourceUri": "ui://test-app"}}
+    mock_tool = MockMCPTool(meta=meta)
+    tool = MCPTool(
+        mcp_tool=mock_tool,
+        mcp_session_manager=self.mock_session_manager,
+    )
+
+    mcp_response = CallToolResult(
+        content=[TextContent(type="text", text="success")]
+    )
+    self.mock_session.call_tool = AsyncMock(return_value=mcp_response)
+
+    tool_context = ToolContext(invocation_context=Mock())
+    tool_context.function_call_id = "test-call-id"
+    args = {"param1": "test_value"}
+
+    # tool_context.actions.render_ui_widgets is None initially
+    result = await tool._run_async_impl(
+        args=args, tool_context=tool_context, credential=None
+    )
+
+    assert result == mcp_response.model_dump(exclude_none=True, mode="json")
+
+    assert tool_context.actions.render_ui_widgets is not None
+    assert len(tool_context.actions.render_ui_widgets) == 1
+    widget = tool_context.actions.render_ui_widgets[0]
+
+    assert widget.id == "test-call-id"
+    assert widget.provider == "mcp"
+    assert widget.payload["resource_uri"] == "ui://test-app"
+    assert widget.payload["tool"] == mock_tool
+    assert widget.payload["tool_args"] == args
 
   @pytest.mark.asyncio
   async def test_run_async_impl_with_oauth2(self):
@@ -375,6 +415,44 @@ class TestMCPTool:
 
     expected_encoded = base64.b64encode(b"user:pass").decode()
     assert headers == {"Authorization": f"Basic {expected_encoded}"}
+
+  @pytest.mark.asyncio
+  @pytest.mark.parametrize(
+      "token, expected_headers",
+      [
+          (
+              "some-token",
+              {
+                  "Authorization": "some-scheme some-token",
+                  "X-Custom-Header": "custom-value",
+              },
+          ),
+          (
+              None,
+              {"X-Custom-Header": "custom-value"},
+          ),
+      ],
+  )
+  async def test_get_headers_http_adds_additional_headers(
+      self, token, expected_headers
+  ):
+    tool = MCPTool(
+        mcp_tool=self.mock_mcp_tool,
+        mcp_session_manager=self.mock_session_manager,
+    )
+    http_auth = HttpAuth(
+        scheme="some-scheme",
+        credentials=HttpCredentials(token=token),
+        additional_headers={"X-Custom-Header": "custom-value"},
+    )
+    credential = AuthCredential(
+        auth_type=AuthCredentialTypes.HTTP, http=http_auth
+    )
+
+    tool_context = create_autospec(ToolContext, instance=True)
+    headers = await tool._get_headers(tool_context, credential)
+
+    assert headers == expected_headers
 
   @pytest.mark.asyncio
   async def test_get_headers_api_key_with_valid_header_scheme(self):
@@ -1015,3 +1093,76 @@ class TestMCPTool:
           )
       }
       tool_context.request_confirmation.assert_called_once()
+
+  def test_visibility_property(self):
+    """Test visibility property extraction from meta."""
+    meta = {"ui": {"visibility": ["app", "debug"]}}
+    mock_tool = MockMCPTool(meta=meta)
+    tool = MCPTool(
+        mcp_tool=mock_tool,
+        mcp_session_manager=self.mock_session_manager,
+    )
+
+    assert tool.visibility == ["app", "debug"]
+
+  def test_visibility_property_empty(self):
+    """Test visibility property when meta is missing or malformed."""
+    # Missing meta
+    tool1 = MCPTool(
+        mcp_tool=MockMCPTool(meta=None),
+        mcp_session_manager=self.mock_session_manager,
+    )
+    assert tool1.visibility == []
+
+    # Malformed meta
+    tool2 = MCPTool(
+        mcp_tool=MockMCPTool(meta="not a dict"),
+        mcp_session_manager=self.mock_session_manager,
+    )
+    assert tool2.visibility == []
+
+    # Missing ui field
+    tool3 = MCPTool(
+        mcp_tool=MockMCPTool(meta={}),
+        mcp_session_manager=self.mock_session_manager,
+    )
+    assert tool3.visibility == []
+
+  def test_mcp_app_resource_uri_property_nested(self):
+    """Test MCP App resource URI extraction from nested meta format."""
+    meta = {"ui": {"resourceUri": "ui://test-resource"}}
+    mock_tool = MockMCPTool(meta=meta)
+    tool = MCPTool(
+        mcp_tool=mock_tool,
+        mcp_session_manager=self.mock_session_manager,
+    )
+
+    assert tool.mcp_app_resource_uri == "ui://test-resource"
+
+  def test_mcp_app_resource_uri_property_flat(self):
+    """Test MCP App resource URI extraction from flat meta format."""
+    meta = {"ui/resourceUri": "ui://test-resource-flat"}
+    mock_tool = MockMCPTool(meta=meta)
+    tool = MCPTool(
+        mcp_tool=mock_tool,
+        mcp_session_manager=self.mock_session_manager,
+    )
+
+    assert tool.mcp_app_resource_uri == "ui://test-resource-flat"
+
+  def test_mcp_app_resource_uri_property_none(self):
+    """Test MCP App resource URI when missing or invalid."""
+    # Missing meta
+    tool1 = MCPTool(
+        mcp_tool=MockMCPTool(meta=None),
+        mcp_session_manager=self.mock_session_manager,
+    )
+    assert tool1.mcp_app_resource_uri is None
+
+    # Invalid scheme
+    meta = {"ui": {"resourceUri": "http://invalid"}}
+    tool2 = MCPTool(
+        mcp_tool=MockMCPTool(meta=meta),
+        mcp_session_manager=self.mock_session_manager,
+    )
+    assert tool2.mcp_app_resource_uri is None

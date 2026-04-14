@@ -25,6 +25,8 @@ from typing_extensions import override
 from . import _session_util
 from ..errors.already_exists_error import AlreadyExistsError
 from ..events.event import Event
+from ..features import FeatureName
+from ..features import is_feature_enabled
 from .base_session_service import BaseSessionService
 from .base_session_service import GetSessionConfig
 from .base_session_service import ListSessionsResponse
@@ -32,6 +34,28 @@ from .session import Session
 from .state import State
 
 logger = logging.getLogger('google_adk.' + __name__)
+
+
+def _light_copy(session: Session) -> Session:
+  """Returns a light copy of the session.
+
+  Main difference between this and true shallow-copy is that container fields
+  (e.g., events and state) are also shallow-copied. What this means is appending
+  to events/state of the copied session won't affect the original while avoiding
+  the potentially expensive cost of a full/recursive deep-copy of all events and
+  state.
+  """
+  copied_session = session.model_copy(deep=False)
+  copied_session.events = copy.copy(session.events)
+  copied_session.state = copy.copy(session.state)
+  return copied_session
+
+
+def _copy_session(session: Session) -> Session:
+  if is_feature_enabled(FeatureName.IN_MEMORY_SESSION_SERVICE_LIGHT_COPY):
+    return _light_copy(session)
+  else:
+    return copy.deepcopy(session)
 
 
 class InMemorySessionService(BaseSessionService):
@@ -124,7 +148,7 @@ class InMemorySessionService(BaseSessionService):
       self.sessions[app_name][user_id] = {}
     self.sessions[app_name][user_id][session_id] = session
 
-    copied_session = copy.deepcopy(session)
+    copied_session = _copy_session(session)
     return self._merge_state(app_name, user_id, copied_session)
 
   @override
@@ -175,13 +199,16 @@ class InMemorySessionService(BaseSessionService):
       return None
 
     session = self.sessions[app_name][user_id].get(session_id)
-    copied_session = copy.deepcopy(session)
+    copied_session = _copy_session(session)
 
     if config:
-      if config.num_recent_events:
-        copied_session.events = copied_session.events[
-            -config.num_recent_events :
-        ]
+      if config.num_recent_events is not None:
+        if config.num_recent_events == 0:
+          copied_session.events = []
+        else:
+          copied_session.events = copied_session.events[
+              -config.num_recent_events :
+          ]
       if config.after_timestamp:
         i = len(copied_session.events) - 1
         while i >= 0:
@@ -242,16 +269,15 @@ class InMemorySessionService(BaseSessionService):
     sessions_without_events = []
 
     if user_id is None:
-      for user_id in self.sessions[app_name]:
-        for session_id in self.sessions[app_name][user_id]:
-          session = self.sessions[app_name][user_id][session_id]
-          copied_session = copy.deepcopy(session)
+      for uid in list(self.sessions[app_name].keys()):
+        for session in list(self.sessions[app_name][uid].values()):
+          copied_session = _copy_session(session)
           copied_session.events = []
-          copied_session = self._merge_state(app_name, user_id, copied_session)
+          copied_session = self._merge_state(app_name, uid, copied_session)
           sessions_without_events.append(copied_session)
     else:
-      for session in self.sessions[app_name][user_id].values():
-        copied_session = copy.deepcopy(session)
+      for session in list(self.sessions[app_name][user_id].values()):
+        copied_session = _copy_session(session)
         copied_session.events = []
         copied_session = self._merge_state(app_name, user_id, copied_session)
         sessions_without_events.append(copied_session)

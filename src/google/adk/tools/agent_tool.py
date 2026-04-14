@@ -113,10 +113,12 @@ class AgentTool(BaseTool):
       skip_summarization: bool = False,
       *,
       include_plugins: bool = True,
+      propagate_grounding_metadata: bool = False,
   ):
     self.agent = agent
     self.skip_summarization: bool = skip_summarization
     self.include_plugins = include_plugins
+    self.propagate_grounding_metadata = propagate_grounding_metadata
 
     super().__init__(name=agent.name, description=agent.description)
 
@@ -247,6 +249,7 @@ class AgentTool(BaseTool):
     )
 
     last_content = None
+    last_grounding_metadata = None
     async with Aclosing(
         runner.run_async(
             user_id=session.user_id, session_id=session.id, new_message=content
@@ -258,6 +261,7 @@ class AgentTool(BaseTool):
           tool_context.state.update(event.actions.state_delta)
         if event.content:
           last_content = event.content
+          last_grounding_metadata = event.grounding_metadata
 
     # Clean up runner resources (especially MCP sessions)
     # to avoid "Attempted to exit cancel scope in a different task" errors
@@ -273,6 +277,12 @@ class AgentTool(BaseTool):
       tool_result = validate_schema(output_schema, merged_text)
     else:
       tool_result = merged_text
+
+    if self.propagate_grounding_metadata and last_grounding_metadata:
+      tool_context.state['temp:_adk_grounding_metadata'] = (
+          last_grounding_metadata
+      )
+
     return tool_result
 
   @override

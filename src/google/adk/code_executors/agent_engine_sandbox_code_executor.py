@@ -17,7 +17,9 @@ from __future__ import annotations
 import json
 import logging
 import mimetypes
+import os
 import re
+import threading
 from typing import Optional
 
 from typing_extensions import override
@@ -46,6 +48,7 @@ class AgentEngineSandboxCodeExecutor(BaseCodeExecutor):
   sandbox_resource_name: str = None
 
   agent_engine_resource_name: str = None
+  _agent_engine_creation_lock: Optional[threading.Lock] = None
 
   def __init__(
       self,
@@ -61,16 +64,19 @@ class AgentEngineSandboxCodeExecutor(BaseCodeExecutor):
         projects/123/locations/us-central1/reasoningEngines/456/
         sandboxEnvironments/789
       agent_engine_resource_name: The resource name of the agent engine to use
-        to create the code execution sandbox. Format:
+        to create the code execution sandbox. If not set, a new Agent Engine
+        will be created automatically. Format:
         projects/123/locations/us-central1/reasoningEngines/456, when both
         sandbox_resource_name and agent_engine_resource_name are set,
         agent_engine_resource_name will be ignored.
       **data: Additional keyword arguments to be passed to the base class.
     """
     super().__init__(**data)
+    self._agent_engine_creation_lock = threading.Lock()
     sandbox_resource_name_pattern = r'^projects/([a-zA-Z0-9-_]+)/locations/([a-zA-Z0-9-_]+)/reasoningEngines/(\d+)/sandboxEnvironments/(\d+)$'
     agent_engine_resource_name_pattern = r'^projects/([a-zA-Z0-9-_]+)/locations/([a-zA-Z0-9-_]+)/reasoningEngines/(\d+)$'
 
+    # Case 1: sandbox_resource_name is provided.
     if sandbox_resource_name is not None:
       self._project_id, self._location = (
           self._get_project_id_and_location_from_resource_name(
@@ -78,18 +84,23 @@ class AgentEngineSandboxCodeExecutor(BaseCodeExecutor):
           )
       )
       self.sandbox_resource_name = sandbox_resource_name
-    elif agent_engine_resource_name is not None:
+
+    # Case 2: Agent Engine resource name is not provided.
+    elif agent_engine_resource_name is None:
+      # The Agent Engine will be auto-created lazily within execute_code().
+      self._project_id = os.environ.get('GOOGLE_CLOUD_PROJECT')
+      self._location = os.environ.get('GOOGLE_CLOUD_LOCATION', 'us-central1')
+      self.agent_engine_resource_name = None
+
+    # Case 3: Use the provided agent_engine_resource_name.
+    else:
       self._project_id, self._location = (
           self._get_project_id_and_location_from_resource_name(
-              agent_engine_resource_name, agent_engine_resource_name_pattern
+              agent_engine_resource_name,
+              agent_engine_resource_name_pattern,
           )
       )
       self.agent_engine_resource_name = agent_engine_resource_name
-    else:
-      raise ValueError(
-          'Either sandbox_resource_name or agent_engine_resource_name must be'
-          ' set.'
-      )
 
   @override
   def execute_code(
@@ -97,6 +108,25 @@ class AgentEngineSandboxCodeExecutor(BaseCodeExecutor):
       invocation_context: InvocationContext,
       code_execution_input: CodeExecutionInput,
   ) -> CodeExecutionResult:
+    if (
+        self.sandbox_resource_name is None
+        and self.agent_engine_resource_name is None
+    ):
+      with self._agent_engine_creation_lock:
+        if self.agent_engine_resource_name is None:
+          logger.info(
+              'No Agent Engine resource name provided. Creating a new one...'
+          )
+          try:
+            # Create a default Agent Engine.
+            created_engine = self._get_api_client().agent_engines.create()
+            self.agent_engine_resource_name = created_engine.api_resource.name
+            logger.info(
+                'Created Agent Engine: %s', self.agent_engine_resource_name
+            )
+          except Exception as e:
+            logger.error('Failed to auto-create Agent Engine: %s', e)
+            raise
     # default to the sandbox resource name if set.
     sandbox_name = self.sandbox_resource_name
     if self.sandbox_resource_name is None:

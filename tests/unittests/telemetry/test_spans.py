@@ -26,6 +26,7 @@ from google.adk.models.llm_request import LlmRequest
 from google.adk.models.llm_response import LlmResponse
 from google.adk.sessions.in_memory_session_service import InMemorySessionService
 from google.adk.telemetry.tracing import ADK_CAPTURE_MESSAGE_CONTENT_IN_SPANS
+from google.adk.telemetry.tracing import GCP_MCP_SERVER_DESTINATION_ID
 from google.adk.telemetry.tracing import trace_agent_invocation
 from google.adk.telemetry.tracing import trace_call_llm
 from google.adk.telemetry.tracing import trace_inference_result
@@ -34,6 +35,7 @@ from google.adk.telemetry.tracing import trace_send_data
 from google.adk.telemetry.tracing import trace_tool_call
 from google.adk.telemetry.tracing import use_inference_span
 from google.adk.tools.base_tool import BaseTool
+from google.adk.tools.tool_context import ToolContext
 from google.genai import types
 from mcp import ClientSession as McpClientSession
 from mcp import ListToolsResult as McpListToolsResult
@@ -70,6 +72,15 @@ class Event:
     return ''
 
 
+# Create a minimal concrete BaseTool for testing
+class SimpleTestTool(BaseTool):
+
+  async def run_async(
+      self, *, args: dict[str, Any], tool_context: ToolContext
+  ) -> Any:
+    return 'SimpleTestTool result'
+
+
 @pytest.fixture
 def mock_span_fixture():
   return mock.MagicMock()
@@ -77,18 +88,21 @@ def mock_span_fixture():
 
 @pytest.fixture
 def mock_tool_fixture():
-  tool = mock.Mock(spec=BaseTool)
-  tool.name = 'sample_tool'
-  tool.description = 'A sample tool for testing.'
-  return tool
+  return SimpleTestTool(
+      name='sample_tool',
+      description='A sample tool for testing.',
+  )
 
 
 @pytest.fixture
 def mock_event_fixture():
   event_mock = mock.create_autospec(Event, instance=True)
+  event_mock.id = 'test_event_id'
   event_mock.model_dumps_json.return_value = (
       '{"default_event_key": "default_event_value"}'
   )
+  event_mock.content = mock.MagicMock()
+  event_mock.content.parts = []
   return event_mock
 
 
@@ -152,6 +166,7 @@ async def test_trace_call_llm(monkeypatch, mock_span_fixture):
       config=types.GenerateContentConfig(
           top_p=0.95,
           max_output_tokens=1024,
+          thinking_config=types.ThinkingConfig(thinking_budget=10),
       ),
   )
   llm_response = LlmResponse(
@@ -161,8 +176,18 @@ async def test_trace_call_llm(monkeypatch, mock_span_fixture):
           total_token_count=100,
           prompt_token_count=50,
           candidates_token_count=50,
+          thoughts_token_count=10,
       ),
   )
+  # We dynamically assign system_instruction_tokens rather than passing it
+  # to the GenerateContentResponseUsageMetadata constructor to ensure backward
+  # compatibility with older versions of the google-genai SDK that do not have
+  # this property defined in their Pydantic models.
+  try:
+    llm_response.usage_metadata.system_instruction_tokens = 5
+  except Exception:
+    pass
+
   trace_call_llm(invocation_context, 'test_event_id', llm_request, llm_response)
 
   expected_calls = [
@@ -172,9 +197,16 @@ async def test_trace_call_llm(monkeypatch, mock_span_fixture):
       mock.call('gcp.vertex.agent.llm_response', mock.ANY),
       mock.call('gen_ai.usage.input_tokens', 50),
       mock.call('gen_ai.usage.output_tokens', 50),
+      mock.call('gen_ai.usage.experimental.reasoning_tokens_limit', 10),
+      mock.call('gen_ai.usage.experimental.reasoning_tokens', 10),
       mock.call('gen_ai.response.finish_reasons', ['stop']),
   ]
-  assert mock_span_fixture.set_attribute.call_count == 12
+  if hasattr(llm_response.usage_metadata, 'system_instruction_tokens'):
+    expected_calls.append(
+        mock.call('gen_ai.usage.experimental.system_instruction_tokens', 5)
+    )
+
+  assert mock_span_fixture.set_attribute.call_count == len(expected_calls) + 5
   mock_span_fixture.set_attribute.assert_has_calls(
       expected_calls, any_order=True
   )
@@ -359,6 +391,91 @@ async def test_trace_call_llm_with_thought_signature(
   assert len(parsed['contents']) == 3
 
 
+def test_trace_tool_call_with_destination_id(
+    monkeypatch, mock_span_fixture, mock_tool_fixture, mock_event_fixture
+):
+  """Test trace_tool_call sets destination ID span attribute when present."""
+  # Arrange
+  monkeypatch.setattr(
+      'opentelemetry.trace.get_current_span', lambda: mock_span_fixture
+  )
+
+  test_dest_id = 'urn:mcp:googleapis.com:project:1234:location:global:bigquery'
+  tool = mock_tool_fixture
+  tool.custom_metadata = {
+      GCP_MCP_SERVER_DESTINATION_ID: test_dest_id,
+      'other_meta': 'value',
+  }
+
+  # Act
+  trace_tool_call(
+      tool=tool,
+      args={},
+      function_response_event=mock_event_fixture,
+  )
+
+  # Assert
+  mock_span_fixture.set_attribute.assert_any_call(
+      GCP_MCP_SERVER_DESTINATION_ID, test_dest_id
+  )
+
+
+def test_trace_tool_call_without_destination_id(
+    monkeypatch, mock_span_fixture, mock_tool_fixture, mock_event_fixture
+):
+  """Test trace_tool_call does not set destination ID span attribute when not present."""
+  # Arrange
+  monkeypatch.setattr(
+      'opentelemetry.trace.get_current_span', lambda: mock_span_fixture
+  )
+
+  tool = mock_tool_fixture
+  tool.custom_metadata = {
+      'other_meta': 'value',
+  }
+
+  # Act
+  trace_tool_call(
+      tool=tool,
+      args={},
+      function_response_event=mock_event_fixture,
+  )
+
+  # Assert
+  called_with_dest_id = any(
+      call_args[0][0] == GCP_MCP_SERVER_DESTINATION_ID
+      for call_args in mock_span_fixture.set_attribute.call_args_list
+  )
+  assert not called_with_dest_id
+
+
+def test_trace_tool_call_with_empty_custom_metadata(
+    monkeypatch, mock_span_fixture, mock_tool_fixture, mock_event_fixture
+):
+  """Test trace_tool_call handles empty custom_metadata gracefully."""
+  # Arrange
+  monkeypatch.setattr(
+      'opentelemetry.trace.get_current_span', lambda: mock_span_fixture
+  )
+
+  tool = mock_tool_fixture
+  tool.custom_metadata = {}
+
+  # Act
+  trace_tool_call(
+      tool=tool,
+      args={},
+      function_response_event=mock_event_fixture,
+  )
+
+  # Assert
+  called_with_dest_id = any(
+      call_args[0][0] == GCP_MCP_SERVER_DESTINATION_ID
+      for call_args in mock_span_fixture.set_attribute.call_args_list
+  )
+  assert not called_with_dest_id
+
+
 def test_trace_tool_call_with_scalar_response(
     monkeypatch, mock_span_fixture, mock_tool_fixture, mock_event_fixture
 ):
@@ -399,7 +516,7 @@ def test_trace_tool_call_with_scalar_response(
       mock.call('gen_ai.operation.name', 'execute_tool'),
       mock.call('gen_ai.tool.name', mock_tool_fixture.name),
       mock.call('gen_ai.tool.description', mock_tool_fixture.description),
-      mock.call('gen_ai.tool.type', 'BaseTool'),
+      mock.call('gen_ai.tool.type', 'SimpleTestTool'),
       mock.call('gen_ai.tool.call.id', test_tool_call_id),
       mock.call('gcp.vertex.agent.tool_call_args', json.dumps(test_args)),
       mock.call('gcp.vertex.agent.event_id', test_event_id),
@@ -459,7 +576,7 @@ def test_trace_tool_call_with_dict_response(
       mock.call('gen_ai.operation.name', 'execute_tool'),
       mock.call('gen_ai.tool.name', mock_tool_fixture.name),
       mock.call('gen_ai.tool.description', mock_tool_fixture.description),
-      mock.call('gen_ai.tool.type', 'BaseTool'),
+      mock.call('gen_ai.tool.type', 'SimpleTestTool'),
       mock.call('gen_ai.tool.call.id', test_tool_call_id),
       mock.call('gcp.vertex.agent.tool_call_args', json.dumps(test_args)),
       mock.call('gcp.vertex.agent.event_id', test_event_id),
@@ -1203,7 +1320,7 @@ def test_trace_tool_call_with_tool_execution_error(
       mock.call('gen_ai.operation.name', 'execute_tool'),
       mock.call('gen_ai.tool.name', mock_tool_fixture.name),
       mock.call('gen_ai.tool.description', mock_tool_fixture.description),
-      mock.call('gen_ai.tool.type', 'BaseTool'),
+      mock.call('gen_ai.tool.type', 'SimpleTestTool'),
       mock.call('error.type', 'INTERNAL_SERVER_ERROR'),
       mock.call('gcp.vertex.agent.tool_call_args', json.dumps(test_args)),
       mock.call(

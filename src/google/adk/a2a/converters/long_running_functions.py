@@ -74,7 +74,10 @@ class LongRunningFunctions:
     for part in event.content.parts:
       should_remove = False
       if part.function_call:
-        if part.function_call.id in event.long_running_tool_ids:
+        if (
+            event.long_running_tool_ids
+            and part.function_call.id in event.long_running_tool_ids
+        ):
           if not event.partial:
             self._parts.append(part)
             self._long_running_tool_ids.add(part.function_call.id)

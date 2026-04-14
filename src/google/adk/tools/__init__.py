@@ -25,6 +25,7 @@ if TYPE_CHECKING:
   from .apihub_tool.apihub_toolset import APIHubToolset
   from .base_tool import BaseTool
   from .discovery_engine_search_tool import DiscoveryEngineSearchTool
+  from .discovery_engine_search_tool import SearchResultMode
   from .enterprise_search_tool import enterprise_web_search_tool as enterprise_web_search
   from .example_tool import ExampleTool
   from .exit_loop_tool import exit_loop
@@ -54,6 +55,10 @@ _LAZY_MAPPING = {
     'DiscoveryEngineSearchTool': (
         '.discovery_engine_search_tool',
         'DiscoveryEngineSearchTool',
+    ),
+    'SearchResultMode': (
+        '.discovery_engine_search_tool',
+        'SearchResultMode',
     ),
     'enterprise_web_search': (
         '.enterprise_search_tool',
