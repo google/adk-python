@@ -118,10 +118,10 @@ async def test_send_content_function_response(
 
   await gemini_connection.send_content(content)
 
-  mock_gemini_session.send.assert_called_once()
-  call_args = mock_gemini_session.send.call_args[1]
-  assert 'input' in call_args
-  assert call_args['input'].function_responses == [function_response]
+  mock_gemini_session.send_tool_response.assert_called_once()
+  call_args = mock_gemini_session.send_tool_response.call_args[1]
+  assert 'function_responses' in call_args
+  assert call_args['function_responses'] == [function_response]
 
 
 @pytest.mark.asyncio
