@@ -424,7 +424,7 @@ class Runner:
 
     Events flow through ic.event_queue via NodeRunner.
 
-    TODO: Add tracing and plugin lifecycle for the node runtime path.
+    TODO: Add tracing for the node runtime path.
     """
     from .workflow._node_runner_class import NodeRunner
 
@@ -505,6 +505,9 @@ class Runner:
     try:
       async for event in self._consume_event_queue(ic, done_sentinel):
         yield event
+      # 5. Run the after_run callbacks. Mirrors _exec_with_plugin:1230.
+      # This does NOT emit any event.
+      await ic.plugin_manager.run_after_run_callback(invocation_context=ic)
     finally:
       await self._cleanup_root_task(task, self.agent.name)
 
@@ -1448,7 +1451,9 @@ class Runner:
     # type of the agent. e.g. a remote a2a agent may surface a credential
     # request as a special long-running function tool call.
     event = find_matching_function_call(session.events)
-    is_resumable = self.resumability_config and self.resumability_config.is_resumable
+    is_resumable = (
+        self.resumability_config and self.resumability_config.is_resumable
+    )
     # Only route based on a past function response if resumability is enabled.
     # In non-resumable scenarios, a turn ending with function call response
     # shouldn't trap the next turn on that same agent if it's not transferable.
