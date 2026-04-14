@@ -48,7 +48,6 @@ from ..base_toolset import ToolPredicate
 from ..load_mcp_resource_tool import LoadMcpResourceTool
 from ..tool_configs import BaseToolConfig
 from ..tool_configs import ToolArgsConfig
-from ..tool_context import ToolContext
 from .mcp_session_manager import MCPSessionManager
 from .mcp_session_manager import retry_on_errors
 from .mcp_session_manager import SseConnectionParams
@@ -447,6 +446,20 @@ class McpToolset(BaseToolset):
         auth_credential=mcp_toolset_config.auth_credential,
         use_mcp_resources=mcp_toolset_config.use_mcp_resources,
     )
+
+  def __getstate__(self):
+    """Custom pickling to exclude non-picklable runtime objects."""
+    state = self.__dict__.copy()
+    # Remove unpicklable file-like objects
+    state.pop("_errlog", None)
+    return state
+
+  def __setstate__(self, state):
+    """Custom unpickling to restore state."""
+    self.__dict__.update(state)
+    # Default to sys.stderr if _errlog was removed during pickling
+    if not hasattr(self, "_errlog") or self._errlog is None:
+      self._errlog = sys.stderr
 
 
 class MCPToolset(McpToolset):

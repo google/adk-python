@@ -105,26 +105,15 @@ class GeminiLlmConnection(BaseLlmConnection):
       # All parts have to be function responses.
       function_responses = [part.function_response for part in content.parts]
       logger.debug('Sending LLM function response: %s', function_responses)
-      await self._gemini_session.send(
-          input=types.LiveClientToolResponse(
-              function_responses=function_responses
-          ),
+      await self._gemini_session.send_tool_response(
+          function_responses=function_responses
       )
     else:
       logger.debug('Sending LLM new content %s', content)
       is_gemini_31 = model_name_utils.is_gemini_3_1_flash_live(
           self._model_version
       )
-      is_gemini_api = self._api_backend == GoogleLLMVariant.GEMINI_API
-
-      # As of now, Gemini 3.1 Flash Live is only available in Gemini API, not
-      # Vertex AI.
-      if (
-          is_gemini_31
-          and is_gemini_api
-          and len(content.parts) == 1
-          and content.parts[0].text
-      ):
+      if is_gemini_31 and len(content.parts) == 1 and content.parts[0].text:
         logger.debug('Using send_realtime_input for Gemini 3.1 text input')
         await self._gemini_session.send_realtime_input(
             text=content.parts[0].text
@@ -149,11 +138,7 @@ class GeminiLlmConnection(BaseLlmConnection):
       is_gemini_31 = model_name_utils.is_gemini_3_1_flash_live(
           self._model_version
       )
-      is_gemini_api = self._api_backend == GoogleLLMVariant.GEMINI_API
-
-      # As of now, Gemini 3.1 Flash Live is only available in Gemini API, not
-      # Vertex AI.
-      if is_gemini_31 and is_gemini_api:
+      if is_gemini_31:
         if input.mime_type and input.mime_type.startswith('audio/'):
           await self._gemini_session.send_realtime_input(audio=input)
         elif input.mime_type and input.mime_type.startswith('image/'):
@@ -377,6 +362,13 @@ class GeminiLlmConnection(BaseLlmConnection):
                   model_version=self._model_version,
               )
           )
+        if message.go_away:
+          logger.debug('Received GoAway message: %s', message.go_away)
+          yield LlmResponse(
+              go_away=message.go_away,
+              model_version=self._model_version,
+          )
+
       if tool_call_parts:
         logger.debug('Exited loop with pending tool_call_parts')
         yield LlmResponse(
