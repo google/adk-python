@@ -810,9 +810,9 @@ class BaseLlmFlow(ABC):
         break
 
   async def _run_one_step_async(
-    self,
-    invocation_context: InvocationContext,
-) -> AsyncGenerator[Event, None]:
+      self,
+      invocation_context: InvocationContext,
+  ) -> AsyncGenerator[Event, None]:
     """One step means one LLM call."""
     llm_request = LlmRequest()
 
