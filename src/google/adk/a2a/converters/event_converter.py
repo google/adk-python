@@ -37,8 +37,6 @@ from google.adk.platform import time as platform_time
 from google.adk.platform import uuid as platform_uuid
 from google.genai import types as genai_types
 
-from .utils import a2a_role_to_genai_role
-
 from ...agents.invocation_context import InvocationContext
 from ...events.event import Event
 from ...flows.llm_flows.functions import REQUEST_EUC_FUNCTION_CALL_NAME
@@ -51,6 +49,7 @@ from .part_converter import convert_a2a_part_to_genai_part
 from .part_converter import convert_genai_part_to_a2a_part
 from .part_converter import GenAIPartToA2APartConverter
 from .utils import _get_adk_metadata_key
+from .utils import a2a_role_to_genai_role
 
 # Constants
 
@@ -242,9 +241,7 @@ def convert_a2a_task_to_event(
     elif a2a_task.history:
       # Only pick agent-role messages from history; a trailing user
       # message should not be misattributed as agent output.
-      agent_messages = [
-          m for m in a2a_task.history if m.role == Role.agent
-      ]
+      agent_messages = [m for m in a2a_task.history if m.role == Role.agent]
       if agent_messages:
         message = agent_messages[-1]
 
