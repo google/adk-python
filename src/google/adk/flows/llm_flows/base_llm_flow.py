@@ -739,57 +739,58 @@ class BaseLlmFlow(ABC):
       else:
         return invocation_context.agent.name
 
-    while True:
-      async with Aclosing(llm_connection.receive()) as agen:
-        async for llm_response in agen:
-          if llm_response.live_session_resumption_update:
-            logger.info(
-                'Update session resumption handle:'
-                f' {llm_response.live_session_resumption_update}.'
-            )
-            invocation_context.live_session_resumption_handle = (
-                llm_response.live_session_resumption_update.new_handle
-            )
-          if llm_response.go_away:
-            logger.info(f'Received go away signal: {llm_response.go_away}')
-            # The server signals that it will close the connection soon.
-            # We proactively raise ConnectionClosed to trigger the reconnection
-            # logic in run_live, which will use the latest session handle.
-            raise ConnectionClosed(None, None)
-
-          model_response_event = Event(
-              id=Event.new_id(),
-              invocation_id=invocation_context.invocation_id,
-              author=get_author_for_event(llm_response),
-          )
-
-          async with Aclosing(
-              self._postprocess_live(
-                  invocation_context,
-                  llm_request,
-                  llm_response,
-                  model_response_event,
+    try:
+      while True:
+        async with Aclosing(llm_connection.receive()) as agen:
+          async for llm_response in agen:
+            if llm_response.live_session_resumption_update:
+              logger.info(
+                  'Update session resumption handle:'
+                  f' {llm_response.live_session_resumption_update}.'
               )
-          ) as agen:
-            async for event in agen:
-              # Cache output audio chunks from model responses
-              # TODO: support video data
-              if (
-                  invocation_context.run_config.save_live_blob
-                  and event.content
-                  and event.content.parts
-                  and event.content.parts[0].inline_data
-                  and event.content.parts[0].inline_data.mime_type.startswith(
-                      'audio/'
+              invocation_context.live_session_resumption_handle = (
+                  llm_response.live_session_resumption_update.new_handle
+              )
+            if llm_response.go_away:
+              logger.info(f'Received go away signal: {llm_response.go_away}')
+              # The server signals that it will close the connection soon.
+              # We proactively raise ConnectionClosed to trigger the reconnection
+              # logic in run_live, which will use the latest session handle.
+              raise ConnectionClosed(None, None)
+
+            model_response_event = Event(
+                id=Event.new_id(),
+                invocation_id=invocation_context.invocation_id,
+                author=get_author_for_event(llm_response),
+            )
+
+            async with Aclosing(
+                self._postprocess_live(
+                    invocation_context,
+                    llm_request,
+                    llm_response,
+                    model_response_event,
+                )
+            ) as agen:
+              async for event in agen:
+                # Cache output audio chunks from model responses
+                # TODO: support video data
+                if (
+                    invocation_context.run_config.save_live_blob
+                    and event.content
+                    and event.content.parts
+                    and event.content.parts[0].inline_data
+                    and event.content.parts[0].inline_data.mime_type.startswith(
+                        'audio/'
+                    )
+                ):
+                  audio_blob = types.Blob(
+                      data=event.content.parts[0].inline_data.data,
+                      mime_type=event.content.parts[0].inline_data.mime_type,
                   )
-              ):
-                audio_blob = types.Blob(
-                    data=event.content.parts[0].inline_data.data,
-                    mime_type=event.content.parts[0].inline_data.mime_type,
-                )
-                self.audio_cache_manager.cache_audio(
-                    invocation_context, audio_blob, cache_type='output'
-                )
+                  self.audio_cache_manager.cache_audio(
+                      invocation_context, audio_blob, cache_type='output'
+                  )
 
                 yield event
         # Give opportunity for other tasks to run.
