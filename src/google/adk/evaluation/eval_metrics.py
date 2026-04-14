@@ -61,6 +61,12 @@ class PrebuiltMetrics(Enum):
 
   PER_TURN_USER_SIMULATOR_QUALITY_V1 = "per_turn_user_simulator_quality_v1"
 
+  MULTI_TURN_TASK_SUCCESS_V1 = "multi_turn_task_success_v1"
+
+  MULTI_TURN_TRAJECTORY_QUALITY_V1 = "multi_turn_trajectory_quality_v1"
+
+  MULTI_TURN_TOOL_USE_QUALITY_V1 = "multi_turn_tool_use_quality_v1"
+
 
 MetricName: TypeAlias = Union[str, PrebuiltMetrics]
 Threshold: TypeAlias = float
@@ -135,6 +141,19 @@ class RubricsBasedCriterion(BaseCriterion):
           " that don't use Rubrics, will just ignore this field, if specified."
           " Metrics that do use rubrics will raise an exception, if they are"
           " not specified."
+      ),
+  )
+
+  evaluate_full_response: bool = Field(
+      default=False,
+      description=(
+          "Whether to evaluate the full agent response including intermediate"
+          " natural language text (e.g. text emitted before tool calls) in"
+          " addition to the final response. By default, only the final"
+          " response text is sent to the judge. When True, text from all"
+          " intermediate invocation events is concatenated with the final"
+          " response before evaluation. This is useful for agents that emit"
+          " text both before and after tool calls within a single invocation."
       ),
   )
 
