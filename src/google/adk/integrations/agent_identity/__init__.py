@@ -12,17 +12,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from __future__ import annotations
+from .gcp_auth_provider import GcpAuthProvider
+from .gcp_auth_provider_scheme import GcpAuthProviderScheme
 
-
-class AlreadyExistsError(Exception):
-  """Represents an error that occurs when an entity already exists."""
-
-  def __init__(self, message: str = "The resource already exists."):
-    """Initializes the AlreadyExistsError exception.
-
-    Args:
-        message (str): An optional custom message to describe the error.
-    """
-    self.message = message
-    super().__init__(self.message)
+__all__ = [
+    "GcpAuthProvider",
+    "GcpAuthProviderScheme",
+]
