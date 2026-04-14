@@ -19,23 +19,14 @@ from __future__ import annotations
 import base64
 import copy
 import dataclasses
-from functools import cached_property
 import json
 import logging
 import os
 import re
-from typing import Any
-from typing import AsyncGenerator
-from typing import Iterable
-from typing import Literal
-from typing import Optional
-from typing import TYPE_CHECKING
-from typing import Union
+from functools import cached_property
+from typing import TYPE_CHECKING, Any, AsyncGenerator, Iterable, Literal, Optional, Union
 
-from anthropic import AsyncAnthropic
-from anthropic import AsyncAnthropicVertex
-from anthropic import NOT_GIVEN
-from anthropic import NotGiven
+from anthropic import NOT_GIVEN, AsyncAnthropic, AsyncAnthropicVertex, NotGiven
 from anthropic import types as anthropic_types
 from google.genai import types
 from pydantic import BaseModel
@@ -401,11 +392,16 @@ class AnthropicLlm(BaseLlm):
         if llm_request.tools_dict
         else NOT_GIVEN
     )
+    system = (
+        llm_request.config.system_instruction
+        if llm_request.config and llm_request.config.system_instruction
+        else NOT_GIVEN
+    )
 
     if not stream:
       message = await self._anthropic_client.messages.create(
           model=model_to_use,
-          system=llm_request.config.system_instruction,
+          system=system,
           messages=messages,
           tools=tools,
           tool_choice=tool_choice,
@@ -414,7 +410,7 @@ class AnthropicLlm(BaseLlm):
       yield message_to_generate_content_response(message)
     else:
       async for response in self._generate_content_streaming(
-          llm_request, messages, tools, tool_choice
+          llm_request, messages, tools, tool_choice, system
       ):
         yield response
 
@@ -424,6 +420,7 @@ class AnthropicLlm(BaseLlm):
       messages: list[anthropic_types.MessageParam],
       tools: Union[Iterable[anthropic_types.ToolUnionParam], NotGiven],
       tool_choice: Union[anthropic_types.ToolChoiceParam, NotGiven],
+      system: Union[str, NotGiven] = NOT_GIVEN,
   ) -> AsyncGenerator[LlmResponse, None]:
     """Handles streaming responses from Anthropic models.
 
@@ -433,7 +430,7 @@ class AnthropicLlm(BaseLlm):
     model_to_use = self._resolve_model_name(llm_request.model)
     raw_stream = await self._anthropic_client.messages.create(
         model=model_to_use,
-        system=llm_request.config.system_instruction,
+        system=system,
         messages=messages,
         tools=tools,
         tool_choice=tool_choice,
