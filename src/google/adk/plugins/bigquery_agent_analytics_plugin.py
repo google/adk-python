@@ -1781,6 +1781,21 @@ _EVENT_VIEW_DEFS: dict[str, list[str]] = {
         ),
         "JSON_VALUE(attributes, '$.model_version') AS model_version",
         "JSON_QUERY(attributes, '$.usage_metadata') AS usage_metadata",
+        (
+            "CAST(JSON_VALUE(attributes,"
+            " '$.usage_metadata.cached_content_token_count')"
+            " AS INT64) AS usage_cached_tokens"
+        ),
+        (
+            "SAFE_DIVIDE("
+            "CAST(JSON_VALUE(attributes,"
+            " '$.usage_metadata.cached_content_token_count')"
+            " AS INT64),"
+            "CAST(JSON_VALUE(content, '$.usage.prompt')"
+            " AS INT64)"
+            ") AS context_cache_hit_rate"
+        ),
+        "JSON_QUERY(attributes, '$.cache_metadata') AS cache_metadata",
     ],
     "LLM_ERROR": [
         "CAST(JSON_VALUE(latency_ms, '$.total_ms') AS INT64) AS total_ms",
@@ -1860,6 +1875,7 @@ class EventData:
   model: Optional[str] = None
   model_version: Optional[str] = None
   usage_metadata: Any = None
+  cache_metadata: Any = None
   status: str = "OK"
   error_message: Optional[str] = None
   extra_attributes: dict[str, Any] = field(default_factory=dict)
@@ -2640,6 +2656,14 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
         attrs["usage_metadata"] = usage_dict
       else:
         attrs["usage_metadata"] = event_data.usage_metadata
+    if event_data.cache_metadata:
+      cache_meta_dict, _ = _recursive_smart_truncate(
+          event_data.cache_metadata, self.config.max_content_length
+      )
+      if isinstance(cache_meta_dict, dict):
+        attrs["cache_metadata"] = cache_meta_dict
+      else:
+        attrs["cache_metadata"] = event_data.cache_metadata
 
     if self.config.log_session_metadata:
       try:
@@ -3172,6 +3196,7 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
             time_to_first_token_ms=tfft,
             model_version=llm_response.model_version,
             usage_metadata=llm_response.usage_metadata,
+            cache_metadata=llm_response.cache_metadata,
             span_id_override=span_id if use_override else None,
             parent_span_id_override=parent_span_id if use_override else None,
         ),

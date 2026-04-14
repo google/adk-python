@@ -6672,3 +6672,95 @@ class TestMultiLoopShutdownDrainsOtherLoops:
       mock_rcts.assert_called()
       call_args = mock_rcts.call_args
       assert call_args[0][1] is other_loop
+
+
+# ================================================================
+# TEST CLASS: Context cache metrics (Issue #5210)
+# ================================================================
+class TestContextCacheMetrics:
+  """Tests for context cache metric extraction and view columns."""
+
+  @pytest.mark.asyncio
+  async def test_cache_metadata_stored_in_attributes(
+      self,
+      bq_plugin_inst,
+      mock_write_client,
+      callback_context,
+      dummy_arrow_schema,
+  ):
+    """cache_metadata from LlmResponse is stored in attributes."""
+    from google.adk.models.cache_metadata import CacheMetadata
+
+    cache_meta = CacheMetadata(
+        cache_name="projects/p/locations/us/cachedContents/123",
+        fingerprint="abc123",
+        invocations_used=5,
+        contents_count=10,
+        expire_time=1700000000.0,
+        created_at=1699000000.0,
+    )
+
+    bigquery_agent_analytics_plugin.TraceManager.push_span(callback_context)
+    llm_request = llm_request_lib.LlmRequest(
+        model="gemini-pro",
+        contents=[types.Content(parts=[types.Part(text="test")])],
+    )
+    await bq_plugin_inst.before_model_callback(
+        callback_context=callback_context, llm_request=llm_request
+    )
+
+    llm_response = llm_response_lib.LlmResponse(
+        content=types.Content(parts=[types.Part(text="Response")]),
+        cache_metadata=cache_meta,
+    )
+    await bq_plugin_inst.after_model_callback(
+        callback_context=callback_context, llm_response=llm_response
+    )
+    await asyncio.sleep(0.05)
+    rows = await _get_captured_rows_async(mock_write_client, dummy_arrow_schema)
+    log_entry = next(r for r in rows if r["event_type"] == "LLM_RESPONSE")
+    attributes = json.loads(log_entry["attributes"])
+    assert "cache_metadata" in attributes
+    assert attributes["cache_metadata"]["cache_name"] == (
+        "projects/p/locations/us/cachedContents/123"
+    )
+    assert attributes["cache_metadata"]["fingerprint"] == "abc123"
+    assert attributes["cache_metadata"]["invocations_used"] == 5
+
+  @pytest.mark.asyncio
+  async def test_no_cache_metadata_when_absent(
+      self,
+      bq_plugin_inst,
+      mock_write_client,
+      callback_context,
+      dummy_arrow_schema,
+  ):
+    """No cache_metadata in attributes when LlmResponse has none."""
+    bigquery_agent_analytics_plugin.TraceManager.push_span(callback_context)
+    llm_request = llm_request_lib.LlmRequest(
+        model="gemini-pro",
+        contents=[types.Content(parts=[types.Part(text="test")])],
+    )
+    await bq_plugin_inst.before_model_callback(
+        callback_context=callback_context, llm_request=llm_request
+    )
+
+    llm_response = llm_response_lib.LlmResponse(
+        content=types.Content(parts=[types.Part(text="Response")]),
+    )
+    await bq_plugin_inst.after_model_callback(
+        callback_context=callback_context, llm_response=llm_response
+    )
+    await asyncio.sleep(0.05)
+    rows = await _get_captured_rows_async(mock_write_client, dummy_arrow_schema)
+    log_entry = next(r for r in rows if r["event_type"] == "LLM_RESPONSE")
+    attributes = json.loads(log_entry["attributes"])
+    assert "cache_metadata" not in attributes
+
+  def test_view_def_includes_cache_columns(self):
+    """LLM_RESPONSE view definition includes cache metric columns."""
+    view_cols = bigquery_agent_analytics_plugin._EVENT_VIEW_DEFS["LLM_RESPONSE"]
+    col_str = " ".join(view_cols)
+    assert "usage_cached_tokens" in col_str
+    assert "context_cache_hit_rate" in col_str
+    assert "cache_metadata" in col_str
