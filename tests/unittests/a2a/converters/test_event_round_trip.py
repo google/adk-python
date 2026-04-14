@@ -287,4 +287,3 @@ def test_serialize_value_handles_non_serializable_nested_types():
   # nested list with mixed types
   assert parsed["nested_list"][0] is True
   assert isinstance(parsed["nested_list"][1], str)
-
