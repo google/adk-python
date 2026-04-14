@@ -112,11 +112,11 @@ async def test_send_history(gemini_connection, mock_gemini_session):
 @pytest.mark.asyncio
 async def test_send_content_text(gemini_connection, mock_gemini_session):
   """Test send_content with text content when audio is inactive.
-  
+
   Note: gemini_connection._audio_active is False by default.
   """
   assert gemini_connection._audio_active is False
-  
+
   content = types.Content(
       role='user', parts=[types.Part.from_text(text='Hello')]
   )
@@ -131,10 +131,12 @@ async def test_send_content_text(gemini_connection, mock_gemini_session):
 
 
 @pytest.mark.asyncio
-async def test_send_content_text_audio_active(gemini_connection, mock_gemini_session):
+async def test_send_content_text_audio_active(
+    gemini_connection, mock_gemini_session
+):
   """Test send_content routes to send_realtime_input when audio is active."""
   gemini_connection._audio_active = True
-  
+
   content = types.Content(
       role='user', parts=[types.Part.from_text(text='Hello')]
   )
@@ -143,6 +145,31 @@ async def test_send_content_text_audio_active(gemini_connection, mock_gemini_ses
 
   mock_gemini_session.send_realtime_input.assert_called_once_with(text='Hello')
   mock_gemini_session.send.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_send_content_mixed_audio_active(
+    gemini_connection, mock_gemini_session, test_blob
+):
+  """Test send_content falls back to LiveClientContent for mixed modalities."""
+  gemini_connection._audio_active = True
+
+  content = types.Content(
+      role='user',
+      parts=[
+          types.Part.from_text(text='Hello'),
+          types.Part(inline_data=test_blob)
+      ]
+  )
+
+  await gemini_connection.send_content(content)
+
+  mock_gemini_session.send.assert_called_once()
+  call_args = mock_gemini_session.send.call_args[1]
+  assert 'input' in call_args
+  assert call_args['input'].turns == [content]
+  assert call_args['input'].turn_complete is True
+  mock_gemini_session.send_realtime_input.assert_not_called()
 
 
 @pytest.mark.asyncio

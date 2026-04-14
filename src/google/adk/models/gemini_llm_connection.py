@@ -122,19 +122,15 @@ class GeminiLlmConnection(BaseLlmConnection):
       is_gemini_api = self._api_backend == GoogleLLMVariant.GEMINI_API
 
       # Route via send_realtime_input if audio is active OR if targeting 3.1 API
-      if self._audio_active or (is_gemini_31 and is_gemini_api):
+      if (self._audio_active or (is_gemini_31 and is_gemini_api)) and all(
+          isinstance(part.text, str) for part in content.parts
+      ):
         logger.debug(
             'Routing text via send_realtime_input %s',
             content,
         )
-        has_text = False
         for part in content.parts:
-          if isinstance(part.text, str):
-            await self._gemini_session.send_realtime_input(text=part.text)
-            has_text = True
-            
-        if not has_text:
-          logger.warning('Encountered unsupported content in send_content')
+          await self._gemini_session.send_realtime_input(text=part.text)
       else:
         logger.debug('Sending LLM new content %s', content)
         await self._gemini_session.send(
@@ -161,9 +157,13 @@ class GeminiLlmConnection(BaseLlmConnection):
       # As of now, Gemini 3.1 Flash Live is only available in Gemini API, not
       # Vertex AI.
       if is_gemini_31 and is_gemini_api:
-        if isinstance(input.mime_type, str) and input.mime_type.startswith('audio/'):
+        if isinstance(input.mime_type, str) and input.mime_type.startswith(
+            'audio/'
+        ):
           await self._gemini_session.send_realtime_input(audio=input)
-        elif isinstance(input.mime_type, str) and input.mime_type.startswith('image/'):
+        elif isinstance(input.mime_type, str) and input.mime_type.startswith(
+            'image/'
+        ):
           await self._gemini_session.send_realtime_input(video=input)
         else:
           logger.warning(
@@ -172,9 +172,13 @@ class GeminiLlmConnection(BaseLlmConnection):
               input.mime_type,
           )
       else:
-        if isinstance(input.mime_type, str) and input.mime_type.startswith('video/'):
+        if isinstance(input.mime_type, str) and input.mime_type.startswith(
+            'video/'
+        ):
           await self._gemini_session.send_realtime_input(video=input)
-        elif isinstance(input.mime_type, str) and input.mime_type.startswith('audio/'):
+        elif isinstance(input.mime_type, str) and input.mime_type.startswith(
+            'audio/'
+        ):
           await self._gemini_session.send_realtime_input(audio=input)
         else:
           await self._gemini_session.send_realtime_input(media=input)
