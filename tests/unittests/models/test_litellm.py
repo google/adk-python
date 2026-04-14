@@ -4902,9 +4902,7 @@ async def test_content_to_message_param_file_uri_mime_fallback_logs_warning(
 ) -> None:
   """Test that falling back to application/octet-stream logs a warning."""
   file_part = types.Part(
-      file_data=types.FileData(
-          file_uri="gs://bucket/artifact/0"
-      )
+      file_data=types.FileData(file_uri="gs://bucket/artifact/0")
   )
   content = types.Content(
       role="user",
@@ -4921,7 +4919,9 @@ async def test_content_to_message_param_file_uri_mime_fallback_logs_warning(
 
 
 @pytest.mark.asyncio
-async def test_content_to_message_param_function_response_with_extra_parts_propagates_model() -> None:
+async def test_content_to_message_param_function_response_with_extra_parts_propagates_model() -> (
+    None
+):
   """Test that model parameter is propagated in recursive calls for mixed parts."""
   tool_part = types.Part.from_function_response(
       name="load_image",
