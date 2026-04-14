@@ -168,16 +168,57 @@ def _format_content(
   return " | ".join(parts), truncated
 
 
-def _get_tool_origin(tool: "BaseTool") -> str:
+def _find_transfer_target(agent, agent_name: str):
+  """Find a transfer target agent by name in the accessible agent tree.
+
+  Searches the current agent's sub-agents, parent, and peer agents
+  to locate the transfer target.
+
+  Args:
+      agent: The current agent executing the transfer.
+      agent_name: The name of the transfer target to find.
+
+  Returns:
+      The matching agent object, or None if not found.
+  """
+  for sub in getattr(agent, "sub_agents", []):
+    if sub.name == agent_name:
+      return sub
+  parent = getattr(agent, "parent_agent", None)
+  if parent is not None and parent.name == agent_name:
+    return parent
+  if parent is not None:
+    for peer in getattr(parent, "sub_agents", []):
+      if peer.name == agent_name and peer.name != agent.name:
+        return peer
+  return None
+
+
+def _get_tool_origin(
+    tool: "BaseTool",
+    tool_args: Optional[dict[str, Any]] = None,
+    tool_context: Optional["ToolContext"] = None,
+) -> str:
   """Returns the provenance category of a tool.
 
   Uses lazy imports to avoid circular dependencies.
 
+  For ``TransferToAgentTool`` the classification is **call-level**: when
+  *tool_args* and *tool_context* are supplied the selected
+  ``agent_name`` is resolved against the agent tree so that transfers
+  to a ``RemoteA2aAgent`` are labelled ``TRANSFER_A2A`` rather than
+  the generic ``TRANSFER_AGENT``.
+
   Args:
       tool: The tool instance.
+      tool_args: Optional tool arguments, used for call-level
+          classification of TransferToAgentTool.
+      tool_context: Optional tool context, used to access the agent
+          tree for TransferToAgentTool classification.
 
   Returns:
-      One of LOCAL, MCP, A2A, SUB_AGENT, TRANSFER_AGENT, or UNKNOWN.
+      One of LOCAL, MCP, A2A, SUB_AGENT, TRANSFER_AGENT,
+      TRANSFER_A2A, or UNKNOWN.
   """
   # Import lazily to avoid circular dependencies.
   # pylint: disable=g-import-not-at-top
@@ -199,6 +240,15 @@ def _get_tool_origin(tool: "BaseTool") -> str:
   if McpTool is not None and isinstance(tool, McpTool):
     return "MCP"
   if isinstance(tool, TransferToAgentTool):
+    if RemoteA2aAgent is not None and tool_args and tool_context:
+      agent_name = tool_args.get("agent_name")
+      if agent_name:
+        target = _find_transfer_target(
+            tool_context._invocation_context.agent,
+            agent_name,
+        )
+        if target is not None and isinstance(target, RemoteA2aAgent):
+          return "TRANSFER_A2A"
     return "TRANSFER_AGENT"
   if isinstance(tool, AgentTool):
     if RemoteA2aAgent is not None and isinstance(tool.agent, RemoteA2aAgent):
@@ -3228,7 +3278,7 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
     args_truncated, is_truncated = _recursive_smart_truncate(
         tool_args, self.config.max_content_length
     )
-    tool_origin = _get_tool_origin(tool)
+    tool_origin = _get_tool_origin(tool, tool_args, tool_context)
     content_dict = {
         "tool": tool.name,
         "args": args_truncated,
@@ -3262,7 +3312,7 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
     resp_truncated, is_truncated = _recursive_smart_truncate(
         result, self.config.max_content_length
     )
-    tool_origin = _get_tool_origin(tool)
+    tool_origin = _get_tool_origin(tool, tool_args, tool_context)
     content_dict = {
         "tool": tool.name,
         "result": resp_truncated,

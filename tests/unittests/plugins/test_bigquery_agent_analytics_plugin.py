@@ -4486,6 +4486,151 @@ class TestToolProvenance:
     result = bigquery_agent_analytics_plugin._get_tool_origin(tool)
     assert result == "TRANSFER_AGENT"
 
+  def test_transfer_tool_without_args_returns_transfer_agent(self):
+    """TransferToAgentTool without tool_args falls back to TRANSFER_AGENT."""
+    from google.adk.tools.transfer_to_agent_tool import TransferToAgentTool
+
+    tool = TransferToAgentTool(agent_names=["remote_a2a"])
+    result = bigquery_agent_analytics_plugin._get_tool_origin(
+        tool, tool_args=None, tool_context=None
+    )
+    assert result == "TRANSFER_AGENT"
+
+  def test_transfer_to_remote_a2a_sub_agent_returns_transfer_a2a(self):
+    """Transfer to a RemoteA2aAgent sub-agent is classified TRANSFER_A2A."""
+    from google.adk.tools.transfer_to_agent_tool import TransferToAgentTool
+
+    try:
+      from google.adk.agents.remote_a2a_agent import RemoteA2aAgent
+    except ImportError:
+      pytest.skip("A2A agent not available")
+
+    remote_agent = mock.MagicMock(spec=RemoteA2aAgent)
+    remote_agent.name = "remote_a2a"
+
+    current_agent = mock.MagicMock()
+    current_agent.name = "root"
+    current_agent.sub_agents = [remote_agent]
+    current_agent.parent_agent = None
+
+    inv_ctx = mock.MagicMock()
+    inv_ctx.agent = current_agent
+    tool_context = mock.MagicMock()
+    tool_context._invocation_context = inv_ctx
+
+    tool = TransferToAgentTool(agent_names=["remote_a2a"])
+    result = bigquery_agent_analytics_plugin._get_tool_origin(
+        tool,
+        tool_args={"agent_name": "remote_a2a"},
+        tool_context=tool_context,
+    )
+    assert result == "TRANSFER_A2A"
+
+  def test_transfer_to_local_sub_agent_returns_transfer_agent(self):
+    """Transfer to a local sub-agent is still classified TRANSFER_AGENT."""
+    from google.adk.tools.transfer_to_agent_tool import TransferToAgentTool
+
+    local_agent = mock.MagicMock()
+    local_agent.name = "local_sub"
+
+    current_agent = mock.MagicMock()
+    current_agent.name = "root"
+    current_agent.sub_agents = [local_agent]
+    current_agent.parent_agent = None
+
+    inv_ctx = mock.MagicMock()
+    inv_ctx.agent = current_agent
+    tool_context = mock.MagicMock()
+    tool_context._invocation_context = inv_ctx
+
+    tool = TransferToAgentTool(agent_names=["local_sub"])
+    result = bigquery_agent_analytics_plugin._get_tool_origin(
+        tool,
+        tool_args={"agent_name": "local_sub"},
+        tool_context=tool_context,
+    )
+    assert result == "TRANSFER_AGENT"
+
+  def test_transfer_to_a2a_peer_returns_transfer_a2a(self):
+    """Transfer to a RemoteA2aAgent peer is classified TRANSFER_A2A."""
+    from google.adk.tools.transfer_to_agent_tool import TransferToAgentTool
+
+    try:
+      from google.adk.agents.remote_a2a_agent import RemoteA2aAgent
+    except ImportError:
+      pytest.skip("A2A agent not available")
+
+    remote_peer = mock.MagicMock(spec=RemoteA2aAgent)
+    remote_peer.name = "remote_peer"
+
+    current_agent = mock.MagicMock()
+    current_agent.name = "child"
+    current_agent.sub_agents = []
+
+    parent_agent = mock.MagicMock()
+    parent_agent.name = "parent"
+    parent_agent.sub_agents = [current_agent, remote_peer]
+    current_agent.parent_agent = parent_agent
+
+    inv_ctx = mock.MagicMock()
+    inv_ctx.agent = current_agent
+    tool_context = mock.MagicMock()
+    tool_context._invocation_context = inv_ctx
+
+    tool = TransferToAgentTool(
+        agent_names=["remote_peer"],
+    )
+    result = bigquery_agent_analytics_plugin._get_tool_origin(
+        tool,
+        tool_args={"agent_name": "remote_peer"},
+        tool_context=tool_context,
+    )
+    assert result == "TRANSFER_A2A"
+
+  def test_transfer_mixed_targets_classifies_per_call(self):
+    """A single TransferToAgentTool with mixed targets classifies per call."""
+    from google.adk.tools.transfer_to_agent_tool import TransferToAgentTool
+
+    try:
+      from google.adk.agents.remote_a2a_agent import RemoteA2aAgent
+    except ImportError:
+      pytest.skip("A2A agent not available")
+
+    remote_agent = mock.MagicMock(spec=RemoteA2aAgent)
+    remote_agent.name = "remote_a2a"
+    local_agent = mock.MagicMock()
+    local_agent.name = "local_sub"
+
+    current_agent = mock.MagicMock()
+    current_agent.name = "root"
+    current_agent.sub_agents = [remote_agent, local_agent]
+    current_agent.parent_agent = None
+
+    inv_ctx = mock.MagicMock()
+    inv_ctx.agent = current_agent
+    tool_context = mock.MagicMock()
+    tool_context._invocation_context = inv_ctx
+
+    tool = TransferToAgentTool(
+        agent_names=["remote_a2a", "local_sub"],
+    )
+
+    # Transfer to remote target → TRANSFER_A2A
+    result = bigquery_agent_analytics_plugin._get_tool_origin(
+        tool,
+        tool_args={"agent_name": "remote_a2a"},
+        tool_context=tool_context,
+    )
+    assert result == "TRANSFER_A2A"
+
+    # Transfer to local target → TRANSFER_AGENT
+    result = bigquery_agent_analytics_plugin._get_tool_origin(
+        tool,
+        tool_args={"agent_name": "local_sub"},
+        tool_context=tool_context,
+    )
+    assert result == "TRANSFER_AGENT"
+
   def test_mcp_tool_returns_mcp(self):
     try:
       from google.adk.tools.mcp_tool.mcp_tool import McpTool
