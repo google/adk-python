@@ -31,6 +31,7 @@ __all__ = [
 def __getattr__(name: str):
   if name == 'SessionDataTransformer':
     from .session_data_transformer import SessionDataTransformer
+
     return SessionDataTransformer
   if name == 'DatabaseSessionService':
     try:

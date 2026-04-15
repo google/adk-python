@@ -761,13 +761,15 @@ class DatabaseSessionService(BaseSessionService):
         else:
           update_time = datetime.fromtimestamp(event.timestamp)
         storage_session.update_time = update_time
-        
+
         transformed_event = (
             self.transformer.before_persist_event(event)
             if self.transformer
             else event
         )
-        sql_session.add(schema.StorageEvent.from_event(session, transformed_event))
+        sql_session.add(
+            schema.StorageEvent.from_event(session, transformed_event)
+        )
 
         await sql_session.commit()
 
