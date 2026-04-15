@@ -224,7 +224,7 @@ class TestA2aAgentExecutor:
 
   @pytest.mark.asyncio
   async def test_prepare_session_new_session(self):
-    """Test session preparation when session doesn't exist."""
+    """Test session preparation delegates to runner._get_or_create_session."""
     run_args = AgentRunRequest(
         user_id="test-user",
         session_id=None,
@@ -232,11 +232,9 @@ class TestA2aAgentExecutor:
         run_config=Mock(spec=RunConfig),
     )
 
-    # Mock session service
-    self.mock_runner.session_service.get_session = AsyncMock(return_value=None)
     mock_session = Mock()
     mock_session.id = "new-session-id"
-    self.mock_runner.session_service.create_session = AsyncMock(
+    self.mock_runner._get_or_create_session = AsyncMock(
         return_value=mock_session
     )
 
@@ -245,10 +243,13 @@ class TestA2aAgentExecutor:
         self.mock_context, run_args, self.mock_runner
     )
 
-    # Verify session was created
+    # Verify session was returned and run_request updated
     assert result == mock_session
-    assert run_args.session_id is not None
-    self.mock_runner.session_service.create_session.assert_called_once()
+    assert run_args.session_id == "new-session-id"
+    self.mock_runner._get_or_create_session.assert_called_once_with(
+        user_id="test-user",
+        session_id=None,
+    )
 
   @pytest.mark.asyncio
   async def test_prepare_session_existing_session(self):
@@ -260,10 +261,9 @@ class TestA2aAgentExecutor:
         run_config=Mock(spec=RunConfig),
     )
 
-    # Mock session service
     mock_session = Mock()
     mock_session.id = "existing-session"
-    self.mock_runner.session_service.get_session = AsyncMock(
+    self.mock_runner._get_or_create_session = AsyncMock(
         return_value=mock_session
     )
 
@@ -274,7 +274,10 @@ class TestA2aAgentExecutor:
 
     # Verify existing session was returned
     assert result == mock_session
-    self.mock_runner.session_service.create_session.assert_not_called()
+    self.mock_runner._get_or_create_session.assert_called_once_with(
+        user_id="test-user",
+        session_id="existing-session",
+    )
 
   def test_constructor_with_callable_runner(self):
     """Test constructor with callable runner."""
