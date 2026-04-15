@@ -1,5 +1,32 @@
 # Changelog
 
+## [1.30.0](https://github.com/google/adk-python/compare/v1.29.0...v1.30.0) (2026-04-13)
+
+
+### Features
+
+* Add Auth Provider support to agent registry ([f2c68eb](https://github.com/google/adk-python/commit/f2c68eb1536f1c0018c2cf7ee3f4417ca442080c))
+* Add Parameter Manager integration to ADK ([b0715d7](https://github.com/google/adk-python/commit/b0715d77a2a433bb2ed07a2475cc4d1f2d662b6c))
+* Add support for Gemma 4 models in ADK ([9d4ecbe](https://github.com/google/adk-python/commit/9d4ecbe9fd1141693e4682cbfe4d542cc62b76ac)), closes [#5156](https://github.com/google/adk-python/issues/5156)
+* allow users to include artifacts from artifact_service in A2A events using provided interceptor ([e63d991](https://github.com/google/adk-python/commit/e63d991be84e373fd31be29d4b6b0e32fdbde557))
+* emit a `TaskStatusUpdateEvent` for ADK events with no output parts but with event.actions ([dcc485b](https://github.com/google/adk-python/commit/dcc485b23e3509e2e386636d841033b91c9a401c))
+* Live avatar support in ADK ([a64a8e4](https://github.com/google/adk-python/commit/a64a8e46480753439b91b9cfd41fd190b4dad493))
+* **live:** expose live_session_resumption_update as Event in BaseLlmFlow ([2626ad7](https://github.com/google/adk-python/commit/2626ad7c69fb64a88372225d5583085fc08b1fcd)), closes [#4357](https://github.com/google/adk-python/issues/4357)
+* Promote BigQuery tools to Stable ([abcf14c](https://github.com/google/adk-python/commit/abcf14c166baf4f8cc6e919b1eb4c063bf3a92af))
+* **samples:** add sample for skill activation via environment tools ([2cbb523](https://github.com/google/adk-python/commit/2cbb52306910fac994fe1d29bdfcfacb258703b4))
+
+
+### Bug Fixes
+
+* Add "gcloud config unset project" command to express mode flow ([e7d8160](https://github.com/google/adk-python/commit/e7d81604126cbdb4d9ee4624e1d1410b06585750))
+* avoid load all agents in adk web server ([cb4dd42](https://github.com/google/adk-python/commit/cb4dd42eff2df6d20c5e53211718ecb023f127fc))
+* Change express mode user flow so it's more clear that an express mode project is being created ([0fedb3b](https://github.com/google/adk-python/commit/0fedb3b5eb2074999d8ccdb839e054ea80da486f))
+* Custom pickling in McpToolset to exclude unpicklable objects like errlog ([d62558c](https://github.com/google/adk-python/commit/d62558cc2d7d6c0372e43c9f009c8c7a6863ff0a))
+* Fix credential leakage vulnerability in Agent Registry ([e3567a6](https://github.com/google/adk-python/commit/e3567a65196bb453cdac4a5ae42f7f079476d748))
+* Include a link to the deployed agent ([547766a](https://github.com/google/adk-python/commit/547766a47779915a8a47745237a46882a02dae9a))
+* preserve interaction ids for interactions SSE tool calls ([9a19304](https://github.com/google/adk-python/commit/9a1930407a4eff67093ea9f14292f1931631a661)), closes [#5169](https://github.com/google/adk-python/issues/5169)
+* validate user_id and session_id against path traversal ([cbcb5e6](https://github.com/google/adk-python/commit/cbcb5e6002b5bae89de5309caf7b9bb02d563cfc)), closes [#5110](https://github.com/google/adk-python/issues/5110)
+
 ## [1.29.0](https://github.com/google/adk-python/compare/v1.28.0...v1.29.0) (2026-04-09)
 
 
