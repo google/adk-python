@@ -328,25 +328,11 @@ class A2aAgentExecutor(AgentExecutor):
       run_request: AgentRunRequest,
       runner: Runner,
   ):
-
-    session_id = run_request.session_id
-    # create a new session if not exists
-    user_id = run_request.user_id
-    session = await runner.session_service.get_session(
-        app_name=runner.app_name,
-        user_id=user_id,
-        session_id=session_id,
+    session = await runner._get_or_create_session(
+        user_id=run_request.user_id,
+        session_id=run_request.session_id,
     )
-    if session is None:
-      session = await runner.session_service.create_session(
-          app_name=runner.app_name,
-          user_id=user_id,
-          state={},
-          session_id=session_id,
-      )
-      # Update run_request with the new session_id
-      run_request.session_id = session.id
-
+    run_request.session_id = session.id
     return session
 
   def _check_new_version_extension(self, context: RequestContext):
