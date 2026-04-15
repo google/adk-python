@@ -2113,6 +2113,93 @@ tools:
   assert "args" in response.json()["detail"]
 
 
+def test_builder_save_rejects_dotted_tool_name(builder_test_client, tmp_path):
+  """Uploading YAML with a dotted tool name is rejected (import prevention)."""
+  yaml_with_dotted_tool = b"""\
+name: my_agent
+tools:
+  - name: os.system
+"""
+  response = builder_test_client.post(
+      "/builder/save?tmp=true",
+      files=[(
+          "files",
+          ("app/root_agent.yaml", yaml_with_dotted_tool, "application/x-yaml"),
+      )],
+  )
+  assert response.status_code == 400
+  assert "os.system" in response.json()["detail"]
+  assert not (tmp_path / "app" / "tmp" / "app" / "root_agent.yaml").exists()
+
+
+def test_builder_save_rejects_dotted_agent_class(builder_test_client, tmp_path):
+  """Uploading YAML with a dotted agent_class is rejected."""
+  yaml_with_dotted_class = b"""\
+agent_class: evil.module.MyAgent
+name: my_agent
+"""
+  response = builder_test_client.post(
+      "/builder/save?tmp=true",
+      files=[(
+          "files",
+          ("app/root_agent.yaml", yaml_with_dotted_class, "application/x-yaml"),
+      )],
+  )
+  assert response.status_code == 400
+  assert "evil.module.MyAgent" in response.json()["detail"]
+
+
+def test_builder_save_rejects_dotted_code_ref(builder_test_client, tmp_path):
+  """Uploading YAML with a dotted code reference is rejected."""
+  yaml_with_dotted_code = b"""\
+name: my_agent
+sub_agents:
+  - code: evil.module.my_agent
+"""
+  response = builder_test_client.post(
+      "/builder/save?tmp=true",
+      files=[(
+          "files",
+          ("app/root_agent.yaml", yaml_with_dotted_code, "application/x-yaml"),
+      )],
+  )
+  assert response.status_code == 400
+  assert "evil.module.my_agent" in response.json()["detail"]
+
+
+def test_builder_save_allows_simple_tool_name(builder_test_client, tmp_path):
+  """Uploading YAML with a simple (non-dotted) tool name is allowed."""
+  yaml_with_simple_tool = b"""\
+name: my_agent
+tools:
+  - name: google_search
+"""
+  response = builder_test_client.post(
+      "/builder/save?tmp=true",
+      files=[(
+          "files",
+          ("app/root_agent.yaml", yaml_with_simple_tool, "application/x-yaml"),
+      )],
+  )
+  assert response.status_code == 200
+
+
+def test_builder_save_allows_simple_agent_class(builder_test_client, tmp_path):
+  """Uploading YAML with a simple agent_class (e.g. LlmAgent) is allowed."""
+  yaml_with_simple_class = b"""\
+agent_class: LlmAgent
+name: my_agent
+"""
+  response = builder_test_client.post(
+      "/builder/save?tmp=true",
+      files=[(
+          "files",
+          ("app/root_agent.yaml", yaml_with_simple_class, "application/x-yaml"),
+      )],
+  )
+  assert response.status_code == 200
+
+
 def test_builder_get_rejects_non_yaml_file_paths(builder_test_client, tmp_path):
   """GET /builder/app/{app_name}?file_path=... rejects non-YAML extensions."""
   app_root = tmp_path / "app"

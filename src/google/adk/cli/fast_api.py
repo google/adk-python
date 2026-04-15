@@ -307,8 +307,15 @@ def get_fast_api_app(
     # Block any upload that contains an `args` key anywhere in the document.
     _BLOCKED_YAML_KEYS = frozenset({"args"})
 
+    # Fields that accept fully-qualified Python names and feed into
+    # importlib.import_module() at agent load time.  Dotted values in
+    # these fields cause module-level code execution from any installed
+    # package.  Builder uploads must use simple (non-dotted) names that
+    # resolve to ADK built-in types only.
+    _IMPORT_REFERENCE_KEYS = frozenset({"name", "agent_class", "code"})
+
     def _check_yaml_for_blocked_keys(content: bytes, filename: str) -> None:
-      """Raise if the YAML document contains any blocked keys."""
+      """Raise if the YAML document contains blocked keys or code refs."""
       import yaml
 
       try:
@@ -324,6 +331,17 @@ def get_fast_api_app(
                   f"Blocked key {key!r} found in {filename!r}. "
                   f"The '{key}' field is not allowed in builder uploads "
                   "because it can execute arbitrary code."
+              )
+            if (
+                key in _IMPORT_REFERENCE_KEYS
+                and isinstance(value, str)
+                and "." in value
+            ):
+              raise ValueError(
+                  f"Fully qualified Python reference in '{key}':"
+                  f" {value!r} in {filename!r} is not allowed in"
+                  " builder uploads. Only simple (non-dotted) names"
+                  " that resolve to ADK built-in types are permitted."
               )
             _walk(value)
         elif isinstance(node, list):
