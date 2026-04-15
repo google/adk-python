@@ -81,11 +81,11 @@ async def test_send_history(gemini_connection, mock_gemini_session):
 
   await gemini_connection.send_history(history)
 
-  mock_gemini_session.send.assert_called_once()
-  call_args = mock_gemini_session.send.call_args[1]
-  assert 'input' in call_args
-  assert call_args['input'].turns == history
-  assert call_args['input'].turn_complete is False  # Last message is from model
+  mock_gemini_session.send_client_content.assert_called_once()
+  call_args = mock_gemini_session.send_client_content.call_args[1]
+  assert 'turns' in call_args
+  assert call_args['turns'] == history
+  assert call_args['turn_complete'] is False  # Last message is from model
 
 
 @pytest.mark.asyncio
@@ -118,10 +118,10 @@ async def test_send_content_function_response(
 
   await gemini_connection.send_content(content)
 
-  mock_gemini_session.send.assert_called_once()
-  call_args = mock_gemini_session.send.call_args[1]
-  assert 'input' in call_args
-  assert call_args['input'].function_responses == [function_response]
+  mock_gemini_session.send_tool_response.assert_called_once()
+  call_args = mock_gemini_session.send_tool_response.call_args[1]
+  assert 'function_responses' in call_args
+  assert call_args['function_responses'] == [function_response]
 
 
 @pytest.mark.asyncio
@@ -668,9 +668,9 @@ async def test_send_history_filters_audio(mock_gemini_session, audio_part):
 
   await connection.send_history(history)
 
-  mock_gemini_session.send.assert_called_once()
-  call_args = mock_gemini_session.send.call_args[1]
-  sent_contents = call_args['input'].turns
+  mock_gemini_session.send_client_content.assert_called_once()
+  call_args = mock_gemini_session.send_client_content.call_args[1]
+  sent_contents = call_args['turns']
   # Only the model response should be sent (user audio filtered out)
   assert len(sent_contents) == 1
   assert sent_contents[0].role == 'model'
@@ -696,9 +696,9 @@ async def test_send_history_keeps_image_data(mock_gemini_session):
 
   await connection.send_history(history)
 
-  mock_gemini_session.send.assert_called_once()
-  call_args = mock_gemini_session.send.call_args[1]
-  sent_contents = call_args['input'].turns
+  mock_gemini_session.send_client_content.assert_called_once()
+  call_args = mock_gemini_session.send_client_content.call_args[1]
+  sent_contents = call_args['turns']
   # Both contents should be sent (image is not filtered)
   assert len(sent_contents) == 2
   assert sent_contents[0].parts[0].inline_data == image_blob
@@ -728,9 +728,9 @@ async def test_send_history_mixed_content_filters_only_audio(
 
   await connection.send_history(history)
 
-  mock_gemini_session.send.assert_called_once()
-  call_args = mock_gemini_session.send.call_args[1]
-  sent_contents = call_args['input'].turns
+  mock_gemini_session.send_client_content.assert_called_once()
+  call_args = mock_gemini_session.send_client_content.call_args[1]
+  sent_contents = call_args['turns']
   # Content should be sent but only with the text part
   assert len(sent_contents) == 1
   assert len(sent_contents[0].parts) == 1
