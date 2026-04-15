@@ -21,9 +21,25 @@ logger = logging.getLogger('google_adk.' + __name__)
 
 __all__ = [
     'BaseMemoryService',
+    'DatabaseMemoryService',
     'InMemoryMemoryService',
     'VertexAiMemoryBankService',
 ]
+
+
+def __getattr__(name: str):
+  if name == 'DatabaseMemoryService':
+    try:
+      from .database_memory_service import DatabaseMemoryService
+
+      return DatabaseMemoryService
+    except ImportError as e:
+      raise ImportError(
+          'DatabaseMemoryService requires sqlalchemy>=2.0, please ensure it is'
+          ' installed correctly.'
+      ) from e
+  raise AttributeError(f'module {__name__!r} has no attribute {name!r}')
+
 
 try:
   from .vertex_ai_rag_memory_service import VertexAiRagMemoryService
