@@ -44,6 +44,7 @@ class FakeRunner(Runner):
         app_name="FakeApp",
         agent=agent,
         session_service=session_service,
+        auto_create_session=True,
     )
     self.run_async_fn = run_async_fn
 
