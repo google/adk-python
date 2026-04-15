@@ -402,10 +402,16 @@ class AnthropicLlm(BaseLlm):
         else NOT_GIVEN
     )
 
+    system = (
+        llm_request.config.system_instruction
+        if llm_request.config and llm_request.config.system_instruction
+        else NOT_GIVEN
+    )
+
     if not stream:
       message = await self._anthropic_client.messages.create(
           model=model_to_use,
-          system=llm_request.config.system_instruction,
+          system=system,
           messages=messages,
           tools=tools,
           tool_choice=tool_choice,
@@ -431,9 +437,14 @@ class AnthropicLlm(BaseLlm):
     a final aggregated LlmResponse with all content.
     """
     model_to_use = self._resolve_model_name(llm_request.model)
+    system = (
+        llm_request.config.system_instruction
+        if llm_request.config and llm_request.config.system_instruction
+        else NOT_GIVEN
+    )
     raw_stream = await self._anthropic_client.messages.create(
         model=model_to_use,
-        system=llm_request.config.system_instruction,
+        system=system,
         messages=messages,
         tools=tools,
         tool_choice=tool_choice,
