@@ -142,6 +142,7 @@ def to_a2a(
         session_service=InMemorySessionService(),
         memory_service=InMemoryMemoryService(),
         credential_service=InMemoryCredentialService(),
+        auto_create_session=True,
     )
 
   # Create A2A components
