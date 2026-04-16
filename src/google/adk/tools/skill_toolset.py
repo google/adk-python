@@ -165,7 +165,7 @@ class LoadSkillTool(BaseTool):
     agent_name = tool_context.agent_name
     state_key = f"_adk_activated_skill_{agent_name}"
 
-    activated_skills = list(tool_context.state.get(state_key, []))
+    activated_skills = list(tool_context.state.get(state_key) or [])
     if skill_name not in activated_skills:
       activated_skills.append(skill_name)
       tool_context.state[state_key] = activated_skills
@@ -732,7 +732,6 @@ class RunSkillScriptTool(BaseTool):
           "error_code": "SKILL_NOT_FOUND",
       }
 
-    script = None
     if file_path.startswith("scripts/"):
       script = skill.resources.get_script(file_path[len("scripts/") :])
     else:
@@ -845,7 +844,7 @@ class SkillToolset(BaseToolset):
 
     agent_name = readonly_context.agent_name
     state_key = f"_adk_activated_skill_{agent_name}"
-    activated_skills = readonly_context.state.get(state_key, [])
+    activated_skills = readonly_context.state.get(state_key) or []
 
     if not activated_skills:
       return []

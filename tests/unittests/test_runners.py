@@ -139,6 +139,7 @@ class MockPlugin(BasePlugin):
       "Modified user message ON_USER_CALLBACK_MSG from MockPlugin"
   )
   ON_EVENT_CALLBACK_MSG = "Modified event ON_EVENT_CALLBACK_MSG from MockPlugin"
+  ON_EVENT_CALLBACK_METADATA = {"plugin_key": "plugin_value"}
 
   def __init__(self):
     super().__init__(name="mock_plugin")
@@ -184,6 +185,7 @@ class MockPlugin(BasePlugin):
             ],
             role=event.content.role,
         ),
+        custom_metadata=self.ON_EVENT_CALLBACK_METADATA,
     )
 
 
@@ -357,6 +359,60 @@ async def test_run_live_auto_create_session():
       app_name="live_app", user_id="user", session_id="missing"
   )
   assert session is not None
+
+
+@pytest.mark.asyncio
+async def test_run_live_persists_event_callback_modifications():
+  """run_live should persist the same event it streams after callback changes."""
+  session_service = InMemorySessionService()
+  artifact_service = InMemoryArtifactService()
+  plugin = MockPlugin()
+  plugin.enable_event_callback = True
+  runner = Runner(
+      app_name="live_app",
+      agent=MockLiveAgent("live_agent"),
+      session_service=session_service,
+      artifact_service=artifact_service,
+      plugins=[plugin],
+  )
+  await session_service.create_session(
+      app_name="live_app", user_id="user", session_id="live_session"
+  )
+
+  from google.adk.agents.live_request_queue import LiveRequestQueue
+
+  live_queue = LiveRequestQueue()
+  agen = runner.run_live(
+      user_id="user",
+      session_id="live_session",
+      live_request_queue=live_queue,
+  )
+
+  streamed_event = await agen.__anext__()
+  await agen.aclose()
+
+  session = await session_service.get_session(
+      app_name="live_app", user_id="user", session_id="live_session"
+  )
+  persisted_event = session.events[0]
+
+  assert streamed_event.author == "live_agent"
+  assert streamed_event.invocation_id
+  assert streamed_event.content.parts[0].text == (
+      MockPlugin.ON_EVENT_CALLBACK_MSG
+  )
+  assert streamed_event.custom_metadata == MockPlugin.ON_EVENT_CALLBACK_METADATA
+
+  assert persisted_event.id == streamed_event.id
+  assert persisted_event.timestamp == streamed_event.timestamp
+  assert persisted_event.author == streamed_event.author
+  assert persisted_event.invocation_id == streamed_event.invocation_id
+  assert persisted_event.content.parts[0].text == (
+      MockPlugin.ON_EVENT_CALLBACK_MSG
+  )
+  assert (
+      persisted_event.custom_metadata == MockPlugin.ON_EVENT_CALLBACK_METADATA
+  )
 
 
 @pytest.mark.asyncio
@@ -746,6 +802,39 @@ class TestRunnerWithPlugins:
     modified_event_message = generated_event.content.parts[0].text
 
     assert modified_event_message == MockPlugin.ON_EVENT_CALLBACK_MSG
+
+  @pytest.mark.asyncio
+  async def test_runner_persists_event_callback_modifications(self):
+    """Event callback output should be persisted, not only streamed."""
+    self.plugin.enable_event_callback = True
+
+    events = await self.run_test()
+    streamed_event = events[0]
+
+    session = await self.session_service.get_session(
+        app_name=TEST_APP_ID, user_id=TEST_USER_ID, session_id=TEST_SESSION_ID
+    )
+    persisted_event = session.events[1]
+
+    assert streamed_event.author == "test_agent"
+    assert streamed_event.invocation_id
+    assert streamed_event.content.parts[0].text == (
+        MockPlugin.ON_EVENT_CALLBACK_MSG
+    )
+    assert (
+        streamed_event.custom_metadata == MockPlugin.ON_EVENT_CALLBACK_METADATA
+    )
+
+    assert persisted_event.id == streamed_event.id
+    assert persisted_event.timestamp == streamed_event.timestamp
+    assert persisted_event.author == streamed_event.author
+    assert persisted_event.invocation_id == streamed_event.invocation_id
+    assert persisted_event.content.parts[0].text == (
+        MockPlugin.ON_EVENT_CALLBACK_MSG
+    )
+    assert (
+        persisted_event.custom_metadata == MockPlugin.ON_EVENT_CALLBACK_METADATA
+    )
 
   @pytest.mark.asyncio
   async def test_runner_close_calls_plugin_close(self):
