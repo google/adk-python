@@ -236,7 +236,7 @@ def test_agent_engine_app_template_compiles_with_windows_paths() -> None:
       adk_app_type="agent",
       trace_to_cloud_option=False,
       express_mode=False,
-      agent_module='agent',
+      agent_module="agent",
   )
   compile(rendered, "<agent_engine_app.py>", "exec")
 
