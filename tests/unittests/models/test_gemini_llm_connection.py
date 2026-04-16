@@ -25,7 +25,9 @@ MODEL_VERSION = 'gemini-2.5-pro'
 @pytest.fixture
 def mock_gemini_session():
   """Mock Gemini session for testing."""
-  return mock.AsyncMock()
+  mock_session = mock.AsyncMock()
+  mock_session.session_id = 'test-session-id'
+  return mock_session
 
 
 @pytest.fixture
@@ -245,6 +247,41 @@ async def test_receive_usage_metadata_and_server_content(
   )
   assert usage_response.usage_metadata == expected_usage
   assert content_response.content == mock_content
+
+
+async def test_receive_populates_live_session_id(
+    gemini_connection, mock_gemini_session
+):
+  """Test that receive populates live_session_id in LlmResponse."""
+  mock_message = mock.AsyncMock()
+  mock_message.usage_metadata = None
+  mock_message.server_content = None
+  mock_message.tool_call = None
+  mock_message.session_resumption_update = None
+  mock_message.go_away = None
+
+  mock_server_content = mock.Mock()
+  mock_server_content.model_turn = types.Content(
+      role='model', parts=[types.Part.from_text(text='text')]
+  )
+  mock_server_content.interrupted = False
+  mock_server_content.input_transcription = None
+  mock_server_content.output_transcription = None
+  mock_server_content.turn_complete = False
+  mock_server_content.grounding_metadata = None
+
+  mock_message.server_content = mock_server_content
+
+  async def mock_receive_generator():
+    yield mock_message
+
+  mock_gemini_session.receive = mock.Mock(return_value=mock_receive_generator())
+
+  responses = [resp async for resp in gemini_connection.receive()]
+
+  assert responses
+  for resp in responses:
+    assert resp.live_session_id == 'test-session-id'
 
 
 @pytest.mark.asyncio
