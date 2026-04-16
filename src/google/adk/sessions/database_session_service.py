@@ -480,7 +480,7 @@ class DatabaseSessionService(BaseSessionService):
           storage_app_state.state, storage_user_state.state, session_state
       )
       session = storage_session.to_session(
-          state=merged_state, is_sqlite=is_sqlite
+          state=merged_state, is_sqlite=is_sqlite, is_postgresql=is_postgresql
       )
     return session
 
@@ -498,6 +498,8 @@ class DatabaseSessionService(BaseSessionService):
     # 2. Get all the events based on session id and filtering config
     # 3. Convert and return the session
     schema = self._get_schema_classes()
+    is_sqlite = self.db_engine.dialect.name == _SQLITE_DIALECT
+    is_postgresql = self.db_engine.dialect.name == _POSTGRESQL_DIALECT
     async with self._rollback_on_exception_session(
         read_only=True
     ) as sql_session:
@@ -543,9 +545,11 @@ class DatabaseSessionService(BaseSessionService):
 
       # Convert storage session to session
       events = [e.to_event() for e in reversed(storage_events)]
-      is_sqlite = self.db_engine.dialect.name == _SQLITE_DIALECT
       session = storage_session.to_session(
-          state=merged_state, events=events, is_sqlite=is_sqlite
+          state=merged_state,
+          events=events,
+          is_sqlite=is_sqlite,
+          is_postgresql=is_postgresql,
       )
     return session
 
@@ -592,12 +596,17 @@ class DatabaseSessionService(BaseSessionService):
 
       sessions = []
       is_sqlite = self.db_engine.dialect.name == _SQLITE_DIALECT
+      is_postgresql = self.db_engine.dialect.name == _POSTGRESQL_DIALECT
       for storage_session in results:
         session_state = storage_session.state
         user_state = user_states_map.get(storage_session.user_id, {})
         merged_state = _merge_state(app_state, user_state, session_state)
         sessions.append(
-            storage_session.to_session(state=merged_state, is_sqlite=is_sqlite)
+            storage_session.to_session(
+                state=merged_state,
+                is_sqlite=is_sqlite,
+                is_postgresql=is_postgresql,
+            )
         )
       return ListSessionsResponse(sessions=sessions)
 
@@ -633,6 +642,7 @@ class DatabaseSessionService(BaseSessionService):
     # 3. Store the new event.
     schema = self._get_schema_classes()
     is_sqlite = self.db_engine.dialect.name == _SQLITE_DIALECT
+    is_postgresql = self.db_engine.dialect.name == _POSTGRESQL_DIALECT
     use_row_level_locking = self._supports_row_level_locking()
 
     state_delta = (
@@ -662,7 +672,9 @@ class DatabaseSessionService(BaseSessionService):
         storage_session = storage_session_result.scalars().one_or_none()
         if storage_session is None:
           raise ValueError(f"Session {session.id} not found.")
-        storage_update_time = storage_session.get_update_timestamp(is_sqlite)
+        storage_update_time = storage_session.get_update_timestamp(
+            is_sqlite, is_postgresql
+        )
         storage_update_marker = storage_session.get_update_marker()
 
         storage_app_state = await _select_required_state(
@@ -728,12 +740,12 @@ class DatabaseSessionService(BaseSessionService):
               storage_session.state | state_deltas["session"]
           )
 
-        if is_sqlite:
+        if is_sqlite or is_postgresql:
           update_time = datetime.fromtimestamp(
               event.timestamp, timezone.utc
           ).replace(tzinfo=None)
         else:
-          update_time = datetime.fromtimestamp(event.timestamp)
+          update_time = datetime.fromtimestamp(event.timestamp, timezone.utc)
         storage_session.update_time = update_time
         sql_session.add(schema.StorageEvent.from_event(session, event))
 
@@ -741,7 +753,7 @@ class DatabaseSessionService(BaseSessionService):
 
         # Update timestamp with commit time
         session.last_update_time = storage_session.get_update_timestamp(
-            is_sqlite
+            is_sqlite, is_postgresql
         )
         session._storage_update_marker = storage_session.get_update_marker()
 
