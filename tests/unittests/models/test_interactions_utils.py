@@ -14,13 +14,183 @@
 
 """Tests for interactions_utils.py conversion functions."""
 
+import asyncio
 import base64
+from collections.abc import Callable
+from datetime import datetime
+from datetime import timezone
 import json
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 from google.adk.models import interactions_utils
 from google.adk.models.llm_request import LlmRequest
 from google.genai import types
+from google.genai._interactions.types.interaction import Interaction
+from google.genai._interactions.types.interaction_complete_event import InteractionCompleteEvent
+from google.genai._interactions.types.interaction_start_event import InteractionStartEvent
+from google.genai._interactions.types.interaction_status_update import InteractionStatusUpdate
+import pytest
+
+
+class _MockAsyncIterator:
+  """Simple async iterator for streaming interaction events."""
+
+  def __init__(self, sequence: list[object]):
+    self._iterator = iter(sequence)
+
+  def __aiter__(self):
+    return self
+
+  async def __anext__(self):
+    try:
+      return next(self._iterator)
+    except StopIteration as exc:
+      raise StopAsyncIteration from exc
+
+
+class _FakeInteractions:
+  """Minimal fake interactions resource for streaming tests."""
+
+  def __init__(self, events: list[object]):
+    self._events = events
+
+  async def create(self, **_kwargs):
+    return _MockAsyncIterator(self._events)
+
+
+class _FakeAio:
+  """Namespace matching the expected api_client.aio shape."""
+
+  def __init__(self, events: list[object]):
+    self.interactions = _FakeInteractions(events)
+
+
+class _FakeApiClient:
+  """Minimal fake API client for generate_content_via_interactions tests."""
+
+  def __init__(self, events: list[object]):
+    self.aio = _FakeAio(events)
+
+
+def _build_function_call_delta_event(
+    *, function_id: str, name: str, arguments: dict[str, object]
+) -> SimpleNamespace:
+  """Build a version-agnostic content.delta event for a function call."""
+  return SimpleNamespace(
+      event_type='content.delta',
+      delta=SimpleNamespace(
+          type='function_call',
+          id=function_id,
+          name=name,
+          arguments=arguments,
+      ),
+  )
+
+
+def _build_llm_request() -> LlmRequest:
+  """Build a minimal request for interactions streaming tests."""
+  return LlmRequest(
+      model='gemini-2.5-flash',
+      contents=[
+          types.Content(
+              role='user',
+              parts=[types.Part(text='Weather in Tokyo?')],
+          )
+      ],
+      config=types.GenerateContentConfig(),
+  )
+
+
+def _build_lifecycle_streamed_events() -> list[object]:
+  """Build streamed events with lifecycle updates carrying the ID."""
+  now = datetime.now(timezone.utc)
+  return [
+      InteractionStartEvent(
+          event_type='interaction.start',
+          interaction=Interaction(
+              id='interaction_123',
+              created=now,
+              updated=now,
+              status='in_progress',
+          ),
+      ),
+      _build_function_call_delta_event(
+          function_id='call_1',
+          name='get_weather',
+          arguments={'city': 'Tokyo'},
+      ),
+      InteractionStatusUpdate(
+          event_type='interaction.status_update',
+          interaction_id='interaction_123',
+          status='requires_action',
+      ),
+  ]
+
+
+def _build_complete_streamed_events() -> list[object]:
+  """Build streamed events with the ID on an interaction.complete event."""
+  now = datetime.now(timezone.utc)
+  return [
+      _build_function_call_delta_event(
+          function_id='call_1',
+          name='get_weather',
+          arguments={'city': 'Tokyo'},
+      ),
+      InteractionCompleteEvent(
+          event_type='interaction.complete',
+          interaction=Interaction(
+              id='interaction_complete_123',
+              created=now,
+              updated=now,
+              status='requires_action',
+          ),
+      ),
+  ]
+
+
+def _build_legacy_streamed_events() -> list[object]:
+  """Build streamed events with the ID on the legacy interaction event."""
+  return [
+      _build_function_call_delta_event(
+          function_id='call_1',
+          name='get_weather',
+          arguments={'city': 'Tokyo'},
+      ),
+      SimpleNamespace(
+          event_type='interaction',
+          id='interaction_legacy_123',
+          status='requires_action',
+          error=None,
+          outputs=None,
+          usage=None,
+      ),
+  ]
+
+
+async def _collect_function_call_interaction_ids(
+    streamed_events: list[object],
+) -> list[str | None]:
+  """Collect non-partial function call interaction IDs from streamed events."""
+  responses = [
+      response
+      async for response in (
+          interactions_utils.generate_content_via_interactions(
+              api_client=_FakeApiClient(streamed_events),
+              llm_request=_build_llm_request(),
+              stream=True,
+          )
+      )
+  ]
+
+  return [
+      response.interaction_id
+      for response in responses
+      if response.partial is not True
+      and response.content is not None
+      and response.content.parts
+      and response.content.parts[0].function_call is not None
+  ]
 
 
 class TestConvertPartToInteractionContent:
@@ -955,3 +1125,36 @@ class TestConvertInteractionEventToLlmResponse:
 
     assert result is None
     assert not aggregated_parts
+
+
+@pytest.mark.parametrize(
+    ('streamed_events_factory', 'expected_ids'),
+    [
+        pytest.param(
+            _build_lifecycle_streamed_events,
+            ['interaction_123', 'interaction_123'],
+            id='lifecycle-events',
+        ),
+        pytest.param(
+            _build_complete_streamed_events,
+            ['interaction_complete_123'],
+            id='complete-event',
+        ),
+        pytest.param(
+            _build_legacy_streamed_events,
+            ['interaction_legacy_123'],
+            id='legacy-event',
+        ),
+    ],
+)
+def test_generate_content_via_interactions_stream_extracts_interaction_id(
+    streamed_events_factory: Callable[[], list[object]],
+    expected_ids: list[str],
+):
+  """Streamed interaction IDs should be preserved across event variants."""
+  streamed_events = streamed_events_factory()
+
+  assert (
+      asyncio.run(_collect_function_call_interaction_ids(streamed_events))
+      == expected_ids
+  )

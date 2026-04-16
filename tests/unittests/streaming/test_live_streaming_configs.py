@@ -642,3 +642,90 @@ def test_streaming_with_context_window_compression_config():
       llm_request_sent_to_mock.live_connect_config.context_window_compression.sliding_window.target_tokens
       == 500
   )
+
+
+def test_streaming_with_avatar_config():
+  """Test avatar_config propagation and video content through run_live.
+
+  Verifies:
+    1. avatar_config from RunConfig is propagated to live_connect_config.
+    2. Video inline_data from the model flows through events correctly.
+  """
+  # Mock model returns video content followed by turn_complete.
+  video_response = LlmResponse(
+      content=types.Content(
+          role='model',
+          parts=[
+              types.Part(
+                  inline_data=types.Blob(
+                      data=b'video_data', mime_type='video/mp4'
+                  )
+              )
+          ],
+      ),
+  )
+  turn_complete_response = LlmResponse(
+      turn_complete=True,
+  )
+
+  mock_model = testing_utils.MockModel.create(
+      [video_response, turn_complete_response]
+  )
+
+  root_agent = Agent(
+      name='root_agent',
+      model=mock_model,
+      tools=[],
+  )
+
+  runner = testing_utils.InMemoryRunner(
+      root_agent=root_agent, response_modalities=['VIDEO']
+  )
+
+  run_config = RunConfig(
+      response_modalities=['VIDEO'],
+      avatar_config=types.AvatarConfig(avatar_name='Kai'),
+  )
+
+  live_request_queue = LiveRequestQueue()
+  live_request_queue.send_realtime(
+      blob=types.Blob(data=b'\x00\xFF', mime_type='audio/pcm')
+  )
+  res_events = runner.run_live(live_request_queue, run_config)
+
+  assert res_events is not None, 'Expected a list of events, got None.'
+  assert (
+      len(res_events) > 0
+  ), 'Expected at least one response, but got an empty list.'
+  assert len(mock_model.requests) == 1
+
+  # 1. Verify avatar_config was propagated to the live_connect_config.
+  llm_request_sent_to_mock = mock_model.requests[0]
+  assert llm_request_sent_to_mock.live_connect_config is not None
+  assert llm_request_sent_to_mock.live_connect_config.avatar_config is not None
+  assert (
+      llm_request_sent_to_mock.live_connect_config.avatar_config.avatar_name
+      == 'Kai'
+  )
+
+  # 2. Verify video content flows through events.
+  video_events = [
+      e
+      for e in res_events
+      if e.content
+      and e.content.parts
+      and any(
+          p.inline_data
+          and p.inline_data.mime_type
+          and p.inline_data.mime_type.startswith('video/')
+          for p in e.content.parts
+      )
+  ]
+  assert video_events, 'Expected at least one event with video inline_data.'
+
+  video_event = video_events[0]
+  assert video_event.content.role == 'model'
+  video_part = video_event.content.parts[0]
+  assert video_part.inline_data is not None
+  assert video_part.inline_data.data == b'video_data'
+  assert video_part.inline_data.mime_type == 'video/mp4'

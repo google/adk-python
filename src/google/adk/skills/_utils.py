@@ -20,6 +20,7 @@ import logging
 import pathlib
 from typing import Union
 
+from google.auth import credentials as auth
 from google.cloud import storage
 from pydantic import ValidationError
 import yaml
@@ -301,6 +302,8 @@ def _list_skills_in_dir(
 def _list_skills_in_gcs_dir(
     bucket_name: str,
     skills_base_path: str = "",
+    project_id: str | None = None,
+    credentials: auth.Credentials | None = None,
 ) -> Dict[str, models.Frontmatter]:
   """List skills in a GCS directory.
 
@@ -311,7 +314,7 @@ def _list_skills_in_gcs_dir(
   Returns:
     Dictionary mapping skill IDs to their frontmatter.
   """
-  client = storage.Client()
+  client = storage.Client(project=project_id, credentials=credentials)
   bucket = client.bucket(bucket_name)
 
   base_prefix = skills_base_path.strip("/")
@@ -350,6 +353,8 @@ def _load_skill_from_gcs_dir(
     bucket_name: str,
     skill_id: str,
     skills_base_path: str = "",
+    project_id: str | None = None,
+    credentials: auth.Credentials | None = None,
 ) -> models.Skill:
   """Load a complete skill from a GCS directory.
 
@@ -357,6 +362,8 @@ def _load_skill_from_gcs_dir(
     bucket_name: Name of the GCS bucket.
     skill_id: The ID of the skill (directory name).
     skills_base_path: Base directory within the bucket (e.g., 'path/to/skills').
+    project_id: Project ID to use for GCS client.
+    credentials: Credentials to use for GCS client.
 
   Returns:
     Skill object with all components loaded.
@@ -366,7 +373,8 @@ def _load_skill_from_gcs_dir(
     ValueError: If SKILL.md is invalid or the skill name does not match
       the directory name.
   """
-  client = storage.Client()
+
+  client = storage.Client(project=project_id, credentials=credentials)
   bucket = client.bucket(bucket_name)
 
   base_prefix = skills_base_path.strip("/")

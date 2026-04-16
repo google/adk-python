@@ -198,6 +198,9 @@ class RunConfig(BaseModel):
   response_modalities: Optional[list[str]] = None
   """The output modalities. If not set, it's default to AUDIO."""
 
+  avatar_config: Optional[types.AvatarConfig] = None
+  """Avatar configuration for the live agent."""
+
   save_input_blobs_as_artifacts: bool = Field(
       default=False,
       deprecated=True,

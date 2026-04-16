@@ -90,6 +90,9 @@ def _build_basic_request(
   llm_request.live_connect_config.context_window_compression = (
       invocation_context.run_config.context_window_compression
   )
+  llm_request.live_connect_config.avatar_config = (
+      invocation_context.run_config.avatar_config
+  )
 
 
 class _BasicLlmRequestProcessor(BaseLlmRequestProcessor):

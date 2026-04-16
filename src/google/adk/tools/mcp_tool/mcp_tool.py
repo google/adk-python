@@ -479,6 +479,9 @@ class McpTool(BaseAuthenticatedTool):
                   f" {credential.http.credentials.token}"
               )
           }
+        if credential.http.additional_headers:
+          headers = headers or {}
+          headers.update(credential.http.additional_headers)
       elif credential.api_key:
         if (
             not self._credentials_manager
