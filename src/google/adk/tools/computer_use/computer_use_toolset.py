@@ -15,6 +15,8 @@
 from __future__ import annotations
 
 import asyncio
+import functools
+import inspect
 import logging
 from typing import Any
 from typing import Callable
@@ -34,7 +36,7 @@ from .base_computer import BaseComputer
 from .computer_use_tool import ComputerUseTool
 
 # Methods that should be excluded when creating tools from BaseComputer methods
-EXCLUDED_METHODS = {"screen_size", "environment", "close"}
+EXCLUDED_METHODS = {"screen_size", "environment", "close", "prepare"}
 
 logger = logging.getLogger("google_adk." + __name__)
 
@@ -56,6 +58,52 @@ class ComputerUseToolset(BaseToolset):
     if not self._initialized:
       await self._computer.initialize()
       self._initialized = True
+
+  def _wrap_method_with_state_binding(
+      self, method: Callable[..., Any]
+  ) -> Callable[..., Any]:
+    """Wrap a computer method to bind session state from tool_context.
+
+    This wrapper intercepts the tool_context parameter injected by ADK's
+    runtime and binds it to the computer's session_state property before
+    calling the actual method. This allows computers to access session
+    state without being coupled to tool_context directly.
+
+    Args:
+      method: The computer method to wrap.
+
+    Returns:
+      A wrapped method that binds session state before calling.
+    """
+    computer = self._computer
+
+    @functools.wraps(method)
+    async def wrapper(
+        *args: Any, tool_context: ToolContext = None, **kwargs: Any
+    ) -> Any:
+      # Prepare computer before each tool call
+      # Computers that need session state (e.g., AgentEngineSandboxComputer)
+      # override prepare() to bind state for sandbox/token sharing
+      if tool_context is not None:
+        await computer.prepare(tool_context)
+
+      # Call the original method (without tool_context - computer doesn't need it)
+      return await method(*args, **kwargs)
+
+    # Create a signature that includes both original parameters and tool_context.
+    # This is needed because FunctionTool filters args based on signature params.
+    orig_sig = inspect.signature(method)
+    new_params = list(orig_sig.parameters.values()) + [
+        inspect.Parameter(
+            "tool_context",
+            inspect.Parameter.KEYWORD_ONLY,
+            default=None,
+            annotation=ToolContext,
+        )
+    ]
+    wrapper.__signature__ = orig_sig.replace(parameters=new_params)
+
+    return wrapper
 
   @staticmethod
   async def adapt_computer_use_tool(
@@ -151,14 +199,20 @@ class ComputerUseToolset(BaseToolset):
       if method_name in EXCLUDED_METHODS:
         continue
 
+      # Skip session_state property
+      if method_name == "session_state":
+        continue
+
       # Check if it's a method defined in Computer class
       attr = getattr(BaseComputer, method_name, None)
       if attr is not None and callable(attr):
         # Get the corresponding method from the concrete instance
         instance_method = getattr(self._computer, method_name)
-        computer_methods.append(instance_method)
+        # Wrap with state binding so session_state is set before each call
+        wrapped_method = self._wrap_method_with_state_binding(instance_method)
+        computer_methods.append(wrapped_method)
 
-    # Create ComputerUseTool instances for each method
+    # Create ComputerUseTool instances for each wrapped method
 
     self._tools = [
         ComputerUseTool(
