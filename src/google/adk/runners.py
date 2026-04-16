@@ -849,15 +849,6 @@ class Runner:
             event=early_exit_event,
         )
       yield early_exit_event
-    elif stop_signal and stop_signal.is_set():
-      # See if the run_async execution is interrupted
-      # If an interruption is called, return an event that signifies as such
-      interrupted_event = Event(
-          invocation_id=invocation_context.invocation_id,
-          author='model',
-          interrupted=True,
-      )
-      yield interrupted_event
     else:
       # Step 2: Otherwise continue with normal execution
       # Note for live/bidi:
@@ -878,6 +869,20 @@ class Runner:
 
       async with Aclosing(execute_fn(invocation_context)) as agen:
         async for event in agen:
+          if stop_signal and stop_signal.is_set():
+            # See if the run_async execution is interrupted
+            # If an interruption is called, return an event that signifies as such
+            interrupted_event = Event(
+                invocation_id=invocation_context.invocation_id,
+                author='model',
+                interrupted=True,
+                content=types.Content(
+                  role='model',
+                  parts=[]
+                )
+            )
+            yield interrupted_event
+
           _apply_run_config_custom_metadata(
               event, invocation_context.run_config
           )
