@@ -82,6 +82,7 @@ class BaseToolset(ABC):
     self.tool_name_prefix = tool_name_prefix
     self._cached_invocation_id: Optional[str] = None
     self._cached_prefixed_tools: Optional[list[BaseTool]] = None
+    self._use_invocation_cache = True
 
   @abstractmethod
   async def get_tools(
@@ -117,7 +118,8 @@ class BaseToolset(ABC):
     invocation_id = readonly_context.invocation_id if readonly_context else None
 
     if (
-        self._cached_prefixed_tools is not None
+        self._use_invocation_cache
+        and self._cached_prefixed_tools is not None
         and self._cached_invocation_id == invocation_id
     ):
       return self._cached_prefixed_tools

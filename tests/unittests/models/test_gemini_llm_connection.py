@@ -25,7 +25,9 @@ MODEL_VERSION = 'gemini-2.5-pro'
 @pytest.fixture
 def mock_gemini_session():
   """Mock Gemini session for testing."""
-  return mock.AsyncMock()
+  mock_session = mock.AsyncMock()
+  mock_session.session_id = 'test-session-id'
+  return mock_session
 
 
 @pytest.fixture
@@ -81,11 +83,11 @@ async def test_send_history(gemini_connection, mock_gemini_session):
 
   await gemini_connection.send_history(history)
 
-  mock_gemini_session.send.assert_called_once()
-  call_args = mock_gemini_session.send.call_args[1]
-  assert 'input' in call_args
-  assert call_args['input'].turns == history
-  assert call_args['input'].turn_complete is False  # Last message is from model
+  mock_gemini_session.send_client_content.assert_called_once()
+  call_args = mock_gemini_session.send_client_content.call_args[1]
+  assert 'turns' in call_args
+  assert call_args['turns'] == history
+  assert call_args['turn_complete'] is False  # Last message is from model
 
 
 @pytest.mark.asyncio
@@ -118,10 +120,10 @@ async def test_send_content_function_response(
 
   await gemini_connection.send_content(content)
 
-  mock_gemini_session.send.assert_called_once()
-  call_args = mock_gemini_session.send.call_args[1]
-  assert 'input' in call_args
-  assert call_args['input'].function_responses == [function_response]
+  mock_gemini_session.send_tool_response.assert_called_once()
+  call_args = mock_gemini_session.send_tool_response.call_args[1]
+  assert 'function_responses' in call_args
+  assert call_args['function_responses'] == [function_response]
 
 
 @pytest.mark.asyncio
@@ -145,6 +147,7 @@ async def test_receive_transcript_finished(
   msg.tool_call = None
   msg.usage_metadata = None
   msg.session_resumption_update = None
+  msg.go_away = None
   msg.server_content.model_turn = None
   msg.server_content.interrupted = False
   msg.server_content.turn_complete = False
@@ -210,6 +213,7 @@ async def test_receive_usage_metadata_and_server_content(
   mock_message.server_content = mock_server_content
   mock_message.tool_call = None
   mock_message.session_resumption_update = None
+  mock_message.go_away = None
 
   async def mock_receive_generator():
     yield mock_message
@@ -245,6 +249,41 @@ async def test_receive_usage_metadata_and_server_content(
   assert content_response.content == mock_content
 
 
+async def test_receive_populates_live_session_id(
+    gemini_connection, mock_gemini_session
+):
+  """Test that receive populates live_session_id in LlmResponse."""
+  mock_message = mock.AsyncMock()
+  mock_message.usage_metadata = None
+  mock_message.server_content = None
+  mock_message.tool_call = None
+  mock_message.session_resumption_update = None
+  mock_message.go_away = None
+
+  mock_server_content = mock.Mock()
+  mock_server_content.model_turn = types.Content(
+      role='model', parts=[types.Part.from_text(text='text')]
+  )
+  mock_server_content.interrupted = False
+  mock_server_content.input_transcription = None
+  mock_server_content.output_transcription = None
+  mock_server_content.turn_complete = False
+  mock_server_content.grounding_metadata = None
+
+  mock_message.server_content = mock_server_content
+
+  async def mock_receive_generator():
+    yield mock_message
+
+  mock_gemini_session.receive = mock.Mock(return_value=mock_receive_generator())
+
+  responses = [resp async for resp in gemini_connection.receive()]
+
+  assert responses
+  for resp in responses:
+    assert resp.live_session_id == 'test-session-id'
+
+
 @pytest.mark.asyncio
 async def test_receive_transcript_finished_on_interrupt(
     gemini_api_connection,
@@ -266,6 +305,7 @@ async def test_receive_transcript_finished_on_interrupt(
   message1.server_content.grounding_metadata = None
   message1.tool_call = None
   message1.session_resumption_update = None
+  message1.go_away = None
 
   message2 = mock.Mock()
   message2.usage_metadata = None
@@ -281,6 +321,7 @@ async def test_receive_transcript_finished_on_interrupt(
   message2.server_content.grounding_metadata = None
   message2.tool_call = None
   message2.session_resumption_update = None
+  message2.go_away = None
 
   message3 = mock.Mock()
   message3.usage_metadata = None
@@ -294,6 +335,7 @@ async def test_receive_transcript_finished_on_interrupt(
   message3.server_content.grounding_metadata = None
   message3.tool_call = None
   message3.session_resumption_update = None
+  message3.go_away = None
 
   async def mock_receive_generator():
     yield message1
@@ -343,6 +385,7 @@ async def test_receive_transcript_finished_on_generation_complete(
   message1.server_content.grounding_metadata = None
   message1.tool_call = None
   message1.session_resumption_update = None
+  message1.go_away = None
 
   message2 = mock.Mock()
   message2.usage_metadata = None
@@ -358,6 +401,7 @@ async def test_receive_transcript_finished_on_generation_complete(
   message2.server_content.grounding_metadata = None
   message2.tool_call = None
   message2.session_resumption_update = None
+  message2.go_away = None
 
   message3 = mock.Mock()
   message3.usage_metadata = None
@@ -371,6 +415,7 @@ async def test_receive_transcript_finished_on_generation_complete(
   message3.server_content.grounding_metadata = None
   message3.tool_call = None
   message3.session_resumption_update = None
+  message3.go_away = None
 
   async def mock_receive_generator():
     yield message1
@@ -419,6 +464,7 @@ async def test_receive_transcript_finished_on_turn_complete(
   message1.server_content.grounding_metadata = None
   message1.tool_call = None
   message1.session_resumption_update = None
+  message1.go_away = None
 
   message2 = mock.Mock()
   message2.usage_metadata = None
@@ -434,6 +480,7 @@ async def test_receive_transcript_finished_on_turn_complete(
   message2.server_content.grounding_metadata = None
   message2.tool_call = None
   message2.session_resumption_update = None
+  message2.go_away = None
 
   message3 = mock.Mock()
   message3.usage_metadata = None
@@ -447,6 +494,7 @@ async def test_receive_transcript_finished_on_turn_complete(
   message3.server_content.grounding_metadata = None
   message3.tool_call = None
   message3.session_resumption_update = None
+  message3.go_away = None
 
   async def mock_receive_generator():
     yield message1
@@ -494,6 +542,7 @@ async def test_receive_handles_input_transcription_fragments(
   message1.server_content.grounding_metadata = None
   message1.tool_call = None
   message1.session_resumption_update = None
+  message1.go_away = None
 
   message2 = mock.Mock()
   message2.usage_metadata = None
@@ -509,6 +558,7 @@ async def test_receive_handles_input_transcription_fragments(
   message2.server_content.grounding_metadata = None
   message2.tool_call = None
   message2.session_resumption_update = None
+  message2.go_away = None
 
   message3 = mock.Mock()
   message3.usage_metadata = None
@@ -524,6 +574,7 @@ async def test_receive_handles_input_transcription_fragments(
   message3.server_content.grounding_metadata = None
   message3.tool_call = None
   message3.session_resumption_update = None
+  message3.go_away = None
 
   async def mock_receive_generator():
     yield message1
@@ -566,6 +617,7 @@ async def test_receive_handles_output_transcription_fragments(
   message1.server_content.grounding_metadata = None
   message1.tool_call = None
   message1.session_resumption_update = None
+  message1.go_away = None
 
   message2 = mock.Mock()
   message2.usage_metadata = None
@@ -581,6 +633,7 @@ async def test_receive_handles_output_transcription_fragments(
   message2.server_content.grounding_metadata = None
   message2.tool_call = None
   message2.session_resumption_update = None
+  message2.go_away = None
 
   message3 = mock.Mock()
   message3.usage_metadata = None
@@ -596,6 +649,7 @@ async def test_receive_handles_output_transcription_fragments(
   message3.server_content.grounding_metadata = None
   message3.tool_call = None
   message3.session_resumption_update = None
+  message3.go_away = None
 
   async def mock_receive_generator():
     yield message1
@@ -651,9 +705,9 @@ async def test_send_history_filters_audio(mock_gemini_session, audio_part):
 
   await connection.send_history(history)
 
-  mock_gemini_session.send.assert_called_once()
-  call_args = mock_gemini_session.send.call_args[1]
-  sent_contents = call_args['input'].turns
+  mock_gemini_session.send_client_content.assert_called_once()
+  call_args = mock_gemini_session.send_client_content.call_args[1]
+  sent_contents = call_args['turns']
   # Only the model response should be sent (user audio filtered out)
   assert len(sent_contents) == 1
   assert sent_contents[0].role == 'model'
@@ -679,9 +733,9 @@ async def test_send_history_keeps_image_data(mock_gemini_session):
 
   await connection.send_history(history)
 
-  mock_gemini_session.send.assert_called_once()
-  call_args = mock_gemini_session.send.call_args[1]
-  sent_contents = call_args['input'].turns
+  mock_gemini_session.send_client_content.assert_called_once()
+  call_args = mock_gemini_session.send_client_content.call_args[1]
+  sent_contents = call_args['turns']
   # Both contents should be sent (image is not filtered)
   assert len(sent_contents) == 2
   assert sent_contents[0].parts[0].inline_data == image_blob
@@ -711,9 +765,9 @@ async def test_send_history_mixed_content_filters_only_audio(
 
   await connection.send_history(history)
 
-  mock_gemini_session.send.assert_called_once()
-  call_args = mock_gemini_session.send.call_args[1]
-  sent_contents = call_args['input'].turns
+  mock_gemini_session.send_client_content.assert_called_once()
+  call_args = mock_gemini_session.send_client_content.call_args[1]
+  sent_contents = call_args['turns']
   # Content should be sent but only with the text part
   assert len(sent_contents) == 1
   assert len(sent_contents[0].parts) == 1
@@ -819,6 +873,7 @@ async def test_receive_grounding_metadata_standalone(
   mock_message.server_content = mock_server_content
   mock_message.tool_call = None
   mock_message.session_resumption_update = None
+  mock_message.go_away = None
 
   async def mock_receive_generator():
     yield mock_message
@@ -862,6 +917,7 @@ async def test_receive_grounding_metadata_with_content(
   mock_message.server_content = mock_server_content
   mock_message.tool_call = None
   mock_message.session_resumption_update = None
+  mock_message.go_away = None
 
   async def mock_receive_generator():
     yield mock_message
@@ -894,6 +950,7 @@ async def test_receive_tool_call_and_grounding_metadata_with_native_audio(
   mock_tool_call_msg.usage_metadata = None
   mock_tool_call_msg.server_content = None
   mock_tool_call_msg.session_resumption_update = None
+  mock_tool_call_msg.go_away = None
 
   function_call = types.FunctionCall(
       name='enterprise_web_search',
@@ -932,6 +989,7 @@ async def test_receive_tool_call_and_grounding_metadata_with_native_audio(
   mock_metadata_msg.server_content = mock_server_content
   mock_metadata_msg.tool_call = None
   mock_metadata_msg.session_resumption_update = None
+  mock_metadata_msg.go_away = None
 
   # 3. Message with turn_complete
   mock_turn_complete_content = mock.create_autospec(
@@ -951,6 +1009,7 @@ async def test_receive_tool_call_and_grounding_metadata_with_native_audio(
   mock_turn_complete_msg.server_content = mock_turn_complete_content
   mock_turn_complete_msg.tool_call = None
   mock_turn_complete_msg.session_resumption_update = None
+  mock_turn_complete_msg.go_away = None
 
   async def mock_receive_generator():
     yield mock_tool_call_msg
@@ -1000,6 +1059,7 @@ async def test_receive_multiple_tool_calls_buffered_until_turn_complete(
   mock_tool_call_msg1.usage_metadata = None
   mock_tool_call_msg1.server_content = None
   mock_tool_call_msg1.session_resumption_update = None
+  mock_tool_call_msg1.go_away = None
 
   function_call1 = types.FunctionCall(
       name='tool_1',
@@ -1018,6 +1078,7 @@ async def test_receive_multiple_tool_calls_buffered_until_turn_complete(
   mock_tool_call_msg2.usage_metadata = None
   mock_tool_call_msg2.server_content = None
   mock_tool_call_msg2.session_resumption_update = None
+  mock_tool_call_msg2.go_away = None
 
   function_call2 = types.FunctionCall(
       name='tool_2',
@@ -1047,6 +1108,7 @@ async def test_receive_multiple_tool_calls_buffered_until_turn_complete(
   mock_turn_complete_msg.server_content = mock_turn_complete_content
   mock_turn_complete_msg.tool_call = None
   mock_turn_complete_msg.session_resumption_update = None
+  mock_turn_complete_msg.go_away = None
 
   async def mock_receive_generator():
     yield mock_tool_call_msg1
@@ -1072,3 +1134,66 @@ async def test_receive_multiple_tool_calls_buffered_until_turn_complete(
 
   # Second response: turn_complete True
   assert responses[1].turn_complete is True
+
+
+@pytest.mark.asyncio
+async def test_receive_go_away(gemini_connection, mock_gemini_session):
+  """Test receive yields go_away message."""
+  mock_go_away = types.LiveServerGoAway(timeLeft='10s')
+  mock_msg = mock.MagicMock()
+  mock_msg.usage_metadata = None
+  mock_msg.server_content = None
+  mock_msg.tool_call = None
+  mock_msg.session_resumption_update = None
+  mock_msg.go_away = mock_go_away
+
+  async def mock_receive_generator():
+    yield mock_msg
+
+  receive_mock = mock.Mock(return_value=mock_receive_generator())
+  mock_gemini_session.receive = receive_mock
+
+  responses = [resp async for resp in gemini_connection.receive()]
+
+  assert len(responses) == 1
+  assert responses[0].go_away == mock_go_away
+
+
+@pytest.mark.asyncio
+async def test_receive_video_content(gemini_connection, mock_gemini_session):
+  """Test receive with video content."""
+  mock_content = types.Content(
+      role='model',
+      parts=[
+          types.Part(
+              inline_data=types.Blob(data=b'video_data', mime_type='video/mp4')
+          )
+      ],
+  )
+  mock_server_content = mock.Mock()
+  mock_server_content.model_turn = mock_content
+  mock_server_content.interrupted = False
+  mock_server_content.input_transcription = None
+  mock_server_content.output_transcription = None
+  mock_server_content.turn_complete = False
+  mock_server_content.grounding_metadata = None
+
+  mock_message = mock.AsyncMock()
+  mock_message.usage_metadata = None
+  mock_message.server_content = mock_server_content
+  mock_message.tool_call = None
+  mock_message.session_resumption_update = None
+  mock_message.go_away = None
+
+  async def mock_receive_generator():
+    yield mock_message
+
+  receive_mock = mock.Mock(return_value=mock_receive_generator())
+  mock_gemini_session.receive = receive_mock
+
+  responses = [resp async for resp in gemini_connection.receive()]
+
+  assert responses
+  content_response = next((r for r in responses if r.content), None)
+  assert content_response is not None
+  assert content_response.content == mock_content
