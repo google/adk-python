@@ -1023,35 +1023,40 @@ async def test_receive_tool_call_and_grounding_metadata_with_native_audio(
 
   assert len(responses) == 3
 
-  # First response: the audio content and grounding metadata
-  assert responses[0].grounding_metadata == grounding_metadata
-  assert responses[0].content == mock_content
+  # First response: the tool call — yielded immediately on arrival
+  # (no longer buffered until turn_complete, which would deadlock on 3.1)
   assert responses[0].content is not None
   assert responses[0].content.parts is not None
-  assert responses[0].content.parts[0].inline_data == audio_blob
-
-  # Second response: the tool call, buffered until turn_complete
-  assert responses[1].content is not None
-  assert responses[1].content.parts is not None
-  assert responses[1].content.parts[0].function_call is not None
+  assert responses[0].content.parts[0].function_call is not None
   assert (
-      responses[1].content.parts[0].function_call.name
+      responses[0].content.parts[0].function_call.name
       == 'enterprise_web_search'
   )
-  assert responses[1].content.parts[0].function_call.args == {
+  assert responses[0].content.parts[0].function_call.args == {
       'query': 'Google stock price today'
   }
-  assert responses[1].grounding_metadata is None
+
+  # Second response: the audio content and grounding metadata
+  assert responses[1].grounding_metadata == grounding_metadata
+  assert responses[1].content == mock_content
+  assert responses[1].content is not None
+  assert responses[1].content.parts is not None
+  assert responses[1].content.parts[0].inline_data == audio_blob
 
   # Third response: the turn_complete
   assert responses[2].turn_complete is True
 
 
 @pytest.mark.asyncio
-async def test_receive_multiple_tool_calls_buffered_until_turn_complete(
+async def test_receive_multiple_tool_call_messages_yielded_immediately(
     gemini_connection, mock_gemini_session
 ):
-  """Test receive buffers multiple tool call messages until turn complete."""
+  """Test receive yields each tool_call message immediately (no buffering).
+
+  Tool calls MUST be yielded the moment they arrive, not accumulated until
+  turn_complete. gemini-3.1-flash-live-preview does not send turn_complete
+  until AFTER it receives the tool response — buffering causes a deadlock.
+  """
   # First tool call message
   mock_tool_call_msg1 = mock.create_autospec(
       types.LiveServerMessage, instance=True
@@ -1120,20 +1125,71 @@ async def test_receive_multiple_tool_calls_buffered_until_turn_complete(
 
   responses = [resp async for resp in gemini_connection.receive()]
 
-  # Expected: One LlmResponse with both tool calls, then one with turn_complete
-  assert len(responses) == 2
+  # Expected: one response per tool_call message, then one for turn_complete.
+  assert len(responses) == 3
 
-  # First response: single LlmResponse carrying both function calls
+  # First response: tool_1 yielded immediately (not waiting for turn_complete)
   assert responses[0].content is not None
-  parts = responses[0].content.parts
-  assert len(parts) == 2
-  assert parts[0].function_call.name == 'tool_1'
-  assert parts[0].function_call.args == {'arg': 'value1'}
-  assert parts[1].function_call.name == 'tool_2'
-  assert parts[1].function_call.args == {'arg': 'value2'}
+  assert len(responses[0].content.parts) == 1
+  assert responses[0].content.parts[0].function_call.name == 'tool_1'
+  assert responses[0].content.parts[0].function_call.args == {'arg': 'value1'}
 
-  # Second response: turn_complete True
-  assert responses[1].turn_complete is True
+  # Second response: tool_2 yielded immediately
+  assert responses[1].content is not None
+  assert len(responses[1].content.parts) == 1
+  assert responses[1].content.parts[0].function_call.name == 'tool_2'
+  assert responses[1].content.parts[0].function_call.args == {'arg': 'value2'}
+
+  # Third response: turn_complete True
+  assert responses[2].turn_complete is True
+
+
+@pytest.mark.asyncio
+async def test_receive_tool_call_yielded_without_turn_complete(
+    gemini_connection, mock_gemini_session
+):
+  """Regression test for the Gemini 3.1 Flash Live deadlock.
+
+  Scenario: model sends a tool_call message but NOT turn_complete (as
+  gemini-3.1-flash-live-preview does — it waits for the tool response
+  before sending turn_complete). receive() must yield the tool_call so
+  the flow layer can execute the tool and send the response back.
+
+  Before the fix: receive() buffered the tool_call internally and only
+  yielded on turn_complete, causing run_live() to hang indefinitely on
+  3.1 models (tool never dispatched -> response never sent -> server
+  never completes the turn -> WebSocket eventually times out).
+  """
+  function_call = types.FunctionCall(name='get_weather', args={'city': 'Paris'})
+  mock_tool_call = mock.create_autospec(
+      types.LiveServerToolCall, instance=True
+  )
+  mock_tool_call.function_calls = [function_call]
+
+  mock_msg = mock.create_autospec(types.LiveServerMessage, instance=True)
+  mock_msg.usage_metadata = None
+  mock_msg.server_content = None
+  mock_msg.tool_call = mock_tool_call
+  mock_msg.session_resumption_update = None
+  mock_msg.go_away = None
+
+  async def mock_receive_generator():
+    yield mock_msg
+    # NOTE: deliberately no turn_complete — mimics Gemini 3.1 Live behavior.
+    # The generator simply exhausts after the tool_call message.
+
+  receive_mock = mock.Mock(return_value=mock_receive_generator())
+  mock_gemini_session.receive = receive_mock
+
+  responses = [resp async for resp in gemini_connection.receive()]
+
+  # Must yield the tool_call even without turn_complete.
+  assert len(responses) == 1
+  assert responses[0].content is not None
+  assert len(responses[0].content.parts) == 1
+  assert responses[0].content.parts[0].function_call.name == 'get_weather'
+  assert responses[0].content.parts[0].function_call.args == {'city': 'Paris'}
+  assert responses[0].model_version == MODEL_VERSION
 
 
 @pytest.mark.asyncio
