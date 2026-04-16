@@ -19,6 +19,7 @@ from unittest.mock import Mock
 from authlib.oauth2.rfc6749 import OAuth2Token
 from fastapi.openapi.models import OAuth2
 from fastapi.openapi.models import OAuthFlowAuthorizationCode
+from fastapi.openapi.models import OAuthFlowClientCredentials
 from fastapi.openapi.models import OAuthFlows
 from google.adk.auth.auth_credential import AuthCredential
 from google.adk.auth.auth_credential import AuthCredentialTypes
@@ -246,3 +247,55 @@ class TestOAuth2CredentialUtil:
     # Should not raise any exceptions when oauth2 is None
     update_credential_with_tokens(credential, tokens)
     assert credential.oauth2 is None
+
+  def test_create_oauth2_session_client_credentials_none_scopes(self):
+    """Test create_oauth2_session handles None scopes in clientCredentials flow.
+
+    When OAuthFlowClientCredentials is created without specifying scopes,
+    the scopes attribute is None.  Previously this caused:
+      AttributeError: 'NoneType' object has no attribute 'keys'
+
+    Regression test for https://github.com/google/adk-python/issues/5328
+    """
+    scheme = OAuth2(
+        flows=OAuthFlows(
+            clientCredentials=OAuthFlowClientCredentials(
+                tokenUrl="https://example.com/token",
+                # scopes intentionally omitted (None)
+            )
+        )
+    )
+    credential = create_oauth2_auth_credential(
+        auth_type=AuthCredentialTypes.OAUTH2
+    )
+
+    client, token_endpoint = create_oauth2_session(scheme, credential)
+
+    assert client is not None
+    assert token_endpoint == "https://example.com/token"
+    # Session scope should be empty since no scopes were provided
+    assert client.scope == ""
+
+  def test_create_oauth2_session_auth_code_none_scopes(self):
+    """Test create_oauth2_session handles None scopes in authorizationCode flow.
+
+    Regression test for https://github.com/google/adk-python/issues/5328
+    """
+    scheme = OAuth2(
+        flows=OAuthFlows(
+            authorizationCode=OAuthFlowAuthorizationCode(
+                authorizationUrl="https://example.com/auth",
+                tokenUrl="https://example.com/token",
+                # scopes intentionally omitted (None)
+            )
+        )
+    )
+    credential = create_oauth2_auth_credential(
+        auth_type=AuthCredentialTypes.OAUTH2
+    )
+
+    client, token_endpoint = create_oauth2_session(scheme, credential)
+
+    assert client is not None
+    assert token_endpoint == "https://example.com/token"
+    assert client.scope == ""

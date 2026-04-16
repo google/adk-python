@@ -111,9 +111,14 @@ class OAuth2CredentialRefresher(BaseCredentialRefresher):
           return auth_credential
 
         try:
+          # Explicitly omit scope from refresh requests per RFC 6749 §6.
+          # When scope is omitted, providers treat it as equal to the
+          # originally-granted scope.  Some providers (e.g. Salesforce)
+          # actively reject refresh requests that include scope.
           tokens = client.refresh_token(
               url=token_endpoint,
               refresh_token=auth_credential.oauth2.refresh_token,
+              scope="",
           )
           update_credential_with_tokens(auth_credential, tokens)
           logger.debug("Successfully refreshed OAuth2 tokens")

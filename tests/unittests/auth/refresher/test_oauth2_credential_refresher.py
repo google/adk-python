@@ -177,3 +177,65 @@ class TestOAuth2CredentialRefresher:
     needs_refresh = await refresher.is_refresh_needed(credential, None)
 
     assert not needs_refresh
+
+  @patch("google.adk.auth.oauth2_credential_util.OAuth2Session")
+  @patch("google.adk.auth.oauth2_credential_util.OAuth2Token")
+  @pytest.mark.asyncio
+  async def test_refresh_omits_scope_from_request(
+      self, mock_oauth2_token, mock_oauth2_session
+  ):
+    """Test that refresh_token is called with scope='' to omit scope.
+
+    Per RFC 6749 §6, scope is OPTIONAL in refresh requests.  When omitted,
+    providers treat it as equal to the originally-granted scope.  Some
+    providers (e.g. Salesforce) actively reject refresh requests that
+    include a scope parameter.
+
+    Regression test for https://github.com/google/adk-python/issues/5328
+    """
+    # Setup mock token
+    mock_token_instance = Mock()
+    mock_token_instance.is_expired.return_value = True
+    mock_oauth2_token.return_value = mock_token_instance
+
+    # Setup mock session
+    mock_client = Mock()
+    mock_oauth2_session.return_value = mock_client
+    mock_tokens = OAuth2Token({
+        "access_token": "refreshed",
+        "refresh_token": "refreshed_rt",
+        "expires_at": int(time.time()) + 3600,
+        "expires_in": 3600,
+    })
+    mock_client.refresh_token.return_value = mock_tokens
+
+    scheme = OpenIdConnectWithConfig(
+        type_="openIdConnect",
+        openId_connect_url=(
+            "https://example.com/.well-known/openid_configuration"
+        ),
+        authorization_endpoint="https://example.com/auth",
+        token_endpoint="https://example.com/token",
+        scopes=["openid", "profile"],
+    )
+    credential = AuthCredential(
+        auth_type=AuthCredentialTypes.OPEN_ID_CONNECT,
+        oauth2=OAuth2Auth(
+            client_id="test_client_id",
+            client_secret="test_client_secret",
+            access_token="expired_token",
+            refresh_token="my_refresh_token",
+            expires_at=int(time.time()) - 3600,
+        ),
+    )
+
+    refresher = OAuth2CredentialRefresher()
+    await refresher.refresh(credential, scheme)
+
+    # Verify scope="" is passed to suppress authlib from injecting
+    # the session's scope into the refresh request body.
+    mock_client.refresh_token.assert_called_once_with(
+        url="https://example.com/token",
+        refresh_token="my_refresh_token",
+        scope="",
+    )
