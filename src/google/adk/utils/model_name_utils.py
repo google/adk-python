@@ -125,3 +125,17 @@ def is_gemini_2_or_above(model_string: Optional[str]) -> bool:
     return False
 
   return parsed_version.major >= 2
+
+
+def is_gemini_3_1_flash_live(model_string: Optional[str]) -> bool:
+  """Check if the model is a Gemini 3.1 Flash Live model.
+
+  Args:
+    model_string: The model name
+
+  Returns:
+    True if it's a Gemini 3.1 Flash Live model, False otherwise
+  """
+  if not model_string:
+    return False
+  return model_string.startswith('gemini-3.1-flash-live')

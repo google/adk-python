@@ -304,13 +304,19 @@ class Gemini(BaseLlm):
     """
     from google.genai import Client
 
-    return Client(
-        http_options=types.HttpOptions(
+    base_url = self.base_url
+
+    kwargs: dict[str, Any] = {
+        'http_options': types.HttpOptions(
             headers=self._tracking_headers(),
             retry_options=self.retry_options,
-            base_url=self.base_url,
+            base_url=base_url,
         )
-    )
+    }
+    if self.model.startswith('projects/'):
+      kwargs['vertexai'] = True
+
+    return Client(**kwargs)
 
   @cached_property
   def _api_backend(self) -> GoogleLLMVariant:
@@ -336,11 +342,19 @@ class Gemini(BaseLlm):
   def _live_api_client(self) -> Client:
     from google.genai import Client
 
-    return Client(
-        http_options=types.HttpOptions(
-            headers=self._tracking_headers(), api_version=self._live_api_version
+    base_url = self.base_url
+
+    kwargs: dict[str, Any] = {
+        'http_options': types.HttpOptions(
+            headers=self._tracking_headers(),
+            api_version=self._live_api_version,
+            base_url=base_url,
         )
-    )
+    }
+    if self.model.startswith('projects/'):
+      kwargs['vertexai'] = True
+
+    return Client(**kwargs)
 
   @contextlib.asynccontextmanager
   async def connect(self, llm_request: LlmRequest) -> BaseLlmConnection:
@@ -418,8 +432,8 @@ class Gemini(BaseLlm):
     from ..tools.computer_use.computer_use_toolset import ComputerUseToolset
 
     async def convert_wait_to_wait_5_seconds(wait_func):
-      async def wait_5_seconds():
-        return await wait_func(5)
+      async def wait_5_seconds(tool_context=None):
+        return await wait_func(5, tool_context=tool_context)
 
       return wait_5_seconds
 

@@ -319,3 +319,45 @@ def test_from_function_with_async_generator_complex_yield_type_vertex():
   # VERTEX_AI should extract yield type (Dict[str, str]) from AsyncGenerator
   assert declaration.response is not None
   assert declaration.response.type == types.Type.OBJECT
+
+
+def test_required_fields_set_in_json_schema_fallback():
+  """Test that required fields are populated when the json_schema fallback path is used.
+
+  When a parameter has a complex union type (e.g. list[str] | None) that
+  _parse_schema_from_parameter can't handle, from_function_with_options falls
+  back to the parameters_json_schema branch. This test verifies that the
+  required fields are correctly populated in that fallback branch.
+  """
+
+  def complex_tool(
+      query: str,
+      mode: str = 'default',
+      tags: list[str] | None = None,
+  ) -> str:
+    """A tool where one param has a complex union type."""
+    return query
+
+  declaration = _automatic_function_calling_util.from_function_with_options(
+      complex_tool, GoogleLLMVariant.GEMINI_API
+  )
+
+  assert declaration.name == 'complex_tool'
+  assert declaration.parameters == types.Schema(
+      type=types.Type.OBJECT,
+      required=['query'],
+      properties={
+          'query': types.Schema(type=types.Type.STRING),
+          'mode': types.Schema(type=types.Type.STRING, default='default'),
+          'tags': types.Schema(
+              any_of=[
+                  types.Schema(
+                      items=types.Schema(type=types.Type.STRING),
+                      type=types.Type.ARRAY,
+                  ),
+                  types.Schema(type=types.Type.NULL),
+              ],
+              nullable=True,
+          ),
+      },
+  )

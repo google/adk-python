@@ -27,6 +27,7 @@ from fastapi.openapi.models import SecuritySchemeType
 from pydantic import Field
 
 from ..utils.feature_decorator import experimental
+from .auth_credential import BaseModelWithConfig
 
 
 class OpenIdConnectWithConfig(SecurityBase):
@@ -42,8 +43,20 @@ class OpenIdConnectWithConfig(SecurityBase):
   scopes: Optional[List[str]] = None
 
 
-# AuthSchemes contains SecuritySchemes from OpenAPI 3.0 and an extra flattened OpenIdConnectWithConfig.
-AuthScheme = Union[SecurityScheme, OpenIdConnectWithConfig]
+class CustomAuthScheme(BaseModelWithConfig):
+  """A flexible model for custom authentication schemes.
+
+  The subclasses must define a `default` for the `type_` field, if using OAuth2
+  user consent flow, to ensure correct rehydration.
+  """
+
+  type_: str = Field(alias="type")
+
+
+# AuthSchemes contains SecuritySchemes from OpenAPI 3.0, an extra flattened
+# OpenIdConnectWithConfig, and supports external schemes that subclasses
+# CustomAuthScheme
+AuthScheme = Union[SecurityScheme, OpenIdConnectWithConfig, CustomAuthScheme]
 
 
 class OAuthGrantType(str, Enum):
