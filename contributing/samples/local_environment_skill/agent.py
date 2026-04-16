@@ -15,38 +15,7 @@ import pathlib
 
 from google.adk import Agent
 from google.adk.environment import LocalEnvironment
-from google.adk.tools.base_tool import BaseTool
 from google.adk.tools.environment import EnvironmentToolset
-from google.genai import types
-
-
-class GetTimezoneTool(BaseTool):
-  """A tool to get the timezone for a given location."""
-
-  def __init__(self):
-    super().__init__(
-        name="get_timezone",
-        description="Returns the timezone for a given location.",
-    )
-
-  def _get_declaration(self) -> types.FunctionDeclaration | None:
-    return types.FunctionDeclaration(
-        name=self.name,
-        description=self.description,
-        parameters_json_schema={
-            "type": "object",
-            "properties": {
-                "location": {
-                    "type": "string",
-                    "description": "The location to get the timezone for.",
-                },
-            },
-            "required": ["location"],
-        },
-    )
-
-  async def run_async(self, *, args: dict, tool_context) -> str:
-    return f"The timezone for {args['location']} is UTC+00:00."
 
 
 def get_wind_speed(location: str) -> str:
@@ -89,7 +58,6 @@ root_agent = Agent(
                 working_dir=pathlib.Path(__file__).parent
             ),
         ),
-        GetTimezoneTool(),
         get_wind_speed,
     ],
 )
