@@ -817,7 +817,7 @@ def _print_agent_engine_url(resource_name: str) -> None:
     engine_id = parts[5]
 
     url = (
-        'https://console.cloud.google.com/agent-platform/runtimes'
+        'https://console.cloud.google.com/vertex-ai/agents/agent-engines'
         f'/locations/{region}/agent-engines/{engine_id}/playground'
         f'?project={project_id}'
     )
