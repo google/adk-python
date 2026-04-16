@@ -124,11 +124,10 @@ def stop_streaming(function_name: str):
 
 
 root_agent = Agent(
-    # see https://docs.cloud.google.com/vertex-ai/generative-ai/docs/migrate
-    # for vertex model names
-    model="gemini-live-2.5-flash-native-audio",  # vertex
-    # see https://ai.google.dev/gemini-api/docs/models for AIS model names
-    # model='gemini-2.5-flash-native-audio-latest',  # for AI studio
+    # Find supported models in Vertex here: https://docs.cloud.google.com/vertex-ai/generative-ai/docs/live-api
+    model="gemini-live-2.5-flash-native-audio",  # Vertex
+    # Find supported models in Gemini API here: https://ai.google.dev/gemini-api/docs/models
+    # model='gemini-2.5-flash-native-audio-preview-12-2025',  # Gemini API
     name="video_streaming_agent",
     instruction="""
       You are a monitoring agent. You can do video monitoring and stock price monitoring
