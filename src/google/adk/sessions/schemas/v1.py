@@ -104,10 +104,13 @@ class StorageSession(Base):
       cascade="all, delete-orphan",
   )
 
-  __mapper_args__ = {"version_id_col": event_sequence} # Add mapper args for versioning
+  __mapper_args__ = {"version_id_col": event_sequence}
 
   def __repr__(self):
-    return f"<StorageSession(id={self.id}, update_time={self.update_time}, event_sequence={self.event_sequence})>"
+    return (
+        f"<StorageSession(id={self.id}, update_time={self.update_time}, "
+        f"event_sequence={self.event_sequence})>"
+    )
 
   @property
   def update_timestamp_tz(self) -> float:
@@ -137,7 +140,7 @@ class StorageSession(Base):
       state: dict[str, Any] | None = None,
       events: list[Event] | None = None,
       is_sqlite: bool = False,
-      event_sequence: int = 0, # Add event_sequence parameter
+      event_sequence: int = 0,
   ) -> Session:
     """Converts the storage session to a session object."""
     if state is None:
@@ -152,7 +155,7 @@ class StorageSession(Base):
         state=state,
         events=events,
         last_update_time=self.get_update_timestamp(is_sqlite=is_sqlite),
-        event_sequence=event_sequence, # Pass event_sequence
+        event_sequence=event_sequence,
     )
 
 

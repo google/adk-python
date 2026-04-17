@@ -14,11 +14,11 @@
 from __future__ import annotations
 
 import asyncio
-from contextlib import asynccontextmanager
 import copy
+import logging
+from contextlib import asynccontextmanager
 from datetime import datetime
 from datetime import timezone
-import logging
 from typing import Any
 from typing import AsyncIterator
 from typing import Optional
@@ -29,14 +29,14 @@ from google.adk.platform import time as platform_time
 from sqlalchemy import delete
 from sqlalchemy import event
 from sqlalchemy import select
-from sqlalchemy import update # Import update
+from sqlalchemy import update
 from sqlalchemy.engine import make_url
 from sqlalchemy.exc import ArgumentError
-from sqlalchemy.ext.asyncio import async_sessionmaker
 from sqlalchemy.ext.asyncio import AsyncEngine
 from sqlalchemy.ext.asyncio import AsyncSession as DatabaseSessionFactory
+from sqlalchemy.ext.asyncio import async_sessionmaker
 from sqlalchemy.ext.asyncio import create_async_engine
-from sqlalchemy.orm.exc import StaleDataError # Import StaleDataError
+from sqlalchemy.orm.exc import StaleDataError
 from sqlalchemy.pool import StaticPool
 from typing_extensions import override
 
@@ -139,9 +139,6 @@ class DatabaseSessionService(BaseSessionService):
 
   def __init__(self, db_url: str, **kwargs: Any):
     """Initializes the database session service with a database URL."""
-    # 1. Create DB engine for db connection
-    # 2. Create all tables based on schema
-    # 3. Initialize all properties
     try:
       engine_kwargs = dict(kwargs)
       url = make_url(db_url)
@@ -149,9 +146,6 @@ class DatabaseSessionService(BaseSessionService):
         engine_kwargs.setdefault("poolclass", StaticPool)
         connect_args = dict(engine_kwargs.get("connect_args", {}))
         connect_args.setdefault("check_same_thread", False)
-        # For SQLite, use "IMMEDIATE" or "EXCLUSIVE" for stronger isolation,
-        # as "SERIALIZABLE" is not supported. "IMMEDIATE" will begin a
-        # transaction immediately, preventing other connections from writing.
         connect_args.setdefault("isolation_level", "IMMEDIATE")
         engine_kwargs["connect_args"] = connect_args
       elif url.get_backend_name() != _SQLITE_DIALECT:
@@ -159,7 +153,6 @@ class DatabaseSessionService(BaseSessionService):
 
       db_engine = create_async_engine(db_url, **engine_kwargs)
       if db_engine.dialect.name == _SQLITE_DIALECT:
-        # Set sqlite pragma to enable foreign keys constraints
         event.listen(db_engine.sync_engine, "connect", _set_sqlite_pragma)
 
     except Exception as e:
@@ -177,21 +170,13 @@ class DatabaseSessionService(BaseSessionService):
 
     self.db_engine: AsyncEngine = db_engine
 
-    # DB session factory method
     self.database_session_factory: async_sessionmaker[
         DatabaseSessionFactory
     ] = async_sessionmaker(bind=self.db_engine, expire_on_commit=False)
 
-    # Flag to indicate if tables are created
     self._tables_created = False
-
-    # Lock to ensure thread-safe table creation
     self._table_creation_lock = asyncio.Lock()
-
-    # The current database schema version in use, "None" if not yet checked
     self._db_schema_version: Optional[str] = None
-
-    # Per-session locks used to serialize append_event calls in this process.
     self._session_locks: dict[_SessionLockKey, asyncio.Lock] = {}
     self._session_lock_ref_count: dict[_SessionLockKey, int] = {}
     self._session_locks_guard = asyncio.Lock()
@@ -203,12 +188,6 @@ class DatabaseSessionService(BaseSessionService):
   async def _rollback_on_exception_session(
       self,
   ) -> AsyncIterator[DatabaseSessionFactory]:
-    """Yields a database session with guaranteed rollback on errors.
-
-    On normal exit the caller is responsible for committing; on any exception
-    the transaction is explicitly rolled back before the error propagates,
-    preventing connection-pool exhaustion from lingering invalid transactions.
-    """
     async with self.database_session_factory() as sql_session:
       try:
         yield sql_session
@@ -227,17 +206,12 @@ class DatabaseSessionService(BaseSessionService):
   async def _with_session_lock(
       self, *, app_name: str, user_id: str, session_id: str
   ) -> AsyncIterator[None]:
-    """Serializes event appends for the same session within this process."""
-    # Use one lock per logical ADK session to prevent concurrent append_event
-    # writes from racing in the same process.
     lock_key = (app_name, user_id, session_id)
     async with self._session_locks_guard:
       lock = self._session_locks.get(lock_key)
       if lock is None:
         lock = asyncio.Lock()
         self._session_locks[lock_key] = lock
-      # Reference counting keeps lock objects alive while they are in use by
-      # concurrent tasks and allows cleanup once all waiters complete.
       self._session_lock_ref_count[lock_key] = (
           self._session_lock_ref_count.get(lock_key, 0) + 1
       )
@@ -248,7 +222,6 @@ class DatabaseSessionService(BaseSessionService):
     finally:
       async with self._session_locks_guard:
         remaining = self._session_lock_ref_count.get(lock_key, 0) - 1
-        # Remove lock bookkeeping after the last waiter exits.
         if remaining <= 0 and not lock.locked():
           self._session_lock_ref_count.pop(lock_key, None)
           self._session_locks.pop(lock_key, None)
@@ -256,22 +229,13 @@ class DatabaseSessionService(BaseSessionService):
           self._session_lock_ref_count[lock_key] = remaining
 
   async def _prepare_tables(self):
-    """Ensure database tables are ready for use.
-
-    This method is called lazily before each database operation. It checks the
-    DB schema version to use and creates the tables (including setting the
-    schema version metadata) if needed.
-    """
-    # Early return if tables are already created
     if self._tables_created:
       return
 
     async with self._table_creation_lock:
-      # Double-check after acquiring the lock
       if self._tables_created:
         return
 
-      # Check the database schema version and set the _db_schema_version
       if self._db_schema_version is None:
         try:
           async with self.db_engine.connect() as conn:
@@ -284,19 +248,14 @@ class DatabaseSessionService(BaseSessionService):
 
       async with self.db_engine.begin() as conn:
         if self._db_schema_version == _schema_check_utils.LATEST_SCHEMA_VERSION:
-          # Uncomment to recreate DB every time
-          # await conn.run_sync(BaseV1.metadata.drop_all)
           logger.debug("Using V1 schema tables...")
           await conn.run_sync(BaseV1.metadata.create_all)
         else:
-          # await conn.run_sync(BaseV0.metadata.drop_all)
           logger.debug("Using V0 schema tables...")
           await conn.run_sync(BaseV0.metadata.create_all)
 
       if self._db_schema_version == _schema_check_utils.LATEST_SCHEMA_VERSION:
         async with self._rollback_on_exception_session() as sql_session:
-          # Check if schema version is set, if not, set it to the latest
-          # version
           stmt = select(StorageMetadata).where(
               StorageMetadata.key == _schema_check_utils.SCHEMA_VERSION_KEY
           )
@@ -321,11 +280,6 @@ class DatabaseSessionService(BaseSessionService):
       state: Optional[dict[str, Any]] = None,
       session_id: Optional[str] = None,
   ) -> Session:
-    # 1. Populate states.
-    # 2. Build storage session object
-    # 3. Add the object to the table
-    # 4. Build the session object with generated id
-    # 5. Return the session
     await self._prepare_tables()
     schema = self._get_schema_classes()
     async with self._rollback_on_exception_session() as sql_session:
@@ -335,7 +289,6 @@ class DatabaseSessionService(BaseSessionService):
         raise AlreadyExistsError(
             f"Session with id {session_id} already exists."
         )
-      # Fetch app and user states from storage
       storage_app_state = await sql_session.get(
           schema.StorageAppState, (app_name)
       )
@@ -343,7 +296,6 @@ class DatabaseSessionService(BaseSessionService):
           schema.StorageUserState, (app_name, user_id)
       )
 
-      # Create state tables if not exist
       if not storage_app_state:
         storage_app_state = schema.StorageAppState(app_name=app_name, state={})
         sql_session.add(storage_app_state)
@@ -353,19 +305,16 @@ class DatabaseSessionService(BaseSessionService):
         )
         sql_session.add(storage_user_state)
 
-      # Extract state deltas
       state_deltas = _session_util.extract_state_delta(state)
       app_state_delta = state_deltas["app"]
       user_state_delta = state_deltas["user"]
       session_state = state_deltas["session"]
 
-      # Apply state delta
       if app_state_delta:
         storage_app_state.state = storage_app_state.state | app_state_delta
       if user_state_delta:
         storage_user_state.state = storage_user_state.state | user_state_delta
 
-      # Store the session
       now = datetime.fromtimestamp(platform_time.get_time(), tz=timezone.utc)
       is_sqlite = self.db_engine.dialect.name == _SQLITE_DIALECT
       is_postgresql = self.db_engine.dialect.name == _POSTGRESQL_DIALECT
@@ -379,17 +328,18 @@ class DatabaseSessionService(BaseSessionService):
           state=session_state,
           create_time=now,
           update_time=now,
-          event_sequence=0, # Explicitly set for new sessions
+          event_sequence=0,
       )
       sql_session.add(storage_session)
       await sql_session.commit()
 
-      # Merge states for response
       merged_state = _merge_state(
           storage_app_state.state, storage_user_state.state, session_state
       )
       session = storage_session.to_session(
-          state=merged_state, is_sqlite=is_sqlite, event_sequence=storage_session.event_sequence
+          state=merged_state,
+          is_sqlite=is_sqlite,
+          event_sequence=storage_session.event_sequence,
       )
     return session
 
@@ -403,9 +353,6 @@ class DatabaseSessionService(BaseSessionService):
       config: Optional[GetSessionConfig] = None,
   ) -> Optional[Session]:
     await self._prepare_tables()
-    # 1. Get the storage session entry from session table
-    # 2. Get all the events based on session id and filtering config
-    # 3. Convert and return the session
     schema = self._get_schema_classes()
     async with self._rollback_on_exception_session() as sql_session:
       storage_session = await sql_session.get(
@@ -433,7 +380,6 @@ class DatabaseSessionService(BaseSessionService):
       result = await sql_session.execute(stmt)
       storage_events = result.scalars().all()
 
-      # Fetch states from storage
       storage_app_state = await sql_session.get(
           schema.StorageAppState, (app_name)
       )
@@ -444,17 +390,17 @@ class DatabaseSessionService(BaseSessionService):
       app_state = storage_app_state.state if storage_app_state else {}
       user_state = storage_user_state.state if storage_user_state else {}
       session_state = storage_session.state
-      # event_sequence is now a direct attribute of storage_session
       event_sequence = storage_session.event_sequence
 
-      # Merge states
       merged_state = _merge_state(app_state, user_state, session_state)
 
-      # Convert storage session to session
       events = [e.to_event() for e in reversed(storage_events)]
       is_sqlite = self.db_engine.dialect.name == _SQLITE_DIALECT
       session = storage_session.to_session(
-          state=merged_state, events=events, is_sqlite=is_sqlite, event_sequence=event_sequence
+          state=merged_state,
+          events=events,
+          is_sqlite=is_sqlite,
+          event_sequence=event_sequence,
       )
     return session
 
@@ -474,13 +420,11 @@ class DatabaseSessionService(BaseSessionService):
       result = await sql_session.execute(stmt)
       results = result.scalars().all()
 
-      # Fetch app state from storage
       storage_app_state = await sql_session.get(
           schema.StorageAppState, (app_name)
       )
       app_state = storage_app_state.state if storage_app_state else {}
 
-      # Fetch user state(s) from storage
       user_states_map = {}
       if user_id is not None:
         storage_user_state = await sql_session.get(
@@ -503,10 +447,13 @@ class DatabaseSessionService(BaseSessionService):
         session_state = storage_session.state
         user_state = user_states_map.get(storage_session.user_id, {})
         merged_state = _merge_state(app_state, user_state, session_state)
-        # Pass event_sequence to to_session if it exists in state
         event_sequence = storage_session.event_sequence
         sessions.append(
-            storage_session.to_session(state=merged_state, is_sqlite=is_sqlite, event_sequence=event_sequence)
+            storage_session.to_session(
+                state=merged_state,
+                is_sqlite=is_sqlite,
+                event_sequence=event_sequence,
+            )
         )
       return ListSessionsResponse(sessions=sessions)
 
@@ -531,15 +478,9 @@ class DatabaseSessionService(BaseSessionService):
     if event.partial:
       return event
 
-    # Apply temp state to in-memory session before trimming, so that
-    # subsequent agents within the same invocation can read temp values.
     self._apply_temp_state(session, event)
-    # Trim temp state before persisting
     event = self._trim_temp_delta_state(event)
 
-    # 1. Check if timestamp is stale
-    # 2. Update session attributes based on event config
-    # 3. Store event to table
     schema = self._get_schema_classes()
     is_sqlite = self.db_engine.dialect.name == _SQLITE_DIALECT
     use_row_level_locking = self._supports_row_level_locking()
@@ -572,14 +513,6 @@ class DatabaseSessionService(BaseSessionService):
         if storage_session is None:
           raise ValueError(f"Session {session.id} not found.")
 
-        # When using version_id_col, SQLAlchemy automatically handles the
-        # event_sequence increment and optimistic concurrency check during commit.
-        # We just need to update the storage_session object's state and its
-        # event_sequence (which will be incremented by SQLAlchemy upon flush/commit).
-
-        # Update event_sequence in the storage_session object before commit.
-        # SQLAlchemy's version_id_col will use this value for the WHERE clause.
-        # It will also increment it after a successful commit.
         storage_session.event_sequence = session.event_sequence
 
         storage_app_state = await _select_required_state(
@@ -609,9 +542,6 @@ class DatabaseSessionService(BaseSessionService):
             ),
         )
 
-        # Removed the old timestamp-based stale session check and reload logic.
-
-        # Merge pre-extracted state deltas into storage.
         if has_app_delta:
           storage_app_state.state = (
               storage_app_state.state | state_deltas["app"]
@@ -621,7 +551,6 @@ class DatabaseSessionService(BaseSessionService):
               storage_user_state.state | state_deltas["user"]
           )
         if state_deltas["session"]:
-          # Merge other session state changes.
           storage_session.state = (
               storage_session.state | state_deltas["session"]
           )
@@ -636,35 +565,26 @@ class DatabaseSessionService(BaseSessionService):
         sql_session.add(schema.StorageEvent.from_event(session, event))
 
         try:
-            await sql_session.commit()
-            # Update in-memory session's event_sequence after successful commit
-            # SQLAlchemy's version_id_col increments storage_session.event_sequence
-            # upon successful commit.
-            session.event_sequence = storage_session.event_sequence
-        except StaleDataError as e: # Catch StaleDataError for optimistic concurrency
-            raise ValueError(
-                "The session has been modified by another writer. "
-                "Please reload the session before appending events."
-            ) from e
+          await sql_session.commit()
+          session.event_sequence = storage_session.event_sequence
+        except StaleDataError as e:
+          raise ValueError(
+              "The session has been modified in storage. "
+              "Please reload the session before appending events."
+          ) from e
 
-        # Update timestamp with commit time
         session.last_update_time = storage_session.get_update_timestamp(
             is_sqlite
         )
 
-    # Also update the in-memory session (handled by super().append_event)
-    # This call might also update last_update_time, but event_sequence is explicitly handled now.
     await super().append_event(session=session, event=event)
     return event
 
   async def close(self) -> None:
-    """Disposes the SQLAlchemy engine and closes pooled connections."""
     await self.db_engine.dispose()
 
   async def __aenter__(self) -> DatabaseSessionService:
-    """Enters the async context manager and returns this service."""
     return self
 
   async def __aexit__(self, exc_type, exc_val, exc_tb) -> None:
-    """Exits the async context manager and closes the service."""
     await self.close()
