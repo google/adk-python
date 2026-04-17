@@ -46,36 +46,36 @@ class Label(enum.Enum):
 
 
 def get_text_from_content(
-    source: Optional[Union[genai_types.Content, Invocation]],
+    content: Optional[Union[genai_types.Content, Invocation]],
     *,
     include_intermediate_responses_in_final: bool = False,
 ) -> Optional[str]:
   """Extracts text from a `Content` or an `Invocation`.
 
-  When `source` is a `Content`, returns the concatenated text of its parts.
+  When `content` is a `Content`, returns the concatenated text of its parts.
 
-  When `source` is an `Invocation`, returns the text of the invocation's final
+  When `content` is an `Invocation`, returns the text of the invocation's final
   response. If `include_intermediate_responses_in_final` is True, text from
   intermediate invocation events (e.g. natural language emitted before tool
   calls) is concatenated with the final response text.
   """
-  if source is None:
+  if content is None:
     return None
-  if isinstance(source, Invocation):
+  if isinstance(content, Invocation):
     if not include_intermediate_responses_in_final:
-      return get_text_from_content(source.final_response)
+      return get_text_from_content(content.final_response)
     parts: list[str] = []
-    if isinstance(source.intermediate_data, InvocationEvents):
-      for event in source.intermediate_data.invocation_events:
+    if isinstance(content.intermediate_data, InvocationEvents):
+      for event in content.intermediate_data.invocation_events:
         text = get_text_from_content(event.content)
         if text:
           parts.append(text)
-    final_text = get_text_from_content(source.final_response)
+    final_text = get_text_from_content(content.final_response)
     if final_text:
       parts.append(final_text)
     return "\n\n".join(parts) if parts else None
-  if source.parts:
-    return "\n".join([p.text for p in source.parts if p.text])
+  if content.parts:
+    return "\n".join([p.text for p in content.parts if p.text])
 
 
 def get_eval_status(score: Optional[float], threshold: float) -> EvalStatus:
