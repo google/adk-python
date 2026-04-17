@@ -305,7 +305,13 @@ class DatabaseMemoryService(BaseMemoryService):  # type: ignore[misc]
   async def __aenter__(self) -> DatabaseMemoryService:
     return self
 
-  async def __aexit__(self, exc_type, exc_val, exc_tb) -> None:
+  async def __aexit__(
+      self,
+      exc_type: Optional[type[BaseException]],
+      exc_val: Optional[BaseException],
+      exc_tb: Any,
+  ) -> None:
+    """Exits the async context manager and closes the service."""
     await self.close()
 
   # -- keyword helpers ------------------------------------------------------

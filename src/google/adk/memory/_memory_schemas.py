@@ -32,7 +32,7 @@ from ..sessions.schemas.shared import DynamicJSON
 _MAX_KEY_LENGTH = 128
 
 
-class Base(DeclarativeBase):
+class Base(DeclarativeBase):  # type: ignore[misc]
   """Base class for memory database tables."""
 
   pass
