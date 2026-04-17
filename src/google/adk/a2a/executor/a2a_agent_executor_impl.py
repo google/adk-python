@@ -281,6 +281,10 @@ class _A2aAgentExecutor(AgentExecutor):
       run_request: AgentRunRequest,
       runner: Runner,
   ):
+    if not run_request.user_id:
+      raise ValueError('user_id must be set in AgentRunRequest')
+    if not run_request.session_id:
+      raise ValueError('session_id must be set in AgentRunRequest')
     session = await runner._get_or_create_session(
         user_id=run_request.user_id,
         session_id=run_request.session_id,
