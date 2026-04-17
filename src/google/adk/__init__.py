@@ -16,23 +16,23 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from .agents.context import Context
-    from .agents.llm_agent import Agent
-    from .runners import Runner
+  from .agents.context import Context
+  from .agents.llm_agent import Agent
+  from .runners import Runner
 else:
-    import importlib
+  import importlib
 
-    _LAZY_IMPORTS = {
-        "Agent": ".agents.llm_agent",
-        "Context": ".agents.context",
-        "Runner": ".runners",
-    }
+  _LAZY_IMPORTS = {
+    "Agent": ".agents.llm_agent",
+    "Context": ".agents.context",
+    "Runner": ".runners",
+  }
 
-    def __getattr__(name: str):
-        if name in _LAZY_IMPORTS:
-            module = importlib.import_module(_LAZY_IMPORTS[name], __name__)
-            return getattr(module, name)
-        raise AttributeError(f"module {__name__} has no attribute {name}")
+  def __getattr__(name: str):
+    if name in _LAZY_IMPORTS:
+      module = importlib.import_module(_LAZY_IMPORTS[name], __name__)
+      return getattr(module, name)
+    raise AttributeError(f"module {__name__} has no attribute {name}")
 
 from . import version
 __version__ = version.__version__
