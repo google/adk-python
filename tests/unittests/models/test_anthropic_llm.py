@@ -776,6 +776,29 @@ def test_part_to_message_block_with_multiple_content_items():
   assert result["content"] == "First part\nSecond part"
 
 
+def test_part_to_message_block_with_string_content():
+  """String content should stay intact instead of being split per character."""
+  from google.adk.models.anthropic_llm import part_to_message_block
+
+  response_part = types.Part.from_function_response(
+      name="load_skill_resource",
+      response={
+          "skill_name": "my_skill",
+          "file_path": "references/doc.md",
+          "content": "Hello",
+      },
+  )
+  response_part.function_response.id = "test_id_790"
+
+  result = part_to_message_block(response_part)
+
+  assert isinstance(result, dict)
+  assert result["tool_use_id"] == "test_id_790"
+  assert result["type"] == "tool_result"
+  assert not result["is_error"]
+  assert result["content"] == "Hello"
+
+
 def test_part_to_message_block_with_pdf_document():
   """Test that part_to_message_block handles PDF document parts."""
   pdf_data = b"%PDF-1.4 fake pdf content"
