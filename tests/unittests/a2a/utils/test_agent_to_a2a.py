@@ -327,6 +327,7 @@ class TestToA2A:
         session_service=mock_runner_class.call_args[1]["session_service"],
         memory_service=mock_runner_class.call_args[1]["memory_service"],
         credential_service=mock_runner_class.call_args[1]["credential_service"],
+        auto_create_session=True,
     )
 
     # Verify the services are of the correct types
@@ -391,6 +392,7 @@ class TestToA2A:
         session_service=mock_runner_class.call_args[1]["session_service"],
         memory_service=mock_runner_class.call_args[1]["memory_service"],
         credential_service=mock_runner_class.call_args[1]["credential_service"],
+        auto_create_session=True,
     )
 
   @patch("google.adk.a2a.utils.agent_to_a2a.A2aAgentExecutor")
