@@ -59,7 +59,7 @@ def get_text_from_content(
   intermediate invocation events (e.g. natural language emitted before tool
   calls) is concatenated with the final response text.
   """
-  if isinstance(content, Invocation):    
+  if isinstance(content, Invocation):
     if not include_intermediate_responses_in_final:
       # Flag off: revert to basic plain-Content behavior.
       return get_text_from_content(content.final_response)
