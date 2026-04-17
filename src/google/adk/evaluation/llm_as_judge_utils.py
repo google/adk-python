@@ -59,22 +59,26 @@ def get_text_from_content(
   intermediate invocation events (e.g. natural language emitted before tool
   calls) is concatenated with the final response text.
   """
-  if content is None:
-    return None
-  if isinstance(content, Invocation):
+  if isinstance(content, Invocation):    
     if not include_intermediate_responses_in_final:
+      # Flag off: revert to basic plain-Content behavior.
       return get_text_from_content(content.final_response)
+
     parts: list[str] = []
     if isinstance(content.intermediate_data, InvocationEvents):
+      # Walk intermediate events in order; collect text parts.
       for event in content.intermediate_data.invocation_events:
         text = get_text_from_content(event.content)
         if text:
           parts.append(text)
+    # Then fetch the final response text and append it to the end.
     final_text = get_text_from_content(content.final_response)
     if final_text:
       parts.append(final_text)
+
     return "\n\n".join(parts) if parts else None
-  if content.parts:
+
+  if content and content.parts:
     return "\n".join([p.text for p in content.parts if p.text])
 
 
