@@ -925,3 +925,59 @@ async def test_postprocess_live_session_resumption_update():
   assert len(events) == 1
   assert events[0].live_session_resumption_update is not None
   assert events[0].live_session_resumption_update.new_handle == 'test_handle'
+
+
+@pytest.mark.asyncio
+async def test_receive_from_model_author_attribution():
+  """Test that _receive_from_model sets the correct author for events based on LlmResponse."""
+  agent = Agent(name='test_agent')
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent
+  )
+  flow = BaseLlmFlowForTesting()
+
+  mock_connection = mock.AsyncMock()
+
+  # Case 1: input_transcription is set -> author should be 'user'
+  response_1 = LlmResponse(
+      input_transcription=types.Transcription(text='test', finished=True)
+  )
+
+  # Case 2: default -> author should be agent.name
+  response_2 = LlmResponse(
+      content=types.Content(
+          role='model', parts=[types.Part.from_text(text='hello')]
+      )
+  )
+
+  # Case 3: content.role is 'user' -> author should be 'user'
+  response_3 = LlmResponse(
+      content=types.Content(
+          role='user', parts=[types.Part.from_text(text='user text')]
+      )
+  )
+
+  class StopTest(Exception):
+    pass
+
+  async def mock_receive():
+    yield response_1
+    yield response_2
+    yield response_3
+    raise StopTest()
+
+  mock_connection.receive = mock.Mock(side_effect=mock_receive)
+
+  events = []
+  try:
+    async for event in flow._receive_from_model(
+        mock_connection, 'event_id', invocation_context, LlmRequest()
+    ):
+      events.append(event)
+  except StopTest:
+    pass
+
+  assert len(events) == 3
+  assert events[0].author == 'user'
+  assert events[1].author == 'test_agent'
+  assert events[2].author == 'user'

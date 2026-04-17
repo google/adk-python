@@ -82,7 +82,7 @@ class McpToolset(BaseToolset):
 
     # Use in an agent
     agent = LlmAgent(
-        model='gemini-2.0-flash',
+        model='gemini-2.5-flash',
         name='enterprise_assistant',
         instruction='Help user accessing their file systems',
         tools=[toolset],
