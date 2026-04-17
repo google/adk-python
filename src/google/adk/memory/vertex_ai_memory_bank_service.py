@@ -41,7 +41,7 @@ logger = logging.getLogger('google_adk.' + __name__)
 
 # Strong references to fire-and-forget tasks to prevent garbage collection.
 # See https://docs.python.org/3/library/asyncio-task.html#creating-tasks
-_background_tasks: set[asyncio.Task] = set()
+_background_tasks: set[asyncio.Task[None]] = set()
 
 _GENERATE_MEMORIES_CONFIG_FALLBACK_KEYS = frozenset({
     'disable_consolidation',
@@ -565,7 +565,7 @@ class VertexAiMemoryBankService(BaseMemoryService):
     return vertexai.Client(project=self._project, location=self._location).aio
 
 
-def _log_ingest_task_error(task: asyncio.Task) -> None:
+def _log_ingest_task_error(task: asyncio.Task[None]) -> None:
   """Logs errors from fire-and-forget ingest_events tasks."""
   if task.cancelled():
     return
