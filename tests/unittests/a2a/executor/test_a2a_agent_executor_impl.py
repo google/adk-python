@@ -657,7 +657,9 @@ class TestA2aAgentExecutor:
     self.mock_runner._get_or_create_session.assert_called_once_with(
         user_id="test-user",
         session_id="old-session-id",
-        get_session_config=GetSessionConfig(num_recent_events=0, after_timestamp=None),
+        get_session_config=GetSessionConfig(
+            num_recent_events=0, after_timestamp=None
+        ),
     )
     assert run_request.session_id == "new-session-id"
 
