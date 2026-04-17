@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+from contextlib import AbstractAsyncContextManager
 from contextlib import asynccontextmanager
 import logging
 from typing import AsyncIterator
@@ -85,7 +86,9 @@ def to_a2a(
     agent_card: Optional[Union[AgentCard, str]] = None,
     push_config_store: Optional[PushNotificationConfigStore] = None,
     runner: Optional[Runner] = None,
-    lifespan: Optional[Callable[[Starlette], AsyncIterator[None]]] = None,
+    lifespan: Optional[
+        Callable[[Starlette], AbstractAsyncContextManager[None]]
+    ] = None,
 ) -> Starlette:
   """Convert an ADK agent to a A2A Starlette application.
 
@@ -171,7 +174,7 @@ def to_a2a(
   )
 
   # Build the agent card and configure A2A routes
-  async def setup_a2a(app: Starlette):
+  async def setup_a2a(app: Starlette) -> None:
     # Use provided agent card or build one asynchronously
     if provided_agent_card is not None:
       final_agent_card = provided_agent_card

@@ -18,6 +18,7 @@ from datetime import datetime
 from datetime import timezone
 import inspect
 import logging
+from typing import Any
 from typing import Awaitable
 from typing import Callable
 from typing import Optional
@@ -296,7 +297,7 @@ class _A2aAgentExecutor(AgentExecutor):
 
   def _get_invocation_metadata(
       self, executor_context: ExecutorContext
-  ) -> dict[str, str]:
+  ) -> dict[str, Any]:
     return {
         _get_adk_metadata_key('app_name'): executor_context.app_name,
         _get_adk_metadata_key('user_id'): executor_context.user_id,

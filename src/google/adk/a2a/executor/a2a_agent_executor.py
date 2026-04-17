@@ -335,7 +335,7 @@ class A2aAgentExecutor(AgentExecutor):
     run_request.session_id = session.id
     return session
 
-  def _check_new_version_extension(self, context: RequestContext):
+  def _check_new_version_extension(self, context: RequestContext) -> bool:
     """Check if the extension for the new version is requested and activate it."""
     if _NEW_A2A_ADK_INTEGRATION_EXTENSION in context.requested_extensions:
       context.add_activated_extension(_NEW_A2A_ADK_INTEGRATION_EXTENSION)
