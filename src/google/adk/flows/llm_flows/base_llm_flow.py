@@ -720,19 +720,21 @@ class BaseLlmFlow(ABC):
   ) -> AsyncGenerator[Event, None]:
     """Receive data from model and process events using BaseLlmConnection."""
 
-    def get_author_for_event(llm_response):
+    def get_author_for_event(llm_response: LlmResponse) -> str:
       """Get the author of the event.
 
-      When the model returns transcription, the author is "user". Otherwise, the
-      author is the agent name(not 'model').
+      When the model returns input transcription, the author is set to "user".
+      Otherwise, the author is the agent name (not 'model').
 
       Args:
         llm_response: The LLM response from the LLM call.
+
+      Returns:
+        The author of the event as a string, either "user" or the agent's name.
       """
-      if (
-          llm_response
-          and llm_response.content
-          and llm_response.content.role == 'user'
+      if llm_response and (
+          llm_response.input_transcription
+          or (llm_response.content and llm_response.content.role == 'user')
       ):
         return 'user'
       else:
