@@ -76,7 +76,7 @@ def get_text_from_content(
     if final_text:
       parts.append(final_text)
 
-    return "\n\n".join(parts) if parts else None
+    return "\n".join(parts) if parts else None
 
   if content and content.parts:
     return "\n".join([p.text for p in content.parts if p.text])
