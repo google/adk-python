@@ -1,5 +1,39 @@
 # Changelog
 
+## [1.31.0](https://github.com/google/adk-python/compare/v1.30.0...v1.31.0) (2026-04-16)
+
+
+### Features
+
+* Add "google-adk" user agent to Parameter Manager and Secret Manager clients ([b8e8f6b](https://github.com/google/adk-python/commit/b8e8f6b90290e48e134f48bbe7e2b800276e7269))
+* Add support for memories.ingest_events in VertexAiMemoryBankService ([d69477f](https://github.com/google/adk-python/commit/d69477f6ff348311e1d53e3f2c389dcf037fb049))
+* Add Vertex AI Agent Engine Sandbox integration for computer use ([7686848](https://github.com/google/adk-python/commit/76868485519090c5fa2a0287bccca040e438d94e))
+* Firestore support ([1a9df8f](https://github.com/google/adk-python/commit/1a9df8f77410a08a85d04744f199d25f20d55ebd))
+* **live:** Add live_session_id to LlmResponse ([bf84e2c](https://github.com/google/adk-python/commit/bf84e2cee84f04c886914eb72318875f3c29ea13))
+
+
+### Bug Fixes
+
+* Bump minimum mcp version from 1.23.0 to 1.24.0 ([494c360](https://github.com/google/adk-python/commit/494c360b2a82af5130f153ff615f84e4c2604a73))
+* **cli:** correct console URL path after adk deploy agent_engine ([64ed1a6](https://github.com/google/adk-python/commit/64ed1a68c98e32d61aff43857fa4e756b129b13f)), closes [#5336](https://github.com/google/adk-python/issues/5336)
+* execute on_event_callback before append_event to persist plugin modifications ([454188d](https://github.com/google/adk-python/commit/454188de5de0ef44adb7716230eacddcb060dab2)), closes [#3990](https://github.com/google/adk-python/issues/3990)
+* make `_EvalMetricResultWithInvocation.expected_invocation` `Optional` for conversation_scenario support ([#5215](https://github.com/google/adk-python/issues/5215)) ([a4c9387](https://github.com/google/adk-python/commit/a4c938775764794f42e00a89e3cb33da5119c38b))
+* Pass in auth headers with header provider instead of connection params ([e12b0af](https://github.com/google/adk-python/commit/e12b0af20d9a025e3d75f309de836b139b6d3e88))
+* populate required fields in FunctionDeclaration json_schema fallback ([9b9faa4](https://github.com/google/adk-python/commit/9b9faa4ba21d566252e4c25bd55ab9db2658051e))
+* Resolve BigQuery plugin issues with A2A transfers, spans, and metadata ([9ca8c38](https://github.com/google/adk-python/commit/9ca8c384324e07e945146359f21010b438eb1bc6))
+* upgrade google-genai lower bound ([8bc5728](https://github.com/google/adk-python/commit/8bc57283f3c584a5a6d6d774a316fe63342ed481))
+
+
+### Code Refactoring
+
+* **live:** Use `send_client_content` to send conversation history ([67dc2eb](https://github.com/google/adk-python/commit/67dc2ebfd42f175f2dd6ea58df51a03c575062c6))
+* **live:** Use `send_tool_response` for function responses ([70c5fc8](https://github.com/google/adk-python/commit/70c5fc83a62d1e81d20986223f5c275b086f9822))
+
+
+### Documentation
+
+* update MCP Toolbox branding, binary version, and asset references ([47fa7b7](https://github.com/google/adk-python/commit/47fa7b743c37e3aa8302e78be552876c2784e6ff))
+
 ## [1.30.0](https://github.com/google/adk-python/compare/v1.29.0...v1.30.0) (2026-04-13)
 
 
