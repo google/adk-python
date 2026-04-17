@@ -474,13 +474,15 @@ class LlmAgent(BaseAgent):
     if agent_state is not None and (
         agent_to_transfer := self._get_subagent_to_resume(ctx)
     ):
-      sub_agent_paused = False
+      sub_agent_paused = False  # Track pause state
       async with Aclosing(agent_to_transfer.run_async(ctx)) as agen:
         async for event in agen:
+          # Check if this event signals a pause (requires Bug 1 fix context)
           if ctx.should_pause_invocation(event):
             sub_agent_paused = True
           yield event
 
+      # Only mark as ended if it didn't pause
       if not sub_agent_paused:
         ctx.set_agent_state(self.name, end_of_agent=True)
         yield self._create_agent_state_event(ctx)
