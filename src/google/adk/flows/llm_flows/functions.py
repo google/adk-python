@@ -22,6 +22,7 @@ import binascii
 from concurrent.futures import ThreadPoolExecutor
 import contextvars
 import copy
+import functools
 import inspect
 import logging
 import threading
@@ -42,8 +43,8 @@ from ...auth.auth_tool import AuthConfig
 from ...auth.auth_tool import AuthToolArguments
 from ...events.event import Event
 from ...events.event_actions import EventActions
-from ...telemetry import _instrumentation
 from ...telemetry.tracing import trace_merged_tool_calls
+from ...telemetry.tracing import trace_tool_call
 from ...telemetry.tracing import tracer
 from ...tools.base_tool import BaseTool
 from ...tools.tool_confirmation import ToolConfirmation
@@ -590,11 +591,22 @@ async def _execute_single_function_call_async(
     )
     return function_response_event
 
-  async with _instrumentation.record_tool_execution(
-      tool, agent, invocation_context, function_args
-  ) as tel_ctx:
-    tel_ctx.function_response_event = await _run_with_trace()
-    return tel_ctx.function_response_event
+  with tracer.start_as_current_span(f'execute_tool {tool.name}'):
+    function_response_event = None
+    caught_error = None
+    try:
+      function_response_event = await _run_with_trace()
+      return function_response_event
+    except Exception as e:
+      caught_error = e
+      raise
+    finally:
+      trace_tool_call(
+          tool=tool,
+          args=function_args,
+          function_response_event=function_response_event,
+          error=caught_error,
+      )
 
 
 async def handle_function_calls_live(
@@ -818,11 +830,22 @@ async def _execute_single_function_call_live(
     )
     return function_response_event
 
-  async with _instrumentation.record_tool_execution(
-      tool, agent, invocation_context, function_args
-  ) as tel_ctx:
-    tel_ctx.function_response_event = await _run_with_trace()
-    return tel_ctx.function_response_event
+  with tracer.start_as_current_span(f'execute_tool {tool.name}'):
+    function_response_event = None
+    caught_error = None
+    try:
+      function_response_event = await _run_with_trace()
+      return function_response_event
+    except Exception as e:
+      caught_error = e
+      raise
+    finally:
+      trace_tool_call(
+          tool=tool,
+          args=function_args,
+          function_response_event=function_response_event,
+          error=caught_error,
+      )
 
 
 async def _process_function_live_helper(

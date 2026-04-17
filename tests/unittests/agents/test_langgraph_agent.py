@@ -232,9 +232,6 @@ async def test_langgraph_agent(
   mock_parent_context = MagicMock(spec=InvocationContext)
   mock_session = MagicMock()
   mock_parent_context.session = mock_session
-  mock_parent_context.user_content = types.Content(
-      role="user", parts=[types.Part.from_text(text="test prompt")]
-  )
   mock_parent_context.branch = "parent_agent"
   mock_parent_context.end_invocation = False
   mock_session.events = events_list
