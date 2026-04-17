@@ -1680,9 +1680,10 @@ async def test_adapt_computer_use_tool_wait():
   assert wait_5_seconds_tool._coordinate_space == (1000, 1000)
 
   # Verify calling the new tool calls the original with 5 seconds
+  # The wrapper adds tool_context parameter
   result = await wait_5_seconds_tool.func()
   assert result == "mock_result"
-  mock_wait_func.assert_awaited_once_with(5)
+  mock_wait_func.assert_awaited_once_with(5, tool_context=None)
 
 
 @pytest.mark.asyncio
