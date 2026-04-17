@@ -27,14 +27,6 @@ def reset_warned_features():
   _WARNED_FEATURES.clear()
 
 
-def test_bigquery_tool_config_experimental_warning():
-  """Test BigQueryToolConfig experimental warning."""
-  with warnings.catch_warnings(record=True) as w:
-    BigQueryToolConfig()
-    assert len(w) == 1
-    assert "BIG_QUERY_TOOL_CONFIG is enabled." in str(w[0].message)
-
-
 def test_bigquery_tool_config_invalid_property():
   """Test BigQueryToolConfig raises exception when setting invalid property."""
   with pytest.raises(

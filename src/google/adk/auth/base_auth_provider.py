@@ -16,6 +16,10 @@ from __future__ import annotations
 
 from abc import ABC
 from abc import abstractmethod
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+  from .auth_schemes import AuthScheme
 
 from ..agents.callback_context import CallbackContext
 from ..features import experimental
@@ -27,6 +31,15 @@ from .auth_tool import AuthConfig
 @experimental(FeatureName.PLUGGABLE_AUTH)
 class BaseAuthProvider(ABC):
   """Abstract base class for custom authentication providers."""
+
+  @property
+  def supported_auth_schemes(self) -> tuple[type[AuthScheme], ...]:
+    """The AuthScheme types supported by this provider.
+
+    Subclasses can override this to return a tuple of scheme types, enabling
+    1-parameter registration.
+    """
+    return ()
 
   @abstractmethod
   async def get_auth_credential(

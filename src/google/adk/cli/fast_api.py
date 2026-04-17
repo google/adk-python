@@ -22,11 +22,13 @@ from pathlib import Path
 import shutil
 import sys
 from typing import Any
+from typing import Literal
 from typing import Mapping
 from typing import Optional
 
 import click
 from fastapi import FastAPI
+from fastapi import HTTPException
 from fastapi import UploadFile
 from fastapi.responses import FileResponse
 from fastapi.responses import PlainTextResponse
@@ -94,6 +96,7 @@ def get_fast_api_app(
     logo_text: Optional[str] = None,
     logo_image_url: Optional[str] = None,
     auto_create_session: bool = False,
+    trigger_sources: Optional[list[Literal["pubsub", "eventarc"]]] = None,
 ) -> FastAPI:
   """Constructs and returns a FastAPI application for serving ADK agents.
 
@@ -135,8 +138,11 @@ def get_fast_api_app(
     extra_plugins: List of extra plugin names to load.
     logo_text: Text to display in the web UI logo area.
     logo_image_url: URL for an image to display in the web UI logo area.
-    auto_create_session: Whether to automatically create a session when
-      not found.
+    auto_create_session: Whether to automatically create a session when not
+      found.
+    trigger_sources: List of trigger sources to enable (e.g. ["pubsub",
+      "eventarc"]). When set, registers /trigger/* endpoints for batch and
+      event-driven agent invocations. None disables all trigger endpoints.
 
   Returns:
     The configured FastAPI application instance.
@@ -205,6 +211,7 @@ def get_fast_api_app(
       logo_image_url=logo_image_url,
       url_prefix=url_prefix,
       auto_create_session=auto_create_session,
+      trigger_sources=trigger_sources,
   )
 
   # Callbacks & other optional args for when constructing the FastAPI instance
@@ -292,6 +299,39 @@ def get_fast_api_app(
       return any(part == ".." for part in path.split("/"))
 
     _ALLOWED_EXTENSIONS = frozenset({".yaml", ".yml"})
+
+    # --- YAML content security ---
+    # The `args` key in agent YAML configs (CodeConfig.args, ToolConfig.args)
+    # allows callers to pass arbitrary arguments to Python constructors and
+    # functions, which is an RCE vector when exposed through the builder UI.
+    # Block any upload that contains an `args` key anywhere in the document.
+    _BLOCKED_YAML_KEYS = frozenset({"args"})
+
+    def _check_yaml_for_blocked_keys(content: bytes, filename: str) -> None:
+      """Raise if the YAML document contains any blocked keys."""
+      import yaml
+
+      try:
+        docs = list(yaml.safe_load_all(content))
+      except yaml.YAMLError as exc:
+        raise ValueError(f"Invalid YAML in {filename!r}: {exc}") from exc
+
+      def _walk(node: Any) -> None:
+        if isinstance(node, dict):
+          for key, value in node.items():
+            if key in _BLOCKED_YAML_KEYS:
+              raise ValueError(
+                  f"Blocked key {key!r} found in {filename!r}. "
+                  f"The '{key}' field is not allowed in builder uploads "
+                  "because it can execute arbitrary code."
+              )
+            _walk(value)
+        elif isinstance(node, list):
+          for item in node:
+            _walk(item)
+
+      for doc in docs:
+        _walk(doc)
 
     def _parse_upload_filename(filename: Optional[str]) -> tuple[str, str]:
       if not filename:
@@ -430,40 +470,14 @@ def get_fast_api_app(
         files: list[UploadFile], tmp: Optional[bool] = False
     ) -> bool:
       try:
-        if tmp:
-          app_names = set()
-          uploads = []
-          for file in files:
-            app_name, rel_path = _parse_upload_filename(file.filename)
-            app_names.add(app_name)
-            uploads.append((rel_path, file))
-
-          if len(app_names) != 1:
-            logger.error(
-                "Exactly one app name is required, found: %s",
-                sorted(app_names),
-            )
-            return False
-
-          app_name = next(iter(app_names))
-          app_root = _get_app_root(app_name)
-          tmp_agent_root = _get_tmp_agent_root(app_root, app_name)
-          tmp_agent_root.mkdir(parents=True, exist_ok=True)
-
-          for rel_path, file in uploads:
-            destination_path = _resolve_under_dir(tmp_agent_root, rel_path)
-            destination_path.parent.mkdir(parents=True, exist_ok=True)
-            with destination_path.open("wb") as buffer:
-              shutil.copyfileobj(file.file, buffer)
-
-          return True
-
-        app_names = set()
-        uploads = []
+        # Phase 1: parse filenames and read content into memory.
+        app_names: set[str] = set()
+        uploads: list[tuple[str, bytes]] = []
         for file in files:
           app_name, rel_path = _parse_upload_filename(file.filename)
           app_names.add(app_name)
-          uploads.append((rel_path, file))
+          content = await file.read()
+          uploads.append((rel_path, content))
 
         if len(app_names) != 1:
           logger.error(
@@ -473,6 +487,24 @@ def get_fast_api_app(
           return False
 
         app_name = next(iter(app_names))
+
+        # Phase 2: validate every file *before* writing anything to disk.
+        for rel_path, content in uploads:
+          _check_yaml_for_blocked_keys(content, f"{app_name}/{rel_path}")
+
+        # Phase 3: write validated files to disk.
+        if tmp:
+          app_root = _get_app_root(app_name)
+          tmp_agent_root = _get_tmp_agent_root(app_root, app_name)
+          tmp_agent_root.mkdir(parents=True, exist_ok=True)
+
+          for rel_path, content in uploads:
+            destination_path = _resolve_under_dir(tmp_agent_root, rel_path)
+            destination_path.parent.mkdir(parents=True, exist_ok=True)
+            destination_path.write_bytes(content)
+
+          return True
+
         app_root = _get_app_root(app_name)
         app_root.mkdir(parents=True, exist_ok=True)
 
@@ -480,16 +512,15 @@ def get_fast_api_app(
         if tmp_agent_root.is_dir():
           copy_dir_contents(tmp_agent_root, app_root)
 
-        for rel_path, file in uploads:
+        for rel_path, content in uploads:
           destination_path = _resolve_under_dir(app_root, rel_path)
           destination_path.parent.mkdir(parents=True, exist_ok=True)
-          with destination_path.open("wb") as buffer:
-            shutil.copyfileobj(file.file, buffer)
+          destination_path.write_bytes(content)
 
         return cleanup_tmp(app_name)
       except ValueError as exc:
         logger.exception("Error in builder_build: %s", exc)
-        return False
+        raise HTTPException(status_code=400, detail=str(exc))
       except OSError as exc:
         logger.exception("Error in builder_build: %s", exc)
         return False

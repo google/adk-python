@@ -35,6 +35,7 @@ from google.adk.sessions.vertex_ai_session_service import VertexAiSessionService
 from google.api_core import exceptions as api_core_exceptions
 from google.genai import types as genai_types
 from google.genai.errors import ClientError
+import pydantic
 import pytest
 
 MOCK_SESSION_JSON_1 = {
@@ -92,6 +93,7 @@ MOCK_EVENT_JSON = [
             'branch': '',
             'long_running_tool_ids': ['tool1'],
         },
+        'raw_event': {},
     },
 ]
 MOCK_EVENT_JSON_2 = [
@@ -417,7 +419,10 @@ class MockAsyncClient:
       self, name: str, user_id: str, config: dict[str, Any]
   ):
     self.last_create_session_config = config
-    new_session_id = '4'
+    if 'session_id' in config:
+      new_session_id = config['session_id']
+    else:
+      new_session_id = '4'
     self.session_dict[new_session_id] = {
         'name': (
             'projects/test-project/locations/test-location/'
@@ -436,7 +441,7 @@ class MockAsyncClient:
             + '/operations/111'
         ),
         'done': True,
-        'response': self.session_dict['4'],
+        'response': self.session_dict[new_session_id],
     })
 
   async def _list_events(self, name: str, **kwargs):
@@ -823,6 +828,20 @@ async def test_get_session_with_many_events(mock_api_client_instance):
 
 @pytest.mark.asyncio
 @pytest.mark.usefixtures('mock_get_api_client')
+async def test_get_session_with_num_recent_events_zero():
+  session_service = mock_vertex_ai_session_service()
+  session = await session_service.get_session(
+      app_name='123',
+      user_id='user',
+      session_id='2',
+      config=GetSessionConfig(num_recent_events=0),
+  )
+  assert session is not None
+  assert len(session.events) == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures('mock_get_api_client')
 async def test_list_sessions():
   session_service = mock_vertex_ai_session_service()
   sessions = await session_service.list_sessions(app_name='123', user_id='user')
@@ -880,15 +899,26 @@ async def test_create_session():
 
 @pytest.mark.asyncio
 @pytest.mark.usefixtures('mock_get_api_client')
-async def test_create_session_with_custom_session_id():
+@pytest.mark.parametrize('session_id', ['1', 'abc123'])
+async def test_create_session_with_custom_session_id(
+    mock_api_client_instance: MockAsyncClient, session_id: str
+):
   session_service = mock_vertex_ai_session_service()
 
-  with pytest.raises(ValueError) as excinfo:
-    await session_service.create_session(
-        app_name='123', user_id='user', session_id='1'
-    )
-  assert str(excinfo.value) == (
-      'User-provided Session id is not supported for VertexAISessionService.'
+  mock_api_client_instance.event_dict[session_id] = (
+      [],
+      None,
+  )
+
+  session = await session_service.create_session(
+      app_name='123', user_id='user', session_id=session_id
+  )
+  assert session.id == session_id
+  assert session.app_name == '123'
+  assert session.user_id == 'user'
+  assert session.last_update_time is not None
+  assert session == await session_service.get_session(
+      app_name='123', user_id='user', session_id=session_id
   )
 
 
@@ -1194,3 +1224,55 @@ async def test_append_event_with_usage_metadata_and_compaction():
   assert appended_event.custom_metadata == {'extra': 'info'}
   assert '_compaction' not in (appended_event.custom_metadata or {})
   assert '_usage_metadata' not in (appended_event.custom_metadata or {})
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures('mock_get_api_client')
+async def test_append_event_fallback_for_older_sdk(mock_api_client_instance):
+  """Tests that append_event falls back to custom_metadata when SDK fails on raw_event."""
+  session_service = mock_vertex_ai_session_service()
+  session = await session_service.get_session(
+      app_name='123', user_id='user', session_id='1'
+  )
+  assert session is not None
+
+  compaction = EventCompaction(
+      start_timestamp=1000.0,
+      end_timestamp=2000.0,
+      compacted_content=genai_types.Content(
+          parts=[genai_types.Part(text='compacted summary')]
+      ),
+  )
+  event_to_append = Event(
+      invocation_id='fallback_invocation',
+      author='model',
+      timestamp=1734005534.0,
+      actions=EventActions(compaction=compaction),
+  )
+
+  mock_client = mock_api_client_instance
+
+  async def side_effect(name, author, invocation_id, timestamp, config):
+    if 'raw_event' in config:
+      # Trigger a real ValidationError since Pydantic V2 doesn't allow easy
+      # instantiation
+      class DummyModel(pydantic.BaseModel):
+        a: int
+
+      DummyModel(a='not an int')
+    return await mock_client._append_event(
+        name, author, invocation_id, timestamp, config
+    )
+
+  mock_client.agent_engines.sessions.events.append.side_effect = side_effect
+
+  await session_service.append_event(session, event_to_append)
+
+  # Verify that it was written and restored correctly via custom_metadata
+  retrieved_session = await session_service.get_session(
+      app_name='123', user_id='user', session_id='1'
+  )
+  appended_event = retrieved_session.events[-1]
+
+  assert appended_event.actions.compaction is not None
+  assert appended_event.actions.compaction.start_timestamp == 1000.0
