@@ -41,6 +41,7 @@ from ..experimental import a2a_experimental
 from .executor_context import ExecutorContext
 
 
+
 @dataclasses.dataclass
 class ExecuteInterceptor:
   """Interceptor for the A2aAgentExecutor."""

@@ -587,6 +587,10 @@ def get_fast_api_app(
     from a2a.utils.constants import AGENT_CARD_WELL_KNOWN_PATH
 
     from ..a2a.executor.a2a_agent_executor import A2aAgentExecutor
+    from ..a2a.executor.config import A2aAgentExecutorConfig
+    from ..a2a.executor.interceptors.include_artifacts_in_a2a_event import (
+        include_artifacts_in_a2a_event_interceptor,
+    )
 
     # locate all a2a agent apps in the agents directory
     base_path = Path.cwd() / agents_dir
@@ -618,6 +622,9 @@ def get_fast_api_app(
         try:
           agent_executor = A2aAgentExecutor(
               runner=create_a2a_runner_loader(app_name),
+              config=A2aAgentExecutorConfig(
+                  execute_interceptors=[include_artifacts_in_a2a_event_interceptor],
+              ),
           )
 
           push_config_store = InMemoryPushNotificationConfigStore()
