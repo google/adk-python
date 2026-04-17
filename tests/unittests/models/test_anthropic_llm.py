@@ -799,6 +799,29 @@ def test_part_to_message_block_with_string_content():
   assert result["content"] == "Hello"
 
 
+def test_part_to_message_block_with_empty_string_content():
+  """An explicit empty content payload should stay empty."""
+  from google.adk.models.anthropic_llm import part_to_message_block
+
+  response_part = types.Part.from_function_response(
+      name="load_skill_resource",
+      response={
+          "skill_name": "my_skill",
+          "file_path": "references/doc.md",
+          "content": "",
+      },
+  )
+  response_part.function_response.id = "test_id_791"
+
+  result = part_to_message_block(response_part)
+
+  assert isinstance(result, dict)
+  assert result["tool_use_id"] == "test_id_791"
+  assert result["type"] == "tool_result"
+  assert not result["is_error"]
+  assert result["content"] == ""
+
+
 def test_part_to_message_block_with_pdf_document():
   """Test that part_to_message_block handles PDF document parts."""
   pdf_data = b"%PDF-1.4 fake pdf content"
