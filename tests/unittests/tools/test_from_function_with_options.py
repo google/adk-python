@@ -361,3 +361,29 @@ def test_required_fields_set_in_json_schema_fallback():
           ),
       },
   )
+
+
+def test_sanitized_in_json_schema_fallback():
+  """Test schema is sanitzed for complex union type."""
+
+  def complex_tool(
+      query: str,
+      mode: str = 'default',
+      tags: dict[str, str] | None = None,
+  ) -> str:
+    return query
+
+  declaration = _automatic_function_calling_util.from_function_with_options(
+      complex_tool, GoogleLLMVariant.GEMINI_API
+  )
+
+  assert declaration.parameters.properties['tags'] == types.Schema(
+      any_of=[
+          types.Schema(
+              # should not contain `additional_properties={'type': 'string'} from pydantic
+              type=types.Type.OBJECT,
+          ),
+          types.Schema(type=types.Type.NULL),
+      ],
+      nullable=True,
+  )
