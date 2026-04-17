@@ -1886,28 +1886,29 @@ class AdkWebServer:
         _is_visual_builder.set(True)
       else:
         _is_visual_builder.set(False)
-
     @app.post("/run", response_model_exclude_none=True)
     async def run_agent(req: RunAgentRequest) -> list[Event]:
-      runner = await self.get_runner_async(req.app_name)
+      try:
+        runner = await self.get_runner_async(req.app_name)
+      except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e)) from e
+      
       _set_telemetry_context_if_needed(runner)
       try:
         async with Aclosing(
-            runner.run_async(
-                user_id=req.user_id,
-                session_id=req.session_id,
-                new_message=req.new_message,
-                state_delta=req.state_delta,
-                invocation_id=req.invocation_id,
+          runner.run_async(
+            user_id=req.user_id,
+            session_id=req.session_id,
+            new_message=req.new_message,
+            state_delta=req.state_delta,
+            invocation_id=req.invocation_id,
             )
-        ) as agen:
-          events = [event async for event in agen]
+          ) as agen:
+            events = [event async for event in agen]
       except SessionNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e)) from e
-      logger.info("Generated %s events in agent run", len(events))
-      logger.debug("Events generated: %s", events)
-      return events
-
+      
+      return events 
     @app.post("/run_sse")
     async def run_agent_sse(req: RunAgentRequest) -> StreamingResponse:
       stream_mode = StreamingMode.SSE if req.streaming else StreamingMode.NONE
