@@ -390,9 +390,24 @@ class InvocationContext(BaseModel):
     if not event.long_running_tool_ids or not event.get_function_calls():
       return False
 
+    # Check if we have already received a response for the long-running tool call
+    # Get all events in the current invocation
+    events = self._get_events(current_invocation=True)
+    
     for fc in event.get_function_calls():
       if fc.id in event.long_running_tool_ids:
-        return True
+        # Check if there's a function response for this fc.id
+        has_response = False
+        for e in events:
+            for fr in e.get_function_responses():
+                if fr.id == fc.id:
+                    has_response = True
+                    break
+            if has_response:
+                break
+        
+        if not has_response:
+            return True
 
     return False
 

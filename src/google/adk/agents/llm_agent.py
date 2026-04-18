@@ -181,7 +181,15 @@ async def _convert_tool_union_to_tools(
     return [FunctionTool(func=tool_union)]
 
   # At this point, tool_union must be a BaseToolset
-  return await tool_union.get_tools_with_prefix(ctx)
+  try:
+    return await tool_union.get_tools_with_prefix(ctx)
+  except Exception as e:
+    logger.warning(
+        'Failed to get tools from toolset %s: %s',
+        type(tool_union).__name__,
+        e,
+    )
+    return []
 
 
 class LlmAgent(BaseAgent):
@@ -466,12 +474,16 @@ class LlmAgent(BaseAgent):
     if agent_state is not None and (
         agent_to_transfer := self._get_subagent_to_resume(ctx)
     ):
+      sub_agent_paused = False
       async with Aclosing(agent_to_transfer.run_async(ctx)) as agen:
         async for event in agen:
+          if ctx.should_pause_invocation(event):
+            sub_agent_paused = True
           yield event
 
-      ctx.set_agent_state(self.name, end_of_agent=True)
-      yield self._create_agent_state_event(ctx)
+      if not sub_agent_paused:
+        ctx.set_agent_state(self.name, end_of_agent=True)
+        yield self._create_agent_state_event(ctx)
       return
 
     should_pause = False
