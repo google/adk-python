@@ -62,60 +62,11 @@ class _ToolUseAccumulator:
   args_json: str
 
 
-@dataclasses.dataclass
-class _ThinkingAccumulator:
+class _ThinkingAccumulator(BaseModel):
   """Accumulates streamed thinking content block data."""
 
-  thinking: str
-  signature: str
-
-
-def _build_anthropic_thinking_param(
-    config: Optional[types.GenerateContentConfig],
-) -> Union[
-    anthropic_types.ThinkingConfigEnabledParam,
-    anthropic_types.ThinkingConfigDisabledParam,
-    NotGiven,
-]:
-  """Maps genai ThinkingConfig to Anthropic's thinking parameter.
-
-  Per ``google.genai.types.ThinkingConfig``, ``thinking_budget`` semantics are:
-    * ``None``: not specified; the genai default is model-dependent. Anthropic
-      requires an explicit ``budget_tokens`` whenever thinking is enabled, so
-      we surface this as a ``ValueError`` to keep the developer's intent
-      explicit (mirroring the Anthropic API).
-    * ``0``: thinking is DISABLED.
-    * ``-1``: AUTOMATIC; not supported by Anthropic models.
-    * positive int: budget in tokens (Anthropic requires ``>= 1024`` and
-      ``< max_tokens``; validation is delegated to the Anthropic API so the
-      caller gets the canonical error message).
-  """
-  if not config or not config.thinking_config:
-    return NOT_GIVEN
-
-  thinking_budget = config.thinking_config.thinking_budget
-
-  if thinking_budget is None:
-    raise ValueError(
-        "thinking_budget must be set explicitly when ThinkingConfig is"
-        " provided for Anthropic models. Use 0 to disable thinking, or a"
-        " positive integer (>= 1024) for the token budget."
-    )
-
-  if thinking_budget == 0:
-    return anthropic_types.ThinkingConfigDisabledParam(type="disabled")
-
-  if thinking_budget < 0:
-    raise ValueError(
-        f"thinking_budget={thinking_budget} is not supported for Anthropic"
-        " models (AUTOMATIC mode is unavailable). Use a positive integer"
-        " (>= 1024) for the token budget, or 0 to disable thinking."
-    )
-
-  return anthropic_types.ThinkingConfigEnabledParam(
-      type="enabled",
-      budget_tokens=thinking_budget,
-  )
+  thinking: str = ""
+  signature: str = ""
 
 
 class ClaudeRequest(BaseModel):
@@ -165,23 +116,24 @@ def part_to_message_block(
     anthropic_types.DocumentBlockParam,
     anthropic_types.ToolUseBlockParam,
     anthropic_types.ToolResultBlockParam,
+    anthropic_types.ThinkingBlockParam,
+    anthropic_types.RedactedThinkingBlockParam,
 ]:
-  if part.thought and part.text:
-    signature = ""
-    if part.thought_signature:
-      signature = part.thought_signature.decode("utf-8")
-    return anthropic_types.ThinkingBlockParam(
-        type="thinking",
-        thinking=part.text,
-        signature=signature,
+  if part.thought:
+    signature_str = (
+        part.thought_signature.decode("utf-8") if part.thought_signature else ""
     )
-  if part.thought and part.thought_signature:
-    # Redacted thinking: no plaintext, only the encrypted blob produced by
-    # content_block_to_part for round-tripping back to Claude.
-    return anthropic_types.RedactedThinkingBlockParam(
-        type="redacted_thinking",
-        data=part.thought_signature.decode("utf-8"),
-    )
+    if part.text:
+      return anthropic_types.ThinkingBlockParam(
+          type="thinking",
+          thinking=part.text,
+          signature=signature_str,
+      )
+    else:
+      return anthropic_types.RedactedThinkingBlockParam(
+          type="redacted_thinking",
+          data=signature_str,
+      )
   if part.text:
     return anthropic_types.TextBlockParam(text=part.text, type="text")
   elif part.function_call:
@@ -315,9 +267,19 @@ def content_block_to_part(
     )
     part.function_call.id = content_block.id
     return part
-  raise NotImplementedError(
-      f"Unsupported content block type: {type(content_block)}"
-  )
+  if isinstance(content_block, anthropic_types.ThinkingBlock):
+    return types.Part(
+        text=content_block.thinking,
+        thought=True,
+        thought_signature=content_block.signature.encode("utf-8"),
+    )
+  if isinstance(content_block, anthropic_types.RedactedThinkingBlock):
+    return types.Part(
+        text="",
+        thought=True,
+        thought_signature=content_block.data.encode("utf-8"),
+    )
+  raise NotImplementedError("Not supported yet.")
 
 
 def message_to_generate_content_response(
@@ -439,6 +401,26 @@ def function_declaration_to_tool_param(
   )
 
 
+def _build_thinking_param(
+    thinking_config: Optional[types.ThinkingConfig],
+    max_tokens: int,
+) -> Union[anthropic_types.ThinkingConfigEnabledParam, NotGiven]:
+  """Converts ADK ThinkingConfig to Anthropic ThinkingConfigEnabledParam.
+
+  Returns NOT_GIVEN if thinking is not configured or budget is 0.
+  Clamps budget_tokens to max_tokens - 1 to satisfy the API constraint.
+  """
+  if thinking_config is None:
+    return NOT_GIVEN
+  budget = thinking_config.thinking_budget
+  if not budget:
+    return NOT_GIVEN
+  return anthropic_types.ThinkingConfigEnabledParam(
+      type="enabled",
+      budget_tokens=min(budget, max_tokens - 1),
+  )
+
+
 class AnthropicLlm(BaseLlm):
   """Integration with Claude models via the Anthropic API.
 
@@ -491,7 +473,10 @@ class AnthropicLlm(BaseLlm):
         if llm_request.tools_dict
         else NOT_GIVEN
     )
-    thinking = _build_anthropic_thinking_param(llm_request.config)
+    thinking = _build_thinking_param(
+        llm_request.config.thinking_config if llm_request.config else None,
+        self.max_tokens,
+    )
 
     if not stream:
       message = await self._anthropic_client.messages.create(
@@ -517,9 +502,7 @@ class AnthropicLlm(BaseLlm):
       tools: Union[Iterable[anthropic_types.ToolUnionParam], NotGiven],
       tool_choice: Union[anthropic_types.ToolChoiceParam, NotGiven],
       thinking: Union[
-          anthropic_types.ThinkingConfigEnabledParam,
-          anthropic_types.ThinkingConfigDisabledParam,
-          NotGiven,
+          anthropic_types.ThinkingConfigEnabledParam, NotGiven
       ] = NOT_GIVEN,
   ) -> AsyncGenerator[LlmResponse, None]:
     """Handles streaming responses from Anthropic models.
@@ -571,6 +554,10 @@ class AnthropicLlm(BaseLlm):
               name=block.name,
               args_json="",
           )
+        elif isinstance(block, anthropic_types.ThinkingBlock):
+          thinking_blocks[event.index] = _ThinkingAccumulator()
+        elif isinstance(block, anthropic_types.RedactedThinkingBlock):
+          redacted_thinking_blocks[event.index] = block.data
 
       elif event.type == "content_block_delta":
         delta = event.delta
@@ -600,6 +587,12 @@ class AnthropicLlm(BaseLlm):
         elif isinstance(delta, anthropic_types.InputJSONDelta):
           if event.index in tool_use_blocks:
             tool_use_blocks[event.index].args_json += delta.partial_json
+        elif isinstance(delta, anthropic_types.ThinkingDelta):
+          if event.index in thinking_blocks:
+            thinking_blocks[event.index].thinking += delta.thinking
+        elif isinstance(delta, anthropic_types.SignatureDelta):
+          if event.index in thinking_blocks:
+            thinking_blocks[event.index].signature = delta.signature
 
       elif event.type == "message_delta":
         output_tokens = event.usage.output_tokens
@@ -608,22 +601,26 @@ class AnthropicLlm(BaseLlm):
     all_parts: list[types.Part] = []
     all_indices = sorted(
         set(
-            list(thinking_blocks.keys())
-            + list(redacted_thinking_blocks.keys())
-            + list(text_blocks.keys())
+            list(text_blocks.keys())
             + list(tool_use_blocks.keys())
+            + list(thinking_blocks.keys())
+            + list(redacted_thinking_blocks.keys())
         )
     )
     for idx in all_indices:
       if idx in thinking_blocks:
         acc = thinking_blocks[idx]
-        part = types.Part(text=acc.thinking, thought=True)
-        if acc.signature:
-          part.thought_signature = acc.signature.encode("utf-8")
-        all_parts.append(part)
+        all_parts.append(
+            types.Part(
+                text=acc.thinking,
+                thought=True,
+                thought_signature=acc.signature.encode("utf-8"),
+            )
+        )
       if idx in redacted_thinking_blocks:
         all_parts.append(
             types.Part(
+                text="",
                 thought=True,
                 thought_signature=redacted_thinking_blocks[idx].encode("utf-8"),
             )

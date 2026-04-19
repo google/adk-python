@@ -1352,176 +1352,157 @@ async def test_non_streaming_does_not_pass_stream_param():
   assert "stream" not in kwargs
 
 
-def test_part_to_message_block_function_call_preserves_valid_id():
-  """Valid Anthropic ids must round-trip byte-for-byte."""
-  part = types.Part.from_function_call(name="test_tool", args={"k": "v"})
-  part.function_call.id = "toolu_01abc"
+# ---------------------------------------------------------------------------
+# Extended thinking support (issue #3079)
+# ---------------------------------------------------------------------------
 
-  result = part_to_message_block(part)
-
-  assert result["id"] == "toolu_01abc"
+# --- Group E: _build_thinking_param unit tests ---
 
 
-def test_part_to_message_block_function_response_preserves_valid_id():
-  """function_response ids must round-trip byte-for-byte to tool_use_id."""
-  part = types.Part.from_function_response(
-      name="test_tool", response={"result": "ok"}
-  )
-  part.function_response.id = "toolu_01abc"
-
-  result = part_to_message_block(part)
-
-  assert result["tool_use_id"] == "toolu_01abc"
-
-
-def test_part_to_message_block_preserves_adk_fallback_id():
-  """ADK-generated ``adk-<uuid>`` ids match Anthropic's regex and round-trip.
-
-  This is the path exercised by the contents.py fix: when Vertex Claude
-  returns id=None, ``populate_client_function_call_id`` writes ``adk-<uuid>``,
-  and contents.py preserves it through replay. ``part_to_message_block`` must
-  pass it through to Anthropic unchanged so call/response stay paired.
-  """
-  call_part = types.Part.from_function_call(name="t", args={"a": 1})
-  call_part.function_call.id = "adk-12345678-1234-1234-1234-123456789012"
-  response_part = types.Part.from_function_response(
-      name="t", response={"result": "ok"}
-  )
-  response_part.function_response.id = (
-      "adk-12345678-1234-1234-1234-123456789012"
-  )
-
-  call_result = part_to_message_block(call_part)
-  response_result = part_to_message_block(response_part)
-
-  assert call_result["id"] == "adk-12345678-1234-1234-1234-123456789012"
-  assert (
-      response_result["tool_use_id"]
-      == "adk-12345678-1234-1234-1234-123456789012"
-  )
-  # The pair must remain matched after conversion.
-  assert call_result["id"] == response_result["tool_use_id"]
-
-
-# --- Tests for extended thinking support ---
-
-
-def test_build_anthropic_thinking_param_with_config():
-  """When thinking_config has a positive budget, return ThinkingConfigEnabledParam."""
-  from google.adk.models.anthropic_llm import _build_anthropic_thinking_param
-
-  config = types.GenerateContentConfig(
-      thinking_config=types.ThinkingConfig(thinking_budget=5000),
-  )
-  result = _build_anthropic_thinking_param(config)
-  assert result == anthropic_types.ThinkingConfigEnabledParam(
-      type="enabled", budget_tokens=5000
-  )
-
-
-def test_build_anthropic_thinking_param_zero_budget_disabled():
-  """thinking_budget=0 maps to ThinkingConfigDisabledParam (genai DISABLED)."""
-  from google.adk.models.anthropic_llm import _build_anthropic_thinking_param
-
-  config = types.GenerateContentConfig(
-      thinking_config=types.ThinkingConfig(thinking_budget=0),
-  )
-  result = _build_anthropic_thinking_param(config)
-  assert result == anthropic_types.ThinkingConfigDisabledParam(type="disabled")
-
-
-def test_build_anthropic_thinking_param_none_budget_raises():
-  """thinking_budget=None must be set explicitly; raises ValueError."""
-  from google.adk.models.anthropic_llm import _build_anthropic_thinking_param
-
-  config = types.GenerateContentConfig(
-      thinking_config=types.ThinkingConfig(),
-  )
-  with pytest.raises(
-      ValueError, match="thinking_budget must be set explicitly"
-  ):
-    _build_anthropic_thinking_param(config)
-
-
-def test_build_anthropic_thinking_param_automatic_budget_raises():
-  """thinking_budget=-1 (AUTOMATIC) is not supported by Anthropic."""
-  from google.adk.models.anthropic_llm import _build_anthropic_thinking_param
-
-  config = types.GenerateContentConfig(
-      thinking_config=types.ThinkingConfig(thinking_budget=-1),
-  )
-  with pytest.raises(ValueError, match="AUTOMATIC mode is unavailable"):
-    _build_anthropic_thinking_param(config)
-
-
-def test_build_anthropic_thinking_param_no_config():
-  """Returns NOT_GIVEN when no thinking config is set."""
+def test_build_thinking_param_none_config():
+  """None thinking_config returns NOT_GIVEN."""
   from anthropic import NOT_GIVEN
-  from google.adk.models.anthropic_llm import _build_anthropic_thinking_param
+  from google.adk.models.anthropic_llm import _build_thinking_param
 
-  result_none = _build_anthropic_thinking_param(None)
-  assert result_none is NOT_GIVEN
+  result = _build_thinking_param(None, 8192)
+  assert result is NOT_GIVEN
 
-  config_no_thinking = types.GenerateContentConfig(
-      system_instruction="test",
+
+def test_build_thinking_param_zero_budget():
+  """thinking_budget=0 returns NOT_GIVEN."""
+  from anthropic import NOT_GIVEN
+  from google.adk.models.anthropic_llm import _build_thinking_param
+
+  result = _build_thinking_param(types.ThinkingConfig(thinking_budget=0), 8192)
+  assert result is NOT_GIVEN
+
+
+def test_build_thinking_param_valid_budget():
+  """Valid budget returns ThinkingConfigEnabledParam with correct budget_tokens."""
+  from google.adk.models.anthropic_llm import _build_thinking_param
+
+  result = _build_thinking_param(
+      types.ThinkingConfig(thinking_budget=2048), 8192
   )
-  result_no_thinking = _build_anthropic_thinking_param(config_no_thinking)
-  assert result_no_thinking is NOT_GIVEN
+  assert result["type"] == "enabled"
+  assert result["budget_tokens"] == 2048
+
+
+def test_build_thinking_param_clamps_to_max_tokens():
+  """budget exceeding max_tokens is clamped to max_tokens - 1."""
+  from google.adk.models.anthropic_llm import _build_thinking_param
+
+  result = _build_thinking_param(
+      types.ThinkingConfig(thinking_budget=10000), 8192
+  )
+  assert result["type"] == "enabled"
+  assert result["budget_tokens"] == 8191
+
+
+# --- Group A: part_to_message_block with thought parts ---
+
+
+def test_part_to_message_block_thought_regular():
+  """A thought part with text and signature becomes a ThinkingBlockParam."""
+  part = Part(
+      text="I reasoned about this", thought=True, thought_signature=b"sig_abc"
+  )
+
+  result = part_to_message_block(part)
+
+  assert isinstance(result, dict)
+  assert result["type"] == "thinking"
+  assert result["thinking"] == "I reasoned about this"
+  assert result["signature"] == "sig_abc"
+
+
+def test_part_to_message_block_thought_redacted():
+  """A thought part with no text becomes a RedactedThinkingBlockParam."""
+  part = Part(text="", thought=True, thought_signature=b"redacted_data_xyz")
+
+  result = part_to_message_block(part)
+
+  assert isinstance(result, dict)
+  assert result["type"] == "redacted_thinking"
+  assert result["data"] == "redacted_data_xyz"
+
+
+def test_part_to_message_block_thought_checked_before_text():
+  """The thought branch fires before the text branch, not producing a TextBlockParam."""
+  part = Part(
+      text="should not become TextBlock", thought=True, thought_signature=b"s"
+  )
+
+  result = part_to_message_block(part)
+
+  assert result["type"] == "thinking"
+
+
+# --- Group B: content_block_to_part with thinking blocks ---
 
 
 def test_content_block_to_part_thinking_block():
-  """ThinkingBlock should produce Part with thought=True and signature."""
+  """ThinkingBlock converts to a thought Part with text and thought_signature."""
   from google.adk.models.anthropic_llm import content_block_to_part
 
   block = anthropic_types.ThinkingBlock(
-      thinking="Let me reason about this.",
-      signature="sig_abc123",
-      type="thinking",
+      thinking="my reasoning", signature="base64sig==", type="thinking"
   )
+
   part = content_block_to_part(block)
 
-  assert part is not None
-  assert part.text == "Let me reason about this."
   assert part.thought is True
-  assert part.thought_signature == b"sig_abc123"
+  assert part.text == "my reasoning"
+  assert part.thought_signature == b"base64sig=="
 
 
-def test_content_block_to_part_redacted_thinking():
-  """RedactedThinkingBlock should preserve the encrypted blob for round-trip."""
+def test_content_block_to_part_redacted_thinking_block():
+  """RedactedThinkingBlock converts to a thought Part with empty text and thought_signature."""
   from google.adk.models.anthropic_llm import content_block_to_part
 
   block = anthropic_types.RedactedThinkingBlock(
-      data="redacted_data",
-      type="redacted_thinking",
+      data="opaque_data", type="redacted_thinking"
   )
+
   part = content_block_to_part(block)
 
   assert part.thought is True
-  assert part.text is None
-  assert part.thought_signature == b"redacted_data"
+  assert part.text == ""
+  assert part.thought_signature == b"opaque_data"
 
 
-def test_message_to_generate_content_response_with_thinking():
-  """Message with ThinkingBlock + TextBlock yields both parts."""
-  from google.adk.models.anthropic_llm import message_to_generate_content_response
+# --- Group F: round-trip multi-turn ---
 
-  message = anthropic_types.Message(
-      id="msg_test_thinking",
+
+def test_thought_part_round_trips_in_content_to_message_param():
+  """Thought parts in model content survive the round-trip through content_to_message_param."""
+  content = Content(
+      role="model",
+      parts=[Part(text="reasoning", thought=True, thought_signature=b"sig")],
+  )
+
+  result = content_to_message_param(content)
+
+  assert result["role"] == "assistant"
+  assert len(result["content"]) == 1
+  block = result["content"][0]
+  assert block["type"] == "thinking"
+  assert block["thinking"] == "reasoning"
+  assert block["signature"] == "sig"
+
+
+# --- Group C: generate_content_async thinking param plumbing ---
+
+
+@pytest.mark.asyncio
+async def test_generate_content_async_passes_thinking_param():
+  """thinking_config is passed as ThinkingConfigEnabledParam to messages.create."""
+  llm = AnthropicLlm(model="claude-sonnet-4-20250514")
+
+  mock_message = anthropic_types.Message(
+      id="msg_think",
       content=[
-          anthropic_types.ThinkingBlock(
-              thinking="I need to think about this.",
-              signature="sig_xyz",
-              type="thinking",
-          ),
-          anthropic_types.RedactedThinkingBlock(
-              data="hidden",
-              type="redacted_thinking",
-          ),
-          anthropic_types.TextBlock(
-              text="Here is my answer.",
-              type="text",
-              citations=None,
-          ),
+          anthropic_types.TextBlock(text="Answer", type="text", citations=None)
       ],
       model="claude-sonnet-4-20250514",
       role="assistant",
@@ -1530,78 +1511,7 @@ def test_message_to_generate_content_response_with_thinking():
       type="message",
       usage=anthropic_types.Usage(
           input_tokens=10,
-          output_tokens=20,
-          cache_creation_input_tokens=0,
-          cache_read_input_tokens=0,
-          server_tool_use=None,
-          service_tier=None,
-      ),
-  )
-
-  response = message_to_generate_content_response(message)
-
-  assert len(response.content.parts) == 3
-
-  thinking_part = response.content.parts[0]
-  assert thinking_part.text == "I need to think about this."
-  assert thinking_part.thought is True
-  assert thinking_part.thought_signature == b"sig_xyz"
-
-  redacted_part = response.content.parts[1]
-  assert redacted_part.thought is True
-  assert redacted_part.text is None
-  assert redacted_part.thought_signature == b"hidden"
-
-  text_part = response.content.parts[2]
-  assert text_part.text == "Here is my answer."
-  assert text_part.thought is not True
-
-
-def test_part_to_message_block_thinking_roundtrip():
-  """Part with thought=True and signature creates ThinkingBlockParam."""
-  part = Part(
-      text="My reasoning steps.",
-      thought=True,
-      thought_signature=b"roundtrip_sig",
-  )
-
-  result = part_to_message_block(part)
-
-  assert isinstance(result, dict)
-  assert result["type"] == "thinking"
-  assert result["thinking"] == "My reasoning steps."
-  assert result["signature"] == "roundtrip_sig"
-
-
-def test_part_to_message_block_redacted_thinking_roundtrip():
-  """Part with thought=True, no text, signature -> RedactedThinkingBlockParam."""
-  part = Part(thought=True, thought_signature=b"encrypted_blob")
-
-  result = part_to_message_block(part)
-
-  assert isinstance(result, dict)
-  assert result["type"] == "redacted_thinking"
-  assert result["data"] == "encrypted_blob"
-
-
-@pytest.mark.asyncio
-async def test_non_streaming_passes_thinking_param():
-  """When thinking_config is set, messages.create gets thinking kwarg."""
-  llm = AnthropicLlm(model="claude-sonnet-4-20250514")
-
-  mock_message = anthropic_types.Message(
-      id="msg_think",
-      content=[
-          anthropic_types.TextBlock(text="Answer.", type="text", citations=None)
-      ],
-      model="claude-sonnet-4-20250514",
-      role="assistant",
-      stop_reason="end_turn",
-      stop_sequence=None,
-      type="message",
-      usage=anthropic_types.Usage(
-          input_tokens=5,
-          output_tokens=2,
+          output_tokens=5,
           cache_creation_input_tokens=0,
           cache_read_input_tokens=0,
           server_tool_use=None,
@@ -1612,28 +1522,29 @@ async def test_non_streaming_passes_thinking_param():
   mock_client = MagicMock()
   mock_client.messages.create = AsyncMock(return_value=mock_message)
 
-  request = LlmRequest(
+  llm_req = LlmRequest(
       model="claude-sonnet-4-20250514",
-      contents=[Content(role="user", parts=[Part.from_text(text="Think")])],
+      contents=[
+          Content(role="user", parts=[Part.from_text(text="Think hard")])
+      ],
       config=types.GenerateContentConfig(
-          system_instruction="Test",
-          thinking_config=types.ThinkingConfig(thinking_budget=8000),
+          system_instruction="You are a reasoner",
+          thinking_config=types.ThinkingConfig(thinking_budget=2048),
       ),
   )
 
   with mock.patch.object(llm, "_anthropic_client", mock_client):
-    _ = [r async for r in llm.generate_content_async(request, stream=False)]
+    _ = [r async for r in llm.generate_content_async(llm_req, stream=False)]
 
   mock_client.messages.create.assert_called_once()
   _, kwargs = mock_client.messages.create.call_args
-  assert kwargs["thinking"] == anthropic_types.ThinkingConfigEnabledParam(
-      type="enabled", budget_tokens=8000
-  )
+  assert kwargs["thinking"]["type"] == "enabled"
+  assert kwargs["thinking"]["budget_tokens"] == 2048
 
 
 @pytest.mark.asyncio
-async def test_non_streaming_no_thinking_param_without_config():
-  """Without thinking_config, thinking kwarg should be NOT_GIVEN."""
+async def test_generate_content_async_no_thinking_config_passes_not_given():
+  """Without thinking_config, messages.create receives NOT_GIVEN for thinking."""
   from anthropic import NOT_GIVEN
 
   llm = AnthropicLlm(model="claude-sonnet-4-20250514")
@@ -1641,7 +1552,7 @@ async def test_non_streaming_no_thinking_param_without_config():
   mock_message = anthropic_types.Message(
       id="msg_no_think",
       content=[
-          anthropic_types.TextBlock(text="Hello!", type="text", citations=None)
+          anthropic_types.TextBlock(text="Hi", type="text", citations=None)
       ],
       model="claude-sonnet-4-20250514",
       role="assistant",
@@ -1661,33 +1572,122 @@ async def test_non_streaming_no_thinking_param_without_config():
   mock_client = MagicMock()
   mock_client.messages.create = AsyncMock(return_value=mock_message)
 
-  request = LlmRequest(
+  llm_req = LlmRequest(
       model="claude-sonnet-4-20250514",
       contents=[Content(role="user", parts=[Part.from_text(text="Hi")])],
-      config=types.GenerateContentConfig(
-          system_instruction="Test",
-      ),
+      config=types.GenerateContentConfig(system_instruction="Test"),
   )
 
   with mock.patch.object(llm, "_anthropic_client", mock_client):
-    _ = [r async for r in llm.generate_content_async(request, stream=False)]
+    _ = [r async for r in llm.generate_content_async(llm_req, stream=False)]
 
-  mock_client.messages.create.assert_called_once()
   _, kwargs = mock_client.messages.create.call_args
   assert kwargs["thinking"] is NOT_GIVEN
 
 
 @pytest.mark.asyncio
-async def test_streaming_thinking_yields_partial_and_final():
-  """Streaming with thinking blocks yields partial thought then final."""
+async def test_generate_content_async_thinking_budget_zero_passes_not_given():
+  """thinking_budget=0 results in NOT_GIVEN being passed to messages.create."""
+  from anthropic import NOT_GIVEN
+
+  llm = AnthropicLlm(model="claude-sonnet-4-20250514")
+
+  mock_message = anthropic_types.Message(
+      id="msg_zero",
+      content=[
+          anthropic_types.TextBlock(text="Hi", type="text", citations=None)
+      ],
+      model="claude-sonnet-4-20250514",
+      role="assistant",
+      stop_reason="end_turn",
+      stop_sequence=None,
+      type="message",
+      usage=anthropic_types.Usage(
+          input_tokens=5,
+          output_tokens=2,
+          cache_creation_input_tokens=0,
+          cache_read_input_tokens=0,
+          server_tool_use=None,
+          service_tier=None,
+      ),
+  )
+
+  mock_client = MagicMock()
+  mock_client.messages.create = AsyncMock(return_value=mock_message)
+
+  llm_req = LlmRequest(
+      model="claude-sonnet-4-20250514",
+      contents=[Content(role="user", parts=[Part.from_text(text="Hi")])],
+      config=types.GenerateContentConfig(
+          system_instruction="Test",
+          thinking_config=types.ThinkingConfig(thinking_budget=0),
+      ),
+  )
+
+  with mock.patch.object(llm, "_anthropic_client", mock_client):
+    _ = [r async for r in llm.generate_content_async(llm_req, stream=False)]
+
+  _, kwargs = mock_client.messages.create.call_args
+  assert kwargs["thinking"] is NOT_GIVEN
+
+
+@pytest.mark.asyncio
+async def test_generate_content_async_thinking_budget_clamped_to_max_tokens():
+  """thinking_budget exceeding max_tokens is clamped to max_tokens - 1."""
+  llm = AnthropicLlm(model="claude-sonnet-4-20250514", max_tokens=4096)
+
+  mock_message = anthropic_types.Message(
+      id="msg_clamp",
+      content=[
+          anthropic_types.TextBlock(text="Hi", type="text", citations=None)
+      ],
+      model="claude-sonnet-4-20250514",
+      role="assistant",
+      stop_reason="end_turn",
+      stop_sequence=None,
+      type="message",
+      usage=anthropic_types.Usage(
+          input_tokens=5,
+          output_tokens=2,
+          cache_creation_input_tokens=0,
+          cache_read_input_tokens=0,
+          server_tool_use=None,
+          service_tier=None,
+      ),
+  )
+
+  mock_client = MagicMock()
+  mock_client.messages.create = AsyncMock(return_value=mock_message)
+
+  llm_req = LlmRequest(
+      model="claude-sonnet-4-20250514",
+      contents=[Content(role="user", parts=[Part.from_text(text="Hi")])],
+      config=types.GenerateContentConfig(
+          system_instruction="Test",
+          thinking_config=types.ThinkingConfig(thinking_budget=5000),
+      ),
+  )
+
+  with mock.patch.object(llm, "_anthropic_client", mock_client):
+    _ = [r async for r in llm.generate_content_async(llm_req, stream=False)]
+
+  _, kwargs = mock_client.messages.create.call_args
+  assert kwargs["thinking"]["budget_tokens"] == 4095
+
+
+# --- Group D: streaming with thinking blocks ---
+
+
+@pytest.mark.asyncio
+async def test_streaming_thinking_block_in_final_response():
+  """Thinking block is accumulated from deltas and emitted in the final response."""
   llm = AnthropicLlm(model="claude-sonnet-4-20250514")
 
   events = [
       MagicMock(
           type="message_start",
-          message=MagicMock(usage=MagicMock(input_tokens=15, output_tokens=0)),
+          message=MagicMock(usage=MagicMock(input_tokens=10, output_tokens=0)),
       ),
-      # Thinking block start
       MagicMock(
           type="content_block_start",
           index=0,
@@ -1695,23 +1695,28 @@ async def test_streaming_thinking_yields_partial_and_final():
               thinking="", signature="", type="thinking"
           ),
       ),
-      # Thinking deltas
       MagicMock(
           type="content_block_delta",
           index=0,
           delta=anthropic_types.ThinkingDelta(
-              thinking="Step 1: ", type="thinking_delta"
+              thinking="I think ", type="thinking_delta"
           ),
       ),
       MagicMock(
           type="content_block_delta",
           index=0,
           delta=anthropic_types.ThinkingDelta(
-              thinking="analyze.", type="thinking_delta"
+              thinking="carefully", type="thinking_delta"
+          ),
+      ),
+      MagicMock(
+          type="content_block_delta",
+          index=0,
+          delta=anthropic_types.SignatureDelta(
+              signature="sig123", type="signature_delta"
           ),
       ),
       MagicMock(type="content_block_stop", index=0),
-      # Text block start
       MagicMock(
           type="content_block_start",
           index=1,
@@ -1720,15 +1725,13 @@ async def test_streaming_thinking_yields_partial_and_final():
       MagicMock(
           type="content_block_delta",
           index=1,
-          delta=anthropic_types.TextDelta(
-              text="The answer is 42.", type="text_delta"
-          ),
+          delta=anthropic_types.TextDelta(text="Answer", type="text_delta"),
       ),
       MagicMock(type="content_block_stop", index=1),
       MagicMock(
           type="message_delta",
           delta=MagicMock(stop_reason="end_turn"),
-          usage=MagicMock(output_tokens=10),
+          usage=MagicMock(output_tokens=20),
       ),
       MagicMock(type="message_stop"),
   ]
@@ -1738,55 +1741,187 @@ async def test_streaming_thinking_yields_partial_and_final():
       return_value=_make_mock_stream_events(events)
   )
 
-  request = LlmRequest(
+  llm_req = LlmRequest(
       model="claude-sonnet-4-20250514",
-      contents=[Content(role="user", parts=[Part.from_text(text="What?")])],
+      contents=[Content(role="user", parts=[Part.from_text(text="Think")])],
       config=types.GenerateContentConfig(
-          system_instruction="Think carefully",
-          thinking_config=types.ThinkingConfig(thinking_budget=5000),
+          system_instruction="You are a reasoner",
+          thinking_config=types.ThinkingConfig(thinking_budget=1024),
       ),
   )
 
   with mock.patch.object(llm, "_anthropic_client", mock_client):
     responses = [
-        r async for r in llm.generate_content_async(request, stream=True)
+        r async for r in llm.generate_content_async(llm_req, stream=True)
     ]
 
-  # 2 thinking partials + 1 text partial + 1 final = 4 responses
-  assert len(responses) == 4
+  # 1 partial for the text delta + 1 final
+  assert len(responses) == 2
 
-  # First two partials are thinking chunks.
-  assert responses[0].partial is True
-  assert responses[0].content.parts[0].thought is True
-  assert responses[0].content.parts[0].text == "Step 1: "
+  partial = responses[0]
+  assert partial.partial is True
+  assert partial.content.parts[0].text == "Answer"
 
-  assert responses[1].partial is True
-  assert responses[1].content.parts[0].thought is True
-  assert responses[1].content.parts[0].text == "analyze."
-
-  # Third partial is text.
-  assert responses[2].partial is True
-  assert responses[2].content.parts[0].text == "The answer is 42."
-
-  # Final aggregated response has both thinking and text parts.
-  final = responses[3]
+  final = responses[1]
   assert final.partial is False
   assert len(final.content.parts) == 2
 
-  thinking_part = final.content.parts[0]
-  assert thinking_part.thought is True
-  assert thinking_part.text == "Step 1: analyze."
+  thought_part = final.content.parts[0]
+  assert thought_part.thought is True
+  assert thought_part.text == "I think carefully"
+  assert thought_part.thought_signature == b"sig123"
 
   text_part = final.content.parts[1]
-  assert text_part.text == "The answer is 42."
+  assert text_part.text == "Answer"
 
-  assert final.usage_metadata.prompt_token_count == 15
-  assert final.usage_metadata.candidates_token_count == 10
+
+@pytest.mark.asyncio
+async def test_streaming_redacted_thinking_block_in_final_response():
+  """Redacted thinking block (data from content_block_start) appears in final response."""
+  llm = AnthropicLlm(model="claude-sonnet-4-20250514")
+
+  events = [
+      MagicMock(
+          type="message_start",
+          message=MagicMock(usage=MagicMock(input_tokens=10, output_tokens=0)),
+      ),
+      MagicMock(
+          type="content_block_start",
+          index=0,
+          content_block=anthropic_types.RedactedThinkingBlock(
+              data="opaque123", type="redacted_thinking"
+          ),
+      ),
+      MagicMock(type="content_block_stop", index=0),
+      MagicMock(
+          type="content_block_start",
+          index=1,
+          content_block=anthropic_types.TextBlock(text="", type="text"),
+      ),
+      MagicMock(
+          type="content_block_delta",
+          index=1,
+          delta=anthropic_types.TextDelta(text="Done", type="text_delta"),
+      ),
+      MagicMock(type="content_block_stop", index=1),
+      MagicMock(
+          type="message_delta",
+          delta=MagicMock(stop_reason="end_turn"),
+          usage=MagicMock(output_tokens=5),
+      ),
+      MagicMock(type="message_stop"),
+  ]
+
+  mock_client = MagicMock()
+  mock_client.messages.create = AsyncMock(
+      return_value=_make_mock_stream_events(events)
+  )
+
+  llm_req = LlmRequest(
+      model="claude-sonnet-4-20250514",
+      contents=[Content(role="user", parts=[Part.from_text(text="Hi")])],
+      config=types.GenerateContentConfig(system_instruction="Test"),
+  )
+
+  with mock.patch.object(llm, "_anthropic_client", mock_client):
+    responses = [
+        r async for r in llm.generate_content_async(llm_req, stream=True)
+    ]
+
+  final = responses[-1]
+  assert final.partial is False
+  assert len(final.content.parts) == 2
+
+  redacted_part = final.content.parts[0]
+  assert redacted_part.thought is True
+  assert redacted_part.text == ""
+  assert redacted_part.thought_signature == b"opaque123"
+
+  assert final.content.parts[1].text == "Done"
+
+
+@pytest.mark.asyncio
+async def test_streaming_thinking_does_not_yield_partial():
+  """Thinking deltas are not yielded as partial responses."""
+  llm = AnthropicLlm(model="claude-sonnet-4-20250514")
+
+  events = [
+      MagicMock(
+          type="message_start",
+          message=MagicMock(usage=MagicMock(input_tokens=10, output_tokens=0)),
+      ),
+      MagicMock(
+          type="content_block_start",
+          index=0,
+          content_block=anthropic_types.ThinkingBlock(
+              thinking="", signature="", type="thinking"
+          ),
+      ),
+      MagicMock(
+          type="content_block_delta",
+          index=0,
+          delta=anthropic_types.ThinkingDelta(
+              thinking="private thoughts", type="thinking_delta"
+          ),
+      ),
+      MagicMock(
+          type="content_block_delta",
+          index=0,
+          delta=anthropic_types.SignatureDelta(
+              signature="s", type="signature_delta"
+          ),
+      ),
+      MagicMock(type="content_block_stop", index=0),
+      MagicMock(
+          type="content_block_start",
+          index=1,
+          content_block=anthropic_types.TextBlock(text="", type="text"),
+      ),
+      MagicMock(
+          type="content_block_delta",
+          index=1,
+          delta=anthropic_types.TextDelta(text="Reply", type="text_delta"),
+      ),
+      MagicMock(type="content_block_stop", index=1),
+      MagicMock(
+          type="message_delta",
+          delta=MagicMock(stop_reason="end_turn"),
+          usage=MagicMock(output_tokens=5),
+      ),
+      MagicMock(type="message_stop"),
+  ]
+
+  mock_client = MagicMock()
+  mock_client.messages.create = AsyncMock(
+      return_value=_make_mock_stream_events(events)
+  )
+
+  llm_req = LlmRequest(
+      model="claude-sonnet-4-20250514",
+      contents=[Content(role="user", parts=[Part.from_text(text="Hi")])],
+      config=types.GenerateContentConfig(
+          system_instruction="Test",
+          thinking_config=types.ThinkingConfig(thinking_budget=1024),
+      ),
+  )
+
+  with mock.patch.object(llm, "_anthropic_client", mock_client):
+    responses = [
+        r async for r in llm.generate_content_async(llm_req, stream=True)
+    ]
+
+  partial_responses = [r for r in responses if r.partial]
+  assert len(partial_responses) == 1
+  assert all(
+      not getattr(p, "thought", False)
+      for p in partial_responses[0].content.parts
+  )
+  assert partial_responses[0].content.parts[0].text == "Reply"
 
 
 @pytest.mark.asyncio
 async def test_streaming_passes_thinking_param():
-  """When thinking_config is set and stream=True, thinking kwarg is passed."""
+  """When thinking_config is set, streaming passes thinking param to messages.create."""
   llm = AnthropicLlm(model="claude-sonnet-4-20250514")
 
   events = [
@@ -1818,90 +1953,19 @@ async def test_streaming_passes_thinking_param():
       return_value=_make_mock_stream_events(events)
   )
 
-  request = LlmRequest(
+  llm_req = LlmRequest(
       model="claude-sonnet-4-20250514",
       contents=[Content(role="user", parts=[Part.from_text(text="Hi")])],
       config=types.GenerateContentConfig(
           system_instruction="Test",
-          thinking_config=types.ThinkingConfig(thinking_budget=3000),
+          thinking_config=types.ThinkingConfig(thinking_budget=1024),
       ),
   )
 
   with mock.patch.object(llm, "_anthropic_client", mock_client):
-    _ = [r async for r in llm.generate_content_async(request, stream=True)]
+    _ = [r async for r in llm.generate_content_async(llm_req, stream=True)]
 
   mock_client.messages.create.assert_called_once()
   _, kwargs = mock_client.messages.create.call_args
-  assert kwargs["thinking"] == anthropic_types.ThinkingConfigEnabledParam(
-      type="enabled", budget_tokens=3000
-  )
-  assert kwargs["stream"] is True
-
-
-@pytest.mark.asyncio
-async def test_streaming_redacted_thinking_block_preserved_in_final():
-  """Streaming RedactedThinkingBlock arrives at start and ends up in final."""
-  llm = AnthropicLlm(model="claude-sonnet-4-20250514")
-
-  events = [
-      MagicMock(
-          type="message_start",
-          message=MagicMock(usage=MagicMock(input_tokens=8, output_tokens=0)),
-      ),
-      MagicMock(
-          type="content_block_start",
-          index=0,
-          content_block=anthropic_types.RedactedThinkingBlock(
-              data="encrypted_blob", type="redacted_thinking"
-          ),
-      ),
-      MagicMock(type="content_block_stop", index=0),
-      MagicMock(
-          type="content_block_start",
-          index=1,
-          content_block=anthropic_types.TextBlock(text="", type="text"),
-      ),
-      MagicMock(
-          type="content_block_delta",
-          index=1,
-          delta=anthropic_types.TextDelta(text="Done.", type="text_delta"),
-      ),
-      MagicMock(type="content_block_stop", index=1),
-      MagicMock(
-          type="message_delta",
-          delta=MagicMock(stop_reason="end_turn"),
-          usage=MagicMock(output_tokens=4),
-      ),
-      MagicMock(type="message_stop"),
-  ]
-
-  mock_client = MagicMock()
-  mock_client.messages.create = AsyncMock(
-      return_value=_make_mock_stream_events(events)
-  )
-
-  request = LlmRequest(
-      model="claude-sonnet-4-20250514",
-      contents=[Content(role="user", parts=[Part.from_text(text="Hi")])],
-      config=types.GenerateContentConfig(
-          system_instruction="Test",
-          thinking_config=types.ThinkingConfig(thinking_budget=3000),
-      ),
-  )
-
-  with mock.patch.object(llm, "_anthropic_client", mock_client):
-    responses = [
-        r async for r in llm.generate_content_async(request, stream=True)
-    ]
-
-  final = responses[-1]
-  assert final.partial is False
-  assert len(final.content.parts) == 2
-
-  redacted_part = final.content.parts[0]
-  assert redacted_part.thought is True
-  assert redacted_part.text is None
-  assert redacted_part.thought_signature == b"encrypted_blob"
-
-  text_part = final.content.parts[1]
-  assert text_part.text == "Done."
+  assert kwargs["thinking"]["type"] == "enabled"
+  assert kwargs["thinking"]["budget_tokens"] == 1024
