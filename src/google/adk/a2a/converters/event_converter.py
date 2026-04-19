@@ -461,7 +461,7 @@ def _create_error_status_event(
               platform_time.get_time(), tz=timezone.utc
           ).isoformat(),
       ),
-      final=False,
+      final=True,
   )
 
 
