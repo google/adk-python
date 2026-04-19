@@ -32,6 +32,7 @@ from typing import Optional
 from typing import TYPE_CHECKING
 from typing import Union
 
+import anthropic
 from anthropic import AsyncAnthropic
 from anthropic import AsyncAnthropicVertex
 from anthropic import NOT_GIVEN
@@ -51,6 +52,15 @@ if TYPE_CHECKING:
 __all__ = ["AnthropicLlm", "Claude"]
 
 logger = logging.getLogger("google_adk." + __name__)
+
+_RATE_LIMIT_POSSIBLE_FIX_MESSAGE = """
+To mitigate rate limit errors, consider using a different model, reducing
+request frequency, or upgrading your Anthropic API plan.
+"""
+
+
+class AnthropicRateLimitError(Exception):
+  """Raised when the Anthropic API returns a rate limit error."""
 
 
 @dataclasses.dataclass
@@ -494,16 +504,21 @@ class AnthropicLlm(BaseLlm):
     thinking = _build_anthropic_thinking_param(llm_request.config)
 
     if not stream:
-      message = await self._anthropic_client.messages.create(
-          model=model_to_use,
-          system=llm_request.config.system_instruction,
-          messages=messages,
-          tools=tools,
-          tool_choice=tool_choice,
-          max_tokens=self.max_tokens,
-          thinking=thinking,
-      )
-      yield message_to_generate_content_response(message)
+      try:
+        message = await self._anthropic_client.messages.create(
+            model=model_to_use,
+            system=llm_request.config.system_instruction,
+            messages=messages,
+            tools=tools,
+            tool_choice=tool_choice,
+            max_tokens=self.max_tokens,
+            thinking=thinking,
+        )
+        yield message_to_generate_content_response(message)
+      except anthropic.RateLimitError as e:
+        raise AnthropicRateLimitError(
+            f"{_RATE_LIMIT_POSSIBLE_FIX_MESSAGE}\n\n{e}"
+        ) from e
     else:
       async for response in self._generate_content_streaming(
           llm_request, messages, tools, tool_choice, thinking
@@ -528,16 +543,21 @@ class AnthropicLlm(BaseLlm):
     a final aggregated LlmResponse with all content.
     """
     model_to_use = self._resolve_model_name(llm_request.model)
-    raw_stream = await self._anthropic_client.messages.create(
-        model=model_to_use,
-        system=llm_request.config.system_instruction,
-        messages=messages,
-        tools=tools,
-        tool_choice=tool_choice,
-        max_tokens=self.max_tokens,
-        stream=True,
-        thinking=thinking,
-    )
+    try:
+      raw_stream = await self._anthropic_client.messages.create(
+          model=model_to_use,
+          system=llm_request.config.system_instruction,
+          messages=messages,
+          tools=tools,
+          tool_choice=tool_choice,
+          max_tokens=self.max_tokens,
+          stream=True,
+          thinking=thinking,
+      )
+    except anthropic.RateLimitError as e:
+      raise AnthropicRateLimitError(
+          f"{_RATE_LIMIT_POSSIBLE_FIX_MESSAGE}\n\n{e}"
+      ) from e
 
     # Track content blocks being built during streaming.
     # Each entry maps a block index to its accumulated state.

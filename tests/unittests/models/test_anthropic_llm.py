@@ -1905,3 +1905,116 @@ async def test_streaming_redacted_thinking_block_preserved_in_final():
 
   text_part = final.content.parts[1]
   assert text_part.text == "Done."
+
+
+# --- Tests for Anthropic API error handling ---
+
+
+def _make_non_streaming_request():
+  return LlmRequest(
+      model="claude-sonnet-4-20250514",
+      contents=[Content(role="user", parts=[Part.from_text(text="Hi")])],
+      config=types.GenerateContentConfig(system_instruction="Test"),
+  )
+
+
+def _make_rate_limit_error():
+  import anthropic
+
+  mock_response = MagicMock()
+  mock_response.status_code = 429
+  mock_response.headers = {}
+  return anthropic.RateLimitError(
+      message="rate limit exceeded",
+      response=mock_response,
+      body={"error": {"message": "rate limit exceeded"}},
+  )
+
+
+def _make_auth_error():
+  import anthropic
+
+  mock_response = MagicMock()
+  mock_response.status_code = 401
+  mock_response.headers = {}
+  return anthropic.AuthenticationError(
+      message="invalid api key",
+      response=mock_response,
+      body={"error": {"message": "invalid api key"}},
+  )
+
+
+@pytest.mark.asyncio
+async def test_non_streaming_rate_limit_raises_anthropic_rate_limit_error():
+  """RateLimitError is re-raised as AnthropicRateLimitError with helpful message."""
+  from google.adk.models.anthropic_llm import AnthropicRateLimitError
+
+  llm = AnthropicLlm(model="claude-sonnet-4-20250514")
+  mock_client = MagicMock()
+  mock_client.messages.create = AsyncMock(side_effect=_make_rate_limit_error())
+
+  with mock.patch.object(llm, "_anthropic_client", mock_client):
+    with pytest.raises(AnthropicRateLimitError):
+      _ = [
+          r
+          async for r in llm.generate_content_async(
+              _make_non_streaming_request(), stream=False
+          )
+      ]
+
+
+@pytest.mark.asyncio
+async def test_streaming_rate_limit_raises_anthropic_rate_limit_error():
+  """RateLimitError is re-raised as AnthropicRateLimitError in streaming path."""
+  from google.adk.models.anthropic_llm import AnthropicRateLimitError
+
+  llm = AnthropicLlm(model="claude-sonnet-4-20250514")
+  mock_client = MagicMock()
+  mock_client.messages.create = AsyncMock(side_effect=_make_rate_limit_error())
+
+  with mock.patch.object(llm, "_anthropic_client", mock_client):
+    with pytest.raises(AnthropicRateLimitError):
+      _ = [
+          r
+          async for r in llm.generate_content_async(
+              _make_non_streaming_request(), stream=True
+          )
+      ]
+
+
+@pytest.mark.asyncio
+async def test_non_streaming_other_errors_propagate():
+  """Non-rate-limit errors propagate unchanged."""
+  import anthropic
+
+  llm = AnthropicLlm(model="claude-sonnet-4-20250514")
+  mock_client = MagicMock()
+  mock_client.messages.create = AsyncMock(side_effect=_make_auth_error())
+
+  with mock.patch.object(llm, "_anthropic_client", mock_client):
+    with pytest.raises(anthropic.AuthenticationError):
+      _ = [
+          r
+          async for r in llm.generate_content_async(
+              _make_non_streaming_request(), stream=False
+          )
+      ]
+
+
+@pytest.mark.asyncio
+async def test_streaming_other_errors_propagate():
+  """Non-rate-limit errors propagate unchanged in streaming path."""
+  import anthropic
+
+  llm = AnthropicLlm(model="claude-sonnet-4-20250514")
+  mock_client = MagicMock()
+  mock_client.messages.create = AsyncMock(side_effect=_make_auth_error())
+
+  with mock.patch.object(llm, "_anthropic_client", mock_client):
+    with pytest.raises(anthropic.AuthenticationError):
+      _ = [
+          r
+          async for r in llm.generate_content_async(
+              _make_non_streaming_request(), stream=True
+          )
+      ]
