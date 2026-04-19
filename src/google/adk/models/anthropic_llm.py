@@ -62,7 +62,8 @@ class _ToolUseAccumulator:
   args_json: str
 
 
-class _ThinkingAccumulator(BaseModel):
+@dataclasses.dataclass
+class _ThinkingAccumulator:
   """Accumulates streamed thinking content block data."""
 
   thinking: str = ""
@@ -609,12 +610,12 @@ class AnthropicLlm(BaseLlm):
     )
     for idx in all_indices:
       if idx in thinking_blocks:
-        acc = thinking_blocks[idx]
+        thinking_acc = thinking_blocks[idx]
         all_parts.append(
             types.Part(
-                text=acc.thinking,
+                text=thinking_acc.thinking,
                 thought=True,
-                thought_signature=acc.signature.encode("utf-8"),
+                thought_signature=thinking_acc.signature.encode("utf-8"),
             )
         )
       if idx in redacted_thinking_blocks:
@@ -628,10 +629,10 @@ class AnthropicLlm(BaseLlm):
       if idx in text_blocks:
         all_parts.append(types.Part.from_text(text=text_blocks[idx]))
       if idx in tool_use_blocks:
-        acc = tool_use_blocks[idx]
-        args = json.loads(acc.args_json) if acc.args_json else {}
-        part = types.Part.from_function_call(name=acc.name, args=args)
-        part.function_call.id = acc.id
+        tool_use_acc = tool_use_blocks[idx]
+        args = json.loads(tool_use_acc.args_json) if tool_use_acc.args_json else {}
+        part = types.Part.from_function_call(name=tool_use_acc.name, args=args)
+        part.function_call.id = tool_use_acc.id
         all_parts.append(part)
 
     yield LlmResponse(
