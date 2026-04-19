@@ -377,6 +377,22 @@ class AnthropicLlm(BaseLlm):
         return match.group(1)
     return model
 
+  def _get_generation_kwargs(
+      self, llm_request: LlmRequest
+  ) -> dict[str, Any]:
+    generation_kwargs: dict[str, Any] = {}
+
+    if llm_request.config.temperature is not None:
+      generation_kwargs["temperature"] = llm_request.config.temperature
+    if llm_request.config.top_p is not None:
+      generation_kwargs["top_p"] = llm_request.config.top_p
+    if llm_request.config.top_k is not None:
+      generation_kwargs["top_k"] = llm_request.config.top_k
+    if llm_request.config.stop_sequences:
+      generation_kwargs["stop_sequences"] = llm_request.config.stop_sequences
+
+    return generation_kwargs
+
   @override
   async def generate_content_async(
       self, llm_request: LlmRequest, stream: bool = False
@@ -401,6 +417,7 @@ class AnthropicLlm(BaseLlm):
         if llm_request.tools_dict
         else NOT_GIVEN
     )
+    generation_kwargs = self._get_generation_kwargs(llm_request)
 
     if not stream:
       message = await self._anthropic_client.messages.create(
@@ -410,6 +427,7 @@ class AnthropicLlm(BaseLlm):
           tools=tools,
           tool_choice=tool_choice,
           max_tokens=self.max_tokens,
+          **generation_kwargs,
       )
       yield message_to_generate_content_response(message)
     else:
@@ -439,6 +457,7 @@ class AnthropicLlm(BaseLlm):
         tool_choice=tool_choice,
         max_tokens=self.max_tokens,
         stream=True,
+        **self._get_generation_kwargs(llm_request),
     )
 
     # Track content blocks being built during streaming.
