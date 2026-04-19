@@ -133,10 +133,17 @@ def to_claude_role(role: Optional[str]) -> Literal["user", "assistant"]:
 def to_google_genai_finish_reason(
     anthropic_stop_reason: Optional[str],
 ) -> types.FinishReason:
-  if anthropic_stop_reason in ["end_turn", "stop_sequence", "tool_use"]:
+  if anthropic_stop_reason in [
+      "end_turn",
+      "stop_sequence",
+      "tool_use",
+      "pause_turn",
+  ]:
     return "STOP"
   if anthropic_stop_reason == "max_tokens":
     return "MAX_TOKENS"
+  if anthropic_stop_reason == "refusal":
+    return "SAFETY"
   return "FINISH_REASON_UNSPECIFIED"
 
 
@@ -343,8 +350,7 @@ def message_to_generate_content_response(
               message.usage.input_tokens + message.usage.output_tokens
           ),
       ),
-      # TODO: Deal with these later.
-      # finish_reason=to_google_genai_finish_reason(message.stop_reason),
+      finish_reason=to_google_genai_finish_reason(message.stop_reason),
   )
 
 
@@ -547,6 +553,7 @@ class AnthropicLlm(BaseLlm):
     redacted_thinking_blocks: dict[int, str] = {}
     input_tokens = 0
     output_tokens = 0
+    stop_reason: Optional[str] = None
 
     async for event in raw_stream:
       if event.type == "message_start":
@@ -603,6 +610,7 @@ class AnthropicLlm(BaseLlm):
 
       elif event.type == "message_delta":
         output_tokens = event.usage.output_tokens
+        stop_reason = event.delta.stop_reason
 
     # Build the final aggregated response with all content.
     all_parts: list[types.Part] = []
@@ -644,6 +652,7 @@ class AnthropicLlm(BaseLlm):
             candidates_token_count=output_tokens,
             total_token_count=input_tokens + output_tokens,
         ),
+        finish_reason=to_google_genai_finish_reason(stop_reason),
         partial=False,
     )
 
