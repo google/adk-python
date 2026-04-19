@@ -1905,3 +1905,185 @@ async def test_streaming_redacted_thinking_block_preserved_in_final():
 
   text_part = final.content.parts[1]
   assert text_part.text == "Done."
+
+
+
+
+# --- Tests for generation config parameter forwarding ---
+
+
+def _make_minimal_stream(text="Hi"):
+  """Minimal streaming event sequence for param-forwarding tests."""
+  return [
+      MagicMock(
+          type="message_start",
+          message=MagicMock(usage=MagicMock(input_tokens=5, output_tokens=0)),
+      ),
+      MagicMock(
+          type="content_block_start",
+          index=0,
+          content_block=anthropic_types.TextBlock(text="", type="text"),
+      ),
+      MagicMock(
+          type="content_block_delta",
+          index=0,
+          delta=anthropic_types.TextDelta(text=text, type="text_delta"),
+      ),
+      MagicMock(type="content_block_stop", index=0),
+      MagicMock(
+          type="message_delta",
+          delta=MagicMock(stop_reason="end_turn"),
+          usage=MagicMock(output_tokens=1),
+      ),
+      MagicMock(type="message_stop"),
+  ]
+
+
+@pytest.mark.asyncio
+async def test_non_streaming_forwards_generation_params():
+  """temperature, top_p, top_k, stop_sequences forwarded to messages.create."""
+  from anthropic import NOT_GIVEN
+
+  llm = AnthropicLlm(model="claude-sonnet-4-20250514")
+  mock_message = anthropic_types.Message(
+      id="msg_test",
+      content=[anthropic_types.TextBlock(text="Hi", type="text", citations=None)],
+      model="claude-sonnet-4-20250514",
+      role="assistant",
+      stop_reason="end_turn",
+      stop_sequence=None,
+      type="message",
+      usage=anthropic_types.Usage(
+          input_tokens=5,
+          output_tokens=2,
+          cache_creation_input_tokens=0,
+          cache_read_input_tokens=0,
+          server_tool_use=None,
+          service_tier=None,
+      ),
+  )
+  mock_client = MagicMock()
+  mock_client.messages.create = AsyncMock(return_value=mock_message)
+
+  llm_request = LlmRequest(
+      model="claude-sonnet-4-20250514",
+      contents=[Content(role="user", parts=[Part.from_text(text="Hi")])],
+      config=types.GenerateContentConfig(
+          system_instruction="Test",
+          temperature=0.7,
+          top_p=0.9,
+          top_k=40,
+          stop_sequences=["STOP", "END"],
+      ),
+  )
+
+  with mock.patch.object(llm, "_anthropic_client", mock_client):
+    _ = [r async for r in llm.generate_content_async(llm_request, stream=False)]
+
+  _, kwargs = mock_client.messages.create.call_args
+  assert kwargs["temperature"] == 0.7
+  assert kwargs["top_p"] == 0.9
+  assert kwargs["top_k"] == 40
+  assert kwargs["stop_sequences"] == ["STOP", "END"]
+
+
+@pytest.mark.asyncio
+async def test_non_streaming_omits_unset_generation_params():
+  """Unset generation params should be NOT_GIVEN, not None."""
+  from anthropic import NOT_GIVEN
+
+  llm = AnthropicLlm(model="claude-sonnet-4-20250514")
+  mock_message = anthropic_types.Message(
+      id="msg_test",
+      content=[anthropic_types.TextBlock(text="Hi", type="text", citations=None)],
+      model="claude-sonnet-4-20250514",
+      role="assistant",
+      stop_reason="end_turn",
+      stop_sequence=None,
+      type="message",
+      usage=anthropic_types.Usage(
+          input_tokens=5,
+          output_tokens=2,
+          cache_creation_input_tokens=0,
+          cache_read_input_tokens=0,
+          server_tool_use=None,
+          service_tier=None,
+      ),
+  )
+  mock_client = MagicMock()
+  mock_client.messages.create = AsyncMock(return_value=mock_message)
+
+  llm_request = LlmRequest(
+      model="claude-sonnet-4-20250514",
+      contents=[Content(role="user", parts=[Part.from_text(text="Hi")])],
+      config=types.GenerateContentConfig(system_instruction="Test"),
+  )
+
+  with mock.patch.object(llm, "_anthropic_client", mock_client):
+    _ = [r async for r in llm.generate_content_async(llm_request, stream=False)]
+
+  _, kwargs = mock_client.messages.create.call_args
+  assert kwargs["temperature"] is NOT_GIVEN
+  assert kwargs["top_p"] is NOT_GIVEN
+  assert kwargs["top_k"] is NOT_GIVEN
+  assert kwargs["stop_sequences"] is NOT_GIVEN
+
+
+@pytest.mark.asyncio
+async def test_streaming_forwards_generation_params():
+  """temperature, top_p, top_k, stop_sequences forwarded in streaming path."""
+  from anthropic import NOT_GIVEN
+
+  llm = AnthropicLlm(model="claude-sonnet-4-20250514")
+  mock_client = MagicMock()
+  mock_client.messages.create = AsyncMock(
+      return_value=_make_mock_stream_events(_make_minimal_stream())
+  )
+
+  llm_request = LlmRequest(
+      model="claude-sonnet-4-20250514",
+      contents=[Content(role="user", parts=[Part.from_text(text="Hi")])],
+      config=types.GenerateContentConfig(
+          system_instruction="Test",
+          temperature=0.5,
+          top_p=0.8,
+          top_k=20,
+          stop_sequences=["DONE"],
+      ),
+  )
+
+  with mock.patch.object(llm, "_anthropic_client", mock_client):
+    _ = [r async for r in llm.generate_content_async(llm_request, stream=True)]
+
+  _, kwargs = mock_client.messages.create.call_args
+  assert kwargs["temperature"] == 0.5
+  assert kwargs["top_p"] == 0.8
+  assert kwargs["top_k"] == 20
+  assert kwargs["stop_sequences"] == ["DONE"]
+
+
+@pytest.mark.asyncio
+async def test_streaming_omits_unset_generation_params():
+  """Unset generation params should be NOT_GIVEN in streaming path."""
+  from anthropic import NOT_GIVEN
+
+  llm = AnthropicLlm(model="claude-sonnet-4-20250514")
+  mock_client = MagicMock()
+  mock_client.messages.create = AsyncMock(
+      return_value=_make_mock_stream_events(_make_minimal_stream())
+  )
+
+  llm_request = LlmRequest(
+      model="claude-sonnet-4-20250514",
+      contents=[Content(role="user", parts=[Part.from_text(text="Hi")])],
+      config=types.GenerateContentConfig(system_instruction="Test"),
+  )
+
+  with mock.patch.object(llm, "_anthropic_client", mock_client):
+    _ = [r async for r in llm.generate_content_async(llm_request, stream=True)]
+
+  _, kwargs = mock_client.messages.create.call_args
+  assert kwargs["temperature"] is NOT_GIVEN
+  assert kwargs["top_p"] is NOT_GIVEN
+  assert kwargs["top_k"] is NOT_GIVEN
+  assert kwargs["stop_sequences"] is NOT_GIVEN

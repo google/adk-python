@@ -493,15 +493,20 @@ class AnthropicLlm(BaseLlm):
     )
     thinking = _build_anthropic_thinking_param(llm_request.config)
 
+    config = llm_request.config
     if not stream:
       message = await self._anthropic_client.messages.create(
           model=model_to_use,
-          system=llm_request.config.system_instruction,
+          system=config.system_instruction,
           messages=messages,
           tools=tools,
           tool_choice=tool_choice,
           max_tokens=self.max_tokens,
           thinking=thinking,
+          temperature=config.temperature if config.temperature is not None else NOT_GIVEN,
+          top_p=config.top_p if config.top_p is not None else NOT_GIVEN,
+          top_k=config.top_k if config.top_k is not None else NOT_GIVEN,
+          stop_sequences=config.stop_sequences if config.stop_sequences is not None else NOT_GIVEN,
       )
       yield message_to_generate_content_response(message)
     else:
@@ -528,13 +533,18 @@ class AnthropicLlm(BaseLlm):
     a final aggregated LlmResponse with all content.
     """
     model_to_use = self._resolve_model_name(llm_request.model)
+    config = llm_request.config
     raw_stream = await self._anthropic_client.messages.create(
         model=model_to_use,
-        system=llm_request.config.system_instruction,
+        system=config.system_instruction,
         messages=messages,
         tools=tools,
         tool_choice=tool_choice,
         max_tokens=self.max_tokens,
+        temperature=config.temperature if config.temperature is not None else NOT_GIVEN,
+        top_p=config.top_p if config.top_p is not None else NOT_GIVEN,
+        top_k=config.top_k if config.top_k is not None else NOT_GIVEN,
+        stop_sequences=config.stop_sequences if config.stop_sequences is not None else NOT_GIVEN,
         stream=True,
         thinking=thinking,
     )
