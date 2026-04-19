@@ -1430,17 +1430,15 @@ def test_build_anthropic_thinking_param_zero_budget_disabled():
   assert result == anthropic_types.ThinkingConfigDisabledParam(type="disabled")
 
 
-def test_build_anthropic_thinking_param_none_budget_raises():
-  """thinking_budget=None must be set explicitly; raises ValueError."""
+def test_build_anthropic_thinking_param_none_budget_returns_not_given():
+  """thinking_budget=None defers to effort/output_config; returns NOT_GIVEN."""
+  from anthropic import NOT_GIVEN
   from google.adk.models.anthropic_llm import _build_anthropic_thinking_param
 
   config = types.GenerateContentConfig(
       thinking_config=types.ThinkingConfig(),
   )
-  with pytest.raises(
-      ValueError, match="thinking_budget must be set explicitly"
-  ):
-    _build_anthropic_thinking_param(config)
+  assert _build_anthropic_thinking_param(config) is NOT_GIVEN
 
 
 def test_build_anthropic_thinking_param_automatic_budget_raises():
@@ -1907,8 +1905,6 @@ async def test_streaming_redacted_thinking_block_preserved_in_final():
   assert text_part.text == "Done."
 
 
-
-
 # --- Tests for generation config parameter forwarding ---
 
 
@@ -1947,7 +1943,9 @@ async def test_non_streaming_forwards_generation_params():
   llm = AnthropicLlm(model="claude-sonnet-4-20250514")
   mock_message = anthropic_types.Message(
       id="msg_test",
-      content=[anthropic_types.TextBlock(text="Hi", type="text", citations=None)],
+      content=[
+          anthropic_types.TextBlock(text="Hi", type="text", citations=None)
+      ],
       model="claude-sonnet-4-20250514",
       role="assistant",
       stop_reason="end_turn",
@@ -1995,7 +1993,9 @@ async def test_non_streaming_omits_unset_generation_params():
   llm = AnthropicLlm(model="claude-sonnet-4-20250514")
   mock_message = anthropic_types.Message(
       id="msg_test",
-      content=[anthropic_types.TextBlock(text="Hi", type="text", citations=None)],
+      content=[
+          anthropic_types.TextBlock(text="Hi", type="text", citations=None)
+      ],
       model="claude-sonnet-4-20250514",
       role="assistant",
       stop_reason="end_turn",
@@ -2087,3 +2087,353 @@ async def test_streaming_omits_unset_generation_params():
   assert kwargs["top_p"] is NOT_GIVEN
   assert kwargs["top_k"] is NOT_GIVEN
   assert kwargs["stop_sequences"] is NOT_GIVEN
+
+
+# --- Tests for output_config.effort (ThinkingLevel mapping) ---
+
+
+def _make_mock_message():
+  return anthropic_types.Message(
+      id="msg_test",
+      content=[
+          anthropic_types.TextBlock(text="Hi", type="text", citations=None)
+      ],
+      model="claude-sonnet-4-20250514",
+      role="assistant",
+      stop_reason="end_turn",
+      stop_sequence=None,
+      type="message",
+      usage=anthropic_types.Usage(
+          input_tokens=5,
+          output_tokens=2,
+          cache_creation_input_tokens=0,
+          cache_read_input_tokens=0,
+          server_tool_use=None,
+          service_tier=None,
+      ),
+  )
+
+
+@pytest.mark.parametrize(
+    "thinking_level,expected_effort",
+    [
+        (types.ThinkingLevel.MINIMAL, "low"),
+        (types.ThinkingLevel.LOW, "medium"),
+        (types.ThinkingLevel.MEDIUM, "high"),
+        (types.ThinkingLevel.HIGH, "xhigh"),
+    ],
+)
+@pytest.mark.asyncio
+async def test_thinking_level_maps_to_effort(thinking_level, expected_effort):
+  """ThinkingLevel values map to the correct Anthropic effort strings."""
+  from anthropic import NOT_GIVEN
+
+  llm = AnthropicLlm(model="claude-sonnet-4-20250514")
+  mock_client = MagicMock()
+  mock_client.messages.create = AsyncMock(return_value=_make_mock_message())
+
+  llm_request = LlmRequest(
+      model="claude-sonnet-4-20250514",
+      contents=[Content(role="user", parts=[Part.from_text(text="Hi")])],
+      config=types.GenerateContentConfig(
+          system_instruction="Test",
+          thinking_config=types.ThinkingConfig(thinking_level=thinking_level),
+      ),
+  )
+
+  with mock.patch.object(llm, "_anthropic_client", mock_client):
+    _ = [r async for r in llm.generate_content_async(llm_request, stream=False)]
+
+  _, kwargs = mock_client.messages.create.call_args
+  assert kwargs["output_config"] == {"effort": expected_effort}
+  assert kwargs["temperature"] is NOT_GIVEN
+  assert kwargs["top_p"] is NOT_GIVEN
+  assert kwargs["top_k"] is NOT_GIVEN
+
+
+@pytest.mark.asyncio
+async def test_anthropic_config_effort_max_non_streaming():
+  """AnthropicGenerateContentConfig.effort='max' is forwarded directly."""
+  from anthropic import NOT_GIVEN
+  from google.adk.models.anthropic_llm import AnthropicGenerateContentConfig
+
+  llm = AnthropicLlm(model="claude-sonnet-4-20250514")
+  mock_client = MagicMock()
+  mock_client.messages.create = AsyncMock(return_value=_make_mock_message())
+
+  llm_request = LlmRequest(
+      model="claude-sonnet-4-20250514",
+      contents=[Content(role="user", parts=[Part.from_text(text="Hi")])],
+      config=AnthropicGenerateContentConfig(
+          system_instruction="Test",
+          effort="max",
+      ),
+  )
+
+  with mock.patch.object(llm, "_anthropic_client", mock_client):
+    _ = [r async for r in llm.generate_content_async(llm_request, stream=False)]
+
+  _, kwargs = mock_client.messages.create.call_args
+  assert kwargs["output_config"] == {"effort": "max"}
+  assert kwargs["temperature"] is NOT_GIVEN
+  assert kwargs["top_p"] is NOT_GIVEN
+  assert kwargs["top_k"] is NOT_GIVEN
+
+
+@pytest.mark.asyncio
+async def test_anthropic_config_effort_max_streaming():
+  """AnthropicGenerateContentConfig.effort='max' is forwarded in streaming."""
+  from anthropic import NOT_GIVEN
+  from google.adk.models.anthropic_llm import AnthropicGenerateContentConfig
+
+  llm = AnthropicLlm(model="claude-sonnet-4-20250514")
+  mock_client = MagicMock()
+  mock_client.messages.create = AsyncMock(
+      return_value=_make_mock_stream_events(_make_minimal_stream())
+  )
+
+  llm_request = LlmRequest(
+      model="claude-sonnet-4-20250514",
+      contents=[Content(role="user", parts=[Part.from_text(text="Hi")])],
+      config=AnthropicGenerateContentConfig(
+          system_instruction="Test",
+          effort="max",
+      ),
+  )
+
+  with mock.patch.object(llm, "_anthropic_client", mock_client):
+    _ = [r async for r in llm.generate_content_async(llm_request, stream=True)]
+
+  _, kwargs = mock_client.messages.create.call_args
+  assert kwargs["output_config"] == {"effort": "max"}
+  assert kwargs["temperature"] is NOT_GIVEN
+  assert kwargs["top_p"] is NOT_GIVEN
+  assert kwargs["top_k"] is NOT_GIVEN
+
+
+@pytest.mark.asyncio
+async def test_no_effort_when_thinking_level_unset():
+  """output_config is NOT_GIVEN when no ThinkingLevel or effort is set."""
+  from anthropic import NOT_GIVEN
+
+  llm = AnthropicLlm(model="claude-sonnet-4-20250514")
+  mock_client = MagicMock()
+  mock_client.messages.create = AsyncMock(return_value=_make_mock_message())
+
+  llm_request = LlmRequest(
+      model="claude-sonnet-4-20250514",
+      contents=[Content(role="user", parts=[Part.from_text(text="Hi")])],
+      config=types.GenerateContentConfig(system_instruction="Test"),
+  )
+
+  with mock.patch.object(llm, "_anthropic_client", mock_client):
+    _ = [r async for r in llm.generate_content_async(llm_request, stream=False)]
+
+  _, kwargs = mock_client.messages.create.call_args
+  assert kwargs["output_config"] is NOT_GIVEN
+
+
+@pytest.mark.asyncio
+async def test_effort_takes_priority_over_sampling_params():
+  """When effort is set via ThinkingLevel, sampling params become NOT_GIVEN."""
+  from anthropic import NOT_GIVEN
+
+  llm = AnthropicLlm(model="claude-sonnet-4-20250514")
+  mock_client = MagicMock()
+  mock_client.messages.create = AsyncMock(return_value=_make_mock_message())
+
+  llm_request = LlmRequest(
+      model="claude-sonnet-4-20250514",
+      contents=[Content(role="user", parts=[Part.from_text(text="Hi")])],
+      config=types.GenerateContentConfig(
+          system_instruction="Test",
+          temperature=0.7,
+          top_p=0.9,
+          thinking_config=types.ThinkingConfig(
+              thinking_level=types.ThinkingLevel.HIGH
+          ),
+      ),
+  )
+
+  with mock.patch.object(llm, "_anthropic_client", mock_client):
+    _ = [r async for r in llm.generate_content_async(llm_request, stream=False)]
+
+  _, kwargs = mock_client.messages.create.call_args
+  assert kwargs["output_config"] == {"effort": "xhigh"}
+  assert kwargs["temperature"] is NOT_GIVEN
+  assert kwargs["top_p"] is NOT_GIVEN
+
+
+# --- Tests for output_config.effort (ThinkingLevel mapping) ---
+
+
+def _make_mock_message():
+  return anthropic_types.Message(
+      id="msg_test",
+      content=[
+          anthropic_types.TextBlock(text="Hi", type="text", citations=None)
+      ],
+      model="claude-sonnet-4-20250514",
+      role="assistant",
+      stop_reason="end_turn",
+      stop_sequence=None,
+      type="message",
+      usage=anthropic_types.Usage(
+          input_tokens=5,
+          output_tokens=2,
+          cache_creation_input_tokens=0,
+          cache_read_input_tokens=0,
+          server_tool_use=None,
+          service_tier=None,
+      ),
+  )
+
+
+@pytest.mark.parametrize(
+    "thinking_level,expected_effort",
+    [
+        (types.ThinkingLevel.MINIMAL, "low"),
+        (types.ThinkingLevel.LOW, "medium"),
+        (types.ThinkingLevel.MEDIUM, "high"),
+        (types.ThinkingLevel.HIGH, "xhigh"),
+    ],
+)
+@pytest.mark.asyncio
+async def test_thinking_level_maps_to_effort(thinking_level, expected_effort):
+  """ThinkingLevel values map to the correct Anthropic effort strings."""
+  from anthropic import NOT_GIVEN
+
+  llm = AnthropicLlm(model="claude-sonnet-4-20250514")
+  mock_client = MagicMock()
+  mock_client.messages.create = AsyncMock(return_value=_make_mock_message())
+
+  llm_request = LlmRequest(
+      model="claude-sonnet-4-20250514",
+      contents=[Content(role="user", parts=[Part.from_text(text="Hi")])],
+      config=types.GenerateContentConfig(
+          system_instruction="Test",
+          thinking_config=types.ThinkingConfig(thinking_level=thinking_level),
+      ),
+  )
+
+  with mock.patch.object(llm, "_anthropic_client", mock_client):
+    _ = [r async for r in llm.generate_content_async(llm_request, stream=False)]
+
+  _, kwargs = mock_client.messages.create.call_args
+  assert kwargs["output_config"] == {"effort": expected_effort}
+  assert kwargs["temperature"] is NOT_GIVEN
+  assert kwargs["top_p"] is NOT_GIVEN
+  assert kwargs["top_k"] is NOT_GIVEN
+
+
+@pytest.mark.asyncio
+async def test_anthropic_config_effort_max_non_streaming():
+  """AnthropicGenerateContentConfig.effort='max' is forwarded directly."""
+  from anthropic import NOT_GIVEN
+  from google.adk.models.anthropic_llm import AnthropicGenerateContentConfig
+
+  llm = AnthropicLlm(model="claude-sonnet-4-20250514")
+  mock_client = MagicMock()
+  mock_client.messages.create = AsyncMock(return_value=_make_mock_message())
+
+  llm_request = LlmRequest(
+      model="claude-sonnet-4-20250514",
+      contents=[Content(role="user", parts=[Part.from_text(text="Hi")])],
+      config=AnthropicGenerateContentConfig(
+          system_instruction="Test",
+          effort="max",
+      ),
+  )
+
+  with mock.patch.object(llm, "_anthropic_client", mock_client):
+    _ = [r async for r in llm.generate_content_async(llm_request, stream=False)]
+
+  _, kwargs = mock_client.messages.create.call_args
+  assert kwargs["output_config"] == {"effort": "max"}
+  assert kwargs["temperature"] is NOT_GIVEN
+  assert kwargs["top_p"] is NOT_GIVEN
+  assert kwargs["top_k"] is NOT_GIVEN
+
+
+@pytest.mark.asyncio
+async def test_anthropic_config_effort_max_streaming():
+  """AnthropicGenerateContentConfig.effort='max' is forwarded in streaming."""
+  from anthropic import NOT_GIVEN
+  from google.adk.models.anthropic_llm import AnthropicGenerateContentConfig
+
+  llm = AnthropicLlm(model="claude-sonnet-4-20250514")
+  mock_client = MagicMock()
+  mock_client.messages.create = AsyncMock(
+      return_value=_make_mock_stream_events(_make_minimal_stream())
+  )
+
+  llm_request = LlmRequest(
+      model="claude-sonnet-4-20250514",
+      contents=[Content(role="user", parts=[Part.from_text(text="Hi")])],
+      config=AnthropicGenerateContentConfig(
+          system_instruction="Test",
+          effort="max",
+      ),
+  )
+
+  with mock.patch.object(llm, "_anthropic_client", mock_client):
+    _ = [r async for r in llm.generate_content_async(llm_request, stream=True)]
+
+  _, kwargs = mock_client.messages.create.call_args
+  assert kwargs["output_config"] == {"effort": "max"}
+  assert kwargs["temperature"] is NOT_GIVEN
+  assert kwargs["top_p"] is NOT_GIVEN
+  assert kwargs["top_k"] is NOT_GIVEN
+
+
+@pytest.mark.asyncio
+async def test_no_effort_when_thinking_level_unset():
+  """output_config is NOT_GIVEN when no ThinkingLevel or effort is set."""
+  from anthropic import NOT_GIVEN
+
+  llm = AnthropicLlm(model="claude-sonnet-4-20250514")
+  mock_client = MagicMock()
+  mock_client.messages.create = AsyncMock(return_value=_make_mock_message())
+
+  llm_request = LlmRequest(
+      model="claude-sonnet-4-20250514",
+      contents=[Content(role="user", parts=[Part.from_text(text="Hi")])],
+      config=types.GenerateContentConfig(system_instruction="Test"),
+  )
+
+  with mock.patch.object(llm, "_anthropic_client", mock_client):
+    _ = [r async for r in llm.generate_content_async(llm_request, stream=False)]
+
+  _, kwargs = mock_client.messages.create.call_args
+  assert kwargs["output_config"] is NOT_GIVEN
+
+
+@pytest.mark.asyncio
+async def test_effort_takes_priority_over_sampling_params():
+  """When effort is set via ThinkingLevel, sampling params become NOT_GIVEN."""
+  from anthropic import NOT_GIVEN
+
+  llm = AnthropicLlm(model="claude-sonnet-4-20250514")
+  mock_client = MagicMock()
+  mock_client.messages.create = AsyncMock(return_value=_make_mock_message())
+
+  llm_request = LlmRequest(
+      model="claude-sonnet-4-20250514",
+      contents=[Content(role="user", parts=[Part.from_text(text="Hi")])],
+      config=types.GenerateContentConfig(
+          system_instruction="Test",
+          temperature=0.7,
+          top_p=0.9,
+          thinking_config=types.ThinkingConfig(
+              thinking_level=types.ThinkingLevel.HIGH
+          ),
+      ),
+  )
+
+  with mock.patch.object(llm, "_anthropic_client", mock_client):
+    _ = [r async for r in llm.generate_content_async(llm_request, stream=False)]
+
+  _, kwargs = mock_client.messages.create.call_args
+  assert kwargs["output_config"] == {"effort": "xhigh"}
+  assert kwargs["temperature"] is NOT_GIVEN
+  assert kwargs["top_p"] is NOT_GIVEN

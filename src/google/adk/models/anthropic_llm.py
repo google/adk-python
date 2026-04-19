@@ -48,9 +48,43 @@ from .llm_response import LlmResponse
 if TYPE_CHECKING:
   from .llm_request import LlmRequest
 
-__all__ = ["AnthropicLlm", "Claude"]
+__all__ = ["AnthropicGenerateContentConfig", "AnthropicLlm", "Claude"]
 
 logger = logging.getLogger("google_adk." + __name__)
+
+_THINKING_LEVEL_TO_EFFORT: dict[types.ThinkingLevel, str] = {
+    types.ThinkingLevel.MINIMAL: "low",
+    types.ThinkingLevel.LOW: "medium",
+    types.ThinkingLevel.MEDIUM: "high",
+    types.ThinkingLevel.HIGH: "xhigh",
+}
+
+
+# google-genai ships no py.typed marker / complete stubs, so mypy resolves
+# GenerateContentConfig as Any and flags the subclass. Composition would lose
+# isinstance() checks and Pydantic field inheritance; a local stub file would
+# need maintenance on every google-genai release. Suppressing narrowly is the
+# least-bad option.
+class AnthropicGenerateContentConfig(types.GenerateContentConfig):  # type: ignore[misc]
+  """GenerateContentConfig extended with Anthropic-specific parameters."""
+
+  effort: Optional[Literal["low", "medium", "high", "xhigh", "max"]] = None
+
+
+def _build_effort_param(
+    config: types.GenerateContentConfig,
+) -> Union[anthropic_types.OutputConfigParam, NotGiven]:
+  """Maps ADK config to Anthropic output_config.effort, or NOT_GIVEN."""
+  if isinstance(config, AnthropicGenerateContentConfig) and config.effort:
+    return anthropic_types.OutputConfigParam(effort=config.effort)
+  if (
+      config.thinking_config
+      and config.thinking_config.thinking_level
+      and config.thinking_config.thinking_level in _THINKING_LEVEL_TO_EFFORT
+  ):
+    effort = _THINKING_LEVEL_TO_EFFORT[config.thinking_config.thinking_level]
+    return anthropic_types.OutputConfigParam(effort=effort)
+  return NOT_GIVEN
 
 
 @dataclasses.dataclass
@@ -96,11 +130,9 @@ def _build_anthropic_thinking_param(
   thinking_budget = config.thinking_config.thinking_budget
 
   if thinking_budget is None:
-    raise ValueError(
-        "thinking_budget must be set explicitly when ThinkingConfig is"
-        " provided for Anthropic models. Use 0 to disable thinking, or a"
-        " positive integer (>= 1024) for the token budget."
-    )
+    # thinking_level (effort) is being used instead of budget; thinking param
+    # is not needed — output_config handles it.
+    return NOT_GIVEN
 
   if thinking_budget == 0:
     return anthropic_types.ThinkingConfigDisabledParam(type="disabled")
@@ -494,6 +526,8 @@ class AnthropicLlm(BaseLlm):
     thinking = _build_anthropic_thinking_param(llm_request.config)
 
     config = llm_request.config
+    effort = _build_effort_param(config)
+    use_sampling = effort is NOT_GIVEN
     if not stream:
       message = await self._anthropic_client.messages.create(
           model=model_to_use,
@@ -503,10 +537,19 @@ class AnthropicLlm(BaseLlm):
           tool_choice=tool_choice,
           max_tokens=self.max_tokens,
           thinking=thinking,
-          temperature=config.temperature if config.temperature is not None else NOT_GIVEN,
-          top_p=config.top_p if config.top_p is not None else NOT_GIVEN,
-          top_k=config.top_k if config.top_k is not None else NOT_GIVEN,
-          stop_sequences=config.stop_sequences if config.stop_sequences is not None else NOT_GIVEN,
+          output_config=effort,
+          temperature=config.temperature
+          if use_sampling and config.temperature is not None
+          else NOT_GIVEN,
+          top_p=config.top_p
+          if use_sampling and config.top_p is not None
+          else NOT_GIVEN,
+          top_k=config.top_k
+          if use_sampling and config.top_k is not None
+          else NOT_GIVEN,
+          stop_sequences=config.stop_sequences
+          if config.stop_sequences is not None
+          else NOT_GIVEN,
       )
       yield message_to_generate_content_response(message)
     else:
@@ -534,6 +577,8 @@ class AnthropicLlm(BaseLlm):
     """
     model_to_use = self._resolve_model_name(llm_request.model)
     config = llm_request.config
+    effort = _build_effort_param(config)
+    use_sampling = effort is NOT_GIVEN
     raw_stream = await self._anthropic_client.messages.create(
         model=model_to_use,
         system=config.system_instruction,
@@ -541,10 +586,19 @@ class AnthropicLlm(BaseLlm):
         tools=tools,
         tool_choice=tool_choice,
         max_tokens=self.max_tokens,
-        temperature=config.temperature if config.temperature is not None else NOT_GIVEN,
-        top_p=config.top_p if config.top_p is not None else NOT_GIVEN,
-        top_k=config.top_k if config.top_k is not None else NOT_GIVEN,
-        stop_sequences=config.stop_sequences if config.stop_sequences is not None else NOT_GIVEN,
+        output_config=effort,
+        temperature=config.temperature
+        if use_sampling and config.temperature is not None
+        else NOT_GIVEN,
+        top_p=config.top_p
+        if use_sampling and config.top_p is not None
+        else NOT_GIVEN,
+        top_k=config.top_k
+        if use_sampling and config.top_k is not None
+        else NOT_GIVEN,
+        stop_sequences=config.stop_sequences
+        if config.stop_sequences is not None
+        else NOT_GIVEN,
         stream=True,
         thinking=thinking,
     )
