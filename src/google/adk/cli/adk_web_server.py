@@ -1009,7 +1009,10 @@ class AdkWebServer:
     @app.get("/apps/{app_name}/app-info", response_model_exclude_none=True)
     async def get_adk_app_info(app_name: str) -> AppInfo:
       """Returns the detailed info for a given ADK app."""
-      agent_or_app = self.agent_loader.load_agent(app_name)
+      try:
+        agent_or_app = self.agent_loader.load_agent(app_name)
+      except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e)) from e
       root_agent = self._get_root_agent(agent_or_app)
       if isinstance(root_agent, LlmAgent):
         return AppInfo(
@@ -1912,7 +1915,10 @@ class AdkWebServer:
     @app.post("/run_sse")
     async def run_agent_sse(req: RunAgentRequest) -> StreamingResponse:
       stream_mode = StreamingMode.SSE if req.streaming else StreamingMode.NONE
-      runner = await self.get_runner_async(req.app_name)
+      try:
+        runner = await self.get_runner_async(req.app_name)
+      except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e)) from e
       _set_telemetry_context_if_needed(runner)
 
       # Validate session existence before starting the stream.
