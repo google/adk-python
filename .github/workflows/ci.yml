@@ -1,0 +1,124 @@
+# Unified CI Workflow for ADK Python
+#
+# This workflow consolidates and replaces the following legacy workflows:
+#   - isort.yml (replaced by lint job's isort check)
+#   - python-unit-tests.yml (replaced by test job)
+#
+# The following workflows are intentionally kept separate:
+#   - mypy.yml: Manual-triggered multi-Python-version type checking
+#   - pyink.yml: Separate formatting check
+#   - Various release/* workflows: Release automation
+#   - Triaging/monitoring workflows: Project maintenance
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    name: Lint Check
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+
+      - name: Create virtual environment and install dependencies
+        run: |
+          uv venv .venv
+          source .venv/bin/activate
+          uv sync --all-extras
+          uv pip install ruff mypy build
+
+      - name: Run ruff lint check
+        run: |
+          source .venv/bin/activate
+          ruff check src/ tests/ --no-fix
+
+      - name: Run isort check
+        run: |
+          source .venv/bin/activate
+          isort --check src/ tests/ contributing/
+
+      - name: Run pyink format check
+        run: |
+          source .venv/bin/activate
+          pyink --check --diff --config pyproject.toml src/ tests/ contributing/
+
+      - name: Run mypy type check (transitional, to be removed by 2026-07-19)
+        continue-on-error: true
+        run: |
+          source .venv/bin/activate
+          mypy src/ --config-file pyproject.toml
+
+  test:
+    name: Test (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.11", "3.12", "3.13", "3.14"]
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v6
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+
+      - name: Create virtual environment and install test dependencies
+        run: |
+          uv venv .venv
+          source .venv/bin/activate
+          uv sync --extra test
+
+      - name: Run unit tests with pytest
+        run: |
+          source .venv/bin/activate
+          pytest tests/unittests \
+            --ignore=tests/unittests/artifacts/test_artifact_service.py \
+            --ignore=tests/unittests/tools/google_api_tool/test_googleapi_to_openapi_converter.py \
+            -v
+
+  build:
+    name: Build Package
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+
+      - name: Build the package
+        run: |
+          uv build
+
+      - name: Verify built artifacts
+        run: |
+          ls -la dist/

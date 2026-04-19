@@ -18,11 +18,16 @@ from abc import ABC
 import asyncio
 import inspect
 import logging
+import time
 from typing import AsyncGenerator
+from typing import cast
 from typing import Optional
 from typing import TYPE_CHECKING
 
 from google.adk.platform import time as platform_time
+from ...errors.agent_timeout_error import AgentTimeoutError
+from ...errors.agent_timeout_error import TimeoutTrigger
+from ...errors.agent_timeout_error import TimeoutType
 from google.genai import types
 from opentelemetry import trace
 from websockets.exceptions import ConnectionClosed
@@ -1166,6 +1171,22 @@ class BaseLlmFlow(ABC):
       llm_request: LlmRequest,
       model_response_event: Event,
   ) -> AsyncGenerator[LlmResponse, None]:
+    single_turn_timeout = (
+        invocation_context.agent.single_turn_timeout
+        if hasattr(invocation_context.agent, 'single_turn_timeout')
+        else None
+    )
+    agent_name = (
+        invocation_context.agent.name
+        if hasattr(invocation_context.agent, 'name')
+        else None
+    )
+
+    start_time = time.time()
+    queue: asyncio.Queue[
+        tuple[str, LlmResponse | Exception | None]
+    ] = asyncio.Queue()
+    done = asyncio.Event()
 
     async def _call_llm_with_tracing() -> AsyncGenerator[LlmResponse, None]:
       with tracer.start_as_current_span('call_llm') as span:
@@ -1262,9 +1283,65 @@ class BaseLlmFlow(ABC):
 
               yield llm_response
 
-    async with Aclosing(_call_llm_with_tracing()) as agen:
-      async for event in agen:
-        yield event
+    async def _run_inner() -> None:
+      try:
+        async with Aclosing(_call_llm_with_tracing()) as agen:
+          async for response in agen:
+            await queue.put(('response', response))
+        await queue.put(('done', None))
+      except Exception as e:
+        await queue.put(('error', e))
+      finally:
+        done.set()
+
+    task = asyncio.create_task(_run_inner())
+
+    try:
+      while not done.is_set():
+        try:
+          remaining_timeout = None
+          if single_turn_timeout is not None:
+            elapsed = time.time() - start_time
+            remaining_timeout = max(0.0, single_turn_timeout - elapsed)
+            if remaining_timeout <= 0:
+              raise asyncio.TimeoutError()
+
+          item = await asyncio.wait_for(
+              queue.get(),
+              timeout=remaining_timeout,
+          )
+        except asyncio.TimeoutError:
+          task.cancel()
+          try:
+            await task
+          except asyncio.CancelledError:
+            pass
+          elapsed = time.time() - start_time
+          raise AgentTimeoutError(
+              message='',
+              timeout_type=TimeoutType.SINGLE_TURN,
+              elapsed_time=elapsed,
+              trigger=TimeoutTrigger.LLM_CALL,
+              agent_name=agent_name,
+          )
+
+        if item[0] == 'response':
+          response = cast(LlmResponse, item[1])
+          yield response
+        elif item[0] == 'error':
+          error = cast(Exception, item[1])
+          raise error
+        elif item[0] == 'done':
+          break
+
+      await task
+    except asyncio.CancelledError:
+      task.cancel()
+      try:
+        await task
+      except asyncio.CancelledError:
+        pass
+      raise
 
   def _finalize_model_response_event(
       self,

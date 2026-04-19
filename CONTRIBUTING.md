@@ -209,13 +209,43 @@ part before or alongside your code PR.
     ./autoformat.sh
     ```
 
-7.  **Build the wheel file:**
+7.  **Set up pre-commit hooks (recommended):**
+
+    The project uses pre-commit hooks to automate code quality checks.
+    Install and enable them with:
+
+    ```shell
+    uv pip install pre-commit
+    pre-commit install
+    ```
+
+    This will set up the following hooks that run automatically on every commit:
+    -   `ruff`: Lint checking and automatic fixes (using configured rules)
+    -   `isort`: Import organization (Google style)
+    -   `pyink`: Code formatting (Google style, 2-space indent, 80 char line length)
+    -   `mypy`: Type checking (**transitional state: currently allowed to fail, will be enforced by 2026-07-19**)
+    -   `trailing-whitespace`: Removes trailing whitespace
+    -   `end-of-file-fixer`: Ensures files end with a newline
+    -   `check-yaml`: Validates YAML syntax
+    -   `check-toml`: Validates TOML syntax
+    -   `check-added-large-files`: Prevents adding large files (>1MB)
+
+    To manually run all hooks on all files:
+
+    ```shell
+    pre-commit run --all-files
+    ```
+
+    **Hook version management:** Run `pre-commit autoupdate` quarterly to update hooks
+    to their latest stable versions.
+
+8.  **Build the wheel file:**
 
     ```shell
     uv build
     ```
 
-8.  **Test the locally built wheel file:** Have a simple testing folder setup as
+9.  **Test the locally built wheel file:** Have a simple testing folder setup as
     mentioned in the
     [quickstart](https://google.github.io/adk-docs/get-started/quickstart/).
 

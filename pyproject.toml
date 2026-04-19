@@ -237,3 +237,119 @@ plugins = ["pydantic.mypy"]
 strict = true
 disable_error_code = ["import-not-found", "import-untyped", "unused-ignore"]
 follow_imports = "skip"
+
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+lint.select = ["E", "W", "F", "I", "B", "C4", "UP", "SIM"]
+
+# ruff.lint.ignore - 现有代码豁免清单
+# ========================================
+# 这些规则被豁免是因为现有代码存在大量违反情况。
+# 后续应该逐步收敛，新代码应遵守这些规则。
+#
+# 收敛策略建议：
+# 1. 新代码必须遵守所有规则（不添加新的 noqa）
+# 2. 按优先级逐步修复现有代码：
+#    - 高优先级：F 系列（逻辑错误）、B 系列（潜在 bug）
+#    - 中优先级：SIM 系列（代码简化）、C4 系列（理解性简化）
+#    - 低优先级：UP 系列（Python 版本升级）、E 系列（风格）
+# 3. 每修复一类问题，从 ignore 列表中移除对应规则
+
+lint.ignore = [
+  # UP 系列 (pyupgrade) - Python 版本升级相关
+  # 现有代码大量使用 Python 3.10 风格的类型注解，
+  # 这些规则要求升级到 PEP 585/PEP 604 风格
+  "UP006",   # non-pep585-annotation: List[str] -> list[str]
+  "UP007",   # non-pep604-annotation-union: Union[str, int] -> str | int
+  "UP008",   # super-call-with-parameters: super() -> super(ClassName, self)
+  "UP012",   # unnecessary-encode-utf8: .encode("utf-8") is default
+  "UP015",   # redundant-open-modes: open(..., "r") is default
+  "UP024",   # os-error-alias: IOError, OSError -> OSError
+  "UP028",   # yield-in-for-loop: yield from iterable
+  "UP031",   # printf-string-formatting: % formatting -> f-strings
+  "UP032",   # f-string: .format() -> f-strings
+  "UP034",   # extraneous-parentheses: 冗余括号
+  "UP035",   # deprecated-import: typing.Dict etc. -> collections.abc
+  "UP037",   # quoted-annotation: 使用 from __future__ import annotations
+  "UP045",   # non-pep604-annotation-optional: Optional[str] -> str | None
+
+  # I 系列 (isort) - 导入排序
+  "I001",    # unsorted-imports: 项目已使用 isort，有独立配置
+
+  # F 系列 (pyflakes) - 逻辑错误
+  "F401",    # unused-import: 存在有意的重导出 (re-exports)
+  "F402",    # import-shadowed-by-loop-var: 循环变量覆盖导入
+  "F403",    # undefined-local-with-import-star: from module import *
+  "F541",    # f-string-missing-placeholders: f-string 无占位符
+  "F601",    # multi-value-repeated-key-literal: 字典重复键
+  "F811",    # redefined-while-unused: 重定义未使用的变量
+  "F821",    # undefined-name: 未定义的名称（可能在类型注解中）
+  "F841",    # unused-variable: 未使用的变量
+
+  # E 系列 (pycodestyle) - 风格错误
+  "E501",    # line-too-long: 行太长（项目用 80 字符，ruff 配置 100）
+  "E402",    # module-import-not-at-top-of-file: 导入不在文件顶部
+  "E711",    # none-comparison: x == None -> x is None
+  "E712",    # true-false-comparison: x == True -> x is True
+  "E721",    # type-comparison: type(x) == Y -> isinstance(x, Y)
+  "E731",    # lambda-assignment: 赋值 lambda 到变量
+
+  # B 系列 (flake8-bugbear) - 潜在 bug
+  "B004",    # unreliable-callable-check: 不可靠的可调用检查
+  "B005",    # strip-with-multi-characters: .strip() 多字符问题
+  "B006",    # mutable-argument-default: 可变默认参数
+  "B007",    # unused-loop-control-variable: 未使用的循环控制变量
+  "B008",    # function-call-in-default-argument: 默认参数中的函数调用
+  "B009",    # get-attr-with-constant: getattr(x, "foo") -> x.foo
+  "B010",    # set-attr-with-constant: setattr 常量值
+  "B011",    # assert-false: assert False 总是失败
+  "B015",    # useless-comparison: 无用比较
+  "B017",    # assert-raises-exception: assertRaises(Exception) 太宽泛
+  "B023",    # function-uses-loop-variable: 闭包使用循环变量
+  "B024",    # abstract-base-class-without-abstract-method: 无抽象方法的 ABC
+  "B027",    # empty-method-without-abstract-decorator: 空方法无 abstractmethod
+  "B028",    # no-explicit-stacklevel: warn() 无 stacklevel
+  "B904",    # raise-without-from-inside-except: except 中 raise 无 from
+  "B905",    # zip-without-explicit-strict: zip() 无 strict=
+
+  # SIM 系列 (flake8-simplify) - 代码简化
+  "SIM101",  # duplicate-isinstance-call: 重复 isinstance 调用
+  "SIM102",  # collapsible-if: 可合并的 if 嵌套
+  "SIM103",  # needless-bool: 不必要的 bool() 调用
+  "SIM105",  # suppressible-exception: 可用 contextlib.suppress
+  "SIM108",  # if-else-block-instead-of-if-exp: 可用三元表达式
+  "SIM110",  # reimplemented-builtin: 重新实现了内置函数
+  "SIM113",  # enumerate-for-loop: 可用 enumerate()
+  "SIM114",  # if-with-same-arms: if 分支相同
+  "SIM117",  # multiple-with-statements: 多个 with 可合并
+  "SIM118",  # in-dict-keys: x in dict.keys() -> x in dict
+  "SIM300",  # magic-values: 测试中的魔法值
+  "SIM401",  # if-else-block-instead-of-dict-get: 可用 dict.get()
+  "SIM910",  # dict-get-with-none-default: .get(x, None) 是默认
+
+  # C4 系列 (flake8-comprehensions) - 推导式简化
+  "C401",    # unnecessary-generator-set: set(generator) -> {x for x in ...}
+  "C403",    # unnecessary-list-comprehension-set: set([...]) -> {...}
+  "C405",    # unnecessary-literal-set: set((1, 2)) -> {1, 2}
+  "C408",    # unnecessary-collection-call: dict() -> {}
+  "C410",    # unnecessary-literal-within-list-call: list((1, 2)) -> [1, 2]
+  "C413",    # unnecessary-call-around-sorted: list(sorted(...)) -> sorted(...)
+  "C414",    # unnecessary-double-cast-or-process: 冗余转换
+  "C416",    # unnecessary-comprehension: [x for x in iter] -> list(iter)
+  "C419",    # unnecessary-comprehension-in-call: sum(x for x in ...) 无括号
+  "C420",    # unnecessary-dict-comprehension-for-iterable: {k:v for k,v in ...}
+
+  # W 系列 (pycodestyle) - 空白相关
+  "W291",    # trailing-whitespace: 尾随空格
+  "W293",    # blank-line-with-whitespace: 空白行有空格
+]
+
+[tool.ruff.lint.per-file-ignores]
+"contributing/samples/**/*.py" = ["E", "W", "F", "I", "B", "C4", "UP", "SIM"]
+
+[tool.ruff.format]
+quote-style = "preserve"
+indent-style = "space"
+line-ending = "lf"

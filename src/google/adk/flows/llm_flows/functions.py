@@ -26,6 +26,7 @@ import functools
 import inspect
 import logging
 import threading
+import time
 from typing import Any
 from typing import AsyncGenerator
 from typing import cast
@@ -41,6 +42,9 @@ from ...agents.active_streaming_tool import ActiveStreamingTool
 from ...agents.live_request_queue import LiveRequestQueue
 from ...auth.auth_tool import AuthConfig
 from ...auth.auth_tool import AuthToolArguments
+from ...errors.agent_timeout_error import AgentTimeoutError
+from ...errors.agent_timeout_error import TimeoutTrigger
+from ...errors.agent_timeout_error import TimeoutType
 from ...events.event import Event
 from ...events.event_actions import EventActions
 from ...telemetry.tracing import trace_merged_tool_calls
@@ -529,8 +533,17 @@ async def _execute_single_function_call_async(
     # Step 3: Otherwise, proceed calling the tool normally.
     if function_response is None:
       try:
+        single_turn_timeout = (
+            agent.single_turn_timeout
+            if hasattr(agent, 'single_turn_timeout')
+            else None
+        )
         function_response = await __call_tool_async(
-            tool, args=function_args, tool_context=tool_context
+            tool,
+            args=function_args,
+            tool_context=tool_context,
+            timeout=single_turn_timeout,
+            agent_name=agent.name,
         )
       except Exception as tool_error:
         error_response = await _run_on_tool_error_callbacks(
@@ -1112,9 +1125,42 @@ async def __call_tool_async(
     tool: BaseTool,
     args: dict[str, Any],
     tool_context: ToolContext,
+    timeout: Optional[float] = None,
+    agent_name: Optional[str] = None,
 ) -> Any:
-  """Calls the tool."""
-  return await tool.run_async(args=args, tool_context=tool_context)
+    """Calls the tool with optional timeout.
+
+    Args:
+        tool: The tool to call.
+        args: The arguments to pass to the tool.
+        tool_context: The tool context.
+        timeout: Optional timeout in seconds. If set and the tool takes
+            longer than this, raises AgentTimeoutError.
+        agent_name: The name of the agent calling the tool, used in error
+            messages.
+
+    Returns:
+        The result from the tool.
+
+    Raises:
+        AgentTimeoutError: If timeout is set and the tool call takes longer
+            than the specified timeout.
+    """
+    start_time = time.time()
+    try:
+        coro = tool.run_async(args=args, tool_context=tool_context)
+        if timeout is not None and timeout > 0:
+            return await asyncio.wait_for(coro, timeout=timeout)
+        return await coro
+    except asyncio.TimeoutError:
+        elapsed = time.time() - start_time
+        raise AgentTimeoutError(
+            message='',
+            timeout_type=TimeoutType.SINGLE_TURN,
+            elapsed_time=elapsed,
+            trigger=TimeoutTrigger.TOOL_CALL,
+            agent_name=agent_name,
+        )
 
 
 def __build_response_event(

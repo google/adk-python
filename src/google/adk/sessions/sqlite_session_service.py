@@ -31,6 +31,7 @@ from typing_extensions import override
 
 from . import _session_util
 from ..errors.already_exists_error import AlreadyExistsError
+from ..errors.version_mismatch_error import VersionMismatchError
 from ..events.event import Event
 from .base_session_service import BaseSessionService
 from .base_session_service import GetSessionConfig
@@ -39,6 +40,10 @@ from .session import Session
 from .state import State
 
 logger = logging.getLogger("google_adk." + __name__)
+
+SCHEMA_VERSION = 1
+
+SCHEMA_VERSION_KEY = "schema_version"
 
 PRAGMA_FOREIGN_KEYS = "PRAGMA foreign_keys = ON"
 
@@ -85,12 +90,51 @@ CREATE TABLE IF NOT EXISTS events (
     FOREIGN KEY (app_name, user_id, session_id) REFERENCES sessions(app_name, user_id, id) ON DELETE CASCADE
 );
 """
+
+METADATA_TABLE_SCHEMA = """
+CREATE TABLE IF NOT EXISTS metadata (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
+"""
+
 CREATE_SCHEMA_SQL = "\n".join([
     APP_STATES_TABLE_SCHEMA,
     USER_STATES_TABLE_SCHEMA,
     SESSIONS_TABLE_SCHEMA,
     EVENTS_TABLE_SCHEMA,
+    METADATA_TABLE_SCHEMA,
 ])
+
+
+def _get_default_db_path() -> str:
+  """Returns the default database path based on environment variables and XDG Base Directory Specification.
+
+  Priority order (highest to lowest):
+    1. ADK_HOME/sessions.db (if ADK_HOME environment variable is set)
+    2. XDG_DATA_HOME/adk/sessions.db (if XDG_DATA_HOME environment variable is set)
+    3. ~/.local/share/adk/sessions.db (default XDG data directory)
+    4. ~/.adk/sessions.db (legacy fallback for backward compatibility)
+
+  Returns:
+    The default database path as a string.
+  """
+  if "ADK_HOME" in os.environ:
+    adk_home = os.path.expanduser(os.environ["ADK_HOME"])
+    return os.path.join(adk_home, "sessions.db")
+
+  if "XDG_DATA_HOME" in os.environ:
+    xdg_data_home = os.path.expanduser(os.environ["XDG_DATA_HOME"])
+    return os.path.join(xdg_data_home, "adk", "sessions.db")
+
+  home = os.path.expanduser("~")
+  xdg_default = os.path.join(home, ".local", "share", "adk", "sessions.db")
+
+  legacy_path = os.path.join(home, ".adk", "sessions.db")
+  if os.path.exists(legacy_path):
+    return legacy_path
+
+  return xdg_default
 
 
 def _parse_db_path(db_path: str) -> tuple[str, str, bool]:
@@ -134,13 +178,53 @@ class SqliteSessionService(BaseSessionService):
 
   Event data is stored as JSON to allow for schema flexibility as event
   fields evolve.
+
+  State Merge Semantics:
+    This implementation uses SQLite's json_patch function (RFC 7396) for
+    state updates, which performs a RECURSIVE merge of nested dictionaries.
+    This differs from DatabaseSessionService which uses a shallow dict.update()
+    merge. For example:
+
+    - Existing state: {"nested": {"a": 1, "b": 2}}
+    - State delta: {"nested": {"b": 3, "c": 4}}
+    - SqliteSessionService result: {"nested": {"a": 1, "b": 3, "c": 4}}
+    - DatabaseSessionService result: {"nested": {"b": 3, "c": 4}}
+
+    When using nested state dictionaries, be aware of this semantic difference.
+
+  Schema Versioning:
+    This service tracks schema version in the 'metadata' table. If the
+    database schema version is older than the expected version, a
+    VersionMismatchError will be raised, and a migration script should be run.
   """
 
-  def __init__(self, db_path: str):
-    """Initializes the SQLite session service with a database path."""
+  def __init__(self, db_path: str = None):
+    """Initializes the SQLite session service with a database path.
+
+    Args:
+      db_path: The path to the SQLite database file. If not provided,
+        the default path is determined by the following priority order:
+        1. ADK_HOME/sessions.db (if ADK_HOME environment variable is set)
+        2. XDG_DATA_HOME/adk/sessions.db (if XDG_DATA_HOME environment variable is set)
+        3. ~/.local/share/adk/sessions.db (default XDG data directory)
+        4. ~/.adk/sessions.db (legacy fallback, only if the file already exists)
+        The directory will be created if it doesn't exist.
+
+    Raises:
+      VersionMismatchError: If the database schema version is incompatible
+        with the current code.
+      RuntimeError: If the database uses an old schema that requires migration.
+    """
+    if db_path is None:
+      db_path = _get_default_db_path()
+
     self._db_path, self._db_connect_path, self._db_connect_uri = _parse_db_path(
         db_path
     )
+
+    db_dir = os.path.dirname(self._db_path)
+    if db_dir and not os.path.exists(db_dir):
+      os.makedirs(db_dir)
 
     if self._is_migration_needed():
       raise RuntimeError(
@@ -152,6 +236,8 @@ class SqliteSessionService(BaseSessionService):
           f" {self._db_path}.new` then backup {self._db_path} and rename"
           f" {self._db_path}.new to {self._db_path}."
       )
+
+    self._check_schema_version()
 
   @override
   async def create_session(
@@ -460,13 +546,29 @@ class SqliteSessionService(BaseSessionService):
 
   @asynccontextmanager
   async def _get_db_connection(self):
-    """Connects to the db and performs initial setup."""
+    """Connects to the db and performs initial setup.
+
+    This method:
+    1. Connects to the SQLite database
+    2. Enables foreign keys
+    3. Creates all tables if they don't exist
+    4. Initializes schema version in metadata table if not already set
+    """
     async with aiosqlite.connect(
         self._db_connect_path, uri=self._db_connect_uri
     ) as db:
       db.row_factory = aiosqlite.Row
       await db.execute(PRAGMA_FOREIGN_KEYS)
       await db.executescript(CREATE_SCHEMA_SQL)
+
+      await db.execute(
+          """
+          INSERT OR IGNORE INTO metadata (key, value) VALUES (?, ?)
+          """,
+          (SCHEMA_VERSION_KEY, str(SCHEMA_VERSION)),
+      )
+      await db.commit()
+
       yield db
 
   async def _get_state(
@@ -566,25 +668,93 @@ class SqliteSessionService(BaseSessionService):
           self._db_connect_path, uri=self._db_connect_uri
       ) as conn:
         cursor = conn.cursor()
-        # Check if events table exists
         cursor.execute(
             "SELECT 1 FROM sqlite_master WHERE type='table' and name='events'"
         )
         if not cursor.fetchone():
-          return False  # No events table, so no migration needed.
+          return False
 
-        # If events table exists, check for event_data column
         cursor.execute("PRAGMA table_info(events)")
         columns = [row[1] for row in cursor.fetchall()]
         if "event_data" in columns:
-          return False  # New schema: event_data column exists.
+          return False
         else:
-          return (
-              True  # Old schema: events table exists, but no event_data column.
-          )
+          return True
     except sqlite3.Error as e:
       raise RuntimeError(
           f"Error accessing database {self._db_path}: {e}"
+      ) from e
+
+  def _check_schema_version(self) -> None:
+    """Checks if the database schema version is compatible with the current code.
+
+    This method:
+    1. If the database doesn't exist yet, does nothing (version will be
+       initialized on first connection).
+    2. If the database exists:
+       - First checks if metadata table exists and schema_version is set
+       - If schema_version exists but doesn't match SCHEMA_VERSION,
+         raises VersionMismatchError.
+       - If metadata table or schema_version doesn't exist, attempts to
+         initialize them. If the database is read-only (e.g., opened with
+         mode=ro), this initialization is skipped and the version check
+         is deferred until actual database operations are performed.
+
+    Raises:
+      VersionMismatchError: If the database schema version is incompatible.
+    """
+    if not os.path.exists(self._db_path):
+      return
+
+    try:
+      with sqlite3.connect(
+          self._db_connect_path, uri=self._db_connect_uri
+      ) as conn:
+        cursor = conn.cursor()
+
+        cursor.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='metadata'"
+        )
+        if not cursor.fetchone():
+          try:
+            cursor.execute(METADATA_TABLE_SCHEMA)
+            cursor.execute(
+                "INSERT INTO metadata (key, value) VALUES (?, ?)",
+                (SCHEMA_VERSION_KEY, str(SCHEMA_VERSION)),
+            )
+            conn.commit()
+          except sqlite3.OperationalError:
+            return
+          return
+
+        cursor.execute(
+            "SELECT value FROM metadata WHERE key = ?",
+            (SCHEMA_VERSION_KEY,),
+        )
+        result = cursor.fetchone()
+        if result is None:
+          try:
+            cursor.execute(
+                "INSERT INTO metadata (key, value) VALUES (?, ?)",
+                (SCHEMA_VERSION_KEY, str(SCHEMA_VERSION)),
+            )
+            conn.commit()
+          except sqlite3.OperationalError:
+            return
+          return
+
+        stored_version = int(result[0])
+        if stored_version != SCHEMA_VERSION:
+          raise VersionMismatchError(
+              expected_version=SCHEMA_VERSION,
+              actual_version=stored_version,
+          )
+
+    except sqlite3.Error as e:
+      if "readonly" in str(e).lower():
+        return
+      raise RuntimeError(
+          f"Error checking schema version for database {self._db_path}: {e}"
       ) from e
 
 
