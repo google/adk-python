@@ -156,11 +156,11 @@ async def test_session_state(service_type):
   )
   await session_service.append_event(session=session_11, event=event)
 
-  # User and app state is stored, temp state is filtered.
+  # User and app state is stored, temp state is accessible in-memory.
   assert session_11.state.get('app:key') == 'value'
   assert session_11.state.get('key11') == 'value11_new'
   assert session_11.state.get('user:key1') == 'value1'
-  assert not session_11.state.get('temp:key')
+  assert session_11.state.get('temp:key') == 'temp'
 
   session_12 = await session_service.get_session(
       app_name=app_name, user_id=user_id_1, session_id=session_id_12
@@ -218,11 +218,11 @@ async def test_create_new_session_will_merge_states(service_type):
   )
   await session_service.append_event(session=session_1, event=event)
 
-  # User and app state is stored, temp state is filtered.
+  # User and app state is stored, temp state is accessible in-memory.
   assert session_1.state.get('app:key') == 'value'
   assert session_1.state.get('key1') == 'value1'
   assert session_1.state.get('user:key1') == 'value1'
-  assert not session_1.state.get('temp:key')
+  assert session_1.state.get('temp:key') == 'temp'
 
   session_2 = await session_service.create_session(
       app_name=app_name, user_id=user_id, state={}, session_id=session_id_2
@@ -377,3 +377,46 @@ async def test_get_session_with_config(service_type):
   )
   events = session.events
   assert len(events) == num_test_events - after_timestamp + 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    'service_type', [SessionServiceType.IN_MEMORY, SessionServiceType.DATABASE]
+)
+async def test_temp_state_accessible_in_session_during_invocation(service_type):
+  session_service = get_session_service(service_type)
+  app_name = 'my_app'
+  user_id = 'test_user'
+
+  session = await session_service.create_session(
+      app_name=app_name, user_id=user_id
+  )
+
+  event = Event(
+      invocation_id='invocation_1',
+      author='test_agent',
+      content=types.Content(
+          role='model', parts=[types.Part(text='Hello from agent')]
+      ),
+      actions=EventActions(
+          state_delta={
+              'temp:agent_output': 'Hello from agent',
+              'temp:oauth_token': 'bearer_abc123',
+              'persistent_key': 'should_persist',
+          }
+      ),
+  )
+  await session_service.append_event(session=session, event=event)
+
+  # temp: keys are accessible in-memory during the same invocation.
+  assert session.state.get('temp:agent_output') == 'Hello from agent'
+  assert session.state.get('temp:oauth_token') == 'bearer_abc123'
+  assert session.state.get('persistent_key') == 'should_persist'
+
+  # temp: keys are not persisted to storage.
+  refetched = await session_service.get_session(
+      app_name=app_name, user_id=user_id, session_id=session.id
+  )
+  assert not refetched.state.get('temp:agent_output')
+  assert not refetched.state.get('temp:oauth_token')
+  assert refetched.state.get('persistent_key') == 'should_persist'

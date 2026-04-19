@@ -259,6 +259,14 @@ class InMemorySessionService(BaseSessionService):
     await super().append_event(session=session, event=event)
     session.last_update_time = event.timestamp
 
+    # Strip temp: keys before persisting to storage.
+    if event.actions and event.actions.state_delta:
+      event.actions.state_delta = {
+          k: v
+          for k, v in event.actions.state_delta.items()
+          if not k.startswith(State.TEMP_PREFIX)
+      }
+
     # Update the storage session
     app_name = session.app_name
     user_id = session.user_id

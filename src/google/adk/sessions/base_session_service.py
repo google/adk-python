@@ -103,7 +103,4 @@ class BaseSessionService(abc.ABC):
     """Updates the session state based on the event."""
     if not event.actions or not event.actions.state_delta:
       return
-    for key, value in event.actions.state_delta.items():
-      if key.startswith(State.TEMP_PREFIX):
-        continue
-      session.state.update({key: value})
+    session.state.update(event.actions.state_delta)
