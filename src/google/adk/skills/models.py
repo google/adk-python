@@ -50,7 +50,10 @@ class Frontmatter(BaseModel):
         https://agentskills.io/specification#allowed-tools-field.
       metadata: Key-value pairs for client-specific properties (defaults to
         empty dict). For example, to include additional tools, use the
-        ``adk_additional_tools`` key with a list of tools.
+        ``adk_additional_tools`` key with a list of tools. Set
+        ``adk_inject_state: true`` to enable ``{var}`` session state
+        interpolation in the SKILL.md body (same syntax as
+        ``LlmAgent.instruction``).
   """
 
   model_config = ConfigDict(
@@ -76,6 +79,8 @@ class Frontmatter(BaseModel):
       tools = v["adk_additional_tools"]
       if not isinstance(tools, list):
         raise ValueError("adk_additional_tools must be a list of strings")
+    if "adk_inject_state" in v and not isinstance(v["adk_inject_state"], bool):
+      raise ValueError("adk_inject_state must be a bool")
     return v
 
   @field_validator("name")
