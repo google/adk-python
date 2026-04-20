@@ -108,11 +108,12 @@ class LoopAgent(BaseAgent):
         if should_exit or pause_invocation:
           break  # break inner for loop
 
-      # Restart from the beginning of the loop.
-      start_index = 0
-      times_looped += 1
-      # Reset the state of all sub-agents in the loop.
-      ctx.reset_sub_agent_states(self.name)
+      if not pause_invocation:
+        # Restart from the beginning of the loop.
+        start_index = 0
+        times_looped += 1
+        # Reset the state of all sub-agents in the loop.
+        ctx.reset_sub_agent_states(self.name)
 
     # If the invocation is paused, we should not yield the end of agent event.
     if pause_invocation:
