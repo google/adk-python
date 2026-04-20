@@ -18,6 +18,7 @@ import asyncio
 
 from google.adk.evaluation.app_details import AgentDetails
 from google.adk.evaluation.app_details import AppDetails
+from google.adk.evaluation.eval_case import get_all_tool_calls
 from google.adk.evaluation.evaluation_generator import _LiveSession
 from google.adk.evaluation.evaluation_generator import EvaluationGenerator
 from google.adk.evaluation.request_intercepter_plugin import _RequestIntercepterPlugin
@@ -25,6 +26,7 @@ from google.adk.evaluation.simulation.user_simulator import NextUserMessage
 from google.adk.evaluation.simulation.user_simulator import Status as UserSimulatorStatus
 from google.adk.evaluation.simulation.user_simulator import UserSimulator
 from google.adk.events.event import Event
+from google.adk.events.event_actions import EventActions
 from google.adk.models.llm_request import LlmRequest
 from google.genai import types
 import pytest
@@ -860,3 +862,48 @@ class TestLiveSessionCallbacks:
     )
     assert isinstance(called_after_args.kwargs["llm_response"], Event)
     assert called_after_args.kwargs["llm_response"] == mock_event
+
+
+def test_convert_events_preserves_tool_calls_when_skip_summarization():
+  """Regression test for #5410.
+
+  When an event has skip_summarization=True, is_final_response() returns True
+  even if the event contains function calls.  Previously such an event was
+  treated as final_event and excluded from invocation_events, causing
+  get_all_tool_calls() to return an empty list and tool_trajectory_avg_score
+  to always be 0.0 despite matching tool calls.
+  """
+  events = [
+      Event(
+          invocation_id="inv1",
+          author="user",
+          content=types.Content(
+              parts=[types.Part(text="run a query")], role="user"
+          ),
+          timestamp=1000.0,
+      ),
+      Event(
+          invocation_id="inv1",
+          author="agent",
+          content=types.Content(
+              parts=[
+                  types.Part(
+                      function_call=types.FunctionCall(
+                          id="call_01",
+                          name="execute_sql",
+                          args={"project_id": "my-proj", "query": "SELECT 1"},
+                      )
+                  )
+              ]
+          ),
+          actions=EventActions(skip_summarization=True),
+      ),
+  ]
+
+  invocations = EvaluationGenerator.convert_events_to_eval_invocations(events)
+  assert len(invocations) == 1
+
+  tool_calls = get_all_tool_calls(invocations[0].intermediate_data)
+  assert len(tool_calls) == 1
+  assert tool_calls[0].name == "execute_sql"
+  assert tool_calls[0].args == {"project_id": "my-proj", "query": "SELECT 1"}
