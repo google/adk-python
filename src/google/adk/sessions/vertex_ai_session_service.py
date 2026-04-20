@@ -270,6 +270,7 @@ class VertexAiSessionService(BaseSessionService):
 
     reasoning_engine_id = self._get_reasoning_engine_id(session.app_name)
 
+    # Build config (Monolithic approach)
     config = {}
     if event.content:
       config['content'] = event.content.model_dump(
@@ -286,9 +287,6 @@ class VertexAiSessionService(BaseSessionService):
               k: json.loads(v.model_dump_json(exclude_none=True, by_alias=True))
               for k, v in event.actions.requested_auth_configs.items()
           },
-          # TODO: add requested_tool_confirmations, agent_state once
-          # they are available in the API.
-          # Note: compaction is stored via event_metadata.custom_metadata.
       }
     if event.error_code:
       config['error_code'] = event.error_code
@@ -311,10 +309,8 @@ class VertexAiSessionService(BaseSessionService):
       metadata_dict['grounding_metadata'] = event.grounding_metadata.model_dump(
           exclude_none=True, mode='json'
       )
-    # Store compaction data in custom_metadata since the Vertex AI service
-    # does not yet support the compaction field.
-    # TODO: Stop writing to custom_metadata once the Vertex AI service
-    # supports the compaction field natively in EventActions.
+
+    # ALWAYS write to custom_metadata
     if event.actions and event.actions.compaction:
       compaction_dict = event.actions.compaction.model_dump(
           exclude_none=True, mode='json'
@@ -324,8 +320,6 @@ class VertexAiSessionService(BaseSessionService):
           key=_COMPACTION_CUSTOM_METADATA_KEY,
           value=compaction_dict,
       )
-    # Store usage_metadata in custom_metadata since the Vertex AI service
-    # does not persist it in EventMetadata.
     if event.usage_metadata:
       usage_dict = event.usage_metadata.model_dump(
           exclude_none=True, mode='json'
@@ -335,7 +329,12 @@ class VertexAiSessionService(BaseSessionService):
           key=_USAGE_METADATA_CUSTOM_METADATA_KEY,
           value=usage_dict,
       )
+
     config['event_metadata'] = metadata_dict
+
+    # Persist the full event state using raw_event. If the client-side SDK
+    # does not support this field, it will raise a ValidationError, and we
+    # will fall back to legacy field-based storage.
     config['raw_event'] = event.model_dump(
         exclude_none=True,
         mode='json',
@@ -345,7 +344,8 @@ class VertexAiSessionService(BaseSessionService):
     # Retry without raw_event if client side validation fails for older SDK
     # versions.
     async with self._get_api_client() as api_client:
-      try:
+
+      async def _do_append(cfg: dict[str, Any]):
         await api_client.agent_engines.sessions.events.append(
             name=(
                 f'reasoningEngines/{reasoning_engine_id}/sessions/{session.id}'
@@ -355,22 +355,16 @@ class VertexAiSessionService(BaseSessionService):
             timestamp=datetime.datetime.fromtimestamp(
                 event.timestamp, tz=datetime.timezone.utc
             ),
-            config=config,
+            config=cfg,
         )
+
+      try:
+        await _do_append(config)
       except pydantic.ValidationError:
+        logger.warning('Vertex SDK does not support raw_event, falling back.')
         if 'raw_event' in config:
           del config['raw_event']
-        await api_client.agent_engines.sessions.events.append(
-            name=(
-                f'reasoningEngines/{reasoning_engine_id}/sessions/{session.id}'
-            ),
-            author=event.author,
-            invocation_id=event.invocation_id,
-            timestamp=datetime.datetime.fromtimestamp(
-                event.timestamp, tz=datetime.timezone.utc
-            ),
-            config=config,
-        )
+        await _do_append(config)
     return event
 
   def _get_reasoning_engine_id(self, app_name: str):
@@ -429,8 +423,8 @@ def _get_raw_event(api_event_obj: Any) -> dict[str, Any] | None:
 
 def _from_api_event(api_event_obj: vertexai.types.SessionEvent) -> Event:
   """Converts an API event object to an Event object."""
-  # Read event data from raw_event first before falling back to top level
-  # fields.
+  # Prioritize reading from raw_event to restore full state. Fall back to
+  # top-level fields for older data that lacks raw_event.
   raw_event_dict = _get_raw_event(api_event_obj)
   if raw_event_dict:
     event_dict = copy.deepcopy(raw_event_dict)
@@ -439,8 +433,9 @@ def _from_api_event(api_event_obj: vertexai.types.SessionEvent) -> Event:
         'id': api_event_obj.name.split('/')[-1],
         'invocation_id': getattr(api_event_obj, 'invocation_id', None),
         'author': getattr(api_event_obj, 'author', None),
-        'timestamp': timestamp_obj.timestamp() if timestamp_obj else None,
     })
+    if timestamp_obj:
+      event_dict['timestamp'] = timestamp_obj.timestamp()
     return Event.model_validate(event_dict)
 
   actions = getattr(api_event_obj, 'actions', None)
@@ -514,6 +509,13 @@ def _from_api_event(api_event_obj: vertexai.types.SessionEvent) -> Event:
         usage_metadata_data
     )
 
+  timestamp_obj = getattr(api_event_obj, 'timestamp', None)
+  timestamp = (
+      timestamp_obj.timestamp()
+      if timestamp_obj
+      else datetime.datetime.now(datetime.timezone.utc).timestamp()
+  )
+
   return Event(
       id=api_event_obj.name.split('/')[-1],
       invocation_id=api_event_obj.invocation_id,
@@ -522,7 +524,7 @@ def _from_api_event(api_event_obj: vertexai.types.SessionEvent) -> Event:
       content=_session_util.decode_model(
           getattr(api_event_obj, 'content', None), types.Content
       ),
-      timestamp=api_event_obj.timestamp.timestamp(),
+      timestamp=timestamp,
       error_code=getattr(api_event_obj, 'error_code', None),
       error_message=getattr(api_event_obj, 'error_message', None),
       partial=partial,

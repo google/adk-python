@@ -18,14 +18,19 @@ import asyncio
 from contextlib import AsyncExitStack
 from datetime import timedelta
 import logging
+from typing import Any
 from typing import AsyncContextManager
+from typing import Coroutine
 from typing import Optional
+from typing import TypeVar
 
 from mcp import ClientSession
 from mcp import SamplingCapability
 from mcp.client.session import SamplingFnT
 
 logger = logging.getLogger('google_adk.' + __name__)
+
+_T = TypeVar('_T')
 
 
 class SessionContext:
@@ -52,14 +57,14 @@ class SessionContext:
 
   def __init__(
       self,
-      client: AsyncContextManager,
+      client: AsyncContextManager[Any],
       timeout: Optional[float],
       sse_read_timeout: Optional[float],
       is_stdio: bool = False,
       *,
       sampling_callback: Optional[SamplingFnT] = None,
       sampling_capabilities: Optional[SamplingCapability] = None,
-  ):
+  ) -> None:
     """
     Args:
         client: An MCP client context manager (e.g., from streamablehttp_client,
@@ -79,7 +84,7 @@ class SessionContext:
     self._session: Optional[ClientSession] = None
     self._ready_event = asyncio.Event()
     self._close_event = asyncio.Event()
-    self._task: Optional[asyncio.Task] = None
+    self._task: Optional[asyncio.Task[Any]] = None
     self._task_lock = asyncio.Lock()
     self._sampling_callback = sampling_callback
     self._sampling_capabilities = sampling_capabilities
@@ -88,6 +93,15 @@ class SessionContext:
   def session(self) -> Optional[ClientSession]:
     """Get the managed ClientSession, if available."""
     return self._session
+
+  @property
+  def _is_task_alive(self) -> bool:
+    """Whether the background session task is currently running.
+
+    Returns True only when the task has been started and has not yet completed.
+    Returns False if the task has not been started or has finished.
+    """
+    return self._task is not None and not self._task.done()
 
   async def start(self) -> ClientSession:
     """Start the runner and wait for the session to be ready.
@@ -123,9 +137,64 @@ class SessionContext:
           f'Failed to create MCP session: {self._task.exception()}'
       ) from self._task.exception()
 
+    if self._session is None:
+      raise ConnectionError('Failed to create MCP session: unknown error')
+
     return self._session
 
-  async def close(self):
+  async def _run_guarded(self, coro: Coroutine[Any, Any, _T]) -> _T:
+    """Run a coroutine while monitoring the background session task.
+
+    Races the given coroutine against the background task. If the task
+    dies first (e.g. transport crash from a non-2xx HTTP response), the
+    coroutine is cancelled and the original error is raised immediately
+    instead of hanging until a read timeout expires.
+
+    Args:
+        coro: The coroutine to run (e.g. session.call_tool(...)).
+
+    Returns:
+        The result of the coroutine.
+
+    Raises:
+        ConnectionError: If the background task has already died or dies
+            during execution, wrapping the original exception.
+    """
+    if self._task is None:
+      coro.close()
+      raise ConnectionError('MCP session task has not been started')
+
+    if self._task.done():
+      exc = self._task.exception() if not self._task.cancelled() else None
+      # Close the coroutine to avoid "was never awaited" warnings
+      coro.close()
+      raise ConnectionError(
+          f'MCP session task has already terminated: {exc}'
+      ) from exc
+
+    coro_task = asyncio.ensure_future(coro)
+
+    done, _ = await asyncio.wait(
+        [coro_task, self._task],
+        return_when=asyncio.FIRST_COMPLETED,
+    )
+
+    if coro_task in done:
+      # If the coroutine itself raised, the exception propagates as-is
+      # (not wrapped in ConnectionError) — this is intentional.
+      return coro_task.result()
+
+    # Background task finished first — transport crash
+    coro_task.cancel()
+    try:
+      await coro_task
+    except BaseException:
+      pass
+
+    exc = self._task.exception() if not self._task.cancelled() else None
+    raise ConnectionError(f'MCP session connection lost: {exc}') from exc
+
+  async def close(self) -> None:
     """Signal the context task to close and wait for cleanup."""
     # Set the close event to signal the task to close.
     # Even if start has not been called, we need to set the close event
@@ -153,17 +222,14 @@ class SessionContext:
   async def __aenter__(self) -> ClientSession:
     return await self.start()
 
-  async def __aexit__(self, exc_type, exc_val, exc_tb):
+  async def __aexit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
     await self.close()
 
-  async def _run(self):
+  async def _run(self) -> None:
     """Run the complete session context within a single task."""
     try:
       async with AsyncExitStack() as exit_stack:
-        transports = await asyncio.wait_for(
-            exit_stack.enter_async_context(self._client),
-            timeout=self._timeout,
-        )
+        transports = await exit_stack.enter_async_context(self._client)
         # The streamable http client returns a GetSessionCallback in addition
         # to the read/write MemoryObjectStreams needed to build the
         # ClientSession. We limit to the first two values to be compatible

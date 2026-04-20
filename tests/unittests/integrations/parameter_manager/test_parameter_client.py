@@ -19,6 +19,8 @@ from unittest.mock import MagicMock
 from unittest.mock import patch
 
 from google.adk.integrations.parameter_manager.parameter_client import ParameterManagerClient
+from google.adk.integrations.parameter_manager.parameter_client import USER_AGENT
+from google.api_core.gapic_v1 import client_info
 import pytest
 
 
@@ -47,9 +49,11 @@ class TestParameterManagerClient:
     mock_default_service_credential.assert_called_once_with(
         scopes=["https://www.googleapis.com/auth/cloud-platform"]
     )
-    mock_pm_client_class.assert_called_once_with(
-        credentials=mock_credentials, client_options=None
-    )
+    mock_pm_client_class.assert_called_once()
+    call_kwargs = mock_pm_client_class.call_args.kwargs
+    assert call_kwargs["credentials"] == mock_credentials
+    assert call_kwargs["client_options"] is None
+    assert call_kwargs["client_info"].user_agent == USER_AGENT
     assert client._credentials == mock_credentials
     assert client._client == mock_pm_client_class.return_value
 
@@ -77,9 +81,11 @@ class TestParameterManagerClient:
     mock_from_service_account_info.assert_called_once_with(
         json.loads(service_account_json)
     )
-    mock_pm_client_class.assert_called_once_with(
-        credentials=mock_credentials, client_options=None
-    )
+    mock_pm_client_class.assert_called_once()
+    call_kwargs = mock_pm_client_class.call_args.kwargs
+    assert call_kwargs["credentials"] == mock_credentials
+    assert call_kwargs["client_options"] is None
+    assert call_kwargs["client_info"].user_agent == USER_AGENT
     assert client._credentials == mock_credentials
     assert client._client == mock_pm_client_class.return_value
 
@@ -101,9 +107,11 @@ class TestParameterManagerClient:
 
       # Verify
       mock_credentials.refresh.assert_called_once()
-      mock_pm_client_class.assert_called_once_with(
-          credentials=mock_credentials, client_options=None
-      )
+      mock_pm_client_class.assert_called_once()
+      call_kwargs = mock_pm_client_class.call_args.kwargs
+      assert call_kwargs["credentials"] == mock_credentials
+      assert call_kwargs["client_options"] is None
+      assert call_kwargs["client_info"].user_agent == USER_AGENT
       assert client._credentials == mock_credentials
       assert client._client == mock_pm_client_class.return_value
 
@@ -127,12 +135,13 @@ class TestParameterManagerClient:
     ParameterManagerClient(location=location)
 
     # Verify
-    mock_pm_client_class.assert_called_once_with(
-        credentials=mock_credentials,
-        client_options={
-            "api_endpoint": f"parametermanager.{location}.rep.googleapis.com"
-        },
-    )
+    mock_pm_client_class.assert_called_once()
+    call_kwargs = mock_pm_client_class.call_args.kwargs
+    assert call_kwargs["credentials"] == mock_credentials
+    assert call_kwargs["client_options"] == {
+        "api_endpoint": f"parametermanager.{location}.rep.googleapis.com"
+    }
+    assert call_kwargs["client_info"].user_agent == USER_AGENT
 
   @patch(
       "google.adk.integrations.parameter_manager.parameter_client.default_service_credential"

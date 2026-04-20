@@ -706,14 +706,10 @@ class AdkWebServer:
         if plugins_config and isinstance(plugins_config, dict):
           bq_analytics_config = plugins_config.get("bigquery_agent_analytics")
 
-    # Determine if the agent was loaded from YAML based on the agent loader info
-    is_visual_builder = False
-    detailed_agents = self.agent_loader.list_agents_detailed()
-    for agent_info in detailed_agents:
-      if agent_info.get("name") == app_name:
-        if agent_info.get("language") == "yaml":
-          is_visual_builder = True
-        break
+    # All YAML agents are treated as visual builder agents.
+    is_visual_builder_agent = os.path.exists(
+        os.path.join(self.agents_dir, app_name, "root_agent.yaml")
+    )
 
     if isinstance(agent_or_app, BaseAgent):
       plugins = extra_plugins_instances
@@ -746,7 +742,7 @@ class AdkWebServer:
       agentic_app = agent_or_app
 
     # If the root agent was loaded from YAML, we treat it as being from Visual Builder
-    if is_visual_builder:
+    if is_visual_builder_agent:
       object.__setattr__(agentic_app, "_is_visual_builder_app", True)
 
     runner = self._create_runner(agentic_app)
@@ -2079,6 +2075,7 @@ class AdkWebServer:
         proactive_audio: bool | None = Query(default=None),
         enable_affective_dialog: bool | None = Query(default=None),
         enable_session_resumption: bool | None = Query(default=None),
+        save_live_blob: bool = Query(default=False),
     ) -> None:
       ws_origin = websocket.headers.get("origin")
       if ws_origin is not None and not _is_request_origin_allowed(
@@ -2121,6 +2118,7 @@ class AdkWebServer:
                 if enable_session_resumption is not None
                 else None
             ),
+            save_live_blob=save_live_blob,
         )
         async with Aclosing(
             runner.run_live(

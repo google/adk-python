@@ -17,10 +17,12 @@ from __future__ import annotations
 import asyncio
 import base64
 import logging
+import os
 import sys
 from typing import Any
 from typing import Awaitable
 from typing import Callable
+from typing import cast
 from typing import Dict
 from typing import List
 from typing import Optional
@@ -82,7 +84,7 @@ class McpToolset(BaseToolset):
 
     # Use in an agent
     agent = LlmAgent(
-        model='gemini-2.0-flash',
+        model='gemini-2.5-flash',
         name='enterprise_assistant',
         instruction='Help user accessing their file systems',
         tools=[toolset],
@@ -117,7 +119,7 @@ class McpToolset(BaseToolset):
       use_mcp_resources: Optional[bool] = False,
       sampling_callback: Optional[SamplingFnT] = None,
       sampling_capabilities: Optional[SamplingCapability] = None,
-  ):
+  ) -> None:
     """Initializes the McpToolset.
 
     Args:
@@ -158,6 +160,15 @@ class McpToolset(BaseToolset):
       sampling_capabilities: Optional capabilities for sampling.
     """
 
+    # --- BEGIN BOUND TOKEN PATCH ---
+    # Set GOOGLE_API_PREVENT_AGENT_TOKEN_SHARING_FOR_GCP_SERVICES to false
+    # to disable bound token sharing. Tracking on
+    # https://github.com/google/adk-python/issues/5361
+    os.environ["GOOGLE_API_PREVENT_AGENT_TOKEN_SHARING_FOR_GCP_SERVICES"] = (
+        "false"
+    )
+    # --- END BOUND TOKEN  PATCH ---
+
     super().__init__(tool_filter=tool_filter, tool_name_prefix=tool_name_prefix)
 
     self._sampling_callback = sampling_callback
@@ -184,7 +195,7 @@ class McpToolset(BaseToolset):
     # Store auth config as instance variable so ADK can populate
     # exchanged_auth_credential in-place before calling get_tools()
     self._auth_config: Optional[AuthConfig] = (
-        AuthConfig(
+        AuthConfig(  # type: ignore[no-untyped-call]
             auth_scheme=auth_scheme,
             raw_auth_credential=auth_credential,
         )
@@ -193,16 +204,31 @@ class McpToolset(BaseToolset):
     )
     self._use_mcp_resources = use_mcp_resources
 
-  def _get_auth_headers(self) -> Optional[Dict[str, str]]:
+  def _get_auth_headers(
+      self, readonly_context: Optional[ReadonlyContext] = None
+  ) -> Optional[Dict[str, str]]:
     """Build authentication headers from exchanged credential.
+
+    Args:
+      readonly_context: Readonly context to get credentials from.
 
     Returns:
         Dictionary of auth headers, or None if no auth configured.
     """
-    if not self._auth_config or not self._auth_config.exchanged_auth_credential:
+    if not self._auth_config:
       return None
 
-    credential = self._auth_config.exchanged_auth_credential
+    credential = None
+    if readonly_context:
+      credential = readonly_context.get_credential(
+          self._auth_config.credential_key
+      )
+
+    if not credential:
+      credential = self._auth_config.exchanged_auth_credential
+
+    if not credential:
+      return None
     headers: Optional[Dict[str, str]] = None
 
     if credential.oauth2:
@@ -241,7 +267,8 @@ class McpToolset(BaseToolset):
         }
 
       if credential.http.additional_headers:
-        headers = headers or {}
+        if headers is None:
+          headers = {}
         headers.update(credential.http.additional_headers)
     elif credential.api_key:
       # For API key, use the auth scheme to determine header name
@@ -279,7 +306,7 @@ class McpToolset(BaseToolset):
         headers.update(provider_headers)
 
     # Add auth headers from exchanged credential if available
-    auth_headers = self._get_auth_headers()
+    auth_headers = self._get_auth_headers(readonly_context)
     if auth_headers:
       headers.update(auth_headers)
 
@@ -323,7 +350,7 @@ class McpToolset(BaseToolset):
     )
 
     # Apply filtering based on context and tool_filter
-    tools = []
+    tools: list[BaseTool] = []
     for tool in tools_response.tools:
       mcp_tool = MCPTool(
           mcp_tool=tool,
@@ -337,7 +364,7 @@ class McpToolset(BaseToolset):
           else None,
       )
 
-      if self._is_tool_selected(mcp_tool, readonly_context):
+      if self._is_tool_selected(mcp_tool, readonly_context):  # type: ignore[arg-type]
         tools.append(mcp_tool)
 
     if self._use_mcp_resources:
@@ -393,7 +420,9 @@ class McpToolset(BaseToolset):
     )
     for resource in result.resources:
       if resource.name == name:
-        return resource.model_dump(mode="json", exclude_none=True)
+        return cast(
+            Dict[str, Any], resource.model_dump(mode="json", exclude_none=True)
+        )
     raise ValueError(f"Resource with name '{name}' not found.")
 
   async def close(self) -> None:
@@ -465,7 +494,7 @@ class McpToolset(BaseToolset):
 class MCPToolset(McpToolset):
   """Deprecated name, use `McpToolset` instead."""
 
-  def __init__(self, *args, **kwargs):
+  def __init__(self, *args: Any, **kwargs: Any) -> None:
     warnings.warn(
         "MCPToolset class is deprecated, use `McpToolset` instead.",
         DeprecationWarning,
@@ -497,8 +526,8 @@ class McpToolsetConfig(BaseToolConfig):
 
   use_mcp_resources: bool = False
 
-  @model_validator(mode="after")
-  def _check_only_one_params_field(self):
+  @model_validator(mode="after")  # type: ignore[untyped-decorator]
+  def _check_only_one_params_field(self) -> Any:
     param_fields = [
         self.stdio_server_params,
         self.stdio_connection_params,

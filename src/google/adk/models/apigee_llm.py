@@ -60,6 +60,8 @@ _CUSTOM_METADATA_FIELDS = (
     'object',
 )
 
+_REFUSAL_PREFIX = '[[REFUSAL]]: '
+
 
 class ApigeeLlm(Gemini):
   """A BaseLlm implementation for calling Apigee proxy.
@@ -658,11 +660,14 @@ class CompletionsHTTPClient:
 
     tool_calls = []
     content_parts = []
+    refusals: list[str] = []
 
     function_responses = []
 
     for part in content.parts or []:
-      self._process_content_part(content, part, tool_calls, content_parts)
+      self._process_content_part(
+          content, part, tool_calls, content_parts, refusals
+      )
       if part.function_response:
         function_responses.append({
             'role': 'tool',
@@ -673,6 +678,8 @@ class CompletionsHTTPClient:
       return function_responses
 
     message = {'role': role}
+    if refusals:
+      message['refusal'] = '\n'.join(refusals)
     if tool_calls:
       message['tool_calls'] = tool_calls
       if not content_parts:
@@ -691,6 +698,7 @@ class CompletionsHTTPClient:
       part: types.Part,
       tool_calls: list[dict[str, Any]],
       content_parts: list[dict[str, Any]],
+      refusals: list[str],
   ) -> None:
     """Processes a single Part and updates tool_calls or content_parts."""
     if content.role != 'user' and (
@@ -731,7 +739,14 @@ class CompletionsHTTPClient:
       # Handled in the loop to return immediately
       pass
     elif part.text:
-      content_parts.append({'type': 'text', 'text': part.text})
+      if part.text.startswith(_REFUSAL_PREFIX):
+        refusals.append(part.text.removeprefix(_REFUSAL_PREFIX))
+      else:
+        before, sep, after = part.text.partition('\n' + _REFUSAL_PREFIX)
+        if sep:
+          refusals.append(after)
+        if before:
+          content_parts.append({'type': 'text', 'text': before})
     elif part.inline_data:
       mime_type = part.inline_data.mime_type
       data = base64.b64encode(part.inline_data.data).decode('utf-8')
@@ -843,6 +858,7 @@ class ChatCompletionsResponseHandler:
     self.usage = {}
     self.logprobs = {}
     self.custom_metadata = {}
+    self._refusal_started = False
 
   def process_response(self, response: dict[str, Any]) -> LlmResponse:
     """Processes a complete non-streaming response."""
@@ -989,19 +1005,49 @@ class ChatCompletionsResponseHandler:
         self.logprobs['refusal'] = []
       self.logprobs['refusal'].extend(logprobs_chunk['refusal'])
 
-  def _append_content(self, content: str, refusal: str) -> str:
-    if content and refusal:
-      content += '\n'
-      content += refusal
-    elif refusal:
-      content = refusal
+  def _accumulate_content(self, choice: dict[str, Any]) -> str:
+    """Processes a message or delta chunk to accumulate content and refusals.
+
+    This method extracts 'content' and 'refusal' from the chunk, updates the
+    accumulated state (self.content_parts), and returns the text content for
+    this chunk (handling prefixes and newlines if it's a refusal).
+
+    Args:
+      choice: A dictionary representing a message choice or a streaming delta.
+
+    Returns:
+      The text content to be appended or yielded for this chunk.
+    """
+    content = choice.get('content', '')
+    refusal = choice.get('refusal', '')
+
+    if content and self._refusal_started:
+      logging.warning(
+          'Received content after refusal has started. Dropping content.'
+      )
+      content = ''
+
+    chunk_text = ''
     if content:
-      self.content_parts += content
-    return content
+      chunk_text += content
+
+    if refusal and not self._refusal_started:
+      self._refusal_started = True
+      if self.content_parts or chunk_text:
+        chunk_text += '\n'
+      chunk_text += _REFUSAL_PREFIX
+
+    if refusal:
+      chunk_text += refusal
+
+    if chunk_text:
+      self.content_parts += chunk_text
+
+    return chunk_text
 
   def _add_chat_completion_chunk_delta(
       self, delta: dict[str, Any]
-  ) -> (list[types.Part], str):
+  ) -> tuple[list[types.Part], str]:
     """Adds a chunk delta from a streaming chat completions response.
 
     This method processes a single delta chunk from a streaming chat completions
@@ -1021,9 +1067,7 @@ class ChatCompletionsResponseHandler:
     for tool_call in delta.get('tool_calls', []):
       chunk_part = self._upsert_tool_call(tool_call)
       parts.append(chunk_part)
-    content = delta.get('content')
-    refusal = delta.get('refusal')
-    merged_content = self._append_content(content, refusal)
+    merged_content = self._accumulate_content(delta)
     if merged_content:
       parts.append(types.Part.from_text(text=merged_content))
 
@@ -1057,9 +1101,7 @@ class ChatCompletionsResponseHandler:
           'type': 'function',
           'function': function_call,
       })
-    content = message.get('content')
-    refusal = message.get('refusal')
-    self._append_content(content, refusal)
+    self._accumulate_content(message)
 
     self._get_or_create_role(message.get('role', 'model'))
     return self._get_content_parts(), self.role

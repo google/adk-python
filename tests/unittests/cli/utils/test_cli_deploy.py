@@ -240,6 +240,20 @@ def test_agent_engine_app_template_compiles_with_windows_paths() -> None:
   compile(rendered, "<agent_engine_app.py>", "exec")
 
 
+def test_print_agent_engine_url() -> None:
+  """It should print the correct URL for a fully-qualified resource name."""
+  with mock.patch("click.secho") as mocked_secho:
+    cli_deploy._print_agent_engine_url(
+        "projects/my-project/locations/us-central1/reasoningEngines/123456"
+    )
+    mocked_secho.assert_called_once()
+    call_args = mocked_secho.call_args[0][0]
+    assert "my-project" in call_args
+    assert "us-central1" in call_args
+    assert "123456" in call_args
+    assert "playground" in call_args
+
+
 @pytest.mark.parametrize("include_requirements", [True, False])
 def test_to_agent_engine_happy_path(
     monkeypatch: pytest.MonkeyPatch,
