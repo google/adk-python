@@ -666,7 +666,9 @@ class EvaluationGenerator:
       invocation_events = [
           InvocationEvent(author=e.author, content=e.content)
           for e in events_to_add
-          if final_event is None or e is not final_event or e.get_function_calls()
+          if final_event is None
+          or e is not final_event
+          or e.get_function_calls()
       ]
       invocations.append(
           Invocation(
