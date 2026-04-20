@@ -2075,6 +2075,7 @@ class AdkWebServer:
         proactive_audio: bool | None = Query(default=None),
         enable_affective_dialog: bool | None = Query(default=None),
         enable_session_resumption: bool | None = Query(default=None),
+        save_live_blob: bool = Query(default=False),
     ) -> None:
       ws_origin = websocket.headers.get("origin")
       if ws_origin is not None and not _is_request_origin_allowed(
@@ -2117,6 +2118,7 @@ class AdkWebServer:
                 if enable_session_resumption is not None
                 else None
             ),
+            save_live_blob=save_live_blob,
         )
         async with Aclosing(
             runner.run_live(

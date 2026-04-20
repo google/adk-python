@@ -63,65 +63,23 @@ class MockMCPTool:
     self.outputSchema = outputSchema
 
 
-class TestMCPTool:
-  """Test suite for MCPTool class."""
+class TestMCPToolLegacy:
+  """Legacy tests for MCPTool."""
+
+  @pytest.fixture(autouse=True)
+  def disable_feature_flag(self):
+    with temporary_feature_override(
+        FeatureName.JSON_SCHEMA_FOR_FUNC_DECL, False
+    ):
+      yield
 
   def setup_method(self):
-    """Set up test fixtures."""
     self.mock_mcp_tool = MockMCPTool()
     self.mock_session_manager = Mock(spec=MCPSessionManager)
     self.mock_session = AsyncMock()
     self.mock_session_manager.create_session = AsyncMock(
         return_value=self.mock_session
     )
-
-  def test_init_basic(self):
-    """Test basic initialization without auth."""
-    tool = MCPTool(
-        mcp_tool=self.mock_mcp_tool,
-        mcp_session_manager=self.mock_session_manager,
-    )
-
-    assert tool.name == "test_tool"
-    assert tool.description == "Test tool description"
-    assert tool._mcp_tool == self.mock_mcp_tool
-    assert tool._mcp_session_manager == self.mock_session_manager
-
-  def test_init_with_auth(self):
-    """Test initialization with authentication."""
-    # Create real auth scheme instances instead of mocks
-    from fastapi.openapi.models import OAuth2
-
-    auth_scheme = OAuth2(flows={})
-    auth_credential = AuthCredential(
-        auth_type=AuthCredentialTypes.OAUTH2,
-        oauth2=OAuth2Auth(client_id="test_id", client_secret="test_secret"),
-    )
-
-    tool = MCPTool(
-        mcp_tool=self.mock_mcp_tool,
-        mcp_session_manager=self.mock_session_manager,
-        auth_scheme=auth_scheme,
-        auth_credential=auth_credential,
-    )
-
-    # The auth config is stored in the parent class _credentials_manager
-    assert tool._credentials_manager is not None
-    assert tool._credentials_manager._auth_config.auth_scheme == auth_scheme
-    assert (
-        tool._credentials_manager._auth_config.raw_auth_credential
-        == auth_credential
-    )
-
-  def test_init_with_empty_description(self):
-    """Test initialization with empty description."""
-    mock_tool = MockMCPTool(description=None)
-    tool = MCPTool(
-        mcp_tool=mock_tool,
-        mcp_session_manager=self.mock_session_manager,
-    )
-
-    assert tool.description == ""
 
   def test_get_declaration(self):
     """Test function declaration generation."""
@@ -136,6 +94,25 @@ class TestMCPTool:
     assert declaration.name == "test_tool"
     assert declaration.description == "Test tool description"
     assert declaration.parameters is not None
+
+
+class TestMCPToolWithJsonSchema:
+  """Tests for MCPTool with JSON_SCHEMA_FOR_FUNC_DECL enabled."""
+
+  @pytest.fixture(autouse=True)
+  def enable_feature_flag(self):
+    with temporary_feature_override(
+        FeatureName.JSON_SCHEMA_FOR_FUNC_DECL, True
+    ):
+      yield
+
+  def setup_method(self):
+    self.mock_mcp_tool = MockMCPTool()
+    self.mock_session_manager = Mock(spec=MCPSessionManager)
+    self.mock_session = AsyncMock()
+    self.mock_session_manager.create_session = AsyncMock(
+        return_value=self.mock_session
+    )
 
   def test_get_declaration_with_json_schema_for_func_decl_enabled(self):
     """Test function declaration generation with json schema for func decl enabled."""
@@ -201,6 +178,67 @@ class TestMCPTool:
 
     assert declaration.response is None
     assert not declaration.response_json_schema
+
+
+class TestMCPTool:
+  """Test suite for MCPTool class."""
+
+  def setup_method(self):
+    """Set up test fixtures."""
+    self.mock_mcp_tool = MockMCPTool()
+    self.mock_session_manager = Mock(spec=MCPSessionManager)
+    self.mock_session = AsyncMock()
+    self.mock_session_manager.create_session = AsyncMock(
+        return_value=self.mock_session
+    )
+
+  def test_init_basic(self):
+    """Test basic initialization without auth."""
+    tool = MCPTool(
+        mcp_tool=self.mock_mcp_tool,
+        mcp_session_manager=self.mock_session_manager,
+    )
+
+    assert tool.name == "test_tool"
+    assert tool.description == "Test tool description"
+    assert tool._mcp_tool == self.mock_mcp_tool
+    assert tool._mcp_session_manager == self.mock_session_manager
+
+  def test_init_with_auth(self):
+    """Test initialization with authentication."""
+    # Create real auth scheme instances instead of mocks
+    from fastapi.openapi.models import OAuth2
+
+    auth_scheme = OAuth2(flows={})
+    auth_credential = AuthCredential(
+        auth_type=AuthCredentialTypes.OAUTH2,
+        oauth2=OAuth2Auth(client_id="test_id", client_secret="test_secret"),
+    )
+
+    tool = MCPTool(
+        mcp_tool=self.mock_mcp_tool,
+        mcp_session_manager=self.mock_session_manager,
+        auth_scheme=auth_scheme,
+        auth_credential=auth_credential,
+    )
+
+    # The auth config is stored in the parent class _credentials_manager
+    assert tool._credentials_manager is not None
+    assert tool._credentials_manager._auth_config.auth_scheme == auth_scheme
+    assert (
+        tool._credentials_manager._auth_config.raw_auth_credential
+        == auth_credential
+    )
+
+  def test_init_with_empty_description(self):
+    """Test initialization with empty description."""
+    mock_tool = MockMCPTool(description=None)
+    tool = MCPTool(
+        mcp_tool=mock_tool,
+        mcp_session_manager=self.mock_session_manager,
+    )
+
+    assert tool.description == ""
 
   @pytest.mark.asyncio
   async def test_run_async_impl_no_auth(self):

@@ -110,6 +110,7 @@ class TestResolveToolsetAuth:
     ctx.credential_service = None
     ctx.app_name = "test-app"
     ctx.user_id = "test-user"
+    ctx.credential_by_key = {}
     return ctx
 
   @pytest.fixture
@@ -154,10 +155,10 @@ class TestResolveToolsetAuth:
     assert mock_invocation_context.end_invocation is False
 
   @pytest.mark.asyncio
-  async def test_toolset_with_credential_available_populates_config(
+  async def test_toolset_with_credential_available_populates_context(
       self, mock_invocation_context, mock_agent
   ):
-    """Test that credential is populated in auth_config when available."""
+    """Test that credential is stored in invocation context when available."""
     auth_config = create_oauth2_auth_config()
     toolset = MockToolset(auth_config=auth_config)
     mock_agent.tools = [toolset]
@@ -184,8 +185,52 @@ class TestResolveToolsetAuth:
     # No auth request events - credential was available
     assert len(events) == 0
     assert mock_invocation_context.end_invocation is False
-    # Credential should be populated in auth_config
-    assert auth_config.exchanged_auth_credential == mock_credential
+    # Credential should be stored in invocation context, not auth_config
+    assert (
+        mock_invocation_context.credential_by_key[auth_config.credential_key]
+        == mock_credential
+    )
+    assert auth_config.exchanged_auth_credential is None
+
+  @pytest.mark.asyncio
+  async def test_toolset_auth_uses_copy_and_does_not_mutate_shared_config(
+      self, mock_invocation_context, mock_agent
+  ):
+    """Test that _resolve_toolset_auth uses a copy and does not mutate shared config."""
+    auth_config = create_oauth2_auth_config()
+    toolset = MockToolset(auth_config=auth_config)
+    mock_agent.tools = [toolset]
+
+    def create_mock_cm(cfg):
+      m = AsyncMock()
+      m._auth_config = cfg
+
+      async def get_cred(ctx):
+        cfg.exchanged_auth_credential = AuthCredential(
+            auth_type=AuthCredentialTypes.OAUTH2,
+            oauth2=OAuth2Auth(auth_uri="https://example.com/consent"),
+        )
+        return None
+
+      m.get_auth_credential = AsyncMock(side_effect=get_cred)
+      return m
+
+    with patch(
+        "google.adk.flows.llm_flows.base_llm_flow.CredentialManager",
+        side_effect=create_mock_cm,
+    ):
+      events = []
+      async for event in _resolve_toolset_auth(
+          mock_invocation_context, mock_agent
+      ):
+        events.append(event)
+
+    # Should yield one auth request event
+    assert len(events) == 1
+    assert mock_invocation_context.end_invocation is True
+
+    # The shared auth_config should NOT be mutated
+    assert auth_config.exchanged_auth_credential is None
 
   @pytest.mark.asyncio
   async def test_toolset_without_credential_yields_auth_event(

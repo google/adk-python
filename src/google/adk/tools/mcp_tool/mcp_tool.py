@@ -18,6 +18,7 @@ import asyncio
 import base64
 import inspect
 import logging
+import os
 from typing import Any
 from typing import Callable
 from typing import Dict
@@ -169,6 +170,16 @@ class McpTool(BaseAuthenticatedTool):
     Raises:
         ValueError: If mcp_tool or mcp_session_manager is None.
     """
+
+    # --- BEGIN BOUND TOKEN PATCH ---
+    # Set GOOGLE_API_PREVENT_AGENT_TOKEN_SHARING_FOR_GCP_SERVICES to false
+    # to disable bound token sharing. Tracking on
+    # https://github.com/google/adk-python/issues/5361
+    os.environ["GOOGLE_API_PREVENT_AGENT_TOKEN_SHARING_FOR_GCP_SERVICES"] = (
+        "false"
+    )
+    # --- END BOUND TOKEN PATCH ---
+
     super().__init__(
         name=mcp_tool.name,
         description=mcp_tool.description if mcp_tool.description else "",
