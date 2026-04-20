@@ -26,6 +26,33 @@ from typing import Optional
 from .path_normalizer import sanitize_generated_file_path
 
 
+def _validate_root_directory(root_directory: str) -> None:
+  """Validate that root_directory from session state is safe to use.
+
+  Rejects values that could redirect file operations outside the project root.
+
+  Args:
+    root_directory: The root_directory value from session state.
+
+  Raises:
+    ValueError: If root_directory contains unsafe path components.
+  """
+  if not root_directory:
+    return
+  if Path(root_directory).is_absolute():
+    raise ValueError(
+        f'root_directory must be a relative path, got: {root_directory!r}'
+    )
+  if any(c in root_directory for c in ['\x00', '\\']):
+    raise ValueError(
+        f'root_directory contains invalid characters: {root_directory!r}'
+    )
+  if any(part == '..' for part in Path(root_directory).parts):
+    raise ValueError(
+        f"root_directory must not contain '..': {root_directory!r}"
+    )
+
+
 def resolve_file_path(
     file_path: str,
     session_state: Optional[Dict[str, Any]] = None,
@@ -43,32 +70,42 @@ def resolve_file_path(
 
   Returns:
     Resolved absolute Path object
+
+  Raises:
+    ValueError: If the resolved path escapes the project root.
   """
   normalized_path = sanitize_generated_file_path(file_path)
   file_path_obj = Path(normalized_path)
 
-  # If already absolute, use as-is
-  if file_path_obj.is_absolute():
-    return file_path_obj
-
   # Get root directory from session state, default to "./"
-  root_directory = "./"
-  if session_state and "root_directory" in session_state:
-    root_directory = session_state["root_directory"]
+  root_directory = './'
+  if session_state and 'root_directory' in session_state:
+    root_directory = session_state['root_directory']
+    _validate_root_directory(root_directory)
 
-  # Use the same resolution logic as the main function
+  # Compute the resolved root as an absolute path
   root_path_obj = Path(root_directory)
-
-  if root_path_obj.is_absolute():
-    resolved_root = root_path_obj
+  if working_directory:
+    resolved_root = (Path(working_directory) / root_path_obj).resolve()
   else:
-    if working_directory:
-      resolved_root = Path(working_directory) / root_directory
-    else:
-      resolved_root = Path(os.getcwd()) / root_directory
+    resolved_root = (Path(os.getcwd()) / root_path_obj).resolve()
 
-  # Resolve file path relative to root directory
-  return resolved_root / file_path_obj
+  # Resolve the candidate path
+  if file_path_obj.is_absolute():
+    candidate = file_path_obj.resolve()
+  else:
+    candidate = (resolved_root / file_path_obj).resolve()
+
+  # Enforce boundary: reject paths that escape the project root
+  try:
+    candidate.relative_to(resolved_root)
+  except ValueError as e:
+    raise ValueError(
+        f'Path {file_path!r} resolves outside project root'
+        f' {resolved_root!r}'
+    ) from e
+
+  return candidate
 
 
 def resolve_file_paths(

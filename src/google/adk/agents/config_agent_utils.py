@@ -220,6 +220,13 @@ def resolve_code_reference(code_config: CodeConfig) -> Any:
   obj = getattr(module, obj_name)
 
   if code_config.args and callable(obj):
+    if not inspect.isclass(obj):
+      raise ValueError(
+          f"Code reference '{code_config.name}' is not a class constructor."
+          " Only class constructors may be invoked with 'args' in YAML config."
+          " Plain functions and built-ins cannot be called with args here."
+          " Remove 'args' from the config, or reference a class instead."
+      )
     kwargs = {arg.name: arg.value for arg in code_config.args if arg.name}
     positional_args = [arg.value for arg in code_config.args if not arg.name]
 
