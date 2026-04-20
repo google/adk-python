@@ -37,7 +37,7 @@ LABEL_TO_OWNER = {
     "models": "xuanyang15",
     "services": "DeanChensj",
     "tools": "xuanyang15",
-    "tracing": "jawoszek",
+    "tracing": "mhenc",
     "web": "wyf7107",
     "workflow": "DeanChensj",
 }

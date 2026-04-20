@@ -28,6 +28,7 @@ from pydantic import PrivateAttr
 from ..apps.app import EventsCompactionConfig
 from ..apps.app import ResumabilityConfig
 from ..artifacts.base_artifact_service import BaseArtifactService
+from ..auth.auth_credential import AuthCredential
 from ..auth.credential_service.base_credential_service import BaseCredentialService
 from ..events.event import Event
 from ..memory.base_memory_service import BaseMemoryService
@@ -213,6 +214,9 @@ class InvocationContext(BaseModel):
 
   canonical_tools_cache: Optional[list[BaseTool]] = None
   """The cache of canonical tools for this invocation."""
+
+  credential_by_key: dict[str, AuthCredential] = Field(default_factory=dict)
+  """The resolved credentials for this invocation, keyed by credential_key."""
 
   _invocation_cost_manager: _InvocationCostManager = PrivateAttr(
       default_factory=_InvocationCostManager
