@@ -18,6 +18,7 @@ from abc import ABC
 import asyncio
 import inspect
 import logging
+import sys
 from typing import AsyncGenerator
 from typing import Optional
 from typing import TYPE_CHECKING
@@ -143,10 +144,11 @@ async def _resolve_toolset_auth(
     if not auth_config:
       continue
 
+    auth_config_copy = auth_config.model_copy(deep=True)
     try:
-      credential = await CredentialManager(auth_config).get_auth_credential(
-          callback_context
-      )
+      credential = await CredentialManager(
+          auth_config_copy
+      ).get_auth_credential(callback_context)
     except ValueError as e:
       # Validation errors from CredentialManager should be logged but not
       # block the flow - the toolset may still work without auth
@@ -158,14 +160,16 @@ async def _resolve_toolset_auth(
       credential = None
 
     if credential:
-      # Populate in-place for toolset to use in get_tools()
-      auth_config.exchanged_auth_credential = credential
+      # Store in invocation context to avoid data leakage and race conditions
+      invocation_context.credential_by_key[auth_config.credential_key] = (
+          credential
+      )
     else:
       # Need auth - will interrupt
       toolset_id = (
           f'{TOOLSET_AUTH_CREDENTIAL_ID_PREFIX}{type(tool_union).__name__}'
       )
-      pending_auth_requests[toolset_id] = auth_config
+      pending_auth_requests[toolset_id] = auth_config_copy
 
   if not pending_auth_requests:
     return
@@ -1165,7 +1169,9 @@ class BaseLlmFlow(ABC):
   ) -> AsyncGenerator[LlmResponse, None]:
 
     async def _call_llm_with_tracing() -> AsyncGenerator[LlmResponse, None]:
-      with tracer.start_as_current_span('call_llm') as span:
+      cm = tracer.start_as_current_span('call_llm')
+      span = cm.__enter__()
+      try:
         # Runs before_model_callback inside the call_llm span so
         # plugins observe the same span as after/error callbacks.
         if response := await self._handle_before_model_callback(
@@ -1258,6 +1264,23 @@ class BaseLlmFlow(ABC):
                   llm_response = altered
 
               yield llm_response
+      except BaseException:
+        try:
+          cm.__exit__(*sys.exc_info())
+        except ValueError:
+          logger.warning(
+              'Failed to detach context during generator cleanup, likely due to'
+              ' cancellation.'
+          )
+        raise
+      else:
+        try:
+          cm.__exit__(None, None, None)
+        except ValueError:
+          logger.warning(
+              'Failed to detach context during generator cleanup, likely due to'
+              ' cancellation.'
+          )
 
     async with Aclosing(_call_llm_with_tracing()) as agen:
       async for event in agen:
