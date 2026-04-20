@@ -626,7 +626,7 @@ class EvaluationGenerator:
     invocations = []
     for invocation_id, events in events_by_invocation_id.items():
       final_response = None
-      final_event = None
+      final_event: Optional[Event] = None
       user_content = Content(parts=[])
       invocation_timestamp = 0
       app_details = None
@@ -666,7 +666,7 @@ class EvaluationGenerator:
       invocation_events = [
           InvocationEvent(author=e.author, content=e.content)
           for e in events_to_add
-          if e is not final_event or e.get_function_calls()
+          if final_event is None or e is not final_event or e.get_function_calls()
       ]
       invocations.append(
           Invocation(
