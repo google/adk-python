@@ -556,8 +556,11 @@ def _safe_json_serialize(obj) -> str:
   try:
     # Try direct JSON serialization first
     return json.dumps(obj, ensure_ascii=False)
-  except (TypeError, ValueError, OverflowError):
-    return str(obj)
+  except (TypeError, OverflowError, ValueError, RecursionError):
+    try:
+      return str(obj)
+    except RecursionError:
+      return '<non-serializable: recursion depth exceeded>'
 
 
 def _part_has_payload(part: types.Part) -> bool:
