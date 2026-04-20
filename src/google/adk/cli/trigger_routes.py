@@ -208,6 +208,22 @@ class TriggerResponse(BaseModel):
   )
 
 
+def _make_trigger_user_id(
+    raw_value: Optional[str],
+    *,
+    default: str,
+) -> str:
+  """Normalize trigger metadata into a session-safe user_id."""
+  if not raw_value:
+    return default
+
+  normalized = raw_value.strip().strip("/")
+  if not normalized:
+    return default
+
+  return normalized.replace("/", "--")
+
+
 # ---------------------------------------------------------------------------
 # Trigger Router
 # ---------------------------------------------------------------------------
@@ -411,7 +427,9 @@ class TriggerRouter:
       async def trigger_pubsub(
           app_name: str, req: PubSubTriggerRequest, request: Request
       ) -> TriggerResponse:
-        user_id = req.subscription or "pubsub-caller"
+        user_id = _make_trigger_user_id(
+            req.subscription, default="pubsub-caller"
+        )
 
         decoded_data = None
         data_payload = None
@@ -477,8 +495,9 @@ class TriggerRouter:
           app_name: str, req: EventarcTriggerRequest, request: Request
       ) -> TriggerResponse:
 
-        user_id = (
-            req.source or request.headers.get("ce-source") or "eventarc-caller"
+        user_id = _make_trigger_user_id(
+            req.source or request.headers.get("ce-source"),
+            default="eventarc-caller",
         )
 
         logger.info(

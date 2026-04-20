@@ -423,6 +423,24 @@ class TestTriggerPubSub:
 
     assert resp.status_code == 200
 
+  def test_subscription_user_id_is_path_safe(
+      self, client, mock_session_service
+  ):
+    """Pub/Sub subscription-derived user_id is stored without slashes."""
+    message_data = base64.b64encode(b"test").decode("utf-8")
+    payload = {
+        "message": {"data": message_data},
+        "subscription": "projects/p/subscriptions/orders-sub",
+    }
+
+    resp = client.post("/apps/test_app/trigger/pubsub", json=payload)
+
+    assert resp.status_code == 200
+    assert (
+        "projects--p--subscriptions--orders-sub"
+        in mock_session_service.sessions["test_app"]
+    )
+
   def test_unknown_app_fails_early(
       self, client, mock_agent_loader, mock_session_service
   ):
@@ -512,6 +530,25 @@ class TestTriggerEventarc:
         headers={"ce-source": "header-source"},
     )
     assert resp.status_code == 200
+
+  def test_eventarc_source_user_id_is_path_safe(
+      self, client, mock_session_service
+  ):
+    """Eventarc ce-source-derived user_id is stored without slashes."""
+    payload = {
+        "data": {"key": "value"},
+    }
+    resp = client.post(
+        "/apps/test_app/trigger/eventarc",
+        json=payload,
+        headers={"ce-source": "//pubsub.googleapis.com/projects/p/topics/t"},
+    )
+
+    assert resp.status_code == 200
+    assert (
+        "pubsub.googleapis.com--projects--p--topics--t"
+        in mock_session_service.sessions["test_app"]
+    )
 
   def test_complex_event_data(self, client, monkeypatch):
     """Complex nested event data is serialized as JSON for the agent."""
