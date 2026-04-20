@@ -25,6 +25,8 @@ import os
 from pathlib import Path
 import tempfile
 import textwrap
+from typing import Any
+from typing import Literal
 from typing import Optional
 
 import click
@@ -2094,9 +2096,8 @@ def cli_migrate_session(
   logs.setup_adk_logger(getattr(logging, log_level.upper()))
   try:
     from ..sessions.migration import migration_runner
-    migration_runner.upgrade(
-        source_db_url, dest_db_url, force_untrusted_source
-    )
+
+    migration_runner.upgrade(source_db_url, dest_db_url, force_untrusted_source)
     click.secho("Migration check and upgrade process finished.", fg="green")
   except Exception as e:
     click.secho(f"Migration failed: {e}", fg="red", err=True)
@@ -2482,14 +2483,14 @@ def cli_deploy_gke(
     otel_to_cloud: bool,
     with_ui: bool,
     adk_version: str,
-    service_type: str,
-    log_level: Optional[str] = None,
+    service_type: Literal["ClusterIP", "NodePort", "LoadBalancer"],
+    log_level: str = "INFO",
     session_service_uri: Optional[str] = None,
     artifact_service_uri: Optional[str] = None,
     memory_service_uri: Optional[str] = None,
     use_local_storage: bool = False,
     trigger_sources: Optional[str] = None,
-):
+) -> None:
   """Deploys an agent to GKE.
 
   AGENT: The path to the agent source code folder.

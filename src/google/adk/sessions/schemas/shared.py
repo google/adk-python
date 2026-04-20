@@ -15,14 +15,13 @@ from __future__ import annotations
 
 import json
 
+from google.adk.utils import serialization_utils
 from sqlalchemy import Dialect
 from sqlalchemy import Text
 from sqlalchemy.dialects import mysql
 from sqlalchemy.dialects import postgresql
 from sqlalchemy.types import DateTime
 from sqlalchemy.types import TypeDecorator
-
-from google.adk.utils import serialization_utils
 
 DEFAULT_MAX_KEY_LENGTH = 128
 DEFAULT_MAX_VARCHAR_LENGTH = 256

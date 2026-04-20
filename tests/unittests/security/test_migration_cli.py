@@ -14,8 +14,10 @@
 
 import unittest
 from unittest import mock
+
 from click.testing import CliRunner
 from google.adk.cli.cli_tools_click import main
+
 
 class TestMigrationCLISecurity(unittest.TestCase):
 
@@ -26,13 +28,19 @@ class TestMigrationCLISecurity(unittest.TestCase):
     """Verifies that the CLI blocks migration from a remote IP source."""
     # Using an external IP address
     untrusted_url = "sqlite://1.2.3.4/malicious.db"
-    
-    result = self.runner.invoke(main, [
-        "migrate", "session",
-        "--source_db_url", untrusted_url,
-        "--dest_db_url", "sqlite:///local.db"
-    ])
-    
+
+    result = self.runner.invoke(
+        main,
+        [
+            "migrate",
+            "session",
+            "--source_db_url",
+            untrusted_url,
+            "--dest_db_url",
+            "sqlite:///local.db",
+        ],
+    )
+
     self.assertNotEqual(result.exit_code, 0)
     self.assertIn("Untrusted source database URL detected", result.output)
     self.assertIn("--force-untrusted-source", result.output)
@@ -41,13 +49,19 @@ class TestMigrationCLISecurity(unittest.TestCase):
     """Verifies that the CLI blocks migration from a Windows UNC path."""
     # Using a Windows UNC path (Samba style)
     untrusted_url = "sqlite:///\\\\192.168.1.90\\lab_share\\malicious.db"
-    
-    result = self.runner.invoke(main, [
-        "migrate", "session",
-        "--source_db_url", untrusted_url,
-        "--dest_db_url", "sqlite:///local.db"
-    ])
-    
+
+    result = self.runner.invoke(
+        main,
+        [
+            "migrate",
+            "session",
+            "--source_db_url",
+            untrusted_url,
+            "--dest_db_url",
+            "sqlite:///local.db",
+        ],
+    )
+
     self.assertNotEqual(result.exit_code, 0)
     self.assertIn("Untrusted source database URL detected", result.output)
 
@@ -55,13 +69,19 @@ class TestMigrationCLISecurity(unittest.TestCase):
   def test_migrate_session_allows_localhost(self, mock_upgrade):
     """Verifies that localhost URLs are trusted by default."""
     trusted_url = "sqlite:///local.db"
-    
-    result = self.runner.invoke(main, [
-        "migrate", "session",
-        "--source_db_url", trusted_url,
-        "--dest_db_url", "sqlite:///dest.db"
-    ])
-    
+
+    result = self.runner.invoke(
+        main,
+        [
+            "migrate",
+            "session",
+            "--source_db_url",
+            trusted_url,
+            "--dest_db_url",
+            "sqlite:///dest.db",
+        ],
+    )
+
     # It should call upgrade (we mock it call because we don't want to run real migration)
     mock_upgrade.assert_called_once()
     self.assertEqual(result.exit_code, 0)
@@ -70,17 +90,24 @@ class TestMigrationCLISecurity(unittest.TestCase):
   def test_migrate_session_force_flag_works(self, mock_upgrade):
     """Verifies that the --force-untrusted-source flag bypasses the block."""
     untrusted_url = "sqlite://8.8.8.8/remote.db"
-    
-    result = self.runner.invoke(main, [
-        "migrate", "session",
-        "--source_db_url", untrusted_url,
-        "--dest_db_url", "sqlite:///local.db",
-        "--force-untrusted-source"
-    ])
-    
+
+    result = self.runner.invoke(
+        main,
+        [
+            "migrate",
+            "session",
+            "--source_db_url",
+            untrusted_url,
+            "--dest_db_url",
+            "sqlite:///local.db",
+            "--force-untrusted-source",
+        ],
+    )
+
     # Should call upgrade with force_untrusted_source=True
     mock_upgrade.assert_called_with(untrusted_url, "sqlite:///local.db", True)
     self.assertEqual(result.exit_code, 0)
+
 
 if __name__ == "__main__":
   unittest.main()

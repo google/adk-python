@@ -1983,7 +1983,7 @@ def test_builder_get_tmp_true_recreates_tmp(builder_test_client, tmp_path):
   assert not (app_root / "tmp").exists()
   response = builder_test_client.get("/builder/app/app?tmp=true")
   assert response.status_code == 200
-  assert response.text == "name: app\n"
+  assert response.text.replace("\r\n", "\n") == "name: app\n"
 
   tmp_agent_root = app_root / "tmp" / "app"
   assert (tmp_agent_root / "root_agent.yaml").is_file()
@@ -1993,7 +1993,7 @@ def test_builder_get_tmp_true_recreates_tmp(builder_test_client, tmp_path):
       "/builder/app/app?tmp=true&file_path=nested/nested.yaml"
   )
   assert response.status_code == 200
-  assert response.text == "nested: true\n"
+  assert response.text.replace("\r\n", "\n") == "nested: true\n"
 
 
 def test_builder_get_tmp_true_missing_app_returns_empty(
@@ -2140,11 +2140,11 @@ def test_builder_get_allows_yaml_file_paths(builder_test_client, tmp_path):
       "/builder/app/app?file_path=sub_agent.yaml"
   )
   assert response.status_code == 200
-  assert response.text == "name: sub\n"
+  assert response.text.replace("\r\n", "\n") == "name: sub\n"
 
   response = builder_test_client.get("/builder/app/app?file_path=tool.yml")
   assert response.status_code == 200
-  assert response.text == "name: tool\n"
+  assert response.text.replace("\r\n", "\n") == "name: tool\n"
 
 
 def test_builder_endpoints_not_registered_without_web(

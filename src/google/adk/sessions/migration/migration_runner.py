@@ -41,7 +41,7 @@ MIGRATIONS = {
 }
 # The most recent schema version. The migration process stops once this version
 # is reached.
-#Reached.
+# Reached.
 LATEST_VERSION = _schema_check_utils.LATEST_SCHEMA_VERSION
 
 

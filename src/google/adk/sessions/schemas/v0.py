@@ -57,6 +57,7 @@ from .. import _session_util
 from ...events.event import Event
 from ...events.event_actions import EventActions
 from ..session import Session
+from .shared import DEFAULT_MAX_KEY_LENGTH
 from .shared import DEFAULT_MAX_VARCHAR_LENGTH
 from .shared import DynamicJSON
 from .shared import JsonEncodedType
@@ -87,8 +88,6 @@ def _truncate_str(value: Optional[str], max_length: int) -> Optional[str]:
     )
     return truncated
   return value
-
-
 
 
 class Base(DeclarativeBase):

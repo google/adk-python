@@ -14,6 +14,8 @@
 
 """Utilities for secure serialization and deserialization."""
 
+from __future__ import annotations
+
 import hashlib
 import hmac
 import os
