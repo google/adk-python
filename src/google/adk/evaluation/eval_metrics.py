@@ -115,19 +115,6 @@ class BaseCriterion(BaseModel):
       description="The threshold to be used by the metric.",
   )
 
-  include_intermediate_responses_in_final: bool = Field(
-      default=False,
-      description=(
-          "Whether to evaluate the full agent response including intermediate"
-          " natural language text (e.g. text emitted before tool calls) in"
-          " addition to the final response. By default, only the final"
-          " response text is sent to the judge. When True, text from all"
-          " intermediate invocation events is concatenated with the final"
-          " response before evaluation. This is useful for agents that emit"
-          " text both before and after tool calls within a single invocation."
-      ),
-  )
-
 
 class LlmAsAJudgeCriterion(BaseCriterion):
   """Criterion when using LLM-As-A-Judge metric."""
