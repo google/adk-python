@@ -3259,8 +3259,49 @@ class TestResolveIds:
     assert span_id == "span-1"
     assert parent_id == "parent-1"
 
-  def test_ambient_otel_span_takes_priority(self, callback_context):
-    """When an ambient OTel span is valid, its IDs take priority."""
+  def test_ambient_provides_trace_id_only_when_stack_present(
+      self, callback_context
+  ):
+    """Plugin stack owns span_id/parent; ambient only provides trace_id."""
+    from opentelemetry.sdk.trace import TracerProvider as SdkProvider
+    from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+    from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
+
+    provider = SdkProvider()
+    provider.add_span_processor(SimpleSpanProcessor(InMemorySpanExporter()))
+    real_tracer = provider.get_tracer("test")
+
+    ed = bigquery_agent_analytics_plugin.EventData()
+
+    with real_tracer.start_as_current_span("invocation") as parent_span:
+      with real_tracer.start_as_current_span("agent") as agent_span:
+        ambient_ctx = agent_span.get_span_context()
+        expected_trace = format(ambient_ctx.trace_id, "032x")
+
+        # Plugin stack has spans — these should win for span/parent.
+        with (
+            mock.patch.object(
+                bigquery_agent_analytics_plugin.TraceManager,
+                "get_current_span_and_parent",
+                return_value=("plugin-span", "plugin-parent"),
+            ),
+            mock.patch.object(
+                bigquery_agent_analytics_plugin.TraceManager,
+                "get_trace_id",
+                return_value="plugin-trace",
+            ),
+        ):
+          trace_id, span_id, parent_id = self._resolve(ed, callback_context)
+
+    # trace_id comes from ambient OTel.
+    assert trace_id == expected_trace
+    # span_id and parent_span_id come from plugin stack.
+    assert span_id == "plugin-span"
+    assert parent_id == "plugin-parent"
+    provider.shutdown()
+
+  def test_ambient_fallback_when_no_plugin_stack(self, callback_context):
+    """Ambient OTel provides span_id/parent when plugin stack is empty."""
     from opentelemetry.sdk.trace import TracerProvider as SdkProvider
     from opentelemetry.sdk.trace.export import SimpleSpanProcessor
     from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
@@ -3278,7 +3319,20 @@ class TestResolveIds:
         expected_span = format(ambient_ctx.span_id, "016x")
         expected_parent = format(parent_span.get_span_context().span_id, "016x")
 
-        trace_id, span_id, parent_id = self._resolve(ed, callback_context)
+        # Plugin stack returns None — ambient is the fallback.
+        with (
+            mock.patch.object(
+                bigquery_agent_analytics_plugin.TraceManager,
+                "get_current_span_and_parent",
+                return_value=(None, None),
+            ),
+            mock.patch.object(
+                bigquery_agent_analytics_plugin.TraceManager,
+                "get_trace_id",
+                return_value=None,
+            ),
+        ):
+          trace_id, span_id, parent_id = self._resolve(ed, callback_context)
 
     assert trace_id == expected_trace
     assert span_id == expected_span
@@ -3309,8 +3363,8 @@ class TestResolveIds:
     assert parent_id == "forced-parent"
     provider.shutdown()
 
-  def test_ambient_root_span_no_self_parent(self, callback_context):
-    """Ambient root span (no parent) must not produce self-parent."""
+  def test_plugin_stack_wins_over_ambient_root_span(self, callback_context):
+    """Plugin stack span is used even when ambient root span exists."""
     from opentelemetry.sdk.trace import TracerProvider as SdkProvider
     from opentelemetry.sdk.trace.export import SimpleSpanProcessor
     from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
@@ -3319,7 +3373,7 @@ class TestResolveIds:
     provider.add_span_processor(SimpleSpanProcessor(InMemorySpanExporter()))
     real_tracer = provider.get_tracer("test")
 
-    # Seed the plugin stack with a span so there's a stale parent.
+    # Seed the plugin stack with a span.
     bigquery_agent_analytics_plugin._span_records_ctx.set(None)
     with mock.patch.object(
         bigquery_agent_analytics_plugin, "tracer", real_tracer
@@ -3328,29 +3382,68 @@ class TestResolveIds:
           callback_context, "plugin-child"
       )
 
+    # Capture the plugin span_id that was pushed.
+    plugin_span_id, _ = (
+        bigquery_agent_analytics_plugin.TraceManager.get_current_span_and_parent()
+    )
+
     ed = bigquery_agent_analytics_plugin.EventData()
 
     # Single root ambient span — no parent.
     with real_tracer.start_as_current_span("root_invocation") as root:
       trace_id, span_id, parent_id = self._resolve(ed, callback_context)
-      root_span_id = format(root.get_span_context().span_id, "016x")
+      ambient_trace = format(root.get_span_context().trace_id, "032x")
 
-    # span_id should be the ambient root's span_id
-    assert span_id == root_span_id
-    # parent must be None — not the stale plugin parent, not self
+    # trace_id comes from ambient.
+    assert trace_id == ambient_trace
+    # span_id comes from plugin stack, not ambient.
+    assert span_id == plugin_span_id
+    # parent is None — only one span in plugin stack.
     assert parent_id is None
-    assert span_id != parent_id
 
     # Cleanup
     bigquery_agent_analytics_plugin.TraceManager.pop_span()
     provider.shutdown()
 
-  def test_ambient_span_used_for_completed_event(self, callback_context):
-    """Completed event with overrides should use ambient when present.
+  def test_ambient_root_fallback_no_self_parent(self, callback_context):
+    """Ambient root span fallback must not produce self-parent."""
+    from opentelemetry.sdk.trace import TracerProvider as SdkProvider
+    from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+    from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 
-    When an ambient OTel span is valid, passing None overrides lets
-    _resolve_ids Layer 2 pick the ambient span — matching the
-    STARTING event's span_id.
+    provider = SdkProvider()
+    provider.add_span_processor(SimpleSpanProcessor(InMemorySpanExporter()))
+    real_tracer = provider.get_tracer("test")
+
+    ed = bigquery_agent_analytics_plugin.EventData()
+
+    # Plugin stack empty — ambient provides the fallback.
+    with (
+        mock.patch.object(
+            bigquery_agent_analytics_plugin.TraceManager,
+            "get_current_span_and_parent",
+            return_value=(None, None),
+        ),
+        mock.patch.object(
+            bigquery_agent_analytics_plugin.TraceManager,
+            "get_trace_id",
+            return_value=None,
+        ),
+    ):
+      with real_tracer.start_as_current_span("root") as root:
+        trace_id, span_id, parent_id = self._resolve(ed, callback_context)
+        root_span_id = format(root.get_span_context().span_id, "016x")
+
+    assert span_id == root_span_id
+    assert parent_id is None
+    provider.shutdown()
+
+  def test_plugin_stack_pairs_starting_completed(self, callback_context):
+    """STARTING/COMPLETED pairing uses plugin stack, not ambient.
+
+    Post-pop callbacks now always pass explicit overrides from the
+    plugin stack.  The plugin stack span_id is used for both events
+    regardless of ambient OTel state.
     """
     from opentelemetry.sdk.trace import TracerProvider as SdkProvider
     from opentelemetry.sdk.trace.export import SimpleSpanProcessor
@@ -3360,23 +3453,33 @@ class TestResolveIds:
     provider.add_span_processor(SimpleSpanProcessor(InMemorySpanExporter()))
     real_tracer = provider.get_tracer("test")
 
-    with real_tracer.start_as_current_span("invoke_agent") as agent_span:
-      expected_span = format(agent_span.get_span_context().span_id, "016x")
+    with real_tracer.start_as_current_span("invoke_agent"):
+      # Simulate STARTING: plugin stack provides span_id.
+      with (
+          mock.patch.object(
+              bigquery_agent_analytics_plugin.TraceManager,
+              "get_current_span_and_parent",
+              return_value=("plugin-agent", "plugin-inv"),
+          ),
+          mock.patch.object(
+              bigquery_agent_analytics_plugin.TraceManager,
+              "get_trace_id",
+              return_value="plugin-trace",
+          ),
+      ):
+        ed_starting = bigquery_agent_analytics_plugin.EventData()
+        _, span_starting, _ = self._resolve(ed_starting, callback_context)
 
-      # Simulate STARTING: no overrides → ambient Layer 2 wins.
-      ed_starting = bigquery_agent_analytics_plugin.EventData()
-      _, span_starting, _ = self._resolve(ed_starting, callback_context)
-
-      # Simulate COMPLETED: None overrides (ambient check passed).
+      # Simulate COMPLETED: explicit override from popped span.
       ed_completed = bigquery_agent_analytics_plugin.EventData(
-          span_id_override=None,
-          parent_span_id_override=None,
+          span_id_override="plugin-agent",
+          parent_span_id_override="plugin-inv",
           latency_ms=42,
       )
       _, span_completed, _ = self._resolve(ed_completed, callback_context)
 
-      assert span_starting == expected_span
-      assert span_completed == expected_span
+      assert span_starting == "plugin-agent"
+      assert span_completed == "plugin-agent"
       assert span_starting == span_completed
 
     provider.shutdown()
@@ -4485,6 +4588,228 @@ class TestToolProvenance:
     tool = TransferToAgentTool(agent_names=["other"])
     result = bigquery_agent_analytics_plugin._get_tool_origin(tool)
     assert result == "TRANSFER_AGENT"
+
+  def test_transfer_tool_without_args_returns_transfer_agent(self):
+    """TransferToAgentTool without tool_args falls back to TRANSFER_AGENT."""
+    from google.adk.tools.transfer_to_agent_tool import TransferToAgentTool
+
+    tool = TransferToAgentTool(agent_names=["remote_a2a"])
+    result = bigquery_agent_analytics_plugin._get_tool_origin(
+        tool, tool_args=None, tool_context=None
+    )
+    assert result == "TRANSFER_AGENT"
+
+  def test_transfer_to_remote_a2a_sub_agent_returns_transfer_a2a(self):
+    """Transfer to a RemoteA2aAgent sub-agent is classified TRANSFER_A2A."""
+    from google.adk.tools.transfer_to_agent_tool import TransferToAgentTool
+
+    try:
+      from google.adk.agents.remote_a2a_agent import RemoteA2aAgent
+    except ImportError:
+      pytest.skip("A2A agent not available")
+
+    remote_agent = mock.MagicMock(spec=RemoteA2aAgent)
+    remote_agent.name = "remote_a2a"
+
+    current_agent = mock.MagicMock()
+    current_agent.name = "root"
+    current_agent.sub_agents = [remote_agent]
+    current_agent.parent_agent = None
+
+    inv_ctx = mock.MagicMock()
+    inv_ctx.agent = current_agent
+    tool_context = mock.MagicMock()
+    tool_context._invocation_context = inv_ctx
+
+    tool = TransferToAgentTool(agent_names=["remote_a2a"])
+    result = bigquery_agent_analytics_plugin._get_tool_origin(
+        tool,
+        tool_args={"agent_name": "remote_a2a"},
+        tool_context=tool_context,
+    )
+    assert result == "TRANSFER_A2A"
+
+  def test_transfer_to_local_sub_agent_returns_transfer_agent(self):
+    """Transfer to a local sub-agent is still classified TRANSFER_AGENT."""
+    from google.adk.tools.transfer_to_agent_tool import TransferToAgentTool
+
+    local_agent = mock.MagicMock()
+    local_agent.name = "local_sub"
+
+    current_agent = mock.MagicMock()
+    current_agent.name = "root"
+    current_agent.sub_agents = [local_agent]
+    current_agent.parent_agent = None
+
+    inv_ctx = mock.MagicMock()
+    inv_ctx.agent = current_agent
+    tool_context = mock.MagicMock()
+    tool_context._invocation_context = inv_ctx
+
+    tool = TransferToAgentTool(agent_names=["local_sub"])
+    result = bigquery_agent_analytics_plugin._get_tool_origin(
+        tool,
+        tool_args={"agent_name": "local_sub"},
+        tool_context=tool_context,
+    )
+    assert result == "TRANSFER_AGENT"
+
+  def test_transfer_to_a2a_peer_returns_transfer_a2a(self):
+    """Transfer to a RemoteA2aAgent peer is classified TRANSFER_A2A."""
+    from google.adk.tools.transfer_to_agent_tool import TransferToAgentTool
+
+    try:
+      from google.adk.agents.remote_a2a_agent import RemoteA2aAgent
+    except ImportError:
+      pytest.skip("A2A agent not available")
+
+    remote_peer = mock.MagicMock(spec=RemoteA2aAgent)
+    remote_peer.name = "remote_peer"
+
+    current_agent = mock.MagicMock()
+    current_agent.name = "child"
+    current_agent.sub_agents = []
+
+    parent_agent = mock.MagicMock()
+    parent_agent.name = "parent"
+    parent_agent.sub_agents = [current_agent, remote_peer]
+    current_agent.parent_agent = parent_agent
+
+    inv_ctx = mock.MagicMock()
+    inv_ctx.agent = current_agent
+    tool_context = mock.MagicMock()
+    tool_context._invocation_context = inv_ctx
+
+    tool = TransferToAgentTool(
+        agent_names=["remote_peer"],
+    )
+    result = bigquery_agent_analytics_plugin._get_tool_origin(
+        tool,
+        tool_args={"agent_name": "remote_peer"},
+        tool_context=tool_context,
+    )
+    assert result == "TRANSFER_A2A"
+
+  def test_transfer_mixed_targets_classifies_per_call(self):
+    """A single TransferToAgentTool with mixed targets classifies per call."""
+    from google.adk.tools.transfer_to_agent_tool import TransferToAgentTool
+
+    try:
+      from google.adk.agents.remote_a2a_agent import RemoteA2aAgent
+    except ImportError:
+      pytest.skip("A2A agent not available")
+
+    remote_agent = mock.MagicMock(spec=RemoteA2aAgent)
+    remote_agent.name = "remote_a2a"
+    local_agent = mock.MagicMock()
+    local_agent.name = "local_sub"
+
+    current_agent = mock.MagicMock()
+    current_agent.name = "root"
+    current_agent.sub_agents = [remote_agent, local_agent]
+    current_agent.parent_agent = None
+
+    inv_ctx = mock.MagicMock()
+    inv_ctx.agent = current_agent
+    tool_context = mock.MagicMock()
+    tool_context._invocation_context = inv_ctx
+
+    tool = TransferToAgentTool(
+        agent_names=["remote_a2a", "local_sub"],
+    )
+
+    # Transfer to remote target → TRANSFER_A2A
+    result = bigquery_agent_analytics_plugin._get_tool_origin(
+        tool,
+        tool_args={"agent_name": "remote_a2a"},
+        tool_context=tool_context,
+    )
+    assert result == "TRANSFER_A2A"
+
+    # Transfer to local target → TRANSFER_AGENT
+    result = bigquery_agent_analytics_plugin._get_tool_origin(
+        tool,
+        tool_args={"agent_name": "local_sub"},
+        tool_context=tool_context,
+    )
+    assert result == "TRANSFER_AGENT"
+
+  @pytest.mark.asyncio
+  async def test_tool_error_callback_classifies_a2a_transfer(
+      self,
+      mock_auth_default,
+      mock_bq_client,
+      mock_write_client,
+      mock_to_arrow_schema,
+      dummy_arrow_schema,
+      mock_asyncio_to_thread,
+  ):
+    """on_tool_error_callback produces TRANSFER_A2A for RemoteA2aAgent."""
+    from google.adk.tools.transfer_to_agent_tool import TransferToAgentTool
+
+    try:
+      from google.adk.agents.remote_a2a_agent import RemoteA2aAgent
+    except ImportError:
+      pytest.skip("A2A agent not available")
+
+    remote_agent = mock.MagicMock(spec=RemoteA2aAgent)
+    remote_agent.name = "remote_a2a"
+
+    mock_agent = mock.MagicMock(spec=base_agent.BaseAgent)
+    mock_agent.name = "root"
+    mock_agent.instruction = ""
+    mock_agent.sub_agents = [remote_agent]
+    mock_agent.parent_agent = None
+
+    mock_s = mock.create_autospec(
+        session_lib.Session, instance=True, spec_set=True
+    )
+    type(mock_s).id = mock.PropertyMock(return_value="sess-1")
+    type(mock_s).user_id = mock.PropertyMock(return_value="user-1")
+    type(mock_s).app_name = mock.PropertyMock(return_value="test_app")
+    type(mock_s).state = mock.PropertyMock(return_value={})
+
+    inv_ctx = InvocationContext(
+        agent=mock_agent,
+        session=mock_s,
+        invocation_id="inv-err",
+        session_service=mock.create_autospec(
+            base_session_service_lib.BaseSessionService,
+            instance=True,
+            spec_set=True,
+        ),
+        plugin_manager=mock.create_autospec(
+            plugin_manager_lib.PluginManager,
+            instance=True,
+            spec_set=True,
+        ),
+    )
+    tool_ctx = tool_context_lib.ToolContext(invocation_context=inv_ctx)
+    tool = TransferToAgentTool(agent_names=["remote_a2a"])
+
+    async with managed_plugin(
+        PROJECT_ID, DATASET_ID, table_id=TABLE_ID
+    ) as plugin:
+      await plugin._ensure_started()
+      mock_write_client.append_rows.reset_mock()
+
+      bigquery_agent_analytics_plugin.TraceManager.push_span(tool_ctx, "tool")
+      await plugin.on_tool_error_callback(
+          tool=tool,
+          tool_args={"agent_name": "remote_a2a"},
+          tool_context=tool_ctx,
+          error=RuntimeError("connection refused"),
+      )
+      await asyncio.sleep(0.01)
+
+      rows = await _get_captured_rows_async(
+          mock_write_client, dummy_arrow_schema
+      )
+
+    assert len(rows) == 1
+    assert rows[0]["event_type"] == "TOOL_ERROR"
+    content = json.loads(rows[0]["content"])
+    assert content["tool_origin"] == "TRANSFER_A2A"
 
   def test_mcp_tool_returns_mcp(self):
     try:
@@ -6672,3 +6997,139 @@ class TestMultiLoopShutdownDrainsOtherLoops:
       mock_rcts.assert_called()
       call_args = mock_rcts.call_args
       assert call_args[0][1] is other_loop
+
+
+# ==============================================================
+# TEST CLASS: A2A_INTERACTION event logging via on_event_callback
+# ==============================================================
+class TestA2AInteractionLogging:
+  """Tests for A2A interaction event emission via on_event_callback.
+
+  When a RemoteA2aAgent processes a response, it attaches A2A
+  metadata (``a2a:task_id``, ``a2a:context_id``, ``a2a:request``,
+  ``a2a:response``) to the event's ``custom_metadata``.  The
+  plugin's ``on_event_callback`` should detect events carrying
+  ``a2a:request`` or ``a2a:response`` and log an
+  ``A2A_INTERACTION`` event so the remote agent's response and
+  cross-reference IDs are visible in BigQuery.
+  """
+
+  @pytest.mark.asyncio
+  async def test_a2a_interaction_logged_for_response_metadata(
+      self,
+      bq_plugin_inst,
+      mock_write_client,
+      invocation_context,
+      dummy_arrow_schema,
+  ):
+    """Event with a2a:response in custom_metadata emits A2A_INTERACTION."""
+    a2a_meta = {
+        "a2a:task_id": "task-abc",
+        "a2a:context_id": "ctx-123",
+        "a2a:response": {"status": "completed", "text": "result"},
+    }
+    event = event_lib.Event(
+        author="remote_agent",
+        custom_metadata=a2a_meta,
+    )
+
+    bigquery_agent_analytics_plugin.TraceManager.push_span(invocation_context)
+    result = await bq_plugin_inst.on_event_callback(
+        invocation_context=invocation_context, event=event
+    )
+    assert result is None
+
+    await asyncio.sleep(0.05)
+    rows = await _get_captured_rows_async(mock_write_client, dummy_arrow_schema)
+    event_types = [r["event_type"] for r in rows]
+    assert "A2A_INTERACTION" in event_types
+
+    a2a_row = next(r for r in rows if r["event_type"] == "A2A_INTERACTION")
+    attributes = json.loads(a2a_row["attributes"])
+    assert "a2a_metadata" in attributes
+    assert attributes["a2a_metadata"]["a2a:task_id"] == "task-abc"
+    assert attributes["a2a_metadata"]["a2a:context_id"] == "ctx-123"
+
+    # Content should contain the a2a:response payload.
+    content = json.loads(a2a_row["content"])
+    assert content["status"] == "completed"
+
+  @pytest.mark.asyncio
+  async def test_a2a_interaction_logged_for_request_metadata(
+      self,
+      bq_plugin_inst,
+      mock_write_client,
+      invocation_context,
+      dummy_arrow_schema,
+  ):
+    """Event with a2a:request (no a2a:response) emits A2A_INTERACTION."""
+    a2a_meta = {
+        "a2a:task_id": "task-xyz",
+        "a2a:request": {"message": "hello"},
+    }
+    event = event_lib.Event(
+        author="remote_agent",
+        custom_metadata=a2a_meta,
+    )
+
+    bigquery_agent_analytics_plugin.TraceManager.push_span(invocation_context)
+    result = await bq_plugin_inst.on_event_callback(
+        invocation_context=invocation_context, event=event
+    )
+    assert result is None
+
+    await asyncio.sleep(0.05)
+    rows = await _get_captured_rows_async(mock_write_client, dummy_arrow_schema)
+    event_types = [r["event_type"] for r in rows]
+    assert "A2A_INTERACTION" in event_types
+
+    a2a_row = next(r for r in rows if r["event_type"] == "A2A_INTERACTION")
+    attributes = json.loads(a2a_row["attributes"])
+    assert attributes["a2a_metadata"]["a2a:request"] == {"message": "hello"}
+    # No a2a:response → content should be None.
+    assert a2a_row["content"] is None
+
+  @pytest.mark.asyncio
+  async def test_no_a2a_interaction_for_irrelevant_metadata(
+      self,
+      bq_plugin_inst,
+      mock_write_client,
+      invocation_context,
+  ):
+    """Events with only a2a:task_id (no request/response) are skipped."""
+    a2a_meta = {
+        "a2a:task_id": "task-only",
+        "a2a:context_id": "ctx-only",
+    }
+    event = event_lib.Event(
+        author="remote_agent",
+        custom_metadata=a2a_meta,
+    )
+
+    result = await bq_plugin_inst.on_event_callback(
+        invocation_context=invocation_context, event=event
+    )
+    assert result is None
+
+    await asyncio.sleep(0.05)
+    # No events logged — a2a:task_id alone is not a meaningful
+    # interaction payload.
+    assert mock_write_client.append_rows.call_count == 0
+
+  @pytest.mark.asyncio
+  async def test_no_a2a_interaction_for_no_metadata(
+      self,
+      bq_plugin_inst,
+      mock_write_client,
+      invocation_context,
+  ):
+    """Events without custom_metadata produce no A2A_INTERACTION."""
+    event = event_lib.Event(author="regular_agent")
+
+    result = await bq_plugin_inst.on_event_callback(
+        invocation_context=invocation_context, event=event
+    )
+    assert result is None
+
+    await asyncio.sleep(0.05)
+    assert mock_write_client.append_rows.call_count == 0

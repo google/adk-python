@@ -417,6 +417,52 @@ def test_handle_login_with_google_option_2(
   assert region == "us-central1"
 
 
+def test_handle_login_with_google_option_2_unset_project(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+  """User selects 2, goes through express sign up, and unsets existing gcloud project."""
+  monkeypatch.setattr(gcp_utils, "check_adc", lambda: True)
+  monkeypatch.setattr(gcp_utils, "retrieve_express_project", lambda: None)
+  monkeypatch.setattr(gcp_utils, "list_gcp_projects", lambda limit: [])
+  monkeypatch.setattr(gcp_utils, "check_express_eligibility", lambda: True)
+
+  confirms = iter([True, True])
+  monkeypatch.setattr(click, "confirm", lambda *a, **k: next(confirms))
+
+  prompts = iter(["2", "1"])
+  monkeypatch.setattr(click, "prompt", lambda *a, **k: next(prompts))
+
+  monkeypatch.setattr(
+      gcp_utils,
+      "sign_up_express",
+      lambda location="us-central1": {
+          "api_key": "new-key",
+          "project_id": "new-proj",
+          "region": location,
+      },
+  )
+
+  monkeypatch.setattr(
+      cli_create, "_get_gcp_project_from_gcloud", lambda: "old-proj"
+  )
+
+  called = {}
+
+  def fake_run(cmd, **kwargs):
+    if cmd == ["gcloud", "config", "unset", "project"]:
+      called["unset"] = True
+      return subprocess.CompletedProcess(args=cmd, returncode=0)
+    raise ValueError(f"Unexpected command: {cmd}")
+
+  monkeypatch.setattr(subprocess, "run", fake_run)
+
+  api_key, proj, region = cli_create._handle_login_with_google()
+  assert api_key == "new-key"
+  assert proj == "new-proj"
+  assert region == "us-central1"
+  assert called.get("unset") is True
+
+
 def test_handle_login_with_google_option_3(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

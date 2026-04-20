@@ -33,7 +33,9 @@ from google.adk.tools.mcp_tool.mcp_tool import MCPTool
 from google.adk.tools.tool_context import ToolContext
 from google.genai.types import FunctionDeclaration
 from google.genai.types import Type
+from mcp.shared.exceptions import McpError
 from mcp.types import CallToolResult
+from mcp.types import ErrorData
 from mcp.types import TextContent
 import pytest
 
@@ -63,65 +65,32 @@ class MockMCPTool:
     self.outputSchema = outputSchema
 
 
-class TestMCPTool:
-  """Test suite for MCPTool class."""
+class TestMCPToolLegacy:
+  """Legacy tests for MCPTool."""
+
+  @pytest.fixture(autouse=True)
+  def disable_feature_flag(self):
+    with temporary_feature_override(
+        FeatureName.JSON_SCHEMA_FOR_FUNC_DECL, False
+    ):
+      yield
 
   def setup_method(self):
-    """Set up test fixtures."""
     self.mock_mcp_tool = MockMCPTool()
     self.mock_session_manager = Mock(spec=MCPSessionManager)
     self.mock_session = AsyncMock()
     self.mock_session_manager.create_session = AsyncMock(
         return_value=self.mock_session
     )
+    self.mock_session_context = AsyncMock()
 
-  def test_init_basic(self):
-    """Test basic initialization without auth."""
-    tool = MCPTool(
-        mcp_tool=self.mock_mcp_tool,
-        mcp_session_manager=self.mock_session_manager,
+    async def fake_run_guarded(coro):
+      return await coro
+
+    self.mock_session_context._run_guarded.side_effect = fake_run_guarded
+    self.mock_session_manager._get_session_context.return_value = (
+        self.mock_session_context
     )
-
-    assert tool.name == "test_tool"
-    assert tool.description == "Test tool description"
-    assert tool._mcp_tool == self.mock_mcp_tool
-    assert tool._mcp_session_manager == self.mock_session_manager
-
-  def test_init_with_auth(self):
-    """Test initialization with authentication."""
-    # Create real auth scheme instances instead of mocks
-    from fastapi.openapi.models import OAuth2
-
-    auth_scheme = OAuth2(flows={})
-    auth_credential = AuthCredential(
-        auth_type=AuthCredentialTypes.OAUTH2,
-        oauth2=OAuth2Auth(client_id="test_id", client_secret="test_secret"),
-    )
-
-    tool = MCPTool(
-        mcp_tool=self.mock_mcp_tool,
-        mcp_session_manager=self.mock_session_manager,
-        auth_scheme=auth_scheme,
-        auth_credential=auth_credential,
-    )
-
-    # The auth config is stored in the parent class _credentials_manager
-    assert tool._credentials_manager is not None
-    assert tool._credentials_manager._auth_config.auth_scheme == auth_scheme
-    assert (
-        tool._credentials_manager._auth_config.raw_auth_credential
-        == auth_credential
-    )
-
-  def test_init_with_empty_description(self):
-    """Test initialization with empty description."""
-    mock_tool = MockMCPTool(description=None)
-    tool = MCPTool(
-        mcp_tool=mock_tool,
-        mcp_session_manager=self.mock_session_manager,
-    )
-
-    assert tool.description == ""
 
   def test_get_declaration(self):
     """Test function declaration generation."""
@@ -136,6 +105,25 @@ class TestMCPTool:
     assert declaration.name == "test_tool"
     assert declaration.description == "Test tool description"
     assert declaration.parameters is not None
+
+
+class TestMCPToolWithJsonSchema:
+  """Tests for MCPTool with JSON_SCHEMA_FOR_FUNC_DECL enabled."""
+
+  @pytest.fixture(autouse=True)
+  def enable_feature_flag(self):
+    with temporary_feature_override(
+        FeatureName.JSON_SCHEMA_FOR_FUNC_DECL, True
+    ):
+      yield
+
+  def setup_method(self):
+    self.mock_mcp_tool = MockMCPTool()
+    self.mock_session_manager = Mock(spec=MCPSessionManager)
+    self.mock_session = AsyncMock()
+    self.mock_session_manager.create_session = AsyncMock(
+        return_value=self.mock_session
+    )
 
   def test_get_declaration_with_json_schema_for_func_decl_enabled(self):
     """Test function declaration generation with json schema for func decl enabled."""
@@ -201,6 +189,76 @@ class TestMCPTool:
 
     assert declaration.response is None
     assert not declaration.response_json_schema
+
+
+class TestMCPTool:
+  """Test suite for MCPTool class."""
+
+  def setup_method(self):
+    """Set up test fixtures."""
+    self.mock_mcp_tool = MockMCPTool()
+    self.mock_session_manager = Mock(spec=MCPSessionManager)
+    self.mock_session = AsyncMock()
+    self.mock_session_manager.create_session = AsyncMock(
+        return_value=self.mock_session
+    )
+    self.mock_session_context = AsyncMock()
+
+    async def fake_run_guarded(coro):
+      return await coro
+
+    self.mock_session_context._run_guarded.side_effect = fake_run_guarded
+    self.mock_session_manager._get_session_context.return_value = (
+        self.mock_session_context
+    )
+
+  def test_init_basic(self):
+    """Test basic initialization without auth."""
+    tool = MCPTool(
+        mcp_tool=self.mock_mcp_tool,
+        mcp_session_manager=self.mock_session_manager,
+    )
+
+    assert tool.name == "test_tool"
+    assert tool.description == "Test tool description"
+    assert tool._mcp_tool == self.mock_mcp_tool
+    assert tool._mcp_session_manager == self.mock_session_manager
+
+  def test_init_with_auth(self):
+    """Test initialization with authentication."""
+    # Create real auth scheme instances instead of mocks
+    from fastapi.openapi.models import OAuth2
+
+    auth_scheme = OAuth2(flows={})
+    auth_credential = AuthCredential(
+        auth_type=AuthCredentialTypes.OAUTH2,
+        oauth2=OAuth2Auth(client_id="test_id", client_secret="test_secret"),
+    )
+
+    tool = MCPTool(
+        mcp_tool=self.mock_mcp_tool,
+        mcp_session_manager=self.mock_session_manager,
+        auth_scheme=auth_scheme,
+        auth_credential=auth_credential,
+    )
+
+    # The auth config is stored in the parent class _credentials_manager
+    assert tool._credentials_manager is not None
+    assert tool._credentials_manager._auth_config.auth_scheme == auth_scheme
+    assert (
+        tool._credentials_manager._auth_config.raw_auth_credential
+        == auth_credential
+    )
+
+  def test_init_with_empty_description(self):
+    """Test initialization with empty description."""
+    mock_tool = MockMCPTool(description=None)
+    tool = MCPTool(
+        mcp_tool=mock_tool,
+        mcp_session_manager=self.mock_session_manager,
+    )
+
+    assert tool.description == ""
 
   @pytest.mark.asyncio
   async def test_run_async_impl_no_auth(self):
@@ -1093,6 +1151,53 @@ class TestMCPTool:
           )
       }
       tool_context.request_confirmation.assert_called_once()
+
+  @pytest.mark.asyncio
+  async def test_run_async_catches_mcp_error(self):
+    """Test that run_async catches McpError and returns a graceful dict."""
+
+    tool = MCPTool(
+        mcp_tool=self.mock_mcp_tool,
+        mcp_session_manager=self.mock_session_manager,
+    )
+
+    # Make _run_async_impl raise McpError
+    error_data = ErrorData(code=-32000, message="Client error '403 Forbidden'")
+    tool._run_async_impl = AsyncMock(side_effect=McpError(error_data))  # pylint: disable=protected-access
+
+    tool_context = Mock(spec=ToolContext)
+    args = {"param1": "test_value"}
+
+    result = await tool.run_async(args=args, tool_context=tool_context)
+
+    assert result == {
+        "error": "MCP tool execution failed: Client error '403 Forbidden'"
+    }
+
+  @pytest.mark.asyncio
+  async def test_run_async_catches_generic_exception(self):
+    """Test run_async catches generic exceptions and returns graceful dict."""
+    tool = MCPTool(
+        mcp_tool=self.mock_mcp_tool,
+        mcp_session_manager=self.mock_session_manager,
+    )
+
+    # Make _run_async_impl raise a generic Exception (like ConnectionError)
+    tool._run_async_impl = AsyncMock(  # pylint: disable=protected-access
+        side_effect=ConnectionError("Failed to create MCP session")
+    )
+
+    tool_context = Mock(spec=ToolContext)
+    args = {"param1": "test_value"}
+
+    result = await tool.run_async(args=args, tool_context=tool_context)
+
+    assert result == {
+        "error": (
+            "Unexpected error during MCP tool execution: Failed to create MCP"
+            " session"
+        )
+    }
 
   def test_visibility_property(self):
     """Test visibility property extraction from meta."""

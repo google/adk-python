@@ -41,7 +41,7 @@ def extract_model_name(model_string: str) -> str:
 
   Args:
     model_string: Either a simple model name like "gemini-2.5-pro" or a
-      path-based model name like "projects/.../models/gemini-2.0-flash-001"
+      path-based model name like "projects/.../models/gemini-2.5-flash"
 
   Returns:
     The extracted model name (e.g., "gemini-2.5-pro")
@@ -130,9 +130,6 @@ def is_gemini_2_or_above(model_string: Optional[str]) -> bool:
 def is_gemini_3_1_flash_live(model_string: Optional[str]) -> bool:
   """Check if the model is a Gemini 3.1 Flash Live model.
 
-  Note: This is a very specific model name for live bidi streaming, so we check
-  for exact match.
-
   Args:
     model_string: The model name
 
@@ -141,5 +138,4 @@ def is_gemini_3_1_flash_live(model_string: Optional[str]) -> bool:
   """
   if not model_string:
     return False
-
-  return model_string == 'gemini-3.1-flash-live-preview'
+  return model_string.startswith('gemini-3.1-flash-live')

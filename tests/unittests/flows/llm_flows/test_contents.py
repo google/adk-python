@@ -1068,3 +1068,30 @@ async def test_adk_function_call_ids_preserved_for_interactions_model():
   user_fr_part = llm_request.contents[2].parts[0]
   assert user_fr_part.function_response is not None
   assert user_fr_part.function_response.id == function_call_id
+
+
+def test_is_other_agent_reply_live_session():
+  """Test _is_other_agent_reply when live_session_id is present."""
+  event = Event(author="another_agent", live_session_id="session_123")
+  assert contents._is_other_agent_reply("current_agent", event) is True
+
+  event = Event(author="user", live_session_id="session_123")
+  assert contents._is_other_agent_reply("current_agent", event) is False
+
+  event = Event(author="current_agent", live_session_id="session_123")
+  assert contents._is_other_agent_reply("current_agent", event) is True
+
+
+def test_is_other_agent_reply_non_live_session():
+  """Test _is_other_agent_reply when live_session_id is not present."""
+  event = Event(author="another_agent")
+  assert contents._is_other_agent_reply("current_agent", event) is True
+
+  event = Event(author="user")
+  assert contents._is_other_agent_reply("current_agent", event) is False
+
+  event = Event(author="current_agent")
+  assert contents._is_other_agent_reply("current_agent", event) is False
+
+  event = Event(author="another_agent")
+  assert contents._is_other_agent_reply("", event) is False

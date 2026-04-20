@@ -16,6 +16,7 @@ import json
 from unittest import mock
 from unittest.mock import AsyncMock
 
+from google.adk.models.apigee_llm import ChatCompletionsResponseHandler
 from google.adk.models.apigee_llm import CompletionsHTTPClient
 from google.adk.models.llm_request import LlmRequest
 from google.genai import types
@@ -771,3 +772,60 @@ async def test_generate_content_async_streaming_parse_lines(
     ]
     assert len(responses) == expected_response_count
     assert responses[0].content.parts[0].text == 'Hello'
+
+
+def test_process_chunk_with_refusal_streaming():
+  handler = ChatCompletionsResponseHandler()
+
+  chunk1 = {
+      'choices': [{
+          'delta': {
+              'role': 'assistant',
+              'content': 'Hello',
+          },
+          'index': 0,
+      }]
+  }
+  responses1 = list(handler.process_chunk(chunk1))
+  assert len(responses1) == 1
+  assert responses1[0].content.parts[0].text == 'Hello'
+
+  chunk2 = {
+      'choices': [{
+          'delta': {
+              'refusal': 'I refuse',
+          },
+          'index': 0,
+      }]
+  }
+  responses2 = list(handler.process_chunk(chunk2))
+  assert len(responses2) == 1
+  assert responses2[0].content.parts[0].text == '\n[[REFUSAL]]: I refuse'
+
+  chunk3 = {
+      'choices': [{
+          'delta': {
+              'refusal': ' to answer',
+          },
+          'index': 0,
+      }]
+  }
+  responses3 = list(handler.process_chunk(chunk3))
+  assert len(responses3) == 1
+  assert responses3[0].content.parts[0].text == ' to answer'
+
+  chunk4 = {
+      'choices': [{
+          'delta': {},
+          'finish_reason': 'stop',
+          'index': 0,
+      }]
+  }
+  responses4 = list(handler.process_chunk(chunk4))
+  assert len(responses4) == 2
+  final_response = responses4[1]
+  assert final_response.finish_reason == types.FinishReason.STOP
+  assert (
+      final_response.content.parts[0].text
+      == 'Hello\n[[REFUSAL]]: I refuse to answer'
+  )

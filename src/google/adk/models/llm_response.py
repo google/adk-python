@@ -110,6 +110,9 @@ class LlmResponse(BaseModel):
   ] = None
   """The session resumption update of the LlmResponse"""
 
+  live_session_id: Optional[str] = None
+  """The session ID of the Live session."""
+
   go_away: Optional[types.LiveServerGoAway] = None
   """The GoAway signal from the Live model."""
 

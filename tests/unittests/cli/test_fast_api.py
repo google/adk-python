@@ -15,6 +15,7 @@
 import asyncio
 import json
 import logging
+import os
 from pathlib import Path
 import signal
 import tempfile
@@ -599,6 +600,13 @@ bigquery_agent_analytics:
           "LocalEvalSetResultsManager",
           autospec=True,
           return_value=mock_eval_set_results_manager,
+      ),
+      patch.object(
+          os.path,
+          "exists",
+          autospec=True,
+          side_effect=lambda p: p.endswith("plugins.yaml")
+          or p.endswith("root_agent.yaml"),
       ),
   ):
     from google.adk.cli.adk_web_server import AdkWebServer
@@ -2376,6 +2384,13 @@ async def test_independent_telemetry_context(
           "LocalEvalSetResultsManager",
           autospec=True,
           return_value=mock_eval_set_results_manager,
+      ),
+      patch.object(
+          os.path,
+          "exists",
+          autospec=True,
+          side_effect=lambda p: "yaml_app" in p
+          and p.endswith("root_agent.yaml"),
       ),
   ):
     app = get_fast_api_app(

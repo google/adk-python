@@ -19,6 +19,8 @@ from unittest.mock import MagicMock
 from unittest.mock import patch
 
 from google.adk.integrations.secret_manager.secret_client import SecretManagerClient
+from google.adk.integrations.secret_manager.secret_client import USER_AGENT
+from google.api_core.gapic_v1 import client_info
 import pytest
 
 import google
@@ -49,9 +51,11 @@ class TestSecretManagerClient:
     mock_default_service_credential.assert_called_once_with(
         scopes=["https://www.googleapis.com/auth/cloud-platform"]
     )
-    mock_secret_manager_client.assert_called_once_with(
-        credentials=mock_credentials, client_options=None
-    )
+    mock_secret_manager_client.assert_called_once()
+    call_kwargs = mock_secret_manager_client.call_args.kwargs
+    assert call_kwargs["credentials"] == mock_credentials
+    assert call_kwargs["client_options"] is None
+    assert call_kwargs["client_info"].user_agent == USER_AGENT
     assert client._credentials == mock_credentials
     assert client._client == mock_secret_manager_client.return_value
 
@@ -79,9 +83,11 @@ class TestSecretManagerClient:
     mock_from_service_account_info.assert_called_once_with(
         json.loads(service_account_json)
     )
-    mock_secret_manager_client.assert_called_once_with(
-        credentials=mock_credentials, client_options=None
-    )
+    mock_secret_manager_client.assert_called_once()
+    call_kwargs = mock_secret_manager_client.call_args.kwargs
+    assert call_kwargs["credentials"] == mock_credentials
+    assert call_kwargs["client_options"] is None
+    assert call_kwargs["client_info"].user_agent == USER_AGENT
     assert client._credentials == mock_credentials
     assert client._client == mock_secret_manager_client.return_value
 
@@ -105,9 +111,11 @@ class TestSecretManagerClient:
 
       # Verify
       mock_credentials.refresh.assert_called_once()
-      mock_secret_manager_client.assert_called_once_with(
-          credentials=mock_credentials, client_options=None
-      )
+      mock_secret_manager_client.assert_called_once()
+      call_kwargs = mock_secret_manager_client.call_args.kwargs
+      assert call_kwargs["credentials"] == mock_credentials
+      assert call_kwargs["client_options"] is None
+      assert call_kwargs["client_info"].user_agent == USER_AGENT
       assert client._credentials == mock_credentials
       assert client._client == mock_secret_manager_client.return_value
 
@@ -131,12 +139,13 @@ class TestSecretManagerClient:
     SecretManagerClient(location=location)
 
     # Verify
-    mock_secret_manager_client.assert_called_once_with(
-        credentials=mock_credentials,
-        client_options={
-            "api_endpoint": f"secretmanager.{location}.rep.googleapis.com"
-        },
-    )
+    mock_secret_manager_client.assert_called_once()
+    call_kwargs = mock_secret_manager_client.call_args.kwargs
+    assert call_kwargs["credentials"] == mock_credentials
+    assert call_kwargs["client_options"] == {
+        "api_endpoint": f"secretmanager.{location}.rep.googleapis.com"
+    }
+    assert call_kwargs["client_info"].user_agent == USER_AGENT
 
   @patch(
       "google.adk.integrations.secret_manager.secret_client.default_service_credential"
