@@ -69,6 +69,11 @@ You can install the latest stable version of ADK using `pip`:
 pip install google-adk
 ```
 
+To install optional integrations, you can use the following command:
+```bash
+pip install "google-adk[extensions]"
+```
+
 The release cadence is roughly bi-weekly.
 
 This version is recommended for most users as it represents the most recent official release.
