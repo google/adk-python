@@ -361,3 +361,41 @@ def test_required_fields_set_in_json_schema_fallback():
           ),
       },
   )
+
+
+def test_tuple_types_work_in_json_schema_fallback() -> None:
+  """Test that tuple schemas work in json schema fallback."""
+
+  def generate_image(
+      prompt: str,
+      input_bytes: list[tuple[bytes, str]] | None = None,
+  ) -> dict[str, str]:
+    """Generate an image from a prompt."""
+    del input_bytes
+    return {'status': prompt}
+
+  declaration = _automatic_function_calling_util.from_function_with_options(
+      generate_image, GoogleLLMVariant.GEMINI_API
+  )
+
+  assert declaration.parameters is not None
+  assert declaration.parameters.required == ['prompt']
+  input_bytes_schema = declaration.parameters.properties['input_bytes']
+  assert input_bytes_schema.nullable is True
+  assert input_bytes_schema.any_of is not None
+
+  array_schema = next(
+      schema
+      for schema in input_bytes_schema.any_of
+      if schema.type == types.Type.ARRAY
+  )
+  assert array_schema.items is not None
+  assert array_schema.items.type == types.Type.ARRAY
+  assert array_schema.items.max_items == 2
+  assert array_schema.items.min_items == 2
+  assert array_schema.items.items is not None
+  assert array_schema.items.items.any_of is not None
+  assert len(array_schema.items.items.any_of) == 2
+  assert array_schema.items.items.any_of[0].type == types.Type.STRING
+  assert array_schema.items.items.any_of[0].format == 'binary'
+  assert array_schema.items.items.any_of[1].type == types.Type.STRING
