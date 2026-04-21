@@ -656,6 +656,8 @@ class AdkWebServer:
       extra_plugins: Optional[list[str]] = None,
       logo_text: Optional[str] = None,
       logo_image_url: Optional[str] = None,
+      max_llm_calls: int = 500,
+      avatar_config: Optional[str] = None,
       url_prefix: Optional[str] = None,
       auto_create_session: bool = False,
       trigger_sources: Optional[list[str]] = None,
@@ -675,9 +677,30 @@ class AdkWebServer:
     self.runners_to_clean: set[str] = set()
     self.current_app_name_ref: SharedValue[str] = SharedValue(value="")
     self.runner_dict = {}
+    self.max_llm_calls = max_llm_calls
+    self.avatar_config = avatar_config
     self.url_prefix = url_prefix
     self.auto_create_session = auto_create_session
     self.trigger_sources = trigger_sources
+
+  def _get_avatar_config(self) -> Optional[types.AvatarConfig]:
+    """Parses avatar_config string or file into AvatarConfig object."""
+    if not self.avatar_config:
+      return None
+
+    try:
+      # Check if it's a file path
+      if os.path.isfile(self.avatar_config):
+        with open(self.avatar_config, "r", encoding="utf-8") as f:
+          config_dict = json.load(f)
+      else:
+        # Assume it's a JSON string
+        config_dict = json.loads(self.avatar_config)
+
+      return types.AvatarConfig.model_validate(config_dict)
+    except Exception as e:
+      logger.error("Failed to parse avatar_config: %s", e)
+      return None
 
   async def get_runner_async(self, app_name: str) -> Runner:
     """Returns the cached runner for the given app."""
@@ -1898,6 +1921,10 @@ class AdkWebServer:
                 session_id=req.session_id,
                 new_message=req.new_message,
                 state_delta=req.state_delta,
+                run_config=RunConfig(
+                    max_llm_calls=self.max_llm_calls,
+                    avatar_config=self._get_avatar_config(),
+                ),
                 invocation_id=req.invocation_id,
             )
         ) as agen:
@@ -1940,7 +1967,11 @@ class AdkWebServer:
                 session_id=req.session_id,
                 new_message=req.new_message,
                 state_delta=req.state_delta,
-                run_config=RunConfig(streaming_mode=stream_mode),
+                run_config=RunConfig(
+                    streaming_mode=stream_mode,
+                    max_llm_calls=self.max_llm_calls,
+                    avatar_config=self._get_avatar_config(),
+                ),
                 invocation_id=req.invocation_id,
             )
         ) as agen:
@@ -2119,6 +2150,8 @@ class AdkWebServer:
                 else None
             ),
             save_live_blob=save_live_blob,
+            max_llm_calls=self.max_llm_calls,
+            avatar_config=self._get_avatar_config(),
         )
         async with Aclosing(
             runner.run_live(

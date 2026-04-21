@@ -1538,6 +1538,23 @@ def fast_api_common_options():
         default=None,
     )
     @click.option(
+        "--max_llm_calls",
+        type=int,
+        default=500,
+        show_default=True,
+        help="Optional. Maximum number of LLM calls allowed for a given run.",
+    )
+    @click.option(
+        "--avatar_config",
+        type=str,
+        help=(
+            "Optional. JSON string or path to JSON file containing"
+            " avatar configuration for live sessions (e.g.,"
+            " '{\"avatarName\": \"avatar_id\"}')."
+        ),
+        default=None,
+    )
+    @click.option(
         "--extra_plugins",
         help=(
             "Optional. Comma-separated list of extra plugin classes or"
@@ -1609,6 +1626,8 @@ def fast_api_common_options():
 def cli_web(
     agents_dir: str,
     eval_storage_uri: Optional[str] = None,
+    max_llm_calls: int = 500,
+    avatar_config: Optional[str] = None,
     log_level: str = "INFO",
     allow_origins: Optional[list[str]] = None,
     host: str = "127.0.0.1",
@@ -1672,7 +1691,10 @@ def cli_web(
       memory_service_uri=memory_service_uri,
       use_local_storage=use_local_storage,
       eval_storage_uri=eval_storage_uri,
+      max_llm_calls=max_llm_calls,
+      avatar_config=avatar_config,
       allow_origins=allow_origins,
+
       web=True,
       trace_to_cloud=trace_to_cloud,
       otel_to_cloud=otel_to_cloud,
@@ -1723,6 +1745,8 @@ def cli_web(
 def cli_api_server(
     agents_dir: str,
     eval_storage_uri: Optional[str] = None,
+    max_llm_calls: int = 500,
+    avatar_config: Optional[str] = None,
     log_level: str = "INFO",
     allow_origins: Optional[list[str]] = None,
     host: str = "127.0.0.1",
@@ -1764,6 +1788,8 @@ def cli_api_server(
           memory_service_uri=memory_service_uri,
           use_local_storage=use_local_storage,
           eval_storage_uri=eval_storage_uri,
+          max_llm_calls=max_llm_calls,
+          avatar_config=avatar_config,
           allow_origins=allow_origins,
           web=False,
           trace_to_cloud=trace_to_cloud,

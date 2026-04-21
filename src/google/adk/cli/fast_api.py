@@ -82,6 +82,8 @@ def get_fast_api_app(
     memory_service_uri: Optional[str] = None,
     use_local_storage: bool = True,
     eval_storage_uri: Optional[str] = None,
+    max_llm_calls: int = 500,
+    avatar_config: Optional[str] = None,
     allow_origins: Optional[list[str]] = None,
     web: bool,
     a2a: bool = False,
