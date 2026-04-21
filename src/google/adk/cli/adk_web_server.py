@@ -656,6 +656,7 @@ class AdkWebServer:
       extra_plugins: Optional[list[str]] = None,
       logo_text: Optional[str] = None,
       logo_image_url: Optional[str] = None,
+      max_llm_calls: int = 500,
       url_prefix: Optional[str] = None,
       auto_create_session: bool = False,
       trigger_sources: Optional[list[str]] = None,
@@ -675,6 +676,7 @@ class AdkWebServer:
     self.runners_to_clean: set[str] = set()
     self.current_app_name_ref: SharedValue[str] = SharedValue(value="")
     self.runner_dict = {}
+    self.max_llm_calls = max_llm_calls
     self.url_prefix = url_prefix
     self.auto_create_session = auto_create_session
     self.trigger_sources = trigger_sources
@@ -1898,6 +1900,7 @@ class AdkWebServer:
                 session_id=req.session_id,
                 new_message=req.new_message,
                 state_delta=req.state_delta,
+                run_config=RunConfig(max_llm_calls=self.max_llm_calls),
                 invocation_id=req.invocation_id,
             )
         ) as agen:
@@ -1940,7 +1943,10 @@ class AdkWebServer:
                 session_id=req.session_id,
                 new_message=req.new_message,
                 state_delta=req.state_delta,
-                run_config=RunConfig(streaming_mode=stream_mode),
+                run_config=RunConfig(
+                    streaming_mode=stream_mode,
+                    max_llm_calls=self.max_llm_calls,
+                ),
                 invocation_id=req.invocation_id,
             )
         ) as agen:
@@ -2119,6 +2125,7 @@ class AdkWebServer:
                 else None
             ),
             save_live_blob=save_live_blob,
+            max_llm_calls=self.max_llm_calls,
         )
         async with Aclosing(
             runner.run_live(
