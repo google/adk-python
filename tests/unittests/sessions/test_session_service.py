@@ -29,6 +29,8 @@ from google.adk.sessions import database_session_service
 from google.adk.sessions.base_session_service import GetSessionConfig
 from google.adk.sessions.database_session_service import DatabaseSessionService
 from google.adk.sessions.in_memory_session_service import InMemorySessionService
+from google.adk.sessions.schemas.shared import update_time_from_timestamp
+from google.adk.sessions.schemas.shared import update_timestamp_from_dt
 from google.adk.sessions.sqlite_session_service import SqliteSessionService
 from google.genai import types
 import pytest
@@ -103,44 +105,63 @@ def test_database_session_service_enables_pool_pre_ping_by_default():
 
 
 @pytest.mark.parametrize('dialect_name', ['sqlite', 'postgresql'])
-def test_database_session_service_strips_timezone_for_dialect(dialect_name):
-  """Verifies that timezone-aware datetimes are converted to naive datetimes
-  for SQLite and PostgreSQL to avoid 'can't subtract offset-naive and
-  offset-aware datetimes' errors.
+def test_update_time_from_timestamp_strips_timezone_for_naive_utc_dialects(
+    dialect_name,
+):
+  """update_time_from_timestamp returns a UTC-naive datetime for SQLite and
+  PostgreSQL, which store TIMESTAMP WITHOUT TIME ZONE values."""
+  posix_ts = 1_700_000_000.0
+  result = update_time_from_timestamp(posix_ts, dialect_name)
+  assert result.tzinfo is None
+  # Value must represent the correct UTC instant.
+  assert result == datetime.fromtimestamp(posix_ts, timezone.utc).replace(
+      tzinfo=None
+  )
 
-  PostgreSQL's default TIMESTAMP type is WITHOUT TIME ZONE, which cannot
-  accept timezone-aware datetime objects when using asyncpg. SQLite also
-  requires naive datetimes.
+
+def test_update_time_from_timestamp_preserves_timezone_for_other_dialects():
+  """update_time_from_timestamp returns a UTC-aware datetime for dialects
+  that support TIMESTAMP WITH TIME ZONE (e.g. MySQL)."""
+  posix_ts = 1_700_000_000.0
+  result = update_time_from_timestamp(posix_ts, 'mysql')
+  assert result.tzinfo is not None
+  assert result == datetime.fromtimestamp(posix_ts, timezone.utc)
+
+
+@pytest.mark.parametrize('dialect_name', ['sqlite', 'postgresql'])
+def test_update_timestamp_from_dt_treats_naive_dt_as_utc_for_naive_utc_dialects(
+    dialect_name,
+):
+  """update_timestamp_from_dt must reattach UTC tzinfo before computing the
+  POSIX timestamp for SQLite and PostgreSQL.
+
+  This is the core of the bug fixed in commit 0e5790805a2f4d:
+  PostgreSQL returns a UTC-naive datetime, so calling .timestamp() directly
+  on a non-UTC host would interpret it as local time and produce a wrong
+  POSIX value.
   """
-  # Simulate the logic in create_session
-  is_sqlite = dialect_name == 'sqlite'
-  is_postgres = dialect_name == 'postgresql'
+  posix_ts = 1_700_000_000.0
+  # Simulate a naive datetime as returned by PostgreSQL / SQLite.
+  naive_utc_dt = datetime.fromtimestamp(posix_ts, timezone.utc).replace(
+      tzinfo=None
+  )
+  assert naive_utc_dt.tzinfo is None
 
-  now = datetime.now(timezone.utc)
-  assert now.tzinfo is not None  # Starts with timezone
+  result = update_timestamp_from_dt(naive_utc_dt, dialect_name)
 
-  if is_sqlite or is_postgres:
-    now = now.replace(tzinfo=None)
-
-  # Both SQLite and PostgreSQL should have timezone stripped
-  assert now.tzinfo is None
+  assert result == posix_ts
 
 
-def test_database_session_service_preserves_timezone_for_other_dialects():
-  """Verifies that timezone info is preserved for dialects that support it."""
-  # For dialects like MySQL with explicit timezone support, we don't strip
-  dialect_name = 'mysql'
-  is_sqlite = dialect_name == 'sqlite'
-  is_postgres = dialect_name == 'postgresql'
+def test_update_timestamp_from_dt_uses_tzinfo_for_aware_dialects():
+  """update_timestamp_from_dt uses the datetime's own tzinfo for dialects
+  that return timezone-aware datetimes (e.g. MySQL)."""
+  posix_ts = 1_700_000_000.0
+  aware_dt = datetime.fromtimestamp(posix_ts, timezone.utc)
+  assert aware_dt.tzinfo is not None
 
-  now = datetime.now(timezone.utc)
-  assert now.tzinfo is not None
+  result = update_timestamp_from_dt(aware_dt, 'mysql')
 
-  if is_sqlite or is_postgres:
-    now = now.replace(tzinfo=None)
-
-  # MySQL should preserve timezone (if the column type supports it)
-  assert now.tzinfo is not None
+  assert result == posix_ts
 
 
 def test_database_session_service_respects_pool_pre_ping_override():

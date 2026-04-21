@@ -46,6 +46,7 @@ from .shared import DEFAULT_MAX_KEY_LENGTH
 from .shared import DEFAULT_MAX_VARCHAR_LENGTH
 from .shared import DynamicJSON
 from .shared import PreciseTimestamp
+from .shared import update_timestamp_from_dt
 
 
 class Base(DeclarativeBase):
@@ -119,21 +120,11 @@ class StorageSession(Base):
         if sqlalchemy_session and sqlalchemy_session.bind
         else None
     )
-    is_sqlite = dialect_name == "sqlite"
-    is_postgresql = dialect_name == "postgresql"
-    return self.get_update_timestamp(
-        is_sqlite=is_sqlite, is_postgresql=is_postgresql
-    )
+    return self.get_update_timestamp(dialect_name)
 
-  def get_update_timestamp(
-      self, is_sqlite: bool, is_postgresql: bool = False
-  ) -> float:
-    """Returns the time zone aware update timestamp."""
-    if is_sqlite or is_postgresql:
-      # SQLite and PostgreSQL store naive datetimes as UTC values. We need to
-      # attach UTC timezone info before converting to a POSIX timestamp.
-      return self.update_time.replace(tzinfo=timezone.utc).timestamp()
-    return self.update_time.timestamp()
+  def get_update_timestamp(self, dialect_name: str | None) -> float:
+    """Returns the update timestamp as a POSIX timestamp."""
+    return update_timestamp_from_dt(self.update_time, dialect_name or "")
 
   def get_update_marker(self) -> str:
     """Returns a stable revision marker for optimistic concurrency checks."""
@@ -146,8 +137,7 @@ class StorageSession(Base):
       self,
       state: dict[str, Any] | None = None,
       events: list[Event] | None = None,
-      is_sqlite: bool = False,
-      is_postgresql: bool = False,
+      dialect_name: str | None = None,
   ) -> Session:
     """Converts the storage session to a session object."""
     if state is None:
@@ -161,9 +151,7 @@ class StorageSession(Base):
         id=self.id,
         state=state,
         events=events,
-        last_update_time=self.get_update_timestamp(
-            is_sqlite=is_sqlite, is_postgresql=is_postgresql
-        ),
+        last_update_time=self.get_update_timestamp(dialect_name),
     )
     session._storage_update_marker = self.get_update_marker()
     return session

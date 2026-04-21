@@ -13,6 +13,8 @@
 # limitations under the License.
 from __future__ import annotations
 
+from datetime import datetime
+from datetime import timezone
 import json
 
 from sqlalchemy import Dialect
@@ -24,6 +26,33 @@ from sqlalchemy.types import TypeDecorator
 
 DEFAULT_MAX_KEY_LENGTH = 128
 DEFAULT_MAX_VARCHAR_LENGTH = 256
+
+# Dialects that store TIMESTAMP values as UTC-naive datetimes and therefore
+# require us to reattach UTC tzinfo on read and strip it on write.
+_NAIVE_UTC_DIALECTS = frozenset({"sqlite", "postgresql"})
+
+
+def update_timestamp_from_dt(dt: datetime, dialect_name: str) -> float:
+  """Converts a DB-returned datetime to a POSIX timestamp.
+
+  SQLite and PostgreSQL store naive datetimes that represent UTC values.
+  All other dialects return timezone-aware datetimes directly.
+  """
+  if dialect_name in _NAIVE_UTC_DIALECTS:
+    return dt.replace(tzinfo=timezone.utc).timestamp()
+  return dt.timestamp()
+
+
+def update_time_from_timestamp(posix_ts: float, dialect_name: str) -> datetime:
+  """Converts a POSIX timestamp to the datetime format expected by the DB.
+
+  SQLite and PostgreSQL require a UTC-naive datetime; every other dialect
+  accepts (and prefers) a UTC-aware datetime.
+  """
+  dt = datetime.fromtimestamp(posix_ts, timezone.utc)
+  if dialect_name in _NAIVE_UTC_DIALECTS:
+    return dt.replace(tzinfo=None)
+  return dt
 
 
 class DynamicJSON(TypeDecorator):
