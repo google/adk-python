@@ -29,7 +29,8 @@ from ..models.llm_request import LlmRequest
 from .base_tool import BaseTool
 
 if TYPE_CHECKING:
-  from .mcp_tool.mcp_toolset import McpToolset
+  from mcp_toolset import McpToolset
+
   from .tool_context import ToolContext
 
 logger = logging.getLogger("google_adk." + __name__)
@@ -38,7 +39,7 @@ logger = logging.getLogger("google_adk." + __name__)
 class LoadMcpResourceTool(BaseTool):
   """A tool that loads the MCP resources and adds them to the session."""
 
-  def __init__(self, mcp_toolset: McpToolset) -> None:
+  def __init__(self, mcp_toolset: McpToolset):
     super().__init__(
         name="load_mcp_resource",
         description="""Loads resources from the MCP server.
