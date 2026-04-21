@@ -525,7 +525,9 @@ def _convert_reasoning_value_to_parts(reasoning_value: Any) -> List[types.Part]:
         continue
       thinking_text = block.get("thinking", "")
       signature = block.get("signature", "")
-      if not thinking_text:
+      # Anthropic streams a signature in a final chunk with empty text.
+      # Preserve signature-only blocks so the signature survives aggregation.
+      if not thinking_text and not signature:
         continue
       part = types.Part(text=thinking_text, thought=True)
       if signature:
@@ -997,25 +999,33 @@ async def _content_to_message_param(
     # For Anthropic models, rebuild thinking_blocks with signatures so that
     # thinking is preserved across tool call boundaries. Without this,
     # Anthropic silently drops thinking after the first turn.
+    #
+    # Streaming splits one Anthropic thinking block across many deltas:
+    # text-only chunks followed by a signature-only chunk at block_stop.
+    # Aggregate them back into one thinking block for outbound.
     if model and _is_anthropic_model(model) and reasoning_parts:
-      thinking_blocks = []
+      combined_text_parts: List[str] = []
+      block_signature: Optional[str] = None
       for part in reasoning_parts:
-        if part.text and part.thought_signature:
+        if part.text:
+          combined_text_parts.append(part.text)
+        if part.thought_signature:
           sig = part.thought_signature
-          if isinstance(sig, bytes):
-            sig = sig.decode("utf-8")
-          thinking_blocks.append({
-              "type": "thinking",
-              "thinking": part.text,
-              "signature": sig,
-          })
-      if thinking_blocks:
+          block_signature = (
+              sig.decode("utf-8") if isinstance(sig, bytes) else sig
+          )
+      combined_text = "".join(combined_text_parts)
+      if combined_text and block_signature:
         msg = ChatCompletionAssistantMessage(
             role=role,
             content=final_content,
             tool_calls=tool_calls or None,
         )
-        msg["thinking_blocks"] = thinking_blocks  # type: ignore[typeddict-unknown-key]
+        msg["thinking_blocks"] = [{  # type: ignore[typeddict-unknown-key]
+            "type": "thinking",
+            "thinking": combined_text,
+            "signature": block_signature,
+        }]
         return msg
 
     reasoning_texts = []
