@@ -1769,6 +1769,53 @@ def test_get_event_graph_returns_dot_src_for_app_agent():
   assert "dotSrc" in response.json()
 
 
+def test_build_graph_image_returns_png_bytes():
+  """Ensure legacy graph-image endpoint still returns a PNG for the dev UI."""
+  from google.adk.cli.adk_web_server import AdkWebServer
+
+  root_agent = DummyAgent(name="dummy_agent")
+  app_agent = App(name="test_app", root_agent=root_agent)
+
+  class Loader:
+
+    def load_agent(self, app_name):
+      return app_agent
+
+    def list_agents(self):
+      return [app_agent.name]
+
+  adk_web_server = AdkWebServer(
+      agent_loader=Loader(),
+      session_service=AsyncMock(),
+      memory_service=MagicMock(),
+      artifact_service=MagicMock(),
+      credential_service=MagicMock(),
+      eval_sets_manager=MagicMock(),
+      eval_set_results_manager=MagicMock(),
+      agents_dir=".",
+  )
+
+  fast_api_app = adk_web_server.get_fast_api_app(
+      setup_observer=lambda _observer, _server: None,
+      tear_down_observer=lambda _observer, _server: None,
+  )
+
+  client = TestClient(fast_api_app)
+
+  with patch(
+      "google.adk.cli.agent_graph.get_agent_graph",
+      new=AsyncMock(return_value=b"png-bytes"),
+  ) as mock_get_agent_graph:
+    response = client.get("/dev/build_graph_image/test_app?dark_mode=true")
+
+  assert response.status_code == 200
+  assert response.content == b"png-bytes"
+  assert response.headers["content-type"] == "image/png"
+  mock_get_agent_graph.assert_awaited_once_with(
+      root_agent, [], image=True, dark_mode=True
+  )
+
+
 def test_a2a_agent_discovery(test_app_with_a2a):
   """Test that A2A agents are properly discovered and configured."""
   # This test mainly verifies that the A2A setup doesn't break the app

@@ -37,6 +37,7 @@ from fastapi import Query
 from fastapi import Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse
+from fastapi.responses import Response
 from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.websockets import WebSocket
@@ -1032,6 +1033,24 @@ class AdkWebServer:
       return event_dict
 
     if web_assets_dir:
+
+      @app.get("/dev/build_graph_image/{app_name}")
+      async def get_app_graph_image(
+          app_name: str, dark_mode: bool = False
+      ) -> Response:
+        agent_or_app = self.agent_loader.load_agent(app_name)
+        root_agent = self._get_root_agent(agent_or_app)
+
+        graph_image = await agent_graph.get_agent_graph(
+            root_agent, [], image=True, dark_mode=dark_mode
+        )
+
+        if isinstance(graph_image, bytes):
+          return Response(content=graph_image, media_type="image/png")
+
+        raise HTTPException(
+            status_code=500, detail="Failed to render app graph image"
+        )
 
       @app.get("/dev/build_graph/{app_name}")
       async def get_app_info(app_name: str) -> Any:
