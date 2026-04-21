@@ -102,9 +102,6 @@ def _finalize_model_response_event(
   if finalized_event.content:
     function_calls = finalized_event.get_function_calls()
     if function_calls:
-      functions.preserve_existing_function_call_ids(
-          model_response_event, finalized_event
-      )
       functions.populate_client_function_call_id(finalized_event)
       finalized_event.long_running_tool_ids = (
           functions.get_long_running_function_calls(

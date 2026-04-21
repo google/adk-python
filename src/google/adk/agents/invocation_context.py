@@ -405,7 +405,7 @@ class InvocationContext(BaseModel):
         function_response.id
         for event in events
         for function_response in event.get_function_responses()
-        if function_response.id and event.author == 'user'
+        if function_response.id and event.author == "user"
     }
 
     for event in reversed(events):
@@ -415,7 +415,8 @@ class InvocationContext(BaseModel):
       paused_function_call_ids = {
           function_call.id
           for function_call in event.get_function_calls()
-          if event.long_running_tool_ids and function_call.id in event.long_running_tool_ids
+          if event.long_running_tool_ids
+          and function_call.id in event.long_running_tool_ids
       }
       if paused_function_call_ids - function_response_ids:
         return True

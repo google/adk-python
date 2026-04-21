@@ -195,35 +195,6 @@ def populate_client_function_call_id(model_response_event: Event) -> None:
       function_call.id = generate_client_function_call_id()
 
 
-def preserve_existing_function_call_ids(
-    previous_event: Event, model_response_event: Event
-) -> None:
-  """Carries forward function call IDs from a previous streaming event.
-
-  Streaming responses may emit partial and final events for the same function
-  call sequence. The partial event is sent to clients first, while only the
-  final event is persisted. Preserving IDs across those events keeps
-  functionResponse routing stable when the client resumes a long-running tool.
-
-  Args:
-    previous_event: The in-flight model response event from an earlier chunk.
-    model_response_event: The newly finalized event for the current chunk.
-  """
-  previous_function_calls = previous_event.get_function_calls()
-  current_function_calls = model_response_event.get_function_calls()
-  if not previous_function_calls or not current_function_calls:
-    return
-
-  for previous_function_call, current_function_call in zip(
-      previous_function_calls, current_function_calls
-  ):
-    if current_function_call.id:
-      continue
-    if previous_function_call.name != current_function_call.name:
-      continue
-    current_function_call.id = previous_function_call.id
-
-
 def remove_client_function_call_id(content: Optional[types.Content]) -> None:
   """Removes ADK-generated function call IDs from content before sending to LLM.
 

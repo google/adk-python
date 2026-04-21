@@ -19,11 +19,9 @@ from unittest.mock import AsyncMock
 
 from google.adk.agents.llm_agent import Agent
 from google.adk.events.event import Event
-from google.adk.flows.llm_flows.base_llm_flow import _finalize_model_response_event
 from google.adk.flows.llm_flows.base_llm_flow import _handle_after_model_callback
 from google.adk.flows.llm_flows.base_llm_flow import BaseLlmFlow
 from google.adk.models.google_llm import Gemini
-from google.adk.models.llm_request import LlmRequest
 from google.adk.models.llm_response import LlmResponse
 from google.adk.plugins.base_plugin import BasePlugin
 from google.adk.tools.base_toolset import BaseToolset
@@ -40,47 +38,6 @@ class BaseLlmFlowForTesting(BaseLlmFlow):
   """Test implementation of BaseLlmFlow for testing purposes."""
 
   pass
-
-
-def test_finalize_model_response_event_preserves_function_call_ids():
-  """Test that streaming finalization keeps function call IDs stable."""
-  previous_event = Event(
-      id=Event.new_id(),
-      invocation_id='test_invocation',
-      author='test_agent',
-      content=types.Content(
-          role='model',
-          parts=[
-              types.Part(
-                  function_call=types.FunctionCall(
-                      name='track_execution',
-                      args={'call_id': 'partial'},
-                      id='adk-existing-id',
-                  )
-              )
-          ],
-      ),
-      partial=True,
-  )
-  llm_response = LlmResponse(
-      content=types.Content(
-          role='model',
-          parts=[
-              types.Part.from_function_call(
-                  name='track_execution', args={'call_id': 'final'}
-              )
-          ],
-      ),
-      partial=False,
-  )
-
-  finalized_event = _finalize_model_response_event(
-      LlmRequest(), llm_response, previous_event
-  )
-
-  function_calls = finalized_event.get_function_calls()
-  assert len(function_calls) == 1
-  assert function_calls[0].id == 'adk-existing-id'
 
 
 @pytest.mark.asyncio
