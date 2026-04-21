@@ -1369,9 +1369,7 @@ async def test_generate_content_async_none_system_instruction_non_streaming():
   mock_message = anthropic_types.Message(
       id="msg_test_no_sys",
       content=[
-          anthropic_types.TextBlock(
-              text="Hello!", type="text", citations=None
-          )
+          anthropic_types.TextBlock(text="Hello!", type="text", citations=None)
       ],
       model="claude-sonnet-4-20250514",
       role="assistant",
