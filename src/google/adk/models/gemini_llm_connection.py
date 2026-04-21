@@ -366,14 +366,16 @@ class GeminiLlmConnection(BaseLlmConnection):
               types.Part(function_call=function_call)
               for function_call in message.tool_call.function_calls
           ])
-          # Yield tool call parts immediately so the framework can execute
-          # the tools and send responses back to the model. Models like
-          # Gemini 3.1 send tool calls via LiveServerToolCall and do not
-          # emit turn_complete until they receive the tool response, so
-          # deferring the yield would deadlock the conversation.
-          if tool_call_parts:
+          # Gemini 3.1 does not emit turn_complete until it receives the
+          # tool response, so yield tool calls immediately to avoid
+          # deadlocking the conversation. Other models (e.g. 2.5-pro,
+          # native-audio) send turn_complete after tool calls, so buffer
+          # and merge them into a single response at turn_complete.
+          if model_name_utils.is_gemini_3_1_flash_live(
+              self._model_version
+          ) and tool_call_parts:
             logger.debug(
-                'Yielding tool_call_parts immediately for live tool call'
+                'Yielding tool_call_parts immediately for Gemini 3.1 live tool call'
             )
             yield LlmResponse(
                 content=types.Content(role='model', parts=tool_call_parts),
