@@ -9378,7 +9378,7 @@ and design patterns that help you use ADK together with MCP servers, including:
 
 ## MCP Toolbox for Databases
 
-[MCP Toolbox for Databases](https://github.com/googleapis/genai-toolbox) is an
+[MCP Toolbox for Databases](https://github.com/googleapis/mcp-toolbox) is an
 open source MCP server that helps you build Gen AI tools so that your agents can
 access data in your database. Google’s Agent Development Kit (ADK) has built in
 support for The MCP Toolbox for Databases.
@@ -15733,7 +15733,7 @@ workflow as a tool for your agent or create a new one.
 
 ## Toolbox Tools for Databases
 
-[MCP Toolbox for Databases](https://github.com/googleapis/genai-toolbox) is an
+[MCP Toolbox for Databases](https://github.com/googleapis/mcp-toolbox) is an
 open source MCP server for databases. It was designed with enterprise-grade and
 production-quality in mind. It enables you to develop tools easier, faster, and
 more securely by handling the complexities such as connection pooling,
@@ -15741,10 +15741,10 @@ authentication, and more.
 
 Google’s Agent Development Kit (ADK) has built in support for Toolbox. For more
 information on
-[getting started](https://googleapis.github.io/genai-toolbox/getting-started) or
-[configuring](https://googleapis.github.io/genai-toolbox/getting-started/configure/)
+[getting started](https://mcp-toolbox.dev/documentation/introduction/#getting-started) or
+[configuring](https://mcp-toolbox.dev/documentation/configuration/)
 Toolbox, see the
-[documentation](https://googleapis.github.io/genai-toolbox/getting-started/introduction/).
+[documentation](https://mcp-toolbox.dev/documentation/introduction/).
 
 ![GenAI Toolbox](../assets/mcp_db_toolbox.png)
 
@@ -15754,8 +15754,8 @@ Toolbox is an open source server that you deploy and manage yourself. For more
 instructions on deploying and configuring, see the official Toolbox
 documentation:
 
-* [Installing the Server](https://googleapis.github.io/genai-toolbox/getting-started/introduction/#installing-the-server)
-* [Configuring Toolbox](https://googleapis.github.io/genai-toolbox/getting-started/configure/)
+* [Installing the Server](https://mcp-toolbox.dev/documentation/introduction/#getting-started)
+* [Configuring Toolbox](https://mcp-toolbox.dev/documentation/configuration/)
 
 ### Install client SDK
 
@@ -15794,9 +15794,9 @@ root_agent = Agent(
 Toolbox has a variety of features to make developing Gen AI tools for databases.
 For more information, read more about the following features:
 
-* [Authenticated Parameters](https://googleapis.github.io/genai-toolbox/resources/tools/#authenticated-parameters): bind tool inputs to values from OIDC tokens automatically, making it easy to run sensitive queries without potentially leaking data
-* [Authorized Invocations:](https://googleapis.github.io/genai-toolbox/resources/tools/#authorized-invocations)  restrict access to use a tool based on the users Auth token
-* [OpenTelemetry](https://googleapis.github.io/genai-toolbox/how-to/export_telemetry/): get metrics and tracing from Toolbox with OpenTelemetry
+* [Authenticated Parameters](https://mcp-toolbox.dev/documentation/connect-to/toolbox-sdks/python-sdk/core/#parameter-binding): bind tool inputs to values from OIDC tokens automatically, making it easy to run sensitive queries without potentially leaking data
+* [Authorized Invocations:](https://mcp-toolbox.dev/documentation/connect-to/toolbox-sdks/python-sdk/core/#client-to-server-authentication)  restrict access to use a tool based on the users Auth token
+* [OpenTelemetry](https://mcp-toolbox.dev/documentation/connect-to/toolbox-sdks/python-sdk/core/#opentelemetry): get metrics and tracing from Toolbox with OpenTelemetry
 
 
 # Tools

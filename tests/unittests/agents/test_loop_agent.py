@@ -15,6 +15,7 @@
 """Testings for the SequentialAgent."""
 
 from typing import AsyncGenerator
+from unittest.mock import patch
 
 from google.adk.agents.base_agent import BaseAgent
 from google.adk.agents.invocation_context import InvocationContext
@@ -249,3 +250,38 @@ async def test_run_async_with_escalate_action(
         ),
     ]
   assert simplified_events == expected_events
+
+
+@pytest.mark.asyncio
+async def test_run_async_with_pause_preserves_sub_agent_state(
+    request: pytest.FixtureRequest,
+):
+  """Test that the sub-agent state is preserved when the loop agent pauses."""
+  agent = _TestingAgent(name=f'{request.function.__name__}_test_agent')
+  loop_agent = LoopAgent(
+      name=f'{request.function.__name__}_test_loop_agent',
+      max_iterations=2,
+      sub_agents=[agent],
+  )
+  parent_ctx = await _create_parent_invocation_context(
+      request.function.__name__, loop_agent, resumable=True
+  )
+
+  # Set some dummy state for the sub-agent
+  parent_ctx.agent_states[agent.name] = {'some_key': 'some_value'}
+
+  # Mock should_pause_invocation to return True for the agent's event
+  def mock_should_pause(event):
+    return event.author == agent.name
+
+  with patch.object(
+      InvocationContext,
+      'should_pause_invocation',
+      side_effect=mock_should_pause,
+  ):
+    async for _ in loop_agent.run_async(parent_ctx):
+      pass  # Consume the async generator
+
+  # Verify that the sub-agent state was NOT reset
+  assert agent.name in parent_ctx.agent_states
+  assert parent_ctx.agent_states[agent.name] == {'some_key': 'some_value'}

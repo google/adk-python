@@ -329,7 +329,6 @@ class AgentRegistry:
           f"MCP Server endpoint URI not found for: {mcp_server_name}"
       )
 
-    headers = self._get_auth_headers() if _is_google_api(endpoint_uri) else None
     if mcp_server_id and not auth_scheme:
       try:
         bindings_data = self._make_request("bindings")
@@ -349,13 +348,25 @@ class AgentRegistry:
 
     connection_params = StreamableHTTPConnectionParams(
         url=endpoint_uri,
-        headers=headers,
     )
+
+    def combined_header_provider(context: ReadonlyContext) -> Dict[str, str]:
+      headers = {}
+      if (
+          not auth_scheme
+          and not auth_credential
+          and _is_google_api(endpoint_uri)
+      ):
+        headers.update(self._get_auth_headers())
+      if self._header_provider:
+        headers.update(self._header_provider(context))
+      return headers
+
     return AgentRegistrySingleMcpToolset(
         destination_resource_id=mcp_server_id,
         connection_params=connection_params,
         tool_name_prefix=name,
-        header_provider=self._header_provider,
+        header_provider=combined_header_provider,
         auth_scheme=auth_scheme,
         auth_credential=auth_credential,
     )
