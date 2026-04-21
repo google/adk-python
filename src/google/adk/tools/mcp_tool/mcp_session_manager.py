@@ -16,9 +16,7 @@ from __future__ import annotations
 
 import asyncio
 from collections import deque
-import concurrent.futures
 from contextlib import AsyncExitStack
-from dataclasses import dataclass
 from datetime import timedelta
 import functools
 import hashlib
@@ -27,19 +25,12 @@ import logging
 import sys
 import threading
 from typing import Any
-from typing import Callable
-from typing import cast
 from typing import Dict
 from typing import Optional
 from typing import Protocol
 from typing import runtime_checkable
 from typing import TextIO
-from typing import TYPE_CHECKING
-from typing import TypeVar
 from typing import Union
-
-if TYPE_CHECKING:
-  from .session_context import SessionContext
 
 from mcp import ClientSession
 from mcp import SamplingCapability
@@ -52,6 +43,8 @@ from mcp.client.streamable_http import McpHttpClientFactory
 from mcp.client.streamable_http import streamablehttp_client
 from pydantic import BaseModel
 from pydantic import ConfigDict
+
+from .session_context import SessionContext
 
 logger = logging.getLogger('google_adk.' + __name__)
 
@@ -153,10 +146,7 @@ class StreamableHTTPConnectionParams(BaseModel):
   httpx_client_factory: CheckableMcpHttpClientFactory = create_mcp_http_client
 
 
-_F = TypeVar('_F', bound=Callable[..., Any])
-
-
-def retry_on_errors(func: _F) -> _F:
+def retry_on_errors(func):
   """Decorator to automatically retry action when MCP session errors occur.
 
   When MCP session errors occur, the decorator will automatically retry the
@@ -175,7 +165,7 @@ def retry_on_errors(func: _F) -> _F:
   """
 
   @functools.wraps(func)  # Preserves original function metadata
-  async def wrapper(self: Any, *args: Any, **kwargs: Any) -> Any:
+  async def wrapper(self, *args, **kwargs):
     try:
       return await func(self, *args, **kwargs)
     except Exception as e:
@@ -192,17 +182,7 @@ def retry_on_errors(func: _F) -> _F:
       logger.info('Retrying %s due to error: %s', func.__name__, e)
       return await func(self, *args, **kwargs)
 
-  return cast(_F, wrapper)
-
-
-@dataclass
-class _SessionEntry:
-  """A dataclass to hold session information."""
-
-  session: ClientSession
-  exit_stack: AsyncExitStack
-  loop: asyncio.AbstractEventLoop
-  context: SessionContext
+  return wrapper
 
 
 class MCPSessionManager:
@@ -225,7 +205,7 @@ class MCPSessionManager:
       *,
       sampling_callback: Optional[SamplingFnT] = None,
       sampling_capabilities: Optional[SamplingCapability] = None,
-  ) -> None:
+  ):
     """Initializes the MCP session manager.
 
     Args:
@@ -257,8 +237,10 @@ class MCPSessionManager:
       self._connection_params = connection_params
     self._errlog = errlog
 
-    # Session pool: maps session keys to _SessionEntry objects
-    self._sessions: Dict[str, _SessionEntry] = {}
+    # Session pool: maps session keys to (session, exit_stack, loop) tuples
+    self._sessions: Dict[
+        str, tuple[ClientSession, AsyncExitStack, asyncio.AbstractEventLoop]
+    ] = {}
 
     # Map of event loops to their respective locks to prevent race conditions
     # across different event loops in session creation.
@@ -330,66 +312,35 @@ class MCPSessionManager:
 
     return base_headers
 
-  def _is_session_disconnected(
-      self,
-      entry: _SessionEntry,
-  ) -> bool:
+  def _is_session_disconnected(self, session: ClientSession) -> bool:
     """Checks if a session is disconnected or closed.
 
     Args:
-        entry: The _SessionEntry to check.
+        session: The ClientSession to check.
 
     Returns:
         True if the session is disconnected, False otherwise.
     """
-    if (
-        entry.session._read_stream._closed
-        or entry.session._write_stream._closed
-    ):
-      return True
-    if entry.context is not None and not entry.context._is_task_alive:  # pylint: disable=protected-access
-      return True
-    return False
-
-  def _get_session_context(
-      self, headers: Optional[Dict[str, str]] = None
-  ) -> Optional['SessionContext']:
-    """Returns the SessionContext for the session matching the given headers.
-
-    Note: This method reads from the session pool without acquiring
-    ``_session_lock``. This is safe because it is called immediately after
-    ``create_session()`` (which populates the entry under the lock) within
-    the same task, and dict reads are atomic in CPython.
-
-    Args:
-        headers: Optional headers used to identify the session.
-
-    Returns:
-        The SessionContext if a matching session exists, None otherwise.
-    """
-    merged_headers = self._merge_headers(headers)
-    session_key = self._generate_session_key(merged_headers)
-    entry = self._sessions.get(session_key)
-    if entry is not None:
-      return entry.context
-    return None
+    return session._read_stream._closed or session._write_stream._closed
 
   async def _cleanup_session(
       self,
       session_key: str,
-      entry: _SessionEntry,
-  ) -> None:
+      exit_stack: AsyncExitStack,
+      stored_loop: asyncio.AbstractEventLoop,
+  ):
     """Cleans up a session, handling different event loops safely.
 
     Args:
         session_key: The session key to clean up.
-        entry: The _SessionEntry managing the session resources.
+        exit_stack: The AsyncExitStack managing the session resources.
+        stored_loop: The event loop on which the session was created.
     """
     current_loop = asyncio.get_running_loop()
     try:
-      if entry.loop is current_loop:
-        await entry.exit_stack.aclose()
-      elif entry.loop.is_closed():
+      if stored_loop is current_loop:
+        await exit_stack.aclose()
+      elif stored_loop.is_closed():
         logger.warning(
             f'Error cleaning up session {session_key}: original event loop'
             ' is closed, resources may be leaked.'
@@ -402,11 +353,11 @@ class MCPSessionManager:
             ' event loop.'
         )
         future = asyncio.run_coroutine_threadsafe(
-            entry.exit_stack.aclose(), entry.loop
+            exit_stack.aclose(), stored_loop
         )
 
         # Attach a callback so errors don't go unnoticed
-        def cleanup_done(f: 'concurrent.futures.Future[Any]') -> None:
+        def cleanup_done(f: asyncio.Future):
           try:
             if f.exception():
               logger.warning(
@@ -428,9 +379,7 @@ class MCPSessionManager:
       if session_key in self._sessions:
         del self._sessions[session_key]
 
-  def _create_client(
-      self, merged_headers: Optional[Dict[str, str]] = None
-  ) -> Any:
+  def _create_client(self, merged_headers: Optional[Dict[str, str]] = None):
     """Creates an MCP client based on the connection parameters.
 
     Args:
@@ -502,22 +451,22 @@ class MCPSessionManager:
     async with self._session_lock:
       # Check if we have an existing session
       if session_key in self._sessions:
-        entry = self._sessions[session_key]
+        session, exit_stack, stored_loop = self._sessions[session_key]
 
         # Check if the existing session is still connected and bound to the current loop
         current_loop = asyncio.get_running_loop()
-        if entry.loop is current_loop and not self._is_session_disconnected(
-            entry
+        if stored_loop is current_loop and not self._is_session_disconnected(
+            session
         ):
           # Session is still good, return it
-          return entry.session
+          return session
         else:
           # Session is disconnected or from a different loop, clean it up
           logger.info(
               'Cleaning up session (disconnected or different loop): %s',
               session_key,
           )
-          await self._cleanup_session(session_key, entry)
+          await self._cleanup_session(session_key, exit_stack, stored_loop)
 
       # Create a new session (either first time or replacing disconnected one)
       exit_stack = AsyncExitStack()
@@ -533,30 +482,28 @@ class MCPSessionManager:
       )
 
       try:
-        from .session_context import SessionContext
-
         client = self._create_client(merged_headers)
         is_stdio = isinstance(self._connection_params, StdioConnectionParams)
 
-        session_context = SessionContext(
-            client=client,
-            timeout=timeout_in_seconds,
-            sse_read_timeout=sse_read_timeout_in_seconds,
-            is_stdio=is_stdio,
-            sampling_callback=self._sampling_callback,
-            sampling_capabilities=self._sampling_capabilities,
-        )
         session = await asyncio.wait_for(
-            exit_stack.enter_async_context(session_context),
+            exit_stack.enter_async_context(
+                SessionContext(
+                    client=client,
+                    timeout=timeout_in_seconds,
+                    sse_read_timeout=sse_read_timeout_in_seconds,
+                    is_stdio=is_stdio,
+                    sampling_callback=self._sampling_callback,
+                    sampling_capabilities=self._sampling_capabilities,
+                )
+            ),
             timeout=timeout_in_seconds,
         )
 
-        # Store session, exit stack, loop, and context in the pool
-        self._sessions[session_key] = _SessionEntry(
-            session=session,
-            exit_stack=exit_stack,
-            loop=asyncio.get_running_loop(),
-            context=session_context,
+        # Store session, exit stack, and loop in the pool
+        self._sessions[session_key] = (
+            session,
+            exit_stack,
+            asyncio.get_running_loop(),
         )
         logger.debug('Created new session: %s', session_key)
         return session
@@ -572,7 +519,7 @@ class MCPSessionManager:
             )
         raise ConnectionError(f'Failed to create MCP session: {e}') from e
 
-  def __getstate__(self) -> Dict[str, Any]:
+  def __getstate__(self):
     """Custom pickling to exclude non-picklable runtime objects."""
     state = self.__dict__.copy()
     # Remove unpicklable entries or those that shouldn't persist across pickle
@@ -585,7 +532,7 @@ class MCPSessionManager:
 
     return state
 
-  def __setstate__(self, state: Dict[str, Any]) -> None:
+  def __setstate__(self, state):
     """Custom unpickling to restore state."""
     self.__dict__.update(state)
     # Re-initialize members that were not pickled
@@ -596,12 +543,12 @@ class MCPSessionManager:
     if not hasattr(self, '_errlog') or self._errlog is None:
       self._errlog = sys.stderr
 
-  async def close(self) -> None:
+  async def close(self):
     """Closes all sessions and cleans up resources."""
     async with self._session_lock:
       for session_key in list(self._sessions.keys()):
-        entry = self._sessions[session_key]
-        await self._cleanup_session(session_key, entry)
+        _, exit_stack, stored_loop = self._sessions[session_key]
+        await self._cleanup_session(session_key, exit_stack, stored_loop)
 
 
 SseServerParams = SseConnectionParams

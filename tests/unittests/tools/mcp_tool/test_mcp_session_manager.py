@@ -24,7 +24,6 @@ from unittest.mock import Mock
 from unittest.mock import patch
 
 from google.adk.platform import thread as platform_thread
-from google.adk.tools.mcp_tool.mcp_session_manager import _SessionEntry
 from google.adk.tools.mcp_tool.mcp_session_manager import MCPSessionManager
 from google.adk.tools.mcp_tool.mcp_session_manager import retry_on_errors
 from google.adk.tools.mcp_tool.mcp_session_manager import SseConnectionParams
@@ -134,6 +133,49 @@ class TestMCPSessionManager:
     manager = MCPSessionManager(sse_params)
 
     assert manager._connection_params == sse_params
+
+  @patch("google.adk.tools.mcp_tool.mcp_session_manager.sse_client")
+  def test_init_with_sse_custom_httpx_factory(self, mock_sse_client):
+    """Test that sse_client is called with custom httpx_client_factory."""
+    custom_httpx_factory = Mock()
+
+    sse_params = SseConnectionParams(
+        url="https://example.com/mcp",
+        timeout=10.0,
+        httpx_client_factory=custom_httpx_factory,
+    )
+    manager = MCPSessionManager(sse_params)
+
+    manager._create_client()
+
+    mock_sse_client.assert_called_once_with(
+        url="https://example.com/mcp",
+        headers=None,
+        timeout=10.0,
+        sse_read_timeout=300.0,
+        httpx_client_factory=custom_httpx_factory,
+    )
+
+  @patch("google.adk.tools.mcp_tool.mcp_session_manager.sse_client")
+  def test_init_with_sse_default_httpx_factory(self, mock_sse_client):
+    """Test that sse_client is called with default httpx_client_factory."""
+    sse_params = SseConnectionParams(
+        url="https://example.com/mcp",
+        timeout=10.0,
+    )
+    manager = MCPSessionManager(sse_params)
+
+    manager._create_client()
+
+    mock_sse_client.assert_called_once_with(
+        url="https://example.com/mcp",
+        headers=None,
+        timeout=10.0,
+        sse_read_timeout=300.0,
+        httpx_client_factory=SseConnectionParams.model_fields[
+            "httpx_client_factory"
+        ].get_default(),
+    )
 
   def test_init_with_streamable_http_params(self):
     """Test initialization with StreamableHTTPConnectionParams."""
@@ -258,20 +300,13 @@ class TestMCPSessionManager:
 
     # Create mock session
     session = MockClientSession()
-    entry = _SessionEntry(
-        session=session,
-        exit_stack=Mock(),
-        loop=Mock(),
-        context=Mock(),
-    )
-    entry.context._is_task_alive = True  # pylint: disable=protected-access
 
     # Not disconnected
-    assert not manager._is_session_disconnected(entry)
+    assert not manager._is_session_disconnected(session)
 
     # Disconnected - read stream closed
     session._read_stream._closed = True
-    assert manager._is_session_disconnected(entry)
+    assert manager._is_session_disconnected(session)
 
   @pytest.mark.asyncio
   async def test_create_session_stdio_new(self):
@@ -287,7 +322,7 @@ class TestMCPSessionManager:
           "google.adk.tools.mcp_tool.mcp_session_manager.AsyncExitStack"
       ) as mock_exit_stack_class:
         with patch(
-            "google.adk.tools.mcp_tool.session_context.SessionContext"
+            "google.adk.tools.mcp_tool.mcp_session_manager.SessionContext"
         ) as mock_session_context_class:
 
           # Setup mocks
@@ -308,11 +343,10 @@ class TestMCPSessionManager:
           assert session == mock_session
           assert len(manager._sessions) == 1
           assert "stdio_session" in manager._sessions
-          entry = manager._sessions["stdio_session"]
-          assert isinstance(entry, _SessionEntry)
-          assert entry.session == mock_session
-          assert entry.loop == asyncio.get_running_loop()
-          assert entry.context is not None  # SessionContext stored
+          session_data = manager._sessions["stdio_session"]
+          assert len(session_data) == 3
+          assert session_data[0] == mock_session
+          assert session_data[2] == asyncio.get_running_loop()
 
           # Verify SessionContext was created
           mock_session_context_class.assert_called_once()
@@ -327,13 +361,10 @@ class TestMCPSessionManager:
     # Create mock existing session
     existing_session = MockClientSession()
     existing_exit_stack = MockAsyncExitStack()
-    mock_session_ctx = Mock()
-    mock_session_ctx._is_task_alive = True  # pylint: disable=protected-access
-    manager._sessions["stdio_session"] = _SessionEntry(  # pylint: disable=protected-access
-        session=existing_session,
-        exit_stack=existing_exit_stack,
-        loop=asyncio.get_running_loop(),
-        context=mock_session_ctx,
+    manager._sessions["stdio_session"] = (
+        existing_session,
+        existing_exit_stack,
+        asyncio.get_running_loop(),
     )
 
     # Session is connected
@@ -352,7 +383,7 @@ class TestMCPSessionManager:
   @pytest.mark.asyncio
   @patch("google.adk.tools.mcp_tool.mcp_session_manager.stdio_client")
   @patch("google.adk.tools.mcp_tool.mcp_session_manager.AsyncExitStack")
-  @patch("google.adk.tools.mcp_tool.session_context.SessionContext")
+  @patch("google.adk.tools.mcp_tool.mcp_session_manager.SessionContext")
   async def test_create_session_timeout(
       self, mock_session_context_class, mock_exit_stack_class, mock_stdio
   ):
@@ -399,17 +430,15 @@ class TestMCPSessionManager:
     session2 = MockClientSession()
     exit_stack2 = MockAsyncExitStack()
 
-    manager._sessions["session1"] = _SessionEntry(  # pylint: disable=protected-access
-        session=session1,
-        exit_stack=exit_stack1,
-        loop=asyncio.get_running_loop(),
-        context=Mock(),
+    manager._sessions["session1"] = (
+        session1,
+        exit_stack1,
+        asyncio.get_running_loop(),
     )
-    manager._sessions["session2"] = _SessionEntry(  # pylint: disable=protected-access
-        session=session2,
-        exit_stack=exit_stack2,
-        loop=asyncio.get_running_loop(),
-        context=Mock(),
+    manager._sessions["session2"] = (
+        session2,
+        exit_stack2,
+        asyncio.get_running_loop(),
     )
 
     await manager.close()
@@ -433,17 +462,15 @@ class TestMCPSessionManager:
     session2 = MockClientSession()
     exit_stack2 = MockAsyncExitStack()
 
-    manager._sessions["session1"] = _SessionEntry(  # pylint: disable=protected-access
-        session=session1,
-        exit_stack=exit_stack1,
-        loop=asyncio.get_running_loop(),
-        context=Mock(),
+    manager._sessions["session1"] = (
+        session1,
+        exit_stack1,
+        asyncio.get_running_loop(),
     )
-    manager._sessions["session2"] = _SessionEntry(  # pylint: disable=protected-access
-        session=session2,
-        exit_stack=exit_stack2,
-        loop=asyncio.get_running_loop(),
-        context=Mock(),
+    manager._sessions["session2"] = (
+        session2,
+        exit_stack2,
+        asyncio.get_running_loop(),
     )
 
     # Should not raise exception
@@ -462,7 +489,7 @@ class TestMCPSessionManager:
   @pytest.mark.asyncio
   @patch("google.adk.tools.mcp_tool.mcp_session_manager.stdio_client")
   @patch("google.adk.tools.mcp_tool.mcp_session_manager.AsyncExitStack")
-  @patch("google.adk.tools.mcp_tool.session_context.SessionContext")
+  @patch("google.adk.tools.mcp_tool.mcp_session_manager.SessionContext")
   async def test_create_and_close_session_in_different_tasks(
       self, mock_session_context_class, mock_exit_stack_class, mock_stdio
   ):
@@ -542,13 +569,7 @@ class TestMCPSessionManager:
           mock_future = Mock()
           mock_run_threadsafe.return_value = mock_future
 
-          entry = _SessionEntry(
-              session=Mock(),
-              exit_stack=mock_exit_stack,
-              loop=loop2,
-              context=Mock(),
-          )
-          await manager._cleanup_session("test_session", entry)  # pylint: disable=protected-access
+          await manager._cleanup_session("test_session", mock_exit_stack, loop2)
 
           # Verify run_coroutine_threadsafe was called
           # ANY is used because a new coroutine object is created each time
@@ -575,41 +596,35 @@ class TestMCPSessionManager:
     # Use a dummy object as a different loop
     different_loop = Mock(spec=asyncio.AbstractEventLoop)
 
-    mock_session_ctx = Mock()
-    mock_session_ctx._is_task_alive = True  # pylint: disable=protected-access
-    manager._sessions["stdio_session"] = _SessionEntry(  # pylint: disable=protected-access
-        session=mock_session,
-        exit_stack=mock_exit_stack,
-        loop=different_loop,
-        context=mock_session_ctx,
+    manager._sessions["stdio_session"] = (
+        mock_session,
+        mock_exit_stack,
+        different_loop,
     )
 
     # 2. Mock creation of a new session
-    # We need to mock create_client and SessionContext
+    # We need to mock create_client, wait_for, and SessionContext
     with patch.object(manager, "_create_client") as mock_create_client:
       with patch(
-          "google.adk.tools.mcp_tool.session_context.SessionContext"
-      ) as mock_session_context_class:
-        # Setup mocks for new session creation
-        mock_create_client.return_value = AsyncMock()
-        new_session = MockClientSession()
+          "google.adk.tools.mcp_tool.mcp_session_manager.asyncio.wait_for"
+      ) as mock_wait_for:
+        with patch(
+            "google.adk.tools.mcp_tool.mcp_session_manager.SessionContext"
+        ) as mock_session_context_class:
+          # Setup mocks for new session creation
+          mock_create_client.return_value = AsyncMock()
+          new_session = MockClientSession()
+          mock_wait_for.return_value = new_session
+          mock_session_context_class.return_value = AsyncMock()
 
-        # Since create_session does:
-        # session = await exit_stack.enter_async_context(session_context)
-        # We need to make the mocked SessionContext's __aenter__
-        # return new_session
-        mock_session_context_instance = AsyncMock()
-        mock_session_context_instance.__aenter__.return_value = new_session
-        mock_session_context_class.return_value = mock_session_context_instance
+          # 3. Call create_session
+          session = await manager.create_session()
 
-        # 3. Call create_session
-        session = await manager.create_session()
-        # 4. Verify results
-        assert session == new_session
-        assert len(manager._sessions) == 1
-        # Verify that old exit_stack.aclose was NOT called since loop was
-        # different
-        mock_exit_stack.aclose.assert_not_called()
+          # 4. Verify results
+          assert session == new_session
+          assert len(manager._sessions) == 1
+          # Verify that old exit_stack.aclose was NOT called since loop was different
+          mock_exit_stack.aclose.assert_not_called()
 
   @pytest.mark.asyncio
   async def test_close_skips_aclose_for_different_loop_sessions(self):
@@ -622,21 +637,11 @@ class TestMCPSessionManager:
 
     session1 = MockClientSession()
     exit_stack1 = MockAsyncExitStack()
-    manager._sessions["session1"] = _SessionEntry(  # pylint: disable=protected-access
-        session=session1,
-        exit_stack=exit_stack1,
-        loop=current_loop,
-        context=Mock(),
-    )
+    manager._sessions["session1"] = (session1, exit_stack1, current_loop)
 
     session2 = MockClientSession()
     exit_stack2 = MockAsyncExitStack()
-    manager._sessions["session2"] = _SessionEntry(  # pylint: disable=protected-access
-        session=session2,
-        exit_stack=exit_stack2,
-        loop=different_loop,
-        context=Mock(),
-    )
+    manager._sessions["session2"] = (session2, exit_stack2, different_loop)
 
     await manager.close()
 
@@ -657,12 +662,7 @@ class TestMCPSessionManager:
     assert isinstance(lock, asyncio.Lock)
 
     # Add a mock session to verify it's cleared on pickling
-    manager._sessions["test"] = _SessionEntry(  # pylint: disable=protected-access
-        session=Mock(),
-        exit_stack=Mock(),
-        loop=asyncio.get_running_loop(),
-        context=Mock(),
-    )
+    manager._sessions["test"] = (Mock(), Mock(), asyncio.get_running_loop())
 
     # Pickle and unpickle
     pickled = pickle.dumps(manager)
@@ -769,98 +769,3 @@ async def test_retry_on_errors_decorator_does_not_retry_exception_from_cancel():
     await mock_function(mock_self)
 
   assert call_count == 1
-
-
-class TestGetSessionContext:
-  """Tests for MCPSessionManager._get_session_context()."""
-
-  def setup_method(self):
-    self.mock_stdio_params = StdioServerParameters(
-        command="test_command", args=[]
-    )
-    self.mock_stdio_connection_params = StdioConnectionParams(
-        server_params=self.mock_stdio_params, timeout=5.0
-    )
-
-  def test_get_session_context_returns_context(self):
-    """Test that _get_session_context returns the stored SessionContext."""
-    manager = MCPSessionManager(self.mock_stdio_connection_params)
-
-    mock_ctx = Mock()
-    manager._sessions["stdio_session"] = _SessionEntry(  # pylint: disable=protected-access
-        session=Mock(),
-        exit_stack=Mock(),
-        loop=Mock(),
-        context=mock_ctx,
-    )
-
-    result = manager._get_session_context()  # pylint: disable=protected-access
-    assert result is mock_ctx
-
-  def test_get_session_context_returns_none_when_no_session(self):
-    """Test that _get_session_context returns None when no session exists."""
-    manager = MCPSessionManager(self.mock_stdio_connection_params)
-
-    result = manager._get_session_context()  # pylint: disable=protected-access
-    assert result is None
-
-
-class TestIsSessionDisconnectedWithContext:
-  """Tests for enhanced _is_session_disconnected with SessionContext."""
-
-  def setup_method(self):
-    self.mock_stdio_params = StdioServerParameters(
-        command="test_command", args=[]
-    )
-    self.mock_stdio_connection_params = StdioConnectionParams(
-        server_params=self.mock_stdio_params, timeout=5.0
-    )
-
-  def test_detects_dead_task(self):
-    """Test that a done background task is detected as disconnected."""
-    manager = MCPSessionManager(self.mock_stdio_connection_params)
-    session = MockClientSession()
-
-    mock_ctx = Mock()
-    mock_ctx._is_task_alive = False  # pylint: disable=protected-access
-    entry = _SessionEntry(
-        session=session,
-        exit_stack=Mock(),
-        loop=Mock(),
-        context=mock_ctx,
-    )
-
-    assert manager._is_session_disconnected(entry)
-
-  def test_alive_task_not_disconnected(self):
-    """Test that an alive background task is not detected as disconnected."""
-    manager = MCPSessionManager(self.mock_stdio_connection_params)
-    session = MockClientSession()
-
-    mock_ctx = Mock()
-    mock_ctx._is_task_alive = True  # pylint: disable=protected-access
-    entry = _SessionEntry(
-        session=session,
-        exit_stack=Mock(),
-        loop=Mock(),
-        context=mock_ctx,
-    )
-
-    assert not manager._is_session_disconnected(entry)
-
-  def test_no_context_falls_back_to_stream_check(self):
-    """Test that without context, only stream state is checked."""
-    manager = MCPSessionManager(self.mock_stdio_connection_params)
-    session = MockClientSession()
-
-    entry = _SessionEntry(
-        session=session,
-        exit_stack=Mock(),
-        loop=Mock(),
-        context=None,
-    )
-
-    assert not manager._is_session_disconnected(entry)
-
-    session._read_stream._closed = True
-    assert manager._is_session_disconnected(entry)
