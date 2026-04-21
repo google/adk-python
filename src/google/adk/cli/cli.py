@@ -56,6 +56,8 @@ async def run_input_file(
     credential_service: BaseCredentialService,
     input_path: str,
     memory_service: Optional[BaseMemoryService] = None,
+    max_llm_calls: int = 500,
+    avatar_config: Optional[types.AvatarConfig] = None,
 ) -> Session:
   app = (
       agent_or_app
@@ -81,7 +83,12 @@ async def run_input_file(
     content = types.Content(role='user', parts=[types.Part(text=query)])
     async with Aclosing(
         runner.run_async(
-            user_id=session.user_id, session_id=session.id, new_message=content
+            user_id=session.user_id,
+            session_id=session.id,
+            new_message=content,
+            run_config=RunConfig(
+                max_llm_calls=max_llm_calls, avatar_config=avatar_config
+            ),
         )
     ) as agen:
       async for event in agen:
@@ -98,6 +105,8 @@ async def run_interactively(
     session_service: BaseSessionService,
     credential_service: BaseCredentialService,
     memory_service: Optional[BaseMemoryService] = None,
+    max_llm_calls: int = 500,
+    avatar_config: Optional[types.AvatarConfig] = None,
 ) -> None:
   app = (
       root_agent_or_app
@@ -124,6 +133,9 @@ async def run_interactively(
             new_message=types.Content(
                 role='user', parts=[types.Part(text=query)]
             ),
+            run_config=RunConfig(
+                max_llm_calls=max_llm_calls, avatar_config=avatar_config
+            ),
         )
     ) as agen:
       async for event in agen:
@@ -145,6 +157,8 @@ async def run_cli(
     artifact_service_uri: Optional[str] = None,
     memory_service_uri: Optional[str] = None,
     use_local_storage: bool = True,
+    max_llm_calls: int = 500,
+    avatar_config: Optional[str] = None,
 ) -> None:
   """Runs an interactive CLI for a certain agent.
 
@@ -170,6 +184,19 @@ async def run_cli(
   user_id = 'test_user'
 
   agents_dir = str(agent_parent_path)
+
+  avatar_config_obj = None
+  if avatar_config:
+    try:
+      if Path(avatar_config).is_file():
+        with open(avatar_config, "r", encoding="utf-8") as f:
+          config_dict = json.load(f)
+      else:
+        config_dict = json.loads(avatar_config)
+      avatar_config_obj = types.AvatarConfig.model_validate(config_dict)
+    except Exception as e:
+      click.secho(f"Warning: Failed to parse avatar_config: {e}", fg="yellow")
+
   agent_loader = AgentLoader(agents_dir=agents_dir)
   agent_or_app = agent_loader.load_agent(agent_folder_name)
   session_app_name = (
@@ -224,6 +251,8 @@ async def run_cli(
         memory_service=memory_service,
         credential_service=credential_service,
         input_path=input_file,
+        max_llm_calls=max_llm_calls,
+        avatar_config=avatar_config_obj,
     )
   elif saved_session_file:
     # Load the saved session from file
@@ -250,6 +279,8 @@ async def run_cli(
         session_service,
         credential_service,
         memory_service=memory_service,
+        max_llm_calls=max_llm_calls,
+        avatar_config=avatar_config_obj,
     )
   else:
     session = await session_service.create_session(
@@ -263,6 +294,8 @@ async def run_cli(
         session_service,
         credential_service,
         memory_service=memory_service,
+        max_llm_calls=max_llm_calls,
+        avatar_config=avatar_config_obj,
     )
 
   if save_session:

@@ -605,6 +605,7 @@ def adk_services_options(*, default_use_local_storage: bool = True):
 @main.command("run", cls=HelpfulCommand)
 @feature_options()
 @adk_services_options(default_use_local_storage=True)
+@fast_api_common_options()
 @click.option(
     "--save_session",
     type=bool,
@@ -659,6 +660,20 @@ def cli_run(
     session_id: Optional[str],
     replay: Optional[str],
     resume: Optional[str],
+    host: str = "127.0.0.1",
+    port: int = 8000,
+    allow_origins: Optional[list[str]] = None,
+    log_level: str = "INFO",
+    trace_to_cloud: bool = False,
+    otel_to_cloud: bool = False,
+    reload: bool = True,
+    a2a: bool = False,
+    reload_agents: bool = False,
+    eval_storage_uri: Optional[str] = None,
+    max_llm_calls: int = 500,
+    avatar_config: Optional[str] = None,
+    extra_plugins: Optional[list[str]] = None,
+    url_prefix: Optional[str] = None,
     session_service_uri: Optional[str] = None,
     artifact_service_uri: Optional[str] = None,
     memory_service_uri: Optional[str] = None,
