@@ -15,17 +15,20 @@
 from __future__ import annotations
 
 from typing import Any
+from typing import cast
 from typing import Optional
-import uuid
 
+from google.adk.platform import uuid as platform_uuid
 from google.genai import types
 from pydantic import BaseModel
 from pydantic import ConfigDict
 from pydantic import Field
 from pydantic import PrivateAttr
 
+from ..apps.app import EventsCompactionConfig
 from ..apps.app import ResumabilityConfig
 from ..artifacts.base_artifact_service import BaseArtifactService
+from ..auth.auth_credential import AuthCredential
 from ..auth.credential_service.base_credential_service import BaseCredentialService
 from ..events.event import Event
 from ..memory.base_memory_service import BaseMemoryService
@@ -200,11 +203,20 @@ class InvocationContext(BaseModel):
   resumability_config: Optional[ResumabilityConfig] = None
   """The resumability config that applies to all agents under this invocation."""
 
+  events_compaction_config: Optional[EventsCompactionConfig] = None
+  """The compaction config for this invocation."""
+
+  token_compaction_checked: bool = False
+  """Whether token-threshold compaction ran during this invocation."""
+
   plugin_manager: PluginManager = Field(default_factory=PluginManager)
   """The manager for keeping track of plugins in this invocation."""
 
   canonical_tools_cache: Optional[list[BaseTool]] = None
   """The cache of canonical tools for this invocation."""
+
+  credential_by_key: dict[str, AuthCredential] = Field(default_factory=dict)
+  """The resolved credentials for this invocation, keyed by credential_key."""
 
   _invocation_cost_manager: _InvocationCostManager = PrivateAttr(
       default_factory=_InvocationCostManager
@@ -389,24 +401,21 @@ class InvocationContext(BaseModel):
     return False
 
   # TODO: Move this method from invocation_context to a dedicated module.
-  # TODO: Converge this method with find_matching_function_call in llm_flows.
   def _find_matching_function_call(
       self, function_response_event: Event
   ) -> Optional[Event]:
     """Finds the function call event in the current invocation that matches the function response id."""
+    from ..flows.llm_flows.functions import find_event_by_function_call_id
+
     function_responses = function_response_event.get_function_responses()
     if not function_responses:
       return None
-    function_call_id = function_responses[0].id
 
-    events = self._get_events(current_invocation=True)
-    # The last event is function_response_event, so we search backwards from the
-    # one before it.
-    for event in reversed(events[:-1]):
-      if any(fc.id == function_call_id for fc in event.get_function_calls()):
-        return event
-    return None
+    # Search backwards from the event before the current response event.
+    return find_event_by_function_call_id(
+        self._get_events(current_invocation=True)[:-1], function_responses[0].id
+    )
 
 
 def new_invocation_context_id() -> str:
-  return "e-" + str(uuid.uuid4())
+  return "e-" + cast(str, platform_uuid.new_uuid())

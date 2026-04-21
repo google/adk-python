@@ -22,13 +22,26 @@ from typing import Optional
 from packaging.version import InvalidVersion
 from packaging.version import Version
 
+from .env_utils import is_env_enabled
+
+_DISABLE_GEMINI_MODEL_ID_CHECK_ENV_VAR = 'ADK_DISABLE_GEMINI_MODEL_ID_CHECK'
+
+
+def is_gemini_model_id_check_disabled() -> bool:
+  """Returns True when Gemini model-id validation should be bypassed.
+
+  This opt-in environment variable is intended for internal usage where model
+  ids may not follow the public ``gemini-*`` naming convention.
+  """
+  return is_env_enabled(_DISABLE_GEMINI_MODEL_ID_CHECK_ENV_VAR)
+
 
 def extract_model_name(model_string: str) -> str:
   """Extract the actual model name from either simple or path-based format.
 
   Args:
     model_string: Either a simple model name like "gemini-2.5-pro" or a
-      path-based model name like "projects/.../models/gemini-2.0-flash-001"
+      path-based model name like "projects/.../models/gemini-2.5-flash"
 
   Returns:
     The extracted model name (e.g., "gemini-2.5-pro")
@@ -112,3 +125,17 @@ def is_gemini_2_or_above(model_string: Optional[str]) -> bool:
     return False
 
   return parsed_version.major >= 2
+
+
+def is_gemini_3_1_flash_live(model_string: Optional[str]) -> bool:
+  """Check if the model is a Gemini 3.1 Flash Live model.
+
+  Args:
+    model_string: The model name
+
+  Returns:
+    True if it's a Gemini 3.1 Flash Live model, False otherwise
+  """
+  if not model_string:
+    return False
+  return model_string.startswith('gemini-3.1-flash-live')

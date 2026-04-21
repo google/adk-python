@@ -69,6 +69,11 @@ You can install the latest stable version of ADK using `pip`:
 pip install google-adk
 ```
 
+To install optional integrations, you can use the following command:
+```bash
+pip install "google-adk[extensions]"
+```
+
 The release cadence is roughly bi-weekly.
 
 This version is recommended for most users as it represents the most recent official release.
@@ -115,7 +120,7 @@ root_agent = Agent(
 
 ### Define a multi-agent system:
 
-Define a multi-agent system with coordinator agent, greeter agent, and task execution agent. Then ADK engine and the model will guide the agents works together to accomplish the task.
+Define a multi-agent system with coordinator agent, greeter agent, and task execution agent. Then ADK engine and the model will guide the agents to work together to accomplish the task.
 
 ```python
 from google.adk.agents import LlmAgent, BaseAgent

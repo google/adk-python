@@ -31,6 +31,7 @@ from google.adk.models.llm_request import LlmRequest
 from google.adk.models.llm_response import LlmResponse
 from google.adk.utils._client_labels_utils import _AGENT_ENGINE_TELEMETRY_ENV_VARIABLE_NAME
 from google.adk.utils._client_labels_utils import _AGENT_ENGINE_TELEMETRY_TAG
+from google.adk.utils._google_client_headers import get_tracking_headers
 from google.adk.utils.variant_utils import GoogleLLMVariant
 from google.genai import types
 from google.genai.errors import ClientError
@@ -152,6 +153,32 @@ def test_supported_models():
       models[3]
       == r"projects\/.+\/locations\/.+\/publishers\/google\/models\/gemini.+"
   )
+
+
+def test_gemini_api_client_creation_with_projects_prefix():
+  model = Gemini(
+      model="projects/test-project/locations/test-location/publishers/google/models/gemini-1.5-pro"
+  )
+  with mock.patch("google.genai.Client", autospec=True) as mock_client:
+    _ = model.api_client
+    mock_client.assert_called_once()
+    _, kwargs = mock_client.call_args
+    assert kwargs["vertexai"] is True
+    assert "project" not in kwargs
+    assert "location" not in kwargs
+
+
+def test_gemini_live_api_client_creation_with_projects_prefix():
+  model = Gemini(
+      model="projects/test-project/locations/test-location/publishers/google/models/gemini-1.5-pro"
+  )
+  with mock.patch("google.genai.Client", autospec=True) as mock_client:
+    _ = model._live_api_client
+    assert mock_client.call_count == 2
+
+    # Second call is for _live_api_client
+    _, kwargs = mock_client.call_args_list[1]
+    assert kwargs["vertexai"] is True
 
 
 def test_client_version_header():
@@ -469,7 +496,7 @@ async def test_generate_content_async_with_custom_headers(
   """Test that tracking headers are updated when custom headers are provided."""
   # Add custom headers to the request config
   custom_headers = {"custom-header": "custom-value"}
-  tracking_headers = gemini_llm._tracking_headers()
+  tracking_headers = get_tracking_headers()
   for key in tracking_headers:
     custom_headers[key] = "custom " + tracking_headers[key]
   llm_request.config.http_options = types.HttpOptions(headers=custom_headers)
@@ -494,7 +521,7 @@ async def test_generate_content_async_with_custom_headers(
     config_arg = call_args.kwargs["config"]
 
     for key, value in config_arg.http_options.headers.items():
-      tracking_headers = gemini_llm._tracking_headers()
+      tracking_headers = get_tracking_headers()
       if key in tracking_headers:
         assert value == tracking_headers[key] + " custom"
       else:
@@ -545,7 +572,7 @@ async def test_generate_content_async_stream_with_custom_headers(
     config_arg = call_args.kwargs["config"]
 
     expected_headers = custom_headers.copy()
-    expected_headers.update(gemini_llm._tracking_headers())
+    expected_headers.update(get_tracking_headers())
     assert config_arg.http_options.headers == expected_headers
 
     assert len(responses) == 2
@@ -599,7 +626,7 @@ async def test_generate_content_async_patches_tracking_headers(
     assert final_config.http_options is not None
     assert (
         final_config.http_options.headers["x-goog-api-client"]
-        == gemini_llm._tracking_headers()["x-goog-api-client"]
+        == get_tracking_headers()["x-goog-api-client"]
     )
 
     assert len(responses) == 2 if stream else 1
@@ -633,7 +660,7 @@ def test_live_api_client_properties(gemini_llm):
     assert http_options.api_version == "v1beta1"
 
     # Check that tracking headers are included
-    tracking_headers = gemini_llm._tracking_headers()
+    tracking_headers = get_tracking_headers()
     for key, value in tracking_headers.items():
       assert key in http_options.headers
       assert value in http_options.headers[key]
@@ -671,7 +698,7 @@ async def test_connect_with_custom_headers(gemini_llm, llm_request):
 
       # Verify that tracking headers were merged with custom headers
       expected_headers = custom_headers.copy()
-      expected_headers.update(gemini_llm._tracking_headers())
+      expected_headers.update(get_tracking_headers())
       assert config_arg.http_options.headers == expected_headers
 
       # Verify that API version was set
@@ -1653,9 +1680,10 @@ async def test_adapt_computer_use_tool_wait():
   assert wait_5_seconds_tool._coordinate_space == (1000, 1000)
 
   # Verify calling the new tool calls the original with 5 seconds
+  # The wrapper adds tool_context parameter
   result = await wait_5_seconds_tool.func()
   assert result == "mock_result"
-  mock_wait_func.assert_awaited_once_with(5)
+  mock_wait_func.assert_awaited_once_with(5, tool_context=None)
 
 
 @pytest.mark.asyncio

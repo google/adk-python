@@ -29,6 +29,7 @@ State keys used:
 - recommendations: Accumulated recommendations from all groups
 """
 
+import copy
 import os
 import sys
 from typing import Any
@@ -57,8 +58,25 @@ from google.adk import Agent
 from google.adk.agents.loop_agent import LoopAgent
 from google.adk.agents.readonly_context import ReadonlyContext
 from google.adk.agents.sequential_agent import SequentialAgent
+from google.adk.models import Gemini
 from google.adk.tools.exit_loop_tool import exit_loop
 from google.adk.tools.tool_context import ToolContext
+from google.genai import types
+
+# Retry configuration for handling API rate limits and overload
+_RETRY_OPTIONS = types.HttpRetryOptions(
+    initial_delay=10,
+    attempts=8,
+    exp_base=2,
+    max_delay=300,
+    http_status_codes=[429, 503],
+)
+
+# Use gemini-3-pro-preview for planning and summary (better quality)
+GEMINI_PRO_WITH_RETRY = Gemini(
+    model="gemini-3-pro-preview",
+    retry_options=_RETRY_OPTIONS,
+)
 
 # Maximum number of files per analysis group to avoid context overflow
 MAX_FILES_PER_GROUP = 5
@@ -97,6 +115,7 @@ def get_next_file_group(tool_context: ToolContext) -> dict[str, Any]:
   current_index = tool_context.state.get("current_group_index", 0)
 
   if current_index >= len(file_groups):
+    print(f"[Progress] All {len(file_groups)} groups processed.")
     return {
         "status": "complete",
         "message": "All file groups have been processed.",
@@ -105,7 +124,11 @@ def get_next_file_group(tool_context: ToolContext) -> dict[str, Any]:
     }
 
   current_group = file_groups[current_index]
-  tool_context.state["current_group_index"] = current_index + 1
+  file_paths = [f.get("relative_path", "?") for f in current_group]
+  print(
+      f"[Progress] Starting group {current_index + 1}/{len(file_groups)}:"
+      f" {file_paths}"
+  )
 
   return {
       "status": "success",
@@ -140,6 +163,16 @@ def save_group_recommendations(
   all_recommendations = tool_context.state.get("recommendations", [])
   all_recommendations.extend(recommendations)
   tool_context.state["recommendations"] = all_recommendations
+  # Advance index only after recommendations are saved, so interrupted
+  # groups get retried on resume instead of being skipped.
+  tool_context.state["current_group_index"] = group_index + 1
+
+  total_groups = len(tool_context.state.get("file_groups", []))
+  print(
+      f"[Progress] Group {group_index + 1}/{total_groups} done."
+      f" +{len(recommendations)} recommendations"
+      f" ({len(all_recommendations)} total)"
+  )
 
   return {
       "status": "success",
@@ -162,6 +195,11 @@ def get_all_recommendations(tool_context: ToolContext) -> dict[str, Any]:
   start_tag = tool_context.state.get("start_tag", "unknown")
   end_tag = tool_context.state.get("end_tag", "unknown")
   compare_url = tool_context.state.get("compare_url", "")
+
+  print(
+      f"[Summary] Retrieving recommendations: {len(recommendations)} total,"
+      f" release {start_tag} → {end_tag}"
+  )
 
   return {
       "status": "success",
@@ -209,6 +247,12 @@ def save_release_info(
   tool_context.state["release_summary"] = release_summary
   tool_context.state["all_changed_files"] = all_changed_files
 
+  total_files = sum(len(group) for group in file_groups)
+  print(
+      f"[Planning] Release {start_tag} → {end_tag}:"
+      f" {total_files} files in {len(file_groups)} groups"
+  )
+
   return {
       "status": "success",
       "start_tag": start_tag,
@@ -249,7 +293,7 @@ def get_release_context(tool_context: ToolContext) -> dict[str, Any]:
 # =============================================================================
 
 planner_agent = Agent(
-    model="gemini-2.5-pro",
+    model=GEMINI_PRO_WITH_RETRY,
     name="release_planner",
     description=(
         "Plans the analysis by fetching release info and organizing files into"
@@ -272,10 +316,12 @@ efficient processing.
 
 3. Call `get_changed_files_summary` to get the list of changed files WITHOUT
    the full patches (to save context space).
+   - **IMPORTANT**: Pass these parameters:
+     - `local_repo_path="{LOCAL_REPOS_DIR_PATH}/{CODE_REPO}"` to avoid 300-file limit
+     - `path_filter="src/google/adk/"` to only get ADK source files (reduces token usage)
 
-4. Filter and organize the files:
-   - **INCLUDE** only files in `src/google/adk/` directory
-   - **EXCLUDE** test files, `__init__.py`, and files outside src/
+4. Further filter the returned files:
+   - **EXCLUDE** test files and `__init__.py` files
    - **IMPORTANT**: Do NOT exclude any file just because it has few changes.
      Even single-line changes to public APIs need documentation updates.
    - **PRIORITIZE** by importance:
@@ -385,10 +431,13 @@ files and finding related documentation that needs updating.
 4. For EACH significant change, call `search_local_git_repo` to find related docs
    in {LOCAL_REPOS_DIR_PATH}/{DOC_REPO}/docs/
    - Search for the feature name, class name, or related keywords
+   - **ALWAYS** pass `ignored_dirs=["api-reference"]` to skip auto-generated API
+     reference docs (they are updated automatically by code, not manually)
    - If no docs found, recommend creating new documentation
 
 5. Call `read_local_git_repo_file_content` to read the relevant doc files
    and check if they need updating.
+   - **SKIP** any files under `docs/api-reference/` — these are auto-generated.
 
 6. For each documentation update needed, create a recommendation with:
    - summary: Brief summary of what needs to change
@@ -421,12 +470,13 @@ files and finding related documentation that needs updating.
 
 
 file_group_analyzer = Agent(
-    model="gemini-2.5-pro",
+    model=GEMINI_PRO_WITH_RETRY,
     name="file_group_analyzer",
     description=(
         "Analyzes a group of changed files and generates recommendations."
     ),
     instruction=file_analyzer_instruction,
+    include_contents="none",
     tools=[
         get_next_file_group,
         get_release_context,  # Get global context to avoid duplicates
@@ -505,7 +555,7 @@ Present a summary of:
 
 
 summary_agent = Agent(
-    model="gemini-2.5-pro",
+    model=GEMINI_PRO_WITH_RETRY,
     name="summary_agent",
     description="Compiles recommendations and creates the GitHub issue.",
     instruction=summary_instruction,
@@ -535,12 +585,32 @@ analysis_pipeline = SequentialAgent(
 )
 
 
+# Resume pipeline: skips planner, continues from where loop left off.
+# Deep copy agents since ADK agents can only have one parent.
+_resume_loop = copy.deepcopy(file_analysis_loop)
+_resume_loop.parent_agent = None
+_resume_summary = copy.deepcopy(summary_agent)
+_resume_summary.parent_agent = None
+
+resume_pipeline = SequentialAgent(
+    name="resume_pipeline",
+    description=(
+        "Resumes the release analysis pipeline from the file analysis loop,"
+        " skipping the planning phase."
+    ),
+    sub_agents=[
+        _resume_loop,
+        _resume_summary,
+    ],
+)
+
+
 # =============================================================================
 # Root Agent: Entry point that understands user requests
 # =============================================================================
 
 root_agent = Agent(
-    model="gemini-2.5-pro",
+    model=GEMINI_PRO_WITH_RETRY,
     name="adk_release_analyzer",
     description=(
         "Analyzes ADK Python releases and generates documentation update"

@@ -14,11 +14,15 @@
 from __future__ import annotations
 
 from datetime import datetime
+import importlib
 import json
 import os
 import shutil
 import subprocess
+import sys
+import traceback
 from typing import Final
+from typing import Literal
 from typing import Optional
 import warnings
 
@@ -95,7 +99,7 @@ COPY --chown=myuser:myuser "agents/{app_name}/" "/app/agents/{app_name}/"
 
 EXPOSE {port}
 
-CMD adk {command} --port={port} {host_option} {service_option} {trace_to_cloud_option} {otel_to_cloud_option} {allow_origins_option} {a2a_option} "/app/agents"
+CMD adk {command} --port={port} {host_option} {service_option} {trace_to_cloud_option} {otel_to_cloud_option} {allow_origins_option} {a2a_option} {trigger_sources_option} "/app/agents"
 """
 
 _AGENT_ENGINE_APP_TEMPLATE: Final[str] = """
@@ -105,7 +109,8 @@ from vertexai.agent_engines import AdkApp
 
 if {is_config_agent}:
   from google.adk.agents import config_agent_utils
-  root_agent = config_agent_utils.from_config("{agent_folder}/root_agent.yaml")
+  config_path = os.path.join(os.path.dirname(__file__), "root_agent.yaml")
+  root_agent = config_agent_utils.from_config(config_path)
 else:
   from .agent import {adk_app_object}
 
@@ -464,6 +469,122 @@ def _validate_gcloud_extra_args(
       )
 
 
+def _validate_agent_import(
+    agent_src_path: str,
+    adk_app_object: str,
+    is_config_agent: bool,
+) -> None:
+  """Validates that the agent module can be imported successfully.
+
+  This pre-deployment validation catches common issues like missing
+  dependencies or import errors in custom BaseLlm implementations before
+  the agent is deployed to Agent Engine. This provides clearer error
+  messages and prevents deployments that would fail at runtime.
+
+  Args:
+    agent_src_path: Path to the staged agent source code.
+    adk_app_object: The Python object name to import ('root_agent' or 'app').
+    is_config_agent: Whether this is a config-based agent.
+
+  Raises:
+    click.ClickException: If the agent module cannot be imported.
+  """
+  if is_config_agent:
+    # Config agents are loaded from YAML, skip Python import validation
+    return
+
+  agent_module_path = os.path.join(agent_src_path, 'agent.py')
+  if not os.path.exists(agent_module_path):
+    raise click.ClickException(
+        f'Agent module not found at {agent_module_path}. '
+        'Please ensure your agent folder contains an agent.py file.'
+    )
+
+  # Add the parent directory to sys.path temporarily for import resolution
+  parent_dir = os.path.dirname(agent_src_path)
+  module_name = os.path.basename(agent_src_path)
+
+  original_sys_path = sys.path.copy()
+  original_sys_modules_keys = set(sys.modules.keys())
+  try:
+    # Add parent directory to path so imports work correctly
+    if parent_dir not in sys.path:
+      sys.path.insert(0, parent_dir)
+    try:
+      module = importlib.import_module(f'{module_name}.agent')
+    except ImportError as e:
+      error_msg = str(e)
+      tb = traceback.format_exc()
+
+      # Check for common issues
+      if 'BaseLlm' in tb or 'base_llm' in tb.lower():
+        raise click.ClickException(
+            'Failed to import agent module due to a BaseLlm-related error:\n'
+            f'{error_msg}\n\n'
+            'This error often occurs when deploying agents with custom LLM '
+            'implementations. Please ensure:\n'
+            '1. All custom LLM classes are defined in files within your agent '
+            'folder\n'
+            '2. All required dependencies are listed in requirements.txt\n'
+            '3. Import paths use relative imports (e.g., "from .my_llm import '
+            'MyLlm")\n'
+            '4. Your custom BaseLlm class and its dependencies are installed\n'
+            '\n'
+            'If this failure is expected (e.g., missing local dependencies), '
+            'disable agent import validation by omitting '
+            '--validate-agent-import (default) or passing '
+            '--skip-agent-import-validation (or --no-validate-agent-import).'
+        ) from e
+      else:
+        raise click.ClickException(
+            f'Failed to import agent module:\n{error_msg}\n\n'
+            'Please ensure all dependencies are listed in requirements.txt '
+            'and all imports are resolvable.\n\n'
+            f'Full traceback:\n{tb}\n\n'
+            'If this failure is expected (e.g., missing local dependencies), '
+            'disable agent import validation by omitting '
+            '--validate-agent-import (default) or passing '
+            '--skip-agent-import-validation (or --no-validate-agent-import).'
+        ) from e
+    except Exception as e:
+      tb = traceback.format_exc()
+      raise click.ClickException(
+          f'Error while loading agent module:\n{e}\n\n'
+          'Please check your agent code for errors.\n\n'
+          f'Full traceback:\n{tb}\n\n'
+          'If this failure is expected (e.g., missing local dependencies), '
+          'disable agent import validation by omitting '
+          '--validate-agent-import (default) or passing '
+          '--skip-agent-import-validation (or --no-validate-agent-import).'
+      ) from e
+
+    # Check that the expected object exists
+    if not hasattr(module, adk_app_object):
+      available_attrs = [
+          attr for attr in dir(module) if not attr.startswith('_')
+      ]
+      raise click.ClickException(
+          f"Agent module does not export '{adk_app_object}'. "
+          f'Available exports: {available_attrs}\n\n'
+          'Please ensure your agent.py exports either "root_agent" or "app".'
+      )
+
+    click.echo(
+        'Agent module validation successful: '
+        f'found "{adk_app_object}" in agent.py'
+    )
+
+  finally:
+    # Restore original sys.path
+    sys.path[:] = original_sys_path
+    # Clean up modules introduced by validation.
+    for key in list(sys.modules.keys()):
+      if key in original_sys_modules_keys:
+        continue
+      if key == module_name or key.startswith(f'{module_name}.'):
+        sys.modules.pop(key, None)
+
+
 def _get_service_option_by_adk_version(
     adk_version: str,
     session_uri: Optional[str],
@@ -524,6 +645,7 @@ def to_cloud_run(
     memory_service_uri: Optional[str] = None,
     use_local_storage: bool = False,
     a2a: bool = False,
+    trigger_sources: Optional[str] = None,
     extra_gcloud_args: Optional[tuple[str, ...]] = None,
 ):
   """Deploys an agent to Google Cloud Run.
@@ -594,6 +716,9 @@ def to_cloud_run(
         f'--allow_origins={",".join(allow_origins)}' if allow_origins else ''
     )
     a2a_option = '--a2a' if a2a else ''
+    trigger_sources_option = (
+        f'--trigger_sources={trigger_sources}' if trigger_sources else ''
+    )
     dockerfile_content = _DOCKERFILE_TEMPLATE.format(
         gcp_project_id=project,
         gcp_region=region,
@@ -614,6 +739,7 @@ def to_cloud_run(
         adk_version=adk_version,
         host_option=host_option,
         a2a_option=a2a_option,
+        trigger_sources_option=trigger_sources_option,
     )
     dockerfile_path = os.path.join(temp_folder, 'Dockerfile')
     os.makedirs(temp_folder, exist_ok=True)
@@ -682,6 +808,24 @@ def to_cloud_run(
     shutil.rmtree(temp_folder)
 
 
+def _print_agent_engine_url(resource_name: str) -> None:
+  """Prints the Google Cloud Console URL for the deployed agent."""
+  parts = resource_name.split('/')
+  if len(parts) >= 6 and parts[0] == 'projects' and parts[2] == 'locations':
+    project_id = parts[1]
+    region = parts[3]
+    engine_id = parts[5]
+
+    url = (
+        'https://console.cloud.google.com/vertex-ai/agents/agent-engines'
+        f'/locations/{region}/agent-engines/{engine_id}/playground'
+        f'?project={project_id}'
+    )
+    click.secho(
+        f'\n🎉 View your deployed agent here:\n{url}\n', fg='cyan', bold=True
+    )
+
+
 def to_agent_engine(
     *,
     agent_folder: str,
@@ -701,6 +845,7 @@ def to_agent_engine(
     requirements_file: Optional[str] = None,
     env_file: Optional[str] = None,
     agent_engine_config_file: Optional[str] = None,
+    skip_agent_import_validation: bool = True,
 ):
   """Deploys an agent to Vertex AI Agent Engine.
 
@@ -746,8 +891,12 @@ def to_agent_engine(
     absolutize_imports (bool): Optional. Default is True. Whether to absolutize
       imports. If True, all relative imports will be converted to absolute
       import statements.
-    project (str): Optional. Google Cloud project id.
-    region (str): Optional. Google Cloud region.
+    project (str): Optional. Google Cloud project id for the deployed agent. If
+      not specified, the project from the `GOOGLE_CLOUD_PROJECT` environment
+      variable will be used. It will be ignored if `api_key` is specified.
+    region (str): Optional. Google Cloud region for the deployed agent. If not
+      specified, the region from the `GOOGLE_CLOUD_LOCATION` environment
+      variable will be used. It will be ignored if `api_key` is specified.
     display_name (str): Optional. The display name of the Agent Engine.
     description (str): Optional. The description of the Agent Engine.
     requirements_file (str): Optional. The filepath to the `requirements.txt`
@@ -760,6 +909,10 @@ def to_agent_engine(
     agent_engine_config_file (str): The filepath to the agent engine config file
       to use. If not specified, the `.agent_engine_config.json` file in the
       `agent_folder` will be used.
+    skip_agent_import_validation (bool): Optional. Default is True. If True,
+      skip the pre-deployment import validation of `agent.py`. This can be
+      useful when the local environment does not have the same dependencies as
+      the deployment environment.
   """
   app_name = os.path.basename(agent_folder)
   display_name = display_name or app_name
@@ -819,6 +972,13 @@ def to_agent_engine(
 
     click.echo('Resolving files and dependencies...')
     agent_config = {}
+    if agent_engine_config_file and not os.path.exists(
+        agent_engine_config_file
+    ):
+      raise click.ClickException(
+          'Agent engine config file not found: '
+          f'{parent_folder}/{agent_engine_config_file}'
+      )
     if not agent_engine_config_file:
       # Attempt to read the agent engine config from .agent_engine_config.json in the dir (if any).
       agent_engine_config_file = os.path.join(
@@ -888,7 +1048,7 @@ def to_agent_engine(
             project = env_project
             click.echo(f'{project=} set by GOOGLE_CLOUD_PROJECT in {env_file}')
       if 'GOOGLE_CLOUD_LOCATION' in env_vars:
-        env_region = env_vars.pop('GOOGLE_CLOUD_LOCATION')
+        env_region = env_vars.get('GOOGLE_CLOUD_LOCATION')
         if env_region:
           if region:
             click.secho(
@@ -932,12 +1092,20 @@ def to_agent_engine(
 
     import vertexai
 
+    from ..utils._google_client_headers import get_tracking_headers
+
     if project and region:
       click.echo('Initializing Vertex AI...')
-      client = vertexai.Client(project=project, location=region)
+      client = vertexai.Client(
+          project=project,
+          location=region,
+          http_options={'headers': get_tracking_headers()},
+      )
     elif api_key:
       click.echo('Initializing Vertex AI in Express Mode with API key...')
-      client = vertexai.Client(api_key=api_key)
+      client = vertexai.Client(
+          api_key=api_key, http_options={'headers': get_tracking_headers()}
+      )
     else:
       click.echo(
           'No project/region or api_key provided. '
@@ -951,6 +1119,11 @@ def to_agent_engine(
     if os.path.exists(config_root_agent_file):
       click.echo(f'Config agent detected: {config_root_agent_file}')
       is_config_agent = True
+
+    # Validate that the agent module can be imported before deployment.
+    if not skip_agent_import_validation:
+      click.echo('Validating agent module...')
+      _validate_agent_import(agent_src_path, adk_app_object, is_config_agent)
 
     adk_app_file = os.path.join(temp_folder, f'{adk_app}.py')
     if adk_app_object == 'root_agent':
@@ -995,11 +1168,13 @@ def to_agent_engine(
           f'✅ Created agent engine: {agent_engine.api_resource.name}',
           fg='green',
       )
+      _print_agent_engine_url(agent_engine.api_resource.name)
     else:
       if project and region and not agent_engine_id.startswith('projects/'):
         agent_engine_id = f'projects/{project}/locations/{region}/reasoningEngines/{agent_engine_id}'
       client.agent_engines.update(name=agent_engine_id, config=agent_config)
       click.secho(f'✅ Updated agent engine: {agent_engine_id}', fg='green')
+      _print_agent_engine_url(agent_engine_id)
   finally:
     click.echo(f'Cleaning up the temp folder: {temp_folder}')
     shutil.rmtree(agent_src_path)
@@ -1028,6 +1203,10 @@ def to_gke(
     memory_service_uri: Optional[str] = None,
     use_local_storage: bool = False,
     a2a: bool = False,
+    trigger_sources: Optional[str] = None,
+    service_type: Literal[
+        'ClusterIP', 'NodePort', 'LoadBalancer'
+    ] = 'ClusterIP',
 ):
   """Deploys an agent to Google Kubernetes Engine(GKE).
 
@@ -1055,6 +1234,7 @@ def to_gke(
     artifact_service_uri: The URI of the artifact service.
     memory_service_uri: The URI of the memory service.
     use_local_storage: Whether to use local .adk storage in the container.
+    service_type: The Kubernetes Service type (default: ClusterIP).
   """
   click.secho(
       '\n🚀 Starting ADK Agent Deployment to GKE...', fg='cyan', bold=True
@@ -1121,6 +1301,9 @@ def to_gke(
         adk_version=adk_version,
         host_option=host_option,
         a2a_option='--a2a' if a2a else '',
+        trigger_sources_option=(
+            f'--trigger_sources={trigger_sources}' if trigger_sources else ''
+        ),
     )
     dockerfile_path = os.path.join(temp_folder, 'Dockerfile')
     os.makedirs(temp_folder, exist_ok=True)
@@ -1192,7 +1375,7 @@ kind: Service
 metadata:
   name: {service_name}
 spec:
-  type: LoadBalancer
+  type: {service_type}
   selector:
     app: {service_name}
   ports:
@@ -1246,3 +1429,11 @@ spec:
   click.secho(
       '\n🎉 Deployment to GKE finished successfully!', fg='cyan', bold=True
   )
+  if service_type == 'ClusterIP':
+    click.echo(
+        '\nThe service is only reachable from within the cluster.'
+        ' To access it locally, run:'
+        f'\n  kubectl port-forward svc/{service_name} {port}:{port}'
+        '\n\nTo expose the service externally, add a Gateway or'
+        ' re-deploy with --service_type=LoadBalancer.'
+    )

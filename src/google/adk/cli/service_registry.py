@@ -250,9 +250,16 @@ def _register_builtin_services(registry: ServiceRegistry) -> None:
       return memory_session_factory("memory://", **kwargs)
     elif db_path.startswith("/"):
       db_path = db_path[1:]
-    kwargs_copy = kwargs.copy()
-    kwargs_copy.pop("agents_dir", None)
-    return SqliteSessionService(db_path=db_path, **kwargs_copy)
+
+    # SqliteSessionService only accepts db_path, warn if extra kwargs provided
+    ignored_kwargs = {k: v for k, v in kwargs.items() if k != "agents_dir"}
+    if ignored_kwargs:
+      logger.warning(
+          "SqliteSessionService does not support additional kwargs. "
+          "The following parameters will be ignored: %s",
+          list(ignored_kwargs.keys()),
+      )
+    return SqliteSessionService(db_path=db_path)
 
   registry.register_session_service("memory", memory_session_factory)
   registry.register_session_service("agentengine", agentengine_session_factory)
@@ -294,6 +301,11 @@ def _register_builtin_services(registry: ServiceRegistry) -> None:
   registry.register_artifact_service("file", file_artifact_factory)
 
   # -- Memory Services --
+  def memory_memory_factory(_uri: str, **_):
+    from ..memory.in_memory_memory_service import InMemoryMemoryService
+
+    return InMemoryMemoryService()
+
   def rag_memory_factory(uri: str, **kwargs):
     from ..memory.vertex_ai_rag_memory_service import VertexAiRagMemoryService
 
@@ -317,6 +329,7 @@ def _register_builtin_services(registry: ServiceRegistry) -> None:
     )
     return VertexAiMemoryBankService(**params)
 
+  registry.register_memory_service("memory", memory_memory_factory)
   registry.register_memory_service("rag", rag_memory_factory)
   registry.register_memory_service("agentengine", agentengine_memory_factory)
 

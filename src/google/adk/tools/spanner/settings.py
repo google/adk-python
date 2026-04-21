@@ -150,7 +150,7 @@ class SpannerVectorStoreSettings(BaseModel):
   """Required. The name of the embedding column to search in the vector store table."""
 
   vector_length: int
-  """Required. The the dimension of the vectors in the `embedding_column`."""
+  """Required. The dimension of the vectors in the `embedding_column`."""
 
   vertex_ai_embedding_model_name: str
   """Required. The Vertex AI embedding model name, which is used to generate embeddings for vector store and vector similarity search.
@@ -262,6 +262,9 @@ class SpannerToolSettings(BaseModel):
 
   query_result_mode: QueryResultMode = QueryResultMode.DEFAULT
   """Mode for Spanner execute sql query result."""
+
+  database_role: Optional[str] = None
+  """Optional. The database role to use for the Spanner session."""
 
   vector_store_settings: Optional[SpannerVectorStoreSettings] = None
   """Settings for Spanner vector store and vector similarity search."""

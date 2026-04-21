@@ -14,13 +14,183 @@
 
 """Tests for interactions_utils.py conversion functions."""
 
+import asyncio
+import base64
+from collections.abc import Callable
+from datetime import datetime
+from datetime import timezone
 import json
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 from google.adk.models import interactions_utils
 from google.adk.models.llm_request import LlmRequest
 from google.genai import types
+from google.genai._interactions.types.interaction import Interaction
+from google.genai._interactions.types.interaction_complete_event import InteractionCompleteEvent
+from google.genai._interactions.types.interaction_start_event import InteractionStartEvent
+from google.genai._interactions.types.interaction_status_update import InteractionStatusUpdate
 import pytest
+
+
+class _MockAsyncIterator:
+  """Simple async iterator for streaming interaction events."""
+
+  def __init__(self, sequence: list[object]):
+    self._iterator = iter(sequence)
+
+  def __aiter__(self):
+    return self
+
+  async def __anext__(self):
+    try:
+      return next(self._iterator)
+    except StopIteration as exc:
+      raise StopAsyncIteration from exc
+
+
+class _FakeInteractions:
+  """Minimal fake interactions resource for streaming tests."""
+
+  def __init__(self, events: list[object]):
+    self._events = events
+
+  async def create(self, **_kwargs):
+    return _MockAsyncIterator(self._events)
+
+
+class _FakeAio:
+  """Namespace matching the expected api_client.aio shape."""
+
+  def __init__(self, events: list[object]):
+    self.interactions = _FakeInteractions(events)
+
+
+class _FakeApiClient:
+  """Minimal fake API client for generate_content_via_interactions tests."""
+
+  def __init__(self, events: list[object]):
+    self.aio = _FakeAio(events)
+
+
+def _build_function_call_delta_event(
+    *, function_id: str, name: str, arguments: dict[str, object]
+) -> SimpleNamespace:
+  """Build a version-agnostic content.delta event for a function call."""
+  return SimpleNamespace(
+      event_type='content.delta',
+      delta=SimpleNamespace(
+          type='function_call',
+          id=function_id,
+          name=name,
+          arguments=arguments,
+      ),
+  )
+
+
+def _build_llm_request() -> LlmRequest:
+  """Build a minimal request for interactions streaming tests."""
+  return LlmRequest(
+      model='gemini-2.5-flash',
+      contents=[
+          types.Content(
+              role='user',
+              parts=[types.Part(text='Weather in Tokyo?')],
+          )
+      ],
+      config=types.GenerateContentConfig(),
+  )
+
+
+def _build_lifecycle_streamed_events() -> list[object]:
+  """Build streamed events with lifecycle updates carrying the ID."""
+  now = datetime.now(timezone.utc)
+  return [
+      InteractionStartEvent(
+          event_type='interaction.start',
+          interaction=Interaction(
+              id='interaction_123',
+              created=now,
+              updated=now,
+              status='in_progress',
+          ),
+      ),
+      _build_function_call_delta_event(
+          function_id='call_1',
+          name='get_weather',
+          arguments={'city': 'Tokyo'},
+      ),
+      InteractionStatusUpdate(
+          event_type='interaction.status_update',
+          interaction_id='interaction_123',
+          status='requires_action',
+      ),
+  ]
+
+
+def _build_complete_streamed_events() -> list[object]:
+  """Build streamed events with the ID on an interaction.complete event."""
+  now = datetime.now(timezone.utc)
+  return [
+      _build_function_call_delta_event(
+          function_id='call_1',
+          name='get_weather',
+          arguments={'city': 'Tokyo'},
+      ),
+      InteractionCompleteEvent(
+          event_type='interaction.complete',
+          interaction=Interaction(
+              id='interaction_complete_123',
+              created=now,
+              updated=now,
+              status='requires_action',
+          ),
+      ),
+  ]
+
+
+def _build_legacy_streamed_events() -> list[object]:
+  """Build streamed events with the ID on the legacy interaction event."""
+  return [
+      _build_function_call_delta_event(
+          function_id='call_1',
+          name='get_weather',
+          arguments={'city': 'Tokyo'},
+      ),
+      SimpleNamespace(
+          event_type='interaction',
+          id='interaction_legacy_123',
+          status='requires_action',
+          error=None,
+          outputs=None,
+          usage=None,
+      ),
+  ]
+
+
+async def _collect_function_call_interaction_ids(
+    streamed_events: list[object],
+) -> list[str | None]:
+  """Collect non-partial function call interaction IDs from streamed events."""
+  responses = [
+      response
+      async for response in (
+          interactions_utils.generate_content_via_interactions(
+              api_client=_FakeApiClient(streamed_events),
+              llm_request=_build_llm_request(),
+              stream=True,
+          )
+      )
+  ]
+
+  return [
+      response.interaction_id
+      for response in responses
+      if response.partial is not True
+      and response.content is not None
+      and response.content.parts
+      and response.content.parts[0].function_call is not None
+  ]
 
 
 class TestConvertPartToInteractionContent:
@@ -60,6 +230,42 @@ class TestConvertPartToInteractionContent:
     result = interactions_utils.convert_part_to_interaction_content(part)
     assert result['id'] == ''
     assert result['name'] == 'get_weather'
+
+  def test_function_call_part_with_thought_signature(self):
+    """Test converting a function call Part with thought_signature."""
+    part = types.Part(
+        function_call=types.FunctionCall(
+            id='call_456',
+            name='my_tool',
+            args={'doc': 'content'},
+        ),
+        thought_signature=b'test_signature_bytes',
+    )
+    result = interactions_utils.convert_part_to_interaction_content(part)
+    assert result['type'] == 'function_call'
+    assert result['id'] == 'call_456'
+    assert result['name'] == 'my_tool'
+    assert result['arguments'] == {'doc': 'content'}
+    # thought_signature should be base64 encoded
+    assert 'thought_signature' in result
+
+    assert (
+        base64.b64decode(result['thought_signature']) == b'test_signature_bytes'
+    )
+
+  def test_function_call_part_without_thought_signature(self):
+    """Test converting a function call Part without thought_signature."""
+    part = types.Part(
+        function_call=types.FunctionCall(
+            id='call_789',
+            name='other_tool',
+            args={},
+        )
+    )
+    result = interactions_utils.convert_part_to_interaction_content(part)
+    assert result['type'] == 'function_call'
+    # thought_signature should not be present
+    assert 'thought_signature' not in result
 
   def test_function_response_dict(self):
     """Test converting a function response Part with dict response."""
@@ -183,8 +389,6 @@ class TestConvertPartToInteractionContent:
 
   def test_thought_only_part(self):
     """Test converting a thought-only Part with signature."""
-    import base64
-
     signature_bytes = b'test-thought-signature'
     part = types.Part(thought=True, thought_signature=signature_bytes)
     result = interactions_utils.convert_part_to_interaction_content(part)
@@ -442,6 +646,39 @@ class TestConvertInteractionOutputToPart:
     assert result.function_call.id == 'call_123'
     assert result.function_call.name == 'get_weather'
     assert result.function_call.args == {'city': 'London'}
+
+  def test_function_call_output_with_thought_signature(self):
+    """Test converting function call output with thought_signature."""
+    output = MagicMock(
+        spec=['type', 'id', 'name', 'arguments', 'thought_signature']
+    )
+    output.type = 'function_call'
+    output.id = 'call_sig_123'
+    output.name = 'gemini3_tool'
+    output.arguments = {'content': 'hello'}
+    # thought_signature is base64 encoded in the output
+    output.thought_signature = base64.b64encode(b'gemini3_signature').decode(
+        'utf-8'
+    )
+    result = interactions_utils.convert_interaction_output_to_part(output)
+    assert result.function_call.id == 'call_sig_123'
+    assert result.function_call.name == 'gemini3_tool'
+    assert result.function_call.args == {'content': 'hello'}
+    # thought_signature should be decoded back to bytes
+    assert result.thought_signature == b'gemini3_signature'
+
+  def test_function_call_output_without_thought_signature(self):
+    """Test converting function call output without thought_signature."""
+    output = MagicMock(spec=['type', 'id', 'name', 'arguments'])
+    output.type = 'function_call'
+    output.id = 'call_no_sig'
+    output.name = 'regular_tool'
+    output.arguments = {}
+    result = interactions_utils.convert_interaction_output_to_part(output)
+    assert result.function_call.id == 'call_no_sig'
+    assert result.function_call.name == 'regular_tool'
+    # thought_signature should be None
+    assert result.thought_signature is None
 
   def test_function_result_output_with_items_list(self):
     """Test converting function result output with items list.
@@ -759,3 +996,165 @@ class TestGetLatestUserContents:
     assert len(result) == 2
     assert result[0].parts[0].text == 'Great'
     assert result[1].parts[0].text == 'Tell me more'
+
+
+class TestConvertInteractionEventToLlmResponse:
+  """Tests for convert_interaction_event_to_llm_response."""
+
+  def test_text_delta_event(self):
+    """Test converting a text delta event."""
+    event = MagicMock()
+    event.event_type = 'content.delta'
+    event.delta = MagicMock()
+    event.delta.type = 'text'
+    event.delta.text = 'Hello world'
+
+    aggregated_parts = []
+    result = interactions_utils.convert_interaction_event_to_llm_response(
+        event, aggregated_parts, interaction_id='int_123'
+    )
+
+    assert result is not None
+    assert result.partial
+    assert result.content.parts[0].text == 'Hello world'
+    assert result.interaction_id == 'int_123'
+    assert len(aggregated_parts) == 1
+
+  def test_function_call_delta_with_thought_signature(self):
+    """Test converting a function call delta with thought_signature."""
+    event = MagicMock()
+    event.event_type = 'content.delta'
+    event.delta = MagicMock(
+        spec=['type', 'id', 'name', 'arguments', 'thought_signature']
+    )
+    event.delta.type = 'function_call'
+    event.delta.id = 'fc_delta_123'
+    event.delta.name = 'streaming_tool'
+    event.delta.arguments = {'param': 'value'}
+    # thought_signature is base64 encoded in the delta
+    event.delta.thought_signature = base64.b64encode(b'delta_signature').decode(
+        'utf-8'
+    )
+
+    aggregated_parts = []
+    result = interactions_utils.convert_interaction_event_to_llm_response(
+        event, aggregated_parts, interaction_id='int_456'
+    )
+
+    # Function calls return None (added to aggregated_parts only)
+    assert result is None
+    assert len(aggregated_parts) == 1
+    fc_part = aggregated_parts[0]
+    assert fc_part.function_call.id == 'fc_delta_123'
+    assert fc_part.function_call.name == 'streaming_tool'
+    assert fc_part.function_call.args == {'param': 'value'}
+    # thought_signature should be decoded back to bytes
+    assert fc_part.thought_signature == b'delta_signature'
+
+  def test_function_call_delta_without_thought_signature(self):
+    """Test converting a function call delta without thought_signature."""
+    event = MagicMock()
+    event.event_type = 'content.delta'
+    event.delta = MagicMock(spec=['type', 'id', 'name', 'arguments'])
+    event.delta.type = 'function_call'
+    event.delta.id = 'fc_no_sig'
+    event.delta.name = 'regular_tool'
+    event.delta.arguments = {}
+
+    aggregated_parts = []
+    result = interactions_utils.convert_interaction_event_to_llm_response(
+        event, aggregated_parts, interaction_id='int_789'
+    )
+
+    # Function calls return None
+    assert result is None
+    assert len(aggregated_parts) == 1
+    fc_part = aggregated_parts[0]
+    assert fc_part.function_call.name == 'regular_tool'
+    # thought_signature should be None
+    assert fc_part.thought_signature is None
+
+  def test_function_call_delta_without_name_skipped(self):
+    """Test that function call delta without name is skipped."""
+    event = MagicMock()
+    event.event_type = 'content.delta'
+    event.delta = MagicMock(spec=['type', 'id', 'name', 'arguments'])
+    event.delta.type = 'function_call'
+    event.delta.id = 'fc_no_name'
+    event.delta.name = None  # No name
+    event.delta.arguments = {}
+
+    aggregated_parts = []
+    result = interactions_utils.convert_interaction_event_to_llm_response(
+        event, aggregated_parts, interaction_id='int_000'
+    )
+
+    # Should be skipped (no name)
+    assert result is None
+    assert not aggregated_parts
+
+  def test_image_delta_with_data(self):
+    """Test converting an image delta with inline data."""
+    event = MagicMock()
+    event.event_type = 'content.delta'
+    event.delta = MagicMock()
+    event.delta.type = 'image'
+    event.delta.data = b'image_bytes'
+    event.delta.uri = None
+    event.delta.mime_type = 'image/png'
+
+    aggregated_parts = []
+    result = interactions_utils.convert_interaction_event_to_llm_response(
+        event, aggregated_parts, interaction_id='int_img'
+    )
+
+    assert result is not None
+    assert not result.partial
+    assert result.content.parts[0].inline_data.data == b'image_bytes'
+    assert len(aggregated_parts) == 1
+
+  def test_unknown_event_type_returns_none(self):
+    """Test that unknown event types return None."""
+    event = MagicMock()
+    event.event_type = 'some_unknown_event'  # Unknown event type
+
+    aggregated_parts = []
+    result = interactions_utils.convert_interaction_event_to_llm_response(
+        event, aggregated_parts, interaction_id='int_other'
+    )
+
+    assert result is None
+    assert not aggregated_parts
+
+
+@pytest.mark.parametrize(
+    ('streamed_events_factory', 'expected_ids'),
+    [
+        pytest.param(
+            _build_lifecycle_streamed_events,
+            ['interaction_123', 'interaction_123'],
+            id='lifecycle-events',
+        ),
+        pytest.param(
+            _build_complete_streamed_events,
+            ['interaction_complete_123'],
+            id='complete-event',
+        ),
+        pytest.param(
+            _build_legacy_streamed_events,
+            ['interaction_legacy_123'],
+            id='legacy-event',
+        ),
+    ],
+)
+def test_generate_content_via_interactions_stream_extracts_interaction_id(
+    streamed_events_factory: Callable[[], list[object]],
+    expected_ids: list[str],
+):
+  """Streamed interaction IDs should be preserved across event variants."""
+  streamed_events = streamed_events_factory()
+
+  assert (
+      asyncio.run(_collect_function_call_interaction_ids(streamed_events))
+      == expected_ids
+  )

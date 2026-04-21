@@ -25,7 +25,7 @@ from .eval_metrics import PrebuiltMetrics
 from .evaluator import EvaluationResult
 from .evaluator import Evaluator
 from .final_response_match_v1 import RougeEvaluator
-from .vertex_ai_eval_facade import _VertexAiEvalFacade
+from .vertex_ai_eval_facade import _SingleTurnVertexAiEvalFacade
 
 
 class ResponseEvaluator(Evaluator):
@@ -89,7 +89,7 @@ class ResponseEvaluator(Evaluator):
           actual_invocations, expected_invocations, conversation_scenario
       )
 
-    return _VertexAiEvalFacade(
+    return _SingleTurnVertexAiEvalFacade(
         threshold=self._threshold,
         metric_name=self._metric_name,
         expected_invocations_required=True,
