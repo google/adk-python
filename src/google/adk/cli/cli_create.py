@@ -64,6 +64,7 @@ https://google.github.io/adk-docs/agents/models
 _SUCCESS_MSG_CODE = """
 Agent created in {agent_folder}:
 - .env
+- .gitignore
 - __init__.py
 - agent.py
 """
@@ -71,6 +72,7 @@ Agent created in {agent_folder}:
 _SUCCESS_MSG_CONFIG = """
 Agent created in {agent_folder}:
 - .env
+- .gitignore
 - __init__.py
 - root_agent.yaml
 """
@@ -168,6 +170,28 @@ def _prompt_for_google_api_key(
   return google_api_key
 
 
+def _ensure_dotenv_gitignored(agent_folder: str) -> None:
+  """Ensures generated dotenv files are ignored by git."""
+  gitignore_file_path = os.path.join(agent_folder, ".gitignore")
+  dotenv_ignore_entry = ".env"
+
+  if not os.path.exists(gitignore_file_path):
+    with open(gitignore_file_path, "w", encoding="utf-8") as f:
+      f.write(f"{dotenv_ignore_entry}\n")
+    return
+
+  with open(gitignore_file_path, "r", encoding="utf-8") as f:
+    content = f.read()
+
+  if dotenv_ignore_entry in (line.strip() for line in content.splitlines()):
+    return
+
+  with open(gitignore_file_path, "a", encoding="utf-8") as f:
+    if content and not content.endswith("\n"):
+      f.write("\n")
+    f.write(f"{dotenv_ignore_entry}\n")
+
+
 def _generate_files(
     agent_folder: str,
     *,
@@ -198,6 +222,7 @@ def _generate_files(
     if google_cloud_region:
       lines.append(f"GOOGLE_CLOUD_LOCATION={google_cloud_region}")
     f.write("\n".join(lines))
+  _ensure_dotenv_gitignored(agent_folder)
 
   if type == "config":
     with open(agent_config_file_path, "w", encoding="utf-8") as f:

@@ -68,6 +68,7 @@ def test_generate_files_with_api_key(agent_folder: Path) -> None:
   env_content = (agent_folder / ".env").read_text()
   assert "GOOGLE_API_KEY=dummy-key" in env_content
   assert "GOOGLE_GENAI_USE_VERTEXAI=0" in env_content
+  assert (agent_folder / ".gitignore").read_text() == ".env\n"
   assert (agent_folder / "agent.py").exists()
   assert (agent_folder / "__init__.py").exists()
 
@@ -130,6 +131,34 @@ def test_generate_files_no_params(agent_folder: Path) -> None:
       "GOOGLE_GENAI_USE_VERTEXAI",
   ):
     assert key not in env_content
+
+
+def test_generate_files_appends_dotenv_to_existing_gitignore(
+    agent_folder: Path,
+) -> None:
+  """Existing .gitignore entries should be preserved."""
+  agent_folder.mkdir(parents=True, exist_ok=True)
+  (agent_folder / ".gitignore").write_text("__pycache__")
+
+  cli_create._generate_files(
+      str(agent_folder), model="gemini-2.0-flash-001", type="code"
+  )
+
+  assert (agent_folder / ".gitignore").read_text() == "__pycache__\n.env\n"
+
+
+def test_generate_files_does_not_duplicate_dotenv_gitignore_entry(
+    agent_folder: Path,
+) -> None:
+  """Existing .env ignore entries should not be duplicated."""
+  agent_folder.mkdir(parents=True, exist_ok=True)
+  (agent_folder / ".gitignore").write_text("__pycache__\n.env\n")
+
+  cli_create._generate_files(
+      str(agent_folder), model="gemini-2.0-flash-001", type="code"
+  )
+
+  assert (agent_folder / ".gitignore").read_text() == "__pycache__\n.env\n"
 
 
 # run_cmd
@@ -213,6 +242,7 @@ def test_run_cmd_with_type_config(
   env_file = agent_dir / ".env"
   assert env_file.exists()
   assert "GOOGLE_API_KEY=test-key" in env_file.read_text()
+  assert (agent_dir / ".gitignore").read_text() == ".env\n"
 
 
 # Prompt helpers
