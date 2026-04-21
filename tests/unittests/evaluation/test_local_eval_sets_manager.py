@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import uuid
 
@@ -409,27 +410,46 @@ class TestLocalEvalSetsManager:
       local_eval_sets_manager.create_eval_set(app_name, eval_set_id)
 
   def test_local_eval_sets_manager_list_eval_sets_success(
-      self, local_eval_sets_manager, mocker
+      self, tmp_path
   ):
     app_name = "test_app"
-    mock_listdir_return = [
-        "eval_set_1.evalset.json",
-        "eval_set_2.evalset.json",
-        "not_an_eval_set.txt",
-    ]
-    mocker.patch("os.listdir", return_value=mock_listdir_return)
-    mocker.patch("os.path.join", return_value="dummy_path")
-    mocker.patch("os.path.basename", side_effect=lambda x: x)
+    app_dir = tmp_path / app_name
+    app_dir.mkdir()
+    (app_dir / "eval_set_1.evalset.json").write_text("{}")
+    (app_dir / "eval_set_2.evalset.json").write_text("{}")
+    (app_dir / "not_an_eval_set.txt").write_text("")
 
+    local_eval_sets_manager = LocalEvalSetsManager(agents_dir=str(tmp_path))
     eval_sets = local_eval_sets_manager.list_eval_sets(app_name)
 
     assert eval_sets == ["eval_set_1", "eval_set_2"]
 
-  def test_local_eval_sets_manager_list_eval_sets_not_found(
-      self, local_eval_sets_manager, mocker
+  def test_local_eval_sets_manager_list_eval_sets_subdirectories(
+      self, tmp_path, caplog
   ):
+    """Eval sets in subdirectories should be ignored with a warning."""
     app_name = "test_app"
-    mocker.patch("os.listdir", side_effect=FileNotFoundError)
+    app_dir = tmp_path / app_name
+    app_dir.mkdir()
+    (app_dir / "top_level.evalset.json").write_text("{}")
+    sub_dir = app_dir / "eval_sets"
+    sub_dir.mkdir()
+    (sub_dir / "nested.evalset.json").write_text("{}")
+
+    local_eval_sets_manager = LocalEvalSetsManager(agents_dir=str(tmp_path))
+    with caplog.at_level(logging.WARNING):
+      eval_sets = local_eval_sets_manager.list_eval_sets(app_name)
+
+    # Only root-level eval sets are returned.
+    assert eval_sets == ["top_level"]
+    # A warning is logged for the subdirectory file.
+    assert "nested.evalset.json" in caplog.text
+    assert "ignored" in caplog.text
+
+  def test_local_eval_sets_manager_list_eval_sets_not_found(
+      self, local_eval_sets_manager
+  ):
+    app_name = "nonexistent_app"
 
     with pytest.raises(NotFoundError):
       local_eval_sets_manager.list_eval_sets(app_name)

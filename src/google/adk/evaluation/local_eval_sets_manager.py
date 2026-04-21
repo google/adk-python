@@ -247,19 +247,37 @@ class LocalEvalSetsManager(EvalSetsManager):
     Raises:
       NotFoundError: If the eval directory for the app is not found.
     """
-    eval_set_file_path = os.path.join(self._agents_dir, app_name)
-    eval_sets = []
-    try:
-      for file in os.listdir(eval_set_file_path):
-        if file.endswith(_EVAL_SET_FILE_EXTENSION):
-          eval_sets.append(
-              os.path.basename(file).removesuffix(_EVAL_SET_FILE_EXTENSION)
-          )
-      return sorted(eval_sets)
-    except FileNotFoundError as e:
+    app_dir = os.path.join(self._agents_dir, app_name)
+    if not os.path.isdir(app_dir):
       raise NotFoundError(
           f"Eval directory for app `{app_name}` not found."
-      ) from e
+      )
+    eval_sets = []
+    for file in os.listdir(app_dir):
+      if file.endswith(_EVAL_SET_FILE_EXTENSION):
+        eval_sets.append(
+            file.removesuffix(_EVAL_SET_FILE_EXTENSION)
+        )
+
+    # Warn about .evalset.json files in subdirectories that won't be
+    # discovered. This helps users who organize eval sets into folders
+    # understand why they don't appear in the UI.
+    for dirpath, _, filenames in os.walk(app_dir):
+      if dirpath == app_dir:
+        continue
+      for file in filenames:
+        if file.endswith(_EVAL_SET_FILE_EXTENSION):
+          rel_path = os.path.relpath(
+              os.path.join(dirpath, file), app_dir
+          )
+          logger.warning(
+              "Eval set file '%s' found in subdirectory and will be"
+              " ignored. Move it to '%s' to make it discoverable.",
+              rel_path,
+              app_dir,
+          )
+
+    return sorted(eval_sets)
 
   @override
   def get_eval_case(
