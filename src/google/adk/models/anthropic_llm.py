@@ -377,9 +377,7 @@ class AnthropicLlm(BaseLlm):
         return match.group(1)
     return model
 
-  def _get_generation_kwargs(
-      self, llm_request: LlmRequest
-  ) -> dict[str, Any]:
+  def _get_generation_kwargs(self, llm_request: LlmRequest) -> dict[str, Any]:
     generation_kwargs: dict[str, Any] = {}
 
     if llm_request.config.temperature is not None:
