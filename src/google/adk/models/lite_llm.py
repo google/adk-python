@@ -1661,6 +1661,11 @@ def _model_response_to_chunk(
         or message.get("function_call")
         or message.get("reasoning_content")
         or message.get("reasoning")
+        # Anthropic streams the thinking block's signature in a final delta
+        # where content/reasoning_content are empty and only thinking_blocks
+        # carries the signature. Without this, the delta is discarded before
+        # _extract_reasoning_value can preserve the signature.
+        or message.get("thinking_blocks")
     )
 
   if isinstance(response, ModelResponseStream):
