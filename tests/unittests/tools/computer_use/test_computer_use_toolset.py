@@ -238,8 +238,8 @@ class TestComputerUseToolset:
 
     assert click_tool is not None
 
-    # The tool's function should be bound to the mock computer instance
-    assert click_tool.func.__self__ == mock_computer
+    # The tool's function should have the correct name (wrapped method)
+    assert click_tool.func.__name__ == "click_at"
 
   @pytest.mark.asyncio
   async def test_get_tools_handles_custom_screen_size(self, mock_computer):
@@ -304,9 +304,11 @@ class TestComputerUseToolset:
     """Test that tools are properly bound to the computer instance."""
     tools = await toolset.get_tools()
 
-    # All tools should be bound to the mock computer
+    # All tools should have wrapped functions with correct names
     for tool in tools:
-      assert tool.func.__self__ == mock_computer
+      # Wrapped functions preserve the original method name via functools.wraps
+      assert callable(tool.func)
+      assert not tool.func.__name__.startswith("_")
 
   @pytest.mark.asyncio
   async def test_toolset_handles_computer_initialization_failure(

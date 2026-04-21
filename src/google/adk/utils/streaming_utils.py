@@ -225,6 +225,13 @@ class StreamingResponseAggregator:
     if fc.partial_args or fc.will_continue:
       # Streaming function call arguments
 
+      # Generate ID on first chunk if not provided by LLM
+      if not fc.id and not self._current_fc_id:
+        # Lazy import to avoid circular dependency
+        from ..flows.llm_flows.functions import generate_client_function_call_id
+
+        fc.id = generate_client_function_call_id()
+
       # Save thought_signature from the part (first chunk should have it)
       if part.thought_signature and not self._current_thought_signature:
         self._current_thought_signature = part.thought_signature
@@ -233,6 +240,12 @@ class StreamingResponseAggregator:
       # Non-streaming function call (standard format with args)
       # Skip empty function calls (used as streaming end markers)
       if fc.name:
+        # Generate ID if not provided by LLM
+        if not fc.id:
+          # Lazy import to avoid circular dependency
+          from ..flows.llm_flows.functions import generate_client_function_call_id
+
+          fc.id = generate_client_function_call_id()
         # Flush any buffered text first, then add the FC part
         self._flush_text_buffer_to_sequence()
         self._parts_sequence.append(part)
