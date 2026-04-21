@@ -4975,15 +4975,25 @@ def test_convert_reasoning_value_to_parts_skips_redacted_blocks():
   assert parts[0].text == "visible"
 
 
-def test_convert_reasoning_value_to_parts_skips_empty_thinking():
-  """Blocks with empty thinking text are excluded."""
+def test_convert_reasoning_value_to_parts_preserves_signature_only_blocks():
+  """Signature-only blocks (empty text) are preserved for streaming aggregation.
+
+  Anthropic emits the block_stop signature as a delta with empty thinking text.
+  Dropping it would lose the signature, breaking multi-turn thinking continuity.
+  Blocks with neither text nor signature are still skipped.
+  """
   thinking_blocks = [
       {"type": "thinking", "thinking": "", "signature": "sig1"},
       {"type": "thinking", "thinking": "real thought", "signature": "sig2"},
+      {"type": "thinking", "thinking": "", "signature": ""},  # fully empty: drop
   ]
   parts = _convert_reasoning_value_to_parts(thinking_blocks)
-  assert len(parts) == 1
-  assert parts[0].text == "real thought"
+  assert len(parts) == 2
+  assert parts[0].text == ""
+  assert parts[0].thought is True
+  assert parts[0].thought_signature == b"sig1"
+  assert parts[1].text == "real thought"
+  assert parts[1].thought_signature == b"sig2"
 
 
 def test_convert_reasoning_value_to_parts_flat_string_unchanged():
@@ -5167,3 +5177,71 @@ def test_redact_file_uri_for_log_http_url_keeps_scheme_and_tail():
       _redact_file_uri_for_log("https://example.com/path/file.pdf")
       == "https://<redacted>/file.pdf"
   )
+
+
+@pytest.mark.asyncio
+async def test_content_to_message_param_anthropic_aggregates_streaming_split_thinking():
+  """Streaming splits one Anthropic thinking block across many parts:
+  text-only chunks followed by a signature-only chunk at block_stop.
+  _content_to_message_param must re-join them into one thinking_block.
+  """
+  content = types.Content(
+      role="model",
+      parts=[
+          # Text-only chunks from streaming deltas (no signature)
+          types.Part(text="The user wants ", thought=True),
+          types.Part(text="GST research ", thought=True),
+          types.Part(text="on secondment.", thought=True),
+          # Final signature-only chunk (empty text, signature carries the whole block)
+          types.Part(text="", thought=True, thought_signature=b"ErEDClsIDBACGAIfull"),
+          # Non-thought response content
+          types.Part.from_function_call(name="create_plan", args={"q": "test"}),
+      ],
+  )
+  result = await _content_to_message_param(
+      content, model="anthropic/claude-4-sonnet"
+  )
+  # One aggregated thinking block with combined text and the block's signature
+  blocks = result["thinking_blocks"]
+  assert len(blocks) == 1
+  assert blocks[0]["type"] == "thinking"
+  assert blocks[0]["thinking"] == "The user wants GST research on secondment."
+  assert blocks[0]["signature"] == "ErEDClsIDBACGAIfull"
+  # Legacy reasoning_content is not set when the Anthropic branch takes
+  assert result.get("reasoning_content") is None
+
+
+def test_model_response_to_chunk_preserves_signature_only_delta():
+  """Anthropic streams a final thinking delta where content and
+  reasoning_content are empty but thinking_blocks carries the signature.
+  _has_meaningful_signal must recognize thinking_blocks as signal so the
+  signature survives into a ReasoningChunk.
+  """
+  stream = ModelResponseStream(
+      id="x",
+      created=0,
+      model="claude",
+      choices=[
+          StreamingChoices(
+              index=0,
+              delta=Delta(
+                  role=None,
+                  content="",
+                  reasoning_content="",
+                  thinking_blocks=[{
+                      "type": "thinking",
+                      "thinking": "",
+                      "signature": "SignatureOnlyChunk",
+                  }],
+              ),
+          )
+      ],
+  )
+  chunks = list(_model_response_to_chunk(stream))
+  reasoning_chunks = [c for c, _ in chunks if isinstance(c, ReasoningChunk)]
+  assert len(reasoning_chunks) == 1
+  parts = reasoning_chunks[0].parts
+  assert len(parts) == 1
+  assert parts[0].text == ""
+  assert parts[0].thought is True
+  assert parts[0].thought_signature == b"SignatureOnlyChunk"
