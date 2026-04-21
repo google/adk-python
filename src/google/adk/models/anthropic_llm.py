@@ -77,10 +77,14 @@ def to_claude_role(role: Optional[str]) -> Literal["user", "assistant"]:
 def to_google_genai_finish_reason(
     anthropic_stop_reason: Optional[str],
 ) -> types.FinishReason:
-  if anthropic_stop_reason in ["end_turn", "stop_sequence", "tool_use"]:
+  if anthropic_stop_reason in [
+      "end_turn", "stop_sequence", "tool_use", "pause_turn"
+  ]:
     return "STOP"
   if anthropic_stop_reason == "max_tokens":
     return "MAX_TOKENS"
+  if anthropic_stop_reason == "refusal":
+    return "SAFETY"
   return "FINISH_REASON_UNSPECIFIED"
 
 
@@ -253,8 +257,7 @@ def message_to_generate_content_response(
               message.usage.input_tokens + message.usage.output_tokens
           ),
       ),
-      # TODO: Deal with these later.
-      # finish_reason=to_google_genai_finish_reason(message.stop_reason),
+      finish_reason=to_google_genai_finish_reason(message.stop_reason),
   )
 
 
@@ -402,6 +405,22 @@ class AnthropicLlm(BaseLlm):
         else NOT_GIVEN
     )
 
+    config = llm_request.config
+    temperature = (
+        NOT_GIVEN if config is None or config.temperature is None
+        else config.temperature
+    )
+    top_p = (
+        NOT_GIVEN if config is None or config.top_p is None else config.top_p
+    )
+    top_k = (
+        NOT_GIVEN if config is None or config.top_k is None else config.top_k
+    )
+    stop_sequences = (
+        NOT_GIVEN if not (config and config.stop_sequences)
+        else config.stop_sequences
+    )
+
     if not stream:
       message = await self._anthropic_client.messages.create(
           model=model_to_use,
@@ -410,11 +429,17 @@ class AnthropicLlm(BaseLlm):
           tools=tools,
           tool_choice=tool_choice,
           max_tokens=self.max_tokens,
+          temperature=temperature,
+          top_p=top_p,
+          top_k=top_k,
+          stop_sequences=stop_sequences,
       )
       yield message_to_generate_content_response(message)
     else:
       async for response in self._generate_content_streaming(
-          llm_request, messages, tools, tool_choice
+          llm_request, messages, tools, tool_choice,
+          temperature=temperature, top_p=top_p,
+          top_k=top_k, stop_sequences=stop_sequences,
       ):
         yield response
 
@@ -424,6 +449,10 @@ class AnthropicLlm(BaseLlm):
       messages: list[anthropic_types.MessageParam],
       tools: Union[Iterable[anthropic_types.ToolUnionParam], NotGiven],
       tool_choice: Union[anthropic_types.ToolChoiceParam, NotGiven],
+      temperature: Union[float, NotGiven] = NOT_GIVEN,
+      top_p: Union[float, NotGiven] = NOT_GIVEN,
+      top_k: Union[int, NotGiven] = NOT_GIVEN,
+      stop_sequences: Union[list[str], NotGiven] = NOT_GIVEN,
   ) -> AsyncGenerator[LlmResponse, None]:
     """Handles streaming responses from Anthropic models.
 
@@ -439,6 +468,10 @@ class AnthropicLlm(BaseLlm):
         tool_choice=tool_choice,
         max_tokens=self.max_tokens,
         stream=True,
+        temperature=temperature,
+        top_p=top_p,
+        top_k=top_k,
+        stop_sequences=stop_sequences,
     )
 
     # Track content blocks being built during streaming.
@@ -447,6 +480,7 @@ class AnthropicLlm(BaseLlm):
     tool_use_blocks: dict[int, _ToolUseAccumulator] = {}
     input_tokens = 0
     output_tokens = 0
+    stop_reason: Optional[str] = None
 
     async for event in raw_stream:
       if event.type == "message_start":
@@ -482,6 +516,7 @@ class AnthropicLlm(BaseLlm):
 
       elif event.type == "message_delta":
         output_tokens = event.usage.output_tokens
+        stop_reason = event.delta.stop_reason
 
     # Build the final aggregated response with all content.
     all_parts: list[types.Part] = []
@@ -505,6 +540,7 @@ class AnthropicLlm(BaseLlm):
             candidates_token_count=output_tokens,
             total_token_count=input_tokens + output_tokens,
         ),
+        finish_reason=to_google_genai_finish_reason(stop_reason),
         partial=False,
     )
 
