@@ -560,7 +560,7 @@ def _safe_json_serialize(obj) -> str:
     try:
       return str(obj)
     except RecursionError:
-      return '<non-serializable: recursion depth exceeded>'
+      return "<non-serializable: recursion depth exceeded>"
 
 
 def _part_has_payload(part: types.Part) -> bool:

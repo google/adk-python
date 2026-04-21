@@ -21,47 +21,47 @@ RecursionError (deeply nested structures).
 Fixes https://github.com/google/adk-python/issues/5412
 """
 
-import pytest
-
 from google.adk.models.lite_llm import _safe_json_serialize
+import pytest
 
 
 def test_circular_reference_returns_str_fallback():
-    """json.dumps raises ValueError on circular references; should fall back to str()."""
+  """json.dumps raises ValueError on circular references; should fall back to str()."""
 
-    class Node:
-        def __init__(self):
-            self.ref = self
+  class Node:
 
-    obj = Node()
-    result = _safe_json_serialize(obj)
-    assert isinstance(result, str)
-    # Should return str(obj) fallback rather than raising ValueError
+    def __init__(self):
+      self.ref = self
+
+  obj = Node()
+  result = _safe_json_serialize(obj)
+  assert isinstance(result, str)
+  # Should return str(obj) fallback rather than raising ValueError
 
 
 def test_deeply_nested_structure_returns_str_fallback():
-    """json.dumps raises RecursionError on deeply nested structures."""
-    obj = current = {}
-    for _ in range(10000):
-        current["child"] = {}
-        current = current["child"]
+  """json.dumps raises RecursionError on deeply nested structures."""
+  obj = current = {}
+  for _ in range(10000):
+    current["child"] = {}
+    current = current["child"]
 
-    result = _safe_json_serialize(obj)
-    assert isinstance(result, str)
-    # str(obj) itself can raise RecursionError, so expect the safe fallback
-    assert "recursion" in result.lower() or result  # non-empty string
+  result = _safe_json_serialize(obj)
+  assert isinstance(result, str)
+  # str(obj) itself can raise RecursionError, so expect the safe fallback
+  assert "recursion" in result.lower() or result  # non-empty string
 
 
 def test_normal_dict_serializes():
-    """Normal dicts should serialize as JSON."""
-    result = _safe_json_serialize({"key": "value", "num": 42})
-    assert '"key"' in result
-    assert '"value"' in result
+  """Normal dicts should serialize as JSON."""
+  result = _safe_json_serialize({"key": "value", "num": 42})
+  assert '"key"' in result
+  assert '"value"' in result
 
 
 def test_non_serializable_object_falls_back_to_str():
-    """Objects without a JSON representation should fall back to str()."""
-    obj = object()
-    result = _safe_json_serialize(obj)
-    assert isinstance(result, str)
-    assert "object" in result.lower()
+  """Objects without a JSON representation should fall back to str()."""
+  obj = object()
+  result = _safe_json_serialize(obj)
+  assert isinstance(result, str)
+  assert "object" in result.lower()

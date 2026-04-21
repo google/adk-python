@@ -21,45 +21,45 @@ RecursionError (deeply nested structures).
 Fixes https://github.com/google/adk-python/issues/5411
 """
 
-import pytest
-
 from google.adk.telemetry.tracing import _safe_json_serialize
+import pytest
 
 
 def test_circular_reference_returns_fallback():
-    """json.dumps raises ValueError on circular references; should not propagate."""
+  """json.dumps raises ValueError on circular references; should not propagate."""
 
-    class Node:
-        def __init__(self):
-            self.ref = self
+  class Node:
 
-    obj = Node()
-    result = _safe_json_serialize(obj)
-    assert isinstance(result, str)
-    # Should return the fallback rather than raising
-    assert "not serializable" in result.lower() or result  # non-empty string
+    def __init__(self):
+      self.ref = self
+
+  obj = Node()
+  result = _safe_json_serialize(obj)
+  assert isinstance(result, str)
+  # Should return the fallback rather than raising
+  assert "not serializable" in result.lower() or result  # non-empty string
 
 
 def test_deeply_nested_structure_returns_fallback():
-    """json.dumps raises RecursionError on deeply nested structures."""
-    obj = current = {}
-    for _ in range(10000):
-        current["child"] = {}
-        current = current["child"]
+  """json.dumps raises RecursionError on deeply nested structures."""
+  obj = current = {}
+  for _ in range(10000):
+    current["child"] = {}
+    current = current["child"]
 
-    result = _safe_json_serialize(obj)
-    assert isinstance(result, str)
+  result = _safe_json_serialize(obj)
+  assert isinstance(result, str)
 
 
 def test_normal_dict_serializes():
-    """Normal dicts should serialize without issue."""
-    result = _safe_json_serialize({"key": "value", "num": 42})
-    assert '"key"' in result
-    assert '"value"' in result
+  """Normal dicts should serialize without issue."""
+  result = _safe_json_serialize({"key": "value", "num": 42})
+  assert '"key"' in result
+  assert '"value"' in result
 
 
 def test_non_serializable_object_uses_default():
-    """Objects without a JSON representation use the default callback."""
-    result = _safe_json_serialize(object())
-    assert isinstance(result, str)
-    assert "not serializable" in result.lower()
+  """Objects without a JSON representation use the default callback."""
+  result = _safe_json_serialize(object())
+  assert isinstance(result, str)
+  assert "not serializable" in result.lower()
