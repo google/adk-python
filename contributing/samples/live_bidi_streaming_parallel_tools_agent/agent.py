@@ -29,7 +29,10 @@ def turn_on_tv():
 
 
 root_agent = Agent(
-    model="gemini-live-2.5-flash-native-audio",
+    # Find supported models in Vertex here: https://docs.cloud.google.com/vertex-ai/generative-ai/docs/live-api
+    model="gemini-live-2.5-flash-native-audio",  # Vertex
+    # Find supported models in Gemini API here: https://ai.google.dev/gemini-api/docs/models
+    # model='gemini-2.5-flash-native-audio-preview-12-2025',  # Gemini API
     name="Home_helper",
     instruction="Be polite and answer all user's questions.",
     tools=[turn_on_lights, turn_on_tv],

@@ -368,6 +368,11 @@ def from_function_with_options(
           parameters_json_schema[name] = types.Schema.model_validate(
               json_schema_dict
           )
+          if param.default is not inspect.Parameter.empty:
+            if param.default is not None:
+              parameters_json_schema[name].default = param.default
+            else:
+              parameters_json_schema[name].nullable = True
         except Exception as e:
           _function_parameter_parse_util._raise_for_unsupported_param(
               param, func.__name__, e
@@ -391,6 +396,11 @@ def from_function_with_options(
     declaration.parameters = types.Schema(
         type='OBJECT',
         properties=parameters_json_schema,
+    )
+    declaration.parameters.required = (
+        _function_parameter_parse_util._get_required_fields(
+            declaration.parameters
+        )
     )
 
   if variant == GoogleLLMVariant.GEMINI_API:

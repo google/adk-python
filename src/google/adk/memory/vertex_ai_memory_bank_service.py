@@ -14,9 +14,10 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Mapping
 from collections.abc import Sequence
-from datetime import datetime
+import datetime
 from functools import lru_cache
 import logging
 from typing import Optional
@@ -38,6 +39,10 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger('google_adk.' + __name__)
 
+# Strong references to fire-and-forget tasks to prevent garbage collection.
+# See https://docs.python.org/3/library/asyncio-task.html#creating-tasks
+_background_tasks: set[asyncio.Task] = set()
+
 _GENERATE_MEMORIES_CONFIG_FALLBACK_KEYS = frozenset({
     'disable_consolidation',
     'disable_memory_revisions',
@@ -47,6 +52,7 @@ _GENERATE_MEMORIES_CONFIG_FALLBACK_KEYS = frozenset({
     'revision_expire_time',
     'revision_labels',
     'revision_ttl',
+    'ttl',
     'wait_for_completion',
 })
 
@@ -65,7 +71,34 @@ _CREATE_MEMORY_CONFIG_FALLBACK_KEYS = frozenset({
     'wait_for_completion',
 })
 
+_INGEST_EVENTS_CONFIG_FALLBACK_KEYS = frozenset({
+    'force_flush',
+    'generation_trigger_config',
+    'stream_id',
+})
+
 _ENABLE_CONSOLIDATION_KEY = 'enable_consolidation'
+
+
+def _should_use_generate_memories(
+    custom_metadata: Mapping[str, object] | None,
+) -> bool:
+  """Returns True if custom_metadata contains keys only GenerateMemories supports.
+
+  If any key in custom_metadata is recognized by GenerateMemories but NOT by
+  IngestEvents, the generate_memories API path is used.  Otherwise
+  ingest_events is the default.
+  """
+  if not custom_metadata:
+    return False
+  ingest_keys = _INGEST_EVENTS_CONFIG_FALLBACK_KEYS
+  generate_keys = _GENERATE_MEMORIES_CONFIG_FALLBACK_KEYS
+  for key in custom_metadata:
+    if key not in ingest_keys and key in generate_keys:
+      return True
+  return False
+
+
 # Vertex docs for GenerateMemoriesRequest.DirectMemoriesSource allow
 # at most 5 direct_memories per request.
 _MAX_DIRECT_MEMORIES_PER_GENERATE_CALL = 5
@@ -203,14 +236,35 @@ class VertexAiMemoryBankService(BaseMemoryService):
       session_id: str | None = None,
       custom_metadata: Mapping[str, object] | None = None,
   ) -> None:
-    """Adds events to Vertex AI Memory Bank via memories.generate.
+    """Adds events to Vertex AI Memory Bank.
+
+    Uses ``memories.ingest_events`` by default. If ``custom_metadata`` contains
+    keys supported only by ``memories.generate`` (e.g. ``ttl``,
+    ``revision_ttl``, ``metadata``, ``wait_for_completion``), the generate path
+    is used instead.
 
     Args:
       app_name: The application name for memory scope.
       user_id: The user ID for memory scope.
       events: The events to process for memory generation.
       session_id: Optional session ID. Currently unused.
-      custom_metadata: Optional service-specific metadata for generate config.
+      custom_metadata: Optional service-specific metadata. Supported keys
+        depend on the API path chosen:
+
+        **IngestEvents keys** (default path):
+          stream_id: Identifier for the event stream.
+          force_flush: If True, forces flushing buffered events.
+          generation_trigger_config: Configuration for triggering memory
+            generation, e.g.
+            ``{"generation_rule": {"idle_duration": "60s"}}``.
+
+        **GenerateMemories keys** (used when any of these are present):
+          ttl: Time-to-live for generated memories, e.g. ``"6000s"``.
+          revision_ttl: Time-to-live for memory revisions.
+          metadata: A mapping of custom metadata key-value pairs.
+          wait_for_completion: Whether to wait for generation to complete.
+          disable_consolidation: Disable memory consolidation.
+          disable_memory_revisions: Disable memory revisions.
     """
     _ = session_id
     await self._add_events_to_memory_from_events(
@@ -260,30 +314,139 @@ class VertexAiMemoryBankService(BaseMemoryService):
       events_to_process: Sequence[Event],
       custom_metadata: Mapping[str, object] | None = None,
   ) -> None:
+    # The generate_memories API is used only when custom_metadata contains
+    # keys exclusive to GenerateMemories.  Otherwise, ingest_events is the
+    # default path, as its behavior is consistent with GenerateMemories
+    # (trigger immediately) and supports additional parameters like
+    # generation_trigger_config.
+    if _should_use_generate_memories(custom_metadata):
+      import vertexai
+
+      direct_events = []
+      for event in events_to_process:
+        if _should_filter_out_event(event.content):
+          continue
+        if event.content:
+          direct_events.append(
+              vertexai.types.GenerateMemoriesRequestDirectContentsSourceEvent(
+                  content=event.content
+              )
+          )
+      if direct_events:
+        api_client = self._get_api_client()
+        config = _build_generate_memories_config(custom_metadata)
+        operation = await api_client.agent_engines.memories.generate(
+            name='reasoningEngines/' + self._agent_engine_id,
+            direct_contents_source=vertexai.types.GenerateMemoriesRequestDirectContentsSource(
+                events=direct_events
+            ),
+            scope={
+                'app_name': app_name,
+                'user_id': user_id,
+            },
+            config=config,
+        )
+        logger.info('Generate memory response received.')
+        logger.debug('Generate memory response: %s', operation)
+      else:
+        logger.info('No events to add to memory.')
+      return
+
+    await self._add_events_to_memory_via_ingest(
+        app_name=app_name,
+        user_id=user_id,
+        events_to_process=events_to_process,
+        custom_metadata=custom_metadata,
+    )
+
+  async def _add_events_to_memory_via_ingest(
+      self,
+      *,
+      app_name: str,
+      user_id: str,
+      events_to_process: Sequence[Event],
+      custom_metadata: Mapping[str, object] | None = None,
+  ) -> None:
+    """Adds events to Vertex AI Memory Bank via memories.ingest_events.
+
+    Args:
+      app_name: The application name for memory scope.
+      user_id: The user ID for memory scope.
+      events_to_process: The events to process for memory ingestion.
+      custom_metadata: Optional service-specific metadata. Supported keys:
+        stream_id: Identifier for the event stream.
+        force_flush: If True, forces flushing buffered events (passed as
+          part of the ingest_events config).
+        generation_trigger_config: Configuration for triggering memory
+          generation, e.g.
+          ``{"generation_rule": {"idle_duration": "60s"}}``.
+    """
+    import vertexai
+
     direct_events = []
     for event in events_to_process:
       if _should_filter_out_event(event.content):
         continue
       if event.content:
-        direct_events.append({
-            'content': event.content.model_dump(exclude_none=True, mode='json')
-        })
+        event_time = None
+        if event.timestamp is not None:
+          event_time = datetime.datetime.fromtimestamp(
+              event.timestamp, tz=datetime.timezone.utc
+          )
+        direct_events.append(
+            vertexai.types.IngestionDirectContentsSourceEvent(
+                content=event.content,
+                event_id=event.id,
+                event_time=event_time,
+            )
+        )
+
+    api_client = self._get_api_client()
+
+    stream_id = custom_metadata.get('stream_id') if custom_metadata else None
+    force_flush = (
+        custom_metadata.get('force_flush') if custom_metadata else None
+    )
+    generation_trigger_config = (
+        custom_metadata.get('generation_trigger_config')
+        if custom_metadata
+        else None
+    )
+
+    request_kwargs: dict[str, object] = {
+        'name': 'reasoningEngines/' + self._agent_engine_id,
+        'scope': {
+            'app_name': app_name,
+            'user_id': user_id,
+        },
+    }
+    # No-events requests are valid for trigger config updates, but
+    # won't trigger an events flush.
     if direct_events:
-      api_client = self._get_api_client()
-      config = _build_generate_memories_config(custom_metadata)
-      operation = await api_client.agent_engines.memories.generate(
-          name='reasoningEngines/' + self._agent_engine_id,
-          direct_contents_source={'events': direct_events},
-          scope={
-              'app_name': app_name,
-              'user_id': user_id,
-          },
-          config=config,
+      request_kwargs['direct_contents_source'] = (
+          vertexai.types.IngestionDirectContentsSource(events=direct_events)
       )
-      logger.info('Generate memory response received.')
-      logger.debug('Generate memory response: %s', operation)
-    else:
-      logger.info('No events to add to memory.')
+    if stream_id:
+      request_kwargs['stream_id'] = stream_id
+    # force_flush is part of the ingest_events config, not a
+    # top-level request parameter.
+    config: dict[str, object] = {}
+    if force_flush is not None:
+      config['force_flush'] = force_flush
+    if config:
+      request_kwargs['config'] = config
+    if generation_trigger_config:
+      request_kwargs['generation_trigger_config'] = generation_trigger_config
+
+    # Fire the ingest request without blocking. IngestEvents latency
+    # (~800ms to trigger) makes awaiting unnecessary outside debugging.
+    task = asyncio.create_task(
+        api_client.agent_engines.memories.ingest_events(**request_kwargs)
+    )
+    _background_tasks.add(task)
+    task.add_done_callback(_background_tasks.discard)
+    task.add_done_callback(_log_ingest_task_error)
+    logger.info('Ingest events request triggered.')
 
   async def _add_memories_via_create(
       self,
@@ -402,12 +565,31 @@ class VertexAiMemoryBankService(BaseMemoryService):
     return vertexai.Client(project=self._project, location=self._location).aio
 
 
+def _log_ingest_task_error(task: asyncio.Task) -> None:
+  """Logs errors from fire-and-forget ingest_events tasks."""
+  if task.cancelled():
+    return
+  exception = task.exception()
+  if exception:
+    logger.error('Background ingest_events task failed: %s', exception)
+
+
 def _should_filter_out_event(content: types.Content) -> bool:
   """Returns whether the event should be filtered out."""
   if not content or not content.parts:
     return True
   for part in content.parts:
-    if part.text or part.inline_data or part.file_data:
+    if (
+        part.text
+        or part.inline_data
+        or part.file_data
+        or part.function_call
+        or part.function_response
+        or part.executable_code
+        or part.code_execution_result
+        or part.tool_call
+        or part.tool_response
+    ):
       return False
   return True
 
@@ -742,7 +924,7 @@ def _to_vertex_metadata_value(
     return {'double_value': float(value)}
   if isinstance(value, str):
     return {'string_value': value}
-  if isinstance(value, datetime):
+  if isinstance(value, datetime.datetime):
     return {'timestamp_value': value}
   if isinstance(value, Mapping):
     if value.keys() <= {
