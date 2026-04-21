@@ -33,7 +33,9 @@ from google.adk.tools.mcp_tool.mcp_tool import MCPTool
 from google.adk.tools.tool_context import ToolContext
 from google.genai.types import FunctionDeclaration
 from google.genai.types import Type
+from mcp.shared.exceptions import McpError
 from mcp.types import CallToolResult
+from mcp.types import ErrorData
 from mcp.types import TextContent
 import pytest
 
@@ -79,6 +81,15 @@ class TestMCPToolLegacy:
     self.mock_session = AsyncMock()
     self.mock_session_manager.create_session = AsyncMock(
         return_value=self.mock_session
+    )
+    self.mock_session_context = AsyncMock()
+
+    async def fake_run_guarded(coro):
+      return await coro
+
+    self.mock_session_context._run_guarded.side_effect = fake_run_guarded
+    self.mock_session_manager._get_session_context.return_value = (
+        self.mock_session_context
     )
 
   def test_get_declaration(self):
@@ -190,6 +201,15 @@ class TestMCPTool:
     self.mock_session = AsyncMock()
     self.mock_session_manager.create_session = AsyncMock(
         return_value=self.mock_session
+    )
+    self.mock_session_context = AsyncMock()
+
+    async def fake_run_guarded(coro):
+      return await coro
+
+    self.mock_session_context._run_guarded.side_effect = fake_run_guarded
+    self.mock_session_manager._get_session_context.return_value = (
+        self.mock_session_context
     )
 
   def test_init_basic(self):
@@ -1131,6 +1151,53 @@ class TestMCPTool:
           )
       }
       tool_context.request_confirmation.assert_called_once()
+
+  @pytest.mark.asyncio
+  async def test_run_async_catches_mcp_error(self):
+    """Test that run_async catches McpError and returns a graceful dict."""
+
+    tool = MCPTool(
+        mcp_tool=self.mock_mcp_tool,
+        mcp_session_manager=self.mock_session_manager,
+    )
+
+    # Make _run_async_impl raise McpError
+    error_data = ErrorData(code=-32000, message="Client error '403 Forbidden'")
+    tool._run_async_impl = AsyncMock(side_effect=McpError(error_data))  # pylint: disable=protected-access
+
+    tool_context = Mock(spec=ToolContext)
+    args = {"param1": "test_value"}
+
+    result = await tool.run_async(args=args, tool_context=tool_context)
+
+    assert result == {
+        "error": "MCP tool execution failed: Client error '403 Forbidden'"
+    }
+
+  @pytest.mark.asyncio
+  async def test_run_async_catches_generic_exception(self):
+    """Test run_async catches generic exceptions and returns graceful dict."""
+    tool = MCPTool(
+        mcp_tool=self.mock_mcp_tool,
+        mcp_session_manager=self.mock_session_manager,
+    )
+
+    # Make _run_async_impl raise a generic Exception (like ConnectionError)
+    tool._run_async_impl = AsyncMock(  # pylint: disable=protected-access
+        side_effect=ConnectionError("Failed to create MCP session")
+    )
+
+    tool_context = Mock(spec=ToolContext)
+    args = {"param1": "test_value"}
+
+    result = await tool.run_async(args=args, tool_context=tool_context)
+
+    assert result == {
+        "error": (
+            "Unexpected error during MCP tool execution: Failed to create MCP"
+            " session"
+        )
+    }
 
   def test_visibility_property(self):
     """Test visibility property extraction from meta."""

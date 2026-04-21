@@ -21,6 +21,7 @@ import logging
 import os
 from typing import Any
 from typing import Callable
+from typing import cast
 from typing import Dict
 from typing import List
 from typing import Optional
@@ -31,6 +32,7 @@ import warnings
 
 from fastapi.openapi.models import APIKeyIn
 from google.genai.types import FunctionDeclaration
+from mcp.shared.exceptions import McpError
 from mcp.shared.session import ProgressFnT
 from mcp.types import Tool as McpBaseTool
 from opentelemetry import propagate
@@ -140,7 +142,7 @@ class McpTool(BaseAuthenticatedTool):
       progress_callback: Optional[
           Union[ProgressFnT, ProgressCallbackFactory]
       ] = None,
-  ):
+  ) -> None:
     """Initializes an McpTool.
 
     This tool wraps an MCP Tool interface and uses a session manager to
@@ -183,7 +185,7 @@ class McpTool(BaseAuthenticatedTool):
     super().__init__(
         name=mcp_tool.name,
         description=mcp_tool.description if mcp_tool.description else "",
-        auth_config=AuthConfig(
+        auth_config=AuthConfig(  # type: ignore[no-untyped-call,arg-type]
             auth_scheme=auth_scheme, raw_auth_credential=auth_credential
         )
         if auth_scheme
@@ -235,7 +237,7 @@ class McpTool(BaseAuthenticatedTool):
     # Format: meta.ui.visibility
     ui = meta.get("ui", {})
     if isinstance(ui, dict):
-      return ui.get("visibility", [])
+      return cast(List[str], ui.get("visibility", []))
     return []
 
   @property
@@ -288,7 +290,7 @@ class McpTool(BaseAuthenticatedTool):
   async def run_async(
       self, *, args: dict[str, Any], tool_context: ToolContext
   ) -> Any:
-    if isinstance(self._require_confirmation, Callable):
+    if callable(self._require_confirmation):
       args_to_call = args.copy()
       try:
         signature = inspect.signature(self._require_confirmation)
@@ -317,7 +319,7 @@ class McpTool(BaseAuthenticatedTool):
         args_to_call = args
 
       require_confirmation = await self._invoke_callable(
-          self._require_confirmation, args_to_call
+          cast(Callable[..., Any], self._require_confirmation), args_to_call
       )
     else:
       require_confirmation = bool(self._require_confirmation)
@@ -339,12 +341,26 @@ class McpTool(BaseAuthenticatedTool):
         }
       elif not tool_context.tool_confirmation.confirmed:
         return {"error": "This tool call is rejected."}
-    return await super().run_async(args=args, tool_context=tool_context)
+
+    try:
+      return await super().run_async(args=args, tool_context=tool_context)
+    except McpError as e:
+      logger.warning("MCP tool execution failed with McpError: %s", e)
+      return {"error": f"MCP tool execution failed: {e}"}
+    except Exception as e:  # pylint: disable=broad-exception-caught
+      logger.warning(
+          "Unexpected error during MCP tool execution: %s", e, exc_info=True
+      )
+      return {"error": f"Unexpected error during MCP tool execution: {e}"}
 
   @retry_on_errors
   @override
   async def _run_async_impl(
-      self, *, args, tool_context: ToolContext, credential: AuthCredential
+      self,
+      *,
+      args: Dict[str, Any],
+      tool_context: ToolContext,
+      credential: Optional[AuthCredential],
   ) -> Dict[str, Any]:
     """Runs the tool asynchronously.
 
@@ -384,13 +400,28 @@ class McpTool(BaseAuthenticatedTool):
     # Resolve progress callback (may be a factory that needs runtime context)
     resolved_callback = self._resolve_progress_callback(tool_context)
 
-    response = await session.call_tool(
+    call_coro = session.call_tool(
         self._mcp_tool.name,
         arguments=args,
         progress_callback=resolved_callback,
         meta=meta_trace_context,
     )
-    result = response.model_dump(exclude_none=True, mode="json")
+
+    # Race the tool call against the background session task so that
+    # transport crashes (e.g. non-2xx HTTP responses) surface immediately
+    # instead of hanging until sse_read_timeout expires.
+    # ConnectionError is intentionally NOT caught here so that it
+    # propagates to retry_on_errors, which will create a fresh session.
+    session_context = self._mcp_session_manager._get_session_context(  # pylint: disable=protected-access
+        headers=final_headers
+    )
+    if session_context:
+      response = await session_context._run_guarded(call_coro)  # pylint: disable=protected-access
+    else:
+      response = await call_coro
+    result = cast(
+        Dict[str, Any], response.model_dump(exclude_none=True, mode="json")
+    )
 
     # Push UI widget to the event actions if the tool supports it.
     if self.mcp_app_resource_uri:
@@ -442,7 +473,7 @@ class McpTool(BaseAuthenticatedTool):
     return self._progress_callback
 
   async def _get_headers(
-      self, tool_context: ToolContext, credential: AuthCredential
+      self, tool_context: ToolContext, credential: Optional[AuthCredential]
   ) -> Optional[dict[str, str]]:
     """Extracts authentication headers from credentials.
 
@@ -534,7 +565,7 @@ class McpTool(BaseAuthenticatedTool):
 class MCPTool(McpTool):
   """Deprecated name, use `McpTool` instead."""
 
-  def __init__(self, *args, **kwargs):
+  def __init__(self, *args: Any, **kwargs: Any) -> None:
     warnings.warn(
         "MCPTool class is deprecated, use `McpTool` instead.",
         DeprecationWarning,

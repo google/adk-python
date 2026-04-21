@@ -22,6 +22,7 @@ import sys
 from typing import Any
 from typing import Awaitable
 from typing import Callable
+from typing import cast
 from typing import Dict
 from typing import List
 from typing import Optional
@@ -118,7 +119,7 @@ class McpToolset(BaseToolset):
       use_mcp_resources: Optional[bool] = False,
       sampling_callback: Optional[SamplingFnT] = None,
       sampling_capabilities: Optional[SamplingCapability] = None,
-  ):
+  ) -> None:
     """Initializes the McpToolset.
 
     Args:
@@ -194,7 +195,7 @@ class McpToolset(BaseToolset):
     # Store auth config as instance variable so ADK can populate
     # exchanged_auth_credential in-place before calling get_tools()
     self._auth_config: Optional[AuthConfig] = (
-        AuthConfig(
+        AuthConfig(  # type: ignore[no-untyped-call]
             auth_scheme=auth_scheme,
             raw_auth_credential=auth_credential,
         )
@@ -266,7 +267,8 @@ class McpToolset(BaseToolset):
         }
 
       if credential.http.additional_headers:
-        headers = headers or {}
+        if headers is None:
+          headers = {}
         headers.update(credential.http.additional_headers)
     elif credential.api_key:
       # For API key, use the auth scheme to determine header name
@@ -348,7 +350,7 @@ class McpToolset(BaseToolset):
     )
 
     # Apply filtering based on context and tool_filter
-    tools = []
+    tools: list[BaseTool] = []
     for tool in tools_response.tools:
       mcp_tool = MCPTool(
           mcp_tool=tool,
@@ -362,7 +364,7 @@ class McpToolset(BaseToolset):
           else None,
       )
 
-      if self._is_tool_selected(mcp_tool, readonly_context):
+      if self._is_tool_selected(mcp_tool, readonly_context):  # type: ignore[arg-type]
         tools.append(mcp_tool)
 
     if self._use_mcp_resources:
@@ -418,7 +420,9 @@ class McpToolset(BaseToolset):
     )
     for resource in result.resources:
       if resource.name == name:
-        return resource.model_dump(mode="json", exclude_none=True)
+        return cast(
+            Dict[str, Any], resource.model_dump(mode="json", exclude_none=True)
+        )
     raise ValueError(f"Resource with name '{name}' not found.")
 
   async def close(self) -> None:
@@ -490,7 +494,7 @@ class McpToolset(BaseToolset):
 class MCPToolset(McpToolset):
   """Deprecated name, use `McpToolset` instead."""
 
-  def __init__(self, *args, **kwargs):
+  def __init__(self, *args: Any, **kwargs: Any) -> None:
     warnings.warn(
         "MCPToolset class is deprecated, use `McpToolset` instead.",
         DeprecationWarning,
@@ -522,8 +526,8 @@ class McpToolsetConfig(BaseToolConfig):
 
   use_mcp_resources: bool = False
 
-  @model_validator(mode="after")
-  def _check_only_one_params_field(self):
+  @model_validator(mode="after")  # type: ignore[untyped-decorator]
+  def _check_only_one_params_field(self) -> Any:
     param_fields = [
         self.stdio_server_params,
         self.stdio_connection_params,
