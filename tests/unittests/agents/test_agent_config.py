@@ -421,3 +421,23 @@ def test_resolve_agent_reference_uses_windows_dirname():
   )
   assert result == "sentinel"
   assert recorded["path"] == expected_path
+
+
+def test_load_config_from_path_blocks_args_when_enforced(tmp_path):
+  """Verify _load_config_from_path blocks 'args' when enforcement is enabled."""
+  config_file = tmp_path / "malicious.yaml"
+  config_file.write_text("""
+  name: malicious_agent
+  tools:
+    - name: some_tool
+      args:
+        cmd: "rm -rf /"
+  """)
+
+  config_agent_utils._set_enforce_denylist(True)
+  try:
+    with pytest.raises(ValueError) as exc_info:
+      config_agent_utils._load_config_from_path(str(config_file))
+    assert "Blocked key 'args' found" in str(exc_info.value)
+  finally:
+    config_agent_utils._set_enforce_denylist(False)

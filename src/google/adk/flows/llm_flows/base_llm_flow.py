@@ -137,10 +137,11 @@ async def _resolve_toolset_auth(
     if not auth_config:
       continue
 
+    auth_config_copy = auth_config.model_copy(deep=True)
     try:
-      credential = await CredentialManager(auth_config).get_auth_credential(
-          callback_context
-      )
+      credential = await CredentialManager(
+          auth_config_copy
+      ).get_auth_credential(callback_context)
     except ValueError as e:
       # Validation errors from CredentialManager should be logged but not
       # block the flow - the toolset may still work without auth
@@ -152,15 +153,16 @@ async def _resolve_toolset_auth(
       credential = None
 
     if credential:
-      # Populate in-place for toolset to use in get_tools()
-      auth_config.exchanged_auth_credential = credential
+      # Store in invocation context to avoid data leakage and race conditions
+      invocation_context.credential_by_key[auth_config.credential_key] = (
+          credential
+      )
     else:
       logger.debug(
           'No credential found for toolset %s; deferring auth to tool'
           ' invocation.',
           type(tool_union).__name__,
       )
-
 
 async def _handle_before_model_callback(
     invocation_context: InvocationContext,
