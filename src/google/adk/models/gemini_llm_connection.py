@@ -81,11 +81,9 @@ class GeminiLlmConnection(BaseLlmConnection):
 
     if contents:
       logger.debug('Sending history to live connection: %s', contents)
-      await self._gemini_session.send(
-          input=types.LiveClientContent(
-              turns=contents,
-              turn_complete=contents[-1].role == 'user',
-          ),
+      await self._gemini_session.send_client_content(
+          turns=contents,
+          turn_complete=contents[-1].role == 'user',
       )
     else:
       logger.info('no content is sent')
@@ -105,10 +103,8 @@ class GeminiLlmConnection(BaseLlmConnection):
       # All parts have to be function responses.
       function_responses = [part.function_response for part in content.parts]
       logger.debug('Sending LLM function response: %s', function_responses)
-      await self._gemini_session.send(
-          input=types.LiveClientToolResponse(
-              function_responses=function_responses
-          ),
+      await self._gemini_session.send_tool_response(
+          function_responses=function_responses
       )
     else:
       logger.debug('Sending LLM new content %s', content)
@@ -180,6 +176,7 @@ class GeminiLlmConnection(BaseLlmConnection):
             role='model',
             parts=[types.Part.from_text(text=text)],
         ),
+        live_session_id=self._gemini_session.session_id,
     )
 
   async def receive(self) -> AsyncGenerator[LlmResponse, None]:
@@ -196,11 +193,13 @@ class GeminiLlmConnection(BaseLlmConnection):
       # partial content and emit responses as needed.
       async for message in agen:
         logger.debug('Got LLM Live message: %s', message)
+        live_session_id = self._gemini_session.session_id
         if message.usage_metadata:
           # Tracks token usage data per model.
           yield LlmResponse(
               usage_metadata=message.usage_metadata,
               model_version=self._model_version,
+              live_session_id=live_session_id,
           )
         if message.server_content:
           content = message.server_content.model_turn
@@ -215,6 +214,7 @@ class GeminiLlmConnection(BaseLlmConnection):
                 grounding_metadata=message.server_content.grounding_metadata,
                 interrupted=message.server_content.interrupted,
                 model_version=self._model_version,
+                live_session_id=live_session_id,
             )
 
           if content and content.parts:
@@ -222,6 +222,7 @@ class GeminiLlmConnection(BaseLlmConnection):
                 content=content,
                 interrupted=message.server_content.interrupted,
                 model_version=self._model_version,
+                live_session_id=live_session_id,
             )
             # grounding_metadata is yielded again at turn_complete,
             # so avoid duplicating it here if turn_complete is true.
@@ -252,6 +253,7 @@ class GeminiLlmConnection(BaseLlmConnection):
                   ),
                   partial=True,
                   model_version=self._model_version,
+                  live_session_id=live_session_id,
               )
             # finished=True and partial transcription may happen in the same
             # message.
@@ -263,6 +265,7 @@ class GeminiLlmConnection(BaseLlmConnection):
                   ),
                   partial=False,
                   model_version=self._model_version,
+                  live_session_id=live_session_id,
               )
               self._input_transcription_text = ''
           if message.server_content.output_transcription:
@@ -277,6 +280,7 @@ class GeminiLlmConnection(BaseLlmConnection):
                   ),
                   partial=True,
                   model_version=self._model_version,
+                  live_session_id=live_session_id,
               )
             if message.server_content.output_transcription.finished:
               yield LlmResponse(
@@ -286,6 +290,7 @@ class GeminiLlmConnection(BaseLlmConnection):
                   ),
                   partial=False,
                   model_version=self._model_version,
+                  live_session_id=live_session_id,
               )
               self._output_transcription_text = ''
           # The Gemini API might not send a transcription finished signal.
@@ -304,6 +309,7 @@ class GeminiLlmConnection(BaseLlmConnection):
                   ),
                   partial=False,
                   model_version=self._model_version,
+                  live_session_id=live_session_id,
               )
               self._input_transcription_text = ''
             if self._output_transcription_text:
@@ -314,6 +320,7 @@ class GeminiLlmConnection(BaseLlmConnection):
                   ),
                   partial=False,
                   model_version=self._model_version,
+                  live_session_id=live_session_id,
               )
               self._output_transcription_text = ''
           if message.server_content.turn_complete:
@@ -325,6 +332,7 @@ class GeminiLlmConnection(BaseLlmConnection):
               yield LlmResponse(
                   content=types.Content(role='model', parts=tool_call_parts),
                   model_version=self._model_version,
+                  live_session_id=live_session_id,
               )
               tool_call_parts = []
             yield LlmResponse(
@@ -332,6 +340,7 @@ class GeminiLlmConnection(BaseLlmConnection):
                 interrupted=message.server_content.interrupted,
                 grounding_metadata=message.server_content.grounding_metadata,
                 model_version=self._model_version,
+                live_session_id=live_session_id,
             )
             break
           # in case of empty content or parts, we still surface it
@@ -346,6 +355,7 @@ class GeminiLlmConnection(BaseLlmConnection):
               yield LlmResponse(
                   interrupted=message.server_content.interrupted,
                   model_version=self._model_version,
+                  live_session_id=live_session_id,
               )
         if message.tool_call:
           logger.debug('Received tool call: %s', message.tool_call)
@@ -362,6 +372,7 @@ class GeminiLlmConnection(BaseLlmConnection):
               LlmResponse(
                   live_session_resumption_update=message.session_resumption_update,
                   model_version=self._model_version,
+                  live_session_id=live_session_id,
               )
           )
         if message.go_away:
@@ -369,6 +380,7 @@ class GeminiLlmConnection(BaseLlmConnection):
           yield LlmResponse(
               go_away=message.go_away,
               model_version=self._model_version,
+              live_session_id=live_session_id,
           )
 
       if tool_call_parts:
@@ -376,6 +388,7 @@ class GeminiLlmConnection(BaseLlmConnection):
         yield LlmResponse(
             content=types.Content(role='model', parts=tool_call_parts),
             model_version=self._model_version,
+            live_session_id=self._gemini_session.session_id,
         )
 
   async def close(self):

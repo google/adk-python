@@ -6,6 +6,19 @@ package(
 )
 
 pytest_test(
+    name = "test_local_environment",
+    srcs = ["test_local_environment.py"],
+    args = [
+        "-p",
+        "pytest_asyncio.plugin",
+    ],
+    deps = [
+        "//third_party/py/google/adk",
+        "//third_party/py/pytest_asyncio",
+    ],
+)
+
+pytest_test(
     name = "test_skill_toolset",
     srcs = ["test_skill_toolset.py"],
     args = [

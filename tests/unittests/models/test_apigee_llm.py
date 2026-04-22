@@ -649,3 +649,86 @@ def test_parse_response_usage_metadata():
   assert llm_response.usage_metadata.candidates_token_count == 5
   assert llm_response.usage_metadata.total_token_count == 15
   assert llm_response.usage_metadata.thoughts_token_count == 4
+
+
+def test_parse_response_with_refusal():
+  """Tests that CompletionsHTTPClient parses refusal correctly."""
+  client = CompletionsHTTPClient(base_url='http://test')
+
+  response_dict = {
+      'choices': [{
+          'message': {
+              'role': 'assistant',
+              'refusal': 'I refuse to answer',
+          },
+          'finish_reason': 'stop',
+      }],
+  }
+  llm_response = client._parse_response(response_dict)
+  assert len(llm_response.content.parts) == 1
+  assert llm_response.content.parts[0].text == '[[REFUSAL]]: I refuse to answer'
+
+  response_dict_mixed = {
+      'choices': [{
+          'message': {
+              'role': 'assistant',
+              'content': 'Here is some content',
+              'refusal': 'But I refuse to answer the rest',
+          },
+          'finish_reason': 'stop',
+      }],
+  }
+  llm_response_mixed = client._parse_response(response_dict_mixed)
+  assert len(llm_response_mixed.content.parts) == 1
+  assert (
+      llm_response_mixed.content.parts[0].text
+      == 'Here is some content\n[[REFUSAL]]: But I refuse to answer the rest'
+  )
+
+
+@pytest.mark.parametrize(
+    ('parts', 'expected_message'),
+    [
+        (
+            [
+                types.Part.from_text(text='[[REFUSAL]]: I refuse to answer'),
+                types.Part.from_text(text='normal content'),
+            ],
+            {
+                'role': 'assistant',
+                'refusal': 'I refuse to answer',
+                'content': 'normal content',
+            },
+        ),
+        (
+            [
+                types.Part.from_text(
+                    text=(
+                        'Here is some content\n[[REFUSAL]]: But I refuse to'
+                        ' answer the rest'
+                    )
+                ),
+            ],
+            {
+                'role': 'assistant',
+                'refusal': 'But I refuse to answer the rest',
+                'content': 'Here is some content',
+            },
+        ),
+    ],
+)
+def test_construct_payload_with_refusal(parts, expected_message):
+  """Tests that CompletionsHTTPClient constructs payload with refusal correctly."""
+  client = CompletionsHTTPClient(base_url='http://test')
+  req = LlmRequest(
+      model='apigee/openai/gpt-4o',
+      contents=[
+          types.Content(
+              role='model',
+              parts=parts,
+          )
+      ],
+  )
+  payload = client._construct_payload(req, stream=False)
+  messages = payload['messages']
+  assert messages == [expected_message]

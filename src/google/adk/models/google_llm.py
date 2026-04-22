@@ -432,8 +432,8 @@ class Gemini(BaseLlm):
     from ..tools.computer_use.computer_use_toolset import ComputerUseToolset
 
     async def convert_wait_to_wait_5_seconds(wait_func):
-      async def wait_5_seconds():
-        return await wait_func(5)
+      async def wait_5_seconds(tool_context=None):
+        return await wait_func(5, tool_context=tool_context)
 
       return wait_5_seconds
 
