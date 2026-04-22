@@ -41,6 +41,12 @@ class FeatureName(str, Enum):
   GOOGLE_CREDENTIALS_CONFIG = "GOOGLE_CREDENTIALS_CONFIG"
   GOOGLE_TOOL = "GOOGLE_TOOL"
   JSON_SCHEMA_FOR_FUNC_DECL = "JSON_SCHEMA_FOR_FUNC_DECL"
+  # Private (leading underscore): not part of the public API surface.
+  # GE flips this on by setting the env var
+  # `ADK_ENABLE_MCP_GRACEFUL_ERROR_HANDLING=1`; nothing should import this
+  # enum member by name. Keeping it private avoids a backward-compat
+  # obligation for what is intended as a temporary, internal kill-switch.
+  _MCP_GRACEFUL_ERROR_HANDLING = "MCP_GRACEFUL_ERROR_HANDLING"
   PROGRESSIVE_SSE_STREAMING = "PROGRESSIVE_SSE_STREAMING"
   PUBSUB_TOOL_CONFIG = "PUBSUB_TOOL_CONFIG"
   PUBSUB_TOOLSET = "PUBSUB_TOOLSET"
@@ -130,6 +136,9 @@ _FEATURE_REGISTRY: dict[FeatureName, FeatureConfig] = {
     ),
     FeatureName.JSON_SCHEMA_FOR_FUNC_DECL: FeatureConfig(
         FeatureStage.WIP, default_on=False
+    ),
+    FeatureName._MCP_GRACEFUL_ERROR_HANDLING: FeatureConfig(
+        FeatureStage.EXPERIMENTAL, default_on=False
     ),
     FeatureName.PROGRESSIVE_SSE_STREAMING: FeatureConfig(
         FeatureStage.EXPERIMENTAL, default_on=True
