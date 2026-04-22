@@ -2013,6 +2013,26 @@ class AdkWebServer:
           media_type="text/event-stream",
       )
 
+    @app.get("/dev/build_graph_image/{app_name}", tags=[TAG_DEBUG])
+    async def get_app_graph_image(
+        app_name: str, dark_mode: bool = False
+    ) -> Response:
+      """Returns the agent graph as an SVG image for the dev UI."""
+      agent_or_app = self.agent_loader.load_agent(app_name)
+      root_agent = self._get_root_agent(agent_or_app)
+
+      # Get graph with NO highlights (empty list) and specified theme
+      dot_graph = await agent_graph.get_agent_graph(
+          root_agent, [], dark_mode=dark_mode
+      )
+
+      if dot_graph and isinstance(dot_graph, graphviz.Digraph):
+        # Render the graph as SVG
+        svg_image = dot_graph.pipe(format="svg")
+        return Response(content=svg_image, media_type="image/svg+xml")
+      else:
+        raise HTTPException(status_code=404, detail="Graph not found")
+
     @app.get(
         "/dev/{app_name}/graph",
         response_model_exclude_none=True,

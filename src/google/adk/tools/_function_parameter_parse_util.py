@@ -131,17 +131,17 @@ def _generate_json_schema_for_parameter(
   json_schema_dict = _add_unevaluated_items_to_fixed_len_tuple_schema(
       json_schema_dict
   )
-  
+
   def _strip_unsupported_keys(d: Any) -> Any:
-      if isinstance(d, dict):
-          d.pop('prefixItems', None)
-          d.pop('unevaluatedItems', None)
-          for k, v in d.items():
-              _strip_unsupported_keys(v)
-      elif isinstance(d, list):
-          for item in d:
-              _strip_unsupported_keys(item)
-      return d
+    if isinstance(d, dict):
+      d.pop('prefixItems', None)
+      d.pop('unevaluatedItems', None)
+      for k, v in d.items():
+        _strip_unsupported_keys(v)
+    elif isinstance(d, list):
+      for item in d:
+        _strip_unsupported_keys(item)
+    return d
 
   return _strip_unsupported_keys(json_schema_dict)
 

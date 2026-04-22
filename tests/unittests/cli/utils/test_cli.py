@@ -423,6 +423,7 @@ async def test_run_cli_passes_memory_service_to_input_file(
       credential_service: InMemoryCredentialService,
       input_path: str,
       memory_service: Any = None,
+      **kwargs,
   ) -> object:
     del app_name, user_id, agent_or_app, artifact_service
     del session_service, credential_service, input_path

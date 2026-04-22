@@ -24,6 +24,7 @@ from google.genai import types
 from pydantic import BaseModel
 
 from ..agents.llm_agent import LlmAgent
+from ..agents.run_config import RunConfig
 from ..apps.app import App
 from ..artifacts.base_artifact_service import BaseArtifactService
 from ..auth.credential_service.base_credential_service import BaseCredentialService
@@ -189,13 +190,13 @@ async def run_cli(
   if avatar_config:
     try:
       if Path(avatar_config).is_file():
-        with open(avatar_config, "r", encoding="utf-8") as f:
+        with open(avatar_config, 'r', encoding='utf-8') as f:
           config_dict = json.load(f)
       else:
         config_dict = json.loads(avatar_config)
       avatar_config_obj = types.AvatarConfig.model_validate(config_dict)
     except Exception as e:
-      click.secho(f"Warning: Failed to parse avatar_config: {e}", fg="yellow")
+      click.secho(f'Warning: Failed to parse avatar_config: {e}', fg='yellow')
 
   agent_loader = AgentLoader(agents_dir=agents_dir)
   agent_or_app = agent_loader.load_agent(agent_folder_name)

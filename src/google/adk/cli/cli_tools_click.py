@@ -51,6 +51,252 @@ LOG_LEVELS = click.Choice(
 )
 
 
+def _check_port_available(host: str, port: int) -> bool:
+  """Check if a port is available for binding on a host."""
+  import socket
+
+  with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+    try:
+      s.bind((host, port))
+      return True
+    except socket.error:
+      return False
+
+
+def web_options():
+  """Decorator to add web UI options to click commands."""
+
+  def decorator(func):
+    @click.option(
+        "--logo-text",
+        type=str,
+        help="Optional. The text to display in the logo of the web UI.",
+        default=None,
+    )
+    @click.option(
+        "--logo-image-url",
+        type=str,
+        help=(
+            "Optional. The URL of the image to display in the logo of the"
+            " web UI."
+        ),
+        default=None,
+    )
+    @functools.wraps(func)
+    def wrapper(*args, **kwargs):
+      return func(*args, **kwargs)
+
+    return wrapper
+
+  return decorator
+
+
+def _deprecate_staging_bucket(ctx, param, value):
+  if value:
+    click.echo(
+        click.style(
+            f"WARNING: --{param} is deprecated and will be removed. Please"
+            " leave it unspecified.",
+            fg="yellow",
+        ),
+        err=True,
+    )
+  return value
+
+
+def deprecated_adk_services_options():
+  """Deprecated ADK services options."""
+
+  def warn(alternative_param, ctx, param, value):
+    if value:
+      click.echo(
+          click.style(
+              f"WARNING: Deprecated option --{param.name} is used. Please use"
+              f" {alternative_param} instead.",
+              fg="yellow",
+          ),
+          err=True,
+      )
+    return value
+
+  def decorator(func):
+    @click.option(
+        "--session_db_url",
+        help="Deprecated. Use --session_service_uri instead.",
+        callback=functools.partial(warn, "--session_service_uri"),
+    )
+    @click.option(
+        "--artifact_storage_uri",
+        type=str,
+        help="Deprecated. Use --artifact_service_uri instead.",
+        callback=functools.partial(warn, "--artifact_service_uri"),
+        default=None,
+    )
+    @functools.wraps(func)
+    def wrapper(*args, **kwargs):
+      return func(*args, **kwargs)
+
+    return wrapper
+
+  return decorator
+
+
+def fast_api_common_options():
+  """Decorator to add common fast api options to click commands."""
+
+  def decorator(func):
+
+    @click.option(
+        "--host",
+        type=str,
+        help="Optional. The binding host of the server",
+        default="127.0.0.1",
+        show_default=True,
+    )
+    @click.option(
+        "--port",
+        type=int,
+        help="Optional. The port of the server",
+        default=8000,
+    )
+    @click.option(
+        "--allow_origins",
+        help=(
+            "Optional. Origins to allow for CORS. Can be literal origins"
+            " (e.g., 'https://example.com') or regex patterns prefixed with"
+            " 'regex:' (e.g., 'regex:https://.*\\.example\\.com')."
+        ),
+        multiple=True,
+    )
+    @click.option(
+        "-v",
+        "--verbose",
+        is_flag=True,
+        show_default=True,
+        default=False,
+        help="Enable verbose (DEBUG) logging. Shortcut for --log_level DEBUG.",
+    )
+    @click.option(
+        "--log_level",
+        type=LOG_LEVELS,
+        default="INFO",
+        help="Optional. Set the logging level",
+    )
+    @click.option(
+        "--trace_to_cloud",
+        is_flag=True,
+        show_default=True,
+        default=False,
+        help="Optional. Whether to enable cloud trace for telemetry.",
+    )
+    @click.option(
+        "--otel_to_cloud",
+        is_flag=True,
+        show_default=True,
+        default=False,
+        help=("Optional. Whether to enable OpenTelemetry for Agent Engine."),
+    )
+    @click.option(
+        "--reload/--no-reload",
+        default=True,
+        help=(
+            "Optional. Whether to enable auto reload for server. Not supported"
+            " for Cloud Run."
+        ),
+    )
+    @click.option(
+        "--a2a",
+        is_flag=True,
+        show_default=True,
+        default=False,
+        help="Optional. Whether to enable A2A endpoint.",
+    )
+    @click.option(
+        "--reload_agents",
+        is_flag=True,
+        default=False,
+        show_default=True,
+        help="Optional. Whether to enable live reload for agents changes.",
+    )
+    @click.option(
+        "--eval_storage_uri",
+        type=str,
+        help=(
+            "Optional. The evals storage URI to store agent evals,"
+            " supported URIs: gs://<bucket name>."
+        ),
+        default=None,
+    )
+    @click.option(
+        "--max_llm_calls",
+        type=int,
+        default=500,
+        show_default=True,
+        help="Optional. Maximum number of LLM calls allowed for a given run.",
+    )
+    @click.option(
+        "--avatar_config",
+        type=str,
+        help=(
+            "Optional. JSON string or path to JSON file containing"
+            " avatar configuration for live sessions (e.g.,"
+            " '{\"avatarName\": \"avatar_id\"}')."
+        ),
+        default=None,
+    )
+    @click.option(
+        "--extra_plugins",
+        help=(
+            "Optional. Comma-separated list of extra plugin classes or"
+            " instances to enable (e.g., my.module.MyPluginClass or"
+            " my.module.my_plugin_instance)."
+        ),
+        multiple=True,
+    )
+    @click.option(
+        "--url_prefix",
+        type=str,
+        help=(
+            "Optional. URL path prefix when the application is mounted behind a"
+            " reverse proxy or API gateway (e.g., '/api/v1', '/adk'). This"
+            " ensures generated URLs and redirects work correctly when the app"
+            " is not served at the root path. Must start with '/' if provided."
+        ),
+        default=None,
+    )
+    @click.option(
+        "--trigger_sources",
+        type=str,
+        help=(
+            "Optional. Comma-separated list of trigger sources to enable"
+            " (e.g., 'pubsub,eventarc'). Registers /apps/{app_name}/trigger/*"
+            " endpoints for batch and event-driven agent invocations."
+        ),
+        default=None,
+    )
+    @functools.wraps(func)
+    @click.pass_context
+    def wrapper(ctx, *args, **kwargs):
+      log_level_source = ctx.get_parameter_source("log_level")
+      if (
+          kwargs.pop("verbose", False)
+          and log_level_source == ParameterSource.DEFAULT
+      ):
+        kwargs["log_level"] = "DEBUG"
+
+      trigger_sources = kwargs.get("trigger_sources")
+      if trigger_sources is not None:
+        kwargs["trigger_sources"] = [
+            s.strip() for s in trigger_sources.split(",") if s.strip()
+        ]
+
+      return func(*args, **kwargs)
+
+    return wrapper
+
+  return decorator
+
+
 def _apply_feature_overrides(
     *,
     enable_features: tuple[str, ...] = (),
@@ -678,6 +924,7 @@ def cli_run(
     artifact_service_uri: Optional[str] = None,
     memory_service_uri: Optional[str] = None,
     use_local_storage: bool = True,
+    trigger_sources: Optional[list[str]] = None,
 ):
   """Runs an interactive CLI for a certain agent.
 
@@ -704,6 +951,8 @@ def cli_run(
           artifact_service_uri=artifact_service_uri,
           memory_service_uri=memory_service_uri,
           use_local_storage=use_local_storage,
+          max_llm_calls=max_llm_calls,
+          avatar_config=avatar_config,
       )
   )
 
@@ -1385,244 +1634,6 @@ def cli_generate_eval_cases(
     raise click.ClickException(f"Failed to generate eval case(s): {e}") from e
 
 
-def web_options():
-  """Decorator to add web UI options to click commands."""
-
-  def decorator(func):
-    @click.option(
-        "--logo-text",
-        type=str,
-        help="Optional. The text to display in the logo of the web UI.",
-        default=None,
-    )
-    @click.option(
-        "--logo-image-url",
-        type=str,
-        help=(
-            "Optional. The URL of the image to display in the logo of the"
-            " web UI."
-        ),
-        default=None,
-    )
-    @functools.wraps(func)
-    def wrapper(*args, **kwargs):
-      return func(*args, **kwargs)
-
-    return wrapper
-
-  return decorator
-
-
-def _deprecate_staging_bucket(ctx, param, value):
-  if value:
-    click.echo(
-        click.style(
-            f"WARNING: --{param} is deprecated and will be removed. Please"
-            " leave it unspecified.",
-            fg="yellow",
-        ),
-        err=True,
-    )
-  return value
-
-
-def deprecated_adk_services_options():
-  """Deprecated ADK services options."""
-
-  def warn(alternative_param, ctx, param, value):
-    if value:
-      click.echo(
-          click.style(
-              f"WARNING: Deprecated option --{param.name} is used. Please use"
-              f" {alternative_param} instead.",
-              fg="yellow",
-          ),
-          err=True,
-      )
-    return value
-
-  def decorator(func):
-    @click.option(
-        "--session_db_url",
-        help="Deprecated. Use --session_service_uri instead.",
-        callback=functools.partial(warn, "--session_service_uri"),
-    )
-    @click.option(
-        "--artifact_storage_uri",
-        type=str,
-        help="Deprecated. Use --artifact_service_uri instead.",
-        callback=functools.partial(warn, "--artifact_service_uri"),
-        default=None,
-    )
-    @functools.wraps(func)
-    def wrapper(*args, **kwargs):
-      return func(*args, **kwargs)
-
-    return wrapper
-
-  return decorator
-
-
-def fast_api_common_options():
-  """Decorator to add common fast api options to click commands."""
-
-  def decorator(func):
-
-    @click.option(
-        "--host",
-        type=str,
-        help="Optional. The binding host of the server",
-        default="127.0.0.1",
-        show_default=True,
-    )
-    @click.option(
-        "--port",
-        type=int,
-        help="Optional. The port of the server",
-        default=8000,
-    )
-    @click.option(
-        "--allow_origins",
-        help=(
-            "Optional. Origins to allow for CORS. Can be literal origins"
-            " (e.g., 'https://example.com') or regex patterns prefixed with"
-            " 'regex:' (e.g., 'regex:https://.*\\.example\\.com')."
-        ),
-        multiple=True,
-    )
-    @click.option(
-        "-v",
-        "--verbose",
-        is_flag=True,
-        show_default=True,
-        default=False,
-        help="Enable verbose (DEBUG) logging. Shortcut for --log_level DEBUG.",
-    )
-    @click.option(
-        "--log_level",
-        type=LOG_LEVELS,
-        default="INFO",
-        help="Optional. Set the logging level",
-    )
-    @click.option(
-        "--trace_to_cloud",
-        is_flag=True,
-        show_default=True,
-        default=False,
-        help="Optional. Whether to enable cloud trace for telemetry.",
-    )
-    @click.option(
-        "--otel_to_cloud",
-        is_flag=True,
-        show_default=True,
-        default=False,
-        help=(
-            "Optional. Whether to write OTel data to Google Cloud"
-            " Observability services - Cloud Trace and Cloud Logging."
-        ),
-    )
-    @click.option(
-        "--reload/--no-reload",
-        default=True,
-        help=(
-            "Optional. Whether to enable auto reload for server. Not supported"
-            " for Cloud Run."
-        ),
-    )
-    @click.option(
-        "--a2a",
-        is_flag=True,
-        show_default=True,
-        default=False,
-        help="Optional. Whether to enable A2A endpoint.",
-    )
-    @click.option(
-        "--reload_agents",
-        is_flag=True,
-        default=False,
-        show_default=True,
-        help="Optional. Whether to enable live reload for agents changes.",
-    )
-    @click.option(
-        "--eval_storage_uri",
-        type=str,
-        help=(
-            "Optional. The evals storage URI to store agent evals,"
-            " supported URIs: gs://<bucket name>."
-        ),
-        default=None,
-    )
-    @click.option(
-        "--max_llm_calls",
-        type=int,
-        default=500,
-        show_default=True,
-        help="Optional. Maximum number of LLM calls allowed for a given run.",
-    )
-    @click.option(
-        "--avatar_config",
-        type=str,
-        help=(
-            "Optional. JSON string or path to JSON file containing"
-            " avatar configuration for live sessions (e.g.,"
-            " '{\"avatarName\": \"avatar_id\"}')."
-        ),
-        default=None,
-    )
-    @click.option(
-        "--extra_plugins",
-        help=(
-            "Optional. Comma-separated list of extra plugin classes or"
-            " instances to enable (e.g., my.module.MyPluginClass or"
-            " my.module.my_plugin_instance)."
-        ),
-        multiple=True,
-    )
-    @click.option(
-        "--url_prefix",
-        type=str,
-        help=(
-            "Optional. URL path prefix when the application is mounted behind a"
-            " reverse proxy or API gateway (e.g., '/api/v1', '/adk'). This"
-            " ensures generated URLs and redirects work correctly when the app"
-            " is not served at the root path. Must start with '/' if provided."
-        ),
-        default=None,
-    )
-    # Parsed into list[str] by the wrapper below (server commands need a list).
-    @click.option(
-        "--trigger_sources",
-        type=str,
-        help=(
-            "Optional. Comma-separated list of trigger sources to enable"
-            " (e.g., 'pubsub,eventarc'). Registers /apps/{app_name}/trigger/*"
-            " endpoints for batch and event-driven agent invocations."
-        ),
-        default=None,
-    )
-    @functools.wraps(func)
-    @click.pass_context
-    def wrapper(ctx, *args, **kwargs):
-      # If verbose flag is set and log level is not set, set log level to DEBUG.
-      log_level_source = ctx.get_parameter_source("log_level")
-      if (
-          kwargs.pop("verbose", False)
-          and log_level_source == ParameterSource.DEFAULT
-      ):
-        kwargs["log_level"] = "DEBUG"
-
-      # Parse comma-separated trigger_sources into a list.
-      trigger_sources = kwargs.get("trigger_sources")
-      if trigger_sources is not None:
-        kwargs["trigger_sources"] = [
-            s.strip() for s in trigger_sources.split(",") if s.strip()
-        ]
-
-      return func(*args, **kwargs)
-
-    return wrapper
-
-  return decorator
 
 
 @main.command("web")
@@ -1709,7 +1720,6 @@ def cli_web(
       max_llm_calls=max_llm_calls,
       avatar_config=avatar_config,
       allow_origins=allow_origins,
-
       web=True,
       trace_to_cloud=trace_to_cloud,
       otel_to_cloud=otel_to_cloud,

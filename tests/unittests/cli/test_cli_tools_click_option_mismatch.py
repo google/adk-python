@@ -98,7 +98,7 @@ def test_adk_run():
       run_command,
       cli_run.callback,
       "run",
-      ignore_params={"enable_features", "disable_features"},
+      ignore_params={"verbose", "enable_features", "disable_features"},
   )
 
 
