@@ -1949,6 +1949,7 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
       table_id: Optional[str] = None,
       config: Optional[BigQueryLoggerConfig] = None,
       location: str = "US",
+      credentials: Optional[google.auth.credentials.Credentials] = None,
       **kwargs,
   ) -> None:
     """Initializes the instance.
@@ -1959,6 +1960,8 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
         table_id: BigQuery table ID (optional, overrides config).
         config: BigQueryLoggerConfig (optional).
         location: BigQuery location (default: "US").
+        credentials: Google Auth credentials (optional). If None, uses
+          Application Default Credentials.
         **kwargs: Additional configuration parameters for BigQueryLoggerConfig.
     """
     super().__init__(name="bigquery_agent_analytics")
@@ -1985,6 +1988,7 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
     self._startup_error: Optional[Exception] = None
     self._is_shutting_down = False
     self._setup_lock = None
+    self._credentials = credentials
     self.client = None
     self._loop_state_by_loop: dict[asyncio.AbstractEventLoop, _LoopState] = {}
     self._write_stream_name = None  # Resolved stream name
@@ -2097,15 +2101,16 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
     # grpc.aio clients are loop-bound, so we create one per event loop.
 
     def get_credentials():
-      creds, project_id = google.auth.default(
+      creds, _ = google.auth.default(
           scopes=["https://www.googleapis.com/auth/cloud-platform"]
       )
-      return creds, project_id
+      return creds
 
-    creds, project_id = await loop.run_in_executor(
-        self._executor, get_credentials
-    )
-    quota_project_id = getattr(creds, "quota_project_id", None)
+    if self._credentials is None:
+      self._credentials = await loop.run_in_executor(
+          self._executor, get_credentials
+      )
+    quota_project_id = getattr(self._credentials, "quota_project_id", None)
     options = (
         client_options.ClientOptions(quota_project_id=quota_project_id)
         if quota_project_id
@@ -2119,7 +2124,7 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
     client_info = gapic_client_info.ClientInfo(user_agent=" ".join(user_agents))
 
     write_client = BigQueryWriteAsyncClient(
-        credentials=creds,
+        credentials=self._credentials,
         client_info=client_info,
         client_options=options,
     )
@@ -2173,7 +2178,9 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
       self.client = await loop.run_in_executor(
           self._executor,
           lambda: bigquery.Client(
-              project=self.project_id, location=self.location
+              project=self.project_id,
+              location=self.location,
+              credentials=self._credentials,
           ),
       )
 
@@ -2193,7 +2200,9 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
             self.project_id,
             self.config.gcs_bucket_name,
             self._executor,
-            storage_client=kwargs.get("storage_client"),
+            storage_client=storage.Client(
+                project=self.project_id, credentials=self._credentials
+            ),
         )
 
       self.parser = HybridContentParser(
