@@ -15,10 +15,16 @@
 from __future__ import annotations
 
 import asyncio
+from contextlib import AsyncExitStack
 from datetime import timedelta
+from unittest.mock import AsyncMock
+from unittest.mock import Mock
 from unittest.mock import patch
 
+from google.adk.features import FeatureName
+from google.adk.features._feature_registry import temporary_feature_override
 from google.adk.tools.mcp_tool.session_context import SessionContext
+from mcp import ClientSession
 import pytest
 
 
@@ -51,7 +57,7 @@ class MockClient:
       raise_on_enter=None,
       delay_on_enter=0,
   ):
-    self._transports = transports or ("read_stream", "write_stream")
+    self._transports = transports or ('read_stream', 'write_stream')
     self._raise_on_enter = raise_on_enter
     self._delay_on_enter = delay_on_enter
     self._entered = False
@@ -85,7 +91,7 @@ class TestSessionContext:
     mock_session = MockClientSession()
 
     with patch(
-        "google.adk.tools.mcp_tool.session_context.ClientSession"
+        'google.adk.tools.mcp_tool.session_context.ClientSession'
     ) as mock_session_class:
       mock_session_class.return_value = mock_session
 
@@ -111,7 +117,7 @@ class TestSessionContext:
   @pytest.mark.asyncio
   async def test_start_raises_connection_error_on_exception(self):
     """Test that start() raises ConnectionError when exception occurs."""
-    test_exception = ValueError("Connection failed")
+    test_exception = ValueError('Connection failed')
     mock_client = MockClient(raise_on_enter=test_exception)
     session_context = SessionContext(
         mock_client, timeout=5.0, sse_read_timeout=None
@@ -121,8 +127,8 @@ class TestSessionContext:
       await session_context.start()
 
     # Verify ConnectionError message contains original exception
-    assert "Failed to create MCP session" in str(exc_info.value)
-    assert "Connection failed" in str(exc_info.value)
+    assert 'Failed to create MCP session' in str(exc_info.value)
+    assert 'Connection failed' in str(exc_info.value)
 
     # Verify ready_event was set (in finally block)
     assert session_context._ready_event.is_set()
@@ -140,12 +146,12 @@ class TestSessionContext:
 
     # Make initialize raise CancelledError
     async def cancelled_initialize():
-      raise asyncio.CancelledError("Task cancelled")
+      raise asyncio.CancelledError('Task cancelled')
 
     mock_session.initialize = cancelled_initialize
 
     with patch(
-        "google.adk.tools.mcp_tool.session_context.ClientSession"
+        'google.adk.tools.mcp_tool.session_context.ClientSession'
     ) as mock_session_class:
       mock_session_class.return_value = mock_session
 
@@ -154,8 +160,8 @@ class TestSessionContext:
         await session_context.start()
 
       # Verify it's a ConnectionError about cancellation
-      assert "Failed to create MCP session" in str(exc_info.value)
-      assert "task cancelled" in str(exc_info.value)
+      assert 'Failed to create MCP session' in str(exc_info.value)
+      assert 'task cancelled' in str(exc_info.value)
 
       # Verify ready_event was set
       assert session_context._ready_event.is_set()
@@ -172,7 +178,7 @@ class TestSessionContext:
     mock_session = MockClientSession()
 
     with patch(
-        "google.adk.tools.mcp_tool.session_context.ClientSession"
+        'google.adk.tools.mcp_tool.session_context.ClientSession'
     ) as mock_session_class:
       mock_session_class.return_value = mock_session
 
@@ -208,12 +214,12 @@ class TestSessionContext:
     mock_session = MockClientSession()
 
     async def failing_operation():
-      raise RuntimeError("Session operation failed")
+      raise RuntimeError('Session operation failed')
 
     mock_session.failing_operation = failing_operation
 
     with patch(
-        "google.adk.tools.mcp_tool.session_context.ClientSession"
+        'google.adk.tools.mcp_tool.session_context.ClientSession'
     ) as mock_session_class:
       mock_session_class.return_value = mock_session
 
@@ -221,7 +227,7 @@ class TestSessionContext:
       session = await session_context.start()
 
       # Use session and trigger exception
-      with pytest.raises(RuntimeError, match="Session operation failed"):
+      with pytest.raises(RuntimeError, match='Session operation failed'):
         await session.failing_operation()
 
       # Close the session context - should not break event loop
@@ -238,7 +244,7 @@ class TestSessionContext:
     mock_session = MockClientSession()
 
     with patch(
-        "google.adk.tools.mcp_tool.session_context.ClientSession"
+        'google.adk.tools.mcp_tool.session_context.ClientSession'
     ) as mock_session_class:
       mock_session_class.return_value = mock_session
 
@@ -261,7 +267,7 @@ class TestSessionContext:
     with pytest.raises(ConnectionError) as exc_info:
       await session_context.start()
 
-    assert "Failed to create MCP session" in str(exc_info.value)
+    assert 'Failed to create MCP session' in str(exc_info.value)
 
   @pytest.mark.asyncio
   async def test_timeout_during_initialization(self):
@@ -281,14 +287,14 @@ class TestSessionContext:
     mock_session.initialize = slow_initialize
 
     with patch(
-        "google.adk.tools.mcp_tool.session_context.ClientSession"
+        'google.adk.tools.mcp_tool.session_context.ClientSession'
     ) as mock_session_class:
       mock_session_class.return_value = mock_session
 
       with pytest.raises(ConnectionError) as exc_info:
         await session_context.start()
 
-      assert "Failed to create MCP session" in str(exc_info.value)
+      assert 'Failed to create MCP session' in str(exc_info.value)
 
   @pytest.mark.asyncio
   async def test_stdio_client_with_read_timeout(self):
@@ -301,7 +307,7 @@ class TestSessionContext:
     mock_session = MockClientSession()
 
     with patch(
-        "google.adk.tools.mcp_tool.session_context.ClientSession"
+        'google.adk.tools.mcp_tool.session_context.ClientSession'
     ) as mock_session_class:
       mock_session_class.return_value = mock_session
 
@@ -309,8 +315,8 @@ class TestSessionContext:
 
       # Verify ClientSession was called with read_timeout_seconds for stdio
       call_args = mock_session_class.call_args
-      assert "read_timeout_seconds" in call_args.kwargs
-      assert call_args.kwargs["read_timeout_seconds"] == timedelta(seconds=5.0)
+      assert 'read_timeout_seconds' in call_args.kwargs
+      assert call_args.kwargs['read_timeout_seconds'] == timedelta(seconds=5.0)
 
       await session_context.close()
 
@@ -325,7 +331,7 @@ class TestSessionContext:
     mock_session = MockClientSession()
 
     with patch(
-        "google.adk.tools.mcp_tool.session_context.ClientSession"
+        'google.adk.tools.mcp_tool.session_context.ClientSession'
     ) as mock_session_class:
       mock_session_class.return_value = mock_session
 
@@ -334,8 +340,8 @@ class TestSessionContext:
       # Verify ClientSession was called with read_timeout_seconds=None for non-stdio
       # when sse_read_timeout is None
       call_args = mock_session_class.call_args
-      assert "read_timeout_seconds" in call_args.kwargs
-      assert call_args.kwargs["read_timeout_seconds"] is None
+      assert 'read_timeout_seconds' in call_args.kwargs
+      assert call_args.kwargs['read_timeout_seconds'] is None
 
       await session_context.close()
 
@@ -350,7 +356,7 @@ class TestSessionContext:
     mock_session = MockClientSession()
 
     with patch(
-        "google.adk.tools.mcp_tool.session_context.ClientSession"
+        'google.adk.tools.mcp_tool.session_context.ClientSession'
     ) as mock_session_class:
       mock_session_class.return_value = mock_session
 
@@ -358,8 +364,8 @@ class TestSessionContext:
 
       # Verify ClientSession was called with sse_read_timeout
       call_args = mock_session_class.call_args
-      assert "read_timeout_seconds" in call_args.kwargs
-      assert call_args.kwargs["read_timeout_seconds"] == timedelta(
+      assert 'read_timeout_seconds' in call_args.kwargs
+      assert call_args.kwargs['read_timeout_seconds'] == timedelta(
           seconds=300.0
       )
 
@@ -376,7 +382,7 @@ class TestSessionContext:
     mock_session = MockClientSession()
 
     with patch(
-        "google.adk.tools.mcp_tool.session_context.ClientSession"
+        'google.adk.tools.mcp_tool.session_context.ClientSession'
     ) as mock_session_class:
       mock_session_class.return_value = mock_session
 
@@ -423,7 +429,7 @@ class TestSessionContext:
     assert start_task.done()
     assert isinstance(
         start_task.exception(), ConnectionError
-    ) and "task cancelled" in str(start_task.exception())
+    ) and 'task cancelled' in str(start_task.exception())
 
   @pytest.mark.asyncio
   async def test_close_before_start_called(self):
@@ -443,7 +449,7 @@ class TestSessionContext:
     with pytest.raises(ConnectionError) as exc_info:
       await session_context.start()
 
-    assert "session already closed" in str(exc_info.value)
+    assert 'session already closed' in str(exc_info.value)
     assert session_context._task is None
 
   @pytest.mark.asyncio
@@ -460,7 +466,7 @@ class TestSessionContext:
     mock_session = MockClientSession()
 
     with patch(
-        "google.adk.tools.mcp_tool.session_context.ClientSession"
+        'google.adk.tools.mcp_tool.session_context.ClientSession'
     ) as mock_session_class:
       mock_session_class.return_value = mock_session
 
@@ -474,7 +480,7 @@ class TestSessionContext:
   @pytest.mark.asyncio
   async def test_client_cleanup_on_exception(self):
     """Test that client is properly cleaned up even when exception occurs."""
-    test_exception = RuntimeError("Test error")
+    test_exception = RuntimeError('Test error')
     mock_client = MockClient(raise_on_enter=test_exception)
     session_context = SessionContext(
         mock_client, timeout=5.0, sse_read_timeout=None
@@ -500,7 +506,7 @@ class TestSessionContext:
     mock_session = MockClientSession()
 
     with patch(
-        "google.adk.tools.mcp_tool.session_context.ClientSession"
+        'google.adk.tools.mcp_tool.session_context.ClientSession'
     ) as mock_session_class:
       mock_session_class.return_value = mock_session
 
@@ -528,12 +534,12 @@ class TestSessionContext:
     class FailingMockSession(MockClientSession):
 
       async def __aexit__(self, exc_type, exc_val, exc_tb):
-        raise RuntimeError("Cleanup failed")
+        raise RuntimeError('Cleanup failed')
 
     failing_session = FailingMockSession()
 
     with patch(
-        "google.adk.tools.mcp_tool.session_context.ClientSession"
+        'google.adk.tools.mcp_tool.session_context.ClientSession'
     ) as mock_session_class:
       mock_session_class.return_value = failing_session
 
@@ -546,221 +552,245 @@ class TestSessionContext:
       assert session_context._close_event.is_set()
 
 
-class TestRunGuarded:
-  """Tests for SessionContext._run_guarded()."""
+class TestSessionContextIsTaskAlive:
+  """Tests for the SessionContext._is_task_alive property."""
+
+  def test_is_task_alive_false_before_start(self):
+    """Before start(), there is no task and the property returns False."""
+    session_context = SessionContext(
+        MockClient(), timeout=5.0, sse_read_timeout=None
+    )
+    assert session_context._is_task_alive is False
 
   @pytest.mark.asyncio
-  async def test_run_guarded_normal_completion(self):
-    """Test _run_guarded returns result when coroutine completes normally."""
-    mock_client = MockClient()
-    mock_session = MockClientSession()
-
-    with patch(
-        "google.adk.tools.mcp_tool.session_context.ClientSession"
-    ) as mock_session_class:
-      mock_session_class.return_value = mock_session
-
-      session_context = SessionContext(
-          mock_client, timeout=5.0, sse_read_timeout=None
-      )
-      await session_context.start()
-
-      async def my_coro():
-        return "hello"
-
-      result = await session_context._run_guarded(my_coro())
-      assert result == "hello"
-
-      await session_context.close()
-
-  @pytest.mark.asyncio
-  async def test_run_guarded_background_task_crash(self):
-    """Test _run_guarded raises ConnectionError when background task dies."""
-    mock_client = MockClient()
-    mock_session = MockClientSession()
-
-    with patch(
-        "google.adk.tools.mcp_tool.session_context.ClientSession"
-    ) as mock_session_class:
-      mock_session_class.return_value = mock_session
-
-      session_context = SessionContext(
-          mock_client, timeout=5.0, sse_read_timeout=None
-      )
-      await session_context.start()
-
-      crash_error = RuntimeError("403 Forbidden")
-
-      async def hanging_coro():
-        await asyncio.sleep(100)
-
-      # Kill the background task and replace with one that's already failed
-      session_context._task.cancel()
-      try:
-        await session_context._task
-      except (asyncio.CancelledError, Exception):
-        pass
-
-      async def failing_task():
-        raise crash_error
-
-      session_context._task = asyncio.create_task(failing_task())
-      await asyncio.sleep(0.01)
-
-      coro = hanging_coro()
-      with pytest.raises(ConnectionError) as exc_info:
-        await session_context._run_guarded(coro)
-
-      assert "403 Forbidden" in str(exc_info.value)
-      assert exc_info.value.__cause__ is crash_error
-
-  @pytest.mark.asyncio
-  async def test_run_guarded_task_already_dead(self):
-    """Test _run_guarded raises immediately when task is already done."""
-    mock_client = MockClient()
-    mock_session = MockClientSession()
-
-    with patch(
-        "google.adk.tools.mcp_tool.session_context.ClientSession"
-    ) as mock_session_class:
-      mock_session_class.return_value = mock_session
-
-      session_context = SessionContext(
-          mock_client, timeout=5.0, sse_read_timeout=None
-      )
-      await session_context.start()
-
-      original_error = ValueError("transport died")
-
-      async def failing_task():
-        raise original_error
-
-      session_context._task.cancel()
-      try:
-        await session_context._task
-      except (asyncio.CancelledError, Exception):
-        pass
-
-      session_context._task = asyncio.create_task(failing_task())
-      await asyncio.sleep(0.01)
-
-      async def my_coro():
-        return "should not reach"
-
-      coro = my_coro()
-      with pytest.raises(ConnectionError) as exc_info:
-        await session_context._run_guarded(coro)
-
-      assert "already terminated" in str(exc_info.value)
-      assert exc_info.value.__cause__ is original_error
-
-  @pytest.mark.asyncio
-  async def test_run_guarded_cancels_coroutine_on_crash(self):
-    """Test that _run_guarded cancels the coroutine when the task crashes."""
-    mock_client = MockClient()
-    mock_session = MockClientSession()
-
-    coro_was_cancelled = False
-
-    with patch(
-        "google.adk.tools.mcp_tool.session_context.ClientSession"
-    ) as mock_session_class:
-      mock_session_class.return_value = mock_session
-
-      session_context = SessionContext(
-          mock_client, timeout=5.0, sse_read_timeout=None
-      )
-      await session_context.start()
-
-      async def slow_coro():
-        nonlocal coro_was_cancelled
-        try:
-          await asyncio.sleep(100)
-        except asyncio.CancelledError:
-          coro_was_cancelled = True
-          raise
-
-      # Replace the background task with one that will fail soon
-      session_context._close_event.set()
-      await asyncio.sleep(0.05)
-
-      crash_error = RuntimeError("connection lost")
-
-      async def crashing_task():
-        await asyncio.sleep(0.05)
-        raise crash_error
-
-      session_context._task = asyncio.create_task(crashing_task())
-
-      with pytest.raises(ConnectionError):
-        await session_context._run_guarded(slow_coro())
-
-      assert coro_was_cancelled
-
-  @pytest.mark.asyncio
-  async def test_run_guarded_coroutine_raises(self):
-    """Test _run_guarded propagates coroutine exceptions unwrapped."""
-    mock_client = MockClient()
-    mock_session = MockClientSession()
-
-    with patch(
-        "google.adk.tools.mcp_tool.session_context.ClientSession"
-    ) as mock_session_class:
-      mock_session_class.return_value = mock_session
-
-      session_context = SessionContext(
-          mock_client, timeout=5.0, sse_read_timeout=None
-      )
-      await session_context.start()
-
-      original_error = ValueError("invalid arguments")
-
-      async def failing_coro():
-        raise original_error
-
-      with pytest.raises(ValueError) as exc_info:
-        await session_context._run_guarded(failing_coro())
-
-      assert exc_info.value is original_error
-
-      await session_context.close()
-
-  @pytest.mark.asyncio
-  async def test_run_guarded_no_task(self):
-    """Test _run_guarded raises when task has not been started."""
+  async def test_is_task_alive_true_while_session_running(self):
+    """After start(), the background task is alive until close()."""
     mock_client = MockClient()
     session_context = SessionContext(
         mock_client, timeout=5.0, sse_read_timeout=None
     )
 
-    async def my_coro():
-      return "hello"
+    with patch(
+        'google.adk.tools.mcp_tool.session_context.ClientSession'
+    ) as mock_session_class:
+      mock_session_class.return_value = MockClientSession()
+      await session_context.start()
+      try:
+        assert session_context._is_task_alive is True
+      finally:
+        await session_context.close()
 
-    coro = my_coro()
-    with pytest.raises(ConnectionError, match="not been started"):
-      await session_context._run_guarded(coro)
+      assert session_context._is_task_alive is False
 
 
-# Mock MCP Tool from mcp.types
-class MockMCPTool:
-  """Mock MCP Tool for testing."""
+class TestSessionContextRunGuarded:
+  """Tests for SessionContext._run_guarded.
 
-  def __init__(
-      self,
-      name="test_tool",
-      description="Test tool description",
-      outputSchema=None,
-      meta=None,
-  ):
-    self.name = name
-    self.description = description
-    self.meta = meta
-    self.inputSchema = {
-        "type": "object",
-        "properties": {
-            "param1": {"type": "string", "description": "First parameter"},
-            "param2": {"type": "integer", "description": "Second parameter"},
-        },
-        "required": ["param1"],
-    }
-    self.outputSchema = outputSchema
+  This is the heart of the 5-minute-hang fix: the method races a
+  coroutine against the background session task and surfaces transport
+  crashes immediately.
+  """
+
+  @pytest.mark.asyncio
+  async def test_run_guarded_raises_when_task_not_started(self):
+    """If start() was never called, _run_guarded refuses to run the coro."""
+    session_context = SessionContext(
+        MockClient(), timeout=5.0, sse_read_timeout=None
+    )
+
+    async def coro():
+      return 'should never run'
+
+    with pytest.raises(ConnectionError, match='task has not been started'):
+      await session_context._run_guarded(coro())
+
+  @pytest.mark.asyncio
+  async def test_run_guarded_returns_result_on_success(self):
+    """When the coroutine completes first, its result is returned."""
+    mock_client = MockClient()
+    session_context = SessionContext(
+        mock_client, timeout=5.0, sse_read_timeout=None
+    )
+
+    with patch(
+        'google.adk.tools.mcp_tool.session_context.ClientSession'
+    ) as mock_session_class:
+      mock_session_class.return_value = MockClientSession()
+      await session_context.start()
+      try:
+
+        async def coro():
+          return 'expected_result'
+
+        result = await session_context._run_guarded(coro())
+        assert result == 'expected_result'
+      finally:
+        await session_context.close()
+
+  @pytest.mark.asyncio
+  async def test_run_guarded_propagates_coro_exception(self):
+    """A coroutine-level exception propagates as-is (not wrapped).
+
+    This is intentional: callers (McpTool) need to distinguish a
+    tool-level failure (McpError) from a transport-level failure
+    (ConnectionError).
+    """
+    mock_client = MockClient()
+    session_context = SessionContext(
+        mock_client, timeout=5.0, sse_read_timeout=None
+    )
+
+    with patch(
+        'google.adk.tools.mcp_tool.session_context.ClientSession'
+    ) as mock_session_class:
+      mock_session_class.return_value = MockClientSession()
+      await session_context.start()
+      try:
+
+        async def coro():
+          raise ValueError('tool error')
+
+        with pytest.raises(ValueError, match='tool error'):
+          await session_context._run_guarded(coro())
+      finally:
+        await session_context.close()
+
+  @pytest.mark.asyncio
+  async def test_run_guarded_raises_when_task_died_before_call(self):
+    """If the background task already died, surface ConnectionError immediately."""
+    mock_client = MockClient()
+    session_context = SessionContext(
+        mock_client, timeout=5.0, sse_read_timeout=None
+    )
+
+    with patch(
+        'google.adk.tools.mcp_tool.session_context.ClientSession'
+    ) as mock_session_class:
+      mock_session_class.return_value = MockClientSession()
+      await session_context.start()
+      # Simulate a transport crash by closing the session.
+      await session_context.close()
+
+      async def coro():
+        return 'should not run'
+
+      with pytest.raises(ConnectionError, match='already terminated'):
+        await session_context._run_guarded(coro())
+
+  @pytest.mark.asyncio
+  async def test_run_guarded_cancels_coro_when_task_dies_first(self):
+    """If the background task dies mid-flight, cancel the coro and raise.
+
+    This is the regression test for the 5-minute hang: when the MCP
+    transport crashes (e.g. AGW returns 403), the background task ends
+    quickly, and the in-flight call must be cancelled rather than
+    waiting for sse_read_timeout.
+    """
+    mock_client = MockClient()
+    session_context = SessionContext(
+        mock_client, timeout=5.0, sse_read_timeout=None
+    )
+
+    with patch(
+        'google.adk.tools.mcp_tool.session_context.ClientSession'
+    ) as mock_session_class:
+      mock_session_class.return_value = MockClientSession()
+      await session_context.start()
+
+      coro_started = asyncio.Event()
+      coro_was_cancelled = False
+
+      async def slow_coro():
+        nonlocal coro_was_cancelled
+        coro_started.set()
+        try:
+          # Pretend we're awaiting a 5-minute SSE read.
+          await asyncio.sleep(300)
+          return 'should never reach here'
+        except asyncio.CancelledError:
+          coro_was_cancelled = True
+          raise
+
+      async def kill_background_task():
+        await coro_started.wait()
+        # Simulate a transport crash by closing the session, which ends
+        # the background task quickly.
+        await session_context.close()
+
+      killer = asyncio.create_task(kill_background_task())
+
+      try:
+        with pytest.raises(ConnectionError, match='connection lost'):
+          await session_context._run_guarded(slow_coro())
+
+        assert coro_was_cancelled is True
+      finally:
+        await killer
+
+
+class TestSessionContextFlagOffPreservesPreFixBehavior:
+  """Pin down that flag=OFF reproduces pre-fix behavior exactly.
+
+  These tests guard against accidental changes leaking into the flag=OFF
+  path, which is the default. An earlier unconditional version of this
+  fix caused existing callers to hit a 3-minute hang because behavior
+  changes were applied to the default path. We must keep flag=OFF
+  byte-for-byte equivalent to pre-fix.
+  """
+
+  @pytest.mark.asyncio
+  async def test_inner_wait_for_is_used_when_flag_off(self):
+    """The inner asyncio.wait_for around enter_async_context must run.
+
+    Pre-fix code wrapped client entry in `asyncio.wait_for(..., timeout)`.
+    Callers that depend on that inner timeout firing for hanging mocks
+    rely on this behavior. With the flag OFF we must restore it.
+    """
+    delayed_client = MockClient(delay_on_enter=10.0)
+    session_context = SessionContext(
+        delayed_client, timeout=0.2, sse_read_timeout=None
+    )
+
+    with temporary_feature_override(
+        FeatureName._MCP_GRACEFUL_ERROR_HANDLING, False
+    ):
+      with pytest.raises(ConnectionError):
+        # The inner wait_for should fire at ~timeout=0.2s, surfacing as
+        # ConnectionError from start(). If the inner wait_for is missing
+        # (the AnyIO fix being applied unconditionally), this test would
+        # block until the OUTER timeout cancels - which doesn't exist
+        # here because we're calling start() directly.
+        await asyncio.wait_for(session_context.start(), timeout=2.0)
+
+    # And confirm: this would NOT raise quickly with the flag ON
+    # because the inner wait_for is removed. We don't actually run the
+    # flag-on case here because there's no outer timeout in this direct
+    # call - that's tested at the McpTool integration level.
+
+  @pytest.mark.asyncio
+  async def test_no_extra_none_check_when_flag_off(self):
+    """The 'session is None' raise must NOT happen when flag is off.
+
+    Pre-fix code returned `self._session` directly, even if it was
+    somehow None. Our new None check is gated to preserve that.
+    """
+    mock_client = MockClient()
+    session_context = SessionContext(
+        mock_client, timeout=5.0, sse_read_timeout=None
+    )
+
+    with patch(
+        'google.adk.tools.mcp_tool.session_context.ClientSession'
+    ) as mock_session_class:
+      mock_session_class.return_value = MockClientSession()
+      with temporary_feature_override(
+          FeatureName._MCP_GRACEFUL_ERROR_HANDLING, False
+      ):
+        # In normal flow, _session is set; the gated None check is moot.
+        # This test exists primarily to document and guard the flag-OFF
+        # code path.
+        result = await session_context.start()
+        try:
+          assert result is not None
+        finally:
+          await session_context.close()

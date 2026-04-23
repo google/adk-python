@@ -28,6 +28,9 @@ from mcp import ClientSession
 from mcp import SamplingCapability
 from mcp.client.session import SamplingFnT
 
+from ...features import FeatureName
+from ...features import is_feature_enabled
+
 logger = logging.getLogger('google_adk.' + __name__)
 
 _T = TypeVar('_T')
@@ -57,14 +60,14 @@ class SessionContext:
 
   def __init__(
       self,
-      client: AsyncContextManager[Any],
+      client: AsyncContextManager,
       timeout: Optional[float],
       sse_read_timeout: Optional[float],
       is_stdio: bool = False,
       *,
       sampling_callback: Optional[SamplingFnT] = None,
       sampling_capabilities: Optional[SamplingCapability] = None,
-  ) -> None:
+  ):
     """
     Args:
         client: An MCP client context manager (e.g., from streamablehttp_client,
@@ -84,7 +87,7 @@ class SessionContext:
     self._session: Optional[ClientSession] = None
     self._ready_event = asyncio.Event()
     self._close_event = asyncio.Event()
-    self._task: Optional[asyncio.Task[Any]] = None
+    self._task: Optional[asyncio.Task] = None
     self._task_lock = asyncio.Lock()
     self._sampling_callback = sampling_callback
     self._sampling_capabilities = sampling_capabilities
@@ -137,10 +140,18 @@ class SessionContext:
           f'Failed to create MCP session: {self._task.exception()}'
       ) from self._task.exception()
 
-    if self._session is None:
+    # Pre-fix code returned `self._session` here directly (typed as
+    # ClientSession even though it could in theory be None). Adding an
+    # explicit None check is safer but introduces a new exception path,
+    # so we gate it behind the feature flag to keep flag-OFF byte-for-byte
+    # compatible with pre-fix behavior.
+    if (
+        is_feature_enabled(FeatureName._MCP_GRACEFUL_ERROR_HANDLING)  # pylint: disable=protected-access
+        and self._session is None
+    ):
       raise ConnectionError('Failed to create MCP session: unknown error')
 
-    return self._session
+    return self._session  # type: ignore[return-value]
 
   async def _run_guarded(self, coro: Coroutine[Any, Any, _T]) -> _T:
     """Run a coroutine while monitoring the background session task.
@@ -166,7 +177,7 @@ class SessionContext:
 
     if self._task.done():
       exc = self._task.exception() if not self._task.cancelled() else None
-      # Close the coroutine to avoid "was never awaited" warnings
+      # Close the coroutine to avoid "was never awaited" warnings.
       coro.close()
       raise ConnectionError(
           f'MCP session task has already terminated: {exc}'
@@ -181,10 +192,13 @@ class SessionContext:
 
     if coro_task in done:
       # If the coroutine itself raised, the exception propagates as-is
-      # (not wrapped in ConnectionError) — this is intentional.
+      # (not wrapped in ConnectionError). This is intentional so callers
+      # can distinguish tool-level errors (McpError) from transport-level
+      # crashes (ConnectionError).
       return coro_task.result()
 
-    # Background task finished first — transport crash
+    # The background task finished first, indicating a transport crash.
+    # Cancel the in-flight tool call and surface the original error.
     coro_task.cancel()
     try:
       await coro_task
@@ -194,7 +208,7 @@ class SessionContext:
     exc = self._task.exception() if not self._task.cancelled() else None
     raise ConnectionError(f'MCP session connection lost: {exc}') from exc
 
-  async def close(self) -> None:
+  async def close(self):
     """Signal the context task to close and wait for cleanup."""
     # Set the close event to signal the task to close.
     # Even if start has not been called, we need to set the close event
@@ -222,14 +236,34 @@ class SessionContext:
   async def __aenter__(self) -> ClientSession:
     return await self.start()
 
-  async def __aexit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
+  async def __aexit__(self, exc_type, exc_val, exc_tb):
     await self.close()
 
-  async def _run(self) -> None:
+  async def _run(self):
     """Run the complete session context within a single task."""
     try:
       async with AsyncExitStack() as exit_stack:
-        transports = await exit_stack.enter_async_context(self._client)
+        if is_feature_enabled(FeatureName._MCP_GRACEFUL_ERROR_HANDLING):  # pylint: disable=protected-access
+          # Post-fix: do NOT wrap in asyncio.wait_for. The MCP client uses
+          # AnyIO TaskGroup/CancelScope internally, which must be entered
+          # and exited in the same task. asyncio.wait_for runs its target
+          # in a nested task and can cancel from a different task on
+          # timeout, producing "Attempted to exit cancel scope in a
+          # different task" errors. The connection-establishment timeout
+          # is still enforced by MCPSessionManager.create_session via its
+          # outer asyncio.wait_for around
+          # exit_stack.enter_async_context(SessionContext(...)).
+          transports = await exit_stack.enter_async_context(self._client)
+        else:
+          # Pre-fix behavior: wrap with asyncio.wait_for so the inner
+          # context entry has its own timeout. Callers that depend on
+          # this inner timeout firing rely on this path; without it,
+          # mocks that delay `__aenter__` cause tests to time out at the
+          # test framework limit instead of the configured per-step timeout.
+          transports = await asyncio.wait_for(
+              exit_stack.enter_async_context(self._client),
+              timeout=self._timeout,
+          )
         # The streamable http client returns a GetSessionCallback in addition
         # to the read/write MemoryObjectStreams needed to build the
         # ClientSession. We limit to the first two values to be compatible
