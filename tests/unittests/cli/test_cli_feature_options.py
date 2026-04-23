@@ -22,6 +22,7 @@ from google.adk.features._feature_registry import _FEATURE_OVERRIDES
 from google.adk.features._feature_registry import _WARNED_FEATURES
 from google.adk.features._feature_registry import FeatureName
 from google.adk.features._feature_registry import is_feature_enabled
+from google.adk.features._feature_registry import temporary_feature_override
 import pytest
 
 
@@ -218,17 +219,21 @@ class TestFeatureOptionsDecorator:
     """Command works without --enable_features flag."""
     enabled_features = []
 
-    @click.command()
-    @feature_options()
-    def test_cmd():
-      enabled_features.append(
-          is_feature_enabled(FeatureName.JSON_SCHEMA_FOR_FUNC_DECL)
-      )
+    with temporary_feature_override(
+        FeatureName.JSON_SCHEMA_FOR_FUNC_DECL, False
+    ):
 
-    runner = CliRunner()
-    result = runner.invoke(test_cmd, [], catch_exceptions=False)
-    assert result.exit_code == 0
-    assert enabled_features == [False]
+      @click.command()
+      @feature_options()
+      def test_cmd():
+        enabled_features.append(
+            is_feature_enabled(FeatureName.JSON_SCHEMA_FOR_FUNC_DECL)
+        )
+
+      runner = CliRunner()
+      result = runner.invoke(test_cmd, [], catch_exceptions=False)
+      assert result.exit_code == 0
+      assert enabled_features == [False]
 
   def test_preserves_function_metadata(self):
     """Decorator preserves the wrapped function's metadata."""

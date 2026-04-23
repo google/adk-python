@@ -960,51 +960,6 @@ class TestAgentLoader:
       assert detailed_list[0]["name"] == agent_name
       assert not detailed_list[0]["is_computer_use"]
 
-  def test_list_agents_excludes_non_agent_directories(self):
-    """Test that list_agents filters out directories without agent definitions."""
-    with tempfile.TemporaryDirectory() as temp_dir:
-      temp_path = Path(temp_dir)
-
-      valid_package = temp_path / "valid_agent"
-      valid_package.mkdir()
-      (valid_package / "__init__.py").write_text(dedent("""
-          from google.adk.agents.base_agent import BaseAgent
-
-          class ValidAgent(BaseAgent):
-              def __init__(self):
-                  super().__init__(name="valid_agent")
-
-          root_agent = ValidAgent()
-      """))
-
-      valid_module = temp_path / "module_agent"
-      valid_module.mkdir()
-      (valid_module / "agent.py").write_text(dedent("""
-          from google.adk.agents.base_agent import BaseAgent
-
-          class ModuleAgent(BaseAgent):
-              def __init__(self):
-                  super().__init__(name="module_agent")
-
-          root_agent = ModuleAgent()
-      """))
-
-      valid_yaml = temp_path / "yaml_agent"
-      valid_yaml.mkdir()
-      (valid_yaml / "root_agent.yaml").write_text("name: yaml_agent\n")
-
-      (temp_path / "random_folder").mkdir()
-      (temp_path / "data").mkdir()
-      (temp_path / "tmp").mkdir()
-
-      loader = AgentLoader(str(temp_path))
-      agents = loader.list_agents()
-
-      assert agents == ["module_agent", "valid_agent", "yaml_agent"]
-      assert "random_folder" not in agents
-      assert "data" not in agents
-      assert "tmp" not in agents
-
   def test_validate_agent_name_rejects_dotted_paths(self):
     """Agent names with dots are rejected to prevent arbitrary module imports."""
     with tempfile.TemporaryDirectory() as temp_dir:

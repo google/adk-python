@@ -83,6 +83,11 @@ OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT = (
 
 USER_CONTENT_ELIDED = '<elided>'
 
+# Used to associate a span with a destination resource for AppHub. Tools with
+# this key in their BaseTool.custom_metadata will have the mapping added as a
+# span attribute
+GCP_MCP_SERVER_DESTINATION_ID = 'gcp.mcp.server.destination.id'
+
 # Needed to avoid circular imports
 if TYPE_CHECKING:
   from ..agents.base_agent import BaseAgent
@@ -165,6 +170,7 @@ def trace_tool_call(
     args: dict[str, Any],
     function_response_event: Event | None,
     error: Exception | None = None,
+    span: Span | None = None,
 ):
   """Traces tool call.
 
@@ -173,8 +179,9 @@ def trace_tool_call(
     args: The arguments to the tool call.
     function_response_event: The event with the function response details.
     error: The exception raised during tool execution, if any.
+    span: The span to record attributes on. If None, uses current span.
   """
-  span = trace.get_current_span()
+  span = span or trace.get_current_span()
 
   span.set_attribute(GEN_AI_OPERATION_NAME, 'execute_tool')
 
@@ -189,6 +196,14 @@ def trace_tool_call(
       span.set_attribute(ERROR_TYPE, str(error.error_type))
     else:
       span.set_attribute(ERROR_TYPE, type(error).__name__)
+
+  # Special case for client side association with a remote tool call
+  if (
+      tool.custom_metadata
+      and GCP_MCP_SERVER_DESTINATION_ID in tool.custom_metadata
+  ):
+    destination_id = tool.custom_metadata[GCP_MCP_SERVER_DESTINATION_ID]
+    span.set_attribute(GCP_MCP_SERVER_DESTINATION_ID, destination_id)
 
   # Setting empty llm request and response (as UI expect these) while not
   # applicable for tool_response.
