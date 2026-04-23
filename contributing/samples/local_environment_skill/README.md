@@ -19,6 +19,6 @@ You can interact with the agent by providing prompts that require a specific ski
 
 ### Expected Behavior
 
-1.  **Find Skill**: The agent uses the `Execute` tool to search for all available skills by running `find skills -name SKILL.md`.
-2.  **Load Skill**: The agent identifies the relevant skill and uses the `ReadFile` tool to read its `SKILL.md` file.
-3.  **Execute Skill**: The agent follows the instructions in the skill file (e.g., reading references or running scripts) to answer the user's request.
+1. **Find Skill**: The agent uses the `Execute` tool to search for all available skills by running `find skills -name SKILL.md`.
+1. **Load Skill**: The agent identifies the relevant skill and uses the `ReadFile` tool to read its `SKILL.md` file.
+1. **Execute Skill**: The agent follows the instructions in the skill file (e.g., reading references or running scripts) to answer the user's request.

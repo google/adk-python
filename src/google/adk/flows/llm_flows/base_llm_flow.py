@@ -18,7 +18,6 @@ from abc import ABC
 import asyncio
 import inspect
 import logging
-import sys
 from typing import AsyncGenerator
 from typing import Optional
 from typing import TYPE_CHECKING
@@ -1169,9 +1168,7 @@ class BaseLlmFlow(ABC):
   ) -> AsyncGenerator[LlmResponse, None]:
 
     async def _call_llm_with_tracing() -> AsyncGenerator[LlmResponse, None]:
-      cm = tracer.start_as_current_span('call_llm')
-      span = cm.__enter__()
-      try:
+      with tracer.start_as_current_span('call_llm') as span:
         # Runs before_model_callback inside the call_llm span so
         # plugins observe the same span as after/error callbacks.
         if response := await self._handle_before_model_callback(
@@ -1264,23 +1261,6 @@ class BaseLlmFlow(ABC):
                   llm_response = altered
 
               yield llm_response
-      except BaseException:
-        try:
-          cm.__exit__(*sys.exc_info())
-        except ValueError:
-          logger.warning(
-              'Failed to detach context during generator cleanup, likely due to'
-              ' cancellation.'
-          )
-        raise
-      else:
-        try:
-          cm.__exit__(None, None, None)
-        except ValueError:
-          logger.warning(
-              'Failed to detach context during generator cleanup, likely due to'
-              ' cancellation.'
-          )
 
     async with Aclosing(_call_llm_with_tracing()) as agen:
       async for event in agen:

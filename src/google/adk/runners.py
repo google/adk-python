@@ -543,9 +543,7 @@ class Runner:
         new_message: Optional[types.Content] = None,
         invocation_id: Optional[str] = None,
     ) -> AsyncGenerator[Event, None]:
-      cm = tracer.start_as_current_span('invocation')
-      span = cm.__enter__()
-      try:
+      with tracer.start_as_current_span('invocation'):
         session = await self._get_or_create_session(
             user_id=user_id,
             session_id=session_id,
@@ -628,23 +626,6 @@ class Runner:
               session,
               self.session_service,
               skip_token_compaction=invocation_context.token_compaction_checked,
-          )
-      except BaseException:
-        try:
-          cm.__exit__(*sys.exc_info())
-        except ValueError:
-          logger.warning(
-              'Failed to detach context during generator cleanup, likely due to'
-              ' cancellation.'
-          )
-        raise
-      else:
-        try:
-          cm.__exit__(None, None, None)
-        except ValueError:
-          logger.warning(
-              'Failed to detach context during generator cleanup, likely due to'
-              ' cancellation.'
           )
 
     async with Aclosing(_run_with_trace(new_message, invocation_id)) as agen:
