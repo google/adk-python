@@ -97,10 +97,10 @@ class TestA2aAgentExecutor:
         new_message=Mock(spec=Content),
         run_config=Mock(spec=RunConfig),
     )
-    # Mock _get_or_create_session
+    # Mock session lookup returning existing session
     mock_session = Mock()
     mock_session.id = "test-session"
-    self.mock_runner._get_or_create_session = AsyncMock(
+    self.mock_runner.session_service.get_session = AsyncMock(
         return_value=mock_session
     )
 
@@ -200,10 +200,10 @@ class TestA2aAgentExecutor:
         run_config=Mock(spec=RunConfig),
     )
 
-    # Mock _get_or_create_session
+    # Mock session lookup returning existing session
     mock_session = Mock()
     mock_session.id = "test-session"
-    self.mock_runner._get_or_create_session = AsyncMock(
+    self.mock_runner.session_service.get_session = AsyncMock(
         return_value=mock_session
     )
 
@@ -616,7 +616,7 @@ class TestA2aAgentExecutor:
     )
     mock_handle_user_input.return_value = missing_event
 
-    self.mock_runner._get_or_create_session = AsyncMock(
+    self.mock_runner.session_service.get_session = AsyncMock(
         return_value=Mock(id="test-session")
     )
     self.mock_request_converter.return_value = AgentRunRequest(
@@ -638,28 +638,33 @@ class TestA2aAgentExecutor:
 
   @pytest.mark.asyncio
   async def test_resolve_session_creates_new_session(self):
-    """Test that _resolve_session delegates to runner._get_or_create_session."""
+    """Test that _resolve_session creates a session when none is found."""
     new_session = Mock()
     new_session.id = "new-session-id"
-    self.mock_runner._get_or_create_session = AsyncMock(
+    self.mock_runner.session_service.get_session = AsyncMock(return_value=None)
+    self.mock_runner.session_service.create_session = AsyncMock(
         return_value=new_session
     )
 
     run_request = AgentRunRequest(
         user_id="test-user",
-        session_id="old-session-id",
+        session_id="new-session-id",
         new_message=Mock(spec=Content),
         run_config=Mock(spec=RunConfig),
     )
 
     await self.executor._resolve_session(run_request, self.mock_runner)
 
-    self.mock_runner._get_or_create_session.assert_called_once_with(
+    self.mock_runner.session_service.get_session.assert_called_once_with(
+        app_name="test-app",
         user_id="test-user",
-        session_id="old-session-id",
-        get_session_config=GetSessionConfig(
-            num_recent_events=0, after_timestamp=None
-        ),
+        session_id="new-session-id",
+        config=GetSessionConfig(num_recent_events=0, after_timestamp=None),
+    )
+    self.mock_runner.session_service.create_session.assert_called_once_with(
+        app_name="test-app",
+        user_id="test-user",
+        session_id="new-session-id",
     )
     assert run_request.session_id == "new-session-id"
 

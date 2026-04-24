@@ -224,17 +224,18 @@ class TestA2aAgentExecutor:
 
   @pytest.mark.asyncio
   async def test_prepare_session_new_session(self):
-    """Test session preparation delegates to runner._get_or_create_session."""
+    """Test session preparation creates a new session when none is found."""
     run_args = AgentRunRequest(
         user_id="test-user",
-        session_id=None,
+        session_id="new-session-id",
         new_message=Mock(spec=Content),
         run_config=Mock(spec=RunConfig),
     )
 
     mock_session = Mock()
     mock_session.id = "new-session-id"
-    self.mock_runner._get_or_create_session = AsyncMock(
+    self.mock_runner.session_service.get_session = AsyncMock(return_value=None)
+    self.mock_runner.session_service.create_session = AsyncMock(
         return_value=mock_session
     )
 
@@ -243,17 +244,23 @@ class TestA2aAgentExecutor:
         self.mock_context, run_args, self.mock_runner
     )
 
-    # Verify session was returned and run_request updated
+    # Verify session was created and run_request updated
     assert result == mock_session
     assert run_args.session_id == "new-session-id"
-    self.mock_runner._get_or_create_session.assert_called_once_with(
+    self.mock_runner.session_service.get_session.assert_called_once_with(
+        app_name="test-app",
         user_id="test-user",
-        session_id=None,
+        session_id="new-session-id",
+    )
+    self.mock_runner.session_service.create_session.assert_called_once_with(
+        app_name="test-app",
+        user_id="test-user",
+        session_id="new-session-id",
     )
 
   @pytest.mark.asyncio
   async def test_prepare_session_existing_session(self):
-    """Test session preparation when session exists."""
+    """Test session preparation returns existing session without creating one."""
     run_args = AgentRunRequest(
         user_id="test-user",
         session_id="existing-session",
@@ -263,21 +270,24 @@ class TestA2aAgentExecutor:
 
     mock_session = Mock()
     mock_session.id = "existing-session"
-    self.mock_runner._get_or_create_session = AsyncMock(
+    self.mock_runner.session_service.get_session = AsyncMock(
         return_value=mock_session
     )
+    self.mock_runner.session_service.create_session = AsyncMock()
 
     # Execute
     result = await self.executor._prepare_session(
         self.mock_context, run_args, self.mock_runner
     )
 
-    # Verify existing session was returned
+    # Verify existing session was returned without creating a new one
     assert result == mock_session
-    self.mock_runner._get_or_create_session.assert_called_once_with(
+    self.mock_runner.session_service.get_session.assert_called_once_with(
+        app_name="test-app",
         user_id="test-user",
         session_id="existing-session",
     )
+    self.mock_runner.session_service.create_session.assert_not_called()
 
   def test_constructor_with_callable_runner(self):
     """Test constructor with callable runner."""
