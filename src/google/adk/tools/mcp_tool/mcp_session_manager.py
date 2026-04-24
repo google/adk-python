@@ -44,6 +44,8 @@ from mcp.client.streamable_http import streamablehttp_client
 from pydantic import BaseModel
 from pydantic import ConfigDict
 
+from ...features import FeatureName
+from ...features import is_feature_enabled
 from .session_context import SessionContext
 
 logger = logging.getLogger('google_adk.' + __name__)
@@ -237,10 +239,17 @@ class MCPSessionManager:
       self._connection_params = connection_params
     self._errlog = errlog
 
-    # Session pool: maps session keys to (session, exit_stack, loop) tuples
+    # Session pool: maps session keys to (session, exit_stack, loop) tuples.
+    # Kept as a tuple for backward-compatibility with downstream tests
+    # that construct or unpack entries directly.
     self._sessions: Dict[
         str, tuple[ClientSession, AsyncExitStack, asyncio.AbstractEventLoop]
     ] = {}
+
+    # Sibling pool: maps session keys to their SessionContext. Stored
+    # separately from `_sessions` so the tuple shape above stays stable.
+    # Used by McpTool to access `_run_guarded` for transport-crash detection.
+    self._session_contexts: Dict[str, SessionContext] = {}
 
     # Map of event loops to their respective locks to prevent race conditions
     # across different event loops in session creation.
@@ -323,6 +332,26 @@ class MCPSessionManager:
     """
     return session._read_stream._closed or session._write_stream._closed
 
+  def _get_session_context(
+      self, headers: Optional[Dict[str, str]] = None
+  ) -> Optional[SessionContext]:
+    """Returns the SessionContext for the session matching the given headers.
+
+    Note: This method reads from the session-context pool without acquiring
+    ``_session_lock``. This is safe because it is called immediately after
+    ``create_session()`` (which populates the entry under the lock) within
+    the same task, and dict reads are atomic in CPython.
+
+    Args:
+        headers: Optional headers used to identify the session.
+
+    Returns:
+        The SessionContext if a matching session exists, None otherwise.
+    """
+    merged_headers = self._merge_headers(headers)
+    session_key = self._generate_session_key(merged_headers)
+    return self._session_contexts.get(session_key)
+
   async def _cleanup_session(
       self,
       session_key: str,
@@ -378,6 +407,10 @@ class MCPSessionManager:
     finally:
       if session_key in self._sessions:
         del self._sessions[session_key]
+      # Also drop the SessionContext reference so we don't leak the
+      # SessionContext after its underlying session is gone.
+      if session_key in self._session_contexts:
+        del self._session_contexts[session_key]
 
   def _create_client(self, merged_headers: Optional[Dict[str, str]] = None):
     """Creates an MCP client based on the connection parameters.
@@ -453,15 +486,30 @@ class MCPSessionManager:
       if session_key in self._sessions:
         session, exit_stack, stored_loop = self._sessions[session_key]
 
-        # Check if the existing session is still connected and bound to the current loop
+        # Check if the existing session is still connected and bound to
+        # the current loop. When the feature flag is on, we ALSO check the
+        # SessionContext's background task: a crashed transport can leave
+        # the session's read/write streams open even though the underlying
+        # task has already died (e.g. after a 4xx/5xx HTTP response).
+        # Without that extra check, callers would reuse a dead session and
+        # hang on the next call. The check is gated because it triggers
+        # session re-creation in some test mocks where `_task` looks
+        # "not alive" but the streams are otherwise reusable.
         current_loop = asyncio.get_running_loop()
-        if stored_loop is current_loop and not self._is_session_disconnected(
-            session
+        if is_feature_enabled(FeatureName._MCP_GRACEFUL_ERROR_HANDLING):  # pylint: disable=protected-access
+          ctx = self._session_contexts.get(session_key)
+          ctx_alive = ctx is None or ctx._is_task_alive  # pylint: disable=protected-access
+        else:
+          ctx_alive = True  # Pre-fix: do not consult task aliveness
+        if (
+            stored_loop is current_loop
+            and not self._is_session_disconnected(session)
+            and ctx_alive
         ):
           # Session is still good, return it
           return session
         else:
-          # Session is disconnected or from a different loop, clean it up
+          # Session is disconnected, dead, or from a different loop; clean up.
           logger.info(
               'Cleaning up session (disconnected or different loop): %s',
               session_key,
@@ -485,26 +533,32 @@ class MCPSessionManager:
         client = self._create_client(merged_headers)
         is_stdio = isinstance(self._connection_params, StdioConnectionParams)
 
+        session_context = SessionContext(
+            client=client,
+            timeout=timeout_in_seconds,
+            sse_read_timeout=sse_read_timeout_in_seconds,
+            is_stdio=is_stdio,
+            sampling_callback=self._sampling_callback,
+            sampling_capabilities=self._sampling_capabilities,
+        )
+
         session = await asyncio.wait_for(
-            exit_stack.enter_async_context(
-                SessionContext(
-                    client=client,
-                    timeout=timeout_in_seconds,
-                    sse_read_timeout=sse_read_timeout_in_seconds,
-                    is_stdio=is_stdio,
-                    sampling_callback=self._sampling_callback,
-                    sampling_capabilities=self._sampling_capabilities,
-                )
-            ),
+            exit_stack.enter_async_context(session_context),
             timeout=timeout_in_seconds,
         )
 
-        # Store session, exit stack, and loop in the pool
+        # Store session, exit stack, and loop in the pool. The pool storage
+        # remains a tuple for backward-compatibility with downstream tests
+        # that construct or unpack entries directly.
         self._sessions[session_key] = (
             session,
             exit_stack,
             asyncio.get_running_loop(),
         )
+        # Track the SessionContext in a sibling dict so McpTool can call
+        # `_run_guarded` on it. Stored separately to avoid changing the
+        # shape of `_sessions` (which is a public-ish internal surface).
+        self._session_contexts[session_key] = session_context
         logger.debug('Created new session: %s', session_key)
         return session
 
@@ -524,6 +578,7 @@ class MCPSessionManager:
     state = self.__dict__.copy()
     # Remove unpicklable entries or those that shouldn't persist across pickle
     state['_sessions'] = {}
+    state['_session_contexts'] = {}
     state['_session_lock_map'] = {}
 
     # Locks and file-like objects cannot be pickled
@@ -537,6 +592,7 @@ class MCPSessionManager:
     self.__dict__.update(state)
     # Re-initialize members that were not pickled
     self._sessions = {}
+    self._session_contexts = {}
     self._session_lock_map = {}
     self._lock_map_lock = threading.Lock()
     # If _errlog was removed during pickling, default to sys.stderr

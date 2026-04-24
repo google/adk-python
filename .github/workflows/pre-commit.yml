@@ -11,3 +11,29 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+
+name: pre-commit
+
+on:
+  push:
+    branches: [main, v2]
+    paths:
+      - '**.py'
+      - '.pre-commit-config.yaml'
+      - 'pyproject.toml'
+  pull_request:
+    branches: [main, v2]
+    paths:
+      - '**.py'
+      - '.pre-commit-config.yaml'
+      - 'pyproject.toml'
+
+jobs:
+  pre-commit:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v6
+
+      - name: Run pre-commit checks
+        uses: pre-commit/action@v3.0.1
