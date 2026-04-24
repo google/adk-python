@@ -202,11 +202,18 @@ part before or alongside your code PR.
 
 1. **Auto-format the code:**
 
-   **NOTE**: We use `isort` and `pyink` for styles. Use the included
-   autoformat.sh to auto-format.
+   We use `pre-commit` to manage code style and formatting (including `isort` and `pyink`).
+
+   To run it manually on all files:
 
    ```shell
-   ./autoformat.sh
+   pre-commit run --all-files
+   ```
+
+   You can also install it as a git hook to run automatically on every commit:
+
+   ```shell
+   pre-commit install
    ```
 
 1. **Build the wheel file:**

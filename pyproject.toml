@@ -1,3 +1,10 @@
+[build-system]
+build-backend = "flit_core.buildapi"
+
+# Build system specify which backend is used to build/install the project (flit,
+# poetry, setuptools,...). All backends are supported by `pip install`
+requires = [ "flit-core>=3.8,<4" ]
+
 [project]
 # Project metadata. Available keys are documented at:
 # https://packaging.python.org/en/latest/specifications/declaring-project-metadata
@@ -5,184 +12,183 @@
 name = "google-adk"
 description = "Agent Development Kit"
 readme = "README.md"
-requires-python = ">=3.10"
 license = { file = "LICENSE" }
-authors = [{ name = "Google LLC", email = "googleapis-packages@google.com" }]
-classifiers = [ # List of https://pypi.org/classifiers/
-  "Typing :: Typed",
+authors = [ { name = "Google LLC", email = "googleapis-packages@google.com" } ]
+requires-python = ">=3.10"
+classifiers = [
   "Intended Audience :: Developers",
   "Intended Audience :: Science/Research",
+  "License :: OSI Approved :: Apache Software License",
+  "Operating System :: OS Independent",
   "Programming Language :: Python",
-  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3 :: Only",
   "Programming Language :: Python :: 3.10",
   "Programming Language :: Python :: 3.11",
   "Programming Language :: Python :: 3.12",
   "Programming Language :: Python :: 3.13",
-  "Programming Language :: Python :: 3.14",
-  "Operating System :: OS Independent",
   "Topic :: Software Development :: Libraries :: Python Modules",
-  "License :: OSI Approved :: Apache Software License",
+  # List of https://pypi.org/classifiers/
+  "Typing :: Typed",
 ]
+dynamic = [ "version" ]
+
 dependencies = [
-  # go/keep-sorted start
-  "PyYAML>=6.0.2, <7.0.0",                                   # For APIHubToolset.
-  "aiosqlite>=0.21.0",                                       # For SQLite database
-  "anyio>=4.9.0, <5.0.0",                                    # For MCP Session Manager
-  "authlib>=1.6.6, <2.0.0",                                  # For RestAPI Tool
-  "click>=8.1.8, <9.0.0",                                    # For CLI tools
-  "fastapi>=0.124.1, <1.0.0",                                # FastAPI framework
-  "google-api-python-client>=2.157.0, <3.0.0",               # Google API client discovery
-  "google-auth[pyopenssl]>=2.47.0",                          # Google Auth library
-  "google-cloud-aiplatform[agent_engines]>=1.148.1, <2.0.0", # For VertexAI integrations, e.g. example store.
-  "google-cloud-bigquery-storage>=2.0.0",
-  "google-cloud-bigquery>=2.2.0",
-  "google-cloud-bigtable>=2.32.0",                           # For Bigtable database
-  "google-cloud-dataplex>=1.7.0,<3.0.0",                    # For Dataplex Catalog Search tool
-  "google-cloud-discoveryengine>=0.13.12, <0.14.0",          # For Discovery Engine Search Tool
-  "google-cloud-pubsub>=2.0.0, <3.0.0",                      # For Pub/Sub Tool
-  "google-cloud-secret-manager>=2.22.0, <3.0.0",             # Fetching secrets in RestAPI Tool
-  "google-cloud-spanner>=3.56.0, <4.0.0",                    # For Spanner database
-  "google-cloud-speech>=2.30.0, <3.0.0",                     # For Audio Transcription
-  "google-cloud-storage>=2.18.0, <4.0.0",                    # For GCS Artifact service
-  "google-genai>=1.72.0, <2.0.0",                            # Google GenAI SDK
-  "graphviz>=0.20.2, <1.0.0",                                # Graphviz for graph rendering
-  "httpx>=0.27.0, <1.0.0",                                   # HTTP client library
-  "jsonschema>=4.23.0, <5.0.0",                              # Agent Builder config validation
-  "mcp>=1.24.0, <2.0.0",                                     # For MCP Toolset
-  "opentelemetry-api>=1.36.0, <1.39.0",                      # OpenTelemetry - keep below 1.39.0 due to current agent_engines exporter constraints.
-  "opentelemetry-exporter-gcp-logging>=1.9.0a0, <2.0.0",
-  "opentelemetry-exporter-gcp-monitoring>=1.9.0a0, <2.0.0",
-  "opentelemetry-exporter-gcp-trace>=1.9.0, <2.0.0",
-  "opentelemetry-exporter-otlp-proto-http>=1.36.0",
-  "opentelemetry-resourcedetector-gcp>=1.9.0a0, <2.0.0",
-  "opentelemetry-sdk>=1.36.0, <1.39.0",
-  "pyarrow>=14.0.0",
-  "pydantic>=2.12.0, <3.0.0",                                 # For data validation/models
-  "python-dateutil>=2.9.0.post0, <3.0.0",                    # For Vertext AI Session Service
-  "python-dotenv>=1.0.0, <2.0.0",                            # To manage environment variables
-  "requests>=2.32.4, <3.0.0",
-  "sqlalchemy-spanner>=1.14.0",                              # Spanner database session service
-  "sqlalchemy>=2.0, <3.0.0",                                 # SQL database ORM
-  "starlette>=0.49.1, <1.0.0",                               # For FastAPI CLI
-  "tenacity>=9.0.0, <10.0.0",                                # For Retry management
-  "typing-extensions>=4.5, <5",
-  "tzlocal>=5.3, <6.0",                                      # Time zone utilities
-  "uvicorn>=0.34.0, <1.0.0",                                 # ASGI server for FastAPI
-  "watchdog>=6.0.0, <7.0.0",                                 # For file change detection and hot reload
-  "websockets>=15.0.1, <16.0.0",                             # For BaseLlmFlow
-  # go/keep-sorted end
+  "aiosqlite>=0.21",                                    # For SQLite database
+  "anyio>=4.9,<5",                                      # For MCP Session Manager
+  "authlib>=1.6.6,<2",                                  # For RestAPI Tool
+  "click>=8.1.8,<9",                                    # For CLI tools
+  "fastapi>=0.124.1,<1",                                # FastAPI framework
+  "google-api-python-client>=2.157,<3",                 # Google API client discovery
+  "google-auth[pyopenssl]>=2.47",                       # Google Auth library
+  "google-cloud-aiplatform[agent-engines]>=1.148.1,<2", # For VertexAI integrations, e.g. example store.
+  "google-cloud-bigquery>=2.2",
+  "google-cloud-bigquery-storage>=2",
+  "google-cloud-bigtable>=2.32",                        # For Bigtable database
+  "google-cloud-dataplex>=1.7,<3",                      # For Dataplex Catalog Search tool
+  "google-cloud-discoveryengine>=0.13.12,<0.14",        # For Discovery Engine Search Tool
+  "google-cloud-pubsub>=2,<3",                          # For Pub/Sub Tool
+  "google-cloud-secret-manager>=2.22,<3",               # Fetching secrets in RestAPI Tool
+  "google-cloud-spanner>=3.56,<4",                      # For Spanner database
+  "google-cloud-speech>=2.30,<3",                       # For Audio Transcription
+  "google-cloud-storage>=2.18,<4",                      # For GCS Artifact service
+  "google-genai>=1.72,<2",                              # Google GenAI SDK
+  "graphviz>=0.20.2,<1",                                # Graphviz for graph rendering
+  "httpx>=0.27,<1",                                     # HTTP client library
+  "jsonschema>=4.23,<5",                                # Agent Builder config validation
+  "mcp>=1.24,<2",                                       # For MCP Toolset
+  "opentelemetry-api>=1.36,<1.39",                      # OpenTelemetry - keep below 1.39.0 due to current agent_engines exporter constraints.
+  "opentelemetry-exporter-gcp-logging>=1.9.0a0,<2",
+  "opentelemetry-exporter-gcp-monitoring>=1.9.0a0,<2",
+  "opentelemetry-exporter-gcp-trace>=1.9,<2",
+  "opentelemetry-exporter-otlp-proto-http>=1.36",
+  "opentelemetry-resourcedetector-gcp>=1.9.0a0,<2",
+  "opentelemetry-sdk>=1.36,<1.39",
+  "pyarrow>=14",
+  "pydantic>=2.12,<3",                                  # For data validation/models
+  "python-dateutil>=2.9.0.post0,<3",                    # For Vertext AI Session Service
+  "python-dotenv>=1,<2",                                # To manage environment variables
+  "pyyaml>=6.0.2,<7",                                   # For APIHubToolset.
+  "requests>=2.32.4,<3",
+  "sqlalchemy>=2,<3",                                   # SQL database ORM
+  "sqlalchemy-spanner>=1.14",                           # Spanner database session service
+  "starlette>=0.49.1,<1",                               # For FastAPI CLI
+  "tenacity>=9,<10",                                    # For Retry management
+  "typing-extensions>=4.5,<5",
+  "tzlocal>=5.3,<6",                                    # Time zone utilities
+  "uvicorn>=0.34,<1",                                   # ASGI server for FastAPI
+  "watchdog>=6,<7",                                     # For file change detection and hot reload
+  "websockets>=15.0.1,<16",                             # For BaseLlmFlow
 ]
-dynamic = ["version"]
-
-[project.urls]
-homepage = "https://google.github.io/adk-docs/"
-repository = "https://github.com/google/adk-python"
-changelog = "https://github.com/google/adk-python/blob/main/CHANGELOG.md"
-documentation = "https://google.github.io/adk-docs/"
-
-[project.scripts]
-adk = "google.adk.cli:main"
-
-[project.optional-dependencies]
-
-dev = [
-  # go/keep-sorted start
-  "flit>=3.10.0",
-  "isort>=6.0.0",
-  "mypy>=1.15.0",
-  "pre-commit>=4.0.0",
-  "pyink>=25.12.0",
-  "pylint>=2.6.0",
-  # go/keep-sorted end
+optional-dependencies.a2a = [
+  "a2a-sdk>=0.3.4,<0.4",
 ]
-
-a2a = [
-  # go/keep-sorted start
-  "a2a-sdk>=0.3.4,<0.4.0",
-  # go/keep-sorted end
+optional-dependencies.agent-identity = [
+  "google-cloud-iamconnectorcredentials>=0.1,<0.2",
 ]
-
-community = [
-  # go/keep-sorted start
+optional-dependencies.community = [
   "google-adk-community",
-  # go/keep-sorted end
 ]
-
-eval = [
-  # go/keep-sorted start
-  "Jinja2>=3.1.4,<4.0.0",                         # For eval template rendering
-  "gepa>=0.1.0",
-  "google-cloud-aiplatform[evaluation]>=1.148.0",
-  "pandas>=2.2.3",
-  "rouge-score>=0.1.2",
-  "tabulate>=0.9.0",
-  # go/keep-sorted end
+optional-dependencies.dev = [
+  "flit>=3.10",
+  "isort>=6",
+  "mypy>=1.15",
+  "pre-commit>=4",
+  "pyink>=25.12",
+  "pylint>=2.6",
 ]
-
-test = [
-  # go/keep-sorted start
-  "a2a-sdk>=0.3.0,<0.4.0",
-  "anthropic>=0.43.0",                            # For anthropic model tests
-  "crewai[tools];python_version>='3.11' and python_version<'3.12'",         # For CrewaiTool tests; chromadb/pypika fail on 3.12+
-  "google-cloud-firestore>=2.11.0, <3.0.0",
-  "google-cloud-iamconnectorcredentials>=0.1.0, <0.2.0",
-  "google-cloud-parametermanager>=0.4.0, <1.0.0",
-  "kubernetes>=29.0.0",                           # For GkeCodeExecutor
-  "langchain-community>=0.3.17",
-  "langgraph>=0.2.60, <0.4.8",                    # For LangGraphAgent
-  "litellm>=1.75.5, <=1.82.6",                      # For LiteLLM tests. Upper bound pinned: versions 1.82.7+ compromised in supply chain attack.
-  "llama-index-readers-file>=0.4.0",              # For retrieval tests
-  "openai>=1.100.2",                              # For LiteLLM
-  "opentelemetry-instrumentation-google-genai>=0.3b0, <1.0.0",
-  "pypika>=0.50.0",                               # For crewai->chromadb dependency
-  "pytest-asyncio>=0.25.0",
-  "pytest-mock>=3.14.0",
-  "pytest-xdist>=3.6.1",
-  "pytest>=9.0.0,<10.0.0",
-  "python-multipart>=0.0.9",
-  "rouge-score>=0.1.2",
-  "slack-bolt>=1.22.0",
-  "tabulate>=0.9.0",
-  # go/keep-sorted end
-]
-
-docs = [
-  "autodoc_pydantic",
+optional-dependencies.docs = [
+  "autodoc-pydantic",
   "furo",
   "myst-parser",
-  "sphinx<9.0.0",
+  "sphinx<9",
   "sphinx-autodoc-typehints",
   "sphinx-rtd-theme",
 ]
-
+optional-dependencies.eval = [
+  "gepa>=0.1",
+  "google-cloud-aiplatform[evaluation]>=1.148",
+  "jinja2>=3.1.4,<4",                           # For eval template rendering
+  "pandas>=2.2.3",
+  "rouge-score>=0.1.2",
+  "tabulate>=0.9",
+]
 # Optional extensions
-extensions = [
-  "anthropic>=0.43.0",                          # For anthropic model support
-  "beautifulsoup4>=3.2.2",                      # For load_web_page tool.
-  "crewai[tools];python_version>='3.11' and python_version<'3.12'",       # For CrewaiTool; chromadb/pypika fail on 3.12+
-  "docker>=7.0.0",                              # For ContainerCodeExecutor
-  "google-cloud-firestore>=2.11.0, <3.0.0",             # For Firestore services
-  "google-cloud-parametermanager>=0.4.0, <1.0.0",
-  "kubernetes>=29.0.0",                         # For GkeCodeExecutor
-  "k8s-agent-sandbox>=0.1.1.post3",             # For GkeCodeExecutor sandbox mode
-  "langgraph>=0.2.60, <0.4.8",                  # For LangGraphAgent
-  "litellm>=1.75.5, <=1.82.6",                    # For LiteLlm class. Upper bound pinned: versions 1.82.7+ compromised in supply chain attack.
-  "llama-index-readers-file>=0.4.0",            # For retrieval using LlamaIndex.
-  "llama-index-embeddings-google-genai>=0.3.0", # For files retrieval using LlamaIndex.
-  "lxml>=5.3.0",                                # For load_web_page tool.
-  "pypika>=0.50.0",                             # For crewai->chromadb dependency
-  "toolbox-adk>=1.0.0, <2.0.0",                 # For tools.toolbox_toolset.ToolboxToolset
+optional-dependencies.extensions = [
+  "anthropic>=0.43",                                                 # For anthropic model support
+  "beautifulsoup4>=3.2.2",                                           # For load_web_page tool.
+  "crewai[tools]; python_version>='3.11' and python_version<'3.12'", # For CrewaiTool; chromadb/pypika fail on 3.12+
+  "docker>=7",                                                       # For ContainerCodeExecutor
+  "google-cloud-firestore>=2.11,<3",                                 # For Firestore services
+  "google-cloud-parametermanager>=0.4,<1",
+  "k8s-agent-sandbox>=0.1.1.post3",                                  # For GkeCodeExecutor sandbox mode
+  "kubernetes>=29",                                                  # For GkeCodeExecutor
+  "langgraph>=0.2.60,<0.4.8",                                        # For LangGraphAgent
+  "litellm>=1.75.5,<=1.82.6",                                        # For LiteLlm class. Upper bound pinned: versions 1.82.7+ compromised in supply chain attack.
+  "llama-index-embeddings-google-genai>=0.3",                        # For files retrieval using LlamaIndex.
+  "llama-index-readers-file>=0.4",                                   # For retrieval using LlamaIndex.
+  "lxml>=5.3",                                                       # For load_web_page tool.
+  "pypika>=0.50",                                                    # For crewai->chromadb dependency
+  "toolbox-adk>=1,<2",                                               # For tools.toolbox_toolset.ToolboxToolset
 ]
-
-otel-gcp = ["opentelemetry-instrumentation-google-genai>=0.6b0, <1.0.0"]
-
-toolbox = ["toolbox-adk>=1.0.0, <2.0.0"]
-
-slack = ["slack-bolt>=1.22.0"]
-
-agent-identity = [
-  "google-cloud-iamconnectorcredentials>=0.1.0, <0.2.0",
+optional-dependencies.otel-gcp = [ "opentelemetry-instrumentation-google-genai>=0.6b0,<1" ]
+optional-dependencies.slack = [ "slack-bolt>=1.22" ]
+optional-dependencies.test = [
+  "a2a-sdk>=0.3,<0.4",
+  "anthropic>=0.43",                                                 # For anthropic model tests
+  "crewai[tools]; python_version>='3.11' and python_version<'3.12'", # For CrewaiTool tests; chromadb/pypika fail on 3.12+
+  "google-cloud-firestore>=2.11,<3",
+  "google-cloud-iamconnectorcredentials>=0.1,<0.2",
+  "google-cloud-parametermanager>=0.4,<1",
+  "kubernetes>=29",                                                  # For GkeCodeExecutor
+  "langchain-community>=0.3.17",
+  "langgraph>=0.2.60,<0.4.8",                                        # For LangGraphAgent
+  "litellm>=1.75.5,<=1.82.6",                                        # For LiteLLM tests. Upper bound pinned: versions 1.82.7+ compromised in supply chain attack.
+  "llama-index-readers-file>=0.4",                                   # For retrieval tests
+  "openai>=1.100.2",                                                 # For LiteLLM
+  "opentelemetry-instrumentation-google-genai>=0.3b0,<1",
+  "pypika>=0.50",                                                    # For crewai->chromadb dependency
+  "pytest>=9,<10",
+  "pytest-asyncio>=0.25",
+  "pytest-mock>=3.14",
+  "pytest-xdist>=3.6.1",
+  "python-multipart>=0.0.9",
+  "rouge-score>=0.1.2",
+  "slack-bolt>=1.22",
+  "tabulate>=0.9",
 ]
+optional-dependencies.toolbox = [ "toolbox-adk>=1,<2" ]
+urls.changelog = "https://github.com/google/adk-python/blob/main/CHANGELOG.md"
+urls.documentation = "https://google.github.io/adk-docs/"
+urls.homepage = "https://google.github.io/adk-docs/"
+urls.repository = "https://github.com/google/adk-python"
+scripts.adk = "google.adk.cli:main"
+
+[tool.flit.sdist]
+include = [ 'src/**/*', 'README.md', 'pyproject.toml', 'LICENSE' ]
+exclude = [ 'src/**/*.sh' ]
+
+[tool.flit.module]
+name = "google.adk"
+include = [ "py.typed" ]
+
+[tool.isort]
+profile = "google"
+single_line_exclusions = [  ]
+line_length = 200                           # Prevent line wrap flickering.
+known_third_party = [ "google.adk", "a2a" ]
+
+[tool.pytest.ini_options]
+testpaths = [ "tests" ]
+asyncio_default_fixture_loop_scope = "function"
+asyncio_mode = "auto"
+
+[tool.mypy]
+python_version = "3.10"
+exclude = [ "tests/", "contributing/samples/" ]
+plugins = [ "pydantic.mypy" ]
+strict = true
+disable_error_code = [ "import-not-found", "import-untyped", "unused-ignore" ]
+follow_imports = "skip"
 
 [tool.pyink]
 # Format py files following Google style-guide
@@ -199,42 +205,3 @@ pyink-annotation-pragmas = [
   "pyright:",
   "pyre-",
 ]
-
-
-[build-system]
-# Build system specify which backend is used to build/install the project (flit,
-# poetry, setuptools,...). All backends are supported by `pip install`
-requires = ["flit_core >=3.8,<4"]
-build-backend = "flit_core.buildapi"
-
-
-[tool.flit.sdist]
-include = ['src/**/*', 'README.md', 'pyproject.toml', 'LICENSE']
-exclude = ['src/**/*.sh']
-
-
-[tool.flit.module]
-name = "google.adk"
-include = ["py.typed"]
-
-
-[tool.isort]
-profile = "google"
-single_line_exclusions = []
-line_length = 200                  # Prevent line wrap flickering.
-known_third_party = ["google.adk"]
-
-
-[tool.pytest.ini_options]
-testpaths = ["tests"]
-asyncio_default_fixture_loop_scope = "function"
-asyncio_mode = "auto"
-
-
-[tool.mypy]
-python_version = "3.10"
-exclude = ["tests/", "contributing/samples/"]
-plugins = ["pydantic.mypy"]
-strict = true
-disable_error_code = ["import-not-found", "import-untyped", "unused-ignore"]
-follow_imports = "skip"
