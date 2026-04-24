@@ -7,31 +7,31 @@ distributed via the `google.adk.tools.spanner` module. These tools include:
 
 1. `list_instances`
 
-  Fetches Spanner instance names present in a project.
+Fetches Spanner instance names present in a project.
 
 1. `get_instance`
 
-  Fetches details of a given Spanner instance.
+Fetches details of a given Spanner instance.
 
 1. `create_database`
 
-  Creates a Spanner database within a given instance and project.
+Creates a Spanner database within a given instance and project.
 
 1. `list_databases`
 
-  Fetches Spanner database names present in an instance.
+Fetches Spanner database names present in an instance.
 
 1. `create_instance`
 
-  Creates a Spanner instance within a GCP project.
+Creates a Spanner instance within a GCP project.
 
 1. `list_instance_configs`
 
-  Fetches Spanner instance configurations available for a project.
+Fetches Spanner instance configurations available for a project.
 
 1. `get_instance_config`
 
-  Fetches details of a Spanner instance configuration.
+Fetches details of a Spanner instance configuration.
 
 ## How to use
 
@@ -42,8 +42,8 @@ or
 for the LLM service for your agent. For example, for using Google AI Studio you
 would set:
 
-* GOOGLE_GENAI_USE_VERTEXAI=FALSE
-* GOOGLE_API_KEY={your api key}
+- GOOGLE_GENAI_USE_VERTEXAI=FALSE
+- GOOGLE_API_KEY={your api key}
 
 ### With Application Default Credentials
 
@@ -51,7 +51,7 @@ This mode is useful for quick development when the agent builder is the only
 user interacting with the agent. The tools are run with these credentials.
 
 1. Create application default credentials on the machine where the agent would
-be running by following https://cloud.google.com/docs/authentication/provide-credentials-adc.
+   be running by following https://cloud.google.com/docs/authentication/provide-credentials-adc.
 
 1. Set `CREDENTIALS_TYPE=None` in `agent.py`
 
@@ -74,43 +74,42 @@ credentials.
 ### With Interactive OAuth
 
 1. Follow
-https://developers.google.com/identity/protocols/oauth2#1.-obtain-oauth-2.0-credentials-from-the-dynamic_data.setvar.console_name.
-to get your client id and client secret. Be sure to choose "web" as your client
-type.
+   https://developers.google.com/identity/protocols/oauth2#1.-obtain-oauth-2.0-credentials-from-the-dynamic_data.setvar.console_name.
+   to get your client id and client secret. Be sure to choose "web" as your client
+   type.
 
-1.  Follow https://developers.google.com/workspace/guides/configure-oauth-consent
-    to add scope "https://www.googleapis.com/auth/spanner.data" and
-    "https://www.googleapis.com/auth/spanner.admin" as declaration, this is used
-    for review purpose.
+1. Follow https://developers.google.com/workspace/guides/configure-oauth-consent
+   to add scope "https://www.googleapis.com/auth/spanner.data" and
+   "https://www.googleapis.com/auth/spanner.admin" as declaration, this is used
+   for review purpose.
 
-1.  Follow
-    https://developers.google.com/identity/protocols/oauth2/web-server#creatingcred
-    to add http://localhost/dev-ui/ to "Authorized redirect URIs".
+1. Follow
+   https://developers.google.com/identity/protocols/oauth2/web-server#creatingcred
+   to add http://localhost/dev-ui/ to "Authorized redirect URIs".
 
-    Note: localhost here is just a hostname that you use to access the dev ui,
-    replace it with the actual hostname you use to access the dev ui.
+   Note: localhost here is just a hostname that you use to access the dev ui,
+   replace it with the actual hostname you use to access the dev ui.
 
-1.  For 1st run, allow popup for localhost in Chrome.
+1. For 1st run, allow popup for localhost in Chrome.
 
-1.  Configure your `.env` file to add two more variables before running the
-    agent:
+1. Configure your `.env` file to add two more variables before running the
+   agent:
 
-    *   OAUTH_CLIENT_ID={your client id}
-    *   OAUTH_CLIENT_SECRET={your client secret}
+   - OAUTH_CLIENT_ID={your client id}
+   - OAUTH_CLIENT_SECRET={your client secret}
 
-    Note: don't create a separate .env, instead put it to the same .env file that
-    stores your Vertex AI or Dev ML credentials
+   Note: don't create a separate .env, instead put it to the same .env file that
+   stores your Vertex AI or Dev ML credentials
 
-1.  Set `CREDENTIALS_TYPE=AuthCredentialTypes.OAUTH2` in `agent.py` and run the
-    agent
+1. Set `CREDENTIALS_TYPE=AuthCredentialTypes.OAUTH2` in `agent.py` and run the
+   agent
 
 ## Sample prompts
 
-* Show me all Spanner instances in my project.
-* Give me details about the 'my-instance' Spanner instance.
-* List all databases in instance 'my-instance'.
-* Create a new Spanner database named 'my-db' in instance 'my-instance'.
-* List all instance configurations available for my project.
-* Get details about 'regional-us-central1' configuration.
-* Create a Spanner instance 'new-instance' with 'regional-us-central1' config and name 'new-instance'.
-
+- Show me all Spanner instances in my project.
+- Give me details about the 'my-instance' Spanner instance.
+- List all databases in instance 'my-instance'.
+- Create a new Spanner database named 'my-db' in instance 'my-instance'.
+- List all instance configurations available for my project.
+- Get details about 'regional-us-central1' configuration.
+- Create a Spanner instance 'new-instance' with 'regional-us-central1' config and name 'new-instance'.

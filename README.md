@@ -29,7 +29,7 @@ simplify building, deploying, and orchestrating agent workflows, from simple
 tasks to complex systems. While optimized for Gemini, ADK is model-agnostic,
 deployment-agnostic, and compatible with other frameworks.
 
----
+______________________________________________________________________
 
 ## 🔥 What's new
 
@@ -70,6 +70,7 @@ pip install google-adk
 ```
 
 To install optional integrations, you can use the following command:
+
 ```bash
 pip install "google-adk[extensions]"
 ```
@@ -79,6 +80,7 @@ The release cadence is roughly bi-weekly.
 This version is recommended for most users as it represents the most recent official release.
 
 ### Development Version
+
 Bug fixes and new features are merged into the main branch on GitHub first. If you need access to changes that haven't been included in an official PyPI release yet, you can install directly from the main branch:
 
 ```bash
@@ -99,7 +101,7 @@ for how they can work together.
 Explore the full documentation for detailed guides on building, evaluating, and
 deploying agents:
 
-* **[Documentation](https://google.github.io/adk-docs)**
+- **[Documentation](https://google.github.io/adk-docs)**
 
 ## 🏁 Feature Highlight
 
@@ -147,7 +149,7 @@ A built-in development UI to help you test, evaluate, debug, and showcase your a
 
 <img src="https://raw.githubusercontent.com/google/adk-python/main/assets/adk-web-dev-ui-function-call.png"/>
 
-###  Evaluate Agents
+### Evaluate Agents
 
 ```bash
 adk eval \
@@ -158,6 +160,7 @@ adk eval \
 ## 🤝 Contributing
 
 We welcome contributions from the community! Whether it's bug reports, feature requests, documentation improvements, or code contributions, please see our
+
 - [General contribution guideline and flow](https://google.github.io/adk-docs/contributing-guide/).
 - Then if you want to contribute code, please read [Code Contributing Guidelines](./CONTRIBUTING.md) to get started.
 
@@ -179,6 +182,6 @@ If you want to develop agent via vibe coding the [llms.txt](./llms.txt) and the 
 
 This project is licensed under the Apache 2.0 License - see the [LICENSE](LICENSE) file for details.
 
----
+______________________________________________________________________
 
 *Happy Agent Building!*
