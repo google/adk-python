@@ -38,6 +38,7 @@ from a2a.types import TaskStatusUpdateEvent
 from a2a.types import TextPart
 from typing_extensions import override
 
+from ...errors.session_not_found_error import SessionNotFoundError
 from ...runners import Runner
 from ...sessions import base_session_service
 from ...utils.context_utils import Aclosing
@@ -70,10 +71,12 @@ class _A2aAgentExecutor(AgentExecutor):
       *,
       runner: Runner | Callable[..., Runner | Awaitable[Runner]],
       config: Optional[A2aAgentExecutorConfig] = None,
+      auto_create_session: bool = True,
   ):
     super().__init__()
     self._runner = runner
     self._config = config or A2aAgentExecutorConfig()
+    self._auto_create_session = auto_create_session
 
   @override
   async def cancel(self, context: RequestContext, event_queue: EventQueue):
@@ -286,13 +289,25 @@ class _A2aAgentExecutor(AgentExecutor):
       raise ValueError('user_id must be set in AgentRunRequest')
     if not run_request.session_id:
       raise ValueError('session_id must be set in AgentRunRequest')
-    session = await runner._get_or_create_session(
+    session = await runner.session_service.get_session(
+        app_name=runner.app_name,
         user_id=run_request.user_id,
         session_id=run_request.session_id,
-        get_session_config=base_session_service.GetSessionConfig(
-            num_recent_events=0
-        ),
+        # Checking existence doesn't require event history.
+        config=base_session_service.GetSessionConfig(num_recent_events=0),
     )
+    if not session:
+      if self._auto_create_session:
+        session = await runner.session_service.create_session(
+            app_name=runner.app_name,
+            user_id=run_request.user_id,
+            session_id=run_request.session_id,
+        )
+      else:
+        raise SessionNotFoundError(
+            f'Session not found: {run_request.session_id}'
+        )
+    # Update run_request with the new session_id
     run_request.session_id = session.id
 
   def _get_invocation_metadata(

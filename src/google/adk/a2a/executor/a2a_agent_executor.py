@@ -38,6 +38,7 @@ from google.adk.platform import uuid as platform_uuid
 from google.adk.runners import Runner
 from typing_extensions import override
 
+from ...errors.session_not_found_error import SessionNotFoundError
 from ...utils.context_utils import Aclosing
 from ..agent.interceptors.new_integration_extension import _NEW_A2A_ADK_INTEGRATION_EXTENSION
 from ..converters.request_converter import AgentRunRequest
@@ -75,12 +76,14 @@ class A2aAgentExecutor(AgentExecutor):
       config: Optional[A2aAgentExecutorConfig] = None,
       use_legacy: bool = False,
       force_new_version: bool = False,
+      auto_create_session: bool = True,
   ):
     super().__init__()
     self._runner = runner
     self._config = config or A2aAgentExecutorConfig()
     self._use_legacy = use_legacy
     self._force_new_version = force_new_version
+    self._auto_create_session = auto_create_session
     self._executor_impl = None
 
   async def _resolve_runner(self) -> Runner:
@@ -141,6 +144,7 @@ class A2aAgentExecutor(AgentExecutor):
         self._executor_impl = ExecutorImpl(
             runner=self._runner,
             config=self._config,
+            auto_create_session=self._auto_create_session,
         )
       await self._executor_impl.execute(context, event_queue)
       return
@@ -328,10 +332,23 @@ class A2aAgentExecutor(AgentExecutor):
       run_request: AgentRunRequest,
       runner: Runner,
   ):
-    session = await runner._get_or_create_session(
+    session = await runner.session_service.get_session(
+        app_name=runner.app_name,
         user_id=run_request.user_id,
         session_id=run_request.session_id,
     )
+    if not session:
+      if self._auto_create_session:
+        session = await runner.session_service.create_session(
+            app_name=runner.app_name,
+            user_id=run_request.user_id,
+            session_id=run_request.session_id,
+        )
+      else:
+        raise SessionNotFoundError(
+            f'Session not found: {run_request.session_id}'
+        )
+    # Update run_request with the new session_id
     run_request.session_id = session.id
     return session
 
