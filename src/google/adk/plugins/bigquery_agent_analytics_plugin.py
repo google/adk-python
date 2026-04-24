@@ -2570,7 +2570,7 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
     # Restore _credentials from _user_credentials if available so
     # _create_loop_state uses the user's identity.  When both are
     # None (non-picklable credentials were dropped), ADC is used.
-    if state["_credentials"] is None and state["_user_credentials"]:
+    if state["_credentials"] is None and state["_user_credentials"] is not None:
       state["_credentials"] = state["_user_credentials"]
     self.__dict__.update(state)
 
