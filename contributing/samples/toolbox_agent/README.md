@@ -59,7 +59,7 @@ CREATE TABLE hotels(
 );
 
 INSERT INTO hotels(id, name, location, price_tier, checkin_date, checkout_date, booked)
-VALUES 
+VALUES
   (1, 'Hilton Basel', 'Basel', 'Luxury', '2024-04-22', '2024-04-20', 0),
   (2, 'Marriott Zurich', 'Zurich', 'Upscale', '2024-04-14', '2024-04-21', 0),
   (3, 'Hyatt Regency Basel', 'Basel', 'Upper Upscale', '2024-04-02', '2024-04-20', 0),

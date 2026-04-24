@@ -8,7 +8,7 @@ The toolset authentication flow works in two phases:
 
 1. **Phase 1**: When the agent tries to get tools from the MCP server without credentials, the toolset signals "authentication required" and returns an auth request event.
 
-2. **Phase 2**: After the user provides OAuth credentials, the agent can successfully list and call tools.
+1. **Phase 2**: After the user provides OAuth credentials, the agent can successfully list and call tools.
 
 ## Files
 
@@ -33,8 +33,8 @@ PYTHONPATH=src python contributing/samples/mcp_toolset_auth/main.py
 ## Expected Behavior
 
 1. First invocation yields an `adk_request_credential` function call
-2. The credential ID is `_adk_toolset_auth_McpToolset` to indicate toolset auth
-3. After providing the access token, the agent can list and call tools
+1. The credential ID is `_adk_toolset_auth_McpToolset` to indicate toolset auth
+1. After providing the access token, the agent can list and call tools
 
 ## Testing with ADK Web UI
 

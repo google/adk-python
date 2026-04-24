@@ -2094,6 +2094,56 @@ class TestBigQueryAgentAnalyticsPlugin:
       await plugin.shutdown()
 
   @pytest.mark.asyncio
+  async def test_pickle_preserves_picklable_credentials(
+      self, mock_auth_default, mock_bq_client
+  ):
+    """Picklable user credentials survive pickle/unpickle."""
+    import pickle
+
+    picklable_creds = FakeCredentials()
+    plugin = bigquery_agent_analytics_plugin.BigQueryAgentAnalyticsPlugin(
+        PROJECT_ID,
+        DATASET_ID,
+        table_id=TABLE_ID,
+        credentials=picklable_creds,
+    )
+    pickled = pickle.dumps(plugin)
+    unpickled = pickle.loads(pickled)
+    # User-provided picklable credentials are preserved.
+    assert unpickled._user_credentials is not None
+    assert unpickled._credentials is not None
+    await plugin.shutdown()
+
+  @pytest.mark.asyncio
+  async def test_pickle_drops_non_picklable_credentials(
+      self, mock_auth_default, mock_bq_client
+  ):
+    """Non-picklable user credentials are dropped gracefully."""
+    import pickle
+
+    class NonPicklableCreds(google.auth.credentials.Credentials):
+
+      def refresh(self, request):
+        pass
+
+      def __getstate__(self):
+        raise TypeError("cannot pickle")
+
+    plugin = bigquery_agent_analytics_plugin.BigQueryAgentAnalyticsPlugin(
+        PROJECT_ID,
+        DATASET_ID,
+        table_id=TABLE_ID,
+        credentials=NonPicklableCreds(),
+    )
+    # Should not raise — non-picklable credentials are dropped.
+    pickled = pickle.dumps(plugin)
+    unpickled = pickle.loads(pickled)
+    # Credentials fall back to None (ADC on next use).
+    assert unpickled._user_credentials is None
+    assert unpickled._credentials is None
+    await plugin.shutdown()
+
+  @pytest.mark.asyncio
   async def test_span_hierarchy_llm_call(
       self,
       bq_plugin_inst,
