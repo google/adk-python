@@ -28,9 +28,8 @@ from typing import Tuple
 from unittest import mock
 
 import click
+from google.adk.cli import cli_deploy
 import pytest
-
-import src.google.adk.cli.cli_deploy as cli_deploy
 
 
 class AgentDirFixture(Protocol):

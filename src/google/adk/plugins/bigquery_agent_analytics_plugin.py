@@ -1949,6 +1949,7 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
       table_id: Optional[str] = None,
       config: Optional[BigQueryLoggerConfig] = None,
       location: str = "US",
+      credentials: Optional[google.auth.credentials.Credentials] = None,
       **kwargs,
   ) -> None:
     """Initializes the instance.
@@ -1959,6 +1960,8 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
         table_id: BigQuery table ID (optional, overrides config).
         config: BigQueryLoggerConfig (optional).
         location: BigQuery location (default: "US").
+        credentials: Google Auth credentials (optional). If None, uses
+          Application Default Credentials.
         **kwargs: Additional configuration parameters for BigQueryLoggerConfig.
     """
     super().__init__(name="bigquery_agent_analytics")
@@ -1985,6 +1988,8 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
     self._startup_error: Optional[Exception] = None
     self._is_shutting_down = False
     self._setup_lock = None
+    self._user_credentials = credentials
+    self._credentials = credentials
     self.client = None
     self._loop_state_by_loop: dict[asyncio.AbstractEventLoop, _LoopState] = {}
     self._write_stream_name = None  # Resolved stream name
@@ -2097,15 +2102,20 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
     # grpc.aio clients are loop-bound, so we create one per event loop.
 
     def get_credentials():
-      creds, project_id = google.auth.default(
+      creds, _ = google.auth.default(
           scopes=["https://www.googleapis.com/auth/cloud-platform"]
       )
-      return creds, project_id
+      return creds
 
-    creds, project_id = await loop.run_in_executor(
-        self._executor, get_credentials
-    )
-    quota_project_id = getattr(creds, "quota_project_id", None)
+    # Note: this read-then-write is not locked.  If two event loops
+    # race here both will resolve ADC and write back the same creds.
+    # This is benign — the result is idempotent — so we accept the
+    # race rather than adding a lock for a one-time init path.
+    if self._credentials is None:
+      self._credentials = await loop.run_in_executor(
+          self._executor, get_credentials
+      )
+    quota_project_id = getattr(self._credentials, "quota_project_id", None)
     options = (
         client_options.ClientOptions(quota_project_id=quota_project_id)
         if quota_project_id
@@ -2119,7 +2129,7 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
     client_info = gapic_client_info.ClientInfo(user_agent=" ".join(user_agents))
 
     write_client = BigQueryWriteAsyncClient(
-        credentials=creds,
+        credentials=self._credentials,
         client_info=client_info,
         client_options=options,
     )
@@ -2173,7 +2183,9 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
       self.client = await loop.run_in_executor(
           self._executor,
           lambda: bigquery.Client(
-              project=self.project_id, location=self.location
+              project=self.project_id,
+              location=self.location,
+              credentials=self._credentials,
           ),
       )
 
@@ -2189,11 +2201,18 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
 
       self.offloader = None
       if self.config.gcs_bucket_name:
+        # GCSOffloader always creates a storage.Client eagerly
+        # (line 1329: storage_client or storage.Client(...)).
+        # Pass credentials so it uses the same auth as the other
+        # clients; omit when None to let it use ADC.
+        gcs_kwargs = {"project": self.project_id}
+        if self._credentials is not None:
+          gcs_kwargs["credentials"] = self._credentials
         self.offloader = GCSOffloader(
             self.project_id,
             self.config.gcs_bucket_name,
             self._executor,
-            storage_client=kwargs.get("storage_client"),
+            storage_client=storage.Client(**gcs_kwargs),
         )
 
       self.parser = HybridContentParser(
@@ -2527,6 +2546,18 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
     state["_startup_error"] = None
     state["_is_shutting_down"] = False
     state["_init_pid"] = 0
+    # _credentials is always runtime-resolved; clear unconditionally.
+    state["_credentials"] = None
+    # Preserve _user_credentials if they are picklable (e.g.,
+    # service-account, AnonymousCredentials).  Drop only when
+    # pickle would fail (e.g., compute_engine.Credentials holding
+    # a requests.Session).
+    import pickle as _pickle
+
+    try:
+      _pickle.dumps(state.get("_user_credentials"))
+    except Exception:
+      state["_user_credentials"] = None
     return state
 
   def __setstate__(self, state):
@@ -2534,6 +2565,13 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
     # Backfill keys that may be absent in pickled state from older
     # code versions so _ensure_started does not raise AttributeError.
     state.setdefault("_init_pid", 0)
+    state.setdefault("_user_credentials", None)
+    state.setdefault("_credentials", None)
+    # Restore _credentials from _user_credentials if available so
+    # _create_loop_state uses the user's identity.  When both are
+    # None (non-picklable credentials were dropped), ADC is used.
+    if state["_credentials"] is None and state["_user_credentials"] is not None:
+      state["_credentials"] = state["_user_credentials"]
     self.__dict__.update(state)
 
   def _reset_runtime_state(self) -> None:
@@ -2588,6 +2626,11 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
     self._startup_error = None
     self._is_shutting_down = False
     self._init_pid = os.getpid()
+    # For ADC-resolved credentials, clear so they are re-resolved
+    # in the child process.  For user-provided credentials, keep
+    # the original object — we cannot re-create it.  The user is
+    # responsible for providing fork-safe credentials if needed.
+    self._credentials = self._user_credentials
 
   async def __aenter__(self) -> BigQueryAgentAnalyticsPlugin:
     await self._ensure_started()

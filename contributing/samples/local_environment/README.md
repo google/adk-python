@@ -16,6 +16,6 @@ You can interact with the agent by providing prompts that require file operation
 
 ### Expected Behavior
 
-1.  **Write File**: The agent uses a tool to write `hello.py` with the content `print("Hello from ADK!")`.
-2.  **Read File**: The agent uses a tool to read `hello.py` and verify the content.
-3.  **Execute Command**: The agent uses a tool to run `python3 hello.py` and returns the output.
+1. **Write File**: The agent uses a tool to write `hello.py` with the content `print("Hello from ADK!")`.
+1. **Read File**: The agent uses a tool to read `hello.py` and verify the content.
+1. **Execute Command**: The agent uses a tool to run `python3 hello.py` and returns the output.

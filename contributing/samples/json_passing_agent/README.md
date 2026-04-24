@@ -5,16 +5,19 @@ This sample demonstrates how to pass structured JSON data between agents. The ex
 ## How to run
 
 1. Run the agent:
+
 ```bash
 adk run .
 ```
 
 2. Talk to the agent:
+
 ```
 I want to order a pizza
 ```
 
 ## Example conversation
+
 ```
 [user]: I'd like a large pizza with pepperoni and mushrooms on a thin crust.
 [order_intake_agent]: (tool call to get available sizes, crusts, toppings)

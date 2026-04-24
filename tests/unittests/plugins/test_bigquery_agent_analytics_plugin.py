@@ -104,11 +104,18 @@ def tool_context(invocation_context):
   return tool_context_lib.ToolContext(invocation_context=invocation_context)
 
 
+class FakeCredentials(google.auth.credentials.Credentials):
+
+  def __init__(self):
+    pass
+
+  def refresh(self, request):
+    pass
+
+
 @pytest.fixture
 def mock_auth_default():
-  mock_creds = mock.create_autospec(
-      google.auth.credentials.Credentials, instance=True, spec_set=True
-  )
+  mock_creds = FakeCredentials()
   with mock.patch.object(
       google.auth,
       "default",
@@ -2001,6 +2008,62 @@ class TestBigQueryAgentAnalyticsPlugin:
           assert kwargs["client_options"] is None
 
   @pytest.mark.asyncio
+  async def test_custom_credentials_used(
+      self,
+      mock_to_arrow_schema,
+      mock_asyncio_to_thread,
+  ):
+    """Verify custom credentials are used and default auth is not called."""
+    mock_custom_creds = mock.create_autospec(
+        google.auth.credentials.Credentials, instance=True, spec_set=True
+    )
+    mock_custom_creds.quota_project_id = "custom-quota-project"
+
+    config = bigquery_agent_analytics_plugin.BigQueryLoggerConfig(
+        gcs_bucket_name="test-bucket",
+        create_views=False,
+    )
+
+    with mock.patch.object(
+        google.auth,
+        "default",
+        autospec=True,
+    ) as mock_auth_default:
+      with mock.patch.object(
+          bigquery_agent_analytics_plugin,
+          "BigQueryWriteAsyncClient",
+          autospec=True,
+      ) as mock_bq_write_cls:
+        with mock.patch(
+            "google.cloud.bigquery.Client", autospec=True
+        ) as mock_bq_cls:
+          with mock.patch(
+              "google.cloud.storage.Client", autospec=True
+          ) as mock_storage_cls:
+            async with managed_plugin(
+                project_id=PROJECT_ID,
+                dataset_id=DATASET_ID,
+                table_id=TABLE_ID,
+                credentials=mock_custom_creds,
+                config=config,
+            ) as plugin:
+              await plugin._ensure_started()
+
+              mock_auth_default.assert_not_called()
+
+              mock_bq_write_cls.assert_called_once()
+              _, kwargs = mock_bq_write_cls.call_args
+              assert kwargs["credentials"] == mock_custom_creds
+
+              mock_bq_cls.assert_called_once()
+              _, kwargs = mock_bq_cls.call_args
+              assert kwargs["credentials"] == mock_custom_creds
+
+              mock_storage_cls.assert_called_once()
+              _, kwargs = mock_storage_cls.call_args
+              assert kwargs["credentials"] == mock_custom_creds
+
+  @pytest.mark.asyncio
   async def test_pickle_safety(self, mock_auth_default, mock_bq_client):
     """Test that the plugin can be pickled safely."""
     import pickle
@@ -2029,6 +2092,56 @@ class TestBigQueryAgentAnalyticsPlugin:
       assert not unpickled_started._loop_state_by_loop
     finally:
       await plugin.shutdown()
+
+  @pytest.mark.asyncio
+  async def test_pickle_preserves_picklable_credentials(
+      self, mock_auth_default, mock_bq_client
+  ):
+    """Picklable user credentials survive pickle/unpickle."""
+    import pickle
+
+    picklable_creds = FakeCredentials()
+    plugin = bigquery_agent_analytics_plugin.BigQueryAgentAnalyticsPlugin(
+        PROJECT_ID,
+        DATASET_ID,
+        table_id=TABLE_ID,
+        credentials=picklable_creds,
+    )
+    pickled = pickle.dumps(plugin)
+    unpickled = pickle.loads(pickled)
+    # User-provided picklable credentials are preserved.
+    assert unpickled._user_credentials is not None
+    assert unpickled._credentials is not None
+    await plugin.shutdown()
+
+  @pytest.mark.asyncio
+  async def test_pickle_drops_non_picklable_credentials(
+      self, mock_auth_default, mock_bq_client
+  ):
+    """Non-picklable user credentials are dropped gracefully."""
+    import pickle
+
+    class NonPicklableCreds(google.auth.credentials.Credentials):
+
+      def refresh(self, request):
+        pass
+
+      def __getstate__(self):
+        raise TypeError("cannot pickle")
+
+    plugin = bigquery_agent_analytics_plugin.BigQueryAgentAnalyticsPlugin(
+        PROJECT_ID,
+        DATASET_ID,
+        table_id=TABLE_ID,
+        credentials=NonPicklableCreds(),
+    )
+    # Should not raise — non-picklable credentials are dropped.
+    pickled = pickle.dumps(plugin)
+    unpickled = pickle.loads(pickled)
+    # Credentials fall back to None (ADC on next use).
+    assert unpickled._user_credentials is None
+    assert unpickled._credentials is None
+    await plugin.shutdown()
 
   @pytest.mark.asyncio
   async def test_span_hierarchy_llm_call(

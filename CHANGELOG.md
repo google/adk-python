@@ -232,7 +232,7 @@
   * Rolling back change to fix issue affecting LlmAgent creation due to missing version field ([0e18f81](https://github.com/google/adk-python/commit/0e18f81a5cd0d0392ded653b1a63a236449a2685))
 
 
-## [1.27.0](https://github.com/google/adk-python/compare/v1.26.0...v1.27.0) (2026-03-12)  
+## [1.27.0](https://github.com/google/adk-python/compare/v1.26.0...v1.27.0) (2026-03-12)
 
 ### Features
 * **[Core]**
@@ -261,7 +261,7 @@
   * **otel:** add experimental semantic convention and emit `gen_ai.client.inference.operation.details` event ([19718e9](https://github.com/google/adk-python/commit/19718e9c174af7b1287b627e6b23a609db1ee5e2))
   * add missing token usage span attributes during model usage ([77bf325](https://github.com/google/adk-python/commit/77bf325d2bf556621c3276f74ee2816fce2a7085))
   * capture tool execution error code in OpenTelemetry spans ([e0a6c6d](https://github.com/google/adk-python/commit/e0a6c6db6f8e2db161f8b86b9f11030f0cec807a))
- 
+
 * **[Tools]**
   * Warn when accessing DEFAULT_SKILL_SYSTEM_INSTRUCTION ([35366f4](https://github.com/google/adk-python/commit/35366f4e2a0575090fe12cd85f51e8116a1cd0d3))
   * add preserve_property_names option to OpenAPIToolset ([078b516](https://github.com/google/adk-python/commit/078b5163ff47acec69b1c8e105f62eb7b74f5548))
