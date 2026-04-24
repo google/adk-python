@@ -1,48 +1,50 @@
 ## ADK Authentication Demo (All in one - Agent, IDP and The app)
 
 This folder contains everything you need to run the ADK's `auth-code`
- grant type authentication demo completely locally
+grant type authentication demo completely locally
 
 Here's the high level diagram.
 
 ![alt](doc_images/adk-auth-all-in-one.svg)
 
 ### Introduction
+
 More often than not the agents use some kind of system identity
- (especially for OpenAPI and MCP tools).
- But obviously this is insecure in that multiple end users
- are using the same identity with permissions to access ALL users' data on the
- backend.
+(especially for OpenAPI and MCP tools).
+But obviously this is insecure in that multiple end users
+are using the same identity with permissions to access ALL users' data on the
+backend.
 
 ADK provides various [authentication mechanisms](https://google.github.io/adk-docs/tools/authentication/) to solve this.
 
 However to properly test it you need various components.
 We provide everything that is needed so that you can test and run
- ADK authentication demo locally.
+ADK authentication demo locally.
 
 This folder comes with -
 
 1. An IDP
-2. A hotel booking application backend
-3. A hotel assistant ADK agent (accessing the application using OpenAPI Tools)
+1. A hotel booking application backend
+1. A hotel assistant ADK agent (accessing the application using OpenAPI Tools)
 
 ### Details
 
 You can read about the [Auth Code grant / flow type](https://developer.okta.com/blog/2018/04/10/oauth-authorization-code-grant-type) in detail. But for the purpose of this demo, following steps take place
 
 1. The user asks the agent to find hotels in "New York".
-2. Agent realizes (based on LLM response) that it needs to call a tool and that the tool needs authentication.
-3. Agent redirects the user to the IDP's login page with callback / redirect URL back to ADK UI.
-4. The user enters credentials (`john.doe` and `password123`) and accepts the consent.
-5. The IDP sends the auth_code back to the redirect URL (from 3).
-6. ADK then exchanges this auth_code for an access token.
-7. ADK does the API call to get details on hotels and hands over that response to LLM, LLM formats the response.
-8. ADK sends a response back to the User.
+1. Agent realizes (based on LLM response) that it needs to call a tool and that the tool needs authentication.
+1. Agent redirects the user to the IDP's login page with callback / redirect URL back to ADK UI.
+1. The user enters credentials (`john.doe` and `password123`) and accepts the consent.
+1. The IDP sends the auth_code back to the redirect URL (from 3).
+1. ADK then exchanges this auth_code for an access token.
+1. ADK does the API call to get details on hotels and hands over that response to LLM, LLM formats the response.
+1. ADK sends a response back to the User.
 
 ### Setting up and running
 
 1. Clone this repository
-2. Carry out following steps and create and activate the environment
+1. Carry out following steps and create and activate the environment
+
 ```bash
 # Go to the cloned directory
 cd adk-python
@@ -56,11 +58,12 @@ python3 -m venv .venv
 pip install -r requirements.txt
 
 ```
+
 3. Configure and Start the IDP. Our IDP needs a private key to sign the tokens and a JWKS with public key component to verify them. Steps are provided for that (please check the screenshots below)
 
 🪧 **NOTE:**
 It is recommended that you execute the key pair creation and public
- key extraction commands (1-3 and 5 below) on Google cloud shell.
+key extraction commands (1-3 and 5 below) on Google cloud shell.
 
 ```bash
 cd idp
@@ -87,6 +90,7 @@ cat private_key.pem | tr -d "\n"
 # Start the IDP
 python app.py
 ```
+
 <details>
 
 <summary><b>Screenshots</b></summary>
@@ -101,6 +105,7 @@ Updated `jwks.json` (notice the key is added in the existing array)
 </details>
 
 4. In a separate shell - Start the backend API (Hotel Booking Application)
+
 ```bash
 # Go to the cloned directory
 cd adk-python
@@ -118,6 +123,7 @@ python main.py
 ```
 
 5. In a separate shell - Start the ADK agent
+
 ```bash
 # Go to the cloned directory
 cd adk-python
@@ -137,6 +143,7 @@ cp sample.env .env
 adk web
 
 ```
+
 6. Access the agent on http://localhost:8000
 
 🪧 **NOTE:**
@@ -149,4 +156,3 @@ subsequent responses are significantly faster.
 
 You can exercise the ADK Authentication
 without any external components using this demo.
-

@@ -170,6 +170,7 @@ def trace_tool_call(
     args: dict[str, Any],
     function_response_event: Event | None,
     error: Exception | None = None,
+    span: Span | None = None,
 ):
   """Traces tool call.
 
@@ -178,8 +179,9 @@ def trace_tool_call(
     args: The arguments to the tool call.
     function_response_event: The event with the function response details.
     error: The exception raised during tool execution, if any.
+    span: The span to record attributes on. If None, uses current span.
   """
-  span = trace.get_current_span()
+  span = span or trace.get_current_span()
 
   span.set_attribute(GEN_AI_OPERATION_NAME, 'execute_tool')
 
