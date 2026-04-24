@@ -2546,12 +2546,18 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
     state["_startup_error"] = None
     state["_is_shutting_down"] = False
     state["_init_pid"] = 0
-    # Credential objects may hold non-picklable transport state
-    # (e.g., requests.Session in compute_engine.Credentials).
-    # Clear both so pickle succeeds regardless of credential type.
-    # After unpickle, credentials are re-resolved via ADC.
+    # _credentials is always runtime-resolved; clear unconditionally.
     state["_credentials"] = None
-    state["_user_credentials"] = None
+    # Preserve _user_credentials if they are picklable (e.g.,
+    # service-account, AnonymousCredentials).  Drop only when
+    # pickle would fail (e.g., compute_engine.Credentials holding
+    # a requests.Session).
+    import pickle as _pickle
+
+    try:
+      _pickle.dumps(state.get("_user_credentials"))
+    except Exception:
+      state["_user_credentials"] = None
     return state
 
   def __setstate__(self, state):
@@ -2561,9 +2567,11 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
     state.setdefault("_init_pid", 0)
     state.setdefault("_user_credentials", None)
     state.setdefault("_credentials", None)
-    # Both _credentials and _user_credentials are cleared during
-    # pickle.  Credentials will be re-resolved via ADC on the next
-    # _create_loop_state call.
+    # Restore _credentials from _user_credentials if available so
+    # _create_loop_state uses the user's identity.  When both are
+    # None (non-picklable credentials were dropped), ADC is used.
+    if state["_credentials"] is None and state["_user_credentials"]:
+      state["_credentials"] = state["_user_credentials"]
     self.__dict__.update(state)
 
   def _reset_runtime_state(self) -> None:
