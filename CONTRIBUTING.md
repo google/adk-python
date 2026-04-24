@@ -2,20 +2,20 @@
 
 We'd love to accept your patches and contributions to this project.
 
--   [How to contribute](#how-to-contribute)
--   [Before you begin](#before-you-begin)
-    -   [Sign our Contributor License Agreement](#sign-our-contributor-license-agreement)
-    -   [Review our community guidelines](#review-our-community-guidelines)
--   [Contribution workflow](#contribution-workflow)
-    -   [Finding Issues to Work On](#finding-issues-to-work-on)
-    -   [Requirement for PRs](#requirement-for-prs)
-    -   [Large or Complex Changes](#large-or-complex-changes)
-    -   [Testing Requirements](#testing-requirements)
-    -   [Unit Tests](#unit-tests)
-    -   [Manual End-to-End (E2E) Tests](#manual-end-to-end-e2e-tests)
-    -   [Documentation](#documentation)
-    -   [Development Setup](#development-setup)
-    -   [Code reviews](#code-reviews)
+- [How to contribute](#how-to-contribute)
+- [Before you begin](#before-you-begin)
+  - [Sign our Contributor License Agreement](#sign-our-contributor-license-agreement)
+  - [Review our community guidelines](#review-our-community-guidelines)
+- [Contribution workflow](#contribution-workflow)
+  - [Finding Issues to Work On](#finding-issues-to-work-on)
+  - [Requirement for PRs](#requirement-for-prs)
+  - [Large or Complex Changes](#large-or-complex-changes)
+  - [Testing Requirements](#testing-requirements)
+  - [Unit Tests](#unit-tests)
+  - [Manual End-to-End (E2E) Tests](#manual-end-to-end-e2e-tests)
+  - [Documentation](#documentation)
+  - [Development Setup](#development-setup)
+  - [Code reviews](#code-reviews)
 
 ## Before you begin
 
@@ -49,32 +49,31 @@ information on using pull requests.
 
 ### Finding Issues to Work On
 
--   Browse issues labeled **`good first issue`** (newcomer-friendly) or **`help
-    wanted`** (general contributions).
--   For other issues, please kindly ask before contributing to avoid
-    duplication.
+- Browse issues labeled **`good first issue`** (newcomer-friendly) or **`help wanted`** (general contributions).
+- For other issues, please kindly ask before contributing to avoid
+  duplication.
 
 ### Requirement for PRs
 
--   All PRs, other than small documentation or typo fixes, should have an Issue
-    associated. If a relevant issue doesn't exist, please create one first or
-    you may instead describe the bug or feature directly within the PR
-    description, following the structure of our issue templates.
--   Small, focused PRs. Keep changes minimal—one concern per PR.
--   For bug fixes or features, please provide logs or screenshot after the fix
-    is applied to help reviewers better understand the fix.
--   Please include a `testing plan` section in your PR to describe how you
-    will test. This will save time for PR review. See `Testing Requirements`
-    section for more details.
+- All PRs, other than small documentation or typo fixes, should have an Issue
+  associated. If a relevant issue doesn't exist, please create one first or
+  you may instead describe the bug or feature directly within the PR
+  description, following the structure of our issue templates.
+- Small, focused PRs. Keep changes minimal—one concern per PR.
+- For bug fixes or features, please provide logs or screenshot after the fix
+  is applied to help reviewers better understand the fix.
+- Please include a `testing plan` section in your PR to describe how you
+  will test. This will save time for PR review. See `Testing Requirements`
+  section for more details.
 
 ### Large or Complex Changes
 
 For substantial features or architectural revisions:
 
--   Open an Issue First: Outline your proposal, including design considerations
-    and impact.
--   Gather Feedback: Discuss with maintainers and the community to ensure
-    alignment and avoid duplicate work
+- Open an Issue First: Outline your proposal, including design considerations
+  and impact.
+- Gather Feedback: Discuss with maintainers and the community to ensure
+  alignment and avoid duplicate work
 
 ### Testing Requirements
 
@@ -88,16 +87,16 @@ passed `pytest` results.
 
 Requirements for unit tests:
 
--   **Coverage:** Cover new features, edge cases, error conditions, and typical
-    use cases.
--   **Location:** Add or update tests under `tests/unittests/`, following
-    existing naming conventions (e.g., `test_<module>_<feature>.py`).
--   **Framework:** Use `pytest`. Tests should be:
-    -   Fast and isolated.
-    -   Written clearly with descriptive names.
-    -   Free of external dependencies (use mocks or fixtures as needed).
--   **Quality:** Aim for high readability and maintainability; include
-    docstrings or comments for complex scenarios.
+- **Coverage:** Cover new features, edge cases, error conditions, and typical
+  use cases.
+- **Location:** Add or update tests under `tests/unittests/`, following
+  existing naming conventions (e.g., `test_<module>_<feature>.py`).
+- **Framework:** Use `pytest`. Tests should be:
+  - Fast and isolated.
+  - Written clearly with descriptive names.
+  - Free of external dependencies (use mocks or fixtures as needed).
+- **Quality:** Aim for high readability and maintainability; include
+  docstrings or comments for complex scenarios.
 
 #### Manual End-to-End (E2E) Tests
 
@@ -107,20 +106,20 @@ is not impacted.
 
 Depending on your change:
 
--   **ADK Web:**
+- **ADK Web:**
 
-    -   Use the `adk web` to verify functionality.
-    -   Capture and attach relevant screenshots demonstrating the UI/UX changes
-        or outputs.
-    -   Label screenshots clearly in your PR description.
+  - Use the `adk web` to verify functionality.
+  - Capture and attach relevant screenshots demonstrating the UI/UX changes
+    or outputs.
+  - Label screenshots clearly in your PR description.
 
--   **Runner:**
+- **Runner:**
 
-    -   Provide the testing setup. For example, the agent definition, and the
-        runner setup.
-    -   Execute the `runner` tool to reproduce workflows.
-    -   Include the command used and console output showing test results.
-    -   Highlight sections of the log that directly relate to your change.
+  - Provide the testing setup. For example, the agent definition, and the
+    runner setup.
+  - Execute the `runner` tool to reproduce workflows.
+  - Include the command used and console output showing test results.
+  - Highlight sections of the log that directly relate to your change.
 
 ### Documentation
 
@@ -131,117 +130,118 @@ part before or alongside your code PR.
 
 ## Development Setup
 
-1.  **Clone the repository:**
+1. **Clone the repository:**
 
-    ```shell
-    gh repo clone google/adk-python
-    cd adk-python
-    ```
+   ```shell
+   gh repo clone google/adk-python
+   cd adk-python
+   ```
 
-2.  **Install uv:**
+1. **Install uv:**
 
-    Check out
-    [uv installation guide](https://docs.astral.sh/uv/getting-started/installation/).
+   Check out
+   [uv installation guide](https://docs.astral.sh/uv/getting-started/installation/).
 
-3.  **Create and activate a virtual environment:**
+1. **Create and activate a virtual environment:**
 
-    **NOTE**: ADK supports Python 3.10+. Python 3.11 and above is strongly
-    recommended.
+   **NOTE**: ADK supports Python 3.10+. Python 3.11 and above is strongly
+   recommended.
 
-    Create a workspace venv using uv.
+   Create a workspace venv using uv.
 
-    ```shell
-    uv venv --python "python3.11" ".venv"
-    ```
+   ```shell
+   uv venv --python "python3.11" ".venv"
+   ```
 
-    Activate the workspace venv.
+   Activate the workspace venv.
 
-    ```shell
-    source .venv/bin/activate
-    ```
+   ```shell
+   source .venv/bin/activate
+   ```
 
-    **Windows**
+   **Windows**
 
-    ```shell
-    source .\.venv\Scripts\activate
-    ```
+   ```shell
+   source .\.venv\Scripts\activate
+   ```
 
-4.  **Install dependencies:**
+1. **Install dependencies:**
 
-    ```shell
-    uv sync --all-extras
-    ```
+   ```shell
+   uv sync --all-extras
+   ```
 
-    **NOTE**: for convenience, installing all extra deps as a starting point.
+   **NOTE**: for convenience, installing all extra deps as a starting point.
 
-5.  **Run unit tests:**
+1. **Run unit tests:**
 
-    ```shell
-    pytest ./tests/unittests
-    ```
+   ```shell
+   pytest ./tests/unittests
+   ```
 
-    NOTE: for accurate repro of test failure, only include `test` as extra
-    dependencies.
+   NOTE: for accurate repro of test failure, only include `test` as extra
+   dependencies.
 
-    ```shell
-    uv sync --extra test
-    pytest ./tests/unittests
-    ```
+   ```shell
+   uv sync --extra test
+   pytest ./tests/unittests
+   ```
 
-    **Alternatively**, use the included `unittests.sh` script which handles
-    environment setup and restoration automatically:
+   **Alternatively**, use the included `unittests.sh` script which handles
+   environment setup and restoration automatically:
 
-    ```shell
-    ./scripts/unittests.sh
-    ```
+   ```shell
+   ./scripts/unittests.sh
+   ```
 
-    This script will:
-    -   Set up the test environment with minimal dependencies (`test`, `eval`, `a2a`)
-    -   Run the unit tests
-    -   Restore the full development environment (`--all-extras`)
+   This script will:
 
-6.  **Auto-format the code:**
+   - Set up the test environment with minimal dependencies (`test`, `eval`, `a2a`)
+   - Run the unit tests
+   - Restore the full development environment (`--all-extras`)
 
-    **NOTE**: We use `isort` and `pyink` for styles. Use the included
-    autoformat.sh to auto-format.
+1. **Auto-format the code:**
 
-    ```shell
-    ./autoformat.sh
-    ```
+   **NOTE**: We use `isort` and `pyink` for styles. Use the included
+   autoformat.sh to auto-format.
 
-7.  **Build the wheel file:**
+   ```shell
+   ./autoformat.sh
+   ```
 
-    ```shell
-    uv build
-    ```
+1. **Build the wheel file:**
 
-8.  **Test the locally built wheel file:** Have a simple testing folder setup as
-    mentioned in the
-    [quickstart](https://google.github.io/adk-docs/get-started/quickstart/).
+   ```shell
+   uv build
+   ```
 
-    Then following below steps to test your changes:
+1. **Test the locally built wheel file:** Have a simple testing folder setup as
+   mentioned in the
+   [quickstart](https://google.github.io/adk-docs/get-started/quickstart/).
 
-    Create a clean venv and activate it:
+   Then following below steps to test your changes:
 
-    ```shell
-    VENV_PATH=~/venvs/adk-quickstart
-    ```
+   Create a clean venv and activate it:
 
-    ```shell
-    command -v deactivate >/dev/null 2>&1 && deactivate
-    ```
+   ```shell
+   VENV_PATH=~/venvs/adk-quickstart
+   ```
 
-    ```shell
-    rm -rf $VENV_PATH \
-      && python3 -m venv $VENV_PATH \
-      && source $VENV_PATH/bin/activate
-    ```
+   ```shell
+   command -v deactivate >/dev/null 2>&1 && deactivate
+   ```
 
-    Install the locally built wheel file:
+   ```shell
+   rm -rf $VENV_PATH \
+     && python3 -m venv $VENV_PATH \
+     && source $VENV_PATH/bin/activate
+   ```
 
-    ```shell
-    pip install dist/google_adk-<version>-py3-none-any.whl
-    ```
+   Install the locally built wheel file:
+
+   ```shell
+   pip install dist/google_adk-<version>-py3-none-any.whl
+   ```
 
 ## Contributing Resources
 

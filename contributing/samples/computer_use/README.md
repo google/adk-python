@@ -4,10 +4,10 @@ This directory contains a computer use agent that can operate a browser to compl
 
 This agent is to demo the usage of ComputerUseToolset.
 
-
 ## Overview
 
 The computer use agent consists of:
+
 - `agent.py`: Main agent configuration using Google's gemini-2.5-computer-use-preview-10-2025 model
 - `playwright.py`: Playwright-based computer implementation for browser automation
 - `requirements.txt`: Python dependencies
@@ -59,10 +59,11 @@ find me a flight from SF to Hawaii on next Monday, coming back on next Friday. s
 ```
 
 The agent will:
+
 1. Open a browser window
-2. Navigate to the specified website
-3. Interact with the page elements to complete your task
-4. Provide updates on its progress
+1. Navigate to the specified website
+1. Interact with the page elements to complete your task
+1. Provide updates on its progress
 
 ### Other Example Tasks
 
@@ -84,9 +85,9 @@ The agent will:
 If you encounter issues:
 
 1. **Playwright not found**: Make sure you've run both `playwright install-deps chromium` and `playwright install chromium`
-2. **Dependencies missing**: Verify all packages from `requirements.txt` are installed
-3. **Browser crashes**: Check that your system supports Chromium and has sufficient resources
-4. **Permission errors**: Ensure your user has permission to run browser automation tools
+1. **Dependencies missing**: Verify all packages from `requirements.txt` are installed
+1. **Browser crashes**: Check that your system supports Chromium and has sufficient resources
+1. **Permission errors**: Ensure your user has permission to run browser automation tools
 
 ## Notes
 
