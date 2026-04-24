@@ -1350,3 +1350,122 @@ async def test_non_streaming_does_not_pass_stream_param():
   mock_client.messages.create.assert_called_once()
   _, kwargs = mock_client.messages.create.call_args
   assert "stream" not in kwargs
+
+
+# --- Test for system_instruction=None fix (#5318) ---
+
+
+@pytest.mark.asyncio
+async def test_generate_content_async_none_system_instruction_non_streaming():
+  """When system_instruction is None, system should be NOT_GIVEN, not None.
+
+  Regression test for #5318: AnthropicLlm.generate_content_async passes
+  system=None to the Anthropic API when no system instruction is set
+  (e.g. during event compaction via LlmEventSummarizer), which causes
+  a 400 Bad Request from the Anthropic API.
+  """
+  llm = AnthropicLlm(model="claude-sonnet-4-20250514")
+
+  mock_message = anthropic_types.Message(
+      id="msg_test_no_sys",
+      content=[
+          anthropic_types.TextBlock(text="Hello!", type="text", citations=None)
+      ],
+      model="claude-sonnet-4-20250514",
+      role="assistant",
+      stop_reason="end_turn",
+      stop_sequence=None,
+      type="message",
+      usage=anthropic_types.Usage(
+          input_tokens=5,
+          output_tokens=2,
+          cache_creation_input_tokens=0,
+          cache_read_input_tokens=0,
+          server_tool_use=None,
+          service_tier=None,
+      ),
+  )
+
+  mock_client = MagicMock()
+  mock_client.messages.create = AsyncMock(return_value=mock_message)
+
+  # Config with system_instruction=None (as happens during event compaction)
+  llm_request = LlmRequest(
+      model="claude-sonnet-4-20250514",
+      contents=[Content(role="user", parts=[Part.from_text(text="Hi")])],
+      config=types.GenerateContentConfig(
+          system_instruction=None,
+      ),
+  )
+
+  with mock.patch.object(llm, "_anthropic_client", mock_client):
+    responses = [
+        r async for r in llm.generate_content_async(llm_request, stream=False)
+    ]
+
+  assert len(responses) == 1
+  mock_client.messages.create.assert_called_once()
+  _, kwargs = mock_client.messages.create.call_args
+  # system should be NOT_GIVEN (omitted), NOT None
+  from anthropic import NOT_GIVEN
+
+  assert kwargs["system"] is NOT_GIVEN, (
+      f"Expected system=NOT_GIVEN but got system={kwargs['system']!r}. "
+      "Passing system=None causes Anthropic API 400 errors."
+  )
+
+
+@pytest.mark.asyncio
+async def test_generate_content_async_none_system_instruction_streaming():
+  """Streaming path should also omit system when system_instruction is None."""
+  llm = AnthropicLlm(model="claude-sonnet-4-20250514")
+
+  events = [
+      MagicMock(
+          type="message_start",
+          message=MagicMock(usage=MagicMock(input_tokens=5, output_tokens=0)),
+      ),
+      MagicMock(
+          type="content_block_start",
+          index=0,
+          content_block=anthropic_types.TextBlock(text="", type="text"),
+      ),
+      MagicMock(
+          type="content_block_delta",
+          index=0,
+          delta=anthropic_types.TextDelta(text="Hi", type="text_delta"),
+      ),
+      MagicMock(type="content_block_stop", index=0),
+      MagicMock(
+          type="message_delta",
+          delta=MagicMock(stop_reason="end_turn"),
+          usage=MagicMock(output_tokens=1),
+      ),
+      MagicMock(type="message_stop"),
+  ]
+
+  mock_client = MagicMock()
+  mock_client.messages.create = AsyncMock(
+      return_value=_make_mock_stream_events(events)
+  )
+
+  # Config with system_instruction=None
+  llm_request = LlmRequest(
+      model="claude-sonnet-4-20250514",
+      contents=[Content(role="user", parts=[Part.from_text(text="Hi")])],
+      config=types.GenerateContentConfig(
+          system_instruction=None,
+      ),
+  )
+
+  with mock.patch.object(llm, "_anthropic_client", mock_client):
+    _ = [r async for r in llm.generate_content_async(llm_request, stream=True)]
+
+  mock_client.messages.create.assert_called_once()
+  _, kwargs = mock_client.messages.create.call_args
+  from anthropic import NOT_GIVEN
+
+  assert kwargs["system"] is NOT_GIVEN, (
+      f"Expected system=NOT_GIVEN but got system={kwargs['system']!r}. "
+      "Passing system=None causes Anthropic API 400 errors."
+  )

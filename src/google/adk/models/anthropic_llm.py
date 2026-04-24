@@ -401,11 +401,18 @@ class AnthropicLlm(BaseLlm):
         if llm_request.tools_dict
         else NOT_GIVEN
     )
+    # Anthropic API rejects system=None; omit the parameter when no
+    # system instruction is set (e.g. during event compaction).
+    system_instruction = (
+        llm_request.config.system_instruction
+        if llm_request.config and llm_request.config.system_instruction
+        else NOT_GIVEN
+    )
 
     if not stream:
       message = await self._anthropic_client.messages.create(
           model=model_to_use,
-          system=llm_request.config.system_instruction,
+          system=system_instruction,
           messages=messages,
           tools=tools,
           tool_choice=tool_choice,
@@ -414,7 +421,7 @@ class AnthropicLlm(BaseLlm):
       yield message_to_generate_content_response(message)
     else:
       async for response in self._generate_content_streaming(
-          llm_request, messages, tools, tool_choice
+          llm_request, messages, tools, tool_choice, system_instruction
       ):
         yield response
 
@@ -424,6 +431,7 @@ class AnthropicLlm(BaseLlm):
       messages: list[anthropic_types.MessageParam],
       tools: Union[Iterable[anthropic_types.ToolUnionParam], NotGiven],
       tool_choice: Union[anthropic_types.ToolChoiceParam, NotGiven],
+      system_instruction: Union[str, NotGiven] = NOT_GIVEN,
   ) -> AsyncGenerator[LlmResponse, None]:
     """Handles streaming responses from Anthropic models.
 
@@ -433,7 +441,7 @@ class AnthropicLlm(BaseLlm):
     model_to_use = self._resolve_model_name(llm_request.model)
     raw_stream = await self._anthropic_client.messages.create(
         model=model_to_use,
-        system=llm_request.config.system_instruction,
+        system=system_instruction,
         messages=messages,
         tools=tools,
         tool_choice=tool_choice,
