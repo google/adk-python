@@ -1988,6 +1988,7 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
     self._startup_error: Optional[Exception] = None
     self._is_shutting_down = False
     self._setup_lock = None
+    self._user_credentials = credentials
     self._credentials = credentials
     self.client = None
     self._loop_state_by_loop: dict[asyncio.AbstractEventLoop, _LoopState] = {}
@@ -2106,6 +2107,10 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
       )
       return creds
 
+    # Note: this read-then-write is not locked.  If two event loops
+    # race here both will resolve ADC and write back the same creds.
+    # This is benign — the result is idempotent — so we accept the
+    # race rather than adding a lock for a one-time init path.
     if self._credentials is None:
       self._credentials = await loop.run_in_executor(
           self._executor, get_credentials
@@ -2196,13 +2201,17 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
 
       self.offloader = None
       if self.config.gcs_bucket_name:
+        gcs_client = None
+        if self._credentials is not None:
+          gcs_client = storage.Client(
+              project=self.project_id,
+              credentials=self._credentials,
+          )
         self.offloader = GCSOffloader(
             self.project_id,
             self.config.gcs_bucket_name,
             self._executor,
-            storage_client=storage.Client(
-                project=self.project_id, credentials=self._credentials
-            ),
+            storage_client=gcs_client,
         )
 
       self.parser = HybridContentParser(
@@ -2536,6 +2545,10 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
     state["_startup_error"] = None
     state["_is_shutting_down"] = False
     state["_init_pid"] = 0
+    # Credential objects may hold non-picklable transport state
+    # (e.g., requests.Session in compute_engine.Credentials).
+    # Clear and re-resolve from _user_credentials on unpickle.
+    state["_credentials"] = None
     return state
 
   def __setstate__(self, state):
@@ -2543,6 +2556,12 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
     # Backfill keys that may be absent in pickled state from older
     # code versions so _ensure_started does not raise AttributeError.
     state.setdefault("_init_pid", 0)
+    state.setdefault("_user_credentials", None)
+    # Restore _credentials from _user_credentials (if user provided
+    # them); ADC-resolved credentials will be re-resolved on next
+    # _create_loop_state call.
+    if state.get("_credentials") is None:
+      state["_credentials"] = state.get("_user_credentials")
     self.__dict__.update(state)
 
   def _reset_runtime_state(self) -> None:
@@ -2597,6 +2616,9 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
     self._startup_error = None
     self._is_shutting_down = False
     self._init_pid = os.getpid()
+    # Credentials may hold stale HTTP transport state after fork.
+    # Re-resolve from _user_credentials on next _create_loop_state.
+    self._credentials = self._user_credentials
 
   async def __aenter__(self) -> BigQueryAgentAnalyticsPlugin:
     await self._ensure_started()
