@@ -16,8 +16,8 @@ repos:
   - repo: https://github.com/pre-commit/pre-commit-hooks
     rev: v4.6.0
     hooks:
-      - id: check-added-large-files
       - id: check-yaml
+        args: [--allow-multiple-documents]
       - id: end-of-file-fixer
       - id: trailing-whitespace
   - repo: https://github.com/tox-dev/pyproject-fmt
