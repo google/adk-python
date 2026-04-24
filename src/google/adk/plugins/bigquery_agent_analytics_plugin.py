@@ -1990,6 +1990,7 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
     self._setup_lock = None
     self._user_credentials = credentials
     self._credentials = credentials
+    self._resolved_location: Optional[str] = None
     self.client = None
     self._loop_state_by_loop: dict[asyncio.AbstractEventLoop, _LoopState] = {}
     self._write_stream_name = None  # Resolved stream name
@@ -2184,10 +2185,27 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
           self._executor,
           lambda: bigquery.Client(
               project=self.project_id,
-              location=self.location,
               credentials=self._credentials,
           ),
       )
+
+    # Auto-detect the dataset's location so view-creation DDL
+    # queries are routed to the correct region.  Table CRUD and the
+    # Storage Write API derive location from the dataset server-side,
+    # but client.query() uses the client's default location for job
+    # routing — a mismatch causes silent view-creation failure.
+    if self._resolved_location is None:
+      dataset_id = f"{self.project_id}.{self.dataset_id}"
+      try:
+        dataset = await loop.run_in_executor(
+            self._executor,
+            lambda: self.client.get_dataset(dataset_id),
+        )
+        self._resolved_location = dataset.location
+      except Exception:
+        # Fallback when dataset metadata cannot be resolved,
+        # preserving current behavior.
+        self._resolved_location = self.location
 
     self.full_table_id = f"{self.project_id}.{self.dataset_id}.{self.table_id}"
     if not self._schema:
@@ -2447,7 +2465,7 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
           event_type=event_type,
       )
       try:
-        self.client.query(sql).result()
+        self.client.query(sql, location=self._resolved_location).result()
       except cloud_exceptions.Conflict:
         logger.debug(
             "View %s was updated concurrently by another process.",
@@ -2546,6 +2564,8 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
     state["_startup_error"] = None
     state["_is_shutting_down"] = False
     state["_init_pid"] = 0
+    # Re-detect dataset location after unpickle.
+    state["_resolved_location"] = None
     # _credentials is always runtime-resolved; clear unconditionally.
     state["_credentials"] = None
     # Preserve _user_credentials if they are picklable (e.g.,
@@ -2567,6 +2587,7 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
     state.setdefault("_init_pid", 0)
     state.setdefault("_user_credentials", None)
     state.setdefault("_credentials", None)
+    state.setdefault("_resolved_location", None)
     # Restore _credentials from _user_credentials if available so
     # _create_loop_state uses the user's identity.  When both are
     # None (non-picklable credentials were dropped), ADC is used.
@@ -2616,6 +2637,7 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
 
     # Clear all runtime state.
     self._setup_lock = None
+    self._resolved_location = None
     self.client = None
     self._loop_state_by_loop = {}
     self._write_stream_name = None
