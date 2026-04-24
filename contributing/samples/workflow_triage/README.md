@@ -7,12 +7,13 @@ This sample demonstrates how to build a multi-agent workflow that intelligently 
 The workflow consists of three main components:
 
 1. **Execution Manager Agent** (`agent.py`) - Analyzes user input and determines which execution agents are relevant
-2. **Plan Execution Agent** - Sequential agent that coordinates execution and summarization
-3. **Worker Execution Agents** (`execution_agent.py`) - Specialized agents that execute specific tasks in parallel
+1. **Plan Execution Agent** - Sequential agent that coordinates execution and summarization
+1. **Worker Execution Agents** (`execution_agent.py`) - Specialized agents that execute specific tasks in parallel
 
 ## Architecture
 
 ### Execution Manager Agent (`root_agent`)
+
 - **Model**: gemini-2.5-flash
 - **Name**: `execution_manager_agent`
 - **Role**: Analyzes user requests and updates the execution plan
@@ -21,6 +22,7 @@ The workflow consists of three main components:
 - **Clarification**: Asks for clarification if user intent is unclear before proceeding
 
 ### Plan Execution Agent
+
 - **Type**: SequentialAgent
 - **Name**: `plan_execution_agent`
 - **Components**:
@@ -28,6 +30,7 @@ The workflow consists of three main components:
   - `execution_summary_agent` - Summarizes the execution results
 
 ### Worker Agents
+
 The system includes two specialized execution agents that run in parallel:
 
 - **Code Agent** (`code_agent`): Handles code generation tasks
@@ -38,6 +41,7 @@ The system includes two specialized execution agents that run in parallel:
   - Output stored in `math_agent_output` state key
 
 ### Execution Summary Agent
+
 - **Model**: gemini-2.5-flash
 - **Name**: `execution_summary_agent`
 - **Role**: Summarizes outputs from all activated agents
@@ -58,12 +62,12 @@ The system includes two specialized execution agents that run in parallel:
 The workflow follows this pattern:
 
 1. User provides input to the root agent (`execution_manager_agent`)
-2. Manager analyzes the request and identifies relevant agents (`code_agent`, `math_agent`)
-3. If user intent is unclear, manager asks for clarification before proceeding
-4. Manager updates the execution plan using `update_execution_plan`
-5. Control transfers to `plan_execution_agent`
-6. `worker_parallel_agent` (ParallelAgent) runs only relevant agents based on the updated plan
-7. `execution_summary_agent` summarizes the results from all activated agents
+1. Manager analyzes the request and identifies relevant agents (`code_agent`, `math_agent`)
+1. If user intent is unclear, manager asks for clarification before proceeding
+1. Manager updates the execution plan using `update_execution_plan`
+1. Control transfers to `plan_execution_agent`
+1. `worker_parallel_agent` (ParallelAgent) runs only relevant agents based on the updated plan
+1. `execution_summary_agent` summarizes the results from all activated agents
 
 ### Example Queries
 

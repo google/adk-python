@@ -31,6 +31,7 @@ import warnings
 
 from fastapi.openapi.models import APIKeyIn
 from google.genai.types import FunctionDeclaration
+from mcp.shared.exceptions import McpError
 from mcp.shared.session import ProgressFnT
 from mcp.types import Tool as McpBaseTool
 from opentelemetry import propagate
@@ -45,11 +46,18 @@ from ...events.ui_widget import UiWidget
 from ...features import FeatureName
 from ...features import is_feature_enabled
 from ...utils.context_utils import find_context_parameter
+# `is_feature_enabled(FeatureName._MCP_GRACEFUL_ERROR_HANDLING)` gates the
+# error-boundary and transport-crash-detection behavior added in this module.
+# When the flag is off (default) or via ADK_DISABLE_MCP_GRACEFUL_ERROR_HANDLING=1
+# `run_async` and `_run_async_impl` fall back to the pre-fix behavior.
+# The enum member is intentionally private (leading underscore) so it is not
+# part of the ADK public API; consumers flip the env var, not the symbol.
 from .._gemini_schema_util import _to_gemini_schema
 from ..base_authenticated_tool import BaseAuthenticatedTool
 from ..tool_context import ToolContext
 from .mcp_session_manager import MCPSessionManager
 from .mcp_session_manager import retry_on_errors
+from .session_context import SessionContext
 
 logger = logging.getLogger("google_adk." + __name__)
 
@@ -339,7 +347,26 @@ class McpTool(BaseAuthenticatedTool):
         }
       elif not tool_context.tool_confirmation.confirmed:
         return {"error": "This tool call is rejected."}
-    return await super().run_async(args=args, tool_context=tool_context)
+
+    if not is_feature_enabled(FeatureName._MCP_GRACEFUL_ERROR_HANDLING):  # pylint: disable=protected-access
+      # Pre-fix behavior: exceptions bubble up to the agent runner.
+      return await super().run_async(args=args, tool_context=tool_context)
+
+    # New behavior: convert MCP-level and unexpected errors into a
+    # structured `{"error": "..."}` dict so the agent loop can continue
+    # gracefully instead of being killed by an unhandled exception. This
+    # is the primary fix for the 5-minute hang seen when Model Armor (or
+    # any AGW policy) returns a 403 mid-tool-call.
+    try:
+      return await super().run_async(args=args, tool_context=tool_context)
+    except McpError as e:
+      logger.warning("MCP tool execution failed with McpError: %s", e)
+      return {"error": f"MCP tool execution failed: {e}"}
+    except Exception as e:  # pylint: disable=broad-exception-caught
+      logger.warning(
+          "Unexpected error during MCP tool execution: %s", e, exc_info=True
+      )
+      return {"error": f"Unexpected error during MCP tool execution: {e}"}
 
   @retry_on_errors
   @override
@@ -384,12 +411,39 @@ class McpTool(BaseAuthenticatedTool):
     # Resolve progress callback (may be a factory that needs runtime context)
     resolved_callback = self._resolve_progress_callback(tool_context)
 
-    response = await session.call_tool(
+    call_coro = session.call_tool(
         self._mcp_tool.name,
         arguments=args,
         progress_callback=resolved_callback,
         meta=meta_trace_context,
     )
+
+    if is_feature_enabled(FeatureName._MCP_GRACEFUL_ERROR_HANDLING):  # pylint: disable=protected-access
+      # Race the tool call against the background session task so that
+      # transport crashes (e.g. non-2xx HTTP responses from an AGW with
+      # Model Armor) surface immediately instead of hanging until
+      # sse_read_timeout (default 5 minutes) expires. ConnectionError is
+      # intentionally NOT caught here; it propagates to retry_on_errors,
+      # which will create a fresh session and retry once before finally
+      # surfacing the failure to the agent (where the run_async wrapper
+      # converts it into an `{"error": ...}` dict).
+      #
+      # The isinstance check is intentional: tests and external subclasses
+      # may inject mock session managers whose `_get_session_context`
+      # returns a Mock instead of a real SessionContext (or None). Falling
+      # back to the direct await keeps those callers working.
+      session_context = self._mcp_session_manager._get_session_context(  # pylint: disable=protected-access
+          headers=final_headers
+      )
+      if isinstance(session_context, SessionContext):
+        response = await session_context._run_guarded(call_coro)  # pylint: disable=protected-access
+      else:
+        response = await call_coro
+    else:
+      # Pre-fix behavior: await the call directly. This is what causes the
+      # ~300s hang when the underlying transport crashes.
+      response = await call_coro
+
     result = response.model_dump(exclude_none=True, mode="json")
 
     # Push UI widget to the event actions if the tool supports it.
