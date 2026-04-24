@@ -467,3 +467,18 @@ async def test_run_async_dict_schema():
   assert result is not None
   assert isinstance(result, dict)
   assert result == {'a': 1, 'b': 2, 'c': 3}
+
+
+def test_tool_initialization_raw_dict_instance():
+  """Test tool initialization with a raw dict schema instance."""
+  raw_schema = {'type': 'object', 'properties': {'name': {'type': 'string'}}}
+  tool = SetModelResponseTool(raw_schema)
+
+  assert tool.output_schema == raw_schema
+  assert not tool._is_basemodel
+  assert not tool._is_list_of_basemodel
+
+  sig = inspect.signature(tool.func)
+  assert 'response' in sig.parameters
+  assert len(sig.parameters) == 1
+  assert sig.parameters['response'].annotation is dict

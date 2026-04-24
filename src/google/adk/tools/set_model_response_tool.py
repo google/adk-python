@@ -87,8 +87,17 @@ class SetModelResponseTool(BaseTool):
               annotation=list[inner_type],
           )
       ]
+    elif isinstance(output_schema, dict):
+      # Use `dict` type, not the instance — dict instances are unhashable.
+      params = [
+          inspect.Parameter(
+              'response',
+              inspect.Parameter.KEYWORD_ONLY,
+              annotation=dict,
+          )
+      ]
     else:
-      # For other schema types (list[str], dict, etc.),
+      # For other schema types (list[str], Schema, GenericAlias, etc.),
       # create a single parameter with the actual schema type
       params = [
           inspect.Parameter(
