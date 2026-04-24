@@ -2139,3 +2139,50 @@ async def test_connect_speech_config_remains_none_when_both_are_none(
       # Verify the final speech_config is still None
       assert config_arg.speech_config is None
       assert isinstance(connection, GeminiLlmConnection)
+
+
+@pytest.mark.asyncio
+async def test_preprocess_request_unsupported_mime_type(gemini_llm):
+    """Verifies that MS Office files are escaped to a text reference."""
+    unsupported_part = types.Part(
+        file_data=types.FileData(
+            mime_type="application/vnd.ms-excel",
+            file_uri="gs://bucket/data.xls",
+            display_name="data.xls"
+        )
+    )
+    req = LlmRequest(
+        model="gemini-2.0-flash",
+        contents=[types.Content(parts=[unsupported_part])]
+    )
+
+    await gemini_llm._preprocess_request(req)
+
+    processed_part = req.contents[0].parts[0]
+    # File_data should be stripped to avoid the 400 error
+    assert processed_part.file_data is None
+    # Text fallback should be present
+    assert '[File reference: "data.xls"]' in processed_part.text
+
+
+@pytest.mark.asyncio
+async def test_preprocess_request_supported_mime_type(gemini_llm):
+    """Verifies that PDF files are passed through without modification."""
+    supported_part = types.Part(
+        file_data=types.FileData(
+            mime_type="application/pdf",
+            file_uri="gs://bucket/doc.pdf",
+            display_name="doc.pdf"
+        )
+    )
+    req = LlmRequest(
+        model="gemini-2.0-flash",
+        contents=[types.Content(parts=[supported_part])]
+    )
+
+    await gemini_llm._preprocess_request(req)
+
+    processed_part = req.contents[0].parts[0]
+    # file_data should still be intact
+    assert processed_part.file_data is not None
+    assert processed_part.file_data.mime_type == "application/pdf"
