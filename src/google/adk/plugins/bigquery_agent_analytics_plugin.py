@@ -3541,7 +3541,7 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
         )
     )
     max_len = self.config.max_content_length
-    if max_len and len(error_tb) > max_len:
+    if max_len > 0 and len(error_tb) > max_len:
       error_tb = error_tb[:max_len] + "... [truncated]"
 
     await self._log_event(
@@ -3586,7 +3586,7 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
           )
       )
       max_len = self.config.max_content_length
-      if max_len and len(error_tb) > max_len:
+      if max_len > 0 and len(error_tb) > max_len:
         error_tb = error_tb[:max_len] + "... [truncated]"
 
       await self._log_event(
