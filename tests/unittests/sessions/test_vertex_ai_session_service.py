@@ -375,6 +375,7 @@ class MockAsyncClient:
     self.agent_engines.sessions.events.list.side_effect = self._list_events
     self.agent_engines.sessions.events.append.side_effect = self._append_event
     self.last_create_session_config: dict[str, Any] = {}
+    self.last_list_sessions_config: dict[str, Any] = {}
 
   async def __aenter__(self):
     """Enters the asynchronous context."""
@@ -391,8 +392,9 @@ class MockAsyncClient:
     raise api_core_exceptions.NotFound(f'Session not found: {session_id}')
 
   async def _list_sessions(self, name: str, config: dict[str, Any]):
+    self.last_list_sessions_config = config
     filter_val = config.get('filter', '')
-    user_id_match = re.search(r'user_id="([^"]+)"', filter_val)
+    user_id_match = re.search(r'user_id="((?:\\.|[^"])*)"', filter_val)
     if user_id_match:
       user_id = user_id_match.group(1)
       if user_id == 'user_with_pages':
@@ -879,6 +881,34 @@ async def test_list_sessions_all_users():
 
 @pytest.mark.asyncio
 @pytest.mark.usefixtures('mock_get_api_client')
+@pytest.mark.parametrize(
+    ('payload', 'expected_filter'),
+    [
+        (
+            'attacker" OR user_id!=""',
+            'user_id="attacker\\" OR user_id!=\\"\\""',
+        ),
+        ('\\', 'user_id="\\\\"'),
+        ('', 'user_id=""'),
+    ],
+)
+async def test_list_sessions_quotes_user_id_filter(
+    mock_api_client_instance, payload, expected_filter
+):
+  session_service = mock_vertex_ai_session_service()
+
+  sessions = await session_service.list_sessions(
+      app_name='123', user_id=payload
+  )
+
+  assert sessions.sessions == []
+  assert mock_api_client_instance.last_list_sessions_config == {
+      'filter': expected_filter
+  }
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures('mock_get_api_client')
 async def test_create_session():
   session_service = mock_vertex_ai_session_service()
 
@@ -891,10 +921,29 @@ async def test_create_session():
   assert session.user_id == 'user'
   assert session.last_update_time is not None
 
+  # Session-scoped initial state is recorded as a synthetic event so that
+  # `rewind_async` can restore those values for keys later overwritten or
+  # introduced by subsequent events.
+  assert len(session.events) == 1
+  assert session.events[0].author == 'user'
+  assert not session.events[0].invocation_id
+  assert session.events[0].actions.state_delta == state
+
   session_id = session.id
-  assert session == await session_service.get_session(
+  got_session = await session_service.get_session(
       app_name='123', user_id='user', session_id=session_id
   )
+  assert got_session.id == session.id
+  assert got_session.app_name == session.app_name
+  assert got_session.user_id == session.user_id
+  assert got_session.state == session.state
+  # The retrieved event has a server-assigned id and the session's
+  # last_update_time advances when an event is appended; otherwise the
+  # round-tripped session matches the synthetic initial-state event.
+  assert len(got_session.events) == 1
+  assert got_session.events[0].author == 'user'
+  assert not got_session.events[0].invocation_id
+  assert got_session.events[0].actions.state_delta == state
 
 
 @pytest.mark.asyncio

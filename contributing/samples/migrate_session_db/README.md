@@ -36,9 +36,10 @@ curl -fsSL https://raw.githubusercontent.com/google/adk-python/main/scripts/db_m
 This script uses `alembic` to compare the existing schema against the current model definition and automatically generates and applies the necessary migrations.
 
 **Note on generated files:**
-*   The script will create an `alembic.ini` file and an `alembic/` directory. You must delete these before re-running the script.
-*   The `sample-output` directory in this example contains a reference of the generated files for your inspection.
-*   The `%(here)s` variable in the database URL is an `alembic` placeholder that refers to the current directory.
+
+- The script will create an `alembic.ini` file and an `alembic/` directory. You must delete these before re-running the script.
+- The `sample-output` directory in this example contains a reference of the generated files for your inspection.
+- The `%(here)s` variable in the database URL is an `alembic` placeholder that refers to the current directory.
 
 ## 3. Run the Agent Successfully
 

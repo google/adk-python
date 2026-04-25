@@ -222,18 +222,18 @@ root_agent = Agent(
         ' safety.'
     ),
     instruction="""
-    You are a helpful assistant that can provide information about weather, currency rates, 
-    distances between cities, and population data. You have access to multiple tools and 
+    You are a helpful assistant that can provide information about weather, currency rates,
+    distances between cities, and population data. You have access to multiple tools and
     should use them efficiently.
-    
-    When users ask for information about multiple cities or multiple types of data, 
+
+    When users ask for information about multiple cities or multiple types of data,
     you should call multiple functions in parallel to provide faster responses.
-    
+
     For example:
     - If asked about weather in multiple cities, call get_weather for each city in parallel
     - If asked about weather and currency rates, call both functions in parallel
     - If asked to compare cities, you might need weather, population, and distance data in parallel
-    
+
     Always aim to be efficient and call multiple functions simultaneously when possible.
     Be informative and provide clear, well-structured responses.
   """,

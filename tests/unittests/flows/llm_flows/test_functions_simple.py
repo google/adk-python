@@ -20,6 +20,7 @@ from google.adk.agents.llm_agent import Agent
 from google.adk.events.event import Event
 from google.adk.events.event_actions import EventActions
 from google.adk.events.ui_widget import UiWidget
+from google.adk.flows.llm_flows.functions import deep_merge_dicts
 from google.adk.flows.llm_flows.functions import find_matching_function_call
 from google.adk.flows.llm_flows.functions import handle_function_calls_async
 from google.adk.flows.llm_flows.functions import handle_function_calls_live
@@ -1236,3 +1237,62 @@ async def test_computer_use_tool_decoding_behavior(handle_function_calls):
   # Verify the image was converted to a blob
   assert len(response_part.parts) == 1
   assert response_part.parts[0].inline_data is not None
+
+
+def test_deep_merge_dicts_concatenates_lists_at_same_key():
+  d1 = {'items': ['a', 'b']}
+  d2 = {'items': ['c', 'd']}
+  assert deep_merge_dicts(d1, d2) == {'items': ['a', 'b', 'c', 'd']}
+
+
+def test_deep_merge_dicts_concatenates_nested_lists():
+  d1 = {'state_delta': {'items': ['a']}}
+  d2 = {'state_delta': {'items': ['b']}}
+  assert deep_merge_dicts(d1, d2) == {'state_delta': {'items': ['a', 'b']}}
+
+
+def test_deep_merge_dicts_overwrites_when_types_differ():
+  d1 = {'x': ['a']}
+  d2 = {'x': 'b'}
+  assert deep_merge_dicts(d1, d2) == {'x': 'b'}
+
+  d1 = {'x': 'a'}
+  d2 = {'x': ['b']}
+  assert deep_merge_dicts(d1, d2) == {'x': ['b']}
+
+
+def test_deep_merge_dicts_overwrites_scalars():
+  d1 = {'x': 1, 'y': 'old'}
+  d2 = {'x': 2, 'y': 'new'}
+  assert deep_merge_dicts(d1, d2) == {'x': 2, 'y': 'new'}
+
+
+def test_merge_parallel_function_response_events_concatenates_state_delta_lists():
+  """Regression test for https://github.com/google/adk-python/issues/5190."""
+  function_response1 = types.FunctionResponse(
+      id='func_1', name='append_item', response={'result': 'ok'}
+  )
+  function_response2 = types.FunctionResponse(
+      id='func_2', name='append_item', response={'result': 'ok'}
+  )
+
+  event1 = Event(
+      invocation_id='inv_1',
+      author='test_agent',
+      content=types.Content(
+          role='user', parts=[types.Part(function_response=function_response1)]
+      ),
+      actions=EventActions(state_delta={'items': ['a']}),
+  )
+  event2 = Event(
+      invocation_id='inv_1',
+      author='test_agent',
+      content=types.Content(
+          role='user', parts=[types.Part(function_response=function_response2)]
+      ),
+      actions=EventActions(state_delta={'items': ['b']}),
+  )
+
+  merged_event = merge_parallel_function_response_events([event1, event2])
+
+  assert merged_event.actions.state_delta == {'items': ['a', 'b']}

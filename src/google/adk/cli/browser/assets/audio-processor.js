@@ -26,7 +26,7 @@ class AudioProcessor extends AudioWorkletProcessor {
         const input = inputs[0];
         if (input.length > 0) {
             let audioData = input[0]; // Get first channel's data
-            
+
             if (this.resampleRatio !== 1) {
                 audioData = this.resample(audioData);
             }
