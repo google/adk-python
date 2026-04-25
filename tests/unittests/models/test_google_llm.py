@@ -155,6 +155,32 @@ def test_supported_models():
   )
 
 
+def test_gemini_api_client_creation_with_projects_prefix():
+  model = Gemini(
+      model="projects/test-project/locations/test-location/publishers/google/models/gemini-1.5-pro"
+  )
+  with mock.patch("google.genai.Client", autospec=True) as mock_client:
+    _ = model.api_client
+    mock_client.assert_called_once()
+    _, kwargs = mock_client.call_args
+    assert kwargs["vertexai"] is True
+    assert "project" not in kwargs
+    assert "location" not in kwargs
+
+
+def test_gemini_live_api_client_creation_with_projects_prefix():
+  model = Gemini(
+      model="projects/test-project/locations/test-location/publishers/google/models/gemini-1.5-pro"
+  )
+  with mock.patch("google.genai.Client", autospec=True) as mock_client:
+    _ = model._live_api_client
+    assert mock_client.call_count == 2
+
+    # Second call is for _live_api_client
+    _, kwargs = mock_client.call_args_list[1]
+    assert kwargs["vertexai"] is True
+
+
 def test_client_version_header():
   model = Gemini(model="gemini-1.5-flash")
   client = model.api_client
@@ -223,6 +249,36 @@ def test_client_version_header_with_agent_engine(monkeypatch):
       sdk in user_agent_header
       for sdk in ["google-genai-sdk/", "vertex-genai-modules/"]
   )
+
+
+def test_api_client_uses_api_version_from_google_base_url():
+  model = Gemini(
+      model="gemini-1.5-flash",
+      base_url="https://generativelanguage.googleapis.com/v1alpha",
+  )
+
+  client = model.api_client
+
+  assert client._api_client._http_options.base_url == (
+      "https://generativelanguage.googleapis.com/"
+  )
+  assert client._api_client._http_options.api_version == "v1alpha"
+
+
+def test_api_client_preserves_custom_base_url_path():
+  model = Gemini(
+      model="gemini-1.5-flash",
+      base_url="https://proxy.example.com/gemini/v1alpha",
+  )
+
+  client = model.api_client
+
+  assert client._api_client._http_options.base_url == (
+      "https://proxy.example.com/gemini/v1alpha"
+  )
+  # Non-Google base URLs aren't normalized, so the SDK's default api_version
+  # ("v1beta") applies even though the URL path looks like a version suffix.
+  assert client._api_client._http_options.api_version == "v1beta"
 
 
 def test_maybe_append_user_content(gemini_llm, llm_request):
@@ -606,6 +662,50 @@ async def test_generate_content_async_patches_tracking_headers(
     assert len(responses) == 2 if stream else 1
 
 
+@pytest.mark.parametrize("stream", [True, False])
+@pytest.mark.asyncio
+async def test_generate_content_async_patches_api_version(
+    stream, llm_request, generate_content_response
+):
+  gemini_llm = Gemini(
+      model="gemini-1.5-flash",
+      base_url="https://generativelanguage.googleapis.com/v1alpha",
+  )
+  llm_request.config.http_options = types.HttpOptions(
+      headers={"custom-header": "custom-value"}
+  )
+
+  with mock.patch.object(gemini_llm, "api_client") as mock_client:
+    if stream:
+
+      async def mock_coro():
+        return MockAsyncIterator([generate_content_response])
+
+      mock_client.aio.models.generate_content_stream.return_value = mock_coro()
+    else:
+
+      async def mock_coro():
+        return generate_content_response
+
+      mock_client.aio.models.generate_content.return_value = mock_coro()
+
+    responses = [
+        resp
+        async for resp in gemini_llm.generate_content_async(
+            llm_request, stream=stream
+        )
+    ]
+
+    if stream:
+      call_args = mock_client.aio.models.generate_content_stream.call_args
+    else:
+      call_args = mock_client.aio.models.generate_content.call_args
+
+    final_config = call_args.kwargs["config"]
+    assert final_config.http_options.api_version == "v1alpha"
+    assert len(responses) == 2 if stream else 1
+
+
 def test_live_api_version_vertex_ai(gemini_llm):
   """Test that _live_api_version returns 'v1beta1' for Vertex AI backend."""
   with mock.patch.object(
@@ -614,12 +714,34 @@ def test_live_api_version_vertex_ai(gemini_llm):
     assert gemini_llm._live_api_version == "v1beta1"
 
 
+def test_live_api_version_uses_google_base_url_version():
+  gemini_llm = Gemini(
+      model="gemini-1.5-flash",
+      base_url="https://generativelanguage.googleapis.com/v1alpha",
+  )
+
+  assert gemini_llm._live_api_version == "v1alpha"
+
+
 def test_live_api_version_gemini_api(gemini_llm):
   """Test that _live_api_version returns 'v1alpha' for Gemini API backend."""
   with mock.patch.object(
       gemini_llm, "_api_backend", GoogleLLMVariant.GEMINI_API
   ):
     assert gemini_llm._live_api_version == "v1alpha"
+
+
+def test_live_api_client_uses_api_version_from_google_base_url():
+  gemini_llm = Gemini(
+      model="gemini-1.5-flash",
+      base_url="https://generativelanguage.googleapis.com/v1alpha",
+  )
+
+  client = gemini_llm._live_api_client
+  http_options = client._api_client._http_options
+
+  assert http_options.base_url == "https://generativelanguage.googleapis.com/"
+  assert http_options.api_version == "v1alpha"
 
 
 def test_live_api_client_properties(gemini_llm):
@@ -1654,9 +1776,10 @@ async def test_adapt_computer_use_tool_wait():
   assert wait_5_seconds_tool._coordinate_space == (1000, 1000)
 
   # Verify calling the new tool calls the original with 5 seconds
+  # The wrapper adds tool_context parameter
   result = await wait_5_seconds_tool.func()
   assert result == "mock_result"
-  mock_wait_func.assert_awaited_once_with(5)
+  mock_wait_func.assert_awaited_once_with(5, tool_context=None)
 
 
 @pytest.mark.asyncio

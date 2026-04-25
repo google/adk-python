@@ -37,34 +37,34 @@ python -m contributing.samples.runner_debug_example.main
 ## Features Demonstrated
 
 1. **Minimal Usage**: Simple 2-line agent interaction
-2. **Multiple Messages**: Processing multiple messages in sequence
-3. **Session Persistence**: Maintaining conversation context
-4. **Separate Sessions**: Managing multiple user sessions
-5. **Tool Calls**: Displaying tool invocations and results
-6. **Event Capture**: Collecting events for programmatic inspection
-7. **Advanced Configuration**: Using RunConfig for custom settings
-8. **Comparison**: Before/after boilerplate reduction
+1. **Multiple Messages**: Processing multiple messages in sequence
+1. **Session Persistence**: Maintaining conversation context
+1. **Separate Sessions**: Managing multiple user sessions
+1. **Tool Calls**: Displaying tool invocations and results
+1. **Event Capture**: Collecting events for programmatic inspection
+1. **Advanced Configuration**: Using RunConfig for custom settings
+1. **Comparison**: Before/after boilerplate reduction
 
 ## Part Types Supported
 
 The `run_debug()` method properly displays all ADK part types:
 
-| Part Type | Display Format | Use Case |
-|-----------|---------------|----------|
-| `text` | `agent > {text}` | Regular text responses |
-| `function_call` | `agent > [Calling tool: {name}({args})]` | Tool invocations |
-| `function_response` | `agent > [Tool result: {response}]` | Tool results |
-| `executable_code` | `agent > [Executing {language} code...]` | Code blocks |
-| `code_execution_result` | `agent > [Code output: {output}]` | Code execution results |
-| `inline_data` | `agent > [Inline data: {mime_type}]` | Images, files, etc. |
-| `file_data` | `agent > [File: {uri}]` | File references |
+| Part Type               | Display Format                           | Use Case               |
+| ----------------------- | ---------------------------------------- | ---------------------- |
+| `text`                  | `agent > {text}`                         | Regular text responses |
+| `function_call`         | `agent > [Calling tool: {name}({args})]` | Tool invocations       |
+| `function_response`     | `agent > [Tool result: {response}]`      | Tool results           |
+| `executable_code`       | `agent > [Executing {language} code...]` | Code blocks            |
+| `code_execution_result` | `agent > [Code output: {output}]`        | Code execution results |
+| `inline_data`           | `agent > [Inline data: {mime_type}]`     | Images, files, etc.    |
+| `file_data`             | `agent > [File: {uri}]`                  | File references        |
 
 ## Tools Available in Example
 
 The example agent includes 2 tools to demonstrate tool handling:
 
 1. **`get_weather(city)`** - Returns mock weather data for major cities
-2. **`calculate(expression)`** - Evaluates mathematical expressions safely
+1. **`calculate(expression)`** - Evaluates mathematical expressions safely
 
 ## Key Benefits
 
@@ -160,15 +160,19 @@ await runner.run_debug("Query", run_config=config)
 ### Common Issues and Solutions
 
 1. **Tool calls not showing in output**
+
    - **Issue**: Tool invocations and responses are not displayed
+
    - **Solution**: Set `verbose=True` to see detailed tool interactions:
 
      ```python
      await runner.run_debug("Query", verbose=True)
      ```
 
-2. **Import errors when running tests**
+1. **Import errors when running tests**
+
    - **Issue**: `ModuleNotFoundError: No module named 'google.adk'`
+
    - **Solution**: Ensure you're using the virtual environment:
 
      ```bash
@@ -176,8 +180,10 @@ await runner.run_debug("Query", run_config=config)
      python -m pytest tests/
      ```
 
-3. **Session state not persisting between calls**
+1. **Session state not persisting between calls**
+
    - **Issue**: Agent doesn't remember previous interactions
+
    - **Solution**: Use the same `user_id` and `session_id` across calls:
 
      ```python
@@ -185,8 +191,10 @@ await runner.run_debug("Query", run_config=config)
      await runner.run_debug("Follow-up", user_id="alice", session_id="debug")
      ```
 
-4. **Output truncation issues**
+1. **Output truncation issues**
+
    - **Issue**: Long tool responses are truncated with "..."
+
    - **Solution**: This is by design to keep debug output readable. For full responses, use:
 
      ```python
@@ -194,8 +202,10 @@ await runner.run_debug("Query", run_config=config)
      # Process events programmatically for full content
      ```
 
-5. **API key errors**
+1. **API key errors**
+
    - **Issue**: Authentication failures or missing API key
+
    - **Solution**: Ensure your Google API key is set:
 
      ```bash

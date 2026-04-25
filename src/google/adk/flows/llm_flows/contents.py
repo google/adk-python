@@ -47,10 +47,22 @@ class _ContentLlmRequestProcessor(BaseLlmRequestProcessor):
     preserve_function_call_ids = False
     if hasattr(agent, 'canonical_model'):
       canonical_model = agent.canonical_model
-      preserve_function_call_ids = (
+      if (
           isinstance(canonical_model, Gemini)
           and canonical_model.use_interactions_api
-      )
+      ):
+        preserve_function_call_ids = True
+      else:
+        # Anthropic pairs tool_use/tool_result by id, so `adk-*` fallback
+        # ids must survive replay.
+        try:
+          from ...models.anthropic_llm import AnthropicLlm
+        except ImportError:
+          AnthropicLlm = None
+        if AnthropicLlm is not None and isinstance(
+            canonical_model, AnthropicLlm
+        ):
+          preserve_function_call_ids = True
 
     # Preserve all contents that were added by instruction processor
     # (since llm_request.contents will be completely reassigned below)
@@ -572,6 +584,28 @@ def _get_current_turn_contents(
 
 def _is_other_agent_reply(current_agent_name: str, event: Event) -> bool:
   """Whether the event is a reply from another agent."""
+  # In live/bidi mode, all events from any agents, including the current
+  # agent, will be marked as other agent's reply. When agent transfers,
+  # the conversation history will be sent to the Live API. If the current
+  # agent previously used `transfer_to_agent` to transfer to another agent,
+  # when the conversation is sent back to the current agent, the history will
+  # contain a `transfer_to_agent` function call event from the current agent.
+  # The Live API marks anything after the function response as model response.
+  # This will confuse the model and cause the model to not respond.
+  #
+  # E.g. when the conversation is transferred from agent A to agent B, then
+  # back to agent A, the history in the last transfer will be:
+  #   User: "Some message that triggers transfer to agent B"
+  #   Model: transfer_to_agent(B)
+  #   User: transfer_to_agent(B) response
+  #   User: "Some message that triggers transfer to agent A"
+  #   User: "For context: [agent B] called transfer_to_agent(A)"
+  #   User: "For context: [agent B] tool transfer_to_agent(A) returned result:"
+  #
+  # In this case, the last three events are marked as model response by the
+  # Live API, instead of user input.
+  if event.live_session_id:
+    return event.author != 'user'
   return bool(
       current_agent_name
       and event.author != current_agent_name

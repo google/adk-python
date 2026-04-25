@@ -280,6 +280,7 @@ class EvaluationGenerator:
     invocations = []
     for invocation_id, events in events_by_invocation_id.items():
       final_response = None
+      final_event = None
       user_content = Content(parts=[])
       invocation_timestamp = 0
       app_details = None
@@ -304,15 +305,17 @@ class EvaluationGenerator:
         if event.content and event.content.parts:
           if event.is_final_response():
             final_response = event.content
-          else:
-            for p in event.content.parts:
-              if p.function_call or p.function_response or p.text:
-                events_to_add.append(event)
-                break
+            final_event = event
+
+          for p in event.content.parts:
+            if p.function_call or p.function_response or p.text:
+              events_to_add.append(event)
+              break
 
       invocation_events = [
           InvocationEvent(author=e.author, content=e.content)
           for e in events_to_add
+          if e is not final_event
       ]
       invocations.append(
           Invocation(

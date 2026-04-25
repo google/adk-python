@@ -73,6 +73,10 @@ class OAuth2Auth(BaseModelWithConfig):
   # tool or adk can generate the auth_uri with the state info thus client
   # can verify the state
   auth_uri: Optional[str] = None
+  # A unique value generated at the start of the OAuth flow to bind the user's
+  # session to the authorization request. This value is typically stored with
+  # user session and passed to backend for validation.
+  nonce: Optional[str] = None
   state: Optional[str] = None
   # tool or adk can decide the redirect_uri if they don't want client to decide
   redirect_uri: Optional[str] = None
