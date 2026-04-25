@@ -83,12 +83,18 @@ class InMemorySessionService(BaseSessionService):
       state: Optional[dict[str, Any]] = None,
       session_id: Optional[str] = None,
   ) -> Session:
-    return self._create_session_impl(
+    # Initial state flows through `_record_initial_state_event` ->
+    # `append_event` so the in-memory dicts and the event stream are written
+    # exactly once. The deprecated `create_session_sync` keeps the legacy
+    # direct-write path because it cannot await `append_event`.
+    session = self._create_session_impl(
         app_name=app_name,
         user_id=user_id,
-        state=state,
+        state=None,
         session_id=session_id,
     )
+    await self._record_initial_state_event(session, state)
+    return session
 
   def create_session_sync(
       self,

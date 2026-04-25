@@ -921,10 +921,29 @@ async def test_create_session():
   assert session.user_id == 'user'
   assert session.last_update_time is not None
 
+  # Session-scoped initial state is recorded as a synthetic event so that
+  # `rewind_async` can restore those values for keys later overwritten or
+  # introduced by subsequent events.
+  assert len(session.events) == 1
+  assert session.events[0].author == 'user'
+  assert not session.events[0].invocation_id
+  assert session.events[0].actions.state_delta == state
+
   session_id = session.id
-  assert session == await session_service.get_session(
+  got_session = await session_service.get_session(
       app_name='123', user_id='user', session_id=session_id
   )
+  assert got_session.id == session.id
+  assert got_session.app_name == session.app_name
+  assert got_session.user_id == session.user_id
+  assert got_session.state == session.state
+  # The retrieved event has a server-assigned id and the session's
+  # last_update_time advances when an event is appended; otherwise the
+  # round-tripped session matches the synthetic initial-state event.
+  assert len(got_session.events) == 1
+  assert got_session.events[0].author == 'user'
+  assert not got_session.events[0].invocation_id
+  assert got_session.events[0].actions.state_delta == state
 
 
 @pytest.mark.asyncio

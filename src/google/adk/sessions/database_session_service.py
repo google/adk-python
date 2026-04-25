@@ -417,11 +417,13 @@ class DatabaseSessionService(BaseSessionService):
       state: Optional[dict[str, Any]] = None,
       session_id: Optional[str] = None,
   ) -> Session:
-    # 1. Populate states.
-    # 2. Build storage session object
-    # 3. Add the object to the table
-    # 4. Build the session object with generated id
-    # 5. Return the session
+    # 1. Ensure app/user state rows exist (append_event requires them) and
+    #    insert an empty session row.
+    # 2. Build the in-memory session reflecting any pre-existing app/user
+    #    state.
+    # 3. Apply the caller-supplied initial state through the synthetic event
+    #    in `_record_initial_state_event` so all state writes share a single
+    #    code path.
     await self._prepare_tables()
     schema = self._get_schema_classes()
     async with self._rollback_on_exception_session() as sql_session:
@@ -432,6 +434,7 @@ class DatabaseSessionService(BaseSessionService):
             f"Session with id {session_id} already exists."
         )
       # Get or create state rows, handling concurrent insert races.
+      # `append_event` requires the app/user state rows to exist.
       storage_app_state = await _get_or_create_state(
           sql_session=sql_session,
           state_model=schema.StorageAppState,
@@ -445,19 +448,6 @@ class DatabaseSessionService(BaseSessionService):
           defaults={"app_name": app_name, "user_id": user_id, "state": {}},
       )
 
-      # Extract state deltas
-      state_deltas = _session_util.extract_state_delta(state)
-      app_state_delta = state_deltas["app"]
-      user_state_delta = state_deltas["user"]
-      session_state = state_deltas["session"]
-
-      # Apply state delta
-      if app_state_delta:
-        storage_app_state.state = storage_app_state.state | app_state_delta
-      if user_state_delta:
-        storage_user_state.state = storage_user_state.state | user_state_delta
-
-      # Store the session
       now = datetime.fromtimestamp(platform_time.get_time(), tz=timezone.utc)
       is_sqlite = self.db_engine.dialect.name == _SQLITE_DIALECT
       is_postgresql = self.db_engine.dialect.name == _POSTGRESQL_DIALECT
@@ -468,20 +458,21 @@ class DatabaseSessionService(BaseSessionService):
           app_name=app_name,
           user_id=user_id,
           id=session_id,
-          state=session_state,
+          state={},
           create_time=now,
           update_time=now,
       )
       sql_session.add(storage_session)
       await sql_session.commit()
 
-      # Merge states for response
       merged_state = _merge_state(
-          storage_app_state.state, storage_user_state.state, session_state
+          storage_app_state.state, storage_user_state.state, {}
       )
       session = storage_session.to_session(
           state=merged_state, is_sqlite=is_sqlite
       )
+
+    await self._record_initial_state_event(session, state)
     return session
 
   @override

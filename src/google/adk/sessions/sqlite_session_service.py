@@ -179,25 +179,9 @@ class SqliteSessionService(BaseSessionService):
               f"Session with id {session_id} already exists."
           )
 
-      # Extract state deltas
-      state_deltas = _session_util.extract_state_delta(state)
-      app_state_delta = state_deltas["app"]
-      user_state_delta = state_deltas["user"]
-      session_state = state_deltas["session"]
-
-      # Apply state delta and update/insert states atomically
-      if app_state_delta:
-        await self._upsert_app_state(db, app_name, app_state_delta, now)
-      if user_state_delta:
-        await self._upsert_user_state(
-            db, app_name, user_id, user_state_delta, now
-        )
-
-      # Fetch current state after upserts
-      storage_app_state = await self._get_app_state(db, app_name)
-      storage_user_state = await self._get_user_state(db, app_name, user_id)
-
-      # Store the session
+      # Insert the session row with empty per-session state. Initial state
+      # (including app:/user:-prefixed keys) is applied through the synthetic
+      # event below so that all state writes go through `append_event`.
       await db.execute(
           """
           INSERT INTO sessions (app_name, user_id, id, state, create_time, update_time)
@@ -207,18 +191,19 @@ class SqliteSessionService(BaseSessionService):
               app_name,
               user_id,
               session_id,
-              json.dumps(session_state),
+              json.dumps({}),
               now,
               now,
           ),
       )
       await db.commit()
 
-      # Merge states for response
-      merged_state = _merge_state(
-          storage_app_state, storage_user_state, session_state
-      )
-      return Session(
+      # Reflect already-persisted app/user state so subsequent appends start
+      # from the correct merged view.
+      storage_app_state = await self._get_app_state(db, app_name)
+      storage_user_state = await self._get_user_state(db, app_name, user_id)
+      merged_state = _merge_state(storage_app_state, storage_user_state, {})
+      session = Session(
           app_name=app_name,
           user_id=user_id,
           id=session_id,
@@ -226,6 +211,9 @@ class SqliteSessionService(BaseSessionService):
           events=[],
           last_update_time=now,
       )
+
+    await self._record_initial_state_event(session, state)
+    return session
 
   @override
   async def get_session(

@@ -18,10 +18,12 @@ import abc
 from typing import Any
 from typing import Optional
 
+from google.adk.platform import time as platform_time
 from pydantic import BaseModel
 from pydantic import Field
 
 from ..events.event import Event
+from ..events.event_actions import EventActions
 from .session import Session
 from .state import State
 
@@ -160,3 +162,36 @@ class BaseSessionService(abc.ABC):
       return
     for key, value in event.actions.state_delta.items():
       session.state.update({key: value})
+
+  async def _record_initial_state_event(
+      self, session: Session, state: Optional[dict[str, Any]]
+  ) -> None:
+    """Appends a synthetic event carrying the initial non-temp session state.
+
+    Subclasses call this from `create_session` so that initial state flows
+    through `append_event` (the single state-merging path) and so that
+    `rewind_async` can restore session-scoped initial values for keys later
+    overwritten or introduced by subsequent events.
+
+    Args:
+      session: The newly created session to attach the event to.
+      state: The initial state dict supplied to `create_session`. Temp-prefixed
+        keys are dropped because temp state is ephemeral and never persisted.
+    """
+    if not state:
+      return
+    state_delta = {
+        k: v for k, v in state.items() if not k.startswith(State.TEMP_PREFIX)
+    }
+    if not state_delta:
+      return
+    # Round to microseconds so the timestamp roundtrips exactly through
+    # storage backends that persist timestamps as datetime (microsecond
+    # precision) — keeps in-memory and reloaded events comparable.
+    timestamp = round(platform_time.get_time(), 6)
+    initial_event = Event(
+        author='user',
+        timestamp=timestamp,
+        actions=EventActions(state_delta=dict(state_delta)),
+    )
+    await self.append_event(session=session, event=initial_event)

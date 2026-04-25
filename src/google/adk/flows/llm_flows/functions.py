@@ -145,9 +145,9 @@ async def _call_tool_in_thread_pool(
   executor = _get_tool_thread_pool(max_workers)
 
   if _is_sync_tool(tool):
-    # For sync FunctionTool, call the underlying function directly
-    def run_sync_tool():
-      if isinstance(tool, FunctionTool):
+    if isinstance(tool, FunctionTool):
+      # For sync FunctionTool, call the underlying function directly.
+      def run_sync_tool():
         args_to_call = tool._preprocess_args(args)
         signature = inspect.signature(tool.func)
         valid_params = {param for param in signature.parameters}
@@ -157,15 +157,10 @@ async def _call_tool_in_thread_pool(
             k: v for k, v in args_to_call.items() if k in valid_params
         }
         return tool.func(**args_to_call)
-      else:
-        # For other sync tool types, we can't easily run them in thread pool
-        return None
 
-    result = await loop.run_in_executor(
-        executor, lambda: ctx.run(run_sync_tool)
-    )
-    if result is not None:
-      return result
+      return await loop.run_in_executor(
+          executor, lambda: ctx.run(run_sync_tool)
+      )
   else:
     # For async tools, run them in a new event loop in a background thread.
     # This helps when async functions contain blocking I/O (common user mistake)
@@ -178,7 +173,7 @@ async def _call_tool_in_thread_pool(
         executor, lambda: ctx.run(run_async_tool_in_new_loop)
     )
 
-  # Fall back to normal async execution for non-FunctionTool sync tools
+  # Fall back to normal async execution for non-FunctionTool sync tools.
   return await tool.run_async(args=args, tool_context=tool_context)
 
 
@@ -406,7 +401,14 @@ async def handle_function_call_list_async(
   ]
 
   # Wait for all tasks to complete
-  function_response_events = await asyncio.gather(*tasks)
+  try:
+    function_response_events = await asyncio.gather(*tasks)
+  except Exception:
+    for t in tasks:
+      if not t.done():
+        t.cancel()
+    await asyncio.gather(*tasks, return_exceptions=True)
+    raise
 
   # Filter out None results
   function_response_events = [
@@ -629,7 +631,14 @@ async def handle_function_calls_live(
   ]
 
   # Wait for all tasks to complete
-  function_response_events = await asyncio.gather(*tasks)
+  try:
+    function_response_events = await asyncio.gather(*tasks)
+  except Exception:
+    for t in tasks:
+      if not t.done():
+        t.cancel()
+    await asyncio.gather(*tasks, return_exceptions=True)
+    raise
 
   # Filter out None results
   function_response_events = [
@@ -1134,10 +1143,12 @@ def __build_response_event(
 
 
 def deep_merge_dicts(d1: dict, d2: dict) -> dict:
-  """Recursively merges d2 into d1."""
+  """Recursively merges d2 into d1; concatenates list values at the same key."""
   for key, value in d2.items():
     if key in d1 and isinstance(d1[key], dict) and isinstance(value, dict):
       d1[key] = deep_merge_dicts(d1[key], value)
+    elif key in d1 and isinstance(d1[key], list) and isinstance(value, list):
+      d1[key] = d1[key] + value
     else:
       d1[key] = value
   return d1

@@ -128,7 +128,7 @@ def _safe_json_serialize(obj) -> str:
     return json.dumps(
         obj, ensure_ascii=False, default=lambda o: '<not serializable>'
     )
-  except (TypeError, OverflowError):
+  except (TypeError, ValueError, OverflowError):
     return '<not serializable>'
 
 

@@ -125,10 +125,13 @@ class VertexAiSessionService(BaseSessionService):
     """
     reasoning_engine_id = self._get_reasoning_engine_id(app_name)
 
-    config = {'session_state': state} if state else {}
+    # Initial state is persisted exclusively through the synthetic event
+    # below (which is sent via `events.append`); avoid passing it as
+    # `session_state` here so the same data is not written to the backend
+    # twice.
+    config = dict(kwargs)
     if session_id:
       config['session_id'] = session_id
-    config.update(kwargs)
     async with self._get_api_client() as api_client:
       api_response = await api_client.agent_engines.sessions.create(
           name=f'reasoningEngines/{reasoning_engine_id}',
@@ -143,9 +146,11 @@ class VertexAiSessionService(BaseSessionService):
         app_name=app_name,
         user_id=user_id,
         id=session_id,
-        state=getattr(get_session_response, 'session_state', None) or {},
+        state={},
         last_update_time=get_session_response.update_time.timestamp(),
     )
+
+    await self._record_initial_state_event(session, state)
     return session
 
   @override
@@ -213,9 +218,21 @@ class VertexAiSessionService(BaseSessionService):
       # to discard events written milliseconds after the session resource was
       # updated. Clock skew between those writes can otherwise drop tool_result
       # events and permanently break the replayed conversation.
+      #
+      # Apply each event's state_delta as we go so callers see the same state
+      # whether or not the backend mirrors it onto the session_state field
+      # (e.g. Vertex stores initial state via the synthetic create_session
+      # event rather than the session_state field).
       if events_iterator is not None:
         async for event in events_iterator:
-          session.events.append(_from_api_event(event))
+          adk_event = _from_api_event(event)
+          session.events.append(adk_event)
+          if adk_event.actions and adk_event.actions.state_delta:
+            for key, value in adk_event.actions.state_delta.items():
+              if value is None:
+                session.state.pop(key, None)
+              else:
+                session.state[key] = value
 
     if config:
       # Filter events based on num_recent_events.
