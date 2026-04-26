@@ -49,6 +49,10 @@ from ..base_toolset import ToolPredicate
 from ..load_mcp_resource_tool import LoadMcpResourceTool
 from ..tool_configs import BaseToolConfig
 from ..tool_configs import ToolArgsConfig
+from ._internal import sanitize_header_value
+from ._internal import validate_header_format
+from ._internal import validate_header_name
+from ._internal import validate_header_value
 from .mcp_session_manager import MCPSessionManager
 from .mcp_session_manager import retry_on_errors
 from .mcp_session_manager import SseConnectionParams
@@ -56,11 +60,151 @@ from .mcp_session_manager import StdioConnectionParams
 from .mcp_session_manager import StreamableHTTPConnectionParams
 from .mcp_tool import MCPTool
 from .mcp_tool import ProgressCallbackFactory
+from .types import HeaderProvider
 
 logger = logging.getLogger("google_adk." + __name__)
 
-
 T = TypeVar("T")
+
+
+def create_session_state_header_provider(
+    state_key: str,
+    header_name: str = "Authorization",
+    header_format: str = "Bearer {value}",
+    default_value: Optional[str] = None,
+    strict: bool = False,
+) -> HeaderProvider:
+  """Creates a header provider that extracts values from session state.
+
+  This utility function generates a header_provider callable that can be used
+  with McpToolset to automatically extract values from the session state and
+  format them as HTTP headers for MCP server connections.
+
+  .. warning::
+      **Security Best Practice**: For sensitive, short-lived tokens like JWTs,
+      use ``request_state`` instead of ``session.state`` to avoid persisting
+      sensitive data to the database. Pass tokens via
+      ``RunAgentRequest.request_state``, which will override ``session.state``
+      for the duration of the request without being persisted.
+
+  **Security Features:**
+
+  - RFC 7230 compliant HTTP header validation and sanitization
+  - Automatic protection against header injection attacks
+  - Support for secure token propagation via session state
+  - Configurable strict validation for header values
+
+  **Security Best Practices:**
+
+  1. **Token Security**: Use ``request_state`` for sensitive, short-lived tokens
+    (JWTs, API keys) instead of ``session.state`` to avoid persisting
+    sensitive data.
+
+  2. **Header Validation**: Header names and values are automatically validated
+    according to RFC 7230 to prevent injection attacks.
+
+  3. **Complex Data**: For complex data structures, pre-serialize them or use
+    ``state_header_format`` to ensure proper string representation.
+
+  4. **Strict Mode**: Enable ``state_header_strict=True`` in configuration to
+    catch non-primitive type errors early.
+
+  Args:
+      state_key: The key to look up in session.state (or request_state).
+      header_name: The HTTP header name to set (default: 'Authorization').
+      header_format: Format string for the header value. Use {value} as a
+        placeholder for the state value (default: 'Bearer {value}').
+      default_value: Default value if state_key is not found in session state.
+        If None, the header is omitted when the key is missing.
+      strict: If True, raises ValueError when non-primitive types are
+        encountered. If False (default), logs a warning instead.
+
+  Returns:
+      A callable that takes a ReadonlyContext and returns a dictionary of
+      headers to be used for the MCP session.
+
+  Raises:
+      ValueError: If strict=True and a non-primitive type is found in state,
+        or if header_name is invalid.
+
+  Example::
+
+      # Example 1: Using request_state for JWT tokens (recommended)
+      toolset = McpToolset(
+          connection_params=StreamableHTTPConnectionParams(
+              url="http://api.example.com/mcp"
+          ),
+          header_provider=create_session_state_header_provider(
+              state_key="jwt_token",  # Will read from request_state first
+              header_name="Authorization",
+              header_format="Bearer {value}"
+          )
+      )
+
+      # Client sends request with ephemeral JWT
+      response = await agent.run(
+          RunAgentRequest(
+              session_id="user-123",
+              request_state={  # Ephemeral, not persisted
+                  "jwt_token": "eyJhbG..."
+              }
+          )
+      )
+  """
+  # Validate header name and format upfront to prevent injection attacks
+  validate_header_name(header_name)
+  validate_header_format(header_format)
+
+  def provider(ctx: ReadonlyContext) -> Dict[str, str]:
+    value = ctx.state.get(state_key, default_value)
+    # Skip header if value is None or empty string
+    if value is None or value == "":
+      return {}
+
+    validate_header_value(state_key, value, strict=strict)
+    formatted_value = header_format.format(value=value)
+    # Strip CRLF from the interpolated value to prevent header injection.
+    # The format string is validated at construction time, but the runtime
+    # value comes from session state and must never contain CRLF here.
+    formatted_value = formatted_value.replace("\r", "").replace("\n", "")
+    sanitized_value = sanitize_header_value(formatted_value)
+
+    return {header_name: sanitized_value}
+
+  return provider
+
+
+def create_combined_header_provider(
+    providers: List[HeaderProvider],
+) -> HeaderProvider:
+  """Creates a header provider that combines multiple providers.
+
+  Args:
+      providers: A list of header providers to combine.
+
+  Returns:
+      A single header provider that merges the results of all input providers.
+  """
+
+  def combined_provider(ctx: ReadonlyContext) -> Dict[str, str]:
+    headers = {}
+    num_providers = len(providers)
+    for i, provider in enumerate(providers):
+      try:
+        provider_headers = provider(ctx)
+        if provider_headers:
+          headers.update(provider_headers)
+      except Exception as e:
+        logger.error(f"Header provider {i+1}/{num_providers} failed: {e}")
+        raise
+
+    if headers:
+      logger.debug(
+          f"Combined header provider generated {len(headers)} total headers"
+      )
+    return headers
+
+  return combined_provider
 
 
 class McpToolset(BaseToolset):
@@ -109,9 +253,8 @@ class McpToolset(BaseToolset):
       auth_scheme: Optional[AuthScheme] = None,
       auth_credential: Optional[AuthCredential] = None,
       require_confirmation: Union[bool, Callable[..., bool]] = False,
-      header_provider: Optional[
-          Callable[[ReadonlyContext], Dict[str, str]]
-      ] = None,
+      header_provider: Optional[HeaderProvider] = None,
+      credential_key: Optional[str] = None,
       progress_callback: Optional[
           Union[ProgressFnT, ProgressCallbackFactory]
       ] = None,
@@ -143,6 +286,11 @@ class McpToolset(BaseToolset):
         Can be a single boolean or a callable to apply to all tools.
       header_provider: A callable that takes a ReadonlyContext and returns a
         dictionary of headers to be used for the MCP session.
+      credential_key: A session state key whose value is sent as an
+        ``Authorization: Bearer <token>`` header on every MCP request. This is
+        a convenience shorthand that internally creates a header_provider. If
+        both ``credential_key`` and ``header_provider`` are provided, they are
+        combined.
       progress_callback: Optional callback to receive progress notifications
         from MCP server during long-running tool execution. Can be either:  - A
         ``ProgressFnT`` callback that receives (progress, total, message). This
@@ -181,7 +329,20 @@ class McpToolset(BaseToolset):
 
     self._connection_params = connection_params
     self._errlog = errlog
-    self._header_provider = header_provider
+
+    # Build the effective header_provider from credential_key and/or the
+    # explicit header_provider parameter.
+    credential_provider = (
+        create_session_state_header_provider(state_key=credential_key)
+        if credential_key
+        else None
+    )
+    if credential_provider and header_provider:
+      self._header_provider = create_combined_header_provider(
+          [credential_provider, header_provider]
+      )
+    else:
+      self._header_provider = credential_provider or header_provider
     self._progress_callback = progress_callback
 
     # Create the session manager that will handle the MCP connection
@@ -467,6 +628,35 @@ class McpToolset(BaseToolset):
     else:
       raise ValueError("No connection params found in McpToolsetConfig.")
 
+    # Build header_provider from state_header_mapping and/or credential_key.
+    providers = []
+
+    if mcp_toolset_config.state_header_mapping:
+      state_mapping = mcp_toolset_config.state_header_mapping
+      state_format = mcp_toolset_config.state_header_format or {}
+
+      providers.extend([
+          create_session_state_header_provider(
+              state_key=state_key,
+              header_name=header_name,
+              header_format=state_format.get(header_name, "{value}"),
+              default_value=None,
+              strict=mcp_toolset_config.state_header_strict,
+          )
+          for state_key, header_name in state_mapping.items()
+      ])
+
+    if mcp_toolset_config.credential_key:
+      providers.append(
+          create_session_state_header_provider(
+              state_key=mcp_toolset_config.credential_key,
+          )
+      )
+
+    header_provider = (
+        create_combined_header_provider(providers) if providers else None
+    )
+
     return cls(
         connection_params=connection_params,
         tool_filter=mcp_toolset_config.tool_filter,
@@ -475,6 +665,7 @@ class McpToolset(BaseToolset):
         auth_credential=mcp_toolset_config.auth_credential,
         credential_key=mcp_toolset_config.credential_key,
         use_mcp_resources=mcp_toolset_config.use_mcp_resources,
+        header_provider=header_provider,
     )
 
   def __getstate__(self):
@@ -528,6 +719,61 @@ class McpToolsetConfig(BaseToolConfig):
   credential_key: str | None = None
 
   use_mcp_resources: bool = False
+
+  credential_key: Optional[str] = None
+  """A session state key whose value is sent as an ``Authorization: Bearer``
+  header on every MCP HTTP request. Convenience shorthand that is equivalent
+  to ``state_header_mapping: {<key>: Authorization}`` with
+  ``state_header_format: {Authorization: "Bearer {value}"}``."""
+
+  state_header_mapping: Optional[Dict[str, str]] = None
+  """Maps session state keys to HTTP header names.
+
+  When specified, values from the session state will be extracted and passed
+  as HTTP headers to the MCP server. This is useful for propagating
+  authentication tokens or other context from the ADK session to the MCP server.
+
+  Example::
+
+      state_header_mapping:
+        jwt_token: Authorization
+        tenant_id: X-Tenant-ID
+
+  This will read `session.state["jwt_token"]` and set it as the
+  "Authorization" header, and read `session.state["tenant_id"]` and
+  set it as the "X-Tenant-ID" header.
+  """
+
+  state_header_format: Optional[Dict[str, str]] = None
+  """Optional formatting for header values extracted from session state.
+
+  Supports format strings with {value} as a placeholder for the state value.
+  Only applies to headers specified in state_header_mapping.
+
+  Example::
+
+      state_header_format:
+        Authorization: "Bearer {value}"
+        X-API-Key: "key:{value}"
+
+  If not specified for a particular header, the value from session state is
+  used as-is.
+  """
+
+  state_header_strict: bool = False
+  """Enable strict type validation for state header values.
+
+  When True, raises ValueError if state values are non-primitive types
+  (not str, int, float, or bool). This helps catch configuration errors
+  early by preventing accidental serialization of complex objects into headers.
+
+  When False (default), non-primitive types trigger a warning but are still
+  formatted into headers.
+
+  Example::
+
+      state_header_strict: true  # Raises error on non-primitive types
+  """
 
   @model_validator(mode="after")
   def _check_only_one_params_field(self):

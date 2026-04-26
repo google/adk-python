@@ -22,6 +22,7 @@ try:
   from .mcp_session_manager import StreamableHTTPConnectionParams
   from .mcp_tool import MCPTool
   from .mcp_tool import McpTool
+  from .mcp_toolset import create_session_state_header_provider
   from .mcp_toolset import MCPToolset
   from .mcp_toolset import McpToolset
 
@@ -32,6 +33,7 @@ try:
       'MCPTool',
       'McpToolset',
       'MCPToolset',
+      'create_session_state_header_provider',
       'SseConnectionParams',
       'StdioConnectionParams',
       'StreamableHTTPConnectionParams',

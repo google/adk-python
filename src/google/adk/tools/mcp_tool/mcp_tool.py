@@ -58,6 +58,7 @@ from ..tool_context import ToolContext
 from .mcp_session_manager import MCPSessionManager
 from .mcp_session_manager import retry_on_errors
 from .session_context import SessionContext
+from .types import HeaderProvider
 
 logger = logging.getLogger("google_adk." + __name__)
 
@@ -142,9 +143,7 @@ class McpTool(BaseAuthenticatedTool):
       auth_scheme: Optional[AuthScheme] = None,
       auth_credential: Optional[AuthCredential] = None,
       require_confirmation: Union[bool, Callable[..., bool]] = False,
-      header_provider: Optional[
-          Callable[[ReadonlyContext], Dict[str, str]]
-      ] = None,
+      header_provider: Optional[HeaderProvider] = None,
       progress_callback: Optional[
           Union[ProgressFnT, ProgressCallbackFactory]
       ] = None,
@@ -163,7 +162,9 @@ class McpTool(BaseAuthenticatedTool):
           or a callable that takes the function's arguments and returns a
           boolean. If the callable returns True, the tool will require
           confirmation from the user.
-        header_provider: Optional function to provide dynamic headers.
+        header_provider: Optional function to provide dynamic headers. A callable
+          that takes a ReadonlyContext and returns a dictionary of headers to be
+          used for the MCP session.
         progress_callback: Optional callback to receive progress notifications
           from MCP server during long-running tool execution. Can be either:
 
