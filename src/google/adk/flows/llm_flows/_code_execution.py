@@ -94,6 +94,16 @@ Always wrap Python code in the tool_code markdown fence shown
 above.
 """
 
+# Recoverable API rejection codes for Gemini 2.x emitting code as a
+# native tool call when no code_execution tool was declared.
+_RECOVERABLE_API_ERRORS = frozenset(
+    {'UNEXPECTED_TOOL_CALL', 'MALFORMED_FUNCTION_CALL'}
+)
+
+_UNEXPECTED_TOOL_CALL_RE = re.compile(
+    r'^\s*Unexpected tool call:\s*(?P<code>.+?)\s*$', re.DOTALL
+)
+
 _DATA_FILE_HELPER_LIB = '''
 import pandas as pd
 
