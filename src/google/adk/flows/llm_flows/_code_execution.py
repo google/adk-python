@@ -115,6 +115,48 @@ def _extract_code_from_error_message(error_message: Optional[str]) -> Optional[s
   return None
 
 
+def _maybe_recover_from_api_rejection(llm_response) -> bool:
+  """Recovers an executable_code part from a Gemini 2.x API rejection.
+
+  When ADK uses a non-built-in code executor (e.g.,
+  AgentEngineSandboxCodeExecutor) with Gemini 2.x, the model may emit a
+  native code_execution tool call. Because no such tool is declared in
+  the request, the server rejects the response with UNEXPECTED_TOOL_CALL
+  (or MALFORMED_FUNCTION_CALL when other tools are present), and
+  llm_response.content ends up empty.
+
+  This function reconstructs the executable_code part the model intended
+  to emit so the existing post-processor pipeline can run it through the
+  configured sandbox executor.
+
+  Returns True if recovery occurred and llm_response was mutated.
+  """
+  error_code = llm_response.error_code
+  if error_code is None:
+    return False
+  error_code_name = getattr(error_code, 'name', str(error_code))
+  if error_code_name not in _RECOVERABLE_API_ERRORS:
+    return False
+
+  code_str = _extract_code_from_error_message(llm_response.error_message)
+  if not code_str:
+    return False
+
+  llm_response.content = types.Content(
+      role='model',
+      parts=[CodeExecutionUtils.build_executable_code_part(code_str)],
+  )
+  llm_response.error_code = None
+  llm_response.error_message = None
+  llm_response.finish_reason = None
+  logger.info(
+      'Recovered code from API %s rejection; routing to configured'
+      ' code executor.',
+      error_code_name,
+  )
+  return True
+
+
 _DATA_FILE_HELPER_LIB = '''
 import pandas as pd
 
