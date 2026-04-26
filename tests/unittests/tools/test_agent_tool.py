@@ -37,6 +37,7 @@ from google.genai.types import Part
 from pydantic import BaseModel
 import pytest
 from pytest import mark
+from google.adk.events.event import Event
 
 from .. import testing_utils
 
@@ -941,6 +942,92 @@ def test_agent_tool_with_input_schema_uses_json_schema_feature(
       },
       'response_json_schema': {'type': 'object'},
   }
+
+
+@mark.asyncio
+async def test_run_async_uses_code_execution_result_output_when_no_text(
+    monkeypatch,
+):
+  """Verify run_async falls back to code execution output when text is empty."""
+
+  from google.adk.events.event import Event
+
+  async def _event_stream():
+    yield Event(
+        author='tool_agent',
+        content=types.Content(
+            parts=[
+                types.Part(
+                    code_execution_result=types.CodeExecutionResult(
+                        output='IRR=0.1472',
+                        outcome=types.Outcome.OUTCOME_OK,
+                    )
+                )
+            ]
+        ),
+    )
+
+  class StubRunner:
+
+    def __init__(
+        self,
+        *,
+        app_name: str,
+        agent: Agent,
+        artifact_service,
+        session_service,
+        memory_service,
+        credential_service,
+        plugins,
+    ):
+      del app_name, agent, artifact_service, memory_service
+      del credential_service, plugins
+      self.session_service = session_service
+
+    def run_async(
+        self,
+        *,
+        user_id: str,
+        session_id: str,
+        invocation_id: Optional[str] = None,
+        new_message: Optional[types.Content] = None,
+        state_delta: Optional[dict[str, Any]] = None,
+        run_config: Optional[RunConfig] = None,
+    ):
+      del user_id, session_id, invocation_id, new_message, state_delta
+      del run_config
+      return _event_stream()
+
+    async def close(self):
+      pass
+
+  monkeypatch.setattr('google.adk.runners.Runner', StubRunner)
+
+  tool_agent = Agent(
+      name='tool_agent',
+      model=testing_utils.MockModel.create(responses=['unused']),
+  )
+  agent_tool = AgentTool(agent=tool_agent)
+
+  session_service = InMemorySessionService()
+  session = await session_service.create_session(
+      app_name='test_app', user_id='test_user'
+  )
+
+  invocation_context = InvocationContext(
+      invocation_id='invocation_id',
+      agent=tool_agent,
+      session=session,
+      session_service=session_service,
+  )
+  tool_context = ToolContext(invocation_context=invocation_context)
+
+  tool_result = await agent_tool.run_async(
+      args={'request': 'test request'},
+      tool_context=tool_context,
+  )
+
+  assert tool_result == 'IRR=0.1472'
 
 
 @mark.asyncio

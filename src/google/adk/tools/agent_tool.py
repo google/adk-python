@@ -272,6 +272,16 @@ class AgentTool(BaseTool):
     merged_text = '\n'.join(
         p.text for p in last_content.parts if p.text and not p.thought
     )
+    # Fallback: if model returned only code_execution_result parts, use their output.
+    if not merged_text.strip():
+      code_outputs = [
+          p.code_execution_result.output
+          for p in last_content.parts
+          if p.code_execution_result and p.code_execution_result.output
+      ]
+      if code_outputs:
+        merged_text = '\n\n'.join(code_outputs)
+
     output_schema = _get_output_schema(self.agent)
     if output_schema:
       tool_result = validate_schema(output_schema, merged_text)
