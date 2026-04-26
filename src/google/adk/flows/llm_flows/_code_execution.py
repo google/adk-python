@@ -270,6 +270,13 @@ async def _run_pre_processor(
     code_executor.process_llm_request(llm_request)
     return
 
+  # Steer Gemini 2.x (and other modern models) away from emitting a
+  # native `executable_code` / code_execution tool call. When the
+  # configured executor is *not* the built-in one, no `code_execution`
+  # tool is declared on the request, and a native emission would be
+  # rejected by the API as UNEXPECTED_TOOL_CALL / MALFORMED_FUNCTION_CALL.
+  llm_request.append_instructions([_NON_BUILTIN_EXECUTOR_INSTRUCTION])
+
   if not code_executor.optimize_data_file:
     return
 
