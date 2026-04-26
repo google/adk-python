@@ -105,7 +105,9 @@ _UNEXPECTED_TOOL_CALL_RE = re.compile(
 )
 
 
-def _extract_code_from_error_message(error_message: Optional[str]) -> Optional[str]:
+def _extract_code_from_error_message(
+    error_message: Optional[str],
+) -> Optional[str]:
   """Best-effort extraction of code from a Gemini API rejection error message."""
   if not error_message:
     return None
