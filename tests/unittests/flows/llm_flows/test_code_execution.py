@@ -25,7 +25,10 @@ from google.adk.code_executors.built_in_code_executor import BuiltInCodeExecutor
 from google.adk.code_executors.code_execution_utils import CodeExecutionResult
 from google.adk.flows.llm_flows._code_execution import _extract_code_from_error_message
 from google.adk.flows.llm_flows._code_execution import _maybe_recover_from_api_rejection
+from google.adk.flows.llm_flows._code_execution import _NON_BUILTIN_EXECUTOR_INSTRUCTION
+from google.adk.flows.llm_flows._code_execution import request_processor
 from google.adk.flows.llm_flows._code_execution import response_processor
+from google.adk.models.llm_request import LlmRequest
 from google.adk.models.llm_response import LlmResponse
 from google.genai import types
 import pytest
@@ -227,3 +230,52 @@ def test_maybe_recover_unparseable_message():
       error_message='some completely different message',
   )
   assert _maybe_recover_from_api_rejection(llm_response) is False
+
+
+# ---------------------------------------------------------------------------
+# Pre-processor: instruction injection
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_pre_processor_injects_instruction_for_non_builtin_executor():
+  mock_executor = MagicMock(spec=BaseCodeExecutor)
+  mock_executor.optimize_data_file = False
+
+  agent = Agent(name='test_agent', code_executor=mock_executor)
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent, user_content='run some code'
+  )
+  llm_request = LlmRequest()
+
+  _ = [
+      event
+      async for event in request_processor.run_async(
+          invocation_context, llm_request
+      )
+  ]
+
+  assert llm_request.config.system_instruction is not None
+  assert _NON_BUILTIN_EXECUTOR_INSTRUCTION in str(
+      llm_request.config.system_instruction
+  )
+
+
+@pytest.mark.asyncio
+async def test_pre_processor_does_not_inject_instruction_for_builtin_executor():
+  code_executor = BuiltInCodeExecutor()
+  agent = Agent(name='test_agent', code_executor=code_executor)
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent, user_content='run some code'
+  )
+  llm_request = LlmRequest(model='gemini-2.0-flash')
+
+  _ = [
+      event
+      async for event in request_processor.run_async(
+          invocation_context, llm_request
+      )
+  ]
+
+  system_instruction = str(llm_request.config.system_instruction or '')
+  assert _NON_BUILTIN_EXECUTOR_INSTRUCTION not in system_instruction
