@@ -23,12 +23,36 @@ from google.adk.agents.llm_agent import Agent
 from google.adk.code_executors.base_code_executor import BaseCodeExecutor
 from google.adk.code_executors.built_in_code_executor import BuiltInCodeExecutor
 from google.adk.code_executors.code_execution_utils import CodeExecutionResult
+from google.adk.flows.llm_flows._code_execution import _extract_code_from_error_message
 from google.adk.flows.llm_flows._code_execution import response_processor
 from google.adk.models.llm_response import LlmResponse
 from google.genai import types
 import pytest
 
 from ... import testing_utils
+
+# ---------------------------------------------------------------------------
+# _extract_code_from_error_message
+# ---------------------------------------------------------------------------
+
+
+def test_extract_code_from_error_message_valid():
+  code = _extract_code_from_error_message('Unexpected tool call: print(1+1)')
+  assert code == 'print(1+1)'
+
+
+def test_extract_code_from_error_message_multiline():
+  msg = 'Unexpected tool call: x = 1\nprint(x)'
+  code = _extract_code_from_error_message(msg)
+  assert code == 'x = 1\nprint(x)'
+
+
+def test_extract_code_from_error_message_none():
+  assert _extract_code_from_error_message(None) is None
+
+
+def test_extract_code_from_error_message_no_match():
+  assert _extract_code_from_error_message('some other error') is None
 
 
 @pytest.mark.asyncio
