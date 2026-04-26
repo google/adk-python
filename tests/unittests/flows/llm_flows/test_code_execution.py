@@ -279,3 +279,74 @@ async def test_pre_processor_does_not_inject_instruction_for_builtin_executor():
 
   system_instruction = str(llm_request.config.system_instruction or '')
   assert _NON_BUILTIN_EXECUTOR_INSTRUCTION not in system_instruction
+
+
+# ---------------------------------------------------------------------------
+# Post-processor: API rejection recovery path
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+@patch('google.adk.flows.llm_flows._code_execution.logger')
+async def test_post_processor_recovers_from_unexpected_tool_call(mock_logger):
+  mock_executor = MagicMock(spec=BaseCodeExecutor)
+  mock_executor.code_block_delimiters = [('```tool_code\n', '\n```')]
+  mock_executor.error_retry_attempts = 2
+  mock_executor.stateful = False
+  mock_executor.execute_code.return_value = CodeExecutionResult(stdout='42')
+
+  agent = Agent(name='test_agent', code_executor=mock_executor)
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent, user_content='run some code'
+  )
+  invocation_context.artifact_service = MagicMock()
+  invocation_context.artifact_service.save_artifact = AsyncMock(
+      return_value='v1'
+  )
+
+  llm_response = LlmResponse(
+      content=None,
+      error_code='UNEXPECTED_TOOL_CALL',
+      error_message='Unexpected tool call: print(6*7)',
+  )
+
+  events = [
+      event
+      async for event in response_processor.run_async(
+          invocation_context, llm_response
+      )
+  ]
+
+  mock_executor.execute_code.assert_called_once()
+  call_input = mock_executor.execute_code.call_args[0][1]
+  assert call_input.code == 'print(6*7)'
+  assert len(events) == 2
+  mock_logger.info.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_post_processor_skips_recovery_for_builtin_executor():
+  code_executor = BuiltInCodeExecutor()
+  agent = Agent(name='test_agent', code_executor=code_executor)
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent, user_content='run some code'
+  )
+  invocation_context.artifact_service = MagicMock()
+  invocation_context.artifact_service.save_artifact = AsyncMock()
+
+  llm_response = LlmResponse(
+      content=None,
+      error_code='UNEXPECTED_TOOL_CALL',
+      error_message='Unexpected tool call: print(1)',
+  )
+
+  events = [
+      event
+      async for event in response_processor.run_async(
+          invocation_context, llm_response
+      )
+  ]
+
+  # BuiltInCodeExecutor path bails out early — no events, no artifact saves.
+  assert events == []
+  invocation_context.artifact_service.save_artifact.assert_not_called()
