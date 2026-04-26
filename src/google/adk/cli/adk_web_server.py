@@ -369,6 +369,7 @@ class RunAgentRequest(common.BaseModel):
   state_delta: Optional[dict[str, Any]] = None
   # for long-running function resume requests (e.g., OAuth callback)
   function_call_event_id: Optional[str] = None
+  request_state: Optional[dict[str, Any]] = None
   # for resume long-running functions
   invocation_id: Optional[str] = None
 
@@ -989,9 +990,7 @@ class AdkWebServer:
       return {
           "version": __version__,
           "language": "python",
-          "language_version": (
-              f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}"
-          ),
+          "language_version": f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}",
       }
 
     @app.get("/list-apps")
@@ -1900,6 +1899,7 @@ class AdkWebServer:
                 new_message=req.new_message,
                 state_delta=req.state_delta,
                 invocation_id=req.invocation_id,
+                request_state=req.request_state,
             )
         ) as agen:
           events = [event async for event in agen]
@@ -1944,6 +1944,7 @@ class AdkWebServer:
                 state_delta=req.state_delta,
                 run_config=RunConfig(streaming_mode=stream_mode),
                 invocation_id=req.invocation_id,
+                request_state=req.request_state,
             )
         ) as agen:
           try:
