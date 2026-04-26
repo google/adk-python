@@ -730,6 +730,115 @@ class TestToGeminiSchema:
     model_schema = data_schema.items.properties["model"]
     assert model_schema.type == Type.OBJECT
 
+  def test_to_gemini_schema_circular_ref(self):
+    """Test that circular references in schema are handled without RecursionError."""
+    openapi_schema = {
+        "$defs": {
+            "Node": {
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string"},
+                    "parent": {"$ref": "#/$defs/Node"},
+                },
+            }
+        },
+        "properties": {"tree": {"$ref": "#/$defs/Node"}},
+        "type": "object",
+    }
+    # Should not raise RecursionError
+    gemini_schema = _to_gemini_schema(openapi_schema)
+    assert gemini_schema.type == Type.OBJECT
+    assert gemini_schema.properties["tree"].type == Type.OBJECT
+    assert (
+        gemini_schema.properties["tree"].properties["name"].type == Type.STRING
+    )
+    assert (
+        gemini_schema.properties["tree"].properties["parent"].type
+        == Type.OBJECT
+    ), "The circular ref should be handled and return the fallback object"
+    assert (
+        gemini_schema.properties["tree"].properties["parent"].description
+        == "Circular ref to Node"
+    )
+
+  def test_to_gemini_schema_multi_step_circular_ref(self):
+    """Test that multi-step circular references (Value -> Struct -> Value) are handled."""
+    openapi_schema = {
+        "$defs": {
+            "Value": {
+                "anyOf": [
+                    {"type": "string"},
+                    {"$ref": "#/$defs/Struct"},
+                ]
+            },
+            "Struct": {
+                "type": "object",
+                "properties": {
+                    "fields": {
+                        "type": "object",
+                        "properties": {
+                            "my_val": {
+                                "type": "array",
+                                "items": {"$ref": "#/$defs/Value"},
+                            }
+                        },
+                    }
+                },
+            },
+        },
+        "properties": {"root": {"$ref": "#/$defs/Value"}},
+        "type": "object",
+    }
+
+    gemini_schema = _to_gemini_schema(openapi_schema)
+    # Individual assertions are used here instead of comparing the whole Schema
+    # object or its properties dictionary because Schema objects with deep
+    # nesting can have subtle differences in default fields that are hard to
+    # debug due to pytest truncation limits.
+    assert gemini_schema.type == Type.OBJECT
+    # root is Value, which resolved to anyOf
+    assert len(gemini_schema.properties["root"].any_of) == 2
+    assert gemini_schema.properties["root"].any_of[0].type == Type.STRING
+    # any_of[1] is Struct
+    struct_schema = gemini_schema.properties["root"].any_of[1]
+    assert struct_schema.type == Type.OBJECT
+    assert struct_schema.properties["fields"].type == Type.OBJECT
+    # properties["fields"].properties["my_val"] is an array
+    my_val_schema = struct_schema.properties["fields"].properties["my_val"]
+    assert my_val_schema.type == Type.ARRAY
+    assert (
+        my_val_schema.items.type == Type.OBJECT
+    ), "Array items referencing a circular $ref should resolve to Type.OBJECT"
+
+  def test_to_gemini_schema_reused_non_circular_ref(self):
+    """Test that reused non-circular references are handled correctly."""
+    openapi_schema = {
+        "$defs": {
+            "CommonType": {"type": "string"},
+            "ObjectA": {
+                "type": "object",
+                "properties": {"prop_a": {"$ref": "#/$defs/CommonType"}},
+            },
+            "ObjectB": {
+                "type": "object",
+                "properties": {"prop_b": {"$ref": "#/$defs/CommonType"}},
+            },
+        },
+        "properties": {
+            "a": {"$ref": "#/$defs/ObjectA"},
+            "b": {"$ref": "#/$defs/ObjectB"},
+        },
+        "type": "object",
+    }
+    gemini_schema = _to_gemini_schema(openapi_schema)
+    assert gemini_schema.type == Type.OBJECT
+    assert (
+        gemini_schema.properties["a"].properties["prop_a"].type == Type.STRING
+    )
+    assert (
+        gemini_schema.properties["b"].properties["prop_b"].type == Type.STRING
+    )
+
 
 class TestToSnakeCase:
 
