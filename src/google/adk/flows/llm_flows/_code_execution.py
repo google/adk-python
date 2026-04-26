@@ -104,6 +104,17 @@ _UNEXPECTED_TOOL_CALL_RE = re.compile(
     r'^\s*Unexpected tool call:\s*(?P<code>.+?)\s*$', re.DOTALL
 )
 
+
+def _extract_code_from_error_message(error_message: Optional[str]) -> Optional[str]:
+  """Best-effort extraction of code from a Gemini API rejection error message."""
+  if not error_message:
+    return None
+  m = _UNEXPECTED_TOOL_CALL_RE.match(error_message)
+  if m:
+    return m.group('code').strip() or None
+  return None
+
+
 _DATA_FILE_HELPER_LIB = '''
 import pandas as pd
 
