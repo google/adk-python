@@ -74,6 +74,26 @@ _DATA_FILE_UTIL_MAP = {
     ),
 }
 
+_NON_BUILTIN_EXECUTOR_INSTRUCTION = """\
+# CRITICAL: Code execution format
+
+You have access to an external Python sandbox managed by the host
+application. To run Python code, output it inside a fenced markdown
+block exactly like this:
+
+```tool_code
+print("hello")
+```
+
+DO NOT emit native executable_code parts.
+DO NOT attempt to call a code_execution tool — no such tool is
+registered for this request and the API will reject the response with
+UNEXPECTED_TOOL_CALL or MALFORMED_FUNCTION_CALL.
+
+Always wrap Python code in the tool_code markdown fence shown
+above.
+"""
+
 _DATA_FILE_HELPER_LIB = '''
 import pandas as pd
 
