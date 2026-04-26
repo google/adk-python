@@ -363,7 +363,21 @@ async def _run_post_processor(
 
   if not code_executor or not isinstance(code_executor, BaseCodeExecutor):
     return
-  if not llm_response or not llm_response.content:
+  if not llm_response:
+    return
+
+  # When the API rejected the response because the model emitted a native
+  # code_execution tool call (UNEXPECTED_TOOL_CALL / MALFORMED_FUNCTION_CALL),
+  # llm_response.content is empty. For non-built-in executors, try to
+  # recover the intended code from the error message so we can still run
+  # it in the configured sandbox.
+  if not llm_response.content and not isinstance(
+      code_executor, BuiltInCodeExecutor
+  ):
+    if not _maybe_recover_from_api_rejection(llm_response):
+      return
+
+  if not llm_response.content:
     return
 
   if isinstance(code_executor, BuiltInCodeExecutor):
