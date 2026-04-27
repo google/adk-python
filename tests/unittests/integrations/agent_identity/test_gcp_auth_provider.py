@@ -25,6 +25,7 @@ pytest.importorskip(
 from google.adk.agents.callback_context import CallbackContext
 from google.adk.auth.auth_credential import AuthCredentialTypes
 from google.adk.auth.auth_tool import AuthConfig
+from google.adk.auth.auth_tool import AuthToolArguments
 from google.adk.flows.llm_flows.functions import REQUEST_EUC_FUNCTION_CALL_NAME
 from google.adk.integrations.agent_identity import gcp_auth_provider
 from google.adk.integrations.agent_identity import GcpAuthProvider
@@ -399,7 +400,9 @@ async def test_get_auth_credential_returns_token_if_consent_was_completed(
   function_call = Mock()
   function_call.id = "auth-req-1"
   function_call.name = REQUEST_EUC_FUNCTION_CALL_NAME
-  function_call.args = {"function_call_id": "call-123"}
+  function_call.args = AuthToolArguments(
+      function_call_id="call-123", auth_config=auth_config
+  ).model_dump(by_alias=True, exclude_none=True)
 
   event1 = Mock()
   event1.get_function_calls.return_value = [function_call]
@@ -432,3 +435,43 @@ async def test_get_auth_credential_returns_token_if_consent_was_completed(
   assert auth_credential.auth_type == AuthCredentialTypes.HTTP
   assert auth_credential.http.scheme == "bearer"
   assert auth_credential.http.credentials.token == "test-token"
+
+
+async def test_get_auth_credential_raises_error_if_consent_canceled(
+    mock_operation, auth_config, context, provider
+):
+  function_call = Mock()
+  function_call.id = "auth-req-1"
+  function_call.name = REQUEST_EUC_FUNCTION_CALL_NAME
+  function_call.args = AuthToolArguments(
+      function_call_id="call-123", auth_config=auth_config
+  ).model_dump(by_alias=True, exclude_none=True)
+
+  event1 = Mock()
+  event1.get_function_calls.return_value = [function_call]
+  event1.get_function_responses.return_value = []
+
+  function_response = Mock()
+  function_response.id = "auth-req-1"
+  function_response.name = REQUEST_EUC_FUNCTION_CALL_NAME
+
+  event2 = Mock()
+  event2.get_function_calls.return_value = []
+  event2.get_function_responses.return_value = [function_response]
+
+  context.session.events = [event1, event2]
+  context.function_call_id = "call-123"
+
+  meta = RetrieveCredentialsMetadata({
+      "uri_consent_required": {
+          "authorization_uri": "https://example.com/auth",
+          "consent_nonce": "sample-nonce",
+      }
+  })
+  mock_operation.metadata.value = RetrieveCredentialsMetadata.serialize(meta)
+  mock_operation.done = False
+
+  with pytest.raises(
+      RuntimeError, match="Failed to retrieve consent based credential."
+  ):
+    await provider.get_auth_credential(auth_config, context)
