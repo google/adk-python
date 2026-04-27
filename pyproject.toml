@@ -60,7 +60,7 @@ dependencies = [
   "opentelemetry-exporter-gcp-logging>=1.9.0a0,<2",
   "opentelemetry-exporter-gcp-monitoring>=1.9.0a0,<2",
   "opentelemetry-exporter-gcp-trace>=1.9,<2",
-  "opentelemetry-exporter-otlp-proto-http>=1.36.0",
+  "opentelemetry-exporter-otlp-proto-http>=1.36",
   "opentelemetry-resourcedetector-gcp>=1.9.0a0,<2",
   "opentelemetry-sdk>=1.36,<1.39",
   "pyarrow>=14",
@@ -102,8 +102,8 @@ optional-dependencies.docs = [
   "myst-parser",
   "sphinx<9",
   "sphinx-autodoc-typehints",
-  "sphinx-rtd-theme",
   "sphinx-click",
+  "sphinx-rtd-theme",
 ]
 optional-dependencies.eval = [
   "gepa>=0.1",
