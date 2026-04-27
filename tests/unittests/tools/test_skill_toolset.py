@@ -187,6 +187,20 @@ async def test_get_tools(mock_skill1, mock_skill2):
 
 
 @pytest.mark.asyncio
+async def test_resolve_additional_tools_from_state_none(mock_skill1):
+  toolset = skill_toolset.SkillToolset([mock_skill1])
+
+  # Mock ReadonlyContext
+  readonly_context = mock.create_autospec(ReadonlyContext, instance=True)
+  readonly_context.agent_name = "test_agent"
+  readonly_context.state.get.return_value = None
+
+  result = await toolset._resolve_additional_tools_from_state(readonly_context)
+
+  assert not result
+
+
+@pytest.mark.asyncio
 async def test_list_skills_tool(
     mock_skill1, mock_skill2, tool_context_instance
 ):
@@ -236,6 +250,28 @@ async def test_load_skill_run_async(
   tool = skill_toolset.LoadSkillTool(toolset)
   result = await tool.run_async(args=args, tool_context=tool_context_instance)
   assert result == expected_result
+
+
+@pytest.mark.asyncio
+async def test_load_skill_run_async_state_none(
+    mock_skill1, tool_context_instance
+):
+  toolset = skill_toolset.SkillToolset([mock_skill1])
+  tool = skill_toolset.LoadSkillTool(toolset)
+
+  # Mock state to return None for the key
+  state_key = "_adk_activated_skill_test_agent"
+  tool_context_instance.state.get.return_value = None
+
+  result = await tool.run_async(
+      args={"skill_name": "skill1"}, tool_context=tool_context_instance
+  )
+
+  assert result["skill_name"] == "skill1"
+  # Verify that it correctly set the list in state
+  tool_context_instance.state.__setitem__.assert_called_with(
+      state_key, ["skill1"]
+  )
 
 
 @pytest.mark.asyncio

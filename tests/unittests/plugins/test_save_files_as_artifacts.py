@@ -92,6 +92,36 @@ class TestSaveFilesAsArtifactsPlugin:
     assert result.parts[1].file_data.mime_type == "application/pdf"
 
   @pytest.mark.asyncio
+  async def test_attach_file_reference_false(self):
+    """Test that file reference is not attached when attach_file_reference is False."""
+    plugin = SaveFilesAsArtifactsPlugin(attach_file_reference=False)
+
+    inline_data = types.Blob(
+        display_name="test_document.pdf",
+        data=b"test data",
+        mime_type="application/pdf",
+    )
+
+    original_part = types.Part(inline_data=inline_data)
+    user_message = types.Content(parts=[original_part])
+
+    result = await plugin.on_user_message_callback(
+        invocation_context=self.mock_context, user_message=user_message
+    )
+
+    self.mock_context.artifact_service.save_artifact.assert_called_once_with(
+        app_name="test_app",
+        user_id="test_user",
+        session_id="test_session",
+        filename="test_document.pdf",
+        artifact=original_part,
+    )
+
+    assert result
+    assert len(result.parts) == 1
+    assert result.parts[0].text == '[Uploaded Artifact: "test_document.pdf"]'
+
+  @pytest.mark.asyncio
   async def test_save_files_without_display_name(self):
     """Test saving files when inline_data has no display_name."""
     inline_data = types.Blob(
