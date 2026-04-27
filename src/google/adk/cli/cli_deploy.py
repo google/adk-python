@@ -22,6 +22,7 @@ import subprocess
 import sys
 import traceback
 from typing import Final
+from typing import Literal
 from typing import Optional
 import warnings
 
@@ -98,7 +99,7 @@ COPY --chown=myuser:myuser "agents/{app_name}/" "/app/agents/{app_name}/"
 
 EXPOSE {port}
 
-CMD adk {command} --port={port} {host_option} {service_option} {trace_to_cloud_option} {otel_to_cloud_option} {allow_origins_option} {a2a_option} "/app/agents"
+CMD adk {command} --port={port} {host_option} {service_option} {trace_to_cloud_option} {otel_to_cloud_option} {allow_origins_option} {a2a_option} {trigger_sources_option} "/app/agents"
 """
 
 _AGENT_ENGINE_APP_TEMPLATE: Final[str] = """
@@ -645,6 +646,7 @@ def to_cloud_run(
     memory_service_uri: Optional[str] = None,
     use_local_storage: bool = False,
     a2a: bool = False,
+    trigger_sources: Optional[str] = None,
     extra_gcloud_args: Optional[tuple[str, ...]] = None,
 ):
   """Deploys an agent to Google Cloud Run.
@@ -715,6 +717,9 @@ def to_cloud_run(
         f'--allow_origins={",".join(allow_origins)}' if allow_origins else ''
     )
     a2a_option = '--a2a' if a2a else ''
+    trigger_sources_option = (
+        f'--trigger_sources={trigger_sources}' if trigger_sources else ''
+    )
     dockerfile_content = _DOCKERFILE_TEMPLATE.format(
         gcp_project_id=project,
         gcp_region=region,
@@ -736,6 +741,7 @@ def to_cloud_run(
         python_version=python_version,
         host_option=host_option,
         a2a_option=a2a_option,
+        trigger_sources_option=trigger_sources_option,
     )
     dockerfile_path = os.path.join(temp_folder, 'Dockerfile')
     os.makedirs(temp_folder, exist_ok=True)
@@ -802,6 +808,24 @@ def to_cloud_run(
   finally:
     click.echo(f'Cleaning up the temp folder: {temp_folder}')
     shutil.rmtree(temp_folder)
+
+
+def _print_agent_engine_url(resource_name: str) -> None:
+  """Prints the Google Cloud Console URL for the deployed agent."""
+  parts = resource_name.split('/')
+  if len(parts) >= 6 and parts[0] == 'projects' and parts[2] == 'locations':
+    project_id = parts[1]
+    region = parts[3]
+    engine_id = parts[5]
+
+    url = (
+        'https://console.cloud.google.com/vertex-ai/agents/agent-engines'
+        f'/locations/{region}/agent-engines/{engine_id}/playground'
+        f'?project={project_id}'
+    )
+    click.secho(
+        f'\n🎉 View your deployed agent here:\n{url}\n', fg='cyan', bold=True
+    )
 
 
 def to_agent_engine(
@@ -950,6 +974,13 @@ def to_agent_engine(
 
     click.echo('Resolving files and dependencies...')
     agent_config = {}
+    if agent_engine_config_file and not os.path.exists(
+        agent_engine_config_file
+    ):
+      raise click.ClickException(
+          'Agent engine config file not found: '
+          f'{parent_folder}/{agent_engine_config_file}'
+      )
     if not agent_engine_config_file:
       # Attempt to read the agent engine config from .agent_engine_config.json in the dir (if any).
       agent_engine_config_file = os.path.join(
@@ -1139,11 +1170,13 @@ def to_agent_engine(
           f'✅ Created agent engine: {agent_engine.api_resource.name}',
           fg='green',
       )
+      _print_agent_engine_url(agent_engine.api_resource.name)
     else:
       if project and region and not agent_engine_id.startswith('projects/'):
         agent_engine_id = f'projects/{project}/locations/{region}/reasoningEngines/{agent_engine_id}'
       client.agent_engines.update(name=agent_engine_id, config=agent_config)
       click.secho(f'✅ Updated agent engine: {agent_engine_id}', fg='green')
+      _print_agent_engine_url(agent_engine_id)
   finally:
     click.echo(f'Cleaning up the temp folder: {temp_folder}')
     shutil.rmtree(agent_src_path)
@@ -1173,6 +1206,10 @@ def to_gke(
     memory_service_uri: Optional[str] = None,
     use_local_storage: bool = False,
     a2a: bool = False,
+    trigger_sources: Optional[str] = None,
+    service_type: Literal[
+        'ClusterIP', 'NodePort', 'LoadBalancer'
+    ] = 'ClusterIP',
 ):
   """Deploys an agent to Google Kubernetes Engine(GKE).
 
@@ -1200,6 +1237,7 @@ def to_gke(
     artifact_service_uri: The URI of the artifact service.
     memory_service_uri: The URI of the memory service.
     use_local_storage: Whether to use local .adk storage in the container.
+    service_type: The Kubernetes Service type (default: ClusterIP).
   """
   click.secho(
       '\n🚀 Starting ADK Agent Deployment to GKE...', fg='cyan', bold=True
@@ -1267,6 +1305,9 @@ def to_gke(
         python_version=python_version,
         host_option=host_option,
         a2a_option='--a2a' if a2a else '',
+        trigger_sources_option=(
+            f'--trigger_sources={trigger_sources}' if trigger_sources else ''
+        ),
     )
     dockerfile_path = os.path.join(temp_folder, 'Dockerfile')
     os.makedirs(temp_folder, exist_ok=True)
@@ -1338,7 +1379,7 @@ kind: Service
 metadata:
   name: {service_name}
 spec:
-  type: LoadBalancer
+  type: {service_type}
   selector:
     app: {service_name}
   ports:
@@ -1392,3 +1433,11 @@ spec:
   click.secho(
       '\n🎉 Deployment to GKE finished successfully!', fg='cyan', bold=True
   )
+  if service_type == 'ClusterIP':
+    click.echo(
+        '\nThe service is only reachable from within the cluster.'
+        ' To access it locally, run:'
+        f'\n  kubectl port-forward svc/{service_name} {port}:{port}'
+        '\n\nTo expose the service externally, add a Gateway or'
+        ' re-deploy with --service_type=LoadBalancer.'
+    )

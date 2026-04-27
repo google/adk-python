@@ -23,6 +23,7 @@ from functools import cached_property
 import json
 import logging
 import os
+import re
 from typing import Any
 from typing import AsyncGenerator
 from typing import Iterable
@@ -59,6 +60,62 @@ class _ToolUseAccumulator:
   id: str
   name: str
   args_json: str
+
+
+@dataclasses.dataclass
+class _ThinkingAccumulator:
+  """Accumulates streamed thinking content block data."""
+
+  thinking: str
+  signature: str
+
+
+def _build_anthropic_thinking_param(
+    config: Optional[types.GenerateContentConfig],
+) -> Union[
+    anthropic_types.ThinkingConfigEnabledParam,
+    anthropic_types.ThinkingConfigDisabledParam,
+    NotGiven,
+]:
+  """Maps genai ThinkingConfig to Anthropic's thinking parameter.
+
+  Per ``google.genai.types.ThinkingConfig``, ``thinking_budget`` semantics are:
+    * ``None``: not specified; the genai default is model-dependent. Anthropic
+      requires an explicit ``budget_tokens`` whenever thinking is enabled, so
+      we surface this as a ``ValueError`` to keep the developer's intent
+      explicit (mirroring the Anthropic API).
+    * ``0``: thinking is DISABLED.
+    * ``-1``: AUTOMATIC; not supported by Anthropic models.
+    * positive int: budget in tokens (Anthropic requires ``>= 1024`` and
+      ``< max_tokens``; validation is delegated to the Anthropic API so the
+      caller gets the canonical error message).
+  """
+  if not config or not config.thinking_config:
+    return NOT_GIVEN
+
+  thinking_budget = config.thinking_config.thinking_budget
+
+  if thinking_budget is None:
+    raise ValueError(
+        "thinking_budget must be set explicitly when ThinkingConfig is"
+        " provided for Anthropic models. Use 0 to disable thinking, or a"
+        " positive integer (>= 1024) for the token budget."
+    )
+
+  if thinking_budget == 0:
+    return anthropic_types.ThinkingConfigDisabledParam(type="disabled")
+
+  if thinking_budget < 0:
+    raise ValueError(
+        f"thinking_budget={thinking_budget} is not supported for Anthropic"
+        " models (AUTOMATIC mode is unavailable). Use a positive integer"
+        " (>= 1024) for the token budget, or 0 to disable thinking."
+    )
+
+  return anthropic_types.ThinkingConfigEnabledParam(
+      type="enabled",
+      budget_tokens=thinking_budget,
+  )
 
 
 class ClaudeRequest(BaseModel):
@@ -103,11 +160,28 @@ def part_to_message_block(
     part: types.Part,
 ) -> Union[
     anthropic_types.TextBlockParam,
+    anthropic_types.ThinkingBlockParam,
     anthropic_types.ImageBlockParam,
     anthropic_types.DocumentBlockParam,
     anthropic_types.ToolUseBlockParam,
     anthropic_types.ToolResultBlockParam,
 ]:
+  if part.thought and part.text:
+    signature = ""
+    if part.thought_signature:
+      signature = part.thought_signature.decode("utf-8")
+    return anthropic_types.ThinkingBlockParam(
+        type="thinking",
+        thinking=part.text,
+        signature=signature,
+    )
+  if part.thought and part.thought_signature:
+    # Redacted thinking: no plaintext, only the encrypted blob produced by
+    # content_block_to_part for round-tripping back to Claude.
+    return anthropic_types.RedactedThinkingBlockParam(
+        type="redacted_thinking",
+        data=part.thought_signature.decode("utf-8"),
+    )
   if part.text:
     return anthropic_types.TextBlockParam(text=part.text, type="text")
   elif part.function_call:
@@ -146,6 +220,12 @@ def part_to_message_block(
         content = json.dumps(result)
       else:
         content = str(result)
+    elif response_data:
+      # Fallback: serialize the entire response dict as JSON so that tools
+      # returning arbitrary key structures (e.g. load_skill returning
+      # {"skill_name", "instructions", "frontmatter"}) are not silently
+      # dropped.
+      content = json.dumps(response_data)
 
     return anthropic_types.ToolResultBlockParam(
         tool_use_id=part.function_response.id or "",
@@ -213,6 +293,19 @@ def content_to_message_param(
 def content_block_to_part(
     content_block: anthropic_types.ContentBlock,
 ) -> types.Part:
+  """Converts an Anthropic content block to a genai Part."""
+  if isinstance(content_block, anthropic_types.ThinkingBlock):
+    part = types.Part(text=content_block.thinking, thought=True)
+    if content_block.signature:
+      part.thought_signature = content_block.signature.encode("utf-8")
+    return part
+  if isinstance(content_block, anthropic_types.RedactedThinkingBlock):
+    # Preserve the encrypted blob so it can round-trip back to Claude in
+    # the next turn; required to keep the model's reasoning chain intact.
+    return types.Part(
+        thought=True,
+        thought_signature=content_block.data.encode("utf-8"),
+    )
   if isinstance(content_block, anthropic_types.TextBlock):
     return types.Part.from_text(text=content_block.text)
   if isinstance(content_block, anthropic_types.ToolUseBlock):
@@ -222,7 +315,9 @@ def content_block_to_part(
     )
     part.function_call.id = content_block.id
     return part
-  raise NotImplementedError("Not supported yet.")
+  raise NotImplementedError(
+      f"Unsupported content block type: {type(content_block)}"
+  )
 
 
 def message_to_generate_content_response(
@@ -234,10 +329,12 @@ def message_to_generate_content_response(
       message.model_dump_json(indent=2, exclude_none=True),
   )
 
+  parts = [content_block_to_part(cb) for cb in message.content]
+
   return LlmResponse(
       content=types.Content(
           role="model",
-          parts=[content_block_to_part(cb) for cb in message.content],
+          parts=parts,
       ),
       usage_metadata=types.GenerateContentResponseUsageMetadata(
           prompt_token_count=message.usage.input_tokens,
@@ -358,10 +455,23 @@ class AnthropicLlm(BaseLlm):
   def supported_models(cls) -> list[str]:
     return [r"claude-3-.*", r"claude-.*-4.*"]
 
+  def _resolve_model_name(self, model: Optional[str]) -> str:
+    if not model:
+      return self.model
+    if model.startswith("projects/"):
+      match = re.search(
+          r"projects/[^/]+/locations/[^/]+/(?:publishers/anthropic/models|endpoints)/([^/:]+)",
+          model,
+      )
+      if match:
+        return match.group(1)
+    return model
+
   @override
   async def generate_content_async(
       self, llm_request: LlmRequest, stream: bool = False
   ) -> AsyncGenerator[LlmResponse, None]:
+    model_to_use = self._resolve_model_name(llm_request.model)
     messages = [
         content_to_message_param(content)
         for content in llm_request.contents or []
@@ -381,20 +491,22 @@ class AnthropicLlm(BaseLlm):
         if llm_request.tools_dict
         else NOT_GIVEN
     )
+    thinking = _build_anthropic_thinking_param(llm_request.config)
 
     if not stream:
       message = await self._anthropic_client.messages.create(
-          model=llm_request.model,
+          model=model_to_use,
           system=llm_request.config.system_instruction,
           messages=messages,
           tools=tools,
           tool_choice=tool_choice,
           max_tokens=self.max_tokens,
+          thinking=thinking,
       )
       yield message_to_generate_content_response(message)
     else:
       async for response in self._generate_content_streaming(
-          llm_request, messages, tools, tool_choice
+          llm_request, messages, tools, tool_choice, thinking
       ):
         yield response
 
@@ -404,26 +516,35 @@ class AnthropicLlm(BaseLlm):
       messages: list[anthropic_types.MessageParam],
       tools: Union[Iterable[anthropic_types.ToolUnionParam], NotGiven],
       tool_choice: Union[anthropic_types.ToolChoiceParam, NotGiven],
+      thinking: Union[
+          anthropic_types.ThinkingConfigEnabledParam,
+          anthropic_types.ThinkingConfigDisabledParam,
+          NotGiven,
+      ] = NOT_GIVEN,
   ) -> AsyncGenerator[LlmResponse, None]:
     """Handles streaming responses from Anthropic models.
 
     Yields partial LlmResponse objects as content arrives, followed by
     a final aggregated LlmResponse with all content.
     """
+    model_to_use = self._resolve_model_name(llm_request.model)
     raw_stream = await self._anthropic_client.messages.create(
-        model=llm_request.model,
+        model=model_to_use,
         system=llm_request.config.system_instruction,
         messages=messages,
         tools=tools,
         tool_choice=tool_choice,
         max_tokens=self.max_tokens,
         stream=True,
+        thinking=thinking,
     )
 
     # Track content blocks being built during streaming.
     # Each entry maps a block index to its accumulated state.
     text_blocks: dict[int, str] = {}
     tool_use_blocks: dict[int, _ToolUseAccumulator] = {}
+    thinking_blocks: dict[int, _ThinkingAccumulator] = {}
+    redacted_thinking_blocks: dict[int, str] = {}
     input_tokens = 0
     output_tokens = 0
 
@@ -434,7 +555,15 @@ class AnthropicLlm(BaseLlm):
 
       elif event.type == "content_block_start":
         block = event.content_block
-        if isinstance(block, anthropic_types.TextBlock):
+        if isinstance(block, anthropic_types.ThinkingBlock):
+          thinking_blocks[event.index] = _ThinkingAccumulator(
+              thinking=block.thinking,
+              signature=block.signature,
+          )
+        elif isinstance(block, anthropic_types.RedactedThinkingBlock):
+          # Redacted blocks arrive fully formed at start; no deltas follow.
+          redacted_thinking_blocks[event.index] = block.data
+        elif isinstance(block, anthropic_types.TextBlock):
           text_blocks[event.index] = block.text
         elif isinstance(block, anthropic_types.ToolUseBlock):
           tool_use_blocks[event.index] = _ToolUseAccumulator(
@@ -445,7 +574,20 @@ class AnthropicLlm(BaseLlm):
 
       elif event.type == "content_block_delta":
         delta = event.delta
-        if isinstance(delta, anthropic_types.TextDelta):
+        if isinstance(delta, anthropic_types.ThinkingDelta):
+          thinking_blocks.setdefault(
+              event.index,
+              _ThinkingAccumulator(thinking="", signature=""),
+          )
+          thinking_blocks[event.index].thinking += delta.thinking
+          yield LlmResponse(
+              content=types.Content(
+                  role="model",
+                  parts=[types.Part(text=delta.thinking, thought=True)],
+              ),
+              partial=True,
+          )
+        elif isinstance(delta, anthropic_types.TextDelta):
           text_blocks.setdefault(event.index, "")
           text_blocks[event.index] += delta.text
           yield LlmResponse(
@@ -465,9 +607,27 @@ class AnthropicLlm(BaseLlm):
     # Build the final aggregated response with all content.
     all_parts: list[types.Part] = []
     all_indices = sorted(
-        set(list(text_blocks.keys()) + list(tool_use_blocks.keys()))
+        set(
+            list(thinking_blocks.keys())
+            + list(redacted_thinking_blocks.keys())
+            + list(text_blocks.keys())
+            + list(tool_use_blocks.keys())
+        )
     )
     for idx in all_indices:
+      if idx in thinking_blocks:
+        acc = thinking_blocks[idx]
+        part = types.Part(text=acc.thinking, thought=True)
+        if acc.signature:
+          part.thought_signature = acc.signature.encode("utf-8")
+        all_parts.append(part)
+      if idx in redacted_thinking_blocks:
+        all_parts.append(
+            types.Part(
+                thought=True,
+                thought_signature=redacted_thinking_blocks[idx].encode("utf-8"),
+            )
+        )
       if idx in text_blocks:
         all_parts.append(types.Part.from_text(text=text_blocks[idx]))
       if idx in tool_use_blocks:
@@ -505,17 +665,26 @@ class Claude(AnthropicLlm):
   @cached_property
   @override
   def _anthropic_client(self) -> AsyncAnthropicVertex:
-    if (
-        "GOOGLE_CLOUD_PROJECT" not in os.environ
-        or "GOOGLE_CLOUD_LOCATION" not in os.environ
-    ):
+    project_id = os.environ.get("GOOGLE_CLOUD_PROJECT")
+    location = os.environ.get("GOOGLE_CLOUD_LOCATION")
+
+    if self.model.startswith("projects/"):
+      match = re.search(
+          r"projects/([^/]+)/locations/([^/]+)/",
+          self.model,
+      )
+      if match:
+        project_id = match.group(1)
+        location = match.group(2)
+
+    if not project_id or not location:
       raise ValueError(
           "GOOGLE_CLOUD_PROJECT and GOOGLE_CLOUD_LOCATION must be set for using"
           " Anthropic on Vertex."
       )
 
     return AsyncAnthropicVertex(
-        project_id=os.environ["GOOGLE_CLOUD_PROJECT"],
-        region=os.environ["GOOGLE_CLOUD_LOCATION"],
+        project_id=project_id,
+        region=location,
         default_headers=get_tracking_headers(),
     )

@@ -26,6 +26,7 @@ from typing import Tuple
 
 import click
 import google.adk.cli.cli_create as cli_create
+from google.adk.cli.utils import gcp_utils
 import pytest
 
 
@@ -85,6 +86,23 @@ def test_generate_files_with_gcp(agent_folder: Path) -> None:
   assert "GOOGLE_CLOUD_PROJECT=proj" in env_content
   assert "GOOGLE_CLOUD_LOCATION=us-central1" in env_content
   assert "GOOGLE_GENAI_USE_VERTEXAI=1" in env_content
+
+
+def test_generate_files_with_express_mode(agent_folder: Path) -> None:
+  """Files should be created with Vertex AI backend when both project and API key are present (Express Mode)."""
+  cli_create._generate_files(
+      str(agent_folder),
+      google_api_key="express-api-key",
+      google_cloud_project="express-project-id",
+      google_cloud_region="us-central1",
+      model="gemini-2.0-flash-001",
+      type="code",
+  )
+
+  env_content = (agent_folder / ".env").read_text()
+  assert "GOOGLE_GENAI_USE_VERTEXAI=1" in env_content
+  assert "GOOGLE_API_KEY=express-api-key" in env_content
+  assert "GOOGLE_CLOUD_PROJECT=express-project-id" in env_content
 
 
 def test_generate_files_overwrite(agent_folder: Path) -> None:
@@ -282,6 +300,178 @@ def test_prompt_to_choose_backend_vertex(
   assert api_key is None
   assert proj == "proj"
   assert region == "region"
+
+
+def test_prompt_to_choose_backend_login(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+  """Choosing Login with Google returns (api_key, project, region) from handler."""
+  monkeypatch.setattr(click, "prompt", lambda *a, **k: "3")
+  monkeypatch.setattr(
+      cli_create,
+      "_handle_login_with_google",
+      lambda: ("api-key", "proj", "region"),
+  )
+
+  api_key, proj, region = cli_create._prompt_to_choose_backend(None, None, None)
+  assert api_key == "api-key"
+  assert proj == "proj"
+  assert region == "region"
+
+
+def test_handle_login_with_google_existing_express(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+  """Handler should return existing Express project if found."""
+  monkeypatch.setattr(gcp_utils, "check_adc", lambda: True)
+  monkeypatch.setattr(
+      gcp_utils,
+      "retrieve_express_project",
+      lambda: {"api_key": "key", "project_id": "proj", "region": "us-central1"},
+  )
+
+  api_key, proj, region = cli_create._handle_login_with_google()
+  assert api_key == "key"
+  assert proj == "proj"
+  assert region == "us-central1"
+
+
+def test_handle_login_with_google_select_gcp_project(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+  """Handler should prompt for project selection if no Express project found."""
+  monkeypatch.setattr(gcp_utils, "check_adc", lambda: True)
+  monkeypatch.setattr(gcp_utils, "retrieve_express_project", lambda: None)
+  monkeypatch.setattr(
+      gcp_utils, "list_gcp_projects", lambda limit: [("p1", "Project 1")]
+  )
+  monkeypatch.setattr(click, "prompt", lambda *a, **k: 1)
+  monkeypatch.setattr(
+      cli_create, "_prompt_for_google_cloud_region", lambda _v: "us-east1"
+  )
+
+  api_key, proj, region = cli_create._handle_login_with_google()
+  assert api_key is None
+  assert proj == "p1"
+  assert region == "us-east1"
+
+
+def test_handle_login_with_google_manual_project(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+  """Handler should allow manual project ID entry when '0' is selected."""
+  monkeypatch.setattr(gcp_utils, "check_adc", lambda: True)
+  monkeypatch.setattr(gcp_utils, "retrieve_express_project", lambda: None)
+  monkeypatch.setattr(
+      gcp_utils, "list_gcp_projects", lambda limit: [("p1", "Project 1")]
+  )
+  prompts = iter([0, "manual-proj", "us-east1"])
+  monkeypatch.setattr(click, "prompt", lambda *a, **k: next(prompts))
+
+  api_key, proj, region = cli_create._handle_login_with_google()
+  assert api_key is None
+  assert proj == "manual-proj"
+  assert region == "us-east1"
+
+
+def test_handle_login_with_google_option_1(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+  """User selects 1, enters project ID and region."""
+  monkeypatch.setattr(gcp_utils, "check_adc", lambda: True)
+  monkeypatch.setattr(gcp_utils, "retrieve_express_project", lambda: None)
+  monkeypatch.setattr(gcp_utils, "list_gcp_projects", lambda limit: [])
+  prompts = iter(["1", "test-proj", "us-east1"])
+  monkeypatch.setattr(click, "prompt", lambda *a, **k: next(prompts))
+
+  api_key, proj, region = cli_create._handle_login_with_google()
+  assert api_key is None
+  assert proj == "test-proj"
+  assert region == "us-east1"
+
+
+def test_handle_login_with_google_option_2(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+  """User selects 2, goes through express sign up."""
+  monkeypatch.setattr(gcp_utils, "check_adc", lambda: True)
+  monkeypatch.setattr(gcp_utils, "retrieve_express_project", lambda: None)
+  monkeypatch.setattr(gcp_utils, "list_gcp_projects", lambda limit: [])
+  monkeypatch.setattr(gcp_utils, "check_express_eligibility", lambda: True)
+  monkeypatch.setattr(click, "confirm", lambda *a, **k: True)
+  prompts = iter(["2", "1"])
+  monkeypatch.setattr(click, "prompt", lambda *a, **k: next(prompts))
+  monkeypatch.setattr(
+      gcp_utils,
+      "sign_up_express",
+      lambda location="us-central1": {
+          "api_key": "new-key",
+          "project_id": "new-proj",
+          "region": location,
+      },
+  )
+
+  api_key, proj, region = cli_create._handle_login_with_google()
+  assert api_key == "new-key"
+  assert proj == "new-proj"
+  assert region == "us-central1"
+
+
+def test_handle_login_with_google_option_2_unset_project(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+  """User selects 2, goes through express sign up, and unsets existing gcloud project."""
+  monkeypatch.setattr(gcp_utils, "check_adc", lambda: True)
+  monkeypatch.setattr(gcp_utils, "retrieve_express_project", lambda: None)
+  monkeypatch.setattr(gcp_utils, "list_gcp_projects", lambda limit: [])
+  monkeypatch.setattr(gcp_utils, "check_express_eligibility", lambda: True)
+
+  confirms = iter([True, True])
+  monkeypatch.setattr(click, "confirm", lambda *a, **k: next(confirms))
+
+  prompts = iter(["2", "1"])
+  monkeypatch.setattr(click, "prompt", lambda *a, **k: next(prompts))
+
+  monkeypatch.setattr(
+      gcp_utils,
+      "sign_up_express",
+      lambda location="us-central1": {
+          "api_key": "new-key",
+          "project_id": "new-proj",
+          "region": location,
+      },
+  )
+
+  monkeypatch.setattr(
+      cli_create, "_get_gcp_project_from_gcloud", lambda: "old-proj"
+  )
+
+  called = {}
+
+  def fake_run(cmd, **kwargs):
+    if cmd == ["gcloud", "config", "unset", "project"]:
+      called["unset"] = True
+      return subprocess.CompletedProcess(args=cmd, returncode=0)
+    raise ValueError(f"Unexpected command: {cmd}")
+
+  monkeypatch.setattr(subprocess, "run", fake_run)
+
+  api_key, proj, region = cli_create._handle_login_with_google()
+  assert api_key == "new-key"
+  assert proj == "new-proj"
+  assert region == "us-central1"
+  assert called.get("unset") is True
+
+
+def test_handle_login_with_google_option_3(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+  """User selects 3, aborts."""
+  monkeypatch.setattr(gcp_utils, "retrieve_express_project", lambda: None)
+  monkeypatch.setattr(gcp_utils, "list_gcp_projects", lambda limit: [])
+  monkeypatch.setattr(click, "prompt", lambda *a, **k: "3")
+  with pytest.raises(click.Abort):
+    cli_create._handle_login_with_google()
 
 
 # prompt_str

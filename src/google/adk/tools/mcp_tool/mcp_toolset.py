@@ -17,6 +17,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import logging
+import os
 import sys
 from typing import Any
 from typing import Awaitable
@@ -29,7 +30,9 @@ from typing import TypeVar
 from typing import Union
 import warnings
 
+from mcp import SamplingCapability
 from mcp import StdioServerParameters
+from mcp.client.session import SamplingFnT
 from mcp.shared.session import ProgressFnT
 from mcp.types import ListResourcesResult
 from mcp.types import ListToolsResult
@@ -46,7 +49,6 @@ from ..base_toolset import ToolPredicate
 from ..load_mcp_resource_tool import LoadMcpResourceTool
 from ..tool_configs import BaseToolConfig
 from ..tool_configs import ToolArgsConfig
-from ..tool_context import ToolContext
 from .mcp_session_manager import MCPSessionManager
 from .mcp_session_manager import retry_on_errors
 from .mcp_session_manager import SseConnectionParams
@@ -81,7 +83,7 @@ class McpToolset(BaseToolset):
 
     # Use in an agent
     agent = LlmAgent(
-        model='gemini-2.0-flash',
+        model='gemini-2.5-flash',
         name='enterprise_assistant',
         instruction='Help user accessing their file systems',
         tools=[toolset],
@@ -114,6 +116,8 @@ class McpToolset(BaseToolset):
           Union[ProgressFnT, ProgressCallbackFactory]
       ] = None,
       use_mcp_resources: Optional[bool] = False,
+      sampling_callback: Optional[SamplingFnT] = None,
+      sampling_capabilities: Optional[SamplingCapability] = None,
   ):
     """Initializes the McpToolset.
 
@@ -150,9 +154,24 @@ class McpToolset(BaseToolset):
       use_mcp_resources: Whether the agent should have access to MCP resources.
         This will add a `load_mcp_resource` tool to the toolset and include
         available resources in the agent context. Defaults to False.
+      sampling_callback: Optional callback to handle sampling requests from the
+        MCP server.
+      sampling_capabilities: Optional capabilities for sampling.
     """
 
+    # --- BEGIN BOUND TOKEN PATCH ---
+    # Set GOOGLE_API_PREVENT_AGENT_TOKEN_SHARING_FOR_GCP_SERVICES to false
+    # to disable bound token sharing. Tracking on
+    # https://github.com/google/adk-python/issues/5361
+    os.environ["GOOGLE_API_PREVENT_AGENT_TOKEN_SHARING_FOR_GCP_SERVICES"] = (
+        "false"
+    )
+    # --- END BOUND TOKEN  PATCH ---
+
     super().__init__(tool_filter=tool_filter, tool_name_prefix=tool_name_prefix)
+
+    self._sampling_callback = sampling_callback
+    self._sampling_capabilities = sampling_capabilities
 
     if not connection_params:
       raise ValueError("Missing connection params in McpToolset.")
@@ -166,6 +185,8 @@ class McpToolset(BaseToolset):
     self._mcp_session_manager = MCPSessionManager(
         connection_params=self._connection_params,
         errlog=self._errlog,
+        sampling_callback=self._sampling_callback,
+        sampling_capabilities=self._sampling_capabilities,
     )
     self._auth_scheme = auth_scheme
     self._auth_credential = auth_credential
@@ -182,16 +203,31 @@ class McpToolset(BaseToolset):
     )
     self._use_mcp_resources = use_mcp_resources
 
-  def _get_auth_headers(self) -> Optional[Dict[str, str]]:
+  def _get_auth_headers(
+      self, readonly_context: Optional[ReadonlyContext] = None
+  ) -> Optional[Dict[str, str]]:
     """Build authentication headers from exchanged credential.
+
+    Args:
+      readonly_context: Readonly context to get credentials from.
 
     Returns:
         Dictionary of auth headers, or None if no auth configured.
     """
-    if not self._auth_config or not self._auth_config.exchanged_auth_credential:
+    if not self._auth_config:
       return None
 
-    credential = self._auth_config.exchanged_auth_credential
+    credential = None
+    if readonly_context:
+      credential = readonly_context.get_credential(
+          self._auth_config.credential_key
+      )
+
+    if not credential:
+      credential = self._auth_config.exchanged_auth_credential
+
+    if not credential:
+      return None
     headers: Optional[Dict[str, str]] = None
 
     if credential.oauth2:
@@ -228,6 +264,10 @@ class McpToolset(BaseToolset):
                 f"{credential.http.scheme} {credential.http.credentials.token}"
             )
         }
+
+      if credential.http.additional_headers:
+        headers = headers or {}
+        headers.update(credential.http.additional_headers)
     elif credential.api_key:
       # For API key, use the auth scheme to determine header name
       if self._auth_config.auth_scheme:
@@ -264,7 +304,7 @@ class McpToolset(BaseToolset):
         headers.update(provider_headers)
 
     # Add auth headers from exchanged credential if available
-    auth_headers = self._get_auth_headers()
+    auth_headers = self._get_auth_headers(readonly_context)
     if auth_headers:
       headers.update(auth_headers)
 
@@ -431,6 +471,20 @@ class McpToolset(BaseToolset):
         auth_credential=mcp_toolset_config.auth_credential,
         use_mcp_resources=mcp_toolset_config.use_mcp_resources,
     )
+
+  def __getstate__(self):
+    """Custom pickling to exclude non-picklable runtime objects."""
+    state = self.__dict__.copy()
+    # Remove unpicklable file-like objects
+    state.pop("_errlog", None)
+    return state
+
+  def __setstate__(self, state):
+    """Custom unpickling to restore state."""
+    self.__dict__.update(state)
+    # Default to sys.stderr if _errlog was removed during pickling
+    if not hasattr(self, "_errlog") or self._errlog is None:
+      self._errlog = sys.stderr
 
 
 class MCPToolset(McpToolset):
