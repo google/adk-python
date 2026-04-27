@@ -200,10 +200,7 @@ class GcpAuthProvider(BaseAuthProvider):
     for call_id, _ in euc_responses.items():
       if call_id in euc_calls:
         call = euc_calls[call_id]
-        if (
-            call.args
-            and call.args.get("function_call_id") == target_tool_call_id
-        ):
+        if call.args and call.args.get("functionCallId") == target_tool_call_id:
           return True
     return False
 
