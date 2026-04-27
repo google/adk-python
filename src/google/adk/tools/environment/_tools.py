@@ -47,9 +47,9 @@ def _truncate(text: str, limit: int = MAX_OUTPUT_CHARS) -> str:
 
 _EXECUTE_TOOL_DESCRIPTION = """
 Run a shell command in the environment. For running programs, tests, and build
-commands ONLY. WARNING: Do NOT use for file reading -- use the ReadFile tool 
-instead. Shell commands like 'cat, head, tail will produce inferior results. 
-Good: Execute("python3 script.py"), Execute("pytest"), Execute("find ..."). 
+commands ONLY. WARNING: Do NOT use for file reading -- use the ReadFile tool
+instead. Shell commands like 'cat, head, tail will produce inferior results.
+Good: Execute("python3 script.py"), Execute("pytest"), Execute("find ...").
 Bad: Execute("head ..."), Execute("cat ...").
 """
 

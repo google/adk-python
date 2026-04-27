@@ -1,11 +1,11 @@
-# CrewAI Tool **kwargs Parameter Handling
+# CrewAI Tool \*\*kwargs Parameter Handling
 
 This sample demonstrates how `CrewaiTool` correctly handles tools with
 `**kwargs` parameters, which is a common pattern in CrewAI tools.
 
 ## What This Sample Demonstrates
 
-### Key Feature: **kwargs Parameter Passing
+### Key Feature: \*\*kwargs Parameter Passing
 
 CrewAI tools often accept arbitrary parameters via `**kwargs`:
 
@@ -55,6 +55,7 @@ python main.py
 ```
 
 **Expected output:**
+
 ```
 ============================================================
 CrewAI Tool **kwargs Parameter Test
@@ -77,8 +78,8 @@ Agent: [Uses tool with category, date_range, and limit parameters]
 
 ✅ **CrewAI tool integration** - Wrapping a CrewAI BaseTool with ADK
 ✅ **Basic parameters** - Required `query` parameter passes correctly
-✅ ****kwargs passing** - Extra parameters (category, date_range, limit) pass
-   through
+✅ \*\***kwargs passing** - Extra parameters (category, date_range, limit) pass
+through
 ✅ **End-to-end execution** - Tool executes and returns results to agent
 
 ## Code Structure
@@ -95,25 +96,27 @@ crewai_tool_kwargs/
 
 **agent.py:**
 
-- Defines `CustomSearchTool` (CrewAI BaseTool with **kwargs)
+- Defines `CustomSearchTool` (CrewAI BaseTool with \*\*kwargs)
 - Wraps it with `CrewaiTool`
 - Creates agent with the wrapped tool
 
 **main.py:**
 
 - Test 1: Basic search (no extra params)
-- Test 2: Search with filters (tests **kwargs)
+- Test 2: Search with filters (tests \*\*kwargs)
 
 ## How It Works
 
 1. **CrewAI Tool Definition** (`agent.py`):
+
    ```python
    class CustomSearchTool(BaseTool):
        def _run(self, query: str, **kwargs) -> str:
            # kwargs receives: category, date_range, limit, etc.
    ```
 
-2. **ADK Wrapping** (`agent.py`):
+1. **ADK Wrapping** (`agent.py`):
+
    ```python
    adk_search_tool = CrewaiTool(
        crewai_search_tool,
@@ -122,12 +125,14 @@ crewai_tool_kwargs/
    )
    ```
 
-3. **LLM Function Calling** (`main.py`):
+1. **LLM Function Calling** (`main.py`):
+
    - LLM sees the tool in function calling format
    - LLM calls with: `{query: "...", category: "...", date_range: "...", limit: 10}`
    - CrewaiTool passes ALL parameters to `**kwargs`
 
-4. **Tool Execution**:
+1. **Tool Execution**:
+
    - `query` → positional parameter
    - `category`, `date_range`, `limit` → collected in `**kwargs`
    - Tool logic uses all parameters
