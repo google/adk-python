@@ -117,7 +117,7 @@ def _extract_code_from_error_message(
   return None
 
 
-def _maybe_recover_from_api_rejection(llm_response) -> bool:
+def _maybe_recover_from_api_rejection(llm_response: LlmResponse) -> bool:
   """Recovers an executable_code part from a Gemini 2.x API rejection.
 
   When ADK uses a non-built-in code executor (e.g.,
@@ -199,7 +199,7 @@ Total columns: {df.shape[1]}
 '''
 
 
-class _CodeExecutionRequestProcessor(BaseLlmRequestProcessor):
+class _CodeExecutionRequestProcessor(BaseLlmRequestProcessor):  # type: ignore[misc]
   """Processes code execution requests."""
 
   @override
@@ -233,7 +233,7 @@ class _CodeExecutionRequestProcessor(BaseLlmRequestProcessor):
 request_processor = _CodeExecutionRequestProcessor()
 
 
-class _CodeExecutionResponseProcessor(BaseLlmResponseProcessor):
+class _CodeExecutionResponseProcessor(BaseLlmResponseProcessor):  # type: ignore[misc]
   """Processes code execution responses."""
 
   @override
@@ -357,7 +357,7 @@ async def _run_pre_processor(
 
 async def _run_post_processor(
     invocation_context: InvocationContext,
-    llm_response,
+    llm_response: LlmResponse,
 ) -> AsyncGenerator[Event, None]:
   """Post-process the model response by extracting and executing the first code block."""
   agent = invocation_context.agent
@@ -482,7 +482,7 @@ def _extract_and_replace_inline_files(
     llm_request: LlmRequest,
 ) -> list[File]:
   """Extracts and replaces inline files with file names in the LLM request."""
-  all_input_files = code_executor_context.get_input_files()
+  all_input_files: list[File] = code_executor_context.get_input_files()
   saved_file_names = set(f.name for f in all_input_files)
 
   # [Step 1] Process input files from LlmRequest and cache them in CodeExecutor.
@@ -531,7 +531,7 @@ def _get_or_set_execution_id(
   if not invocation_context.agent.code_executor.stateful:
     return None
 
-  execution_id = code_executor_context.get_execution_id()
+  execution_id: Optional[str] = code_executor_context.get_execution_id()
   if not execution_id:
     execution_id = invocation_context.session.id
     code_executor_context.set_execution_id(execution_id)
@@ -623,7 +623,7 @@ def _get_data_file_preprocessing_code(file: File) -> Optional[str]:
     return var_name
 
   if file.mime_type not in _DATA_FILE_UTIL_MAP:
-    return
+    return None
 
   var_name = _get_normalized_file_name(file.name)
   loader_code = _DATA_FILE_UTIL_MAP[file.mime_type].loader_code_template.format(
