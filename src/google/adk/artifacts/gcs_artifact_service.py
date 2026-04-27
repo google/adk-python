@@ -244,17 +244,18 @@ class GcsArtifactService(BaseArtifactService):
           content_type="text/plain",
       )
     elif artifact.file_data:
-      if not artifact.file_data.file_uri:
+      file_uri = artifact.file_data.file_uri
+      if not file_uri:
         raise InputValidationError("Artifact file_data must have a file_uri.")
       if artifact_util.is_artifact_ref(artifact):
-        if not artifact_util.parse_artifact_uri(artifact.file_data.file_uri):
+        if not artifact_util.parse_artifact_uri(file_uri):
           raise InputValidationError(
-              f"Invalid artifact reference URI: {artifact.file_data.file_uri}"
+              f"Invalid artifact reference URI: {file_uri}"
           )
       # Store the URI as blob metadata; no content to upload.
       blob.metadata = {
           **(blob.metadata or {}),
-          "file_uri": artifact.file_data.file_uri,
+          "file_uri": file_uri,
       }
       blob.upload_from_string(
           b"",
