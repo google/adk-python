@@ -21,6 +21,7 @@ from google.adk.agents.llm_agent import Agent
 from google.adk.agents.run_config import RunConfig
 from google.adk.agents.sequential_agent import SequentialAgent
 from google.adk.artifacts.in_memory_artifact_service import InMemoryArtifactService
+from google.adk.events.event import Event
 from google.adk.features import FeatureName
 from google.adk.features._feature_registry import temporary_feature_override
 from google.adk.memory.in_memory_memory_service import InMemoryMemoryService
@@ -37,7 +38,6 @@ from google.genai.types import Part
 from pydantic import BaseModel
 import pytest
 from pytest import mark
-from google.adk.events.event import Event
 
 from .. import testing_utils
 
