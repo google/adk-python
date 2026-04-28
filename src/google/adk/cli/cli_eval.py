@@ -24,7 +24,9 @@ from typing import Optional
 import click
 from google.genai import types as genai_types
 
+from ..agents.base_agent import BaseAgent
 from ..agents.llm_agent import Agent
+from ..apps.app import App
 from ..evaluation.base_eval_service import BaseEvalService
 from ..evaluation.base_eval_service import EvaluateConfig
 from ..evaluation.base_eval_service import EvaluateRequest
@@ -86,11 +88,33 @@ def get_default_metric_info(
   )
 
 
-def get_root_agent(agent_module_file_path: str) -> Agent:
-  """Returns root agent given the agent module."""
+def get_app_or_root_agent(
+    agent_module_file_path: str,
+) -> tuple[Optional[App], BaseAgent]:
+  """Returns the (app, root_agent) pair for the given agent module.
+
+  Resolution order mirrors `AgentLoader._load_from_module_or_package`:
+  if the module exposes an `App` instance via `agent.app`, that App and its
+  `root_agent` are returned. Otherwise `app` is None and the bare
+  `agent.root_agent` is returned. This lets eval flows participate in the
+  App's plugin / cache / resumability lifecycle when one is defined, while
+  preserving the bare-`root_agent` path for projects that don't use App.
+  """
   agent_module = _get_agent_module(agent_module_file_path)
-  root_agent = agent_module.agent.root_agent
-  return root_agent
+  app = getattr(agent_module.agent, "app", None)
+  if isinstance(app, App):
+    return app, app.root_agent
+  return None, agent_module.agent.root_agent
+
+
+def get_root_agent(agent_module_file_path: str) -> Agent:
+  """Returns root agent given the agent module.
+
+  Kept for backward compatibility. New callers should prefer
+  `get_app_or_root_agent`, which also surfaces the wrapping `App` (if any)
+  so plugins, context-cache, and resumability configs are honored.
+  """
+  return get_app_or_root_agent(agent_module_file_path)[1]
 
 
 def try_get_reset_func(agent_module_file_path: str) -> Any:
