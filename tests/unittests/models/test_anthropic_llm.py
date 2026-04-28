@@ -28,6 +28,7 @@ from google.adk.models.anthropic_llm import Claude
 from google.adk.models.anthropic_llm import content_to_message_param
 from google.adk.models.anthropic_llm import function_declaration_to_tool_param
 from google.adk.models.anthropic_llm import part_to_message_block
+from google.adk.models.anthropic_llm import to_google_genai_finish_reason
 from google.adk.models.llm_request import LlmRequest
 from google.adk.models.llm_response import LlmResponse
 from google.genai import types
@@ -137,6 +138,23 @@ def test_supported_models():
   assert len(models) == 2
   assert models[0] == r"claude-3-.*"
   assert models[1] == r"claude-.*-4.*"
+
+
+@pytest.mark.parametrize(
+    ("stop_reason", "expected"),
+    [
+        ("end_turn", types.FinishReason.STOP),
+        ("stop_sequence", types.FinishReason.STOP),
+        ("tool_use", types.FinishReason.STOP),
+        ("pause_turn", types.FinishReason.STOP),
+        ("max_tokens", types.FinishReason.MAX_TOKENS),
+        ("refusal", types.FinishReason.SAFETY),
+        (None, types.FinishReason.FINISH_REASON_UNSPECIFIED),
+        ("unknown_reason", types.FinishReason.FINISH_REASON_UNSPECIFIED),
+    ],
+)
+def test_to_google_genai_finish_reason(stop_reason, expected):
+  assert to_google_genai_finish_reason(stop_reason) == expected
 
 
 function_declaration_test_cases = [
@@ -1350,6 +1368,54 @@ async def test_non_streaming_does_not_pass_stream_param():
   mock_client.messages.create.assert_called_once()
   _, kwargs = mock_client.messages.create.call_args
   assert "stream" not in kwargs
+  assert responses[0].finish_reason == types.FinishReason.STOP
+
+
+@pytest.mark.asyncio
+async def test_streaming_sets_finish_reason_from_message_delta():
+  llm = AnthropicLlm(model="claude-sonnet-4-20250514")
+
+  events = [
+      MagicMock(
+          type="message_start",
+          message=MagicMock(usage=MagicMock(input_tokens=5, output_tokens=0)),
+      ),
+      MagicMock(
+          type="content_block_start",
+          index=0,
+          content_block=anthropic_types.TextBlock(text="", type="text"),
+      ),
+      MagicMock(
+          type="content_block_delta",
+          index=0,
+          delta=anthropic_types.TextDelta(text="Hello", type="text_delta"),
+      ),
+      MagicMock(type="content_block_stop", index=0),
+      MagicMock(
+          type="message_delta",
+          delta=MagicMock(stop_reason="max_tokens"),
+          usage=MagicMock(output_tokens=3),
+      ),
+      MagicMock(type="message_stop"),
+  ]
+
+  mock_client = MagicMock()
+  mock_client.messages.create = AsyncMock(
+      return_value=_make_mock_stream_events(events)
+  )
+
+  llm_request = LlmRequest(
+      model="claude-sonnet-4-20250514",
+      contents=[Content(role="user", parts=[Part.from_text(text="Hi")])],
+      config=types.GenerateContentConfig(system_instruction="Test"),
+  )
+
+  with mock.patch.object(llm, "_anthropic_client", mock_client):
+    responses = [
+        r async for r in llm.generate_content_async(llm_request, stream=True)
+    ]
+
+  assert responses[-1].finish_reason == types.FinishReason.MAX_TOKENS
 
 
 def test_part_to_message_block_function_call_preserves_valid_id():
