@@ -15,7 +15,6 @@
 from __future__ import annotations
 
 import base64
-
 from typing import Any
 from typing import Dict
 from typing import List
@@ -399,14 +398,15 @@ def credential_to_param(
       encoded_credentials = base64.b64encode(
           f"{credentials.username}:{credentials.password}".encode("utf-8")
       ).decode("ascii")
+      python_name = INTERNAL_AUTH_PREFIX + "Authorization"
       param = ApiParameter(
           original_name="Authorization",
           param_location="header",
           param_schema=Schema(type="string"),
           description=auth_scheme.description or "Basic authentication",
-          py_name=INTERNAL_AUTH_PREFIX + "Authorization",
+          py_name=python_name,
       )
-      kwargs = {param.py_name: f"Basic {encoded_credentials}"}
+      kwargs = {python_name: f"Basic {encoded_credentials}"}
       return param, kwargs
     else:
       raise ValueError("Invalid HTTP auth credentials")
