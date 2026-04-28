@@ -38,8 +38,8 @@ def _user_key(app_name: str, user_id: str) -> str:
 
 
 def _extract_words_lower(text: str) -> set[str]:
-  """Extracts words from a string and converts them to lowercase."""
-  return set([word.lower() for word in re.findall(r'[A-Za-z]+', text)])
+  """Extracts Unicode-aware tokens from a string in lowercase."""
+  return set(word.lower() for word in re.findall(r'\w+', text))
 
 
 class InMemoryMemoryService(BaseMemoryService):
@@ -116,13 +116,19 @@ class InMemoryMemoryService(BaseMemoryService):
       for event in session_events:
         if not event.content or not event.content.parts:
           continue
-        words_in_event = _extract_words_lower(
-            ' '.join([part.text for part in event.content.parts if part.text])
+        event_text = ' '.join(
+            [part.text for part in event.content.parts if part.text]
         )
+        words_in_event = _extract_words_lower(event_text)
         if not words_in_event:
           continue
 
-        if any(query_word in words_in_event for query_word in words_in_query):
+        event_text_lower = event_text.lower()
+        if any(
+            query_word in words_in_event
+            or (not query_word.isascii() and query_word in event_text_lower)
+            for query_word in words_in_query
+        ):
           response.memories.append(
               MemoryEntry(
                   content=event.content,

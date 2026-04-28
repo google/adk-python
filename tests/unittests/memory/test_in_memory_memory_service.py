@@ -327,3 +327,53 @@ async def test_search_memory_is_scoped_by_user():
   assert (
       result_other_user.memories[0].content.parts[0].text == 'This is a secret.'
   )
+
+
+# --- Non-Latin language tests ---
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    'event_text,query,expected_count',
+    [
+        # Japanese (no space delimiters — substring fallback)
+        ('私の名前は太郎です', '太郎', 1),
+        ('私の名前は太郎です', '天気', 0),
+        # Chinese (no space delimiters — substring fallback)
+        ('我喜欢机器学习', '机器学习', 1),
+        ('我喜欢机器学习', '天气预报', 0),
+        # Korean (space-delimited — token match)
+        ('제 이름은 민수입니다', '민수입니다', 1),
+        # Cyrillic (space-delimited — token match)
+        ('Меня зовут Алексей', 'Алексей', 1),
+        # Mixed: non-Latin substring + Latin token in same event
+        ('太郎 works at ABC Corp', '太郎', 1),
+        ('太郎 works at ABC Corp', 'ABC', 1),
+        # Latin partial-word must NOT match (regression guard)
+        ('I like to code in Python.', 'thon', 0),
+    ],
+)
+async def test_search_memory_non_latin(event_text, query, expected_count):
+  """Tests search_memory with non-Latin scripts and mixed content."""
+  session = Session(
+      app_name=MOCK_APP_NAME,
+      user_id=MOCK_USER_ID,
+      id='session-i18n',
+      last_update_time=7000,
+      events=[
+          Event(
+              id='event-i18n',
+              invocation_id='inv-i18n',
+              author='user',
+              timestamp=90000,
+              content=types.Content(parts=[types.Part(text=event_text)]),
+          ),
+      ],
+  )
+  memory_service = InMemoryMemoryService()
+  await memory_service.add_session_to_memory(session)
+
+  result = await memory_service.search_memory(
+      app_name=MOCK_APP_NAME, user_id=MOCK_USER_ID, query=query
+  )
+  assert len(result.memories) == expected_count
