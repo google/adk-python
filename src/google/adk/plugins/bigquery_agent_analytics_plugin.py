@@ -2653,7 +2653,14 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
 
   async def _ensure_started(self, **kwargs) -> None:
     """Ensures that the plugin is started and initialized."""
-    if os.getpid() != self._init_pid:
+    # _init_pid == 0 means the plugin was unpickled and has never been
+    # initialized in this process (the pickle sentinel set by
+    # __getstate__).  Skip the fork reset in that case — no fork
+    # happened, and _started is already False so _lazy_setup will run.
+    # Real forks are caught by os.register_at_fork (line 108) and by
+    # this check when _init_pid is a real (non-zero) PID from a
+    # different process.
+    if self._init_pid != 0 and os.getpid() != self._init_pid:
       self._reset_runtime_state()
     if not self._started:
       # Kept original lock name as it was not explicitly changed.

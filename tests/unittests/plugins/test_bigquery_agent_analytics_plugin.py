@@ -7408,3 +7408,75 @@ class TestDatasetLocationHandling:
       ) as plugin:
         await plugin._ensure_started()
         assert plugin._started
+
+
+# ================================================================
+# TEST CLASS: Fork detection after pickle (Issue #86)
+# ================================================================
+class TestForkDetectionAfterPickle:
+  """Tests that unpickled plugins do not false-positive fork detection."""
+
+  @pytest.mark.asyncio
+  async def test_no_reset_after_unpickle(
+      self,
+      mock_auth_default,
+      mock_bq_client,
+      mock_write_client,
+      mock_to_arrow_schema,
+      mock_asyncio_to_thread,
+  ):
+    """Unpickled plugin does not trigger _reset_runtime_state."""
+    import pickle
+
+    config = bigquery_agent_analytics_plugin.BigQueryLoggerConfig(
+        create_views=False,
+    )
+    plugin = bigquery_agent_analytics_plugin.BigQueryAgentAnalyticsPlugin(
+        PROJECT_ID, DATASET_ID, table_id=TABLE_ID, config=config
+    )
+    # Pickle round-trip simulates Vertex AI Agent Engine deployment
+    pickled = pickle.dumps(plugin)
+    unpickled = pickle.loads(pickled)
+
+    assert unpickled._init_pid == 0  # pickle sentinel
+
+    with mock.patch.object(unpickled, "_reset_runtime_state") as mock_reset:
+      await unpickled._ensure_started()
+      # Should NOT have called _reset_runtime_state because
+      # _init_pid == 0 means "unpickled, never initialized"
+      mock_reset.assert_not_called()
+
+    assert unpickled._started
+    await unpickled.shutdown()
+
+  @pytest.mark.asyncio
+  async def test_reset_on_real_fork(
+      self,
+      mock_auth_default,
+      mock_bq_client,
+      mock_write_client,
+      mock_to_arrow_schema,
+      mock_asyncio_to_thread,
+  ):
+    """Plugin detects real fork when _init_pid is a real non-zero PID."""
+    config = bigquery_agent_analytics_plugin.BigQueryLoggerConfig(
+        create_views=False,
+    )
+    async with managed_plugin(
+        project_id=PROJECT_ID,
+        dataset_id=DATASET_ID,
+        table_id=TABLE_ID,
+        config=config,
+    ) as plugin:
+      await plugin._ensure_started()
+      # Simulate a fork: set _init_pid to a different real PID
+      plugin._init_pid = 99999
+      plugin._started = True  # pretend it was started in parent
+
+      with mock.patch.object(
+          plugin, "_reset_runtime_state", wraps=plugin._reset_runtime_state
+      ) as mock_reset:
+        await plugin._ensure_started()
+        # Should have called _reset_runtime_state because
+        # _init_pid is a real PID different from os.getpid()
+        mock_reset.assert_called_once()
