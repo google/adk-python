@@ -53,11 +53,13 @@ adk web contributing/samples/cache_analysis
 The script automatically determines the experiment type based on the model name:
 
 ### Models with "2.5" (e.g., gemini-2.5-flash)
+
 - **Explicit Caching**: ADK explicit caching + Google's implicit caching
 - **Implicit Only**: Google's built-in implicit caching alone
 - **Measures**: Added benefit of explicit caching over Google's built-in implicit caching
 
 ### Other Models (e.g., gemini-2.0-flash-001, gemini-1.5-flash)
+
 - **Cached**: ADK explicit context caching enabled
 - **Uncached**: No caching (baseline comparison)
 - **Measures**: Raw performance improvement from explicit caching vs no caching
@@ -65,12 +67,12 @@ The script automatically determines the experiment type based on the model name:
 ## Tools Included
 
 1. **analyze_data_patterns** - Statistical analysis and pattern recognition in datasets
-2. **research_literature** - Academic and professional literature research with citations
-3. **generate_test_scenarios** - Comprehensive test case generation and validation strategies
-4. **benchmark_performance** - System performance measurement and bottleneck analysis
-5. **optimize_system_performance** - Performance optimization recommendations and strategies
-6. **analyze_security_vulnerabilities** - Security risk assessment and vulnerability analysis
-7. **design_scalability_architecture** - Scalable system architecture design and planning
+1. **research_literature** - Academic and professional literature research with citations
+1. **generate_test_scenarios** - Comprehensive test case generation and validation strategies
+1. **benchmark_performance** - System performance measurement and bottleneck analysis
+1. **optimize_system_performance** - Performance optimization recommendations and strategies
+1. **analyze_security_vulnerabilities** - Security risk assessment and vulnerability analysis
+1. **design_scalability_architecture** - Scalable system architecture design and planning
 
 ## Expected Results
 
@@ -79,35 +81,43 @@ The script automatically determines the experiment type based on the model name:
 **Note**: This sample uses a tool-heavy agent that may show different performance characteristics than simple text-based agents.
 
 ### Performance Improvements
+
 - **Simple Text Agents**: Typically see 30-70% latency reduction with caching
 - **Tool-Heavy Agents**: May experience higher latency due to cache setup overhead, but still provide cost benefits
 - **Gemini 2.5 Flash**: Compares explicit ADK caching against Google's built-in implicit caching
 
 ### Cost Savings
+
 - **Input Token Cost**: 75% reduction for cached content (25% of normal cost)
 - **Typical Savings**: 30-60% on input costs for multi-turn conversations
 - **Tool-Heavy Workloads**: Cost savings often outweigh latency trade-offs
 
 ### Token Metrics
+
 - **Cached Content Token Count**: Non-zero values indicating successful cache hits
 - **Cache Hit Ratio**: Proportion of tokens served from cache vs fresh computation
 
 ## Troubleshooting
 
 ### Zero Cached Tokens
+
 If `cached_content_token_count` is always 0:
+
 - Verify model names match exactly (e.g., `gemini-2.0-flash-001`)
 - Check that cache configuration `min_tokens` threshold is met
 - Ensure proper App-based configuration is used
 
 ### Session Errors
+
 If seeing "Session not found" errors:
+
 - Verify `runner.app_name` is used for session creation
 - Check App vs Agent object usage in InMemoryRunner initialization
 
 ## Technical Implementation
 
 This sample demonstrates:
+
 - **Modern App Architecture**: App-level cache configuration following ADK best practices
 - **Integration Testing**: Comprehensive cache functionality validation
 - **Performance Analysis**: Detailed metrics collection and comparison methodology

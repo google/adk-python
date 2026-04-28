@@ -38,27 +38,26 @@ agent's prompt using the Genetic-Pareto (GEPA) algorithm. We'll use the Google
 Agent Development Kit (ADK) to build and evaluate a "Vote Taker" agent designed
 to collect audience votes while filtering sensitive information.
 
-
 ## GEPA Overview
 
 **GEPA (Genetic-Pareto)** is a prompt optimization algorithm that learns from
 trial and error, using LLM-based reflection to understand failures and guide
 prompt evolution. Here's a simplified view of how it works:
 
-1.  **Run & Collect:** It runs the agent with a candidate prompt on a few
-    training examples to collect interaction trajectories.
-2.  **Reflect:** It gives the trajectories of failed rollouts to a "reflection"
-    model, which analyzes what went wrong and generates high-level insights or
-    "rules" for improvement. For example, it might notice *"The agent should
-    always confirm the order number before issuing a refund."*
-3.  **Evolve:** It uses these insights to propose new candidate prompts by
-    editing existing prompts or combining ideas from different successful ones,
-    inspired by genetic algorithms.
-4.  **Evaluate & Select:** It evaluates these new prompts on a validation set
-    and keeps only the best-performing, diverse set of prompts (the "Pareto
-    frontier").
-5.  **Repeat:** It repeats this loop—collect, reflect, evolve, evaluate—until
-    it reaches its budget (`max_metric_calls`).
+1. **Run & Collect:** It runs the agent with a candidate prompt on a few
+   training examples to collect interaction trajectories.
+1. **Reflect:** It gives the trajectories of failed rollouts to a "reflection"
+   model, which analyzes what went wrong and generates high-level insights or
+   "rules" for improvement. For example, it might notice *"The agent should
+   always confirm the order number before issuing a refund."*
+1. **Evolve:** It uses these insights to propose new candidate prompts by
+   editing existing prompts or combining ideas from different successful ones,
+   inspired by genetic algorithms.
+1. **Evaluate & Select:** It evaluates these new prompts on a validation set
+   and keeps only the best-performing, diverse set of prompts (the "Pareto
+   frontier").
+1. **Repeat:** It repeats this loop—collect, reflect, evolve, evaluate—until
+   it reaches its budget (`max_metric_calls`).
 
 This can result in a more detailed and robust prompt that has learned from its
 mistakes, and capturing nuances that are sometimes difficult to discover
@@ -96,29 +95,29 @@ Setting the right hyperparameters is crucial for a successful and efficient
 run. The following hyperparameters can be set via command-line flags in
 `run_experiment.py`:
 
-*   `--max_metric_calls`: Total budget for GEPA prompt evaluations. This is the
-    main control for runtime/cost. One could start with 100 and increase to
-    500+ for further optimization.
-*   `--eval_set_size`: Size of the dev set to use for Pareto frontier
-    evaluation in GEPA. If None, uses all available dev tasks. A larger size
-    gives a more stable, less noisy fitness score with more coverage but is
-    more expensive and slows down the GEPA runtime. A few tens of examples
-    might suffice for simpler tasks and up to a few hundreds
-    for more complex and variable tasks.
-*   `--train_batch_size`: Number of trajectories sampled from rollouts
-    to be used by the reflection model in each GEPA step to generate prompt
-    improvements. This corresponds to the mini-batch size in GEPA used as a
-    fast, preliminary filter for new candidate prompts. It trades-off signal
-    quality and cost of evaluation. The GEPA paper uses a default of 3.
-    Increasing the batch size may help provide a more stable
-    signal and estimate of a prompt quality but entails higher cost and less
-    iterations, given a fixed budget. One can start with a low value and
-    increase the size if significant variations are observed.
-*   `--num_eval_trials`: Number of times each task is run during evaluation.
-    Higher values give more stable evaluation metrics but increase runtime.
-    Recommended: 4-8.
-*   `--num_test_records`: Size of the test set for final evaluation of the
-    optimized prompt. If None, uses all available test tasks.
+- `--max_metric_calls`: Total budget for GEPA prompt evaluations. This is the
+  main control for runtime/cost. One could start with 100 and increase to
+  500+ for further optimization.
+- `--eval_set_size`: Size of the dev set to use for Pareto frontier
+  evaluation in GEPA. If None, uses all available dev tasks. A larger size
+  gives a more stable, less noisy fitness score with more coverage but is
+  more expensive and slows down the GEPA runtime. A few tens of examples
+  might suffice for simpler tasks and up to a few hundreds
+  for more complex and variable tasks.
+- `--train_batch_size`: Number of trajectories sampled from rollouts
+  to be used by the reflection model in each GEPA step to generate prompt
+  improvements. This corresponds to the mini-batch size in GEPA used as a
+  fast, preliminary filter for new candidate prompts. It trades-off signal
+  quality and cost of evaluation. The GEPA paper uses a default of 3.
+  Increasing the batch size may help provide a more stable
+  signal and estimate of a prompt quality but entails higher cost and less
+  iterations, given a fixed budget. One can start with a low value and
+  increase the size if significant variations are observed.
+- `--num_eval_trials`: Number of times each task is run during evaluation.
+  Higher values give more stable evaluation metrics but increase runtime.
+  Recommended: 4-8.
+- `--num_test_records`: Size of the test set for final evaluation of the
+  optimized prompt. If None, uses all available test tasks.
 
 ## LLM-based Rater
 

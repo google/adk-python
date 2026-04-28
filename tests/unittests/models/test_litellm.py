@@ -45,6 +45,7 @@ from google.adk.models.lite_llm import _model_response_to_chunk
 from google.adk.models.lite_llm import _model_response_to_generate_content_response
 from google.adk.models.lite_llm import _parse_tool_calls_from_text
 from google.adk.models.lite_llm import _redirect_litellm_loggers_to_stdout
+from google.adk.models.lite_llm import _safe_json_serialize
 from google.adk.models.lite_llm import _schema_to_dict
 from google.adk.models.lite_llm import _split_message_content_and_tool_calls
 from google.adk.models.lite_llm import _THOUGHT_SIGNATURE_SEPARATOR
@@ -678,6 +679,31 @@ def test_schema_to_dict_filters_none_enum_values():
       "READY",
       "DONE",
   ]
+
+
+def test_safe_json_serialize_serializable_object():
+  assert _safe_json_serialize({"a": 1, "b": [2, 3]}) == '{"a": 1, "b": [2, 3]}'
+
+
+def test_safe_json_serialize_non_serializable_object_falls_back_to_str():
+  class _NotJsonable:
+
+    def __repr__(self):
+      return "<not jsonable>"
+
+  assert _safe_json_serialize(_NotJsonable()) == "<not jsonable>"
+
+
+def test_safe_json_serialize_circular_dict_falls_back_to_str():
+  obj = {}
+  obj["self"] = obj
+  assert isinstance(_safe_json_serialize(obj), str)
+
+
+def test_safe_json_serialize_circular_list_falls_back_to_str():
+  obj = []
+  obj.append(obj)
+  assert isinstance(_safe_json_serialize(obj), str)
 
 
 MULTIPLE_FUNCTION_CALLS_STREAM = [
@@ -2873,12 +2899,6 @@ async def test_get_content_file_uri_file_id_required_falls_back_to_text(
             "video_url",
             id="video",
         ),
-        pytest.param(
-            "https://example.com/audio.mp3",
-            "audio/mpeg",
-            "audio_url",
-            id="audio",
-        ),
     ],
 )
 async def test_get_content_file_uri_media_url_file_id_required_uses_url_type(
@@ -3143,17 +3163,57 @@ async def test_get_content_file_uri_mime_type_inference(
 
 
 @pytest.mark.asyncio
-async def test_get_content_audio():
-  parts = [
-      types.Part.from_bytes(data=b"test_audio_data", mime_type="audio/mpeg")
-  ]
+@pytest.mark.parametrize(
+    "mime_type,expected_format",
+    [
+        ("audio/mpeg", "mp3"),
+        ("audio/mp3", "mp3"),
+        ("audio/wav", "wav"),
+        ("audio/x-wav", "wav"),
+        ("audio/wave", "wav"),
+        ("audio/flac", "flac"),
+        ("audio/ogg", "ogg"),
+        ("audio/mp4", "mp4"),
+    ],
+)
+async def test_get_content_audio_inline_data_emits_input_audio(
+    mime_type, expected_format
+):
+  """Audio inline_data is serialised as `input_audio` with raw base64 + format."""
+  parts = [types.Part.from_bytes(data=b"test_audio_data", mime_type=mime_type)]
   content = await _get_content(parts)
-  assert content[0]["type"] == "audio_url"
-  assert (
-      content[0]["audio_url"]["url"]
-      == "data:audio/mpeg;base64,dGVzdF9hdWRpb19kYXRh"
-  )
-  assert "format" not in content[0]["audio_url"]
+  assert content == [{
+      "type": "input_audio",
+      "input_audio": {
+          "data": "dGVzdF9hdWRpb19kYXRh",
+          "format": expected_format,
+      },
+  }]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "provider,model",
+    [
+        ("openai", "openai/gpt-4o"),
+        ("azure", "azure/gpt-4"),
+    ],
+)
+async def test_get_content_audio_file_uri_http_falls_back_to_text(
+    provider, model
+):
+  """Audio HTTP file_uri falls back to a text reference for openai/azure."""
+  file_uri = "https://example.com/audio.mp3"
+  parts = [
+      types.Part(
+          file_data=types.FileData(file_uri=file_uri, mime_type="audio/mpeg")
+      )
+  ]
+  content = await _get_content(parts, provider=provider, model=model)
+  assert content == [{
+      "type": "text",
+      "text": f'[File reference: "{file_uri}"]',
+  }]
 
 
 def test_to_litellm_role():

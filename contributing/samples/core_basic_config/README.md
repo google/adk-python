@@ -2,6 +2,6 @@
 
 This sample only covers:
 
-* name
-* description
-* model
+- name
+- description
+- model
