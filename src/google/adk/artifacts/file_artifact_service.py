@@ -25,6 +25,7 @@ from typing import Optional
 from typing import Union
 from urllib.parse import unquote
 from urllib.parse import urlparse
+from urllib.request import url2pathname
 
 from google.genai import types
 from pydantic import alias_generators
@@ -59,7 +60,10 @@ def _file_uri_to_path(uri: str) -> Optional[Path]:
   parsed = urlparse(uri)
   if parsed.scheme != "file":
     return None
-  return Path(unquote(parsed.path))
+  path_str = unquote(parsed.path)
+  if os.name == "nt":
+    path_str = url2pathname(path_str)
+  return Path(path_str)
 
 
 _USER_NAMESPACE_PREFIX = "user:"
