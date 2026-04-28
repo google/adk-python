@@ -96,6 +96,10 @@ optional-dependencies.dev = [
   "pyink>=25.12",
   "pylint>=2.6",
 ]
+optional-dependencies.dns-aid = [
+  "dns-aid>=0.18,<1",
+  "google-adk[a2a]",
+]
 optional-dependencies.docs = [
   "autodoc-pydantic",
   "furo",
