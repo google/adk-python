@@ -7447,6 +7447,9 @@ class TestForkDetectionAfterPickle:
       mock_reset.assert_not_called()
 
     assert unpickled._started
+    # After successful startup, _init_pid should be recorded so
+    # fork detection works for the rest of this instance's lifetime.
+    assert unpickled._init_pid == os.getpid()
     await unpickled.shutdown()
 
   @pytest.mark.asyncio
@@ -7470,7 +7473,7 @@ class TestForkDetectionAfterPickle:
     ) as plugin:
       await plugin._ensure_started()
       # Simulate a fork: set _init_pid to a different real PID
-      plugin._init_pid = 99999
+      plugin._init_pid = max(os.getpid() - 1, 1)
       plugin._started = True  # pretend it was started in parent
 
       with mock.patch.object(

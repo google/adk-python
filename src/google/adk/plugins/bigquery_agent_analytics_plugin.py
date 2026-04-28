@@ -2672,6 +2672,12 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
             await self._lazy_setup(**kwargs)
             self._started = True
             self._startup_error = None
+            # Record the current PID so fork detection works for
+            # the rest of this instance's lifetime.  Without this,
+            # an unpickled plugin would keep _init_pid == 0 forever,
+            # disabling the PID-based fork check.
+            if self._init_pid == 0:
+              self._init_pid = os.getpid()
           except Exception as e:
             self._startup_error = e
             logger.error("Failed to initialize BigQuery Plugin: %s", e)
