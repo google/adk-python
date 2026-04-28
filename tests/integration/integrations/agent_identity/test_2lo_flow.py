@@ -18,13 +18,6 @@ import dataclasses
 from typing import Any
 from unittest import mock
 
-import pytest
-
-pytest.importorskip(
-    "google.cloud.iamconnectorcredentials_v1alpha",
-    reason="Requires google-cloud-iamconnectorcredentials",
-)
-
 from google.adk import Agent
 from google.adk import Runner
 from google.adk.auth.auth_tool import AuthConfig
@@ -34,9 +27,12 @@ from google.adk.integrations.agent_identity import GcpAuthProvider
 from google.adk.integrations.agent_identity import GcpAuthProviderScheme
 from google.adk.sessions.in_memory_session_service import InMemorySessionService
 from google.adk.tools.base_authenticated_tool import BaseAuthenticatedTool
+from google.adk.tools.mcp_tool.mcp_tool import McpTool
 from google.cloud.iamconnectorcredentials_v1alpha import RetrieveCredentialsRequest
 from google.cloud.iamconnectorcredentials_v1alpha import RetrieveCredentialsResponse
 from google.genai import types
+from mcp.types import Tool as McpBaseTool
+import pytest
 
 from tests.unittests import testing_utils
 
@@ -200,3 +196,73 @@ async def test_gcp_agent_identity_2lo_gets_token() -> None:
 
     assert function_response.name == "dummy_tool"
     assert DUMMY_TOKEN in str(function_response.response)
+
+
+@pytest.mark.parametrize("llm_backend", ["GOOGLE_AI"], indirect=True)
+@pytest.mark.asyncio
+async def test_gcp_agent_identity_2lo_sends_authorization_header_to_mcp_session(
+    llm_backend: Any,
+) -> None:
+  """Ensures a 2LO token from GCP is correctly passed into the outbound MCP session headers."""
+  CredentialManager._auth_provider_registry._providers.clear()
+  CredentialManager.register_auth_provider(GcpAuthProvider())
+
+  mock_operation = _DummyOperation()
+  with mock.patch.object(
+      gcp_auth_provider, "Client", autospec=True
+  ) as mock_gcp:
+    mock_gcp.return_value.retrieve_credentials.return_value = mock_operation
+
+    mock_session_mgr = mock.AsyncMock()
+    mock_session_mgr.create_session.return_value.call_tool.return_value = (
+        mock.MagicMock()
+    )
+
+    mcp_tool = McpTool(
+        mcp_tool=McpBaseTool(
+            name="dummy_mcp",
+            description="Dummy MCP tool for testing.",
+            inputSchema={"type": "object", "properties": {}},
+        ),
+        mcp_session_manager=mock_session_mgr,
+        auth_scheme=GcpAuthProviderScheme(
+            name=TEST_CONNECTOR_2LO, scopes=["test-scope"]
+        ),
+    )
+
+    agent = Agent(
+        name="test_agent",
+        model=testing_utils.MockModel.create(
+            responses=[
+                types.Part.from_function_call(name="dummy_mcp", args={}),
+                "Tool executed successfully.",
+            ]
+        ),
+        instruction="Use dummy_mcp tool.",
+        tools=[mcp_tool],
+    )
+
+    async for _ in Runner(
+        app_name="test_mcp_header_app",
+        agent=agent,
+        session_service=InMemorySessionService(),
+        auto_create_session=True,
+    ).run_async(
+        user_id="test_user",
+        session_id="session-id-2",
+        new_message=types.UserContent(parts=[types.Part(text="Run tool.")]),
+    ):
+      pass
+
+    mock_gcp.return_value.retrieve_credentials.assert_called_once_with(
+        RetrieveCredentialsRequest(
+            connector=TEST_CONNECTOR_2LO,
+            user_id="test_user",
+            scopes=["test-scope"],
+            force_refresh=False,
+        )
+    )
+
+    assert mock_session_mgr.create_session.call_args.kwargs.get("headers") == {
+        "Authorization": f"Bearer {DUMMY_TOKEN}"
+    }

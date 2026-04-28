@@ -102,6 +102,7 @@ optional-dependencies.docs = [
   "myst-parser",
   "sphinx<9",
   "sphinx-autodoc-typehints",
+  "sphinx-click",
   "sphinx-rtd-theme",
 ]
 optional-dependencies.eval = [
