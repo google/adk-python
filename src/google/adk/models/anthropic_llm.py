@@ -36,6 +36,7 @@ from anthropic import AsyncAnthropic
 from anthropic import AsyncAnthropicVertex
 from anthropic import NOT_GIVEN
 from anthropic import NotGiven
+from anthropic import RateLimitError
 from anthropic import types as anthropic_types
 from google.genai import types
 from pydantic import BaseModel
@@ -51,6 +52,28 @@ if TYPE_CHECKING:
 __all__ = ["AnthropicLlm", "Claude"]
 
 logger = logging.getLogger("google_adk." + __name__)
+
+
+_RATE_LIMIT_POSSIBLE_FIX_MESSAGE = """
+On how to mitigate this issue, please refer to:
+
+https://docs.anthropic.com/en/api/errors#http-errors
+"""
+
+
+class _AnthropicRateLimitError(RateLimitError):  # type: ignore[misc]
+  """Represents a rate limit error received from Anthropic."""
+
+  def __init__(self, rate_limit_error: RateLimitError):
+    super().__init__(
+        str(rate_limit_error),
+        response=rate_limit_error.response,
+        body=getattr(rate_limit_error, "body", None),
+    )
+
+  def __str__(self) -> str:
+    base_message = super().__str__()
+    return f"{_RATE_LIMIT_POSSIBLE_FIX_MESSAGE}\n\n{base_message}"
 
 
 @dataclasses.dataclass
@@ -493,22 +516,25 @@ class AnthropicLlm(BaseLlm):
     )
     thinking = _build_anthropic_thinking_param(llm_request.config)
 
-    if not stream:
-      message = await self._anthropic_client.messages.create(
-          model=model_to_use,
-          system=llm_request.config.system_instruction,
-          messages=messages,
-          tools=tools,
-          tool_choice=tool_choice,
-          max_tokens=self.max_tokens,
-          thinking=thinking,
-      )
-      yield message_to_generate_content_response(message)
-    else:
-      async for response in self._generate_content_streaming(
-          llm_request, messages, tools, tool_choice, thinking
-      ):
-        yield response
+    try:
+      if not stream:
+        message = await self._anthropic_client.messages.create(
+            model=model_to_use,
+            system=llm_request.config.system_instruction,
+            messages=messages,
+            tools=tools,
+            tool_choice=tool_choice,
+            max_tokens=self.max_tokens,
+            thinking=thinking,
+        )
+        yield message_to_generate_content_response(message)
+      else:
+        async for response in self._generate_content_streaming(
+            llm_request, messages, tools, tool_choice, thinking
+        ):
+          yield response
+    except RateLimitError as rate_limit_error:
+      raise _AnthropicRateLimitError(rate_limit_error) from rate_limit_error
 
   async def _generate_content_streaming(
       self,
