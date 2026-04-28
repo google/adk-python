@@ -87,8 +87,22 @@ class SetModelResponseTool(BaseTool):
               annotation=list[inner_type],
           )
       ]
+    elif isinstance(output_schema, dict):
+      # For raw dict schemas (e.g. {"type": "object", "properties": {...}}),
+      # use the `dict` type itself as the annotation rather than the dict
+      # instance. Passing the instance would later trigger
+      # `annotation in _py_builtin_type_to_schema_type.keys()` inside
+      # `_function_parameter_parse_util`, which calls `__hash__` on the
+      # annotation and raises `TypeError: unhashable type: 'dict'`.
+      params = [
+          inspect.Parameter(
+              'response',
+              inspect.Parameter.KEYWORD_ONLY,
+              annotation=dict,
+          )
+      ]
     else:
-      # For other schema types (list[str], dict, etc.),
+      # For other schema types (list[str], dict[str, int], etc.),
       # create a single parameter with the actual schema type
       params = [
           inspect.Parameter(
