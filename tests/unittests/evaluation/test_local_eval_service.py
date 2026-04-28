@@ -19,6 +19,7 @@ import sys
 from typing import Optional
 
 from google.adk.agents.llm_agent import LlmAgent
+from google.adk.apps.app import App
 from google.adk.errors.not_found_error import NotFoundError
 from google.adk.evaluation.base_eval_service import EvaluateConfig
 from google.adk.evaluation.base_eval_service import EvaluateRequest
@@ -791,3 +792,74 @@ def test_copy_invocation_rubrics_to_actual_invocations():
   _copy_invocation_rubrics_to_actual_invocations(expected, actual)
   assert actual[0].rubrics == [rubric1]
   assert actual[1].rubrics == [rubric2]
+
+
+@pytest.mark.asyncio
+async def test_perform_inference_forwards_app_to_evaluation_generator(
+    dummy_agent, mock_eval_sets_manager, mocker
+):
+  """LocalEvalService passes its `app` through to _generate_inferences_from_root_agent."""
+  app = App(name="test_app", root_agent=dummy_agent)
+
+  eval_case = EvalCase(eval_id="case-1", conversation=[])
+  mock_eval_sets_manager.get_eval_set.return_value = EvalSet(
+      eval_set_id="set-1",
+      eval_cases=[eval_case],
+  )
+
+  mock_generate = mocker.patch(
+      "google.adk.evaluation.local_eval_service.EvaluationGenerator._generate_inferences_from_root_agent",
+      new=mocker.AsyncMock(return_value=[]),
+  )
+
+  service = LocalEvalService(
+      root_agent=dummy_agent,
+      eval_sets_manager=mock_eval_sets_manager,
+      app=app,
+  )
+
+  request = InferenceRequest(
+      app_name="test_app",
+      eval_set_id="set-1",
+      eval_case_ids=["case-1"],
+      inference_config=InferenceConfig(),
+  )
+  async for _ in service.perform_inference(inference_request=request):
+    pass
+
+  mock_generate.assert_awaited_once()
+  assert mock_generate.await_args.kwargs["app"] is app
+
+
+@pytest.mark.asyncio
+async def test_perform_inference_passes_none_when_no_app(
+    dummy_agent, mock_eval_sets_manager, mocker
+):
+  """When LocalEvalService has no `app`, it forwards None (legacy behavior)."""
+  eval_case = EvalCase(eval_id="case-1", conversation=[])
+  mock_eval_sets_manager.get_eval_set.return_value = EvalSet(
+      eval_set_id="set-1",
+      eval_cases=[eval_case],
+  )
+
+  mock_generate = mocker.patch(
+      "google.adk.evaluation.local_eval_service.EvaluationGenerator._generate_inferences_from_root_agent",
+      new=mocker.AsyncMock(return_value=[]),
+  )
+
+  service = LocalEvalService(
+      root_agent=dummy_agent,
+      eval_sets_manager=mock_eval_sets_manager,
+  )
+
+  request = InferenceRequest(
+      app_name="test_app",
+      eval_set_id="set-1",
+      eval_case_ids=["case-1"],
+      inference_config=InferenceConfig(),
+  )
+  async for _ in service.perform_inference(inference_request=request):
+    pass
+
+  mock_generate.assert_awaited_once()
+  assert mock_generate.await_args.kwargs["app"] is None
