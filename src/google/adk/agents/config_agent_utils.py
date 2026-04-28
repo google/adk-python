@@ -32,11 +32,16 @@ from .common_configs import CodeConfig
 
 
 @experimental(FeatureName.AGENT_CONFIG)
-def from_config(config_path: str) -> BaseAgent:
+def from_config(config_path: str, *, trusted: bool = False) -> BaseAgent:
   """Build agent from a configfile path.
 
   Args:
     config_path: the path to a YAML config file.
+    trusted: When True, allow `args` keys in the YAML config. Set this only
+      when the YAML source is under operator control (local trusted config
+      authored by the project owner). Callers loading YAML supplied by an
+      end user, fetched from the network, written by a built-in agent
+      assistant, or otherwise outside operator control must leave this False.
 
   Returns:
     The created agent instance.
@@ -44,10 +49,11 @@ def from_config(config_path: str) -> BaseAgent:
   Raises:
     FileNotFoundError: If config file doesn't exist.
     ValidationError: If config file's content is invalid YAML.
-    ValueError: If agent type is unsupported.
+    ValueError: If agent type is unsupported, or if the config contains a
+      blocked key while trusted=False.
   """
   abs_path = os.path.abspath(config_path)
-  config = _load_config_from_path(abs_path)
+  config = _load_config_from_path(abs_path, trusted=trusted)
   agent_config = config.root
 
   # pylint: disable=unidiomatic-typecheck Needs exact class matching.
@@ -105,12 +111,18 @@ def _check_config_for_blocked_keys(node: Any, filename: str) -> None:
       _check_config_for_blocked_keys(item, filename)
 
 
-def _load_config_from_path(config_path: str) -> AgentConfig:
+def _load_config_from_path(
+    config_path: str, *, trusted: bool = False
+) -> AgentConfig:
   """Load an agent's configuration from a YAML file.
 
   Args:
     config_path: Path to the YAML config file. Both relative and absolute
       paths are accepted.
+    trusted: When True, skip the denylist that rejects `args` keys. Default
+      False blocks `args` regardless of the legacy `_set_enforce_denylist`
+      flag. The legacy flag remains as a force-on override for callers that
+      previously set it to True.
 
   Returns:
     The loaded and validated AgentConfig object.
@@ -118,6 +130,7 @@ def _load_config_from_path(config_path: str) -> AgentConfig:
   Raises:
     FileNotFoundError: If config file doesn't exist.
     ValidationError: If config file's content is invalid YAML.
+    ValueError: If the config contains a blocked key while trusted=False.
   """
   if not os.path.exists(config_path):
     raise FileNotFoundError(f"Config file not found: {config_path}")
@@ -125,7 +138,7 @@ def _load_config_from_path(config_path: str) -> AgentConfig:
   with open(config_path, "r", encoding="utf-8") as f:
     config_data = yaml.safe_load(f)
 
-  if _ENFORCE_DENYLIST:
+  if not trusted or _ENFORCE_DENYLIST:
     _check_config_for_blocked_keys(config_data, config_path)
 
   return AgentConfig.model_validate(config_data)

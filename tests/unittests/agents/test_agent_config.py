@@ -276,7 +276,7 @@ model_code:
   config_file = tmp_path / "litellm_agent.yaml"
   config_file.write_text(yaml_content)
 
-  agent = config_agent_utils.from_config(str(config_file))
+  agent = config_agent_utils.from_config(str(config_file), trusted=True)
 
   assert isinstance(agent, LlmAgent)
   assert isinstance(agent.model, LiteLlm)
@@ -300,7 +300,7 @@ model:
   config_file = tmp_path / "legacy_litellm_agent.yaml"
   config_file.write_text(yaml_content)
 
-  agent = config_agent_utils.from_config(str(config_file))
+  agent = config_agent_utils.from_config(str(config_file), trusted=True)
 
   assert isinstance(agent, LlmAgent)
   assert isinstance(agent.model, LiteLlm)
@@ -441,3 +441,69 @@ def test_load_config_from_path_blocks_args_when_enforced(tmp_path):
     assert "Blocked key 'args' found" in str(exc_info.value)
   finally:
     config_agent_utils._set_enforce_denylist(False)
+
+
+def test_from_config_blocks_args_by_default(tmp_path: Path):
+  """Default from_config() rejects YAML containing an 'args' key."""
+  config_file = tmp_path / "with_args.yaml"
+  config_file.write_text(
+      "agent_class: LlmAgent\n"
+      "name: agent_with_args\n"
+      'instruction: "."\n'
+      "model_code:\n"
+      "  name: google.adk.models.lite_llm.LiteLlm\n"
+      "  args:\n"
+      "    - name: model\n"
+      "      value: kimi/k2\n"
+  )
+
+  with pytest.raises(ValueError) as exc_info:
+    config_agent_utils.from_config(str(config_file))
+  assert "Blocked key 'args' found" in str(exc_info.value)
+
+
+def test_from_config_allows_args_when_trusted(tmp_path: Path):
+  """from_config(..., trusted=True) accepts YAML containing an 'args' key."""
+  config_file = tmp_path / "with_args.yaml"
+  config_file.write_text(
+      "agent_class: LlmAgent\n"
+      "name: agent_with_args\n"
+      'instruction: "."\n'
+      "model_code:\n"
+      "  name: google.adk.models.lite_llm.LiteLlm\n"
+      "  args:\n"
+      "    - name: model\n"
+      "      value: kimi/k2\n"
+  )
+
+  agent = config_agent_utils.from_config(str(config_file), trusted=True)
+
+  assert isinstance(agent, LlmAgent)
+  assert isinstance(agent.model, LiteLlm)
+  assert agent.model.model == "kimi/k2"
+
+
+def test_from_config_default_blocks_os_system_in_output_schema(tmp_path: Path):
+  """Default from_config() blocks the output_schema CodeConfig.args RCE sink.
+
+  Without the denylist, output_schema.name=os.system with a single args entry
+  would invoke os.system at agent load. The default trusted=False path
+  rejects the YAML before resolve_code_reference is reached.
+  """
+  marker = tmp_path / "rce_marker"
+  config_file = tmp_path / "exploit.yaml"
+  config_file.write_text(
+      "agent_class: LlmAgent\n"
+      "name: exploit_agent\n"
+      'instruction: "."\n'
+      'model: "gemini-2.5-flash"\n'
+      "output_schema:\n"
+      "  name: os.system\n"
+      "  args:\n"
+      f"    - value: 'touch {marker.as_posix()}'\n"
+  )
+
+  with pytest.raises(ValueError) as exc_info:
+    config_agent_utils.from_config(str(config_file))
+  assert "Blocked key 'args' found" in str(exc_info.value)
+  assert not marker.exists()
