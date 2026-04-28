@@ -22,15 +22,19 @@ from collections.abc import MutableMapping
 import contextvars
 import json
 import os
+import sys
 from typing import Any
 from typing import Literal
+from typing import TYPE_CHECKING
 from typing import TypedDict
 
 from google.genai import types
 from google.genai.models import t as transformers
-from mcp import ClientSession as McpClientSession
-from mcp import Tool as McpTool
 from opentelemetry._logs import Logger
+
+if TYPE_CHECKING:
+  from mcp import ClientSession as McpClientSession
+  from mcp import Tool as McpTool
 from opentelemetry._logs import LogRecord
 from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GEN_AI_INPUT_MESSAGES
 from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GEN_AI_OUTPUT_MESSAGES
@@ -135,7 +139,7 @@ def _safe_json_serialize_no_whitespaces(obj) -> str:
         ensure_ascii=False,
         default=lambda o: '<not serializable>',
     )
-  except (TypeError, OverflowError):
+  except (TypeError, ValueError, OverflowError):
     return '<not serializable>'
 
 
@@ -268,12 +272,16 @@ async def _to_tool_definitions(
   if callable(tool):
     return [_tool_definition_from_callable_tool(tool)]
 
-  if isinstance(tool, McpTool):
-    return [_tool_definition_from_mcp_tool(tool)]
+  if 'mcp' in sys.modules:
+    from mcp import ClientSession as McpClientSession
+    from mcp import Tool as McpTool
 
-  if isinstance(tool, McpClientSession):
-    result = await tool.list_tools()
-    return [_model_dump_to_tool_definition(t) for t in result.tools]
+    if isinstance(tool, McpTool):
+      return [_tool_definition_from_mcp_tool(tool)]
+
+    if isinstance(tool, McpClientSession):
+      result = await tool.list_tools()
+      return [_model_dump_to_tool_definition(t) for t in result.tools]
 
   return [
       GenericToolDefinition(

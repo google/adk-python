@@ -179,7 +179,7 @@ def convert_genai_part_to_a2a_part(
 ) -> Optional[a2a_types.Part]:
   """Convert a Google GenAI Part to an A2A Part."""
 
-  if part.text:
+  if part.text is not None:
     a2a_part = a2a_types.TextPart(text=part.text)
     if part.thought is not None:
       a2a_part.metadata = {_get_adk_metadata_key('thought'): part.thought}

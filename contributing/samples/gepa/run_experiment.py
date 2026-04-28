@@ -24,6 +24,7 @@ import os
 from absl import app
 from absl import flags
 import experiment
+import gepa_utils
 from google.genai import types
 import utils
 
@@ -105,7 +106,7 @@ def main(argv: Sequence[str]) -> None:
   for logger in loggers:
     logger.setLevel(logging.WARNING)
 
-  types.logger.addFilter(utils.FilterInferenceWarnings())
+  types.logger.addFilter(gepa_utils.FilterInferenceWarnings())
   output_dir = os.path.join(
       _OUTPUT_DIR.value, datetime.now().strftime('%Y%m%d%H%M%S%f')
   )
