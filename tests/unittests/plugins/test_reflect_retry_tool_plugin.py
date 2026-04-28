@@ -168,6 +168,57 @@ class TestReflectAndRetryToolPlugin(IsolatedAsyncioTestCase):
     # Should re-raise the original exception when max_retries is 0
     self.assertIs(cm.exception, error)
 
+  async def test_on_tool_error_callback_max_retries_zero_without_exception(
+      self,
+  ):
+    """Test error callback when max_retries is 0 and exception is disabled."""
+    mock_tool = self.get_mock_tool()
+    mock_tool_context = self.get_mock_tool_context()
+    sample_tool_args = self.get_sample_tool_args()
+    plugin = ReflectAndRetryToolPlugin(
+        max_retries=0, throw_exception_if_retry_exceeded=False
+    )
+    error = ValueError("Test error")
+
+    result = await plugin.on_tool_error_callback(
+        tool=mock_tool,
+        tool_args=sample_tool_args,
+        tool_context=mock_tool_context,
+        error=error,
+    )
+
+    # Should return a retry exceeded message instead of raising
+    self.assertIsNotNone(result)
+    self.assertEqual(result["response_type"], REFLECT_AND_RETRY_RESPONSE_TYPE)
+    self.assertEqual(result["error_type"], "ValueError")
+    self.assertEqual(result["retry_count"], 0)
+    self.assertIn(
+        "the retry limit has been exceeded", result["reflection_guidance"]
+    )
+
+  async def test_on_tool_error_callback_max_retries_zero_with_dict_error(self):
+    """Test error callback when max_retries is 0 and error is a dict."""
+    mock_tool = self.get_mock_tool()
+    mock_tool_context = self.get_mock_tool_context()
+    sample_tool_args = self.get_sample_tool_args()
+    plugin = CustomErrorExtractionPlugin(
+        max_retries=0, throw_exception_if_retry_exceeded=True
+    )
+    dict_error = {"status": "error", "message": "Custom dict error"}
+    plugin.set_error_condition(lambda result: dict_error)
+
+    with self.assertRaises(Exception) as cm:
+      await plugin.after_tool_callback(
+          tool=mock_tool,
+          tool_args=sample_tool_args,
+          tool_context=mock_tool_context,
+          result={"some": "result"},
+      )
+
+    # Should raise an Exception wrapping the dict
+    self.assertNotIsInstance(cm.exception, TypeError)
+    self.assertIn("Custom dict error", str(cm.exception))
+
   async def test_on_tool_error_callback_first_failure(self):
     """Test first tool failure creates reflection response."""
     plugin = self.get_plugin()
@@ -279,6 +330,40 @@ class TestReflectAndRetryToolPlugin(IsolatedAsyncioTestCase):
 
     # Verify exception properties
     self.assertIs(cm.exception, error)
+
+  async def test_max_retries_exceeded_with_dict_error(self):
+    """Test that Exception is raised when max retries exceeded with dict error."""
+    mock_tool = self.get_mock_tool()
+    mock_tool_context = self.get_mock_tool_context()
+    sample_tool_args = self.get_sample_tool_args()
+    plugin = CustomErrorExtractionPlugin(
+        max_retries=1, throw_exception_if_retry_exceeded=True
+    )
+    dict_error = {"status": "error", "message": "Custom dict error"}
+    plugin.set_error_condition(lambda result: dict_error)
+
+    # First call should fail and return a retry response
+    result1 = await plugin.after_tool_callback(
+        tool=mock_tool,
+        tool_args=sample_tool_args,
+        tool_context=mock_tool_context,
+        result={"some": "result"},
+    )
+    self.assertIsNotNone(result1)
+    self.assertEqual(result1["retry_count"], 1)
+
+    # Second call should exceed max_retries and raise
+    with self.assertRaises(Exception) as cm:
+      await plugin.after_tool_callback(
+          tool=mock_tool,
+          tool_args=sample_tool_args,
+          tool_context=mock_tool_context,
+          result={"some": "result"},
+      )
+
+    # Verify exception properties
+    self.assertNotIsInstance(cm.exception, TypeError)
+    self.assertIn("Custom dict error", str(cm.exception))
 
   async def test_max_retries_exceeded_without_exception(self):
     """Test max retries exceeded returns failure message when exception is disabled."""
