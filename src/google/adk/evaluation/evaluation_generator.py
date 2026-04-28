@@ -26,6 +26,7 @@ from google.genai.types import Content
 from pydantic import BaseModel
 
 from ..agents.llm_agent import Agent
+from ..apps.app import App
 from ..artifacts.base_artifact_service import BaseArtifactService
 from ..artifacts.in_memory_artifact_service import InMemoryArtifactService
 from ..events.event import Event
@@ -143,7 +144,15 @@ class EvaluationGenerator:
     """Process a query using the agent and evaluation dataset."""
     module_path = f"{module_name}"
     agent_module = importlib.import_module(module_path)
-    root_agent = agent_module.agent.root_agent
+    # Prefer the wrapping `App` when the module exposes one, so that
+    # `app.plugins`, context-cache, and resumability configs participate
+    # in eval runs the same way they do for `adk web` / `adk run`.
+    app_obj = getattr(agent_module.agent, "app", None)
+    if isinstance(app_obj, App):
+      root_agent = app_obj.root_agent
+    else:
+      app_obj = None
+      root_agent = agent_module.agent.root_agent
 
     reset_func = getattr(agent_module.agent, "reset_data", None)
 
@@ -157,6 +166,7 @@ class EvaluationGenerator:
         user_simulator=user_simulator,
         reset_func=reset_func,
         initial_session=initial_session,
+        app=app_obj,
     )
 
   @staticmethod
@@ -197,8 +207,17 @@ class EvaluationGenerator:
       session_service: Optional[BaseSessionService] = None,
       artifact_service: Optional[BaseArtifactService] = None,
       memory_service: Optional[BaseMemoryService] = None,
+      app: Optional[App] = None,
   ) -> list[Invocation]:
-    """Scrapes the root agent in coordination with the user simulator."""
+    """Scrapes the root agent in coordination with the user simulator.
+
+    If `app` is provided, the eval Runner is built from a copy of the App
+    with internal eval plugins merged into `app.plugins`, preserving the
+    App's `context_cache_config`, `resumability_config`, and any other
+    application-wide configuration. Otherwise the Runner is built from
+    the bare `root_agent` with only the internal eval plugins, matching
+    the legacy behavior.
+    """
 
     if not session_service:
       session_service = InMemorySessionService()
@@ -235,13 +254,39 @@ class EvaluationGenerator:
     ensure_retry_options_plugin = EnsureRetryOptionsPlugin(
         name="ensure_retry_options"
     )
+    internal_eval_plugins = [
+        request_intercepter_plugin,
+        ensure_retry_options_plugin,
+    ]
+
+    if app is not None:
+      # Copy the App so we don't mutate the user's instance, and merge our
+      # internal eval plugins with the user's. Override `root_agent` so the
+      # Runner targets the agent the caller actually asked us to evaluate
+      # (e.g., a sub-agent), while still carrying the App's plugins,
+      # context_cache_config, and resumability_config.
+      runner_app = app.model_copy(
+          update={
+              "plugins": list(app.plugins) + internal_eval_plugins,
+              "root_agent": root_agent,
+          }
+      )
+      runner_kwargs: dict[str, Any] = {
+          "app": runner_app,
+          "app_name": app_name,
+      }
+    else:
+      runner_kwargs = {
+          "app_name": app_name,
+          "agent": root_agent,
+          "plugins": internal_eval_plugins,
+      }
+
     async with Runner(
-        app_name=app_name,
-        agent=root_agent,
+        **runner_kwargs,
         artifact_service=artifact_service,
         session_service=session_service,
         memory_service=memory_service,
-        plugins=[request_intercepter_plugin, ensure_retry_options_plugin],
     ) as runner:
       events = []
       while True:
