@@ -81,6 +81,18 @@ def _resolve_agent_class(agent_class: str) -> type[BaseAgent]:
 
 
 _BLOCKED_YAML_KEYS = frozenset({"args"})
+
+_BLOCKED_CODE_REFERENCE_MODULES = frozenset({
+    "builtins",
+    "importlib",
+    "os",
+    "pathlib",
+    "shutil",
+    "socket",
+    "subprocess",
+    "sys",
+})
+
 _ENFORCE_DENYLIST = False
 
 
@@ -89,8 +101,18 @@ def _set_enforce_denylist(value: bool) -> None:
   _ENFORCE_DENYLIST = value
 
 
-def _check_config_for_blocked_keys(node: Any, filename: str) -> None:
-  """Recursively check if the configuration contains any blocked keys."""
+def is_blocked_code_reference(value: Any) -> bool:
+  """Return True if a config value references a blocked Python module."""
+  if not isinstance(value, str):
+    return False
+
+  module_path = value.rsplit(".", 1)[0] if "." in value else value
+  root_module = module_path.split(".", 1)[0]
+  return root_module in _BLOCKED_CODE_REFERENCE_MODULES
+
+
+def check_config_for_blocked_keys(node: Any, filename: str) -> None:
+  """Recursively check if the configuration contains blocked entries."""
   if isinstance(node, dict):
     for key, value in node.items():
       if key in _BLOCKED_YAML_KEYS:
@@ -99,10 +121,23 @@ def _check_config_for_blocked_keys(node: Any, filename: str) -> None:
             f"The '{key}' field is not allowed in agent configurations "
             "because it can execute arbitrary code."
         )
-      _check_config_for_blocked_keys(value, filename)
+
+      if key in ("name", "code") and is_blocked_code_reference(value):
+        raise ValueError(
+            f"Blocked code reference {value!r} found in {filename!r}. "
+            "References to unsafe Python modules are not allowed in "
+            "agent configurations."
+        )
+
+      check_config_for_blocked_keys(value, filename)
   elif isinstance(node, list):
     for item in node:
-      _check_config_for_blocked_keys(item, filename)
+      check_config_for_blocked_keys(item, filename)
+
+
+def _check_config_for_blocked_keys(node: Any, filename: str) -> None:
+  """Recursively check if the configuration contains any blocked keys."""
+  check_config_for_blocked_keys(node, filename)
 
 
 def _load_config_from_path(config_path: str) -> AgentConfig:
@@ -126,7 +161,7 @@ def _load_config_from_path(config_path: str) -> AgentConfig:
     config_data = yaml.safe_load(f)
 
   if _ENFORCE_DENYLIST:
-    _check_config_for_blocked_keys(config_data, config_path)
+    check_config_for_blocked_keys(config_data, config_path)
 
   return AgentConfig.model_validate(config_data)
 

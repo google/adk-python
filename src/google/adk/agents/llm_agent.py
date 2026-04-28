@@ -921,6 +921,15 @@ class LlmAgent(BaseAgent):
         obj = getattr(module, tool_config.name)
       else:
         # User-defined tools
+        from .config_agent_utils import is_blocked_code_reference
+
+        if is_blocked_code_reference(tool_config.name):
+          raise ValueError(
+              f"Blocked tool reference: {tool_config.name!r}. "
+              "References to unsafe Python modules are not allowed in "
+              "agent tool configurations."
+          )
+
         module_path, obj_name = tool_config.name.rsplit('.', 1)
         module = importlib.import_module(module_path)
         obj = getattr(module, obj_name)

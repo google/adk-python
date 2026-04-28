@@ -311,33 +311,21 @@ def get_fast_api_app(
     # allows callers to pass arbitrary arguments to Python constructors and
     # functions, which is an RCE vector when exposed through the builder UI.
     # Block any upload that contains an `args` key anywhere in the document.
-    _BLOCKED_YAML_KEYS = frozenset({"args"})
-
     def _check_yaml_for_blocked_keys(content: bytes, filename: str) -> None:
-      """Raise if the YAML document contains any blocked keys."""
+      """Raise if the YAML document contains blocked config entries."""
       import yaml
+
+      from google.adk.agents.config_agent_utils import (
+          check_config_for_blocked_keys,
+      )
 
       try:
         docs = list(yaml.safe_load_all(content))
       except yaml.YAMLError as exc:
         raise ValueError(f"Invalid YAML in {filename!r}: {exc}") from exc
 
-      def _walk(node: Any) -> None:
-        if isinstance(node, dict):
-          for key, value in node.items():
-            if key in _BLOCKED_YAML_KEYS:
-              raise ValueError(
-                  f"Blocked key {key!r} found in {filename!r}. "
-                  f"The '{key}' field is not allowed in builder uploads "
-                  "because it can execute arbitrary code."
-              )
-            _walk(value)
-        elif isinstance(node, list):
-          for item in node:
-            _walk(item)
-
       for doc in docs:
-        _walk(doc)
+        check_config_for_blocked_keys(doc, filename)
 
     def _parse_upload_filename(filename: Optional[str]) -> tuple[str, str]:
       if not filename:
