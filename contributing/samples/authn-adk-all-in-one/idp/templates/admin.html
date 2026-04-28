@@ -151,7 +151,7 @@
                 token_endpoint: document.getElementById('token_endpoint').value,
                 jwks_uri: document.getElementById('jwks_uri').value
             };
-            
+
             const response = await fetch('/admin/update-config', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },

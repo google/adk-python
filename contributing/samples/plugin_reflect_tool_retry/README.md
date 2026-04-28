@@ -6,7 +6,7 @@ recovery for tool failures.
 **Key Features:**
 
 - **Concurrency Safe:** Uses locking to safely handle parallel tool
-executions
+  executions
 - **Configurable Scope:** Tracks failures per-invocation (default) or globally
   using the `TrackingScope` enum.
 - **Extensible Scoping:** The `_get_scope_key` method can be overridden to
@@ -15,8 +15,8 @@ executions
   defined scope. A success with one tool resets its counter without affecting
   others.
 - **Custom Error Extraction:** Supports detecting errors in normal tool
-responses that don't throw exceptions, by overriding the
-`extract_error_from_result` method.
+  responses that don't throw exceptions, by overriding the
+  `extract_error_from_result` method.
 
 ## Samples
 

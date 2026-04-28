@@ -168,16 +168,57 @@ def _format_content(
   return " | ".join(parts), truncated
 
 
-def _get_tool_origin(tool: "BaseTool") -> str:
+def _find_transfer_target(agent, agent_name: str):
+  """Find a transfer target agent by name in the accessible agent tree.
+
+  Searches the current agent's sub-agents, parent, and peer agents
+  to locate the transfer target.
+
+  Args:
+      agent: The current agent executing the transfer.
+      agent_name: The name of the transfer target to find.
+
+  Returns:
+      The matching agent object, or None if not found.
+  """
+  for sub in getattr(agent, "sub_agents", []):
+    if sub.name == agent_name:
+      return sub
+  parent = getattr(agent, "parent_agent", None)
+  if parent is not None and parent.name == agent_name:
+    return parent
+  if parent is not None:
+    for peer in getattr(parent, "sub_agents", []):
+      if peer.name == agent_name and peer.name != agent.name:
+        return peer
+  return None
+
+
+def _get_tool_origin(
+    tool: "BaseTool",
+    tool_args: Optional[dict[str, Any]] = None,
+    tool_context: Optional["ToolContext"] = None,
+) -> str:
   """Returns the provenance category of a tool.
 
   Uses lazy imports to avoid circular dependencies.
 
+  For ``TransferToAgentTool`` the classification is **call-level**: when
+  *tool_args* and *tool_context* are supplied the selected
+  ``agent_name`` is resolved against the agent tree so that transfers
+  to a ``RemoteA2aAgent`` are labelled ``TRANSFER_A2A`` rather than
+  the generic ``TRANSFER_AGENT``.
+
   Args:
       tool: The tool instance.
+      tool_args: Optional tool arguments, used for call-level classification of
+        TransferToAgentTool.
+      tool_context: Optional tool context, used to access the agent tree for
+        TransferToAgentTool classification.
 
   Returns:
-      One of LOCAL, MCP, A2A, SUB_AGENT, TRANSFER_AGENT, or UNKNOWN.
+      One of LOCAL, MCP, A2A, SUB_AGENT, TRANSFER_AGENT,
+      TRANSFER_A2A, or UNKNOWN.
   """
   # Import lazily to avoid circular dependencies.
   # pylint: disable=g-import-not-at-top
@@ -199,6 +240,15 @@ def _get_tool_origin(tool: "BaseTool") -> str:
   if McpTool is not None and isinstance(tool, McpTool):
     return "MCP"
   if isinstance(tool, TransferToAgentTool):
+    if RemoteA2aAgent is not None and tool_args and tool_context:
+      agent_name = tool_args.get("agent_name")
+      if agent_name:
+        target = _find_transfer_target(
+            tool_context._invocation_context.agent,
+            agent_name,
+        )
+        if target is not None and isinstance(target, RemoteA2aAgent):
+          return "TRANSFER_A2A"
     return "TRANSFER_AGENT"
   if isinstance(tool, AgentTool):
     if RemoteA2aAgent is not None and isinstance(tool.agent, RemoteA2aAgent):
@@ -1774,6 +1824,17 @@ _EVENT_VIEW_DEFS: dict[str, list[str]] = {
             "CAST(JSON_VALUE(content, '$.usage.total')"
             " AS INT64) AS usage_total_tokens"
         ),
+        (
+            "CAST(JSON_VALUE(attributes,"
+            " '$.usage_metadata.cached_content_token_count') AS INT64) AS"
+            " usage_cached_tokens"
+        ),
+        (
+            "SAFE_DIVIDE(CAST(JSON_VALUE(attributes,"
+            " '$.usage_metadata.cached_content_token_count') AS"
+            " INT64),CAST(JSON_VALUE(content, '$.usage.prompt') AS INT64)) AS"
+            " context_cache_hit_rate"
+        ),
         "CAST(JSON_VALUE(latency_ms, '$.total_ms') AS INT64) AS total_ms",
         (
             "CAST(JSON_VALUE(latency_ms,"
@@ -1781,6 +1842,7 @@ _EVENT_VIEW_DEFS: dict[str, list[str]] = {
         ),
         "JSON_VALUE(attributes, '$.model_version') AS model_version",
         "JSON_QUERY(attributes, '$.usage_metadata') AS usage_metadata",
+        "JSON_QUERY(attributes, '$.cache_metadata') AS cache_metadata",
     ],
     "LLM_ERROR": [
         "CAST(JSON_VALUE(latency_ms, '$.total_ms') AS INT64) AS total_ms",
@@ -1825,6 +1887,25 @@ _EVENT_VIEW_DEFS: dict[str, list[str]] = {
         "JSON_VALUE(content, '$.tool') AS tool_name",
         "JSON_QUERY(content, '$.args') AS tool_args",
     ],
+    "A2A_INTERACTION": [
+        "content AS response_content",
+        (
+            "JSON_VALUE(attributes,"
+            " '$.a2a_metadata.\"a2a:task_id\"') AS a2a_task_id"
+        ),
+        (
+            "JSON_VALUE(attributes,"
+            " '$.a2a_metadata.\"a2a:context_id\"') AS a2a_context_id"
+        ),
+        (
+            "JSON_QUERY(attributes,"
+            " '$.a2a_metadata.\"a2a:request\"') AS a2a_request"
+        ),
+        (
+            "JSON_QUERY(attributes,"
+            " '$.a2a_metadata.\"a2a:response\"') AS a2a_response"
+        ),
+    ],
 }
 
 _VIEW_SQL_TEMPLATE = """\
@@ -1860,6 +1941,7 @@ class EventData:
   model: Optional[str] = None
   model_version: Optional[str] = None
   usage_metadata: Any = None
+  cache_metadata: Any = None
   status: str = "OK"
   error_message: Optional[str] = None
   extra_attributes: dict[str, Any] = field(default_factory=dict)
@@ -1880,6 +1962,7 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
       table_id: Optional[str] = None,
       config: Optional[BigQueryLoggerConfig] = None,
       location: str = "US",
+      credentials: Optional[google.auth.credentials.Credentials] = None,
       **kwargs,
   ) -> None:
     """Initializes the instance.
@@ -1890,6 +1973,8 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
         table_id: BigQuery table ID (optional, overrides config).
         config: BigQueryLoggerConfig (optional).
         location: BigQuery location (default: "US").
+        credentials: Google Auth credentials (optional). If None, uses
+          Application Default Credentials.
         **kwargs: Additional configuration parameters for BigQueryLoggerConfig.
     """
     super().__init__(name="bigquery_agent_analytics")
@@ -1916,6 +2001,8 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
     self._startup_error: Optional[Exception] = None
     self._is_shutting_down = False
     self._setup_lock = None
+    self._user_credentials = credentials
+    self._credentials = credentials
     self.client = None
     self._loop_state_by_loop: dict[asyncio.AbstractEventLoop, _LoopState] = {}
     self._write_stream_name = None  # Resolved stream name
@@ -2028,15 +2115,20 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
     # grpc.aio clients are loop-bound, so we create one per event loop.
 
     def get_credentials():
-      creds, project_id = google.auth.default(
+      creds, _ = google.auth.default(
           scopes=["https://www.googleapis.com/auth/cloud-platform"]
       )
-      return creds, project_id
+      return creds
 
-    creds, project_id = await loop.run_in_executor(
-        self._executor, get_credentials
-    )
-    quota_project_id = getattr(creds, "quota_project_id", None)
+    # Note: this read-then-write is not locked.  If two event loops
+    # race here both will resolve ADC and write back the same creds.
+    # This is benign — the result is idempotent — so we accept the
+    # race rather than adding a lock for a one-time init path.
+    if self._credentials is None:
+      self._credentials = await loop.run_in_executor(
+          self._executor, get_credentials
+      )
+    quota_project_id = getattr(self._credentials, "quota_project_id", None)
     options = (
         client_options.ClientOptions(quota_project_id=quota_project_id)
         if quota_project_id
@@ -2050,7 +2142,7 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
     client_info = gapic_client_info.ClientInfo(user_agent=" ".join(user_agents))
 
     write_client = BigQueryWriteAsyncClient(
-        credentials=creds,
+        credentials=self._credentials,
         client_info=client_info,
         client_options=options,
     )
@@ -2104,7 +2196,8 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
       self.client = await loop.run_in_executor(
           self._executor,
           lambda: bigquery.Client(
-              project=self.project_id, location=self.location
+              project=self.project_id,
+              credentials=self._credentials,
           ),
       )
 
@@ -2120,11 +2213,18 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
 
       self.offloader = None
       if self.config.gcs_bucket_name:
+        # GCSOffloader always creates a storage.Client eagerly
+        # (line 1329: storage_client or storage.Client(...)).
+        # Pass credentials so it uses the same auth as the other
+        # clients; omit when None to let it use ADC.
+        gcs_kwargs = {"project": self.project_id}
+        if self._credentials is not None:
+          gcs_kwargs["credentials"] = self._credentials
         self.offloader = GCSOffloader(
             self.project_id,
             self.config.gcs_bucket_name,
             self._executor,
-            storage_client=kwargs.get("storage_client"),
+            storage_client=storage.Client(**gcs_kwargs),
         )
 
       self.parser = HybridContentParser(
@@ -2458,6 +2558,18 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
     state["_startup_error"] = None
     state["_is_shutting_down"] = False
     state["_init_pid"] = 0
+    # _credentials is always runtime-resolved; clear unconditionally.
+    state["_credentials"] = None
+    # Preserve _user_credentials if they are picklable (e.g.,
+    # service-account, AnonymousCredentials).  Drop only when
+    # pickle would fail (e.g., compute_engine.Credentials holding
+    # a requests.Session).
+    import pickle as _pickle
+
+    try:
+      _pickle.dumps(state.get("_user_credentials"))
+    except Exception:
+      state["_user_credentials"] = None
     return state
 
   def __setstate__(self, state):
@@ -2465,6 +2577,13 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
     # Backfill keys that may be absent in pickled state from older
     # code versions so _ensure_started does not raise AttributeError.
     state.setdefault("_init_pid", 0)
+    state.setdefault("_user_credentials", None)
+    state.setdefault("_credentials", None)
+    # Restore _credentials from _user_credentials if available so
+    # _create_loop_state uses the user's identity.  When both are
+    # None (non-picklable credentials were dropped), ADC is used.
+    if state["_credentials"] is None and state["_user_credentials"] is not None:
+      state["_credentials"] = state["_user_credentials"]
     self.__dict__.update(state)
 
   def _reset_runtime_state(self) -> None:
@@ -2519,6 +2638,11 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
     self._startup_error = None
     self._is_shutting_down = False
     self._init_pid = os.getpid()
+    # For ADC-resolved credentials, clear so they are re-resolved
+    # in the child process.  For user-provided credentials, keep
+    # the original object — we cannot re-create it.  The user is
+    # responsible for providing fork-safe credentials if needed.
+    self._credentials = self._user_credentials
 
   async def __aenter__(self) -> BigQueryAgentAnalyticsPlugin:
     await self._ensure_started()
@@ -2552,17 +2676,34 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
   ) -> tuple[Optional[str], Optional[str], Optional[str]]:
     """Resolves trace_id, span_id, and parent_span_id for a log row.
 
+    Resolution rules:
+
+      * **trace_id** — ambient OTel trace wins (the plugin stack already
+        shares the ambient trace when initialised from an ambient span,
+        so in practice they agree).
+      * **span_id / parent_span_id** — the plugin's internal span stack
+        (``TraceManager``) is the preferred source.  Ambient OTel spans
+        are only used as a fallback when the plugin stack has no span.
+        This ensures every ``parent_span_id`` in BigQuery references a
+        ``span_id`` that is also logged to BigQuery, producing a
+        self-consistent execution tree.
+      * **Explicit overrides** (``EventData``) always win last — they
+        are set by post-pop callbacks that have already captured the
+        correct plugin-stack values before the pop.
+
     Priority order (highest first):
-      1. Explicit ``EventData`` overrides (needed for post-pop callbacks).
-      2. Ambient OTel span (the framework's ``start_as_current_span``).
-         When present this aligns BQ rows with Cloud Trace / o11y.
-      3. Plugin's internal span stack (``TraceManager``).
+      1. Explicit ``EventData`` overrides.
+      2. Plugin's internal span stack (``TraceManager``) for
+         ``span_id`` / ``parent_span_id``.
+      3. Ambient OTel span — always used for ``trace_id``; used for
+         ``span_id`` / ``parent_span_id`` only when the plugin stack
+         has no span.
       4. ``invocation_id`` fallback for trace_id.
 
     Returns:
         (trace_id, span_id, parent_span_id)
     """
-    # --- Layer 3: plugin stack baseline ---
+    # --- Plugin stack: span_id / parent_span_id baseline ---
     trace_id = TraceManager.get_trace_id(callback_context)
     plugin_span_id, plugin_parent_span_id = (
         TraceManager.get_current_span_and_parent()
@@ -2570,21 +2711,24 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
     span_id = plugin_span_id
     parent_span_id = plugin_parent_span_id
 
-    # --- Layer 2: ambient OTel span ---
+    # --- Ambient OTel: trace_id always; span fallback only ---
     ambient = trace.get_current_span()
     ambient_ctx = ambient.get_span_context()
     if ambient_ctx.is_valid:
       trace_id = format(ambient_ctx.trace_id, "032x")
-      span_id = format(ambient_ctx.span_id, "016x")
-      # Reset parent — stale plugin-stack parent must not leak through
-      # when the ambient span is a root (no parent).
-      parent_span_id = None
-      # SDK spans expose .parent; non-recording spans do not.
-      parent_ctx = getattr(ambient, "parent", None)
-      if parent_ctx is not None and parent_ctx.span_id:
-        parent_span_id = format(parent_ctx.span_id, "016x")
+      # Only use ambient span IDs when the plugin stack has no span.
+      # Framework-internal spans (execute_tool, call_llm, etc.) are
+      # never written to BQ, so deriving parent_span_id from them
+      # creates phantom references.  The plugin stack guarantees
+      # that both span_id and parent_span_id reference BQ rows.
+      if span_id is None:
+        span_id = format(ambient_ctx.span_id, "016x")
+        parent_span_id = None
+        parent_ctx = getattr(ambient, "parent", None)
+        if parent_ctx is not None and parent_ctx.span_id:
+          parent_span_id = format(parent_ctx.span_id, "016x")
 
-    # --- Layer 1: explicit EventData overrides ---
+    # --- Explicit EventData overrides (post-pop callbacks) ---
     if event_data.trace_id_override is not None:
       trace_id = event_data.trace_id_override
     if event_data.span_id_override is not None:
@@ -2640,6 +2784,15 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
         attrs["usage_metadata"] = usage_dict
       else:
         attrs["usage_metadata"] = event_data.usage_metadata
+
+    if event_data.cache_metadata:
+      cache_meta_dict, _ = _recursive_smart_truncate(
+          event_data.cache_metadata, self.config.max_content_length
+      )
+      if isinstance(cache_meta_dict, dict):
+        attrs["cache_metadata"] = cache_meta_dict
+      else:
+        attrs["cache_metadata"] = event_data.cache_metadata
 
     if self.config.log_session_metadata:
       try:
@@ -2813,13 +2966,18 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
       invocation_context: InvocationContext,
       event: "Event",
   ) -> None:
-    """Logs state changes and HITL events from the event stream.
+    """Logs state changes, HITL events, and A2A interactions.
 
     - Checks each event for a non-empty state_delta and logs it as a
       STATE_DELTA event.
     - Detects synthetic ``adk_request_*`` function calls (HITL pause
       events) and their corresponding function responses (HITL
       completions) and emits dedicated HITL event types.
+    - Detects events carrying A2A interaction metadata
+      (``a2a:request`` / ``a2a:response`` in ``custom_metadata``)
+      and logs them as ``A2A_INTERACTION`` events so the remote
+      agent's response and cross-reference IDs (``a2a:task_id``,
+      ``a2a:context_id``) are visible in BigQuery.
 
     The HITL detection must happen here (not in tool callbacks) because
     ``adk_request_credential``, ``adk_request_confirmation``, and
@@ -2883,6 +3041,45 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
                 is_truncated=is_truncated,
             )
 
+    # --- A2A interaction logging ---
+    # RemoteA2aAgent attaches cross-reference metadata to events:
+    #   a2a:task_id, a2a:context_id  — correlation keys
+    #   a2a:request, a2a:response    — full interaction payload
+    # Log an A2A_INTERACTION event when meaningful payload is present
+    # so the supervisor's BQ trace contains the remote agent's
+    # response and cross-reference IDs for JOINs.
+    meta = getattr(event, "custom_metadata", None)
+    if meta and (
+        meta.get("a2a:request") is not None
+        or meta.get("a2a:response") is not None
+    ):
+      a2a_keys = {k: v for k, v in meta.items() if k.startswith("a2a:")}
+      a2a_truncated, is_truncated = _recursive_smart_truncate(
+          a2a_keys, self.config.max_content_length
+      )
+      # Use the a2a:response as the event content when available,
+      # so the remote agent's answer is visible in the content
+      # column.
+      response_payload = a2a_keys.get("a2a:response")
+      content_dict = None
+      content_truncated = False
+      if response_payload is not None:
+        content_dict, content_truncated = _recursive_smart_truncate(
+            response_payload,
+            self.config.max_content_length,
+        )
+      await self._log_event(
+          "A2A_INTERACTION",
+          callback_ctx,
+          raw_content=content_dict,
+          is_truncated=is_truncated or content_truncated,
+          event_data=EventData(
+              extra_attributes={
+                  "a2a_metadata": a2a_truncated,
+              },
+          ),
+      )
+
     return None
 
   async def on_state_change_callback(
@@ -2940,19 +3137,14 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
       span_id, duration = TraceManager.pop_span()
       parent_span_id = TraceManager.get_current_span_id()
 
-      # Only override span IDs when no ambient OTel span exists.
-      # When ambient exists, _resolve_ids Layer 2 uses the framework's
-      # span IDs, keeping STARTING/COMPLETED pairs consistent.
-      has_ambient = trace.get_current_span().get_span_context().is_valid
-
       await self._log_event(
           "INVOCATION_COMPLETED",
           callback_ctx,
           event_data=EventData(
               trace_id_override=trace_id,
               latency_ms=duration,
-              span_id_override=None if has_ambient else span_id,
-              parent_span_id_override=None if has_ambient else parent_span_id,
+              span_id_override=span_id,
+              parent_span_id_override=parent_span_id,
           ),
       )
     finally:
@@ -2995,18 +3187,13 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
     span_id, duration = TraceManager.pop_span()
     parent_span_id, _ = TraceManager.get_current_span_and_parent()
 
-    # Only override span IDs when no ambient OTel span exists.
-    # When ambient exists, _resolve_ids Layer 2 uses the framework's
-    # span IDs, keeping STARTING/COMPLETED pairs consistent.
-    has_ambient = trace.get_current_span().get_span_context().is_valid
-
     await self._log_event(
         "AGENT_COMPLETED",
         callback_context,
         event_data=EventData(
             latency_ms=duration,
-            span_id_override=None if has_ambient else span_id,
-            parent_span_id_override=None if has_ambient else parent_span_id,
+            span_id_override=span_id,
+            parent_span_id_override=parent_span_id,
         ),
     )
 
@@ -3156,12 +3343,6 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
       # Otherwise log_event will fetch current stack (which is parent).
       span_id = popped_span_id or span_id
 
-    # Only override span IDs when no ambient OTel span exists.
-    # When ambient exists, _resolve_ids Layer 2 uses the framework's
-    # span IDs, keeping LLM_REQUEST/LLM_RESPONSE pairs consistent.
-    has_ambient = trace.get_current_span().get_span_context().is_valid
-    use_override = is_popped and not has_ambient
-
     await self._log_event(
         "LLM_RESPONSE",
         callback_context,
@@ -3172,8 +3353,9 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
             time_to_first_token_ms=tfft,
             model_version=llm_response.model_version,
             usage_metadata=llm_response.usage_metadata,
-            span_id_override=span_id if use_override else None,
-            parent_span_id_override=parent_span_id if use_override else None,
+            cache_metadata=getattr(llm_response, "cache_metadata", None),
+            span_id_override=span_id if is_popped else None,
+            parent_span_id_override=(parent_span_id if is_popped else None),
         ),
     )
 
@@ -3195,9 +3377,6 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
     span_id, duration = TraceManager.pop_span()
     parent_span_id, _ = TraceManager.get_current_span_and_parent()
 
-    # Only override span IDs when no ambient OTel span exists.
-    has_ambient = trace.get_current_span().get_span_context().is_valid
-
     await self._log_event(
         "LLM_ERROR",
         callback_context,
@@ -3205,8 +3384,8 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
             status="ERROR",
             error_message=str(error),
             latency_ms=duration,
-            span_id_override=None if has_ambient else span_id,
-            parent_span_id_override=None if has_ambient else parent_span_id,
+            span_id_override=span_id,
+            parent_span_id_override=parent_span_id,
         ),
     )
 
@@ -3228,7 +3407,7 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
     args_truncated, is_truncated = _recursive_smart_truncate(
         tool_args, self.config.max_content_length
     )
-    tool_origin = _get_tool_origin(tool)
+    tool_origin = _get_tool_origin(tool, tool_args, tool_context)
     content_dict = {
         "tool": tool.name,
         "args": args_truncated,
@@ -3262,7 +3441,7 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
     resp_truncated, is_truncated = _recursive_smart_truncate(
         result, self.config.max_content_length
     )
-    tool_origin = _get_tool_origin(tool)
+    tool_origin = _get_tool_origin(tool, tool_args, tool_context)
     content_dict = {
         "tool": tool.name,
         "result": resp_truncated,
@@ -3271,13 +3450,10 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
     span_id, duration = TraceManager.pop_span()
     parent_span_id, _ = TraceManager.get_current_span_and_parent()
 
-    # Only override span IDs when no ambient OTel span exists.
-    has_ambient = trace.get_current_span().get_span_context().is_valid
-
     event_data = EventData(
         latency_ms=duration,
-        span_id_override=None if has_ambient else span_id,
-        parent_span_id_override=None if has_ambient else parent_span_id,
+        span_id_override=span_id,
+        parent_span_id_override=parent_span_id,
     )
     await self._log_event(
         "TOOL_COMPLETED",
@@ -3307,7 +3483,7 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
     args_truncated, is_truncated = _recursive_smart_truncate(
         tool_args, self.config.max_content_length
     )
-    tool_origin = _get_tool_origin(tool)
+    tool_origin = _get_tool_origin(tool, tool_args, tool_context)
     content_dict = {
         "tool": tool.name,
         "args": args_truncated,
@@ -3315,9 +3491,6 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
     }
     span_id, duration = TraceManager.pop_span()
     parent_span_id, _ = TraceManager.get_current_span_and_parent()
-
-    # Only override span IDs when no ambient OTel span exists.
-    has_ambient = trace.get_current_span().get_span_context().is_valid
 
     await self._log_event(
         "TOOL_ERROR",
@@ -3328,7 +3501,7 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
             status="ERROR",
             error_message=str(error),
             latency_ms=duration,
-            span_id_override=None if has_ambient else span_id,
-            parent_span_id_override=None if has_ambient else parent_span_id,
+            span_id_override=span_id,
+            parent_span_id_override=parent_span_id,
         ),
     )

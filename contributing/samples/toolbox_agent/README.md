@@ -15,11 +15,11 @@ Before starting, ensure you have Python installed on your system.
 Run the following command to download and install the MCP Toolbox binary.
 
 > [!NOTE]
-> You can find the latest version on the [Releases page](https://github.com/googleapis/genai-toolbox/releases) and update the version in the URL below.
+> You can find the latest version on the [Releases page](https://github.com/googleapis/mcp-toolbox/releases) and update the version in the URL below.
 
 ```bash
 export OS="linux/amd64" # one of linux/amd64, darwin/arm64, darwin/amd64, or windows/amd64
-curl -O https://storage.googleapis.com/genai-toolbox/v0.31.0/$OS/toolbox
+curl -O https://storage.googleapis.com/mcp-toolbox-for-databases/v1.1.0/$OS/toolbox
 chmod +x toolbox
 ```
 
@@ -59,7 +59,7 @@ CREATE TABLE hotels(
 );
 
 INSERT INTO hotels(id, name, location, price_tier, checkin_date, checkout_date, booked)
-VALUES 
+VALUES
   (1, 'Hilton Basel', 'Basel', 'Luxury', '2024-04-22', '2024-04-20', 0),
   (2, 'Marriott Zurich', 'Zurich', 'Upscale', '2024-04-14', '2024-04-21', 0),
   (3, 'Hyatt Regency Basel', 'Basel', 'Upper Upscale', '2024-04-02', '2024-04-20', 0),

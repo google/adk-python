@@ -35,6 +35,7 @@ from google.adk.sessions.vertex_ai_session_service import VertexAiSessionService
 from google.api_core import exceptions as api_core_exceptions
 from google.genai import types as genai_types
 from google.genai.errors import ClientError
+import pydantic
 import pytest
 
 MOCK_SESSION_JSON_1 = {
@@ -374,6 +375,7 @@ class MockAsyncClient:
     self.agent_engines.sessions.events.list.side_effect = self._list_events
     self.agent_engines.sessions.events.append.side_effect = self._append_event
     self.last_create_session_config: dict[str, Any] = {}
+    self.last_list_sessions_config: dict[str, Any] = {}
 
   async def __aenter__(self):
     """Enters the asynchronous context."""
@@ -390,8 +392,9 @@ class MockAsyncClient:
     raise api_core_exceptions.NotFound(f'Session not found: {session_id}')
 
   async def _list_sessions(self, name: str, config: dict[str, Any]):
+    self.last_list_sessions_config = config
     filter_val = config.get('filter', '')
-    user_id_match = re.search(r'user_id="([^"]+)"', filter_val)
+    user_id_match = re.search(r'user_id="((?:\\.|[^"])*)"', filter_val)
     if user_id_match:
       user_id = user_id_match.group(1)
       if user_id == 'user_with_pages':
@@ -878,6 +881,34 @@ async def test_list_sessions_all_users():
 
 @pytest.mark.asyncio
 @pytest.mark.usefixtures('mock_get_api_client')
+@pytest.mark.parametrize(
+    ('payload', 'expected_filter'),
+    [
+        (
+            'attacker" OR user_id!=""',
+            'user_id="attacker\\" OR user_id!=\\"\\""',
+        ),
+        ('\\', 'user_id="\\\\"'),
+        ('', 'user_id=""'),
+    ],
+)
+async def test_list_sessions_quotes_user_id_filter(
+    mock_api_client_instance, payload, expected_filter
+):
+  session_service = mock_vertex_ai_session_service()
+
+  sessions = await session_service.list_sessions(
+      app_name='123', user_id=payload
+  )
+
+  assert sessions.sessions == []
+  assert mock_api_client_instance.last_list_sessions_config == {
+      'filter': expected_filter
+  }
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures('mock_get_api_client')
 async def test_create_session():
   session_service = mock_vertex_ai_session_service()
 
@@ -1223,3 +1254,55 @@ async def test_append_event_with_usage_metadata_and_compaction():
   assert appended_event.custom_metadata == {'extra': 'info'}
   assert '_compaction' not in (appended_event.custom_metadata or {})
   assert '_usage_metadata' not in (appended_event.custom_metadata or {})
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures('mock_get_api_client')
+async def test_append_event_fallback_for_older_sdk(mock_api_client_instance):
+  """Tests that append_event falls back to custom_metadata when SDK fails on raw_event."""
+  session_service = mock_vertex_ai_session_service()
+  session = await session_service.get_session(
+      app_name='123', user_id='user', session_id='1'
+  )
+  assert session is not None
+
+  compaction = EventCompaction(
+      start_timestamp=1000.0,
+      end_timestamp=2000.0,
+      compacted_content=genai_types.Content(
+          parts=[genai_types.Part(text='compacted summary')]
+      ),
+  )
+  event_to_append = Event(
+      invocation_id='fallback_invocation',
+      author='model',
+      timestamp=1734005534.0,
+      actions=EventActions(compaction=compaction),
+  )
+
+  mock_client = mock_api_client_instance
+
+  async def side_effect(name, author, invocation_id, timestamp, config):
+    if 'raw_event' in config:
+      # Trigger a real ValidationError since Pydantic V2 doesn't allow easy
+      # instantiation
+      class DummyModel(pydantic.BaseModel):
+        a: int
+
+      DummyModel(a='not an int')
+    return await mock_client._append_event(
+        name, author, invocation_id, timestamp, config
+    )
+
+  mock_client.agent_engines.sessions.events.append.side_effect = side_effect
+
+  await session_service.append_event(session, event_to_append)
+
+  # Verify that it was written and restored correctly via custom_metadata
+  retrieved_session = await session_service.get_session(
+      app_name='123', user_id='user', session_id='1'
+  )
+  appended_event = retrieved_session.events[-1]
+
+  assert appended_event.actions.compaction is not None
+  assert appended_event.actions.compaction.start_timestamp == 1000.0
