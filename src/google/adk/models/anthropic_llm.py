@@ -405,17 +405,25 @@ def function_declaration_to_tool_param(
 def _build_thinking_param(
     thinking_config: Optional[types.ThinkingConfig],
     max_tokens: int,
-) -> Union[anthropic_types.ThinkingConfigEnabledParam, NotGiven]:
-  """Converts ADK ThinkingConfig to Anthropic ThinkingConfigEnabledParam.
+) -> Union[
+    anthropic_types.ThinkingConfigEnabledParam,
+    anthropic_types.ThinkingConfigDisabledParam,
+    NotGiven,
+]:
+  """Converts ADK ThinkingConfig to an Anthropic thinking parameter.
 
-  Returns NOT_GIVEN if thinking is not configured or budget is 0.
-  Clamps budget_tokens to max_tokens - 1 to satisfy the API constraint.
+  Returns NOT_GIVEN if no thinking config is provided.
+  Explicitly disables thinking when budget is 0 (some models enable it by
+  default). Clamps budget_tokens to max_tokens - 1 to satisfy the API
+  constraint.
   """
   if thinking_config is None:
     return NOT_GIVEN
   budget = thinking_config.thinking_budget
-  if not budget:
+  if budget is None:
     return NOT_GIVEN
+  if budget == 0:
+    return anthropic_types.ThinkingConfigDisabledParam(type="disabled")
   return anthropic_types.ThinkingConfigEnabledParam(
       type="enabled",
       budget_tokens=min(budget, max_tokens - 1),
@@ -503,7 +511,9 @@ class AnthropicLlm(BaseLlm):
       tools: Union[Iterable[anthropic_types.ToolUnionParam], NotGiven],
       tool_choice: Union[anthropic_types.ToolChoiceParam, NotGiven],
       thinking: Union[
-          anthropic_types.ThinkingConfigEnabledParam, NotGiven
+          anthropic_types.ThinkingConfigEnabledParam,
+          anthropic_types.ThinkingConfigDisabledParam,
+          NotGiven,
       ] = NOT_GIVEN,
   ) -> AsyncGenerator[LlmResponse, None]:
     """Handles streaming responses from Anthropic models.
