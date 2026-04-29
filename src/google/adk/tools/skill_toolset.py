@@ -37,6 +37,7 @@ from ..features import experimental
 from ..features import FeatureName
 from ..skills import models
 from ..skills import prompt
+from ..skills.skill_registry import SkillRegistry
 from .base_tool import BaseTool
 from .base_toolset import BaseToolset
 from .function_tool import FunctionTool
@@ -155,6 +156,20 @@ class LoadSkillTool(BaseTool):
       }
 
     skill = self._toolset._get_skill(skill_name)
+    if not skill and self._toolset._registry:
+      try:
+        skill = await self._toolset._registry.get_skill(name=skill_name)
+        if skill:
+          self._toolset._skills[skill_name] = skill
+      except Exception as e:
+        logger.exception(
+            "Failed to fetch skill '%s' from registry.", skill_name
+        )
+        return {
+            "error": f"Failed to fetch skill '{skill_name}' from registry: {e}",
+            "error_code": "REGISTRY_ERROR",
+        }
+
     if not skill:
       return {
           "error": f"Skill '{skill_name}' not found.",
@@ -772,13 +787,74 @@ class RunSkillScriptTool(BaseTool):
 
 
 @experimental(FeatureName.SKILL_TOOLSET)
+class SearchSkillsTool(BaseTool):
+  """Tool to search for relevant skills in the registry."""
+
+  def __init__(self, toolset: "SkillToolset"):
+    super().__init__(
+        name="search_skills",
+        description=toolset._registry.get_search_description(),
+    )
+    self._toolset = toolset
+
+  def _get_declaration(self) -> types.FunctionDeclaration | None:
+    properties = {
+        "query": {
+            "type": "string",
+            "description": "Semantic or keyword search query.",
+        },
+    }
+    filter_schema = self._toolset._registry.get_filter_schema()
+    if filter_schema:
+      properties["filters"] = filter_schema
+    return types.FunctionDeclaration(
+        name=self.name,
+        description=self.description,
+        parameters_json_schema={
+            "type": "object",
+            "properties": properties,
+            "required": ["query"],
+        },
+    )
+
+  async def run_async(
+      self, *, args: dict[str, Any], tool_context: ToolContext
+  ) -> Any:
+    query = args.get("query")
+    filters = args.get("filters")
+
+    if not query:
+      return {
+          "error": "Argument 'query' is required.",
+          "error_code": "INVALID_ARGUMENTS",
+      }
+
+    results = await self._toolset._registry.search_skills(
+        query=query, filters=filters
+    )
+
+    formatted_results = []
+    for r in results:
+      if r.name in self._toolset._skills:
+        logger.warning(
+            "Naming conflict detected: Skill '%s' exists both locally and in"
+            " the registry. Filtering out the registry skill.",
+            r.name,
+        )
+        continue
+      formatted_results.append(r.model_dump())
+    return formatted_results
+
+
+@experimental(FeatureName.SKILL_TOOLSET)
 class SkillToolset(BaseToolset):
   """A toolset for managing and interacting with agent skills."""
 
   def __init__(
       self,
-      skills: list[models.Skill],
+      skills: list[models.Skill] | None = None,
       *,
+      registry: Optional[SkillRegistry] = None,
       code_executor: Optional[BaseCodeExecutor] = None,
       script_timeout: int = _DEFAULT_SCRIPT_TIMEOUT,
       additional_tools: list[ToolUnion] | None = None,
@@ -787,6 +863,7 @@ class SkillToolset(BaseToolset):
 
     Args:
       skills: List of skills to register.
+      registry: Optional skill registry for dynamic discovery.
       code_executor: Optional code executor for script execution.
       script_timeout: Timeout in seconds for shell script execution via
         subprocess.run. Defaults to 300 seconds. Does not apply to Python
@@ -796,12 +873,13 @@ class SkillToolset(BaseToolset):
 
     # Check for duplicate skill names
     seen: set[str] = set()
-    for skill in skills:
+    for skill in skills or []:
       if skill.name in seen:
         raise ValueError(f"Duplicate skill name '{skill.name}'.")
       seen.add(skill.name)
 
-    self._skills = {skill.name: skill for skill in skills}
+    self._skills = {skill.name: skill for skill in skills or []}
+    self._registry = registry
     self._code_executor = code_executor
     self._script_timeout = script_timeout
     self._use_invocation_cache = False
@@ -824,6 +902,8 @@ class SkillToolset(BaseToolset):
         LoadSkillResourceTool(self),
         RunSkillScriptTool(self),
     ]
+    if self._registry:
+      self._tools.append(SearchSkillsTool(self))
 
   async def get_tools(
       self, readonly_context: ReadonlyContext | None = None
@@ -904,6 +984,12 @@ class SkillToolset(BaseToolset):
     skills_xml = prompt.format_skills_as_xml(skills)
     instructions = []
     instructions.append(_DEFAULT_SKILL_SYSTEM_INSTRUCTION)
+    if self._registry:
+      instructions.append(
+          "\nYou can also use the `search_skills` tool to discover additional"
+          " skills in the registry if the available skills listed below are"
+          " not sufficient.\n"
+      )
     instructions.append(skills_xml)
     llm_request.append_instructions(instructions)
 
