@@ -22,7 +22,9 @@ import binascii
 from concurrent.futures import ThreadPoolExecutor
 import contextvars
 import copy
+import hashlib
 import inspect
+import json
 import logging
 import threading
 from typing import Any
@@ -181,6 +183,20 @@ def generate_client_function_call_id() -> str:
   return f'{AF_FUNCTION_CALL_ID_PREFIX}{platform_uuid.new_uuid()}'
 
 
+def function_call_digest(function_call: types.FunctionCall) -> str:
+  """Returns a stable digest for a function call."""
+  dumped = function_call.model_dump(
+      exclude_none=True, by_alias=True, mode='json'
+  )
+  canonical_json = json.dumps(
+      dumped,
+      sort_keys=True,
+      ensure_ascii=False,
+      separators=(',', ':'),
+  )
+  return hashlib.sha256(canonical_json.encode('utf-8')).hexdigest()
+
+
 def populate_client_function_call_id(model_response_event: Event) -> None:
   if not model_response_event.get_function_calls():
     return
@@ -235,6 +251,7 @@ def build_auth_request_event(
     *,
     author: Optional[str] = None,
     role: Optional[str] = None,
+    function_call_digest_by_id: Optional[dict[str, str]] = None,
 ) -> Event:
   """Builds an auth request event with function calls for each auth request.
 
@@ -246,6 +263,8 @@ def build_auth_request_event(
     auth_requests: Dict mapping function_call_id to AuthConfig.
     author: The event author. Defaults to agent name.
     role: The content role. Defaults to None.
+    function_call_digest_by_id: Optional mapping of function call IDs to stable
+      digests for tool-level auth requests.
 
   Returns:
     Event with auth request function calls.
@@ -260,6 +279,9 @@ def build_auth_request_event(
         args=AuthToolArguments(
             function_call_id=function_call_id,
             auth_config=auth_config,
+            function_call_digest=(function_call_digest_by_id or {}).get(
+                function_call_id
+            ),
         ).model_dump(exclude_none=True, by_alias=True),
     )
     long_running_tool_ids.add(request_euc_function_call.id)
@@ -276,6 +298,7 @@ def build_auth_request_event(
 
 def generate_auth_event(
     invocation_context: InvocationContext,
+    function_call_event: Event,
     function_response_event: Event,
 ) -> Optional[Event]:
   """Generates an auth request event from a function response event.
@@ -285,6 +308,7 @@ def generate_auth_event(
 
   Args:
     invocation_context: The invocation context.
+    function_call_event: The function call event that produced the response.
     function_response_event: The function response event with auth requests.
 
   Returns:
@@ -293,10 +317,18 @@ def generate_auth_event(
   if not function_response_event.actions.requested_auth_configs:
     return None
 
+  function_call_digest_by_id = {
+      function_call.id: function_call_digest(function_call)
+      for function_call in function_call_event.get_function_calls()
+      if function_call.id
+      in function_response_event.actions.requested_auth_configs
+  }
+
   return build_auth_request_event(
       invocation_context,
       function_response_event.actions.requested_auth_configs,
       role=function_response_event.content.role,
+      function_call_digest_by_id=function_call_digest_by_id,
   )
 
 

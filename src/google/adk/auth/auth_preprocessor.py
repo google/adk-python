@@ -37,6 +37,44 @@ from .auth_tool import AuthToolArguments
 TOOLSET_AUTH_CREDENTIAL_ID_PREFIX = '_adk_toolset_auth_'
 
 
+def _find_function_call(
+    events: list[Event], function_call_id: str
+) -> Any | None:
+  for event in events:
+    for function_call in event.get_function_calls():
+      if function_call.id == function_call_id:
+        return function_call
+  return None
+
+
+def _has_requested_auth_config(
+    events: list[Event], function_call_id: str
+) -> bool:
+  return any(
+      function_call_id in event.actions.requested_auth_configs
+      for event in events
+  )
+
+
+def _is_valid_auth_resume_target(
+    events: list[Event], args: AuthToolArguments
+) -> bool:
+  if args.function_call_id.startswith(TOOLSET_AUTH_CREDENTIAL_ID_PREFIX):
+    return False
+  if not _has_requested_auth_config(events, args.function_call_id):
+    return False
+  if not args.function_call_digest:
+    return False
+
+  function_call = _find_function_call(events, args.function_call_id)
+  if not function_call:
+    return False
+
+  return (
+      functions.function_call_digest(function_call) == args.function_call_digest
+  )
+
+
 async def _store_auth_and_collect_resume_targets(
     events: list[Event],
     auth_fc_ids: set[str],
@@ -64,21 +102,23 @@ async def _store_auth_and_collect_resume_targets(
   """
   # Step 1: Scan events for matching adk_request_credential function calls
   # to extract AuthToolArguments (contains credential_key).
-  requested_auth_config_by_id: dict[str, AuthConfig] = {}
+  requested_auth_args_by_id: dict[str, AuthToolArguments] = {}
   for event in events:
     event_function_calls = event.get_function_calls()
     if not event_function_calls:
       continue
-    try:
-      for function_call in event_function_calls:
-        if (
-            function_call.id in auth_fc_ids
-            and function_call.name == REQUEST_EUC_FUNCTION_CALL_NAME
-        ):
-          args = AuthToolArguments.model_validate(function_call.args)
-          requested_auth_config_by_id[function_call.id] = args.auth_config
-    except TypeError:
-      continue
+    for function_call in event_function_calls:
+      if (
+          function_call.id not in auth_fc_ids
+          or function_call.name != REQUEST_EUC_FUNCTION_CALL_NAME
+      ):
+        continue
+      try:
+        requested_auth_args_by_id[function_call.id] = (
+            AuthToolArguments.model_validate(function_call.args)
+        )
+      except TypeError:
+        continue
 
   # Step 2: Store credentials. Merge credential_key from the original
   # request into the client's auth response before storing.
@@ -86,12 +126,13 @@ async def _store_auth_and_collect_resume_targets(
     if fc_id not in auth_responses:
       continue
     auth_config = AuthConfig.model_validate(auth_responses[fc_id])
-    requested_auth_config = requested_auth_config_by_id.get(fc_id)
-    if (
-        requested_auth_config
-        and requested_auth_config.credential_key is not None
+    requested_auth_args = requested_auth_args_by_id.get(fc_id)
+    if requested_auth_args and (
+        requested_auth_args.auth_config.credential_key is not None
     ):
-      auth_config.credential_key = requested_auth_config.credential_key
+      auth_config.credential_key = (
+          requested_auth_args.auth_config.credential_key
+      )
     await AuthHandler(auth_config=auth_config).parse_and_store_auth_response(
         state=state
     )
@@ -99,27 +140,9 @@ async def _store_auth_and_collect_resume_targets(
   # Step 3: Collect original function call IDs to resume, skipping
   # toolset auth entries which don't map to a resumable function call.
   tools_to_resume: set[str] = set()
-  for fc_id in auth_fc_ids:
-    requested_auth_config = requested_auth_config_by_id.get(fc_id)
-    if not requested_auth_config:
-      continue
-    # Re-parse to get function_call_id (AuthConfig doesn't carry it;
-    # AuthToolArguments does).
-    for event in events:
-      event_function_calls = event.get_function_calls()
-      if not event_function_calls:
-        continue
-      for function_call in event_function_calls:
-        if (
-            function_call.id == fc_id
-            and function_call.name == REQUEST_EUC_FUNCTION_CALL_NAME
-        ):
-          args = AuthToolArguments.model_validate(function_call.args)
-          if args.function_call_id.startswith(
-              TOOLSET_AUTH_CREDENTIAL_ID_PREFIX
-          ):
-            continue
-          tools_to_resume.add(args.function_call_id)
+  for args in requested_auth_args_by_id.values():
+    if _is_valid_auth_resume_target(events, args):
+      tools_to_resume.add(args.function_call_id)
 
   return tools_to_resume
 
@@ -141,10 +164,12 @@ class _AuthLlmRequestProcessor(BaseLlmRequestProcessor):
     # Find the last user-authored event with function responses to
     # identify adk_request_credential responses.
     last_event_with_content = None
+    last_event_with_content_index = -1
     for i in range(len(events) - 1, -1, -1):
       event = events[i]
       if event.content is not None:
         last_event_with_content = event
+        last_event_with_content_index = i
         break
 
     if not last_event_with_content or last_event_with_content.author != 'user':
@@ -170,8 +195,12 @@ class _AuthLlmRequestProcessor(BaseLlmRequestProcessor):
       return
 
     # Store credentials and collect tools to resume.
+    prior_events = events[:last_event_with_content_index]
     tools_to_resume = await _store_auth_and_collect_resume_targets(
-        events, auth_fc_ids, auth_responses, invocation_context.session.state
+        prior_events,
+        auth_fc_ids,
+        auth_responses,
+        invocation_context.session.state,
     )
 
     if not tools_to_resume:
@@ -179,7 +208,7 @@ class _AuthLlmRequestProcessor(BaseLlmRequestProcessor):
 
     # Find the original function call event and re-execute the tools
     # that needed auth.
-    for i in range(len(events) - 2, -1, -1):
+    for i in range(last_event_with_content_index - 1, -1, -1):
       event = events[i]
       function_calls = event.get_function_calls()
       if not function_calls:

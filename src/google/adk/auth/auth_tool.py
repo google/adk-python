@@ -146,3 +146,4 @@ class AuthToolArguments(BaseModelWithConfig):
 
   function_call_id: str
   auth_config: AuthConfig
+  function_call_digest: Optional[str] = None
