@@ -82,7 +82,7 @@ def _construct_auth_credential(
     return AuthCredential(
         auth_type=AuthCredentialTypes.HTTP,
         http=HttpAuth(
-            scheme="bearer",
+            scheme="Bearer",
             credentials=HttpCredentials(token=response.token),
         ),
     )
