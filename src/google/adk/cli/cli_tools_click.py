@@ -825,6 +825,7 @@ def cli_eval(
     from .cli_eval import _collect_inferences
     from .cli_eval import get_default_metric_info
     from .cli_eval import get_root_agent
+    from .cli_eval import get_root_agent_and_app
     from .cli_eval import parse_and_get_evals_to_run
     from .cli_eval import pretty_print_eval_result
   except ModuleNotFoundError as mnf:
@@ -834,7 +835,7 @@ def cli_eval(
   print(f"Using evaluation criteria: {eval_config}")
   eval_metrics = get_eval_metrics_from_config(eval_config)
 
-  root_agent = get_root_agent(agent_module_file_path)
+  root_agent, app = get_root_agent_and_app(agent_module_file_path)
   app_name = os.path.basename(agent_module_file_path)
   agents_dir = os.path.dirname(agent_module_file_path)
   eval_sets_manager = None
@@ -936,6 +937,7 @@ def cli_eval(
 
     eval_service = LocalEvalService(
         root_agent=root_agent,
+        app=app,
         eval_sets_manager=eval_sets_manager,
         eval_set_results_manager=eval_set_results_manager,
         user_simulator_provider=user_simulator_provider,
@@ -1859,7 +1861,7 @@ def cli_api_server(
     default=False,
     help=(
         "Optional. Deploy ADK Web UI if set. (default: deploy ADK API server"
-        " only). WARNING: The web UI is for development and testing only — do"
+        " only). WARNING: The web UI is for development and testing only â€” do"
         " not use in production."
     ),
 )
@@ -1910,7 +1912,7 @@ def cli_api_server(
     default=False,
     help="Optional. Whether to enable A2A endpoint.",
 )
-# Kept as raw str (not parsed to list) — interpolated directly into Dockerfile CMD.
+# Kept as raw str (not parsed to list) â€” interpolated directly into Dockerfile CMD.
 @click.option(
     "--trigger_sources",
     type=str,
@@ -2389,7 +2391,7 @@ def cli_deploy_agent_engine(
     default=False,
     help=(
         "Optional. Deploy ADK Web UI if set. (default: deploy ADK API server"
-        " only). WARNING: The web UI is for development and testing only — do"
+        " only). WARNING: The web UI is for development and testing only â€” do"
         " not use in production."
     ),
 )
@@ -2433,7 +2435,7 @@ def cli_deploy_agent_engine(
         " version in the dev environment)"
     ),
 )
-# Kept as raw str (not parsed to list) — interpolated directly into Dockerfile CMD.
+# Kept as raw str (not parsed to list) â€” interpolated directly into Dockerfile CMD.
 @click.option(
     "--trigger_sources",
     type=str,
