@@ -16,8 +16,11 @@ from __future__ import annotations
 
 from google.adk.evaluation.app_details import AgentDetails
 from google.adk.evaluation.app_details import AppDetails
+from google.adk.evaluation.eval_case import EvalCase
+from google.adk.evaluation.eval_set import EvalSet
 from google.adk.evaluation.evaluation_generator import EvaluationGenerator
 from google.adk.evaluation.request_intercepter_plugin import _RequestIntercepterPlugin
+from google.adk.evaluation.simulation.llm_backed_user_simulator import LlmBackedUserSimulatorConfig
 from google.adk.evaluation.simulation.user_simulator import NextUserMessage
 from google.adk.evaluation.simulation.user_simulator import Status as UserSimulatorStatus
 from google.adk.evaluation.simulation.user_simulator import UserSimulator
@@ -479,3 +482,45 @@ class TestGenerateInferencesFromRootAgent:
     mock_generate_inferences.assert_called_once()
     called_with_content = mock_generate_inferences.call_args.args[3]
     assert called_with_content.parts[0].text == "message 1"
+
+
+class TestGenerateResponses:
+  """Test cases for EvaluationGenerator.generate_responses method."""
+
+  @pytest.mark.asyncio
+  async def test_generate_responses_forwards_llm_backed_user_simulator_config(
+      self, mocker
+  ):
+    """Tests that an LlmBackedUserSimulatorConfig is forwarded to the provider verbatim."""
+    mock_provider_cls = mocker.patch(
+        "google.adk.evaluation.evaluation_generator.UserSimulatorProvider"
+    )
+    mocker.patch(
+        "google.adk.evaluation.evaluation_generator.EvaluationGenerator._process_query",
+        new_callable=mocker.AsyncMock,
+        return_value=[],
+    )
+
+    user_simulator_config = LlmBackedUserSimulatorConfig(
+        model="test-model",
+        max_allowed_invocations=5,
+    )
+    eval_set = EvalSet(
+        eval_set_id="test_set",
+        eval_cases=[EvalCase(eval_id="case_0", conversation=[])],
+    )
+
+    await EvaluationGenerator.generate_responses(
+        eval_set=eval_set,
+        agent_module_path="some.agent.module",
+        repeat_num=1,
+        user_simulator_config=user_simulator_config,
+    )
+
+    mock_provider_cls.assert_called_once_with(
+        user_simulator_config=user_simulator_config
+    )
+    assert (
+        mock_provider_cls.call_args.kwargs["user_simulator_config"]
+        is user_simulator_config
+    )
