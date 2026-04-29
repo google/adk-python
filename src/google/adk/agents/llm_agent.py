@@ -142,38 +142,39 @@ async def _convert_tool_union_to_tools(
     model: Union[str, BaseLlm],
     multiple_tools: bool = False,
 ) -> list[BaseTool]:
+  from ..tools.enterprise_search_tool import EnterpriseWebSearchTool
   from ..tools.google_search_tool import GoogleSearchTool
   from ..tools.vertex_ai_search_tool import VertexAiSearchTool
 
-  # Wrap google_search tool with AgentTool if there are multiple tools because
-  # the built-in tools cannot be used together with other tools.
+  # Handle built-in tool workarounds when multiple tools are present.
+  # Built-in tools cannot be used together with other tools, so we wrap or
+  # replace them with compatible alternatives.
   # TODO(b/448114567): Remove once the workaround is no longer needed.
-  if multiple_tools and isinstance(tool_union, GoogleSearchTool):
-    from ..tools.google_search_agent_tool import create_google_search_agent
-    from ..tools.google_search_agent_tool import GoogleSearchAgentTool
+  if multiple_tools:
+    tool_workarounds = [
+        # GoogleSearchTool: wrap with AgentTool
+        {
+            'tool_class': GoogleSearchTool,
+            'handler': lambda: _handle_google_search_tool(tool_union, model),
+        },
+        # VertexAiSearchTool: replace with DiscoveryEngineSearchTool
+        {
+            'tool_class': VertexAiSearchTool,
+            'handler': lambda: _handle_vertex_ai_search_tool(tool_union),
+        },
+        # EnterpriseWebSearchTool: wrap with AgentTool
+        {
+            'tool_class': EnterpriseWebSearchTool,
+            'handler': lambda: _handle_enterprise_search_tool(
+                tool_union, model
+            ),
+        },
+    ]
 
-    search_tool = cast(GoogleSearchTool, tool_union)
-    if search_tool.bypass_multi_tools_limit:
-      return [GoogleSearchAgentTool(create_google_search_agent(model))]
-
-  # Replace VertexAiSearchTool with DiscoveryEngineSearchTool if there are
-  # multiple tools because the built-in tools cannot be used together with
-  # other tools.
-  # TODO(b/448114567): Remove once the workaround is no longer needed.
-  if multiple_tools and isinstance(tool_union, VertexAiSearchTool):
-    from ..tools.discovery_engine_search_tool import DiscoveryEngineSearchTool
-
-    vais_tool = cast(VertexAiSearchTool, tool_union)
-    if vais_tool.bypass_multi_tools_limit:
-      return [
-          DiscoveryEngineSearchTool(
-              data_store_id=vais_tool.data_store_id,
-              data_store_specs=vais_tool.data_store_specs,
-              search_engine_id=vais_tool.search_engine_id,
-              filter=vais_tool.filter,
-              max_results=vais_tool.max_results,
-          )
-      ]
+    for workaround in tool_workarounds:
+      if isinstance(tool_union, workaround['tool_class']):
+        if tool_union.bypass_multi_tools_limit:
+          return workaround['handler']()
 
   if isinstance(tool_union, BaseTool):
     return [tool_union]
@@ -190,6 +191,43 @@ async def _convert_tool_union_to_tools(
         e,
     )
     return []
+
+
+def _handle_google_search_tool(
+    tool_union: ToolUnion, model: Union[str, BaseLlm]
+) -> list[BaseTool]:
+  """Handle GoogleSearchTool workaround by wrapping with AgentTool."""
+  from ..tools.google_search_agent_tool import create_google_search_agent
+  from ..tools.google_search_agent_tool import GoogleSearchAgentTool
+
+  return [GoogleSearchAgentTool(create_google_search_agent(model))]
+
+
+def _handle_vertex_ai_search_tool(tool_union: ToolUnion) -> list[BaseTool]:
+  """Handle VertexAiSearchTool workaround by replacing with DiscoveryEngineSearchTool."""
+  from ..tools.discovery_engine_search_tool import DiscoveryEngineSearchTool
+  from ..tools.vertex_ai_search_tool import VertexAiSearchTool
+
+  vais_tool = cast(VertexAiSearchTool, tool_union)
+  return [
+      DiscoveryEngineSearchTool(
+          data_store_id=vais_tool.data_store_id,
+          data_store_specs=vais_tool.data_store_specs,
+          search_engine_id=vais_tool.search_engine_id,
+          filter=vais_tool.filter,
+          max_results=vais_tool.max_results,
+      )
+  ]
+
+
+def _handle_enterprise_search_tool(
+    tool_union: ToolUnion, model: Union[str, BaseLlm]
+) -> list[BaseTool]:
+  """Handle EnterpriseWebSearchTool workaround by wrapping with AgentTool."""
+  from ..tools.enterprise_search_agent_tool import create_enterprise_search_agent
+  from ..tools.enterprise_search_agent_tool import EnterpriseSearchAgentTool
+
+  return [EnterpriseSearchAgentTool(create_enterprise_search_agent(model))]
 
 
 class LlmAgent(BaseAgent):
