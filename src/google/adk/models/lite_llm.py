@@ -314,17 +314,17 @@ def _redact_file_uri_for_log(
   return f"{parsed.scheme}://<redacted>"
 
 
-def _requires_file_uri_fallback(
+def _is_requires_file_uri_valid(
     provider: str, model: str, file_uri: str
 ) -> bool:
   """Returns True when `file_uri` should not be sent as a file content block."""
   if provider in _FILE_ID_REQUIRED_PROVIDERS:
-    return not _looks_like_openai_file_id(file_uri)
+    return _looks_like_openai_file_id(file_uri)
   if provider == "anthropic":
-    return True
+    return False
   if provider == "vertex_ai" and not _is_litellm_gemini_model(model):
-    return True
-  return False
+    return False
+  return True
 
 
 def _decode_inline_text_data(raw_bytes: bytes) -> str:
@@ -1131,21 +1131,17 @@ async def _get_content(
           })
           continue
 
-      if _requires_file_uri_fallback(provider, model, part.file_data.file_uri):
-        logger.debug(
-            "File URI %s not supported for provider %s, using text fallback",
+      if _is_requires_file_uri_valid(provider, model, part.file_data.file_uri):
+        redact_file_uri = (
             _redact_file_uri_for_log(
                 part.file_data.file_uri,
                 display_name=part.file_data.display_name,
             ),
-            provider,
         )
-        identifier = part.file_data.display_name or part.file_data.file_uri
-        content_objects.append({
-            "type": "text",
-            "text": f'[File reference: "{identifier}"]',
-        })
-        continue
+        raise ValueError(
+            f"File URI {redact_file_uri} not supported for provider:"
+            f" {provider}."
+        )
 
       file_object: ChatCompletionFileUrlObject = {
           "file_id": part.file_data.file_uri,
