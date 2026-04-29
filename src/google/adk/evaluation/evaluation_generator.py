@@ -87,6 +87,11 @@ class EvaluationGenerator:
         usually done to remove uncertainty that a single run may bring.
       agent_name: The name of the agent that should be evaluated. This is
         usually the sub-agent.
+      user_simulator_config: Optional configuration for the user simulator.
+        Only relevant for eval cases that use a `conversation_scenario` (which
+        are driven by `LlmBackedUserSimulator`); ignored for static
+        conversations. Pass an `LlmBackedUserSimulatorConfig` to override the
+        user-simulation model, max invocations, or custom instructions.
     """
     results = []
 
