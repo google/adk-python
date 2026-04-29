@@ -46,6 +46,7 @@ from .eval_case import InvocationEvents
 from .eval_case import SessionInput
 from .eval_set import EvalSet
 from .request_intercepter_plugin import _RequestIntercepterPlugin
+from .simulation.user_simulator import BaseUserSimulatorConfig
 from .simulation.user_simulator import Status as UserSimulatorStatus
 from .simulation.user_simulator import UserSimulator
 from .simulation.user_simulator_provider import UserSimulatorProvider
@@ -75,6 +76,7 @@ class EvaluationGenerator:
       agent_module_path: str,
       repeat_num: int = 3,
       agent_name: str = None,
+      user_simulator_config: Optional[BaseUserSimulatorConfig] = None,
   ) -> list[EvalCaseResponses]:
     """Returns evaluation responses for the given dataset and agent.
 
@@ -90,7 +92,10 @@ class EvaluationGenerator:
 
     for eval_case in eval_set.eval_cases:
       # assume only static conversations are needed
-      user_simulator = UserSimulatorProvider().provide(eval_case)
+      user_simulator = UserSimulatorProvider(
+          user_simulator_config=user_simulator_config
+      ).provide(eval_case)
+
       responses = []
       for _ in range(repeat_num):
         response_invocations = await EvaluationGenerator._process_query(
