@@ -124,7 +124,7 @@ optional-dependencies.extensions = [
   "k8s-agent-sandbox>=0.1.1.post3",                                  # For GkeCodeExecutor sandbox mode
   "kubernetes>=29",                                                  # For GkeCodeExecutor
   "langgraph>=0.2.60,<0.4.8",                                        # For LangGraphAgent
-  "litellm>=1.75.5,<=1.82.6",                                        # For LiteLlm class. Upper bound pinned: versions 1.82.7+ compromised in supply chain attack.
+  "litellm>=1.83.7,<=1.83.14",                                       # For LiteLlm class. Lower bound: 5 CVE patches (2026-04). Upper bound pinned to current latest; bump deliberately. See #5488.
   "llama-index-embeddings-google-genai>=0.3",                        # For files retrieval using LlamaIndex.
   "llama-index-readers-file>=0.4",                                   # For retrieval using LlamaIndex.
   "lxml>=5.3",                                                       # For load_web_page tool.
@@ -143,7 +143,7 @@ optional-dependencies.test = [
   "kubernetes>=29",                                                  # For GkeCodeExecutor
   "langchain-community>=0.3.17",
   "langgraph>=0.2.60,<0.4.8",                                        # For LangGraphAgent
-  "litellm>=1.75.5,<=1.82.6",                                        # For LiteLLM tests. Upper bound pinned: versions 1.82.7+ compromised in supply chain attack.
+  "litellm>=1.83.7,<=1.83.14",                                       # For LiteLLM tests. Lower bound: 5 CVE patches (2026-04). Upper bound pinned to current latest; bump deliberately. See #5488.
   "llama-index-readers-file>=0.4",                                   # For retrieval tests
   "openai>=1.100.2",                                                 # For LiteLLM
   "opentelemetry-instrumentation-google-genai>=0.3b0,<1",
