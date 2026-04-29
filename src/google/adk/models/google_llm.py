@@ -15,6 +15,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import copy
 from functools import cached_property
@@ -97,19 +98,14 @@ class Gemini(BaseLlm):
     directly (location, project, credentials, http_options, etc.),
     subclass ``Gemini`` and override the ``api_client`` property::
 
-        from functools import cached_property
         from google.adk.models import Gemini
         from google.genai import Client
 
         class GlobalGemini(Gemini):
-          @cached_property
           def api_client(self) -> Client:
             return Client(vertexai=True, location="global")
 
         agent = Agent(model=GlobalGemini(model="gemini-3-pro-preview"))
-
-    Use ``@property`` instead of ``@cached_property`` if you hit asyncio
-    lock contention in multithreaded code.
   """
 
   model: str = 'gemini-2.5-flash'
@@ -321,14 +317,31 @@ class Gemini(BaseLlm):
     ):
       yield llm_response
 
-  @cached_property
+  @property
   def api_client(self) -> Client:
     """Provides the api client.
+
+    The client is cached per asyncio event loop so that each OS thread running
+    its own event loop receives a fresh ``google.genai.Client`` (and therefore
+    a fresh underlying HTTP session).  Reusing a client whose event loop has
+    been closed causes ``RuntimeError: Event loop is closed`` in multi-threaded
+    deployments such as Vertex AI Agent Engine.
 
     Returns:
       The api client.
     """
     from google.genai import Client
+
+    try:
+      loop = asyncio.get_running_loop()
+    except RuntimeError:
+      loop = None
+
+    cached_loop, cached_client = self.__dict__.get(
+        '_api_client_cache', (None, None)
+    )
+    if cached_client is not None and cached_loop is loop:
+      return cached_client
 
     base_url, api_version = self._base_url_and_api_version
     kwargs_for_http_options: dict[str, Any] = {
@@ -345,7 +358,9 @@ class Gemini(BaseLlm):
     if self.model.startswith('projects/'):
       kwargs['vertexai'] = True
 
-    return Client(**kwargs)
+    client = Client(**kwargs)
+    self.__dict__['_api_client_cache'] = (loop, client)
+    return client
 
   @cached_property
   def _api_backend(self) -> GoogleLLMVariant:
@@ -374,9 +389,20 @@ class Gemini(BaseLlm):
       # use v1alpha for using API KEY from Google AI Studio
       return 'v1alpha'
 
-  @cached_property
+  @property
   def _live_api_client(self) -> Client:
     from google.genai import Client
+
+    try:
+      loop = asyncio.get_running_loop()
+    except RuntimeError:
+      loop = None
+
+    cached_loop, cached_client = self.__dict__.get(
+        '_live_api_client_cache', (None, None)
+    )
+    if cached_client is not None and cached_loop is loop:
+      return cached_client
 
     base_url, _ = self._base_url_and_api_version
 
@@ -390,7 +416,9 @@ class Gemini(BaseLlm):
     if self.model.startswith('projects/'):
       kwargs['vertexai'] = True
 
-    return Client(**kwargs)
+    client = Client(**kwargs)
+    self.__dict__['_live_api_client_cache'] = (loop, client)
+    return client
 
   @contextlib.asynccontextmanager
   async def connect(self, llm_request: LlmRequest) -> BaseLlmConnection:
