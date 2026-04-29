@@ -25,6 +25,7 @@ import uuid
 from typing_extensions import override
 
 from ..agents.base_agent import BaseAgent
+from ..apps.app import App
 from ..artifacts.base_artifact_service import BaseArtifactService
 from ..artifacts.in_memory_artifact_service import InMemoryArtifactService
 from ..errors.not_found_error import NotFoundError
@@ -116,6 +117,7 @@ class LocalEvalService(BaseEvalService):
       self,
       root_agent: BaseAgent,
       eval_sets_manager: EvalSetsManager,
+      app: Optional[App] = None,
       metric_evaluator_registry: Optional[MetricEvaluatorRegistry] = None,
       session_service: Optional[BaseSessionService] = None,
       artifact_service: Optional[BaseArtifactService] = None,
@@ -125,6 +127,7 @@ class LocalEvalService(BaseEvalService):
       memory_service: Optional[BaseMemoryService] = None,
   ):
     self._root_agent = root_agent
+    self._app = app
     self._eval_sets_manager = eval_sets_manager
     metric_evaluator_registry = (
         metric_evaluator_registry or DEFAULT_METRIC_EVALUATOR_REGISTRY
@@ -182,6 +185,7 @@ class LocalEvalService(BaseEvalService):
             eval_set_id=inference_request.eval_set_id,
             eval_case=eval_case,
             root_agent=self._root_agent,
+            app=self._app,
         )
 
     inference_results = [run_inference(eval_case) for eval_case in eval_cases]
@@ -470,6 +474,7 @@ class LocalEvalService(BaseEvalService):
       eval_set_id: str,
       eval_case: EvalCase,
       root_agent: BaseAgent,
+      app: Optional[App] = None,
   ) -> InferenceResult:
     initial_session = eval_case.session_input
     session_id = self._session_id_supplier()
@@ -491,6 +496,7 @@ class LocalEvalService(BaseEvalService):
                 session_service=self._session_service,
                 artifact_service=self._artifact_service,
                 memory_service=self._memory_service,
+                app=app,
             )
         )
 

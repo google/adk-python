@@ -26,6 +26,7 @@ from google.genai.types import Content
 from pydantic import BaseModel
 
 from ..agents.llm_agent import Agent
+from ..apps.app import App
 from ..artifacts.base_artifact_service import BaseArtifactService
 from ..artifacts.in_memory_artifact_service import InMemoryArtifactService
 from ..events.event import Event
@@ -197,6 +198,7 @@ class EvaluationGenerator:
       session_service: Optional[BaseSessionService] = None,
       artifact_service: Optional[BaseArtifactService] = None,
       memory_service: Optional[BaseMemoryService] = None,
+      app: Optional[App] = None,
   ) -> list[Invocation]:
     """Scrapes the root agent in coordination with the user simulator."""
 
@@ -235,13 +237,15 @@ class EvaluationGenerator:
     ensure_retry_options_plugin = EnsureRetryOptionsPlugin(
         name="ensure_retry_options"
     )
+    app_plugins = list(app.plugins) if app else []
     async with Runner(
         app_name=app_name,
         agent=root_agent,
         artifact_service=artifact_service,
         session_service=session_service,
         memory_service=memory_service,
-        plugins=[request_intercepter_plugin, ensure_retry_options_plugin],
+        plugins=app_plugins
+        + [request_intercepter_plugin, ensure_retry_options_plugin],
     ) as runner:
       events = []
       while True:

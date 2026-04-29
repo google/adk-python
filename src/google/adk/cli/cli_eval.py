@@ -25,6 +25,7 @@ import click
 from google.genai import types as genai_types
 
 from ..agents.llm_agent import Agent
+from ..apps.app import App
 from ..evaluation.base_eval_service import BaseEvalService
 from ..evaluation.base_eval_service import EvaluateConfig
 from ..evaluation.base_eval_service import EvaluateRequest
@@ -91,6 +92,17 @@ def get_root_agent(agent_module_file_path: str) -> Agent:
   agent_module = _get_agent_module(agent_module_file_path)
   root_agent = agent_module.agent.root_agent
   return root_agent
+
+
+def get_root_agent_and_app(
+    agent_module_file_path: str,
+) -> tuple[Agent, Optional[App]]:
+  """Returns root agent and App (if defined) given the agent module."""
+  agent_module = _get_agent_module(agent_module_file_path)
+  agent_obj = agent_module.agent
+  app = agent_obj if isinstance(agent_obj, App) else None
+  root_agent = agent_obj.root_agent
+  return root_agent, app
 
 
 def try_get_reset_func(agent_module_file_path: str) -> Any:
