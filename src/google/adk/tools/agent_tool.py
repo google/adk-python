@@ -272,6 +272,16 @@ class AgentTool(BaseTool):
     merged_text = '\n'.join(
         p.text for p in last_content.parts if p.text and not p.thought
     )
+
+    # Fall back to code_execution_result output if merged_text is empty
+    # This handles inner code-executor agents that return only
+    # executable_code and code_execution_result (no text part)
+    if not merged_text or not merged_text.strip():
+      for p in last_content.parts:
+        if p.code_execution_result and p.code_execution_result.output:
+          merged_text = p.code_execution_result.output
+          break
+
     output_schema = _get_output_schema(self.agent)
     if output_schema:
       tool_result = validate_schema(output_schema, merged_text)
