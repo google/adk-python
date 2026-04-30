@@ -695,3 +695,51 @@ class TestValidateAgentImport:
     )
 
     assert sys.path == original_path
+
+
+def test_to_agent_engine_triggers_onboarding(
+    monkeypatch: pytest.MonkeyPatch,
+    agent_dir: Callable[[bool, bool], Path],
+) -> None:
+  """It should trigger onboarding when credentials are missing."""
+  onboarding_recorder = _Recorder()
+
+  def mock_handle_login():
+    onboarding_recorder()
+    return cli_deploy._onboarding.ExpressModeAuth(
+        api_key="fake_api_key", project_id="fake_project", region="fake_region"
+    )
+
+  monkeypatch.setattr(
+      cli_deploy._onboarding, "handle_login_with_google", mock_handle_login
+  )
+
+  fake_vertexai = types.ModuleType("vertexai")
+
+  class _FakeAgentEngines:
+
+    def create(self, *, config: Dict[str, Any]) -> Any:
+      _ = config
+      return types.SimpleNamespace(
+          api_resource=types.SimpleNamespace(
+              name="projects/p/locations/l/reasoningEngines/e"
+          )
+      )
+
+  class _FakeVertexClient:
+
+    def __init__(self, *_args: Any, **_kwargs: Any) -> None:
+      self.agent_engines = _FakeAgentEngines()
+
+  fake_vertexai.Client = _FakeVertexClient
+  monkeypatch.setitem(sys.modules, "vertexai", fake_vertexai)
+
+  src_dir = agent_dir(False, False)
+
+  cli_deploy.to_agent_engine(
+      agent_folder=str(src_dir),
+      adk_app="my_adk_app",
+      trace_to_cloud=True,
+  )
+
+  assert len(onboarding_recorder.calls) == 1
