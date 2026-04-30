@@ -88,7 +88,7 @@ def create_slice_history_callback(n_recent_turns):
 
 
 root_agent = Agent(
-    model='gemini-2.0-flash',
+    model='gemini-2.5-flash',
     name='short_history_agent',
     description=(
         'an agent that maintains only the last turn in its context window.'
