@@ -23,9 +23,9 @@ from unittest.mock import patch
 from google.adk.agents.invocation_context import InvocationContext
 from google.adk.auth.auth_handler import AuthHandler
 from google.adk.auth.auth_preprocessor import _AuthLlmRequestProcessor
+from google.adk.auth.auth_schemes import CustomAuthScheme
 from google.adk.auth.auth_tool import AuthConfig
 from google.adk.auth.auth_tool import AuthToolArguments
-from google.adk.auth.auth_schemes import CustomAuthScheme
 from google.adk.events.event import Event
 from google.adk.events.event_actions import EventActions
 from google.adk.flows.llm_flows import functions
