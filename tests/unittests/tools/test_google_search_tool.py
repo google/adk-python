@@ -251,6 +251,27 @@ class TestGoogleSearchTool:
     assert llm_request.config.tools[1].google_search is not None
 
   @pytest.mark.asyncio
+  async def test_process_llm_request_with_provider_prefixed_gemini_model(
+      self,
+  ):
+    """Test processing LLM request with provider-prefixed Gemini model."""
+    tool = GoogleSearchTool()
+    tool_context = await _create_tool_context()
+
+    llm_request = LlmRequest(
+        model='openrouter/google/gemini-2.5-pro:online',
+        config=types.GenerateContentConfig(),
+    )
+
+    await tool.process_llm_request(
+        tool_context=tool_context, llm_request=llm_request
+    )
+
+    assert llm_request.config.tools is not None
+    assert len(llm_request.config.tools) == 1
+    assert llm_request.config.tools[0].google_search is not None
+
+  @pytest.mark.asyncio
   async def test_process_llm_request_with_non_gemini_model_raises_error(self):
     """Test that non-Gemini model raises ValueError."""
     tool = GoogleSearchTool()
