@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import copy
 import json
 from pathlib import Path
 import tempfile
@@ -34,8 +35,10 @@ from a2a.types import TaskState
 from a2a.types import TaskStatus as A2ATaskStatus
 from a2a.types import TaskStatusUpdateEvent
 from a2a.types import TextPart
+from a2a.types import TransportProtocol as A2ATransport
 from google.adk.a2a.agent import ParametersConfig
 from google.adk.a2a.agent import RequestInterceptor
+from google.adk.a2a.agent.config import A2aRemoteAgentConfig
 from google.adk.a2a.agent.utils import execute_after_request_interceptors
 from google.adk.a2a.agent.utils import execute_before_request_interceptors
 from google.adk.agents.invocation_context import InvocationContext
@@ -196,6 +199,10 @@ class TestRemoteA2aAgentResolution:
     assert client is not None
     assert agent._httpx_client == client
     assert agent._httpx_client_needs_cleanup is True
+    assert agent._a2a_client_factory._config.supported_transports == [
+        A2ATransport.jsonrpc,
+        A2ATransport.http_json,
+    ]
 
   @pytest.mark.asyncio
   async def test_ensure_httpx_client_reuses_existing_client(self):
@@ -623,6 +630,37 @@ class TestRemoteA2aAgentMessageHandling:
       assert parts[0] == mock_a2a_part
       assert context_id is None
 
+  def test_construct_message_parts_from_session_user_input_metadata(self):
+    """Test that user input metadata is added for user messages."""
+    mock_part = Mock()
+    mock_content = Mock()
+    mock_content.parts = [mock_part]
+
+    mock_event = Mock()
+    mock_event.content = mock_content
+    mock_event.author = "user"
+    mock_event.custom_metadata = None
+
+    self.mock_session.events = [mock_event]
+
+    with patch(
+        "google.adk.agents.remote_a2a_agent._present_other_agent_message"
+    ) as mock_convert:
+      mock_convert.return_value = mock_event
+
+      mock_a2a_part = Mock()
+      mock_a2a_part.root = Mock()
+      mock_a2a_part.root.metadata = {}
+      self.mock_genai_part_converter.return_value = mock_a2a_part
+
+      parts, _ = self.agent._construct_message_parts_from_session(
+          self.mock_context
+      )
+
+      assert len(parts) == 1
+      assert parts[0] == mock_a2a_part
+      assert parts[0].root.metadata.get("is_user_input") is True
+
   def test_construct_message_parts_from_session_success_multiple_parts(self):
     """Test successful message parts construction from session."""
     # Mock event with text content
@@ -710,6 +748,8 @@ class TestRemoteA2aAgentMessageHandling:
     def mock_converter(part):
       mock_a2a_part = Mock()
       mock_a2a_part.text = part.text
+      mock_a2a_part.root = Mock()
+      mock_a2a_part.root.metadata = {}
       return mock_a2a_part
 
     self.mock_genai_part_converter.side_effect = mock_converter
@@ -760,6 +800,8 @@ class TestRemoteA2aAgentMessageHandling:
     def mock_converter(part):
       mock_a2a_part = Mock()
       mock_a2a_part.text = part.text
+      mock_a2a_part.root = Mock()
+      mock_a2a_part.root.metadata = {}
       return mock_a2a_part
 
     self.mock_genai_part_converter.side_effect = mock_converter
@@ -815,6 +857,8 @@ class TestRemoteA2aAgentMessageHandling:
     def mock_converter(part):
       mock_a2a_part = Mock()
       mock_a2a_part.text = part.text
+      mock_a2a_part.root = Mock()
+      mock_a2a_part.root.metadata = {}
       return mock_a2a_part
 
     self.mock_genai_part_converter.side_effect = mock_converter
@@ -949,6 +993,8 @@ class TestRemoteA2aAgentMessageHandling:
       def mock_converter(part):
         mock_a2a_part = Mock()
         mock_a2a_part.original_text = part.text
+        mock_a2a_part.root = Mock()
+        mock_a2a_part.root.metadata = {}
         converted_parts.append(mock_a2a_part)
         return mock_a2a_part
 
@@ -2866,3 +2912,28 @@ class TestRemoteA2aAgentInterceptors:
     )
 
     assert result is event
+
+
+class TestRemoteA2aAgentDeepcopy:
+  """Test deepcopy functionality for RemoteA2aAgent and its config."""
+
+  def test_deepcopy_config(self):
+    """Test that A2aRemoteAgentConfig can be deepcopied with interceptors."""
+    config = A2aRemoteAgentConfig()
+    mock_interceptor = Mock()
+    config.request_interceptors = [mock_interceptor]
+
+    copied_config = copy.deepcopy(config)
+    assert copied_config is not None
+
+    # Verify that functions are shared (by reference)
+    assert copied_config.a2a_message_converter is config.a2a_message_converter
+
+    # Verify that request_interceptors list was copied
+    assert copied_config.request_interceptors is not None
+    assert len(copied_config.request_interceptors) == 1
+    # Standard objects inside lists should be deepcopied (new instances)
+    assert (
+        copied_config.request_interceptors[0]
+        is not config.request_interceptors[0]
+    )

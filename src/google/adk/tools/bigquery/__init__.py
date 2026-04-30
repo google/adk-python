@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""BigQuery Tools (Experimental).
+"""BigQuery Tools.
 
 BigQuery Tools under this module are hand crafted and customized while the tools
 under google.adk.tools.google_api_tool are auto generated based on API

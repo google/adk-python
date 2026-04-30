@@ -61,7 +61,7 @@ class TestUrlContextTool:
     tool_context = await _create_tool_context()
 
     llm_request = LlmRequest(
-        model='gemini-2.0-flash', config=types.GenerateContentConfig()
+        model='gemini-2.5-flash', config=types.GenerateContentConfig()
     )
 
     await tool.process_llm_request(
@@ -79,7 +79,7 @@ class TestUrlContextTool:
     tool_context = await _create_tool_context()
 
     llm_request = LlmRequest(
-        model='projects/265104255505/locations/us-central1/publishers/google/models/gemini-2.0-flash-001',
+        model='projects/265104255505/locations/us-central1/publishers/google/models/gemini-2.5-flash',
         config=types.GenerateContentConfig(),
     )
 
@@ -122,7 +122,7 @@ class TestUrlContextTool:
     )
 
     llm_request = LlmRequest(
-        model='gemini-2.0-flash',
+        model='gemini-2.5-flash',
         config=types.GenerateContentConfig(tools=[existing_tool]),
     )
 
@@ -161,7 +161,7 @@ class TestUrlContextTool:
     tool_context = await _create_tool_context()
 
     llm_request = LlmRequest(
-        model='projects/265104255505/locations/us-central1/publishers/google/models/gemini-1.5-flash-001',
+        model='projects/265104255505/locations/us-central1/publishers/google/models/gemini-1.5-flash',
         config=types.GenerateContentConfig(),
     )
 
@@ -268,7 +268,7 @@ class TestUrlContextTool:
     tool = UrlContextTool()
     tool_context = await _create_tool_context()
 
-    llm_request = LlmRequest(model='gemini-2.0-flash')
+    llm_request = LlmRequest(model='gemini-2.5-flash')
 
     await tool.process_llm_request(
         tool_context=tool_context, llm_request=llm_request
@@ -286,7 +286,7 @@ class TestUrlContextTool:
     tool_context = await _create_tool_context()
 
     llm_request = LlmRequest(
-        model='gemini-2.0-flash', config=types.GenerateContentConfig(tools=None)
+        model='gemini-2.5-flash', config=types.GenerateContentConfig(tools=None)
     )
 
     await tool.process_llm_request(

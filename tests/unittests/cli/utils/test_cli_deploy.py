@@ -30,9 +30,8 @@ from typing import Tuple
 from unittest import mock
 
 import click
+from google.adk.cli import cli_deploy
 import pytest
-
-import src.google.adk.cli.cli_deploy as cli_deploy
 
 
 # Helpers
@@ -240,6 +239,20 @@ def test_agent_engine_app_template_compiles_with_windows_paths() -> None:
   compile(rendered, "<agent_engine_app.py>", "exec")
 
 
+def test_print_agent_engine_url() -> None:
+  """It should print the correct URL for a fully-qualified resource name."""
+  with mock.patch("click.secho") as mocked_secho:
+    cli_deploy._print_agent_engine_url(
+        "projects/my-project/locations/us-central1/reasoningEngines/123456"
+    )
+    mocked_secho.assert_called_once()
+    call_args = mocked_secho.call_args[0][0]
+    assert "my-project" in call_args
+    assert "us-central1" in call_args
+    assert "123456" in call_args
+    assert "playground" in call_args
+
+
 @pytest.mark.parametrize("include_requirements", [True, False])
 def test_to_agent_engine_happy_path(
     monkeypatch: pytest.MonkeyPatch,
@@ -304,6 +317,34 @@ def test_to_agent_engine_happy_path(
   assert "google-cloud-aiplatform[adk,agent_engines]" in reqs_path.read_text()
   assert len(create_recorder.calls) == 1
   assert str(rmtree_recorder.get_last_call_args()[0]) == str(tmp_dir)
+
+
+def test_to_agent_engine_raises_when_explicit_config_file_missing(
+    monkeypatch: pytest.MonkeyPatch,
+    agent_dir: Callable[[bool, bool], Path],
+    tmp_path: Path,
+) -> None:
+  """It should fail with a clear error when --agent_engine_config_file is missing."""
+  monkeypatch.setattr(shutil, "rmtree", lambda *a, **k: None)
+  src_dir = agent_dir(False, False)
+  missing_config = tmp_path / "no_such_agent_engine_config.json"
+  expected_abs = str(missing_config.resolve())
+
+  with pytest.raises(click.ClickException) as exc_info:
+    cli_deploy.to_agent_engine(
+        agent_folder=str(src_dir),
+        temp_folder="tmp",
+        adk_app="my_adk_app",
+        trace_to_cloud=True,
+        project="my-gcp-project",
+        region="us-central1",
+        display_name="My Test Agent",
+        description="A test agent.",
+        agent_engine_config_file=str(missing_config),
+    )
+
+  assert "Agent engine config file not found" in str(exc_info.value)
+  assert expected_abs in str(exc_info.value)
 
 
 def test_to_agent_engine_skips_agent_import_validation_by_default(
@@ -508,7 +549,7 @@ def test_to_gke_happy_path(
   assert "image: gcr.io/gke-proj/gke-svc" in yaml_content
   assert f"containerPort: 9090" in yaml_content
   assert f"targetPort: 9090" in yaml_content
-  assert "type: LoadBalancer" in yaml_content
+  assert "type: ClusterIP" in yaml_content
 
   # 4. Verify cleanup
   assert str(rmtree_recorder.get_last_call_args()[0]) == str(tmp_path)
@@ -654,3 +695,51 @@ class TestValidateAgentImport:
     )
 
     assert sys.path == original_path
+
+
+def test_to_agent_engine_triggers_onboarding(
+    monkeypatch: pytest.MonkeyPatch,
+    agent_dir: Callable[[bool, bool], Path],
+) -> None:
+  """It should trigger onboarding when credentials are missing."""
+  onboarding_recorder = _Recorder()
+
+  def mock_handle_login():
+    onboarding_recorder()
+    return cli_deploy._onboarding.ExpressModeAuth(
+        api_key="fake_api_key", project_id="fake_project", region="fake_region"
+    )
+
+  monkeypatch.setattr(
+      cli_deploy._onboarding, "handle_login_with_google", mock_handle_login
+  )
+
+  fake_vertexai = types.ModuleType("vertexai")
+
+  class _FakeAgentEngines:
+
+    def create(self, *, config: Dict[str, Any]) -> Any:
+      _ = config
+      return types.SimpleNamespace(
+          api_resource=types.SimpleNamespace(
+              name="projects/p/locations/l/reasoningEngines/e"
+          )
+      )
+
+  class _FakeVertexClient:
+
+    def __init__(self, *_args: Any, **_kwargs: Any) -> None:
+      self.agent_engines = _FakeAgentEngines()
+
+  fake_vertexai.Client = _FakeVertexClient
+  monkeypatch.setitem(sys.modules, "vertexai", fake_vertexai)
+
+  src_dir = agent_dir(False, False)
+
+  cli_deploy.to_agent_engine(
+      agent_folder=str(src_dir),
+      adk_app="my_adk_app",
+      trace_to_cloud=True,
+  )
+
+  assert len(onboarding_recorder.calls) == 1

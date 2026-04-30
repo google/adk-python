@@ -12,133 +12,390 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from __future__ import annotations
+
+import socket
 from unittest import mock
 
 from google.adk.tools.load_web_page import load_web_page
+import google.adk.tools.load_web_page as load_web_page_module
 import requests
 
 
-def _mock_beautiful_soup(text='This is a test paragraph with enough words'):
-  """Create a mock BeautifulSoup class that returns the given text."""
+def _create_response(html: str) -> requests.Response:
+  response = requests.Response()
+  response.status_code = 200
+  response._content = html.encode('utf-8')  # pylint: disable=protected-access
+  response.url = 'https://example.com'
+  return response
+
+
+def _clear_proxy_env(monkeypatch):
+  for proxy_variable in (
+      'HTTP_PROXY',
+      'HTTPS_PROXY',
+      'http_proxy',
+      'https_proxy',
+      'ALL_PROXY',
+      'all_proxy',
+      'NO_PROXY',
+      'no_proxy',
+  ):
+    monkeypatch.delenv(proxy_variable, raising=False)
+
+
+def test_load_web_page_blocks_file_scheme_urls(monkeypatch):
+  _clear_proxy_env(monkeypatch)
+  mock_get = mock.Mock()
+  monkeypatch.setattr(load_web_page_module.requests, 'get', mock_get)
+  mock_send = mock.Mock()
+  monkeypatch.setattr(load_web_page_module.HTTPAdapter, 'send', mock_send)
+
+  result = load_web_page('file:///etc/passwd')
+
+  assert result == 'Failed to fetch url: file:///etc/passwd'
+  mock_get.assert_not_called()
+  mock_send.assert_not_called()
+
+
+def test_load_web_page_blocks_loopback_ip_urls(monkeypatch):
+  _clear_proxy_env(monkeypatch)
+  mock_get = mock.Mock()
+  monkeypatch.setattr(load_web_page_module.requests, 'get', mock_get)
+  mock_send = mock.Mock()
+  monkeypatch.setattr(load_web_page_module.HTTPAdapter, 'send', mock_send)
+
+  result = load_web_page(
+      'http://127.0.0.1:19876/latest/meta-data/iam/security-credentials/'
+  )
+
+  assert (
+      result
+      == 'Failed to fetch url:'
+      ' http://127.0.0.1:19876/latest/meta-data/iam/security-credentials/'
+  )
+  mock_get.assert_not_called()
+  mock_send.assert_not_called()
+
+
+def test_load_web_page_blocks_shared_address_space_urls(monkeypatch):
+  _clear_proxy_env(monkeypatch)
+  mock_get = mock.Mock()
+  monkeypatch.setattr(load_web_page_module.requests, 'get', mock_get)
+  mock_send = mock.Mock()
+  monkeypatch.setattr(load_web_page_module.HTTPAdapter, 'send', mock_send)
+
+  result = load_web_page('http://100.64.0.1/internal')
+
+  assert result == 'Failed to fetch url: http://100.64.0.1/internal'
+  mock_get.assert_not_called()
+  mock_send.assert_not_called()
+
+
+def test_load_web_page_blocks_private_hostname_targets(monkeypatch):
+  _clear_proxy_env(monkeypatch)
+  monkeypatch.setattr(
+      load_web_page_module.socket,
+      'getaddrinfo',
+      mock.Mock(
+          return_value=[(
+              socket.AF_INET,
+              socket.SOCK_STREAM,
+              socket.IPPROTO_TCP,
+              '',
+              ('169.254.169.254', 0),
+          )]
+      ),
+  )
+  mock_get = mock.Mock()
+  monkeypatch.setattr(load_web_page_module.requests, 'get', mock_get)
+  mock_send = mock.Mock()
+  monkeypatch.setattr(load_web_page_module.HTTPAdapter, 'send', mock_send)
+
+  result = load_web_page('http://metadata.google.internal/computeMetadata/v1/')
+
+  assert (
+      result
+      == 'Failed to fetch url:'
+      ' http://metadata.google.internal/computeMetadata/v1/'
+  )
+  mock_get.assert_not_called()
+  mock_send.assert_not_called()
+
+
+def test_load_web_page_uses_proxy_for_unresolved_public_hostnames(monkeypatch):
+  monkeypatch.setenv('HTTPS_PROXY', 'http://proxy.example.test:8080')
+  monkeypatch.setenv('NO_PROXY', '')
+  monkeypatch.setattr(
+      load_web_page_module.socket,
+      'getaddrinfo',
+      mock.Mock(side_effect=AssertionError('unexpected local DNS lookup')),
+  )
+  monkeypatch.setattr(
+      'bs4.BeautifulSoup',
+      mock.Mock(
+          return_value=mock.Mock(
+              get_text=mock.Mock(
+                  return_value='This page has enough words to keep.'
+              )
+          )
+      ),
+  )
+  mock_get = mock.Mock(
+      return_value=_create_response(
+          '<html><body><p>This page has enough words to keep.</p></body></html>'
+      )
+  )
+  monkeypatch.setattr(load_web_page_module.requests, 'get', mock_get)
+  mock_send = mock.Mock()
+  monkeypatch.setattr(load_web_page_module.HTTPAdapter, 'send', mock_send)
+
+  result = load_web_page('https://does-not-resolve.invalid')
+
+  assert result == 'This page has enough words to keep.'
+  mock_get.assert_called_once_with(
+      'https://does-not-resolve.invalid',
+      allow_redirects=False,
+      timeout=load_web_page_module._DEFAULT_TIMEOUT_SECONDS,
+  )
+  mock_send.assert_not_called()
+
+
+def test_load_web_page_fetches_public_urls_by_pinning_the_resolved_ip(
+    monkeypatch,
+):
+  _clear_proxy_env(monkeypatch)
+  monkeypatch.setattr(
+      load_web_page_module.socket,
+      'getaddrinfo',
+      mock.Mock(
+          return_value=[(
+              socket.AF_INET,
+              socket.SOCK_STREAM,
+              socket.IPPROTO_TCP,
+              '',
+              ('93.184.216.34', 0),
+          )]
+      ),
+  )
   mock_soup = mock.Mock()
-  mock_soup.get_text.return_value = text
-  mock_cls = mock.Mock(return_value=mock_soup)
-  return mock_cls
+  mock_soup.get_text.return_value = 'This page has enough words to keep.\ntiny'
+  monkeypatch.setattr('bs4.BeautifulSoup', mock.Mock(return_value=mock_soup))
+  captured_request: dict[str, object] = {}
 
-
-class TestLoadWebPage:
-
-  def test_invalid_scheme_file(self):
-    result = load_web_page('file:///etc/passwd')
-    assert 'Invalid URL scheme' in result
-    assert 'file' in result
-
-  def test_invalid_scheme_ftp(self):
-    result = load_web_page('ftp://example.com/file')
-    assert 'Invalid URL scheme' in result
-    assert 'ftp' in result
-
-  def test_invalid_scheme_empty(self):
-    result = load_web_page('not-a-url')
-    assert 'Invalid URL scheme' in result
-
-  @mock.patch('google.adk.tools.load_web_page.requests.get')
-  def test_timeout_returns_error_message(self, mock_get):
-    mock_get.side_effect = requests.exceptions.Timeout()
-    result = load_web_page('https://example.com')
-    assert 'timed out' in result
-
-  @mock.patch('google.adk.tools.load_web_page.requests.get')
-  def test_connection_error_returns_error_message(self, mock_get):
-    mock_get.side_effect = requests.exceptions.ConnectionError()
-    result = load_web_page('https://example.com')
-    assert 'Connection error' in result
-
-  @mock.patch('builtins.__import__')
-  @mock.patch('google.adk.tools.load_web_page.requests.get')
-  def test_successful_request(self, mock_get, mock_import):
-    mock_soup_instance = mock.Mock()
-    mock_soup_instance.get_text.return_value = (
-        'This is a test paragraph with enough words'
-    )
-    mock_bs_module = mock.Mock()
-    mock_bs_module.BeautifulSoup.return_value = mock_soup_instance
-
-    original_import = (
-        __builtins__.__import__
-        if hasattr(__builtins__, '__import__')
-        else __import__
+  def _send(
+      self,
+      request,
+      stream=False,
+      timeout=None,
+      verify=True,
+      cert=None,
+      proxies=None,
+  ):
+    del self, stream, timeout, verify, cert
+    captured_request['url'] = request.url
+    captured_request['host_header'] = request.headers['Host']
+    captured_request['proxies'] = proxies
+    return _create_response(
+        '<html><body><p>This page has enough words to keep.</p>'
+        '<p>tiny</p></body></html>'
     )
 
-    def side_effect(name, *args, **kwargs):
-      if name == 'bs4':
-        return mock_bs_module
-      return original_import(name, *args, **kwargs)
+  monkeypatch.setattr(load_web_page_module.HTTPAdapter, 'send', _send)
+  mock_get = mock.Mock()
+  monkeypatch.setattr(load_web_page_module.requests, 'get', mock_get)
 
-    mock_import.side_effect = side_effect
+  result = load_web_page('https://example.com/search?q=adk')
 
-    mock_response = mock.Mock()
-    mock_response.status_code = 200
-    mock_response.content = (
-        b'<html><body><p>This is a test paragraph with enough words</p>'
-        b'</body></html>'
+  assert result == 'This page has enough words to keep.'
+  assert captured_request['url'] == 'https://93.184.216.34/search?q=adk'
+  assert captured_request['host_header'] == 'example.com'
+  assert not captured_request['proxies']
+  mock_get.assert_not_called()
+
+
+def test_load_web_page_tries_another_resolved_address_after_connect_error(
+    monkeypatch,
+):
+  _clear_proxy_env(monkeypatch)
+  monkeypatch.setattr(
+      load_web_page_module.socket,
+      'getaddrinfo',
+      mock.Mock(
+          return_value=[
+              (
+                  socket.AF_INET,
+                  socket.SOCK_STREAM,
+                  socket.IPPROTO_TCP,
+                  '',
+                  ('93.184.216.34', 0),
+              ),
+              (
+                  socket.AF_INET,
+                  socket.SOCK_STREAM,
+                  socket.IPPROTO_TCP,
+                  '',
+                  ('93.184.216.35', 0),
+              ),
+          ]
+      ),
+  )
+  monkeypatch.setattr(
+      'bs4.BeautifulSoup',
+      mock.Mock(
+          return_value=mock.Mock(
+              get_text=mock.Mock(
+                  return_value='This page has enough words to keep.'
+              )
+          )
+      ),
+  )
+  captured_urls: list[str] = []
+
+  def _send(
+      self,
+      request,
+      stream=False,
+      timeout=None,
+      verify=True,
+      cert=None,
+      proxies=None,
+  ):
+    del self, stream, timeout, verify, cert, proxies
+    captured_urls.append(request.url)
+    if len(captured_urls) == 1:
+      raise requests.ConnectionError('first address failed')
+    return _create_response(
+        '<html><body><p>This page has enough words to keep.</p></body></html>'
     )
-    mock_get.return_value = mock_response
 
-    result = load_web_page('https://example.com')
+  monkeypatch.setattr(load_web_page_module.HTTPAdapter, 'send', _send)
+  mock_get = mock.Mock()
+  monkeypatch.setattr(load_web_page_module.requests, 'get', mock_get)
 
-    mock_get.assert_called_once_with(
-        'https://example.com', allow_redirects=False, timeout=10
+  result = load_web_page('https://example.com')
+
+  assert result == 'This page has enough words to keep.'
+  assert captured_urls == [
+      'https://93.184.216.34',
+      'https://93.184.216.35',
+  ]
+  mock_get.assert_not_called()
+
+
+def test_load_web_page_passes_timeout_to_pinned_session(monkeypatch):
+  _clear_proxy_env(monkeypatch)
+  monkeypatch.setattr(
+      load_web_page_module.socket,
+      'getaddrinfo',
+      mock.Mock(
+          return_value=[(
+              socket.AF_INET,
+              socket.SOCK_STREAM,
+              socket.IPPROTO_TCP,
+              '',
+              ('93.184.216.34', 0),
+          )]
+      ),
+  )
+  monkeypatch.setattr(
+      'bs4.BeautifulSoup',
+      mock.Mock(
+          return_value=mock.Mock(
+              get_text=mock.Mock(
+                  return_value='This page has enough words to keep.'
+              )
+          )
+      ),
+  )
+  captured_timeouts: list[object] = []
+
+  def _send(
+      self,
+      request,
+      stream=False,
+      timeout=None,
+      verify=True,
+      cert=None,
+      proxies=None,
+  ):
+    del self, request, stream, verify, cert, proxies
+    captured_timeouts.append(timeout)
+    return _create_response(
+        '<html><body><p>This page has enough words to keep.</p></body></html>'
     )
-    assert 'test paragraph' in result
 
-  @mock.patch('google.adk.tools.load_web_page.requests.get')
-  def test_failed_request_non_200(self, mock_get):
-    mock_response = mock.Mock()
-    mock_response.status_code = 404
-    mock_get.return_value = mock_response
+  monkeypatch.setattr(load_web_page_module.HTTPAdapter, 'send', _send)
 
-    result = load_web_page('https://example.com/missing')
-    assert 'Failed to fetch url' in result
+  load_web_page('https://example.com')
 
-  @mock.patch('google.adk.tools.load_web_page.requests.get')
-  def test_timeout_parameter_passed(self, mock_get):
-    mock_response = mock.Mock()
-    mock_response.status_code = 404
-    mock_get.return_value = mock_response
+  assert captured_timeouts == [load_web_page_module._DEFAULT_TIMEOUT_SECONDS]
 
-    load_web_page('http://example.com')
 
-    _, kwargs = mock_get.call_args
-    assert kwargs['timeout'] == 10
+def test_load_web_page_passes_timeout_to_proxied_get(monkeypatch):
+  monkeypatch.setenv('HTTPS_PROXY', 'http://proxy.example.test:8080')
+  monkeypatch.setenv('NO_PROXY', '')
+  monkeypatch.setattr(
+      load_web_page_module.socket,
+      'getaddrinfo',
+      mock.Mock(side_effect=AssertionError('unexpected local DNS lookup')),
+  )
+  monkeypatch.setattr(
+      'bs4.BeautifulSoup',
+      mock.Mock(
+          return_value=mock.Mock(
+              get_text=mock.Mock(
+                  return_value='This page has enough words to keep.'
+              )
+          )
+      ),
+  )
+  mock_get = mock.Mock(
+      return_value=_create_response(
+          '<html><body><p>This page has enough words to keep.</p></body></html>'
+      )
+  )
+  monkeypatch.setattr(load_web_page_module.requests, 'get', mock_get)
 
-  @mock.patch('google.adk.tools.load_web_page.requests.get')
-  def test_allow_redirects_false(self, mock_get):
-    mock_response = mock.Mock()
-    mock_response.status_code = 404
-    mock_get.return_value = mock_response
+  load_web_page('https://does-not-resolve.invalid')
 
-    load_web_page('https://example.com')
+  mock_get.assert_called_once_with(
+      'https://does-not-resolve.invalid',
+      allow_redirects=False,
+      timeout=load_web_page_module._DEFAULT_TIMEOUT_SECONDS,
+  )
 
-    _, kwargs = mock_get.call_args
-    assert kwargs['allow_redirects'] is False
 
-  @mock.patch('google.adk.tools.load_web_page.requests.get')
-  def test_http_scheme_accepted(self, mock_get):
-    mock_response = mock.Mock()
-    mock_response.status_code = 404
-    mock_get.return_value = mock_response
+def test_load_web_page_returns_failure_on_timeout(monkeypatch):
+  _clear_proxy_env(monkeypatch)
+  monkeypatch.setattr(
+      load_web_page_module.socket,
+      'getaddrinfo',
+      mock.Mock(
+          return_value=[(
+              socket.AF_INET,
+              socket.SOCK_STREAM,
+              socket.IPPROTO_TCP,
+              '',
+              ('93.184.216.34', 0),
+          )]
+      ),
+  )
 
-    result = load_web_page('http://example.com')
-    assert 'Invalid URL scheme' not in result
-    mock_get.assert_called_once()
+  def _send(
+      self,
+      request,
+      stream=False,
+      timeout=None,
+      verify=True,
+      cert=None,
+      proxies=None,
+  ):
+    del self, request, stream, timeout, verify, cert, proxies
+    raise requests.exceptions.Timeout('boom')
 
-  @mock.patch('google.adk.tools.load_web_page.requests.get')
-  def test_https_scheme_accepted(self, mock_get):
-    mock_response = mock.Mock()
-    mock_response.status_code = 404
-    mock_get.return_value = mock_response
+  monkeypatch.setattr(load_web_page_module.HTTPAdapter, 'send', _send)
 
-    result = load_web_page('https://example.com')
-    assert 'Invalid URL scheme' not in result
-    mock_get.assert_called_once()
+  result = load_web_page('https://example.com')
+
+  assert result == 'Failed to fetch url: https://example.com'

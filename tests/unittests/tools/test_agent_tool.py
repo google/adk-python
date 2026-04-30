@@ -441,11 +441,21 @@ def test_agent_tool_response_schema_no_output_schema_vertex_ai(
   declaration = agent_tool._get_declaration()
 
   assert declaration.name == 'tool_agent'
-  assert declaration.parameters.type == 'OBJECT'
-  assert declaration.parameters.properties['request'].type == 'STRING'
-  # Should have string response schema for VERTEX_AI
-  assert declaration.response is not None
-  assert declaration.response.type == types.Type.STRING
+
+  from google.adk.features import is_feature_enabled
+
+  if is_feature_enabled(FeatureName.JSON_SCHEMA_FOR_FUNC_DECL):
+    assert declaration.parameters_json_schema == {
+        'type': 'object',
+        'properties': {'request': {'type': 'string'}},
+        'required': ['request'],
+    }
+    assert declaration.response_json_schema == {'type': 'string'}
+  else:
+    assert declaration.parameters.type == 'OBJECT'
+    assert declaration.parameters.properties['request'].type == 'STRING'
+    assert declaration.response is not None
+    assert declaration.response.type == types.Type.STRING
 
 
 @mark.parametrize(
@@ -474,8 +484,13 @@ def test_agent_tool_response_schema_with_output_schema_vertex_ai(
 
   assert declaration.name == 'tool_agent'
   # Should have object response schema for VERTEX_AI when output_schema exists
-  assert declaration.response is not None
-  assert declaration.response.type == types.Type.OBJECT
+  from google.adk.features import is_feature_enabled
+
+  if is_feature_enabled(FeatureName.JSON_SCHEMA_FOR_FUNC_DECL):
+    assert declaration.response_json_schema == {'type': 'object'}
+  else:
+    assert declaration.response is not None
+    assert declaration.response.type == types.Type.OBJECT
 
 
 @mark.parametrize(
@@ -536,11 +551,24 @@ def test_agent_tool_response_schema_with_input_schema_vertex_ai(
   declaration = agent_tool._get_declaration()
 
   assert declaration.name == 'tool_agent'
-  assert declaration.parameters.type == 'OBJECT'
-  assert declaration.parameters.properties['custom_input'].type == 'STRING'
-  # Should have object response schema for VERTEX_AI when output_schema exists
-  assert declaration.response is not None
-  assert declaration.response.type == types.Type.OBJECT
+  from google.adk.features import is_feature_enabled
+
+  if is_feature_enabled(FeatureName.JSON_SCHEMA_FOR_FUNC_DECL):
+    assert declaration.parameters_json_schema == {
+        'title': 'CustomInput',
+        'type': 'object',
+        'properties': {
+            'custom_input': {'title': 'Custom Input', 'type': 'string'}
+        },
+        'required': ['custom_input'],
+    }
+    assert declaration.response_json_schema == {'type': 'object'}
+  else:
+    assert declaration.parameters.type == 'OBJECT'
+    assert declaration.parameters.properties['custom_input'].type == 'STRING'
+    # Should have object response schema for VERTEX_AI when output_schema exists
+    assert declaration.response is not None
+    assert declaration.response.type == types.Type.OBJECT
 
 
 @mark.parametrize(
@@ -568,11 +596,24 @@ def test_agent_tool_response_schema_with_input_schema_no_output_vertex_ai(
   declaration = agent_tool._get_declaration()
 
   assert declaration.name == 'tool_agent'
-  assert declaration.parameters.type == 'OBJECT'
-  assert declaration.parameters.properties['custom_input'].type == 'STRING'
-  # Should have string response schema for VERTEX_AI when no output_schema
-  assert declaration.response is not None
-  assert declaration.response.type == types.Type.STRING
+  from google.adk.features import is_feature_enabled
+
+  if is_feature_enabled(FeatureName.JSON_SCHEMA_FOR_FUNC_DECL):
+    assert declaration.parameters_json_schema == {
+        'title': 'CustomInput',
+        'type': 'object',
+        'properties': {
+            'custom_input': {'title': 'Custom Input', 'type': 'string'}
+        },
+        'required': ['custom_input'],
+    }
+    assert declaration.response_json_schema == {'type': 'string'}
+  else:
+    assert declaration.parameters.type == 'OBJECT'
+    assert declaration.parameters.properties['custom_input'].type == 'STRING'
+    # Should have string response schema for VERTEX_AI when no output_schema
+    assert declaration.response is not None
+    assert declaration.response.type == types.Type.STRING
 
 
 def test_include_plugins_default_true():
@@ -977,9 +1018,23 @@ class TestAgentToolWithCompositeAgents:
     # Should expose CustomInput schema, not fallback to 'request'
     assert declaration.name == 'sequence'
     assert declaration.description == 'Process the query through multiple steps'
-    assert declaration.parameters.properties['query'].type == 'STRING'
-    assert declaration.parameters.properties['language'].type == 'STRING'
-    assert 'request' not in declaration.parameters.properties
+
+    from google.adk.features import is_feature_enabled
+
+    if is_feature_enabled(FeatureName.JSON_SCHEMA_FOR_FUNC_DECL):
+      assert declaration.parameters_json_schema == {
+          'title': 'CustomInput',
+          'type': 'object',
+          'properties': {
+              'query': {'title': 'Query', 'type': 'string'},
+              'language': {'title': 'Language', 'type': 'string'},
+          },
+          'required': ['query', 'language'],
+      }
+    else:
+      assert declaration.parameters.properties['query'].type == 'STRING'
+      assert declaration.parameters.properties['language'].type == 'STRING'
+      assert 'request' not in declaration.parameters.properties
 
   def test_sequential_agent_without_input_schema_falls_back_to_request(self):
     """Test that AgentTool falls back to 'request' when no sub-agent has input_schema."""
@@ -1005,8 +1060,18 @@ class TestAgentToolWithCompositeAgents:
 
     # Should fall back to 'request' parameter
     assert declaration.name == 'sequence'
-    assert declaration.parameters.properties['request'].type == 'STRING'
-    assert 'query' not in declaration.parameters.properties
+
+    from google.adk.features import is_feature_enabled
+
+    if is_feature_enabled(FeatureName.JSON_SCHEMA_FOR_FUNC_DECL):
+      assert declaration.parameters_json_schema == {
+          'type': 'object',
+          'properties': {'request': {'type': 'string'}},
+          'required': ['request'],
+      }
+    else:
+      assert declaration.parameters.properties['request'].type == 'STRING'
+      assert 'query' not in declaration.parameters.properties
 
   @mark.parametrize(
       'env_variables',
@@ -1044,8 +1109,13 @@ class TestAgentToolWithCompositeAgents:
     declaration = agent_tool._get_declaration()
 
     # Should have object response schema from last sub-agent
-    assert declaration.response is not None
-    assert declaration.response.type == types.Type.OBJECT
+    from google.adk.features import is_feature_enabled
+
+    if is_feature_enabled(FeatureName.JSON_SCHEMA_FOR_FUNC_DECL):
+      assert declaration.response_json_schema == {'type': 'object'}
+    else:
+      assert declaration.response is not None
+      assert declaration.response.type == types.Type.OBJECT
 
   def test_nested_sequential_agent_input_schema(self):
     """Test that AgentTool recursively finds input_schema in nested composite agents."""
@@ -1075,9 +1145,22 @@ class TestAgentToolWithCompositeAgents:
 
     # Should recursively find CustomInput from inner_agent
     assert declaration.name == 'outer_sequence'
-    assert 'deep_query' in declaration.parameters.properties
-    assert declaration.parameters.properties['deep_query'].type == 'STRING'
-    assert 'request' not in declaration.parameters.properties
+
+    from google.adk.features import is_feature_enabled
+
+    if is_feature_enabled(FeatureName.JSON_SCHEMA_FOR_FUNC_DECL):
+      assert declaration.parameters_json_schema == {
+          'title': 'CustomInput',
+          'type': 'object',
+          'properties': {
+              'deep_query': {'title': 'Deep Query', 'type': 'string'}
+          },
+          'required': ['deep_query'],
+      }
+    else:
+      assert 'deep_query' in declaration.parameters.properties
+      assert declaration.parameters.properties['deep_query'].type == 'STRING'
+      assert 'request' not in declaration.parameters.properties
 
   @mark.parametrize(
       'env_variables',
@@ -1145,10 +1228,23 @@ class TestAgentToolWithCompositeAgents:
 
     sequence_tool = tool_declarations[0].function_declarations[0]
     assert sequence_tool.name == 'sequence'
-    # Should have 'custom_input' parameter from first sub-agent's input_schema
-    assert 'custom_input' in sequence_tool.parameters.properties
-    # Should NOT have the fallback 'request' parameter
-    assert 'request' not in sequence_tool.parameters.properties
+
+    from google.adk.features import is_feature_enabled
+
+    if is_feature_enabled(FeatureName.JSON_SCHEMA_FOR_FUNC_DECL):
+      assert sequence_tool.parameters_json_schema == {
+          'title': 'CustomInput',
+          'type': 'object',
+          'properties': {
+              'custom_input': {'title': 'Custom Input', 'type': 'string'}
+          },
+          'required': ['custom_input'],
+      }
+    else:
+      # Should have 'custom_input' parameter from first sub-agent's input_schema
+      assert 'custom_input' in sequence_tool.parameters.properties
+      # Should NOT have the fallback 'request' parameter
+      assert 'request' not in sequence_tool.parameters.properties
 
   def test_empty_sequential_agent_falls_back_to_request(self):
     """Test that AgentTool with empty SequentialAgent falls back to 'request'."""
@@ -1163,4 +1259,13 @@ class TestAgentToolWithCompositeAgents:
     declaration = agent_tool._get_declaration()
 
     # Should fall back to 'request' parameter
-    assert declaration.parameters.properties['request'].type == 'STRING'
+    from google.adk.features import is_feature_enabled
+
+    if is_feature_enabled(FeatureName.JSON_SCHEMA_FOR_FUNC_DECL):
+      assert declaration.parameters_json_schema == {
+          'type': 'object',
+          'properties': {'request': {'type': 'string'}},
+          'required': ['request'],
+      }
+    else:
+      assert declaration.parameters.properties['request'].type == 'STRING'
