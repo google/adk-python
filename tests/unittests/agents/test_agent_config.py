@@ -37,7 +37,7 @@ import yaml
 def test_agent_config_discriminator_default_is_llm_agent(tmp_path: Path):
   yaml_content = """\
 name: search_agent
-model: gemini-2.0-flash
+model: gemini-2.5-flash
 description: a sample description
 instruction: a fake instruction
 tools:
@@ -67,7 +67,7 @@ def test_agent_config_discriminator_llm_agent(
   yaml_content = f"""\
 agent_class: {agent_class_value}
 name: search_agent
-model: gemini-2.0-flash
+model: gemini-2.5-flash
 description: a sample description
 instruction: a fake instruction
 tools:
@@ -186,7 +186,7 @@ def test_agent_config_discriminator_with_sub_agents(
   sub_agent_dir.mkdir()
   sub_agent_config = """\
 name: sub_agent_{index}
-model: gemini-2.0-flash
+model: gemini-2.5-flash
 description: a sub agent
 instruction: sub agent instruction
 """
@@ -230,7 +230,7 @@ def test_agent_config_discriminator_llm_agent_with_sub_agents(
   sub_agent_dir.mkdir()
   sub_agent_config = """\
 name: sub_agent_{index}
-model: gemini-2.0-flash
+model: gemini-2.5-flash
 description: a sub agent
 instruction: sub agent instruction
 """
@@ -243,7 +243,7 @@ instruction: sub agent instruction
   yaml_content = f"""\
 agent_class: {agent_class_value}
 name: main_agent
-model: gemini-2.0-flash
+model: gemini-2.5-flash
 description: main agent with sub agents
 instruction: main agent instruction
 sub_agents:
@@ -368,14 +368,14 @@ def test_resolve_agent_reference_resolves_relative_paths(
   child_config_path.write_text(dedent(f"""
           agent_class: LlmAgent
           name: {child_name}
-          model: gemini-2.0-flash
+          model: gemini-2.5-flash
           instruction: {instruction}
           """).lstrip())
 
   config_file.write_text(dedent(f"""
           agent_class: LlmAgent
           name: main_agent
-          model: gemini-2.0-flash
+          model: gemini-2.5-flash
           instruction: I am the main agent
           sub_agents:
             - config_path: {child_rel_path.as_posix()}
