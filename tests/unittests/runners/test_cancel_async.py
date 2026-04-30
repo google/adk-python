@@ -1,4 +1,6 @@
 import asyncio
+from typing import Any
+from typing import AsyncGenerator
 
 from google.adk.agents import BaseAgent
 from google.adk.agents.run_config import RunConfig
@@ -8,8 +10,6 @@ from google.adk.runners import InMemoryRunner
 from google.adk.runners import StopSignal
 from google.genai.types import Content
 from google.genai.types import Part
-from typing import Any
-from typing import AsyncGenerator
 import pytest
 
 
