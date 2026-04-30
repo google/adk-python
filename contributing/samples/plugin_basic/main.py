@@ -28,7 +28,7 @@ async def hello_world(tool_context: ToolContext, query: str):
 
 
 root_agent = Agent(
-    model='gemini-2.0-flash',
+    model='gemini-2.5-flash',
     name='hello_world',
     description='Prints hello world with user query.',
     instruction="""Use hello_world tool to print hello world and user query.

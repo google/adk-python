@@ -27,15 +27,15 @@ class TestExtractModelName:
   def test_extract_model_name_simple_model(self):
     """Test extraction of simple model names."""
     assert extract_model_name('gemini-2.5-pro') == 'gemini-2.5-pro'
-    assert extract_model_name('gemini-1.5-flash') == 'gemini-1.5-flash'
+    assert extract_model_name('gemini-2.5-flash') == 'gemini-2.5-flash'
     assert extract_model_name('gemini-1.0-pro') == 'gemini-1.0-pro'
     assert extract_model_name('claude-3-sonnet') == 'claude-3-sonnet'
     assert extract_model_name('gpt-4') == 'gpt-4'
 
   def test_extract_model_name_path_based_model(self):
     """Test extraction of path-based model names."""
-    path_model = 'projects/265104255505/locations/us-central1/publishers/google/models/gemini-2.0-flash-001'
-    assert extract_model_name(path_model) == 'gemini-2.0-flash-001'
+    path_model = 'projects/265104255505/locations/us-central1/publishers/google/models/gemini-2.5-flash'
+    assert extract_model_name(path_model) == 'gemini-2.5-flash'
 
     path_model_2 = 'projects/12345/locations/us-east1/publishers/google/models/gemini-1.5-pro-preview'
     assert extract_model_name(path_model_2) == 'gemini-1.5-pro-preview'
@@ -64,16 +64,16 @@ class TestExtractModelName:
   def test_extract_model_name_with_models_prefix(self):
     """Test extraction of model names with 'models/' prefix."""
     assert extract_model_name('models/gemini-2.5-pro') == 'gemini-2.5-pro'
-    assert extract_model_name('models/gemini-1.5-flash') == 'gemini-1.5-flash'
+    assert extract_model_name('models/gemini-2.5-flash') == 'gemini-2.5-flash'
 
   def test_extract_model_name_invalid_path(self):
     """Test that invalid path formats return the original string."""
     invalid_paths = [
         'projects/invalid/path/format',
         'invalid/path/format',
-        'projects/123/locations/us-central1/models/gemini-2.0-flash',  # missing publishers
-        'projects/123/publishers/google/models/gemini-2.0-flash',  # missing locations
-        'projects/123/locations/us-central1/publishers/google/gemini-2.0-flash',  # missing models
+        'projects/123/locations/us-central1/models/gemini-2.5-flash',  # missing publishers
+        'projects/123/publishers/google/models/gemini-2.5-flash',  # missing locations
+        'projects/123/locations/us-central1/publishers/google/gemini-2.5-flash',  # missing models
     ]
 
     for invalid_path in invalid_paths:
@@ -86,8 +86,8 @@ class TestExtractModelName:
   def test_extract_model_name_edge_cases(self):
     """Test edge cases for model name extraction."""
     # Test with unusual but valid path patterns
-    path_with_numbers = 'projects/123456789/locations/us-central1/publishers/google/models/gemini-2.0-flash-001'
-    assert extract_model_name(path_with_numbers) == 'gemini-2.0-flash-001'
+    path_with_numbers = 'projects/123456789/locations/us-central1/publishers/google/models/gemini-2.5-flash'
+    assert extract_model_name(path_with_numbers) == 'gemini-2.5-flash'
 
     # Test with hyphens in project/location names
     path_with_hyphens = 'projects/my-test-project/locations/us-central1/publishers/google/models/gemini-1.5-pro'
@@ -102,14 +102,14 @@ class TestIsGeminiModel:
     assert is_gemini_model('gemini-2.5-pro') is True
     assert is_gemini_model('gemini-1.5-flash') is True
     assert is_gemini_model('gemini-1.0-pro') is True
-    assert is_gemini_model('gemini-2.0-flash-001') is True
+    assert is_gemini_model('gemini-2.5-flash') is True
     assert is_gemini_model('claude-3-sonnet') is False
     assert is_gemini_model('gpt-4') is False
     assert is_gemini_model('llama-2') is False
 
   def test_is_gemini_model_path_based_names(self):
     """Test Gemini model detection with path-based model names."""
-    gemini_path = 'projects/265104255505/locations/us-central1/publishers/google/models/gemini-2.0-flash-001'
+    gemini_path = 'projects/265104255505/locations/us-central1/publishers/google/models/gemini-2.5-flash'
     assert is_gemini_model(gemini_path) is True
 
     gemini_path_2 = 'projects/12345/locations/us-east1/publishers/google/models/gemini-1.5-pro-preview'
@@ -154,20 +154,20 @@ class TestIsGemini1Model:
     assert is_gemini_1_model('gemini-1.0-pro') is True
     assert is_gemini_1_model('gemini-1.5-pro-preview') is True
     assert is_gemini_1_model('gemini-1.9-experimental') is True
-    assert is_gemini_1_model('gemini-2.0-flash') is False
+    assert is_gemini_1_model('gemini-2.5-flash') is False
     assert is_gemini_1_model('gemini-2.5-pro') is False
     assert is_gemini_1_model('gemini-10.0-pro') is False  # Only 1.x versions
     assert is_gemini_1_model('claude-3-sonnet') is False
 
   def test_is_gemini_1_model_path_based_names(self):
     """Test Gemini 1.x model detection with path-based model names."""
-    gemini_1_path = 'projects/265104255505/locations/us-central1/publishers/google/models/gemini-1.5-flash-001'
+    gemini_1_path = 'projects/265104255505/locations/us-central1/publishers/google/models/gemini-1.5-flash'
     assert is_gemini_1_model(gemini_1_path) is True
 
     gemini_1_path_2 = 'projects/12345/locations/us-east1/publishers/google/models/gemini-1.0-pro-preview'
     assert is_gemini_1_model(gemini_1_path_2) is True
 
-    gemini_2_path = 'projects/265104255505/locations/us-central1/publishers/google/models/gemini-2.0-flash-001'
+    gemini_2_path = 'projects/265104255505/locations/us-central1/publishers/google/models/gemini-2.5-flash'
     assert is_gemini_1_model(gemini_2_path) is False
 
   def test_is_gemini_1_model_edge_cases(self):
@@ -193,9 +193,8 @@ class TestIsGemini2Model:
 
   def test_is_gemini_2_or_above_simple_names(self):
     """Test Gemini 2.0+ model detection with simple model names."""
-    assert is_gemini_2_or_above('gemini-2.0-flash') is True
+    assert is_gemini_2_or_above('gemini-2.5-flash') is True
     assert is_gemini_2_or_above('gemini-2.5-pro') is True
-    assert is_gemini_2_or_above('gemini-2.0-flash-001') is True
     assert is_gemini_2_or_above('gemini-2.9-experimental') is True
     assert is_gemini_2_or_above('gemini-2-pro') is True
     assert is_gemini_2_or_above('gemini-2') is True
@@ -206,13 +205,13 @@ class TestIsGemini2Model:
 
   def test_is_gemini_2_or_above_path_based_names(self):
     """Test Gemini 2.0+ model detection with path-based model names."""
-    gemini_2_path = 'projects/265104255505/locations/us-central1/publishers/google/models/gemini-2.0-flash-001'
+    gemini_2_path = 'projects/265104255505/locations/us-central1/publishers/google/models/gemini-2.5-flash'
     assert is_gemini_2_or_above(gemini_2_path) is True
 
     gemini_2_path_2 = 'projects/12345/locations/us-east1/publishers/google/models/gemini-2.5-pro-preview'
     assert is_gemini_2_or_above(gemini_2_path_2) is True
 
-    gemini_1_path = 'projects/265104255505/locations/us-central1/publishers/google/models/gemini-1.5-flash-001'
+    gemini_1_path = 'projects/265104255505/locations/us-central1/publishers/google/models/gemini-1.5-flash'
     assert is_gemini_2_or_above(gemini_1_path) is False
 
     gemini_3_path = 'projects/12345/locations/us-east1/publishers/google/models/gemini-3.0-pro'
@@ -228,7 +227,7 @@ class TestIsGemini2Model:
 
     # Test with model names containing gemini-2 but not starting with it
     assert is_gemini_2_or_above('my-gemini-2.5-model') is False
-    assert is_gemini_2_or_above('custom-gemini-2.0-flash') is False
+    assert is_gemini_2_or_above('custom-gemini-2.5-flash') is False
 
     # Test with invalid versions
     assert is_gemini_2_or_above('gemini-2.') is False  # Missing version number
@@ -243,11 +242,11 @@ class TestModelNameUtilsIntegration:
     """Test that model classification functions are consistent."""
     test_models = [
         'gemini-1.5-flash',
-        'gemini-2.0-flash',
+        'gemini-2.5-flash',
         'gemini-2.5-pro',
         'gemini-3.0-pro',
         'projects/123/locations/us-central1/publishers/google/models/gemini-1.5-pro',
-        'projects/123/locations/us-central1/publishers/google/models/gemini-2.0-flash',
+        'projects/123/locations/us-central1/publishers/google/models/gemini-2.5-flash',
         'projects/123/locations/us-central1/publishers/google/models/gemini-3.0-pro',
         'claude-3-sonnet',
         'gpt-4',
@@ -286,8 +285,8 @@ class TestModelNameUtilsIntegration:
             'projects/123/locations/us-central1/publishers/google/models/gemini-1.5-flash',
         ),
         (
-            'gemini-2.0-flash',
-            'projects/123/locations/us-central1/publishers/google/models/gemini-2.0-flash',
+            'gemini-2.5-flash',
+            'projects/123/locations/us-central1/publishers/google/models/gemini-2.5-flash',
         ),
         (
             'gemini-2.5-pro',
