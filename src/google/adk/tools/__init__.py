@@ -36,6 +36,7 @@ if TYPE_CHECKING:
   from .load_artifacts_tool import load_artifacts_tool as load_artifacts
   from .load_memory_tool import load_memory_tool as load_memory
   from .long_running_tool import LongRunningFunctionTool
+  from .perplexity_search_tool import PerplexitySearchTool
   from .preload_memory_tool import preload_memory_tool as preload_memory
   from .tool_context import ToolContext
   from .transfer_to_agent_tool import transfer_to_agent
@@ -78,6 +79,10 @@ _LAZY_MAPPING = {
     'LongRunningFunctionTool': (
         '.long_running_tool',
         'LongRunningFunctionTool',
+    ),
+    'PerplexitySearchTool': (
+        '.perplexity_search_tool',
+        'PerplexitySearchTool',
     ),
     'preload_memory': ('.preload_memory_tool', 'preload_memory_tool'),
     'ToolContext': ('.tool_context', 'ToolContext'),
