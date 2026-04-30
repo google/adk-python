@@ -46,7 +46,7 @@
 #   ]
 
 #   mock_model = testing_utils.MockModel.create(responses)
-#   mock_model.model = 'gemini-2.0-flash-exp'  # For CFC support
+#   mock_model.model = 'gemini-2.5-flash'  # For CFC support
 
 #   root_agent = Agent(
 #       name='test_agent',
@@ -145,7 +145,7 @@
 #   ]
 
 #   mock_model = testing_utils.MockModel.create(responses)
-#   mock_model.model = 'gemini-2.0-flash-exp'
+#   mock_model.model = 'gemini-2.5-flash'
 
 #   root_agent = Agent(
 #       name='test_agent',

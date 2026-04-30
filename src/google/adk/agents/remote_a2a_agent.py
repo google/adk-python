@@ -422,6 +422,11 @@ class RemoteA2aAgent(BaseAgent):
         if not isinstance(converted_parts, list):
           converted_parts = [converted_parts] if converted_parts else []
 
+        if event.author == "user":
+          for part in converted_parts:
+            part.root.metadata = part.root.metadata or {}
+            part.root.metadata["is_user_input"] = True
+
         if converted_parts:
           message_parts.extend(converted_parts)
         else:

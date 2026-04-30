@@ -169,7 +169,7 @@ async def test_get_auth_credential_returns_credential_if_available_immediately(
   auth_credential = await provider.get_auth_credential(auth_config, context)
 
   assert auth_credential.auth_type == AuthCredentialTypes.HTTP
-  assert auth_credential.http.scheme == "bearer"
+  assert auth_credential.http.scheme == "Bearer"
   assert auth_credential.http.credentials.token == "test-token"
   mock_client.retrieve_credentials.assert_called_once()
 
@@ -433,7 +433,7 @@ async def test_get_auth_credential_returns_token_if_consent_was_completed(
   # Verify
   assert auth_credential is not None
   assert auth_credential.auth_type == AuthCredentialTypes.HTTP
-  assert auth_credential.http.scheme == "bearer"
+  assert auth_credential.http.scheme == "Bearer"
   assert auth_credential.http.credentials.token == "test-token"
 
 

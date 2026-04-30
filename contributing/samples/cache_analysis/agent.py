@@ -640,7 +640,7 @@ def benchmark_performance(
 # Create the cache analysis research assistant agent
 cache_analysis_agent = Agent(
     name="cache_analysis_assistant",
-    model="gemini-2.0-flash-001",
+    model="gemini-2.5-flash",
     description="""
     Advanced Research and Analysis Assistant specializing in comprehensive system analysis,
     performance benchmarking, literature research, and test scenario generation for
