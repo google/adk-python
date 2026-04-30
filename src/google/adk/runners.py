@@ -69,13 +69,13 @@ logger = logging.getLogger('google_adk.' + __name__)
 
 class StopSignal:
 
-  def __init__(self):
+  def __init__(self) -> None:
     self.stopped = False
 
-  def stop(self):
+  def stop(self) -> None:
     self.stopped = True
 
-  def reset(self):
+  def reset(self) -> None:
     self.stopped = False
 
   def is_set(self) -> bool:

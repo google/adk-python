@@ -8,7 +8,8 @@ from google.adk.runners import InMemoryRunner
 from google.adk.runners import StopSignal
 from google.genai.types import Content
 from google.genai.types import Part
-from typing import Any, AsyncGenerator
+from typing import Any
+from typing import AsyncGenerator
 import pytest
 
 
