@@ -27,6 +27,7 @@ from google.adk.auth.auth_credential import AuthCredential
 from google.adk.auth.auth_credential import AuthCredentialTypes
 from google.adk.auth.auth_credential import HttpAuth
 from google.adk.auth.auth_credential import HttpCredentials
+from google.adk.auth.auth_credential import OAuth2Auth
 from google.adk.auth.auth_tool import AuthConfig
 from google.adk.tools.load_mcp_resource_tool import LoadMcpResourceTool
 from google.adk.tools.mcp_tool.mcp_session_manager import MCPSessionManager
@@ -35,6 +36,7 @@ from google.adk.tools.mcp_tool.mcp_session_manager import StdioConnectionParams
 from google.adk.tools.mcp_tool.mcp_session_manager import StreamableHTTPConnectionParams
 from google.adk.tools.mcp_tool.mcp_tool import MCPTool
 from google.adk.tools.mcp_tool.mcp_toolset import McpToolset
+from google.adk.tools.tool_configs import ToolArgsConfig
 from mcp import StdioServerParameters
 from mcp.types import BlobResourceContents
 from mcp.types import ListResourcesResult
@@ -136,10 +138,8 @@ class TestMcpToolset:
   def test_init_with_auth(self):
     """Test initialization with authentication."""
     # Create real auth scheme instances
-    from fastapi.openapi.models import OAuth2
 
     auth_scheme = OAuth2(flows={})
-    from google.adk.auth.auth_credential import OAuth2Auth
 
     auth_credential = AuthCredential(
         auth_type="oauth2",
@@ -154,6 +154,42 @@ class TestMcpToolset:
 
     assert toolset._auth_scheme == auth_scheme
     assert toolset._auth_credential == auth_credential
+
+  def test_init_with_auth_and_credential_key(self):
+    """Test initialization with authentication and a custom credential_key."""
+
+    auth_scheme = OAuth2(flows={})
+
+    auth_credential = AuthCredential(
+        auth_type="oauth2",
+        oauth2=OAuth2Auth(client_id="test_id", client_secret="test_secret"),
+    )
+
+    toolset = McpToolset(
+        connection_params=self.mock_stdio_params,
+        auth_scheme=auth_scheme,
+        auth_credential=auth_credential,
+        credential_key="my_custom_key",
+    )
+
+    assert toolset._auth_scheme == auth_scheme
+    assert toolset._auth_credential == auth_credential
+    assert toolset._auth_config.credential_key == "my_custom_key"
+
+  def test_from_config_with_credential_key(self):
+    """Test that from_config correctly parses credential_key."""
+
+    auth_scheme = OAuth2(flows={})
+
+    config = ToolArgsConfig(
+        stdio_server_params=self.mock_stdio_params,
+        auth_scheme=auth_scheme,
+        credential_key="my_custom_key",
+    )
+    toolset = McpToolset.from_config(config, "")
+
+    assert isinstance(toolset._auth_scheme, OAuth2)
+    assert toolset._auth_config.credential_key == "my_custom_key"
 
   def test_init_missing_connection_params(self):
     """Test initialization with missing connection params raises error."""
