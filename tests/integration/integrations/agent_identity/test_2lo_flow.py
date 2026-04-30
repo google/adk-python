@@ -72,8 +72,6 @@ class DummyTool(BaseAuthenticatedTool):
     return None
 
 
-# Mocked execution; pin to a single LLM backend to avoid duplicate runs.
-@pytest.mark.parametrize("llm_backend", ["GOOGLE_AI"], indirect=True)
 @dataclasses.dataclass
 class _DummyOperation:
   done: bool = True
@@ -94,6 +92,8 @@ class _DummyOperation:
     return getattr(self, field_name, None) is not None
 
 
+# Mocked execution; pin to a single LLM backend to avoid duplicate runs.
+@pytest.mark.parametrize("llm_backend", ["GOOGLE_AI"], indirect=True)
 @pytest.mark.asyncio
 async def test_gcp_agent_identity_2lo_gets_token() -> None:
   """Test the end-to-end flow fetching 2LO OAuth token from GCP Agent Identity credentials service."""
