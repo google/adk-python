@@ -45,6 +45,11 @@ def _truncate(text: str, limit: int = MAX_OUTPUT_CHARS) -> str:
   return text[:limit] + f'\n... (truncated, {len(text)} total chars)'
 
 
+def _is_valid_line_number(value: Any) -> bool:
+  """Returns True when *value* is a non-bool integer."""
+  return isinstance(value, int) and not isinstance(value, bool)
+
+
 _EXECUTE_TOOL_DESCRIPTION = """
 Run a shell command in the environment. For running programs, tests, and build
 commands ONLY. WARNING: Do NOT use for file reading -- use the ReadFile tool
@@ -179,18 +184,12 @@ class ReadFileTool(BaseTool):
       return {'status': 'error', 'error': '`path` is required.'}
     start_line = args.get('start_line')
     end_line = args.get('end_line')
-
-    # Use `sed` to read the file if start_line or end_line are specified.
-    if (start_line and start_line > 1) or end_line:
-      start = start_line or 1
-      if end_line:
-        sed_range = f'{start},{end_line}'
-      else:
-        sed_range = f'{start},$'
-      cmd = f"cat -n '{path}' | sed -n '{sed_range}p'"
-      res = await self._environment.execute(cmd)
-      if res.exit_code == 0:
-        return {'status': 'ok', 'content': _truncate(res.stdout)}
+    for name, value in (('start_line', start_line), ('end_line', end_line)):
+      if value is not None and not _is_valid_line_number(value):
+        return {
+            'status': 'error',
+            'error': f'`{name}` must be an integer if provided.',
+        }
 
     try:
       data_bytes = await self._environment.read_file(path)
