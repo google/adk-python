@@ -118,6 +118,7 @@ class McpToolset(BaseToolset):
       use_mcp_resources: Optional[bool] = False,
       sampling_callback: Optional[SamplingFnT] = None,
       sampling_capabilities: Optional[SamplingCapability] = None,
+      credential_key: str | None = None,
   ):
     """Initializes the McpToolset.
 
@@ -157,6 +158,8 @@ class McpToolset(BaseToolset):
       sampling_callback: Optional callback to handle sampling requests from the
         MCP server.
       sampling_capabilities: Optional capabilities for sampling.
+      credential_key: A user specified key used to load and save this credential
+        in a credential service. Used with auth_scheme.
     """
 
     # --- BEGIN BOUND TOKEN PATCH ---
@@ -197,6 +200,7 @@ class McpToolset(BaseToolset):
         AuthConfig(
             auth_scheme=auth_scheme,
             raw_auth_credential=auth_credential,
+            credential_key=credential_key,
         )
         if auth_scheme
         else None
@@ -469,6 +473,7 @@ class McpToolset(BaseToolset):
         tool_name_prefix=mcp_toolset_config.tool_name_prefix,
         auth_scheme=mcp_toolset_config.auth_scheme,
         auth_credential=mcp_toolset_config.auth_credential,
+        credential_key=mcp_toolset_config.credential_key,
         use_mcp_resources=mcp_toolset_config.use_mcp_resources,
     )
 
@@ -519,6 +524,8 @@ class McpToolsetConfig(BaseToolConfig):
   auth_scheme: Optional[AuthScheme] = None
 
   auth_credential: Optional[AuthCredential] = None
+
+  credential_key: str | None = None
 
   use_mcp_resources: bool = False
 
