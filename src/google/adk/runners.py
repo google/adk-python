@@ -29,7 +29,6 @@ from typing import Optional
 import warnings
 
 from google.adk.apps.compaction import _run_compaction_for_sliding_window
-from google.adk.artifacts import artifact_util
 from google.genai import types
 
 from .agents.base_agent import BaseAgent
@@ -543,9 +542,7 @@ class Runner:
         new_message: Optional[types.Content] = None,
         invocation_id: Optional[str] = None,
     ) -> AsyncGenerator[Event, None]:
-      cm = tracer.start_as_current_span('invocation')
-      span = cm.__enter__()
-      try:
+      with tracer.start_as_current_span('invocation'):
         session = await self._get_or_create_session(
             user_id=user_id,
             session_id=session_id,
@@ -628,23 +625,6 @@ class Runner:
               session,
               self.session_service,
               skip_token_compaction=invocation_context.token_compaction_checked,
-          )
-      except BaseException:
-        try:
-          cm.__exit__(*sys.exc_info())
-        except ValueError:
-          logger.warning(
-              'Failed to detach context during generator cleanup, likely due to'
-              ' cancellation.'
-          )
-        raise
-      else:
-        try:
-          cm.__exit__(None, None, None)
-        except ValueError:
-          logger.warning(
-              'Failed to detach context during generator cleanup, likely due to'
-              ' cancellation.'
           )
 
     async with Aclosing(_run_with_trace(new_message, invocation_id)) as agen:
@@ -773,15 +753,27 @@ class Runner:
         )
       else:
         # Artifact version changed after rewind point. Restore to version at
-        # rewind point.
-        artifact_uri = artifact_util.get_artifact_uri(
+        # rewind point by loading the actual data via the artifact service.
+        artifact = await self.artifact_service.load_artifact(
             app_name=self.app_name,
             user_id=session.user_id,
             session_id=session.id,
             filename=filename,
             version=vt,
         )
-        artifact = types.Part(file_data=types.FileData(file_uri=artifact_uri))
+        if artifact is None:
+          logger.warning(
+              'Artifact %s version %d not found during rewind for'
+              ' session %s. Replacing with empty data.',
+              filename,
+              vt,
+              session.id,
+          )
+          artifact = types.Part(
+              inline_data=types.Blob(
+                  mime_type='application/octet-stream', data=b''
+              )
+          )
       await self.artifact_service.save_artifact(
           app_name=self.app_name,
           user_id=session.user_id,

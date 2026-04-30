@@ -1,4 +1,5 @@
-google-adk==1.12
+google-adk==1.28.1
+
 Flask==3.1.3
 flask-cors==6.0.1
 python-dotenv==1.1.1

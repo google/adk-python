@@ -170,7 +170,7 @@ class TestResolveToolsetAuth:
     )
 
     with patch(
-        "google.adk.flows.llm_flows.base_llm_flow.CredentialManager"
+        "google.adk.auth.credential_manager.CredentialManager"
     ) as MockCredentialManager:
       mock_manager = AsyncMock()
       mock_manager.get_auth_credential = AsyncMock(return_value=mock_credential)
@@ -216,7 +216,7 @@ class TestResolveToolsetAuth:
       return m
 
     with patch(
-        "google.adk.flows.llm_flows.base_llm_flow.CredentialManager",
+        "google.adk.auth.credential_manager.CredentialManager",
         side_effect=create_mock_cm,
     ):
       events = []
@@ -242,7 +242,7 @@ class TestResolveToolsetAuth:
     mock_agent.tools = [toolset]
 
     with patch(
-        "google.adk.flows.llm_flows.base_llm_flow.CredentialManager"
+        "google.adk.auth.credential_manager.CredentialManager"
     ) as MockCredentialManager:
       mock_manager = AsyncMock()
       mock_manager.get_auth_credential = AsyncMock(return_value=None)
@@ -286,7 +286,7 @@ class TestResolveToolsetAuth:
     mock_agent.tools = [toolset1, toolset2]
 
     with patch(
-        "google.adk.flows.llm_flows.base_llm_flow.CredentialManager"
+        "google.adk.auth.credential_manager.CredentialManager"
     ) as MockCredentialManager:
       mock_manager = AsyncMock()
       mock_manager.get_auth_credential = AsyncMock(return_value=None)

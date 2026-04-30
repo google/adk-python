@@ -14,52 +14,85 @@
 
 """Defines the interface to support a model."""
 
-from .apigee_llm import ApigeeLlm
+from __future__ import annotations
+
+import importlib
+from typing import TYPE_CHECKING
+
 from .base_llm import BaseLlm
-from .gemma_llm import Gemma
-from .google_llm import Gemini
 from .llm_request import LlmRequest
 from .llm_response import LlmResponse
 from .registry import LLMRegistry
 
-__all__ = [
-    'BaseLlm',
-    'Gemini',
-    'Gemma',
-    'LLMRegistry',
-]
-
-
-LLMRegistry.register(Gemini)
-LLMRegistry.register(Gemma)
-LLMRegistry.register(ApigeeLlm)
-
-# Optionally register Claude if anthropic package is installed
-try:
+if TYPE_CHECKING:
   from .anthropic_llm import Claude
-
-  LLMRegistry.register(Claude)
-  __all__.append('Claude')
-except Exception:
-  # Claude support requires: pip install google-adk[extensions]
-  pass
-
-# Optionally register LiteLlm if litellm package is installed
-try:
+  from .apigee_llm import ApigeeLlm
+  from .gemma_llm import Gemma
+  from .gemma_llm import Gemma3Ollama
+  from .google_llm import Gemini
   from .lite_llm import LiteLlm
 
-  LLMRegistry.register(LiteLlm)
-  __all__.append('LiteLlm')
-except Exception:
-  # LiteLLM support requires: pip install google-adk[extensions]
-  pass
+__all__ = [
+    'ApigeeLlm',
+    'BaseLlm',
+    'Claude',
+    'Gemini',
+    'Gemma',
+    'Gemma3Ollama',
+    'LLMRegistry',
+    'LiteLlm',
+]
 
-# Optionally register Gemma3Ollama if litellm package is installed
-try:
-  from .gemma_llm import Gemma3Ollama
+_LAZY_PROVIDERS: dict[str, tuple[list[str], str]] = {
+    'Gemini': (
+        [
+            r'gemini-.*',
+            r'model-optimizer-.*',
+            r'projects\/.+\/locations\/.+\/endpoints\/.+',
+            r'projects\/.+\/locations\/.+\/publishers\/google\/models\/gemini.+',
+        ],
+        'google_llm',
+    ),
+    'Gemma': ([r'gemma-.*'], 'gemma_llm'),
+    'ApigeeLlm': ([r'.*-apigee$'], 'apigee_llm'),
+    'Claude': ([r'claude-3-.*', r'claude-.*-4.*'], 'anthropic_llm'),
+    'Gemma3Ollama': ([r'ollama/gemma3.*'], 'gemma_llm'),
+    'LiteLlm': (
+        [
+            r'openai/.*',
+            r'azure/.*',
+            r'azure_ai/.*',
+            r'groq/.*',
+            r'anthropic/.*',
+            r'bedrock/.*',
+            r'ollama/(?!gemma3).*',
+            r'ollama_chat/.*',
+            r'together_ai/.*',
+            r'vertex_ai/.*',
+            r'mistral/.*',
+            r'deepseek/.*',
+            r'fireworks_ai/.*',
+            r'cohere/.*',
+            r'databricks/.*',
+            r'ai21/.*',
+        ],
+        'lite_llm',
+    ),
+}
 
-  LLMRegistry.register(Gemma3Ollama)
-  __all__.append('Gemma3Ollama')
-except Exception:
-  # Gemma3Ollama requires LiteLLM: pip install google-adk[extensions]
-  pass
+for _name, (_patterns, _module) in _LAZY_PROVIDERS.items():
+  LLMRegistry._register_lazy(_patterns, f'{__name__}.{_module}', _name)
+
+
+def __getattr__(name: str):
+  if name in _LAZY_PROVIDERS:
+    module_name = _LAZY_PROVIDERS[name][1]
+    try:
+      module = importlib.import_module(f'{__name__}.{module_name}')
+    except ImportError as e:
+      raise ImportError(
+          f'`{name}` requires an optional dependency that is not installed.'
+          ' Install with: pip install google-adk[extensions]'
+      ) from e
+    return getattr(module, name)
+  raise AttributeError(f'module {__name__!r} has no attribute {name!r}')

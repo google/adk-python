@@ -6,34 +6,35 @@ This sample demonstrates how to use the `ApplicationIntegrationToolset` within a
 
 ## Prerequisites
 
-1.  **Set up Integration Connection:**
-    *   You need an existing [Integration connection](https://cloud.google.com/integration-connectors/docs/overview) configured to interact with your Jira instance. Follow the [documentation](https://google.github.io/adk-docs/tools/google-cloud-tools/#use-integration-connectors) to provision the Integration Connector in Google Cloud and then use this [documentation](https://cloud.google.com/integration-connectors/docs/connectors/jiracloud/configure) to create a Jira connection. Note the `Connection Name`, `Project ID`, and `Location` of your connection.
-    * 
+1. **Set up Integration Connection:**
 
-2.  **Configure Environment Variables:**
-    *   Create a `.env` file in the same directory as `agent.py` (or add to your existing one).
-    *   Add the following variables to the `.env` file, replacing the placeholder values with your actual connection details:
+   - You need an existing [Integration connection](https://cloud.google.com/integration-connectors/docs/overview) configured to interact with your Jira instance. Follow the [documentation](https://google.github.io/adk-docs/tools/google-cloud-tools/#use-integration-connectors) to provision the Integration Connector in Google Cloud and then use this [documentation](https://cloud.google.com/integration-connectors/docs/connectors/jiracloud/configure) to create a Jira connection. Note the `Connection Name`, `Project ID`, and `Location` of your connection.
+   -
 
-      ```dotenv
-      CONNECTION_NAME=<YOUR_JIRA_CONNECTION_NAME>
-      CONNECTION_PROJECT=<YOUR_GOOGLE_CLOUD_PROJECT_ID>
-      CONNECTION_LOCATION=<YOUR_CONNECTION_LOCATION>
-      ```
+1. **Configure Environment Variables:**
+
+   - Create a `.env` file in the same directory as `agent.py` (or add to your existing one).
+   - Add the following variables to the `.env` file, replacing the placeholder values with your actual connection details:
+
+   ```dotenv
+   CONNECTION_NAME=<YOUR_JIRA_CONNECTION_NAME>
+   CONNECTION_PROJECT=<YOUR_GOOGLE_CLOUD_PROJECT_ID>
+   CONNECTION_LOCATION=<YOUR_CONNECTION_LOCATION>
+   ```
 
 ## How to Use
 
-1.  **Install Dependencies:** Ensure you have the necessary libraries installed (e.g., `google-adk`, `python-dotenv`).
-2.  **Run the Agent:** Execute the agent script from your terminal:
-    ```bash
-    python agent.py
-    ```
-3.  **Interact:** Once the agent starts, you can interact with it by typing prompts related to Jira issue management.
+1. **Install Dependencies:** Ensure you have the necessary libraries installed (e.g., `google-adk`, `python-dotenv`).
+1. **Run the Agent:** Execute the agent script from your terminal:
+   ```bash
+   python agent.py
+   ```
+1. **Interact:** Once the agent starts, you can interact with it by typing prompts related to Jira issue management.
 
 ## Sample Prompts
 
 Here are some examples of how you can interact with the agent:
 
-*   `Can you list me all the issues ?`
-*   `Can you list me all the projects ?`
-*   `Can you create an issue: "Bug in product XYZ" in project ABC ?`
-
+- `Can you list me all the issues ?`
+- `Can you list me all the projects ?`
+- `Can you create an issue: "Bug in product XYZ" in project ABC ?`

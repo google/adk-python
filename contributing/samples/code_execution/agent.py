@@ -78,7 +78,7 @@ def base_system_instruction():
 
 
 root_agent = Agent(
-    model="gemini-2.0-flash-001",
+    model="gemini-2.5-flash",
     name="data_science_agent",
     instruction=base_system_instruction() + """
 

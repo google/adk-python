@@ -104,11 +104,18 @@ def tool_context(invocation_context):
   return tool_context_lib.ToolContext(invocation_context=invocation_context)
 
 
+class FakeCredentials(google.auth.credentials.Credentials):
+
+  def __init__(self):
+    pass
+
+  def refresh(self, request):
+    pass
+
+
 @pytest.fixture
 def mock_auth_default():
-  mock_creds = mock.create_autospec(
-      google.auth.credentials.Credentials, instance=True, spec_set=True
-  )
+  mock_creds = FakeCredentials()
   with mock.patch.object(
       google.auth,
       "default",
@@ -2001,6 +2008,62 @@ class TestBigQueryAgentAnalyticsPlugin:
           assert kwargs["client_options"] is None
 
   @pytest.mark.asyncio
+  async def test_custom_credentials_used(
+      self,
+      mock_to_arrow_schema,
+      mock_asyncio_to_thread,
+  ):
+    """Verify custom credentials are used and default auth is not called."""
+    mock_custom_creds = mock.create_autospec(
+        google.auth.credentials.Credentials, instance=True, spec_set=True
+    )
+    mock_custom_creds.quota_project_id = "custom-quota-project"
+
+    config = bigquery_agent_analytics_plugin.BigQueryLoggerConfig(
+        gcs_bucket_name="test-bucket",
+        create_views=False,
+    )
+
+    with mock.patch.object(
+        google.auth,
+        "default",
+        autospec=True,
+    ) as mock_auth_default:
+      with mock.patch.object(
+          bigquery_agent_analytics_plugin,
+          "BigQueryWriteAsyncClient",
+          autospec=True,
+      ) as mock_bq_write_cls:
+        with mock.patch(
+            "google.cloud.bigquery.Client", autospec=True
+        ) as mock_bq_cls:
+          with mock.patch(
+              "google.cloud.storage.Client", autospec=True
+          ) as mock_storage_cls:
+            async with managed_plugin(
+                project_id=PROJECT_ID,
+                dataset_id=DATASET_ID,
+                table_id=TABLE_ID,
+                credentials=mock_custom_creds,
+                config=config,
+            ) as plugin:
+              await plugin._ensure_started()
+
+              mock_auth_default.assert_not_called()
+
+              mock_bq_write_cls.assert_called_once()
+              _, kwargs = mock_bq_write_cls.call_args
+              assert kwargs["credentials"] == mock_custom_creds
+
+              mock_bq_cls.assert_called_once()
+              _, kwargs = mock_bq_cls.call_args
+              assert kwargs["credentials"] == mock_custom_creds
+
+              mock_storage_cls.assert_called_once()
+              _, kwargs = mock_storage_cls.call_args
+              assert kwargs["credentials"] == mock_custom_creds
+
+  @pytest.mark.asyncio
   async def test_pickle_safety(self, mock_auth_default, mock_bq_client):
     """Test that the plugin can be pickled safely."""
     import pickle
@@ -2029,6 +2092,56 @@ class TestBigQueryAgentAnalyticsPlugin:
       assert not unpickled_started._loop_state_by_loop
     finally:
       await plugin.shutdown()
+
+  @pytest.mark.asyncio
+  async def test_pickle_preserves_picklable_credentials(
+      self, mock_auth_default, mock_bq_client
+  ):
+    """Picklable user credentials survive pickle/unpickle."""
+    import pickle
+
+    picklable_creds = FakeCredentials()
+    plugin = bigquery_agent_analytics_plugin.BigQueryAgentAnalyticsPlugin(
+        PROJECT_ID,
+        DATASET_ID,
+        table_id=TABLE_ID,
+        credentials=picklable_creds,
+    )
+    pickled = pickle.dumps(plugin)
+    unpickled = pickle.loads(pickled)
+    # User-provided picklable credentials are preserved.
+    assert unpickled._user_credentials is not None
+    assert unpickled._credentials is not None
+    await plugin.shutdown()
+
+  @pytest.mark.asyncio
+  async def test_pickle_drops_non_picklable_credentials(
+      self, mock_auth_default, mock_bq_client
+  ):
+    """Non-picklable user credentials are dropped gracefully."""
+    import pickle
+
+    class NonPicklableCreds(google.auth.credentials.Credentials):
+
+      def refresh(self, request):
+        pass
+
+      def __getstate__(self):
+        raise TypeError("cannot pickle")
+
+    plugin = bigquery_agent_analytics_plugin.BigQueryAgentAnalyticsPlugin(
+        PROJECT_ID,
+        DATASET_ID,
+        table_id=TABLE_ID,
+        credentials=NonPicklableCreds(),
+    )
+    # Should not raise — non-picklable credentials are dropped.
+    pickled = pickle.dumps(plugin)
+    unpickled = pickle.loads(pickled)
+    # Credentials fall back to None (ADC on next use).
+    assert unpickled._user_credentials is None
+    assert unpickled._credentials is None
+    await plugin.shutdown()
 
   @pytest.mark.asyncio
   async def test_span_hierarchy_llm_call(
@@ -6999,6 +7112,70 @@ class TestMultiLoopShutdownDrainsOtherLoops:
       assert call_args[0][1] is other_loop
 
 
+class TestCacheMetadataLogging:
+  """Tests for logging cache_metadata from LlmResponse."""
+
+  @pytest.mark.asyncio
+  async def test_cache_metadata_logged_when_present(
+      self,
+      bq_plugin_inst,
+      mock_write_client,
+      callback_context,
+      dummy_arrow_schema,
+  ):
+    """Verifies cache_metadata is logged into BigQuery attributes when present."""
+    llm_response = llm_response_lib.LlmResponse(
+        content=types.Content(parts=[types.Part(text="Cache test")]),
+        cache_metadata={"fingerprint": "abc-123", "contents_count": 2},
+    )
+    bigquery_agent_analytics_plugin.TraceManager.push_span(callback_context)
+    await bq_plugin_inst.after_model_callback(
+        callback_context=callback_context,
+        llm_response=llm_response,
+    )
+    await asyncio.sleep(0.05)
+    rows = await _get_captured_rows_async(mock_write_client, dummy_arrow_schema)
+    log_entry = next(r for r in rows if r["event_type"] == "LLM_RESPONSE")
+
+    attributes = json.loads(log_entry["attributes"])
+    assert "cache_metadata" in attributes
+    assert attributes["cache_metadata"]["fingerprint"] == "abc-123"
+    assert attributes["cache_metadata"]["contents_count"] == 2
+
+  @pytest.mark.asyncio
+  async def test_missing_cache_metadata_does_not_crash(
+      self,
+      bq_plugin_inst,
+      mock_write_client,
+      callback_context,
+      dummy_arrow_schema,
+  ):
+    """Verifies missing cache_metadata gracefully defaults using getattr."""
+
+    class LegacyLlmResponse:
+
+      def __init__(self):
+        self.content = types.Content(parts=[types.Part(text="Mock text")])
+        self.usage_metadata = None
+        self.model_version = "v1"
+        self.partial = False
+        # Deliberately omitting cache_metadata
+
+    mock_response = LegacyLlmResponse()
+
+    bigquery_agent_analytics_plugin.TraceManager.push_span(callback_context)
+    await bq_plugin_inst.after_model_callback(
+        callback_context=callback_context,
+        llm_response=mock_response,
+    )
+    await asyncio.sleep(0.05)
+    rows = await _get_captured_rows_async(mock_write_client, dummy_arrow_schema)
+    log_entry = next(r for r in rows if r["event_type"] == "LLM_RESPONSE")
+
+    attributes = json.loads(log_entry["attributes"])
+    assert "cache_metadata" not in attributes
+
+
 # ==============================================================
 # TEST CLASS: A2A_INTERACTION event logging via on_event_callback
 # ==============================================================
@@ -7133,3 +7310,101 @@ class TestA2AInteractionLogging:
 
     await asyncio.sleep(0.05)
     assert mock_write_client.append_rows.call_count == 0
+
+
+# ================================================================
+# TEST CLASS: Dataset location handling (Issue #5476)
+# ================================================================
+class TestDatasetLocationHandling:
+  """Tests that BQ client is created without a default location.
+
+  When location is omitted from bigquery.Client(), client.query()
+  sends no location field in the API request, letting BigQuery
+  infer location from the referenced dataset.  This prevents
+  silent view-creation failures for non-US datasets.
+  """
+
+  @pytest.mark.asyncio
+  async def test_client_created_without_location(
+      self,
+      mock_auth_default,
+      mock_to_arrow_schema,
+      mock_asyncio_to_thread,
+  ):
+    """bigquery.Client is created without a location parameter."""
+    with mock.patch.object(bigquery, "Client", autospec=True) as mock_bq_cls:
+      mock_bq_cls.return_value.get_table.side_effect = (
+          cloud_exceptions.NotFound("table")
+      )
+      mock_bq_cls.return_value.create_table.return_value = None
+
+      async with managed_plugin(
+          project_id=PROJECT_ID,
+          dataset_id=DATASET_ID,
+          table_id=TABLE_ID,
+          location="europe-west1",
+          config=bigquery_agent_analytics_plugin.BigQueryLoggerConfig(
+              create_views=False,
+          ),
+      ) as plugin:
+        await plugin._ensure_started()
+
+        mock_bq_cls.assert_called_once()
+        _, kwargs = mock_bq_cls.call_args
+        assert "location" not in kwargs
+
+  @pytest.mark.asyncio
+  async def test_view_query_omits_location(
+      self,
+      mock_auth_default,
+      mock_to_arrow_schema,
+      mock_asyncio_to_thread,
+  ):
+    """View creation DDL queries do not pass an explicit location."""
+    with mock.patch.object(bigquery, "Client", autospec=True) as mock_bq_cls:
+      mock_client = mock_bq_cls.return_value
+      mock_client.get_table.return_value = mock.MagicMock()
+      mock_client.query.return_value.result.return_value = None
+
+      async with managed_plugin(
+          project_id=PROJECT_ID,
+          dataset_id=DATASET_ID,
+          table_id=TABLE_ID,
+          config=bigquery_agent_analytics_plugin.BigQueryLoggerConfig(
+              create_views=True,
+          ),
+      ) as plugin:
+        await plugin._ensure_started()
+
+        assert mock_client.query.call_count > 0
+        for call in mock_client.query.call_args_list:
+          _, kwargs = call
+          # No explicit location — BQ infers from dataset
+          assert "location" not in kwargs
+
+  @pytest.mark.asyncio
+  async def test_view_error_still_logged(
+      self,
+      mock_auth_default,
+      mock_to_arrow_schema,
+      mock_asyncio_to_thread,
+  ):
+    """View creation errors are logged but not raised."""
+    with mock.patch.object(bigquery, "Client", autospec=True) as mock_bq_cls:
+      mock_client = mock_bq_cls.return_value
+      mock_client.get_table.return_value = mock.MagicMock()
+      mock_client.query.return_value.result.side_effect = Exception(
+          "view error"
+      )
+
+      # Should not raise
+      async with managed_plugin(
+          project_id=PROJECT_ID,
+          dataset_id=DATASET_ID,
+          table_id=TABLE_ID,
+          config=bigquery_agent_analytics_plugin.BigQueryLoggerConfig(
+              create_views=True,
+          ),
+      ) as plugin:
+        await plugin._ensure_started()
+        assert plugin._started
