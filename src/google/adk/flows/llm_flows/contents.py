@@ -47,10 +47,22 @@ class _ContentLlmRequestProcessor(BaseLlmRequestProcessor):
     preserve_function_call_ids = False
     if hasattr(agent, 'canonical_model'):
       canonical_model = agent.canonical_model
-      preserve_function_call_ids = (
+      if (
           isinstance(canonical_model, Gemini)
           and canonical_model.use_interactions_api
-      )
+      ):
+        preserve_function_call_ids = True
+      else:
+        # Anthropic pairs tool_use/tool_result by id, so `adk-*` fallback
+        # ids must survive replay.
+        try:
+          from ...models.anthropic_llm import AnthropicLlm
+        except ImportError:
+          AnthropicLlm = None
+        if AnthropicLlm is not None and isinstance(
+            canonical_model, AnthropicLlm
+        ):
+          preserve_function_call_ids = True
 
     # Preserve all contents that were added by instruction processor
     # (since llm_request.contents will be completely reassigned below)

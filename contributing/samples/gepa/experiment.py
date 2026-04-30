@@ -31,6 +31,7 @@ from typing import TypedDict
 import gepa
 from gepa.core.adapter import EvaluationBatch
 from gepa.core.adapter import GEPAAdapter
+import gepa_utils
 from litellm import provider_list
 import rater_lib
 from retry import retry
@@ -43,8 +44,6 @@ from tau_bench.run import display_metrics
 from tau_bench.types import EnvRunResult
 from tau_bench.types import RunConfig
 import tau_bench_agent as tau_bench_agent_lib
-
-import utils
 
 
 def run_tau_bench_rollouts(
@@ -583,7 +582,7 @@ def run_gepa(
       task_lm=None,  # this must be None when a custom adapter is used
       adapter=tau_bench_adapter,
       max_metric_calls=config.max_metric_calls,
-      reflection_lm=utils.reflection_inference_fn(config.reflection_model),
+      reflection_lm=gepa_utils.reflection_inference_fn(config.reflection_model),
       reflection_minibatch_size=config.reflection_minibatch_size,
       run_dir=output_dir,
   )

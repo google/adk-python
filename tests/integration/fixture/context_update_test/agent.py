@@ -35,7 +35,7 @@ def update_fc(
 
 
 root_agent = Agent(
-    model="gemini-1.5-flash",
+    model="gemini-2.5-flash",
     name="root_agent",
     instruction="Call tools",
     flow="auto",

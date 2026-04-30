@@ -168,7 +168,7 @@ class TestDebugLoggingPluginCallbacks:
     await plugin.before_run_callback(invocation_context=mock_invocation_context)
 
     llm_request = LlmRequest(
-        model="gemini-2.0-flash",
+        model="gemini-2.5-flash",
         contents=[
             types.Content(
                 role="user", parts=[types.Part.from_text(text="Test prompt")]
@@ -185,7 +185,7 @@ class TestDebugLoggingPluginCallbacks:
     state = plugin._invocation_states[mock_invocation_context.invocation_id]
     llm_entries = [e for e in state.entries if e.entry_type == "llm_request"]
     assert len(llm_entries) == 1
-    assert llm_entries[0].data["model"] == "gemini-2.0-flash"
+    assert llm_entries[0].data["model"] == "gemini-2.5-flash"
     assert llm_entries[0].data["content_count"] == 1
     assert "config" in llm_entries[0].data
     assert (
@@ -311,7 +311,7 @@ class TestDebugLoggingPluginCallbacks:
     # Initialize state first
     await plugin.before_run_callback(invocation_context=mock_invocation_context)
 
-    llm_request = LlmRequest(model="gemini-2.0-flash")
+    llm_request = LlmRequest(model="gemini-2.5-flash")
     error = ValueError("Test error message")
 
     result = await plugin.on_model_error_callback(
@@ -568,7 +568,7 @@ class TestDebugLoggingPluginSystemInstructionConfig:
 
     await plugin.before_run_callback(invocation_context=mock_invocation_context)
 
-    llm_request = LlmRequest(model="gemini-2.0-flash")
+    llm_request = LlmRequest(model="gemini-2.5-flash")
     llm_request.config.system_instruction = "Full system instruction text"
 
     await plugin.before_model_callback(
@@ -592,7 +592,7 @@ class TestDebugLoggingPluginSystemInstructionConfig:
 
     await plugin.before_run_callback(invocation_context=mock_invocation_context)
 
-    llm_request = LlmRequest(model="gemini-2.0-flash")
+    llm_request = LlmRequest(model="gemini-2.5-flash")
     llm_request.config.system_instruction = "Full system instruction text"
 
     await plugin.before_model_callback(
