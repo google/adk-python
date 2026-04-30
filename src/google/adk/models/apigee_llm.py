@@ -30,7 +30,6 @@ from typing import Optional
 from typing import TYPE_CHECKING
 
 from google.adk import version as adk_version
-import google.auth
 from google.genai import types
 import httpx
 import tenacity
@@ -41,6 +40,7 @@ from .google_llm import Gemini
 from .llm_response import LlmResponse
 
 if TYPE_CHECKING:
+  from google.auth.credentials import Credentials
   from google.genai import Client
 
   from .llm_request import LlmRequest
@@ -52,11 +52,6 @@ _APIGEE_PROXY_URL_ENV_VARIABLE_NAME = 'APIGEE_PROXY_URL'
 _GOOGLE_GENAI_USE_VERTEXAI_ENV_VARIABLE_NAME = 'GOOGLE_GENAI_USE_VERTEXAI'
 _PROJECT_ENV_VARIABLE_NAME = 'GOOGLE_CLOUD_PROJECT'
 _LOCATION_ENV_VARIABLE_NAME = 'GOOGLE_CLOUD_LOCATION'
-
-_APIGEE_SCOPES = [
-    'https://www.googleapis.com/auth/cloud-platform',
-    'https://www.googleapis.com/auth/userinfo.email',
-]
 
 _CUSTOM_METADATA_FIELDS = (
     'id',
@@ -98,6 +93,7 @@ class ApigeeLlm(Gemini):
       custom_headers: dict[str, str] | None = None,
       retry_options: Optional[types.HttpRetryOptions] = None,
       api_type: ApiType | str = ApiType.UNKNOWN,
+      credentials: Optional[Credentials] = None,
   ):
     """Initializes the Apigee LLM backend.
 
@@ -129,6 +125,11 @@ class ApigeeLlm(Gemini):
         authorization headers in Vertex AI and Gemini API calls.
       retry_options: Allow google-genai to retry failed responses.
       api_type: The type of API to use. One of `ApiType` or string.
+      credentials: Optional google-auth credentials passed through to the
+        underlying `genai.Client`. Use this when the Apigee proxy requires
+        additional OAuth scopes (e.g., `userinfo.email` for tokeninfo-based
+        caller identification). When omitted, the default `genai.Client`
+        authentication flow is used.
     """  # fmt: skip
 
     super().__init__(model=model, retry_options=retry_options)
@@ -171,6 +172,7 @@ class ApigeeLlm(Gemini):
     )
     self._custom_headers = custom_headers or {}
     self._user_agent = f'google-adk/{adk_version.__version__}'
+    self._credentials = credentials
 
   @classmethod
   @override
@@ -240,16 +242,15 @@ class ApigeeLlm(Gemini):
         **kwargs_for_http_options,
     )
 
-    credentials, _ = google.auth.default(scopes=_APIGEE_SCOPES)
-
     kwargs_for_client = {}
     kwargs_for_client['vertexai'] = self._isvertexai
     if self._isvertexai:
       kwargs_for_client['project'] = self._project
       kwargs_for_client['location'] = self._location
+    if self._credentials is not None:
+      kwargs_for_client['credentials'] = self._credentials
 
     return Client(
-        credentials=credentials,
         http_options=http_options,
         **kwargs_for_client,
     )

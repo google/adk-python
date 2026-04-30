@@ -18,7 +18,6 @@ import os
 from unittest import mock
 from unittest.mock import AsyncMock
 
-from google.adk.models.apigee_llm import _APIGEE_SCOPES
 from google.adk.models.apigee_llm import ApigeeLlm
 from google.adk.models.apigee_llm import CompletionsHTTPClient
 from google.adk.models.llm_request import LlmRequest
@@ -32,16 +31,6 @@ APIGEE_GEMINI_MODEL_ID = 'apigee/gemini/v1/' + BASE_MODEL_ID
 APIGEE_VERTEX_MODEL_ID = 'apigee/vertex_ai/v1beta/gemini-pro'
 VERTEX_BASE_MODEL_ID = 'gemini-pro'
 PROXY_URL = 'https://test.apigee.net'
-
-
-@pytest.fixture(autouse=True)
-def mock_google_auth_default():
-  """Mocks google.auth.default to avoid requiring real credentials in tests."""
-  with mock.patch(
-      'google.adk.models.apigee_llm.google.auth.default'
-  ) as mock_auth:
-    mock_auth.return_value = (mock.Mock(), 'test-project')
-    yield mock_auth
 
 
 @pytest.fixture
@@ -664,13 +653,44 @@ def test_parse_response_usage_metadata():
 
 @pytest.mark.asyncio
 @mock.patch('google.genai.Client')
-async def test_api_client_requests_userinfo_email_scope(
-    mock_client_constructor, llm_request, mock_google_auth_default
+async def test_api_client_passes_credentials_when_provided(
+    mock_client_constructor, llm_request
 ):
-  """Tests that api_client requests userinfo.email scope for Apigee Gateway tokeninfo."""
+  """Tests that credentials passed to __init__ are forwarded to genai.Client."""
   mock_credentials = mock.Mock()
-  mock_google_auth_default.return_value = (mock_credentials, 'test-project')
 
+  mock_client_instance = mock.Mock()
+  mock_client_instance.aio.models.generate_content = AsyncMock(
+      return_value=types.GenerateContentResponse(
+          candidates=[
+              types.Candidate(
+                  content=Content(
+                      parts=[Part.from_text(text='Test response')],
+                      role='model',
+                  )
+              )
+          ]
+      )
+  )
+  mock_client_constructor.return_value = mock_client_instance
+
+  apigee_llm = ApigeeLlm(
+      model=APIGEE_GEMINI_MODEL_ID,
+      proxy_url=PROXY_URL,
+      credentials=mock_credentials,
+  )
+  _ = [resp async for resp in apigee_llm.generate_content_async(llm_request)]
+
+  _, kwargs = mock_client_constructor.call_args
+  assert kwargs['credentials'] is mock_credentials
+
+
+@pytest.mark.asyncio
+@mock.patch('google.genai.Client')
+async def test_api_client_omits_credentials_when_not_provided(
+    mock_client_constructor, llm_request
+):
+  """Tests that credentials kwarg is not forwarded when not supplied."""
   mock_client_instance = mock.Mock()
   mock_client_instance.aio.models.generate_content = AsyncMock(
       return_value=types.GenerateContentResponse(
@@ -692,10 +712,8 @@ async def test_api_client_requests_userinfo_email_scope(
   )
   _ = [resp async for resp in apigee_llm.generate_content_async(llm_request)]
 
-  mock_google_auth_default.assert_called_once_with(scopes=_APIGEE_SCOPES)
-
   _, kwargs = mock_client_constructor.call_args
-  assert kwargs['credentials'] is mock_credentials
+  assert 'credentials' not in kwargs
 
 
 def test_parse_response_with_refusal():
