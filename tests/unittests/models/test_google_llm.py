@@ -76,13 +76,13 @@ def generate_content_response():
 
 @pytest.fixture
 def gemini_llm():
-  return Gemini(model="gemini-1.5-flash")
+  return Gemini(model="gemini-2.5-flash")
 
 
 @pytest.fixture
 def llm_request():
   return LlmRequest(
-      model="gemini-1.5-flash",
+      model="gemini-2.5-flash",
       contents=[Content(role="user", parts=[Part.from_text(text="Hello")])],
       config=types.GenerateContentConfig(
           temperature=0.1,
@@ -109,7 +109,7 @@ def cache_metadata():
 @pytest.fixture
 def llm_request_with_cache(cache_metadata):
   return LlmRequest(
-      model="gemini-1.5-flash",
+      model="gemini-2.5-flash",
       contents=[Content(role="user", parts=[Part.from_text(text="Hello")])],
       config=types.GenerateContentConfig(
           temperature=0.1,
@@ -126,7 +126,7 @@ def llm_request_with_cache(cache_metadata):
 @pytest.fixture
 def llm_request_with_computer_use():
   return LlmRequest(
-      model="gemini-1.5-flash",
+      model="gemini-2.5-flash",
       contents=[Content(role="user", parts=[Part.from_text(text="Hello")])],
       config=types.GenerateContentConfig(
           temperature=0.1,
@@ -157,7 +157,7 @@ def test_supported_models():
 
 def test_gemini_api_client_creation_with_projects_prefix():
   model = Gemini(
-      model="projects/test-project/locations/test-location/publishers/google/models/gemini-1.5-pro"
+      model="projects/test-project/locations/test-location/publishers/google/models/gemini-2.5-pro"
   )
   with mock.patch("google.genai.Client", autospec=True) as mock_client:
     _ = model.api_client
@@ -170,7 +170,7 @@ def test_gemini_api_client_creation_with_projects_prefix():
 
 def test_gemini_live_api_client_creation_with_projects_prefix():
   model = Gemini(
-      model="projects/test-project/locations/test-location/publishers/google/models/gemini-1.5-pro"
+      model="projects/test-project/locations/test-location/publishers/google/models/gemini-2.5-pro"
   )
   with mock.patch("google.genai.Client", autospec=True) as mock_client:
     _ = model._live_api_client
@@ -182,7 +182,7 @@ def test_gemini_live_api_client_creation_with_projects_prefix():
 
 
 def test_client_version_header():
-  model = Gemini(model="gemini-1.5-flash")
+  model = Gemini(model="gemini-2.5-flash")
   client = model.api_client
 
   # Check that ADK version and Python version are present in headers
@@ -217,7 +217,7 @@ def test_client_version_header_with_agent_engine(monkeypatch):
   monkeypatch.setenv(
       _AGENT_ENGINE_TELEMETRY_ENV_VARIABLE_NAME, "my_test_project"
   )
-  model = Gemini(model="gemini-1.5-flash")
+  model = Gemini(model="gemini-2.5-flash")
   client = model.api_client
 
   # Check that ADK version with telemetry tag and Python version are present in
@@ -253,7 +253,7 @@ def test_client_version_header_with_agent_engine(monkeypatch):
 
 def test_api_client_uses_api_version_from_google_base_url():
   model = Gemini(
-      model="gemini-1.5-flash",
+      model="gemini-2.5-flash",
       base_url="https://generativelanguage.googleapis.com/v1alpha",
   )
 
@@ -267,7 +267,7 @@ def test_api_client_uses_api_version_from_google_base_url():
 
 def test_api_client_preserves_custom_base_url_path():
   model = Gemini(
-      model="gemini-1.5-flash",
+      model="gemini-2.5-flash",
       base_url="https://proxy.example.com/gemini/v1alpha",
   )
 
@@ -668,7 +668,7 @@ async def test_generate_content_async_patches_api_version(
     stream, llm_request, generate_content_response
 ):
   gemini_llm = Gemini(
-      model="gemini-1.5-flash",
+      model="gemini-2.5-flash",
       base_url="https://generativelanguage.googleapis.com/v1alpha",
   )
   llm_request.config.http_options = types.HttpOptions(
@@ -716,7 +716,7 @@ def test_live_api_version_vertex_ai(gemini_llm):
 
 def test_live_api_version_uses_google_base_url_version():
   gemini_llm = Gemini(
-      model="gemini-1.5-flash",
+      model="gemini-2.5-flash",
       base_url="https://generativelanguage.googleapis.com/v1alpha",
   )
 
@@ -733,7 +733,7 @@ def test_live_api_version_gemini_api(gemini_llm):
 
 def test_live_api_client_uses_api_version_from_google_base_url():
   gemini_llm = Gemini(
-      model="gemini-1.5-flash",
+      model="gemini-2.5-flash",
       base_url="https://generativelanguage.googleapis.com/v1alpha",
   )
 
@@ -889,7 +889,7 @@ async def test_preprocess_request_handles_backend_specific_fields(
   """
   # Arrange: Create a request with fields that need to be preprocessed.
   llm_request_with_files = LlmRequest(
-      model="gemini-1.5-flash",
+      model="gemini-2.5-flash",
       contents=[
           Content(
               role="user",
@@ -935,9 +935,9 @@ async def test_preprocess_request_handles_backend_specific_fields(
 @pytest.mark.asyncio
 async def test_generate_content_async_stream_aggregated_content_regardless_of_finish_reason():
   """Test that aggregated content is generated regardless of finish_reason."""
-  gemini_llm = Gemini(model="gemini-1.5-flash")
+  gemini_llm = Gemini(model="gemini-2.5-flash")
   llm_request = LlmRequest(
-      model="gemini-1.5-flash",
+      model="gemini-2.5-flash",
       contents=[Content(role="user", parts=[Part.from_text(text="Hello")])],
       config=types.GenerateContentConfig(
           temperature=0.1,
@@ -1008,9 +1008,9 @@ async def test_generate_content_async_stream_aggregated_content_regardless_of_fi
 @pytest.mark.asyncio
 async def test_generate_content_async_stream_with_thought_and_text_error_handling():
   """Test that aggregated content with thought and text preserves error information."""
-  gemini_llm = Gemini(model="gemini-1.5-flash")
+  gemini_llm = Gemini(model="gemini-2.5-flash")
   llm_request = LlmRequest(
-      model="gemini-1.5-flash",
+      model="gemini-2.5-flash",
       contents=[Content(role="user", parts=[Part.from_text(text="Hello")])],
       config=types.GenerateContentConfig(
           temperature=0.1,
@@ -1075,9 +1075,9 @@ async def test_generate_content_async_stream_with_thought_and_text_error_handlin
 @pytest.mark.asyncio
 async def test_generate_content_async_stream_error_info_none_for_stop_finish_reason():
   """Test that error_code and error_message are None when finish_reason is STOP."""
-  gemini_llm = Gemini(model="gemini-1.5-flash")
+  gemini_llm = Gemini(model="gemini-2.5-flash")
   llm_request = LlmRequest(
-      model="gemini-1.5-flash",
+      model="gemini-2.5-flash",
       contents=[Content(role="user", parts=[Part.from_text(text="Hello")])],
       config=types.GenerateContentConfig(
           temperature=0.1,
@@ -1138,9 +1138,9 @@ async def test_generate_content_async_stream_error_info_none_for_stop_finish_rea
 @pytest.mark.asyncio
 async def test_generate_content_async_stream_error_info_set_for_non_stop_finish_reason():
   """Test that error_code and error_message are set for non-STOP finish reasons."""
-  gemini_llm = Gemini(model="gemini-1.5-flash")
+  gemini_llm = Gemini(model="gemini-2.5-flash")
   llm_request = LlmRequest(
-      model="gemini-1.5-flash",
+      model="gemini-2.5-flash",
       contents=[Content(role="user", parts=[Part.from_text(text="Hello")])],
       config=types.GenerateContentConfig(
           temperature=0.1,
@@ -1201,9 +1201,9 @@ async def test_generate_content_async_stream_error_info_set_for_non_stop_finish_
 @pytest.mark.asyncio
 async def test_generate_content_async_stream_no_aggregated_content_without_text():
   """Test that no aggregated content is generated when there's no accumulated text."""
-  gemini_llm = Gemini(model="gemini-1.5-flash")
+  gemini_llm = Gemini(model="gemini-2.5-flash")
   llm_request = LlmRequest(
-      model="gemini-1.5-flash",
+      model="gemini-2.5-flash",
       contents=[Content(role="user", parts=[Part.from_text(text="Hello")])],
       config=types.GenerateContentConfig(
           temperature=0.1,
@@ -1261,9 +1261,9 @@ async def test_generate_content_async_stream_no_aggregated_content_without_text(
 @pytest.mark.asyncio
 async def test_generate_content_async_stream_mixed_text_function_call_text():
   """Test streaming with pattern: [text, function_call, text] to verify proper aggregation."""
-  gemini_llm = Gemini(model="gemini-1.5-flash")
+  gemini_llm = Gemini(model="gemini-2.5-flash")
   llm_request = LlmRequest(
-      model="gemini-1.5-flash",
+      model="gemini-2.5-flash",
       contents=[Content(role="user", parts=[Part.from_text(text="Hello")])],
       config=types.GenerateContentConfig(
           temperature=0.1,
@@ -1362,9 +1362,9 @@ async def test_generate_content_async_stream_mixed_text_function_call_text():
 @pytest.mark.asyncio
 async def test_generate_content_async_stream_multiple_text_parts_in_single_response():
   """Test streaming with multiple text parts in a single response."""
-  gemini_llm = Gemini(model="gemini-1.5-flash")
+  gemini_llm = Gemini(model="gemini-2.5-flash")
   llm_request = LlmRequest(
-      model="gemini-1.5-flash",
+      model="gemini-2.5-flash",
       contents=[Content(role="user", parts=[Part.from_text(text="Hello")])],
       config=types.GenerateContentConfig(
           temperature=0.1,
@@ -1414,9 +1414,9 @@ async def test_generate_content_async_stream_multiple_text_parts_in_single_respo
 @pytest.mark.asyncio
 async def test_generate_content_async_stream_complex_mixed_thought_text_function():
   """Test complex streaming with thought, text, and function calls mixed."""
-  gemini_llm = Gemini(model="gemini-1.5-flash")
+  gemini_llm = Gemini(model="gemini-2.5-flash")
   llm_request = LlmRequest(
-      model="gemini-1.5-flash",
+      model="gemini-2.5-flash",
       contents=[Content(role="user", parts=[Part.from_text(text="Hello")])],
       config=types.GenerateContentConfig(
           temperature=0.1,
@@ -1534,9 +1534,9 @@ async def test_generate_content_async_stream_complex_mixed_thought_text_function
 @pytest.mark.asyncio
 async def test_generate_content_async_stream_two_separate_text_aggregations():
   """Test that [text, function_call, text] results in two separate text aggregations."""
-  gemini_llm = Gemini(model="gemini-1.5-flash")
+  gemini_llm = Gemini(model="gemini-2.5-flash")
   llm_request = LlmRequest(
-      model="gemini-1.5-flash",
+      model="gemini-2.5-flash",
       contents=[Content(role="user", parts=[Part.from_text(text="Hello")])],
       config=types.GenerateContentConfig(
           temperature=0.1,
@@ -1647,7 +1647,7 @@ async def test_computer_use_removes_system_instruction():
   llm = Gemini()
 
   llm_request = LlmRequest(
-      model="gemini-1.5-flash",
+      model="gemini-2.5-flash",
       contents=[
           types.Content(role="user", parts=[types.Part.from_text(text="Hello")])
       ],
@@ -1676,7 +1676,7 @@ async def test_computer_use_preserves_system_instruction_when_no_computer_use():
 
   original_instruction = "You are a helpful assistant"
   llm_request = LlmRequest(
-      model="gemini-1.5-flash",
+      model="gemini-2.5-flash",
       contents=[
           types.Content(role="user", parts=[types.Part.from_text(text="Hello")])
       ],
@@ -1704,7 +1704,7 @@ async def test_computer_use_with_no_config():
   llm = Gemini()
 
   llm_request = LlmRequest(
-      model="gemini-1.5-flash",
+      model="gemini-2.5-flash",
       contents=[
           types.Content(role="user", parts=[types.Part.from_text(text="Hello")])
       ],
@@ -1721,7 +1721,7 @@ async def test_computer_use_with_no_tools():
 
   original_instruction = "You are a helpful assistant"
   llm_request = LlmRequest(
-      model="gemini-1.5-flash",
+      model="gemini-2.5-flash",
       contents=[
           types.Content(role="user", parts=[types.Part.from_text(text="Hello")])
       ],
@@ -1755,7 +1755,7 @@ async def test_adapt_computer_use_tool_wait():
   )
 
   llm_request = LlmRequest(
-      model="gemini-1.5-flash",
+      model="gemini-2.5-flash",
       config=types.GenerateContentConfig(),
   )
 
@@ -1788,7 +1788,7 @@ async def test_adapt_computer_use_tool_no_wait():
   llm = Gemini()
 
   llm_request = LlmRequest(
-      model="gemini-1.5-flash",
+      model="gemini-2.5-flash",
       config=types.GenerateContentConfig(),
   )
 
@@ -1963,7 +1963,7 @@ def test_build_request_log_with_config_multiple_tool_types():
   )
 
   llm_request = LlmRequest(
-      model="gemini-1.5-flash",
+      model="gemini-2.5-flash",
       contents=[Content(role="user", parts=[Part.from_text(text="Hello")])],
       config=types.GenerateContentConfig(
           temperature=0.7,
@@ -2020,7 +2020,7 @@ def test_build_request_log_function_declarations_in_second_tool():
   )
 
   llm_request = LlmRequest(
-      model="gemini-1.5-flash",
+      model="gemini-2.5-flash",
       contents=[Content(role="user", parts=[Part.from_text(text="Hello")])],
       config=types.GenerateContentConfig(
           temperature=0.5,
@@ -2056,7 +2056,7 @@ def test_build_request_log_fallback_to_repr_on_all_failures(monkeypatch):
   """Test that _build_request_log falls back to repr() if model_dump fails."""
 
   llm_request = LlmRequest(
-      model="gemini-1.5-flash",
+      model="gemini-2.5-flash",
       contents=[Content(role="user", parts=[Part.from_text(text="Hello")])],
       config=types.GenerateContentConfig(
           temperature=0.7,

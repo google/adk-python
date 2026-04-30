@@ -39,7 +39,7 @@ bigquery_toolset = BigQueryToolset(
 )
 
 root_agent = Agent(
-    model="gemini-2.0-flash",
+    model="gemini-2.5-flash",
     name="bigquery_agent",
     instruction="""
       You are a helpful Google BigQuery agent that help to manage users' data on Google BigQuery.

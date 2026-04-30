@@ -30,9 +30,7 @@ The `run_cache_experiments.py` script compares caching performance between model
 python run_cache_experiments.py <model_name> --output results.json
 
 # Examples:
-python run_cache_experiments.py gemini-2.0-flash-001 --output gemini_2_0_results.json
 python run_cache_experiments.py gemini-2.5-flash --output gemini_2_5_results.json
-python run_cache_experiments.py gemini-1.5-flash --output gemini_1_5_results.json
 
 # Run multiple iterations for averaged results
 python run_cache_experiments.py <model_name> --repeat 3 --output averaged_results.json
@@ -57,12 +55,6 @@ The script automatically determines the experiment type based on the model name:
 - **Explicit Caching**: ADK explicit caching + Google's implicit caching
 - **Implicit Only**: Google's built-in implicit caching alone
 - **Measures**: Added benefit of explicit caching over Google's built-in implicit caching
-
-### Other Models (e.g., gemini-2.0-flash-001, gemini-1.5-flash)
-
-- **Cached**: ADK explicit context caching enabled
-- **Uncached**: No caching (baseline comparison)
-- **Measures**: Raw performance improvement from explicit caching vs no caching
 
 ## Tools Included
 
@@ -103,7 +95,7 @@ The script automatically determines the experiment type based on the model name:
 
 If `cached_content_token_count` is always 0:
 
-- Verify model names match exactly (e.g., `gemini-2.0-flash-001`)
+- Verify model names match exactly (e.g., `gemini-2.5-flash`)
 - Check that cache configuration `min_tokens` threshold is met
 - Ensure proper App-based configuration is used
 

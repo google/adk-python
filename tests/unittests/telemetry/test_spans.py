@@ -60,7 +60,7 @@ import pytest
 try:
   from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GEN_AI_TOOL_DEFINITIONS
 except ImportError:
-  GEN_AI_TOOL_DEFINITIONS = 'gen_ai.tool_definitions'
+  GEN_AI_TOOL_DEFINITIONS = 'gen_ai.tool.definitions'
 
 
 class Event:
