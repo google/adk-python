@@ -24,8 +24,8 @@ from typing import TYPE_CHECKING
 from google.genai import types
 from typing_extensions import override
 
-from ...environments._base_environment import BaseEnvironment
-from ...environments._base_environment import ExecutionResult
+from ...environment._base_environment import BaseEnvironment
+from ...environment._base_environment import ExecutionResult
 from ...utils.feature_decorator import experimental
 from ..base_tool import BaseTool
 from ._constants import DEFAULT_TIMEOUT
@@ -47,9 +47,9 @@ def _truncate(text: str, limit: int = MAX_OUTPUT_CHARS) -> str:
 
 _EXECUTE_TOOL_DESCRIPTION = """
 Run a shell command in the environment. For running programs, tests, and build
-commands ONLY. WARNING: Do NOT use for file reading -- use the ReadFile tool 
-instead. Shell commands like 'cat, head, tail will produce inferior results. 
-Good: Execute("python3 script.py"), Execute("pytest"), Execute("find ..."). 
+commands ONLY. WARNING: Do NOT use for file reading -- use the ReadFile tool
+instead. Shell commands like 'cat, head, tail will produce inferior results.
+Good: Execute("python3 script.py"), Execute("pytest"), Execute("find ...").
 Bad: Execute("head ..."), Execute("cat ...").
 """
 

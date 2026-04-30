@@ -17,6 +17,7 @@ from unittest.mock import ANY
 from unittest.mock import patch
 
 from google.adk.agents.run_config import RunConfig
+from google.genai import types
 import pytest
 
 
@@ -64,3 +65,35 @@ def test_audio_transcription_configs_are_not_shared_between_instances():
   assert (
       config1.input_audio_transcription is not config2.input_audio_transcription
   )
+
+
+def test_avatar_config_initialization():
+  custom_avatar = types.CustomizedAvatar(
+      image_mime_type="image/jpeg", image_data=b"image_bytes"
+  )
+  avatar_config = types.AvatarConfig(
+      audio_bitrate_bps=128000,
+      video_bitrate_bps=1000000,
+      customized_avatar=custom_avatar,
+  )
+  run_config = RunConfig(avatar_config=avatar_config)
+
+  assert run_config.avatar_config == avatar_config
+  assert run_config.avatar_config.customized_avatar == custom_avatar
+  assert (
+      run_config.avatar_config.customized_avatar.image_mime_type == "image/jpeg"
+  )
+  assert run_config.avatar_config.customized_avatar.image_data == b"image_bytes"
+
+
+def test_avatar_config_with_name():
+  avatar_config = types.AvatarConfig(
+      audio_bitrate_bps=128000,
+      video_bitrate_bps=1000000,
+      avatar_name="test_avatar",
+  )
+  run_config = RunConfig(avatar_config=avatar_config)
+
+  assert run_config.avatar_config == avatar_config
+  assert run_config.avatar_config.avatar_name == "test_avatar"
+  assert run_config.avatar_config.customized_avatar is None

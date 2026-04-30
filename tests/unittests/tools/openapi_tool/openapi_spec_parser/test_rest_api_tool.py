@@ -46,104 +46,190 @@ import pytest
 import requests
 
 
-class TestRestApiTool:
+@pytest.fixture
+def mock_tool_context():
+  """Fixture for a mock OperationParser."""
+  mock_context = MagicMock(spec=ToolContext)
+  mock_context.state = State({}, {})
+  mock_context.get_auth_response.return_value = {}
+  mock_context.request_credential.return_value = {}
+  return mock_context
 
-  @pytest.fixture
-  def mock_tool_context(self):
-    """Fixture for a mock OperationParser."""
-    mock_context = MagicMock(spec=ToolContext)
-    mock_context.state = State({}, {})
-    mock_context.get_auth_response.return_value = {}
-    mock_context.request_credential.return_value = {}
-    return mock_context
 
-  @pytest.fixture
-  def mock_ssl_context(self):
-    """Fixture for a mock ssl.SSLContext."""
-    return mock.create_autospec(ssl.SSLContext)
+@pytest.fixture
+def mock_ssl_context():
+  """Fixture for a mock ssl.SSLContext."""
+  return mock.create_autospec(ssl.SSLContext)
 
-  @pytest.fixture
-  def mock_operation_parser(self):
-    """Fixture for a mock OperationParser."""
+
+@pytest.fixture
+def mock_operation_parser():
+  """Fixture for a mock OperationParser."""
+  mock_parser = MagicMock(spec=OperationParser)
+  mock_parser.get_function_name.return_value = "mock_function_name"
+  mock_parser.get_json_schema.return_value = {}
+  mock_parser.get_parameters.return_value = []
+  mock_parser.get_return_type_hint.return_value = "str"
+  mock_parser.get_pydoc_string.return_value = "Mock docstring"
+  mock_parser.get_signature_parameters.return_value = []
+  mock_parser.get_return_type_value.return_value = str
+  mock_parser.get_annotations.return_value = {}
+  return mock_parser
+
+
+@pytest.fixture
+def sample_endpoint():
+  return OperationEndpoint(
+      base_url="https://example.com", path="/test", method="GET"
+  )
+
+
+@pytest.fixture
+def sample_operation():
+  return Operation(
+      operationId="testOperation",
+      description="Test operation",
+      parameters=[],
+      requestBody=RequestBody(
+          content={
+              "application/json": MediaType(
+                  schema=OpenAPISchema(
+                      type="object",
+                      properties={
+                          "testBodyParam": OpenAPISchema(type="string")
+                      },
+                  )
+              )
+          }
+      ),
+  )
+
+
+@pytest.fixture
+def sample_api_parameters():
+  return [
+      ApiParameter(
+          original_name="test_param",
+          py_name="test_param",
+          param_location="query",
+          param_schema=OpenAPISchema(type="string"),
+          is_required=True,
+      ),
+      ApiParameter(
+          original_name="",
+          py_name="test_body_param",
+          param_location="body",
+          param_schema=OpenAPISchema(type="string"),
+          is_required=True,
+      ),
+  ]
+
+
+@pytest.fixture
+def sample_return_parameter():
+  return ApiParameter(
+      original_name="test_param",
+      py_name="test_param",
+      param_location="query",
+      param_schema=OpenAPISchema(type="string"),
+      is_required=True,
+  )
+
+
+@pytest.fixture
+def sample_auth_scheme():
+  scheme, _ = token_to_scheme_credential(
+      "apikey", "header", "", "sample_auth_credential_internal_test"
+  )
+  return scheme
+
+
+@pytest.fixture
+def sample_auth_credential():
+  _, credential = token_to_scheme_credential(
+      "apikey", "header", "", "sample_auth_credential_internal_test"
+  )
+  return credential
+
+
+class TestRestApiToolLegacy:
+
+  @pytest.fixture(autouse=True)
+  def disable_feature_flag(self):
+    with temporary_feature_override(
+        FeatureName.JSON_SCHEMA_FOR_FUNC_DECL, False
+    ):
+      yield
+
+  def test_get_declaration(
+      self, sample_endpoint, sample_operation, mock_operation_parser
+  ):
+    tool = RestApiTool(
+        name="test_tool",
+        description="Test description",
+        endpoint=sample_endpoint,
+        operation=sample_operation,
+        should_parse_operation=False,
+    )
+    tool._operation_parser = mock_operation_parser
+
+    declaration = tool._get_declaration()
+    assert isinstance(declaration, FunctionDeclaration)
+    assert declaration.name == "test_tool"
+    assert declaration.description == "Test description"
+    assert isinstance(declaration.parameters, Schema)
+
+
+class TestRestApiToolWithJsonSchema:
+
+  @pytest.fixture(autouse=True)
+  def enable_feature_flag(self):
+    with temporary_feature_override(
+        FeatureName.JSON_SCHEMA_FOR_FUNC_DECL, True
+    ):
+      yield
+
+  def test_get_declaration_with_json_schema_feature_enabled(
+      self, sample_endpoint, sample_operation
+  ):
+    """Test that _get_declaration uses parameters_json_schema when feature is enabled."""
     mock_parser = MagicMock(spec=OperationParser)
-    mock_parser.get_function_name.return_value = "mock_function_name"
-    mock_parser.get_json_schema.return_value = {}
-    mock_parser.get_parameters.return_value = []
-    mock_parser.get_return_type_hint.return_value = "str"
-    mock_parser.get_pydoc_string.return_value = "Mock docstring"
-    mock_parser.get_signature_parameters.return_value = []
-    mock_parser.get_return_type_value.return_value = str
-    mock_parser.get_annotations.return_value = {}
-    return mock_parser
+    mock_parser.get_json_schema.return_value = {
+        "type": "object",
+        "properties": {
+            "test_param": {"type": "string"},
+        },
+        "required": ["test_param"],
+    }
 
-  @pytest.fixture
-  def sample_endpoint(self):
-    return OperationEndpoint(
-        base_url="https://example.com", path="/test", method="GET"
+    tool = RestApiTool(
+        name="test_tool",
+        description="Test description",
+        endpoint=sample_endpoint,
+        operation=sample_operation,
+        should_parse_operation=False,
     )
+    tool._operation_parser = mock_parser
 
-  @pytest.fixture
-  def sample_operation(self):
-    return Operation(
-        operationId="testOperation",
-        description="Test operation",
-        parameters=[],
-        requestBody=RequestBody(
-            content={
-                "application/json": MediaType(
-                    schema=OpenAPISchema(
-                        type="object",
-                        properties={
-                            "testBodyParam": OpenAPISchema(type="string")
-                        },
-                    )
-                )
-            }
-        ),
-    )
+    with temporary_feature_override(
+        FeatureName.JSON_SCHEMA_FOR_FUNC_DECL, True
+    ):
+      declaration = tool._get_declaration()
 
-  @pytest.fixture
-  def sample_api_parameters(self):
-    return [
-        ApiParameter(
-            original_name="test_param",
-            py_name="test_param",
-            param_location="query",
-            param_schema=OpenAPISchema(type="string"),
-            is_required=True,
-        ),
-        ApiParameter(
-            original_name="",
-            py_name="test_body_param",
-            param_location="body",
-            param_schema=OpenAPISchema(type="string"),
-            is_required=True,
-        ),
-    ]
+    assert isinstance(declaration, FunctionDeclaration)
+    assert declaration.name == "test_tool"
+    assert declaration.description == "Test description"
+    assert declaration.parameters is None
+    assert declaration.parameters_json_schema == {
+        "type": "object",
+        "properties": {
+            "test_param": {"type": "string"},
+        },
+        "required": ["test_param"],
+    }
 
-  @pytest.fixture
-  def sample_return_parameter(self):
-    return ApiParameter(
-        original_name="test_param",
-        py_name="test_param",
-        param_location="query",
-        param_schema=OpenAPISchema(type="string"),
-        is_required=True,
-    )
 
-  @pytest.fixture
-  def sample_auth_scheme(self):
-    scheme, _ = token_to_scheme_credential(
-        "apikey", "header", "", "sample_auth_credential_internal_test"
-    )
-    return scheme
-
-  @pytest.fixture
-  def sample_auth_credential(self):
-    _, credential = token_to_scheme_credential(
-        "apikey", "header", "", "sample_auth_credential_internal_test"
-    )
-    return credential
+class TestRestApiTool:
 
   def test_init(
       self,
@@ -188,63 +274,6 @@ class TestRestApiTool:
 
     tool = RestApiTool.from_parsed_operation_str(parsed_operation_str)
     assert tool.name == "test_operation"
-
-  def test_get_declaration(
-      self, sample_endpoint, sample_operation, mock_operation_parser
-  ):
-    tool = RestApiTool(
-        name="test_tool",
-        description="Test description",
-        endpoint=sample_endpoint,
-        operation=sample_operation,
-        should_parse_operation=False,
-    )
-    tool._operation_parser = mock_operation_parser
-
-    declaration = tool._get_declaration()
-    assert isinstance(declaration, FunctionDeclaration)
-    assert declaration.name == "test_tool"
-    assert declaration.description == "Test description"
-    assert isinstance(declaration.parameters, Schema)
-
-  def test_get_declaration_with_json_schema_feature_enabled(
-      self, sample_endpoint, sample_operation
-  ):
-    """Test that _get_declaration uses parameters_json_schema when feature is enabled."""
-    mock_parser = MagicMock(spec=OperationParser)
-    mock_parser.get_json_schema.return_value = {
-        "type": "object",
-        "properties": {
-            "test_param": {"type": "string"},
-        },
-        "required": ["test_param"],
-    }
-
-    tool = RestApiTool(
-        name="test_tool",
-        description="Test description",
-        endpoint=sample_endpoint,
-        operation=sample_operation,
-        should_parse_operation=False,
-    )
-    tool._operation_parser = mock_parser
-
-    with temporary_feature_override(
-        FeatureName.JSON_SCHEMA_FOR_FUNC_DECL, True
-    ):
-      declaration = tool._get_declaration()
-
-    assert isinstance(declaration, FunctionDeclaration)
-    assert declaration.name == "test_tool"
-    assert declaration.description == "Test description"
-    assert declaration.parameters is None
-    assert declaration.parameters_json_schema == {
-        "type": "object",
-        "properties": {
-            "test_param": {"type": "string"},
-        },
-        "required": ["test_param"],
-    }
 
   @patch(
       "google.adk.tools.openapi_tool.openapi_spec_parser.rest_api_tool._request"

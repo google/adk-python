@@ -17,8 +17,7 @@ jobs:
     if: >-
       github.repository == 'google/adk-python' && (
         github.event_name == 'schedule' ||
-        github.event.action == 'opened' ||
-        github.event.label.name == 'planned'
+        github.event.action == 'opened'
       )
     permissions:
       issues: write

@@ -19,20 +19,20 @@ features that cut across your entire application.
 Plugins are incredibly versatile. By implementing different callback methods, you
 can achieve a wide range of functionalities.
 
-*   **Logging & Tracing**: Create detailed logs of agent, tool, and LLM activity
-    for debugging and performance analysis.
-*   **Policy Enforcement**: Implement security guardrails. For example, a
-    before\_tool\_callback can check if a user is authorized to use a specific
-    tool and prevent its execution by returning a value.
-*   **Monitoring & Metrics**: Collect and export metrics on token usage,
-    execution times, and invocation counts to monitoring systems like Prometheus
-    or Stackdriver.
-*   **Caching**: In before\_model\_callback or before\_tool\_callback, you can
-    check if a request has been made before. If so, you can return a cached
-    response, skipping the expensive LLM or tool call entirely.
-*   **Request/Response Modification**: Dynamically add information to LLM prompts
-    (e.g., in before\_model\_callback) or standardize tool outputs (e.g., in
-    after\_tool\_callback).
+- **Logging & Tracing**: Create detailed logs of agent, tool, and LLM activity
+  for debugging and performance analysis.
+- **Policy Enforcement**: Implement security guardrails. For example, a
+  before_tool_callback can check if a user is authorized to use a specific
+  tool and prevent its execution by returning a value.
+- **Monitoring & Metrics**: Collect and export metrics on token usage,
+  execution times, and invocation counts to monitoring systems like Prometheus
+  or Stackdriver.
+- **Caching**: In before_model_callback or before_tool_callback, you can
+  check if a request has been made before. If so, you can return a cached
+  response, skipping the expensive LLM or tool call entirely.
+- **Request/Response Modification**: Dynamically add information to LLM prompts
+  (e.g., in before_model_callback) or standardize tool outputs (e.g., in
+  after_tool_callback).
 
 ### Run the agent
 
