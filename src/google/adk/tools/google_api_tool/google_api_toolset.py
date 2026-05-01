@@ -24,7 +24,6 @@ from typing_extensions import override
 from ...agents.readonly_context import ReadonlyContext
 from ...auth.auth_credential import ServiceAccount
 from ...auth.auth_schemes import OpenIdConnectWithConfig
-from ...tools.base_tool import BaseTool
 from ...tools.base_toolset import BaseToolset
 from ...tools.base_toolset import ToolPredicate
 from ..openapi_tool import OpenAPIToolset
@@ -64,6 +63,7 @@ class GoogleApiToolset(BaseToolset):
       *,
       additional_headers: Optional[Dict[str, str]] = None,
       additional_scopes: Optional[List[str]] = None,
+      discovery_url: Optional[str] = None,
   ):
     super().__init__(tool_filter=tool_filter, tool_name_prefix=tool_name_prefix)
     self.api_name = api_name
@@ -73,12 +73,13 @@ class GoogleApiToolset(BaseToolset):
     self._service_account = service_account
     self._additional_headers = additional_headers
     self._additional_scopes = additional_scopes
+    self._discovery_url = discovery_url
     self._openapi_toolset = self._load_toolset_with_oidc_auth()
 
   @override
   async def get_tools(
       self, readonly_context: Optional[ReadonlyContext] = None
-  ) -> list[BaseTool]:
+  ) -> List[GoogleApiTool]:
     """Get all tools in the toolset."""
     return [
         GoogleApiTool(
@@ -97,7 +98,7 @@ class GoogleApiToolset(BaseToolset):
 
   def _load_toolset_with_oidc_auth(self) -> OpenAPIToolset:
     spec_dict = GoogleApiToOpenApiConverter(
-        self.api_name, self.api_version
+        self.api_name, self.api_version, discovery_url=self._discovery_url
     ).convert()
     discovery_scopes = list(
         spec_dict['components']['securitySchemes']['oauth2']['flows'][
