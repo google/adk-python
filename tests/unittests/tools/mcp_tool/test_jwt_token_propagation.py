@@ -429,53 +429,6 @@ class TestMcpToolsetFromConfigWithStateMapping:
     # No header provider should be created
     assert toolset._header_provider is None
 
-  def test_from_config_with_credential_key(self):
-    """Test that from_config creates header provider from credential_key."""
-    from google.adk.tools.mcp_tool.mcp_toolset import McpToolset
-    from google.adk.tools.tool_configs import ToolArgsConfig
-
-    config = ToolArgsConfig(
-        stdio_server_params={"command": "test_command", "args": []},
-        credential_key="my_token",
-    )
-
-    toolset = McpToolset.from_config(config, "/fake/path")
-
-    assert toolset._header_provider is not None
-
-    mock_context = Mock(spec=ReadonlyContext)
-    mock_context.state = {"my_token": "test-jwt-123"}
-
-    headers = toolset._header_provider(mock_context)
-
-    assert headers == {"Authorization": "Bearer test-jwt-123"}
-
-  def test_from_config_credential_key_with_state_header_mapping(self):
-    """Test that credential_key and state_header_mapping combine."""
-    from google.adk.tools.mcp_tool.mcp_toolset import McpToolset
-    from google.adk.tools.tool_configs import ToolArgsConfig
-
-    config = ToolArgsConfig(
-        stdio_server_params={"command": "test_command", "args": []},
-        credential_key="jwt_token",
-        state_header_mapping={"tenant_id": "X-Tenant-ID"},
-    )
-
-    toolset = McpToolset.from_config(config, "/fake/path")
-
-    mock_context = Mock(spec=ReadonlyContext)
-    mock_context.state = {
-        "jwt_token": "my-jwt",
-        "tenant_id": "tenant-42",
-    }
-
-    headers = toolset._header_provider(mock_context)
-
-    assert headers == {
-        "Authorization": "Bearer my-jwt",
-        "X-Tenant-ID": "tenant-42",
-    }
-
   def test_from_config_with_strict_mode(self):
     """Test that from_config respects state_header_strict setting."""
     from google.adk.tools.mcp_tool.mcp_toolset import McpToolset
@@ -498,77 +451,6 @@ class TestMcpToolsetFromConfigWithStateMapping:
 
     assert "data" in str(exc_info.value)
     assert "dict" in str(exc_info.value)
-
-
-class TestCredentialKey:
-  """Test suite for credential_key on McpToolset.__init__."""
-
-  def test_credential_key_creates_bearer_header(self):
-    """Test credential_key reads token from state and sends as Bearer."""
-    from google.adk.tools.mcp_tool.mcp_toolset import McpToolset
-
-    toolset = McpToolset(
-        connection_params=StdioServerParameters(command="echo", args=[]),
-        credential_key="auth_token",
-    )
-
-    assert toolset._header_provider is not None
-
-    mock_context = Mock(spec=ReadonlyContext)
-    mock_context.state = {"auth_token": "my-jwt-token"}
-
-    headers = toolset._header_provider(mock_context)
-
-    assert headers == {"Authorization": "Bearer my-jwt-token"}
-
-  def test_credential_key_missing_state_returns_empty(self):
-    """Test credential_key returns empty headers when key not in state."""
-    from google.adk.tools.mcp_tool.mcp_toolset import McpToolset
-
-    toolset = McpToolset(
-        connection_params=StdioServerParameters(command="echo", args=[]),
-        credential_key="auth_token",
-    )
-
-    mock_context = Mock(spec=ReadonlyContext)
-    mock_context.state = {}
-
-    headers = toolset._header_provider(mock_context)
-
-    assert headers == {}
-
-  def test_credential_key_none_means_no_provider(self):
-    """Test that credential_key=None does not create a provider."""
-    from google.adk.tools.mcp_tool.mcp_toolset import McpToolset
-
-    toolset = McpToolset(
-        connection_params=StdioServerParameters(command="echo", args=[]),
-        credential_key=None,
-    )
-
-    assert toolset._header_provider is None
-
-  def test_credential_key_combines_with_header_provider(self):
-    """Test that credential_key and header_provider are combined."""
-    from google.adk.tools.mcp_tool.mcp_toolset import McpToolset
-
-    custom_provider = lambda ctx: {"X-Custom": "value"}
-
-    toolset = McpToolset(
-        connection_params=StdioServerParameters(command="echo", args=[]),
-        credential_key="auth_token",
-        header_provider=custom_provider,
-    )
-
-    mock_context = Mock(spec=ReadonlyContext)
-    mock_context.state = {"auth_token": "my-jwt"}
-
-    headers = toolset._header_provider(mock_context)
-
-    assert headers == {
-        "Authorization": "Bearer my-jwt",
-        "X-Custom": "value",
-    }
 
 
 class TestRFC7230Compliance:

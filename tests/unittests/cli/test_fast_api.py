@@ -2598,6 +2598,7 @@ async def test_independent_telemetry_context(
       invocation_id: Optional[str] = None,
       new_message: Optional[types.Content] = None,
       state_delta: Optional[dict[str, Any]] = None,
+      request_state: Optional[dict[str, Any]] = None,
       run_config: Optional[RunConfig] = None,
   ):
     # Capture the value of is_visual_builder inside the request context

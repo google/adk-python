@@ -254,7 +254,6 @@ class McpToolset(BaseToolset):
       auth_credential: Optional[AuthCredential] = None,
       require_confirmation: Union[bool, Callable[..., bool]] = False,
       header_provider: Optional[HeaderProvider] = None,
-      credential_key: Optional[str] = None,
       progress_callback: Optional[
           Union[ProgressFnT, ProgressCallbackFactory]
       ] = None,
@@ -286,11 +285,6 @@ class McpToolset(BaseToolset):
         Can be a single boolean or a callable to apply to all tools.
       header_provider: A callable that takes a ReadonlyContext and returns a
         dictionary of headers to be used for the MCP session.
-      credential_key: A session state key whose value is sent as an
-        ``Authorization: Bearer <token>`` header on every MCP request. This is
-        a convenience shorthand that internally creates a header_provider. If
-        both ``credential_key`` and ``header_provider`` are provided, they are
-        combined.
       progress_callback: Optional callback to receive progress notifications
         from MCP server during long-running tool execution. Can be either:  - A
         ``ProgressFnT`` callback that receives (progress, total, message). This
@@ -330,19 +324,7 @@ class McpToolset(BaseToolset):
     self._connection_params = connection_params
     self._errlog = errlog
 
-    # Build the effective header_provider from credential_key and/or the
-    # explicit header_provider parameter.
-    credential_provider = (
-        create_session_state_header_provider(state_key=credential_key)
-        if credential_key
-        else None
-    )
-    if credential_provider and header_provider:
-      self._header_provider = create_combined_header_provider(
-          [credential_provider, header_provider]
-      )
-    else:
-      self._header_provider = credential_provider or header_provider
+    self._header_provider = header_provider
     self._progress_callback = progress_callback
 
     # Create the session manager that will handle the MCP connection
@@ -628,7 +610,7 @@ class McpToolset(BaseToolset):
     else:
       raise ValueError("No connection params found in McpToolsetConfig.")
 
-    # Build header_provider from state_header_mapping and/or credential_key.
+    # Build header_provider from state_header_mapping.
     providers = []
 
     if mcp_toolset_config.state_header_mapping:
@@ -645,13 +627,6 @@ class McpToolset(BaseToolset):
           )
           for state_key, header_name in state_mapping.items()
       ])
-
-    if mcp_toolset_config.credential_key:
-      providers.append(
-          create_session_state_header_provider(
-              state_key=mcp_toolset_config.credential_key,
-          )
-      )
 
     header_provider = (
         create_combined_header_provider(providers) if providers else None
@@ -719,12 +694,6 @@ class McpToolsetConfig(BaseToolConfig):
   credential_key: str | None = None
 
   use_mcp_resources: bool = False
-
-  credential_key: Optional[str] = None
-  """A session state key whose value is sent as an ``Authorization: Bearer``
-  header on every MCP HTTP request. Convenience shorthand that is equivalent
-  to ``state_header_mapping: {<key>: Authorization}`` with
-  ``state_header_format: {Authorization: "Bearer {value}"}``."""
 
   state_header_mapping: Optional[Dict[str, str]] = None
   """Maps session state keys to HTTP header names.
