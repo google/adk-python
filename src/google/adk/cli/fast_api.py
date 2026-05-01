@@ -313,11 +313,8 @@ def get_fast_api_app(
     # Block any upload that contains an `args` key anywhere in the document.
     def _check_yaml_for_blocked_keys(content: bytes, filename: str) -> None:
       """Raise if the YAML document contains blocked config entries."""
+      from google.adk.agents.config_agent_utils import check_config_for_blocked_keys
       import yaml
-
-      from google.adk.agents.config_agent_utils import (
-          check_config_for_blocked_keys,
-      )
 
       try:
         docs = list(yaml.safe_load_all(content))

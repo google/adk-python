@@ -926,9 +926,9 @@ class LlmAgent(BaseAgent):
 
         if is_blocked_code_reference(tool_config.name):
           raise ValueError(
-              f"Blocked tool reference: {tool_config.name!r}. "
-              "References to unsafe Python modules are not allowed in "
-              "agent tool configurations."
+              f'Blocked tool reference: {tool_config.name!r}. '
+              'References to unsafe Python modules are not allowed in '
+              'agent tool configurations.'
           )
 
         module_path, obj_name = tool_config.name.rsplit('.', 1)
