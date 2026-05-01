@@ -13,15 +13,15 @@
 # limitations under the License.
 
 from pathlib import Path
+from types import SimpleNamespace
 from unittest import mock
 
-import pytest
-
 from google.adk.cli import service_registry
+import pytest
 
 
 def test_file_artifact_factory_normalizes_windows_file_uri(monkeypatch):
-  monkeypatch.setattr(service_registry.os, "name", "nt", raising=False)
+  monkeypatch.setattr(service_registry, "os", SimpleNamespace(name="nt"))
   mocked_url2pathname = mock.Mock(return_value=r"C:\tmp\adk artifacts")
   monkeypatch.setattr(service_registry, "url2pathname", mocked_url2pathname)
 

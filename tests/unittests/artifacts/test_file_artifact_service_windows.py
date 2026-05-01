@@ -13,13 +13,14 @@
 # limitations under the License.
 
 from pathlib import Path
+from types import SimpleNamespace
 from unittest import mock
 
 from google.adk.artifacts import file_artifact_service
 
 
 def test_file_uri_to_path_normalizes_windows_file_uri(monkeypatch):
-  monkeypatch.setattr(file_artifact_service.os, "name", "nt", raising=False)
+  monkeypatch.setattr(file_artifact_service, "os", SimpleNamespace(name="nt"))
   mocked_url2pathname = mock.Mock(return_value=r"C:\tmp\adk artifacts")
   monkeypatch.setattr(
       file_artifact_service, "url2pathname", mocked_url2pathname
@@ -34,6 +35,7 @@ def test_file_uri_to_path_normalizes_windows_file_uri(monkeypatch):
 
 
 def test_file_uri_to_path_returns_none_for_non_file_uri():
-  assert file_artifact_service._file_uri_to_path(
-      "gs://bucket/adk_artifacts"
-  ) is None
+  assert (
+      file_artifact_service._file_uri_to_path("gs://bucket/adk_artifacts")
+      is None
+  )

@@ -294,11 +294,11 @@ def _register_builtin_services(registry: ServiceRegistry) -> None:
       )
     if not parsed_uri.path:
       raise ValueError("file:// artifact URIs must include a path component.")
-    
+
     artifact_path_str = unquote(parsed_uri.path)
     if os.name == "nt":
       artifact_path_str = url2pathname(artifact_path_str)
-    
+
     artifact_path = Path(artifact_path_str)
     return FileArtifactService(root_dir=artifact_path)
 
