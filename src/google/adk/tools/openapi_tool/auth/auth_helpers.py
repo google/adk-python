@@ -399,14 +399,15 @@ def credential_to_param(
       username = auth_credential.http.credentials.username or ""
       password = auth_credential.http.credentials.password or ""
       encoded = base64.b64encode(f"{username}:{password}".encode()).decode()
+      py_name = INTERNAL_AUTH_PREFIX + "Authorization"
       param = ApiParameter(
           original_name="Authorization",
           param_location="header",
           param_schema=Schema(type="string"),
           description=auth_scheme.description or "Basic auth",
-          py_name=INTERNAL_AUTH_PREFIX + "Authorization",
+          py_name=py_name,
       )
-      kwargs = {param.py_name: f"Basic {encoded}"}
+      kwargs = {py_name: f"Basic {encoded}"}
       return param, kwargs
     else:
       raise ValueError("Invalid HTTP auth credentials")
