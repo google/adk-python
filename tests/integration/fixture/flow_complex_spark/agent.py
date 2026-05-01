@@ -16,7 +16,7 @@ from google.adk import Agent
 from google.genai import types
 
 research_plan_agent = Agent(
-    model="gemini-1.5-flash",
+    model="gemini-2.5-flash",
     name="research_plan_agent",
     description="I can help generate research plan.",
     instruction="""\
@@ -60,7 +60,7 @@ Output summary:
 
 
 question_generation_agent = Agent(
-    model="gemini-1.5-flash",
+    model="gemini-2.5-flash",
     name="question_generation_agent",
     description="I can help generate questions related to user's question.",
     instruction="""\
@@ -85,7 +85,7 @@ Here is an example of the generated question list:
 )
 
 information_retrieval_agent = Agent(
-    model="gemini-1.5-flash",
+    model="gemini-2.5-flash",
     name="information_retrieval_agent",
     description=(
         "I can help retrieve information related to question_generation_agent's"
@@ -117,7 +117,7 @@ For the answer of one question:
 )
 
 question_sources_generation_agent = Agent(
-    model="gemini-1.5-flash",
+    model="gemini-2.5-flash",
     name="question_sources_generation_agent",
     description=(
         "I can help generate questions and retrieve related information."
@@ -134,7 +134,7 @@ question_sources_generation_agent = Agent(
 )
 
 summary_agent = Agent(
-    model="gemini-1.5-flash",
+    model="gemini-2.5-flash",
     name="summary_agent",
     description="I can help summarize information of previous content.",
     instruction="""\
@@ -152,7 +152,7 @@ Summarize information in all historical messages that were replied by "question_
 )
 
 research_assistant = Agent(
-    model="gemini-1.5-flash",
+    model="gemini-2.5-flash",
     name="research_assistant",
     description="I can help with research question.",
     instruction="Help customers with their need.",
@@ -168,7 +168,7 @@ research_assistant = Agent(
 )
 
 spark_agent = Agent(
-    model="gemini-1.5-flash",
+    model="gemini-2.5-flash",
     name="spark_assistant",
     description="I can help with non-research question.",
     instruction="Help customers with their need.",
