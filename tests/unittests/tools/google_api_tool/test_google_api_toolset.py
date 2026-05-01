@@ -159,6 +159,35 @@ class TestGoogleApiToolset:
     assert kwargs["auth_scheme"].scopes == [DEFAULT_SCOPE]
 
   @mock.patch(
+      "google.adk.tools.google_api_tool.google_api_toolset.OpenAPIToolset"
+  )
+  @mock.patch(
+      "google.adk.tools.google_api_tool.google_api_toolset.GoogleApiToOpenApiConverter"
+  )
+  def test_init_with_additional_scopes(
+      self,
+      mock_converter_class,
+      mock_openapi_toolset_class,
+      mock_converter_instance,
+      mock_openapi_toolset_instance,
+  ):
+    """Test GoogleApiToolset initialization with additional scopes."""
+    mock_converter_class.return_value = mock_converter_instance
+    mock_openapi_toolset_class.return_value = mock_openapi_toolset_instance
+
+    extra_scopes = ["https://www.googleapis.com/auth/calendar.readonly"]
+    tool_set = GoogleApiToolset(
+        api_name=TEST_API_NAME,
+        api_version=TEST_API_VERSION,
+        additional_scopes=extra_scopes,
+    )
+
+    mock_openapi_toolset_class.assert_called_once()
+    _, kwargs = mock_openapi_toolset_class.call_args
+    assert isinstance(kwargs["auth_scheme"], OpenIdConnectWithConfig)
+    assert kwargs["auth_scheme"].scopes == [DEFAULT_SCOPE] + extra_scopes
+
+  @mock.patch(
       "google.adk.tools.google_api_tool.google_api_toolset.GoogleApiTool"
   )
   @mock.patch(
