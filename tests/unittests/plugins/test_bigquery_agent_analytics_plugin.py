@@ -7483,3 +7483,124 @@ class TestForkDetectionAfterPickle:
         # Should have called _reset_runtime_state because
         # _init_pid is a real PID different from os.getpid()
         mock_reset.assert_called_once()
+
+
+# ================================================================
+# TEST CLASS: GCS offload unit mismatch fix (Issue #5561)
+# ================================================================
+class TestOffloadUnitSeparation:
+  """Tests that byte-based inline limit and character-based truncation
+  limit are evaluated independently for the GCS offload decision."""
+
+  @pytest.mark.asyncio
+  async def test_multibyte_text_offloaded_by_byte_limit(self):
+    """Multi-byte text exceeding inline_text_limit bytes is offloaded."""
+    mock_offloader = mock.AsyncMock()
+    mock_offloader.upload_content.return_value = "gs://bucket/offloaded.txt"
+
+    parser = bigquery_agent_analytics_plugin.HybridContentParser(
+        offloader=mock_offloader,
+        trace_id="t",
+        span_id="s",
+        max_length=-1,  # no character truncation
+    )
+    # 10K emoji chars → ~40KB UTF-8, exceeds inline_text_limit (32KB)
+    text = "\U0001f600" * 10000
+    assert len(text) == 10000  # characters
+    assert len(text.encode("utf-8")) > 32 * 1024  # bytes
+
+    content = types.Content(parts=[types.Part(text=text)])
+    _, parts, _ = await parser._parse_content_object(content)
+
+    mock_offloader.upload_content.assert_called_once()
+    assert parts[0]["storage_mode"] == "GCS_REFERENCE"
+
+  @pytest.mark.asyncio
+  async def test_ascii_under_both_limits_stays_inline(self):
+    """ASCII text under both byte and character limits stays inline."""
+    mock_offloader = mock.AsyncMock()
+
+    parser = bigquery_agent_analytics_plugin.HybridContentParser(
+        offloader=mock_offloader,
+        trace_id="t",
+        span_id="s",
+        max_length=50000,
+    )
+    text = "A" * 1000  # 1K chars = 1K bytes, under both limits
+    content = types.Content(parts=[types.Part(text=text)])
+    _, parts, _ = await parser._parse_content_object(content)
+
+    mock_offloader.upload_content.assert_not_called()
+    assert parts[0]["storage_mode"] == "INLINE"
+    assert parts[0]["text"] == text
+
+  @pytest.mark.asyncio
+  async def test_text_exceeding_char_limit_offloaded(self):
+    """ASCII text exceeding max_length characters is offloaded."""
+    mock_offloader = mock.AsyncMock()
+    mock_offloader.upload_content.return_value = "gs://bucket/big.txt"
+
+    parser = bigquery_agent_analytics_plugin.HybridContentParser(
+        offloader=mock_offloader,
+        trace_id="t",
+        span_id="s",
+        max_length=100,  # small char limit
+    )
+    # 200 ASCII chars — under byte limit (32KB) but over char limit
+    text = "X" * 200
+    assert len(text.encode("utf-8")) < 32 * 1024
+    assert len(text) > 100
+
+    content = types.Content(parts=[types.Part(text=text)])
+    _, parts, _ = await parser._parse_content_object(content)
+
+    mock_offloader.upload_content.assert_called_once()
+    assert parts[0]["storage_mode"] == "GCS_REFERENCE"
+
+  @pytest.mark.asyncio
+  async def test_no_offloader_falls_back_to_truncate(self):
+    """Without offloader, text exceeding char limit is truncated inline."""
+    parser = bigquery_agent_analytics_plugin.HybridContentParser(
+        offloader=None,
+        trace_id="t",
+        span_id="s",
+        max_length=50,
+    )
+    text = "Z" * 200
+    content = types.Content(parts=[types.Part(text=text)])
+    _, parts, is_truncated = await parser._parse_content_object(content)
+
+    assert is_truncated
+    assert parts[0]["storage_mode"] == "INLINE"
+    assert "TRUNCATED" in parts[0]["text"]
+
+  @pytest.mark.asyncio
+  async def test_multibyte_under_char_and_byte_limits_stays_inline(self):
+    """Multi-byte text under both char limit and byte limit stays inline.
+
+    This is the specific regression case from #5561: with the old
+    mixed-unit min(), max_length=10000 became the offload_threshold,
+    and byte_len (12K) > 10000 triggered a false offload even though
+    char_len (3K) < max_length and byte_len (12K) < inline_text_limit
+    (32KB).
+    """
+    mock_offloader = mock.AsyncMock()
+    parser = bigquery_agent_analytics_plugin.HybridContentParser(
+        offloader=mock_offloader,
+        trace_id="t",
+        span_id="s",
+        max_length=10000,
+    )
+
+    # 3K emoji chars → ~12K bytes
+    text = "\U0001f600" * 3000
+    assert len(text) < 10000  # under char limit
+    assert len(text.encode("utf-8")) > 10000  # bytes > max_length
+    assert len(text.encode("utf-8")) < 32 * 1024  # under byte limit
+
+    content = types.Content(parts=[types.Part(text=text)])
+    _, parts, _ = await parser._parse_content_object(content)
+
+    # Should NOT offload: under both real limits
+    mock_offloader.upload_content.assert_not_called()
+    assert parts[0]["storage_mode"] == "INLINE"

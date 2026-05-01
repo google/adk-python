@@ -1430,14 +1430,20 @@ class HybridContentParser:
 
       # CASE C: Text
       elif hasattr(part, "text") and part.text:
-        text_len = len(part.text.encode("utf-8"))
-        # If max_length is set and smaller than inline limit, use it as threshold
-        # to prefer offloading over truncation.
-        offload_threshold = self.inline_text_limit
-        if self.max_length != -1 and self.max_length < offload_threshold:
-          offload_threshold = self.max_length
+        char_len = len(part.text)
+        byte_len = len(part.text.encode("utf-8"))
 
-        if self.offloader and text_len > offload_threshold:
+        # Decide whether to offload using each limit in its own
+        # unit.  inline_text_limit is a byte-based storage guard;
+        # max_length is a character-based truncation limit.
+        # Comparing them in a single min() mixes units and
+        # produces wrong decisions for multi-byte text.
+        exceeds_inline_byte_limit = byte_len > self.inline_text_limit
+        exceeds_char_limit = (
+            self.max_length != -1 and char_len > self.max_length
+        )
+
+        if self.offloader and (exceeds_inline_byte_limit or exceeds_char_limit):
           # Text is too big, treat as file
           path = f"{datetime.now().date()}/{self.trace_id}/{self.span_id}_p{idx}.txt"
           try:
