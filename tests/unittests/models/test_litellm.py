@@ -2870,7 +2870,10 @@ async def test_get_content_file_uri_file_id_required_raises_error(
           )
       )
   ]
-  with pytest.raises(ValueError, match=f"File URI `document.pdf` not supported for provider: {provider}"):
+  with pytest.raises(
+      ValueError,
+      match=f"File URI `document.pdf` not supported for provider: {provider}",
+  ):
     _ = await _get_content(parts, provider=provider, model=model)
 
 
@@ -2960,7 +2963,10 @@ async def test_get_content_file_uri_http_pdf_file_id_required_falls_raises_error
           )
       )
   ]
-  with pytest.raises(ValueError, match=f"File URI `document.pdf` not supported for provider: {provider}"):
+  with pytest.raises(
+      ValueError,
+      match=f"File URI `document.pdf` not supported for provider: {provider}",
+  ):
     _ = await _get_content(parts, provider=provider, model=model)
 
 
@@ -2995,7 +3001,10 @@ async def test_get_content_file_uri_anthropic_falls_raises_error():
           )
       )
   ]
-  with pytest.raises(ValueError, match=f"File URI `document.pdf` not supported for provider: anthropic"):
+  with pytest.raises(
+      ValueError,
+      match=f"File URI `document.pdf` not supported for provider: anthropic",
+  ):
     _ = await _get_content(
         parts, provider="anthropic", model="anthropic/claude-3-5"
     )
@@ -3004,7 +3013,10 @@ async def test_get_content_file_uri_anthropic_falls_raises_error():
 @pytest.mark.asyncio
 async def test_get_content_file_uri_anthropic_openai_file_id_raises_error():
   parts = [types.Part(file_data=types.FileData(file_uri="file-abc123"))]
-  with pytest.raises(ValueError, match="File URI `file-<redacted>` not supported for provider: anthropic"):
+  with pytest.raises(
+      ValueError,
+      match="File URI `file-<redacted>` not supported for provider: anthropic",
+  ):
     _ = await _get_content(
         parts, provider="anthropic", model="anthropic/claude-3-5"
     )
@@ -3021,7 +3033,10 @@ async def test_get_content_file_uri_vertex_ai_non_gemini_raises_error():
           )
       )
   ]
-  with pytest.raises(ValueError, match=f"File URI `document.pdf` not supported for provider: vertex_ai"):
+  with pytest.raises(
+      ValueError,
+      match=f"File URI `document.pdf` not supported for provider: vertex_ai",
+  ):
     _ = await _get_content(
         parts, provider="vertex_ai", model="vertex_ai/claude-3-5"
     )
@@ -3188,9 +3203,7 @@ async def test_get_content_audio_inline_data_emits_input_audio(
         ("azure", "azure/gpt-4"),
     ],
 )
-async def test_get_content_audio_file_uri_http_raises_error(
-    provider, model
-):
+async def test_get_content_audio_file_uri_http_raises_error(provider, model):
   """Audio HTTP file_uri falls back to a text reference for openai/azure."""
   file_uri = "https://example.com/audio.mp3"
   parts = [
@@ -3198,7 +3211,13 @@ async def test_get_content_audio_file_uri_http_raises_error(
           file_data=types.FileData(file_uri=file_uri, mime_type="audio/mpeg")
       )
   ]
-  with pytest.raises(ValueError, match=f"File URI `https://<redacted>/audio.mp3` not supported for provider: {provider}"):
+  with pytest.raises(
+      ValueError,
+      match=(
+          "File URI `https://<redacted>/audio.mp3` not supported for provider:"
+          f" {provider}"
+      ),
+  ):
     _ = await _get_content(parts, provider=provider, model=model)
 
 

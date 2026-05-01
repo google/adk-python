@@ -1131,10 +1131,12 @@ async def _get_content(
           })
           continue
 
-      if not _is_requires_file_uri_valid(provider, model, part.file_data.file_uri):
+      if not _is_requires_file_uri_valid(
+          provider, model, part.file_data.file_uri
+      ):
         redact_file_uri = _redact_file_uri_for_log(
-          part.file_data.file_uri,
-          display_name=part.file_data.display_name,
+            part.file_data.file_uri,
+            display_name=part.file_data.display_name,
         )
         raise ValueError(
             f"File URI `{redact_file_uri}` not supported for provider:"
