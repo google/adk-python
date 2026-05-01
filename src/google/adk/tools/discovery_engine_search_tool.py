@@ -36,6 +36,75 @@ _STRUCTURED_STORE_ERROR_PATTERN = re.compile(
     r'search_result_mode.*DOCUMENTS', re.IGNORECASE
 )
 
+_DEFAULT_ENDPOINT = 'discoveryengine.googleapis.com'
+_GLOBAL_LOCATION = 'global'
+_LOCATION_PATTERN = re.compile(
+    r'/locations/([a-z0-9-]+)(?:/|$)', flags=re.IGNORECASE
+)
+_VALID_LOCATION_PATTERN = re.compile(r'^[a-z0-9-]+$')
+
+
+def _normalize_location(location: str, location_type: str) -> str:
+  """Normalizes and validates a location value."""
+  normalized_location = location.strip().lower()
+  if not normalized_location:
+    raise ValueError(f'{location_type} must not be empty if specified.')
+  if not _VALID_LOCATION_PATTERN.fullmatch(normalized_location):
+    raise ValueError(
+        f'{location_type} must contain only letters, digits, and hyphens.'
+    )
+  return normalized_location
+
+
+def _extract_resource_location(resource_id: str) -> Optional[str]:
+  """Extracts and validates location from a resource id."""
+  if '/locations/' not in resource_id.lower():
+    return None
+
+  location_match = _LOCATION_PATTERN.search(resource_id)
+  if not location_match:
+    raise ValueError('Invalid location in data_store_id or search_engine_id.')
+  return _normalize_location(location_match.group(1), 'resource location')
+
+
+def _resolve_location(resource_id: str, location: Optional[str]) -> str:
+  """Resolves the Discovery Engine location to use for the endpoint."""
+  inferred_location = _extract_resource_location(resource_id)
+
+  if location is not None:
+    normalized_location = _normalize_location(location, 'location')
+    if inferred_location and normalized_location != inferred_location:
+      raise ValueError(
+          'location must match the location in data_store_id or '
+          'search_engine_id.'
+      )
+    return normalized_location
+
+  if inferred_location:
+    return inferred_location
+  return _GLOBAL_LOCATION
+
+
+def _build_client_options(
+    resource_id: str,
+    quota_project_id: Optional[str],
+    location: Optional[str],
+) -> Optional[client_options.ClientOptions]:
+  """Builds client options for Discovery Engine requests."""
+  client_options_kwargs = {}
+  resolved_location = _resolve_location(resource_id, location)
+
+  if resolved_location != _GLOBAL_LOCATION:
+    client_options_kwargs['api_endpoint'] = (
+        f'{resolved_location}-{_DEFAULT_ENDPOINT}'
+    )
+  if quota_project_id:
+    client_options_kwargs['quota_project_id'] = quota_project_id
+
+  if not client_options_kwargs:
+    return None
+  return client_options.ClientOptions(**client_options_kwargs)
+
 
 class SearchResultMode(enum.Enum):
   """Search result mode for discovery engine search."""
@@ -61,6 +130,7 @@ class DiscoveryEngineSearchTool(FunctionTool):
       max_results: Optional[int] = None,
       *,
       search_result_mode: Optional[SearchResultMode] = None,
+      location: Optional[str] = None,
   ):
     """Initializes the DiscoveryEngineSearchTool.
 
@@ -75,9 +145,12 @@ class DiscoveryEngineSearchTool(FunctionTool):
       filter: The filter to be applied to the search request. Default is None.
       max_results: The maximum number of results to return. Default is None.
       search_result_mode: The search result mode. When None (default),
-        automatically detects the correct mode by trying CHUNKS first
-        and falling back to DOCUMENTS if the datastore requires it.
-        Set explicitly to CHUNKS or DOCUMENTS to skip auto-detection.
+        automatically detects the correct mode by trying CHUNKS first and
+        falling back to DOCUMENTS if the datastore requires it. Set explicitly
+        to CHUNKS or DOCUMENTS to skip auto-detection.
+      location: Optional endpoint location override.
+        Examples: "global", "us", "eu". If not specified, location is inferred
+          from `data_store_id` or `search_engine_id` and defaults to "global".
     """
     super().__init__(self.discovery_engine_search)
     if (data_store_id is None and search_engine_id is None) or (
@@ -99,13 +172,15 @@ class DiscoveryEngineSearchTool(FunctionTool):
     self._filter = filter
     self._max_results = max_results
     self._search_result_mode = search_result_mode
+    self._location = location
 
     credentials, _ = google.auth.default()
     quota_project_id = getattr(credentials, 'quota_project_id', None)
-    options = (
-        client_options.ClientOptions(quota_project_id=quota_project_id)
-        if quota_project_id
-        else None
+    resource_id = data_store_id or search_engine_id or ''
+    options = _build_client_options(
+        resource_id=resource_id,
+        quota_project_id=quota_project_id,
+        location=location,
     )
     self._discovery_engine_client = discoveryengine.SearchServiceClient(
         credentials=credentials, client_options=options

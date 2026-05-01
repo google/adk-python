@@ -51,6 +51,10 @@ else:
   # Initialize the tools to use the application default credentials.
   # https://cloud.google.com/docs/authentication/provide-credentials-adc
   application_default_credentials, _ = google.auth.default()
+  if not application_default_credentials.valid:
+    application_default_credentials.refresh(
+        google.auth.transport.requests.Request()
+    )
   credentials_config = DataAgentCredentialsConfig(
       credentials=application_default_credentials
   )
@@ -70,7 +74,7 @@ da_toolset = DataAgentToolset(
 
 root_agent = Agent(
     name="data_agent",
-    model="gemini-2.0-flash",
+    model="gemini-2.5-flash",
     description="Agent to answer user questions using Data Agents.",
     instruction=(
         "## Persona\nYou are a helpful assistant that uses Data Agents"

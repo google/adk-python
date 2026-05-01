@@ -1,7 +1,7 @@
 # yaml-language-server: $schema=https://raw.githubusercontent.com/google/adk-python/refs/heads/main/src/google/adk/agents/config_schemas/AgentConfig.json
 agent_class: LlmAgent
 name: InitialWriterAgent
-model: gemini-2.0-flash
+model: gemini-2.5-flash
 description: Writes the initial document draft based on the topic, aiming for some initial substance.
 instruction: |
   You are a Creative Writing Assistant tasked with starting a story.

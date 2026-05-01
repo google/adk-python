@@ -46,7 +46,6 @@ _FUNCTION_RESPONSE_PREFIX = "```tool_outputs\n"
 _FUNCTION_RESPONSE_SUFFIX = "\n```\n"
 
 
-# TODO(yaojie): Add unit tests for this function.
 def convert_examples_to_text(
     examples: list[Example], model: Optional[str]
 ) -> str:

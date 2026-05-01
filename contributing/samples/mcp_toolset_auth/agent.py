@@ -63,7 +63,7 @@ mcp_toolset = McpToolset(
 
 # Define the agent that uses the OAuth-protected MCP toolset
 root_agent = LlmAgent(
-    model='gemini-2.0-flash',
+    model='gemini-2.5-flash',
     name='oauth_mcp_agent',
     instruction="""You are a helpful assistant that can access user information.
 
