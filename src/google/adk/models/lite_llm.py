@@ -718,6 +718,28 @@ def _extract_reasoning_tokens(usage: Any) -> int:
   return 0
 
 
+def _merge_reasoning_texts(reasoning_parts: Iterable[types.Part]) -> str:
+  """Merges reasoning text fragments into a single provider payload.
+
+  Streaming providers such as vLLM can emit reasoning as token-sized chunks.
+  ADK stores those chunks as consecutive thought parts, so inserting separators
+  here changes the model's original reasoning text.
+  """
+  reasoning_texts = []
+  for part in reasoning_parts:
+    if part.text:
+      reasoning_texts.append(part.text)
+    elif (
+        part.inline_data
+        and part.inline_data.data
+        and part.inline_data.mime_type
+        and part.inline_data.mime_type.startswith("text/")
+    ):
+      reasoning_texts.append(_decode_inline_text_data(part.inline_data.data))
+
+  return "".join(reasoning_texts)
+
+
 def _extract_thought_signature_from_tool_call(
     tool_call: ChatCompletionMessageToolCall,
 ) -> Optional[bytes]:
@@ -919,19 +941,7 @@ async def _content_to_message_param(
         msg["thinking_blocks"] = thinking_blocks  # type: ignore[typeddict-unknown-key]
         return msg
 
-    reasoning_texts = []
-    for part in reasoning_parts:
-      if part.text:
-        reasoning_texts.append(part.text)
-      elif (
-          part.inline_data
-          and part.inline_data.data
-          and part.inline_data.mime_type
-          and part.inline_data.mime_type.startswith("text/")
-      ):
-        reasoning_texts.append(_decode_inline_text_data(part.inline_data.data))
-
-    reasoning_content = _NEW_LINE.join(text for text in reasoning_texts if text)
+    reasoning_content = _merge_reasoning_texts(reasoning_parts)
     return ChatCompletionAssistantMessage(
         role=role,
         content=final_content,
