@@ -25,9 +25,7 @@ MODEL_VERSION = 'gemini-2.5-pro'
 @pytest.fixture
 def mock_gemini_session():
   """Mock Gemini session for testing."""
-  mock_session = mock.AsyncMock()
-  mock_session.session_id = 'test-session-id'
-  return mock_session
+  return mock.AsyncMock()
 
 
 @pytest.fixture
@@ -83,11 +81,11 @@ async def test_send_history(gemini_connection, mock_gemini_session):
 
   await gemini_connection.send_history(history)
 
-  mock_gemini_session.send_client_content.assert_called_once()
-  call_args = mock_gemini_session.send_client_content.call_args[1]
-  assert 'turns' in call_args
-  assert call_args['turns'] == history
-  assert call_args['turn_complete'] is False  # Last message is from model
+  mock_gemini_session.send.assert_called_once()
+  call_args = mock_gemini_session.send.call_args[1]
+  assert 'input' in call_args
+  assert call_args['input'].turns == history
+  assert call_args['input'].turn_complete is False  # Last message is from model
 
 
 @pytest.mark.asyncio
@@ -120,10 +118,10 @@ async def test_send_content_function_response(
 
   await gemini_connection.send_content(content)
 
-  mock_gemini_session.send_tool_response.assert_called_once()
-  call_args = mock_gemini_session.send_tool_response.call_args[1]
-  assert 'function_responses' in call_args
-  assert call_args['function_responses'] == [function_response]
+  mock_gemini_session.send.assert_called_once()
+  call_args = mock_gemini_session.send.call_args[1]
+  assert 'input' in call_args
+  assert call_args['input'].function_responses == [function_response]
 
 
 @pytest.mark.asyncio
@@ -147,7 +145,6 @@ async def test_receive_transcript_finished(
   msg.tool_call = None
   msg.usage_metadata = None
   msg.session_resumption_update = None
-  msg.go_away = None
   msg.server_content.model_turn = None
   msg.server_content.interrupted = False
   msg.server_content.turn_complete = False
@@ -213,7 +210,6 @@ async def test_receive_usage_metadata_and_server_content(
   mock_message.server_content = mock_server_content
   mock_message.tool_call = None
   mock_message.session_resumption_update = None
-  mock_message.go_away = None
 
   async def mock_receive_generator():
     yield mock_message
@@ -249,41 +245,6 @@ async def test_receive_usage_metadata_and_server_content(
   assert content_response.content == mock_content
 
 
-async def test_receive_populates_live_session_id(
-    gemini_connection, mock_gemini_session
-):
-  """Test that receive populates live_session_id in LlmResponse."""
-  mock_message = mock.AsyncMock()
-  mock_message.usage_metadata = None
-  mock_message.server_content = None
-  mock_message.tool_call = None
-  mock_message.session_resumption_update = None
-  mock_message.go_away = None
-
-  mock_server_content = mock.Mock()
-  mock_server_content.model_turn = types.Content(
-      role='model', parts=[types.Part.from_text(text='text')]
-  )
-  mock_server_content.interrupted = False
-  mock_server_content.input_transcription = None
-  mock_server_content.output_transcription = None
-  mock_server_content.turn_complete = False
-  mock_server_content.grounding_metadata = None
-
-  mock_message.server_content = mock_server_content
-
-  async def mock_receive_generator():
-    yield mock_message
-
-  mock_gemini_session.receive = mock.Mock(return_value=mock_receive_generator())
-
-  responses = [resp async for resp in gemini_connection.receive()]
-
-  assert responses
-  for resp in responses:
-    assert resp.live_session_id == 'test-session-id'
-
-
 @pytest.mark.asyncio
 async def test_receive_transcript_finished_on_interrupt(
     gemini_api_connection,
@@ -305,7 +266,6 @@ async def test_receive_transcript_finished_on_interrupt(
   message1.server_content.grounding_metadata = None
   message1.tool_call = None
   message1.session_resumption_update = None
-  message1.go_away = None
 
   message2 = mock.Mock()
   message2.usage_metadata = None
@@ -321,7 +281,6 @@ async def test_receive_transcript_finished_on_interrupt(
   message2.server_content.grounding_metadata = None
   message2.tool_call = None
   message2.session_resumption_update = None
-  message2.go_away = None
 
   message3 = mock.Mock()
   message3.usage_metadata = None
@@ -335,7 +294,6 @@ async def test_receive_transcript_finished_on_interrupt(
   message3.server_content.grounding_metadata = None
   message3.tool_call = None
   message3.session_resumption_update = None
-  message3.go_away = None
 
   async def mock_receive_generator():
     yield message1
@@ -385,7 +343,6 @@ async def test_receive_transcript_finished_on_generation_complete(
   message1.server_content.grounding_metadata = None
   message1.tool_call = None
   message1.session_resumption_update = None
-  message1.go_away = None
 
   message2 = mock.Mock()
   message2.usage_metadata = None
@@ -401,7 +358,6 @@ async def test_receive_transcript_finished_on_generation_complete(
   message2.server_content.grounding_metadata = None
   message2.tool_call = None
   message2.session_resumption_update = None
-  message2.go_away = None
 
   message3 = mock.Mock()
   message3.usage_metadata = None
@@ -415,7 +371,6 @@ async def test_receive_transcript_finished_on_generation_complete(
   message3.server_content.grounding_metadata = None
   message3.tool_call = None
   message3.session_resumption_update = None
-  message3.go_away = None
 
   async def mock_receive_generator():
     yield message1
@@ -464,7 +419,6 @@ async def test_receive_transcript_finished_on_turn_complete(
   message1.server_content.grounding_metadata = None
   message1.tool_call = None
   message1.session_resumption_update = None
-  message1.go_away = None
 
   message2 = mock.Mock()
   message2.usage_metadata = None
@@ -480,7 +434,6 @@ async def test_receive_transcript_finished_on_turn_complete(
   message2.server_content.grounding_metadata = None
   message2.tool_call = None
   message2.session_resumption_update = None
-  message2.go_away = None
 
   message3 = mock.Mock()
   message3.usage_metadata = None
@@ -494,7 +447,6 @@ async def test_receive_transcript_finished_on_turn_complete(
   message3.server_content.grounding_metadata = None
   message3.tool_call = None
   message3.session_resumption_update = None
-  message3.go_away = None
 
   async def mock_receive_generator():
     yield message1
@@ -542,7 +494,6 @@ async def test_receive_handles_input_transcription_fragments(
   message1.server_content.grounding_metadata = None
   message1.tool_call = None
   message1.session_resumption_update = None
-  message1.go_away = None
 
   message2 = mock.Mock()
   message2.usage_metadata = None
@@ -558,7 +509,6 @@ async def test_receive_handles_input_transcription_fragments(
   message2.server_content.grounding_metadata = None
   message2.tool_call = None
   message2.session_resumption_update = None
-  message2.go_away = None
 
   message3 = mock.Mock()
   message3.usage_metadata = None
@@ -574,7 +524,6 @@ async def test_receive_handles_input_transcription_fragments(
   message3.server_content.grounding_metadata = None
   message3.tool_call = None
   message3.session_resumption_update = None
-  message3.go_away = None
 
   async def mock_receive_generator():
     yield message1
@@ -617,7 +566,6 @@ async def test_receive_handles_output_transcription_fragments(
   message1.server_content.grounding_metadata = None
   message1.tool_call = None
   message1.session_resumption_update = None
-  message1.go_away = None
 
   message2 = mock.Mock()
   message2.usage_metadata = None
@@ -633,7 +581,6 @@ async def test_receive_handles_output_transcription_fragments(
   message2.server_content.grounding_metadata = None
   message2.tool_call = None
   message2.session_resumption_update = None
-  message2.go_away = None
 
   message3 = mock.Mock()
   message3.usage_metadata = None
@@ -649,7 +596,6 @@ async def test_receive_handles_output_transcription_fragments(
   message3.server_content.grounding_metadata = None
   message3.tool_call = None
   message3.session_resumption_update = None
-  message3.go_away = None
 
   async def mock_receive_generator():
     yield message1
@@ -705,9 +651,9 @@ async def test_send_history_filters_audio(mock_gemini_session, audio_part):
 
   await connection.send_history(history)
 
-  mock_gemini_session.send_client_content.assert_called_once()
-  call_args = mock_gemini_session.send_client_content.call_args[1]
-  sent_contents = call_args['turns']
+  mock_gemini_session.send.assert_called_once()
+  call_args = mock_gemini_session.send.call_args[1]
+  sent_contents = call_args['input'].turns
   # Only the model response should be sent (user audio filtered out)
   assert len(sent_contents) == 1
   assert sent_contents[0].role == 'model'
@@ -733,9 +679,9 @@ async def test_send_history_keeps_image_data(mock_gemini_session):
 
   await connection.send_history(history)
 
-  mock_gemini_session.send_client_content.assert_called_once()
-  call_args = mock_gemini_session.send_client_content.call_args[1]
-  sent_contents = call_args['turns']
+  mock_gemini_session.send.assert_called_once()
+  call_args = mock_gemini_session.send.call_args[1]
+  sent_contents = call_args['input'].turns
   # Both contents should be sent (image is not filtered)
   assert len(sent_contents) == 2
   assert sent_contents[0].parts[0].inline_data == image_blob
@@ -765,9 +711,9 @@ async def test_send_history_mixed_content_filters_only_audio(
 
   await connection.send_history(history)
 
-  mock_gemini_session.send_client_content.assert_called_once()
-  call_args = mock_gemini_session.send_client_content.call_args[1]
-  sent_contents = call_args['turns']
+  mock_gemini_session.send.assert_called_once()
+  call_args = mock_gemini_session.send.call_args[1]
+  sent_contents = call_args['input'].turns
   # Content should be sent but only with the text part
   assert len(sent_contents) == 1
   assert len(sent_contents[0].parts) == 1
@@ -873,7 +819,6 @@ async def test_receive_grounding_metadata_standalone(
   mock_message.server_content = mock_server_content
   mock_message.tool_call = None
   mock_message.session_resumption_update = None
-  mock_message.go_away = None
 
   async def mock_receive_generator():
     yield mock_message
@@ -917,7 +862,6 @@ async def test_receive_grounding_metadata_with_content(
   mock_message.server_content = mock_server_content
   mock_message.tool_call = None
   mock_message.session_resumption_update = None
-  mock_message.go_away = None
 
   async def mock_receive_generator():
     yield mock_message
@@ -950,7 +894,6 @@ async def test_receive_tool_call_and_grounding_metadata_with_native_audio(
   mock_tool_call_msg.usage_metadata = None
   mock_tool_call_msg.server_content = None
   mock_tool_call_msg.session_resumption_update = None
-  mock_tool_call_msg.go_away = None
 
   function_call = types.FunctionCall(
       name='enterprise_web_search',
@@ -989,244 +932,82 @@ async def test_receive_tool_call_and_grounding_metadata_with_native_audio(
   mock_metadata_msg.server_content = mock_server_content
   mock_metadata_msg.tool_call = None
   mock_metadata_msg.session_resumption_update = None
-  mock_metadata_msg.go_away = None
-
-  # 3. Message with turn_complete
-  mock_turn_complete_content = mock.create_autospec(
-      types.LiveServerContent, instance=True
-  )
-  mock_turn_complete_content.model_turn = None
-  mock_turn_complete_content.grounding_metadata = None
-  mock_turn_complete_content.turn_complete = True
-  mock_turn_complete_content.interrupted = False
-  mock_turn_complete_content.input_transcription = None
-  mock_turn_complete_content.output_transcription = None
-
-  mock_turn_complete_msg = mock.create_autospec(
-      types.LiveServerMessage, instance=True
-  )
-  mock_turn_complete_msg.usage_metadata = None
-  mock_turn_complete_msg.server_content = mock_turn_complete_content
-  mock_turn_complete_msg.tool_call = None
-  mock_turn_complete_msg.session_resumption_update = None
-  mock_turn_complete_msg.go_away = None
 
   async def mock_receive_generator():
     yield mock_tool_call_msg
     yield mock_metadata_msg
-    yield mock_turn_complete_msg
 
   receive_mock = mock.Mock(return_value=mock_receive_generator())
   mock_gemini_session.receive = receive_mock
 
   responses = [resp async for resp in connection.receive()]
 
-  assert len(responses) == 3
-
-  # First response: the audio content and grounding metadata
-  assert responses[0].grounding_metadata == grounding_metadata
-  assert responses[0].content == mock_content
-  assert responses[0].content is not None
-  assert responses[0].content.parts is not None
-  assert responses[0].content.parts[0].inline_data == audio_blob
-
-  # Second response: the tool call, buffered until turn_complete
-  assert responses[1].content is not None
-  assert responses[1].content.parts is not None
-  assert responses[1].content.parts[0].function_call is not None
-  assert (
-      responses[1].content.parts[0].function_call.name
-      == 'enterprise_web_search'
-  )
-  assert responses[1].content.parts[0].function_call.args == {
-      'query': 'Google stock price today'
-  }
-  assert responses[1].grounding_metadata is None
-
-  # Third response: the turn_complete
-  assert responses[2].turn_complete is True
-
-
-@pytest.mark.asyncio
-async def test_receive_multiple_tool_calls_buffered_until_turn_complete(
-    gemini_connection, mock_gemini_session
-):
-  """Test receive buffers multiple tool call messages until turn complete."""
-  # First tool call message
-  mock_tool_call_msg1 = mock.create_autospec(
-      types.LiveServerMessage, instance=True
-  )
-  mock_tool_call_msg1.usage_metadata = None
-  mock_tool_call_msg1.server_content = None
-  mock_tool_call_msg1.session_resumption_update = None
-  mock_tool_call_msg1.go_away = None
-
-  function_call1 = types.FunctionCall(
-      name='tool_1',
-      args={'arg': 'value1'},
-  )
-  mock_tool_call1 = mock.create_autospec(
-      types.LiveServerToolCall, instance=True
-  )
-  mock_tool_call1.function_calls = [function_call1]
-  mock_tool_call_msg1.tool_call = mock_tool_call1
-
-  # Second tool call message
-  mock_tool_call_msg2 = mock.create_autospec(
-      types.LiveServerMessage, instance=True
-  )
-  mock_tool_call_msg2.usage_metadata = None
-  mock_tool_call_msg2.server_content = None
-  mock_tool_call_msg2.session_resumption_update = None
-  mock_tool_call_msg2.go_away = None
-
-  function_call2 = types.FunctionCall(
-      name='tool_2',
-      args={'arg': 'value2'},
-  )
-  mock_tool_call2 = mock.create_autospec(
-      types.LiveServerToolCall, instance=True
-  )
-  mock_tool_call2.function_calls = [function_call2]
-  mock_tool_call_msg2.tool_call = mock_tool_call2
-
-  # Turn complete message
-  mock_turn_complete_content = mock.create_autospec(
-      types.LiveServerContent, instance=True
-  )
-  mock_turn_complete_content.model_turn = None
-  mock_turn_complete_content.grounding_metadata = None
-  mock_turn_complete_content.turn_complete = True
-  mock_turn_complete_content.interrupted = False
-  mock_turn_complete_content.input_transcription = None
-  mock_turn_complete_content.output_transcription = None
-
-  mock_turn_complete_msg = mock.create_autospec(
-      types.LiveServerMessage, instance=True
-  )
-  mock_turn_complete_msg.usage_metadata = None
-  mock_turn_complete_msg.server_content = mock_turn_complete_content
-  mock_turn_complete_msg.tool_call = None
-  mock_turn_complete_msg.session_resumption_update = None
-  mock_turn_complete_msg.go_away = None
-
-  async def mock_receive_generator():
-    yield mock_tool_call_msg1
-    yield mock_tool_call_msg2
-    yield mock_turn_complete_msg
-
-  receive_mock = mock.Mock(return_value=mock_receive_generator())
-  mock_gemini_session.receive = receive_mock
-
-  responses = [resp async for resp in gemini_connection.receive()]
-
-  # Expected: One LlmResponse with both tool calls, then one with turn_complete
   assert len(responses) == 2
 
-  # First response: single LlmResponse carrying both function calls
+  # First response: the tool call
   assert responses[0].content is not None
-  parts = responses[0].content.parts
-  assert len(parts) == 2
-  assert parts[0].function_call.name == 'tool_1'
-  assert parts[0].function_call.args == {'arg': 'value1'}
-  assert parts[1].function_call.name == 'tool_2'
-  assert parts[1].function_call.args == {'arg': 'value2'}
+  assert responses[0].content.parts is not None
+  assert responses[0].content.parts[0].function_call is not None
+  assert (
+      responses[0].content.parts[0].function_call.name
+      == 'enterprise_web_search'
+  )
+  assert responses[0].content.parts[0].function_call.args == {
+      'query': 'Google stock price today'
+  }
+  assert responses[0].grounding_metadata is None
 
-  # Second response: turn_complete True
-  assert responses[1].turn_complete is True
+  # Second response: the audio content and grounding metadata
+  assert responses[1].grounding_metadata == grounding_metadata
+  assert responses[1].content == mock_content
+  assert responses[1].content is not None
+  assert responses[1].content.parts is not None
+  assert responses[1].content.parts[0].inline_data == audio_blob
 
 
-@pytest.mark.asyncio
-async def test_receive_tool_calls_yielded_immediately_for_gemini_3_1(
-    mock_gemini_session,
+def _create_mock_receive_message(
+    model_turn=None,
+    grounding_metadata=None,
+    interrupted=False,
+    turn_complete=False,
+    tool_call=None,
 ):
-  """Test that tool calls are yielded immediately for Gemini 3.1."""
-  connection = GeminiLlmConnection(
-      mock_gemini_session,
-      api_backend=GoogleLLMVariant.VERTEX_AI,
-      model_version='gemini-3.1-flash-live-preview',
-  )
-
-  mock_tool_call_msg = mock.create_autospec(
-      types.LiveServerMessage, instance=True
-  )
-  mock_tool_call_msg.usage_metadata = None
-  mock_tool_call_msg.server_content = None
-  mock_tool_call_msg.session_resumption_update = None
-  mock_tool_call_msg.go_away = None
-
-  function_call = types.FunctionCall(
-      name='test_tool',
-      args={'arg': 'value'},
-  )
-  mock_tool_call = mock.create_autospec(types.LiveServerToolCall, instance=True)
-  mock_tool_call.function_calls = [function_call]
-  mock_tool_call_msg.tool_call = mock_tool_call
-
-  async def mock_receive_generator():
-    yield mock_tool_call_msg
-
-  receive_mock = mock.Mock(return_value=mock_receive_generator())
-  mock_gemini_session.receive = receive_mock
-
-  responses = []
-  async for resp in connection.receive():
-    responses.append(resp)
-    break
-
-  assert len(responses) == 1
-  assert responses[0].content is not None
-  assert responses[0].content.parts[0].function_call.name == 'test_tool'
-
-
-@pytest.mark.asyncio
-async def test_receive_go_away(gemini_connection, mock_gemini_session):
-  """Test receive yields go_away message."""
-  mock_go_away = types.LiveServerGoAway(timeLeft='10s')
-  mock_msg = mock.MagicMock()
-  mock_msg.usage_metadata = None
-  mock_msg.server_content = None
-  mock_msg.tool_call = None
-  mock_msg.session_resumption_update = None
-  mock_msg.go_away = mock_go_away
-
-  async def mock_receive_generator():
-    yield mock_msg
-
-  receive_mock = mock.Mock(return_value=mock_receive_generator())
-  mock_gemini_session.receive = receive_mock
-
-  responses = [resp async for resp in gemini_connection.receive()]
-
-  assert len(responses) == 1
-  assert responses[0].go_away == mock_go_away
-
-
-@pytest.mark.asyncio
-async def test_receive_video_content(gemini_connection, mock_gemini_session):
-  """Test receive with video content."""
-  mock_content = types.Content(
-      role='model',
-      parts=[
-          types.Part(
-              inline_data=types.Blob(data=b'video_data', mime_type='video/mp4')
-          )
-      ],
-  )
+  """Helper to create a mock message from the Gemini API."""
   mock_server_content = mock.Mock()
-  mock_server_content.model_turn = mock_content
-  mock_server_content.interrupted = False
+  mock_server_content.model_turn = model_turn
+  mock_server_content.interrupted = interrupted
   mock_server_content.input_transcription = None
   mock_server_content.output_transcription = None
-  mock_server_content.turn_complete = False
-  mock_server_content.grounding_metadata = None
+  mock_server_content.turn_complete = turn_complete
+  mock_server_content.generation_complete = False
+  mock_server_content.grounding_metadata = grounding_metadata
 
-  mock_message = mock.AsyncMock()
+  mock_message = mock.Mock()
   mock_message.usage_metadata = None
   mock_message.server_content = mock_server_content
-  mock_message.tool_call = None
+  mock_message.tool_call = tool_call
   mock_message.session_resumption_update = None
-  mock_message.go_away = None
+  return mock_message
+
+
+@pytest.mark.asyncio
+async def test_receive_extracts_grounding_metadata(
+    gemini_connection, mock_gemini_session
+):
+  """Test that grounding_metadata is extracted and included in LlmResponse."""
+  mock_content = types.Content(
+      role='model', parts=[types.Part.from_text(text='response text')]
+  )
+  mock_grounding_metadata = types.GroundingMetadata(
+      retrieval_queries=['test query'],
+      web_search_queries=['web search query'],
+  )
+
+  mock_message = _create_mock_receive_message(
+      model_turn=mock_content,
+      grounding_metadata=mock_grounding_metadata,
+      turn_complete=True,
+  )
 
   async def mock_receive_generator():
     yield mock_message
@@ -1236,7 +1017,255 @@ async def test_receive_video_content(gemini_connection, mock_gemini_session):
 
   responses = [resp async for resp in gemini_connection.receive()]
 
-  assert responses
+  assert len(responses) >= 2
+
   content_response = next((r for r in responses if r.content), None)
   assert content_response is not None
-  assert content_response.content == mock_content
+  assert content_response.grounding_metadata == mock_grounding_metadata
+  assert content_response.grounding_metadata.retrieval_queries == ['test query']
+  assert content_response.grounding_metadata.web_search_queries == [
+      'web search query'
+  ]
+
+
+@pytest.mark.asyncio
+async def test_receive_grounding_metadata_at_turn_complete(
+    gemini_connection, mock_gemini_session
+):
+  """Test grounding_metadata on turn_complete when no text was built."""
+  mock_grounding_metadata = types.GroundingMetadata(
+      retrieval_queries=['test query'],
+  )
+
+  message1 = _create_mock_receive_message(
+      grounding_metadata=mock_grounding_metadata
+  )
+
+  message2 = _create_mock_receive_message(turn_complete=True)
+
+  async def mock_receive_generator():
+    yield message1
+    yield message2
+
+  receive_mock = mock.Mock(return_value=mock_receive_generator())
+  mock_gemini_session.receive = receive_mock
+
+  responses = [resp async for resp in gemini_connection.receive()]
+
+  turn_complete_response = next((r for r in responses if r.turn_complete), None)
+  assert turn_complete_response is not None
+  assert turn_complete_response.grounding_metadata == mock_grounding_metadata
+
+
+@pytest.mark.asyncio
+async def test_receive_grounding_metadata_with_text_and_turn_complete(
+    gemini_connection, mock_gemini_session
+):
+  """Test grounding_metadata with text then turn_complete."""
+  mock_content = types.Content(
+      role='model', parts=[types.Part.from_text(text='response text')]
+  )
+  mock_grounding_metadata = types.GroundingMetadata(
+      retrieval_queries=['test query'],
+  )
+
+  mock_message = _create_mock_receive_message(
+      model_turn=mock_content,
+      grounding_metadata=mock_grounding_metadata,
+      turn_complete=True,
+  )
+
+  async def mock_receive_generator():
+    yield mock_message
+
+  receive_mock = mock.Mock(return_value=mock_receive_generator())
+  mock_gemini_session.receive = receive_mock
+
+  responses = [resp async for resp in gemini_connection.receive()]
+
+  content_response = next((r for r in responses if r.content), None)
+  assert content_response is not None
+  assert content_response.grounding_metadata == mock_grounding_metadata
+
+  turn_complete_response = next((r for r in responses if r.turn_complete), None)
+  assert turn_complete_response is not None
+  assert turn_complete_response.grounding_metadata == mock_grounding_metadata
+
+
+@pytest.mark.asyncio
+async def test_receive_grounding_metadata_with_tool_call(
+    gemini_connection, mock_gemini_session
+):
+  """Test grounding_metadata propagated with tool_call responses."""
+  mock_grounding_metadata = types.GroundingMetadata(
+      retrieval_queries=['test query'],
+  )
+
+  message1 = _create_mock_receive_message(
+      grounding_metadata=mock_grounding_metadata
+  )
+
+  mock_function_call = types.FunctionCall(
+      name='test_function', args={'param': 'value'}
+  )
+  mock_tool_call = mock.Mock()
+  mock_tool_call.function_calls = [mock_function_call]
+
+  message2 = _create_mock_receive_message(tool_call=mock_tool_call)
+  message2.server_content = None
+
+  async def mock_receive_generator():
+    yield message1
+    yield message2
+
+  receive_mock = mock.Mock(return_value=mock_receive_generator())
+  mock_gemini_session.receive = receive_mock
+
+  responses = [resp async for resp in gemini_connection.receive()]
+
+  tool_call_response = next(
+      (r for r in responses if r.content and r.content.parts[0].function_call),
+      None,
+  )
+  assert tool_call_response is not None
+  assert tool_call_response.grounding_metadata == mock_grounding_metadata
+
+
+@pytest.mark.asyncio
+async def test_receive_grounding_metadata_reset_after_tool_call(
+    gemini_connection, mock_gemini_session
+):
+  """Test grounding_metadata reset after tool_call."""
+  mock_grounding_metadata = types.GroundingMetadata(
+      retrieval_queries=['test query'],
+  )
+
+  message1 = _create_mock_receive_message(
+      grounding_metadata=mock_grounding_metadata
+  )
+
+  mock_function_call = types.FunctionCall(
+      name='test_function', args={'param': 'value'}
+  )
+  mock_tool_call = mock.Mock()
+  mock_tool_call.function_calls = [mock_function_call]
+  message2 = _create_mock_receive_message(tool_call=mock_tool_call)
+  message2.server_content = None
+
+  message3 = _create_mock_receive_message(turn_complete=True)
+
+  async def mock_receive_generator():
+    yield message1
+    yield message2
+    yield message3
+
+  receive_mock = mock.Mock(return_value=mock_receive_generator())
+  mock_gemini_session.receive = receive_mock
+
+  responses = [resp async for resp in gemini_connection.receive()]
+
+  tool_call_response = next(
+      (r for r in responses if r.content and r.content.parts[0].function_call),
+      None,
+  )
+  assert tool_call_response is not None
+  assert tool_call_response.grounding_metadata == mock_grounding_metadata
+
+  turn_complete_response = next((r for r in responses if r.turn_complete), None)
+  assert turn_complete_response is not None
+  assert turn_complete_response.grounding_metadata is None
+
+
+@pytest.mark.asyncio
+async def test_receive_grounding_metadata_accumulates_across_messages(
+    gemini_connection, mock_gemini_session
+):
+  """Test grounding_metadata accumulated across messages."""
+  grounding1 = types.GroundingMetadata(
+      retrieval_queries=['query1'],
+  )
+  grounding2 = types.GroundingMetadata(
+      retrieval_queries=['query2'],
+      grounding_chunks=[
+          types.GroundingChunk(
+              web=types.GroundingChunkWeb(uri='https://example.com')
+          )
+      ],
+  )
+
+  mock_content1 = types.Content(
+      role='model', parts=[types.Part.from_text(text='part1')]
+  )
+  message1 = _create_mock_receive_message(
+      model_turn=mock_content1, grounding_metadata=grounding1
+  )
+
+  mock_content2 = types.Content(
+      role='model', parts=[types.Part.from_text(text=' part2')]
+  )
+  message2 = _create_mock_receive_message(
+      model_turn=mock_content2, grounding_metadata=grounding2
+  )
+
+  message3 = _create_mock_receive_message(turn_complete=True)
+
+  async def mock_receive_generator():
+    yield message1
+    yield message2
+    yield message3
+
+  receive_mock = mock.Mock(return_value=mock_receive_generator())
+  mock_gemini_session.receive = receive_mock
+
+  responses = [resp async for resp in gemini_connection.receive()]
+
+  turn_complete_response = next((r for r in responses if r.turn_complete), None)
+  assert turn_complete_response is not None
+  merged = turn_complete_response.grounding_metadata
+  assert merged is not None
+  assert merged.retrieval_queries == ['query1', 'query2']
+  assert len(merged.grounding_chunks) == 1
+  assert merged.grounding_chunks[0].web.uri == 'https://example.com'
+
+
+@pytest.mark.asyncio
+async def test_receive_interrupted_with_pending_text_preserves_flag(
+    gemini_connection, mock_gemini_session
+):
+  """Test interrupted flag when flushing pending text."""
+  mock_grounding_metadata = types.GroundingMetadata(
+      retrieval_queries=['test query'],
+  )
+
+  mock_content1 = types.Content(
+      role='model', parts=[types.Part.from_text(text='partial')]
+  )
+  message1 = _create_mock_receive_message(
+      model_turn=mock_content1, grounding_metadata=mock_grounding_metadata
+  )
+
+  mock_content2 = types.Content(
+      role='model', parts=[types.Part.from_text(text=' text')]
+  )
+  message2 = _create_mock_receive_message(model_turn=mock_content2)
+
+  message3 = _create_mock_receive_message(interrupted=True)
+
+  async def mock_receive_generator():
+    yield message1
+    yield message2
+    yield message3
+
+  receive_mock = mock.Mock(return_value=mock_receive_generator())
+  mock_gemini_session.receive = receive_mock
+
+  responses = [resp async for resp in gemini_connection.receive()]
+
+  full_text_responses = [
+      r for r in responses if r.content and not r.partial and r.interrupted
+  ]
+  assert len(full_text_responses) > 0, 'Should have interrupted full text response'
+
+  assert full_text_responses[0].content.parts[0].text == 'partial text'
+  assert full_text_responses[0].grounding_metadata == mock_grounding_metadata
+  assert full_text_responses[0].interrupted is True
