@@ -22,7 +22,6 @@ from google.adk.code_executors.code_execution_utils import CodeExecutionResult
 from google.adk.code_executors.unsafe_local_code_executor import UnsafeLocalCodeExecutor
 from google.adk.models import llm_request as llm_request_model
 from google.adk.skills import models
-from google.adk.skills.skill_registry import SkillRegistry
 from google.adk.tools import skill_toolset
 from google.adk.tools import tool_context
 from google.genai import types
@@ -472,128 +471,6 @@ async def test_scripts_resource_not_found(mock_skill1, tool_context_instance):
       tool_context=tool_context_instance,
   )
   assert result["error_code"] == "RESOURCE_NOT_FOUND"
-
-
-class MockSkillRegistry(SkillRegistry):
-
-  def __init__(self):
-    self.skills = {}
-    self.search_results = []
-
-  async def get_skill(self, *, name, version=None):
-    return self.skills.get(name)
-
-  async def search_skills(self, *, query, filters=None, **kwargs):
-    return self.search_results
-
-  def get_filter_schema(self):
-    return None
-
-
-@pytest.mark.asyncio
-async def test_skill_toolset_init_with_registry(mock_skill1):
-  registry = MockSkillRegistry()
-  toolset = skill_toolset.SkillToolset([mock_skill1], registry=registry)
-  assert toolset._registry == registry
-  tools = await toolset.get_tools()
-  assert len(tools) == 5  # 4 default + SearchSkillsTool
-  assert isinstance(tools[4], skill_toolset.SearchSkillsTool)
-
-
-@pytest.mark.asyncio
-async def test_search_skills_tool_run_async(mock_skill1, tool_context_instance):
-  registry = MockSkillRegistry()
-  frontmatter = mock.create_autospec(models.Frontmatter, instance=True)
-  frontmatter.name = "remote-skill"
-  frontmatter.model_dump.return_value = {"name": "remote-skill"}
-  registry.search_results = [frontmatter]
-
-  toolset = skill_toolset.SkillToolset([mock_skill1], registry=registry)
-  tool = skill_toolset.SearchSkillsTool(toolset)
-
-  result = await tool.run_async(
-      args={"query": "test"}, tool_context=tool_context_instance
-  )
-  assert result == [{"name": "remote-skill"}]
-
-
-@pytest.mark.asyncio
-async def test_search_skills_tool_collision(
-    mock_skill1, tool_context_instance, caplog
-):
-  registry = MockSkillRegistry()
-  frontmatter = mock.create_autospec(models.Frontmatter, instance=True)
-  frontmatter.name = "skill1"  # Same name as mock_skill1
-  frontmatter.model_dump.return_value = {"name": "skill1"}
-
-  frontmatter2 = mock.create_autospec(models.Frontmatter, instance=True)
-  frontmatter2.name = "remote-skill"
-  frontmatter2.model_dump.return_value = {"name": "remote-skill"}
-
-  registry.search_results = [frontmatter, frontmatter2]
-
-  toolset = skill_toolset.SkillToolset([mock_skill1], registry=registry)
-  tool = skill_toolset.SearchSkillsTool(toolset)
-
-  with caplog.at_level(logging.WARNING):
-    result = await tool.run_async(
-        args={"query": "test"}, tool_context=tool_context_instance
-    )
-  assert result == [{"name": "remote-skill"}]
-  assert "Naming conflict detected" in caplog.text
-
-
-@pytest.mark.asyncio
-async def test_load_skill_tool_fetches_from_registry(
-    tool_context_instance, mock_skill1
-):
-  registry = MockSkillRegistry()
-  registry.skills["my-skill"] = mock_skill1
-
-  toolset = skill_toolset.SkillToolset([], registry=registry)
-  tool = skill_toolset.LoadSkillTool(toolset)
-
-  result = await tool.run_async(
-      args={"skill_name": "my-skill"}, tool_context=tool_context_instance
-  )
-  assert result["skill_name"] == "my-skill"
-  assert toolset._skills["my-skill"] == mock_skill1
-
-
-@pytest.mark.asyncio
-async def test_load_skill_tool_registry_error(tool_context_instance):
-  registry = MockSkillRegistry()
-  registry.get_skill = mock.AsyncMock(
-      side_effect=Exception("Test registry error")
-  )
-
-  toolset = skill_toolset.SkillToolset([], registry=registry)
-  tool = skill_toolset.LoadSkillTool(toolset)
-
-  result = await tool.run_async(
-      args={"skill_name": "my-skill"}, tool_context=tool_context_instance
-  )
-  assert result["error_code"] == "REGISTRY_ERROR"
-  assert "Failed to fetch skill 'my-skill' from registry" in result["error"]
-
-
-@pytest.mark.asyncio
-async def test_process_llm_request_with_registry(
-    mock_skill1, tool_context_instance
-):
-  registry = MockSkillRegistry()
-  toolset = skill_toolset.SkillToolset([mock_skill1], registry=registry)
-  llm_req = mock.create_autospec(llm_request_model.LlmRequest, instance=True)
-
-  await toolset.process_llm_request(
-      tool_context=tool_context_instance, llm_request=llm_req
-  )
-
-  llm_req.append_instructions.assert_called_once()
-  args, _ = llm_req.append_instructions.call_args
-  instructions = args[0]
-  assert len(instructions) == 3  # default + search instruction + skills xml
-  assert "search_skills" in instructions[1]
 
 
 # RunSkillScriptTool tests

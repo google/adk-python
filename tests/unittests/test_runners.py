@@ -1212,7 +1212,7 @@ from google.adk.agents.llm_agent import LlmAgent
 class MyAgent(LlmAgent):
     pass
 
-root_agent = MyAgent(name="{agent_dir_name}", model="gemini-2.0-flash")
+root_agent = MyAgent(name="{agent_dir_name}", model="gemini-2.5-flash")
 """
     (agent_dir / "agent.py").write_text(agent_source, encoding="utf-8")
 
@@ -1274,7 +1274,7 @@ class TestRunnerInferAgentOrigin:
     """
     agent = LlmAgent(
         name="my_custom_agent",
-        model="gemini-2.0-flash",
+        model="gemini-2.5-flash",
     )
 
     runner = Runner(
