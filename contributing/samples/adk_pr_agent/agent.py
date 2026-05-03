@@ -143,7 +143,7 @@ Some bad descriptions are:
 """
 
 root_agent = Agent(
-    model="gemini-2.0-flash",
+    model="gemini-2.5-flash",
     name="github_pr_agent",
     description="Generate pull request descriptions for ADK.",
     instruction=system_prompt,

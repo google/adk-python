@@ -42,7 +42,7 @@ files_retrieval = FilesRetrieval(
 )
 
 root_agent = Agent(
-    model="gemini-2.0-flash",
+    model="gemini-2.5-flash",
     name="files_retrieval_agent",
     instruction=(
         "You are a helpful assistant that answers questions about the Agent"

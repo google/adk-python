@@ -76,7 +76,7 @@ roll_agent_with_litellm_claude = LlmAgent(
 )
 
 roll_agent_with_gemini = LlmAgent(
-    model='gemini-2.0-flash',
+    model='gemini-2.5-flash',
     description='Handles rolling dice of different sizes.',
     name='roll_agent_with_gemini',
     instruction="""

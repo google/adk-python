@@ -349,7 +349,7 @@ class TestComputerUseToolset:
   async def test_process_llm_request(self, toolset, mock_computer):
     """Test that process_llm_request adds tools and computer use configuration."""
     llm_request = LlmRequest(
-        model="gemini-1.5-flash",
+        model="gemini-2.5-flash",
         config=types.GenerateContentConfig(),
     )
 
@@ -391,7 +391,7 @@ class TestComputerUseToolset:
     )
 
     llm_request = LlmRequest(
-        model="gemini-1.5-flash",
+        model="gemini-2.5-flash",
         config=types.GenerateContentConfig(),
     )
 
@@ -420,7 +420,7 @@ class TestComputerUseToolset:
   ):
     """Test that process_llm_request doesn't add duplicate computer use configuration."""
     llm_request = LlmRequest(
-        model="gemini-1.5-flash",
+        model="gemini-2.5-flash",
         config=types.GenerateContentConfig(
             tools=[
                 types.Tool(
@@ -457,7 +457,7 @@ class TestComputerUseToolset:
     toolset = ComputerUseToolset(computer=mock_computer)
 
     llm_request = LlmRequest(
-        model="gemini-1.5-flash",
+        model="gemini-2.5-flash",
         config=types.GenerateContentConfig(),
     )
 
@@ -479,7 +479,7 @@ class TestComputerUseToolset:
     )
 
     llm_request = LlmRequest(
-        model="gemini-1.5-flash",
+        model="gemini-2.5-flash",
         config=types.GenerateContentConfig(),
     )
     llm_request.tools_dict["wait"] = original_tool
@@ -518,7 +518,7 @@ class TestComputerUseToolset:
     )
 
     llm_request = LlmRequest(
-        model="gemini-1.5-flash",
+        model="gemini-2.5-flash",
         config=types.GenerateContentConfig(),
     )
     llm_request.tools_dict["wait"] = original_tool
@@ -549,7 +549,7 @@ class TestComputerUseToolset:
   async def test_adapt_computer_use_tool_invalid_method(self):
     """Test adapt_computer_use_tool with invalid method name."""
     llm_request = LlmRequest(
-        model="gemini-1.5-flash",
+        model="gemini-2.5-flash",
         config=types.GenerateContentConfig(),
     )
 
@@ -571,7 +571,7 @@ class TestComputerUseToolset:
   async def test_adapt_computer_use_tool_excluded_method(self):
     """Test adapt_computer_use_tool with excluded method name."""
     llm_request = LlmRequest(
-        model="gemini-1.5-flash",
+        model="gemini-2.5-flash",
         config=types.GenerateContentConfig(),
     )
 
@@ -593,7 +593,7 @@ class TestComputerUseToolset:
   async def test_adapt_computer_use_tool_method_not_in_tools_dict(self):
     """Test adapt_computer_use_tool when method is not in tools_dict."""
     llm_request = LlmRequest(
-        model="gemini-1.5-flash",
+        model="gemini-2.5-flash",
         config=types.GenerateContentConfig(),
     )
 

@@ -74,7 +74,7 @@ class TestGeminiContextCacheManager:
     )
 
     return LlmRequest(
-        model="gemini-2.0-flash",
+        model="gemini-2.5-flash",
         contents=contents,
         config=types.GenerateContentConfig(
             system_instruction="Test instruction",
@@ -342,7 +342,7 @@ class TestGeminiContextCacheManager:
     # Test that tool_config and tools are included in fingerprint
     # Create request without tools/tool_config
     llm_request_no_tools = LlmRequest(
-        model="gemini-2.0-flash",
+        model="gemini-2.5-flash",
         contents=[types.Content(role="user", parts=[types.Part(text="Test")])],
         config=types.GenerateContentConfig(
             system_instruction="Test instruction"
@@ -362,7 +362,7 @@ class TestGeminiContextCacheManager:
     llm_request1 = self.create_llm_request()
 
     llm_request2 = LlmRequest(
-        model="gemini-2.0-flash",
+        model="gemini-2.5-flash",
         contents=[
             types.Content(
                 role="user", parts=[types.Part(text="Different message")]
@@ -395,7 +395,7 @@ class TestGeminiContextCacheManager:
     )
 
     llm_request_none = LlmRequest(
-        model="gemini-2.0-flash",
+        model="gemini-2.5-flash",
         contents=[types.Content(role="user", parts=[types.Part(text="Test")])],
         config=types.GenerateContentConfig(
             system_instruction="Test instruction",
@@ -506,7 +506,7 @@ class TestGeminiContextCacheManager:
     """Test various edge cases."""
     # Test with None cache_config
     llm_request_no_config = LlmRequest(
-        model="gemini-2.0-flash",
+        model="gemini-2.5-flash",
         contents=[types.Content(role="user", parts=[types.Part(text="Test")])],
         config=types.GenerateContentConfig(system_instruction="Test"),
         cache_config=None,
@@ -521,7 +521,7 @@ class TestGeminiContextCacheManager:
 
     # Test with empty contents
     llm_request_empty = LlmRequest(
-        model="gemini-2.0-flash",
+        model="gemini-2.5-flash",
         contents=[],
         config=types.GenerateContentConfig(system_instruction="Test"),
         cache_config=self.cache_config,
@@ -663,7 +663,7 @@ class TestGeminiContextCacheManager:
 
     # First LLM call: contents = [user_msg]
     request_short = LlmRequest(
-        model="gemini-2.0-flash",
+        model="gemini-2.5-flash",
         contents=[user_msg],
         config=types.GenerateContentConfig(
             system_instruction="You are a weather bot",
@@ -674,7 +674,7 @@ class TestGeminiContextCacheManager:
 
     # Second LLM call: contents grew to [user_msg, model, tool_resp]
     request_long = LlmRequest(
-        model="gemini-2.0-flash",
+        model="gemini-2.5-flash",
         contents=[user_msg, model_tool_call, tool_response],
         config=types.GenerateContentConfig(
             system_instruction="You are a weather bot",

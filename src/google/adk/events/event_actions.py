@@ -64,7 +64,7 @@ class EventActions(BaseModel):
   Only used for function_response event.
   """
 
-  state_delta: dict[str, object] = Field(default_factory=dict)
+  state_delta: dict[str, Any] = Field(default_factory=dict)
   """Indicates that the event is updating the state with the given delta."""
 
   artifact_delta: dict[str, int] = Field(default_factory=dict)
