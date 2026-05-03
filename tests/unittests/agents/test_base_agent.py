@@ -685,6 +685,92 @@ async def test_run_async_with_async_after_agent_callback_append_reply(
 
 
 @pytest.mark.asyncio
+async def test_run_async_after_agent_callback_state_visibility(
+    request: pytest.FixtureRequest,
+):
+  class _StateTestingAgent(_TestingAgent):
+    @override
+    async def _run_async_impl(self, ctx: InvocationContext) -> AsyncGenerator[Event, None]:
+      yield Event(
+          author=self.name,
+          invocation_id=ctx.invocation_id,
+          content=types.Content(parts=[types.Part(text='State change event')]),
+          actions=EventActions(state_delta={"test_key": "test_val"}),
+      )
+
+  agent = _StateTestingAgent(
+      name=f'{request.function.__name__}_test_agent',
+  )
+
+  def verify_state_callback(ctx: CallbackContext) -> None:
+    assert ctx.state['test_key'] == 'test_val'
+
+  agent.after_agent_callback = verify_state_callback
+
+  parent_ctx = await _create_parent_invocation_context(
+      request.function.__name__, agent
+  )
+
+  from google.adk.runners import InMemoryRunner
+  runner = InMemoryRunner(agent=agent, app_name='test')
+  
+  events = [e async for e in runner.run_async(
+      user_id='user1',
+      session_id=parent_ctx.session.id,
+      new_message=types.Content(parts=[types.Part(text='hello')])
+  )]
+
+  assert len(events) == 1
+  assert events[0].author == agent.name
+
+
+@pytest.mark.asyncio
+async def test_run_async_before_agent_callback_state_visibility(
+    request: pytest.FixtureRequest,
+):
+  from google.adk.agents.sequential_agent import SequentialAgent
+  
+  class _StateTestingAgent(_TestingAgent):
+    @override
+    async def _run_async_impl(self, ctx: InvocationContext) -> AsyncGenerator[Event, None]:
+      yield Event(
+          author=self.name,
+          invocation_id=ctx.invocation_id,
+          content=types.Content(parts=[types.Part(text='Agent 1 event')]),
+          actions=EventActions(state_delta={"shared_key": "shared_val"}),
+      )
+
+  agent1 = _StateTestingAgent(name='agent1')
+
+  def verify_state_callback(ctx: CallbackContext) -> None:
+    assert ctx.state['shared_key'] == 'shared_val'
+
+  agent2 = _TestingAgent(
+      name='agent2',
+      before_agent_callback=verify_state_callback
+  )
+  
+  seq_agent = SequentialAgent(
+      name='seq_agent',
+      sub_agents=[agent1, agent2]
+  )
+
+  parent_ctx = await _create_parent_invocation_context(
+      request.function.__name__, seq_agent
+  )
+
+  from google.adk.runners import InMemoryRunner
+  runner = InMemoryRunner(agent=seq_agent, app_name='test')
+  
+  events = [e async for e in runner.run_async(
+      user_id='user1',
+      session_id=parent_ctx.session.id,
+      new_message=types.Content(parts=[types.Part(text='hello')])
+  )]
+
+  assert len(events) == 2
+
+@pytest.mark.asyncio
 async def test_run_async_incomplete_agent(request: pytest.FixtureRequest):
   agent = _IncompleteAgent(name=f'{request.function.__name__}_test_agent')
   parent_ctx = await _create_parent_invocation_context(

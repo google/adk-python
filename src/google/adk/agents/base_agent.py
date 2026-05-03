@@ -439,7 +439,15 @@ class BaseAgent(BaseModel):
     Returns:
       Optional[Event]: an event if callback provides content or changed state.
     """
-    callback_context = CallbackContext(ctx)
+    last_event = None
+    if ctx.session.events:
+      last_event = ctx.session.events[-1]
+
+    event_actions = None
+    if last_event and last_event.actions:
+      event_actions = last_event.actions
+
+    callback_context = CallbackContext(ctx, event_actions=event_actions)
 
     # Run callbacks from the plugins.
     before_agent_callback_content = (
@@ -499,7 +507,15 @@ class BaseAgent(BaseModel):
       Optional[Event]: an event if callback provides content or changed state.
     """
 
-    callback_context = CallbackContext(invocation_context)
+    last_event = None
+    if invocation_context.session.events:
+      last_event = invocation_context.session.events[-1]
+
+    event_actions = None
+    if last_event and last_event.actions:
+      event_actions = last_event.actions
+
+    callback_context = CallbackContext(invocation_context, event_actions=event_actions)
 
     # Run callbacks from the plugins.
     after_agent_callback_content = (
