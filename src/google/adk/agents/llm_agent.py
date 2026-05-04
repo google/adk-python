@@ -181,7 +181,15 @@ async def _convert_tool_union_to_tools(
     return [FunctionTool(func=tool_union)]
 
   # At this point, tool_union must be a BaseToolset
-  return await tool_union.get_tools_with_prefix(ctx)
+  try:
+    return await tool_union.get_tools_with_prefix(ctx)
+  except Exception as e:
+    logger.warning(
+        'Failed to get tools from toolset %s: %s',
+        type(tool_union).__name__,
+        e,
+    )
+    return []
 
 
 class LlmAgent(BaseAgent):
@@ -331,8 +339,9 @@ class LlmAgent(BaseAgent):
     - Schema: Google's Schema type
 
   NOTE:
-    When this is set, agent can ONLY reply and CANNOT use any tools, such as
-    function tools, RAGs, agent transfer, etc.
+    The ADK supports using `output_schema` and `tools` together. It works by
+    exposing tools during the thought loop and enforcing structure only on the
+    final output.
   """
   output_key: Optional[str] = None
   """The key in session state to store the output of the agent.

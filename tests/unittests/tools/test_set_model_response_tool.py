@@ -112,7 +112,7 @@ async def test_run_async_valid_data():
   """Test tool execution with valid data."""
   tool = SetModelResponseTool(PersonSchema)
 
-  agent = LlmAgent(name='test_agent', model='gemini-1.5-flash')
+  agent = LlmAgent(name='test_agent', model='gemini-2.5-flash')
   invocation_context = await _create_invocation_context(agent)
   tool_context = ToolContext(invocation_context)
 
@@ -134,7 +134,7 @@ async def test_run_async_complex_schema():
   """Test tool execution with complex schema."""
   tool = SetModelResponseTool(ComplexSchema)
 
-  agent = LlmAgent(name='test_agent', model='gemini-1.5-flash')
+  agent = LlmAgent(name='test_agent', model='gemini-2.5-flash')
   invocation_context = await _create_invocation_context(agent)
   tool_context = ToolContext(invocation_context)
 
@@ -164,7 +164,7 @@ async def test_run_async_validation_error():
   """Test tool execution with invalid data raises validation error."""
   tool = SetModelResponseTool(PersonSchema)
 
-  agent = LlmAgent(name='test_agent', model='gemini-1.5-flash')
+  agent = LlmAgent(name='test_agent', model='gemini-2.5-flash')
   invocation_context = await _create_invocation_context(agent)
   tool_context = ToolContext(invocation_context)
 
@@ -181,7 +181,7 @@ async def test_run_async_missing_required_field():
   """Test tool execution with missing required field."""
   tool = SetModelResponseTool(PersonSchema)
 
-  agent = LlmAgent(name='test_agent', model='gemini-1.5-flash')
+  agent = LlmAgent(name='test_agent', model='gemini-2.5-flash')
   invocation_context = await _create_invocation_context(agent)
   tool_context = ToolContext(invocation_context)
 
@@ -198,7 +198,7 @@ async def test_session_state_storage_key():
   """Test that response is no longer stored in session state."""
   tool = SetModelResponseTool(PersonSchema)
 
-  agent = LlmAgent(name='test_agent', model='gemini-1.5-flash')
+  agent = LlmAgent(name='test_agent', model='gemini-2.5-flash')
   invocation_context = await _create_invocation_context(agent)
   tool_context = ToolContext(invocation_context)
 
@@ -219,7 +219,7 @@ async def test_multiple_executions_return_latest():
   """Test that multiple executions return latest response independently."""
   tool = SetModelResponseTool(PersonSchema)
 
-  agent = LlmAgent(name='test_agent', model='gemini-1.5-flash')
+  agent = LlmAgent(name='test_agent', model='gemini-2.5-flash')
   invocation_context = await _create_invocation_context(agent)
   tool_context = ToolContext(invocation_context)
 
@@ -308,7 +308,7 @@ async def test_run_async_list_schema_valid_data():
   """Test tool execution with valid list data."""
   tool = SetModelResponseTool(list[ItemSchema])
 
-  agent = LlmAgent(name='test_agent', model='gemini-1.5-flash')
+  agent = LlmAgent(name='test_agent', model='gemini-2.5-flash')
   invocation_context = await _create_invocation_context(agent)
   tool_context = ToolContext(invocation_context)
 
@@ -339,7 +339,7 @@ async def test_run_async_list_schema_empty_list():
   """Test tool execution with empty list."""
   tool = SetModelResponseTool(list[ItemSchema])
 
-  agent = LlmAgent(name='test_agent', model='gemini-1.5-flash')
+  agent = LlmAgent(name='test_agent', model='gemini-2.5-flash')
   invocation_context = await _create_invocation_context(agent)
   tool_context = ToolContext(invocation_context)
 
@@ -360,7 +360,7 @@ async def test_run_async_list_schema_validation_error():
   """Test tool execution with invalid list data raises validation error."""
   tool = SetModelResponseTool(list[ItemSchema])
 
-  agent = LlmAgent(name='test_agent', model='gemini-1.5-flash')
+  agent = LlmAgent(name='test_agent', model='gemini-2.5-flash')
   invocation_context = await _create_invocation_context(agent)
   tool_context = ToolContext(invocation_context)
 
@@ -408,7 +408,7 @@ async def test_run_async_list_str_schema():
   """Test tool execution with list[str] data."""
   tool = SetModelResponseTool(list[str])
 
-  agent = LlmAgent(name='test_agent', model='gemini-1.5-flash')
+  agent = LlmAgent(name='test_agent', model='gemini-2.5-flash')
   invocation_context = await _create_invocation_context(agent)
   tool_context = ToolContext(invocation_context)
 
@@ -453,7 +453,7 @@ async def test_run_async_dict_schema():
   """Test tool execution with dict data."""
   tool = SetModelResponseTool(dict[str, int])
 
-  agent = LlmAgent(name='test_agent', model='gemini-1.5-flash')
+  agent = LlmAgent(name='test_agent', model='gemini-2.5-flash')
   invocation_context = await _create_invocation_context(agent)
   tool_context = ToolContext(invocation_context)
 

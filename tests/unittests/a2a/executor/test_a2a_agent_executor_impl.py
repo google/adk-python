@@ -29,12 +29,14 @@ from a2a.types import TextPart
 from google.adk.a2a.converters.request_converter import AgentRunRequest
 from google.adk.a2a.converters.utils import _get_adk_metadata_key
 from google.adk.a2a.executor.a2a_agent_executor_impl import _A2aAgentExecutor as A2aAgentExecutor
+from google.adk.a2a.executor.a2a_agent_executor_impl import _NEW_A2A_ADK_INTEGRATION_EXTENSION
 from google.adk.a2a.executor.a2a_agent_executor_impl import A2aAgentExecutorConfig
 from google.adk.a2a.executor.config import ExecuteInterceptor
 from google.adk.events.event import Event
 from google.adk.events.event_actions import EventActions
 from google.adk.runners import RunConfig
 from google.adk.runners import Runner
+from google.adk.sessions.base_session_service import GetSessionConfig
 from google.genai.types import Content
 import pytest
 
@@ -77,7 +79,7 @@ class TestA2aAgentExecutor:
         _get_adk_metadata_key("app_name"): "test-app",
         _get_adk_metadata_key("user_id"): "test-user",
         _get_adk_metadata_key("session_id"): "test-session",
-        _get_adk_metadata_key("agent_executor_v2"): True,
+        _NEW_A2A_ADK_INTEGRATION_EXTENSION: {"adk_agent_executor_v2": True},
     }
 
   async def _create_async_generator(self, items):
@@ -658,6 +660,7 @@ class TestA2aAgentExecutor:
         app_name=self.mock_runner.app_name,
         user_id="test-user",
         session_id="old-session-id",
+        config=GetSessionConfig(num_recent_events=0, after_timestamp=None),
     )
     self.mock_runner.session_service.create_session.assert_called_once_with(
         app_name=self.mock_runner.app_name,

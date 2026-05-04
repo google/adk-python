@@ -203,6 +203,23 @@ class TestComputerUseToolset:
       assert method in tool_names
 
   @pytest.mark.asyncio
+  async def test_get_tools_filters_excluded_functions(self, mock_computer):
+    """Test that get_tools filters out excluded functions."""
+    excluded_funcs = ["drag_and_drop", "key_combination"]
+    toolset = ComputerUseToolset(
+        computer=mock_computer,
+        excluded_predefined_functions=excluded_funcs,
+    )
+
+    tools = await toolset.get_tools()
+    tool_names = [tool.func.__name__ for tool in tools]
+
+    for func in excluded_funcs:
+      assert func not in tool_names
+
+    assert "click_at" in tool_names
+
+  @pytest.mark.asyncio
   async def test_get_tools_with_readonly_context(self, toolset):
     """Test get_tools with readonly_context parameter."""
     from google.adk.agents.readonly_context import ReadonlyContext
@@ -238,8 +255,8 @@ class TestComputerUseToolset:
 
     assert click_tool is not None
 
-    # The tool's function should be bound to the mock computer instance
-    assert click_tool.func.__self__ == mock_computer
+    # The tool's function should have the correct name (wrapped method)
+    assert click_tool.func.__name__ == "click_at"
 
   @pytest.mark.asyncio
   async def test_get_tools_handles_custom_screen_size(self, mock_computer):
@@ -304,9 +321,11 @@ class TestComputerUseToolset:
     """Test that tools are properly bound to the computer instance."""
     tools = await toolset.get_tools()
 
-    # All tools should be bound to the mock computer
+    # All tools should have wrapped functions with correct names
     for tool in tools:
-      assert tool.func.__self__ == mock_computer
+      # Wrapped functions preserve the original method name via functools.wraps
+      assert callable(tool.func)
+      assert not tool.func.__name__.startswith("_")
 
   @pytest.mark.asyncio
   async def test_toolset_handles_computer_initialization_failure(
@@ -330,7 +349,7 @@ class TestComputerUseToolset:
   async def test_process_llm_request(self, toolset, mock_computer):
     """Test that process_llm_request adds tools and computer use configuration."""
     llm_request = LlmRequest(
-        model="gemini-1.5-flash",
+        model="gemini-2.5-flash",
         config=types.GenerateContentConfig(),
     )
 
@@ -361,12 +380,47 @@ class TestComputerUseToolset:
     )
 
   @pytest.mark.asyncio
+  async def test_process_llm_request_with_excluded_functions(
+      self, mock_computer
+  ):
+    """Test that process_llm_request passes excluded_predefined_functions."""
+    excluded_funcs = ["drag_and_drop", "key_combination"]
+    toolset = ComputerUseToolset(
+        computer=mock_computer,
+        excluded_predefined_functions=excluded_funcs,
+    )
+
+    llm_request = LlmRequest(
+        model="gemini-2.5-flash",
+        config=types.GenerateContentConfig(),
+    )
+
+    await toolset.process_llm_request(
+        tool_context=MagicMock(), llm_request=llm_request
+    )
+
+    # Should have computer use tool
+    computer_use_tools = [
+        tool
+        for tool in llm_request.config.tools
+        if hasattr(tool, "computer_use") and tool.computer_use
+    ]
+    assert len(computer_use_tools) == 1
+
+    # Should have correct excluded functions
+    computer_use_tool = computer_use_tools[0]
+    assert (
+        computer_use_tool.computer_use.excluded_predefined_functions
+        == excluded_funcs
+    )
+
+  @pytest.mark.asyncio
   async def test_process_llm_request_with_existing_computer_use(
       self, toolset, mock_computer
   ):
     """Test that process_llm_request doesn't add duplicate computer use configuration."""
     llm_request = LlmRequest(
-        model="gemini-1.5-flash",
+        model="gemini-2.5-flash",
         config=types.GenerateContentConfig(
             tools=[
                 types.Tool(
@@ -403,7 +457,7 @@ class TestComputerUseToolset:
     toolset = ComputerUseToolset(computer=mock_computer)
 
     llm_request = LlmRequest(
-        model="gemini-1.5-flash",
+        model="gemini-2.5-flash",
         config=types.GenerateContentConfig(),
     )
 
@@ -425,7 +479,7 @@ class TestComputerUseToolset:
     )
 
     llm_request = LlmRequest(
-        model="gemini-1.5-flash",
+        model="gemini-2.5-flash",
         config=types.GenerateContentConfig(),
     )
     llm_request.tools_dict["wait"] = original_tool
@@ -464,7 +518,7 @@ class TestComputerUseToolset:
     )
 
     llm_request = LlmRequest(
-        model="gemini-1.5-flash",
+        model="gemini-2.5-flash",
         config=types.GenerateContentConfig(),
     )
     llm_request.tools_dict["wait"] = original_tool
@@ -495,7 +549,7 @@ class TestComputerUseToolset:
   async def test_adapt_computer_use_tool_invalid_method(self):
     """Test adapt_computer_use_tool with invalid method name."""
     llm_request = LlmRequest(
-        model="gemini-1.5-flash",
+        model="gemini-2.5-flash",
         config=types.GenerateContentConfig(),
     )
 
@@ -517,7 +571,7 @@ class TestComputerUseToolset:
   async def test_adapt_computer_use_tool_excluded_method(self):
     """Test adapt_computer_use_tool with excluded method name."""
     llm_request = LlmRequest(
-        model="gemini-1.5-flash",
+        model="gemini-2.5-flash",
         config=types.GenerateContentConfig(),
     )
 
@@ -539,7 +593,7 @@ class TestComputerUseToolset:
   async def test_adapt_computer_use_tool_method_not_in_tools_dict(self):
     """Test adapt_computer_use_tool when method is not in tools_dict."""
     llm_request = LlmRequest(
-        model="gemini-1.5-flash",
+        model="gemini-2.5-flash",
         config=types.GenerateContentConfig(),
     )
 

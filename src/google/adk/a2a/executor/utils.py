@@ -41,16 +41,24 @@ async def execute_after_event_interceptors(
     executor_context: ExecutorContext,
     adk_event: Event,
     execute_interceptors: Optional[list[ExecuteInterceptor]],
-) -> Optional[A2AEvent]:
+) -> list[A2AEvent]:
+  events = [a2a_event]
   if execute_interceptors:
     for interceptor in execute_interceptors:
       if interceptor.after_event:
-        a2a_event = await interceptor.after_event(
-            executor_context, a2a_event, adk_event
-        )
-        if a2a_event is None:
-          return None
-  return a2a_event
+        next_events = []
+        for e in events:
+          res = await interceptor.after_event(executor_context, e, adk_event)
+          if res is None:
+            continue
+          if isinstance(res, list):
+            next_events.extend(res)
+          else:
+            next_events.append(res)
+        events = next_events
+        if not events:
+          return []
+  return events
 
 
 async def execute_after_agent_interceptors(

@@ -51,7 +51,7 @@ async def inject_session_state(
     )
 
   agent = Agent(
-      model="gemini-2.0-flash",
+      model="gemini-2.5-flash",
       name="agent",
       instruction=build_instruction,
   )

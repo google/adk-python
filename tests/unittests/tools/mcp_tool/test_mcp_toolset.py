@@ -15,16 +15,20 @@
 import asyncio
 import base64
 from io import StringIO
-import json
+import pickle
 import sys
-import unittest
 from unittest.mock import AsyncMock
 from unittest.mock import MagicMock
 from unittest.mock import Mock
-from unittest.mock import patch
 
+from fastapi.openapi.models import OAuth2
 from google.adk.agents.readonly_context import ReadonlyContext
 from google.adk.auth.auth_credential import AuthCredential
+from google.adk.auth.auth_credential import AuthCredentialTypes
+from google.adk.auth.auth_credential import HttpAuth
+from google.adk.auth.auth_credential import HttpCredentials
+from google.adk.auth.auth_credential import OAuth2Auth
+from google.adk.auth.auth_tool import AuthConfig
 from google.adk.tools.load_mcp_resource_tool import LoadMcpResourceTool
 from google.adk.tools.mcp_tool.mcp_session_manager import MCPSessionManager
 from google.adk.tools.mcp_tool.mcp_session_manager import SseConnectionParams
@@ -32,6 +36,7 @@ from google.adk.tools.mcp_tool.mcp_session_manager import StdioConnectionParams
 from google.adk.tools.mcp_tool.mcp_session_manager import StreamableHTTPConnectionParams
 from google.adk.tools.mcp_tool.mcp_tool import MCPTool
 from google.adk.tools.mcp_tool.mcp_toolset import McpToolset
+from google.adk.tools.tool_configs import ToolArgsConfig
 from mcp import StdioServerParameters
 from mcp.types import BlobResourceContents
 from mcp.types import ListResourcesResult
@@ -133,10 +138,8 @@ class TestMcpToolset:
   def test_init_with_auth(self):
     """Test initialization with authentication."""
     # Create real auth scheme instances
-    from fastapi.openapi.models import OAuth2
 
     auth_scheme = OAuth2(flows={})
-    from google.adk.auth.auth_credential import OAuth2Auth
 
     auth_credential = AuthCredential(
         auth_type="oauth2",
@@ -151,6 +154,42 @@ class TestMcpToolset:
 
     assert toolset._auth_scheme == auth_scheme
     assert toolset._auth_credential == auth_credential
+
+  def test_init_with_auth_and_credential_key(self):
+    """Test initialization with authentication and a custom credential_key."""
+
+    auth_scheme = OAuth2(flows={})
+
+    auth_credential = AuthCredential(
+        auth_type="oauth2",
+        oauth2=OAuth2Auth(client_id="test_id", client_secret="test_secret"),
+    )
+
+    toolset = McpToolset(
+        connection_params=self.mock_stdio_params,
+        auth_scheme=auth_scheme,
+        auth_credential=auth_credential,
+        credential_key="my_custom_key",
+    )
+
+    assert toolset._auth_scheme == auth_scheme
+    assert toolset._auth_credential == auth_credential
+    assert toolset._auth_config.credential_key == "my_custom_key"
+
+  def test_from_config_with_credential_key(self):
+    """Test that from_config correctly parses credential_key."""
+
+    auth_scheme = OAuth2(flows={})
+
+    config = ToolArgsConfig(
+        stdio_server_params=self.mock_stdio_params,
+        auth_scheme=auth_scheme,
+        credential_key="my_custom_key",
+    )
+    toolset = McpToolset.from_config(config, "")
+
+    assert isinstance(toolset._auth_scheme, OAuth2)
+    assert toolset._auth_config.credential_key == "my_custom_key"
 
   def test_init_missing_connection_params(self):
     """Test initialization with missing connection params raises error."""
@@ -612,3 +651,67 @@ class TestMcpToolset:
     assert result == contents
     self.mock_session.list_resources.assert_called_once()
     self.mock_session.read_resource.assert_called_once_with(uri=uri)
+
+  @pytest.mark.asyncio
+  async def test_sampling_callback_invoked(self):
+
+    called = {"value": False}
+
+    async def mock_sampling_handler(messages, params=None, context=None):
+      called["value"] = True
+
+      assert isinstance(messages, list)
+      assert messages[0]["role"] == "user"
+
+      return {
+          "model": "test-model",
+          "role": "assistant",
+          "content": {"type": "text", "text": "sampling response"},
+          "stopReason": "endTurn",
+      }
+
+    toolset = McpToolset(
+        connection_params=StreamableHTTPConnectionParams(
+            url="http://localhost:9999",
+            timeout=10,
+        ),
+        sampling_callback=mock_sampling_handler,
+    )
+
+    messages = [{"role": "user", "content": {"type": "text", "text": "hello"}}]
+
+    result = await toolset._sampling_callback(messages)
+
+    assert called["value"] is True
+    assert result["role"] == "assistant"
+    assert result["content"]["text"] == "sampling response"
+
+  @pytest.mark.asyncio
+  async def test_get_auth_headers_includes_additional_headers(self):
+    credential = AuthCredential(
+        auth_type=AuthCredentialTypes.HTTP,
+        http=HttpAuth(
+            scheme="bearer",
+            credentials=HttpCredentials(token="token"),
+            additional_headers={"X-API-Key": "secret"},
+        ),
+    )
+    auth_config = AuthConfig(
+        auth_scheme=OAuth2(flows={}),
+        raw_auth_credential=credential,
+    )
+    auth_config.exchanged_auth_credential = credential
+    toolset = McpToolset(connection_params=self.mock_stdio_params)
+    toolset._auth_config = auth_config
+
+    headers = toolset._get_auth_headers()
+
+    assert headers["Authorization"] == "Bearer token"
+    assert headers["X-API-Key"] == "secret"
+
+  def test_pickle_mcp_toolset(self):
+    toolset = McpToolset(connection_params=self.mock_stdio_params)
+    pickled = pickle.dumps(toolset)
+    unpickled = pickle.loads(pickled)
+    assert unpickled._connection_params == self.mock_stdio_params
+    assert unpickled._errlog == sys.stderr
