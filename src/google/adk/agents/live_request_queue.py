@@ -70,6 +70,8 @@ class LiveRequestQueue:
     self._queue.put_nowait(LiveRequest(content=content))
 
   def send_realtime(self, blob: types.Blob):
+    if not blob.mime_type:
+      blob.mime_type = "audio/pcm;rate=16000"
     self._queue.put_nowait(LiveRequest(blob=blob))
 
   def send_activity_start(self):
