@@ -2091,7 +2091,7 @@ class AdkWebServer:
         return
 
       await websocket.accept()
-      self.current_app_name_ref.value = req.app_name
+      self.current_app_name_ref.value = app_name
       runner_for_context = await self.get_runner_async(app_name)
       _set_telemetry_context_if_needed(runner_for_context)
 
