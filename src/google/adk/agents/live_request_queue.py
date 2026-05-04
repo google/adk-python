@@ -70,7 +70,15 @@ class LiveRequestQueue:
     self._queue.put_nowait(LiveRequest(content=content))
 
   def send_realtime(self, blob: types.Blob):
-    self._queue.put_nowait(LiveRequest(blob=blob))
+    # Fix for issue #5552: Ensure the audio blob always explicitly declares
+    # the correct MIME type to prevent "Invalid Audio Format" errors.
+    # This helps in cases where the MIME type might be implicitly lost
+    # or misinterpreted downstream.
+    corrected_blob = types.Blob(
+        mime_type="audio/pcm;rate=16000",
+        data=blob.data,
+    )
+    self._queue.put_nowait(LiveRequest(blob=corrected_blob))
 
   def send_activity_start(self):
     """Sends an activity start signal to mark the beginning of user input."""
