@@ -611,10 +611,6 @@ class Runner:
       if event_or_done is done_sentinel:
         break
       event: Event = event_or_done
-      if not event.partial:
-        if event.node_info.message_as_output and event.content is not None:
-          event = event.model_copy()
-          event.output = None
 
       _apply_run_config_custom_metadata(event, ic.run_config)
       modified_event = await ic.plugin_manager.run_on_event_callback(

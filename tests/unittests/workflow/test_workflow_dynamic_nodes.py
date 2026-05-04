@@ -1153,8 +1153,9 @@ async def test_workflow_resume_does_not_rerun_completed_llm_agent():
   assert len(agent_events) > 0
   agent_event = agent_events[-1]
 
-  # Verify that runners.py cleared the output
-  assert agent_event.output is None
+  # The persisted event keeps the LlmAgent's output so resume can replay
+  # it without re-firing the model
+  assert agent_event.output == 'LLM output content'
 
   # When the workflow is resumed by resolving the interrupt
   resume_events = await _resume(

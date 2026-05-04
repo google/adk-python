@@ -2051,3 +2051,52 @@ async def test_parallel_nodes_trigger_same_hitl_node(
   )
   outputs3 = workflow_testing_utils.get_outputs(events3)
   assert outputs3 == [f'c_from_b_response 2']
+
+
+@pytest.mark.asyncio
+async def test_cached_llm_agent_output_remains_subscriptable_after_resume(
+    request: pytest.FixtureRequest,
+):
+  """Cached LlmAgent output must stay a dict on resume."""
+
+  class Greeting(BaseModel):
+    text: str
+
+  greeter = LlmAgent(
+      name='greeter',
+      model=testing_utils.MockModel.create(
+          responses=[types.Part.from_text(text='{"text": "hi"}')],
+      ),
+      mode='single_turn',
+      output_schema=Greeting,
+      instruction='Return JSON.',
+  )
+
+  @node(rerun_on_resume=True)
+  async def orchestrator(ctx: Context, node_input: Any):
+    out = await ctx.run_node(greeter, 'go')
+    if 'confirm' not in ctx.resume_inputs:
+      yield RequestInput(message='ok?', interrupt_id='confirm')
+      return
+    yield Event(output={'echoed': out['text']})
+
+  agent = Workflow(name='wf', edges=[(START, orchestrator)])
+  app = App(
+      name=request.function.__name__,
+      root_agent=agent,
+      resumability_config=ResumabilityConfig(is_resumable=True),
+  )
+  runner = testing_utils.InMemoryRunner(app=app)
+
+  events1 = await runner.run_async(testing_utils.get_user_content('start'))
+  req = workflow_testing_utils.get_request_input_events(events1)[0]
+  interrupt_id = get_request_input_interrupt_ids(req)[0]
+  invocation_id = events1[0].invocation_id
+
+  events2 = await runner.run_async(
+      new_message=testing_utils.UserContent(
+          create_request_input_response(interrupt_id, {'approved': True})
+      ),
+      invocation_id=invocation_id,
+  )
+  assert {'echoed': 'hi'} in workflow_testing_utils.get_outputs(events2)
