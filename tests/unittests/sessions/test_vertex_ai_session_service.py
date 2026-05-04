@@ -705,6 +705,22 @@ async def test_get_another_user_session(agent_engine_id):
 
 @pytest.mark.asyncio
 @pytest.mark.usefixtures('mock_get_api_client')
+async def test_delete_another_user_session_raises(
+    mock_api_client_instance: MockAsyncClient,
+):
+  session_service = mock_vertex_ai_session_service()
+
+  with pytest.raises(ValueError) as excinfo:
+    await session_service.delete_session(
+        app_name='123', user_id='user2', session_id='1'
+    )
+
+  assert str(excinfo.value) == 'Session 1 does not belong to user user2.'
+  mock_api_client_instance.agent_engines.sessions.delete.assert_not_called()
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures('mock_get_api_client')
 async def test_get_and_delete_session():
   session_service = mock_vertex_ai_session_service()
 

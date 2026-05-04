@@ -256,6 +256,15 @@ class VertexAiSessionService(BaseSessionService):
   async def delete_session(
       self, *, app_name: str, user_id: str, session_id: str
   ) -> None:
+    session = await self.get_session(
+        app_name=app_name,
+        user_id=user_id,
+        session_id=session_id,
+        config=GetSessionConfig(num_recent_events=0),
+    )
+    if session is None:
+      return
+
     reasoning_engine_id = self._get_reasoning_engine_id(app_name)
 
     async with self._get_api_client() as api_client:
