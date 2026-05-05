@@ -23,7 +23,6 @@ from google.adk.sessions.in_memory_session_service import InMemorySessionService
 from google.adk.sessions.sqlite_session_service import SqliteSessionService
 import pytest
 
-
 _APP = 'test-app'
 _USER = 'user-42'
 _OTHER_USER = 'user-99'
@@ -72,9 +71,7 @@ async def test_get_user_state_returns_state_written_via_append_event(
     session_service,
 ):
   """State written with the user: prefix is returned without the prefix."""
-  session = await session_service.create_session(
-      app_name=_APP, user_id=_USER
-  )
+  session = await session_service.create_session(app_name=_APP, user_id=_USER)
   await session_service.append_event(
       session,
       Event(
@@ -94,9 +91,7 @@ async def test_get_user_state_returns_state_written_via_append_event(
 @pytest.mark.asyncio
 async def test_get_user_state_is_not_visible_across_users(session_service):
   """User state is scoped to (app_name, user_id) — other users see {}."""
-  session = await session_service.create_session(
-      app_name=_APP, user_id=_USER
-  )
+  session = await session_service.create_session(app_name=_APP, user_id=_USER)
   await session_service.append_event(
       session,
       Event(
@@ -137,9 +132,7 @@ async def test_get_user_state_available_before_session_is_created(
 @pytest.mark.asyncio
 async def test_get_user_state_reflects_latest_write(session_service):
   """Subsequent writes overwrite earlier values under the same key."""
-  session = await session_service.create_session(
-      app_name=_APP, user_id=_USER
-  )
+  session = await session_service.create_session(app_name=_APP, user_id=_USER)
   await session_service.append_event(
       session,
       Event(
