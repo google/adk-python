@@ -29,6 +29,8 @@ import warnings
 import click
 from packaging.version import parse
 
+from .utils import _onboarding
+
 _IS_WINDOWS = os.name == 'nt'
 _GCLOUD_CMD = 'gcloud.cmd' if _IS_WINDOWS else 'gcloud'
 _LOCAL_STORAGE_FLAG_MIN_VERSION: Final[str] = '1.21.0'
@@ -1108,10 +1110,22 @@ def to_agent_engine(
       )
     else:
       click.echo(
-          'No project/region or api_key provided. '
-          'Please specify either project/region or api_key.'
+          'No project/region or api_key provided. Starting onboarding flow...'
       )
-      return
+      auth_info = _onboarding.handle_login_with_google()
+      if isinstance(auth_info, _onboarding.VertexAIAuth):
+        click.echo('Initializing Vertex AI...')
+        client = vertexai.Client(
+            project=auth_info.project_id,
+            location=auth_info.region,
+            http_options={'headers': get_tracking_headers()},
+        )
+      elif isinstance(auth_info, _onboarding.ExpressModeAuth):
+        click.echo('Initializing Vertex AI in Express Mode with API key...')
+        client = vertexai.Client(
+            api_key=auth_info.api_key,
+            http_options={'headers': get_tracking_headers()},
+        )
     click.echo('Vertex AI initialized.')
 
     is_config_agent = False

@@ -99,7 +99,7 @@ root_agent = LlmAgent(
 When asked about weather, use the get_weather tool.
 When asked to calculate, use the calculate tool.
 Be concise in your responses.""",
-    model="gemini-2.0-flash",
+    model="gemini-2.5-flash",
     tools=[get_weather, calculate],
 )
 

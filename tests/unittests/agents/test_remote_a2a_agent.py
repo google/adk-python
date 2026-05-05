@@ -630,6 +630,37 @@ class TestRemoteA2aAgentMessageHandling:
       assert parts[0] == mock_a2a_part
       assert context_id is None
 
+  def test_construct_message_parts_from_session_user_input_metadata(self):
+    """Test that user input metadata is added for user messages."""
+    mock_part = Mock()
+    mock_content = Mock()
+    mock_content.parts = [mock_part]
+
+    mock_event = Mock()
+    mock_event.content = mock_content
+    mock_event.author = "user"
+    mock_event.custom_metadata = None
+
+    self.mock_session.events = [mock_event]
+
+    with patch(
+        "google.adk.agents.remote_a2a_agent._present_other_agent_message"
+    ) as mock_convert:
+      mock_convert.return_value = mock_event
+
+      mock_a2a_part = Mock()
+      mock_a2a_part.root = Mock()
+      mock_a2a_part.root.metadata = {}
+      self.mock_genai_part_converter.return_value = mock_a2a_part
+
+      parts, _ = self.agent._construct_message_parts_from_session(
+          self.mock_context
+      )
+
+      assert len(parts) == 1
+      assert parts[0] == mock_a2a_part
+      assert parts[0].root.metadata.get("is_user_input") is True
+
   def test_construct_message_parts_from_session_success_multiple_parts(self):
     """Test successful message parts construction from session."""
     # Mock event with text content
@@ -717,6 +748,8 @@ class TestRemoteA2aAgentMessageHandling:
     def mock_converter(part):
       mock_a2a_part = Mock()
       mock_a2a_part.text = part.text
+      mock_a2a_part.root = Mock()
+      mock_a2a_part.root.metadata = {}
       return mock_a2a_part
 
     self.mock_genai_part_converter.side_effect = mock_converter
@@ -767,6 +800,8 @@ class TestRemoteA2aAgentMessageHandling:
     def mock_converter(part):
       mock_a2a_part = Mock()
       mock_a2a_part.text = part.text
+      mock_a2a_part.root = Mock()
+      mock_a2a_part.root.metadata = {}
       return mock_a2a_part
 
     self.mock_genai_part_converter.side_effect = mock_converter
@@ -822,6 +857,8 @@ class TestRemoteA2aAgentMessageHandling:
     def mock_converter(part):
       mock_a2a_part = Mock()
       mock_a2a_part.text = part.text
+      mock_a2a_part.root = Mock()
+      mock_a2a_part.root.metadata = {}
       return mock_a2a_part
 
     self.mock_genai_part_converter.side_effect = mock_converter
@@ -956,6 +993,8 @@ class TestRemoteA2aAgentMessageHandling:
       def mock_converter(part):
         mock_a2a_part = Mock()
         mock_a2a_part.original_text = part.text
+        mock_a2a_part.root = Mock()
+        mock_a2a_part.root.metadata = {}
         converted_parts.append(mock_a2a_part)
         return mock_a2a_part
 

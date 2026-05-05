@@ -26,6 +26,7 @@ from typing import Tuple
 
 import click
 import google.adk.cli.cli_create as cli_create
+from google.adk.cli.utils import _onboarding
 from google.adk.cli.utils import gcp_utils
 import pytest
 
@@ -61,7 +62,7 @@ def test_generate_files_with_api_key(agent_folder: Path) -> None:
   cli_create._generate_files(
       str(agent_folder),
       google_api_key="dummy-key",
-      model="gemini-2.0-flash-001",
+      model="gemini-2.5-flash",
       type="code",
   )
 
@@ -79,7 +80,7 @@ def test_generate_files_with_gcp(agent_folder: Path) -> None:
       str(agent_folder),
       google_cloud_project="proj",
       google_cloud_region="us-central1",
-      model="gemini-2.0-flash-001",
+      model="gemini-2.5-flash",
       type="code",
   )
 
@@ -96,7 +97,7 @@ def test_generate_files_with_express_mode(agent_folder: Path) -> None:
       google_api_key="express-api-key",
       google_cloud_project="express-project-id",
       google_cloud_region="us-central1",
-      model="gemini-2.0-flash-001",
+      model="gemini-2.5-flash",
       type="code",
   )
 
@@ -114,7 +115,7 @@ def test_generate_files_overwrite(agent_folder: Path) -> None:
   cli_create._generate_files(
       str(agent_folder),
       google_api_key="new-key",
-      model="gemini-2.0-flash-001",
+      model="gemini-2.5-flash",
       type="code",
   )
 
@@ -130,14 +131,14 @@ def test_generate_files_permission_error(
   )
   with pytest.raises(PermissionError):
     cli_create._generate_files(
-        str(agent_folder), model="gemini-2.0-flash-001", type="code"
+        str(agent_folder), model="gemini-2.5-flash", type="code"
     )
 
 
 def test_generate_files_no_params(agent_folder: Path) -> None:
   """No backend parameters → minimal .env file is generated."""
   cli_create._generate_files(
-      str(agent_folder), model="gemini-2.0-flash-001", type="code"
+      str(agent_folder), model="gemini-2.5-flash", type="code"
   )
 
   env_content = (agent_folder / ".env").read_text()
@@ -194,7 +195,7 @@ def test_run_cmd_overwrite_reject(
   with pytest.raises(click.Abort):
     cli_create.run_cmd(
         agent_name,
-        model="gemini-2.0-flash-001",
+        model="gemini-2.5-flash",
         google_api_key=None,
         google_cloud_project=None,
         google_cloud_region=None,
@@ -211,7 +212,7 @@ def test_run_cmd_invalid_app_name(
   with pytest.raises(click.BadParameter, match="Invalid app name"):
     cli_create.run_cmd(
         "my-agent",
-        model="gemini-2.0-flash-001",
+        model="gemini-2.5-flash",
         google_api_key=None,
         google_cloud_project=None,
         google_cloud_region=None,
@@ -229,7 +230,7 @@ def test_run_cmd_with_type_config(
 
   cli_create.run_cmd(
       agent_name,
-      model="gemini-2.0-flash-001",
+      model="gemini-2.5-flash",
       google_api_key="test-key",
       google_cloud_project=None,
       google_cloud_region=None,
@@ -247,7 +248,7 @@ def test_run_cmd_with_type_config(
   # Check YAML content
   yaml_content = yaml_file.read_text()
   assert "name: root_agent" in yaml_content
-  assert "model: gemini-2.0-flash-001" in yaml_content
+  assert "model: gemini-2.5-flash" in yaml_content
   assert "description: A helpful assistant for user questions." in yaml_content
 
   # Should create empty __init__.py
@@ -266,7 +267,7 @@ def test_run_cmd_with_type_config(
 def test_prompt_for_google_cloud(monkeypatch: pytest.MonkeyPatch) -> None:
   """Prompt should return the project input."""
   monkeypatch.setattr(click, "prompt", lambda *a, **k: "test-proj")
-  assert cli_create._prompt_for_google_cloud(None) == "test-proj"
+  assert _onboarding.prompt_for_google_cloud(None) == "test-proj"
 
 
 def test_prompt_for_google_cloud_region(
@@ -274,13 +275,13 @@ def test_prompt_for_google_cloud_region(
 ) -> None:
   """Prompt should return the region input."""
   monkeypatch.setattr(click, "prompt", lambda *a, **k: "asia-northeast1")
-  assert cli_create._prompt_for_google_cloud_region(None) == "asia-northeast1"
+  assert _onboarding.prompt_for_google_cloud_region(None) == "asia-northeast1"
 
 
 def test_prompt_for_google_api_key(monkeypatch: pytest.MonkeyPatch) -> None:
   """Prompt should return the API-key input."""
   monkeypatch.setattr(click, "prompt", lambda *a, **k: "api-key")
-  assert cli_create._prompt_for_google_api_key(None) == "api-key"
+  assert _onboarding.prompt_for_google_api_key(None) == "api-key"
 
 
 def test_prompt_for_model_gemini(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -308,12 +309,12 @@ def test_prompt_to_choose_backend_api(monkeypatch: pytest.MonkeyPatch) -> None:
   """Choosing API-key backend returns (api_key, None, None)."""
   monkeypatch.setattr(click, "prompt", lambda *a, **k: "1")
   monkeypatch.setattr(
-      cli_create, "_prompt_for_google_api_key", lambda _v: "api-key"
+      _onboarding, "prompt_for_google_api_key", lambda _v: "api-key"
   )
 
-  api_key, proj, region = cli_create._prompt_to_choose_backend(None, None, None)
-  assert api_key == "api-key"
-  assert proj is None and region is None
+  auth_info = _onboarding.prompt_to_choose_backend(None, None, None)
+  assert isinstance(auth_info, _onboarding.GoogleAIAuth)
+  assert auth_info.api_key == "api-key"
 
 
 def test_prompt_to_choose_backend_vertex(
@@ -321,15 +322,15 @@ def test_prompt_to_choose_backend_vertex(
 ) -> None:
   """Choosing Vertex backend returns (None, project, region)."""
   monkeypatch.setattr(click, "prompt", lambda *a, **k: "2")
-  monkeypatch.setattr(cli_create, "_prompt_for_google_cloud", lambda _v: "proj")
+  monkeypatch.setattr(_onboarding, "prompt_for_google_cloud", lambda _v: "proj")
   monkeypatch.setattr(
-      cli_create, "_prompt_for_google_cloud_region", lambda _v: "region"
+      _onboarding, "prompt_for_google_cloud_region", lambda _v: "region"
   )
 
-  api_key, proj, region = cli_create._prompt_to_choose_backend(None, None, None)
-  assert api_key is None
-  assert proj == "proj"
-  assert region == "region"
+  auth_info = _onboarding.prompt_to_choose_backend(None, None, None)
+  assert isinstance(auth_info, _onboarding.VertexAIAuth)
+  assert auth_info.project_id == "proj"
+  assert auth_info.region == "region"
 
 
 def test_prompt_to_choose_backend_login(
@@ -338,15 +339,18 @@ def test_prompt_to_choose_backend_login(
   """Choosing Login with Google returns (api_key, project, region) from handler."""
   monkeypatch.setattr(click, "prompt", lambda *a, **k: "3")
   monkeypatch.setattr(
-      cli_create,
-      "_handle_login_with_google",
-      lambda: ("api-key", "proj", "region"),
+      _onboarding,
+      "handle_login_with_google",
+      lambda: _onboarding.ExpressModeAuth(
+          api_key="api-key", project_id="proj", region="region"
+      ),
   )
 
-  api_key, proj, region = cli_create._prompt_to_choose_backend(None, None, None)
-  assert api_key == "api-key"
-  assert proj == "proj"
-  assert region == "region"
+  auth_info = _onboarding.prompt_to_choose_backend(None, None, None)
+  assert isinstance(auth_info, _onboarding.ExpressModeAuth)
+  assert auth_info.api_key == "api-key"
+  assert auth_info.project_id == "proj"
+  assert auth_info.region == "region"
 
 
 def test_handle_login_with_google_existing_express(
@@ -360,10 +364,11 @@ def test_handle_login_with_google_existing_express(
       lambda: {"api_key": "key", "project_id": "proj", "region": "us-central1"},
   )
 
-  api_key, proj, region = cli_create._handle_login_with_google()
-  assert api_key == "key"
-  assert proj == "proj"
-  assert region == "us-central1"
+  auth_info = _onboarding.handle_login_with_google()
+  assert isinstance(auth_info, _onboarding.ExpressModeAuth)
+  assert auth_info.api_key == "key"
+  assert auth_info.project_id == "proj"
+  assert auth_info.region == "us-central1"
 
 
 def test_handle_login_with_google_select_gcp_project(
@@ -377,13 +382,13 @@ def test_handle_login_with_google_select_gcp_project(
   )
   monkeypatch.setattr(click, "prompt", lambda *a, **k: 1)
   monkeypatch.setattr(
-      cli_create, "_prompt_for_google_cloud_region", lambda _v: "us-east1"
+      _onboarding, "prompt_for_google_cloud_region", lambda _v: "us-east1"
   )
 
-  api_key, proj, region = cli_create._handle_login_with_google()
-  assert api_key is None
-  assert proj == "p1"
-  assert region == "us-east1"
+  auth_info = _onboarding.handle_login_with_google()
+  assert isinstance(auth_info, _onboarding.VertexAIAuth)
+  assert auth_info.project_id == "p1"
+  assert auth_info.region == "us-east1"
 
 
 def test_handle_login_with_google_manual_project(
@@ -398,10 +403,10 @@ def test_handle_login_with_google_manual_project(
   prompts = iter([0, "manual-proj", "us-east1"])
   monkeypatch.setattr(click, "prompt", lambda *a, **k: next(prompts))
 
-  api_key, proj, region = cli_create._handle_login_with_google()
-  assert api_key is None
-  assert proj == "manual-proj"
-  assert region == "us-east1"
+  auth_info = _onboarding.handle_login_with_google()
+  assert isinstance(auth_info, _onboarding.VertexAIAuth)
+  assert auth_info.project_id == "manual-proj"
+  assert auth_info.region == "us-east1"
 
 
 def test_handle_login_with_google_option_1(
@@ -414,10 +419,10 @@ def test_handle_login_with_google_option_1(
   prompts = iter(["1", "test-proj", "us-east1"])
   monkeypatch.setattr(click, "prompt", lambda *a, **k: next(prompts))
 
-  api_key, proj, region = cli_create._handle_login_with_google()
-  assert api_key is None
-  assert proj == "test-proj"
-  assert region == "us-east1"
+  auth_info = _onboarding.handle_login_with_google()
+  assert isinstance(auth_info, _onboarding.VertexAIAuth)
+  assert auth_info.project_id == "test-proj"
+  assert auth_info.region == "us-east1"
 
 
 def test_handle_login_with_google_option_2(
@@ -441,10 +446,11 @@ def test_handle_login_with_google_option_2(
       },
   )
 
-  api_key, proj, region = cli_create._handle_login_with_google()
-  assert api_key == "new-key"
-  assert proj == "new-proj"
-  assert region == "us-central1"
+  auth_info = _onboarding.handle_login_with_google()
+  assert isinstance(auth_info, _onboarding.ExpressModeAuth)
+  assert auth_info.api_key == "new-key"
+  assert auth_info.project_id == "new-proj"
+  assert auth_info.region == "us-central1"
 
 
 def test_handle_login_with_google_option_2_unset_project(
@@ -473,7 +479,7 @@ def test_handle_login_with_google_option_2_unset_project(
   )
 
   monkeypatch.setattr(
-      cli_create, "_get_gcp_project_from_gcloud", lambda: "old-proj"
+      _onboarding, "get_gcp_project_from_gcloud", lambda: "old-proj"
   )
 
   called = {}
@@ -486,10 +492,11 @@ def test_handle_login_with_google_option_2_unset_project(
 
   monkeypatch.setattr(subprocess, "run", fake_run)
 
-  api_key, proj, region = cli_create._handle_login_with_google()
-  assert api_key == "new-key"
-  assert proj == "new-proj"
-  assert region == "us-central1"
+  auth_info = _onboarding.handle_login_with_google()
+  assert isinstance(auth_info, _onboarding.ExpressModeAuth)
+  assert auth_info.api_key == "new-key"
+  assert auth_info.project_id == "new-proj"
+  assert auth_info.region == "us-central1"
   assert called.get("unset") is True
 
 
@@ -501,15 +508,15 @@ def test_handle_login_with_google_option_3(
   monkeypatch.setattr(gcp_utils, "list_gcp_projects", lambda limit: [])
   monkeypatch.setattr(click, "prompt", lambda *a, **k: "3")
   with pytest.raises(click.Abort):
-    cli_create._handle_login_with_google()
+    _onboarding.handle_login_with_google()
 
 
 # prompt_str
 def test_prompt_str_non_empty(monkeypatch: pytest.MonkeyPatch) -> None:
-  """_prompt_str should retry until a non-blank string is provided."""
+  """prompt_str should retry until a non-blank string is provided."""
   responses = iter(["", " ", "valid"])
   monkeypatch.setattr(click, "prompt", lambda *_a, **_k: next(responses))
-  assert cli_create._prompt_str("dummy") == "valid"
+  assert _onboarding.prompt_str("dummy") == "valid"
 
 
 # gcloud fallback helpers
@@ -522,7 +529,7 @@ def test_get_gcp_project_from_gcloud_fail(
       "run",
       lambda *_a, **_k: (_ for _ in ()).throw(FileNotFoundError()),
   )
-  assert cli_create._get_gcp_project_from_gcloud() == ""
+  assert _onboarding.get_gcp_project_from_gcloud() == ""
 
 
 def test_get_gcp_region_from_gcloud_fail(
@@ -536,4 +543,4 @@ def test_get_gcp_region_from_gcloud_fail(
           subprocess.CalledProcessError(1, "gcloud")
       ),
   )
-  assert cli_create._get_gcp_region_from_gcloud() == ""
+  assert _onboarding.get_gcp_region_from_gcloud() == ""

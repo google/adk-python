@@ -84,7 +84,7 @@ async def append_logprobs_to_response(
 
 # Create a simple agent that demonstrates logprobs usage
 root_agent = Agent(
-    model="gemini-2.0-flash",
+    model="gemini-2.5-flash",
     name="logprobs_demo_agent",
     description=(
         "A simple agent that demonstrates log probability extraction and"
