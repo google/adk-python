@@ -270,6 +270,19 @@ class VertexAiSessionService(BaseSessionService):
         raise
 
   @override
+  async def get_user_state(
+      self, *, app_name: str, user_id: str
+  ) -> dict[str, Any]:
+    # The Vertex AI Agent Engine API does not expose user state independently
+    # of a session. Callers that require cross-session user state should use
+    # list_sessions to retrieve it indirectly.
+    raise NotImplementedError(
+        'VertexAiSessionService does not support get_user_state. '
+        'The Vertex AI Agent Engine API does not expose user state '
+        'independently of a session. Use list_sessions instead.'
+    )
+
+  @override
   async def append_event(self, session: Session, event: Event) -> Event:
     # Update the in-memory session.
     await super().append_event(session=session, event=event)
