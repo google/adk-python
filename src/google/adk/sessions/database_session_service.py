@@ -630,7 +630,7 @@ class DatabaseSessionService(BaseSessionService):
       )
       if storage_user_state is None:
         return {}
-      return dict(storage_user_state.state)
+      return dict(storage_user_state.state or {})
 
   @override
   async def append_event(self, session: Session, event: Event) -> Event:

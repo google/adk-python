@@ -273,13 +273,21 @@ class VertexAiSessionService(BaseSessionService):
   async def get_user_state(
       self, *, app_name: str, user_id: str
   ) -> dict[str, Any]:
-    # The Vertex AI Agent Engine API does not expose user state independently
-    # of a session. Callers that require cross-session user state should use
-    # list_sessions to retrieve it indirectly.
+    """Not supported by the Vertex AI Agent Engine backend.
+
+    The Vertex AI Agent Engine API does not expose user state independently of
+    a session.  To read user state, enumerate sessions via ``list_sessions``
+    and call ``get_session`` on each result to access the merged state.
+
+    Raises:
+      NotImplementedError: Always, because the Vertex AI Agent Engine API does
+        not provide a way to query user state without a session.
+    """
     raise NotImplementedError(
         'VertexAiSessionService does not support get_user_state. '
         'The Vertex AI Agent Engine API does not expose user state '
-        'independently of a session. Use list_sessions instead.'
+        'independently of a session. To read user state, enumerate sessions '
+        'via list_sessions and call get_session on each result.'
     )
 
   @override

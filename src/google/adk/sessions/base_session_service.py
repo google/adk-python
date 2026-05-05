@@ -141,12 +141,14 @@ class BaseSessionService(abc.ABC):
     Raises:
       NotImplementedError: When the concrete ``BaseSessionService``
         implementation does not support reading user state independently of a
-        session.  Callers should catch this and fall back to
-        ``list_sessions`` or accept that user state is unavailable.
+        session.  Callers should catch this, then enumerate sessions via
+        ``list_sessions`` and call ``get_session`` on each result to access
+        the merged state, or accept that user state is unavailable.
     """
     raise NotImplementedError(
         f'{type(self).__name__} does not support get_user_state. '
-        'Use list_sessions to retrieve user state indirectly.'
+        'To read user state, enumerate sessions via list_sessions and '
+        'call get_session on each result to access the merged state.'
     )
 
   async def append_event(self, session: Session, event: Event) -> Event:
