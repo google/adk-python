@@ -593,7 +593,7 @@ async def _execute_single_function_call_async(
     return function_response_event
 
   async with _instrumentation.record_tool_execution(
-      tool, agent, invocation_context, function_args
+      tool, agent, function_args
   ) as tel_ctx:
     tel_ctx.function_response_event = await _run_with_trace()
     return tel_ctx.function_response_event
@@ -828,7 +828,7 @@ async def _execute_single_function_call_live(
     return function_response_event
 
   async with _instrumentation.record_tool_execution(
-      tool, agent, invocation_context, function_args
+      tool, agent, function_args
   ) as tel_ctx:
     tel_ctx.function_response_event = await _run_with_trace()
     return tel_ctx.function_response_event
