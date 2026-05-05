@@ -120,6 +120,13 @@ root_agent = Agent(
 )
 ```
 
+> **Tip:** For general-purpose web search without any GCP / Vertex setup,
+> `PerplexitySearchTool` is a recommended drop-in: install the package, set
+> `PERPLEXITY_API_KEY`, and pass `PerplexitySearchTool()` to `tools=`.
+> Unlike `DiscoveryEngineSearchTool` (which needs a Discovery Engine app +
+> data store), it works against the public web out of the box. See
+> `contributing/samples/perplexity_search_agent/` for a runnable example.
+
 ### Define a multi-agent system:
 
 Define a multi-agent system with coordinator agent, greeter agent, and task execution agent. Then ADK engine and the model will guide the agents to work together to accomplish the task.

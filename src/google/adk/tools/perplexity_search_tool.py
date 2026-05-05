@@ -49,6 +49,12 @@ class PerplexitySearchTool(FunctionTool):
   pin server-side options (recency, domain filter, max results, etc.) at
   construction time.
 
+  This is the recommended general-purpose web search tool when you do not
+  have a Google Cloud / Vertex AI Discovery Engine data store set up:
+  `DiscoveryEngineSearchTool` requires a GCP project with a Discovery Engine
+  app and indexed corpus, whereas `PerplexitySearchTool` works against the
+  public web with a single `PERPLEXITY_API_KEY` environment variable.
+
   See https://docs.perplexity.ai/api-reference/search-post for the request
   and response schema.
 
