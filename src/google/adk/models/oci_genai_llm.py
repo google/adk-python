@@ -337,6 +337,13 @@ class OCIGenAILlm(BaseLlm):
     auth_file_location: Path to the OCI config file used for ``API_KEY``
       auth (default: ``~/.oci/config``).
     max_tokens: Maximum number of tokens to generate (default: 2048).
+    reasoning_effort: Reasoning-token budget for reasoning-capable models.
+      One of ``"NONE"``, ``"MINIMAL"``, ``"LOW"``, ``"MEDIUM"``, ``"HIGH"``,
+      or ``None`` (default — let OCI pick). Honoured by GPT-5 family,
+      Gemini 2.5, Grok reasoning variants, and Cohere Command-A-Reasoning;
+      ignored by non-reasoning models. The single most impactful cost knob
+      for reasoning models — ``"LOW"`` typically cuts reasoning-token spend
+      5-10× vs the default.
   """
 
   model: str = "google.gemini-2.5-flash"
@@ -347,6 +354,7 @@ class OCIGenAILlm(BaseLlm):
   auth_profile: str = "DEFAULT"
   auth_file_location: str = "~/.oci/config"
   max_tokens: int = 2048
+  reasoning_effort: Optional[str] = None
 
   @classmethod
   @override
@@ -489,6 +497,10 @@ class OCIGenAILlm(BaseLlm):
       response_format = _build_response_format(cfg, oci_models)
       if response_format is not None:
         chat_request_kwargs["response_format"] = response_format
+
+    # Constructor-level reasoning_effort applies regardless of per-request cfg.
+    if self.reasoning_effort is not None:
+      chat_request_kwargs["reasoning_effort"] = self.reasoning_effort
 
     if oci_tools:
       chat_request_kwargs["tools"] = oci_tools
