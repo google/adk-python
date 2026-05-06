@@ -880,18 +880,21 @@ class LlmAgent(BaseAgent):
     except Exception:
       previous = ''
 
-    # Final response: perform schema validation if needed and replace
-    # previous aggregated value with the validated final result.
+    # Final response: combine previous aggregated value with the final
+    # fragment, then perform schema validation if needed and save the
+    # combined result.
     if event.is_final_response():
+      combined = (previous or '') + (result or '')
+      if not combined:
+        return
       if self.output_schema:
-        if not result.strip():
+        # If combined is just whitespace, skip.
+        if not combined.strip():
           return
-        validated = validate_schema(self.output_schema, result)
+        validated = validate_schema(self.output_schema, combined)
         event.actions.state_delta[self.output_key] = validated
         return
-      elif not result:
-        return
-      event.actions.state_delta[self.output_key] = result
+      event.actions.state_delta[self.output_key] = combined
       return
 
     # Non-final (streaming) response: append the fragment to previous value.
