@@ -857,6 +857,12 @@ class LlmAgent(BaseAgent):
         if not result.strip():
           return
         result = validate_schema(self.output_schema, result)
+      elif not result:
+        # No text parts found and no output_schema. Skip to avoid
+        # overwriting state_delta values already set by callbacks
+        # (e.g. after_tool_callback with skip_summarization on
+        # function_response-only events).
+        return
       event.actions.state_delta[self.output_key] = result
 
   @model_validator(mode='after')

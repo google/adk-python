@@ -427,10 +427,33 @@ async def test_load_resource_process_llm_request_binary(
 
 
 @pytest.mark.asyncio
-async def test_process_llm_request(
+async def test_process_llm_request_with_list_skills_tool(
     mock_skill1, mock_skill2, tool_context_instance
 ):
   toolset = skill_toolset.SkillToolset([mock_skill1, mock_skill2])
+  llm_req = mock.create_autospec(llm_request_model.LlmRequest, instance=True)
+
+  await toolset.process_llm_request(
+      tool_context=tool_context_instance, llm_request=llm_req
+  )
+
+  llm_req.append_instructions.assert_called_once_with(
+      [skill_toolset.DEFAULT_SKILL_SYSTEM_INSTRUCTION]
+  )
+
+
+@pytest.mark.asyncio
+async def test_process_llm_request_without_list_skills_tool(
+    mock_skill1, mock_skill2, tool_context_instance
+):
+  toolset = skill_toolset.SkillToolset([mock_skill1, mock_skill2])
+  # Manually remove ListSkillsTool from self._tools to simulate it not being available
+  toolset._tools = [
+      t
+      for t in toolset._tools
+      if not isinstance(t, skill_toolset.ListSkillsTool)
+  ]
+
   llm_req = mock.create_autospec(llm_request_model.LlmRequest, instance=True)
 
   await toolset.process_llm_request(

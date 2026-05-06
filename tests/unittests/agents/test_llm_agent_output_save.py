@@ -276,3 +276,34 @@ class TestLlmAgentOutputSave:
     # ASSERT: Because the method should return early, the state_delta
     # should remain empty.
     assert len(event.actions.state_delta) == 0
+
+  def test_maybe_save_output_to_state_skips_function_response_only_event(self):
+    """Test that state_delta set by callback is not overwritten when event
+    only has function_response parts and no text."""
+    agent = LlmAgent(name="test_agent", output_key="result")
+
+    # Simulate a function_response-only event (no text parts)
+    parts = [
+        types.Part(
+            function_response=types.FunctionResponse(
+                name="my_tool",
+                response={"status": "success", "data": [1, 2, 3]},
+            )
+        )
+    ]
+    content = types.Content(role="user", parts=parts)
+
+    event = Event(
+        invocation_id="test_invocation",
+        author="test_agent",
+        content=content,
+        actions=EventActions(
+            skip_summarization=True,
+            state_delta={"result": [1, 2, 3]},
+        ),
+    )
+
+    agent._LlmAgent__maybe_save_output_to_state(event)
+
+    # The callback-set value should be preserved, not overwritten with ""
+    assert event.actions.state_delta["result"] == [1, 2, 3]

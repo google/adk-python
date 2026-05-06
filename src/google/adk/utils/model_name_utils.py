@@ -127,6 +127,31 @@ def is_gemini_2_or_above(model_string: Optional[str]) -> bool:
   return parsed_version.major >= 2
 
 
+def is_gemini_eap_model(model_string: Optional[str]) -> bool:
+  """Check if the model is an Early Access Program (EAP) Gemini model.
+
+  Matches names of the form ``gemini-<variant>-early-exp`` optionally
+  followed by a numeric suffix, e.g. ``gemini-flash-early-exp`` or
+  ``gemini-flash-early-exp3``. ``<variant>`` is one or more
+  alphanumeric/underscore segments separated by ``-`` (e.g. ``flash``,
+  ``pro``, ``flash-lite``).
+
+  Args:
+    model_string: Either a simple model name or path-based model name.
+
+  Returns:
+    True if it matches the EAP naming convention, False otherwise.
+  """
+  if not model_string:
+    return False
+
+  model_name = extract_model_name(model_string)
+  return (
+      re.match(r'^gemini-[a-z0-9_]+(?:-[a-z0-9_]+)*-early-exp\d*$', model_name)
+      is not None
+  )
+
+
 def is_gemini_3_1_flash_live(model_string: Optional[str]) -> bool:
   """Check if the model is a Gemini 3.1 Flash Live model.
 
