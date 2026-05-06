@@ -486,7 +486,7 @@ class LlmAgent(BaseAgent):
     should_pause = False
     async with Aclosing(self._llm_flow.run_async(ctx)) as agen:
       async for event in agen:
-        self.__maybe_save_output_to_state(event)
+        self.__maybe_save_output_to_state(event, ctx)
         yield event
         if ctx.should_pause_invocation(event):
           # Do not pause immediately, wait until the long-running tool call is
@@ -510,7 +510,7 @@ class LlmAgent(BaseAgent):
   ) -> AsyncGenerator[Event, None]:
     async with Aclosing(self._llm_flow.run_live(ctx)) as agen:
       async for event in agen:
-        self.__maybe_save_output_to_state(event)
+        self.__maybe_save_output_to_state(event, ctx)
         yield event
       if ctx.end_invocation:
         return
@@ -827,8 +827,16 @@ class LlmAgent(BaseAgent):
         return self.__get_agent_to_run(event.actions.transfer_to_agent)
     return None
 
-  def __maybe_save_output_to_state(self, event: Event):
-    """Saves the model output to state if needed."""
+  def __maybe_save_output_to_state(
+      self, event: Event, ctx: Optional[InvocationContext] = None
+  ):
+    """Saves the model output to state if needed.
+
+    Backwards-compatible: if `ctx` is None, keeps the original behavior of
+    only saving on final responses. If `ctx` is provided, append streamed
+    partial text to the existing session state so intermediate streamed
+    fragments are not lost when tools are called.
+    """
     # skip if the event was authored by some other agent (e.g. current agent
     # transferred to another agent)
     if event.author != self.name:
@@ -842,28 +850,54 @@ class LlmAgent(BaseAgent):
     if not self.output_key:
       return
 
-    # Handle text responses
-    if event.is_final_response() and event.content and event.content.parts:
+    # Collect text parts from this event
+    if not (event.content and event.content.parts):
+      return
 
-      result = ''.join(
-          part.text
-          for part in event.content.parts
-          if part.text and not part.thought
-      )
+    result = ''.join(
+        part.text for part in event.content.parts if part.text and not part.thought
+    )
+
+    # If no invocation context was provided, preserve legacy behavior: only
+    # save on final responses and apply schema validation then.
+    if ctx is None:
+      if not event.is_final_response():
+        return
       if self.output_schema:
-        # If the result from the final chunk is just whitespace or empty,
-        # it means this is an empty final chunk of a stream.
-        # Do not attempt to parse it as JSON.
         if not result.strip():
           return
         result = validate_schema(self.output_schema, result)
       elif not result:
-        # No text parts found and no output_schema. Skip to avoid
-        # overwriting state_delta values already set by callbacks
-        # (e.g. after_tool_callback with skip_summarization on
-        # function_response-only events).
         return
       event.actions.state_delta[self.output_key] = result
+      return
+
+    # When ctx is provided, append partial streamed results into session
+    # state so earlier streamed text is preserved across tool calls.
+    # Read the existing value from the session (may be empty).
+    try:
+      previous = ctx.session.state.get(self.output_key, '') or ''
+    except Exception:
+      previous = ''
+
+    # Final response: perform schema validation if needed and replace
+    # previous aggregated value with the validated final result.
+    if event.is_final_response():
+      if self.output_schema:
+        if not result.strip():
+          return
+        validated = validate_schema(self.output_schema, result)
+        event.actions.state_delta[self.output_key] = validated
+        return
+      elif not result:
+        return
+      event.actions.state_delta[self.output_key] = result
+      return
+
+    # Non-final (streaming) response: append the fragment to previous value.
+    if result:
+      event.actions.state_delta[self.output_key] = previous + result
+    return
 
   @model_validator(mode='after')
   def __model_validator_after(self) -> LlmAgent:
