@@ -279,7 +279,9 @@ class TestLlmAgentOutputSave:
 
   def test_maybe_save_output_to_state_skips_function_response_only_event(self):
     """Test that state_delta set by callback is not overwritten when event
-    only has function_response parts and no text."""
+
+    only has function_response parts and no text.
+    """
     agent = LlmAgent(name="test_agent", output_key="result")
 
     # Simulate a function_response-only event (no text parts)
