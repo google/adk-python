@@ -31,6 +31,8 @@ from datetime import timezone
 import json
 import logging
 import pickle
+
+from ._safe_unpickle import safe_loads as _safe_pickle_loads
 from typing import Any
 from typing import Optional
 
@@ -114,7 +116,7 @@ class DynamicPickleType(TypeDecorator):
     """Ensures the raw bytes from the database are unpickled back into a Python object."""
     if value is not None:
       if dialect.name in ("spanner+spanner", "mysql"):
-        return pickle.loads(value)
+        return _safe_pickle_loads(value)
     return value
 
 
