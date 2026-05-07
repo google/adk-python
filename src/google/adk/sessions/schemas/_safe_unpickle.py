@@ -48,6 +48,7 @@ _ALLOWED_GLOBALS: dict[str, set[str]] = {
     "copy_reg": {"_reconstructor"},
     "copyreg": {"_reconstructor", "__newobj__"},
     "_codecs": {"encode"},
+    "enum": {"__new__", "Enum", "IntEnum", "StrEnum"},
 }
 
 
