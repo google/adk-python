@@ -350,6 +350,14 @@ class LlmAgent(BaseAgent):
   - Extracts agent reply for later use, such as in tools, callbacks, etc.
   - Connects agents to coordinate with each other.
   """
+  accumulate_output_key: bool = True
+  """Whether to accumulate streamed output fragments into `output_key`.
+
+  When True (default) streamed fragments received before tool calls are
+  appended into the session state under `output_key` so the final saved value
+  includes all streamed text. When False, preserves legacy behavior where
+  only the final response's text from the last event is saved.
+  """
   # Controlled input/output configurations - End
 
   # Advance features - Start
@@ -873,22 +881,40 @@ class LlmAgent(BaseAgent):
       return
 
     # When ctx is provided, append partial streamed results into session
-    # state so earlier streamed text is preserved across tool calls.
+    # state so earlier streamed text is preserved across tool calls. If the
+    # caller disabled accumulation via `accumulate_output_key`, fall back to
+    # legacy behavior: ignore non-final fragments and save only the final
+    # fragment (without combining previous fragments).
     # Read the existing value from the session (may be empty).
     try:
       previous = ctx.session.state.get(self.output_key, '') or ''
     except Exception:
       previous = ''
+    # If accumulation disabled, ignore non-final fragments and save only
+    # the final fragment as legacy behavior.
+    if not self.accumulate_output_key:
+      if not event.is_final_response():
+        return
+      # Final-only behavior: validate only the final fragment.
+      if self.output_schema:
+        if not result.strip():
+          return
+        validated = validate_schema(self.output_schema, result)
+        event.actions.state_delta[self.output_key] = validated
+        return
+      if not result:
+        return
+      event.actions.state_delta[self.output_key] = result
+      return
 
-    # Final response: combine previous aggregated value with the final
-    # fragment, then perform schema validation if needed and save the
-    # combined result.
+    # Accumulation enabled: Final response combines previous + result
+    # then validate and save. Non-final events append current fragment to
+    # previous value so it is available to future finalization.
     if event.is_final_response():
       combined = (previous or '') + (result or '')
       if not combined:
         return
       if self.output_schema:
-        # If combined is just whitespace, skip.
         if not combined.strip():
           return
         validated = validate_schema(self.output_schema, combined)
@@ -1032,6 +1058,8 @@ class LlmAgent(BaseAgent):
       kwargs['output_schema'] = resolve_code_reference(config.output_schema)
     if config.output_key:
       kwargs['output_key'] = config.output_key
+    if getattr(config, 'accumulate_output_key', None) is not None:
+      kwargs['accumulate_output_key'] = config.accumulate_output_key
     if config.tools:
       kwargs['tools'] = cls._resolve_tools(config.tools, config_abs_path)
     if config.before_model_callbacks:

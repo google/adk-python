@@ -307,3 +307,53 @@ class TestLlmAgentOutputSave:
 
     # The callback-set value should be preserved, not overwritten with ""
     assert event.actions.state_delta["result"] == [1, 2, 3]
+
+  def test_accumulate_output_key_toggle(self):
+    """Test that `accumulate_output_key` controls accumulation behavior.
+
+    Simulate two streamed fragments separated by a tool call by manually
+    updating the session state between calls.
+    """
+    class Ctx:
+      pass
+
+    # Prepare a fake invocation context with session.state
+    ctx = Ctx()
+    ctx.session = type('S', (), {'state': {}})()
+
+    # Case 1: accumulation enabled (default)
+    agent = LlmAgent(name="test_agent", output_key="result")
+
+    # First (partial) fragment
+    event1 = create_test_event(
+        author="test_agent", content_text="Intro: ", is_final=False
+    )
+    agent._LlmAgent__maybe_save_output_to_state(event1, ctx)
+    # Simulate session update that runner would do
+    ctx.session.state["result"] = event1.actions.state_delta.get("result", "")
+
+    # Final fragment
+    event2 = create_test_event(author="test_agent", content_text="Conclusion", is_final=True)
+    agent._LlmAgent__maybe_save_output_to_state(event2, ctx)
+
+    # With accumulation enabled, final saved value should include both parts
+    assert event2.actions.state_delta["result"] == "Intro: Conclusion"
+
+    # Case 2: accumulation disabled
+    ctx2 = Ctx()
+    ctx2.session = type('S', (), {'state': {}})()
+    agent2 = LlmAgent(name="test_agent", output_key="result", accumulate_output_key=False)
+
+    event1b = create_test_event(
+        author="test_agent", content_text="Intro: ", is_final=False
+    )
+    agent2._LlmAgent__maybe_save_output_to_state(event1b, ctx2)
+    # Simulate runner updating session with the partial (though when disabled
+    # we expect the partial not to be used for final save)
+    ctx2.session.state["result"] = event1b.actions.state_delta.get("result", "")
+
+    event2b = create_test_event(author="test_agent", content_text="Conclusion", is_final=True)
+    agent2._LlmAgent__maybe_save_output_to_state(event2b, ctx2)
+
+    # With accumulation disabled, final saved value should be only final fragment
+    assert event2b.actions.state_delta["result"] == "Conclusion"
