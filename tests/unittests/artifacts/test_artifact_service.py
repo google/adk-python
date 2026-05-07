@@ -616,6 +616,8 @@ async def test_file_metadata_camelcase(tmp_path, artifact_service_factory):
   metadata_path = (
       tmp_path
       / "artifacts"
+      / "apps"
+      / "myapp"
       / "users"
       / "user123"
       / "sessions"
@@ -677,6 +679,8 @@ async def test_file_list_artifact_versions(tmp_path, artifact_service_factory):
   version_payload_path = (
       tmp_path
       / "artifacts"
+      / "apps"
+      / "myapp"
       / "users"
       / "user123"
       / "sessions"
@@ -722,6 +726,81 @@ async def test_file_list_artifact_versions(tmp_path, artifact_service_factory):
 @pytest.mark.parametrize(
     ("filename", "session_id"),
     [
+        ("docs/report.txt", "sess789"),
+        ("user:shared.txt", None),
+    ],
+)
+async def test_file_artifacts_are_isolated_by_app_name(
+    tmp_path, filename, session_id
+):
+  """FileArtifactService does not share artifacts across app names."""
+  artifact_service = FileArtifactService(root_dir=tmp_path / "artifacts")
+
+  await artifact_service.save_artifact(
+      app_name="victim_app",
+      user_id="user123",
+      session_id=session_id,
+      filename=filename,
+      artifact=types.Part(text="victim data"),
+  )
+
+  assert (
+      await artifact_service.load_artifact(
+          app_name="attacker_app",
+          user_id="user123",
+          session_id=session_id,
+          filename=filename,
+      )
+      is None
+  )
+  assert (
+      await artifact_service.list_artifact_keys(
+          app_name="attacker_app",
+          user_id="user123",
+          session_id=session_id,
+      )
+      == []
+  )
+  assert (
+      await artifact_service.list_versions(
+          app_name="attacker_app",
+          user_id="user123",
+          session_id=session_id,
+          filename=filename,
+      )
+      == []
+  )
+  assert (
+      await artifact_service.get_artifact_version(
+          app_name="attacker_app",
+          user_id="user123",
+          session_id=session_id,
+          filename=filename,
+      )
+      is None
+  )
+
+  await artifact_service.delete_artifact(
+      app_name="attacker_app",
+      user_id="user123",
+      session_id=session_id,
+      filename=filename,
+  )
+
+  loaded = await artifact_service.load_artifact(
+      app_name="victim_app",
+      user_id="user123",
+      session_id=session_id,
+      filename=filename,
+  )
+  assert loaded is not None
+  assert loaded.text == "victim data"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("filename", "session_id"),
+    [
         ("../escape.txt", "sess123"),
         ("user:../escape.txt", "sess123"),
         ("/absolute/path.txt", "sess123"),
@@ -740,6 +819,38 @@ async def test_file_save_artifact_rejects_out_of_scope_paths(
         user_id="user123",
         session_id=session_id,
         filename=filename,
+        artifact=part,
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "app_name",
+    [
+        "../escape",
+        "../../etc",
+        "foo/../../bar",
+        "valid/../..",
+        "..",
+        ".",
+        "has/slash",
+        "back\\slash",
+        "null\x00byte",
+        "",
+    ],
+)
+async def test_file_save_artifact_rejects_traversal_in_app_name(
+    tmp_path, app_name
+):
+  """FileArtifactService rejects app_name values that escape root_dir."""
+  artifact_service = FileArtifactService(root_dir=tmp_path / "artifacts")
+  part = types.Part(text="content")
+  with pytest.raises(InputValidationError):
+    await artifact_service.save_artifact(
+        app_name=app_name,
+        user_id="user123",
+        session_id="sess123",
+        filename="safe.txt",
         artifact=part,
     )
 
