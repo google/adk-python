@@ -30,7 +30,7 @@ def get_current_time() -> str:
 
 
 root_agent = Agent(
-    model="gemini-2.0-flash",
+    model="gemini-2.5-flash",
     name="postgres_session_agent",
     description="A sample agent demonstrating PostgreSQL session persistence.",
     instruction="""

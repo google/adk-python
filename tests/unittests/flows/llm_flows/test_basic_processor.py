@@ -63,7 +63,7 @@ class TestBasicLlmRequestProcessor:
     """Test that processor sets output_schema when agent has no tools."""
     agent = LlmAgent(
         name='test_agent',
-        model='gemini-1.5-flash',
+        model='gemini-2.5-flash',
         output_schema=OutputSchema,
         tools=[],  # No tools
     )
@@ -86,7 +86,7 @@ class TestBasicLlmRequestProcessor:
     """Test that processor skips output_schema when agent has tools."""
     agent = LlmAgent(
         name='test_agent',
-        model='gemini-1.5-flash',
+        model='gemini-2.5-flash',
         output_schema=OutputSchema,
         tools=[FunctionTool(func=dummy_tool)],  # Has tools
     )
@@ -152,7 +152,7 @@ class TestBasicLlmRequestProcessor:
     """Test that processor works normally when agent has no output_schema or tools."""
     agent = LlmAgent(
         name='test_agent',
-        model='gemini-1.5-flash',
+        model='gemini-2.5-flash',
         # No output_schema, no tools
     )
 
@@ -174,7 +174,7 @@ class TestBasicLlmRequestProcessor:
     """Test that processor sets the model name correctly."""
     agent = LlmAgent(
         name='test_agent',
-        model='gemini-1.5-flash',
+        model='gemini-2.5-flash',
     )
 
     invocation_context = await _create_invocation_context(agent)
@@ -187,4 +187,4 @@ class TestBasicLlmRequestProcessor:
       events.append(event)
 
     # Should have set the model name
-    assert llm_request.model == 'gemini-1.5-flash'
+    assert llm_request.model == 'gemini-2.5-flash'

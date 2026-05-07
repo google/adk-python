@@ -44,7 +44,7 @@ async def generate_image(prompt: str, tool_context: 'ToolContext'):
 
 
 root_agent = Agent(
-    model='gemini-2.0-flash-001',
+    model='gemini-2.5-flash',
     name='root_agent',
     description="""An agent that generates images and answer questions about the images.""",
     instruction="""You are an agent whose job is to generate or edit an image based on the user's prompt.

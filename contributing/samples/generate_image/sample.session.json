@@ -240,7 +240,7 @@
       "invocation_id": "CFs9iCdD",
       "event_id": "urXUWHfc",
       "model_request": {
-        "model": "gemini-1.5-flash",
+        "model": "gemini-2.5-flash",
         "contents": [
           {
             "parts": [
@@ -311,7 +311,7 @@
             ]
           }
         ],
-        "model_version": "gemini-1.5-flash-001",
+        "model_version": "gemini-2.5-flash",
         "usage_metadata": {
           "candidates_token_count": 16,
           "prompt_token_count": 84,
@@ -323,7 +323,7 @@
       "invocation_id": "CFs9iCdD",
       "event_id": "vxNenxyu",
       "model_request": {
-        "model": "gemini-1.5-flash",
+        "model": "gemini-2.5-flash",
         "contents": [
           {
             "parts": [
@@ -415,7 +415,7 @@
             ]
           }
         ],
-        "model_version": "gemini-1.5-flash-001",
+        "model_version": "gemini-2.5-flash",
         "usage_metadata": {
           "candidates_token_count": 11,
           "prompt_token_count": 117,
@@ -427,7 +427,7 @@
       "invocation_id": "IGkazcuO",
       "event_id": "fqFlqdNL",
       "model_request": {
-        "model": "gemini-1.5-flash",
+        "model": "gemini-2.5-flash",
         "contents": [
           {
             "parts": [
@@ -540,7 +540,7 @@
             ]
           }
         ],
-        "model_version": "gemini-1.5-flash-001",
+        "model_version": "gemini-2.5-flash",
         "usage_metadata": {
           "candidates_token_count": 19,
           "prompt_token_count": 135,
@@ -552,7 +552,7 @@
       "invocation_id": "IGkazcuO",
       "event_id": "WD2LHmFA",
       "model_request": {
-        "model": "gemini-1.5-flash",
+        "model": "gemini-2.5-flash",
         "contents": [
           {
             "parts": [
@@ -686,7 +686,7 @@
             ]
           }
         ],
-        "model_version": "gemini-1.5-flash-001",
+        "model_version": "gemini-2.5-flash",
         "usage_metadata": {
           "candidates_token_count": 14,
           "prompt_token_count": 171,

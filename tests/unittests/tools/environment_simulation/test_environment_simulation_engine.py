@@ -221,3 +221,37 @@ class TestEnvironmentSimulationEngineSimulate:
     result2 = await engine_injected.simulate(mock_tool, {}, MagicMock())
     assert result2 == {"injected": True}
     mock_create_strategy.assert_not_called()
+
+  async def test_injected_latency_awaits_asyncio_sleep(
+      self, mock_create_strategy, mock_analyzer
+  ):
+    """Regression guard against blocking time.sleep in the async path."""
+    del mock_create_strategy, mock_analyzer
+    latency = 0.2
+    config = EnvironmentSimulationConfig(
+        tool_simulation_configs=[
+            ToolSimulationConfig(
+                tool_name="test_tool",
+                injection_configs=[
+                    InjectionConfig(
+                        injected_latency_seconds=latency,
+                        injected_response={"injected": True},
+                    )
+                ],
+            )
+        ],
+        simulation_model="test-model",
+        simulation_model_configuration=genai_types.GenerateContentConfig(),
+    )
+    engine = EnvironmentSimulationEngine(config)
+    mock_tool = MagicMock()
+    mock_tool.name = "test_tool"
+
+    with patch(
+        "google.adk.tools.environment_simulation.environment_simulation_engine.asyncio.sleep",
+        new_callable=AsyncMock,
+    ) as mock_sleep:
+      result = await engine.simulate(mock_tool, {}, MagicMock())
+
+    mock_sleep.assert_awaited_once_with(latency)
+    assert result == {"injected": True}
