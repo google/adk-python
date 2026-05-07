@@ -320,7 +320,12 @@ def test_llm_response_create_error_case_with_citation_metadata():
 
 
 def test_llm_response_create_empty_content_with_stop_reason():
-  """Test LlmResponse.create() with empty content and stop finish reason."""
+  """Empty content + STOP must surface an explicit MODEL_RETURNED_NO_CONTENT error.
+
+  Previously this returned a successful LlmResponse with empty content,
+  which let an empty model turn (e.g. gemini-2.5-flash-lite returning zero
+  output tokens after a tool call) silently become the final agent output.
+  """
   generate_content_response = types.GenerateContentResponse(
       candidates=[
           types.Candidate(
@@ -332,8 +337,9 @@ def test_llm_response_create_empty_content_with_stop_reason():
 
   response = LlmResponse.create(generate_content_response)
 
-  assert response.error_code is None
-  assert response.content is not None
+  assert response.error_code == 'MODEL_RETURNED_NO_CONTENT'
+  assert response.error_message
+  assert response.finish_reason == types.FinishReason.STOP
 
 
 def test_llm_response_create_includes_model_version():
@@ -397,3 +403,84 @@ def test_get_function_responses_empty_when_no_content():
 def test_get_function_responses_empty_when_no_parts():
   response = LlmResponse(content=types.Content(parts=None))
   assert response.get_function_responses() == []
+
+
+def test_llm_response_create_empty_parts_with_stop_surfaces_error():
+  """Empty parts + finish_reason=STOP must not pass through as success.
+
+  Reproduces the gemini-2.5-flash-lite case where the second turn after a
+  tool call returns Content(role='model', parts=[]) with STOP, which used
+  to silently become an empty final agent output.
+  """
+  generate_content_response = types.GenerateContentResponse(
+      candidates=[
+          types.Candidate(
+              content=types.Content(role='model', parts=[]),
+              finish_reason=types.FinishReason.STOP,
+          )
+      ]
+  )
+
+  response = LlmResponse.create(generate_content_response)
+
+  assert response.error_code == 'MODEL_RETURNED_NO_CONTENT'
+  assert response.error_message
+  assert response.finish_reason == types.FinishReason.STOP
+
+
+def test_llm_response_create_none_content_with_stop_surfaces_error():
+  """content=None + finish_reason=STOP also routes to the error branch."""
+  generate_content_response = types.GenerateContentResponse(
+      candidates=[
+          types.Candidate(
+              content=None,
+              finish_reason=types.FinishReason.STOP,
+          )
+      ]
+  )
+
+  response = LlmResponse.create(generate_content_response)
+
+  assert response.error_code == 'MODEL_RETURNED_NO_CONTENT'
+  assert response.error_message
+  assert response.finish_reason == types.FinishReason.STOP
+
+
+def test_llm_response_create_non_empty_parts_with_stop_is_success():
+  """Regression guard: real text + STOP must remain a successful response."""
+  generate_content_response = types.GenerateContentResponse(
+      candidates=[
+          types.Candidate(
+              content=types.Content(
+                  role='model', parts=[types.Part(text='ok')]
+              ),
+              finish_reason=types.FinishReason.STOP,
+          )
+      ]
+  )
+
+  response = LlmResponse.create(generate_content_response)
+
+  assert response.error_code is None
+  assert response.error_message is None
+  assert response.content.parts[0].text == 'ok'
+  assert response.finish_reason == types.FinishReason.STOP
+
+
+def test_llm_response_create_empty_parts_with_max_tokens_preserves_finish_reason():
+  """Regression guard: non-STOP empty responses still surface their finish_reason."""
+  generate_content_response = types.GenerateContentResponse(
+      candidates=[
+          types.Candidate(
+              content=types.Content(role='model', parts=[]),
+              finish_reason=types.FinishReason.MAX_TOKENS,
+              finish_message='token limit reached',
+          )
+      ]
+  )
+
+  response = LlmResponse.create(generate_content_response)
+
+  assert response.error_code == types.FinishReason.MAX_TOKENS
+  assert response.error_message == 'token limit reached'
+  assert response.finish_reason == types.FinishReason.MAX_TOKENS

@@ -960,8 +960,14 @@ class BaseLlmFlow(ABC):
 
     # Skip the model response event if there is no content and no error code.
     # This is needed for the code executor to trigger another loop.
+    # Treat a Content object with empty/missing parts as "no content" so it
+    # cannot pass through as a final response with empty text. Empty content
+    # carrying an error_code is still yielded so the caller sees the error.
+    content_is_empty = (
+        not llm_response.content or not llm_response.content.parts
+    )
     if (
-        not llm_response.content
+        content_is_empty
         and not llm_response.error_code
         and not llm_response.interrupted
     ):

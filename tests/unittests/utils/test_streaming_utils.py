@@ -185,7 +185,13 @@ class TestStreamingResponseAggregator:
 
   @pytest.mark.asyncio
   async def test_process_response_with_none_content(self):
-    """Test that StreamingResponseAggregator handles content=None."""
+    """Empty parts + STOP must surface a MODEL_RETURNED_NO_CONTENT error.
+
+    Previously the aggregator yielded a successful LlmResponse with empty
+    content here; that let an empty Gemini turn (e.g. gemini-2.5-flash-lite
+    returning zero output tokens after a tool call) silently become the
+    final agent output.
+    """
     aggregator = streaming_utils.StreamingResponseAggregator()
     response = types.GenerateContentResponse(
         candidates=[
@@ -199,7 +205,9 @@ class TestStreamingResponseAggregator:
     async for r in aggregator.process_response(response):
       results.append(r)
     assert len(results) == 1
-    assert results[0].content is not None
+    assert results[0].error_code == "MODEL_RETURNED_NO_CONTENT"
+    assert results[0].error_message
+    assert results[0].finish_reason == types.FinishReason.STOP
 
     closed_response = aggregator.close()
     assert closed_response is None
