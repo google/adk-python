@@ -18,13 +18,6 @@ import dataclasses
 from typing import Any
 from unittest import mock
 
-import pytest
-
-pytest.importorskip(
-    "google.cloud.iamconnectorcredentials_v1alpha",
-    reason="Requires google-cloud-iamconnectorcredentials",
-)
-
 from google.adk import Agent
 from google.adk import Runner
 from google.adk.auth.auth_tool import AuthConfig
@@ -38,6 +31,7 @@ from google.cloud.iamconnectorcredentials_v1alpha import RetrieveCredentialsMeta
 from google.cloud.iamconnectorcredentials_v1alpha import RetrieveCredentialsRequest
 from google.cloud.iamconnectorcredentials_v1alpha import RetrieveCredentialsResponse
 from google.genai import types
+import pytest
 
 from tests.unittests import testing_utils
 
