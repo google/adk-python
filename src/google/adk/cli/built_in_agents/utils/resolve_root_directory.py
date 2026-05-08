@@ -101,8 +101,7 @@ def resolve_file_path(
     candidate.relative_to(resolved_root)
   except ValueError as e:
     raise ValueError(
-        f'Path {file_path!r} resolves outside project root'
-        f' {resolved_root!r}'
+        f'Path {file_path!r} resolves outside project root {resolved_root!r}'
     ) from e
 
   return candidate
