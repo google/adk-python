@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -63,7 +63,7 @@ mcp_toolset = McpToolset(
 
 # Define the agent that uses the OAuth-protected MCP toolset
 root_agent = LlmAgent(
-    model='gemini-2.0-flash',
+    model='gemini-2.5-flash',
     name='oauth_mcp_agent',
     instruction="""You are a helpful assistant that can access user information.
 

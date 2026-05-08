@@ -23,13 +23,13 @@ import pytest
 
 @pytest.fixture
 def gemini_llm():
-  return Gemini(model="gemini-1.5-flash")
+  return Gemini(model="gemini-2.5-flash")
 
 
 @pytest.fixture
 def llm_request():
   return LlmRequest(
-      model="gemini-1.5-flash",
+      model="gemini-2.5-flash",
       contents=[Content(role="user", parts=[Part.from_text(text="Hello")])],
       config=types.GenerateContentConfig(
           temperature=0.1,
