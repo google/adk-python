@@ -1096,36 +1096,18 @@ def to_agent_engine(
 
     from ..utils._google_client_headers import get_tracking_headers
 
-    if project and region:
-      click.echo('Initializing Vertex AI...')
-      client = vertexai.Client(
-          project=project,
-          location=region,
-          http_options={'headers': get_tracking_headers()},
-      )
-    elif api_key:
-      click.echo('Initializing Vertex AI in Express Mode with API key...')
-      client = vertexai.Client(
-          api_key=api_key, http_options={'headers': get_tracking_headers()}
-      )
-    else:
-      click.echo(
-          'No project/region or api_key provided. Starting onboarding flow...'
-      )
+    if not project or not region:
+      click.echo('No project/region provided. Starting onboarding flow...')
       auth_info = _onboarding.handle_login_with_google()
-      if isinstance(auth_info, _onboarding.VertexAIAuth):
-        click.echo('Initializing Vertex AI...')
-        client = vertexai.Client(
-            project=auth_info.project_id,
-            location=auth_info.region,
-            http_options={'headers': get_tracking_headers()},
-        )
-      elif isinstance(auth_info, _onboarding.ExpressModeAuth):
-        click.echo('Initializing Vertex AI in Express Mode with API key...')
-        client = vertexai.Client(
-            api_key=auth_info.api_key,
-            http_options={'headers': get_tracking_headers()},
-        )
+      project = auth_info.project_id
+      region = auth_info.region
+
+    click.echo('Initializing Vertex AI...')
+    client = vertexai.Client(
+        project=project,
+        location=region,
+        http_options={'headers': get_tracking_headers()},
+    )
     click.echo('Vertex AI initialized.')
 
     is_config_agent = False
