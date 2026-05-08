@@ -411,6 +411,18 @@ class FirestoreSessionService(BaseSessionService):  # type: ignore[misc]
         u_state = user_states_map.get(u_id, {})
         merged = self._merge_state(app_state, u_state, s_state)
 
+        # Convert timestamp (mirrors the logic in get_session).
+        update_time = data.get("updateTime")
+        last_update_time = 0.0
+        if update_time:
+          if isinstance(update_time, datetime):
+            last_update_time = update_time.timestamp()
+          else:
+            try:
+              last_update_time = float(update_time)
+            except (ValueError, TypeError):
+              pass
+
         sessions.append(
             Session(
                 id=data["id"],
@@ -418,7 +430,7 @@ class FirestoreSessionService(BaseSessionService):  # type: ignore[misc]
                 user_id=data["userId"],
                 state=merged,
                 events=[],
-                last_update_time=0.0,
+                last_update_time=last_update_time,
             )
         )
 
