@@ -702,36 +702,37 @@ def test_to_agent_engine_triggers_onboarding(
     agent_dir: Callable[[bool, bool], Path],
 ) -> None:
   """It should trigger onboarding when credentials are missing."""
-  onboarding_recorder = _Recorder()
-
-  def mock_handle_login():
-    onboarding_recorder()
-    return cli_deploy._onboarding.ExpressModeAuth(
-        api_key="fake_api_key", project_id="fake_project", region="fake_region"
-    )
-
+  mock_handle_login = mock.Mock(
+      return_value=cli_deploy._onboarding.ExpressModeAuth(
+          api_key="fake_api_key",
+          project_id="fake_project",
+          region="fake_region",
+      )
+  )
   monkeypatch.setattr(
       cli_deploy._onboarding, "handle_login_with_google", mock_handle_login
   )
 
+  # Mock subprocess.run to avoid calling gcloud
+  monkeypatch.setattr(
+      subprocess,
+      "run",
+      lambda *a, **k: types.SimpleNamespace(stdout="fake-project\n"),
+  )
+
   fake_vertexai = types.ModuleType("vertexai")
+  mock_client = mock.Mock()
+  fake_vertexai.Client = mock.Mock(return_value=mock_client)
 
-  class _FakeAgentEngines:
+  mock_agent_engines = mock.Mock()
+  mock_client.agent_engines = mock_agent_engines
 
-    def create(self, *, config: Dict[str, Any]) -> Any:
-      _ = config
-      return types.SimpleNamespace(
-          api_resource=types.SimpleNamespace(
-              name="projects/p/locations/l/reasoningEngines/e"
-          )
+  mock_agent_engines.create.return_value = types.SimpleNamespace(
+      api_resource=types.SimpleNamespace(
+          name="projects/p/locations/l/reasoningEngines/e"
       )
+  )
 
-  class _FakeVertexClient:
-
-    def __init__(self, *_args: Any, **_kwargs: Any) -> None:
-      self.agent_engines = _FakeAgentEngines()
-
-  fake_vertexai.Client = _FakeVertexClient
   monkeypatch.setitem(sys.modules, "vertexai", fake_vertexai)
 
   src_dir = agent_dir(False, False)
@@ -742,4 +743,11 @@ def test_to_agent_engine_triggers_onboarding(
       trace_to_cloud=True,
   )
 
-  assert len(onboarding_recorder.calls) == 1
+  mock_handle_login.assert_called_once()
+
+  # Verify vertexai.Client was initialized with correct args
+  fake_vertexai.Client.assert_called_once()
+  kwargs = fake_vertexai.Client.call_args.kwargs
+  assert kwargs.get("project") == "fake_project"
+  assert kwargs.get("location") == "fake_region"
+  assert "api_key" not in kwargs or kwargs.get("api_key") is None
