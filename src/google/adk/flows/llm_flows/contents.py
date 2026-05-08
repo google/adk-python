@@ -795,8 +795,8 @@ def _is_request_input_event(event: Event) -> bool:
   return _is_function_call_event(event, REQUEST_INPUT_FUNCTION_CALL_NAME)
 
 
-def _is_live_model_audio_event_with_inline_data(event: Event) -> bool:
-  """Check if the event is a live/bidi audio event with inline data.
+def _is_live_model_media_event_with_inline_data(event: Event) -> bool:
+  """Check if the event is a live/bidi media event (audio, video, image) with inline data.
 
   There are two possible cases and we only care about the second case:
   content=Content(
@@ -826,12 +826,14 @@ def _is_live_model_audio_event_with_inline_data(event: Event) -> bool:
   if not event.content or not event.content.parts:
     return False
   for part in event.content.parts:
-    if (
-        part.inline_data
-        and part.inline_data.mime_type
-        and part.inline_data.mime_type.startswith('audio/')
-    ):
-      return True
+    if part.inline_data and part.inline_data.mime_type:
+      mime = part.inline_data.mime_type.lower()
+      if (
+          mime.startswith('audio/')
+          or mime.startswith('video/')
+          or mime.startswith('image/')
+      ):
+        return True
   return False
 
 
