@@ -863,7 +863,9 @@ class LlmAgent(BaseAgent):
       return
 
     result = ''.join(
-        part.text for part in event.content.parts if part.text and not part.thought
+        part.text
+        for part in event.content.parts
+        if part.text and not part.thought
     )
 
     # If no invocation context was provided, preserve legacy behavior: only

@@ -141,7 +141,11 @@ class LlmAgentConfig(BaseAgentConfig):
 
   accumulate_output_key: Optional[bool] = Field(
       default=None,
-      description='Optional. When true, streamed fragments are accumulated into the `output_key` across tool calls. When false, only the final response is saved to `output_key`.',
+      description=(
+          'Optional. When true, streamed fragments are accumulated into the'
+          ' `output_key` across tool calls. When false, only the final response'
+          ' is saved to `output_key`.'
+      ),
   )
 
   include_contents: Literal['default', 'none'] = Field(
