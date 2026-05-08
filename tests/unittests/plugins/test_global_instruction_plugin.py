@@ -46,7 +46,7 @@ async def test_global_instruction_plugin_with_string():
   mock_callback_context._invocation_context = mock_invocation_context
 
   llm_request = LlmRequest(
-      model="gemini-1.5-flash",
+      model="gemini-2.5-flash",
       config=types.GenerateContentConfig(system_instruction=""),
   )
 
@@ -86,7 +86,7 @@ async def test_global_instruction_plugin_with_instruction_provider():
   mock_callback_context.session = mock_session
 
   llm_request = LlmRequest(
-      model="gemini-1.5-flash",
+      model="gemini-2.5-flash",
       config=types.GenerateContentConfig(system_instruction=""),
   )
 
@@ -122,7 +122,7 @@ async def test_global_instruction_plugin_empty_instruction():
   mock_callback_context._invocation_context = mock_invocation_context
 
   llm_request = LlmRequest(
-      model="gemini-1.5-flash",
+      model="gemini-2.5-flash",
       config=types.GenerateContentConfig(
           system_instruction="Original instruction"
       ),
@@ -159,7 +159,7 @@ async def test_global_instruction_plugin_leads_existing():
   mock_callback_context._invocation_context = mock_invocation_context
 
   llm_request = LlmRequest(
-      model="gemini-1.5-flash",
+      model="gemini-2.5-flash",
       config=types.GenerateContentConfig(
           system_instruction="Existing instructions."
       ),
@@ -194,7 +194,7 @@ async def test_global_instruction_plugin_prepends_to_list():
   mock_callback_context._invocation_context = mock_invocation_context
 
   llm_request = LlmRequest(
-      model="gemini-1.5-flash",
+      model="gemini-2.5-flash",
       config=types.GenerateContentConfig(
           system_instruction=["Existing instruction."]
       ),
