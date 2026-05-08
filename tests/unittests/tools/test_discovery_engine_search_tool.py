@@ -80,6 +80,193 @@ class TestDiscoveryEngineSearchTool:
           data_store_id="test_data_store", data_store_specs=[{"id": "123"}]
       )
 
+  @pytest.mark.parametrize(
+      ("tool_kwargs", "expected_endpoint"),
+      [
+          (
+              {
+                  "data_store_id": (
+                      "projects/test/locations/eu/collections/default_collection/"
+                      "dataStores/test_data_store"
+                  )
+              },
+              "eu-discoveryengine.googleapis.com",
+          ),
+          (
+              {
+                  "search_engine_id": (
+                      "projects/test/locations/us/collections/default_collection/"
+                      "engines/test_search_engine"
+                  )
+              },
+              "us-discoveryengine.googleapis.com",
+          ),
+          (
+              {
+                  "data_store_id": (
+                      "projects/test/locations/europe-west1/collections/"
+                      "default_collection/dataStores/test_data_store"
+                  )
+              },
+              "europe-west1-discoveryengine.googleapis.com",
+          ),
+      ],
+  )
+  @mock.patch.object(discovery_engine_search_tool, "client_options")
+  @mock.patch.object(discoveryengine, "SearchServiceClient")
+  def test_init_with_regional_location_uses_regional_endpoint(
+      self,
+      mock_search_client,
+      mock_client_options,
+      tool_kwargs,
+      expected_endpoint,
+  ):
+    """Test initialization uses the expected regional API endpoint."""
+    DiscoveryEngineSearchTool(**tool_kwargs)
+
+    mock_client_options.ClientOptions.assert_called_once_with(
+        api_endpoint=expected_endpoint
+    )
+    mock_search_client.assert_called_once_with(
+        credentials="credentials",
+        client_options=mock_client_options.ClientOptions.return_value,
+    )
+
+  @mock.patch.object(discovery_engine_search_tool, "client_options")
+  @mock.patch.object(discoveryengine, "SearchServiceClient")
+  def test_init_with_explicit_location_override_uses_input_location(
+      self, mock_search_client, mock_client_options
+  ):
+    """Test initialization uses explicit location when resource has none."""
+    DiscoveryEngineSearchTool(
+        data_store_id="test_data_store",
+        location="eu",
+    )
+
+    mock_client_options.ClientOptions.assert_called_once_with(
+        api_endpoint="eu-discoveryengine.googleapis.com"
+    )
+    mock_search_client.assert_called_once_with(
+        credentials="credentials",
+        client_options=mock_client_options.ClientOptions.return_value,
+    )
+
+  @mock.patch.object(discoveryengine, "SearchServiceClient")
+  def test_init_with_mismatched_location_raises_error(self, mock_search_client):
+    """Test initialization rejects mismatched location overrides."""
+    with pytest.raises(
+        ValueError,
+        match=(
+            "location must match the location in data_store_id or "
+            "search_engine_id."
+        ),
+    ):
+      DiscoveryEngineSearchTool(
+          data_store_id=(
+              "projects/test/locations/us/collections/default_collection/"
+              "dataStores/test_data_store"
+          ),
+          location="eu",
+      )
+
+    mock_search_client.assert_not_called()
+
+  @mock.patch.object(discoveryengine, "SearchServiceClient")
+  def test_init_with_empty_location_raises_error(self, mock_search_client):
+    """Test initialization rejects an empty location override."""
+    with pytest.raises(
+        ValueError, match="location must not be empty if specified."
+    ):
+      DiscoveryEngineSearchTool(
+          data_store_id=(
+              "projects/test/locations/us/collections/default_collection/"
+              "dataStores/test_data_store"
+          ),
+          location=" ",
+      )
+
+    mock_search_client.assert_not_called()
+
+  @mock.patch.object(discoveryengine, "SearchServiceClient")
+  def test_init_with_invalid_override_location_raises_error(
+      self, mock_search_client
+  ):
+    """Test initialization rejects invalid override location characters."""
+    with pytest.raises(
+        ValueError,
+        match="location must contain only letters, digits, and hyphens.",
+    ):
+      DiscoveryEngineSearchTool(
+          data_store_id="test_data_store",
+          location="attacker.com#",
+      )
+
+    mock_search_client.assert_not_called()
+
+  @mock.patch.object(discoveryengine, "SearchServiceClient")
+  def test_init_with_invalid_resource_location_raises_error(
+      self, mock_search_client
+  ):
+    """Test initialization rejects invalid resource location characters."""
+    with pytest.raises(
+        ValueError,
+        match="Invalid location in data_store_id or search_engine_id.",
+    ):
+      DiscoveryEngineSearchTool(
+          data_store_id=(
+              "projects/test/locations/attacker.com#/collections/"
+              "default_collection/dataStores/test_data_store"
+          )
+      )
+
+    mock_search_client.assert_not_called()
+
+  @mock.patch.object(discovery_engine_search_tool, "client_options")
+  @mock.patch.object(discoveryengine, "SearchServiceClient")
+  def test_init_with_global_location_keeps_default_endpoint(
+      self, mock_search_client, mock_client_options
+  ):
+    """Test initialization keeps default API endpoint for global location."""
+    DiscoveryEngineSearchTool(
+        data_store_id=(
+            "projects/test/locations/global/collections/default_collection/"
+            "dataStores/test_data_store"
+        )
+    )
+
+    mock_client_options.ClientOptions.assert_not_called()
+    mock_search_client.assert_called_once_with(
+        credentials="credentials", client_options=None
+    )
+
+  @mock.patch.object(discovery_engine_search_tool, "client_options")
+  @mock.patch.object(discoveryengine, "SearchServiceClient")
+  def test_init_with_regional_location_and_quota_project_id(
+      self, mock_search_client, mock_client_options
+  ):
+    """Test initialization uses endpoint and quota project id together."""
+    mock_credentials = mock.MagicMock()
+    mock_credentials.quota_project_id = "test-quota-project"
+
+    with mock.patch.object(
+        auth, "default", return_value=(mock_credentials, "project")
+    ):
+      DiscoveryEngineSearchTool(
+          data_store_id=(
+              "projects/test/locations/eu/collections/default_collection/"
+              "dataStores/test_data_store"
+          )
+      )
+
+    mock_client_options.ClientOptions.assert_called_once_with(
+        api_endpoint="eu-discoveryengine.googleapis.com",
+        quota_project_id="test-quota-project",
+    )
+    mock_search_client.assert_called_once_with(
+        credentials=mock_credentials,
+        client_options=mock_client_options.ClientOptions.return_value,
+    )
+
   @mock.patch.object(discovery_engine_search_tool, "client_options")
   @mock.patch.object(
       discoveryengine,

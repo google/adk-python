@@ -22,10 +22,10 @@ def test_agent_not_found_enhanced_error():
   """Verify enhanced error message for agent not found."""
   root_agent = LlmAgent(
       name='root',
-      model='gemini-2.0-flash',
+      model='gemini-2.5-flash',
       sub_agents=[
-          LlmAgent(name='agent_a', model='gemini-2.0-flash'),
-          LlmAgent(name='agent_b', model='gemini-2.0-flash'),
+          LlmAgent(name='agent_a', model='gemini-2.5-flash'),
+          LlmAgent(name='agent_b', model='gemini-2.5-flash'),
       ],
   )
 
@@ -47,13 +47,13 @@ def test_agent_tree_traversal():
   """Verify agent tree traversal helper works correctly."""
   root_agent = LlmAgent(
       name='orchestrator',
-      model='gemini-2.0-flash',
+      model='gemini-2.5-flash',
       sub_agents=[
           LlmAgent(
               name='parent_agent',
-              model='gemini-2.0-flash',
+              model='gemini-2.5-flash',
               sub_agents=[
-                  LlmAgent(name='child_agent', model='gemini-2.0-flash'),
+                  LlmAgent(name='child_agent', model='gemini-2.5-flash'),
               ],
           ),
       ],
@@ -72,11 +72,11 @@ def test_agent_not_found_shows_all_agents():
   """Verify error message shows all agents (no truncation)."""
   # Create 100 sub-agents
   sub_agents = [
-      LlmAgent(name=f'agent_{i}', model='gemini-2.0-flash') for i in range(100)
+      LlmAgent(name=f'agent_{i}', model='gemini-2.5-flash') for i in range(100)
   ]
 
   root_agent = LlmAgent(
-      name='root', model='gemini-2.0-flash', sub_agents=sub_agents
+      name='root', model='gemini-2.5-flash', sub_agents=sub_agents
   )
 
   with pytest.raises(ValueError) as exc_info:

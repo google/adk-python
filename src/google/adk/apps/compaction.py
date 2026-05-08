@@ -22,11 +22,45 @@ from ..agents.base_agent import BaseAgent
 from ..events.event import Event
 from ..sessions.base_session_service import BaseSessionService
 from ..sessions.session import Session
+from ..telemetry.tracing import _build_compaction_attributes
+from ..telemetry.tracing import _build_compaction_result_attributes
+from ..telemetry.tracing import tracer
 from .app import App
 from .app import EventsCompactionConfig
 from .llm_event_summarizer import LlmEventSummarizer
 
 logger = logging.getLogger('google_adk.' + __name__)
+
+
+async def _summarize_events_with_trace(
+    *,
+    session: Session,
+    config: EventsCompactionConfig,
+    events_to_compact: list[Event],
+    trigger: str,
+) -> Event | None:
+  """Summarizes events within a trace span labeled for compaction."""
+  if config.summarizer is None:
+    return None
+
+  attributes = _build_compaction_attributes(
+      session_id=session.id,
+      trigger=trigger,
+      summarizer_type=type(config.summarizer).__name__,
+      event_count=len(events_to_compact),
+      token_threshold=config.token_threshold,
+      event_retention_size=config.event_retention_size,
+      compaction_interval=config.compaction_interval,
+      overlap_size=config.overlap_size,
+  )
+
+  with tracer.start_as_current_span(f'compact_events {trigger}') as span:
+    span.set_attributes(attributes)
+    compaction_event = await config.summarizer.maybe_summarize_events(
+        events=events_to_compact
+    )
+    span.set_attributes(_build_compaction_result_attributes(compaction_event))
+    return compaction_event
 
 
 def _count_text_chars_in_content(content: types.Content | None) -> int:
@@ -383,8 +417,11 @@ async def _run_compaction_for_token_threshold_config(
   if config.summarizer is None:
     return False
 
-  compaction_event = await config.summarizer.maybe_summarize_events(
-      events=events_to_compact
+  compaction_event = await _summarize_events_with_trace(
+      session=session,
+      config=config,
+      events_to_compact=events_to_compact,
+      trigger='token_threshold',
   )
   if compaction_event:
     await session_service.append_event(session=session, event=compaction_event)
@@ -602,8 +639,11 @@ async def _run_compaction_for_sliding_window(
   if config.summarizer is None:
     return None
 
-  compaction_event = await config.summarizer.maybe_summarize_events(
-      events=events_to_compact
+  compaction_event = await _summarize_events_with_trace(
+      session=session,
+      config=config,
+      events_to_compact=events_to_compact,
+      trigger='sliding_window',
   )
   if compaction_event:
     await session_service.append_event(session=session, event=compaction_event)

@@ -39,7 +39,7 @@ gke_executor = GkeCodeExecutor(
 
 root_agent = LlmAgent(
     name="gke_coding_agent",
-    model="gemini-2.0-flash",
+    model="gemini-2.5-flash",
     description=(
         "A general-purpose agent that executes Python code in a secure GKE"
         " Sandbox."

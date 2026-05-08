@@ -27,7 +27,16 @@ from .state import State
 
 
 class GetSessionConfig(BaseModel):
-  """The configuration of getting a session."""
+  """The configuration of getting a session.
+
+  Attributes:
+    num_recent_events: The limit of recent events to get for the session.
+      Optional: if None, the filter is not applied; if greater than 0, returns
+        at most given number of recent events; if 0, no events are returned.
+    after_timestamp: The earliest timestamp of events to get for the session.
+      Optional: if None, the filter is not applied; otherwise, returns events
+        with timestamp >= the given time.
+  """
 
   num_recent_events: Optional[int] = None
   after_timestamp: Optional[float] = None
@@ -114,6 +123,13 @@ class BaseSessionService(abc.ABC):
     self._update_session_state(session, event)
     session.events.append(event)
     return event
+
+  async def flush(self):
+    """Flushes any buffered events.
+
+    For non-buffering implementations, this can be a no-op.
+    """
+    pass
 
   def _apply_temp_state(self, session: Session, event: Event) -> None:
     """Applies temp-scoped state delta to the in-memory session state.
