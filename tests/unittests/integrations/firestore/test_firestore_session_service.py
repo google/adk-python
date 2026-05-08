@@ -399,6 +399,7 @@ async def test_list_sessions_with_user_id(mock_firestore_client):
       "appName": app_name,
       "userId": user_id,
       "state": {"session_key": "session_val"},
+      "updateTime": 1234567890.0,
   }
 
   app_state_coll = mock.MagicMock()
@@ -454,6 +455,7 @@ async def test_list_sessions_with_user_id(mock_firestore_client):
   assert session.state["session_key"] == "session_val"
   assert session.state["app:app_key"] == "app_val"
   assert session.state["user:user_key"] == "user_val"
+  assert session.last_update_time == 1234567890.0
 
 
 @pytest.mark.asyncio
@@ -467,6 +469,7 @@ async def test_list_sessions_without_user_id(mock_firestore_client):
       "appName": app_name,
       "userId": "user1",
       "state": {"session_key": "session_val"},
+      "updateTime": 1234567890.0,
   }
 
   mock_firestore_client.collection_group.return_value.where.return_value.get = (
@@ -508,6 +511,7 @@ async def test_list_sessions_without_user_id(mock_firestore_client):
   assert session.id == "session1"
   assert session.state["app:app_key"] == "app_val"
   assert session.state["user:user_key"] == "user_val"
+  assert session.last_update_time == 1234567890.0
 
   mock_firestore_client.collection_group.assert_called_once_with("sessions")
   mock_firestore_client.collection_group.return_value.where.assert_called_once_with(
