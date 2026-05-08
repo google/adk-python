@@ -786,17 +786,17 @@ class Runner:
 
   def _should_append_event(self, event: Event, is_live_call: bool) -> bool:
     """Checks if an event should be appended to the session."""
-    # Don't append audio response from model in live mode to session.
+    # Don't append media (audio/video/image) response from model in live mode to session.
     # The data is appended to artifacts with a reference in file_data in the
-    # event.
+    # event if save_live_blob is True.
     # We should append non-partial events only.For example, non-finished(partial)
     # transcription events should not be appended.
     # Function call and function response events should be appended.
     # Other control events should be appended.
-    if is_live_call and contents._is_live_model_audio_event_with_inline_data(
+    if is_live_call and contents._is_live_model_media_event_with_inline_data(
         event
     ):
-      # We don't append live model audio events with inline data to avoid
+      # We don't append live model media events with inline data to avoid
       # storing large blobs in the session. However, events with file_data
       # (references to artifacts) should be appended.
       return False
