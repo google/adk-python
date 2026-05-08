@@ -17,7 +17,6 @@ from __future__ import annotations
 import contextlib
 import dataclasses
 import logging
-import sys
 import time
 from typing import Any
 from typing import AsyncIterator
@@ -35,6 +34,7 @@ from ..events import event as event_lib
 if TYPE_CHECKING:
   from ..agents.base_agent import BaseAgent
   from ..agents.invocation_context import InvocationContext
+  from ..tools.base_tool import BaseTool
 
 
 def _get_elapsed_ms(span: trace.Span | None, fallback_start: float) -> float:
@@ -94,13 +94,11 @@ async def record_agent_invocation(
       _metrics.record_agent_invocation_duration(
           agent.name,
           elapsed_ms,
-          ctx.user_content,
-          ctx.session.events,
           caught_error,
       )
       _metrics.record_agent_request_size(agent.name, ctx.user_content)
       _metrics.record_agent_response_size(agent.name, ctx.session.events)
-      _metrics.record_agent_workflow_steps(agent.name, len(ctx.session.events))
+      _metrics.record_agent_workflow_steps(agent.name, ctx.session.events)
     except Exception:  # pylint: disable=broad-exception-caught
       logger.exception(
           "Failed to record agent metrics for agent %s", agent.name
@@ -111,14 +109,12 @@ async def record_agent_invocation(
 async def record_tool_execution(
     tool: BaseTool,
     agent: BaseAgent,
-    invocation_context: InvocationContext,
     function_args: dict[str, Any],
 ) -> AsyncIterator[TelemetryContext]:
   """Unified context manager for consolidated tool execution telemetry."""
   start_time = time.monotonic()
   caught_error: Exception | None = None
   span: trace.Span | None = None
-  tel_ctx: TelemetryContext | None = None
   span_name = f"execute_tool {tool.name}"
   try:
     with tracing.tracer.start_as_current_span(span_name) as s:
@@ -140,22 +136,11 @@ async def record_tool_execution(
             error=caught_error,
         )
   finally:
-    elapsed_ms = _get_elapsed_ms(span, start_time)
-    result_event = (
-        tel_ctx.function_response_event if tel_ctx is not None else None
-    )
-    output_content = (
-        result_event.content
-        if isinstance(result_event, event_lib.Event)
-        else None
-    )
     try:
       _metrics.record_tool_execution_duration(
           tool_name=tool.name,
           agent_name=agent.name,
-          elapsed_ms=elapsed_ms,
-          input_content=invocation_context.user_content,
-          output_content=output_content,
+          elapsed_ms=_get_elapsed_ms(span, start_time),
           error=caught_error,
       )
     except Exception:  # pylint: disable=broad-exception-caught

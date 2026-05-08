@@ -124,6 +124,13 @@ class BaseSessionService(abc.ABC):
     session.events.append(event)
     return event
 
+  async def flush(self):
+    """Flushes any buffered events.
+
+    For non-buffering implementations, this can be a no-op.
+    """
+    pass
+
   def _apply_temp_state(self, session: Session, event: Event) -> None:
     """Applies temp-scoped state delta to the in-memory session state.
 
