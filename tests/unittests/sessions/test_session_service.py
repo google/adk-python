@@ -1014,6 +1014,30 @@ async def test_append_event_allows_markerless_current_session():
 
 
 @pytest.mark.asyncio
+async def test_append_event_when_session_is_same_ref_as_storage_session():
+  """Tests that appending an event to a session only appends it once if the user-passed session and the underlying storage session are the same object."""
+  service = InMemorySessionService()
+  app_name = 'my_app'
+  user_id = 'test_user'
+
+  # Create a session
+  session = await service.create_session(app_name=app_name, user_id=user_id)
+
+  # Get the actual storage event object from the underlying storage
+  storage_session = service.sessions[app_name][user_id][session.id]
+
+  # Append the event to the storage session directly
+  event = Event(invocation_id='inv1', author='user')
+  await service.append_event(session=storage_session, event=event)
+
+  # Verify that the storage session has only one event
+  final_session = await service.get_session(
+      app_name=app_name, user_id=user_id, session_id=session.id
+  )
+  assert len(final_session.events) == 1
+
+
+@pytest.mark.asyncio
 async def test_get_session_with_config(session_service):
   app_name = 'my_app'
   user_id = 'user'

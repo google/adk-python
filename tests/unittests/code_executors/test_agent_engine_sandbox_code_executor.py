@@ -155,7 +155,76 @@ class TestAgentEngineSandboxCodeExecutor:
     mock_json_output = MagicMock()
     mock_json_output.mime_type = "application/json"
     mock_json_output.data = json.dumps(
-        {"stdout": "recreated sandbox run", "stderr": ""}
+        {"msg_out": "recreated sandbox run", "msg_err": ""}
+    ).encode("utf-8")
+    mock_json_output.metadata = None
+    mock_response.outputs = [mock_json_output]
+    mock_api_client.agent_engines.sandboxes.execute_code.return_value = (
+        mock_response
+    )
+
+    # Execute using agent_engine_resource_name so a sandbox can be created
+    executor = AgentEngineSandboxCodeExecutor(
+        agent_engine_resource_name=(
+            "projects/123/locations/us-central1/reasoningEngines/456"
+        )
+    )
+    code_input = CodeExecutionInput(code='print("hello world")')
+    result = executor.execute_code(mock_invocation_context, code_input)
+
+    # Assert get was called for the existing sandbox
+    mock_api_client.agent_engines.sandboxes.get.assert_called_once_with(
+        name=existing_sandbox_name
+    )
+
+    # Assert create was called and session updated with new sandbox
+    mock_api_client.agent_engines.sandboxes.create.assert_called_once()
+    assert (
+        mock_invocation_context.session.state["sandbox_name"]
+        == created_sandbox_name
+    )
+
+    # Assert execute_code used the created sandbox name
+    mock_api_client.agent_engines.sandboxes.execute_code.assert_called_once_with(
+        name=created_sandbox_name,
+        input_data={"code": 'print("hello world")'},
+    )
+
+  @patch("vertexai.Client")
+  def test_execute_code_recreates_sandbox_when_get_raises_client_error(
+      self,
+      mock_vertexai_client,
+      mock_invocation_context,
+  ):
+    # Setup Mocks
+    mock_api_client = MagicMock()
+    mock_vertexai_client.return_value = mock_api_client
+
+    # Existing sandbox name stored in session
+    existing_sandbox_name = "projects/123/locations/us-central1/reasoningEngines/456/sandboxEnvironments/old"
+    mock_invocation_context.session.state = {
+        "sandbox_name": existing_sandbox_name
+    }
+
+    # Mock get to raise ClientError with code 404
+    from google.genai.errors import ClientError
+
+    mock_api_client.agent_engines.sandboxes.get.side_effect = ClientError(
+        code=404, response_json={"message": "Not Found"}
+    )
+
+    # Mock create operation to return a new sandbox resource name
+    operation_mock = MagicMock()
+    created_sandbox_name = "projects/123/locations/us-central1/reasoningEngines/456/sandboxEnvironments/789"
+    operation_mock.response.name = created_sandbox_name
+    mock_api_client.agent_engines.sandboxes.create.return_value = operation_mock
+
+    # Mock execute_code response
+    mock_response = MagicMock()
+    mock_json_output = MagicMock()
+    mock_json_output.mime_type = "application/json"
+    mock_json_output.data = json.dumps(
+        {"msg_out": "recreated sandbox run", "msg_err": ""}
     ).encode("utf-8")
     mock_json_output.metadata = None
     mock_response.outputs = [mock_json_output]
