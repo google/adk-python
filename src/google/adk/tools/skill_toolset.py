@@ -900,11 +900,15 @@ class SkillToolset(BaseToolset):
       self, *, tool_context: ToolContext, llm_request: LlmRequest
   ) -> None:
     """Processes the outgoing LLM request to include available skills."""
-    skills = self._list_skills()
-    skills_xml = prompt.format_skills_as_xml(skills)
-    instructions = []
-    instructions.append(_DEFAULT_SKILL_SYSTEM_INSTRUCTION)
-    instructions.append(skills_xml)
+    instructions = [_DEFAULT_SKILL_SYSTEM_INSTRUCTION]
+
+    has_list_skills = any(isinstance(t, ListSkillsTool) for t in self._tools)
+
+    if not has_list_skills:
+      skills = self._list_skills()
+      skills_xml = prompt.format_skills_as_xml(skills)
+      instructions.append(skills_xml)
+
     llm_request.append_instructions(instructions)
 
 
