@@ -279,7 +279,9 @@ class TestLlmAgentOutputSave:
 
   def test_maybe_save_output_to_state_skips_function_response_only_event(self):
     """Test that state_delta set by callback is not overwritten when event
-    only has function_response parts and no text."""
+
+    only has function_response parts and no text.
+    """
     agent = LlmAgent(name="test_agent", output_key="result")
 
     # Simulate a function_response-only event (no text parts)
@@ -307,3 +309,25 @@ class TestLlmAgentOutputSave:
 
     # The callback-set value should be preserved, not overwritten with ""
     assert event.actions.state_delta["result"] == [1, 2, 3]
+
+  def test_maybe_save_output_to_state_saves_empty_string_when_text_is_empty(
+      self,
+  ):
+    """Test that output is saved as empty string when part.text is explicitly empty."""
+    agent = LlmAgent(name="test_agent", output_key="result")
+
+    # Explicitly construct a part with empty string text
+    parts = [types.Part(text="")]
+    content = types.Content(role="model", parts=parts)
+    event = Event(
+        invocation_id="test_invocation",
+        author="test_agent",
+        content=content,
+        actions=EventActions(),
+    )
+
+    agent._LlmAgent__maybe_save_output_to_state(event)
+
+    # Assert key exists and value is empty string
+    assert "result" in event.actions.state_delta
+    assert not event.actions.state_delta["result"]
