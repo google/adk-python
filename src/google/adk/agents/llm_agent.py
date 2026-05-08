@@ -845,6 +845,17 @@ class LlmAgent(BaseAgent):
     # Handle text responses
     if event.is_final_response() and event.content and event.content.parts:
 
+      # Skip if no text parts at all to avoid overwriting state_delta values
+      # already set (e.g. after_tool_callback with skip_summarization
+      # on function_response-only events).
+      has_text_part = any(
+          part.text is not None and not part.thought
+          for part in event.content.parts
+      )
+
+      if not has_text_part:
+        return
+
       result = ''.join(
           part.text
           for part in event.content.parts

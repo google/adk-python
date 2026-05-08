@@ -60,17 +60,21 @@ class EnvironmentToolset(BaseToolset):
       self,
       *,
       environment: BaseEnvironment,
+      max_output_chars: Optional[int] = None,
       **kwargs: Any,
   ):
     """Create an environment toolset.
 
     Args:
-      environment: The environment used to execute commands and
-        perform file I/O.
+      environment: The environment used to execute commands and perform file
+        I/O.
+      max_output_chars: Maximum character limit for stdout/stderr/file
+        truncation.
       **kwargs: Forwarded to ``BaseToolset.__init__``.
     """
     super().__init__(**kwargs)
     self._environment = environment
+    self._max_output_chars = max_output_chars
     self._environment_initialized = False
 
   @override
@@ -82,8 +86,10 @@ class EnvironmentToolset(BaseToolset):
       await self._environment.initialize()
       self._environment_initialized = True
     return [
-        ExecuteTool(self._environment),
-        ReadFileTool(self._environment),
+        ExecuteTool(self._environment, max_output_chars=self._max_output_chars),
+        ReadFileTool(
+            self._environment, max_output_chars=self._max_output_chars
+        ),
         EditFileTool(self._environment),
         WriteFileTool(self._environment),
     ]

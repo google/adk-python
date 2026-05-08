@@ -349,3 +349,51 @@ def test_llm_response_create_includes_model_version():
   )
   response = LlmResponse.create(generate_content_response)
   assert response.model_version == 'gemini-2.5-flash'
+
+
+def test_get_function_calls_returns_calls_in_order():
+  fc1 = types.FunctionCall(name='a', args={})
+  fc2 = types.FunctionCall(name='b', args={'x': 1})
+  response = LlmResponse(
+      content=types.Content(
+          parts=[
+              types.Part(function_call=fc1),
+              types.Part(text='ignored'),
+              types.Part(function_call=fc2),
+          ]
+      )
+  )
+  assert response.get_function_calls() == [fc1, fc2]
+
+
+def test_get_function_calls_empty_when_no_content():
+  assert LlmResponse().get_function_calls() == []
+
+
+def test_get_function_calls_empty_when_no_parts():
+  response = LlmResponse(content=types.Content(parts=None))
+  assert response.get_function_calls() == []
+
+
+def test_get_function_responses_returns_responses_in_order():
+  fr1 = types.FunctionResponse(name='a', response={'r': 1})
+  fr2 = types.FunctionResponse(name='b', response={'r': 2})
+  response = LlmResponse(
+      content=types.Content(
+          parts=[
+              types.Part(function_response=fr1),
+              types.Part(text='ignored'),
+              types.Part(function_response=fr2),
+          ]
+      )
+  )
+  assert response.get_function_responses() == [fr1, fr2]
+
+
+def test_get_function_responses_empty_when_no_content():
+  assert LlmResponse().get_function_responses() == []
+
+
+def test_get_function_responses_empty_when_no_parts():
+  response = LlmResponse(content=types.Content(parts=None))
+  assert response.get_function_responses() == []
