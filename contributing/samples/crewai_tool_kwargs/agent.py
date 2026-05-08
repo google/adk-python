@@ -95,7 +95,7 @@ adk_search_tool = CrewaiTool(
 )
 
 root_agent = Agent(
-    model="gemini-2.0-flash",
+    model="gemini-2.5-flash",
     name="search_agent",
     description="An agent that can search with flexible filtering options",
     instruction="""
