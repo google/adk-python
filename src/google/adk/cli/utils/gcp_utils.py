@@ -139,7 +139,11 @@ def sign_up_express(
       "POST",
       ":signUp",
       location=location,
-      data={"region": location, "tos_accepted": True},
+      data={
+          "region": location,
+          "tos_accepted": True,
+          "get_default_api_key": True,
+      },
   )
   return {
       "project_id": project.get("projectId"),

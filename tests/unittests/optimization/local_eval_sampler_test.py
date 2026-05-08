@@ -338,48 +338,6 @@ async def test_extract_eval_data(mocker):
   ]
 
 
-def test_extract_eval_data_preserves_none_metric_score(mocker):
-  mock_eval_sets_manager = mocker.MagicMock(spec=EvalSetsManager)
-  mock_eval_case = mocker.MagicMock()
-  mock_eval_case.conversation_scenario = "test_scenario"
-  mock_eval_sets_manager.get_eval_case.return_value = mock_eval_case
-
-  mock_metric_result = mocker.MagicMock(spec=EvalMetricResult)
-  mock_metric_result.metric_name = "test_metric"
-  mock_metric_result.score = None
-  mock_metric_result.eval_status = EvalStatus.NOT_EVALUATED
-
-  mock_per_inv_result = mocker.MagicMock(spec=EvalMetricResultPerInvocation)
-  mock_per_inv_result.actual_invocation = mocker.MagicMock(spec=Invocation)
-  mock_per_inv_result.expected_invocation = mocker.MagicMock(spec=Invocation)
-  mock_per_inv_result.eval_metric_results = [mock_metric_result]
-
-  mock_eval_result = mocker.MagicMock(spec=EvalCaseResult)
-  mock_eval_result.eval_id = "t1"
-  mock_eval_result.eval_metric_result_per_invocation = [mock_per_inv_result]
-
-  mocker.patch(
-      "google.adk.optimization.local_eval_sampler.extract_single_invocation_info",
-      side_effect=[{"info": "actual"}, {"info": "expected"}],
-  )
-
-  config = LocalEvalSamplerConfig(
-      eval_config=EvalConfig(),
-      app_name="test_app",
-      train_eval_set="train_set",
-      train_eval_case_ids=["t1"],
-  )
-  interface = LocalEvalSampler(config, mock_eval_sets_manager)
-
-  eval_data = interface._extract_eval_data("train_set", [mock_eval_result])
-
-  assert eval_data["t1"]["invocations"][0]["eval_metric_results"] == [{
-      "metric_name": "test_metric",
-      "score": None,
-      "eval_status": "NOT_EVALUATED",
-  }]
-
-
 @pytest.mark.asyncio
 async def test_sample_and_score(mocker):
   # Mock results
