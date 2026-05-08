@@ -12,9 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import pytest
-
 from google.adk.agents.config_agent_utils import check_config_for_blocked_keys
+import pytest
 
 
 def test_check_config_for_blocked_keys_rejects_args_key():
