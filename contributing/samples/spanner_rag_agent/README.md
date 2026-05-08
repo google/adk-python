@@ -26,6 +26,7 @@ To run this sample, you need an accessible Spanner instance and database in your
 Google Cloud Project.
 
 ### Set up the Spanner database table
+
 To set up the schema, navigate to Spanner Studio:
 First, you want to add the products table. Copy and paste this statement in the
 empty tab.
@@ -50,6 +51,7 @@ Then, click the `run` button and wait a few seconds for your schema to be
 created.
 
 ### Create an Embedding model
+
 Next, you will create an Embedding model in Spanner and configure it to VertexAI
 model endpoint.
 
@@ -69,6 +71,7 @@ created.
 Learn more about Spanner `MODEL` in [Spanner Vertex AI integration](https://cloud.google.com/spanner/docs/ml-tutorial-embeddings)
 
 ### Load the sample data
+
 Now, you will want to insert some products into your database. Open up a new tab
 in Spanner Studio, then copy and paste the following insert statements:
 
@@ -89,6 +92,7 @@ VALUES (1, 1, "Cymbal Helios Helmet", "Safety meets style with the Cymbal childr
 Click the `run` button to insert the data.
 
 ### Generate embeddings for the sample data
+
 For similarity search to work on the products, you need to generate embeddings
 for the product descriptions.
 With the `EmbeddingsModel` created in the schema, this is a simple UPDATE DML
@@ -116,8 +120,8 @@ or
 for the LLM service for your agent. For example, for using Google AI Studio you
 would set:
 
-* GOOGLE_GENAI_USE_VERTEXAI=FALSE
-* GOOGLE_API_KEY={your api key}
+- GOOGLE_GENAI_USE_VERTEXAI=FALSE
+- GOOGLE_API_KEY={your api key}
 
 ### With Application Default Credentials
 
@@ -125,7 +129,7 @@ This mode is useful for quick development when the agent builder is the only
 user interacting with the agent. The tools are run with these credentials.
 
 1. Create application default credentials on the machine where the agent would
-be running by following https://cloud.google.com/docs/authentication/provide-credentials-adc.
+   be running by following https://cloud.google.com/docs/authentication/provide-credentials-adc.
 
 1. Set `CREDENTIALS_TYPE=None` in `agent.py`
 
@@ -148,40 +152,40 @@ credentials.
 ### With Interactive OAuth
 
 1. Follow
-https://developers.google.com/identity/protocols/oauth2#1.-obtain-oauth-2.0-credentials-from-the-dynamic_data.setvar.console_name.
-to get your client id and client secret. Be sure to choose "web" as your client
-type.
+   https://developers.google.com/identity/protocols/oauth2#1.-obtain-oauth-2.0-credentials-from-the-dynamic_data.setvar.console_name.
+   to get your client id and client secret. Be sure to choose "web" as your client
+   type.
 
-1.  Follow
-    https://developers.google.com/workspace/guides/configure-oauth-consent
-    to add scope "https://www.googleapis.com/auth/spanner.data" and
-    "https://www.googleapis.com/auth/spanner.admin" as declaration, this is used
-    for review purpose.
+1. Follow
+   https://developers.google.com/workspace/guides/configure-oauth-consent
+   to add scope "https://www.googleapis.com/auth/spanner.data" and
+   "https://www.googleapis.com/auth/spanner.admin" as declaration, this is used
+   for review purpose.
 
-1.  Follow
-    https://developers.google.com/identity/protocols/oauth2/web-server#creatingcred
-    to add http://localhost/dev-ui/ to "Authorized redirect URIs".
+1. Follow
+   https://developers.google.com/identity/protocols/oauth2/web-server#creatingcred
+   to add http://localhost/dev-ui/ to "Authorized redirect URIs".
 
-    Note: localhost here is just a hostname that you use to access the dev ui,
-    replace it with the actual hostname you use to access the dev ui.
+   Note: localhost here is just a hostname that you use to access the dev ui,
+   replace it with the actual hostname you use to access the dev ui.
 
-1.  For 1st run, allow popup for localhost in Chrome.
+1. For 1st run, allow popup for localhost in Chrome.
 
-1.  Configure your `.env` file to add two more variables before running the
-    agent:
+1. Configure your `.env` file to add two more variables before running the
+   agent:
 
-    *   OAUTH_CLIENT_ID={your client id}
-    *   OAUTH_CLIENT_SECRET={your client secret}
+   - OAUTH_CLIENT_ID={your client id}
+   - OAUTH_CLIENT_SECRET={your client secret}
 
-    Note: don't create a separate .env, instead put it to the same .env file
-    that stores your Vertex AI or Dev ML credentials
+   Note: don't create a separate .env, instead put it to the same .env file
+   that stores your Vertex AI or Dev ML credentials
 
-1.  Set `CREDENTIALS_TYPE=AuthCredentialTypes.OAUTH2` in `agent.py` and run the
-    agent
+1. Set `CREDENTIALS_TYPE=AuthCredentialTypes.OAUTH2` in `agent.py` and run the
+   agent
 
 ## 💬 Sample prompts
 
-* I'd like to buy a starter bike for my 3-year-old child, can you show me the recommendation?
+- I'd like to buy a starter bike for my 3-year-old child, can you show me the recommendation?
 
 ![Spanner RAG Sample Agent](Spanner_RAG_Sample_Agent.png)
 
@@ -191,180 +195,56 @@ There are a few options to perform similarity search:
 
 1. Use the built-in `vector_store_similarity_search` in the Spanner Toolset with explicit `SpannerVectorStoreSettings` configuration.
 
-  - This provides an easy way to perform similarity search. You can specify
-    different configurations related to vector search based on your Spanner
-    database vector store table setup.
+- This provides an easy way to perform similarity search. You can specify
+  different configurations related to vector search based on your Spanner
+  database vector store table setup.
 
-    Example pseudocode (see the `agent.py` for details):
+  Example pseudocode (see the `agent.py` for details):
 
-    ```py
-    from google.adk.agents.llm_agent import LlmAgent
-    from google.adk.tools.spanner.settings import Capabilities
-    from google.adk.tools.spanner.settings import SpannerToolSettings
-    from google.adk.tools.spanner.settings import SpannerVectorStoreSettings
-    from google.adk.tools.spanner.spanner_toolset import SpannerToolset
+  ```py
+  from google.adk.agents.llm_agent import LlmAgent
+  from google.adk.tools.spanner.settings import Capabilities
+  from google.adk.tools.spanner.settings import SpannerToolSettings
+  from google.adk.tools.spanner.settings import SpannerVectorStoreSettings
+  from google.adk.tools.spanner.spanner_toolset import SpannerToolset
 
-    # credentials_config = SpannerCredentialsConfig(...)
+  # credentials_config = SpannerCredentialsConfig(...)
 
-    # Define Spanner tool config with the vector store settings.
-    vector_store_settings = SpannerVectorStoreSettings(
-        project_id="<PROJECT_ID>",
-        instance_id="<INSTANCE_ID>",
-        database_id="<DATABASE_ID>",
-        table_name="products",
-        content_column="productDescription",
-        embedding_column="productDescriptionEmbedding",
-        vector_length=768,
-        vertex_ai_embedding_model_name="text-embedding-005",
-        selected_columns=[
-            "productId",
-            "productName",
-            "productDescription",
-        ],
-        nearest_neighbors_algorithm="EXACT_NEAREST_NEIGHBORS",
-        top_k=3,
-        distance_type="COSINE",
-        additional_filter="inventoryCount > 0",
-    )
+  # Define Spanner tool config with the vector store settings.
+  vector_store_settings = SpannerVectorStoreSettings(
+      project_id="<PROJECT_ID>",
+      instance_id="<INSTANCE_ID>",
+      database_id="<DATABASE_ID>",
+      table_name="products",
+      content_column="productDescription",
+      embedding_column="productDescriptionEmbedding",
+      vector_length=768,
+      vertex_ai_embedding_model_name="text-embedding-005",
+      selected_columns=[
+          "productId",
+          "productName",
+          "productDescription",
+      ],
+      nearest_neighbors_algorithm="EXACT_NEAREST_NEIGHBORS",
+      top_k=3,
+      distance_type="COSINE",
+      additional_filter="inventoryCount > 0",
+  )
 
-    tool_settings = SpannerToolSettings(
-        capabilities=[Capabilities.DATA_READ],
-        vector_store_settings=vector_store_settings,
-    )
+  tool_settings = SpannerToolSettings(
+      capabilities=[Capabilities.DATA_READ],
+      vector_store_settings=vector_store_settings,
+  )
 
-    # Get the Spanner toolset with the Spanner tool settings and credentials config.
-    spanner_toolset = SpannerToolset(
-        credentials_config=credentials_config,
-        spanner_tool_settings=tool_settings,
-        # Use `vector_store_similarity_search` only
-        tool_filter=["vector_store_similarity_search"],
-    )
+  # Get the Spanner toolset with the Spanner tool settings and credentials config.
+  spanner_toolset = SpannerToolset(
+      credentials_config=credentials_config,
+      spanner_tool_settings=tool_settings,
+      # Use `vector_store_similarity_search` only
+      tool_filter=["vector_store_similarity_search"],
+  )
 
-    root_agent = LlmAgent(
-        model="gemini-2.5-flash",
-        name="spanner_knowledge_base_agent",
-        description=(
-            "Agent to answer questions about product-specific recommendations."
-        ),
-        instruction="""
-        You are a helpful assistant that answers user questions about product-specific recommendations.
-        1. Always use the `vector_store_similarity_search` tool to find relevant information.
-        2. If no relevant information is found, say you don't know.
-        3. Present all the relevant information naturally and well formatted in your response.
-        """,
-        tools=[spanner_toolset],
-    )
-    ```
-
-2. Use the built-in `similarity_search` in the Spanner Toolset.
-
-   - `similarity_search` is a lower-level tool, which provide the most flexible
-      and generic way. Specify all the necessary tool's parameters is required
-      when interacting with `LlmAgent` before performing the tool call. This is
-      more suitable for data analysis, ad-hoc query and assistant scenarios.
-
-    Example pseudocode:
-
-    ```py
-    from google.adk.agents.llm_agent import LlmAgent
-    from google.adk.tools.spanner.settings import Capabilities
-    from google.adk.tools.spanner.settings import SpannerToolSettings
-    from google.adk.tools.spanner.spanner_toolset import SpannerToolset
-
-    # credentials_config = SpannerCredentialsConfig(...)
-
-    tool_settings = SpannerToolSettings(
-        capabilities=[Capabilities.DATA_READ],
-    )
-
-    spanner_toolset = SpannerToolset(
-        credentials_config=credentials_config,
-        spanner_tool_settings=tool_settings,
-        # Use `similarity_search` only
-        tool_filter=["similarity_search"],
-    )
-
-    root_agent = LlmAgent(
-        model="gemini-2.5-flash",
-        name="spanner_knowledge_base_agent",
-        description=(
-            "Agent to answer questions by retrieving relevant information "
-            "from the Spanner database."
-        ),
-        instruction="""
-        You are a helpful assistant that answers user questions to find the most relavant information from a Spanner database.
-        1. Always use the `similarity_search` tool to find relevant information.
-        2. If no relevant information is found, say you don't know.
-        3. Present all the relevant information naturally and well formatted in your response.
-        """,
-        tools=[spanner_toolset],
-    )
-    ```
-
-3. Wraps the built-in `similarity_search` in the Spanner Toolset.
-
-  - This provides a more controlled way to perform similarity search via code.
-    You can extend the tool as a wrapped function tool to have customized logic.
-
-    Example pseudocode:
-
-    ```py
-    from google.adk.agents.llm_agent import LlmAgent
-
-    from google.adk.tools.google_tool import GoogleTool
-    from google.adk.tools.spanner import search_tool
-    import google.auth
-    from google.auth.credentials import Credentials
-
-    # credentials_config = SpannerCredentialsConfig(...)
-
-    # Create a wrapped function tool for the agent on top of the built-in
-    # similarity_search tool in the Spanner toolset.
-    # This customized tool is used to perform a Spanner KNN vector search on a
-    # embedded knowledge base stored in a Spanner database table.
-    def wrapped_spanner_similarity_search(
-        search_query: str,
-        credentials: Credentials,
-    ) -> str:
-      """Perform a similarity search on the product catalog.
-
-      Args:
-        search_query: The search query to find relevant content.
-
-      Returns:
-          Relevant product catalog content with sources
-      """
-
-      # ... Customized logic ...
-
-      # Instead of fixing all parameters, you can also expose some of them for
-      # the LLM to decide.
-      return search_tool.similarity_search(
-          project_id="<PROJECT_ID>",
-          instance_id="<INSTANCE_ID>",
-          database_id="<DATABASE_ID>",
-          table_name="products",
-          query=search_query,
-          embedding_column_to_search="productDescriptionEmbedding",
-          columns= [
-            "productId",
-            "productName",
-            "productDescription",
-          ]
-          embedding_options={
-            "vertex_ai_embedding_model_name": "text-embedding-005",
-          },
-          credentials=credentials,
-          additional_filter="inventoryCount > 0",
-          search_options={
-              "top_k": 3,
-              "distance_type": "EUCLIDEAN",
-          },
-      )
-
-    # ...
-
-    root_agent = LlmAgent(
+  root_agent = LlmAgent(
       model="gemini-2.5-flash",
       name="spanner_knowledge_base_agent",
       description=(
@@ -372,18 +252,142 @@ There are a few options to perform similarity search:
       ),
       instruction="""
       You are a helpful assistant that answers user questions about product-specific recommendations.
-      1. Always use the `wrapped_spanner_similarity_search` tool to find relevant information.
+      1. Always use the `vector_store_similarity_search` tool to find relevant information.
       2. If no relevant information is found, say you don't know.
       3. Present all the relevant information naturally and well formatted in your response.
       """,
-      tools=[
-          # Add customized Spanner tool based on the built-in similarity_search
-          # in the Spanner toolset.
-          GoogleTool(
-              func=wrapped_spanner_similarity_search,
-              credentials_config=credentials_config,
-              tool_settings=tool_settings,
-          ),
-      ],
+      tools=[spanner_toolset],
+  )
+  ```
+
+2. Use the built-in `similarity_search` in the Spanner Toolset.
+
+   - `similarity_search` is a lower-level tool, which provide the most flexible
+     and generic way. Specify all the necessary tool's parameters is required
+     when interacting with `LlmAgent` before performing the tool call. This is
+     more suitable for data analysis, ad-hoc query and assistant scenarios.
+
+   Example pseudocode:
+
+   ```py
+   from google.adk.agents.llm_agent import LlmAgent
+   from google.adk.tools.spanner.settings import Capabilities
+   from google.adk.tools.spanner.settings import SpannerToolSettings
+   from google.adk.tools.spanner.spanner_toolset import SpannerToolset
+
+   # credentials_config = SpannerCredentialsConfig(...)
+
+   tool_settings = SpannerToolSettings(
+       capabilities=[Capabilities.DATA_READ],
+   )
+
+   spanner_toolset = SpannerToolset(
+       credentials_config=credentials_config,
+       spanner_tool_settings=tool_settings,
+       # Use `similarity_search` only
+       tool_filter=["similarity_search"],
+   )
+
+   root_agent = LlmAgent(
+       model="gemini-2.5-flash",
+       name="spanner_knowledge_base_agent",
+       description=(
+           "Agent to answer questions by retrieving relevant information "
+           "from the Spanner database."
+       ),
+       instruction="""
+       You are a helpful assistant that answers user questions to find the most relavant information from a Spanner database.
+       1. Always use the `similarity_search` tool to find relevant information.
+       2. If no relevant information is found, say you don't know.
+       3. Present all the relevant information naturally and well formatted in your response.
+       """,
+       tools=[spanner_toolset],
+   )
+   ```
+
+1. Wraps the built-in `similarity_search` in the Spanner Toolset.
+
+- This provides a more controlled way to perform similarity search via code.
+  You can extend the tool as a wrapped function tool to have customized logic.
+
+  Example pseudocode:
+
+  ```py
+  from google.adk.agents.llm_agent import LlmAgent
+
+  from google.adk.tools.google_tool import GoogleTool
+  from google.adk.tools.spanner import search_tool
+  import google.auth
+  from google.auth.credentials import Credentials
+
+  # credentials_config = SpannerCredentialsConfig(...)
+
+  # Create a wrapped function tool for the agent on top of the built-in
+  # similarity_search tool in the Spanner toolset.
+  # This customized tool is used to perform a Spanner KNN vector search on a
+  # embedded knowledge base stored in a Spanner database table.
+  def wrapped_spanner_similarity_search(
+      search_query: str,
+      credentials: Credentials,
+  ) -> str:
+    """Perform a similarity search on the product catalog.
+
+    Args:
+      search_query: The search query to find relevant content.
+
+    Returns:
+        Relevant product catalog content with sources
+    """
+
+    # ... Customized logic ...
+
+    # Instead of fixing all parameters, you can also expose some of them for
+    # the LLM to decide.
+    return search_tool.similarity_search(
+        project_id="<PROJECT_ID>",
+        instance_id="<INSTANCE_ID>",
+        database_id="<DATABASE_ID>",
+        table_name="products",
+        query=search_query,
+        embedding_column_to_search="productDescriptionEmbedding",
+        columns= [
+          "productId",
+          "productName",
+          "productDescription",
+        ]
+        embedding_options={
+          "vertex_ai_embedding_model_name": "text-embedding-005",
+        },
+        credentials=credentials,
+        additional_filter="inventoryCount > 0",
+        search_options={
+            "top_k": 3,
+            "distance_type": "EUCLIDEAN",
+        },
     )
-    ```
+
+  # ...
+
+  root_agent = LlmAgent(
+    model="gemini-2.5-flash",
+    name="spanner_knowledge_base_agent",
+    description=(
+        "Agent to answer questions about product-specific recommendations."
+    ),
+    instruction="""
+    You are a helpful assistant that answers user questions about product-specific recommendations.
+    1. Always use the `wrapped_spanner_similarity_search` tool to find relevant information.
+    2. If no relevant information is found, say you don't know.
+    3. Present all the relevant information naturally and well formatted in your response.
+    """,
+    tools=[
+        # Add customized Spanner tool based on the built-in similarity_search
+        # in the Spanner toolset.
+        GoogleTool(
+            func=wrapped_spanner_similarity_search,
+            credentials_config=credentials_config,
+            tool_settings=tool_settings,
+        ),
+    ],
+  )
+  ```

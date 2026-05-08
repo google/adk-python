@@ -30,51 +30,50 @@ pip install google-adk asyncpg greenlet
 
 ### sessions
 
-| Column      | Type         | Description                    |
-| ----------- | ------------ | ------------------------------ |
-| app_name    | VARCHAR(128) | Application identifier (PK)    |
-| user_id     | VARCHAR(128) | User identifier (PK)           |
-| id          | VARCHAR(128) | Session UUID (PK)              |
-| state       | JSONB        | Session state as JSON          |
-| create_time | TIMESTAMP    | Creation timestamp             |
-| update_time | TIMESTAMP    | Last update timestamp          |
+| Column      | Type         | Description                 |
+| ----------- | ------------ | --------------------------- |
+| app_name    | VARCHAR(128) | Application identifier (PK) |
+| user_id     | VARCHAR(128) | User identifier (PK)        |
+| id          | VARCHAR(128) | Session UUID (PK)           |
+| state       | JSONB        | Session state as JSON       |
+| create_time | TIMESTAMP    | Creation timestamp          |
+| update_time | TIMESTAMP    | Last update timestamp       |
 
 ### events
 
-| Column             | Type         | Description                    |
-| ------------------ | ------------ | ------------------------------ |
-| id                 | VARCHAR(256) | Event UUID (PK)                |
-| app_name           | VARCHAR(128) | Application identifier (PK)    |
-| user_id            | VARCHAR(128) | User identifier (PK)           |
-| session_id         | VARCHAR(128) | Session reference (PK, FK)     |
-| invocation_id      | VARCHAR(256) | Invocation identifier          |
-| timestamp          | TIMESTAMP    | Event timestamp                |
-| event_data         | JSONB        | Event content as JSON          |
+| Column        | Type         | Description                 |
+| ------------- | ------------ | --------------------------- |
+| id            | VARCHAR(256) | Event UUID (PK)             |
+| app_name      | VARCHAR(128) | Application identifier (PK) |
+| user_id       | VARCHAR(128) | User identifier (PK)        |
+| session_id    | VARCHAR(128) | Session reference (PK, FK)  |
+| invocation_id | VARCHAR(256) | Invocation identifier       |
+| timestamp     | TIMESTAMP    | Event timestamp             |
+| event_data    | JSONB        | Event content as JSON       |
 
 ### app_states
 
-| Column      | Type         | Description                    |
-| ----------- | ------------ | ------------------------------ |
-| app_name    | VARCHAR(128) | Application identifier (PK)    |
-| state       | JSONB        | Application-level state        |
-| update_time | TIMESTAMP    | Last update timestamp          |
+| Column      | Type         | Description                 |
+| ----------- | ------------ | --------------------------- |
+| app_name    | VARCHAR(128) | Application identifier (PK) |
+| state       | JSONB        | Application-level state     |
+| update_time | TIMESTAMP    | Last update timestamp       |
 
 ### user_states
 
-| Column      | Type         | Description                    |
-| ----------- | ------------ | ------------------------------ |
-| app_name    | VARCHAR(128) | Application identifier (PK)    |
-| user_id     | VARCHAR(128) | User identifier (PK)           |
-| state       | JSONB        | User-level state               |
-| update_time | TIMESTAMP    | Last update timestamp          |
+| Column      | Type         | Description                 |
+| ----------- | ------------ | --------------------------- |
+| app_name    | VARCHAR(128) | Application identifier (PK) |
+| user_id     | VARCHAR(128) | User identifier (PK)        |
+| state       | JSONB        | User-level state            |
+| update_time | TIMESTAMP    | Last update timestamp       |
 
 ### adk_internal_metadata
 
-| Column      | Type         | Description                    |
-| ----------- | ------------ | ------------------------------ |
-| key         | VARCHAR(128) | Metadata key                   |
-| value       | VARCHAR(256) | Metadata value                 |
-
+| Column | Type         | Description    |
+| ------ | ------------ | -------------- |
+| key    | VARCHAR(128) | Metadata key   |
+| value  | VARCHAR(256) | Metadata value |
 
 ## Configuration
 
@@ -192,7 +191,7 @@ PostgreSQL's JSONB type provides efficient storage for state data:
 ## Production Considerations
 
 1. **Connection Pooling**: Use `pool_size` and `max_overflow` for high-traffic applications
-2. **SSL/TLS**: Always use encrypted connections in production
-3. **Backups**: Implement regular backup strategies for session data
-4. **Indexing**: The default schema includes primary key indexes; add additional indexes based on query patterns
-5. **Monitoring**: Monitor connection pool usage and query performance
+1. **SSL/TLS**: Always use encrypted connections in production
+1. **Backups**: Implement regular backup strategies for session data
+1. **Indexing**: The default schema includes primary key indexes; add additional indexes based on query patterns
+1. **Monitoring**: Monitor connection pool usage and query performance
