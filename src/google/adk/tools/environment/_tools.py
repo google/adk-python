@@ -63,12 +63,20 @@ Bad: Execute("head ..."), Execute("cat ...").
 class ExecuteTool(BaseTool):
   """Run a shell command in the environment's working directory."""
 
-  def __init__(self, environment: BaseEnvironment):
+  def __init__(
+      self,
+      environment: BaseEnvironment,
+      *,
+      max_output_chars: Optional[int] = None,
+  ):
     super().__init__(
         name='Execute',
         description=_EXECUTE_TOOL_DESCRIPTION,
     )
     self._environment = environment
+    self._max_output_chars = (
+        max_output_chars if max_output_chars is not None else MAX_OUTPUT_CHARS
+    )
 
   @override
   def _get_declaration(self) -> Optional[types.FunctionDeclaration]:
@@ -116,9 +124,15 @@ class ExecuteTool(BaseTool):
 
     result: dict[str, Any] = {'status': 'ok'}
     if execution_result.stdout:
-      result['stdout'] = _truncate(execution_result.stdout)
+      result['stdout'] = _truncate(
+          execution_result.stdout,
+          limit=self._max_output_chars,
+      )
     if execution_result.stderr:
-      result['stderr'] = _truncate(execution_result.stderr)
+      result['stderr'] = _truncate(
+          execution_result.stderr,
+          limit=self._max_output_chars,
+      )
     if execution_result.exit_code != 0:
       result['status'] = 'error'
       result['exit_code'] = execution_result.exit_code
@@ -132,7 +146,12 @@ class ExecuteTool(BaseTool):
 class ReadFileTool(BaseTool):
   """Read a file from the environment."""
 
-  def __init__(self, environment: BaseEnvironment):
+  def __init__(
+      self,
+      environment: BaseEnvironment,
+      *,
+      max_output_chars: Optional[int] = None,
+  ):
     super().__init__(
         name='ReadFile',
         description=(
@@ -141,6 +160,9 @@ class ReadFileTool(BaseTool):
         ),
     )
     self._environment = environment
+    self._max_output_chars = (
+        max_output_chars if max_output_chars is not None else MAX_OUTPUT_CHARS
+    )
 
   @override
   def _get_declaration(self) -> Optional[types.FunctionDeclaration]:
@@ -216,7 +238,13 @@ class ReadFileTool(BaseTool):
       numbered = ''.join(
           f'{start + i:6d}\t{line}' for i, line in enumerate(selected)
       )
-      result = {'status': 'ok', 'content': _truncate(numbered)}
+      result = {
+          'status': 'ok',
+          'content': _truncate(
+              numbered,
+              limit=self._max_output_chars,
+          ),
+      }
       if start > 1 or end < total:
         result['total_lines'] = total
       return result
