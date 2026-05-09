@@ -95,6 +95,7 @@ def _ensure_dotenv_gitignored(agent_folder: str) -> None:
       f.write("\n")
     f.write(f"{dotenv_entry}\n")
 
+
 def _generate_files(
     agent_folder: str,
     *,
