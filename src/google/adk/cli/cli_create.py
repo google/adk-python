@@ -74,6 +74,27 @@ Please ensure .env is added to your .gitignore to avoid committing secrets to ve
 """
 
 
+def _ensure_dotenv_gitignored(agent_folder: str) -> None:
+  """Ensures generated secrets are excluded from version control."""
+  gitignore_file_path = os.path.join(agent_folder, ".gitignore")
+  dotenv_entry = ".env"
+
+  if not os.path.exists(gitignore_file_path):
+    with open(gitignore_file_path, "w", encoding="utf-8") as f:
+      f.write(f"{dotenv_entry}\n")
+    return
+
+  with open(gitignore_file_path, encoding="utf-8") as f:
+    existing_lines = f.read().splitlines()
+
+  if dotenv_entry in existing_lines:
+    return
+
+  with open(gitignore_file_path, "a", encoding="utf-8") as f:
+    if existing_lines:
+      f.write("\n")
+    f.write(f"{dotenv_entry}\n")
+
 def _generate_files(
     agent_folder: str,
     *,
