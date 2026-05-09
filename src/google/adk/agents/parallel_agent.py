@@ -19,8 +19,10 @@ from __future__ import annotations
 import asyncio
 import logging
 import sys
+from typing import Any
 from typing import AsyncGenerator
 from typing import ClassVar
+from typing import List
 from typing import Optional
 
 from typing_extensions import deprecated
@@ -94,12 +96,15 @@ async def _merge_agent_run(
 ) -> AsyncGenerator[Event, None]:
   """Merges agent runs using asyncio.TaskGroup on Python 3.11+."""
   sentinel = object()
-  queue: asyncio.Queue = asyncio.Queue()
+  queue: asyncio.Queue[Any] = asyncio.Queue()
   names = branch_names or [f'branch-{i}' for i in range(len(agent_runs))]
 
   # Agents are processed in parallel.
   # Events for each agent are put on queue sequentially.
-  async def process_an_agent(events_for_one_agent, branch_name: str):
+  async def process_an_agent(
+      events_for_one_agent: AsyncGenerator[Event, None],
+      branch_name: str,
+  ) -> None:
     try:
       gen = (
           _iter_with_idle_timeout(
@@ -158,10 +163,10 @@ async def _merge_agent_run_pre_3_11(
       Event: The next event from the merged generator.
   """
   sentinel = object()
-  queue: asyncio.Queue = asyncio.Queue()
+  queue: asyncio.Queue[Any] = asyncio.Queue()
   names = branch_names or [f'branch-{i}' for i in range(len(agent_runs))]
 
-  def propagate_exceptions(tasks):
+  def propagate_exceptions(tasks: List[asyncio.Task[None]]) -> None:
     # Propagate exceptions and errors from tasks.
     for task in tasks:
       if task.done():
@@ -171,7 +176,10 @@ async def _merge_agent_run_pre_3_11(
 
   # Agents are processed in parallel.
   # Events for each agent are put on queue sequentially.
-  async def process_an_agent(events_for_one_agent, branch_name: str):
+  async def process_an_agent(
+      events_for_one_agent: AsyncGenerator[Event, None],
+      branch_name: str,
+  ) -> None:
     try:
       gen = (
           _iter_with_idle_timeout(

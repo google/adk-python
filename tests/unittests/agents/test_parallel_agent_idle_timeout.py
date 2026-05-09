@@ -43,6 +43,14 @@ from google.genai import types
 import pytest
 from typing_extensions import override
 
+# ExceptionGroup / BaseExceptionGroup are builtins only on Python 3.11+.
+# Build the expected-exception tuple once so tests that run on 3.10 don't hit
+# a NameError when the tuple literal is evaluated.
+if sys.version_info >= (3, 11):
+  _TIMEOUT_ERRORS = (asyncio.TimeoutError, ExceptionGroup, BaseExceptionGroup)
+else:
+  _TIMEOUT_ERRORS = (asyncio.TimeoutError,)
+
 # ---------------------------------------------------------------------------
 # Shared test helpers
 # ---------------------------------------------------------------------------
@@ -237,9 +245,7 @@ async def test_merge_timeout_stalled_branch_raises(merge_fn):
       _gen_from_events([_make_event('normal', 'ok')]),
       _stalling_gen(yield_first=True),
   ]
-  with pytest.raises(
-      (asyncio.TimeoutError, ExceptionGroup, BaseExceptionGroup)
-  ):
+  with pytest.raises(_TIMEOUT_ERRORS):
     events = []
     async for e in merge_fn(
         runs,
@@ -339,9 +345,7 @@ async def test_parallel_agent_stalled_branch_raises_timeout():
   )
   ctx = await _make_ctx(parent)
 
-  with pytest.raises(
-      (asyncio.TimeoutError, ExceptionGroup, BaseExceptionGroup)
-  ):
+  with pytest.raises(_TIMEOUT_ERRORS):
     async for _ in parent.run_async(ctx):
       pass
 
@@ -358,9 +362,7 @@ async def test_parallel_agent_stalled_from_start_raises_timeout():
   )
   ctx = await _make_ctx(parent)
 
-  with pytest.raises(
-      (asyncio.TimeoutError, ExceptionGroup, BaseExceptionGroup)
-  ):
+  with pytest.raises(_TIMEOUT_ERRORS):
     async for _ in parent.run_async(ctx):
       pass
 
@@ -395,9 +397,7 @@ async def test_parallel_agent_timeout_logged_as_warning(caplog):
   )
   ctx = await _make_ctx(parent)
 
-  with pytest.raises(
-      (asyncio.TimeoutError, ExceptionGroup, BaseExceptionGroup)
-  ):
+  with pytest.raises(_TIMEOUT_ERRORS):
     with caplog.at_level(logging.WARNING):
       async for _ in parent.run_async(ctx):
         pass
