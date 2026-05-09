@@ -56,7 +56,8 @@ def _validate_session_id(session_id: str) -> None:
       session_id
   ):
     raise ValueError(
-        f'Invalid session_id {session_id!r}: must match {_SESSION_ID_PATTERN.pattern}.'
+        f'Invalid session_id {session_id!r}: must match'
+        f' {_SESSION_ID_PATTERN.pattern}.'
     )
 
 
