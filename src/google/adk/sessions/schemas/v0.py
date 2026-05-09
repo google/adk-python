@@ -31,8 +31,6 @@ from datetime import timezone
 import json
 import logging
 import pickle
-
-from ._safe_unpickle import safe_loads as _safe_pickle_loads
 from typing import Any
 from typing import Optional
 
@@ -59,6 +57,7 @@ from .. import _session_util
 from ...events.event import Event
 from ...events.event_actions import EventActions
 from ..session import Session
+from ._safe_unpickle import safe_loads as _safe_pickle_loads
 from .shared import DEFAULT_MAX_KEY_LENGTH
 from .shared import DEFAULT_MAX_VARCHAR_LENGTH
 from .shared import DynamicJSON
