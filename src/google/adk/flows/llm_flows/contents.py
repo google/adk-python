@@ -66,8 +66,11 @@ class _ContentLlmRequestProcessor(BaseLlmRequestProcessor):
     # Preserve all contents that were added by instruction processor
     # (since llm_request.contents will be completely reassigned below)
     instruction_related_contents = llm_request.contents
+    run_config = invocation_context.run_config
     include_thoughts_from_other_agents = (
-        invocation_context.run_config.include_thoughts_from_other_agents
+        run_config.include_thoughts_from_other_agents
+        if run_config is not None
+        else False
     )
 
     is_single_turn = getattr(agent, 'mode', None) == 'single_turn'
@@ -568,11 +571,13 @@ def _get_contents(
       e
       for e in rewind_filtered_events
       if _should_include_event_in_context(
-          current_branch, e, isolation_scope=isolation_scope,
+          current_branch,
+          e,
+          isolation_scope=isolation_scope,
           include_thoughts=(
               include_thoughts_from_other_agents
               and _is_other_agent_reply(agent_name, e)
-          )
+          ),
       )
   ]
 
@@ -647,7 +652,9 @@ def _get_contents(
             break
 
     if is_other_reply:
-      if converted_event := _present_other_agent_message(event, include_thoughts=include_thoughts_from_other_agents):
+      if converted_event := _present_other_agent_message(
+          event, include_thoughts=include_thoughts_from_other_agents
+      ):
         filtered_events.append(converted_event)
     else:
       filtered_events.append(event)
@@ -726,7 +733,9 @@ def _get_current_turn_contents(
   for i in range(len(events) - 1, -1, -1):
     event = events[i]
     if _should_include_event_in_context(
-        current_branch, event, isolation_scope=isolation_scope,
+        current_branch,
+        event,
+        isolation_scope=isolation_scope,
         include_thoughts=(
             include_thoughts_from_other_agents
             and _is_other_agent_reply(agent_name, event)
