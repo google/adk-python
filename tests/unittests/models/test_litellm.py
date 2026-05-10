@@ -22,11 +22,13 @@ import tempfile
 import unittest
 from unittest.mock import ANY
 from unittest.mock import AsyncMock
+from unittest.mock import MagicMock
 from unittest.mock import Mock
 import warnings
 
 from google.adk.models.lite_llm import _append_fallback_user_content_if_missing
 from google.adk.models.lite_llm import _content_to_message_param
+from google.adk.models.lite_llm import _convert_reasoning_value_to_parts
 from google.adk.models.lite_llm import _enforce_strict_openai_schema
 from google.adk.models.lite_llm import _extract_reasoning_value
 from google.adk.models.lite_llm import _extract_thought_signature_from_tool_call
@@ -36,12 +38,14 @@ from google.adk.models.lite_llm import _function_declaration_to_tool_param
 from google.adk.models.lite_llm import _get_completion_inputs
 from google.adk.models.lite_llm import _get_content
 from google.adk.models.lite_llm import _get_provider_from_model
+from google.adk.models.lite_llm import _is_anthropic_model
 from google.adk.models.lite_llm import _message_to_generate_content_response
 from google.adk.models.lite_llm import _MISSING_TOOL_RESULT_MESSAGE
 from google.adk.models.lite_llm import _model_response_to_chunk
 from google.adk.models.lite_llm import _model_response_to_generate_content_response
 from google.adk.models.lite_llm import _parse_tool_calls_from_text
 from google.adk.models.lite_llm import _redirect_litellm_loggers_to_stdout
+from google.adk.models.lite_llm import _safe_json_serialize
 from google.adk.models.lite_llm import _schema_to_dict
 from google.adk.models.lite_llm import _split_message_content_and_tool_calls
 from google.adk.models.lite_llm import _THOUGHT_SIGNATURE_SEPARATOR
@@ -254,7 +258,7 @@ async def test_get_completion_inputs_formats_pydantic_schema_for_litellm():
   )
 
   _, _, response_format, _ = await _get_completion_inputs(
-      llm_request, model="gemini/gemini-2.0-flash"
+      llm_request, model="gemini/gemini-2.5-flash"
   )
 
   assert response_format == {
@@ -274,7 +278,7 @@ def test_to_litellm_response_format_passes_preformatted_dict():
 
   assert (
       _to_litellm_response_format(
-          response_format, model="gemini/gemini-2.0-flash"
+          response_format, model="gemini/gemini-2.5-flash"
       )
       == response_format
   )
@@ -287,7 +291,7 @@ def test_to_litellm_response_format_wraps_json_schema_dict():
   }
 
   formatted = _to_litellm_response_format(
-      schema, model="gemini/gemini-2.0-flash"
+      schema, model="gemini/gemini-2.5-flash"
   )
   assert formatted["type"] == "json_object"
   assert formatted["response_schema"] == schema
@@ -297,7 +301,7 @@ def test_to_litellm_response_format_handles_model_dump_object():
   schema_obj = _ModelDumpOnly()
 
   formatted = _to_litellm_response_format(
-      schema_obj, model="gemini/gemini-2.0-flash"
+      schema_obj, model="gemini/gemini-2.5-flash"
   )
 
   assert formatted["type"] == "json_object"
@@ -312,7 +316,7 @@ def test_to_litellm_response_format_handles_genai_schema_instance():
   )
 
   formatted = _to_litellm_response_format(
-      schema_instance, model="gemini/gemini-2.0-flash"
+      schema_instance, model="gemini/gemini-2.5-flash"
   )
   assert formatted["type"] == "json_object"
   assert formatted["response_schema"] == schema_instance.model_dump(
@@ -337,7 +341,7 @@ def test_to_litellm_response_format_uses_json_schema_for_openai_model():
 def test_to_litellm_response_format_uses_response_schema_for_gemini_model():
   """Test that Gemini models continue to use response_schema format."""
   formatted = _to_litellm_response_format(
-      _StructuredOutput, model="gemini/gemini-2.0-flash"
+      _StructuredOutput, model="gemini/gemini-2.5-flash"
   )
 
   assert formatted["type"] == "json_object"
@@ -348,7 +352,7 @@ def test_to_litellm_response_format_uses_response_schema_for_gemini_model():
 def test_to_litellm_response_format_uses_response_schema_for_vertex_gemini():
   """Test that Vertex AI Gemini models use response_schema format."""
   formatted = _to_litellm_response_format(
-      _StructuredOutput, model="vertex_ai/gemini-2.0-flash"
+      _StructuredOutput, model="vertex_ai/gemini-2.5-flash"
   )
 
   assert formatted["type"] == "json_object"
@@ -529,7 +533,7 @@ def test_to_litellm_response_format_nested_pydantic_for_openai():
 def test_to_litellm_response_format_nested_pydantic_for_gemini_unchanged():
   """Gemini models should NOT get the strict OpenAI transformations."""
   formatted = _to_litellm_response_format(
-      _OuterModel, model="gemini/gemini-2.0-flash"
+      _OuterModel, model="gemini/gemini-2.5-flash"
   )
 
   assert formatted["type"] == "json_object"
@@ -561,12 +565,12 @@ async def test_get_completion_inputs_uses_openai_format_for_openai_model():
 async def test_get_completion_inputs_uses_gemini_format_for_gemini_model():
   """Test that _get_completion_inputs produces Gemini-compatible format."""
   llm_request = LlmRequest(
-      model="gemini/gemini-2.0-flash",
+      model="gemini/gemini-2.5-flash",
       config=types.GenerateContentConfig(response_schema=_StructuredOutput),
   )
 
   _, _, response_format, _ = await _get_completion_inputs(
-      llm_request, model="gemini/gemini-2.0-flash"
+      llm_request, model="gemini/gemini-2.5-flash"
   )
 
   assert response_format["type"] == "json_object"
@@ -611,7 +615,7 @@ async def test_get_completion_inputs_uses_passed_model_for_gemini_format():
 
   # Pass Gemini model explicitly - should use response_schema format
   _, _, response_format, _ = await _get_completion_inputs(
-      llm_request, model="gemini/gemini-2.0-flash"
+      llm_request, model="gemini/gemini-2.5-flash"
   )
 
   assert response_format["type"] == "json_object"
@@ -675,6 +679,31 @@ def test_schema_to_dict_filters_none_enum_values():
       "READY",
       "DONE",
   ]
+
+
+def test_safe_json_serialize_serializable_object():
+  assert _safe_json_serialize({"a": 1, "b": [2, 3]}) == '{"a": 1, "b": [2, 3]}'
+
+
+def test_safe_json_serialize_non_serializable_object_falls_back_to_str():
+  class _NotJsonable:
+
+    def __repr__(self):
+      return "<not jsonable>"
+
+  assert _safe_json_serialize(_NotJsonable()) == "<not jsonable>"
+
+
+def test_safe_json_serialize_circular_dict_falls_back_to_str():
+  obj = {}
+  obj["self"] = obj
+  assert isinstance(_safe_json_serialize(obj), str)
+
+
+def test_safe_json_serialize_circular_list_falls_back_to_str():
+  obj = []
+  obj.append(obj)
+  assert isinstance(_safe_json_serialize(obj), str)
 
 
 MULTIPLE_FUNCTION_CALLS_STREAM = [
@@ -2870,12 +2899,6 @@ async def test_get_content_file_uri_file_id_required_falls_back_to_text(
             "video_url",
             id="video",
         ),
-        pytest.param(
-            "https://example.com/audio.mp3",
-            "audio/mpeg",
-            "audio_url",
-            id="audio",
-        ),
     ],
 )
 async def test_get_content_file_uri_media_url_file_id_required_uses_url_type(
@@ -3140,17 +3163,57 @@ async def test_get_content_file_uri_mime_type_inference(
 
 
 @pytest.mark.asyncio
-async def test_get_content_audio():
-  parts = [
-      types.Part.from_bytes(data=b"test_audio_data", mime_type="audio/mpeg")
-  ]
+@pytest.mark.parametrize(
+    "mime_type,expected_format",
+    [
+        ("audio/mpeg", "mp3"),
+        ("audio/mp3", "mp3"),
+        ("audio/wav", "wav"),
+        ("audio/x-wav", "wav"),
+        ("audio/wave", "wav"),
+        ("audio/flac", "flac"),
+        ("audio/ogg", "ogg"),
+        ("audio/mp4", "mp4"),
+    ],
+)
+async def test_get_content_audio_inline_data_emits_input_audio(
+    mime_type, expected_format
+):
+  """Audio inline_data is serialised as `input_audio` with raw base64 + format."""
+  parts = [types.Part.from_bytes(data=b"test_audio_data", mime_type=mime_type)]
   content = await _get_content(parts)
-  assert content[0]["type"] == "audio_url"
-  assert (
-      content[0]["audio_url"]["url"]
-      == "data:audio/mpeg;base64,dGVzdF9hdWRpb19kYXRh"
-  )
-  assert "format" not in content[0]["audio_url"]
+  assert content == [{
+      "type": "input_audio",
+      "input_audio": {
+          "data": "dGVzdF9hdWRpb19kYXRh",
+          "format": expected_format,
+      },
+  }]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "provider,model",
+    [
+        ("openai", "openai/gpt-4o"),
+        ("azure", "azure/gpt-4"),
+    ],
+)
+async def test_get_content_audio_file_uri_http_falls_back_to_text(
+    provider, model
+):
+  """Audio HTTP file_uri falls back to a text reference for openai/azure."""
+  file_uri = "https://example.com/audio.mp3"
+  parts = [
+      types.Part(
+          file_data=types.FileData(file_uri=file_uri, mime_type="audio/mpeg")
+      )
+  ]
+  content = await _get_content(parts, provider=provider, model=model)
+  assert content == [{
+      "type": "text",
+      "text": f'[File reference: "{file_uri}"]',
+  }]
 
 
 def test_to_litellm_role():
@@ -4283,11 +4346,11 @@ def test_gemini_via_litellm_warning_vertex_ai(monkeypatch):
   with warnings.catch_warnings(record=True) as w:
     warnings.simplefilter("always")
     # Test with Vertex AI Gemini via LiteLLM
-    LiteLlm(model="vertex_ai/gemini-1.5-flash")
+    LiteLlm(model="vertex_ai/gemini-2.5-flash")
     assert len(w) == 1
     assert issubclass(w[0].category, UserWarning)
     assert "[GEMINI_VIA_LITELLM]" in str(w[0].message)
-    assert "vertex_ai/gemini-1.5-flash" in str(w[0].message)
+    assert "vertex_ai/gemini-2.5-flash" in str(w[0].message)
 
 
 def test_gemini_via_litellm_warning_suppressed(monkeypatch):
@@ -4388,19 +4451,25 @@ async def test_finish_reason_unknown_maps_to_other(
     mock_acompletion, lite_llm_instance
 ):
   """Test that unmapped finish_reason values map to FinishReason.OTHER."""
-  mock_response = ModelResponse(
-      choices=[
-          Choices(
-              message=ChatCompletionAssistantMessage(
-                  role="assistant",
-                  content="Test response",
-              ),
-              # LiteLLM validates finish_reason to a known set. Use a value that
-              # LiteLLM accepts but ADK does not explicitly map.
-              finish_reason="eos",
-          )
-      ]
-  )
+  # LiteLLM's Choices model normalizes finish_reason values (e.g., "eos" ->
+  # "stop") before ADK processes them. To test ADK's own fallback mapping,
+  # construct a mock response that bypasses LiteLLM's normalization and
+  # returns a raw unmapped finish_reason string.
+  mock_choice = MagicMock()
+  mock_choice.get = lambda key, default=None: {
+      "message": ChatCompletionAssistantMessage(
+          role="assistant",
+          content="Test response",
+      ),
+      "finish_reason": "totally_unknown_reason",
+  }.get(key, default)
+
+  mock_response = MagicMock()
+  mock_response.get = lambda key, default=None: {
+      "choices": [mock_choice],
+  }.get(key, default)
+  mock_response.model = "test_model"
+
   mock_acompletion.return_value = mock_response
 
   llm_request = LlmRequest(
@@ -4675,3 +4744,213 @@ def test_handles_litellm_logger_names(logger_name):
   finally:
     # Clean up
     test_logger.removeHandler(handler)
+
+
+# ── Anthropic thinking_blocks tests ─────────────────────────────
+
+
+@pytest.mark.parametrize(
+    "model_string,expected",
+    [
+        ("anthropic/claude-4-sonnet", True),
+        ("anthropic/claude-3-5-sonnet-20241022", True),
+        ("Anthropic/Claude-4-Opus", True),
+        ("bedrock/anthropic.claude-3-5-sonnet", True),
+        ("bedrock/us.anthropic.claude-3-5-sonnet-20241022-v2:0", True),
+        ("bedrock/claude-3-5-sonnet", True),
+        ("vertex_ai/claude-3-5-sonnet@20241022", True),
+        ("openai/gpt-4o", False),
+        ("gemini/gemini-2.5-pro", False),
+        ("vertex_ai/gemini-2.5-flash", False),
+        ("bedrock/amazon.titan-text-express-v1", False),
+    ],
+    ids=[
+        "anthropic-prefix",
+        "anthropic-versioned",
+        "anthropic-uppercase",
+        "bedrock-anthropic-dot",
+        "bedrock-us-anthropic",
+        "bedrock-claude",
+        "vertex-claude",
+        "openai-no-match",
+        "gemini-no-match",
+        "vertex-gemini-no-match",
+        "bedrock-non-anthropic",
+    ],
+)
+def test_is_anthropic_model(model_string, expected):
+  assert _is_anthropic_model(model_string) is expected
+
+
+def test_extract_reasoning_value_prefers_thinking_blocks():
+  """thinking_blocks takes precedence over reasoning_content."""
+  thinking_blocks = [
+      {"type": "thinking", "thinking": "deep thought", "signature": "sig123"},
+  ]
+  message = {
+      "role": "assistant",
+      "content": "Answer",
+      "thinking_blocks": thinking_blocks,
+      "reasoning_content": "flat reasoning",
+  }
+  result = _extract_reasoning_value(message)
+  assert result is thinking_blocks
+
+
+def test_extract_reasoning_value_falls_back_without_thinking_blocks():
+  """When thinking_blocks is absent, falls back to reasoning_content."""
+  message = {
+      "role": "assistant",
+      "content": "Answer",
+      "reasoning_content": "flat reasoning",
+  }
+  result = _extract_reasoning_value(message)
+  assert result == "flat reasoning"
+
+
+def test_convert_reasoning_value_to_parts_thinking_blocks_preserves_signature():
+  """thinking_blocks format produces parts with thought_signature."""
+  thinking_blocks = [
+      {"type": "thinking", "thinking": "step 1", "signature": "sig_abc"},
+      {"type": "thinking", "thinking": "step 2", "signature": "sig_def"},
+  ]
+  parts = _convert_reasoning_value_to_parts(thinking_blocks)
+  assert len(parts) == 2
+  assert parts[0].text == "step 1"
+  assert parts[0].thought is True
+  assert parts[0].thought_signature == b"sig_abc"
+  assert parts[1].text == "step 2"
+  assert parts[1].thought_signature == b"sig_def"
+
+
+def test_convert_reasoning_value_to_parts_skips_redacted_blocks():
+  """Redacted thinking blocks are excluded from parts."""
+  thinking_blocks = [
+      {"type": "thinking", "thinking": "visible", "signature": "sig1"},
+      {"type": "redacted", "data": "hidden"},
+  ]
+  parts = _convert_reasoning_value_to_parts(thinking_blocks)
+  assert len(parts) == 1
+  assert parts[0].text == "visible"
+
+
+def test_convert_reasoning_value_to_parts_skips_empty_thinking():
+  """Blocks with empty thinking text are excluded."""
+  thinking_blocks = [
+      {"type": "thinking", "thinking": "", "signature": "sig1"},
+      {"type": "thinking", "thinking": "real thought", "signature": "sig2"},
+  ]
+  parts = _convert_reasoning_value_to_parts(thinking_blocks)
+  assert len(parts) == 1
+  assert parts[0].text == "real thought"
+
+
+def test_convert_reasoning_value_to_parts_flat_string_unchanged():
+  """Flat string reasoning still produces thought parts without signature."""
+  parts = _convert_reasoning_value_to_parts("simple reasoning text")
+  assert len(parts) == 1
+  assert parts[0].text == "simple reasoning text"
+  assert parts[0].thought is True
+  assert parts[0].thought_signature is None
+
+
+@pytest.mark.asyncio
+async def test_content_to_message_param_anthropic_outputs_thinking_blocks():
+  """For Anthropic models, thinking_blocks are output instead of reasoning_content."""
+  content = types.Content(
+      role="model",
+      parts=[
+          types.Part(
+              text="deep thought",
+              thought=True,
+              thought_signature=b"sig_round_trip",
+          ),
+          types.Part(text="Hello!"),
+      ],
+  )
+  result = await _content_to_message_param(
+      content, model="anthropic/claude-4-sonnet"
+  )
+  assert result["role"] == "assistant"
+  assert "thinking_blocks" in result
+  assert result.get("reasoning_content") is None
+  blocks = result["thinking_blocks"]
+  assert len(blocks) == 1
+  assert blocks[0]["type"] == "thinking"
+  assert blocks[0]["thinking"] == "deep thought"
+  assert blocks[0]["signature"] == "sig_round_trip"
+  assert result["content"] == "Hello!"
+
+
+@pytest.mark.asyncio
+async def test_content_to_message_param_non_anthropic_uses_reasoning_content():
+  """For non-Anthropic models, reasoning_content is used as before."""
+  content = types.Content(
+      role="model",
+      parts=[
+          types.Part(text="thinking text", thought=True),
+          types.Part(text="Answer"),
+      ],
+  )
+  result = await _content_to_message_param(content, model="openai/gpt-4o")
+  assert result["role"] == "assistant"
+  assert result.get("reasoning_content") == "thinking text"
+  assert "thinking_blocks" not in result
+
+
+@pytest.mark.asyncio
+async def test_anthropic_thinking_blocks_round_trip():
+  """End-to-end: thinking_blocks in response → Part → thinking_blocks out."""
+  # Simulate LiteLLM response with thinking_blocks
+  response_message = {
+      "role": "assistant",
+      "content": "Final answer",
+      "thinking_blocks": [
+          {
+              "type": "thinking",
+              "thinking": "Let me reason...",
+              "signature": "abc123signature",
+          },
+      ],
+  }
+
+  # Step 1: Extract reasoning value
+  reasoning_value = _extract_reasoning_value(response_message)
+  assert isinstance(reasoning_value, list)
+
+  # Step 2: Convert to parts (preserves signature)
+  parts = _convert_reasoning_value_to_parts(reasoning_value)
+  assert len(parts) == 1
+  assert parts[0].thought_signature == b"abc123signature"
+
+  # Step 3: Build Content for history
+  all_parts = parts + [types.Part(text="Final answer")]
+  content = types.Content(role="model", parts=all_parts)
+
+  # Step 4: Convert back to message param for Anthropic
+  result = await _content_to_message_param(
+      content, model="anthropic/claude-4-sonnet"
+  )
+  blocks = result["thinking_blocks"]
+  assert len(blocks) == 1
+  assert blocks[0]["type"] == "thinking"
+  assert blocks[0]["thinking"] == "Let me reason..."
+  assert blocks[0]["signature"] == "abc123signature"
+
+
+@pytest.mark.asyncio
+async def test_content_to_message_param_anthropic_no_signature_falls_back():
+  """Anthropic model with thought parts but no signatures uses reasoning_content."""
+  content = types.Content(
+      role="model",
+      parts=[
+          types.Part(text="thinking without sig", thought=True),
+          types.Part(text="Response"),
+      ],
+  )
+  result = await _content_to_message_param(
+      content, model="anthropic/claude-4-sonnet"
+  )
+  # Falls back to reasoning_content when no signatures present
+  assert result.get("reasoning_content") == "thinking without sig"
+  assert "thinking_blocks" not in result

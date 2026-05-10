@@ -79,7 +79,6 @@ async def health_check():
     return {"status": "ok"}
 ```
 
-
 ## Deployment to Production
 
 The adk cli provides the "adk deploy" command to deploy to Google Vertex Agent Engine, Google CloudRun, Google GKE.

@@ -100,10 +100,11 @@ _LITELLM_STRUCTURED_TYPES = {"json_object", "json_schema"}
 _JSON_DECODER = json.JSONDecoder()
 
 # Mapping of major MIME type prefixes to LiteLLM content types for URL blocks.
+# Audio is handled separately as `input_audio` content blocks because LiteLLM
+# (and OpenAI) do not accept an `audio_url` content type.
 _MEDIA_URL_CONTENT_TYPE_BY_MAJOR_MIME_TYPE = {
     "image": "image_url",
     "video": "video_url",
-    "audio": "audio_url",
 }
 
 # Mapping of LiteLLM finish_reason strings to FinishReason enum values
@@ -346,6 +347,18 @@ def _media_url_content_type(mime_type: str) -> str | None:
   return _MEDIA_URL_CONTENT_TYPE_BY_MAJOR_MIME_TYPE.get(major_mime_type)
 
 
+def _audio_format_from_mime_type(mime_type: str) -> str:
+  """Maps an audio MIME type to the format string for `input_audio` blocks."""
+  subtype = _normalize_mime_type(mime_type).split("/", 1)[1]
+  if subtype.startswith("x-"):
+    subtype = subtype[2:]
+  if subtype == "mpeg":
+    return "mp3"
+  if subtype in ("wave", "vnd.wave"):
+    return "wav"
+  return subtype
+
+
 def _iter_reasoning_texts(reasoning_value: Any) -> Iterable[str]:
   """Yields textual fragments from provider specific reasoning payloads."""
   if reasoning_value is None:
@@ -384,8 +397,42 @@ def _iter_reasoning_texts(reasoning_value: Any) -> Iterable[str]:
     yield str(reasoning_value)
 
 
+def _is_thinking_blocks_format(reasoning_value: Any) -> bool:
+  """Returns True if reasoning_value is Anthropic thinking_blocks format.
+
+  Anthropic thinking_blocks is a list of dicts, each with 'type', 'thinking',
+  and 'signature' keys.
+  """
+  if not isinstance(reasoning_value, list) or not reasoning_value:
+    return False
+  first = reasoning_value[0]
+  return isinstance(first, dict) and "signature" in first
+
+
 def _convert_reasoning_value_to_parts(reasoning_value: Any) -> List[types.Part]:
-  """Converts provider reasoning payloads into Gemini thought parts."""
+  """Converts provider reasoning payloads into Gemini thought parts.
+
+  Handles Anthropic thinking_blocks (list of dicts with type/thinking/signature)
+  by preserving the signature on each part's thought_signature field. This is
+  required for Anthropic to maintain thinking across tool call boundaries.
+  """
+  if _is_thinking_blocks_format(reasoning_value):
+    parts: List[types.Part] = []
+    for block in reasoning_value:
+      if not isinstance(block, dict):
+        continue
+      block_type = block.get("type", "")
+      if block_type == "redacted":
+        continue
+      thinking_text = block.get("thinking", "")
+      signature = block.get("signature", "")
+      if not thinking_text:
+        continue
+      part = types.Part(text=thinking_text, thought=True)
+      if signature:
+        part.thought_signature = signature.encode("utf-8")
+      parts.append(part)
+    return parts
   return [
       types.Part(text=text, thought=True)
       for text in _iter_reasoning_texts(reasoning_value)
@@ -396,12 +443,19 @@ def _convert_reasoning_value_to_parts(reasoning_value: Any) -> List[types.Part]:
 def _extract_reasoning_value(message: Message | Delta | None) -> Any:
   """Fetches the reasoning payload from a LiteLLM message.
 
-  Checks for both 'reasoning_content' (LiteLLM standard, used by Azure/Foundry,
-  Ollama via LiteLLM) and 'reasoning' (used by LM Studio, vLLM).
-  Prioritizes 'reasoning_content' when both are present.
+  Checks for 'thinking_blocks' (Anthropic structured format with signatures),
+  'reasoning_content' (LiteLLM standard, used by Azure/Foundry, Ollama via
+  LiteLLM) and 'reasoning' (used by LM Studio, vLLM).
+  Prioritizes 'thinking_blocks' when present (Anthropic models), then
+  'reasoning_content', then 'reasoning'.
   """
   if message is None:
     return None
+  # Anthropic models return thinking_blocks with type/thinking/signature fields.
+  # This must be preserved to maintain thinking across tool call boundaries.
+  thinking_blocks = message.get("thinking_blocks")
+  if thinking_blocks is not None:
+    return thinking_blocks
   reasoning_content = message.get("reasoning_content")
   if reasoning_content is not None:
     return reasoning_content
@@ -502,7 +556,7 @@ def _safe_json_serialize(obj) -> str:
   try:
     # Try direct JSON serialization first
     return json.dumps(obj, ensure_ascii=False)
-  except (TypeError, OverflowError):
+  except (TypeError, ValueError, OverflowError):
     return str(obj)
 
 
@@ -835,6 +889,30 @@ async def _content_to_message_param(
           else final_content
       )
 
+    # For Anthropic models, rebuild thinking_blocks with signatures so that
+    # thinking is preserved across tool call boundaries. Without this,
+    # Anthropic silently drops thinking after the first turn.
+    if model and _is_anthropic_model(model) and reasoning_parts:
+      thinking_blocks = []
+      for part in reasoning_parts:
+        if part.text and part.thought_signature:
+          sig = part.thought_signature
+          if isinstance(sig, bytes):
+            sig = sig.decode("utf-8")
+          thinking_blocks.append({
+              "type": "thinking",
+              "thinking": part.text,
+              "signature": sig,
+          })
+      if thinking_blocks:
+        msg = ChatCompletionAssistantMessage(
+            role=role,
+            content=final_content,
+            tool_calls=tool_calls or None,
+        )
+        msg["thinking_blocks"] = thinking_blocks  # type: ignore[typeddict-unknown-key]
+        return msg
+
     reasoning_texts = []
     for part in reasoning_parts:
       if part.text:
@@ -973,6 +1051,15 @@ async def _get_content(
         })
         continue
       base64_string = base64.b64encode(part.inline_data.data).decode("utf-8")
+      if mime_type.startswith("audio/"):
+        content_objects.append({
+            "type": "input_audio",
+            "input_audio": {
+                "data": base64_string,
+                "format": _audio_format_from_mime_type(mime_type),
+            },
+        })
+        continue
       data_uri = f"data:{mime_type};base64,{base64_string}"
       # LiteLLM providers extract the MIME type from the data URI; avoid
       # passing a separate `format` field that some backends reject.
@@ -1941,6 +2028,31 @@ Functions:
 {_NEW_LINE.join(function_logs)}
 -----------------------------------------------------------
 """
+
+
+def _is_anthropic_model(model_string: str) -> bool:
+  """Check if the model is an Anthropic Claude model accessed via LiteLLM.
+
+  Detects models using the anthropic/ provider prefix, bedrock/ models that
+  contain 'anthropic' or 'claude', and vertex_ai/ models that contain 'claude'.
+
+  Args:
+    model_string: A LiteLLM model string (e.g., "anthropic/claude-4-sonnet",
+      "bedrock/anthropic.claude-3-5-sonnet", "vertex_ai/claude-4-sonnet")
+
+  Returns:
+    True if it's an Anthropic Claude model, False otherwise.
+  """
+  lower = model_string.lower()
+  if lower.startswith("anthropic/"):
+    return True
+  if lower.startswith("bedrock/"):
+    model_part = lower.split("/", 1)[1]
+    return "anthropic" in model_part or "claude" in model_part
+  if lower.startswith("vertex_ai/"):
+    model_part = lower.split("/", 1)[1]
+    return "claude" in model_part
+  return False
 
 
 def _is_litellm_vertex_model(model_string: str) -> bool:

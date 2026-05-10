@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -99,7 +99,7 @@ root_agent = LlmAgent(
 When asked about weather, use the get_weather tool.
 When asked to calculate, use the calculate tool.
 Be concise in your responses.""",
-    model="gemini-2.0-flash",
+    model="gemini-2.5-flash",
     tools=[get_weather, calculate],
 )
 

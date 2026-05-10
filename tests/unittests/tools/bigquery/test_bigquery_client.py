@@ -21,6 +21,7 @@ import google.adk
 from google.adk.tools.bigquery.client import DP_USER_AGENT
 from google.adk.tools.bigquery.client import get_bigquery_client
 from google.adk.tools.bigquery.client import get_dataplex_catalog_client
+from google.adk.utils._telemetry_context import _is_visual_builder
 from google.api_core.gapic_v1 import client_info as gapic_client_info
 import google.auth
 from google.auth.exceptions import DefaultCredentialsError
@@ -191,6 +192,33 @@ def test_bigquery_client_user_agent_custom_list():
     }
     actual_user_agents = set(client_info_arg.user_agent.split())
     assert expected_user_agents.issubset(actual_user_agents)
+
+
+def test_bigquery_client_user_agent_visual_builder():
+  """Test BigQuery client user agent when visual builder flag is set."""
+  token = _is_visual_builder.set(True)
+  try:
+    with mock.patch.object(
+        bigquery_client, "Connection", autospec=True
+    ) as mock_connection:
+      # Trigger the BigQuery client creation
+      get_bigquery_client(
+          project="test-gcp-project",
+          credentials=mock.create_autospec(Credentials, instance=True),
+      )
+
+      # Verify that the tracking user agent was set
+      client_info_arg = mock_connection.call_args[1].get("client_info")
+      assert client_info_arg is not None
+      expected_user_agents = {
+          "adk-bigquery-tool",
+          f"google-adk/{google.adk.__version__}",
+          "google-adk-visual-builder",
+      }
+      actual_user_agents = set(client_info_arg.user_agent.split())
+      assert expected_user_agents.issubset(actual_user_agents)
+  finally:
+    _is_visual_builder.reset(token)
 
 
 def test_bigquery_client_location_custom():

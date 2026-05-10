@@ -18,6 +18,8 @@ from typing import Callable
 
 from google.adk.agents.llm_agent import Agent
 from google.adk.events.event import Event
+from google.adk.events.event_actions import EventActions
+from google.adk.events.ui_widget import UiWidget
 from google.adk.flows.llm_flows.functions import find_matching_function_call
 from google.adk.flows.llm_flows.functions import handle_function_calls_async
 from google.adk.flows.llm_flows.functions import handle_function_calls_live
@@ -1136,6 +1138,45 @@ async def test_mixed_function_types_execution_order():
       'yield_E',
       'yield_F',
   ]
+
+
+def test_merge_parallel_function_response_events_merges_ui_widgets():
+  """Test that merge_parallel_function_response_events merges render_ui_widgets."""
+  invocation_id = 'base_invocation_123'
+
+  widget1 = UiWidget(
+      id='widget_1', provider='mcp', payload={'resource_uri': 'ui://widget1'}
+  )
+  widget2 = UiWidget(
+      id='widget_2', provider='mcp', payload={'resource_uri': 'ui://widget2'}
+  )
+  widget3 = UiWidget(
+      id='widget_3', provider='mcp', payload={'resource_uri': 'ui://widget3'}
+  )
+
+  event1 = Event(
+      invocation_id=invocation_id,
+      author='test_agent',
+      actions=EventActions(render_ui_widgets=[widget1]),
+  )
+
+  event2 = Event(
+      invocation_id='different_invocation_456',
+      author='different_agent',
+      actions=EventActions(render_ui_widgets=[widget2, widget3]),
+  )
+
+  # Merge the events
+  merged_event = merge_parallel_function_response_events([event1, event2])
+
+  # Should contain all ui widgets
+  assert merged_event.actions.render_ui_widgets is not None
+  assert len(merged_event.actions.render_ui_widgets) == 3
+
+  widget_ids = {widget.id for widget in merged_event.actions.render_ui_widgets}
+  assert 'widget_1' in widget_ids
+  assert 'widget_2' in widget_ids
+  assert 'widget_3' in widget_ids
 
 
 @pytest.mark.asyncio

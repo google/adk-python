@@ -107,7 +107,7 @@ async def run_cache_comparison_experiment(
   Run a cache performance comparison experiment for a specific model.
 
   Args:
-      model_name: Model to test (e.g., "gemini-2.0-flash", "gemini-2.5-flash")
+      model_name: Model to test (e.g., "gemini-2.5-flash")
       description: Description of what the experiment tests
       cached_label: Label for the cached experiment variant
       uncached_label: Label for the uncached experiment variant
@@ -545,7 +545,7 @@ async def main():
   )
   parser.add_argument(
       "model",
-      help="Model to test (e.g., gemini-2.5-flash, gemini-2.0-flash-001)",
+      help="Model to test (e.g., gemini-2.5-flash)",
   )
   parser.add_argument(
       "--output",

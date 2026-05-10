@@ -83,7 +83,10 @@ OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT = (
 
 USER_CONTENT_ELIDED = '<elided>'
 
-GEN_AI_AGENT_VERSION = 'gen_ai.agent.version'
+# Used to associate a span with a destination resource for AppHub. Tools with
+# this key in their BaseTool.custom_metadata will have the mapping added as a
+# span attribute
+GCP_MCP_SERVER_DESTINATION_ID = 'gcp.mcp.server.destination.id'
 
 # Needed to avoid circular imports
 if TYPE_CHECKING:
@@ -125,7 +128,7 @@ def _safe_json_serialize(obj) -> str:
     return json.dumps(
         obj, ensure_ascii=False, default=lambda o: '<not serializable>'
     )
-  except (TypeError, OverflowError):
+  except (TypeError, ValueError, OverflowError):
     return '<not serializable>'
 
 
@@ -159,7 +162,6 @@ def trace_agent_invocation(
   span.set_attribute(GEN_AI_AGENT_DESCRIPTION, agent.description)
 
   span.set_attribute(GEN_AI_AGENT_NAME, agent.name)
-  span.set_attribute(GEN_AI_AGENT_VERSION, agent.version)
   span.set_attribute(GEN_AI_CONVERSATION_ID, ctx.session.id)
 
 
@@ -168,6 +170,7 @@ def trace_tool_call(
     args: dict[str, Any],
     function_response_event: Event | None,
     error: Exception | None = None,
+    span: Span | None = None,
 ):
   """Traces tool call.
 
@@ -176,8 +179,9 @@ def trace_tool_call(
     args: The arguments to the tool call.
     function_response_event: The event with the function response details.
     error: The exception raised during tool execution, if any.
+    span: The span to record attributes on. If None, uses current span.
   """
-  span = trace.get_current_span()
+  span = span or trace.get_current_span()
 
   span.set_attribute(GEN_AI_OPERATION_NAME, 'execute_tool')
 
@@ -192,6 +196,14 @@ def trace_tool_call(
       span.set_attribute(ERROR_TYPE, str(error.error_type))
     else:
       span.set_attribute(ERROR_TYPE, type(error).__name__)
+
+  # Special case for client side association with a remote tool call
+  if (
+      tool.custom_metadata
+      and GCP_MCP_SERVER_DESTINATION_ID in tool.custom_metadata
+  ):
+    destination_id = tool.custom_metadata[GCP_MCP_SERVER_DESTINATION_ID]
+    span.set_attribute(GCP_MCP_SERVER_DESTINATION_ID, destination_id)
 
   # Setting empty llm request and response (as UI expect these) while not
   # applicable for tool_response.
@@ -433,6 +445,58 @@ def trace_send_data(
     span.set_attribute('gcp.vertex.agent.data', '{}')
 
 
+def _build_compaction_attributes(
+    *,
+    session_id: str,
+    trigger: str,
+    summarizer_type: str,
+    event_count: int,
+    token_threshold: int | None = None,
+    event_retention_size: int | None = None,
+    compaction_interval: int | None = None,
+    overlap_size: int | None = None,
+) -> dict[str, AttributeValue]:
+  """Builds span attributes for event compaction tracing."""
+  attributes: dict[str, AttributeValue] = {
+      GEN_AI_SYSTEM: _guess_gemini_system_name(),
+      GEN_AI_OPERATION_NAME: 'compact_events',
+      GEN_AI_CONVERSATION_ID: session_id,
+      'gen_ai.compaction.trigger': trigger,
+      'gen_ai.compaction.summarizer_type': summarizer_type,
+      'gen_ai.compaction.event_count': event_count,
+  }
+  if token_threshold is not None:
+    attributes['gen_ai.compaction.token_threshold'] = token_threshold
+  if event_retention_size is not None:
+    attributes['gen_ai.compaction.event_retention_size'] = event_retention_size
+  if compaction_interval is not None:
+    attributes['gen_ai.compaction.compaction_interval'] = compaction_interval
+  if overlap_size is not None:
+    attributes['gen_ai.compaction.overlap_size'] = overlap_size
+  return attributes
+
+
+def _build_compaction_result_attributes(
+    compacted_event: Event | None,
+) -> dict[str, AttributeValue]:
+  """Builds span attributes for compaction result."""
+  if (
+      compacted_event is None
+      or compacted_event.actions is None
+      or compacted_event.actions.compaction is None
+  ):
+    return {}
+
+  attributes: dict[str, AttributeValue] = {}
+  compaction = compacted_event.actions.compaction
+  attributes['gen_ai.compaction.result_event_id'] = compacted_event.id
+  if compaction.start_timestamp is not None:
+    attributes['gen_ai.compaction.start_timestamp'] = compaction.start_timestamp
+  if compaction.end_timestamp is not None:
+    attributes['gen_ai.compaction.end_timestamp'] = compaction.end_timestamp
+  return attributes
+
+
 def _build_llm_request_for_trace(llm_request: LlmRequest) -> dict[str, Any]:
   """Builds a dictionary representation of the LLM request for tracing.
 
@@ -495,7 +559,6 @@ def use_generate_content_span(
       USER_ID: invocation_context.session.user_id,
       'gcp.vertex.agent.event_id': model_response_event.id,
       'gcp.vertex.agent.invocation_id': invocation_context.invocation_id,
-      GEN_AI_AGENT_VERSION: invocation_context.agent.version,
   }
   if (
       _is_gemini_agent(invocation_context.agent)
@@ -530,7 +593,6 @@ async def use_inference_span(
       USER_ID: invocation_context.session.user_id,
       'gcp.vertex.agent.event_id': model_response_event.id,
       'gcp.vertex.agent.invocation_id': invocation_context.invocation_id,
-      GEN_AI_AGENT_VERSION: invocation_context.agent.version,
   }
   if (
       _is_gemini_agent(invocation_context.agent)

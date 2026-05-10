@@ -92,6 +92,7 @@ def create_oauth2_session(
           redirect_uri=auth_credential.oauth2.redirect_uri,
           state=auth_credential.oauth2.state,
           token_endpoint_auth_method=auth_credential.oauth2.token_endpoint_auth_method,
+          code_challenge_method=auth_credential.oauth2.code_challenge_method,
       ),
       token_endpoint,
   )
