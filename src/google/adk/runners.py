@@ -29,7 +29,6 @@ from typing import Optional
 import warnings
 
 from google.adk.apps.compaction import _run_compaction_for_sliding_window
-from google.adk.artifacts import artifact_util
 from google.genai import types
 
 from .agents.base_agent import BaseAgent
@@ -754,15 +753,27 @@ class Runner:
         )
       else:
         # Artifact version changed after rewind point. Restore to version at
-        # rewind point.
-        artifact_uri = artifact_util.get_artifact_uri(
+        # rewind point by loading the actual data via the artifact service.
+        artifact = await self.artifact_service.load_artifact(
             app_name=self.app_name,
             user_id=session.user_id,
             session_id=session.id,
             filename=filename,
             version=vt,
         )
-        artifact = types.Part(file_data=types.FileData(file_uri=artifact_uri))
+        if artifact is None:
+          logger.warning(
+              'Artifact %s version %d not found during rewind for'
+              ' session %s. Replacing with empty data.',
+              filename,
+              vt,
+              session.id,
+          )
+          artifact = types.Part(
+              inline_data=types.Blob(
+                  mime_type='application/octet-stream', data=b''
+              )
+          )
       await self.artifact_service.save_artifact(
           app_name=self.app_name,
           user_id=session.user_id,
@@ -775,21 +786,49 @@ class Runner:
 
   def _should_append_event(self, event: Event, is_live_call: bool) -> bool:
     """Checks if an event should be appended to the session."""
-    # Don't append audio response from model in live mode to session.
+    # Don't append media (audio/video/image) response from model in live mode to session.
     # The data is appended to artifacts with a reference in file_data in the
-    # event.
+    # event if save_live_blob is True.
     # We should append non-partial events only.For example, non-finished(partial)
     # transcription events should not be appended.
     # Function call and function response events should be appended.
     # Other control events should be appended.
-    if is_live_call and contents._is_live_model_audio_event_with_inline_data(
+    if is_live_call and contents._is_live_model_media_event_with_inline_data(
         event
     ):
-      # We don't append live model audio events with inline data to avoid
+      # We don't append live model media events with inline data to avoid
       # storing large blobs in the session. However, events with file_data
       # (references to artifacts) should be appended.
       return False
     return True
+
+  def _get_output_event(
+      self,
+      *,
+      original_event: Event,
+      modified_event: Event | None,
+      run_config: RunConfig | None,
+  ) -> Event:
+    """Returns the event that should be persisted and yielded.
+
+    Plugins may return a replacement event that only overrides a subset of
+    fields. Merge those changes onto the original event so the streamed event
+    and the persisted event stay aligned without losing the original event
+    identity.
+    """
+    if modified_event is None:
+      return original_event
+
+    _apply_run_config_custom_metadata(modified_event, run_config)
+    update = {}
+    for field_name in modified_event.model_fields_set:
+      if field_name in {'id', 'invocation_id', 'timestamp'}:
+        continue
+      update[field_name] = modified_event.__dict__[field_name]
+    output_event = original_event.model_copy(update=update)
+    if not output_event.author:
+      output_event.author = original_event.author
+    return output_event
 
   async def _exec_with_plugin(
       self,
@@ -854,13 +893,24 @@ class Runner:
           _apply_run_config_custom_metadata(
               event, invocation_context.run_config
           )
+          # Step 3: Run the on_event callbacks before persisting so callback
+          # changes are stored in the session and match the streamed event.
+          modified_event = await plugin_manager.run_on_event_callback(
+              invocation_context=invocation_context, event=event
+          )
+          output_event = self._get_output_event(
+              original_event=event,
+              modified_event=modified_event,
+              run_config=invocation_context.run_config,
+          )
+
           if is_live_call:
             if event.partial and _is_transcription(event):
               is_transcribing = True
             if is_transcribing and _is_tool_call_or_response(event):
               # only buffer function call and function response event which is
               # non-partial
-              buffered_events.append(event)
+              buffered_events.append(output_event)
               continue
             # Note for live/bidi: for audio response, it's considered as
             # non-partial event(event.partial=None)
@@ -881,7 +931,7 @@ class Runner:
                 )
                 if self._should_append_event(event, is_live_call):
                   await self.session_service.append_event(
-                      session=session, event=event
+                      session=session, event=output_event
                   )
 
                 for buffered_event in buffered_events:
@@ -897,25 +947,15 @@ class Runner:
                 if self._should_append_event(event, is_live_call):
                   logger.debug('Appending non-buffered event: %s', event)
                   await self.session_service.append_event(
-                      session=session, event=event
+                      session=session, event=output_event
                   )
           else:
             if event.partial is not True:
               await self.session_service.append_event(
-                  session=session, event=event
+                  session=session, event=output_event
               )
 
-          # Step 3: Run the on_event callbacks to optionally modify the event.
-          modified_event = await plugin_manager.run_on_event_callback(
-              invocation_context=invocation_context, event=event
-          )
-          if modified_event:
-            _apply_run_config_custom_metadata(
-                modified_event, invocation_context.run_config
-            )
-            yield modified_event
-          else:
-            yield event
+          yield output_event
 
     # Step 4: Run the after_run callbacks to perform global cleanup tasks or
     # finalizing logs and metrics data.
@@ -1575,6 +1615,10 @@ class Runner:
     # Close Plugins
     if self.plugin_manager:
       await self.plugin_manager.close()
+
+    # Close Session Service
+    if self.session_service:
+      await self.session_service.flush()
 
     logger.info('Runner closed.')
 

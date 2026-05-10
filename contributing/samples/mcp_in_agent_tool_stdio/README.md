@@ -43,7 +43,7 @@ This demo uses **Gemini 2.5 Flash** as the model. Try these prompts:
    What tools do you have access to?
    ```
 
-2. **Fetch and summarize JSON Schema specification:**
+1. **Fetch and summarize JSON Schema specification:**
 
    ```
    Use the mcp_helper to fetch https://json-schema.org/specification and summarize the key features of JSON Schema

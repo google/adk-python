@@ -339,8 +339,9 @@ class LlmAgent(BaseAgent):
     - Schema: Google's Schema type
 
   NOTE:
-    When this is set, agent can ONLY reply and CANNOT use any tools, such as
-    function tools, RAGs, agent transfer, etc.
+    The ADK supports using `output_schema` and `tools` together. It works by
+    exposing tools during the thought loop and enforcing structure only on the
+    final output.
   """
   output_key: Optional[str] = None
   """The key in session state to store the output of the agent.
@@ -843,6 +844,17 @@ class LlmAgent(BaseAgent):
 
     # Handle text responses
     if event.is_final_response() and event.content and event.content.parts:
+
+      # Skip if no text parts at all to avoid overwriting state_delta values
+      # already set (e.g. after_tool_callback with skip_summarization
+      # on function_response-only events).
+      has_text_part = any(
+          part.text is not None and not part.thought
+          for part in event.content.parts
+      )
+
+      if not has_text_part:
+        return
 
       result = ''.join(
           part.text

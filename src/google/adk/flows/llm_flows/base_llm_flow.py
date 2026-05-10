@@ -36,9 +36,7 @@ from ...agents.invocation_context import InvocationContext
 from ...agents.live_request_queue import LiveRequestQueue
 from ...agents.readonly_context import ReadonlyContext
 from ...agents.run_config import StreamingMode
-from ...auth.auth_handler import AuthHandler
 from ...auth.auth_tool import AuthConfig
-from ...auth.credential_manager import CredentialManager
 from ...events.event import Event
 from ...models.base_llm_connection import BaseLlmConnection
 from ...models.llm_request import LlmRequest
@@ -69,6 +67,8 @@ _ADK_AGENT_NAME_LABEL_KEY = 'adk_agent_name'
 # Timing configuration
 DEFAULT_TRANSFER_AGENT_DELAY = 1.0
 DEFAULT_TASK_COMPLETION_DELAY = 1.0
+
+DEFAULT_MAX_RECONNECT_ATTEMPTS = 5
 
 # Statistics configuration
 DEFAULT_ENABLE_CACHE_STATISTICS = False
@@ -141,10 +141,13 @@ async def _resolve_toolset_auth(
     if not auth_config:
       continue
 
+    auth_config_copy = auth_config.model_copy(deep=True)
+    from ...auth.credential_manager import CredentialManager
+
     try:
-      credential = await CredentialManager(auth_config).get_auth_credential(
-          callback_context
-      )
+      credential = await CredentialManager(
+          auth_config_copy
+      ).get_auth_credential(callback_context)
     except ValueError as e:
       # Validation errors from CredentialManager should be logged but not
       # block the flow - the toolset may still work without auth
@@ -156,19 +159,22 @@ async def _resolve_toolset_auth(
       credential = None
 
     if credential:
-      # Populate in-place for toolset to use in get_tools()
-      auth_config.exchanged_auth_credential = credential
+      # Store in invocation context to avoid data leakage and race conditions
+      invocation_context.credential_by_key[auth_config.credential_key] = (
+          credential
+      )
     else:
       # Need auth - will interrupt
       toolset_id = (
           f'{TOOLSET_AUTH_CREDENTIAL_ID_PREFIX}{type(tool_union).__name__}'
       )
-      pending_auth_requests[toolset_id] = auth_config
+      pending_auth_requests[toolset_id] = auth_config_copy
 
   if not pending_auth_requests:
     return
 
-  # Build auth requests dict with generated auth requests
+  from ...auth.auth_handler import AuthHandler
+
   auth_requests = {
       credential_id: AuthHandler(auth_config).generate_auth_request()
       for credential_id, auth_config in pending_auth_requests.items()
@@ -471,6 +477,8 @@ class BaseLlmFlow(ABC):
       invocation_context: InvocationContext,
   ) -> AsyncGenerator[Event, None]:
     """Runs the flow using live api."""
+    from google.genai import errors
+
     llm_request = LlmRequest()
     event_id = Event.new_id()
 
@@ -513,7 +521,12 @@ class BaseLlmFlow(ABC):
             invocation_context.agent.name,
         )
         async with llm.connect(llm_request) as llm_connection:
-          if llm_request.contents:
+          # Skip sending history if we are resuming a session. The server
+          # already has the state associated with the resumption handle.
+          if (
+              llm_request.contents
+              and not invocation_context.live_session_resumption_handle
+          ):
             # Sends the conversation history to the model.
             with tracer.start_as_current_span('send_data'):
               # Combine regular contents with audio/transcription from session
@@ -537,6 +550,8 @@ class BaseLlmFlow(ABC):
                 )
             ) as agen:
               async for event in agen:
+                # Reset attempt counter on successful communication.
+                attempt = 1
                 # Empty event means the queue is closed.
                 if not event:
                   break
@@ -606,9 +621,31 @@ class BaseLlmFlow(ABC):
             except asyncio.CancelledError:
               pass
       except (ConnectionClosed, ConnectionClosedOK) as e:
-        # when the session timeout, it will just close and not throw exception.
-        # so this is for bad cases
+        # If we have a session resumption handle, we attempt to reconnect.
+        # This handle is updated dynamically during the session.
+        if invocation_context.live_session_resumption_handle:
+          if attempt > DEFAULT_MAX_RECONNECT_ATTEMPTS:
+            logger.error('Max reconnection attempts reached (%s).', e)
+            raise
+          logger.info(
+              'Connection closed (%s), reconnecting with session handle.', e
+          )
+          continue
         logger.error('Connection closed: %s.', e)
+        raise
+      except errors.APIError as e:
+        # Error code 1000 and 1006 indicates a recoverable connection drop.
+        # In that case, we attempt to reconnect with session handle if available.
+        if e.code in [1000, 1006]:
+          if invocation_context.live_session_resumption_handle:
+            if attempt > DEFAULT_MAX_RECONNECT_ATTEMPTS:
+              logger.error('Max reconnection attempts reached (%s).', e)
+              raise
+            logger.info(
+                'Connection lost (%s), reconnecting with session handle.', e
+            )
+            continue
+        logger.error('APIError in live flow: %s', e)
         raise
       except Exception as e:
         logger.error(
@@ -687,75 +724,81 @@ class BaseLlmFlow(ABC):
   ) -> AsyncGenerator[Event, None]:
     """Receive data from model and process events using BaseLlmConnection."""
 
-    def get_author_for_event(llm_response):
+    def get_author_for_event(llm_response: LlmResponse) -> str:
       """Get the author of the event.
 
-      When the model returns transcription, the author is "user". Otherwise, the
-      author is the agent name(not 'model').
+      When the model returns input transcription, the author is set to "user".
+      Otherwise, the author is the agent name (not 'model').
 
       Args:
         llm_response: The LLM response from the LLM call.
+
+      Returns:
+        The author of the event as a string, either "user" or the agent's name.
       """
-      if (
-          llm_response
-          and llm_response.content
-          and llm_response.content.role == 'user'
+      if llm_response and (
+          llm_response.input_transcription
+          or (llm_response.content and llm_response.content.role == 'user')
       ):
         return 'user'
       else:
         return invocation_context.agent.name
 
-    try:
-      while True:
-        async with Aclosing(llm_connection.receive()) as agen:
-          async for llm_response in agen:
-            if llm_response.live_session_resumption_update:
-              logger.info(
-                  'Update session resumption handle:'
-                  f' {llm_response.live_session_resumption_update}.'
-              )
-              invocation_context.live_session_resumption_handle = (
-                  llm_response.live_session_resumption_update.new_handle
-              )
-            model_response_event = Event(
-                id=Event.new_id(),
-                invocation_id=invocation_context.invocation_id,
-                author=get_author_for_event(llm_response),
+    while True:
+      async with Aclosing(llm_connection.receive()) as agen:
+        async for llm_response in agen:
+          if llm_response.live_session_resumption_update:
+            logger.info(
+                'Update session resumption handle:'
+                f' {llm_response.live_session_resumption_update}.'
             )
+            invocation_context.live_session_resumption_handle = (
+                llm_response.live_session_resumption_update.new_handle
+            )
+          if llm_response.go_away:
+            logger.info(f'Received go away signal: {llm_response.go_away}')
+            # The server signals that it will close the connection soon.
+            # We proactively raise ConnectionClosed to trigger the reconnection
+            # logic in run_live, which will use the latest session handle.
+            raise ConnectionClosed(None, None)
 
-            async with Aclosing(
-                self._postprocess_live(
-                    invocation_context,
-                    llm_request,
-                    llm_response,
-                    model_response_event,
+          model_response_event = Event(
+              id=Event.new_id(),
+              invocation_id=invocation_context.invocation_id,
+              author=get_author_for_event(llm_response),
+          )
+
+          async with Aclosing(
+              self._postprocess_live(
+                  invocation_context,
+                  llm_request,
+                  llm_response,
+                  model_response_event,
+              )
+          ) as agen:
+            async for event in agen:
+              # Cache output audio chunks from model responses
+              # TODO: support video data
+              if (
+                  invocation_context.run_config.save_live_blob
+                  and event.content
+                  and event.content.parts
+                  and event.content.parts[0].inline_data
+                  and event.content.parts[0].inline_data.mime_type.startswith(
+                      'audio/'
+                  )
+              ):
+                audio_blob = types.Blob(
+                    data=event.content.parts[0].inline_data.data,
+                    mime_type=event.content.parts[0].inline_data.mime_type,
                 )
-            ) as agen:
-              async for event in agen:
-                # Cache output audio chunks from model responses
-                # TODO: support video data
-                if (
-                    invocation_context.run_config.save_live_blob
-                    and event.content
-                    and event.content.parts
-                    and event.content.parts[0].inline_data
-                    and event.content.parts[0].inline_data.mime_type.startswith(
-                        'audio/'
-                    )
-                ):
-                  audio_blob = types.Blob(
-                      data=event.content.parts[0].inline_data.data,
-                      mime_type=event.content.parts[0].inline_data.mime_type,
-                  )
-                  self.audio_cache_manager.cache_audio(
-                      invocation_context, audio_blob, cache_type='output'
-                  )
+                self.audio_cache_manager.cache_audio(
+                    invocation_context, audio_blob, cache_type='output'
+                )
 
-                yield event
-        # Give opportunity for other tasks to run.
-        await asyncio.sleep(0)
-    except ConnectionClosedOK:
-      pass
+              yield event
+      # Give opportunity for other tasks to run.
+      await asyncio.sleep(0)
 
   async def run_async(
       self, invocation_context: InvocationContext
@@ -984,7 +1027,16 @@ class BaseLlmFlow(ABC):
         and not llm_response.input_transcription
         and not llm_response.output_transcription
         and not llm_response.usage_metadata
+        and not llm_response.live_session_resumption_update
     ):
+      return
+
+    # Handle session resumption updates for cross-connection resumption
+    if llm_response.live_session_resumption_update:
+      model_response_event.live_session_resumption_update = (
+          llm_response.live_session_resumption_update
+      )
+      yield model_response_event
       return
 
     # Handle transcription events ONCE per llm_response, outside the event loop

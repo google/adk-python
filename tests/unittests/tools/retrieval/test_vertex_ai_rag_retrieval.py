@@ -108,7 +108,7 @@ def test_vertex_rag_retrieval_for_gemini_2_x():
       'response1',
   ]
   mockModel = testing_utils.MockModel.create(responses=responses)
-  mockModel.model = 'gemini-2.0-flash'
+  mockModel.model = 'gemini-2.5-flash'
 
   # Calls the first time.
   agent = Agent(

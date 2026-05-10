@@ -12,12 +12,25 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from __future__ import annotations
+
+import importlib
+from typing import TYPE_CHECKING
+
 from .auth_credential import AuthCredential
 from .auth_credential import AuthCredentialTypes
 from .auth_credential import OAuth2Auth
-from .auth_handler import AuthHandler
 from .auth_schemes import AuthScheme
 from .auth_schemes import AuthSchemeType
 from .auth_schemes import OpenIdConnectWithConfig
 from .auth_tool import AuthConfig
 from .base_auth_provider import BaseAuthProvider
+
+if TYPE_CHECKING:
+  from .auth_handler import AuthHandler
+
+
+def __getattr__(name: str):
+  if name == 'AuthHandler':
+    return importlib.import_module(f'{__name__}.auth_handler').AuthHandler
+  raise AttributeError(f'module {__name__!r} has no attribute {name!r}')
