@@ -1068,3 +1068,104 @@ async def test_adk_function_call_ids_preserved_for_interactions_model():
   user_fr_part = llm_request.contents[2].parts[0]
   assert user_fr_part.function_response is not None
   assert user_fr_part.function_response.id == function_call_id
+
+
+@pytest.mark.asyncio
+async def test_adk_function_call_ids_preserved_for_anthropic_model():
+  """Anthropic ids must round-trip through replay so Claude can match
+  tool_use blocks with their tool_result blocks (issue #5074).
+  """
+  from google.adk.models.anthropic_llm import AnthropicLlm
+
+  agent = Agent(
+      model=AnthropicLlm(model="claude-sonnet-4-20250514"),
+      name="test_agent",
+  )
+  llm_request = LlmRequest(model="claude-sonnet-4-20250514")
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent
+  )
+
+  # ADK fallback ids look like ``adk-<uuid>`` and would previously be
+  # stripped to None for non-Gemini models on the replay path.
+  function_call_id = "adk-test-call-id"
+  events = [
+      Event(
+          invocation_id="inv1",
+          author="user",
+          content=types.UserContent("Call the tool"),
+      ),
+      Event(
+          invocation_id="inv2",
+          author="test_agent",
+          content=types.Content(
+              role="model",
+              parts=[
+                  types.Part(
+                      function_call=types.FunctionCall(
+                          id=function_call_id,
+                          name="test_tool",
+                          args={"x": 1},
+                      )
+                  )
+              ],
+          ),
+      ),
+      Event(
+          invocation_id="inv3",
+          author="test_agent",
+          content=types.Content(
+              role="user",
+              parts=[
+                  types.Part(
+                      function_response=types.FunctionResponse(
+                          id=function_call_id,
+                          name="test_tool",
+                          response={"result": 2},
+                      )
+                  )
+              ],
+          ),
+      ),
+  ]
+  invocation_context.session.events = events
+
+  async for _ in contents.request_processor.run_async(
+      invocation_context, llm_request
+  ):
+    pass
+
+  model_fc_part = llm_request.contents[1].parts[0]
+  assert model_fc_part.function_call is not None
+  assert model_fc_part.function_call.id == function_call_id
+
+  user_fr_part = llm_request.contents[2].parts[0]
+  assert user_fr_part.function_response is not None
+  assert user_fr_part.function_response.id == function_call_id
+
+
+def test_is_other_agent_reply_live_session():
+  """Test _is_other_agent_reply when live_session_id is present."""
+  event = Event(author="another_agent", live_session_id="session_123")
+  assert contents._is_other_agent_reply("current_agent", event) is True
+
+  event = Event(author="user", live_session_id="session_123")
+  assert contents._is_other_agent_reply("current_agent", event) is False
+
+  event = Event(author="current_agent", live_session_id="session_123")
+  assert contents._is_other_agent_reply("current_agent", event) is True
+
+
+def test_is_other_agent_reply_non_live_session():
+  """Test _is_other_agent_reply when live_session_id is not present."""
+  event = Event(author="another_agent")
+  assert contents._is_other_agent_reply("current_agent", event) is True
+
+  event = Event(author="user")
+  assert contents._is_other_agent_reply("current_agent", event) is False
+
+  event = Event(author="current_agent")
+  assert contents._is_other_agent_reply("current_agent", event) is False
+
+  event = Event(author="another_agent")
+  assert contents._is_other_agent_reply("", event) is False

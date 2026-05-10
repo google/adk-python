@@ -54,9 +54,9 @@ class GetTimezoneTool(BaseTool):
     return f"The timezone for {args['location']} is UTC+00:00."
 
 
-def get_current_humidity(location: str) -> str:
-  """Returns the current humidity for a given location."""
-  return f"The humidity in {location} is 45%."
+def get_wind_speed(location: str) -> str:
+  """Returns the current wind speed for a given location."""
+  return f"The wind speed in {location} is 10 mph."
 
 
 greeting_skill = models.Skill(
@@ -87,7 +87,7 @@ weather_skill = load_skill_from_dir(
 # be used in production environments.
 my_skill_toolset = SkillToolset(
     skills=[greeting_skill, weather_skill],
-    additional_tools=[GetTimezoneTool(), get_current_humidity],
+    additional_tools=[GetTimezoneTool(), get_wind_speed],
     code_executor=UnsafeLocalCodeExecutor(),
 )
 

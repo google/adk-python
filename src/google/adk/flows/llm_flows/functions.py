@@ -20,8 +20,8 @@ import asyncio
 import base64
 import binascii
 from concurrent.futures import ThreadPoolExecutor
+import contextvars
 import copy
-import functools
 import inspect
 import logging
 import threading
@@ -42,8 +42,8 @@ from ...auth.auth_tool import AuthConfig
 from ...auth.auth_tool import AuthToolArguments
 from ...events.event import Event
 from ...events.event_actions import EventActions
+from ...telemetry import _instrumentation
 from ...telemetry.tracing import trace_merged_tool_calls
-from ...telemetry.tracing import trace_tool_call
 from ...telemetry.tracing import tracer
 from ...tools.base_tool import BaseTool
 from ...tools.tool_confirmation import ToolConfirmation
@@ -140,14 +140,17 @@ async def _call_tool_in_thread_pool(
   """
   from ...tools.function_tool import FunctionTool
 
+  ctx = contextvars.copy_context()
   loop = asyncio.get_running_loop()
   executor = _get_tool_thread_pool(max_workers)
 
   if _is_sync_tool(tool):
-    # For sync FunctionTool, call the underlying function directly
-    def run_sync_tool():
-      if isinstance(tool, FunctionTool):
-        args_to_call, validation_errors = tool._preprocess_args(args)
+    if isinstance(tool, FunctionTool):
+      # For sync FunctionTool, call the underlying function directly.
+      def run_sync_tool():
+        args_to_call, validation_errors = tool._preprocess_args_with_validation(
+            args
+        )
         if validation_errors:
           return tool._build_validation_error_response(validation_errors)
         signature = inspect.signature(tool.func)
@@ -158,13 +161,10 @@ async def _call_tool_in_thread_pool(
             k: v for k, v in args_to_call.items() if k in valid_params
         }
         return tool.func(**args_to_call)
-      else:
-        # For other sync tool types, we can't easily run them in thread pool
-        return None
 
-    result = await loop.run_in_executor(executor, run_sync_tool)
-    if result is not None:
-      return result
+      return await loop.run_in_executor(
+          executor, lambda: ctx.run(run_sync_tool)
+      )
   else:
     # For async tools, run them in a new event loop in a background thread.
     # This helps when async functions contain blocking I/O (common user mistake)
@@ -173,9 +173,11 @@ async def _call_tool_in_thread_pool(
       # Create a new event loop for this thread
       return asyncio.run(tool.run_async(args=args, tool_context=tool_context))
 
-    return await loop.run_in_executor(executor, run_async_tool_in_new_loop)
+    return await loop.run_in_executor(
+        executor, lambda: ctx.run(run_async_tool_in_new_loop)
+    )
 
-  # Fall back to normal async execution for non-FunctionTool sync tools
+  # Fall back to normal async execution for non-FunctionTool sync tools.
   return await tool.run_async(args=args, tool_context=tool_context)
 
 
@@ -403,7 +405,14 @@ async def handle_function_call_list_async(
   ]
 
   # Wait for all tasks to complete
-  function_response_events = await asyncio.gather(*tasks)
+  try:
+    function_response_events = await asyncio.gather(*tasks)
+  except Exception:
+    for t in tasks:
+      if not t.done():
+        t.cancel()
+    await asyncio.gather(*tasks, return_exceptions=True)
+    raise
 
   # Filter out None results
   function_response_events = [
@@ -587,22 +596,11 @@ async def _execute_single_function_call_async(
     )
     return function_response_event
 
-  with tracer.start_as_current_span(f'execute_tool {tool.name}'):
-    function_response_event = None
-    caught_error = None
-    try:
-      function_response_event = await _run_with_trace()
-      return function_response_event
-    except Exception as e:
-      caught_error = e
-      raise
-    finally:
-      trace_tool_call(
-          tool=tool,
-          args=function_args,
-          function_response_event=function_response_event,
-          error=caught_error,
-      )
+  async with _instrumentation.record_tool_execution(
+      tool, agent, function_args
+  ) as tel_ctx:
+    tel_ctx.function_response_event = await _run_with_trace()
+    return tel_ctx.function_response_event
 
 
 async def handle_function_calls_live(
@@ -637,7 +635,14 @@ async def handle_function_calls_live(
   ]
 
   # Wait for all tasks to complete
-  function_response_events = await asyncio.gather(*tasks)
+  try:
+    function_response_events = await asyncio.gather(*tasks)
+  except Exception:
+    for t in tasks:
+      if not t.done():
+        t.cancel()
+    await asyncio.gather(*tasks, return_exceptions=True)
+    raise
 
   # Filter out None results
   function_response_events = [
@@ -826,22 +831,11 @@ async def _execute_single_function_call_live(
     )
     return function_response_event
 
-  with tracer.start_as_current_span(f'execute_tool {tool.name}'):
-    function_response_event = None
-    caught_error = None
-    try:
-      function_response_event = await _run_with_trace()
-      return function_response_event
-    except Exception as e:
-      caught_error = e
-      raise
-    finally:
-      trace_tool_call(
-          tool=tool,
-          args=function_args,
-          function_response_event=function_response_event,
-          error=caught_error,
-      )
+  async with _instrumentation.record_tool_execution(
+      tool, agent, function_args
+  ) as tel_ctx:
+    tel_ctx.function_response_event = await _run_with_trace()
+    return tel_ctx.function_response_event
 
 
 async def _process_function_live_helper(

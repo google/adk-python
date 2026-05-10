@@ -16,10 +16,15 @@ from __future__ import annotations
 
 import abc
 from enum import Enum
+from typing import Any
 from typing import Literal
 from typing import Optional
+from typing import TYPE_CHECKING
 
 import pydantic
+
+if TYPE_CHECKING:
+  from ..tool_context import ToolContext
 
 from ...features import experimental
 from ...features import FeatureName
@@ -59,6 +64,17 @@ class BaseComputer(abc.ABC):
   This abstract base class async defines the standard interface for controlling
   computer environments, including web browsers and other interactive systems.
   """
+
+  async def prepare(self, tool_context: "ToolContext") -> None:
+    """Called before each tool invocation to prepare resources.
+
+    Override this to set up session-level resources (sandbox, tokens, etc.)
+    using tool_context.state for persistence across invocations.
+
+    Args:
+        tool_context: The tool context with session state access.
+    """
+    pass
 
   @abc.abstractmethod
   async def screen_size(self) -> tuple[int, int]:

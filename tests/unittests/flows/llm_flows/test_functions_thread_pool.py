@@ -15,6 +15,7 @@
 """Tests for thread pool execution of tools in Live API mode."""
 
 import asyncio
+import contextvars
 import threading
 import time
 
@@ -24,9 +25,12 @@ from google.adk.agents.run_config import ToolThreadPoolConfig
 from google.adk.flows.llm_flows.functions import _call_tool_in_thread_pool
 from google.adk.flows.llm_flows.functions import _get_tool_thread_pool
 from google.adk.flows.llm_flows.functions import _is_sync_tool
+from google.adk.tools.base_tool import BaseTool
 from google.adk.tools.function_tool import FunctionTool
+from google.adk.tools.set_model_response_tool import SetModelResponseTool
 from google.adk.tools.tool_context import ToolContext
 from google.genai import types
+from pydantic import BaseModel
 import pytest
 
 from ... import testing_utils
@@ -75,8 +79,6 @@ class TestIsSyncTool:
 
   def test_tool_without_func_returns_false(self):
     """Test that a tool without func attribute returns False."""
-    from google.adk.tools.base_tool import BaseTool
-
     tool = BaseTool(name='test', description='test tool')
     assert _is_sync_tool(tool) is False
 
@@ -348,6 +350,147 @@ class TestCallToolInThreadPool:
     # Verify the pool was created with custom max_workers
     pool = _get_tool_thread_pool(max_workers=12)
     assert pool is not None
+
+  @pytest.mark.asyncio
+  async def test_contextvars_propagation_sync_tool(self):
+    """Test that contextvars propagate to sync tools in thread pool."""
+    test_var = contextvars.ContextVar('test_var', default='default')
+    test_var.set('main_thread_value')
+
+    def sync_func() -> dict[str, str]:
+      return {'value': test_var.get()}
+
+    tool = FunctionTool(sync_func)
+    model = testing_utils.MockModel.create(responses=[])
+    agent = Agent(name='test_agent', model=model, tools=[tool])
+    invocation_context = await testing_utils.create_invocation_context(
+        agent=agent, user_content=''
+    )
+    tool_context = ToolContext(
+        invocation_context=invocation_context,
+        function_call_id='test_id',
+    )
+
+    result = await _call_tool_in_thread_pool(tool, {}, tool_context)
+
+    assert result == {'value': 'main_thread_value'}
+
+  @pytest.mark.asyncio
+  async def test_contextvars_propagation_async_tool(self):
+    """Test that contextvars propagate to async tools in thread pool."""
+    test_var = contextvars.ContextVar('test_var', default='default')
+    test_var.set('main_thread_value')
+
+    async def async_func() -> dict[str, str]:
+      return {'value': test_var.get()}
+
+    tool = FunctionTool(async_func)
+    model = testing_utils.MockModel.create(responses=[])
+    agent = Agent(name='test_agent', model=model, tools=[tool])
+    invocation_context = await testing_utils.create_invocation_context(
+        agent=agent, user_content=''
+    )
+    tool_context = ToolContext(
+        invocation_context=invocation_context,
+        function_call_id='test_id',
+    )
+
+    result = await _call_tool_in_thread_pool(tool, {}, tool_context)
+
+    assert result == {'value': 'main_thread_value'}
+
+  @pytest.mark.asyncio
+  async def test_sync_tool_returning_none_runs_exactly_once(self):
+    """Regression test for issue #5284.
+
+    A sync FunctionTool whose underlying function returns None must not
+    be re-invoked through the run_async fallback path.
+    """
+    call_count = 0
+
+    def side_effect_only_func() -> None:
+      nonlocal call_count
+      call_count += 1
+
+    tool = FunctionTool(side_effect_only_func)
+    model = testing_utils.MockModel.create(responses=[])
+    agent = Agent(name='test_agent', model=model, tools=[tool])
+    invocation_context = await testing_utils.create_invocation_context(
+        agent=agent, user_content=''
+    )
+    tool_context = ToolContext(
+        invocation_context=invocation_context,
+        function_call_id='test_id',
+    )
+
+    result = await _call_tool_in_thread_pool(tool, {}, tool_context)
+
+    assert result is None
+    assert call_count == 1
+
+  @pytest.mark.asyncio
+  async def test_non_function_tool_sync_falls_back_to_run_async(self):
+    """Sync tools that aren't FunctionTool subclasses go through run_async.
+
+    Covers the fall-through path used by tools like SetModelResponseTool
+    that have a sync ``func`` attribute but aren't FunctionTool instances.
+    """
+    run_async_call_count = 0
+
+    class _SyncNonFunctionTool(BaseTool):
+
+      def __init__(self):
+        super().__init__(name='custom_tool', description='desc')
+        # Sync attribute so _is_sync_tool returns True.
+        self.func = lambda: 'unused'
+
+      async def run_async(self, *, args, tool_context):
+        nonlocal run_async_call_count
+        run_async_call_count += 1
+        return {'via': 'run_async'}
+
+    tool = _SyncNonFunctionTool()
+    model = testing_utils.MockModel.create(responses=[])
+    agent = Agent(name='test_agent', model=model, tools=[tool])
+    invocation_context = await testing_utils.create_invocation_context(
+        agent=agent, user_content=''
+    )
+    tool_context = ToolContext(
+        invocation_context=invocation_context,
+        function_call_id='test_id',
+    )
+
+    result = await _call_tool_in_thread_pool(tool, {}, tool_context)
+
+    assert result == {'via': 'run_async'}
+    assert run_async_call_count == 1
+
+  @pytest.mark.asyncio
+  async def test_set_model_response_tool_falls_back_to_run_async(self):
+    """SetModelResponseTool — the real-world non-FunctionTool sync tool."""
+
+    class _Schema(BaseModel):
+      answer: str
+
+    tool = SetModelResponseTool(output_schema=_Schema)
+    # Precondition: this is the code path the bug report referenced.
+    assert _is_sync_tool(tool)
+
+    model = testing_utils.MockModel.create(responses=[])
+    agent = Agent(name='test_agent', model=model, tools=[tool])
+    invocation_context = await testing_utils.create_invocation_context(
+        agent=agent, user_content=''
+    )
+    tool_context = ToolContext(
+        invocation_context=invocation_context,
+        function_call_id='test_id',
+    )
+
+    result = await _call_tool_in_thread_pool(
+        tool, {'answer': 'hello'}, tool_context
+    )
+
+    assert result == {'answer': 'hello'}
 
 
 class TestToolThreadPoolConfig:

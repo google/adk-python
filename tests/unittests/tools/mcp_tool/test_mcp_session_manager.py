@@ -769,3 +769,277 @@ async def test_retry_on_errors_decorator_does_not_retry_exception_from_cancel():
     await mock_function(mock_self)
 
   assert call_count == 1
+
+
+class TestMCPSessionManagerGetSessionContext:
+  """Tests for MCPSessionManager._get_session_context.
+
+  This is the lookup that allows McpTool to obtain the SessionContext
+  for the current session and call `_run_guarded` on it.
+  """
+
+  def setup_method(self):
+    """Set up a manager with stdio params."""
+    self.params = StdioServerParameters(command="echo", args=[])
+    self.manager = MCPSessionManager(self.params)
+
+  def test_returns_none_when_no_session_exists(self):
+    """With an empty pool, _get_session_context returns None."""
+    assert self.manager._get_session_context() is None
+    assert self.manager._get_session_context(headers={"x": "y"}) is None
+
+  def test_returns_stored_session_context_for_stdio(self):
+    """A stored SessionContext is returned for the stdio session key."""
+    fake_ctx = MockSessionContext()
+    # Stdio uses a constant session key, so headers are ignored.
+    self.manager._session_contexts["stdio_session"] = fake_ctx
+
+    assert self.manager._get_session_context() is fake_ctx
+    assert self.manager._get_session_context(headers={"x": "y"}) is fake_ctx
+
+  def test_returns_correct_session_context_per_header_set(self):
+    """Different header sets produce different keys, so different contexts."""
+    sse_params = SseConnectionParams(url="https://example.com/mcp")
+    manager = MCPSessionManager(sse_params)
+
+    ctx_a = MockSessionContext()
+    ctx_b = MockSessionContext()
+    key_a = manager._generate_session_key(
+        manager._merge_headers({"x-token": "a"})
+    )
+    key_b = manager._generate_session_key(
+        manager._merge_headers({"x-token": "b"})
+    )
+    manager._session_contexts[key_a] = ctx_a
+    manager._session_contexts[key_b] = ctx_b
+
+    assert manager._get_session_context(headers={"x-token": "a"}) is ctx_a
+    assert manager._get_session_context(headers={"x-token": "b"}) is ctx_b
+    # Unknown header set returns None.
+    assert manager._get_session_context(headers={"x-token": "c"}) is None
+
+  def test_session_contexts_dict_is_independent_of_sessions_tuple(self):
+    """Backward-compat guard: _sessions remains the tuple shape.
+
+    Downstream tests poke at `_sessions` directly using tuple unpacking
+    (`session, exit_stack, loop = manager._sessions[key]`). This test
+    ensures we did not switch to a dataclass that would break that.
+    """
+    mock_session = MockClientSession()
+    mock_exit_stack = MockAsyncExitStack()
+    mock_loop = Mock()
+    mock_ctx = MockSessionContext()
+
+    self.manager._sessions["stdio_session"] = (
+        mock_session,
+        mock_exit_stack,
+        mock_loop,
+    )
+    self.manager._session_contexts["stdio_session"] = mock_ctx
+
+    # Should be unpackable as a 3-tuple.
+    session, exit_stack, loop = self.manager._sessions["stdio_session"]
+    assert session is mock_session
+    assert exit_stack is mock_exit_stack
+    assert loop is mock_loop
+
+    # And the SessionContext is reachable independently.
+    assert self.manager._get_session_context() is mock_ctx
+
+  def test_pickling_round_trip_clears_runtime_state(self):
+    """__getstate__/__setstate__ should drop runtime SessionContext refs."""
+    import pickle
+
+    self.manager._session_contexts["stdio_session"] = MockSessionContext()
+
+    restored = pickle.loads(pickle.dumps(self.manager))
+
+    # Runtime state must not survive pickling.
+    assert restored._session_contexts == {}
+    assert restored._sessions == {}
+
+
+class TestMCPSessionManagerCreateSessionFlagOff:
+  """Pin down that create_session does NOT consult task aliveness when off.
+
+  Existing callers broke under an earlier unconditional version of this
+  fix because the new `_is_task_alive` check caused session re-creation
+  paths to fire when the test mocks did not have a live `_task`. The
+  check must be gated behind the feature flag.
+  """
+
+  def setup_method(self):
+    from google.adk.features import FeatureName  # noqa: F401
+
+    self.params = StdioServerParameters(command="echo", args=[])
+    self.manager = MCPSessionManager(self.params)
+
+  @pytest.mark.asyncio
+  async def test_existing_session_reused_when_flag_off_even_with_dead_ctx(
+      self,
+  ):
+    """A 'dead' SessionContext does not invalidate the session when off."""
+    from google.adk.features import FeatureName
+    from google.adk.features._feature_registry import temporary_feature_override
+
+    # Pre-populate a healthy-looking session and a SessionContext whose
+    # _task looks dead.
+    healthy_session = MockClientSession()
+    dead_ctx = MockSessionContext()
+    dead_ctx._is_task_alive = False  # pretend the task died
+    self.manager._sessions["stdio_session"] = (
+        healthy_session,
+        MockAsyncExitStack(),
+        asyncio.get_running_loop(),
+    )
+    self.manager._session_contexts["stdio_session"] = dead_ctx
+
+    # With flag OFF, the create_session must reuse the existing session
+    # rather than tearing it down because of the dead _task.
+    with temporary_feature_override(
+        FeatureName._MCP_GRACEFUL_ERROR_HANDLING, False
+    ):
+      returned = await self.manager.create_session()
+
+    assert returned is healthy_session
+
+  @pytest.mark.asyncio
+  async def test_existing_session_recreated_when_flag_on_with_dead_ctx(
+      self,
+  ):
+    """And confirm: with flag ON, the dead _task DOES trigger re-creation."""
+    from google.adk.features import FeatureName
+    from google.adk.features._feature_registry import temporary_feature_override
+
+    healthy_session = MockClientSession()
+    dead_ctx = MockSessionContext()
+    dead_ctx._is_task_alive = False
+    # Mark the existing exit_stack so we can confirm the new one is different.
+    old_exit_stack = MockAsyncExitStack()
+    self.manager._sessions["stdio_session"] = (
+        healthy_session,
+        old_exit_stack,
+        asyncio.get_running_loop(),
+    )
+    self.manager._session_contexts["stdio_session"] = dead_ctx
+
+    # Patch the SessionContext used inside create_session so we don't
+    # actually try to launch a real subprocess. Mirrors the patching
+    # pattern used by `test_create_session_stdio_new`.
+    new_session = MockClientSession()
+    mock_exit_stack = MockAsyncExitStack()
+    mock_session_ctx = MockSessionContext(session=new_session)
+
+    with temporary_feature_override(
+        FeatureName._MCP_GRACEFUL_ERROR_HANDLING, True
+    ):
+      with patch("google.adk.tools.mcp_tool.mcp_session_manager.stdio_client"):
+        with patch(
+            "google.adk.tools.mcp_tool.mcp_session_manager.AsyncExitStack"
+        ) as mock_exit_stack_class:
+          with patch(
+              "google.adk.tools.mcp_tool.mcp_session_manager.SessionContext"
+          ) as mock_session_context_class:
+            mock_exit_stack_class.return_value = mock_exit_stack
+            mock_session_context_class.return_value = mock_session_ctx
+            mock_exit_stack.enter_async_context.return_value = new_session
+
+            returned = await self.manager.create_session()
+
+    assert returned is new_session
+    # The original 'healthy_session' was torn down because dead_ctx
+    # told us the task was gone.
+    assert returned is not healthy_session
+
+
+class TestMCPGracefulErrorHandlingFlagContract:
+  """Pin down the public contract that GE will rely on to enable the fix.
+
+  GE will flip this fix on by setting an environment variable in their
+  deployment config (per Sasha's confirmation: "environment variable, GE
+  team is responsible for setting it"). The deployment expects:
+
+    * `ADK_ENABLE_MCP_GRACEFUL_ERROR_HANDLING=1`  enables the fix
+    * absence of the variable                      keeps it disabled
+    * `ADK_DISABLE_MCP_GRACEFUL_ERROR_HANDLING=1` is the kill switch
+
+  These tests are guards: if anyone refactors the feature-flag framework
+  in a way that changes how the env var is read (renames it, caches the
+  value at import time, requires a binary push, etc.), these tests fail
+  loudly so we don't silently break GE's rollout.
+  """
+
+  def test_default_state_is_off_so_cl_is_a_noop(self):
+    """The CL must be a no-op until GE explicitly enables it."""
+    import os
+
+    from google.adk.features import FeatureName
+    from google.adk.features import is_feature_enabled
+
+    enable = "ADK_ENABLE_MCP_GRACEFUL_ERROR_HANDLING"
+    disable = "ADK_DISABLE_MCP_GRACEFUL_ERROR_HANDLING"
+    saved = {k: os.environ.pop(k) for k in (enable, disable) if k in os.environ}
+    try:
+      assert (
+          is_feature_enabled(FeatureName._MCP_GRACEFUL_ERROR_HANDLING) is False
+      )
+    finally:
+      os.environ.update(saved)
+
+  def test_env_var_enable_flips_flag_on_at_runtime(self):
+    """The env var GE will set must turn the fix on without a rebuild."""
+    import os
+
+    from google.adk.features import FeatureName
+    from google.adk.features import is_feature_enabled
+
+    enable = "ADK_ENABLE_MCP_GRACEFUL_ERROR_HANDLING"
+    saved = os.environ.pop(enable, None)
+    try:
+      os.environ[enable] = "1"
+      assert (
+          is_feature_enabled(FeatureName._MCP_GRACEFUL_ERROR_HANDLING) is True
+      )
+      # And once it's removed, we revert. Confirms the value is read
+      # live from os.environ on every call (no caching, no binary push).
+      del os.environ[enable]
+      assert (
+          is_feature_enabled(FeatureName._MCP_GRACEFUL_ERROR_HANDLING) is False
+      )
+    finally:
+      if saved is not None:
+        os.environ[enable] = saved
+
+  def test_env_var_disable_acts_as_kill_switch(self):
+    """The disable env var lets consumers turn off without a rebuild."""
+    import os
+
+    from google.adk.features import FeatureName
+    from google.adk.features import is_feature_enabled
+    from google.adk.features._feature_registry import temporary_feature_override
+
+    disable = "ADK_DISABLE_MCP_GRACEFUL_ERROR_HANDLING"
+    enable = "ADK_ENABLE_MCP_GRACEFUL_ERROR_HANDLING"
+    saved_disable = os.environ.pop(disable, None)
+    saved_enable = os.environ.pop(enable, None)
+    try:
+      # If a future default flip ever turns this on by default, the
+      # disable env var should still let consumers turn it back off
+      # without a rebuild.
+      os.environ[disable] = "1"
+      assert (
+          is_feature_enabled(FeatureName._MCP_GRACEFUL_ERROR_HANDLING) is False
+      )
+      # And confirm: a programmatic override takes precedence over the
+      # disable env var (priority order documented in _feature_registry).
+      with temporary_feature_override(
+          FeatureName._MCP_GRACEFUL_ERROR_HANDLING, True
+      ):
+        assert (
+            is_feature_enabled(FeatureName._MCP_GRACEFUL_ERROR_HANDLING) is True
+        )
+    finally:
+      if saved_disable is not None:
+        os.environ[disable] = saved_disable
+      if saved_enable is not None:
+        os.environ[enable] = saved_enable

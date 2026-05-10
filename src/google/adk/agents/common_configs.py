@@ -118,7 +118,7 @@ class AgentRefConfig(BaseModel):
     my_custom_agent = LlmAgent(
         name="my_custom_agent",
         instruction="You are a helpful custom agent.",
-        model="gemini-2.0-flash",
+        model="gemini-2.5-flash",
     )
     ```
 

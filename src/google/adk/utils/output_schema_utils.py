@@ -23,7 +23,7 @@ from __future__ import annotations
 from typing import Union
 
 from ..models.base_llm import BaseLlm
-from .model_name_utils import is_gemini_2_or_above
+from .model_name_utils import is_gemini_eap_or_2_or_above
 from .variant_utils import get_google_llm_variant
 from .variant_utils import GoogleLLMVariant
 
@@ -49,5 +49,5 @@ def can_use_output_schema_with_tools(model: Union[str, BaseLlm]) -> bool:
 
   return (
       get_google_llm_variant() == GoogleLLMVariant.VERTEX_AI
-      and is_gemini_2_or_above(model_string)
+      and is_gemini_eap_or_2_or_above(model_string)
   )

@@ -75,7 +75,7 @@ class CrewaiTool(FunctionTool):
     """
     # Preprocess arguments (includes Pydantic model conversion and type
     # validation)
-    args_to_call, validation_errors = self._preprocess_args(args)
+    args_to_call, validation_errors = self._preprocess_args_with_validation(args)
 
     if validation_errors:
       return self._build_validation_error_response(validation_errors)

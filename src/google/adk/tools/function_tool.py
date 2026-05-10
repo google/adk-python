@@ -99,7 +99,18 @@ class FunctionTool(BaseTool):
 
     return function_decl
 
-  def _preprocess_args(
+  def _preprocess_args(self, args: dict[str, Any]) -> dict[str, Any]:
+    """Backward-compatible wrapper that returns only processed args.
+
+    Existing callers (including upstream's thread-pool sync path in
+    `flows/llm_flows/functions.py`) still get a single dict. Use
+    `_preprocess_args_with_validation` directly when validation errors should
+    surface to the LLM instead of being silently dropped.
+    """
+    args_to_call, _ = self._preprocess_args_with_validation(args)
+    return args_to_call
+
+  def _preprocess_args_with_validation(
       self, args: dict[str, Any]
   ) -> tuple[dict[str, Any], list[str]]:
     """Preprocess, validate, and convert function arguments before invocation.
@@ -182,7 +193,7 @@ class FunctionTool(BaseTool):
     # Preprocess arguments (includes Pydantic model conversion and type
     # validation). Validation errors are returned to the LLM so it can
     # self-correct and retry with proper argument types.
-    args_to_call, validation_errors = self._preprocess_args(args)
+    args_to_call, validation_errors = self._preprocess_args_with_validation(args)
 
     if validation_errors:
       return self._build_validation_error_response(validation_errors)

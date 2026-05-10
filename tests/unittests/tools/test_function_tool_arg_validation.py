@@ -66,7 +66,7 @@ class TestArgCoercion:
 
   def test_string_to_int(self):
     tool = FunctionTool(int_func)
-    args, errors = tool._preprocess_args({"num": "42"})
+    args, errors = tool._preprocess_args_with_validation({"num": "42"})
     assert errors == []
     assert args["num"] == 42
     assert isinstance(args["num"], int)
@@ -74,57 +74,57 @@ class TestArgCoercion:
   def test_float_to_int(self):
     """Pydantic lax mode truncates float to int."""
     tool = FunctionTool(int_func)
-    args, errors = tool._preprocess_args({"num": 3.0})
+    args, errors = tool._preprocess_args_with_validation({"num": 3.0})
     assert errors == []
     assert args["num"] == 3
     assert isinstance(args["num"], int)
 
   def test_string_to_float(self):
     tool = FunctionTool(float_func)
-    args, errors = tool._preprocess_args({"val": "3.14"})
+    args, errors = tool._preprocess_args_with_validation({"val": "3.14"})
     assert errors == []
     assert abs(args["val"] - 3.14) < 1e-9
 
   def test_int_to_float(self):
     tool = FunctionTool(float_func)
-    args, errors = tool._preprocess_args({"val": 5})
+    args, errors = tool._preprocess_args_with_validation({"val": 5})
     assert errors == []
     assert args["val"] == 5.0
     assert isinstance(args["val"], float)
 
   def test_enum_valid_value(self):
     tool = FunctionTool(enum_func)
-    args, errors = tool._preprocess_args({"color": "red"})
+    args, errors = tool._preprocess_args_with_validation({"color": "red"})
     assert errors == []
     assert args["color"] == Color.RED
 
   def test_enum_invalid_value(self):
     tool = FunctionTool(enum_func)
-    args, errors = tool._preprocess_args({"color": "purple"})
+    args, errors = tool._preprocess_args_with_validation({"color": "purple"})
     assert len(errors) == 1
     assert "color" in errors[0]
 
   def test_list_int_coercion(self):
     tool = FunctionTool(list_int_func)
-    args, errors = tool._preprocess_args({"nums": ["1", "2", "3"]})
+    args, errors = tool._preprocess_args_with_validation({"nums": ["1", "2", "3"]})
     assert errors == []
     assert args["nums"] == [1, 2, 3]
 
   def test_optional_none_skipped(self):
     tool = FunctionTool(optional_int_func)
-    args, errors = tool._preprocess_args({"num": None})
+    args, errors = tool._preprocess_args_with_validation({"num": None})
     assert errors == []
     assert args["num"] is None
 
   def test_optional_value_coerced(self):
     tool = FunctionTool(optional_int_func)
-    args, errors = tool._preprocess_args({"num": "7"})
+    args, errors = tool._preprocess_args_with_validation({"num": "7"})
     assert errors == []
     assert args["num"] == 7
 
   def test_bool_from_int(self):
     tool = FunctionTool(bool_func)
-    args, errors = tool._preprocess_args({"flag": 1})
+    args, errors = tool._preprocess_args_with_validation({"flag": 1})
     assert errors == []
     assert args["flag"] is True
 
@@ -136,7 +136,7 @@ class TestArgValidationErrors:
 
   def test_string_for_int_returns_error(self):
     tool = FunctionTool(int_func)
-    args, errors = tool._preprocess_args({"num": "foobar"})
+    args, errors = tool._preprocess_args_with_validation({"num": "foobar"})
     assert len(errors) == 1
     assert "num" in errors[0]
 
@@ -146,13 +146,13 @@ class TestArgValidationErrors:
     # None passed for a required int param. The Optional unwrap won't
     # trigger because the annotation is plain `int`, not Optional[int].
     # TypeAdapter(int).validate_python(None) raises ValidationError.
-    args, errors = tool._preprocess_args({"num": None})
+    args, errors = tool._preprocess_args_with_validation({"num": None})
     assert len(errors) == 1
     assert "num" in errors[0]
 
   def test_multiple_param_errors(self):
     tool = FunctionTool(multi_param_func)
-    args, errors = tool._preprocess_args(
+    args, errors = tool._preprocess_args_with_validation(
         {"name": 123, "count": "not_a_number", "flag": "not_a_bool"}
     )
     # All three fail: pydantic rejects int->str, "not_a_number"->int,
