@@ -497,10 +497,97 @@ async def test_scripts_resource_not_found(mock_skill1, tool_context_instance):
   assert result["error_code"] == "RESOURCE_NOT_FOUND"
 
 
+@pytest.mark.asyncio
+async def test_load_resource_repeated_failure_escalates_to_fatal(mock_skill1):
+  """Second call with same missing path within an invocation returns RESOURCE_NOT_FOUND_FATAL."""
+  toolset = skill_toolset.SkillToolset([mock_skill1])
+  tool = skill_toolset.LoadSkillResourceTool(toolset)
+  ctx = _make_tool_context_with_agent()
+
+  args = {"skill_name": "skill1", "file_path": "references/nonexistent.md"}
+
+  result1 = await tool.run_async(args=args, tool_context=ctx)
+  assert result1["error_code"] == "RESOURCE_NOT_FOUND"
+
+  result2 = await tool.run_async(args=args, tool_context=ctx)
+  assert result2["error_code"] == "RESOURCE_NOT_FOUND_FATAL"
+  assert "Do not retry" in result2["error"]
+  assert "stop" in result2["error"].lower()
+
+
+@pytest.mark.asyncio
+async def test_load_resource_different_paths_each_soft_fail(mock_skill1):
+  """Different missing paths each get a soft error (no cross-path escalation)."""
+  toolset = skill_toolset.SkillToolset([mock_skill1])
+  tool = skill_toolset.LoadSkillResourceTool(toolset)
+  ctx = _make_tool_context_with_agent()
+
+  result1 = await tool.run_async(
+      args={"skill_name": "skill1", "file_path": "references/missing_a.md"},
+      tool_context=ctx,
+  )
+  assert result1["error_code"] == "RESOURCE_NOT_FOUND"
+
+  result2 = await tool.run_async(
+      args={"skill_name": "skill1", "file_path": "references/missing_b.md"},
+      tool_context=ctx,
+  )
+  assert result2["error_code"] == "RESOURCE_NOT_FOUND"
+
+
+@pytest.mark.asyncio
+async def test_load_resource_failures_isolated_per_invocation(mock_skill1):
+  """Failed-path tracking does not leak across invocations.
+
+  A path that hit a soft RESOURCE_NOT_FOUND in invocation A must still
+  return RESOURCE_NOT_FOUND (not _FATAL) on its first attempt in
+  invocation B, even when sharing session state.
+  """
+  toolset = skill_toolset.SkillToolset([mock_skill1])
+  tool = skill_toolset.LoadSkillResourceTool(toolset)
+
+  shared_state = {}
+  ctx_a = _make_tool_context_with_agent(invocation_id="inv_a")
+  ctx_a.state = shared_state
+  ctx_b = _make_tool_context_with_agent(invocation_id="inv_b")
+  ctx_b.state = shared_state
+
+  args = {"skill_name": "skill1", "file_path": "references/typo.md"}
+
+  result_a = await tool.run_async(args=args, tool_context=ctx_a)
+  assert result_a["error_code"] == "RESOURCE_NOT_FOUND"
+
+  result_b = await tool.run_async(args=args, tool_context=ctx_b)
+  assert result_b["error_code"] == "RESOURCE_NOT_FOUND"
+
+  # And the fatal escalation still works within a single invocation.
+  result_b2 = await tool.run_async(args=args, tool_context=ctx_b)
+  assert result_b2["error_code"] == "RESOURCE_NOT_FOUND_FATAL"
+
+
+@pytest.mark.asyncio
+async def test_load_resource_failed_paths_use_temp_prefix(mock_skill1):
+  """Tracking key uses the `temp:` prefix so it is not persisted."""
+  toolset = skill_toolset.SkillToolset([mock_skill1])
+  tool = skill_toolset.LoadSkillResourceTool(toolset)
+  ctx = _make_tool_context_with_agent()
+
+  await tool.run_async(
+      args={"skill_name": "skill1", "file_path": "references/missing.md"},
+      tool_context=ctx,
+  )
+
+  # Every key written by the retry guard must start with `temp:` so it gets
+  # trimmed from the event delta and never reaches durable storage.
+  guard_keys = [k for k in ctx.state if "skill_resource_failed_paths" in k]
+  assert guard_keys, "Retry guard did not write a tracking key."
+  assert all(k.startswith("temp:") for k in guard_keys)
+
+
 # RunSkillScriptTool tests
 
 
-def _make_tool_context_with_agent(agent=None):
+def _make_tool_context_with_agent(agent=None, invocation_id="test_invocation"):
   """Creates a mock ToolContext with _invocation_context.agent."""
   ctx = mock.MagicMock(spec=tool_context.ToolContext)
   ctx._invocation_context = mock.MagicMock()
@@ -508,6 +595,7 @@ def _make_tool_context_with_agent(agent=None):
   ctx._invocation_context.agent.name = "test_agent"
   ctx._invocation_context.agent_states = {}
   ctx.agent_name = "test_agent"
+  ctx.invocation_id = invocation_id
   ctx.state = {}
   return ctx
 

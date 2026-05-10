@@ -82,10 +82,14 @@ _DEFAULT_SKILL_SYSTEM_INSTRUCTION = (
     "of them in order.\n"
     "3. The `load_skill_resource` tool is for viewing files within a "
     "skill's directory (e.g., `references/*`, `assets/*`, `scripts/*`). "
-    "Do NOT use other tools to access these files.\n"
+    "It is ONLY for skill-bundled files — do NOT use it to access "
+    "documents or files provided by the user at runtime. Do NOT use "
+    "other tools to access skill files.\n"
     "4. Use `run_skill_script` to run scripts from a skill's `scripts/` "
     "directory. Use `load_skill_resource` to view script content first if "
     "needed.\n"
+    "5. If `load_skill_resource` returns any error, do not retry the "
+    "same path. Report the error to the user and stop.\n"
 )
 
 
@@ -351,6 +355,26 @@ class LoadSkillResourceTool(BaseTool):
       }
 
     if content is None:
+      # Invocation-scoped retry guard. The `temp:` prefix prevents persistence
+      # to durable session storage; appending invocation_id ensures the guard
+      # does not leak across invocations on in-memory session backends (where
+      # temp keys are not auto-cleared).
+      failed_key = (
+          f"temp:_adk_skill_resource_failed_paths_{tool_context.invocation_id}"
+      )
+      failed_paths = list(tool_context.state.get(failed_key) or [])
+      resource_id = f"{skill_name}:{file_path}"
+      if resource_id in failed_paths:
+        return {
+            "error": (
+                f"Resource '{file_path}' not found in skill '{skill_name}'."
+                " This path was already attempted and failed. Do not retry"
+                " — report the error to the user and stop."
+            ),
+            "error_code": "RESOURCE_NOT_FOUND_FATAL",
+        }
+      failed_paths.append(resource_id)
+      tool_context.state[failed_key] = failed_paths
       return {
           "error": f"Resource '{file_path}' not found in skill '{skill_name}'.",
           "error_code": "RESOURCE_NOT_FOUND",
