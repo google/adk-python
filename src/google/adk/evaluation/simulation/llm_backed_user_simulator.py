@@ -16,7 +16,6 @@ from __future__ import annotations
 
 import logging
 from typing import ClassVar
-from typing import Optional
 
 from google.genai import types as genai_types
 from pydantic import Field
@@ -72,7 +71,7 @@ prompt is also counted as an invocation.
 (Not recommended) If you don't want a limit, you can set the value to -1.""",
   )
 
-  custom_instructions: Optional[str] = Field(
+  custom_instructions: str | None = Field(
       default=None,
       description="""Custom instructions for the LlmBackedUserSimulator. The
 instructions must contain the following formatting placeholders following Jinja syntax:
@@ -88,7 +87,7 @@ instructions must contain the following formatting placeholders following Jinja 
 
   @field_validator("custom_instructions")
   @classmethod
-  def validate_custom_instructions(cls, value: Optional[str]) -> Optional[str]:
+  def validate_custom_instructions(cls, value: str | None) -> str | None:
     if value is None:
       return value
     if not is_valid_user_simulator_template(
@@ -158,11 +157,11 @@ class LlmBackedUserSimulator(UserSimulator):
   async def _get_llm_response(
       self,
       rewritten_dialogue: str,
-  ) -> str:
-    """Sends a user message generation request to the LLM and returns the full response."""
+  ) -> tuple[str, str | None]:
+    """Sends a user message generation request to the LLM and returns the full response and potential error reason."""
     if self._invocation_count == 0:
       # first invocation - send the static starting prompt
-      return self._conversation_scenario.starting_prompt
+      return self._conversation_scenario.starting_prompt, None
 
     user_agent_instructions = get_llm_backed_user_simulator_prompt(
         conversation_plan=self._conversation_scenario.conversation_plan,
@@ -187,8 +186,21 @@ class LlmBackedUserSimulator(UserSimulator):
     add_default_retry_options_if_not_present(llm_request)
 
     response = ""
+    error_reason = None
+    has_thought_tokens = False
     async with Aclosing(self._llm.generate_content_async(llm_request)) as agen:
       async for llm_response in agen:
+        error_code = llm_response.error_code
+        if error_code:
+          logger.warning(
+              "User simulator LLM returned error: code=%s, message=%s",
+              error_code,
+              getattr(llm_response, "error_message", ""),
+          )
+          error_reason = f"safety filters or other error (code={error_code})"
+          response = ""
+          break
+
         generated_content: genai_types.Content = llm_response.content
         if (
             not generated_content
@@ -196,10 +208,22 @@ class LlmBackedUserSimulator(UserSimulator):
             or not generated_content.parts
         ):
           continue
+
         for part in generated_content.parts:
-          if part.text and not part.thought:
+          if part.thought:
+            has_thought_tokens = True
+          elif part.text:
             response += part.text
-    return response
+
+    if not response:
+      if error_reason:
+        pass  # Keep the error reason from error_code
+      elif has_thought_tokens:
+        error_reason = "LLM returned only thinking tokens"
+      else:
+        error_reason = "LLM returned empty response"
+
+    return response, error_reason
 
   @override
   async def get_next_user_message(
@@ -234,11 +258,11 @@ class LlmBackedUserSimulator(UserSimulator):
     rewritten_dialogue = self._summarize_conversation(events)
 
     # query the LLM for the next user message
-    response = await self._get_llm_response(rewritten_dialogue)
+    response, error_reason = await self._get_llm_response(rewritten_dialogue)
     self._invocation_count += 1
 
     # is the conversation over? (Has the user simulator output the stop signal?)
-    if _STOP_SIGNAL.lower() in response.lower():
+    if response and _STOP_SIGNAL.lower() in response.lower():
       logger.info(
           "Stopping user message generation as the stop signal was detected."
       )
@@ -256,11 +280,11 @@ class LlmBackedUserSimulator(UserSimulator):
 
     # if we are here, the user agent failed to generate a message, which is not
     # a valid result for the LLM backed user simulator.
-    raise RuntimeError("Failed to generate a user message")
+    raise RuntimeError(f"Failed to generate a user message: {error_reason}")
 
   @override
   def get_simulation_evaluator(
       self,
-  ) -> Optional[Evaluator]:
+  ) -> Evaluator | None:
     """Returns an Evaluator that evaluates if the simulation was successful or not."""
     raise NotImplementedError()

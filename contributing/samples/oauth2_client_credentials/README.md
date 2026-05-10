@@ -18,9 +18,9 @@ The OAuth2 client credentials grant type is used for server-to-server authentica
 ```
 
 1. **WeatherAssistant** calls weather tool when user asks for weather data
-2. **AuthenticatedFunctionTool** automatically handles OAuth2 flow
-3. **OAuth2CredentialExchanger** exchanges client credentials for access token
-4. **Authenticated requests** are made to weather API
+1. **AuthenticatedFunctionTool** automatically handles OAuth2 flow
+1. **OAuth2CredentialExchanger** exchanges client credentials for access token
+1. **Authenticated requests** are made to weather API
 
 ## Files
 
@@ -33,6 +33,7 @@ Weather assistant agent that demonstrates OAuth2 client credentials flow transpa
 - **Agent Definition**: ADK LLM agent focused on providing weather information
 
 **Key Features:**
+
 - Automatic token exchange using client ID and secret
 - Bearer token authentication
 - Transparent OAuth2 handling (invisible to the model)
@@ -48,6 +49,7 @@ python contributing/samples/oauth2_client_credentials/main.py "What's the weathe
 ```
 
 **Requirements:**
+
 - LLM API key (Google AI or Vertex AI)
 - OAuth2 test server running
 
@@ -60,6 +62,7 @@ python contributing/samples/oauth2_client_credentials/oauth2_test_server.py
 ```
 
 **Features:**
+
 - OIDC discovery endpoint (`/.well-known/openid_configuration`)
 - Client credentials token exchange (`/token`)
 - Protected weather API (`/api/weather`)
@@ -67,6 +70,7 @@ python contributing/samples/oauth2_client_credentials/oauth2_test_server.py
 - Test credentials: `client_id="test_client"`, `client_secret="test_secret"`
 
 **Endpoints:**
+
 - `GET /.well-known/openid_configuration` - OIDC discovery
 - `POST /token` - Token exchange
 - `GET /api/weather` - Weather API (requires Bearer token)
@@ -78,7 +82,7 @@ python contributing/samples/oauth2_client_credentials/oauth2_test_server.py
    ```bash
    python contributing/samples/oauth2_client_credentials/oauth2_test_server.py &
    ```
-2. Create a `.env` file in the project root with your API credentials:
+1. Create a `.env` file in the project root with your API credentials:
 
 ```bash
 # Choose Model Backend: 0 -> ML Dev, 1 -> Vertex
@@ -93,12 +97,14 @@ GOOGLE_CLOUD_LOCATION=us-central1
 ```
 
 3. **Run the agent:**
+
    ```bash
    # Ask for weather
    python contributing/samples/oauth2_client_credentials/main.py "What's the weather in Tokyo?"
    ```
 
-3. **Interactive demo (use ADK commands):**
+1. **Interactive demo (use ADK commands):**
+
    ```bash
    # Interactive CLI
    adk run contributing/samples/oauth2_client_credentials
@@ -135,9 +141,9 @@ raw_credential = AuthCredential(
 ## Authentication Flow
 
 1. **Weather Request**: User asks WeatherAssistant for weather information
-2. **Tool Invocation**: Agent calls `get_weather_data` authenticated function tool
-3. **Credential Loading**: CredentialManager loads OAuth2 configuration
-4. **Token Exchange**: OAuth2CredentialExchanger uses client credentials to get access token
-5. **Request Enhancement**: AuthenticatedFunctionTool adds `Authorization: Bearer <token>` header
-6. **API Call**: Weather API accessed with valid token
-7. **Response**: Weather data returned to user
+1. **Tool Invocation**: Agent calls `get_weather_data` authenticated function tool
+1. **Credential Loading**: CredentialManager loads OAuth2 configuration
+1. **Token Exchange**: OAuth2CredentialExchanger uses client credentials to get access token
+1. **Request Enhancement**: AuthenticatedFunctionTool adds `Authorization: Bearer <token>` header
+1. **API Call**: Weather API accessed with valid token
+1. **Response**: Weather data returned to user

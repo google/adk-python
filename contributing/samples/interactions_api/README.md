@@ -8,11 +8,11 @@ conversation history.
 ## Features Tested
 
 1. **Basic Text Generation** - Simple conversation without tools
-2. **Google Search Tool** - Web search using `GoogleSearchTool` with
+1. **Google Search Tool** - Web search using `GoogleSearchTool` with
    `bypass_multi_tools_limit=True`
-3. **Multi-Turn Conversations** - Stateful interactions with context retention
+1. **Multi-Turn Conversations** - Stateful interactions with context retention
    via `previous_interaction_id`
-4. **Custom Function Tool** - Weather lookup using `get_current_weather`
+1. **Custom Function Tool** - Weather lookup using `get_current_weather`
 
 ## Important: Tool Compatibility
 
@@ -58,6 +58,7 @@ python -m interactions_api.main
 ## Key Differences: Interactions API vs Standard API
 
 ### Interactions API (`use_interactions_api=True`)
+
 - Uses stateful interactions via `previous_interaction_id`
 - Only sends current turn contents when chaining interactions
 - Returns `interaction_id` in responses for chaining
@@ -65,6 +66,7 @@ python -m interactions_api.main
 - Context caching is not used (state maintained via interaction chaining)
 
 ### Standard API (`use_interactions_api=False`)
+
 - Uses stateless `generate_content` calls
 - Sends full conversation history with each request
 - No interaction IDs in responses

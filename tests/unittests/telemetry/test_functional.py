@@ -16,6 +16,7 @@ import dataclasses
 import gc
 import sys
 from typing import Any
+from typing import Sequence
 
 from google.adk.agents.llm_agent import Agent
 from google.adk.models.base_llm import BaseLlm
@@ -27,6 +28,7 @@ from google.genai.types import Part
 from opentelemetry.instrumentation.google_genai import GoogleGenAiSdkInstrumentor
 from opentelemetry.sdk.metrics import MeterProvider
 from opentelemetry.sdk.metrics.export import InMemoryMetricReader
+from opentelemetry.sdk.metrics.export import Metric
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
@@ -231,7 +233,9 @@ class MetricPoint:
   value: Any = None
 
 
-def _extract_metrics(metrics_list, name: str) -> list[MetricPoint]:
+def _extract_metrics(
+    metrics_list: Sequence[Metric], name: str
+) -> list[MetricPoint]:
   m = next((m for m in metrics_list if m.name == name), None)
   if not m:
     return []
@@ -312,8 +316,6 @@ async def test_metrics(monkeypatch):
       MetricPoint(
           attributes={
               "gen_ai.agent.name": "complex_agent",
-              "gen_ai.input.type": "text",
-              "gen_ai.output.type": "text",
           },
           value=None,
       )
@@ -330,8 +332,6 @@ async def test_metrics(monkeypatch):
           attributes={
               "gen_ai.agent.name": "complex_agent",
               "gen_ai.tool.name": "generate_random_number",
-              "gen_ai.input.type": "text",
-              "gen_ai.output.type": "text",
           },
           value=None,
       ),
@@ -339,8 +339,6 @@ async def test_metrics(monkeypatch):
           attributes={
               "gen_ai.agent.name": "complex_agent",
               "gen_ai.tool.name": "get_current_time",
-              "gen_ai.input.type": "text",
-              "gen_ai.output.type": "text",
           },
           value=None,
       ),
@@ -351,7 +349,8 @@ async def test_metrics(monkeypatch):
   got_steps = _extract_metrics(metrics_list, "gen_ai.agent.workflow.steps")
   assert len(got_steps) == 1
   want_steps = [
-      MetricPoint(attributes={"gen_ai.agent.name": "complex_agent"}, value=6)
+      # (tool call + result) x 2 + text response = 5 steps
+      MetricPoint(attributes={"gen_ai.agent.name": "complex_agent"}, value=5)
   ]
   assert got_steps == want_steps
 
@@ -397,7 +396,6 @@ async def test_metrics_tool_error(monkeypatch):
           attributes={
               "gen_ai.agent.name": "error_agent",
               "gen_ai.tool.name": "failing_tool",
-              "gen_ai.input.type": "text",
               "error.type": "ValueError",
           },
           value=None,
@@ -406,8 +404,6 @@ async def test_metrics_tool_error(monkeypatch):
           attributes={
               "gen_ai.agent.name": "error_agent",
               "gen_ai.tool.name": "get_current_time",
-              "gen_ai.input.type": "text",
-              "gen_ai.output.type": "text",
           },
           value=None,
       ),

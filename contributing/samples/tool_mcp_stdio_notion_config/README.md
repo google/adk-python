@@ -7,9 +7,9 @@ This sample demonstrates how to configure an ADK agent to use the Notion MCP ser
 ### 1. Create a Notion Integration
 
 1. Go to [Notion Integrations](https://www.notion.so/my-integrations)
-2. Click "New integration"
-3. Give it a name and select your workspace
-4. Copy the "Internal Integration Secret" (starts with `ntn_`)
+1. Click "New integration"
+1. Give it a name and select your workspace
+1. Copy the "Internal Integration Secret" (starts with `ntn_`)
 
 For detailed setup instructions, see the [Notion MCP Server documentation](https://www.npmjs.com/package/@notionhq/notion-mcp-server).
 
@@ -27,8 +27,8 @@ env:
 **Important**: After creating the integration, you must grant it access to specific pages and databases:
 
 1. Go to `Access` tab in [Notion Integrations](https://www.notion.so/my-integrations) page
-2. Click "Edit access"
-3. Add pages or databases as needed
+1. Click "Edit access"
+1. Add pages or databases as needed
 
 ### 4. Run the Agent
 
