@@ -29,7 +29,6 @@ from typing import Optional
 import warnings
 
 from google.adk.apps.compaction import _run_compaction_for_sliding_window
-from google.adk.artifacts import artifact_util
 from google.genai import types
 
 from .agents.base_agent import BaseAgent
@@ -754,15 +753,27 @@ class Runner:
         )
       else:
         # Artifact version changed after rewind point. Restore to version at
-        # rewind point.
-        artifact_uri = artifact_util.get_artifact_uri(
+        # rewind point by loading the actual data via the artifact service.
+        artifact = await self.artifact_service.load_artifact(
             app_name=self.app_name,
             user_id=session.user_id,
             session_id=session.id,
             filename=filename,
             version=vt,
         )
-        artifact = types.Part(file_data=types.FileData(file_uri=artifact_uri))
+        if artifact is None:
+          logger.warning(
+              'Artifact %s version %d not found during rewind for'
+              ' session %s. Replacing with empty data.',
+              filename,
+              vt,
+              session.id,
+          )
+          artifact = types.Part(
+              inline_data=types.Blob(
+                  mime_type='application/octet-stream', data=b''
+              )
+          )
       await self.artifact_service.save_artifact(
           app_name=self.app_name,
           user_id=session.user_id,
@@ -775,17 +786,17 @@ class Runner:
 
   def _should_append_event(self, event: Event, is_live_call: bool) -> bool:
     """Checks if an event should be appended to the session."""
-    # Don't append audio response from model in live mode to session.
+    # Don't append media (audio/video/image) response from model in live mode to session.
     # The data is appended to artifacts with a reference in file_data in the
-    # event.
+    # event if save_live_blob is True.
     # We should append non-partial events only.For example, non-finished(partial)
     # transcription events should not be appended.
     # Function call and function response events should be appended.
     # Other control events should be appended.
-    if is_live_call and contents._is_live_model_audio_event_with_inline_data(
+    if is_live_call and contents._is_live_model_media_event_with_inline_data(
         event
     ):
-      # We don't append live model audio events with inline data to avoid
+      # We don't append live model media events with inline data to avoid
       # storing large blobs in the session. However, events with file_data
       # (references to artifacts) should be appended.
       return False
@@ -1604,6 +1615,10 @@ class Runner:
     # Close Plugins
     if self.plugin_manager:
       await self.plugin_manager.close()
+
+    # Close Session Service
+    if self.session_service:
+      await self.session_service.flush()
 
     logger.info('Runner closed.')
 

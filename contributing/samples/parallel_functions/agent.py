@@ -215,7 +215,7 @@ async def get_population(cities: List[str], tool_context: ToolContext) -> dict:
 
 
 root_agent = Agent(
-    model='gemini-2.0-flash',
+    model='gemini-2.5-flash',
     name='parallel_function_test_agent',
     description=(
         'Agent for testing parallel function calling performance and thread'

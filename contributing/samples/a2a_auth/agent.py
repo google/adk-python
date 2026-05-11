@@ -29,7 +29,7 @@ adk_yt_tool = LangchainTool(
 
 youtube_search_agent = Agent(
     name="youtube_search_agent",
-    model="gemini-2.0-flash",  # Replace with the actual model name
+    model="gemini-2.5-flash",  # Replace with the actual model name
     instruction="""
     Ask customer to provide singer name, and the number of videos to search.
     """,
@@ -47,7 +47,7 @@ bigquery_agent = RemoteA2aAgent(
 )
 
 root_agent = Agent(
-    model="gemini-2.0-flash",
+    model="gemini-2.5-flash",
     name="root_agent",
     instruction="""
       You are a helpful assistant that can help search youtube videos, look up BigQuery datasets and tables.

@@ -12,6 +12,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import importlib
+from typing import TYPE_CHECKING
+
 from .base_agent import BaseAgent
 from .context import Context
 from .invocation_context import InvocationContext
@@ -20,10 +23,12 @@ from .live_request_queue import LiveRequestQueue
 from .llm_agent import Agent
 from .llm_agent import LlmAgent
 from .loop_agent import LoopAgent
-from .mcp_instruction_provider import McpInstructionProvider
 from .parallel_agent import ParallelAgent
 from .run_config import RunConfig
 from .sequential_agent import SequentialAgent
+
+if TYPE_CHECKING:
+  from .mcp_instruction_provider import McpInstructionProvider
 
 __all__ = [
     'Agent',
@@ -39,3 +44,16 @@ __all__ = [
     'LiveRequestQueue',
     'RunConfig',
 ]
+
+
+def __getattr__(name: str):
+  if name == 'McpInstructionProvider':
+    try:
+      module = importlib.import_module(f'{__name__}.mcp_instruction_provider')
+    except ImportError as e:
+      raise ImportError(
+          '`McpInstructionProvider` requires the `mcp` package.'
+          ' Install with: pip install google-adk[extensions]'
+      ) from e
+    return module.McpInstructionProvider
+  raise AttributeError(f'module {__name__!r} has no attribute {name!r}')

@@ -77,7 +77,7 @@ calendar_tool = ApplicationIntegrationToolset(
 )
 
 root_agent = Agent(
-    model="gemini-2.0-flash",
+    model="gemini-2.5-flash",
     name="data_processing_agent",
     description="Agent that can list events in a calendar.",
     instruction="""
