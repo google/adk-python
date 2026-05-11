@@ -111,6 +111,19 @@ class DynamicPickleType(TypeDecorator):
         return pickle.dumps(value)
     return value
 
+  def result_processor(self, dialect, coltype):
+    if dialect.name in ("mysql", "spanner+spanner"):
+      return super().result_processor(dialect, coltype)
+
+    def process(value):
+      if value is None:
+        return None
+      if isinstance(value, memoryview):
+        value = bytes(value)
+      return _safe_pickle_loads(value)
+
+    return process
+
   def process_result_value(self, value, dialect):
     """Ensures the raw bytes from the database are unpickled back into a Python object."""
     if value is not None:
