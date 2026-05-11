@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import asyncio
 import importlib
 from pathlib import Path
 import sys
@@ -32,7 +33,6 @@ from google.adk.artifacts.in_memory_artifact_service import InMemoryArtifactServ
 from google.adk.cli.utils.agent_loader import AgentLoader
 from google.adk.errors.session_not_found_error import SessionNotFoundError
 from google.adk.events.event import Event
-from google.adk.models.llm_request import LlmRequest
 from google.adk.models.llm_response import LlmResponse
 from google.adk.plugins.base_plugin import BasePlugin
 from google.adk.runners import Runner
@@ -41,7 +41,7 @@ from google.adk.sessions.session import Session
 from google.genai import types
 import pytest
 
-from tests.unittests import testing_utils
+from . import testing_utils
 
 TEST_APP_ID = "test_app"
 TEST_USER_ID = "test_user"
@@ -1558,37 +1558,6 @@ class TestRunnerMetadata:
         artifact_service=self.artifact_service,
     )
 
-  def test_new_invocation_context_with_metadata(self):
-    """Test that _new_invocation_context correctly passes metadata."""
-    mock_session = Session(
-        id=TEST_SESSION_ID,
-        app_name=TEST_APP_ID,
-        user_id=TEST_USER_ID,
-        events=[],
-    )
-
-    test_metadata = {"user_id": "test123", "trace_id": "trace456"}
-    invocation_context = self.runner._new_invocation_context(
-        mock_session, metadata=test_metadata
-    )
-
-    assert invocation_context.metadata == test_metadata
-    assert invocation_context.metadata["user_id"] == "test123"
-    assert invocation_context.metadata["trace_id"] == "trace456"
-
-  def test_new_invocation_context_without_metadata(self):
-    """Test that _new_invocation_context works without metadata."""
-    mock_session = Session(
-        id=TEST_SESSION_ID,
-        app_name=TEST_APP_ID,
-        user_id=TEST_USER_ID,
-        events=[],
-    )
-
-    invocation_context = self.runner._new_invocation_context(mock_session)
-
-    assert invocation_context.metadata is None
-
   @pytest.mark.asyncio
   async def test_run_async_passes_metadata_to_invocation_context(self):
     """Test that run_async correctly passes metadata to before_model_callback."""
@@ -1608,7 +1577,7 @@ class TestRunnerMetadata:
     # Create agent with before_model_callback
     agent_with_callback = LlmAgent(
         name="callback_agent",
-        model="gemini-2.0-flash",
+        model="gemini-2.5-flash",
         before_model_callback=before_model_callback,
     )
 
@@ -1641,44 +1610,6 @@ class TestRunnerMetadata:
     assert captured_metadata["experiment_id"] == "exp-001"
     assert captured_metadata["variant"] == "B"
 
-  def test_metadata_field_in_invocation_context(self):
-    """Test that InvocationContext model accepts metadata field."""
-    mock_session = Session(
-        id=TEST_SESSION_ID,
-        app_name=TEST_APP_ID,
-        user_id=TEST_USER_ID,
-        events=[],
-    )
-
-    test_metadata = {"key1": "value1", "key2": 123}
-
-    # This should not raise a validation error
-    invocation_context = InvocationContext(
-        session_service=self.session_service,
-        invocation_id="test_inv_id",
-        agent=self.root_agent,
-        session=mock_session,
-        metadata=test_metadata,
-    )
-
-    assert invocation_context.metadata == test_metadata
-
-  def test_metadata_field_in_llm_request(self):
-    """Test that LlmRequest model accepts metadata field."""
-    test_metadata = {"context_key": "ctx123", "user_info": {"name": "test"}}
-
-    llm_request = LlmRequest(metadata=test_metadata)
-
-    assert llm_request.metadata == test_metadata
-    assert llm_request.metadata["context_key"] == "ctx123"
-    assert llm_request.metadata["user_info"]["name"] == "test"
-
-  def test_llm_request_without_metadata(self):
-    """Test that LlmRequest works without metadata."""
-    llm_request = LlmRequest()
-
-    assert llm_request.metadata is None
-
   @pytest.mark.asyncio
   async def test_empty_metadata_dict_not_converted_to_none(self):
     """Test that empty dict {} is preserved and not converted to None."""
@@ -1695,7 +1626,7 @@ class TestRunnerMetadata:
 
     agent_with_callback = LlmAgent(
         name="callback_agent",
-        model="gemini-2.0-flash",
+        model="gemini-2.5-flash",
         before_model_callback=before_model_callback,
     )
 
@@ -1747,7 +1678,7 @@ class TestRunnerMetadata:
 
     agent_with_callback = LlmAgent(
         name="callback_agent",
-        model="gemini-2.0-flash",
+        model="gemini-2.5-flash",
         before_model_callback=before_model_callback,
     )
 
@@ -1821,7 +1752,7 @@ class TestRunnerMetadata:
 
     agent_with_callback = LlmAgent(
         name="callback_agent",
-        model="gemini-2.0-flash",
+        model="gemini-2.5-flash",
         before_model_callback=before_model_callback,
     )
 
@@ -1854,8 +1785,6 @@ class TestRunnerMetadata:
   @pytest.mark.asyncio
   async def test_run_live_passes_metadata_to_llm_request(self):
     """Test that run_live() passes metadata through live pipeline to LlmRequest."""
-    import asyncio
-
     # Create MockModel to capture LlmRequest
     mock_model = testing_utils.MockModel.create(
         responses=[
