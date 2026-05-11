@@ -217,6 +217,11 @@ class TestToGeminiSchema:
     gemini_schema = _to_gemini_schema(openapi_schema)
     assert gemini_schema.enum == ["a", "b", "c"]
 
+  def test_to_gemini_schema_const(self):
+    openapi_schema = {"type": "string", "const": "BaseAgent"}
+    gemini_schema = _to_gemini_schema(openapi_schema)
+    assert gemini_schema.enum == ["BaseAgent"]
+
   def test_to_gemini_schema_required(self):
     openapi_schema = {
         "type": "object",

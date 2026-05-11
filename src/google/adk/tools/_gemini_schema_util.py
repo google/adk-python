@@ -26,6 +26,10 @@ from ..utils.variant_utils import get_google_llm_variant
 
 
 class _ExtendedJSONSchema(JSONSchema):
+  const: Optional[Any] = Field(
+      default=None,
+      description="""Optional. Restricts the value to a single constant.""",
+  )
   property_ordering: Optional[list[str]] = Field(
       default=None,
       description="""Optional. The order of the properties. Not a standard field in open api spec. Only used to support the order of the properties.""",
@@ -183,6 +187,8 @@ def _sanitize_schema_formats_for_gemini(
       "any_of",  # 'one_of', 'all_of', 'not' to come
   }
   snake_case_schema: dict[str, Any] = {}
+  has_const = False
+  const_value = None
   dict_schema_field_names: tuple[str, ...] = (
       "properties",
       "defs",
@@ -218,8 +224,14 @@ def _sanitize_schema_formats_for_gemini(
           (current_type == "string" and field_value in ("date-time", "enum"))
       ):
         snake_case_schema[field_name] = field_value
+    elif field_name == "const":
+      has_const = True
+      const_value = field_value
     elif field_name in supported_fields and field_value is not None:
       snake_case_schema[field_name] = field_value
+
+  if has_const and const_value is not None:
+    snake_case_schema["enum"] = [str(const_value)]
 
   return _sanitize_schema_type(snake_case_schema, preserve_null_type)
 
