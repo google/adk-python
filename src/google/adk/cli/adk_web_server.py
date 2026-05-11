@@ -1887,6 +1887,7 @@ class AdkWebServer:
 
     @app.post("/run", response_model_exclude_none=True)
     async def run_agent(req: RunAgentRequest) -> list[Event]:
+      self.current_app_name_ref.value = req.app_name
       runner = await self.get_runner_async(req.app_name)
       _set_telemetry_context_if_needed(runner)
       try:
@@ -1908,6 +1909,7 @@ class AdkWebServer:
 
     @app.post("/run_sse")
     async def run_agent_sse(req: RunAgentRequest) -> StreamingResponse:
+      self.current_app_name_ref.value = req.app_name
       stream_mode = StreamingMode.SSE if req.streaming else StreamingMode.NONE
       runner = await self.get_runner_async(req.app_name)
       _set_telemetry_context_if_needed(runner)
@@ -2073,6 +2075,7 @@ class AdkWebServer:
         proactive_audio: bool | None = Query(default=None),
         enable_affective_dialog: bool | None = Query(default=None),
         enable_session_resumption: bool | None = Query(default=None),
+        save_live_blob: bool = Query(default=False),
     ) -> None:
       ws_origin = websocket.headers.get("origin")
       if ws_origin is not None and not _is_request_origin_allowed(
@@ -2086,6 +2089,7 @@ class AdkWebServer:
         return
 
       await websocket.accept()
+      self.current_app_name_ref.value = app_name
       runner_for_context = await self.get_runner_async(app_name)
       _set_telemetry_context_if_needed(runner_for_context)
 
@@ -2115,6 +2119,7 @@ class AdkWebServer:
                 if enable_session_resumption is not None
                 else None
             ),
+            save_live_blob=save_live_blob,
         )
         async with Aclosing(
             runner.run_live(

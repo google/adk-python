@@ -37,7 +37,7 @@ jira_toolset = ApplicationIntegrationToolset(
 )
 
 root_agent = LlmAgent(
-    model="gemini-2.0-flash",
+    model="gemini-2.5-flash",
     name="Issue_Management_Agent",
     instruction="""
     You are an agent that helps manage issues in a Jira instance.

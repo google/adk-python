@@ -24,21 +24,25 @@ The A2A Basic sample consists of:
 ## Key Features
 
 ### 1. **Local Sub-Agent Integration**
+
 - The `roll_agent` demonstrates how to create and integrate local sub-agents
 - Handles dice rolling with configurable number of sides
 - Uses a simple function tool (`roll_die`) for random number generation
 
 ### 2. **Remote A2A Agent Integration**
+
 - The `prime_agent` shows how to connect to remote agent services
 - Communicates with a separate service via HTTP at `http://localhost:8001/a2a/check_prime_agent`
 - Demonstrates cross-service agent communication
 
 ### 3. **Agent Orchestration**
+
 - The root agent intelligently delegates tasks based on user requests
 - Can chain operations (e.g., "roll a die and check if it's prime")
 - Provides clear workflow coordination between multiple agents
 
 ### 4. **Example Tool Integration**
+
 - Includes an `ExampleTool` with sample interactions for context
 - Helps the agent understand expected behavior patterns
 
@@ -47,12 +51,14 @@ The A2A Basic sample consists of:
 ### Prerequisites
 
 1. **Start the Remote Prime Agent server**:
+
    ```bash
    # Start the remote a2a server that serves the check prime agent on port 8001
    adk api_server --a2a --port 8001 contributing/samples/a2a_basic/remote_a2a
    ```
 
-2. **Run the Main Agent**:
+1. **Run the Main Agent**:
+
    ```bash
    # In a separate terminal, run the adk web server
    adk web contributing/samples/
@@ -63,18 +69,21 @@ The A2A Basic sample consists of:
 Once both services are running, you can interact with the root agent:
 
 **Simple Dice Rolling:**
+
 ```
 User: Roll a 6-sided die
 Bot: I rolled a 4 for you.
 ```
 
 **Prime Number Checking:**
+
 ```
 User: Is 7 a prime number?
 Bot: Yes, 7 is a prime number.
 ```
 
 **Combined Operations:**
+
 ```
 User: Roll a 10-sided die and check if it's prime
 Bot: I rolled an 8 for you.
@@ -96,7 +105,6 @@ Bot: 8 is not a prime number.
 - **`agent.json`**: Agent card of the A2A agent
 - **`check_prime(nums: list[int])`**: Prime number checking algorithm
 
-
 ## Extending the Sample
 
 You can extend this sample by:
@@ -112,6 +120,7 @@ You can extend this sample by:
 When deploying the remote A2A agent to different environments (e.g., Cloud Run, different hosts/ports), you **must** update the `url` field in the agent card JSON file:
 
 ### Local Development
+
 ```json
 {
   "url": "http://localhost:8001/a2a/check_prime_agent",
@@ -120,6 +129,7 @@ When deploying the remote A2A agent to different environments (e.g., Cloud Run, 
 ```
 
 ### Cloud Run Example
+
 ```json
 {
   "url": "https://your-service-abc123-uc.a.run.app/a2a/check_prime_agent",
@@ -128,6 +138,7 @@ When deploying the remote A2A agent to different environments (e.g., Cloud Run, 
 ```
 
 ### Custom Host/Port Example
+
 ```json
 {
   "url": "https://your-domain.com:9000/a2a/check_prime_agent",
@@ -140,14 +151,15 @@ When deploying the remote A2A agent to different environments (e.g., Cloud Run, 
 ## Troubleshooting
 
 **Connection Issues:**
+
 - Ensure the local ADK web server is running on port 8000
 - Ensure the remote A2A server is running on port 8001
 - Check that no firewall is blocking localhost connections
 - **Verify the `url` field in `remote_a2a/check_prime_agent/agent.json` matches the actual deployed location of your remote A2A server**
 - Verify the agent card URL passed to RemoteA2AAgent constructor matches the running A2A server
 
-
 **Agent Not Responding:**
+
 - Check the logs for both the local ADK web server on port 8000 and remote A2A server on port 8001
 - Verify the agent instructions are clear and unambiguous
 - **Double-check that the RPC URL in the agent.json file is correct and accessible**
