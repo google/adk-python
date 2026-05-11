@@ -4901,6 +4901,23 @@ async def test_content_to_message_param_non_anthropic_uses_reasoning_content():
 
 
 @pytest.mark.asyncio
+async def test_content_to_message_param_preserves_reasoning_fragments():
+  content = types.Content(
+      role="model",
+      parts=[
+          types.Part(text="Step 1: ", thought=True),
+          types.Part(text="inspect", thought=True),
+          types.Part(text=".", thought=True),
+          types.Part(text="Done"),
+      ],
+  )
+
+  result = await _content_to_message_param(content, model="openai/gpt-4o")
+
+  assert result.get("reasoning_content") == "Step 1: inspect."
+
+
+@pytest.mark.asyncio
 async def test_anthropic_thinking_blocks_round_trip():
   """End-to-end: thinking_blocks in response → Part → thinking_blocks out."""
   # Simulate LiteLLM response with thinking_blocks
