@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+
+### Breaking Changes
+
+* `FileArtifactService` now stores artifacts under `root/apps/{app_name}/users/{user_id}/...` instead of `root/users/{user_id}/...`. Existing file-backed artifacts remain on disk in the old layout and will not be found automatically after upgrading. Move each existing `root/users/{user_id}/...` directory into the matching app namespace, for example `root/apps/{app_name}/users/{user_id}/...`, before using the updated service.
+
 ## [1.33.0](https://github.com/google/adk-python/compare/v1.32.0...v1.33.0) (2026-05-08)
 
 
