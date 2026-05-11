@@ -176,10 +176,12 @@ def _process_content_object(event: Event) -> Any:
   text = ''.join(
       p.text for p in event.content.parts if p.text and not p.thought
   )
+  text = text.strip()
+
   if not text:
     return None
 
-  text = text.strip()
+  
   try:
     return json.loads(text)
   except (json.JSONDecodeError, ValueError):
