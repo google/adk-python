@@ -168,6 +168,24 @@ def _validate_resume_response(response_data: Any, schema: Any) -> Any:
     raise ValueError(f'Validation failed against schema: {e}') from e
 
 
+def _process_content_object(event: Event) -> Any:
+  """Extracts output from event.content."""
+  if not event.content or not event.content.parts:
+    return None
+
+  text = ''.join(
+      p.text for p in event.content.parts if p.text and not p.thought
+  )
+  if not text:
+    return None
+
+  text = text.strip()
+  try:
+    return json.loads(text)
+  except (json.JSONDecodeError, ValueError):
+    return text
+
+
 def _reconstruct_node_states(
     events: list[Event],
     base_path: str,
@@ -266,7 +284,7 @@ def _reconstruct_node_states(
         child.output = event.output
         child.branch = event.branch
       elif use_message_as_output:
-        child.output = event.content
+        child.output = _process_content_object(event)
       if event.actions and event.actions.route is not None:
         child.route = event.actions.route
 
