@@ -2358,6 +2358,68 @@ def test_model_response_to_generate_content_response_reasoning_field():
   assert response.content.parts[1].text == "Result"
 
 
+def test_model_response_to_generate_content_response_grounding_metadata_dict():
+  """vertex_ai_grounding_metadata as a dict is propagated to the LlmResponse."""
+  model_response = ModelResponse(
+      model="gemini/gemini-2.5-flash",
+      choices=[{
+          "message": {"role": "assistant", "content": "Answer"},
+          "finish_reason": "stop",
+      }],
+  )
+  model_response.vertex_ai_grounding_metadata = {
+      "grounding_chunks": [
+          {"web": {"uri": "https://example.com", "title": "Example"}}
+      ],
+  }
+
+  response = _model_response_to_generate_content_response(model_response)
+
+  assert response.grounding_metadata is not None
+  assert (
+      response.grounding_metadata.grounding_chunks[0].web.uri
+      == "https://example.com"
+  )
+
+
+def test_model_response_to_generate_content_response_grounding_metadata_list():
+  """LiteLLM may emit a list (per candidate); the first entry is used."""
+  model_response = ModelResponse(
+      model="gemini/gemini-2.5-flash",
+      choices=[{
+          "message": {"role": "assistant", "content": "Answer"},
+          "finish_reason": "stop",
+      }],
+  )
+  model_response.vertex_ai_grounding_metadata = [
+      {"grounding_chunks": [{"web": {"uri": "https://a.test", "title": "A"}}]},
+      {"grounding_chunks": [{"web": {"uri": "https://b.test", "title": "B"}}]},
+  ]
+
+  response = _model_response_to_generate_content_response(model_response)
+
+  assert response.grounding_metadata is not None
+  assert (
+      response.grounding_metadata.grounding_chunks[0].web.uri
+      == "https://a.test"
+  )
+
+
+def test_model_response_to_generate_content_response_no_grounding_metadata():
+  """Without vertex_ai_grounding_metadata, grounding_metadata stays None."""
+  model_response = ModelResponse(
+      model="gemini/gemini-2.5-flash",
+      choices=[{
+          "message": {"role": "assistant", "content": "Answer"},
+          "finish_reason": "stop",
+      }],
+  )
+
+  response = _model_response_to_generate_content_response(model_response)
+
+  assert response.grounding_metadata is None
+
+
 def test_reasoning_content_takes_precedence_over_reasoning():
   """Test that 'reasoning_content' is prioritized over 'reasoning'."""
   message = {

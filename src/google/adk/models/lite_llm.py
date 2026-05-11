@@ -1675,6 +1675,29 @@ def _model_response_to_generate_content_response(
         cached_content_token_count=_extract_cached_prompt_tokens(usage_dict),
         thoughts_token_count=reasoning_tokens if reasoning_tokens else None,
     )
+
+  # LiteLLM exposes Gemini's grounding metadata on the ModelResponse itself
+  # rather than inside the message. Mirror the native Gemini path so that
+  # downstream consumers (event.grounding_metadata, after_model_callback,
+  # citation pipelines, ...) can rely on it for both model paths.
+  raw_grounding = getattr(response, "vertex_ai_grounding_metadata", None)
+  if raw_grounding:
+    # LiteLLM may emit a list (one entry per candidate) or a single value.
+    if isinstance(raw_grounding, list):
+      raw_grounding = raw_grounding[0] if raw_grounding else None
+    if isinstance(raw_grounding, types.GroundingMetadata):
+      llm_response.grounding_metadata = raw_grounding
+    elif isinstance(raw_grounding, dict):
+      try:
+        llm_response.grounding_metadata = types.GroundingMetadata.model_validate(
+            raw_grounding
+        )
+      except Exception:  # pragma: no cover
+        logger.warning(
+            "LiteLlm: vertex_ai_grounding_metadata did not match the"
+            " GroundingMetadata schema and was dropped."
+        )
+
   return llm_response
 
 
