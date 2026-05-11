@@ -2106,8 +2106,21 @@ class AdkWebServer:
 
       async def forward_events():
         runner = await self.get_runner_async(app_name)
+
+        # Native-audio models (e.g., gemini-live-2.5-flash-native-audio) only
+        # support AUDIO modality. When TEXT is requested, fall back to AUDIO.
+        effective_modalities = modalities
+        if isinstance(runner.agent, LlmAgent):
+            model_name = ''
+            if isinstance(runner.agent.model, str):
+                model_name = runner.agent.model
+            elif runner.agent.model:  # BaseLlm instance
+                model_name = runner.agent.model.model
+            if 'native-audio' in model_name.lower():
+                effective_modalities = ['AUDIO']
+
         run_config = RunConfig(
-            response_modalities=modalities,
+            response_modalities=effective_modalities,
             proactivity=(
                 types.ProactivityConfig(proactive_audio=proactive_audio)
                 if proactive_audio is not None
