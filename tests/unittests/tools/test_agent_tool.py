@@ -1269,3 +1269,167 @@ class TestAgentToolWithCompositeAgents:
       }
     else:
       assert declaration.parameters.properties['request'].type == 'STRING'
+
+
+@mark.asyncio
+async def test_no_schema_non_request_args_serialized_as_json(monkeypatch):
+  """AgentTool.run_async with no input_schema serializes non-'request' args as JSON.
+
+  Regression test for KeyError: 'request' — when the orchestrating LLM passes
+  kwargs other than 'request', the fallback path must not crash.
+  """
+  captured = {}
+
+  async def _empty_async_generator():
+    if False:
+      yield None
+
+  class StubRunner:
+
+    def __init__(
+        self,
+        *,
+        app_name: str,
+        agent,
+        artifact_service,
+        session_service,
+        memory_service,
+        credential_service,
+        plugins,
+    ):
+      del artifact_service, memory_service, credential_service
+      self.agent = agent
+      self.session_service = session_service
+      self.plugin_manager = PluginManager(plugins=plugins)
+      self.app_name = app_name
+
+    def run_async(
+        self,
+        *,
+        user_id: str,
+        session_id: str,
+        invocation_id=None,
+        new_message=None,
+        state_delta=None,
+        run_config=None,
+    ):
+      captured['new_message'] = new_message
+      return _empty_async_generator()
+
+    async def close(self):
+      pass
+
+  monkeypatch.setattr('google.adk.runners.Runner', StubRunner)
+
+  tool_agent = Agent(name='tool_agent', model='test-model')
+  agent_tool = AgentTool(agent=tool_agent)
+  root_agent = Agent(name='root_agent', model='test-model', tools=[agent_tool])
+
+  session_service = InMemorySessionService()
+  session = await session_service.create_session(
+      app_name='test_app', user_id='user'
+  )
+  invocation_context = InvocationContext(
+      artifact_service=InMemoryArtifactService(),
+      session_service=session_service,
+      memory_service=InMemoryMemoryService(),
+      plugin_manager=PluginManager(),
+      invocation_id='test-invocation',
+      agent=root_agent,
+      session=session,
+      run_config=RunConfig(),
+  )
+  tool_context = ToolContext(invocation_context)
+
+  # LLM passed structured kwargs instead of the 'request' key — must not crash
+  await agent_tool.run_async(
+      args={'brand': 'Nike', 'product': 'running shoes'},
+      tool_context=tool_context,
+  )
+
+  import json
+
+  assert captured['new_message'] is not None
+  text = captured['new_message'].parts[0].text
+  parsed = json.loads(text)
+  assert parsed == {'brand': 'Nike', 'product': 'running shoes'}
+
+
+@mark.asyncio
+async def test_no_schema_request_key_backward_compat(monkeypatch):
+  """AgentTool.run_async with no input_schema keeps 'request' value as plain text.
+
+  Ensures the fix for non-'request' args does not break the existing contract
+  when the LLM correctly passes args={'request': '...'}.
+  """
+  captured = {}
+
+  async def _empty_async_generator():
+    if False:
+      yield None
+
+  class StubRunner:
+
+    def __init__(
+        self,
+        *,
+        app_name: str,
+        agent,
+        artifact_service,
+        session_service,
+        memory_service,
+        credential_service,
+        plugins,
+    ):
+      del artifact_service, memory_service, credential_service
+      self.agent = agent
+      self.session_service = session_service
+      self.plugin_manager = PluginManager(plugins=plugins)
+      self.app_name = app_name
+
+    def run_async(
+        self,
+        *,
+        user_id: str,
+        session_id: str,
+        invocation_id=None,
+        new_message=None,
+        state_delta=None,
+        run_config=None,
+    ):
+      captured['new_message'] = new_message
+      return _empty_async_generator()
+
+    async def close(self):
+      pass
+
+  monkeypatch.setattr('google.adk.runners.Runner', StubRunner)
+
+  tool_agent = Agent(name='tool_agent', model='test-model')
+  agent_tool = AgentTool(agent=tool_agent)
+  root_agent = Agent(name='root_agent', model='test-model', tools=[agent_tool])
+
+  session_service = InMemorySessionService()
+  session = await session_service.create_session(
+      app_name='test_app', user_id='user'
+  )
+  invocation_context = InvocationContext(
+      artifact_service=InMemoryArtifactService(),
+      session_service=session_service,
+      memory_service=InMemoryMemoryService(),
+      plugin_manager=PluginManager(),
+      invocation_id='test-invocation',
+      agent=root_agent,
+      session=session,
+      run_config=RunConfig(),
+  )
+  tool_context = ToolContext(invocation_context)
+
+  await agent_tool.run_async(
+      args={'request': 'find me Nike running shoes'},
+      tool_context=tool_context,
+  )
+
+  assert captured['new_message'] is not None
+  text = captured['new_message'].parts[0].text
+  assert text == 'find me Nike running shoes'

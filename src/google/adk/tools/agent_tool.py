@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+import json
 from typing import Any
 from typing import Optional
 from typing import TYPE_CHECKING
@@ -213,9 +214,10 @@ class AgentTool(BaseTool):
           ],
       )
     else:
+      request_text = args.get('request') or json.dumps(args, ensure_ascii=False)
       content = types.Content(
           role='user',
-          parts=[types.Part.from_text(text=args['request'])],
+          parts=[types.Part.from_text(text=request_text)],
       )
     invocation_context = tool_context._invocation_context
     parent_app_name = (
