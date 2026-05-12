@@ -24,6 +24,7 @@ from . import _output_schema_processor
 from . import basic
 from . import contents
 from . import context_cache_processor
+from . import elicitation
 from . import identity
 from . import instructions
 from . import interactions_processor
@@ -48,6 +49,8 @@ def _create_request_processors():
       # in the model request context.
       compaction.request_processor,
       contents.request_processor,
+      # Elicitation processor rehydrates state from hidden_context.
+      elicitation.request_processor,
       # Context cache processor sets up cache config and finds
       # existing cache metadata.
       context_cache_processor.request_processor,
@@ -73,6 +76,7 @@ def _create_response_processors():
   return [
       _nl_planning.response_processor,
       _code_execution.response_processor,
+      elicitation.response_processor,
   ]
 
 
