@@ -144,7 +144,11 @@ class CachePerformanceAnalyzer:
         total_cached_tokens / total_requests if total_requests > 0 else 0.0
     )
 
-    invocations_used = [c.invocations_used for c in cache_history]
+    invocations_used = [
+        c.invocations_used
+        for c in cache_history
+        if c.invocations_used is not None
+    ]
     total_invocations = sum(invocations_used)
 
     return {
@@ -156,7 +160,9 @@ class CachePerformanceAnalyzer:
             else 0
         ),
         "latest_cache": cache_history[-1].cache_name,
-        "cache_refreshes": len(set(c.cache_name for c in cache_history)),
+        "cache_refreshes": len(
+            {c.cache_name for c in cache_history if c.cache_name is not None}
+        ),
         "total_invocations": total_invocations,
         "total_prompt_tokens": total_prompt_tokens,
         "total_cached_tokens": total_cached_tokens,

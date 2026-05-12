@@ -127,7 +127,7 @@ def update_time(callback_context: CallbackContext):
 
 
 root_agent = Agent(
-    model="gemini-2.0-flash",
+    model="gemini-2.5-flash",
     name="calendar_agent",
     instruction="""
       You are a helpful personal calendar assistant.

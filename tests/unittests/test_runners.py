@@ -29,6 +29,7 @@ from google.adk.apps.app import App
 from google.adk.apps.app import ResumabilityConfig
 from google.adk.artifacts.in_memory_artifact_service import InMemoryArtifactService
 from google.adk.cli.utils.agent_loader import AgentLoader
+from google.adk.errors.session_not_found_error import SessionNotFoundError
 from google.adk.events.event import Event
 from google.adk.plugins.base_plugin import BasePlugin
 from google.adk.runners import Runner
@@ -138,6 +139,7 @@ class MockPlugin(BasePlugin):
       "Modified user message ON_USER_CALLBACK_MSG from MockPlugin"
   )
   ON_EVENT_CALLBACK_MSG = "Modified event ON_EVENT_CALLBACK_MSG from MockPlugin"
+  ON_EVENT_CALLBACK_METADATA = {"plugin_key": "plugin_value"}
 
   def __init__(self):
     super().__init__(name="mock_plugin")
@@ -183,6 +185,7 @@ class MockPlugin(BasePlugin):
             ],
             role=event.content.role,
         ),
+        custom_metadata=self.ON_EVENT_CALLBACK_METADATA,
     )
 
 
@@ -243,7 +246,7 @@ async def test_session_not_found_message_includes_alignment_hint():
       new_message=types.Content(role="user", parts=[]),
   )
 
-  with pytest.raises(ValueError) as excinfo:
+  with pytest.raises(SessionNotFoundError) as excinfo:
     await agen.__anext__()
 
   await agen.aclose()
@@ -356,6 +359,60 @@ async def test_run_live_auto_create_session():
       app_name="live_app", user_id="user", session_id="missing"
   )
   assert session is not None
+
+
+@pytest.mark.asyncio
+async def test_run_live_persists_event_callback_modifications():
+  """run_live should persist the same event it streams after callback changes."""
+  session_service = InMemorySessionService()
+  artifact_service = InMemoryArtifactService()
+  plugin = MockPlugin()
+  plugin.enable_event_callback = True
+  runner = Runner(
+      app_name="live_app",
+      agent=MockLiveAgent("live_agent"),
+      session_service=session_service,
+      artifact_service=artifact_service,
+      plugins=[plugin],
+  )
+  await session_service.create_session(
+      app_name="live_app", user_id="user", session_id="live_session"
+  )
+
+  from google.adk.agents.live_request_queue import LiveRequestQueue
+
+  live_queue = LiveRequestQueue()
+  agen = runner.run_live(
+      user_id="user",
+      session_id="live_session",
+      live_request_queue=live_queue,
+  )
+
+  streamed_event = await agen.__anext__()
+  await agen.aclose()
+
+  session = await session_service.get_session(
+      app_name="live_app", user_id="user", session_id="live_session"
+  )
+  persisted_event = session.events[0]
+
+  assert streamed_event.author == "live_agent"
+  assert streamed_event.invocation_id
+  assert streamed_event.content.parts[0].text == (
+      MockPlugin.ON_EVENT_CALLBACK_MSG
+  )
+  assert streamed_event.custom_metadata == MockPlugin.ON_EVENT_CALLBACK_METADATA
+
+  assert persisted_event.id == streamed_event.id
+  assert persisted_event.timestamp == streamed_event.timestamp
+  assert persisted_event.author == streamed_event.author
+  assert persisted_event.invocation_id == streamed_event.invocation_id
+  assert persisted_event.content.parts[0].text == (
+      MockPlugin.ON_EVENT_CALLBACK_MSG
+  )
+  assert (
+      persisted_event.custom_metadata == MockPlugin.ON_EVENT_CALLBACK_METADATA
+  )
 
 
 @pytest.mark.asyncio
@@ -747,6 +804,39 @@ class TestRunnerWithPlugins:
     assert modified_event_message == MockPlugin.ON_EVENT_CALLBACK_MSG
 
   @pytest.mark.asyncio
+  async def test_runner_persists_event_callback_modifications(self):
+    """Event callback output should be persisted, not only streamed."""
+    self.plugin.enable_event_callback = True
+
+    events = await self.run_test()
+    streamed_event = events[0]
+
+    session = await self.session_service.get_session(
+        app_name=TEST_APP_ID, user_id=TEST_USER_ID, session_id=TEST_SESSION_ID
+    )
+    persisted_event = session.events[1]
+
+    assert streamed_event.author == "test_agent"
+    assert streamed_event.invocation_id
+    assert streamed_event.content.parts[0].text == (
+        MockPlugin.ON_EVENT_CALLBACK_MSG
+    )
+    assert (
+        streamed_event.custom_metadata == MockPlugin.ON_EVENT_CALLBACK_METADATA
+    )
+
+    assert persisted_event.id == streamed_event.id
+    assert persisted_event.timestamp == streamed_event.timestamp
+    assert persisted_event.author == streamed_event.author
+    assert persisted_event.invocation_id == streamed_event.invocation_id
+    assert persisted_event.content.parts[0].text == (
+        MockPlugin.ON_EVENT_CALLBACK_MSG
+    )
+    assert (
+        persisted_event.custom_metadata == MockPlugin.ON_EVENT_CALLBACK_METADATA
+    )
+
+  @pytest.mark.asyncio
   async def test_runner_close_calls_plugin_close(self):
     """Test that runner.close() calls plugin manager close."""
     # Mock the plugin manager's close method
@@ -1098,6 +1188,34 @@ class TestRunnerShouldAppendEvent:
     )
     assert self.runner._should_append_event(event, is_live_call=True) is True
 
+  def test_should_not_append_event_live_model_video(self):
+    event = Event(
+        invocation_id="inv1",
+        author="model",
+        content=types.Content(
+            parts=[
+                types.Part(
+                    inline_data=types.Blob(data=b"123", mime_type="video/mp4")
+                )
+            ]
+        ),
+    )
+    assert self.runner._should_append_event(event, is_live_call=True) is False
+
+  def test_should_append_event_non_live_model_video(self):
+    event = Event(
+        invocation_id="inv1",
+        author="model",
+        content=types.Content(
+            parts=[
+                types.Part(
+                    inline_data=types.Blob(data=b"123", mime_type="video/mp4")
+                )
+            ]
+        ),
+    )
+    assert self.runner._should_append_event(event, is_live_call=False) is True
+
 
 @pytest.fixture
 def user_agent_module(tmp_path, monkeypatch):
@@ -1122,7 +1240,7 @@ from google.adk.agents.llm_agent import LlmAgent
 class MyAgent(LlmAgent):
     pass
 
-root_agent = MyAgent(name="{agent_dir_name}", model="gemini-2.0-flash")
+root_agent = MyAgent(name="{agent_dir_name}", model="gemini-2.5-flash")
 """
     (agent_dir / "agent.py").write_text(agent_source, encoding="utf-8")
 
@@ -1184,7 +1302,7 @@ class TestRunnerInferAgentOrigin:
     """
     agent = LlmAgent(
         name="my_custom_agent",
-        model="gemini-2.0-flash",
+        model="gemini-2.5-flash",
     )
 
     runner = Runner(
@@ -1235,6 +1353,191 @@ class TestRunnerInferAgentOrigin:
     assert runner._app_name_alignment_hint is not None
     assert "wrong_name" in runner._app_name_alignment_hint
     assert "actual_name" in runner._app_name_alignment_hint
+
+
+@pytest.mark.asyncio
+async def test_run_async_passes_get_session_config():
+  """run_async should forward RunConfig.get_session_config to get_session."""
+  from google.adk.sessions.base_session_service import GetSessionConfig
+
+  session_service = InMemorySessionService()
+
+  # Pre-create a session with multiple events.
+  session = await session_service.create_session(
+      app_name=TEST_APP_ID, user_id=TEST_USER_ID, session_id=TEST_SESSION_ID
+  )
+  for i in range(10):
+    await session_service.append_event(
+        session=session,
+        event=Event(
+            invocation_id=f"inv_{i}",
+            author="user",
+            content=types.Content(
+                role="user", parts=[types.Part(text=f"message {i}")]
+            ),
+        ),
+    )
+
+  runner = Runner(
+      app_name=TEST_APP_ID,
+      agent=MockAgent("test_agent"),
+      session_service=session_service,
+      artifact_service=InMemoryArtifactService(),
+  )
+
+  # Run with num_recent_events=3 to only load recent events.
+  config = RunConfig(
+      get_session_config=GetSessionConfig(num_recent_events=3),
+  )
+
+  events = []
+  async for event in runner.run_async(
+      user_id=TEST_USER_ID,
+      session_id=TEST_SESSION_ID,
+      new_message=types.Content(role="user", parts=[types.Part(text="hello")]),
+      run_config=config,
+  ):
+    events.append(event)
+
+  # Agent should still produce output (session was found).
+  assert len(events) >= 1
+  assert events[0].author == "test_agent"
+
+
+@pytest.mark.asyncio
+async def test_run_live_passes_get_session_config():
+  """run_live should forward RunConfig.get_session_config to get_session."""
+  from google.adk.agents.live_request_queue import LiveRequestQueue
+  from google.adk.sessions.base_session_service import GetSessionConfig
+
+  session_service = InMemorySessionService()
+
+  # Pre-create session.
+  await session_service.create_session(
+      app_name=TEST_APP_ID, user_id=TEST_USER_ID, session_id=TEST_SESSION_ID
+  )
+
+  runner = Runner(
+      app_name=TEST_APP_ID,
+      agent=MockLiveAgent("live_agent"),
+      session_service=session_service,
+      artifact_service=InMemoryArtifactService(),
+  )
+
+  config = RunConfig(
+      get_session_config=GetSessionConfig(num_recent_events=5),
+  )
+
+  live_queue = LiveRequestQueue()
+  agen = runner.run_live(
+      user_id=TEST_USER_ID,
+      session_id=TEST_SESSION_ID,
+      live_request_queue=live_queue,
+      run_config=config,
+  )
+
+  event = await agen.__anext__()
+  await agen.aclose()
+
+  assert event.author == "live_agent"
+  assert event.content.parts[0].text == "live hello"
+
+
+@pytest.mark.asyncio
+async def test_rewind_async_passes_get_session_config():
+  """rewind_async should forward RunConfig.get_session_config to get_session."""
+  from google.adk.sessions.base_session_service import GetSessionConfig
+
+  session_service = InMemorySessionService()
+
+  runner = Runner(
+      app_name=TEST_APP_ID,
+      agent=MockAgent("test_agent"),
+      session_service=session_service,
+      artifact_service=InMemoryArtifactService(),
+      auto_create_session=True,
+  )
+
+  config = RunConfig(
+      get_session_config=GetSessionConfig(num_recent_events=5),
+  )
+
+  # rewind_async on a fresh session will raise because the invocation_id
+  # doesn't exist, but it demonstrates that the config path works.
+  with pytest.raises(ValueError, match=r"Invocation ID not found"):
+    await runner.rewind_async(
+        user_id=TEST_USER_ID,
+        session_id="new_session",
+        rewind_before_invocation_id="inv_missing",
+        run_config=config,
+    )
+
+
+@pytest.mark.asyncio
+async def test_run_debug_passes_get_session_config():
+  """run_debug should forward RunConfig.get_session_config to get_session."""
+  from google.adk.sessions.base_session_service import GetSessionConfig
+
+  session_service = InMemorySessionService()
+
+  runner = Runner(
+      app_name=TEST_APP_ID,
+      agent=MockAgent("test_agent"),
+      session_service=session_service,
+      artifact_service=InMemoryArtifactService(),
+  )
+
+  config = RunConfig(
+      get_session_config=GetSessionConfig(num_recent_events=5),
+  )
+
+  events = await runner.run_debug(
+      "hello",
+      run_config=config,
+      quiet=True,
+  )
+
+  assert len(events) >= 1
+  assert events[0].author == "test_agent"
+
+
+@pytest.mark.asyncio
+async def test_get_session_config_limits_events():
+  """Verify that num_recent_events actually limits loaded events."""
+  from google.adk.sessions.base_session_service import GetSessionConfig
+
+  session_service = InMemorySessionService()
+
+  # Create session and add events.
+  session = await session_service.create_session(
+      app_name=TEST_APP_ID, user_id=TEST_USER_ID, session_id=TEST_SESSION_ID
+  )
+  for i in range(10):
+    await session_service.append_event(
+        session=session,
+        event=Event(
+            invocation_id=f"inv_{i}",
+            author="user",
+            content=types.Content(
+                role="user", parts=[types.Part(text=f"message {i}")]
+            ),
+        ),
+    )
+
+  # Without config: should load all events.
+  full_session = await session_service.get_session(
+      app_name=TEST_APP_ID, user_id=TEST_USER_ID, session_id=TEST_SESSION_ID
+  )
+  assert len(full_session.events) == 10
+
+  # With config: should limit events.
+  limited_session = await session_service.get_session(
+      app_name=TEST_APP_ID,
+      user_id=TEST_USER_ID,
+      session_id=TEST_SESSION_ID,
+      config=GetSessionConfig(num_recent_events=3),
+  )
+  assert len(limited_session.events) == 3
 
 
 if __name__ == "__main__":

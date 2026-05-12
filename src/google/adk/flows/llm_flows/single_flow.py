@@ -22,13 +22,13 @@ from . import _code_execution
 from . import _nl_planning
 from . import _output_schema_processor
 from . import basic
+from . import compaction
 from . import contents
 from . import context_cache_processor
 from . import identity
 from . import instructions
 from . import interactions_processor
 from . import request_confirmation
-from ...auth import auth_preprocessor
 from .base_llm_flow import BaseLlmFlow
 
 logger = logging.getLogger('google_adk.' + __name__)
@@ -36,12 +36,17 @@ logger = logging.getLogger('google_adk.' + __name__)
 
 def _create_request_processors():
   """Create the standard request processor list for a single-agent flow."""
+  from ...auth import auth_preprocessor
+
   return [
       basic.request_processor,
       auth_preprocessor.request_processor,
       request_confirmation.request_processor,
       instructions.request_processor,
       identity.request_processor,
+      # Compaction should run before contents so compacted events are reflected
+      # in the model request context.
+      compaction.request_processor,
       contents.request_processor,
       # Context cache processor sets up cache config and finds
       # existing cache metadata.

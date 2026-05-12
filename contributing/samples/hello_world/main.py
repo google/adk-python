@@ -48,8 +48,15 @@ async def main():
         session_id=session.id,
         new_message=content,
     ):
-      if event.content.parts and event.content.parts[0].text:
-        print(f'** {event.author}: {event.content.parts[0].text}')
+      if event.content.parts:
+        for part in event.content.parts:
+          if part.text:
+            print(f'** {event.author}: {part.text}')
+          if part.function_call:
+            print(
+                f'** {event.author} calls tool: {part.function_call.name} with'
+                f' args {part.function_call.args}'
+            )
 
   async def run_prompt_bytes(session: Session, new_message: str):
     content = types.Content(
@@ -74,6 +81,7 @@ async def main():
     session = await runner.session_service.get_session(
         app_name=app_name, user_id=user_id_1, session_id=session_11.id
     )
+    print('** session.state:', session.state)
     assert len(session.state['rolls']) == rolls_size
     for roll in session.state['rolls']:
       assert roll > 0 and roll <= 100
@@ -82,9 +90,9 @@ async def main():
   print('Start time:', start_time)
   print('------------------------------------')
   await run_prompt(session_11, 'Hi')
-  await run_prompt(session_11, 'Roll a die with 100 sides')
+  await run_prompt(session_11, 'Roll a dice with 100 sides')
   await check_rolls_in_state(1)
-  await run_prompt(session_11, 'Roll a die again with 100 sides.')
+  await run_prompt(session_11, 'Roll a dice again with 100 sides.')
   await check_rolls_in_state(2)
   await run_prompt(session_11, 'What numbers did I got?')
   await run_prompt_bytes(session_11, 'Hi bytes')

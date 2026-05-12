@@ -15,13 +15,12 @@
 from __future__ import annotations
 
 import os
-import subprocess
 from typing import Optional
-from typing import Tuple
 
 import click
 
 from ..apps.app import validate_app_name
+from .utils import _onboarding
 
 _INIT_PY_TEMPLATE = """\
 from . import agent
@@ -47,15 +46,6 @@ model: {model_name}
 """
 
 
-_GOOGLE_API_MSG = """
-Don't have API Key? Create one in AI Studio: https://aistudio.google.com/apikey
-"""
-
-_GOOGLE_CLOUD_SETUP_MSG = """
-You need an existing Google Cloud account and project, check out this link for details:
-https://google.github.io/adk-docs/get-started/quickstart/#gemini---google-cloud-vertex-ai
-"""
-
 _OTHER_MODEL_MSG = """
 Please see below guide to configure other models:
 https://google.github.io/adk-docs/agents/models
@@ -66,6 +56,9 @@ Agent created in {agent_folder}:
 - .env
 - __init__.py
 - agent.py
+
+⚠️  WARNING: Secrets (like GOOGLE_API_KEY) are stored in .env.
+Please ensure .env is added to your .gitignore to avoid committing secrets to version control.
 """
 
 _SUCCESS_MSG_CONFIG = """
@@ -73,99 +66,10 @@ Agent created in {agent_folder}:
 - .env
 - __init__.py
 - root_agent.yaml
+
+⚠️  WARNING: Secrets (like GOOGLE_API_KEY) are stored in .env.
+Please ensure .env is added to your .gitignore to avoid committing secrets to version control.
 """
-
-
-def _get_gcp_project_from_gcloud() -> str:
-  """Uses gcloud to get default project."""
-  try:
-    result = subprocess.run(
-        ["gcloud", "config", "get-value", "project"],
-        capture_output=True,
-        text=True,
-        check=True,
-    )
-    return result.stdout.strip()
-  except (subprocess.CalledProcessError, FileNotFoundError):
-    return ""
-
-
-def _get_gcp_region_from_gcloud() -> str:
-  """Uses gcloud to get default region."""
-  try:
-    result = subprocess.run(
-        ["gcloud", "config", "get-value", "compute/region"],
-        capture_output=True,
-        text=True,
-        check=True,
-    )
-    return result.stdout.strip()
-  except (subprocess.CalledProcessError, FileNotFoundError):
-    return ""
-
-
-def _prompt_str(
-    prompt_prefix: str,
-    *,
-    prior_msg: Optional[str] = None,
-    default_value: Optional[str] = None,
-) -> str:
-  if prior_msg:
-    click.secho(prior_msg, fg="green")
-  while True:
-    value: str = click.prompt(
-        prompt_prefix, default=default_value or None, type=str
-    )
-    if value and value.strip():
-      return value.strip()
-
-
-def _prompt_for_google_cloud(
-    google_cloud_project: Optional[str],
-) -> str:
-  """Prompts user for Google Cloud project ID."""
-  google_cloud_project = (
-      google_cloud_project
-      or os.environ.get("GOOGLE_CLOUD_PROJECT", None)
-      or _get_gcp_project_from_gcloud()
-  )
-
-  google_cloud_project = _prompt_str(
-      "Enter Google Cloud project ID", default_value=google_cloud_project
-  )
-
-  return google_cloud_project
-
-
-def _prompt_for_google_cloud_region(
-    google_cloud_region: Optional[str],
-) -> str:
-  """Prompts user for Google Cloud region."""
-  google_cloud_region = (
-      google_cloud_region
-      or os.environ.get("GOOGLE_CLOUD_LOCATION", None)
-      or _get_gcp_region_from_gcloud()
-  )
-
-  google_cloud_region = _prompt_str(
-      "Enter Google Cloud region",
-      default_value=google_cloud_region or "us-central1",
-  )
-  return google_cloud_region
-
-
-def _prompt_for_google_api_key(
-    google_api_key: Optional[str],
-) -> str:
-  """Prompts user for Google API key."""
-  google_api_key = google_api_key or os.environ.get("GOOGLE_API_KEY", None)
-
-  google_api_key = _prompt_str(
-      "Enter Google API key",
-      prior_msg=_GOOGLE_API_MSG,
-      default_value=google_api_key,
-  )
-  return google_api_key
 
 
 def _generate_files(
@@ -187,10 +91,10 @@ def _generate_files(
 
   with open(dotenv_file_path, "w", encoding="utf-8") as f:
     lines = []
-    if google_api_key:
-      lines.append("GOOGLE_GENAI_USE_VERTEXAI=0")
-    elif google_cloud_project and google_cloud_region:
+    if google_cloud_project and google_cloud_region:
       lines.append("GOOGLE_GENAI_USE_VERTEXAI=1")
+    elif google_api_key:
+      lines.append("GOOGLE_GENAI_USE_VERTEXAI=0")
     if google_api_key:
       lines.append(f"GOOGLE_API_KEY={google_api_key}")
     if google_cloud_project:
@@ -234,29 +138,6 @@ Choose model""",
   else:
     click.secho(_OTHER_MODEL_MSG, fg="green")
     return "<FILL_IN_MODEL>"
-
-
-def _prompt_to_choose_backend(
-    google_api_key: Optional[str],
-    google_cloud_project: Optional[str],
-    google_cloud_region: Optional[str],
-) -> Tuple[Optional[str], Optional[str], Optional[str]]:
-  """Prompts user to choose backend.
-
-  Returns:
-    A tuple of (google_api_key, google_cloud_project, google_cloud_region).
-  """
-  backend_choice = click.prompt(
-      "1. Google AI\n2. Vertex AI\nChoose a backend",
-      type=click.Choice(["1", "2"]),
-  )
-  if backend_choice == "1":
-    google_api_key = _prompt_for_google_api_key(google_api_key)
-  elif backend_choice == "2":
-    click.secho(_GOOGLE_CLOUD_SETUP_MSG, fg="green")
-    google_cloud_project = _prompt_for_google_cloud(google_cloud_project)
-    google_cloud_region = _prompt_for_google_cloud_region(google_cloud_region)
-  return google_api_key, google_cloud_project, google_cloud_region
 
 
 def _prompt_to_choose_type() -> str:
@@ -318,11 +199,18 @@ def run_cmd(
 
   if not google_api_key and not (google_cloud_project and google_cloud_region):
     if model.startswith("gemini"):
-      google_api_key, google_cloud_project, google_cloud_region = (
-          _prompt_to_choose_backend(
-              google_api_key, google_cloud_project, google_cloud_region
-          )
+      auth_info = _onboarding.prompt_to_choose_backend(
+          google_api_key, google_cloud_project, google_cloud_region
       )
+      if isinstance(auth_info, _onboarding.GoogleAIAuth):
+        google_api_key = auth_info.api_key
+      elif isinstance(auth_info, _onboarding.VertexAIAuth):
+        google_cloud_project = auth_info.project_id
+        google_cloud_region = auth_info.region
+      elif isinstance(auth_info, _onboarding.ExpressModeAuth):
+        google_api_key = auth_info.api_key
+        google_cloud_project = auth_info.project_id
+        google_cloud_region = auth_info.region
 
   if not type:
     type = _prompt_to_choose_type()

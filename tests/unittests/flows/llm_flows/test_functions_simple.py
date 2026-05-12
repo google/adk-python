@@ -18,8 +18,13 @@ from typing import Callable
 
 from google.adk.agents.llm_agent import Agent
 from google.adk.events.event import Event
+from google.adk.events.event_actions import EventActions
+from google.adk.events.ui_widget import UiWidget
 from google.adk.flows.llm_flows.functions import find_matching_function_call
+from google.adk.flows.llm_flows.functions import handle_function_calls_async
+from google.adk.flows.llm_flows.functions import handle_function_calls_live
 from google.adk.flows.llm_flows.functions import merge_parallel_function_response_events
+from google.adk.tools.computer_use.computer_use_tool import ComputerUseTool
 from google.adk.tools.function_tool import FunctionTool
 from google.adk.tools.tool_context import ToolContext
 from google.genai import types
@@ -397,8 +402,6 @@ def test_find_function_call_event_multiple_function_responses():
 @pytest.mark.asyncio
 async def test_function_call_args_not_modified():
   """Test that function_call.args is not modified when making a copy."""
-  from google.adk.flows.llm_flows.functions import handle_function_calls_async
-  from google.adk.flows.llm_flows.functions import handle_function_calls_live
 
   def simple_fn(**kwargs) -> dict:
     return {'result': 'test'}
@@ -455,8 +458,6 @@ async def test_function_call_args_not_modified():
 @pytest.mark.asyncio
 async def test_function_call_args_none_handling():
   """Test that function_call.args=None is handled correctly."""
-  from google.adk.flows.llm_flows.functions import handle_function_calls_async
-  from google.adk.flows.llm_flows.functions import handle_function_calls_live
 
   def simple_fn(**kwargs) -> dict:
     return {'result': 'test'}
@@ -504,8 +505,6 @@ async def test_function_call_args_none_handling():
 @pytest.mark.asyncio
 async def test_function_call_args_copy_behavior():
   """Test that modifying the copied args doesn't affect the original."""
-  from google.adk.flows.llm_flows.functions import handle_function_calls_async
-  from google.adk.flows.llm_flows.functions import handle_function_calls_live
 
   def simple_fn(test_param: str, other_param: int) -> dict:
     # Modify the args to test that the copy prevents affecting the original
@@ -565,8 +564,6 @@ async def test_function_call_args_copy_behavior():
 @pytest.mark.asyncio
 async def test_function_call_args_deep_copy_behavior():
   """Test that deep copy behavior works correctly with nested structures."""
-  from google.adk.flows.llm_flows.functions import handle_function_calls_async
-  from google.adk.flows.llm_flows.functions import handle_function_calls_live
 
   def simple_fn(nested_dict: dict, list_param: list) -> dict:
     # Modify the nested structures to test deep copy
@@ -1141,3 +1138,101 @@ async def test_mixed_function_types_execution_order():
       'yield_E',
       'yield_F',
   ]
+
+
+def test_merge_parallel_function_response_events_merges_ui_widgets():
+  """Test that merge_parallel_function_response_events merges render_ui_widgets."""
+  invocation_id = 'base_invocation_123'
+
+  widget1 = UiWidget(
+      id='widget_1', provider='mcp', payload={'resource_uri': 'ui://widget1'}
+  )
+  widget2 = UiWidget(
+      id='widget_2', provider='mcp', payload={'resource_uri': 'ui://widget2'}
+  )
+  widget3 = UiWidget(
+      id='widget_3', provider='mcp', payload={'resource_uri': 'ui://widget3'}
+  )
+
+  event1 = Event(
+      invocation_id=invocation_id,
+      author='test_agent',
+      actions=EventActions(render_ui_widgets=[widget1]),
+  )
+
+  event2 = Event(
+      invocation_id='different_invocation_456',
+      author='different_agent',
+      actions=EventActions(render_ui_widgets=[widget2, widget3]),
+  )
+
+  # Merge the events
+  merged_event = merge_parallel_function_response_events([event1, event2])
+
+  # Should contain all ui widgets
+  assert merged_event.actions.render_ui_widgets is not None
+  assert len(merged_event.actions.render_ui_widgets) == 3
+
+  widget_ids = {widget.id for widget in merged_event.actions.render_ui_widgets}
+  assert 'widget_1' in widget_ids
+  assert 'widget_2' in widget_ids
+  assert 'widget_3' in widget_ids
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    'handle_function_calls',
+    [
+        (handle_function_calls_async),
+        (handle_function_calls_live),
+    ],
+)
+async def test_computer_use_tool_decoding_behavior(handle_function_calls):
+  """Tests that computer use tools automatically decode base64 images."""
+  valid_b64 = 'R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7'
+
+  # make the tool return a dictionary with the image
+  async def mock_run(*args, **kwargs):
+    return {
+        'image': {'data': valid_b64, 'mimetype': 'image/png'},
+        'url': 'https://example.com',
+    }
+
+  # create a ComputerUseTool
+  tool = ComputerUseTool(func=mock_run, screen_size=(1024, 768))
+
+  model = testing_utils.MockModel.create(responses=[])
+  agent = Agent(
+      name='test_agent',
+      model=model,
+      tools=[tool],
+  )
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent, user_content=''
+  )
+
+  # Create function call
+  function_call = types.FunctionCall(name=tool.name, args={})
+  content = types.Content(parts=[types.Part(function_call=function_call)])
+  event = Event(
+      invocation_id=invocation_context.invocation_id,
+      author=agent.name,
+      content=content,
+  )
+  tools_dict = {tool.name: tool}
+
+  result = await handle_function_calls(
+      invocation_context,
+      event,
+      tools_dict,
+  )
+
+  assert result is not None
+  response_part = result.content.parts[0].function_response
+
+  # Verify original image data is removed from the dict response
+  assert 'image' not in response_part.response
+  assert 'url' in response_part.response
+  # Verify the image was converted to a blob
+  assert len(response_part.parts) == 1
+  assert response_part.parts[0].inline_data is not None

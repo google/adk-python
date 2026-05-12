@@ -16,15 +16,15 @@ from __future__ import annotations
 
 from abc import ABC
 import asyncio
-import datetime
 import inspect
 import logging
 from typing import AsyncGenerator
-from typing import cast
 from typing import Optional
 from typing import TYPE_CHECKING
 
+from google.adk.platform import time as platform_time
 from google.genai import types
+from opentelemetry import trace
 from websockets.exceptions import ConnectionClosed
 from websockets.exceptions import ConnectionClosedOK
 
@@ -36,10 +36,7 @@ from ...agents.invocation_context import InvocationContext
 from ...agents.live_request_queue import LiveRequestQueue
 from ...agents.readonly_context import ReadonlyContext
 from ...agents.run_config import StreamingMode
-from ...agents.transcription_entry import TranscriptionEntry
-from ...auth.auth_handler import AuthHandler
 from ...auth.auth_tool import AuthConfig
-from ...auth.credential_manager import CredentialManager
 from ...events.event import Event
 from ...models.base_llm_connection import BaseLlmConnection
 from ...models.llm_request import LlmRequest
@@ -49,12 +46,10 @@ from ...telemetry.tracing import trace_call_llm
 from ...telemetry.tracing import trace_send_data
 from ...telemetry.tracing import tracer
 from ...tools.base_toolset import BaseToolset
-from ...tools.google_search_tool import google_search
 from ...tools.tool_context import ToolContext
 from ...utils.context_utils import Aclosing
 from .audio_cache_manager import AudioCacheManager
 from .functions import build_auth_request_event
-from .functions import REQUEST_EUC_FUNCTION_CALL_NAME
 
 # Prefix used by toolset auth credential IDs
 TOOLSET_AUTH_CREDENTIAL_ID_PREFIX = '_adk_toolset_auth_'
@@ -72,6 +67,8 @@ _ADK_AGENT_NAME_LABEL_KEY = 'adk_agent_name'
 # Timing configuration
 DEFAULT_TRANSFER_AGENT_DELAY = 1.0
 DEFAULT_TASK_COMPLETION_DELAY = 1.0
+
+DEFAULT_MAX_RECONNECT_ATTEMPTS = 5
 
 # Statistics configuration
 DEFAULT_ENABLE_CACHE_STATISTICS = False
@@ -144,10 +141,13 @@ async def _resolve_toolset_auth(
     if not auth_config:
       continue
 
+    auth_config_copy = auth_config.model_copy(deep=True)
+    from ...auth.credential_manager import CredentialManager
+
     try:
-      credential = await CredentialManager(auth_config).get_auth_credential(
-          callback_context
-      )
+      credential = await CredentialManager(
+          auth_config_copy
+      ).get_auth_credential(callback_context)
     except ValueError as e:
       # Validation errors from CredentialManager should be logged but not
       # block the flow - the toolset may still work without auth
@@ -159,19 +159,22 @@ async def _resolve_toolset_auth(
       credential = None
 
     if credential:
-      # Populate in-place for toolset to use in get_tools()
-      auth_config.exchanged_auth_credential = credential
+      # Store in invocation context to avoid data leakage and race conditions
+      invocation_context.credential_by_key[auth_config.credential_key] = (
+          credential
+      )
     else:
       # Need auth - will interrupt
       toolset_id = (
           f'{TOOLSET_AUTH_CREDENTIAL_ID_PREFIX}{type(tool_union).__name__}'
       )
-      pending_auth_requests[toolset_id] = auth_config
+      pending_auth_requests[toolset_id] = auth_config_copy
 
   if not pending_auth_requests:
     return
 
-  # Build auth requests dict with generated auth requests
+  from ...auth.auth_handler import AuthHandler
+
   auth_requests = {
       credential_id: AuthHandler(auth_config).generate_auth_request()
       for credential_id, auth_config in pending_auth_requests.items()
@@ -310,6 +313,7 @@ async def _run_and_handle_error(
     invocation_context: InvocationContext,
     llm_request: LlmRequest,
     model_response_event: Event,
+    call_llm_span: Optional[trace.Span] = None,
 ) -> AsyncGenerator[LlmResponse, None]:
   """Wraps an LLM response generator with error callback handling.
 
@@ -323,6 +327,9 @@ async def _run_and_handle_error(
     invocation_context: The invocation context.
     llm_request: The LLM request.
     model_response_event: The model response event.
+    call_llm_span: The call_llm span to rebind error callbacks to. When
+      provided, on_model_error callbacks run under this span so plugins observe
+      the same span as before/after model callbacks.
 
   Yields:
     LlmResponse objects from the generator.
@@ -368,21 +375,35 @@ async def _run_and_handle_error(
 
   try:
     async with Aclosing(response_generator) as agen:
-      with tracing.use_generate_content_span(
-          llm_request, invocation_context, model_response_event
-      ) as span:
+      async with tracing.use_inference_span(
+          llm_request,
+          invocation_context,
+          model_response_event,
+      ) as gc_span:
         async for llm_response in agen:
-          tracing.trace_generate_content_result(span, llm_response)
+          if gc_span:
+            tracing.trace_inference_result(
+                gc_span,
+                llm_response,
+            )
           yield llm_response
   except Exception as model_error:
     callback_context = CallbackContext(
         invocation_context, event_actions=model_response_event.actions
     )
-    error_response = await _run_on_model_error_callbacks(
-        callback_context=callback_context,
-        llm_request=llm_request,
-        error=model_error,
-    )
+    if call_llm_span is not None:
+      with trace.use_span(call_llm_span, end_on_exit=False):
+        error_response = await _run_on_model_error_callbacks(
+            callback_context=callback_context,
+            llm_request=llm_request,
+            error=model_error,
+        )
+    else:
+      error_response = await _run_on_model_error_callbacks(
+          callback_context=callback_context,
+          llm_request=llm_request,
+          error=model_error,
+      )
     if error_response is not None:
       yield error_response
     else:
@@ -456,6 +477,8 @@ class BaseLlmFlow(ABC):
       invocation_context: InvocationContext,
   ) -> AsyncGenerator[Event, None]:
     """Runs the flow using live api."""
+    from google.genai import errors
+
     llm_request = LlmRequest()
     event_id = Event.new_id()
 
@@ -498,7 +521,12 @@ class BaseLlmFlow(ABC):
             invocation_context.agent.name,
         )
         async with llm.connect(llm_request) as llm_connection:
-          if llm_request.contents:
+          # Skip sending history if we are resuming a session. The server
+          # already has the state associated with the resumption handle.
+          if (
+              llm_request.contents
+              and not invocation_context.live_session_resumption_handle
+          ):
             # Sends the conversation history to the model.
             with tracer.start_as_current_span('send_data'):
               # Combine regular contents with audio/transcription from session
@@ -522,6 +550,8 @@ class BaseLlmFlow(ABC):
                 )
             ) as agen:
               async for event in agen:
+                # Reset attempt counter on successful communication.
+                attempt = 1
                 # Empty event means the queue is closed.
                 if not event:
                   break
@@ -591,9 +621,31 @@ class BaseLlmFlow(ABC):
             except asyncio.CancelledError:
               pass
       except (ConnectionClosed, ConnectionClosedOK) as e:
-        # when the session timeout, it will just close and not throw exception.
-        # so this is for bad cases
+        # If we have a session resumption handle, we attempt to reconnect.
+        # This handle is updated dynamically during the session.
+        if invocation_context.live_session_resumption_handle:
+          if attempt > DEFAULT_MAX_RECONNECT_ATTEMPTS:
+            logger.error('Max reconnection attempts reached (%s).', e)
+            raise
+          logger.info(
+              'Connection closed (%s), reconnecting with session handle.', e
+          )
+          continue
         logger.error('Connection closed: %s.', e)
+        raise
+      except errors.APIError as e:
+        # Error code 1000 and 1006 indicates a recoverable connection drop.
+        # In that case, we attempt to reconnect with session handle if available.
+        if e.code in [1000, 1006]:
+          if invocation_context.live_session_resumption_handle:
+            if attempt > DEFAULT_MAX_RECONNECT_ATTEMPTS:
+              logger.error('Max reconnection attempts reached (%s).', e)
+              raise
+            logger.info(
+                'Connection lost (%s), reconnecting with session handle.', e
+            )
+            continue
+        logger.error('APIError in live flow: %s', e)
         raise
       except Exception as e:
         logger.error(
@@ -676,75 +728,81 @@ class BaseLlmFlow(ABC):
   ) -> AsyncGenerator[Event, None]:
     """Receive data from model and process events using BaseLlmConnection."""
 
-    def get_author_for_event(llm_response):
+    def get_author_for_event(llm_response: LlmResponse) -> str:
       """Get the author of the event.
 
-      When the model returns transcription, the author is "user". Otherwise, the
-      author is the agent name(not 'model').
+      When the model returns input transcription, the author is set to "user".
+      Otherwise, the author is the agent name (not 'model').
 
       Args:
         llm_response: The LLM response from the LLM call.
+
+      Returns:
+        The author of the event as a string, either "user" or the agent's name.
       """
-      if (
-          llm_response
-          and llm_response.content
-          and llm_response.content.role == 'user'
+      if llm_response and (
+          llm_response.input_transcription
+          or (llm_response.content and llm_response.content.role == 'user')
       ):
         return 'user'
       else:
         return invocation_context.agent.name
 
-    try:
-      while True:
-        async with Aclosing(llm_connection.receive()) as agen:
-          async for llm_response in agen:
-            if llm_response.live_session_resumption_update:
-              logger.info(
-                  'Update session resumption handle:'
-                  f' {llm_response.live_session_resumption_update}.'
-              )
-              invocation_context.live_session_resumption_handle = (
-                  llm_response.live_session_resumption_update.new_handle
-              )
-            model_response_event = Event(
-                id=Event.new_id(),
-                invocation_id=invocation_context.invocation_id,
-                author=get_author_for_event(llm_response),
+    while True:
+      async with Aclosing(llm_connection.receive()) as agen:
+        async for llm_response in agen:
+          if llm_response.live_session_resumption_update:
+            logger.info(
+                'Update session resumption handle:'
+                f' {llm_response.live_session_resumption_update}.'
             )
+            invocation_context.live_session_resumption_handle = (
+                llm_response.live_session_resumption_update.new_handle
+            )
+          if llm_response.go_away:
+            logger.info(f'Received go away signal: {llm_response.go_away}')
+            # The server signals that it will close the connection soon.
+            # We proactively raise ConnectionClosed to trigger the reconnection
+            # logic in run_live, which will use the latest session handle.
+            raise ConnectionClosed(None, None)
 
-            async with Aclosing(
-                self._postprocess_live(
-                    invocation_context,
-                    llm_request,
-                    llm_response,
-                    model_response_event,
+          model_response_event = Event(
+              id=Event.new_id(),
+              invocation_id=invocation_context.invocation_id,
+              author=get_author_for_event(llm_response),
+          )
+
+          async with Aclosing(
+              self._postprocess_live(
+                  invocation_context,
+                  llm_request,
+                  llm_response,
+                  model_response_event,
+              )
+          ) as agen:
+            async for event in agen:
+              # Cache output audio chunks from model responses
+              # TODO: support video data
+              if (
+                  invocation_context.run_config.save_live_blob
+                  and event.content
+                  and event.content.parts
+                  and event.content.parts[0].inline_data
+                  and event.content.parts[0].inline_data.mime_type.startswith(
+                      'audio/'
+                  )
+              ):
+                audio_blob = types.Blob(
+                    data=event.content.parts[0].inline_data.data,
+                    mime_type=event.content.parts[0].inline_data.mime_type,
                 )
-            ) as agen:
-              async for event in agen:
-                # Cache output audio chunks from model responses
-                # TODO: support video data
-                if (
-                    invocation_context.run_config.save_live_blob
-                    and event.content
-                    and event.content.parts
-                    and event.content.parts[0].inline_data
-                    and event.content.parts[0].inline_data.mime_type.startswith(
-                        'audio/'
-                    )
-                ):
-                  audio_blob = types.Blob(
-                      data=event.content.parts[0].inline_data.data,
-                      mime_type=event.content.parts[0].inline_data.mime_type,
-                  )
-                  self.audio_cache_manager.cache_audio(
-                      invocation_context, audio_blob, cache_type='output'
-                  )
+                self.audio_cache_manager.cache_audio(
+                    invocation_context, audio_blob, cache_type='output'
+                )
 
-                yield event
-        # Give opportunity for other tasks to run.
-        await asyncio.sleep(0)
-    except ConnectionClosedOK:
-      pass
+              yield event
+      # Give opportunity for other tasks to run.
+      await asyncio.sleep(0)
 
   async def run_async(
       self, invocation_context: InvocationContext
@@ -843,7 +901,7 @@ class BaseLlmFlow(ABC):
           async for event in agen:
             # Update the mutable event id to avoid conflict
             model_response_event.id = Event.new_id()
-            model_response_event.timestamp = datetime.datetime.now().timestamp()
+            model_response_event.timestamp = platform_time.get_time()
             yield event
 
   async def _preprocess_async(
@@ -973,7 +1031,16 @@ class BaseLlmFlow(ABC):
         and not llm_response.input_transcription
         and not llm_response.output_transcription
         and not llm_response.usage_metadata
+        and not llm_response.live_session_resumption_update
     ):
+      return
+
+    # Handle session resumption updates for cross-connection resumption
+    if llm_response.live_session_resumption_update:
+      model_response_event.live_session_resumption_update = (
+          llm_response.live_session_resumption_update
+      )
+      yield model_response_event
       return
 
     # Handle transcription events ONCE per llm_response, outside the event loop
@@ -1104,28 +1171,30 @@ class BaseLlmFlow(ABC):
       llm_request: LlmRequest,
       model_response_event: Event,
   ) -> AsyncGenerator[LlmResponse, None]:
-    # Runs before_model_callback if it exists.
-    if response := await self._handle_before_model_callback(
-        invocation_context, llm_request, model_response_event
-    ):
-      yield response
-      return
-
-    llm_request.config = llm_request.config or types.GenerateContentConfig()
-    llm_request.config.labels = llm_request.config.labels or {}
-
-    # Add agent name as a label to the llm_request. This will help with slicing
-    # the billing reports on a per-agent basis.
-    if _ADK_AGENT_NAME_LABEL_KEY not in llm_request.config.labels:
-      llm_request.config.labels[_ADK_AGENT_NAME_LABEL_KEY] = (
-          invocation_context.agent.name
-      )
-
-    # Calls the LLM.
-    llm = self.__get_llm(invocation_context)
 
     async def _call_llm_with_tracing() -> AsyncGenerator[LlmResponse, None]:
       with tracer.start_as_current_span('call_llm') as span:
+        # Runs before_model_callback inside the call_llm span so
+        # plugins observe the same span as after/error callbacks.
+        if response := await self._handle_before_model_callback(
+            invocation_context, llm_request, model_response_event
+        ):
+          yield response
+          return
+
+        llm_request.config = llm_request.config or types.GenerateContentConfig()
+        llm_request.config.labels = llm_request.config.labels or {}
+
+        # Add agent name as a label to the llm_request. This will help
+        # with slicing billing reports on a per-agent basis.
+        if _ADK_AGENT_NAME_LABEL_KEY not in llm_request.config.labels:
+          llm_request.config.labels[_ADK_AGENT_NAME_LABEL_KEY] = (
+              invocation_context.agent.name
+          )
+
+        # Calls the LLM.
+        llm = self.__get_llm(invocation_context)
+
         if invocation_context.run_config.support_cfc:
           invocation_context.live_request_queue = LiveRequestQueue()
           responses_generator = self.run_live(invocation_context)
@@ -1135,14 +1204,20 @@ class BaseLlmFlow(ABC):
                   invocation_context,
                   llm_request,
                   model_response_event,
+                  call_llm_span=span,
               )
           ) as agen:
             async for llm_response in agen:
-              # Runs after_model_callback if it exists.
-              if altered_llm_response := await self._handle_after_model_callback(
-                  invocation_context, llm_response, model_response_event
-              ):
-                llm_response = altered_llm_response
+              # Rebind to call_llm span for after_model_callback.
+              with trace.use_span(span, end_on_exit=False):
+                if altered := (
+                    await self._handle_after_model_callback(
+                        invocation_context,
+                        llm_response,
+                        model_response_event,
+                    )
+                ):
+                  llm_response = altered
               # only yield partial response in SSE streaming mode
               if (
                   invocation_context.run_config.streaming_mode
@@ -1153,9 +1228,9 @@ class BaseLlmFlow(ABC):
               if llm_response.turn_complete:
                 invocation_context.live_request_queue.close()
         else:
-          # Check if we can make this llm call or not. If the current call
-          # pushes the counter beyond the max set value, then the execution is
-          # stopped right here, and exception is thrown.
+          # Check if we can make this llm call or not. If the current
+          # call pushes the counter beyond the max set value, then the
+          # execution is stopped right here, and exception is thrown.
           invocation_context.increment_llm_call_count()
           responses_generator = llm.generate_content_async(
               llm_request,
@@ -1168,6 +1243,7 @@ class BaseLlmFlow(ABC):
                   invocation_context,
                   llm_request,
                   model_response_event,
+                  call_llm_span=span,
               )
           ) as agen:
             async for llm_response in agen:
@@ -1178,11 +1254,16 @@ class BaseLlmFlow(ABC):
                   llm_response,
                   span,
               )
-              # Runs after_model_callback if it exists.
-              if altered_llm_response := await self._handle_after_model_callback(
-                  invocation_context, llm_response, model_response_event
-              ):
-                llm_response = altered_llm_response
+              # Rebind to call_llm span for after_model_callback.
+              with trace.use_span(span, end_on_exit=False):
+                if altered := (
+                    await self._handle_after_model_callback(
+                        invocation_context,
+                        llm_response,
+                        model_response_event,
+                    )
+                ):
+                  llm_response = altered
 
               yield llm_response
 
@@ -1237,6 +1318,7 @@ class BaseLlmFlow(ABC):
       invocation_context: InvocationContext,
       llm_request: LlmRequest,
       model_response_event: Event,
+      call_llm_span: Optional[trace.Span] = None,
   ) -> AsyncGenerator[LlmResponse, None]:
     async with Aclosing(
         _run_and_handle_error(
@@ -1244,6 +1326,7 @@ class BaseLlmFlow(ABC):
             invocation_context,
             llm_request,
             model_response_event,
+            call_llm_span=call_llm_span,
         )
     ) as agen:
       async for response in agen:
@@ -1287,6 +1370,33 @@ class BaseLlmFlow(ABC):
 
   def __get_llm(self, invocation_context: InvocationContext) -> BaseLlm:
     agent = invocation_context.agent
+
+    # Check for conformance test replay mode
+    if config := invocation_context.session.state.get('_adk_replay_config'):
+      from ...cli.conformance._conformance_test_google_llm import _ConformanceTestGemini
+
+      # Models are stateless, so the current replay state is cached in the
+      # session state to maintain the state across model calls
+      # key: (agent_name, user_message_index)
+      # value: replay index
+      user_message_index = config.get('user_message_index')
+      replay_indexes = config.get('_adk_replay_indexes', {})
+      if (agent.name, user_message_index) not in replay_indexes:
+        replay_indexes[(agent.name, user_message_index)] = 0
+      current_replay_index = replay_indexes[(agent.name, user_message_index)]
+
+      config['current_replay_index'] = current_replay_index
+      config['agent_name'] = agent.name
+      model = _ConformanceTestGemini(
+          config=config,
+      )
+
+      replay_indexes[(agent.name, user_message_index)] = (
+          current_replay_index + 1
+      )
+      config['_adk_replay_indexes'] = replay_indexes
+      return model
+
     if not hasattr(agent, 'canonical_model'):
       raise TypeError(
           'Expected agent to have canonical_model attribute,'

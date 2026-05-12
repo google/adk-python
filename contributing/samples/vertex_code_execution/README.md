@@ -22,14 +22,14 @@ The `VertexAiCodeExecutor` leverages the
 [Vertex AI Code Interpreter Extension](https://cloud.google.com/vertex-ai/generative-ai/docs/extensions/code-interpreter)
 to run Python code. This provides several advantages:
 
--   **Security**: Code is executed in a sandboxed environment on Google Cloud,
-    isolating it from your local system.
--   **Pre-installed Libraries**: The environment comes with many common Python
-    data science libraries pre-installed, such as `pandas`, `numpy`, and
-    `matplotlib`.
--   **Stateful Execution**: The execution environment is stateful, meaning
-    variables and data from one code execution are available in subsequent
-    executions within the same session.
+- **Security**: Code is executed in a sandboxed environment on Google Cloud,
+  isolating it from your local system.
+- **Pre-installed Libraries**: The environment comes with many common Python
+  data science libraries pre-installed, such as `pandas`, `numpy`, and
+  `matplotlib`.
+- **Stateful Execution**: The execution environment is stateful, meaning
+  variables and data from one code execution are available in subsequent
+  executions within the same session.
 
 ## How to use
 
