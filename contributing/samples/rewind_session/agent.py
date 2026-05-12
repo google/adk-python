@@ -52,7 +52,7 @@ async def load_artifact(tool_context: ToolContext, filename: str) -> dict:
 # Create the agent
 root_agent = Agent(
     name="state_agent",
-    model="gemini-2.0-flash",
+    model="gemini-2.5-flash",
     instruction="""You are an agent that manages state and artifacts.
 
     You can:

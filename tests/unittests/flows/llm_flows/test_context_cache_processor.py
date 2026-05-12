@@ -88,7 +88,7 @@ class TestContextCacheRequestProcessor:
     )
 
     llm_request = LlmRequest(
-        model="gemini-2.0-flash",
+        model="gemini-2.5-flash",
         contents=[
             types.Content(
                 role="user",
@@ -115,7 +115,7 @@ class TestContextCacheRequestProcessor:
     )
 
     llm_request = LlmRequest(
-        model="gemini-2.0-flash",
+        model="gemini-2.5-flash",
         contents=[
             types.Content(
                 role="user",
@@ -157,7 +157,7 @@ class TestContextCacheRequestProcessor:
     )
 
     llm_request = LlmRequest(
-        model="gemini-2.0-flash",
+        model="gemini-2.5-flash",
         contents=[
             types.Content(
                 role="user",
@@ -198,7 +198,7 @@ class TestContextCacheRequestProcessor:
     )
 
     llm_request = LlmRequest(
-        model="gemini-2.0-flash",
+        model="gemini-2.5-flash",
         contents=[
             types.Content(
                 role="user",
@@ -248,7 +248,7 @@ class TestContextCacheRequestProcessor:
     )
 
     llm_request = LlmRequest(
-        model="gemini-2.0-flash",
+        model="gemini-2.5-flash",
         contents=[
             types.Content(
                 role="user",
@@ -299,7 +299,7 @@ class TestContextCacheRequestProcessor:
     )
 
     llm_request = LlmRequest(
-        model="gemini-2.0-flash",
+        model="gemini-2.5-flash",
         contents=[
             types.Content(
                 role="user",
@@ -334,7 +334,7 @@ class TestContextCacheRequestProcessor:
     )
 
     llm_request = LlmRequest(
-        model="gemini-2.0-flash",
+        model="gemini-2.5-flash",
         contents=[
             types.Content(
                 role="user",
@@ -363,7 +363,7 @@ class TestContextCacheRequestProcessor:
     )
 
     llm_request = LlmRequest(
-        model="gemini-2.0-flash",
+        model="gemini-2.5-flash",
         contents=[
             types.Content(
                 role="user",
@@ -390,7 +390,7 @@ class TestContextCacheRequestProcessor:
     )
 
     llm_request = LlmRequest(
-        model="gemini-2.0-flash",
+        model="gemini-2.5-flash",
         contents=[
             types.Content(
                 role="user",
@@ -434,7 +434,7 @@ class TestContextCacheRequestProcessor:
     )
 
     llm_request = LlmRequest(
-        model="gemini-2.0-flash",
+        model="gemini-2.5-flash",
         contents=[
             types.Content(
                 role="user",
@@ -476,7 +476,7 @@ class TestContextCacheRequestProcessor:
     )
 
     llm_request = LlmRequest(
-        model="gemini-2.0-flash",
+        model="gemini-2.5-flash",
         contents=[
             types.Content(
                 role="user",
@@ -509,7 +509,7 @@ class TestContextCacheRequestProcessor:
     )
 
     llm_request = LlmRequest(
-        model="gemini-2.0-flash",
+        model="gemini-2.5-flash",
         contents=[
             types.Content(
                 role="user",
@@ -548,7 +548,7 @@ class TestContextCacheRequestProcessor:
     )
 
     llm_request = LlmRequest(
-        model="gemini-2.0-flash",
+        model="gemini-2.5-flash",
         contents=[
             types.Content(
                 role="user",
@@ -587,7 +587,7 @@ class TestContextCacheRequestProcessor:
     )
 
     llm_request = LlmRequest(
-        model="gemini-2.0-flash",
+        model="gemini-2.5-flash",
         contents=[
             types.Content(
                 role="user",
@@ -626,7 +626,7 @@ class TestContextCacheRequestProcessor:
     )
 
     llm_request = LlmRequest(
-        model="gemini-2.0-flash",
+        model="gemini-2.5-flash",
         contents=[
             types.Content(
                 role="user",

@@ -366,6 +366,25 @@ class GeminiLlmConnection(BaseLlmConnection):
               types.Part(function_call=function_call)
               for function_call in message.tool_call.function_calls
           ])
+          # Gemini 3.1 does not emit turn_complete until it receives the
+          # tool response, so yield tool calls immediately to avoid
+          # deadlocking the conversation. Other models (e.g. 2.5-pro,
+          # native-audio) send turn_complete after tool calls, so buffer
+          # and merge them into a single response at turn_complete.
+          if (
+              model_name_utils.is_gemini_3_1_flash_live(self._model_version)
+              and tool_call_parts
+          ):
+            logger.debug(
+                'Yielding tool_call_parts immediately for Gemini 3.1 live tool'
+                ' call'
+            )
+            yield LlmResponse(
+                content=types.Content(role='model', parts=tool_call_parts),
+                model_version=self._model_version,
+                live_session_id=live_session_id,
+            )
+            tool_call_parts = []
         if message.session_resumption_update:
           logger.debug('Received session resumption message: %s', message)
           yield (

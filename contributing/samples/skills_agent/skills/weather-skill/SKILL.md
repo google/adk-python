@@ -1,6 +1,10 @@
-______________________________________________________________________
-
-## name: weather-skill description: A skill that provides weather information based on reference data. metadata: adk_additional_tools: - get_wind_speed
+---
+name: weather-skill
+description: A skill that provides weather information based on reference data.
+metadata:
+  adk_additional_tools:
+    - get_wind_speed
+---
 
 Step 1: Check 'references/weather_info.md' for the current weather.
 Step 2: If humidity is requested, use run 'scripts/get_humidity.py' with the `location` argument.

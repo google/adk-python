@@ -1430,14 +1430,18 @@ class HybridContentParser:
 
       # CASE C: Text
       elif hasattr(part, "text") and part.text:
-        text_len = len(part.text.encode("utf-8"))
-        # If max_length is set and smaller than inline limit, use it as threshold
-        # to prefer offloading over truncation.
-        offload_threshold = self.inline_text_limit
-        if self.max_length != -1 and self.max_length < offload_threshold:
-          offload_threshold = self.max_length
+        char_len = len(part.text)
+        byte_len = len(part.text.encode("utf-8"))
 
-        if self.offloader and text_len > offload_threshold:
+        # Decide whether to offload using each limit in its own
+        # unit.  inline_text_limit is a byte-based storage guard;
+        # max_length is a character-based truncation limit.
+        exceeds_inline_byte_limit = byte_len > self.inline_text_limit
+        exceeds_char_limit = (
+            self.max_length != -1 and char_len > self.max_length
+        )
+
+        if self.offloader and (exceeds_inline_byte_limit or exceeds_char_limit):
           # Text is too big, treat as file
           path = f"{datetime.now().date()}/{self.trace_id}/{self.span_id}_p{idx}.txt"
           try:
@@ -1824,6 +1828,17 @@ _EVENT_VIEW_DEFS: dict[str, list[str]] = {
             "CAST(JSON_VALUE(content, '$.usage.total')"
             " AS INT64) AS usage_total_tokens"
         ),
+        (
+            "CAST(JSON_VALUE(attributes,"
+            " '$.usage_metadata.cached_content_token_count') AS INT64) AS"
+            " usage_cached_tokens"
+        ),
+        (
+            "SAFE_DIVIDE(CAST(JSON_VALUE(attributes,"
+            " '$.usage_metadata.cached_content_token_count') AS"
+            " INT64),CAST(JSON_VALUE(content, '$.usage.prompt') AS INT64)) AS"
+            " context_cache_hit_rate"
+        ),
         "CAST(JSON_VALUE(latency_ms, '$.total_ms') AS INT64) AS total_ms",
         (
             "CAST(JSON_VALUE(latency_ms,"
@@ -1831,6 +1846,7 @@ _EVENT_VIEW_DEFS: dict[str, list[str]] = {
         ),
         "JSON_VALUE(attributes, '$.model_version') AS model_version",
         "JSON_QUERY(attributes, '$.usage_metadata') AS usage_metadata",
+        "JSON_QUERY(attributes, '$.cache_metadata') AS cache_metadata",
     ],
     "LLM_ERROR": [
         "CAST(JSON_VALUE(latency_ms, '$.total_ms') AS INT64) AS total_ms",
@@ -1894,6 +1910,18 @@ _EVENT_VIEW_DEFS: dict[str, list[str]] = {
             " '$.a2a_metadata.\"a2a:response\"') AS a2a_response"
         ),
     ],
+    "AGENT_RESPONSE": [
+        "JSON_VALUE(content, '$.response') AS response_text",
+        "JSON_VALUE(attributes, '$.source_event_id') AS source_event_id",
+        (
+            "JSON_VALUE(attributes,"
+            " '$.source_event_author') AS source_event_author"
+        ),
+        (
+            "JSON_VALUE(attributes,"
+            " '$.source_event_branch') AS source_event_branch"
+        ),
+    ],
 }
 
 _VIEW_SQL_TEMPLATE = """\
@@ -1929,6 +1957,7 @@ class EventData:
   model: Optional[str] = None
   model_version: Optional[str] = None
   usage_metadata: Any = None
+  cache_metadata: Any = None
   status: str = "OK"
   error_message: Optional[str] = None
   extra_attributes: dict[str, Any] = field(default_factory=dict)
@@ -1988,6 +2017,7 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
     self._startup_error: Optional[Exception] = None
     self._is_shutting_down = False
     self._setup_lock = None
+    self._user_credentials = credentials
     self._credentials = credentials
     self.client = None
     self._loop_state_by_loop: dict[asyncio.AbstractEventLoop, _LoopState] = {}
@@ -2106,6 +2136,10 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
       )
       return creds
 
+    # Note: this read-then-write is not locked.  If two event loops
+    # race here both will resolve ADC and write back the same creds.
+    # This is benign — the result is idempotent — so we accept the
+    # race rather than adding a lock for a one-time init path.
     if self._credentials is None:
       self._credentials = await loop.run_in_executor(
           self._executor, get_credentials
@@ -2179,7 +2213,6 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
           self._executor,
           lambda: bigquery.Client(
               project=self.project_id,
-              location=self.location,
               credentials=self._credentials,
           ),
       )
@@ -2196,13 +2229,18 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
 
       self.offloader = None
       if self.config.gcs_bucket_name:
+        # GCSOffloader always creates a storage.Client eagerly
+        # (line 1329: storage_client or storage.Client(...)).
+        # Pass credentials so it uses the same auth as the other
+        # clients; omit when None to let it use ADC.
+        gcs_kwargs = {"project": self.project_id}
+        if self._credentials is not None:
+          gcs_kwargs["credentials"] = self._credentials
         self.offloader = GCSOffloader(
             self.project_id,
             self.config.gcs_bucket_name,
             self._executor,
-            storage_client=storage.Client(
-                project=self.project_id, credentials=self._credentials
-            ),
+            storage_client=storage.Client(**gcs_kwargs),
         )
 
       self.parser = HybridContentParser(
@@ -2536,6 +2574,18 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
     state["_startup_error"] = None
     state["_is_shutting_down"] = False
     state["_init_pid"] = 0
+    # _credentials is always runtime-resolved; clear unconditionally.
+    state["_credentials"] = None
+    # Preserve _user_credentials if they are picklable (e.g.,
+    # service-account, AnonymousCredentials).  Drop only when
+    # pickle would fail (e.g., compute_engine.Credentials holding
+    # a requests.Session).
+    import pickle as _pickle
+
+    try:
+      _pickle.dumps(state.get("_user_credentials"))
+    except Exception:
+      state["_user_credentials"] = None
     return state
 
   def __setstate__(self, state):
@@ -2543,6 +2593,13 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
     # Backfill keys that may be absent in pickled state from older
     # code versions so _ensure_started does not raise AttributeError.
     state.setdefault("_init_pid", 0)
+    state.setdefault("_user_credentials", None)
+    state.setdefault("_credentials", None)
+    # Restore _credentials from _user_credentials if available so
+    # _create_loop_state uses the user's identity.  When both are
+    # None (non-picklable credentials were dropped), ADC is used.
+    if state["_credentials"] is None and state["_user_credentials"] is not None:
+      state["_credentials"] = state["_user_credentials"]
     self.__dict__.update(state)
 
   def _reset_runtime_state(self) -> None:
@@ -2597,6 +2654,11 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
     self._startup_error = None
     self._is_shutting_down = False
     self._init_pid = os.getpid()
+    # For ADC-resolved credentials, clear so they are re-resolved
+    # in the child process.  For user-provided credentials, keep
+    # the original object — we cannot re-create it.  The user is
+    # responsible for providing fork-safe credentials if needed.
+    self._credentials = self._user_credentials
 
   async def __aenter__(self) -> BigQueryAgentAnalyticsPlugin:
     await self._ensure_started()
@@ -2607,7 +2669,14 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
 
   async def _ensure_started(self, **kwargs) -> None:
     """Ensures that the plugin is started and initialized."""
-    if os.getpid() != self._init_pid:
+    # _init_pid == 0 means the plugin was unpickled and has never been
+    # initialized in this process (the pickle sentinel set by
+    # __getstate__).  Skip the fork reset in that case — no fork
+    # happened, and _started is already False so _lazy_setup will run.
+    # Real forks are caught by os.register_at_fork (line 108) and by
+    # this check when _init_pid is a real (non-zero) PID from a
+    # different process.
+    if self._init_pid != 0 and os.getpid() != self._init_pid:
       self._reset_runtime_state()
     if not self._started:
       # Kept original lock name as it was not explicitly changed.
@@ -2619,6 +2688,10 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
             await self._lazy_setup(**kwargs)
             self._started = True
             self._startup_error = None
+            # Record the current PID so fork detection works for
+            # the rest of this instance's lifetime.
+            if self._init_pid == 0:
+              self._init_pid = os.getpid()
           except Exception as e:
             self._startup_error = e
             logger.error("Failed to initialize BigQuery Plugin: %s", e)
@@ -2738,6 +2811,15 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
         attrs["usage_metadata"] = usage_dict
       else:
         attrs["usage_metadata"] = event_data.usage_metadata
+
+    if event_data.cache_metadata:
+      cache_meta_dict, _ = _recursive_smart_truncate(
+          event_data.cache_metadata, self.config.max_content_length
+      )
+      if isinstance(cache_meta_dict, dict):
+        attrs["cache_metadata"] = cache_meta_dict
+      else:
+        attrs["cache_metadata"] = event_data.cache_metadata
 
     if self.config.log_session_metadata:
       try:
@@ -2911,7 +2993,7 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
       invocation_context: InvocationContext,
       event: "Event",
   ) -> None:
-    """Logs state changes, HITL events, and A2A interactions.
+    """Logs state changes, HITL events, A2A interactions, and agent responses.
 
     - Checks each event for a non-empty state_delta and logs it as a
       STATE_DELTA event.
@@ -2923,6 +3005,9 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
       and logs them as ``A2A_INTERACTION`` events so the remote
       agent's response and cross-reference IDs (``a2a:task_id``,
       ``a2a:context_id``) are visible in BigQuery.
+    - Detects final response events emitted by agents and logs
+      them as ``AGENT_RESPONSE`` so the visible response text
+      (after all callback modifications) is captured in BigQuery.
 
     The HITL detection must happen here (not in tool callbacks) because
     ``adk_request_credential``, ``adk_request_confirmation``, and
@@ -3024,6 +3109,50 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
               },
           ),
       )
+
+    # --- Final agent response logging ---
+    # Captures final response events emitted by agents (after all
+    # after_model_callback modifications).  Uses a strict guard to
+    # avoid false positives from skip_summarization function
+    # responses, long-running tool pause events, and thought-only
+    # events (which ADK treats as invisible internal reasoning).
+    is_agent_response = (
+        event.content
+        and event.content.parts
+        and event.is_final_response()
+        and event.partial is not True
+        and not event.get_function_calls()
+        and not event.get_function_responses()
+        and not event.long_running_tool_ids
+    )
+    if is_agent_response:
+      # Filter to visible text parts only.  Exclude thoughts
+      # (internal reasoning, A2A working/submitted updates),
+      # empty parts, and non-text parts (executable_code, etc.)
+      # that would render as "other" in _format_content.
+      visible_parts = [
+          p
+          for p in event.content.parts
+          if p.text and not getattr(p, "thought", None)
+      ]
+      if visible_parts:
+        visible_content = types.Content(
+            role=event.content.role, parts=visible_parts
+        )
+        formatted, truncated = self._format_content_safely(visible_content)
+        await self._log_event(
+            "AGENT_RESPONSE",
+            callback_ctx,
+            raw_content={"response": formatted},
+            is_truncated=truncated,
+            event_data=EventData(
+                extra_attributes={
+                    "source_event_id": event.id,
+                    "source_event_author": event.author,
+                    "source_event_branch": event.branch,
+                },
+            ),
+        )
 
     return None
 
@@ -3298,6 +3427,7 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
             time_to_first_token_ms=tfft,
             model_version=llm_response.model_version,
             usage_metadata=llm_response.usage_metadata,
+            cache_metadata=getattr(llm_response, "cache_metadata", None),
             span_id_override=span_id if is_popped else None,
             parent_span_id_override=(parent_span_id if is_popped else None),
         ),
