@@ -18,6 +18,8 @@ from contextlib import asynccontextmanager
 import logging
 from typing import AsyncIterator
 from typing import Callable
+from typing import Dict
+from typing import List
 from typing import Optional
 from typing import Union
 
@@ -27,6 +29,7 @@ from a2a.server.tasks import InMemoryPushNotificationConfigStore
 from a2a.server.tasks import InMemoryTaskStore
 from a2a.server.tasks import PushNotificationConfigStore
 from a2a.types import AgentCard
+from a2a.types import SecurityScheme
 from starlette.applications import Starlette
 
 from ...agents.base_agent import BaseAgent
@@ -86,6 +89,8 @@ def to_a2a(
     push_config_store: Optional[PushNotificationConfigStore] = None,
     runner: Optional[Runner] = None,
     lifespan: Optional[Callable[[Starlette], AsyncIterator[None]]] = None,
+    security_schemes: Optional[Dict[str, SecurityScheme]] = None,
+    default_skill_security: Optional[List[Dict[str, List[str]]]] = None,
 ) -> Starlette:
   """Convert an ADK agent to a A2A Starlette application.
 
@@ -107,6 +112,11 @@ def to_a2a(
         database connections or loading resources). The context manager
         receives the Starlette app instance and can set state on
         ``app.state``.
+      security_schemes: Optional dictionary of security scheme definitions
+          to include in the generated agent card.
+      default_skill_security: Optional default security requirements to apply
+          to all generated skills. Each element is a dict mapping a security
+          scheme name to a list of required scopes.
 
   Returns:
       A Starlette application that can be run with uvicorn
@@ -127,6 +137,14 @@ def to_a2a(
           await app.state.db.close()
 
       app = to_a2a(agent, lifespan=lifespan)
+
+      # Or with security:
+      from a2a.types import SecurityScheme
+      app = to_a2a(
+          agent,
+          security_schemes={"oauth2": SecurityScheme(...)},
+          default_skill_security=[{"oauth2": ["agent.read"]}],
+      )
   """
   # Set up ADK logging to ensure logs are visible when using uvicorn directly
   adk_logger = logging.getLogger("google_adk")
@@ -167,6 +185,8 @@ def to_a2a(
   card_builder = AgentCardBuilder(
       agent=agent,
       rpc_url=rpc_url,
+      security_schemes=security_schemes,
+      default_skill_security=default_skill_security,
   )
 
   # Build the agent card and configure A2A routes
