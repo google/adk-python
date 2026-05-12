@@ -187,8 +187,7 @@ uv venv --python "python3.11" ".venv" source .venv/bin/activate
 
 uv sync --all-extras ```
 
-**Minimal setup for testing only (matches CI):** `bash uv sync --extra test
---extra eval --extra a2a`
+**Minimal setup for testing only (matches CI):** `bash uv sync --extra test`
 
 **Virtual Environment Usage (Required):** - **Always use** `.venv/bin/python` or
 `.venv/bin/pytest` directly - **Or activate** with `source .venv/bin/activate`
@@ -256,17 +255,7 @@ the key style points:
 
 ### Autoformat (Required Before Committing)
 
-**Always run** before committing code: `bash ./autoformat.sh`
-
-**Manual formatting** (if needed): ```bash
-
-# Format imports
-
-isort src/ tests/ contributing/
-
-# Format code style
-
-pyink --config pyproject.toml src/ tests/ contributing/ ```
+**Always run** before committing code: `pre-commit run --all-files`
 
 **Check formatting** without making changes: `bash pyink --check --diff --config
 pyproject.toml src/ isort --check src/`
@@ -363,7 +352,7 @@ catching issues with the public API.
 **Quick start:** Run all tests with: `bash pytest tests/unittests`
 
 **Recommended:** Match CI configuration before submitting PRs: `bash uv sync
---extra test --extra eval --extra a2a && pytest tests/unittests`
+--extra test && pytest tests/unittests`
 
 **Additional options:** ```bash
 
@@ -513,7 +502,9 @@ Quick reference to important project files:
 -   **Main config:** `pyproject.toml` (uses `flit_core` build backend)
 -   **Dependencies:** `uv.lock` (managed by `uv`)
 -   **Linting:** `pylintrc` (Google Python Style Guide)
--   **Auto-format:** `autoformat.sh` (runs isort + pyink)
+-   **Auto-format:** `pre-commit` (runs isort + pyink)
+-   **Run on all files:** `pre-commit run --all-files`
+-   **Install as hook:** `pre-commit install`
 -   **CLI entry point:** `src/google/adk/cli/cli_tools_click.py`
 -   **Web UI backend:** `src/google/adk/cli/adk_web_server.py`
 -   **Main exports:** `src/google/adk/__init__.py` (exports Agent, Runner)

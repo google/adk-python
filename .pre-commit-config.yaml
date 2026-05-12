@@ -1,0 +1,38 @@
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v4.6.0
+    hooks:
+      - id: check-yaml
+        args: [--allow-multiple-documents]
+      - id: end-of-file-fixer
+      - id: trailing-whitespace
+  - repo: https://github.com/tox-dev/pyproject-fmt
+    rev: v2.5.0
+    hooks:
+      - id: pyproject-fmt
+  - repo: https://github.com/PyCQA/isort
+    rev: 8.0.1
+    hooks:
+      - id: isort
+  - repo: https://github.com/google/pyink
+    rev: 25.12.0
+    hooks:
+      - id: pyink
+  - repo: local
+    hooks:
+      - id: addlicense
+        name: addlicense
+        entry: >
+          bash -c 'if command -v addlicense >/dev/null 2>&1;
+          then addlicense -c "Google LLC" -l apache "$@";
+          else echo "Warning: addlicense not installed, skipping"; fi' --
+        language: system
+        files: \.(py|sh)$
+  - repo: https://github.com/executablebooks/mdformat
+    rev: 0.7.22
+    hooks:
+      - id: mdformat
+        files: ^(README\.md|CONTRIBUTING\.md|contributing/.*\.md)$
+        exclude: (?i)SKILL\.md$
+        additional_dependencies:
+          - mdformat-gfm

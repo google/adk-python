@@ -5,6 +5,7 @@ This sample demonstrates how to access and display log probabilities from langua
 ## Overview
 
 This simple example shows:
+
 - **Log Probability Access**: How to extract `avg_logprobs` and `logprobs_result` from `LlmResponse`
 - **After-Model Callback**: How to append log probability information to responses
 - **Confidence Analysis**: How to interpret and display confidence metrics
@@ -25,6 +26,7 @@ User Query → Agent Response → Log Probability Analysis Appended
 ## What You'll See
 
 The agent response will include log probability analysis like:
+
 ```
 [LOG PROBABILITY ANALYSIS]
 📊 Average Log Probability: -0.23
@@ -36,6 +38,7 @@ The agent response will include log probability analysis like:
 ## Usage
 
 ### Basic Usage
+
 ```bash
 # Run the agent in web UI
 adk web contributing/samples
@@ -53,8 +56,7 @@ adk run contributing/samples/logprobs
   - Low: < -1.0 (uncertain or complex responses)
 - **Use Cases**: Quality control, uncertainty detection, response filtering
 
-
-
 ## Key Fields in LlmResponse
+
 - **`avg_logprobs`**: Average log probability across all tokens in the response
 - **`logprobs_result`**: Detailed log probability information including top alternative tokens

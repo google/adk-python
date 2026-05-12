@@ -16,14 +16,19 @@ from __future__ import annotations
 from abc import ABC
 from abc import abstractmethod
 from datetime import datetime
+import logging
 from typing import Any
 from typing import Optional
+from typing import Union
 
+from google.adk.platform import time as platform_time
 from google.genai import types
 from pydantic import alias_generators
 from pydantic import BaseModel
 from pydantic import ConfigDict
 from pydantic import Field
+
+logger = logging.getLogger("google_adk." + __name__)
 
 
 class ArtifactVersion(BaseModel):
@@ -47,7 +52,7 @@ class ArtifactVersion(BaseModel):
       description="Optional user-supplied metadata stored with the artifact.",
   )
   create_time: float = Field(
-      default_factory=lambda: datetime.now().timestamp(),
+      default_factory=lambda: platform_time.get_time(),
       description=(
           "Unix timestamp (seconds) when the version record was created."
       ),
@@ -60,6 +65,26 @@ class ArtifactVersion(BaseModel):
   )
 
 
+def ensure_part(artifact: Union[types.Part, dict[str, Any]]) -> types.Part:
+  """Normalizes an artifact to a ``types.Part`` instance.
+
+  External callers may provide artifacts as
+  plain dictionaries with camelCase keys (``inlineData``) instead of properly
+  deserialized ``types.Part`` objects.  ``model_validate`` handles both
+  camelCase and snake_case dictionaries transparently via Pydantic aliases.
+
+  Args:
+    artifact: A ``types.Part`` instance or a dictionary representation.
+
+  Returns:
+    A validated ``types.Part`` instance.
+  """
+  if isinstance(artifact, dict):
+    logger.debug("Normalizing artifact dict to types.Part: %s", list(artifact))
+    return types.Part.model_validate(artifact)
+  return artifact
+
+
 class BaseArtifactService(ABC):
   """Abstract base class for artifact services."""
 
@@ -70,7 +95,7 @@ class BaseArtifactService(ABC):
       app_name: str,
       user_id: str,
       filename: str,
-      artifact: types.Part,
+      artifact: Union[types.Part, dict[str, Any]],
       session_id: Optional[str] = None,
       custom_metadata: Optional[dict[str, Any]] = None,
   ) -> int:
@@ -84,10 +109,12 @@ class BaseArtifactService(ABC):
       app_name: The app name.
       user_id: The user ID.
       filename: The filename of the artifact.
-      artifact: The artifact to save. If the artifact consists of `file_data`,
-        the artifact service assumes its content has been uploaded separately,
-        and this method will associate the `file_data` with the artifact if
-        necessary.
+      artifact: The artifact to save. Accepts a ``types.Part`` instance or a
+        plain dictionary (camelCase or snake_case keys) which will be
+        normalized via ``ensure_part``. If the artifact consists of
+        ``file_data``, the artifact service assumes its content has been
+        uploaded separately, and this method will associate the ``file_data``
+        with the artifact if necessary.
       session_id: The session ID. If `None`, the artifact is user-scoped.
       custom_metadata: custom metadata to associate with the artifact.
 

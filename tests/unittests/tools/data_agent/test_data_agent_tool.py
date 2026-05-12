@@ -196,3 +196,16 @@ def test_get_stream_from_file(mock_post, case_file_path):
 
   # 6. Assert that the final list of dicts matches the expected output
   assert result == expected_final_list
+
+
+def test_get_http_headers_includes_client_id():
+  """Tests _get_http_headers includes the correct GDA client ID."""
+  mock_creds = mock.Mock()
+  mock_creds.token = "fake-token"
+
+  # pylint: disable=protected-access
+  headers = data_agent_tool._get_http_headers(mock_creds)
+
+  assert headers["X-Goog-API-Client"] == "GOOGLE_ADK"
+  assert headers["Content-Type"] == "application/json"
+  assert headers["Authorization"] == "Bearer fake-token"

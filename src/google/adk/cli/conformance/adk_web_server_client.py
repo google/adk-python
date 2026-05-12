@@ -207,6 +207,17 @@ class AdkWebServerClient:
       response.raise_for_status()
       return Session.model_validate(response.json())
 
+  async def get_version_data(self) -> Dict[str, str]:
+    """Retrieve version data from the ADK web server.
+
+    Returns:
+      Dictionary containing version information
+    """
+    async with self._get_client() as client:
+      response = await client.get("/version")
+      response.raise_for_status()
+      return response.json()
+
   async def run_agent(
       self,
       request: RunAgentRequest,
@@ -226,7 +237,8 @@ class AdkWebServerClient:
       Event objects streamed from the agent execution
 
     Raises:
-      ValueError: If mode is provided but test_case_dir or user_message_index is None
+      ValueError: If mode is not supported, or if mode is provided but
+        test_case_dir or user_message_index is None
       httpx.HTTPStatusError: If the request fails
       json.JSONDecodeError: If event data cannot be parsed
       RuntimeError: If the server streams an error payload
@@ -248,11 +260,25 @@ class AdkWebServerClient:
             "dir": str(test_case_dir),
             "user_message_index": user_message_index,
         }
-      else:  # record mode
+        if request.streaming:
+          request.state_delta["_adk_replay_config"]["streaming_mode"] = "sse"
+        else:
+          request.state_delta["_adk_replay_config"]["streaming_mode"] = "none"
+      elif mode == "record":
         request.state_delta["_adk_recordings_config"] = {
             "dir": str(test_case_dir),
             "user_message_index": user_message_index,
         }
+        if request.streaming:
+          request.state_delta["_adk_recordings_config"][
+              "streaming_mode"
+          ] = "sse"
+        else:
+          request.state_delta["_adk_recordings_config"][
+              "streaming_mode"
+          ] = "none"
+      else:
+        raise ValueError(f"Unsupported mode: {mode}")
 
     async with self._get_client() as client:
       async with client.stream(

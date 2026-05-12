@@ -21,6 +21,8 @@ from fastapi.openapi.models import OAuth2
 from fastapi.openapi.models import OAuthFlowAuthorizationCode
 from fastapi.openapi.models import OAuthFlowImplicit
 from fastapi.openapi.models import OAuthFlows
+from fastapi.openapi.models import SecurityBase
+from google.adk.agents.callback_context import CallbackContext
 from google.adk.agents.invocation_context import InvocationContext
 from google.adk.agents.llm_agent import Agent
 from google.adk.auth.auth_credential import AuthCredential
@@ -30,20 +32,71 @@ from google.adk.auth.auth_credential import ServiceAccount
 from google.adk.auth.auth_credential import ServiceAccountCredential
 from google.adk.auth.auth_schemes import AuthScheme
 from google.adk.auth.auth_schemes import AuthSchemeType
+from google.adk.auth.auth_schemes import CustomAuthScheme
 from google.adk.auth.auth_schemes import ExtendedOAuth2
 from google.adk.auth.auth_tool import AuthConfig
+from google.adk.auth.base_auth_provider import BaseAuthProvider
+from google.adk.auth.credential_manager import _rehydrate_custom_scheme
 from google.adk.auth.credential_manager import CredentialManager
 from google.adk.auth.credential_manager import ServiceAccountCredentialExchanger
 from google.adk.auth.oauth2_discovery import AuthorizationServerMetadata
 from google.adk.sessions.in_memory_session_service import InMemorySessionService
 from google.adk.tools.tool_context import ToolContext
+from pydantic import Field
 import pytest
 
 from .. import testing_utils
 
 
+class DummyAuthScheme(CustomAuthScheme):
+  """A custom auth scheme for testing pluggable auth providers."""
+
+  type_: str = "dummy_auth_scheme"
+
+
 class TestCredentialManager:
   """Test suite for CredentialManager."""
+
+  @pytest.fixture(autouse=True)
+  def _clear_registry(self):
+    """Clear the global auth provider registry before each test."""
+    CredentialManager._auth_provider_registry._providers.clear()
+
+  def test_register_auth_provider(self, mocker):
+    """Test register_auth_provider class method."""
+    provider = mocker.Mock(
+        spec=BaseAuthProvider, supported_auth_schemes=(DummyAuthScheme,)
+    )
+
+    CredentialManager.register_auth_provider(provider)
+
+    assert (
+        CredentialManager._auth_provider_registry._providers[DummyAuthScheme]
+        == provider
+    )
+
+  @patch("google.adk.auth.credential_manager.logger")
+  def test_register_auth_provider_collision(self, mock_logger, mocker):
+    """Test register_auth_provider logs warning on scheme collision, but ignores exact duplicates."""
+    provider1 = mocker.Mock(
+        spec=BaseAuthProvider, supported_auth_schemes=(DummyAuthScheme,)
+    )
+    CredentialManager.register_auth_provider(provider1)
+
+    # Identical provider does not warn
+    CredentialManager.register_auth_provider(provider1)
+    mock_logger.warning.assert_not_called()
+
+    provider2 = mocker.Mock(
+        spec=BaseAuthProvider, supported_auth_schemes=(DummyAuthScheme,)
+    )
+
+    CredentialManager.register_auth_provider(provider2)
+    mock_logger.warning.assert_called_once()
+    assert (
+        CredentialManager._auth_provider_registry._providers[DummyAuthScheme]
+        == provider1
+    )
 
   def test_init(self):
     """Test CredentialManager initialization."""
@@ -64,12 +117,151 @@ class TestCredentialManager:
     tool_context.request_credential.assert_called_once_with(auth_config)
 
   @pytest.mark.asyncio
+  async def test_get_auth_credential_rehydrates_custom_scheme(self, mocker):
+    """Test that get_auth_credential rehydrates generic CustomAuthScheme."""
+
+    class SpecificCustomScheme(CustomAuthScheme):
+      type_: str = "specific_custom_scheme"
+
+    # Create a generic CustomAuthScheme instance that models SpecificCustomScheme data
+    mock_scheme_data = {"type": "specific_custom_scheme"}
+    raw_custom_scheme = CustomAuthScheme.model_validate(mock_scheme_data)
+
+    # Verify it's exactly the base class currently
+    assert type(raw_custom_scheme) is CustomAuthScheme
+
+    auth_config = mocker.Mock(spec=AuthConfig)
+    auth_config.auth_scheme = raw_custom_scheme
+
+    mock_context = mocker.Mock(spec=CallbackContext)
+
+    manager = CredentialManager(auth_config)
+
+    # Supply a mock provider so we bypass the complex native token loading logic downstream
+    mock_provider = mocker.AsyncMock(spec=BaseAuthProvider)
+    mock_provider.get_auth_credential.return_value = AuthCredential(
+        auth_type=AuthCredentialTypes.API_KEY, api_key="dummy"
+    )
+    mocker.patch.object(
+        manager._auth_provider_registry,
+        "get_provider",
+        return_value=mock_provider,
+    )
+
+    await manager.get_auth_credential(mock_context)
+
+    # Verify the auth_scheme mutated to the specific subclass
+    assert isinstance(manager._auth_config.auth_scheme, SpecificCustomScheme)
+    assert manager._auth_config.auth_scheme.type_ == "specific_custom_scheme"
+
+  @pytest.mark.asyncio
+  async def test_get_auth_credential_uses_registered_provider(self, mocker):
+    """Test get_auth_credential uses registered provider if available."""
+    credential = AuthCredential(
+        auth_type=AuthCredentialTypes.API_KEY, api_key="test-key"
+    )
+    provider = mocker.AsyncMock(
+        spec=BaseAuthProvider, supported_auth_schemes=(DummyAuthScheme,)
+    )
+    provider.get_auth_credential.return_value = credential
+    manager = CredentialManager(
+        mocker.Mock(spec=AuthConfig, auth_scheme=DummyAuthScheme())
+    )
+    CredentialManager.register_auth_provider(provider)
+    mock_context = mocker.Mock(spec=CallbackContext)
+
+    received_credential = await manager.get_auth_credential(mock_context)
+
+    assert received_credential is credential
+
+  @pytest.mark.asyncio
+  async def test_get_auth_credential_fallback_when_no_provider(self, mocker):
+    """Test fallback to standard flow when no provider is registered."""
+    api_key_cred = AuthCredential(
+        auth_type=AuthCredentialTypes.API_KEY,
+        api_key="fallback-key-no-provider",
+    )
+
+    auth_scheme = mocker.Mock(spec=AuthScheme)
+    auth_scheme.type_ = AuthSchemeType.apiKey
+
+    auth_config = mocker.Mock(spec=AuthConfig)
+    auth_config.auth_scheme = auth_scheme
+    auth_config.raw_auth_credential = api_key_cred
+    auth_config.exchanged_auth_credential = None
+
+    manager = CredentialManager(auth_config)
+
+    # Setup registry to return None (no provider found)
+    mocker.patch.object(
+        CredentialManager._auth_provider_registry,
+        "get_provider",
+        return_value=None,
+    )
+
+    result = await manager.get_auth_credential(mocker.Mock())
+
+    assert result == api_key_cred
+
+  @pytest.mark.asyncio
+  async def test_get_auth_credential_raises_error_when_provider_returns_none(
+      self, mocker
+  ):
+    """Test that a ValueError is raised when registered provider returns None."""
+    api_key_cred = AuthCredential(
+        auth_type=AuthCredentialTypes.API_KEY, api_key="fallback-key"
+    )
+
+    provider = mocker.AsyncMock(
+        spec=BaseAuthProvider, supported_auth_schemes=(DummyAuthScheme,)
+    )
+    provider.get_auth_credential.return_value = None
+
+    auth_config = mocker.Mock(spec=AuthConfig)
+    auth_config.auth_scheme = DummyAuthScheme()
+    auth_config.raw_auth_credential = api_key_cred
+    auth_config.exchanged_auth_credential = None
+
+    manager = CredentialManager(auth_config)
+    CredentialManager.register_auth_provider(provider)
+
+    mock_context = mocker.Mock(spec=CallbackContext)
+
+    with pytest.raises(
+        ValueError, match="AuthProvider did not return a credential."
+    ):
+      await manager.get_auth_credential(mock_context)
+
+  @pytest.mark.asyncio
+  async def test_get_auth_credential_triggers_user_consent_when_provider_returns_auth_uri(
+      self, mocker
+  ):
+    """Test get_auth_credential triggers user consent when provider returns oauth2 credential with auth_uri."""
+    credential = mocker.Mock(spec=AuthCredential)
+    credential.oauth2 = mocker.Mock(auth_uri="http://auth", access_token=None)
+
+    provider = mocker.AsyncMock(
+        spec=BaseAuthProvider, supported_auth_schemes=(DummyAuthScheme,)
+    )
+    provider.get_auth_credential.return_value = credential
+
+    manager = CredentialManager(
+        mocker.Mock(spec=AuthConfig, auth_scheme=DummyAuthScheme())
+    )
+    CredentialManager.register_auth_provider(provider)
+    mock_context = mocker.Mock(spec=CallbackContext)
+
+    assert await manager.get_auth_credential(mock_context) is None
+    assert manager._auth_config.exchanged_auth_credential is credential
+
+  @pytest.mark.asyncio
   async def test_load_auth_credentials_success(self):
     """Test load_auth_credential with successful flow."""
     # Create mocks
     auth_config = Mock(spec=AuthConfig)
     auth_config.raw_auth_credential = None
     auth_config.exchanged_auth_credential = None
+    auth_config.auth_scheme = Mock(spec=AuthScheme)
 
     # Mock the credential that will be returned
     mock_credential = Mock(spec=AuthCredential)
@@ -876,3 +1068,83 @@ def http_bearer_credential():
       auth_type=AuthCredentialTypes.HTTP,
       http=Mock(),
   )
+
+
+class TestRehydrateCustomScheme:
+  """Unit tests for the module-level _rehydrate_custom_scheme function."""
+
+  def test_rehydrate_custom_scheme_success(self):
+    mock_scheme_data = {"type": "dummy_auth_scheme"}
+    custom_scheme = CustomAuthScheme.model_validate(mock_scheme_data)
+
+    rehydrated = _rehydrate_custom_scheme(
+        scheme=custom_scheme, supported_schemes=[DummyAuthScheme]
+    )
+
+    assert isinstance(rehydrated, DummyAuthScheme)
+    assert rehydrated.type_ == "dummy_auth_scheme"
+
+  def test_rehydrate_custom_scheme_with_model_extra(self):
+    """Test that model_extras are preserved during rehydration."""
+
+    class DummyAuthSchemeWithExtra(CustomAuthScheme):
+      type_: str = Field(default="dummy_with_extra")
+      some_extra_field: str | None = None
+
+    mock_scheme_data = {
+        "type": "dummy_with_extra",
+        "some_extra_field": "extra_value",
+    }
+    # Because CustomAuthScheme doesn't know about `some_extra_field`, it goes'
+    # into model_extra
+    custom_scheme = CustomAuthScheme.model_validate(mock_scheme_data)
+    assert custom_scheme.model_extra == {"some_extra_field": "extra_value"}
+
+    rehydrated = _rehydrate_custom_scheme(
+        scheme=custom_scheme, supported_schemes=[DummyAuthSchemeWithExtra]
+    )
+
+    assert isinstance(rehydrated, DummyAuthSchemeWithExtra)
+    assert rehydrated.type_ == "dummy_with_extra"
+    assert rehydrated.some_extra_field == "extra_value"
+
+  def test_rehydrate_custom_scheme_failure(self):
+    mock_scheme_data = {"type": "unknown_scheme"}
+    custom_scheme = CustomAuthScheme.model_validate(mock_scheme_data)
+
+    with pytest.raises(
+        ValueError,
+        match=(
+            "Cannot rehydrate: no registered scheme matches type"
+            " 'unknown_scheme'"
+        ),
+    ):
+      _rehydrate_custom_scheme(
+          scheme=custom_scheme, supported_schemes=[DummyAuthScheme]
+      )
+
+  @pytest.mark.asyncio
+  async def test_get_auth_credential_raises_error_when_no_provider_registered(
+      self, mocker
+  ):
+    """Test that a ValueError is raised when no provider is registered for a CustomAuthScheme."""
+
+    class DummyCustomScheme(CustomAuthScheme):
+      type_: str = "dummy_custom_auth_scheme"
+
+    auth_config = mocker.Mock(spec=AuthConfig, instance=True)
+    auth_config.auth_scheme = DummyCustomScheme()
+
+    manager = CredentialManager(auth_config)
+
+    with pytest.raises(
+        ValueError,
+        match=(
+            r"No auth provider registered for custom auth scheme "
+            r"'dummy_custom_auth_scheme'\. "
+            r"Register it using `CredentialManager\.register_auth_provider\("
+        ),
+    ):
+      await manager.get_auth_credential(
+          mocker.Mock(spec=CallbackContext, instance=True)
+      )

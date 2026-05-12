@@ -73,6 +73,15 @@ class OpenApiSpecParser:
   3. A callable Python object (a function) that can execute the operation.
   """
 
+  def __init__(self, *, preserve_property_names: bool = False):
+    """Initializes the OpenApiSpecParser.
+
+    Args:
+        preserve_property_names: If True, preserve the original property names
+          from the OpenAPI spec instead of converting them to snake_case.
+    """
+    self._preserve_property_names = preserve_property_names
+
   def parse(self, openapi_spec_dict: Dict[str, Any]) -> List[ParsedOperation]:
     """Extracts an OpenAPI spec dict into a list of ParsedOperation objects.
 
@@ -212,7 +221,10 @@ class OpenApiSpecParser:
 
         url = OperationEndpoint(base_url=base_url, path=path, method=method)
         operation = Operation.model_validate(operation_dict)
-        operation_parser = OperationParser(operation)
+        operation_parser = OperationParser(
+            operation,
+            preserve_property_names=self._preserve_property_names,
+        )
 
         # Check for operation-specific auth scheme
         auth_scheme_name = operation_parser.get_auth_scheme_name()

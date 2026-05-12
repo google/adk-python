@@ -27,7 +27,16 @@ from .state import State
 
 
 class GetSessionConfig(BaseModel):
-  """The configuration of getting a session."""
+  """The configuration of getting a session.
+
+  Attributes:
+    num_recent_events: The limit of recent events to get for the session.
+      Optional: if None, the filter is not applied; if greater than 0, returns
+        at most given number of recent events; if 0, no events are returned.
+    after_timestamp: The earliest timestamp of events to get for the session.
+      Optional: if None, the filter is not applied; otherwise, returns events
+        with timestamp >= the given time.
+  """
 
   num_recent_events: Optional[int] = None
   after_timestamp: Optional[float] = None
@@ -106,13 +115,42 @@ class BaseSessionService(abc.ABC):
     """Appends an event to a session object."""
     if event.partial:
       return event
+    # Apply temp-scoped state to the in-memory session BEFORE trimming the
+    # event delta, so that subsequent agents within the same invocation can
+    # read temp values (e.g. output_key='temp:my_key' in SequentialAgent).
+    self._apply_temp_state(session, event)
     event = self._trim_temp_delta_state(event)
     self._update_session_state(session, event)
     session.events.append(event)
     return event
 
+  async def flush(self):
+    """Flushes any buffered events.
+
+    For non-buffering implementations, this can be a no-op.
+    """
+    pass
+
+  def _apply_temp_state(self, session: Session, event: Event) -> None:
+    """Applies temp-scoped state delta to the in-memory session state.
+
+    Temp state is ephemeral: it lives in the session's in-memory state for
+    the duration of the current invocation but is NOT persisted to storage
+    (the event delta is trimmed separately by _trim_temp_delta_state).
+    """
+    if not event.actions or not event.actions.state_delta:
+      return
+    for key, value in event.actions.state_delta.items():
+      if key.startswith(State.TEMP_PREFIX):
+        session.state[key] = value
+
   def _trim_temp_delta_state(self, event: Event) -> Event:
-    """Removes temporary state delta keys from the event."""
+    """Removes temporary state delta keys from the event.
+
+    This prevents temp-scoped state from being persisted, while the
+    in-memory session state (updated by _apply_temp_state) retains the
+    values for the duration of the current invocation.
+    """
     if not event.actions or not event.actions.state_delta:
       return event
 
@@ -128,6 +166,4 @@ class BaseSessionService(abc.ABC):
     if not event.actions or not event.actions.state_delta:
       return
     for key, value in event.actions.state_delta.items():
-      if key.startswith(State.TEMP_PREFIX):
-        continue
       session.state.update({key: value})
