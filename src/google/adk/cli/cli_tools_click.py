@@ -993,8 +993,6 @@ def cli_eval(
   eval_run_summary = {}
 
   for eval_result in eval_results:
-    eval_result: EvalCaseResult
-
     if eval_result.eval_set_id not in eval_run_summary:
       eval_run_summary[eval_result.eval_set_id] = [0, 0]
 
@@ -1011,7 +1009,6 @@ def cli_eval(
 
   if print_detailed_results:
     for eval_result in eval_results:
-      eval_result: EvalCaseResult
       click.echo(
           "********************************************************************"
       )
