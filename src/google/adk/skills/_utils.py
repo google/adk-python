@@ -17,6 +17,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import pathlib
 from typing import Union
 
@@ -401,7 +402,7 @@ def _load_skill_from_gcs_dir(
         f" name '{skill_name_expected}'."
     )
 
-  def _load_files_in_dir(subdir: str) -> Dict[str, Union[str, bytes]]:
+  def _load_files_in_dir(subdir: str) -> dict[str, str | bytes]:
     prefix = f"{skill_dir_prefix}{subdir}/"
     blobs = bucket.list_blobs(prefix=prefix)
     result = {}
@@ -411,10 +412,26 @@ def _load_skill_from_gcs_dir(
       if not relative_path:
         continue
 
+      # Use PurePosixPath for platform-independent GCS path validation
+      p = pathlib.PurePosixPath(relative_path)
+
+      # Reject absolute paths and traversal sequences
+      if p.is_absolute() or ".." in p.parts:
+        raise ValueError(f"Unsafe path in skill resource: {relative_path!r}")
+
+      normalized = p.as_posix()
+
+      # Prevent silent file overwrites via path aliasing
+      if normalized in result:
+        raise ValueError(f"Duplicate normalized path detected: {normalized!r}")
+
+      # NOTE: Final path safety enforced during materialization
+      # via realpath + commonpath checks in skill_toolset.py
       try:
-        result[relative_path] = blob.download_as_text()
+        result[normalized] = blob.download_as_text()
       except UnicodeDecodeError:
-        result[relative_path] = blob.download_as_bytes()
+        result[normalized] = blob.download_as_bytes()
+
     return result
 
   references = _load_files_in_dir("references")

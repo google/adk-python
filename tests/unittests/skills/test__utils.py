@@ -340,3 +340,148 @@ def test_list_skills_in_dir_missing_base_path(tmp_path):
 
   skills = list_skills_in_dir(tmp_path / "nonexistent")
   assert skills == {}
+
+
+# ── Security: path traversal prevention (VRP #499557362) ──
+
+
+@mock.patch("google.cloud.storage.Client")
+def test__load_skill_from_gcs_dir_rejects_dotdot_traversal(mock_client_class):
+  """Ingestion layer must reject blob names containing .. sequences."""
+  mock_client = mock.MagicMock()
+  mock_client_class.return_value = mock_client
+  mock_bucket = mock.MagicMock()
+  mock_client.bucket.return_value = mock_bucket
+
+  def mock_blob_side_effect(path):
+    m = mock.MagicMock()
+    if path.endswith("SKILL.md"):
+      m.exists.return_value = True
+      m.download_as_text.return_value = (
+          "---\nname: my-skill\ndescription: Test\n---\nBody"
+      )
+    else:
+      m.exists.return_value = False
+    return m
+
+  mock_bucket.blob.side_effect = mock_blob_side_effect
+
+  def list_blobs_side_effect(prefix=None):
+    m = mock.MagicMock()
+    m.name = prefix + "../../../../tmp/malicious.py"
+    m.download_as_text.return_value = "malicious content"
+    return [m]
+
+  mock_bucket.list_blobs.side_effect = list_blobs_side_effect
+
+  with pytest.raises(ValueError, match="Unsafe path"):
+    _load_skill_from_gcs_dir("my-bucket", "my-skill")
+
+
+@mock.patch("google.cloud.storage.Client")
+def test__load_skill_from_gcs_dir_rejects_absolute_path(mock_client_class):
+  """Ingestion layer must reject blob names that resolve to absolute paths."""
+  mock_client = mock.MagicMock()
+  mock_client_class.return_value = mock_client
+  mock_bucket = mock.MagicMock()
+  mock_client.bucket.return_value = mock_bucket
+
+  def mock_blob_side_effect(path):
+    m = mock.MagicMock()
+    if path.endswith("SKILL.md"):
+      m.exists.return_value = True
+      m.download_as_text.return_value = (
+          "---\nname: my-skill\ndescription: Test\n---\nBody"
+      )
+    else:
+      m.exists.return_value = False
+    return m
+
+  mock_bucket.blob.side_effect = mock_blob_side_effect
+
+  def list_blobs_side_effect(prefix=None):
+    m = mock.MagicMock()
+    m.name = prefix + "/etc/passwd"
+    m.download_as_text.return_value = "root:x:0:0"
+    return [m]
+
+  mock_bucket.list_blobs.side_effect = list_blobs_side_effect
+
+  with pytest.raises(ValueError, match="Unsafe path"):
+    _load_skill_from_gcs_dir("my-bucket", "my-skill")
+
+
+@mock.patch("google.cloud.storage.Client")
+def test__load_skill_from_gcs_dir_rejects_duplicate_normalized_path(
+    mock_client_class,
+):
+  """Ingestion layer must reject two blobs that normalize to the same path."""
+  mock_client = mock.MagicMock()
+  mock_client_class.return_value = mock_client
+  mock_bucket = mock.MagicMock()
+  mock_client.bucket.return_value = mock_bucket
+
+  def mock_blob_side_effect(path):
+    m = mock.MagicMock()
+    if path.endswith("SKILL.md"):
+      m.exists.return_value = True
+      m.download_as_text.return_value = (
+          "---\nname: my-skill\ndescription: Test\n---\nBody"
+      )
+    else:
+      m.exists.return_value = False
+    return m
+
+  mock_bucket.blob.side_effect = mock_blob_side_effect
+
+  def list_blobs_side_effect(prefix=None):
+    if "references" in prefix:
+      blob1 = mock.MagicMock()
+      blob1.name = prefix + "doc.md"
+      blob1.download_as_text.return_value = "first"
+      blob2 = mock.MagicMock()
+      blob2.name = prefix + "doc.md"
+      blob2.download_as_text.return_value = "second"
+      return [blob1, blob2]
+    return []
+
+  mock_bucket.list_blobs.side_effect = list_blobs_side_effect
+
+  with pytest.raises(ValueError, match="Duplicate normalized path"):
+    _load_skill_from_gcs_dir("my-bucket", "my-skill")
+
+
+@mock.patch("google.cloud.storage.Client")
+def test__load_skill_from_gcs_dir_safe_path_succeeds(mock_client_class):
+  """Clean blob names must pass ingestion and load correctly (happy path)."""
+  mock_client = mock.MagicMock()
+  mock_client_class.return_value = mock_client
+  mock_bucket = mock.MagicMock()
+  mock_client.bucket.return_value = mock_bucket
+
+  def mock_blob_side_effect(path):
+    m = mock.MagicMock()
+    if path.endswith("SKILL.md"):
+      m.exists.return_value = True
+      m.download_as_text.return_value = (
+          "---\nname: my-skill\ndescription: Test\n---\nBody"
+      )
+    else:
+      m.exists.return_value = False
+    return m
+
+  mock_bucket.blob.side_effect = mock_blob_side_effect
+
+  def list_blobs_side_effect(prefix=None):
+    if "references" in prefix:
+      m = mock.MagicMock()
+      m.name = prefix + "safe_doc.md"
+      m.download_as_text.return_value = "safe content"
+      return [m]
+    return []
+
+  mock_bucket.list_blobs.side_effect = list_blobs_side_effect
+
+  skill = _load_skill_from_gcs_dir("my-bucket", "my-skill")
+  assert skill.name == "my-skill"
+  assert skill.resources.get_reference("safe_doc.md") == "safe content"

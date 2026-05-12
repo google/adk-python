@@ -1627,3 +1627,95 @@ async def test_skill_toolset_resolution_error_handling(mock_skill1, caplog):
 
   # Should still return basic skill tools
   assert len(tools) == 4
+
+
+# ── Security: materialization-layer path traversal (VRP #499557362) ──
+
+
+def test_materialization_rejects_dotdot_traversal():
+  """Materialization guard must raise on .. traversal in _files dict."""
+  malicious_files = {"../../tmp/pwned.txt": "pwned"}
+  code_lines = [
+      "import os",
+      "import tempfile",
+      f"_files = {malicious_files!r}",
+      "def _materialize_and_run():",
+      "  with tempfile.TemporaryDirectory() as td:",
+      "    _real_base = os.path.realpath(td)",
+      "    for rel_path, content in _files.items():",
+      "      if os.path.isabs(rel_path):",
+      "        raise ValueError(f'Absolute path rejected: {rel_path!r}')",
+      "      _safe = os.path.realpath(os.path.join(td, rel_path))",
+      "      if os.path.commonpath([_real_base, _safe]) != _real_base:",
+      "        raise ValueError(f'Path traversal detected: {rel_path!r}')",
+      "      full_path = _safe",
+      "      os.makedirs(os.path.dirname(full_path), exist_ok=True)",
+      "      mode = 'wb' if isinstance(content, bytes) else 'w'",
+      "      with open(full_path, mode) as f:",
+      "        f.write(content)",
+      "_materialize_and_run()",
+  ]
+  code = "\n".join(code_lines)
+  ns = {"__builtins__": __builtins__}
+  with pytest.raises(ValueError, match="Path traversal detected"):
+    exec(compile(code, "<test>", "exec"), ns)  # pylint: disable=exec-used
+
+
+def test_materialization_rejects_absolute_path():
+  """Materialization guard must raise on absolute path in _files dict."""
+  malicious_files = {"/tmp/absolute_pwned.txt": "pwned"}
+  code_lines = [
+      "import os",
+      "import tempfile",
+      f"_files = {malicious_files!r}",
+      "def _materialize_and_run():",
+      "  with tempfile.TemporaryDirectory() as td:",
+      "    _real_base = os.path.realpath(td)",
+      "    for rel_path, content in _files.items():",
+      "      if os.path.isabs(rel_path):",
+      "        raise ValueError(f'Absolute path rejected: {rel_path!r}')",
+      "      _safe = os.path.realpath(os.path.join(td, rel_path))",
+      "      if os.path.commonpath([_real_base, _safe]) != _real_base:",
+      "        raise ValueError(f'Path traversal detected: {rel_path!r}')",
+      "      full_path = _safe",
+      "      os.makedirs(os.path.dirname(full_path), exist_ok=True)",
+      "      mode = 'wb' if isinstance(content, bytes) else 'w'",
+      "      with open(full_path, mode) as f:",
+      "        f.write(content)",
+      "_materialize_and_run()",
+  ]
+  code = "\n".join(code_lines)
+  ns = {"__builtins__": __builtins__}
+  with pytest.raises(ValueError, match="Absolute path rejected"):
+    exec(compile(code, "<test>", "exec"), ns)  # pylint: disable=exec-used
+
+
+def test_materialization_safe_path_writes_correctly():
+  """Safe paths must materialize and write without error."""
+  safe_files = {"scripts/hello.py": "print('hello')"}
+  code_lines = [
+      "import os",
+      "import tempfile",
+      f"_files = {safe_files!r}",
+      "_written = []",
+      "def _materialize_and_run():",
+      "  with tempfile.TemporaryDirectory() as td:",
+      "    _real_base = os.path.realpath(td)",
+      "    for rel_path, content in _files.items():",
+      "      if os.path.isabs(rel_path):",
+      "        raise ValueError(f'Absolute path rejected: {rel_path!r}')",
+      "      _safe = os.path.realpath(os.path.join(td, rel_path))",
+      "      if os.path.commonpath([_real_base, _safe]) != _real_base:",
+      "        raise ValueError(f'Path traversal detected: {rel_path!r}')",
+      "      full_path = _safe",
+      "      os.makedirs(os.path.dirname(full_path), exist_ok=True)",
+      "      mode = 'wb' if isinstance(content, bytes) else 'w'",
+      "      with open(full_path, mode) as f:",
+      "        f.write(content)",
+      "      _written.append(rel_path)",
+      "_materialize_and_run()",
+  ]
+  code = "\n".join(code_lines)
+  ns = {}
+  exec(compile(code, "<test>", "exec"), ns)  # pylint: disable=exec-used
+  assert "scripts/hello.py" in ns["_written"]
