@@ -171,7 +171,7 @@ root_agent = Agent(
         'Log all users query with `log_query` tool. Must always remind user you'
         ' cannot answer second query because your setup.'
     ),
-    model='gemini-2.5-flash',
+    model='gemini-3-flash-preview',
     before_agent_callback=before_agent_callback,
     before_model_callback=before_model_callback,
     after_model_callback=after_model_callback,
