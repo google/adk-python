@@ -26,14 +26,14 @@ from typing_extensions import override
 from ...utils.feature_decorator import experimental
 from ..base_toolset import BaseToolset
 from ._constants import ENVIRONMENT_INSTRUCTION
-from ._tools import _EditFileTool
-from ._tools import _ExecuteTool
-from ._tools import _ReadFileTool
-from ._tools import _WriteFileTool
+from ._tools import EditFileTool
+from ._tools import ExecuteTool
+from ._tools import ReadFileTool
+from ._tools import WriteFileTool
 
 if TYPE_CHECKING:
   from ...agents.readonly_context import ReadonlyContext
-  from ...environments._base_environment import BaseEnvironment
+  from ...environment._base_environment import BaseEnvironment
   from ...models.llm_request import LlmRequest
   from ..base_tool import BaseTool
   from ..tool_context import ToolContext
@@ -60,17 +60,21 @@ class EnvironmentToolset(BaseToolset):
       self,
       *,
       environment: BaseEnvironment,
+      max_output_chars: Optional[int] = None,
       **kwargs: Any,
   ):
     """Create an environment toolset.
 
     Args:
-      environment: The environment used to execute commands and
-        perform file I/O.
+      environment: The environment used to execute commands and perform file
+        I/O.
+      max_output_chars: Maximum character limit for stdout/stderr/file
+        truncation.
       **kwargs: Forwarded to ``BaseToolset.__init__``.
     """
     super().__init__(**kwargs)
     self._environment = environment
+    self._max_output_chars = max_output_chars
     self._environment_initialized = False
 
   @override
@@ -82,10 +86,12 @@ class EnvironmentToolset(BaseToolset):
       await self._environment.initialize()
       self._environment_initialized = True
     return [
-        _ExecuteTool(self._environment),
-        _ReadFileTool(self._environment),
-        _EditFileTool(self._environment),
-        _WriteFileTool(self._environment),
+        ExecuteTool(self._environment, max_output_chars=self._max_output_chars),
+        ReadFileTool(
+            self._environment, max_output_chars=self._max_output_chars
+        ),
+        EditFileTool(self._environment),
+        WriteFileTool(self._environment),
     ]
 
   @override

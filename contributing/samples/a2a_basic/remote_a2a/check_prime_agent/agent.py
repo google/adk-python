@@ -48,7 +48,7 @@ async def check_prime(nums: list[int]) -> str:
 
 
 root_agent = Agent(
-    model='gemini-2.0-flash',
+    model='gemini-2.5-flash',
     name='check_prime_agent',
     description='check prime agent that can check whether numbers are prime.',
     instruction="""

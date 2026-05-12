@@ -297,6 +297,23 @@ class TestConvertGenaiPartToA2aPart:
     assert result.root.metadata is not None
     assert result.root.metadata[_get_adk_metadata_key("thought")]
 
+  def test_convert_empty_text_part(self):
+    """Test that Part(text='') is preserved, not dropped.
+
+    Regression test for #5341: empty-string text parts are valid and
+    must not fall through to the unsupported-part warning.
+    """
+    # Arrange
+    genai_part = genai_types.Part(text="")
+
+    # Act
+    result = convert_genai_part_to_a2a_part(genai_part)
+
+    # Assert — should produce a valid TextPart, not None
+    assert result is not None
+    assert isinstance(result.root, a2a_types.TextPart)
+    assert result.root.text == ""
+
   def test_convert_file_data_part(self):
     """Test conversion of GenAI file_data Part to A2A Part."""
     # Arrange

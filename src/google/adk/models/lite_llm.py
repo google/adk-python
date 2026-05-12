@@ -100,10 +100,11 @@ _LITELLM_STRUCTURED_TYPES = {"json_object", "json_schema"}
 _JSON_DECODER = json.JSONDecoder()
 
 # Mapping of major MIME type prefixes to LiteLLM content types for URL blocks.
+# Audio is handled separately as `input_audio` content blocks because LiteLLM
+# (and OpenAI) do not accept an `audio_url` content type.
 _MEDIA_URL_CONTENT_TYPE_BY_MAJOR_MIME_TYPE = {
     "image": "image_url",
     "video": "video_url",
-    "audio": "audio_url",
 }
 
 # Mapping of LiteLLM finish_reason strings to FinishReason enum values
@@ -346,6 +347,18 @@ def _media_url_content_type(mime_type: str) -> str | None:
   return _MEDIA_URL_CONTENT_TYPE_BY_MAJOR_MIME_TYPE.get(major_mime_type)
 
 
+def _audio_format_from_mime_type(mime_type: str) -> str:
+  """Maps an audio MIME type to the format string for `input_audio` blocks."""
+  subtype = _normalize_mime_type(mime_type).split("/", 1)[1]
+  if subtype.startswith("x-"):
+    subtype = subtype[2:]
+  if subtype == "mpeg":
+    return "mp3"
+  if subtype in ("wave", "vnd.wave"):
+    return "wav"
+  return subtype
+
+
 def _iter_reasoning_texts(reasoning_value: Any) -> Iterable[str]:
   """Yields textual fragments from provider specific reasoning payloads."""
   if reasoning_value is None:
@@ -543,7 +556,7 @@ def _safe_json_serialize(obj) -> str:
   try:
     # Try direct JSON serialization first
     return json.dumps(obj, ensure_ascii=False)
-  except (TypeError, OverflowError):
+  except (TypeError, ValueError, OverflowError):
     return str(obj)
 
 
@@ -1038,6 +1051,15 @@ async def _get_content(
         })
         continue
       base64_string = base64.b64encode(part.inline_data.data).decode("utf-8")
+      if mime_type.startswith("audio/"):
+        content_objects.append({
+            "type": "input_audio",
+            "input_audio": {
+                "data": base64_string,
+                "format": _audio_format_from_mime_type(mime_type),
+            },
+        })
+        continue
       data_uri = f"data:{mime_type};base64,{base64_string}"
       # LiteLLM providers extract the MIME type from the data URI; avoid
       # passing a separate `format` field that some backends reject.

@@ -233,7 +233,7 @@ class RemoteA2aAgent(BaseAgent):
           httpx_client=self._httpx_client,
           streaming=False,
           polling=False,
-          supported_transports=[A2ATransport.jsonrpc],
+          supported_transports=[A2ATransport.jsonrpc, A2ATransport.http_json],
       )
       self._a2a_client_factory = A2AClientFactory(config=client_config)
     return self._httpx_client
@@ -421,6 +421,11 @@ class RemoteA2aAgent(BaseAgent):
         converted_parts = self._genai_part_converter(part)
         if not isinstance(converted_parts, list):
           converted_parts = [converted_parts] if converted_parts else []
+
+        if event.author == "user":
+          for part in converted_parts:
+            part.root.metadata = part.root.metadata or {}
+            part.root.metadata["is_user_input"] = True
 
         if converted_parts:
           message_parts.extend(converted_parts)

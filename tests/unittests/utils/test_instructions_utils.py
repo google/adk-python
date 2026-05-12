@@ -41,7 +41,7 @@ async def _create_test_readonly_context(
     session_id: str = "test_session_id",
 ) -> ReadonlyContext:
   agent = Agent(
-      model="gemini-2.0-flash",
+      model="gemini-2.5-flash",
       name="agent",
       instruction="test",
   )

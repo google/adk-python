@@ -39,7 +39,7 @@ ask_vertex_retrieval = VertexAiRagRetrieval(
 )
 
 root_agent = Agent(
-    model="gemini-2.0-flash-001",
+    model="gemini-2.5-flash",
     name="root_agent",
     instruction=(
         "You are an AI assistant with access to specialized corpus of"

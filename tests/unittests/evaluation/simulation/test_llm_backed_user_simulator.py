@@ -129,7 +129,8 @@ async def to_async_iter(items):
 def mock_llm_agent(mocker):
   """Provides a mock LLM agent."""
   mock_llm_registry_cls = mocker.patch(
-      "google.adk.evaluation.simulation.llm_backed_user_simulator.LLMRegistry"
+      "google.adk.evaluation.simulation.llm_backed_user_simulator.LLMRegistry",
+      autospec=True,
   )
   mock_llm_registry = mocker.MagicMock()
   mock_llm_registry_cls.return_value = mock_llm_registry
@@ -207,18 +208,25 @@ class TestLlmBackedUserSimulator:
       self, simulator, mock_llm_agent, mocker
   ):
     """Tests that _get_llm_response returns the full response correctly."""
-    mock_llm_response = mocker.MagicMock()
+    mock_llm_response = mocker.create_autospec(
+        types.GenerateContentResponse, instance=True
+    )
+    mock_llm_response.error_code = None
     mock_llm_response.content = types.Content(
         parts=[
             types.Part(text="some thought", thought=True),
             types.Part(text="Hello world!"),
         ]
     )
+    mock_llm_response.parts = mock_llm_response.content.parts
     mock_llm_agent.generate_content_async.return_value = to_async_iter(
         [mock_llm_response]
     )
-    response = await simulator._get_llm_response(rewritten_dialogue="")
+    response, error_reason = await simulator._get_llm_response(
+        rewritten_dialogue=""
+    )
     assert response == "Hello world!"
+    assert error_reason is None
 
   @pytest.mark.asyncio
   async def test_get_next_user_message_first_invocation(
@@ -257,10 +265,14 @@ class TestLlmBackedUserSimulator:
   @pytest.mark.asyncio
   async def test_stop_signal_detected(self, simulator, mock_llm_agent, mocker):
     """Tests get_next_user_message when the stop signal is detected."""
-    mock_llm_response = mocker.MagicMock()
+    mock_llm_response = mocker.create_autospec(
+        types.GenerateContentResponse, instance=True
+    )
+    mock_llm_response.error_code = None
     mock_llm_response.content = types.Content(
         parts=[types.Part(text="Thanks! Bye!</finished>")]
     )
+    mock_llm_response.parts = mock_llm_response.content.parts
     mock_llm_agent.generate_content_async.return_value = to_async_iter(
         [mock_llm_response]
     )
@@ -273,11 +285,69 @@ class TestLlmBackedUserSimulator:
     assert next_user_message.user_message is None
 
   @pytest.mark.asyncio
-  async def test_no_message_generated(self, simulator, mock_llm_agent):
-    """Tests get_next_user_message when no message is generated."""
+  async def test_no_message_generated_empty_response(
+      self, simulator, mock_llm_agent
+  ):
+    """Tests get_next_user_message when no message is generated (empty stream)."""
     mock_llm_agent.generate_content_async.return_value = to_async_iter([])
 
-    with pytest.raises(RuntimeError, match="Failed to generate a user message"):
+    with pytest.raises(
+        RuntimeError,
+        match="Failed to generate a user message: LLM returned empty response",
+    ):
+      await simulator.get_next_user_message(events=_INPUT_EVENTS)
+
+  @pytest.mark.asyncio
+  async def test_get_next_user_message_safety_blocked(
+      self, simulator, mock_llm_agent, mocker
+  ):
+    """Tests get_next_user_message when response is safety blocked."""
+    mock_llm_response = mocker.create_autospec(
+        types.GenerateContentResponse, instance=True
+    )
+    mock_llm_response.content = None
+    mock_llm_response.error_code = "SAFETY"
+    mock_llm_response.error_message = "Blocked by safety"
+    mock_llm_response.parts = []
+    mock_llm_agent.generate_content_async.return_value = to_async_iter(
+        [mock_llm_response]
+    )
+
+    with pytest.raises(
+        RuntimeError,
+        match=(
+            "Failed to generate a user message: safety filters or other error"
+            " \\(code=SAFETY\\)"
+        ),
+    ):
+      await simulator.get_next_user_message(events=_INPUT_EVENTS)
+
+  @pytest.mark.asyncio
+  async def test_get_next_user_message_thinking_only(
+      self, simulator, mock_llm_agent, mocker
+  ):
+    """Tests get_next_user_message when response contains only thinking tokens."""
+    mock_llm_response = mocker.create_autospec(
+        types.GenerateContentResponse, instance=True
+    )
+    mock_llm_response.content = types.Content(
+        parts=[
+            types.Part(text="thinking...", thought=True),
+        ]
+    )
+    mock_llm_response.error_code = None
+    mock_llm_response.parts = mock_llm_response.content.parts
+    mock_llm_agent.generate_content_async.return_value = to_async_iter(
+        [mock_llm_response]
+    )
+
+    with pytest.raises(
+        RuntimeError,
+        match=(
+            "Failed to generate a user message: LLM returned only thinking"
+            " tokens"
+        ),
+    ):
       await simulator.get_next_user_message(events=_INPUT_EVENTS)
 
   @pytest.mark.asyncio
@@ -285,10 +355,14 @@ class TestLlmBackedUserSimulator:
       self, simulator, mock_llm_agent, mocker
   ):
     """Tests get_next_user_message when the user message is generated successfully."""
-    mock_llm_response = mocker.MagicMock()
+    mock_llm_response = mocker.create_autospec(
+        types.GenerateContentResponse, instance=True
+    )
+    mock_llm_response.error_code = None
     mock_llm_response.content = types.Content(
         parts=[types.Part(text="I need to book a flight.")]
     )
+    mock_llm_response.parts = mock_llm_response.content.parts
     mock_llm_agent.generate_content_async.return_value = to_async_iter(
         [mock_llm_response]
     )
@@ -309,10 +383,14 @@ class TestLlmBackedUserSimulator:
       self, simulator_with_persona, mock_llm_agent, mocker
   ):
     """Tests get_next_user_message when the user message is generated successfully."""
-    mock_llm_response = mocker.MagicMock()
+    mock_llm_response = mocker.create_autospec(
+        types.GenerateContentResponse, instance=True
+    )
+    mock_llm_response.error_code = None
     mock_llm_response.content = types.Content(
         parts=[types.Part(text="I need to book a flight.")]
     )
+    mock_llm_response.parts = mock_llm_response.content.parts
     mock_llm_agent.generate_content_async.return_value = to_async_iter(
         [mock_llm_response]
     )

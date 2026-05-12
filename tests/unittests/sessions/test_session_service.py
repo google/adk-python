@@ -23,6 +23,8 @@ from unittest import mock
 from google.adk.errors.already_exists_error import AlreadyExistsError
 from google.adk.events.event import Event
 from google.adk.events.event_actions import EventActions
+from google.adk.features import FeatureName
+from google.adk.features import override_feature_enabled
 from google.adk.sessions import database_session_service
 from google.adk.sessions.base_session_service import GetSessionConfig
 from google.adk.sessions.database_session_service import DatabaseSessionService
@@ -35,6 +37,7 @@ from sqlalchemy import delete
 
 class SessionServiceType(enum.Enum):
   IN_MEMORY = 'IN_MEMORY'
+  IN_MEMORY_WITH_LIGHT_COPY_ENABLED = 'IN_MEMORY_WITH_LIGHT_COPY_ENABLED'
   DATABASE = 'DATABASE'
   SQLITE = 'SQLITE'
 
@@ -48,22 +51,33 @@ def get_session_service(
     return DatabaseSessionService('sqlite+aiosqlite:///:memory:')
   if service_type == SessionServiceType.SQLITE:
     return SqliteSessionService(str(tmp_path / 'sqlite.db'))
+  if service_type == SessionServiceType.IN_MEMORY_WITH_LIGHT_COPY_ENABLED:
+    return InMemorySessionService()
   return InMemorySessionService()
 
 
 @pytest.fixture(
     params=[
         SessionServiceType.IN_MEMORY,
+        SessionServiceType.IN_MEMORY_WITH_LIGHT_COPY_ENABLED,
         SessionServiceType.DATABASE,
         SessionServiceType.SQLITE,
     ]
 )
 async def session_service(request, tmp_path):
   """Provides a session service and closes database backends on teardown."""
+  if request.param == SessionServiceType.IN_MEMORY_WITH_LIGHT_COPY_ENABLED:
+    override_feature_enabled(
+        FeatureName.IN_MEMORY_SESSION_SERVICE_LIGHT_COPY, True
+    )
   service = get_session_service(request.param, tmp_path)
   yield service
   if isinstance(service, DatabaseSessionService):
     await service.close()
+  if request.param == SessionServiceType.IN_MEMORY_WITH_LIGHT_COPY_ENABLED:
+    override_feature_enabled(
+        FeatureName.IN_MEMORY_SESSION_SERVICE_LIGHT_COPY, False
+    )
 
 
 def test_database_session_service_enables_pool_pre_ping_by_default():
@@ -997,6 +1011,30 @@ async def test_append_event_allows_markerless_current_session():
     ]
   finally:
     await service.close()
+
+
+@pytest.mark.asyncio
+async def test_append_event_when_session_is_same_ref_as_storage_session():
+  """Tests that appending an event to a session only appends it once if the user-passed session and the underlying storage session are the same object."""
+  service = InMemorySessionService()
+  app_name = 'my_app'
+  user_id = 'test_user'
+
+  # Create a session
+  session = await service.create_session(app_name=app_name, user_id=user_id)
+
+  # Get the actual storage event object from the underlying storage
+  storage_session = service.sessions[app_name][user_id][session.id]
+
+  # Append the event to the storage session directly
+  event = Event(invocation_id='inv1', author='user')
+  await service.append_event(session=storage_session, event=event)
+
+  # Verify that the storage session has only one event
+  final_session = await service.get_session(
+      app_name=app_name, user_id=user_id, session_id=session.id
+  )
+  assert len(final_session.events) == 1
 
 
 @pytest.mark.asyncio
