@@ -584,6 +584,65 @@ def get_fast_api_app(
           headers={"Cache-Control": "no-store"},
       )
 
+  # SECURITY FIX (CVE: agent-selector-bypass): /run and /run_sse must use the
+  # resolved `app_name` (which respects agent_engine_id) for BOTH session
+  # lookup AND runner loading, not the raw user-supplied req.app_name.
+  # Using req.app_name for _get_runner_async() allowed an attacker to execute
+  # an arbitrary agent against any valid session.
+
+  @app.post("/run", response_model_exclude_none=True)
+  async def agent_run(req: AgentRunRequest) -> list[Event]:
+    # Connect to managed session if agent_engine_id is set.
+    app_name = agent_engine_id if agent_engine_id else req.app_name
+    session = await session_service.get_session(
+        app_name=app_name, user_id=req.user_id, session_id=req.session_id
+    )
+    if not session:
+      raise HTTPException(status_code=404, detail="Session not found")
+    # FIX: use resolved app_name, not raw req.app_name
+    runner = await _get_runner_async(app_name)
+    events = [
+        event
+        async for event in runner.run_async(
+            user_id=req.user_id,
+            session_id=req.session_id,
+            new_message=req.new_message,
+        )
+    ]
+    logger.info("Generated %s events in agent run: %s", len(events), events)
+    return events
+
+  @app.post("/run_sse")
+  async def agent_run_sse(req: AgentRunRequest) -> StreamingResponse:
+    # Connect to managed session if agent_engine_id is set.
+    app_name = agent_engine_id if agent_engine_id else req.app_name
+    # SSE endpoint
+    session = await session_service.get_session(
+        app_name=app_name, user_id=req.user_id, session_id=req.session_id
+    )
+    if not session:
+      raise HTTPException(status_code=404, detail="Session not found")
+
+    # Convert the events to properly formatted SSE
+    async def event_generator():
+      try:
+        stream_mode = StreamingMode.SSE if req.streaming else StreamingMode.NONE
+        # FIX: use resolved app_name, not raw req.app_name
+        runner = await _get_runner_async(app_name)
+        async for event in runner.run_async(
+            user_id=req.user_id,
+            session_id=req.session_id,
+            new_message=req.new_message,
+            run_config=RunConfig(streaming_mode=stream_mode),
+        ):
+          yield event
+
+      except Exception as exc:
+        logger.exception("Error in agent_run_sse event_generator: %s", exc)
+        raise
+
+    return StreamingResponse(event_generator(), media_type="text/event-stream")
+
   if a2a:
     from a2a.server.apps import A2AStarletteApplication
     from a2a.server.request_handlers import DefaultRequestHandler
