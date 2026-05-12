@@ -165,7 +165,7 @@ class LoadSkillTool(BaseTool):
     agent_name = tool_context.agent_name
     state_key = f"_adk_activated_skill_{agent_name}"
 
-    activated_skills = list(tool_context.state.get(state_key, []))
+    activated_skills = list(tool_context.state.get(state_key) or [])
     if skill_name not in activated_skills:
       activated_skills.append(skill_name)
       tool_context.state[state_key] = activated_skills
@@ -732,7 +732,6 @@ class RunSkillScriptTool(BaseTool):
           "error_code": "SKILL_NOT_FOUND",
       }
 
-    script = None
     if file_path.startswith("scripts/"):
       script = skill.resources.get_script(file_path[len("scripts/") :])
     else:
@@ -845,7 +844,7 @@ class SkillToolset(BaseToolset):
 
     agent_name = readonly_context.agent_name
     state_key = f"_adk_activated_skill_{agent_name}"
-    activated_skills = readonly_context.state.get(state_key, [])
+    activated_skills = readonly_context.state.get(state_key) or []
 
     if not activated_skills:
       return []
@@ -901,11 +900,15 @@ class SkillToolset(BaseToolset):
       self, *, tool_context: ToolContext, llm_request: LlmRequest
   ) -> None:
     """Processes the outgoing LLM request to include available skills."""
-    skills = self._list_skills()
-    skills_xml = prompt.format_skills_as_xml(skills)
-    instructions = []
-    instructions.append(_DEFAULT_SKILL_SYSTEM_INSTRUCTION)
-    instructions.append(skills_xml)
+    instructions = [_DEFAULT_SKILL_SYSTEM_INSTRUCTION]
+
+    has_list_skills = any(isinstance(t, ListSkillsTool) for t in self._tools)
+
+    if not has_list_skills:
+      skills = self._list_skills()
+      skills_xml = prompt.format_skills_as_xml(skills)
+      instructions.append(skills_xml)
+
     llm_request.append_instructions(instructions)
 
 

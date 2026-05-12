@@ -58,7 +58,7 @@ async def _create_readonly_context(
     ('default_model', 'expected_model_name', 'expected_model_type'),
     [
         (LlmAgent.DEFAULT_MODEL, LlmAgent.DEFAULT_MODEL, Gemini),
-        ('gemini-2.0-flash', 'gemini-2.0-flash', Gemini),
+        ('gemini-2.5-flash', 'gemini-2.5-flash', Gemini),
     ],
 )
 def test_canonical_model_default_fallback(
@@ -511,8 +511,8 @@ class TestCanonicalTools:
 @pytest.mark.parametrize(
     'model_name',
     [
-        'gemini-1.5-flash',
-        'gemini-2.0-flash-exp',
+        'gemini-2.5-flash',
+        'gemini-2.5-pro',
     ],
 )
 def test_agent_with_gemini_string_model(model_name):

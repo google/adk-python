@@ -126,10 +126,18 @@ class TestGcpUtils(unittest.TestCase):
     result = gcp_utils.sign_up_express()
     self.assertEqual(result["project_id"], "new-project")
     self.assertEqual(result["api_key"], "new-api-key")
-    args, _ = mock_session.post.call_args
+    args, kwargs = mock_session.post.call_args
     self.assertEqual(
         args[0],
         "https://us-central1-aiplatform.googleapis.com/v1beta1/vertexExpress:signUp",
+    )
+    self.assertEqual(
+        kwargs["json"],
+        {
+            "region": "us-central1",
+            "tos_accepted": True,
+            "get_default_api_key": True,
+        },
     )
 
   @mock.patch(

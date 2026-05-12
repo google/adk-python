@@ -123,23 +123,24 @@ class LocalEnvironment(BaseEnvironment):
     )
 
   @override
-  async def read_file(self, path: str) -> bytes:
+  async def read_file(self, path: str | Path) -> bytes:
     if self._working_dir is None:
       raise RuntimeError('`working_dir` is not set. Call initialize() first.')
 
-    path = self._resolve_path(path)
-    return await asyncio.to_thread(self._sync_read, path)
+    resolved = self._resolve_path(path)
+    return await asyncio.to_thread(self._sync_read, resolved)
 
   @override
-  async def write_file(self, path: str, content: str | bytes) -> None:
+  async def write_file(self, path: str | Path, content: str | bytes) -> None:
     if self._working_dir is None:
       raise RuntimeError('`working_dir` is not set. Call initialize() first.')
 
-    path = self._resolve_path(path)
-    return await asyncio.to_thread(self._sync_write, path, content)
+    resolved = self._resolve_path(path)
+    return await asyncio.to_thread(self._sync_write, resolved, content)
 
-  def _resolve_path(self, path: str) -> str:
+  def _resolve_path(self, path: str | Path) -> str:
     """Resolve a relative path against the working directory."""
+    path = str(path)
     if os.path.isabs(path):
       return path
     return os.path.join(self._working_dir, path)

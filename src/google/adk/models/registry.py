@@ -17,9 +17,11 @@
 from __future__ import annotations
 
 from functools import lru_cache
+import importlib
 import logging
 import re
 from typing import TYPE_CHECKING
+from typing import Union
 
 if TYPE_CHECKING:
   from .base_llm import BaseLlm
@@ -27,12 +29,8 @@ if TYPE_CHECKING:
 logger = logging.getLogger('google_adk.' + __name__)
 
 
-_llm_registry_dict: dict[str, type[BaseLlm]] = {}
-"""Registry for LLMs.
-
-Key is the regex that matches the model name.
-Value is the class that implements the model.
-"""
+_LazyEntry = tuple[str, str]
+_llm_registry_dict: dict[str, Union[type['BaseLlm'], _LazyEntry]] = {}
 
 
 class LLMRegistry:
@@ -82,6 +80,14 @@ class LLMRegistry:
       LLMRegistry._register(regex, llm_cls)
 
   @staticmethod
+  def _register_lazy(
+      model_name_regexes: list[str], module_path: str, class_name: str
+  ):
+    """Pre-registers a lazily-imported LLM class."""
+    for regex in model_name_regexes:
+      _llm_registry_dict[regex] = (module_path, class_name)
+
+  @staticmethod
   @lru_cache(maxsize=32)
   def resolve(model: str) -> type[BaseLlm]:
     """Resolves the model to a BaseLlm subclass.
@@ -95,9 +101,20 @@ class LLMRegistry:
         ValueError: If the model is not found.
     """
 
-    for regex, llm_class in _llm_registry_dict.items():
-      if re.compile(regex).fullmatch(model):
+    for regex, entry in list(_llm_registry_dict.items()):
+      if not re.compile(regex).fullmatch(model):
+        continue
+      if isinstance(entry, tuple):
+        module_path, class_name = entry
+        try:
+          module = importlib.import_module(module_path)
+        except ImportError:
+          _llm_registry_dict.pop(regex, None)
+          continue
+        llm_class = getattr(module, class_name)
+        _llm_registry_dict[regex] = llm_class
         return llm_class
+      return entry
 
     # Provide helpful error messages for known patterns
     error_msg = f'Model {model} not found.'

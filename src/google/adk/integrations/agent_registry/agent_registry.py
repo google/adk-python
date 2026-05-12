@@ -28,12 +28,7 @@ from typing import Mapping
 from typing import TypedDict
 from urllib.parse import urlparse
 
-from a2a.types import AgentCapabilities
-from a2a.types import AgentCard
-from a2a.types import AgentSkill
-from a2a.types import TransportProtocol as A2ATransport
 from google.adk.agents.readonly_context import ReadonlyContext
-from google.adk.agents.remote_a2a_agent import RemoteA2aAgent
 from google.adk.auth.auth_credential import AuthCredential
 from google.adk.auth.auth_schemes import AuthScheme
 from google.adk.integrations.agent_identity.gcp_auth_provider_scheme import GcpAuthProviderScheme
@@ -48,6 +43,20 @@ import google.auth.transport.requests
 import httpx
 from mcp import StdioServerParameters
 from typing_extensions import override
+
+# pylint: disable=g-import-not-at-top
+try:
+  from a2a.types import AgentCapabilities
+  from a2a.types import AgentCard
+  from a2a.types import AgentSkill
+  from a2a.types import TransportProtocol as A2ATransport
+  from google.adk.agents.remote_a2a_agent import RemoteA2aAgent
+except ImportError as e:
+  raise ImportError(
+      "AgentRegistry requires the 'a2a-sdk' package. "
+      "Please install it using 'pip install google-adk[a2a]'."
+  ) from e
+# pylint: enable=g-import-not-at-top
 
 logger = logging.getLogger("google_adk." + __name__)
 
@@ -329,7 +338,6 @@ class AgentRegistry:
           f"MCP Server endpoint URI not found for: {mcp_server_name}"
       )
 
-    headers = self._get_auth_headers() if _is_google_api(endpoint_uri) else None
     if mcp_server_id and not auth_scheme:
       try:
         bindings_data = self._make_request("bindings")
@@ -349,13 +357,25 @@ class AgentRegistry:
 
     connection_params = StreamableHTTPConnectionParams(
         url=endpoint_uri,
-        headers=headers,
     )
+
+    def combined_header_provider(context: ReadonlyContext) -> Dict[str, str]:
+      headers = {}
+      if (
+          not auth_scheme
+          and not auth_credential
+          and _is_google_api(endpoint_uri)
+      ):
+        headers.update(self._get_auth_headers())
+      if self._header_provider:
+        headers.update(self._header_provider(context))
+      return headers
+
     return AgentRegistrySingleMcpToolset(
         destination_resource_id=mcp_server_id,
         connection_params=connection_params,
         tool_name_prefix=name,
-        header_provider=self._header_provider,
+        header_provider=combined_header_provider,
         auth_scheme=auth_scheme,
         auth_credential=auth_credential,
     )

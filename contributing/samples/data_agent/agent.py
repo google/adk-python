@@ -74,7 +74,7 @@ da_toolset = DataAgentToolset(
 
 root_agent = Agent(
     name="data_agent",
-    model="gemini-2.0-flash",
+    model="gemini-2.5-flash",
     description="Agent to answer user questions using Data Agents.",
     instruction=(
         "## Persona\nYou are a helpful assistant that uses Data Agents"
