@@ -30,6 +30,9 @@ from ...models.llm_request import LlmRequest
 from ...tools.tool_confirmation import ToolConfirmation
 from ._base_llm_processor import BaseLlmRequestProcessor
 from .functions import REQUEST_CONFIRMATION_FUNCTION_CALL_NAME
+from .agent_transfer import _get_transfer_targets
+from ...tools.transfer_to_agent_tool import TransferToAgentTool
+
 
 if TYPE_CHECKING:
   from ...agents.llm_agent import LlmAgent
@@ -166,15 +169,26 @@ class _RequestConfirmationLlmRequestProcessor(BaseLlmRequestProcessor):
       return
 
     # Step 4: Re-execute the confirmed tools.
+
+    tools_dict = {
+        tool.name: tool
+        for tool in await agent.canonical_tools(
+            ReadonlyContext(invocation_context)
+        )
+    }
+
+    if hasattr(agent, 'disallow_transfer_to_parent'):
+      transfer_targets = _get_transfer_targets(agent)
+      if transfer_targets:
+        transfer_tool = TransferToAgentTool(
+            agent_names=[a.name for a in transfer_targets]
+        )
+        tools_dict[transfer_tool.name] = transfer_tool
+
     if function_response_event := await functions.handle_function_call_list_async(
         invocation_context,
         tools_to_resume_with_args.values(),
-        {
-            tool.name: tool
-            for tool in await agent.canonical_tools(
-                ReadonlyContext(invocation_context)
-            )
-        },
+        tools_dict,
         tools_to_resume_with_confirmation.keys(),
         tools_to_resume_with_confirmation,
     ):
