@@ -151,9 +151,13 @@ def _remove_title(schema: Dict):
 
 
 def _get_pydantic_schema(func: Callable) -> Dict:
+  from ..utils.context_utils import find_context_parameter
+
   fields_dict = _get_fields_dict(func)
-  if 'tool_context' in fields_dict.keys():
-    fields_dict.pop('tool_context')
+  # Remove context parameter (detected by type or fallback to 'tool_context' name)
+  context_param = find_context_parameter(func) or 'tool_context'
+  if context_param in fields_dict.keys():
+    fields_dict.pop(context_param)
   return pydantic.create_model(func.__name__, **fields_dict).model_json_schema()
 
 
@@ -364,6 +368,11 @@ def from_function_with_options(
           parameters_json_schema[name] = types.Schema.model_validate(
               json_schema_dict
           )
+          if param.default is not inspect.Parameter.empty:
+            if param.default is not None:
+              parameters_json_schema[name].default = param.default
+            else:
+              parameters_json_schema[name].nullable = True
         except Exception as e:
           _function_parameter_parse_util._raise_for_unsupported_param(
               param, func.__name__, e
@@ -387,6 +396,11 @@ def from_function_with_options(
     declaration.parameters = types.Schema(
         type='OBJECT',
         properties=parameters_json_schema,
+    )
+    declaration.parameters.required = (
+        _function_parameter_parse_util._get_required_fields(
+            declaration.parameters
+        )
     )
 
   if variant == GoogleLLMVariant.GEMINI_API:

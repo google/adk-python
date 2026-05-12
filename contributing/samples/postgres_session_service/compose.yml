@@ -1,0 +1,24 @@
+# Docker Compose configuration for the postgres_session_service sample.
+#
+# This file defines a PostgreSQL service used to demonstrate ADK's
+# DatabaseSessionService with a persistent backend. It sets up a
+# postgres:16-alpine container with:
+# - Default credentials (user: postgres, password: postgres)
+# - A pre-created database named 'adk_sessions'
+# - Port 5432 exposed for local access
+# - A named volume 'postgres_data' for data persistence
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: adk_sessions
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+volumes:
+  postgres_data:

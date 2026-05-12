@@ -13,6 +13,7 @@
 # limitations under the License.
 
 """Migration runner to upgrade schemas to the latest version."""
+
 from __future__ import annotations
 
 import logging

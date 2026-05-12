@@ -79,7 +79,9 @@ class TestAuthLlmRequestProcessor:
   @pytest.fixture
   def mock_auth_config(self):
     """Create a mock AuthConfig."""
-    return Mock(spec=AuthConfig)
+    config = Mock(spec=AuthConfig)
+    config.credential_key = None
+    return config
 
   @pytest.fixture
   def mock_function_response_with_auth(self, mock_auth_config):
@@ -347,10 +349,12 @@ class TestAuthLlmRequestProcessor:
         auth_response_1,
         auth_response_2,
     ]
+    user_event_with_multiple_responses.get_function_calls.return_value = []
 
     # Create system function call events
     system_function_call_1 = Mock()
     system_function_call_1.id = 'auth_id_1'
+    system_function_call_1.name = REQUEST_EUC_FUNCTION_CALL_NAME
     system_function_call_1.args = {
         'function_call_id': 'tool_id_1',
         'auth_config': mock_auth_config,
@@ -358,6 +362,7 @@ class TestAuthLlmRequestProcessor:
 
     system_function_call_2 = Mock()
     system_function_call_2.id = 'auth_id_2'
+    system_function_call_2.name = REQUEST_EUC_FUNCTION_CALL_NAME
     system_function_call_2.args = {
         'function_call_id': 'tool_id_2',
         'auth_config': mock_auth_config,

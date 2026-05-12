@@ -59,7 +59,12 @@ def _build_basic_request(
       llm_request.set_output_schema(agent.output_schema)
 
   llm_request.live_connect_config.response_modalities = (
-      invocation_context.run_config.response_modalities
+      [
+          types.Modality(m)
+          for m in invocation_context.run_config.response_modalities
+      ]
+      if invocation_context.run_config.response_modalities is not None
+      else None
   )
   llm_request.live_connect_config.speech_config = (
       invocation_context.run_config.speech_config
@@ -84,6 +89,9 @@ def _build_basic_request(
   )
   llm_request.live_connect_config.context_window_compression = (
       invocation_context.run_config.context_window_compression
+  )
+  llm_request.live_connect_config.avatar_config = (
+      invocation_context.run_config.avatar_config
   )
 
 

@@ -19,9 +19,9 @@ execution by extending existing `CodeExecutor` classes. By subclassing an
 executor (e.g., `VertexAiCodeExecutor`) and overriding its `execute_code`
 method, you can inject custom logic to:
 
--   Modify the code before it's executed.
--   Add files to the execution environment.
--   Process the results after execution.
+- Modify the code before it's executed.
+- Add files to the execution environment.
+- Process the results after execution.
 
 ## Example: Adding Japanese Font Support
 

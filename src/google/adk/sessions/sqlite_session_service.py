@@ -19,14 +19,14 @@ import json
 import logging
 import os
 import sqlite3
-import time
 from typing import Any
 from typing import Optional
 from urllib.parse import unquote
 from urllib.parse import urlparse
-import uuid
 
 import aiosqlite
+from google.adk.platform import time as platform_time
+from google.adk.platform import uuid as platform_uuid
 from typing_extensions import override
 
 from . import _session_util
@@ -165,8 +165,8 @@ class SqliteSessionService(BaseSessionService):
     if session_id:
       session_id = session_id.strip()
     if not session_id:
-      session_id = str(uuid.uuid4())
-    now = time.time()
+      session_id = platform_uuid.new_uuid()
+    now = platform_time.get_time()
 
     async with self._get_db_connection() as db:
       # Check if session_id already exists
@@ -261,11 +261,14 @@ class SqliteSessionService(BaseSessionService):
 
       query_parts.append("ORDER BY timestamp DESC")
 
-      if config and config.num_recent_events:
+      if config and config.num_recent_events is not None:
         query_parts.append("LIMIT ?")
         params.append(config.num_recent_events)
 
-      event_rows = await db.execute_fetchall(" ".join(query_parts), params)
+      if config and config.num_recent_events == 0:
+        event_rows = []
+      else:
+        event_rows = await db.execute_fetchall(" ".join(query_parts), params)
       storage_events_data = [row["event_data"] for row in event_rows]
 
       # Fetch states from storage
@@ -361,6 +364,9 @@ class SqliteSessionService(BaseSessionService):
     if event.partial:
       return event
 
+    # Apply temp state to in-memory session before trimming, so that
+    # subsequent agents within the same invocation can read temp values.
+    self._apply_temp_state(session, event)
     # Trim temp state before persisting
     event = self._trim_temp_delta_state(event)
     event_timestamp = event.timestamp

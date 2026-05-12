@@ -27,14 +27,6 @@ def reset_warned_features():
   _WARNED_FEATURES.clear()
 
 
-def test_bigquery_tool_config_experimental_warning():
-  """Test BigQueryToolConfig experimental warning."""
-  with warnings.catch_warnings(record=True) as w:
-    BigQueryToolConfig()
-    assert len(w) == 1
-    assert "BIG_QUERY_TOOL_CONFIG is enabled." in str(w[0].message)
-
-
 def test_bigquery_tool_config_invalid_property():
   """Test BigQueryToolConfig raises exception when setting invalid property."""
   with pytest.raises(
@@ -129,6 +121,16 @@ def test_bigquery_tool_config_valid_labels(labels):
             {"": "value"},
             "Label keys cannot be empty",
             id="empty-label-key",
+        ),
+        pytest.param(
+            {"adk-bigquery-test": "value"},
+            'Label key cannot start with "adk-bigquery-"',
+            id="internal-label-key",
+        ),
+        pytest.param(
+            {f"key_{i}": "value" for i in range(21)},
+            "Only up to 20 job labels can be provided",
+            id="too-many-labels",
         ),
     ],
 )

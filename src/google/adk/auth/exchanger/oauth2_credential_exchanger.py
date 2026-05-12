@@ -193,6 +193,14 @@ class OAuth2CredentialExchanger(BaseCredentialExchanger):
       return ExchangeResult(auth_credential, False)
 
     try:
+      kwargs = {}
+      # If a code_verifier is available (e.g. from PKCE), include it in the
+      # token exchange request.
+      if auth_credential.oauth2 and auth_credential.oauth2.code_verifier:
+        kwargs["code_verifier"] = auth_credential.oauth2.code_verifier
+
+      # Authlib already injects client_id for body-based client auth flows such
+      # as client_secret_post, so passing it here would duplicate the field.
       tokens = client.fetch_token(
           token_endpoint,
           authorization_response=self._normalize_auth_uri(
@@ -200,7 +208,7 @@ class OAuth2CredentialExchanger(BaseCredentialExchanger):
           ),
           code=auth_credential.oauth2.auth_code,
           grant_type=OAuthGrantType.AUTHORIZATION_CODE,
-          client_id=auth_credential.oauth2.client_id,
+          **kwargs,
       )
       update_credential_with_tokens(auth_credential, tokens)
       logger.debug("Successfully exchanged authorization code for access token")

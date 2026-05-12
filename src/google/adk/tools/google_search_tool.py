@@ -21,6 +21,7 @@ from typing_extensions import override
 
 from ..utils.model_name_utils import is_gemini_1_model
 from ..utils.model_name_utils import is_gemini_model
+from ..utils.model_name_utils import is_gemini_model_id_check_disabled
 from .base_tool import BaseTool
 from .tool_context import ToolContext
 
@@ -67,6 +68,7 @@ class GoogleSearchTool(BaseTool):
     if self.model is not None:
       llm_request.model = self.model
 
+    model_check_disabled = is_gemini_model_id_check_disabled()
     llm_request.config = llm_request.config or types.GenerateContentConfig()
     llm_request.config.tools = llm_request.config.tools or []
     if is_gemini_1_model(llm_request.model):
@@ -77,7 +79,7 @@ class GoogleSearchTool(BaseTool):
       llm_request.config.tools.append(
           types.Tool(google_search_retrieval=types.GoogleSearchRetrieval())
       )
-    elif is_gemini_model(llm_request.model):
+    elif is_gemini_model(llm_request.model) or model_check_disabled:
       llm_request.config.tools.append(
           types.Tool(google_search=types.GoogleSearch())
       )

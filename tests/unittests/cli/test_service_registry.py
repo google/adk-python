@@ -165,6 +165,13 @@ def test_create_memory_service_agentengine_full(registry, mock_services):
   )
 
 
+def test_create_memory_service_memory(registry):
+  from google.adk.memory.in_memory_memory_service import InMemoryMemoryService
+
+  memory_service = registry.create_memory_service("memory://")
+  assert isinstance(memory_service, InMemoryMemoryService)
+
+
 # General Tests
 def test_unsupported_scheme(registry, mock_services):
   session_service = registry.create_session_service("unsupported://foo")
