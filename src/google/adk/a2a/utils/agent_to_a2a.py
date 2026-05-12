@@ -75,6 +75,19 @@ def _load_agent_card(
     return agent_card
 
 
+def _build_rpc_url(
+    *,
+    host: str,
+    port: int,
+    protocol: str,
+    service_url: Optional[str],
+) -> str:
+  """Build the RPC URL published in the generated agent card."""
+  if service_url is not None:
+    return service_url
+  return f"{protocol}://{host}:{port}/"
+
+
 @a2a_experimental
 def to_a2a(
     agent: BaseAgent,
@@ -82,6 +95,7 @@ def to_a2a(
     host: str = "localhost",
     port: int = 8000,
     protocol: str = "http",
+    service_url: Optional[str] = None,
     agent_card: Optional[Union[AgentCard, str]] = None,
     push_config_store: Optional[PushNotificationConfigStore] = None,
     runner: Optional[Runner] = None,
@@ -94,6 +108,8 @@ def to_a2a(
       host: The host for the A2A RPC URL (default: "localhost")
       port: The port for the A2A RPC URL (default: 8000)
       protocol: The protocol for the A2A RPC URL (default: "http")
+      service_url: Optional full service URL to publish in the generated
+        agent card. When provided, it takes precedence over host/port/protocol.
       agent_card: Optional pre-built AgentCard object or path to agent card
                   JSON. If not provided, will be built automatically from the
                   agent.
@@ -115,6 +131,8 @@ def to_a2a(
       agent = MyAgent()
       app = to_a2a(agent, host="localhost", port=8000, protocol="http")
       # Then run with: uvicorn module:app --host localhost --port 8000
+
+      app = to_a2a(agent, service_url="https://my-agent.run.app")
 
       # Or with custom agent card:
       app = to_a2a(agent, agent_card=my_custom_agent_card)
@@ -161,7 +179,12 @@ def to_a2a(
   )
 
   # Use provided agent card or build one from the agent
-  rpc_url = f"{protocol}://{host}:{port}/"
+  rpc_url = _build_rpc_url(
+      host=host,
+      port=port,
+      protocol=protocol,
+      service_url=service_url,
+  )
   provided_agent_card = _load_agent_card(agent_card)
 
   card_builder = AgentCardBuilder(
