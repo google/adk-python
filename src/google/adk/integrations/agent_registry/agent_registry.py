@@ -28,12 +28,7 @@ from typing import Mapping
 from typing import TypedDict
 from urllib.parse import urlparse
 
-from a2a.types import AgentCapabilities
-from a2a.types import AgentCard
-from a2a.types import AgentSkill
-from a2a.types import TransportProtocol as A2ATransport
 from google.adk.agents.readonly_context import ReadonlyContext
-from google.adk.agents.remote_a2a_agent import RemoteA2aAgent
 from google.adk.auth.auth_credential import AuthCredential
 from google.adk.auth.auth_schemes import AuthScheme
 from google.adk.integrations.agent_identity.gcp_auth_provider_scheme import GcpAuthProviderScheme
@@ -48,6 +43,20 @@ import google.auth.transport.requests
 import httpx
 from mcp import StdioServerParameters
 from typing_extensions import override
+
+# pylint: disable=g-import-not-at-top
+try:
+  from a2a.types import AgentCapabilities
+  from a2a.types import AgentCard
+  from a2a.types import AgentSkill
+  from a2a.types import TransportProtocol as A2ATransport
+  from google.adk.agents.remote_a2a_agent import RemoteA2aAgent
+except ImportError as e:
+  raise ImportError(
+      "AgentRegistry requires the 'a2a-sdk' package. "
+      "Please install it using 'pip install google-adk[a2a]'."
+  ) from e
+# pylint: enable=g-import-not-at-top
 
 logger = logging.getLogger("google_adk." + __name__)
 

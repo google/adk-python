@@ -22,8 +22,8 @@ from fastapi.openapi.models import OAuth2
 from google.adk.agents.remote_a2a_agent import RemoteA2aAgent
 from google.adk.auth.auth_credential import AuthCredential
 from google.adk.auth.auth_credential import OAuth2Auth
-from google.adk.integrations.agent_registry import _ProtocolType
 from google.adk.integrations.agent_registry import AgentRegistry
+from google.adk.integrations.agent_registry.agent_registry import _ProtocolType
 from google.adk.telemetry.tracing import GCP_MCP_SERVER_DESTINATION_ID
 from google.adk.tools.mcp_tool.mcp_toolset import McpToolset
 import httpx
