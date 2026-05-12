@@ -1689,8 +1689,8 @@ def _model_response_to_generate_content_response(
       llm_response.grounding_metadata = raw_grounding
     elif isinstance(raw_grounding, dict):
       try:
-        llm_response.grounding_metadata = types.GroundingMetadata.model_validate(
-            raw_grounding
+        llm_response.grounding_metadata = (
+            types.GroundingMetadata.model_validate(raw_grounding)
         )
       except Exception:  # pragma: no cover
         logger.warning(
