@@ -25,9 +25,9 @@ from google.genai import types
 from pydantic import TypeAdapter
 from pydantic import ValidationError
 
+from ...events._node_path_builder import _NodePathBuilder
 from ...events.event import Event
 from ...events.request_input import RequestInput
-from ...events._node_path_builder import _NodePathBuilder
 from ._workflow_hitl_utils import REQUEST_INPUT_FUNCTION_CALL_NAME
 
 _RESULT_KEY = 'result'
@@ -181,7 +181,6 @@ def _process_content_object(event: Event) -> Any:
   if not text:
     return None
 
-  
   try:
     return json.loads(text)
   except (json.JSONDecodeError, ValueError):
@@ -209,8 +208,9 @@ def _reconstruct_node_states(
       segment: str = child_path._segments[-1]
       return segment
     else:
-      if event_path_builder == base_path_builder or event_path_builder.is_descendant_of(
-          base_path_builder
+      if (
+          event_path_builder == base_path_builder
+          or event_path_builder.is_descendant_of(base_path_builder)
       ):
         return base_path
       return None

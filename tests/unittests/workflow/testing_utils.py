@@ -216,6 +216,8 @@ class TestInMemoryRunner(AfInMemoryRunner):
   app_name is hardcoded as InMemoryRunner in the parent class.
   """
 
+  __test__ = False
+
   async def run_async_with_new_session(
       self, new_message: types.ContentUnion
   ) -> list[Event]:

@@ -29,6 +29,7 @@ from google.genai import types
 class TestRunner:
   """Agents runner for testing."""
 
+  __test__ = False
   app_name = "test_app"
   user_id = "test_user"
 

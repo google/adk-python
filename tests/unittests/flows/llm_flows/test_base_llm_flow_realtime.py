@@ -29,6 +29,7 @@ from ... import testing_utils
 class TestBaseLlmFlow(BaseLlmFlow):
   """Test implementation of BaseLlmFlow for testing purposes."""
 
+  __test__ = False
   pass
 
 

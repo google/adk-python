@@ -64,6 +64,7 @@ async def run_workflow(wf, message='start'):
 # The route can be set without the output. This means didn't produce any output
 # but wants to signal a route to take.
 class TestingNode(BaseNode):
+  __test__ = False
   model_config = ConfigDict(arbitrary_types_allowed=True)
 
   output: Optional[Any] = None
@@ -97,6 +98,7 @@ class TestingNode(BaseNode):
 
 
 class TestingNodeWithIntermediateContent(BaseNode):
+  __test__ = False
   model_config = ConfigDict(arbitrary_types_allowed=True)
 
   intermediate_content: list[types.Content] = Field(default_factory=list)
