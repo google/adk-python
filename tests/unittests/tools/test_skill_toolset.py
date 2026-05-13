@@ -528,7 +528,9 @@ async def test_load_resource_repeated_failure_escalates_to_fatal(mock_skill1):
 
 
 @pytest.mark.asyncio
-async def test_load_resource_different_path_also_escalates_to_fatal(mock_skill1):
+async def test_load_resource_different_path_also_escalates_to_fatal(
+    mock_skill1,
+):
   """A different missing path on the second call still escalates to RESOURCE_NOT_FOUND_FATAL.
 
   The counter is path-agnostic: any second not-found within the same invocation

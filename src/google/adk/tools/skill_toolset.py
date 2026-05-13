@@ -359,9 +359,7 @@ class LoadSkillResourceTool(BaseTool):
       # paths so the guard fires even when the LLM hallucinates a different path
       # on each retry. The `temp:` prefix prevents persistence to durable
       # session storage; invocation_id isolates in-memory backends.
-      counter_key = (
-          f"temp:_adk_skill_resource_not_found_count_{tool_context.invocation_id}"
-      )
+      counter_key = f"temp:_adk_skill_resource_not_found_count_{tool_context.invocation_id}"
       fail_count = int(tool_context.state.get(counter_key) or 0) + 1
       tool_context.state[counter_key] = fail_count
       if fail_count > 1:
