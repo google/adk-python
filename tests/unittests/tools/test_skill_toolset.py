@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import asyncio
 import logging
 import sys
 from unittest import mock
@@ -268,7 +269,6 @@ async def test_load_skill_run_async_state_none(
   )
 
   assert result["skill_name"] == "skill1"
-  # Verify that it correctly set the list in state
   tool_context_instance.state.__setitem__.assert_called_with(
       state_key, ["skill1"]
   )
@@ -1569,6 +1569,7 @@ async def test_skill_toolset_dynamic_tool_resolution(mock_skill1, mock_skill2):
   )
 
   ctx = _make_tool_context_with_agent()
+  ctx.invocation_id = "turn-1"
   # Initial tools (only core)
   tools1 = await toolset.get_tools_with_prefix(readonly_context=ctx)
   assert len(tools1) == 4
@@ -1579,6 +1580,7 @@ async def test_skill_toolset_dynamic_tool_resolution(mock_skill1, mock_skill2):
   await load_tool.run_async(args={"skill_name": "skill2"}, tool_context=ctx)
 
   # Dynamic tools should now be resolved
+  ctx.invocation_id = "turn-2"
   tools = await toolset.get_tools_with_prefix(readonly_context=ctx)
   assert tools is not tools1
   tool_names = {t.name for t in tools}
@@ -1627,3 +1629,265 @@ async def test_skill_toolset_resolution_error_handling(mock_skill1, caplog):
 
   # Should still return basic skill tools
   assert len(tools) == 4
+
+
+@pytest.fixture(name="mock_registry")
+def _mock_registry():
+  """Fixture for mock SkillRegistry."""
+  registry = mock.create_autospec(skill_toolset.SkillRegistry, instance=True)
+  registry.search_tool_description.return_value = None
+  return registry
+
+
+@pytest.mark.asyncio
+async def test_skill_toolset_init_with_registry(mock_registry):
+  # Verify toolset initializes with empty skills list and registers SearchSkillsTool
+  toolset = skill_toolset.SkillToolset(registry=mock_registry)
+  assert toolset._registry == mock_registry
+  assert len(toolset._skills) == 0
+
+  tools = await toolset.get_tools()
+  assert len(tools) == 5
+  assert isinstance(tools[4], skill_toolset.SearchSkillsTool)
+
+
+def test_search_skills_tool_init_without_registry():
+  toolset = skill_toolset.SkillToolset()
+  with pytest.raises(
+      ValueError,
+      match="SearchSkillsTool requires a configured skill registry.",
+  ):
+    skill_toolset.SearchSkillsTool(toolset)
+
+
+@pytest.mark.asyncio
+async def test_search_skills_tool_run_async(
+    mock_registry, mock_skill1, tool_context_instance
+):
+  # Verify search_skills tool works, filters out local naming conflicts
+  mock_frontmatter1 = mock.create_autospec(models.Frontmatter, instance=True)
+  mock_frontmatter1.name = "skill1"
+  mock_frontmatter1.model_dump.return_value = {"name": "skill1"}
+
+  mock_frontmatter2 = mock.create_autospec(models.Frontmatter, instance=True)
+  mock_frontmatter2.name = "skill2"
+  mock_frontmatter2.model_dump.return_value = {"name": "skill2"}
+
+  mock_registry.search_skills.return_value = [
+      mock_frontmatter1,
+      mock_frontmatter2,
+  ]
+
+  # skill1 exists locally, skill2 does not
+  toolset = skill_toolset.SkillToolset([mock_skill1], registry=mock_registry)
+  tool = skill_toolset.SearchSkillsTool(toolset)
+
+  result = await tool.run_async(
+      args={"query": "test"}, tool_context=tool_context_instance
+  )
+
+  mock_registry.search_skills.assert_called_once_with(query="test")
+  # skill1 should be filtered out due to naming conflict with local mock_skill1
+  assert result == [{"name": "skill2"}]
+
+
+@pytest.mark.asyncio
+async def test_load_skill_tool_fallback_to_registry(
+    mock_registry, mock_skill1, tool_context_instance
+):
+  # Verify LoadSkillTool falls back to registry, fetching on-demand without cache
+  mock_registry.get_skill.return_value = mock_skill1
+
+  toolset = skill_toolset.SkillToolset(registry=mock_registry)
+  tool = skill_toolset.LoadSkillTool(toolset)
+
+  # Mock state
+  state_key = "_adk_activated_skill_test_agent"
+  tool_context_instance.state.get.return_value = None
+
+  # First load: goes to registry
+  tool_context_instance.invocation_id = "inv-1"
+  result = await tool.run_async(
+      args={"skill_name": "skill1"}, tool_context=tool_context_instance
+  )
+
+  assert result["skill_name"] == "skill1"
+  assert result["instructions"] == "instructions for skill1"
+  mock_registry.get_skill.assert_called_once_with(name="skill1")
+
+  # Verify that the Skill frontmatter was cached in the unified state dictionary
+  tool_context_instance.state.__setitem__.assert_called_once_with(
+      state_key, ["skill1"]
+  )
+
+  # Mock state.get to return the cached skill list
+  tool_context_instance.state.get.side_effect = lambda key, default=None: (
+      ["skill1"] if key == state_key else default
+  )
+
+  # Second load on a new turn: should fetch from registry on-demand as only frontmatter is in state
+  tool_context_instance.invocation_id = "inv-2"
+  mock_registry.get_skill.reset_mock()
+  result2 = await tool.run_async(
+      args={"skill_name": "skill1"}, tool_context=tool_context_instance
+  )
+  assert result2["skill_name"] == "skill1"
+  mock_registry.get_skill.assert_called_once_with(name="skill1")
+
+
+@pytest.mark.asyncio
+async def test_registry_skill_resources_and_tools_resolved(
+    mock_registry, tool_context_instance
+):
+  # Create a mock registry skill that declares local additional tools
+  mock_skill = mock.create_autospec(models.Skill, instance=True)
+  mock_skill.name = "registry_skill"
+  mock_skill.instructions = "registry instructions"
+  mock_skill.frontmatter = mock.create_autospec(
+      models.Frontmatter, instance=True
+  )
+  mock_skill.frontmatter.name = "registry_skill"
+  mock_skill.frontmatter.metadata = {"adk_additional_tools": ["my_custom_tool"]}
+
+  mock_skill.resources = mock.MagicMock()
+  mock_skill.resources.get_reference.return_value = "reference content"
+
+  mock_registry.get_skill.return_value = mock_skill
+
+  # Setup toolset with the registry and the local implementation of the tool
+  custom_tool = mock.create_autospec(skill_toolset.BaseTool, instance=True)
+  custom_tool.name = "my_custom_tool"
+
+  toolset = skill_toolset.SkillToolset(
+      registry=mock_registry, additional_tools=[custom_tool]
+  )
+
+  # Load the skill via LoadSkillTool
+  load_tool = skill_toolset.LoadSkillTool(toolset)
+
+  state_key = "_adk_activated_skill_test_agent"
+  tool_context_instance.state.get.side_effect = lambda key, default=None: (
+      ["registry_skill"] if key == state_key else default
+  )
+
+  result = await load_tool.run_async(
+      args={"skill_name": "registry_skill"}, tool_context=tool_context_instance
+  )
+  assert result["skill_name"] == "registry_skill"
+
+  # 1. Verify dynamic tools from the registry are resolved
+  tools = await toolset.get_tools(readonly_context=tool_context_instance)
+  tool_names = {t.name for t in tools}
+  assert "my_custom_tool" in tool_names
+
+  # 2. Verify resource loading resolves registry skill correctly
+  resource_tool = skill_toolset.LoadSkillResourceTool(toolset)
+  res_result = await resource_tool.run_async(
+      args={
+          "skill_name": "registry_skill",
+          "file_path": "references/ref.md",
+      },
+      tool_context=tool_context_instance,
+  )
+  assert res_result["content"] == "reference content"
+
+
+@pytest.mark.asyncio
+async def test_process_llm_request_with_registry(
+    mock_registry, tool_context_instance
+):
+  toolset = skill_toolset.SkillToolset(registry=mock_registry)
+  llm_req = mock.create_autospec(llm_request_model.LlmRequest, instance=True)
+
+  await toolset.process_llm_request(
+      tool_context=tool_context_instance, llm_request=llm_req
+  )
+
+  llm_req.append_instructions.assert_called_once()
+  args, _ = llm_req.append_instructions.call_args
+  instructions = args[0]
+  assert len(instructions) == 2
+  assert instructions[0] == skill_toolset.DEFAULT_SKILL_SYSTEM_INSTRUCTION
+  assert "search_skills" in instructions[1]
+
+
+@pytest.mark.asyncio
+async def test_turn_scoped_skill_cache(
+    mock_registry, mock_skill1, tool_context_instance
+):
+  # Verify that multiple tool calls on the same registry-provided skill in the same turn
+  # use the turn-scoped cache and only call the registry once.
+  mock_registry.get_skill.return_value = mock_skill1
+
+  toolset = skill_toolset.SkillToolset(registry=mock_registry)
+  load_tool = skill_toolset.LoadSkillTool(toolset)
+  script_tool = skill_toolset.RunSkillScriptTool(toolset)
+
+  tool_context_instance.invocation_id = "same-turn-id"
+  tool_context_instance.state.get.return_value = None
+
+  # Call LoadSkillTool
+  res1 = await load_tool.run_async(
+      args={"skill_name": "skill1"}, tool_context=tool_context_instance
+  )
+  assert res1["skill_name"] == "skill1"
+  mock_registry.get_skill.assert_called_once_with(name="skill1")
+
+  # Setup executor for script tool
+  executor = mock.create_autospec(skill_toolset.BaseCodeExecutor, instance=True)
+  executor.execute_code.return_value = mock.MagicMock(
+      stdout="hello\n", stderr=""
+  )
+  toolset._code_executor = executor
+
+  # Call RunSkillScriptTool in the same turn
+  res2 = await script_tool.run_async(
+      args={"skill_name": "skill1", "file_path": "run.py"},
+      tool_context=tool_context_instance,
+  )
+  assert res2["status"] == "success"
+  # Registry should NOT be called again
+  mock_registry.get_skill.assert_called_once_with(name="skill1")
+
+
+@pytest.mark.asyncio
+async def test_turn_scoped_skill_cache_eviction(mock_registry, mock_skill1):
+  mock_registry.get_skill.return_value = mock_skill1
+  toolset = skill_toolset.SkillToolset(registry=mock_registry)
+
+  # Fill cache up to limit
+  for i in range(16):
+    await toolset._get_or_fetch_skill("skill1", f"turn-{i}")
+
+  assert len(toolset._invocation_cache) == 16
+  assert "turn-0" in toolset._invocation_cache
+
+  # Next turn should evict oldest (turn-0)
+  await toolset._get_or_fetch_skill("skill1", "turn-16")
+  assert len(toolset._invocation_cache) == 16
+  assert "turn-0" not in toolset._invocation_cache
+  assert "turn-1" in toolset._invocation_cache
+
+
+@pytest.mark.asyncio
+async def test_turn_scoped_skill_cache_concurrency(mock_registry, mock_skill1):
+  # Delay registry fetch to simulate async I/O and force race condition
+  async def delayed_get_skill(name):
+    await asyncio.sleep(0.1)
+    return mock_skill1
+
+  mock_registry.get_skill.side_effect = delayed_get_skill
+  toolset = skill_toolset.SkillToolset(registry=mock_registry)
+
+  # Trigger concurrent calls for the same skill in the same turn
+  results = await asyncio.gather(
+      toolset._get_or_fetch_skill("skill1", "concurrent-turn"),
+      toolset._get_or_fetch_skill("skill1", "concurrent-turn"),
+      toolset._get_or_fetch_skill("skill1", "concurrent-turn"),
+  )
+
+  for res in results:
+    assert res is mock_skill1
+
+  # Registry should have been called exactly once
+  mock_registry.get_skill.assert_called_once_with(name="skill1")

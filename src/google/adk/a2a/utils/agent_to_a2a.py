@@ -18,14 +18,13 @@ from contextlib import asynccontextmanager
 import logging
 from typing import AsyncIterator
 from typing import Callable
-from typing import Optional
-from typing import Union
 
 from a2a.server.apps import A2AStarletteApplication
 from a2a.server.request_handlers import DefaultRequestHandler
 from a2a.server.tasks import InMemoryPushNotificationConfigStore
 from a2a.server.tasks import InMemoryTaskStore
 from a2a.server.tasks import PushNotificationConfigStore
+from a2a.server.tasks import TaskStore
 from a2a.types import AgentCard
 from starlette.applications import Starlette
 
@@ -41,8 +40,8 @@ from .agent_card_builder import AgentCardBuilder
 
 
 def _load_agent_card(
-    agent_card: Optional[Union[AgentCard, str]],
-) -> Optional[AgentCard]:
+    agent_card: AgentCard | str | None,
+) -> AgentCard | None:
   """Load agent card from various sources.
 
   Args:
@@ -82,10 +81,11 @@ def to_a2a(
     host: str = "localhost",
     port: int = 8000,
     protocol: str = "http",
-    agent_card: Optional[Union[AgentCard, str]] = None,
-    push_config_store: Optional[PushNotificationConfigStore] = None,
-    runner: Optional[Runner] = None,
-    lifespan: Optional[Callable[[Starlette], AsyncIterator[None]]] = None,
+    agent_card: AgentCard | str | None = None,
+    push_config_store: PushNotificationConfigStore | None = None,
+    task_store: TaskStore | None = None,
+    runner: Runner | None = None,
+    lifespan: Callable[[Starlette], AsyncIterator[None]] | None = None,
 ) -> Starlette:
   """Convert an ADK agent to a A2A Starlette application.
 
@@ -100,6 +100,8 @@ def to_a2a(
       push_config_store: Optional A2A push notification config store. If not
         provided, an in-memory store will be created so push-notification
         config RPC methods are supported.
+      task_store: Optional A2A task store for persisting task state. If not
+        provided, an in-memory store will be created.
       runner: Optional pre-built Runner object. If not provided, a default
               runner will be created using in-memory services.
       lifespan: Optional async context manager for Starlette lifespan
@@ -127,6 +129,20 @@ def to_a2a(
           await app.state.db.close()
 
       app = to_a2a(agent, lifespan=lifespan)
+
+      # Or with a persistent task store (the caller owns engine disposal):
+      from a2a.server.tasks import DatabaseTaskStore
+      from sqlalchemy.ext.asyncio import create_async_engine
+
+      engine = create_async_engine("postgresql+asyncpg://...")
+      task_store = DatabaseTaskStore(engine=engine)
+
+      @asynccontextmanager
+      async def lifespan(app):
+          yield
+          await engine.dispose()
+
+      app = to_a2a(agent, task_store=task_store, lifespan=lifespan)
   """
   # Set up ADK logging to ensure logs are visible when using uvicorn directly
   adk_logger = logging.getLogger("google_adk")
@@ -145,7 +161,8 @@ def to_a2a(
     )
 
   # Create A2A components
-  task_store = InMemoryTaskStore()
+  if task_store is None:
+    task_store = InMemoryTaskStore()
 
   agent_executor = A2aAgentExecutor(
       runner=runner or create_runner,
