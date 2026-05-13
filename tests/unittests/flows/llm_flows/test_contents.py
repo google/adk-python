@@ -19,6 +19,7 @@ from google.adk.flows.llm_flows import contents
 from google.adk.flows.llm_flows.contents import request_processor
 from google.adk.flows.llm_flows.functions import REQUEST_CONFIRMATION_FUNCTION_CALL_NAME
 from google.adk.flows.llm_flows.functions import REQUEST_EUC_FUNCTION_CALL_NAME
+from google.adk.models.anthropic_llm import AnthropicLlm
 from google.adk.models.google_llm import Gemini
 from google.adk.models.llm_request import LlmRequest
 from google.genai import types
@@ -1169,3 +1170,76 @@ def test_is_other_agent_reply_non_live_session():
 
   event = Event(author="another_agent")
   assert contents._is_other_agent_reply("", event) is False
+
+
+@pytest.mark.asyncio
+async def test_anthropic_model_preserves_function_call_ids():
+  """AnthropicLlm should preserve function call IDs during session replay."""
+  anthropic_model = AnthropicLlm(model="claude-sonnet-4-20250514")
+  agent = Agent(
+      model=anthropic_model,
+      name="test_agent",
+      include_contents="default",
+  )
+  llm_request = LlmRequest(model="claude-sonnet-4-20250514")
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent
+  )
+
+  function_call_id = "toolu_test123"
+  events = [
+      Event(
+          invocation_id="inv1",
+          author="user",
+          content=types.Content(
+              role="user",
+              parts=[types.Part.from_text(text="Use the tool")],
+          ),
+      ),
+      Event(
+          invocation_id="inv2",
+          author="test_agent",
+          content=types.Content(
+              role="model",
+              parts=[
+                  types.Part(
+                      function_call=types.FunctionCall(
+                          id=function_call_id,
+                          name="my_tool",
+                          args={"arg": "value"},
+                      )
+                  )
+              ],
+          ),
+      ),
+      Event(
+          invocation_id="inv3",
+          author="user",
+          content=types.Content(
+              role="user",
+              parts=[
+                  types.Part(
+                      function_response=types.FunctionResponse(
+                          id=function_call_id,
+                          name="my_tool",
+                          response={"result": "done"},
+                      )
+                  )
+              ],
+          ),
+      ),
+  ]
+  invocation_context.session.events = events
+
+  async for _ in contents.request_processor.run_async(
+      invocation_context, llm_request
+  ):
+    pass
+
+  model_fc_part = llm_request.contents[1].parts[0]
+  assert model_fc_part.function_call is not None
+  assert model_fc_part.function_call.id == function_call_id
+
+  user_fr_part = llm_request.contents[2].parts[0]
+  assert user_fr_part.function_response is not None
+  assert user_fr_part.function_response.id == function_call_id

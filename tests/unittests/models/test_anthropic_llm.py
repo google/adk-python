@@ -15,6 +15,7 @@
 import base64
 import json
 import os
+import re
 import sys
 from unittest import mock
 from unittest.mock import AsyncMock
@@ -1905,3 +1906,157 @@ async def test_streaming_redacted_thinking_block_preserved_in_final():
 
   text_part = final.content.parts[1]
   assert text_part.text == "Done."
+
+
+def test_part_to_message_block_function_call_none_id():
+  """Function call with None ID should get a valid generated ID."""
+  part = types.Part.from_function_call(name="test_tool", args={"key": "value"})
+  part.function_call.id = None
+
+  result = part_to_message_block(part)
+  assert result["id"].startswith("toolu_")
+  assert re.fullmatch(r"[a-zA-Z0-9_-]+", result["id"])
+
+
+def test_part_to_message_block_function_call_empty_id():
+  """Function call with empty string ID should get a valid generated ID."""
+  part = types.Part.from_function_call(name="test_tool", args={"key": "value"})
+  part.function_call.id = ""
+
+  result = part_to_message_block(part)
+  assert result["id"].startswith("toolu_")
+  assert re.fullmatch(r"[a-zA-Z0-9_-]+", result["id"])
+
+
+def test_part_to_message_block_function_call_invalid_chars_id():
+  """Function call with invalid chars in ID should get a valid generated ID."""
+  part = types.Part.from_function_call(name="test_tool", args={"key": "value"})
+  part.function_call.id = "invalid id with spaces!"
+
+  result = part_to_message_block(part)
+  assert result["id"].startswith("toolu_")
+  assert re.fullmatch(r"[a-zA-Z0-9_-]+", result["id"])
+
+
+def test_part_to_message_block_function_response_none_id():
+  """Function response with None ID should get a valid generated ID."""
+  part = types.Part.from_function_response(
+      name="test_tool", response={"result": "ok"}
+  )
+  part.function_response.id = None
+
+  result = part_to_message_block(part)
+  assert result["tool_use_id"].startswith("toolu_")
+  assert re.fullmatch(r"[a-zA-Z0-9_-]+", result["tool_use_id"])
+
+
+def test_part_to_message_block_function_response_empty_id():
+  """Function response with empty ID should get a valid generated ID."""
+  part = types.Part.from_function_response(
+      name="test_tool", response={"result": "ok"}
+  )
+  part.function_response.id = ""
+
+  result = part_to_message_block(part)
+  assert result["tool_use_id"].startswith("toolu_")
+  assert re.fullmatch(r"[a-zA-Z0-9_-]+", result["tool_use_id"])
+
+
+def _make_tool_call_part(name: str, call_id: str | None) -> Part:
+  part = types.Part.from_function_call(name=name, args={})
+  part.function_call.id = call_id
+  return part
+
+
+def _make_tool_response_part(name: str, response_id: str | None) -> Part:
+  part = types.Part.from_function_response(name=name, response={"result": "ok"})
+  part.function_response.id = response_id
+  return part
+
+
+async def _capture_anthropic_messages(
+    llm: AnthropicLlm,
+    contents: list[Content],
+    generate_content_response,
+    generate_llm_response,
+) -> list[dict]:
+  llm_request = LlmRequest(
+      model="claude-sonnet-4-20250514",
+      contents=contents,
+      config=types.GenerateContentConfig(system_instruction="You are helpful"),
+  )
+  with mock.patch.object(llm, "_anthropic_client") as mock_client:
+    with mock.patch.object(
+        anthropic_llm,
+        "message_to_generate_content_response",
+        return_value=generate_llm_response,
+    ):
+
+      async def mock_coro():
+        return generate_content_response
+
+      mock_client.messages.create.return_value = mock_coro()
+      _ = [
+          r async for r in llm.generate_content_async(llm_request, stream=False)
+      ]
+
+  _, kwargs = mock_client.messages.create.call_args
+  return kwargs["messages"]
+
+
+@pytest.mark.parametrize(
+    "case_id,call_ids,response_ids,expected_unique",
+    [
+        (
+            "distinct_invalid_pair_uniquely",
+            ["bad A!", "bad B!"],
+            ["bad A!", "bad B!"],
+            2,
+        ),
+        ("matching_empty_ids_pair", [""], [""], 1),
+        ("none_and_empty_collapse", [None], [""], 1),
+        ("repeated_invalid_id_consistent", ["bad!"], ["bad!"], 1),
+    ],
+    ids=lambda v: v if isinstance(v, str) else None,
+)
+@pytest.mark.asyncio
+async def test_generate_content_async_pairs_invalid_tool_ids(
+    case_id,
+    call_ids,
+    response_ids,
+    expected_unique,
+    generate_content_response,
+    generate_llm_response,
+):
+  """Anthropic requests have matching, properly-counted tool_use/tool_result IDs."""
+  llm = AnthropicLlm(model="claude-sonnet-4-20250514")
+  contents = [
+      Content(role="user", parts=[Part.from_text(text="Hi")]),
+      Content(
+          role="model",
+          parts=[
+              _make_tool_call_part(f"tool_{i}", cid)
+              for i, cid in enumerate(call_ids)
+          ],
+      ),
+      Content(
+          role="user",
+          parts=[
+              _make_tool_response_part(f"tool_{i}", rid)
+              for i, rid in enumerate(response_ids)
+          ],
+      ),
+  ]
+
+  messages = await _capture_anthropic_messages(
+      llm, contents, generate_content_response, generate_llm_response
+  )
+
+  use_ids = [b["id"] for b in messages[1]["content"] if b["type"] == "tool_use"]
+  result_ids = [
+      b["tool_use_id"]
+      for b in messages[2]["content"]
+      if b["type"] == "tool_result"
+  ]
+  assert len(set(use_ids)) == expected_unique
+  assert set(use_ids) == set(result_ids)

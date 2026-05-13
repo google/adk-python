@@ -595,8 +595,20 @@ class BaseLlmFlow(ABC):
                     agent_to_run = self._get_agent_to_run(
                         invocation_context, transfer_to_agent
                     )
+                    child_ctx = invocation_context.model_copy()
+                    # Child Live agent should start a new Live session.
+                    # Do not reuse the parent session's resumption handle.
+                    child_ctx.live_session_resumption_handle = None
+
+                    if child_ctx.run_config:
+                      child_ctx.run_config = child_ctx.run_config.model_copy(
+                          deep=True
+                      )
+                      if child_ctx.run_config.session_resumption:
+                        child_ctx.run_config.session_resumption.handle = None
+
                     async with Aclosing(
-                        agent_to_run.run_live(invocation_context)
+                        agent_to_run.run_live(child_ctx)
                     ) as agen:
                       async for item in agen:
                         yield item
