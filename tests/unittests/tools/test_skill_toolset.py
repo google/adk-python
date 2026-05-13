@@ -332,16 +332,10 @@ async def test_load_skill_run_async_state_none(
                 "error_code": "SKILL_NOT_FOUND",
             },
         ),
-        (
-            {"skill_name": "skill1", "file_path": "references/other.md"},
-            {
-                "error": (
-                    "Resource 'references/other.md' not found in skill"
-                    " 'skill1'."
-                ),
-                "error_code": "RESOURCE_NOT_FOUND",
-            },
-        ),
+        # RESOURCE_NOT_FOUND is tested separately in
+        # test_load_resource_first_missing_returns_soft_error because the
+        # counter guard requires a real state dict (mock state.get() returns a
+        # truthy MagicMock that int() coerces to 1, skipping the soft path).
         (
             {"skill_name": "skill1", "file_path": "invalid/path.txt"},
             {
@@ -487,19 +481,36 @@ def test_duplicate_skill_name_raises(mock_skill1):
 
 
 @pytest.mark.asyncio
-async def test_scripts_resource_not_found(mock_skill1, tool_context_instance):
+async def test_scripts_resource_not_found(mock_skill1):
   toolset = skill_toolset.SkillToolset([mock_skill1])
   tool = skill_toolset.LoadSkillResourceTool(toolset)
+  ctx = _make_tool_context_with_agent()
   result = await tool.run_async(
       args={"skill_name": "skill1", "file_path": "scripts/nonexistent.sh"},
-      tool_context=tool_context_instance,
+      tool_context=ctx,
   )
   assert result["error_code"] == "RESOURCE_NOT_FOUND"
 
 
 @pytest.mark.asyncio
+async def test_load_resource_first_missing_returns_soft_error(mock_skill1):
+  """First RESOURCE_NOT_FOUND in an invocation returns the soft error code."""
+  toolset = skill_toolset.SkillToolset([mock_skill1])
+  tool = skill_toolset.LoadSkillResourceTool(toolset)
+  ctx = _make_tool_context_with_agent()
+  result = await tool.run_async(
+      args={"skill_name": "skill1", "file_path": "references/other.md"},
+      tool_context=ctx,
+  )
+  assert result["error_code"] == "RESOURCE_NOT_FOUND"
+  assert result["error"] == (
+      "Resource 'references/other.md' not found in skill 'skill1'."
+  )
+
+
+@pytest.mark.asyncio
 async def test_load_resource_repeated_failure_escalates_to_fatal(mock_skill1):
-  """Second call with same missing path within an invocation returns RESOURCE_NOT_FOUND_FATAL."""
+  """Any second RESOURCE_NOT_FOUND within an invocation returns RESOURCE_NOT_FOUND_FATAL."""
   toolset = skill_toolset.SkillToolset([mock_skill1])
   tool = skill_toolset.LoadSkillResourceTool(toolset)
   ctx = _make_tool_context_with_agent()
@@ -513,11 +524,16 @@ async def test_load_resource_repeated_failure_escalates_to_fatal(mock_skill1):
   assert result2["error_code"] == "RESOURCE_NOT_FOUND_FATAL"
   assert "Do not retry" in result2["error"]
   assert "stop" in result2["error"].lower()
+  assert "failure #2" in result2["error"]
 
 
 @pytest.mark.asyncio
-async def test_load_resource_different_paths_each_soft_fail(mock_skill1):
-  """Different missing paths each get a soft error (no cross-path escalation)."""
+async def test_load_resource_different_path_also_escalates_to_fatal(mock_skill1):
+  """A different missing path on the second call still escalates to RESOURCE_NOT_FOUND_FATAL.
+
+  The counter is path-agnostic: any second not-found within the same invocation
+  is fatal, even when the LLM hallucinates a different path on each retry.
+  """
   toolset = skill_toolset.SkillToolset([mock_skill1])
   tool = skill_toolset.LoadSkillResourceTool(toolset)
   ctx = _make_tool_context_with_agent()
@@ -532,16 +548,17 @@ async def test_load_resource_different_paths_each_soft_fail(mock_skill1):
       args={"skill_name": "skill1", "file_path": "references/missing_b.md"},
       tool_context=ctx,
   )
-  assert result2["error_code"] == "RESOURCE_NOT_FOUND"
+  assert result2["error_code"] == "RESOURCE_NOT_FOUND_FATAL"
+  assert "Do not retry" in result2["error"]
 
 
 @pytest.mark.asyncio
 async def test_load_resource_failures_isolated_per_invocation(mock_skill1):
-  """Failed-path tracking does not leak across invocations.
+  """Failure counter does not leak across invocations.
 
-  A path that hit a soft RESOURCE_NOT_FOUND in invocation A must still
-  return RESOURCE_NOT_FOUND (not _FATAL) on its first attempt in
-  invocation B, even when sharing session state.
+  A RESOURCE_NOT_FOUND in invocation A must not increment invocation B's
+  counter; invocation B's first missing-resource call must still return the
+  soft error, even when both invocations share the same session state dict.
   """
   toolset = skill_toolset.SkillToolset([mock_skill1])
   tool = skill_toolset.LoadSkillResourceTool(toolset)
@@ -552,22 +569,31 @@ async def test_load_resource_failures_isolated_per_invocation(mock_skill1):
   ctx_b = _make_tool_context_with_agent(invocation_id="inv_b")
   ctx_b.state = shared_state
 
-  args = {"skill_name": "skill1", "file_path": "references/typo.md"}
-
-  result_a = await tool.run_async(args=args, tool_context=ctx_a)
+  # invocation A: one failure — counter for inv_a reaches 1 (soft).
+  result_a = await tool.run_async(
+      args={"skill_name": "skill1", "file_path": "references/typo.md"},
+      tool_context=ctx_a,
+  )
   assert result_a["error_code"] == "RESOURCE_NOT_FOUND"
 
-  result_b = await tool.run_async(args=args, tool_context=ctx_b)
-  assert result_b["error_code"] == "RESOURCE_NOT_FOUND"
+  # invocation B, first attempt (different path) — counter for inv_b = 1 (soft).
+  result_b1 = await tool.run_async(
+      args={"skill_name": "skill1", "file_path": "references/typo.md"},
+      tool_context=ctx_b,
+  )
+  assert result_b1["error_code"] == "RESOURCE_NOT_FOUND"
 
-  # And the fatal escalation still works within a single invocation.
-  result_b2 = await tool.run_async(args=args, tool_context=ctx_b)
+  # invocation B, second attempt (different path) — counter for inv_b = 2 (fatal).
+  result_b2 = await tool.run_async(
+      args={"skill_name": "skill1", "file_path": "references/other.md"},
+      tool_context=ctx_b,
+  )
   assert result_b2["error_code"] == "RESOURCE_NOT_FOUND_FATAL"
 
 
 @pytest.mark.asyncio
-async def test_load_resource_failed_paths_use_temp_prefix(mock_skill1):
-  """Tracking key uses the `temp:` prefix so it is not persisted."""
+async def test_load_resource_counter_uses_temp_prefix(mock_skill1):
+  """Failure-counter key uses the `temp:` prefix so it is not persisted."""
   toolset = skill_toolset.SkillToolset([mock_skill1])
   tool = skill_toolset.LoadSkillResourceTool(toolset)
   ctx = _make_tool_context_with_agent()
@@ -577,10 +603,10 @@ async def test_load_resource_failed_paths_use_temp_prefix(mock_skill1):
       tool_context=ctx,
   )
 
-  # Every key written by the retry guard must start with `temp:` so it gets
-  # trimmed from the event delta and never reaches durable storage.
-  guard_keys = [k for k in ctx.state if "skill_resource_failed_paths" in k]
-  assert guard_keys, "Retry guard did not write a tracking key."
+  # The counter key must start with `temp:` so it is trimmed from the event
+  # delta and never reaches durable storage.
+  guard_keys = [k for k in ctx.state if "skill_resource_not_found_count" in k]
+  assert guard_keys, "Failure counter did not write a tracking key."
   assert all(k.startswith("temp:") for k in guard_keys)
 
 

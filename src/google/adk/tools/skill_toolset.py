@@ -355,26 +355,25 @@ class LoadSkillResourceTool(BaseTool):
       }
 
     if content is None:
-      # Invocation-scoped retry guard. The `temp:` prefix prevents persistence
-      # to durable session storage; appending invocation_id ensures the guard
-      # does not leak across invocations on in-memory session backends (where
-      # temp keys are not auto-cleared).
-      failed_key = (
-          f"temp:_adk_skill_resource_failed_paths_{tool_context.invocation_id}"
+      # Invocation-scoped failure counter. Counts RESOURCE_NOT_FOUND across ALL
+      # paths so the guard fires even when the LLM hallucinates a different path
+      # on each retry. The `temp:` prefix prevents persistence to durable
+      # session storage; invocation_id isolates in-memory backends.
+      counter_key = (
+          f"temp:_adk_skill_resource_not_found_count_{tool_context.invocation_id}"
       )
-      failed_paths = list(tool_context.state.get(failed_key) or [])
-      resource_id = f"{skill_name}:{file_path}"
-      if resource_id in failed_paths:
+      fail_count = int(tool_context.state.get(counter_key) or 0) + 1
+      tool_context.state[counter_key] = fail_count
+      if fail_count > 1:
         return {
             "error": (
                 f"Resource '{file_path}' not found in skill '{skill_name}'."
-                " This path was already attempted and failed. Do not retry"
-                " — report the error to the user and stop."
+                f" This is resource lookup failure #{fail_count} this"
+                " invocation. Do not retry any path — report the error to"
+                " the user and stop."
             ),
             "error_code": "RESOURCE_NOT_FOUND_FATAL",
         }
-      failed_paths.append(resource_id)
-      tool_context.state[failed_key] = failed_paths
       return {
           "error": f"Resource '{file_path}' not found in skill '{skill_name}'.",
           "error_code": "RESOURCE_NOT_FOUND",
