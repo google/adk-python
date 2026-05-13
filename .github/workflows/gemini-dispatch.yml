@@ -92,7 +92,7 @@ jobs:
             const request = process.env.REQUEST;
             core.setOutput('request', request);
 
-            if (eventType === 'pull_request.opened') {
+            if (eventType === 'pull_request.opened' || eventType === 'pull_request.ready_for_review') {
               core.setOutput('command', 'review');
             } else if (request.startsWith("@gemini-cli /review")) {
               core.setOutput('command', 'review');
