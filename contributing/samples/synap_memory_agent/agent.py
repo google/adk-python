@@ -15,11 +15,11 @@
 """Sample agent demonstrating Synap memory tools.
 
 Synap (https://maximem.ai) is a managed long-term memory layer for AI agents.
-The `synap-google-adk` package exposes Synap as ADK FunctionTools so the agent
-can search and store memories across sessions.
+The `maximem-synap-google-adk` package exposes Synap as ADK FunctionTools so
+the agent can search and store memories across sessions.
 
 Setup:
-    pip install synap-google-adk maximem-synap
+    pip install maximem-synap-google-adk maximem-synap
     export SYNAP_API_KEY=<your-key>  # https://synap.maximem.ai
 
 Open source integration package:
