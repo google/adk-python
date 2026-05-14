@@ -9,18 +9,18 @@ interaction.
 
 The agent combines:
 
--   **Tools**: `search_wikipedia` and `get_current_year` for gathering
-    information
--   **Structured Output**: `PersonInfo` schema to ensure consistent response
-    format
+- **Tools**: `search_wikipedia` and `get_current_year` for gathering
+  information
+- **Structured Output**: `PersonInfo` schema to ensure consistent response
+  format
 
 When both `output_schema` and `tools` are specified:
 
-1.  ADK automatically adds a special `set_model_response` tool
-2.  The model can use the regular tools for information gathering
-3.  For the final response, the model uses `set_model_response` with structured
-    data
-4.  ADK extracts and validates the structured response
+1. ADK automatically adds a special `set_model_response` tool
+1. The model can use the regular tools for information gathering
+1. For the final response, the model uses `set_model_response` with structured
+   data
+1. ADK extracts and validates the structured response
 
 ## Expected Response Format
 
@@ -40,7 +40,7 @@ The agent will return information in this structured format for user query
 
 ## Key Features Demonstrated
 
-1.  **Tool Usage**: Agent can search Wikipedia and get current year
-2.  **Structured Output**: Response follows strict PersonInfo schema
-3.  **Validation**: ADK validates the response matches the schema
-4.  **Flexibility**: Works with any combination of tools and output schemas
+1. **Tool Usage**: Agent can search Wikipedia and get current year
+1. **Structured Output**: Response follows strict PersonInfo schema
+1. **Validation**: ADK validates the response matches the schema
+1. **Flexibility**: Works with any combination of tools and output schemas

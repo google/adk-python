@@ -1413,43 +1413,6 @@ def _deprecate_staging_bucket(ctx, param, value):
   return value
 
 
-def deprecated_adk_services_options():
-  """Deprecated ADK services options."""
-
-  def warn(alternative_param, ctx, param, value):
-    if value:
-      click.echo(
-          click.style(
-              f"WARNING: Deprecated option --{param.name} is used. Please use"
-              f" {alternative_param} instead.",
-              fg="yellow",
-          ),
-          err=True,
-      )
-    return value
-
-  def decorator(func):
-    @click.option(
-        "--session_db_url",
-        help="Deprecated. Use --session_service_uri instead.",
-        callback=functools.partial(warn, "--session_service_uri"),
-    )
-    @click.option(
-        "--artifact_storage_uri",
-        type=str,
-        help="Deprecated. Use --artifact_service_uri instead.",
-        callback=functools.partial(warn, "--artifact_service_uri"),
-        default=None,
-    )
-    @functools.wraps(func)
-    def wrapper(*args, **kwargs):
-      return func(*args, **kwargs)
-
-    return wrapper
-
-  return decorator
-
-
 def fast_api_common_options():
   """Decorator to add common fast api options to click commands."""
 
@@ -1600,7 +1563,6 @@ def fast_api_common_options():
 @fast_api_common_options()
 @web_options()
 @adk_services_options(default_use_local_storage=True)
-@deprecated_adk_services_options()
 @click.argument(
     "agents_dir",
     type=click.Path(
@@ -1623,8 +1585,6 @@ def cli_web(
     artifact_service_uri: Optional[str] = None,
     memory_service_uri: Optional[str] = None,
     use_local_storage: bool = True,
-    session_db_url: Optional[str] = None,  # Deprecated
-    artifact_storage_uri: Optional[str] = None,  # Deprecated
     a2a: bool = False,
     reload_agents: bool = False,
     extra_plugins: Optional[list[str]] = None,
@@ -1641,8 +1601,6 @@ def cli_web(
 
     adk web --session_service_uri=[uri] --port=[port] path/to/agents_dir
   """
-  session_service_uri = session_service_uri or session_db_url
-  artifact_service_uri = artifact_service_uri or artifact_storage_uri
   logs.setup_adk_logger(getattr(logging, log_level.upper()))
 
   @asynccontextmanager
@@ -1713,7 +1671,6 @@ def cli_web(
 )
 @fast_api_common_options()
 @adk_services_options(default_use_local_storage=True)
-@deprecated_adk_services_options()
 @click.option(
     "--auto_create_session",
     is_flag=True,
@@ -1737,8 +1694,6 @@ def cli_api_server(
     artifact_service_uri: Optional[str] = None,
     memory_service_uri: Optional[str] = None,
     use_local_storage: bool = True,
-    session_db_url: Optional[str] = None,  # Deprecated
-    artifact_storage_uri: Optional[str] = None,  # Deprecated
     a2a: bool = False,
     reload_agents: bool = False,
     extra_plugins: Optional[list[str]] = None,
@@ -1754,8 +1709,6 @@ def cli_api_server(
 
     adk api_server --session_service_uri=[uri] --port=[port] path/to/agents_dir
   """
-  session_service_uri = session_service_uri or session_db_url
-  artifact_service_uri = artifact_service_uri or artifact_storage_uri
   logs.setup_adk_logger(getattr(logging, log_level.upper()))
 
   config = uvicorn.Config(
@@ -1884,11 +1837,6 @@ def cli_api_server(
     default="INFO",
     help="Optional. Set the logging level",
 )
-@click.option(
-    "--verbosity",
-    type=LOG_LEVELS,
-    help="Deprecated. Use --log_level instead.",
-)
 @click.argument(
     "agent",
     type=click.Path(
@@ -1934,7 +1882,6 @@ def cli_api_server(
 )
 # TODO: Add eval_storage_uri option back when evals are supported in Cloud Run.
 @adk_services_options(default_use_local_storage=False)
-@deprecated_adk_services_options()
 @click.pass_context
 def cli_deploy_cloud_run(
     ctx,
@@ -1950,14 +1897,11 @@ def cli_deploy_cloud_run(
     with_ui: bool,
     adk_version: str,
     log_level: str,
-    verbosity: Optional[str],
     allow_origins: Optional[list[str]] = None,
     session_service_uri: Optional[str] = None,
     artifact_service_uri: Optional[str] = None,
     memory_service_uri: Optional[str] = None,
     use_local_storage: bool = False,
-    session_db_url: Optional[str] = None,  # Deprecated
-    artifact_storage_uri: Optional[str] = None,  # Deprecated
     a2a: bool = False,
     trigger_sources: Optional[str] = None,
 ):
@@ -1974,18 +1918,8 @@ def cli_deploy_cloud_run(
     adk deploy cloud_run --project=[project] --region=[region] path/to/my_agent
       -- --no-allow-unauthenticated --min-instances=2
   """
-  if verbosity:
-    click.secho(
-        "WARNING: The --verbosity option is deprecated. Use --log_level"
-        " instead.",
-        fg="yellow",
-        err=True,
-    )
 
   _warn_if_with_ui(with_ui)
-
-  session_service_uri = session_service_uri or session_db_url
-  artifact_service_uri = artifact_service_uri or artifact_storage_uri
 
   # Parse arguments to separate gcloud args (after --) from regular args
   gcloud_args = []
@@ -2030,7 +1964,7 @@ def cli_deploy_cloud_run(
         allow_origins=allow_origins,
         with_ui=with_ui,
         log_level=log_level,
-        verbosity=verbosity,
+        verbosity=log_level,
         adk_version=adk_version,
         session_service_uri=session_service_uri,
         artifact_service_uri=artifact_service_uri,

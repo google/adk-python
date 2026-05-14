@@ -1188,6 +1188,34 @@ class TestRunnerShouldAppendEvent:
     )
     assert self.runner._should_append_event(event, is_live_call=True) is True
 
+  def test_should_not_append_event_live_model_video(self):
+    event = Event(
+        invocation_id="inv1",
+        author="model",
+        content=types.Content(
+            parts=[
+                types.Part(
+                    inline_data=types.Blob(data=b"123", mime_type="video/mp4")
+                )
+            ]
+        ),
+    )
+    assert self.runner._should_append_event(event, is_live_call=True) is False
+
+  def test_should_append_event_non_live_model_video(self):
+    event = Event(
+        invocation_id="inv1",
+        author="model",
+        content=types.Content(
+            parts=[
+                types.Part(
+                    inline_data=types.Blob(data=b"123", mime_type="video/mp4")
+                )
+            ]
+        ),
+    )
+    assert self.runner._should_append_event(event, is_live_call=False) is True
+
 
 @pytest.fixture
 def user_agent_module(tmp_path, monkeypatch):
@@ -1212,7 +1240,7 @@ from google.adk.agents.llm_agent import LlmAgent
 class MyAgent(LlmAgent):
     pass
 
-root_agent = MyAgent(name="{agent_dir_name}", model="gemini-2.0-flash")
+root_agent = MyAgent(name="{agent_dir_name}", model="gemini-2.5-flash")
 """
     (agent_dir / "agent.py").write_text(agent_source, encoding="utf-8")
 
@@ -1274,7 +1302,7 @@ class TestRunnerInferAgentOrigin:
     """
     agent = LlmAgent(
         name="my_custom_agent",
-        model="gemini-2.0-flash",
+        model="gemini-2.5-flash",
     )
 
     runner = Runner(

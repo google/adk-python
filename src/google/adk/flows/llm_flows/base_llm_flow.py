@@ -36,9 +36,7 @@ from ...agents.invocation_context import InvocationContext
 from ...agents.live_request_queue import LiveRequestQueue
 from ...agents.readonly_context import ReadonlyContext
 from ...agents.run_config import StreamingMode
-from ...auth.auth_handler import AuthHandler
 from ...auth.auth_tool import AuthConfig
-from ...auth.credential_manager import CredentialManager
 from ...events.event import Event
 from ...models.base_llm_connection import BaseLlmConnection
 from ...models.llm_request import LlmRequest
@@ -144,6 +142,8 @@ async def _resolve_toolset_auth(
       continue
 
     auth_config_copy = auth_config.model_copy(deep=True)
+    from ...auth.credential_manager import CredentialManager
+
     try:
       credential = await CredentialManager(
           auth_config_copy
@@ -173,7 +173,8 @@ async def _resolve_toolset_auth(
   if not pending_auth_requests:
     return
 
-  # Build auth requests dict with generated auth requests
+  from ...auth.auth_handler import AuthHandler
+
   auth_requests = {
       credential_id: AuthHandler(auth_config).generate_auth_request()
       for credential_id, auth_config in pending_auth_requests.items()
@@ -594,8 +595,20 @@ class BaseLlmFlow(ABC):
                     agent_to_run = self._get_agent_to_run(
                         invocation_context, transfer_to_agent
                     )
+                    child_ctx = invocation_context.model_copy()
+                    # Child Live agent should start a new Live session.
+                    # Do not reuse the parent session's resumption handle.
+                    child_ctx.live_session_resumption_handle = None
+
+                    if child_ctx.run_config:
+                      child_ctx.run_config = child_ctx.run_config.model_copy(
+                          deep=True
+                      )
+                      if child_ctx.run_config.session_resumption:
+                        child_ctx.run_config.session_resumption.handle = None
+
                     async with Aclosing(
-                        agent_to_run.run_live(invocation_context)
+                        agent_to_run.run_live(child_ctx)
                     ) as agen:
                       async for item in agen:
                         yield item

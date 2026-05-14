@@ -24,6 +24,7 @@ from a2a.types import TaskState
 from a2a.types import TaskStatusUpdateEvent
 from a2a.types import TextPart
 from google.adk.a2a.converters.from_adk_event import convert_event_to_a2a_events
+from google.adk.events import event_actions
 from google.adk.events.event import Event
 from google.genai import types as genai_types
 import pytest
@@ -106,3 +107,26 @@ class TestFromAdk:
     """Test convert_event_to_a2a_events with None agents_artifacts."""
     with pytest.raises(ValueError, match="Agents artifacts cannot be None"):
       convert_event_to_a2a_events(self.mock_event, None)
+
+  def test_convert_event_to_a2a_events_with_actions(self):
+    """Test conversion of event with actions to TaskStatusUpdateEvent."""
+    self.mock_event.actions = event_actions.EventActions()
+    self.mock_event.actions.artifact_delta["image"] = 0
+
+    agents_artifacts = {}
+
+    result = convert_event_to_a2a_events(
+        self.mock_event,
+        agents_artifacts,
+        task_id="task-123",
+        context_id="context-456",
+    )
+
+    assert len(result) == 1
+    assert isinstance(result[0], TaskStatusUpdateEvent)
+    assert result[0].task_id == "task-123"
+    assert result[0].context_id == "context-456"
+
+    metadata = result[0].status.message.metadata
+    assert "adk_actions" in metadata
+    assert metadata["adk_actions"]["artifactDelta"] == {"image": 0}

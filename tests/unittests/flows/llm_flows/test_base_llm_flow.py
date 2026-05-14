@@ -18,6 +18,7 @@ from unittest import mock
 from unittest.mock import AsyncMock
 
 from google.adk.agents.llm_agent import Agent
+from google.adk.agents.run_config import RunConfig
 from google.adk.events.event import Event
 from google.adk.flows.llm_flows.base_llm_flow import _handle_after_model_callback
 from google.adk.flows.llm_flows.base_llm_flow import BaseLlmFlow
@@ -981,3 +982,90 @@ async def test_receive_from_model_author_attribution():
   assert events[0].author == 'user'
   assert events[1].author == 'test_agent'
   assert events[2].author == 'user'
+
+
+@pytest.mark.asyncio
+async def test_run_live_clears_resumption_handle_on_transfer():
+  """Test that run_live clears session resumption handles when transferring to another agent."""
+  from google.adk.agents.live_request_queue import LiveRequestQueue
+
+  agent = Agent(name='test_agent')
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent
+  )
+  invocation_context.live_session_resumption_handle = 'test_handle'
+  invocation_context.live_request_queue = LiveRequestQueue()
+
+  # Set up run_config with session_resumption
+  run_config = RunConfig()
+  session_resumption = types.SessionResumptionConfig()
+  session_resumption.handle = 'test_handle'
+  run_config.session_resumption = session_resumption
+  invocation_context.run_config = run_config
+
+  flow = BaseLlmFlowForTesting()
+
+  # Mock _receive_from_model to yield an event that triggers transfer
+  part = types.Part(
+      function_response=types.FunctionResponse(name='transfer_to_agent')
+  )
+  content = types.Content(parts=[part])
+  transfer_event = Event(
+      id=Event.new_id(),
+      invocation_id=invocation_context.invocation_id,
+      author=agent.name,
+  )
+  transfer_event.content = content
+  transfer_event.actions = mock.Mock()
+  transfer_event.actions.transfer_to_agent = 'sub_agent'
+
+  class StopTest(Exception):
+    pass
+
+  receive_call_count = 0
+
+  async def mock_receive_from_model(*args, **kwargs):
+    nonlocal receive_call_count
+    receive_call_count += 1
+    if receive_call_count == 1:
+      yield transfer_event
+    else:
+      raise StopTest()
+
+  flow._receive_from_model = mock.Mock(side_effect=mock_receive_from_model)
+
+  # Mock _get_agent_to_run to return a mock agent
+  mock_sub_agent = mock.Mock()
+  mock_sub_agent.run_live = mock.Mock()
+
+  async def mock_run_live_sub_agent(child_ctx, *args, **kwargs):
+    # Verify handles are cleared before sub-agent runs
+    assert child_ctx.live_session_resumption_handle is None
+    assert child_ctx.run_config.session_resumption.handle is None
+    for item in []:
+      yield item
+
+  mock_sub_agent.run_live.side_effect = mock_run_live_sub_agent
+
+  flow._get_agent_to_run = mock.Mock(return_value=mock_sub_agent)
+
+  # Mock _send_to_model to prevent it from running indefinitely
+  flow._send_to_model = mock.AsyncMock()
+
+  with mock.patch(
+      'google.adk.models.google_llm.Gemini.connect'
+  ) as mock_connect:
+    mock_connection = mock.AsyncMock()
+    mock_connect.return_value.__aenter__.return_value = mock_connection
+
+    try:
+      async for _ in flow.run_live(invocation_context):
+        pass
+    except StopTest:
+      pass
+
+  # Verify that parent's resumption handles were not cleared
+  assert invocation_context.live_session_resumption_handle == 'test_handle'
+  assert (
+      invocation_context.run_config.session_resumption.handle == 'test_handle'
+  )

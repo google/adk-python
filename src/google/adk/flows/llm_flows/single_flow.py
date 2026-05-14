@@ -29,7 +29,6 @@ from . import identity
 from . import instructions
 from . import interactions_processor
 from . import request_confirmation
-from ...auth import auth_preprocessor
 from .base_llm_flow import BaseLlmFlow
 
 logger = logging.getLogger('google_adk.' + __name__)
@@ -37,6 +36,8 @@ logger = logging.getLogger('google_adk.' + __name__)
 
 def _create_request_processors():
   """Create the standard request processor list for a single-agent flow."""
+  from ...auth import auth_preprocessor
+
   return [
       basic.request_processor,
       auth_preprocessor.request_processor,

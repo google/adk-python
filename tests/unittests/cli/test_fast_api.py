@@ -849,7 +849,10 @@ def test_app_with_a2a(
           "google.adk.cli.fast_api.LocalEvalSetResultsManager",
           return_value=mock_eval_set_results_manager,
       ),
-      patch("a2a.server.tasks.InMemoryTaskStore") as mock_task_store,
+      patch(
+          "google.adk.cli.fast_api._create_task_store_from_options",
+          return_value=MagicMock(),
+      ),
       patch(
           "google.adk.a2a.executor.a2a_agent_executor.A2aAgentExecutor"
       ) as mock_executor,
@@ -859,7 +862,6 @@ def test_app_with_a2a(
       patch("a2a.server.apps.A2AStarletteApplication") as mock_a2a_app,
   ):
     # Configure mocks
-    mock_task_store.return_value = MagicMock()
     mock_executor.return_value = MagicMock()
     mock_handler.return_value = MagicMock()
 
@@ -1814,7 +1816,9 @@ def test_a2a_request_handler_uses_push_config_store(
           "google.adk.cli.fast_api.LocalEvalSetResultsManager",
           return_value=mock_eval_set_results_manager,
       ),
-      patch("a2a.server.tasks.InMemoryTaskStore") as mock_task_store,
+      patch(
+          "google.adk.cli.fast_api._create_task_store_from_options",
+      ) as mock_create_task_store,
       patch(
           "a2a.server.tasks.InMemoryPushNotificationConfigStore"
       ) as mock_push_config_store_class,
@@ -1827,7 +1831,7 @@ def test_a2a_request_handler_uses_push_config_store(
       patch("a2a.server.apps.A2AStarletteApplication") as mock_a2a_app,
   ):
     mock_task_store_instance = MagicMock()
-    mock_task_store.return_value = mock_task_store_instance
+    mock_create_task_store.return_value = mock_task_store_instance
     mock_push_config_store = MagicMock()
     mock_push_config_store_class.return_value = mock_push_config_store
     mock_executor_instance = MagicMock()
@@ -1855,6 +1859,242 @@ def test_a2a_request_handler_uses_push_config_store(
         push_config_store=mock_push_config_store,
         task_store=mock_task_store_instance,
     )
+
+
+def test_a2a_request_handler_uses_task_store_uri(
+    mock_session_service,
+    mock_artifact_service,
+    mock_memory_service,
+    mock_agent_loader,
+    mock_eval_sets_manager,
+    mock_eval_set_results_manager,
+    temp_agents_dir_with_a2a,
+    monkeypatch,
+):
+  """Test A2A request handler uses task store created from URI."""
+  with (
+      patch("signal.signal", return_value=None),
+      patch(
+          "google.adk.cli.fast_api.create_session_service_from_options",
+          return_value=mock_session_service,
+      ),
+      patch(
+          "google.adk.cli.fast_api.create_artifact_service_from_options",
+          return_value=mock_artifact_service,
+      ),
+      patch(
+          "google.adk.cli.fast_api.create_memory_service_from_options",
+          return_value=mock_memory_service,
+      ),
+      patch(
+          "google.adk.cli.fast_api.AgentLoader",
+          return_value=mock_agent_loader,
+      ),
+      patch(
+          "google.adk.cli.fast_api.LocalEvalSetsManager",
+          return_value=mock_eval_sets_manager,
+      ),
+      patch(
+          "google.adk.cli.fast_api.LocalEvalSetResultsManager",
+          return_value=mock_eval_set_results_manager,
+      ),
+      patch(
+          "google.adk.cli.fast_api._create_task_store_from_options",
+      ) as mock_create_task_store,
+      patch(
+          "google.adk.a2a.executor.a2a_agent_executor.A2aAgentExecutor"
+      ) as mock_executor,
+      patch(
+          "a2a.server.request_handlers.DefaultRequestHandler"
+      ) as mock_handler,
+      patch("a2a.server.apps.A2AStarletteApplication") as mock_a2a_app,
+  ):
+    custom_task_store = MagicMock()
+    mock_create_task_store.return_value = custom_task_store
+    mock_executor_instance = MagicMock()
+    mock_executor.return_value = mock_executor_instance
+    mock_handler.return_value = MagicMock()
+    mock_a2a_app_instance = MagicMock()
+    mock_a2a_app_instance.routes.return_value = []
+    mock_a2a_app.return_value = mock_a2a_app_instance
+
+    test_uri = "postgresql+asyncpg://user:pass@host/db"
+    monkeypatch.chdir(temp_agents_dir_with_a2a)
+    _ = get_fast_api_app(
+        agents_dir=".",
+        web=True,
+        session_service_uri="",
+        artifact_service_uri="",
+        memory_service_uri="",
+        allow_origins=["*"],
+        a2a=True,
+        task_store_uri=test_uri,
+        host="127.0.0.1",
+        port=8000,
+    )
+
+    mock_create_task_store.assert_called_once_with(
+        task_store_uri=test_uri,
+    )
+    mock_handler.assert_called_once()
+    call_kwargs = mock_handler.call_args[1]
+    assert call_kwargs["task_store"] is custom_task_store
+
+
+def test_a2a_task_store_engine_disposed_on_shutdown(
+    mock_session_service,
+    mock_artifact_service,
+    mock_memory_service,
+    mock_agent_loader,
+    mock_eval_sets_manager,
+    mock_eval_set_results_manager,
+    temp_agents_dir_with_a2a,
+    monkeypatch,
+):
+  """Test that the A2A task store engine is disposed on app shutdown."""
+  mock_engine = AsyncMock()
+  custom_task_store = MagicMock()
+  custom_task_store.engine = mock_engine
+
+  with (
+      patch("signal.signal", return_value=None),
+      patch(
+          "google.adk.cli.fast_api.create_session_service_from_options",
+          return_value=mock_session_service,
+      ),
+      patch(
+          "google.adk.cli.fast_api.create_artifact_service_from_options",
+          return_value=mock_artifact_service,
+      ),
+      patch(
+          "google.adk.cli.fast_api.create_memory_service_from_options",
+          return_value=mock_memory_service,
+      ),
+      patch(
+          "google.adk.cli.fast_api.AgentLoader",
+          return_value=mock_agent_loader,
+      ),
+      patch(
+          "google.adk.cli.fast_api.LocalEvalSetsManager",
+          return_value=mock_eval_sets_manager,
+      ),
+      patch(
+          "google.adk.cli.fast_api.LocalEvalSetResultsManager",
+          return_value=mock_eval_set_results_manager,
+      ),
+      patch(
+          "google.adk.cli.fast_api._create_task_store_from_options",
+          return_value=custom_task_store,
+      ),
+      patch(
+          "google.adk.a2a.executor.a2a_agent_executor.A2aAgentExecutor"
+      ) as mock_executor,
+      patch(
+          "a2a.server.request_handlers.DefaultRequestHandler"
+      ) as mock_handler,
+      patch("a2a.server.apps.A2AStarletteApplication") as mock_a2a_app,
+  ):
+    mock_executor.return_value = MagicMock()
+    mock_handler.return_value = MagicMock()
+    mock_a2a_app_instance = MagicMock()
+    mock_a2a_app_instance.routes.return_value = []
+    mock_a2a_app.return_value = mock_a2a_app_instance
+
+    monkeypatch.chdir(temp_agents_dir_with_a2a)
+    app = get_fast_api_app(
+        agents_dir=".",
+        web=True,
+        session_service_uri="",
+        artifact_service_uri="",
+        memory_service_uri="",
+        allow_origins=["*"],
+        a2a=True,
+        task_store_uri="postgresql+asyncpg://user:pass@host/db",
+        host="127.0.0.1",
+        port=8000,
+    )
+
+    # Exercise the lifespan to trigger shutdown cleanup.
+    # TestClient enters/exits the lifespan context on __enter__/__exit__.
+    with TestClient(app):
+      pass
+
+    mock_engine.dispose.assert_awaited_once()
+
+
+def test_a2a_in_memory_task_store_no_engine_dispose(
+    mock_session_service,
+    mock_artifact_service,
+    mock_memory_service,
+    mock_agent_loader,
+    mock_eval_sets_manager,
+    mock_eval_set_results_manager,
+    temp_agents_dir_with_a2a,
+    monkeypatch,
+):
+  """Test that in-memory task stores (no engine attr) skip disposal."""
+  custom_task_store = MagicMock(spec=[])  # no attributes at all
+
+  with (
+      patch("signal.signal", return_value=None),
+      patch(
+          "google.adk.cli.fast_api.create_session_service_from_options",
+          return_value=mock_session_service,
+      ),
+      patch(
+          "google.adk.cli.fast_api.create_artifact_service_from_options",
+          return_value=mock_artifact_service,
+      ),
+      patch(
+          "google.adk.cli.fast_api.create_memory_service_from_options",
+          return_value=mock_memory_service,
+      ),
+      patch(
+          "google.adk.cli.fast_api.AgentLoader",
+          return_value=mock_agent_loader,
+      ),
+      patch(
+          "google.adk.cli.fast_api.LocalEvalSetsManager",
+          return_value=mock_eval_sets_manager,
+      ),
+      patch(
+          "google.adk.cli.fast_api.LocalEvalSetResultsManager",
+          return_value=mock_eval_set_results_manager,
+      ),
+      patch(
+          "google.adk.cli.fast_api._create_task_store_from_options",
+          return_value=custom_task_store,
+      ),
+      patch(
+          "google.adk.a2a.executor.a2a_agent_executor.A2aAgentExecutor"
+      ) as mock_executor,
+      patch(
+          "a2a.server.request_handlers.DefaultRequestHandler"
+      ) as mock_handler,
+      patch("a2a.server.apps.A2AStarletteApplication") as mock_a2a_app,
+  ):
+    mock_executor.return_value = MagicMock()
+    mock_handler.return_value = MagicMock()
+    mock_a2a_app_instance = MagicMock()
+    mock_a2a_app_instance.routes.return_value = []
+    mock_a2a_app.return_value = mock_a2a_app_instance
+
+    monkeypatch.chdir(temp_agents_dir_with_a2a)
+    app = get_fast_api_app(
+        agents_dir=".",
+        web=True,
+        session_service_uri="",
+        artifact_service_uri="",
+        memory_service_uri="",
+        allow_origins=["*"],
+        a2a=True,
+        host="127.0.0.1",
+        port=8000,
+    )
+
+    # Lifespan should complete without errors even with no engine.
+    with TestClient(app):
+      pass
 
 
 def test_a2a_disabled_by_default(test_app):
