@@ -57,13 +57,21 @@ def create_oauth2_session(
         and auth_scheme.flows.authorizationCode.tokenUrl
     ):
       token_endpoint = auth_scheme.flows.authorizationCode.tokenUrl
-      scopes = list(auth_scheme.flows.authorizationCode.scopes.keys())
+      scopes = (
+          list(auth_scheme.flows.authorizationCode.scopes.keys())
+          if auth_scheme.flows.authorizationCode.scopes
+          else []
+      )
     elif (
         auth_scheme.flows.clientCredentials
         and auth_scheme.flows.clientCredentials.tokenUrl
     ):
       token_endpoint = auth_scheme.flows.clientCredentials.tokenUrl
-      scopes = list(auth_scheme.flows.clientCredentials.scopes.keys())
+      scopes = (
+          list(auth_scheme.flows.clientCredentials.scopes.keys())
+          if auth_scheme.flows.clientCredentials.scopes
+          else []
+      )
     else:
       logger.warning(
           "OAuth2 scheme missing required flow configuration. Expected either"
