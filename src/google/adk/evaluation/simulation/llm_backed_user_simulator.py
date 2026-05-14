@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import logging
 from typing import ClassVar
+from typing import Union
 
 from google.genai import types as genai_types
 from pydantic import Field
@@ -23,6 +24,7 @@ from pydantic import field_validator
 from typing_extensions import override
 
 from ...events.event import Event
+from ...models.base_llm import BaseLlm
 from ...models.llm_request import LlmRequest
 from ...models.registry import LLMRegistry
 from ...utils.context_utils import Aclosing
@@ -46,9 +48,12 @@ _STOP_SIGNAL = "</finished>"
 class LlmBackedUserSimulatorConfig(BaseUserSimulatorConfig):
   """Contains configurations required by an LLM backed user simulator."""
 
-  model: str = Field(
+  model: Union[str, BaseLlm] = Field(
       default="gemini-2.5-flash",
-      description="The model to use for user simulation.",
+      description=(
+          "The model to use for user simulation. It can be a model name"
+          " string or a BaseLlm instance for custom/self-hosted models."
+      ),
   )
 
   model_configuration: genai_types.GenerateContentConfig = Field(
@@ -123,9 +128,12 @@ class LlmBackedUserSimulator(UserSimulator):
     super().__init__(config, config_type=LlmBackedUserSimulator.config_type)
     self._conversation_scenario = conversation_scenario
     self._invocation_count = 0
-    llm_registry = LLMRegistry()
-    llm_class = llm_registry.resolve(self._config.model)
-    self._llm = llm_class(model=self._config.model)
+    if isinstance(self._config.model, BaseLlm):
+      self._llm = self._config.model
+    else:
+      llm_registry = LLMRegistry()
+      llm_class = llm_registry.resolve(self._config.model)
+      self._llm = llm_class(model=self._config.model)
     self._user_persona = self._conversation_scenario.user_persona
 
   @classmethod
@@ -171,8 +179,12 @@ class LlmBackedUserSimulator(UserSimulator):
         user_persona=self._user_persona,
     )
 
+    config_model = self._config.model
+    model_str = (
+        config_model if isinstance(config_model, str) else config_model.model
+    )
     llm_request = LlmRequest(
-        model=self._config.model,
+        model=model_str,
         config=self._config.model_configuration,
         contents=[
             genai_types.Content(

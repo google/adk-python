@@ -19,6 +19,7 @@ from enum import Enum
 from typing import Optional
 from typing import Union
 
+from google.adk.models.base_llm import BaseLlm
 from google.genai import types as genai_types
 from pydantic import alias_generators
 from pydantic import BaseModel
@@ -75,10 +76,11 @@ Threshold: TypeAlias = float
 class JudgeModelOptions(EvalBaseModel):
   """Options for an eval metric's judge model."""
 
-  judge_model: str = Field(
+  judge_model: Union[str, BaseLlm] = Field(
       default="gemini-2.5-flash",
       description=(
-          "The judge model to use for evaluation. It can be a model name."
+          "The judge model to use for evaluation. It can be a model name"
+          " string or a BaseLlm instance for custom/self-hosted models."
       ),
   )
 
