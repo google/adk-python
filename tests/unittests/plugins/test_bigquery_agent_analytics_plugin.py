@@ -1531,6 +1531,60 @@ class TestBigQueryAgentAnalyticsPlugin:
     # The original test passed it as kwarg.
 
   @pytest.mark.asyncio
+  async def test_after_model_callback_projects_finish_reason(
+      self,
+      bq_plugin_inst,
+      mock_write_client,
+      callback_context,
+      dummy_arrow_schema,
+  ):
+    """finish_reason from LlmResponse is projected to attributes JSON."""
+    llm_response = llm_response_lib.LlmResponse(
+        content=types.Content(parts=[types.Part(text="Truncated")]),
+        usage_metadata=types.UsageMetadata(
+            prompt_token_count=10, total_token_count=15
+        ),
+        finish_reason=types.FinishReason.MAX_TOKENS,
+    )
+    bigquery_agent_analytics_plugin.TraceManager.push_span(callback_context)
+    await bq_plugin_inst.after_model_callback(
+        callback_context=callback_context,
+        llm_response=llm_response,
+    )
+    await asyncio.sleep(0.01)
+    log_entry = await _get_captured_event_dict_async(
+        mock_write_client, dummy_arrow_schema
+    )
+    _assert_common_fields(log_entry, "LLM_RESPONSE")
+    attrs = json.loads(log_entry["attributes"])
+    assert attrs["finish_reason"] == "MAX_TOKENS"
+
+  @pytest.mark.asyncio
+  async def test_after_model_callback_omits_finish_reason_when_absent(
+      self,
+      bq_plugin_inst,
+      mock_write_client,
+      callback_context,
+      dummy_arrow_schema,
+  ):
+    """When LlmResponse.finish_reason is None, the key is not emitted."""
+    llm_response = llm_response_lib.LlmResponse(
+        content=types.Content(parts=[types.Part(text="ok")]),
+    )
+    bigquery_agent_analytics_plugin.TraceManager.push_span(callback_context)
+    await bq_plugin_inst.after_model_callback(
+        callback_context=callback_context,
+        llm_response=llm_response,
+    )
+    await asyncio.sleep(0.01)
+    log_entry = await _get_captured_event_dict_async(
+        mock_write_client, dummy_arrow_schema
+    )
+    _assert_common_fields(log_entry, "LLM_RESPONSE")
+    attrs = json.loads(log_entry["attributes"])
+    assert "finish_reason" not in attrs
+
+  @pytest.mark.asyncio
   async def test_after_model_callback_tool_call(
       self,
       bq_plugin_inst,
@@ -3754,6 +3808,30 @@ class TestEnrichAttributes:
         "input_tokens": 100,
         "output_tokens": 50,
     }
+
+  def test_finish_reason_included_when_set(self):
+    """Should include finish_reason in attributes when set on EventData."""
+    plugin = self._make_plugin()
+    ed = bigquery_agent_analytics_plugin.EventData(finish_reason="MAX_TOKENS")
+    with mock.patch.object(
+        bigquery_agent_analytics_plugin.TraceManager,
+        "get_root_agent_name",
+        return_value="agent",
+    ):
+      attrs = plugin._enrich_attributes(ed, self._make_callback_context())
+    assert attrs["finish_reason"] == "MAX_TOKENS"
+
+  def test_finish_reason_omitted_when_none(self):
+    """Should not add finish_reason key when EventData.finish_reason is None."""
+    plugin = self._make_plugin()
+    ed = bigquery_agent_analytics_plugin.EventData()
+    with mock.patch.object(
+        bigquery_agent_analytics_plugin.TraceManager,
+        "get_root_agent_name",
+        return_value="agent",
+    ):
+      attrs = plugin._enrich_attributes(ed, self._make_callback_context())
+    assert "finish_reason" not in attrs
 
 
 class TestMultiSubagentToolLogging:
