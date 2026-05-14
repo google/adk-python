@@ -625,6 +625,7 @@ async def handle_function_calls_live(
               tools_dict,
               agent,
               streaming_lock,
+              function_call_event.live_session_id,
           )
       )
       for function_call in function_calls
@@ -669,6 +670,7 @@ async def _execute_single_function_call_live(
     tools_dict: dict[str, BaseTool],
     agent: LlmAgent,
     streaming_lock: asyncio.Lock,
+    live_session_id: Optional[str],
 ) -> Optional[Event]:
   """Execute a single function call for live mode with thread safety."""
 
@@ -726,7 +728,11 @@ async def _execute_single_function_call_live(
     )
     if error_response is not None:
       return __build_response_event(
-          tool, error_response, tool_context, invocation_context
+          tool,
+          error_response,
+          tool_context,
+          invocation_context,
+          live_session_id=live_session_id,
       )
     raise tool_error
 
@@ -823,7 +829,11 @@ async def _execute_single_function_call_live(
 
     # Builds the function response event.
     function_response_event = __build_response_event(
-        tool, function_response, tool_context, invocation_context
+        tool,
+        function_response,
+        tool_context,
+        invocation_context,
+        live_session_id=live_session_id,
     )
     return function_response_event
 
@@ -1108,6 +1118,8 @@ def __build_response_event(
     function_result: dict[str, object],
     tool_context: ToolContext,
     invocation_context: InvocationContext,
+    *,
+    live_session_id: Optional[str] = None,
 ) -> Event:
   # Specs requires the result to be a dict.
   if not isinstance(function_result, dict):
@@ -1137,6 +1149,7 @@ def __build_response_event(
       content=content,
       actions=tool_context.actions,
       branch=invocation_context.branch,
+      live_session_id=live_session_id,
   )
 
   return function_response_event
@@ -1199,6 +1212,7 @@ def merge_parallel_function_response_events(
       branch=base_event.branch,
       content=types.Content(role='user', parts=merged_parts),
       actions=merged_actions,  # Aggregated from all parallel events
+      live_session_id=base_event.live_session_id,
   )
 
   # Use the base_event as the timestamp

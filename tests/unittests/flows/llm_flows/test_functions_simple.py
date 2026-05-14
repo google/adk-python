@@ -503,6 +503,34 @@ async def test_function_call_args_none_handling():
 
 
 @pytest.mark.asyncio
+async def test_live_function_response_preserves_live_session_id():
+  def simple_fn() -> dict:
+    return {'result': 'ok'}
+
+  tool = FunctionTool(simple_fn)
+  model = testing_utils.MockModel.create(responses=[])
+  agent = Agent(name='test_agent', model=model, tools=[tool])
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent, user_content=''
+  )
+
+  function_call = types.FunctionCall(name=tool.name, args={})
+  event = Event(
+      invocation_id=invocation_context.invocation_id,
+      author=agent.name,
+      content=types.Content(parts=[types.Part(function_call=function_call)]),
+      live_session_id='live-session-1',
+  )
+
+  result = await handle_function_calls_live(
+      invocation_context, event, {tool.name: tool}
+  )
+
+  assert result is not None
+  assert result.live_session_id == 'live-session-1'
+
+
+@pytest.mark.asyncio
 async def test_function_call_args_copy_behavior():
   """Test that modifying the copied args doesn't affect the original."""
 
@@ -1020,6 +1048,7 @@ def test_merge_parallel_function_response_events_preserves_other_attributes():
       invocation_id=invocation_id,
       author=base_author,
       branch=base_branch,
+      live_session_id='live-session-1',
       content=types.Content(
           role='user', parts=[types.Part(function_response=function_response1)]
       ),
@@ -1041,6 +1070,7 @@ def test_merge_parallel_function_response_events_preserves_other_attributes():
   assert merged_event.invocation_id == invocation_id
   assert merged_event.author == base_author
   assert merged_event.branch == base_branch
+  assert merged_event.live_session_id == 'live-session-1'
 
   # Should contain both function responses
   assert len(merged_event.content.parts) == 2
