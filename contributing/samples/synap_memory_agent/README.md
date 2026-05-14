@@ -4,7 +4,7 @@ This sample demonstrates how to add persistent, cross-session memory to a Google
 
 ## What it does
 
-The agent is wired up with two `FunctionTool` instances from `synap-google-adk`:
+The agent is wired up with two `FunctionTool` instances from `maximem-synap-google-adk`:
 - `search_memory` — semantic search over the user's stored memories
 - `store_memory` — persist explicit facts the user mentions
 
@@ -13,7 +13,7 @@ On each turn the agent can recall what it knows about the user and save new fact
 ## Setup
 
 ```bash
-pip install synap-google-adk maximem-synap
+pip install maximem-synap-google-adk maximem-synap
 export SYNAP_API_KEY=<your-key>  # free key at https://synap.maximem.ai
 ```
 
@@ -28,5 +28,5 @@ Try teaching it something on the first turn (e.g. *"I'm allergic to peanuts"*), 
 ## Resources
 
 - [Synap documentation](https://docs.maximem.ai)
-- [PyPI: `synap-google-adk`](https://pypi.org/project/synap-google-adk/)
+- [PyPI: `maximem-synap-google-adk`](https://pypi.org/project/maximem-synap-google-adk/)
 - [Open source integration package](https://github.com/maximem-ai/maximem_synap_sdk/tree/main/packages/integrations/synap-google-adk)
