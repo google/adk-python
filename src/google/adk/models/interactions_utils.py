@@ -111,12 +111,12 @@ def convert_part_to_interaction_content(part: types.Part) -> Optional[dict]:
       ).decode('utf-8')
     return result
   elif part.function_response is not None:
-    # Convert the function response to a string for the interactions API
-    # The interactions API expects result to be either a string or items list
+    # Pass the function response through to the interactions API.
+    # Dict and list values are passed directly — the Interactions API handles
+    # JSON serialization internally. Pre-serializing with json.dumps() would
+    # cause double-escaping.
     result = part.function_response.response
-    if isinstance(result, dict):
-      result = json.dumps(result)
-    elif not isinstance(result, str):
+    if not isinstance(result, (dict, str, list)):
       result = str(result)
     logger.debug(
         'Converting function_response: name=%s, call_id=%s',

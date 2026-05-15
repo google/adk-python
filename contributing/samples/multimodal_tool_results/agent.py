@@ -29,7 +29,7 @@ root_agent = LlmAgent(
     name="image_describing_agent",
     description="image describing agent",
     instruction="""Whatever the user says, get the image using the get_image tool, and describe it.""",
-    model="gemini-2.0-flash",
+    model="gemini-2.5-flash",
     tools=[get_image],
 )
 

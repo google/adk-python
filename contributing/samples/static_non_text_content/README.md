@@ -16,27 +16,30 @@ This sample demonstrates ADK's static instruction feature with non-text content 
 The agent includes:
 
 1. **Text instructions**: Guide the agent on how to behave
-2. **Sample image**: A 1x1 yellow pixel PNG (`sample_chart.png`) as inline binary data
+1. **Sample image**: A 1x1 yellow pixel PNG (`sample_chart.png`) as inline binary data
 
 **Gemini Developer API:**
-3. **Contributing guide**: A sample document uploaded to Gemini Files API and referenced via file_data
+3\. **Contributing guide**: A sample document uploaded to Gemini Files API and referenced via file_data
 
 **Vertex AI:**
-3. **Research paper**: Gemma research paper from Google Cloud Storage via GCS file reference
-4. **AI research paper**: Same research paper accessed via HTTPS URL for comparison
+3\. **Research paper**: Gemma research paper from Google Cloud Storage via GCS file reference
+4\. **AI research paper**: Same research paper accessed via HTTPS URL for comparison
 
 ## Content Used
 
 **All API variants:**
+
 - **Image**: Base64-encoded 1x1 yellow pixel PNG (embedded in code as `inline_data`)
 
 **Gemini Developer API:**
+
 - **Document**: Sample contributing guide text (uploaded to Gemini Files API as `file_data`)
   - Contains sample guidelines and best practices for development
   - Demonstrates Files API upload and file_data reference functionality
   - Files are automatically cleaned up after 48 hours by the Gemini API
 
 **Vertex AI:**
+
 - **Gemma Research Paper**: Research paper accessed via GCS URI (as `file_data`)
   - GCS URI: `gs://cloud-samples-data/generative-ai/pdf/2403.05530.pdf`
   - Demonstrates native GCS file access in Vertex AI
@@ -69,28 +72,35 @@ The agent will automatically load environment variables on startup.
 ## Usage
 
 ### Default Test Prompts (Recommended)
+
 ```bash
 cd contributing/samples
 python -m static_non_text_content.main
 ```
+
 This runs test prompts that demonstrate the static content features:
+
 - **Gemini Developer API**: 4 prompts testing inline_data + Files API upload
 - **Vertex AI**: 5 prompts testing inline_data + GCS/HTTPS file access comparison
 
-### Interactive Mode  
+### Interactive Mode
+
 ```bash
 cd contributing/samples
 adk run static_non_text_content
 ```
+
 Use ADK's built-in interactive mode for free-form conversation.
 
 ### Single Prompt
+
 ```bash
 cd contributing/samples
 python -m static_non_text_content.main --prompt "What reference materials do you have access to?"
 ```
 
 ### With Debug Logging
+
 ```bash
 cd contributing/samples
 python -m static_non_text_content.main --debug --prompt "What is the Gemma research paper about?"
@@ -101,16 +111,17 @@ python -m static_non_text_content.main --debug --prompt "What is the Gemma resea
 The sample automatically runs test prompts when no `--prompt` is specified:
 
 **All API variants:**
+
 1. "What reference materials do you have access to?"
-2. "Can you describe the sample chart that was provided to you?"
-3. "How do the inline image and file references in your instructions help you answer questions?"
+1. "Can you describe the sample chart that was provided to you?"
+1. "How do the inline image and file references in your instructions help you answer questions?"
 
 **Gemini Developer API only:**
-4. "What does the contributing guide document say about best practices?"
+4\. "What does the contributing guide document say about best practices?"
 
 **Vertex AI only (additional prompts):**
-5. "What is the Gemma research paper about and what are its key contributions?"
-6. "Can you compare the research papers you have access to? Are they related or different?"
+5\. "What is the Gemma research paper about and what are its key contributions?"
+6\. "Can you compare the research papers you have access to? Are they related or different?"
 
 **Gemini Developer API** tests: `inline_data` (image) + Files API `file_data` (uploaded document)
 **Vertex AI** tests: `inline_data` (image) + GCS URI `file_data` + HTTPS URL `file_data` (same document via different access methods)
@@ -118,9 +129,9 @@ The sample automatically runs test prompts when no `--prompt` is specified:
 ## How It Works
 
 1. **Static Instruction Processing**: The `static_instruction` content is processed during agent initialization
-2. **Reference Generation**: Non-text parts get references like `[Reference to inline binary data: inline_data_0 ('sample_chart.png', type: image/png)]` in the system instruction
-3. **User Content Creation**: The actual binary data/file references are moved to user contents with proper role attribution
-4. **Model Understanding**: The model receives both the descriptive references and the actual content for analysis
+1. **Reference Generation**: Non-text parts get references like `[Reference to inline binary data: inline_data_0 ('sample_chart.png', type: image/png)]` in the system instruction
+1. **User Content Creation**: The actual binary data/file references are moved to user contents with proper role attribution
+1. **Model Understanding**: The model receives both the descriptive references and the actual content for analysis
 
 ## Code Structure
 

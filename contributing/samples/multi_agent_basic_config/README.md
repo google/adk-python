@@ -11,6 +11,7 @@ This sample demonstrates a minimal multi-agent setup with a learning assistant t
 ## Usage
 
 The root agent will automatically delegate:
+
 - Coding/programming questions → `code_tutor_agent`
 - Math questions → `math_tutor_agent`
 
