@@ -4799,6 +4799,26 @@ def test_extract_reasoning_value_prefers_thinking_blocks():
   assert result is thinking_blocks
 
 
+def test_extract_reasoning_value_gemini_thinking_blocks_zips_signatures():
+  """Gemini keeps thought signatures beside thinking_blocks."""
+  message = {
+      "role": "assistant",
+      "content": "Answer",
+      "thinking_blocks": [
+          {"type": "thinking", "thinking": "step 1"},
+          {"type": "thinking", "thinking": "step 2"},
+      ],
+      "provider_specific_fields": {
+          "thought_signatures": ["sig-1", "sig-2"],
+      },
+  }
+  result = _extract_reasoning_value(message)
+  assert result == [
+      {"type": "thinking", "thinking": "step 1", "signature": "sig-1"},
+      {"type": "thinking", "thinking": "step 2", "signature": "sig-2"},
+  ]
+
+
 def test_extract_reasoning_value_falls_back_without_thinking_blocks():
   """When thinking_blocks is absent, falls back to reasoning_content."""
   message = {
@@ -4847,6 +4867,18 @@ def test_convert_reasoning_value_to_parts_skips_empty_thinking():
   assert parts[0].text == "real thought"
 
 
+def test_convert_reasoning_value_to_parts_gemini_blocks_without_signature():
+  """Gemini thinking_blocks should still produce thought parts."""
+  thinking_blocks = [
+      {"type": "thinking", "thinking": "gemini thought"},
+  ]
+  parts = _convert_reasoning_value_to_parts(thinking_blocks)
+  assert len(parts) == 1
+  assert parts[0].text == "gemini thought"
+  assert parts[0].thought is True
+  assert parts[0].thought_signature is None
+
+
 def test_convert_reasoning_value_to_parts_flat_string_unchanged():
   """Flat string reasoning still produces thought parts without signature."""
   parts = _convert_reasoning_value_to_parts("simple reasoning text")
@@ -4854,6 +4886,27 @@ def test_convert_reasoning_value_to_parts_flat_string_unchanged():
   assert parts[0].text == "simple reasoning text"
   assert parts[0].thought is True
   assert parts[0].thought_signature is None
+
+
+def test_message_to_generate_content_response_gemini_thinking_blocks():
+  """Gemini thinking_blocks are surfaced before visible text."""
+  message = {
+      "role": "assistant",
+      "content": "I am a large language model.",
+      "thinking_blocks": [
+          {"type": "thinking", "thinking": "Identity check"},
+      ],
+      "provider_specific_fields": {
+          "thought_signatures": ["sig-gemini"],
+      },
+  }
+  response = _message_to_generate_content_response(message)
+  parts = response.content.parts
+  assert len(parts) == 2
+  assert parts[0].thought is True
+  assert parts[0].text == "Identity check"
+  assert parts[0].thought_signature == b"sig-gemini"
+  assert parts[1].text == "I am a large language model."
 
 
 @pytest.mark.asyncio

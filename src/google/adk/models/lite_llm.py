@@ -398,15 +398,47 @@ def _iter_reasoning_texts(reasoning_value: Any) -> Iterable[str]:
 
 
 def _is_thinking_blocks_format(reasoning_value: Any) -> bool:
-  """Returns True if reasoning_value is Anthropic thinking_blocks format.
+  """Returns True if reasoning_value is structured thinking_blocks format.
 
-  Anthropic thinking_blocks is a list of dicts, each with 'type', 'thinking',
-  and 'signature' keys.
+  Anthropic blocks include per-block signatures. Gemini blocks can use the same
+  type/thinking shape while carrying signatures separately on the message.
   """
   if not isinstance(reasoning_value, list) or not reasoning_value:
     return False
   first = reasoning_value[0]
-  return isinstance(first, dict) and "signature" in first
+  return isinstance(first, dict) and (
+      "thinking" in first or "signature" in first
+  )
+
+
+def _with_parallel_thought_signatures(
+    thinking_blocks: Any, message: Message | Delta
+) -> Any:
+  """Adds Gemini's parallel thought signatures to thinking_blocks."""
+  if not isinstance(thinking_blocks, list) or not thinking_blocks:
+    return thinking_blocks
+  first = thinking_blocks[0]
+  if not isinstance(first, dict) or "signature" in first:
+    return thinking_blocks
+
+  provider_fields = message.get("provider_specific_fields") or {}
+  if not isinstance(provider_fields, dict):
+    return thinking_blocks
+  signatures = provider_fields.get("thought_signatures") or []
+  if not isinstance(signatures, list) or not signatures:
+    return thinking_blocks
+
+  merged = []
+  for index, block in enumerate(thinking_blocks):
+    if (
+        isinstance(block, dict)
+        and index < len(signatures)
+        and signatures[index]
+    ):
+      merged.append({**block, "signature": signatures[index]})
+    else:
+      merged.append(block)
+  return merged
 
 
 def _convert_reasoning_value_to_parts(reasoning_value: Any) -> List[types.Part]:
@@ -455,7 +487,7 @@ def _extract_reasoning_value(message: Message | Delta | None) -> Any:
   # This must be preserved to maintain thinking across tool call boundaries.
   thinking_blocks = message.get("thinking_blocks")
   if thinking_blocks is not None:
-    return thinking_blocks
+    return _with_parallel_thought_signatures(thinking_blocks, message)
   reasoning_content = message.get("reasoning_content")
   if reasoning_content is not None:
     return reasoning_content
