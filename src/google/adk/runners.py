@@ -851,115 +851,108 @@ class Runner:
 
     plugin_manager = invocation_context.plugin_manager
 
-    # Step 1: Run the before_run callbacks to see if we should early exit.
-    early_exit_result = await plugin_manager.run_before_run_callback(
-        invocation_context=invocation_context
-    )
-    if isinstance(early_exit_result, types.Content):
-      early_exit_event = Event(
-          invocation_id=invocation_context.invocation_id,
-          author='model',
-          content=early_exit_result,
+    try:
+      # Step 1: Run the before_run callbacks to see if we should
+      # early exit.
+      early_exit_result = await plugin_manager.run_before_run_callback(
+          invocation_context=invocation_context
       )
-      _apply_run_config_custom_metadata(
-          early_exit_event, invocation_context.run_config
-      )
-      if self._should_append_event(early_exit_event, is_live_call):
-        await self.session_service.append_event(
-            session=session,
-            event=early_exit_event,
+      if isinstance(early_exit_result, types.Content):
+        early_exit_event = Event(
+            invocation_id=invocation_context.invocation_id,
+            author='model',
+            content=early_exit_result,
         )
-      yield early_exit_event
-    else:
-      # Step 2: Otherwise continue with normal execution
-      # Note for live/bidi:
-      # the transcription may arrive later than the action(function call
-      # event and thus function response event). In this case, the order of
-      # transcription and function call event will be wrong if we just
-      # append as it arrives. To address this, we should check if there is
-      # transcription going on. If there is transcription going on, we
-      # should hold on appending the function call event until the
-      # transcription is finished. The transcription in progress can be
-      # identified by checking if the transcription event is partial. When
-      # the next transcription event is not partial, it means the previous
-      # transcription is finished. Then if there is any buffered function
-      # call event, we should append them after this finished(non-partial)
-      # transcription event.
-      buffered_events: list[Event] = []
-      is_transcribing: bool = False
+        _apply_run_config_custom_metadata(
+            early_exit_event, invocation_context.run_config
+        )
+        if self._should_append_event(early_exit_event, is_live_call):
+          await self.session_service.append_event(
+              session=session,
+              event=early_exit_event,
+          )
+        yield early_exit_event
+      else:
+        # Step 2: Otherwise continue with normal execution
+        buffered_events: list[Event] = []
+        is_transcribing: bool = False
 
-      async with Aclosing(execute_fn(invocation_context)) as agen:
-        async for event in agen:
-          _apply_run_config_custom_metadata(
-              event, invocation_context.run_config
-          )
-          # Step 3: Run the on_event callbacks before persisting so callback
-          # changes are stored in the session and match the streamed event.
-          modified_event = await plugin_manager.run_on_event_callback(
-              invocation_context=invocation_context, event=event
-          )
-          output_event = self._get_output_event(
-              original_event=event,
-              modified_event=modified_event,
-              run_config=invocation_context.run_config,
-          )
+        async with Aclosing(execute_fn(invocation_context)) as agen:
+          async for event in agen:
+            _apply_run_config_custom_metadata(
+                event, invocation_context.run_config
+            )
+            # Step 3: Run the on_event callbacks before persisting
+            # so callback changes are stored in the session and
+            # match the streamed event.
+            modified_event = await plugin_manager.run_on_event_callback(
+                invocation_context=invocation_context, event=event
+            )
+            output_event = self._get_output_event(
+                original_event=event,
+                modified_event=modified_event,
+                run_config=invocation_context.run_config,
+            )
 
-          if is_live_call:
-            if event.partial and _is_transcription(event):
-              is_transcribing = True
-            if is_transcribing and _is_tool_call_or_response(event):
-              # only buffer function call and function response event which is
-              # non-partial
-              buffered_events.append(output_event)
-              continue
-            # Note for live/bidi: for audio response, it's considered as
-            # non-partial event(event.partial=None)
-            # event.partial=False and event.partial=None are considered as
-            # non-partial event; event.partial=True is considered as partial
-            # event.
-            if event.partial is not True:
-              if _is_transcription(event) and (
-                  _has_non_empty_transcription_text(event.input_transcription)
-                  or _has_non_empty_transcription_text(
-                      event.output_transcription
+            if is_live_call:
+              if event.partial and _is_transcription(event):
+                is_transcribing = True
+              if is_transcribing and _is_tool_call_or_response(event):
+                buffered_events.append(output_event)
+                continue
+              if event.partial is not True:
+                if _is_transcription(event) and (
+                    _has_non_empty_transcription_text(event.input_transcription)
+                    or _has_non_empty_transcription_text(
+                        event.output_transcription
+                    )
+                ):
+                  is_transcribing = False
+                  logger.debug(
+                      'Appending transcription finished event: %s',
+                      event,
                   )
-              ):
-                # transcription end signal, append buffered events
-                is_transcribing = False
-                logger.debug(
-                    'Appending transcription finished event: %s', event
+                  if self._should_append_event(event, is_live_call):
+                    await self.session_service.append_event(
+                        session=session, event=output_event
+                    )
+
+                  for buffered_event in buffered_events:
+                    logger.debug(
+                        'Appending buffered event: %s',
+                        buffered_event,
+                    )
+                    await self.session_service.append_event(
+                        session=session, event=buffered_event
+                    )
+                    yield buffered_event
+                  buffered_events = []
+                else:
+                  if self._should_append_event(event, is_live_call):
+                    logger.debug('Appending non-buffered event: %s', event)
+                    await self.session_service.append_event(
+                        session=session, event=output_event
+                    )
+            else:
+              if event.partial is not True:
+                await self.session_service.append_event(
+                    session=session, event=output_event
                 )
-                if self._should_append_event(event, is_live_call):
-                  await self.session_service.append_event(
-                      session=session, event=output_event
-                  )
 
-                for buffered_event in buffered_events:
-                  logger.debug('Appending buffered event: %s', buffered_event)
-                  await self.session_service.append_event(
-                      session=session, event=buffered_event
-                  )
-                  yield buffered_event  # yield buffered events to caller
-                buffered_events = []
-              else:
-                # non-transcription event or empty transcription event, for
-                # example, event that stores blob reference, should be appended.
-                if self._should_append_event(event, is_live_call):
-                  logger.debug('Appending non-buffered event: %s', event)
-                  await self.session_service.append_event(
-                      session=session, event=output_event
-                  )
-          else:
-            if event.partial is not True:
-              await self.session_service.append_event(
-                  session=session, event=output_event
-              )
+            yield output_event
+    except Exception as e:
+      # Notify plugins of the unhandled execution error.  Covers
+      # failures in before_run_callback, early-exit, and the main
+      # execution loop.  Notification-only; always re-raised.
+      await plugin_manager.run_on_run_error_callback(
+          invocation_context=invocation_context,
+          error=e,
+      )
+      raise
 
-          yield output_event
-
-    # Step 4: Run the after_run callbacks to perform global cleanup tasks or
-    # finalizing logs and metrics data.
-    # This does NOT emit any event.
+    # Step 4: Run the after_run callbacks to perform global cleanup
+    # tasks or finalizing logs and metrics data.
+    # This does NOT emit any event.  Only runs on success.
     await plugin_manager.run_after_run_callback(
         invocation_context=invocation_context
     )

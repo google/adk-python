@@ -28,6 +28,7 @@ import json
 import logging
 import mimetypes
 import os
+import traceback as traceback_module
 
 # Enable gRPC fork support so child processes created via os.fork()
 # can safely create new gRPC channels.  Must be set before grpc's
@@ -1874,8 +1875,15 @@ _EVENT_VIEW_DEFS: dict[str, list[str]] = {
     "AGENT_COMPLETED": [
         "CAST(JSON_VALUE(latency_ms, '$.total_ms') AS INT64) AS total_ms",
     ],
+    "AGENT_ERROR": [
+        "CAST(JSON_VALUE(latency_ms, '$.total_ms') AS INT64) AS total_ms",
+        "JSON_VALUE(content, '$.error_traceback') AS error_traceback",
+    ],
     "INVOCATION_STARTING": [],
     "INVOCATION_COMPLETED": [],
+    "INVOCATION_ERROR": [
+        "JSON_VALUE(content, '$.error_traceback') AS error_traceback",
+    ],
     "STATE_DELTA": [
         "JSON_QUERY(attributes, '$.state_delta') AS state_delta",
     ],
@@ -3579,3 +3587,98 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
             parent_span_id_override=parent_span_id,
         ),
     )
+
+  @_safe_callback
+  async def on_agent_error_callback(
+      self,
+      *,
+      agent: Any,
+      callback_context: CallbackContext,
+      error: Exception,
+  ) -> None:
+    """Callback when an agent execution fails with an unhandled exception.
+
+    Emits an AGENT_ERROR event and pops the agent span from
+    TraceManager.
+
+    Args:
+        agent: The agent instance that failed.
+        callback_context: The callback context.
+        error: The exception that escaped agent execution.
+    """
+    span_id, duration = TraceManager.pop_span()
+    parent_span_id, _ = TraceManager.get_current_span_and_parent()
+
+    error_tb = "".join(
+        traceback_module.format_exception(
+            type(error), error, error.__traceback__
+        )
+    )
+    max_len = self.config.max_content_length
+    if max_len > 0 and len(error_tb) > max_len:
+      error_tb = error_tb[:max_len] + "... [truncated]"
+
+    await self._log_event(
+        "AGENT_ERROR",
+        callback_context,
+        event_data=EventData(
+            status="ERROR",
+            error_message=str(error),
+            latency_ms=duration,
+            span_id_override=span_id,
+            parent_span_id_override=parent_span_id,
+        ),
+        raw_content={"error_traceback": error_tb},
+    )
+
+  @_safe_callback
+  async def on_run_error_callback(
+      self,
+      *,
+      invocation_context: "InvocationContext",
+      error: Exception,
+  ) -> None:
+    """Callback when a runner execution fails with an unhandled exception.
+
+    Emits an INVOCATION_ERROR event and performs the cleanup that
+    after_run_callback would normally do.
+
+    Args:
+        invocation_context: The context of the current invocation.
+        error: The exception that escaped runner execution.
+    """
+    try:
+      callback_ctx = CallbackContext(invocation_context)
+      trace_id = TraceManager.get_trace_id(callback_ctx)
+
+      span_id, duration = TraceManager.pop_span()
+      parent_span_id = TraceManager.get_current_span_id()
+
+      error_tb = "".join(
+          traceback_module.format_exception(
+              type(error), error, error.__traceback__
+          )
+      )
+      max_len = self.config.max_content_length
+      if max_len > 0 and len(error_tb) > max_len:
+        error_tb = error_tb[:max_len] + "... [truncated]"
+
+      await self._log_event(
+          "INVOCATION_ERROR",
+          callback_ctx,
+          event_data=EventData(
+              trace_id_override=trace_id,
+              status="ERROR",
+              error_message=str(error),
+              latency_ms=duration,
+              span_id_override=span_id,
+              parent_span_id_override=parent_span_id,
+          ),
+          raw_content={"error_traceback": error_tb},
+      )
+    finally:
+      # Cleanup must run even if _log_event raises.
+      TraceManager.clear_stack()
+      _active_invocation_id_ctx.set(None)
+      _root_agent_name_ctx.set(None)
+      await self.flush()
