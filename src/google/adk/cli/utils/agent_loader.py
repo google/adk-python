@@ -116,7 +116,7 @@ class AgentLoader(BaseAgentLoader):
 
   def _load_from_submodule(
       self, agent_name: str
-  ) -> Optional[Union[BaseAgent], App]:
+  ) -> Optional[Union[BaseAgent, App]]:
     # Load for case: Import "{agent_name}.agent" and look for "root_agent"
     # Covers structure: agents_dir/{agent_name}/agent.py (with root_agent defined in the module)
     try:
@@ -167,6 +167,8 @@ class AgentLoader(BaseAgentLoader):
   def _load_from_yaml_config(
       self, agent_name: str, agents_dir: str
   ) -> Optional[BaseAgent]:
+    # Validate agent_name doesn't escape agents_dir
+    self._validate_agent_path(agents_dir, agent_name)
     # Load from the config file at agents_dir/{agent_name}/root_agent.yaml
     config_path = os.path.join(agents_dir, agent_name, "root_agent.yaml")
     try:
@@ -188,7 +190,32 @@ class AgentLoader(BaseAgentLoader):
       ) + e.args[1:]
       raise e
 
-  _VALID_AGENT_NAME_RE = re.compile(r"^[a-zA-Z0-9_]+$")
+  def _validate_agent_path(self, agents_dir: str, agent_name: str) -> None:
+    """Validate that the agent path resolves within agents_dir.
+
+    Args:
+        agents_dir: The base directory for agents.
+        agent_name: The agent name/path to validate.
+
+    Raises:
+        ValueError: If the resolved path would escape agents_dir.
+    """
+    # Normalize paths to absolute, resolved paths
+    base_path = Path(agents_dir).resolve()
+    # Handle both forward and backward slashes by using Path
+    agent_path = base_path / agent_name
+    resolved_path = agent_path.resolve()
+
+    # Check if the resolved path is still within the base directory
+    try:
+      resolved_path.relative_to(base_path)
+    except ValueError as e:
+      raise ValueError(
+          f"Agent '{agent_name}' resolves outside agents_dir. "
+          "Path traversal is not permitted."
+      ) from e
+
+  _VALID_AGENT_NAME_RE: re.Pattern[str] = re.compile(r"^[a-zA-Z0-9_]+$")
 
   def _validate_agent_name(self, agent_name: str) -> None:
     """Validate agent name to prevent arbitrary module imports."""
@@ -423,7 +450,7 @@ class AgentLoader(BaseAgentLoader):
 
     raise ValueError(f"Could not determine agent type for '{agent_name}'.")
 
-  def remove_agent_from_cache(self, agent_name: str):
+  def remove_agent_from_cache(self, agent_name: str) -> None:
     # Clear module cache for the agent and its submodules
     keys_to_delete = [
         module_name
