@@ -119,7 +119,11 @@ async def inject_session_state(
           )
           return ''
         else:
-          raise KeyError(f'Context variable not found: `{var_name}`.')
+          logger.debug(
+              'Context variable %s not found in session state, returning as-is',
+              var_name,
+          )
+          return match.group()
 
   return await _async_sub(r'{+[^{}]*}+', _replace_match, template)
 
