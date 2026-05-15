@@ -247,12 +247,59 @@ async def test_perform_inference_with_case_ids(
       eval_set_id="test_eval_set",
       eval_case=eval_set.eval_cases[0],
       root_agent=dummy_agent,
+      use_live=False,
+      live_timeout_seconds=300,
   )
   eval_service._perform_inference_single_eval_item.assert_any_call(
       app_name="test_app",
       eval_set_id="test_eval_set",
       eval_case=eval_set.eval_cases[2],
       root_agent=dummy_agent,
+      use_live=False,
+      live_timeout_seconds=300,
+  )
+
+
+@pytest.mark.asyncio
+async def test_perform_inference_with_use_live(
+    eval_service,
+    dummy_agent,
+    mock_eval_sets_manager,
+    mocker,
+):
+  eval_set = EvalSet(
+      eval_set_id="test_eval_set",
+      eval_cases=[
+          EvalCase(eval_id="case1", conversation=[], session_input=None),
+      ],
+  )
+  mock_eval_sets_manager.get_eval_set.return_value = eval_set
+
+  mock_inference_result = mocker.MagicMock()
+  eval_service._perform_inference_single_eval_item = mocker.AsyncMock(
+      return_value=mock_inference_result
+  )
+
+  inference_request = InferenceRequest(
+      app_name="test_app",
+      eval_set_id="test_eval_set",
+      inference_config=InferenceConfig(
+          parallelism=1, use_live=True, live_timeout_seconds=600
+      ),
+  )
+
+  results = []
+  async for result in eval_service.perform_inference(inference_request):
+    results.append(result)
+
+  assert len(results) == 1
+  eval_service._perform_inference_single_eval_item.assert_called_once_with(
+      app_name="test_app",
+      eval_set_id="test_eval_set",
+      eval_case=eval_set.eval_cases[0],
+      root_agent=dummy_agent,
+      use_live=True,
+      live_timeout_seconds=600,
   )
 
 
@@ -791,3 +838,80 @@ def test_copy_invocation_rubrics_to_actual_invocations():
   _copy_invocation_rubrics_to_actual_invocations(expected, actual)
   assert actual[0].rubrics == [rubric1]
   assert actual[1].rubrics == [rubric2]
+
+
+@pytest.mark.asyncio
+async def test_perform_inference_single_eval_item_live(
+    eval_service, dummy_agent, mocker
+):
+  eval_case = EvalCase(eval_id="case1", conversation=[], session_input=None)
+  mock_generate_live = mocker.patch(
+      "google.adk.evaluation.evaluation_generator.EvaluationGenerator._generate_inferences_from_root_agent_live"
+  )
+  mock_generate_live.return_value = []
+
+  eval_service._session_id_supplier = mocker.MagicMock(
+      return_value="test_session_id"
+  )
+  mock_user_sim = mocker.MagicMock()
+  eval_service._user_simulator_provider.provide = mocker.MagicMock(
+      return_value=mock_user_sim
+  )
+
+  await eval_service._perform_inference_single_eval_item(
+      app_name="test_app",
+      eval_set_id="test_eval_set",
+      eval_case=eval_case,
+      root_agent=dummy_agent,
+      use_live=True,
+      live_timeout_seconds=600,
+  )
+
+  mock_generate_live.assert_called_once_with(
+      root_agent=dummy_agent,
+      user_simulator=mock_user_sim,
+      initial_session=None,
+      session_id="test_session_id",
+      session_service=eval_service._session_service,
+      artifact_service=eval_service._artifact_service,
+      memory_service=eval_service._memory_service,
+      live_timeout_seconds=600,
+  )
+
+
+@pytest.mark.asyncio
+async def test_perform_inference_single_eval_item_non_live(
+    eval_service, dummy_agent, mocker
+):
+  eval_case = EvalCase(eval_id="case1", conversation=[], session_input=None)
+  mock_generate = mocker.patch(
+      "google.adk.evaluation.evaluation_generator.EvaluationGenerator._generate_inferences_from_root_agent"
+  )
+  mock_generate.return_value = []
+
+  eval_service._session_id_supplier = mocker.MagicMock(
+      return_value="test_session_id"
+  )
+  mock_user_sim = mocker.MagicMock()
+  eval_service._user_simulator_provider.provide = mocker.MagicMock(
+      return_value=mock_user_sim
+  )
+
+  await eval_service._perform_inference_single_eval_item(
+      app_name="test_app",
+      eval_set_id="test_eval_set",
+      eval_case=eval_case,
+      root_agent=dummy_agent,
+      use_live=False,
+      live_timeout_seconds=300,
+  )
+
+  mock_generate.assert_called_once_with(
+      root_agent=dummy_agent,
+      user_simulator=mock_user_sim,
+      initial_session=None,
+      session_id="test_session_id",
+      session_service=eval_service._session_service,
+      artifact_service=eval_service._artifact_service,
+      memory_service=eval_service._memory_service,
+  )

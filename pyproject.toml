@@ -166,7 +166,7 @@ scripts.adk = "google.adk.cli:main"
 
 [tool.flit.sdist]
 include = [ 'src/**/*', 'README.md', 'pyproject.toml', 'LICENSE' ]
-exclude = [ 'src/**/*.sh' ]
+exclude = [ 'src/**/*.sh', 'src/**/README.md' ]
 
 [tool.flit.module]
 name = "google.adk"

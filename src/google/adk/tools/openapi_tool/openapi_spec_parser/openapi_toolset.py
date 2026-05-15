@@ -245,14 +245,3 @@ class OpenAPIToolset(BaseToolset):
   @override
   async def close(self):
     pass
-
-  @override
-  def get_auth_config(self) -> Optional[AuthConfig]:
-    """Returns the auth config for this toolset.
-
-    Note: This returns a copy so any exchanged credentials populated by the ADK
-    framework do not persist on the toolset instance across invocations.
-    """
-    return (
-        self._auth_config.model_copy(deep=True) if self._auth_config else None
-    )
