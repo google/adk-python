@@ -12,8 +12,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import asyncio
 import os
 import sys
+import threading
 from typing import Optional
 from unittest import mock
 from unittest.mock import AsyncMock
@@ -153,6 +155,84 @@ def test_supported_models():
       models[3]
       == r"projects\/.+\/locations\/.+\/publishers\/google\/models\/gemini.+"
   )
+
+
+def test_api_client_cached_per_event_loop():
+  """Verify api_client returns a fresh client for each distinct event loop.
+
+  Regression test for https://github.com/google/adk-python/issues/5538:
+  RuntimeError: Event loop is closed caused by reusing a cached api_client
+  whose underlying HTTP session was bound to a previous (now-closed) event
+  loop.  Each new OS thread in Vertex AI Agent Engine gets a fresh event loop,
+  so the client must not be shared across loops.
+  """
+  model = Gemini(model='gemini-2.5-flash')
+
+  with mock.patch('google.genai.Client', autospec=True) as mock_client:
+    mock_client.side_effect = lambda **kw: mock.MagicMock()
+
+    # Collect clients returned in each thread's event loop.
+    results: list[object] = []
+
+    def run_in_thread():
+      loop = asyncio.new_event_loop()
+      asyncio.set_event_loop(loop)
+      try:
+        client = loop.run_until_complete(asyncio.coroutine(lambda: model.api_client)())
+        results.append(client)
+      finally:
+        loop.close()
+        asyncio.set_event_loop(None)
+
+    async def get_client():
+      return model.api_client
+
+    # Each thread runs its own event loop.
+    t1 = threading.Thread(target=lambda: _run_and_collect(model, results))
+    t2 = threading.Thread(target=lambda: _run_and_collect(model, results))
+    t1.start()
+    t1.join()
+    t2.start()
+    t2.join()
+
+    # Two distinct event loops → two distinct Client instances.
+    assert len(results) == 2
+    assert results[0] is not results[1], (
+        'api_client must not be shared across different event loops'
+    )
+    assert mock_client.call_count == 2
+
+
+def _run_and_collect(model: Gemini, results: list) -> None:
+  """Helper: run a fresh event loop in the current thread and capture api_client."""
+  loop = asyncio.new_event_loop()
+  asyncio.set_event_loop(loop)
+  try:
+
+    async def _get():
+      return model.api_client
+
+    client = loop.run_until_complete(_get())
+    results.append(client)
+  finally:
+    loop.close()
+    asyncio.set_event_loop(None)
+
+
+def test_api_client_cached_within_same_event_loop():
+  """Verify api_client is cached (not recreated) within the same event loop."""
+  model = Gemini(model='gemini-2.5-flash')
+
+  with mock.patch('google.genai.Client', autospec=True) as mock_client:
+    mock_client.side_effect = lambda **kw: mock.MagicMock()
+
+    async def _get_twice():
+      c1 = model.api_client
+      c2 = model.api_client
+      assert c1 is c2, 'api_client must be cached within the same event loop'
+
+    asyncio.run(_get_twice())
+    assert mock_client.call_count == 1
 
 
 def test_gemini_api_client_creation_with_projects_prefix():
