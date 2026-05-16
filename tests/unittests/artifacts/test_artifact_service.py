@@ -400,6 +400,109 @@ async def test_list_keys_preserves_user_prefix(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
+    "service_type",
+    [
+        ArtifactServiceType.IN_MEMORY,
+        ArtifactServiceType.GCS,
+        ArtifactServiceType.FILE,
+    ],
+)
+async def test_session_scoped_artifacts_are_isolated_by_app_name(
+    service_type, artifact_service_factory
+):
+  """Artifacts with the same user/session/filename are isolated by app."""
+  artifact_service = artifact_service_factory(service_type)
+  artifact = types.Part.from_bytes(
+      data=b"app a content", mime_type="text/plain"
+  )
+
+  await artifact_service.save_artifact(
+      app_name="app_a",
+      user_id="user0",
+      session_id="session0",
+      filename="report.txt",
+      artifact=artifact,
+  )
+
+  assert not await artifact_service.load_artifact(
+      app_name="app_b",
+      user_id="user0",
+      session_id="session0",
+      filename="report.txt",
+  )
+  assert not await artifact_service.list_artifact_keys(
+      app_name="app_b",
+      user_id="user0",
+      session_id="session0",
+  )
+
+  await artifact_service.delete_artifact(
+      app_name="app_b",
+      user_id="user0",
+      session_id="session0",
+      filename="report.txt",
+  )
+  assert (
+      await artifact_service.load_artifact(
+          app_name="app_a",
+          user_id="user0",
+          session_id="session0",
+          filename="report.txt",
+      )
+      == artifact
+  )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "service_type",
+    [
+        ArtifactServiceType.IN_MEMORY,
+        ArtifactServiceType.GCS,
+        ArtifactServiceType.FILE,
+    ],
+)
+async def test_user_scoped_artifacts_are_isolated_by_app_name(
+    service_type, artifact_service_factory
+):
+  """User-scoped artifacts are also isolated by app."""
+  artifact_service = artifact_service_factory(service_type)
+  artifact = types.Part.from_bytes(
+      data=b"shared within one app only", mime_type="text/plain"
+  )
+
+  await artifact_service.save_artifact(
+      app_name="app_a",
+      user_id="user0",
+      session_id="session0",
+      filename="user:shared.txt",
+      artifact=artifact,
+  )
+
+  assert not await artifact_service.load_artifact(
+      app_name="app_b",
+      user_id="user0",
+      session_id="session0",
+      filename="user:shared.txt",
+  )
+  assert not await artifact_service.list_artifact_keys(
+      app_name="app_b",
+      user_id="user0",
+      session_id="session0",
+  )
+  assert (
+      await artifact_service.load_artifact(
+          app_name="app_a",
+          user_id="user0",
+          session_id="session0",
+          filename="user:shared.txt",
+      )
+      == artifact
+  )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
     "service_type", [ArtifactServiceType.IN_MEMORY, ArtifactServiceType.GCS]
 )
 async def test_list_artifact_versions_and_get_artifact_version(
@@ -616,6 +719,8 @@ async def test_file_metadata_camelcase(tmp_path, artifact_service_factory):
   metadata_path = (
       tmp_path
       / "artifacts"
+      / "apps"
+      / "myapp"
       / "users"
       / "user123"
       / "sessions"
@@ -677,6 +782,8 @@ async def test_file_list_artifact_versions(tmp_path, artifact_service_factory):
   version_payload_path = (
       tmp_path
       / "artifacts"
+      / "apps"
+      / "myapp"
       / "users"
       / "user123"
       / "sessions"
@@ -740,6 +847,38 @@ async def test_file_save_artifact_rejects_out_of_scope_paths(
         user_id="user123",
         session_id=session_id,
         filename=filename,
+        artifact=part,
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "app_name",
+    [
+        "../escape",
+        "../../etc",
+        "foo/../../bar",
+        "valid/../..",
+        "..",
+        ".",
+        "has/slash",
+        "back\\slash",
+        "null\x00byte",
+        "",
+    ],
+)
+async def test_file_save_artifact_rejects_traversal_in_app_name(
+    tmp_path, app_name
+):
+  """FileArtifactService rejects app_name values that escape root_dir."""
+  artifact_service = FileArtifactService(root_dir=tmp_path / "artifacts")
+  part = types.Part(text="content")
+  with pytest.raises(InputValidationError):
+    await artifact_service.save_artifact(
+        app_name=app_name,
+        user_id="user123",
+        session_id="sess123",
+        filename="safe.txt",
         artifact=part,
     )
 

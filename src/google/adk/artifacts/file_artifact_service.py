@@ -217,18 +217,20 @@ class FileArtifactService(BaseArtifactService):
 
   # Storage layout matches the cloud and in-memory services:
   # root/
-  # └── users/
-  #     └── {user_id}/
-  #         ├── sessions/
-  #         │   └── {session_id}/
-  #         │       └── artifacts/
-  #         │           └── {artifact_path}/  # derived from filename
-  #         │               └── versions/
-  #         │                   └── {version}/
-  #         │                       ├── {original_filename}
-  #         │                       └── metadata.json
-  #         └── artifacts/
-  #             └── {artifact_path}/...
+  # └── apps/
+  #     └── {app_name}/
+  #         └── users/
+  #             └── {user_id}/
+  #                 ├── sessions/
+  #                 │   └── {session_id}/
+  #                 │       └── artifacts/
+  #                 │           └── {artifact_path}/  # derived from filename
+  #                 │               └── versions/
+  #                 │                   └── {version}/
+  #                 │                       ├── {original_filename}
+  #                 │                       └── metadata.json
+  #                 └── artifacts/
+  #                     └── {artifact_path}/...
   #
   # Artifact paths are derived from the provided filenames: separators create
   # nested directories, and path traversal is rejected to keep the layout
@@ -244,19 +246,21 @@ class FileArtifactService(BaseArtifactService):
     self.root_dir = Path(root_dir).expanduser().resolve()
     self.root_dir.mkdir(parents=True, exist_ok=True)
 
-  def _base_root(self, user_id: str, /) -> Path:
-    """Returns the artifacts root directory for a user."""
+  def _base_root(self, app_name: str, user_id: str, /) -> Path:
+    """Returns the artifacts root directory for an app and user."""
+    _validate_path_segment(app_name, "app_name")
     _validate_path_segment(user_id, "user_id")
-    return self.root_dir / "users" / user_id
+    return self.root_dir / "apps" / app_name / "users" / user_id
 
   def _scope_root(
       self,
+      app_name: str,
       user_id: str,
       session_id: Optional[str],
       filename: str,
   ) -> Path:
     """Returns the directory that represents the artifact scope."""
-    base = self._base_root(user_id)
+    base = self._base_root(app_name, user_id)
     if _is_user_scoped(session_id, filename):
       return _user_artifacts_dir(base)
     if not session_id:
@@ -267,12 +271,14 @@ class FileArtifactService(BaseArtifactService):
 
   def _artifact_dir(
       self,
+      app_name: str,
       user_id: str,
       session_id: Optional[str],
       filename: str,
   ) -> Path:
     """Builds the directory path for an artifact."""
     scope_root = self._scope_root(
+        app_name=app_name,
         user_id=user_id,
         session_id=session_id,
         filename=filename,
@@ -283,6 +289,7 @@ class FileArtifactService(BaseArtifactService):
   def _build_artifact_version(
       self,
       *,
+      app_name: str,
       user_id: str,
       session_id: Optional[str],
       filename: str,
@@ -294,6 +301,7 @@ class FileArtifactService(BaseArtifactService):
         metadata.canonical_uri
         if metadata and metadata.canonical_uri
         else self._canonical_uri(
+            app_name=app_name,
             user_id=user_id,
             session_id=session_id,
             filename=filename,
@@ -312,6 +320,7 @@ class FileArtifactService(BaseArtifactService):
   def _canonical_uri(
       self,
       *,
+      app_name: str,
       user_id: str,
       session_id: Optional[str],
       filename: str,
@@ -319,6 +328,7 @@ class FileArtifactService(BaseArtifactService):
   ) -> str:
     """Builds the canonical file:// URI for an artifact payload."""
     artifact_dir = self._artifact_dir(
+        app_name=app_name,
         user_id=user_id,
         session_id=session_id,
         filename=filename,
@@ -357,6 +367,7 @@ class FileArtifactService(BaseArtifactService):
     """
     return await asyncio.to_thread(
         self._save_artifact_sync,
+        app_name,
         user_id,
         filename,
         artifact,
@@ -366,6 +377,7 @@ class FileArtifactService(BaseArtifactService):
 
   def _save_artifact_sync(
       self,
+      app_name: str,
       user_id: str,
       filename: str,
       artifact: Union[types.Part, dict[str, Any]],
@@ -375,6 +387,7 @@ class FileArtifactService(BaseArtifactService):
     """Saves an artifact to disk and returns its version."""
     artifact = ensure_part(artifact)
     artifact_dir = self._artifact_dir(
+        app_name=app_name,
         user_id=user_id,
         session_id=session_id,
         filename=filename,
@@ -407,6 +420,7 @@ class FileArtifactService(BaseArtifactService):
       )
 
     canonical_uri = self._canonical_uri(
+        app_name=app_name,
         user_id=user_id,
         session_id=session_id,
         filename=filename,
@@ -441,6 +455,7 @@ class FileArtifactService(BaseArtifactService):
   ) -> Optional[types.Part]:
     return await asyncio.to_thread(
         self._load_artifact_sync,
+        app_name,
         user_id,
         filename,
         session_id,
@@ -449,6 +464,7 @@ class FileArtifactService(BaseArtifactService):
 
   def _load_artifact_sync(
       self,
+      app_name: str,
       user_id: str,
       filename: str,
       session_id: Optional[str],
@@ -456,6 +472,7 @@ class FileArtifactService(BaseArtifactService):
   ) -> Optional[types.Part]:
     """Loads an artifact from disk."""
     artifact_dir = self._artifact_dir(
+        app_name=app_name,
         user_id=user_id,
         session_id=session_id,
         filename=filename,
@@ -510,19 +527,21 @@ class FileArtifactService(BaseArtifactService):
   ) -> list[str]:
     return await asyncio.to_thread(
         self._list_artifact_keys_sync,
+        app_name,
         user_id,
         session_id,
     )
 
   def _list_artifact_keys_sync(
       self,
+      app_name: str,
       user_id: str,
       session_id: Optional[str],
   ) -> list[str]:
     """Lists artifact filenames for the given session/user."""
     filenames: set[str] = set()
 
-    base_root = self._base_root(user_id)
+    base_root = self._base_root(app_name, user_id)
 
     if session_id:
       session_root = _session_artifacts_dir(base_root, session_id)
@@ -565,6 +584,7 @@ class FileArtifactService(BaseArtifactService):
     """
     await asyncio.to_thread(
         self._delete_artifact_sync,
+        app_name,
         user_id,
         filename,
         session_id,
@@ -572,11 +592,13 @@ class FileArtifactService(BaseArtifactService):
 
   def _delete_artifact_sync(
       self,
+      app_name: str,
       user_id: str,
       filename: str,
       session_id: Optional[str],
   ) -> None:
     artifact_dir = self._artifact_dir(
+        app_name=app_name,
         user_id=user_id,
         session_id=session_id,
         filename=filename,
@@ -597,6 +619,7 @@ class FileArtifactService(BaseArtifactService):
     """Lists all versions stored for an artifact."""
     return await asyncio.to_thread(
         self._list_versions_sync,
+        app_name,
         user_id,
         filename,
         session_id,
@@ -604,11 +627,13 @@ class FileArtifactService(BaseArtifactService):
 
   def _list_versions_sync(
       self,
+      app_name: str,
       user_id: str,
       filename: str,
       session_id: Optional[str],
   ) -> list[int]:
     artifact_dir = self._artifact_dir(
+        app_name=app_name,
         user_id=user_id,
         session_id=session_id,
         filename=filename,
@@ -627,6 +652,7 @@ class FileArtifactService(BaseArtifactService):
     """Lists metadata for each artifact version on disk."""
     return await asyncio.to_thread(
         self._list_artifact_versions_sync,
+        app_name,
         user_id,
         filename,
         session_id,
@@ -634,11 +660,13 @@ class FileArtifactService(BaseArtifactService):
 
   def _list_artifact_versions_sync(
       self,
+      app_name: str,
       user_id: str,
       filename: str,
       session_id: Optional[str],
   ) -> list[ArtifactVersion]:
     artifact_dir = self._artifact_dir(
+        app_name=app_name,
         user_id=user_id,
         session_id=session_id,
         filename=filename,
@@ -650,6 +678,7 @@ class FileArtifactService(BaseArtifactService):
       metadata = _read_metadata(metadata_path)
       artifact_versions.append(
           self._build_artifact_version(
+              app_name=app_name,
               user_id=user_id,
               session_id=session_id,
               filename=filename,
@@ -672,6 +701,7 @@ class FileArtifactService(BaseArtifactService):
     """Gets metadata for a specific artifact version."""
     return await asyncio.to_thread(
         self._get_artifact_version_sync,
+        app_name,
         user_id,
         filename,
         session_id,
@@ -680,12 +710,14 @@ class FileArtifactService(BaseArtifactService):
 
   def _get_artifact_version_sync(
       self,
+      app_name: str,
       user_id: str,
       filename: str,
       session_id: Optional[str],
       version: Optional[int],
   ) -> Optional[ArtifactVersion]:
     artifact_dir = self._artifact_dir(
+        app_name=app_name,
         user_id=user_id,
         session_id=session_id,
         filename=filename,
@@ -703,6 +735,7 @@ class FileArtifactService(BaseArtifactService):
     metadata_path = _metadata_path(artifact_dir, version_to_read)
     metadata = _read_metadata(metadata_path)
     return self._build_artifact_version(
+        app_name=app_name,
         user_id=user_id,
         session_id=session_id,
         filename=filename,
