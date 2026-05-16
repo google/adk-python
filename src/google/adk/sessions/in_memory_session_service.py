@@ -314,6 +314,8 @@ class InMemorySessionService(BaseSessionService):
 
   @override
   async def append_event(self, session: Session, event: Event) -> Event:
+    if any(e.id == event.id for e in session.events):
+      return event
     if event.partial:
       return event
 

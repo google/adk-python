@@ -764,6 +764,29 @@ async def test_session_last_update_time_updates_on_event(session_service):
 
 
 @pytest.mark.asyncio
+async def test_append_event_deduplication():
+  session_service = InMemorySessionService()
+  app_name = 'my_app'
+  user_id = 'user'
+
+  session = await session_service.create_session(
+      app_name=app_name, user_id=user_id
+  )
+  event = Event(
+      id='event_id_1',
+      invocation_id='invocation',
+      author='user',
+      timestamp=123456789.0,
+  )
+  await session_service.append_event(session=session, event=event)
+  assert len(session.events) == 1
+
+  # Append the same event again
+  await session_service.append_event(session=session, event=event)
+  assert len(session.events) == 1
+
+
+@pytest.mark.asyncio
 async def test_append_event_to_stale_session():
   session_service = get_session_service(
       service_type=SessionServiceType.DATABASE
