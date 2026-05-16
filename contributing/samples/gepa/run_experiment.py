@@ -26,6 +26,7 @@ from absl import flags
 import experiment
 import gepa_utils
 from google.genai import types
+import utils
 
 _OUTPUT_DIR = flags.DEFINE_string(
     'output_dir',
