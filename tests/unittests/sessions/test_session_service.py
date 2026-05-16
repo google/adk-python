@@ -1650,3 +1650,26 @@ async def test_append_event_locks_only_scopes_with_deltas(
   finally:
     database_session_service._select_required_state = original_fn
     await service.close()
+
+
+@pytest.mark.asyncio
+async def test_append_events_batch_sequential(session_service):
+  """Tests that append_events_batch appends all events sequentially."""
+  session = await session_service.create_session(
+      app_name='my_app', user_id='user'
+  )
+
+  events = [
+      Event(
+          invocation_id=f'batch_{i}',
+          author='user',
+          content=types.Content(
+              role='user', parts=[types.Part(text=f'msg_{i}')]
+          ),
+      )
+      for i in range(3)
+  ]
+
+  results = await session_service.append_events_batch(session, events)
+  assert len(results) == 3
+  assert len(session.events) == 3

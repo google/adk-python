@@ -1311,3 +1311,133 @@ async def test_append_event_fallback_for_older_sdk(mock_api_client_instance):
 
   assert appended_event.actions.compaction is not None
   assert appended_event.actions.compaction.start_timestamp == 1000.0
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures('mock_get_api_client')
+async def test_append_event_retries_on_429(mock_api_client_instance):
+  """Tests that append_event retries with backoff on 429 RESOURCE_EXHAUSTED."""
+  session_service = mock_vertex_ai_session_service()
+  session = await session_service.get_session(
+      app_name='123', user_id='user', session_id='1'
+  )
+
+  call_count = 0
+
+  async def side_effect(name, author, invocation_id, timestamp, config):
+    nonlocal call_count
+    call_count += 1
+    if call_count <= 2:
+      raise ClientError(
+          code=429,
+          response_json={'message': 'RESOURCE_EXHAUSTED'},
+          response=None,
+      )
+    return await mock_api_client_instance._append_event(
+        name, author, invocation_id, timestamp, config
+    )
+
+  mock_api_client_instance.agent_engines.sessions.events.append.side_effect = (
+      side_effect
+  )
+
+  event_to_append = Event(
+      invocation_id='retry_invocation',
+      author='model',
+      timestamp=1734005535.0,
+      content=genai_types.Content(
+          parts=[genai_types.Part(text='retry_content')]
+      ),
+  )
+
+  with mock.patch('asyncio.sleep', new_callable=mock.AsyncMock):
+    await session_service.append_event(session, event_to_append)
+
+  assert call_count == 3
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures('mock_get_api_client')
+async def test_append_event_raises_after_max_retries(mock_api_client_instance):
+  """Tests that append_event raises after exhausting all retry attempts."""
+  session_service = mock_vertex_ai_session_service()
+  session = await session_service.get_session(
+      app_name='123', user_id='user', session_id='1'
+  )
+
+  mock_api_client_instance.agent_engines.sessions.events.append.side_effect = (
+      ClientError(
+          code=429,
+          response_json={'message': 'RESOURCE_EXHAUSTED'},
+          response=None,
+      )
+  )
+
+  event_to_append = Event(
+      invocation_id='exhaust_invocation',
+      author='model',
+      timestamp=1734005536.0,
+  )
+
+  with mock.patch('asyncio.sleep', new_callable=mock.AsyncMock):
+    with pytest.raises(ClientError) as excinfo:
+      await session_service.append_event(session, event_to_append)
+    assert excinfo.value.code == 429
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures('mock_get_api_client')
+async def test_append_event_does_not_retry_on_non_429(mock_api_client_instance):
+  """Tests that non-429 ClientErrors are raised immediately without retry."""
+  session_service = mock_vertex_ai_session_service()
+  session = await session_service.get_session(
+      app_name='123', user_id='user', session_id='1'
+  )
+
+  mock_api_client_instance.agent_engines.sessions.events.append.side_effect = (
+      ClientError(
+          code=400,
+          response_json={'message': 'BAD_REQUEST'},
+          response=None,
+      )
+  )
+
+  event_to_append = Event(
+      invocation_id='no_retry_invocation',
+      author='model',
+      timestamp=1734005537.0,
+  )
+
+  with pytest.raises(ClientError) as excinfo:
+    await session_service.append_event(session, event_to_append)
+  assert excinfo.value.code == 400
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures('mock_get_api_client')
+async def test_append_events_batch(mock_api_client_instance):
+  """Tests that append_events_batch appends multiple events."""
+  session_service = mock_vertex_ai_session_service()
+  session = await session_service.get_session(
+      app_name='123', user_id='user', session_id='1'
+  )
+  initial_event_count = len(session.events)
+
+  events_to_append = [
+      Event(
+          invocation_id=f'batch_{i}',
+          author='model',
+          timestamp=1734005540.0 + i,
+          content=genai_types.Content(
+              parts=[genai_types.Part(text=f'batch_content_{i}')]
+          ),
+      )
+      for i in range(5)
+  ]
+
+  results = await session_service.append_events_batch(
+      session, events_to_append
+  )
+
+  assert len(results) == 5
+  assert len(session.events) == initial_event_count + 5

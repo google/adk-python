@@ -124,6 +124,19 @@ class BaseSessionService(abc.ABC):
     session.events.append(event)
     return event
 
+  async def append_events_batch(
+      self, session: Session, events: list[Event]
+  ) -> list[Event]:
+    """Appends multiple events to a session.
+
+    Subclasses may override this to add concurrency control or batching.
+    The default implementation appends events sequentially.
+    """
+    results = []
+    for event in events:
+      results.append(await self.append_event(session, event))
+    return results
+
   async def flush(self):
     """Flushes any buffered events.
 

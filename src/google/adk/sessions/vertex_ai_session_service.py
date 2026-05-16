@@ -18,6 +18,7 @@ import copy
 import datetime
 import json
 import logging
+import random
 import re
 from typing import Any
 from typing import Optional
@@ -352,10 +353,10 @@ class VertexAiSessionService(BaseSessionService):
     async with self._get_api_client() as api_client:
 
       async def _do_append(cfg: dict[str, Any]):
-        await api_client.agent_engines.sessions.events.append(
-            name=(
-                f'reasoningEngines/{reasoning_engine_id}/sessions/{session.id}'
-            ),
+        await self._append_with_retry(
+            api_client,
+            reasoning_engine_id=reasoning_engine_id,
+            session_id=session.id,
             author=event.author,
             invocation_id=event.invocation_id,
             timestamp=datetime.datetime.fromtimestamp(
@@ -372,6 +373,65 @@ class VertexAiSessionService(BaseSessionService):
           del config['raw_event']
         await _do_append(config)
     return event
+
+  @override
+  async def append_events_batch(
+      self, session: Session, events: list[Event]
+  ) -> list[Event]:
+    """Appends multiple events with concurrency control to avoid 429 errors."""
+    semaphore = asyncio.Semaphore(5)
+
+    async def _append_one(event: Event) -> Event:
+      async with semaphore:
+        return await self.append_event(session, event)
+
+    return list(await asyncio.gather(*[_append_one(e) for e in events]))
+
+  _RETRY_MAX_ATTEMPTS = 5
+  _RETRY_INITIAL_DELAY = 1.0
+  _RETRY_MAX_DELAY = 30.0
+  _RETRY_EXP_BASE = 2.0
+
+  async def _append_with_retry(
+      self,
+      api_client: Any,
+      *,
+      reasoning_engine_id: str,
+      session_id: str,
+      author: str,
+      invocation_id: str,
+      timestamp: datetime.datetime,
+      config: dict[str, Any],
+  ) -> None:
+    """Appends an event to the API with retry on 429 RESOURCE_EXHAUSTED."""
+    delay = self._RETRY_INITIAL_DELAY
+    for attempt in range(self._RETRY_MAX_ATTEMPTS):
+      try:
+        await api_client.agent_engines.sessions.events.append(
+            name=(
+                f'reasoningEngines/{reasoning_engine_id}/sessions/{session_id}'
+            ),
+            author=author,
+            invocation_id=invocation_id,
+            timestamp=timestamp,
+            config=config,
+        )
+        return
+      except ClientError as e:
+        if e.code == 429 and attempt < self._RETRY_MAX_ATTEMPTS - 1:
+          jitter = random.uniform(0, delay * 0.5)
+          wait = min(delay + jitter, self._RETRY_MAX_DELAY)
+          logger.warning(
+              'Rate limited (429) on append_event, attempt %d/%d.'
+              ' Retrying in %.1fs.',
+              attempt + 1,
+              self._RETRY_MAX_ATTEMPTS,
+              wait,
+          )
+          await asyncio.sleep(wait)
+          delay = min(delay * self._RETRY_EXP_BASE, self._RETRY_MAX_DELAY)
+        else:
+          raise
 
   def _get_reasoning_engine_id(self, app_name: str):
     if self._agent_engine_id:
