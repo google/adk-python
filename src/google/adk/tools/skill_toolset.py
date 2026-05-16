@@ -19,6 +19,7 @@
 from __future__ import annotations
 
 import asyncio
+import collections
 import json
 import logging
 import mimetypes
@@ -895,6 +896,8 @@ class SkillToolset(BaseToolset):
       script_timeout: Timeout in seconds for shell script execution via
         subprocess.run. Defaults to 300 seconds. Does not apply to Python
         scripts executed via exec().
+      additional_tools: Optional list of `BaseTool` or `BaseToolset` instances
+        to be made available to the agent when certain skills are activated.
     """
     super().__init__()
 
@@ -911,10 +914,13 @@ class SkillToolset(BaseToolset):
     self._registry = registry
     self._code_executor = code_executor
     self._script_timeout = script_timeout
-    self._invocation_cache: dict[
+    # Needed for mid-turn reloading of skill tools.
+    self._use_invocation_cache = False
+    # Cache fetched remote skill definitions per turn to reduce requests to registry
+    self._fetched_skill_cache: collections.OrderedDict[
         str,
         dict[str, models.Skill | asyncio.Future[models.Skill | None] | None],
-    ] = {}
+    ] = collections.OrderedDict()
     self._max_cache_turns = 16
 
     self._provided_tools_by_name = {}
@@ -1019,14 +1025,13 @@ class SkillToolset(BaseToolset):
       return None
 
     if invocation_id:
-      if invocation_id not in self._invocation_cache:
+      if invocation_id not in self._fetched_skill_cache:
         # Enforce bounded cache (FIFO eviction)
-        if len(self._invocation_cache) >= self._max_cache_turns:
-          oldest = next(iter(self._invocation_cache))
-          self._invocation_cache.pop(oldest)
-        self._invocation_cache[invocation_id] = {}
+        if len(self._fetched_skill_cache) >= self._max_cache_turns:
+          self._fetched_skill_cache.popitem(last=False)
+        self._fetched_skill_cache[invocation_id] = {}
 
-      turn_cache = self._invocation_cache[invocation_id]
+      turn_cache = self._fetched_skill_cache[invocation_id]
       if skill_name in turn_cache:
         cached = turn_cache[skill_name]
         if isinstance(cached, asyncio.Future):
@@ -1075,6 +1080,16 @@ class SkillToolset(BaseToolset):
       )
 
     llm_request.append_instructions(instructions)
+
+  @override
+  async def close(self) -> None:
+    """Performs cleanup and releases resources held by the toolset."""
+    for turn_cache in self._fetched_skill_cache.values():
+      for cached in turn_cache.values():
+        if isinstance(cached, asyncio.Future) and not cached.done():
+          cached.cancel()
+    self._fetched_skill_cache.clear()
+    await super().close()
 
 
 def __getattr__(name: str) -> Any:

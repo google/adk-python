@@ -208,7 +208,10 @@ class AgentRegistry:
           "Authorization": f"Bearer {self._credentials.token}",
           "Content-Type": "application/json",
       }
-      quota_project_id = getattr(self._credentials, "quota_project_id", None)
+      quota_project_id = (
+          getattr(self._credentials, "quota_project_id", None)
+          or self.project_id
+      )
       if quota_project_id:
         headers["x-goog-user-project"] = quota_project_id
       return headers
