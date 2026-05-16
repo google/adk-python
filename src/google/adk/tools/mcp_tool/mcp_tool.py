@@ -58,6 +58,7 @@ from ..tool_context import ToolContext
 from .mcp_session_manager import MCPSessionManager
 from .mcp_session_manager import retry_on_errors
 from .session_context import SessionContext
+from ._internal import sanitize_header_value
 from .types import HeaderProvider
 
 logger = logging.getLogger("google_adk." + __name__)
@@ -396,6 +397,11 @@ class McpTool(BaseAuthenticatedTool):
       headers.update(auth_headers)
     if dynamic_headers:
       headers.update(dynamic_headers)
+
+    # Sanitize all header values to prevent injection attacks.
+    if headers:
+      headers = {k: sanitize_header_value(v) for k, v in headers.items()}
+
     final_headers = headers if headers else None
 
     # Propagate trace context in the _meta field as sprcified by MCP protocol.
