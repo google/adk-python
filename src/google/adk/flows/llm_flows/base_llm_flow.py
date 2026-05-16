@@ -1130,7 +1130,7 @@ class BaseLlmFlow(ABC):
         invocation_context, function_call_event, llm_request.tools_dict
     ):
       auth_event = functions.generate_auth_event(
-          invocation_context, function_response_event
+          invocation_context, function_call_event, function_response_event
       )
       if auth_event:
         yield auth_event

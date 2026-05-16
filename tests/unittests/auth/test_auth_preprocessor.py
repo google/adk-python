@@ -23,11 +23,15 @@ from unittest.mock import patch
 from google.adk.agents.invocation_context import InvocationContext
 from google.adk.auth.auth_handler import AuthHandler
 from google.adk.auth.auth_preprocessor import _AuthLlmRequestProcessor
+from google.adk.auth.auth_schemes import CustomAuthScheme
 from google.adk.auth.auth_tool import AuthConfig
 from google.adk.auth.auth_tool import AuthToolArguments
 from google.adk.events.event import Event
+from google.adk.events.event_actions import EventActions
+from google.adk.flows.llm_flows import functions
 from google.adk.flows.llm_flows.functions import REQUEST_EUC_FUNCTION_CALL_NAME
 from google.adk.models.llm_request import LlmRequest
+from google.genai import types
 import pytest
 
 
@@ -320,8 +324,13 @@ class TestAuthLlmRequestProcessor:
   @patch('google.adk.auth.auth_preprocessor.AuthHandler')
   @patch('google.adk.auth.auth_tool.AuthConfig.model_validate')
   @patch('google.adk.flows.llm_flows.functions.handle_function_calls_async')
+  @patch(
+      'google.adk.auth.auth_preprocessor._is_valid_auth_resume_target',
+      return_value=True,
+  )
   async def test_processes_multiple_auth_responses_and_resumes_tools(
       self,
+      mock_is_valid_auth_resume_target,
       mock_handle_function_calls,
       mock_auth_config_validate,
       mock_auth_handler_class,
@@ -413,6 +422,7 @@ class TestAuthLlmRequestProcessor:
 
     # Verify auth responses were processed
     assert mock_auth_handler.parse_and_store_auth_response.call_count == 2
+    assert mock_is_valid_auth_resume_target.call_count == 2
 
     # Verify function calls were resumed
     mock_handle_function_calls.assert_called_once()
@@ -422,6 +432,100 @@ class TestAuthLlmRequestProcessor:
 
     # Verify the function response event was yielded
     assert result == [mock_function_response_event]
+
+  @pytest.mark.asyncio
+  @patch('google.adk.auth.auth_preprocessor.AuthHandler')
+  @patch('google.adk.flows.llm_flows.functions.handle_function_calls_async')
+  async def test_ignores_tampered_original_function_call_on_resume(
+      self,
+      mock_handle_function_calls,
+      mock_auth_handler_class,
+      processor,
+      mock_invocation_context,
+      mock_llm_request,
+  ):
+    """Test that auth resume refuses a tampered original function call."""
+    auth_config = AuthConfig(auth_scheme=CustomAuthScheme(type='custom_auth'))
+    original_function_call = types.FunctionCall(
+        id='tool_id_1',
+        name='read_file',
+        args={'path': '/home/victim/notes.txt'},
+    )
+    original_event = Event(
+        author='test_agent',
+        content=types.Content(
+            parts=[types.Part(function_call=original_function_call)]
+        ),
+    )
+    mock_invocation_context.invocation_id = 'test_invocation_id'
+    mock_invocation_context.branch = None
+    auth_request_event = functions.build_auth_request_event(
+        mock_invocation_context,
+        {'tool_id_1': auth_config},
+        author='test_agent',
+        function_call_digest_by_id={
+            'tool_id_1': functions.function_call_digest(original_function_call)
+        },
+    )
+    paused_response_event = Event(
+        author='test_agent',
+        content=types.Content(
+            parts=[
+                types.Part(
+                    function_response=types.FunctionResponse(
+                        id='tool_id_1',
+                        name='read_file',
+                        response={'error': 'Auth required.'},
+                    )
+                )
+            ]
+        ),
+        actions=EventActions(requested_auth_configs={'tool_id_1': auth_config}),
+    )
+
+    # Simulate a storage-layer mutation of the original tool-call event.
+    original_function_call.name = 'delete_user_account'
+    original_function_call.args = {'user_id': 'victim_user'}
+
+    auth_request_function_call = auth_request_event.get_function_calls()[0]
+    user_auth_response_event = Event(
+        author='user',
+        content=types.Content(
+            parts=[
+                types.Part(
+                    function_response=types.FunctionResponse(
+                        id=auth_request_function_call.id,
+                        name=REQUEST_EUC_FUNCTION_CALL_NAME,
+                        response=auth_config.model_dump(
+                            mode='json', by_alias=True, exclude_none=True
+                        ),
+                    )
+                )
+            ]
+        ),
+    )
+    mock_invocation_context.session.events = [
+        original_event,
+        auth_request_event,
+        paused_response_event,
+        user_auth_response_event,
+    ]
+
+    mock_auth_handler = Mock(spec=AuthHandler)
+    mock_auth_handler.parse_and_store_auth_response = AsyncMock()
+    mock_auth_handler_class.return_value = mock_auth_handler
+
+    result = []
+    async for event in processor.run_async(
+        mock_invocation_context, mock_llm_request
+    ):
+      result.append(event)
+
+    assert result == []
+    mock_auth_handler.parse_and_store_auth_response.assert_called_once_with(
+        state=mock_invocation_context.session.state
+    )
+    mock_handle_function_calls.assert_not_called()
 
   @pytest.mark.asyncio
   @patch('google.adk.auth.auth_preprocessor.AuthHandler')
