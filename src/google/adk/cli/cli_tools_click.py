@@ -647,6 +647,12 @@ def adk_services_options(*, default_use_local_storage: bool = True):
     ),
     callback=validate_exclusive,
 )
+@click.option(
+    "--dev",
+    is_flag=True,
+    default=False,
+    help="Optional. Enable development mode with automatic agent reloading on file changes.",
+)
 @click.argument(
     "agent",
     type=click.Path(
@@ -659,6 +665,7 @@ def cli_run(
     session_id: Optional[str],
     replay: Optional[str],
     resume: Optional[str],
+    dev: bool = False,
     session_service_uri: Optional[str] = None,
     artifact_service_uri: Optional[str] = None,
     memory_service_uri: Optional[str] = None,
@@ -685,6 +692,7 @@ def cli_run(
           saved_session_file=resume,
           save_session=save_session,
           session_id=session_id,
+          dev=dev,
           session_service_uri=session_service_uri,
           artifact_service_uri=artifact_service_uri,
           memory_service_uri=memory_service_uri,
