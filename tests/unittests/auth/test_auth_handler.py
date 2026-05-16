@@ -66,6 +66,8 @@ class MockOAuth2Session:
     params = f"client_id={self.client_id}&scope={self.scope}"
     if kwargs.get("audience"):
       params += f"&audience={kwargs.get('audience')}"
+    if kwargs.get("prompt"):
+      params += f"&prompt={kwargs.get('prompt')}"
     return f"{url}?{params}", "mock_state"
 
   def fetch_token(
@@ -250,6 +252,75 @@ class TestGenerateAuthUri:
     result = handler.generate_auth_uri()
 
     assert "audience=test_audience" in result.oauth2.auth_uri
+    # When prompt is unset, the default "consent" must be forwarded.
+    assert "prompt=consent" in result.oauth2.auth_uri
+
+  @patch("google.adk.auth.auth_handler.OAuth2Session", MockOAuth2Session)
+  def test_generate_auth_uri_default_prompt_is_consent(self, auth_config):
+    """When OAuth2Auth.prompt is unset, the auth URI must send prompt=consent.
+
+    Locks in backward-compatible behavior — existing callers that never set
+    a prompt continue to get the consent screen.
+    """
+    handler = AuthHandler(auth_config)
+    result = handler.generate_auth_uri()
+
+    assert "prompt=consent" in result.oauth2.auth_uri
+
+  @patch("google.adk.auth.auth_handler.OAuth2Session", MockOAuth2Session)
+  def test_generate_auth_uri_with_custom_prompt_none(
+      self, openid_auth_scheme, oauth2_credentials
+  ):
+    """A caller-supplied prompt value must override the default."""
+    oauth2_credentials.oauth2.prompt = "none"
+    exchanged = oauth2_credentials.model_copy(deep=True)
+
+    config = AuthConfig(
+        auth_scheme=openid_auth_scheme,
+        raw_auth_credential=oauth2_credentials,
+        exchanged_auth_credential=exchanged,
+    )
+    handler = AuthHandler(config)
+    result = handler.generate_auth_uri()
+
+    assert "prompt=none" in result.oauth2.auth_uri
+    assert "prompt=consent" not in result.oauth2.auth_uri
+
+  @patch("google.adk.auth.auth_handler.OAuth2Session", MockOAuth2Session)
+  def test_generate_auth_uri_with_custom_prompt_select_account(
+      self, openid_auth_scheme, oauth2_credentials
+  ):
+    """Standard OIDC prompt values other than 'consent' must pass through."""
+    oauth2_credentials.oauth2.prompt = "select_account"
+    exchanged = oauth2_credentials.model_copy(deep=True)
+
+    config = AuthConfig(
+        auth_scheme=openid_auth_scheme,
+        raw_auth_credential=oauth2_credentials,
+        exchanged_auth_credential=exchanged,
+    )
+    handler = AuthHandler(config)
+    result = handler.generate_auth_uri()
+
+    assert "prompt=select_account" in result.oauth2.auth_uri
+
+  @patch("google.adk.auth.auth_handler.OAuth2Session", MockOAuth2Session)
+  def test_generate_auth_uri_with_idp_specific_prompt(
+      self, openid_auth_scheme, oauth2_credentials
+  ):
+    """IdP-specific prompt values (e.g. Azure's admin_consent) pass through."""
+    oauth2_credentials.oauth2.prompt = "admin_consent"
+    exchanged = oauth2_credentials.model_copy(deep=True)
+
+    config = AuthConfig(
+        auth_scheme=openid_auth_scheme,
+        raw_auth_credential=oauth2_credentials,
+        exchanged_auth_credential=exchanged,
+    )
+    handler = AuthHandler(config)
+    result = handler.generate_auth_uri()
+
+    assert "prompt=admin_consent" in result.oauth2.auth_uri
 
   @patch("google.adk.auth.auth_handler.OAuth2Session", MockOAuth2Session)
   def test_generate_auth_uri_openid(

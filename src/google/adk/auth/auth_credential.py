@@ -98,6 +98,15 @@ class OAuth2Auth(BaseModelWithConfig):
       ]
       | None
   ) = "client_secret_basic"
+  # The OAuth2 ``prompt`` parameter forwarded to the authorization endpoint.
+  # When ``None`` (default), ``"consent"`` is sent to preserve existing
+  # behavior. Standard values per RFC 6749 / OIDC: ``"none"``, ``"login"``,
+  # ``"consent"``, ``"select_account"``. ``str`` is also allowed so that
+  # IdP-specific values (e.g. Azure's ``"admin_consent"``) can be passed
+  # through unchanged.
+  prompt: Literal["none", "login", "consent", "select_account"] | str | None = (
+      None
+  )
 
 
 class ServiceAccountCredential(BaseModelWithConfig):
