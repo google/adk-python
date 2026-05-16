@@ -475,12 +475,19 @@ class LlmAgent(BaseAgent):
     if agent_state is not None and (
         agent_to_transfer := self._get_subagent_to_resume(ctx)
     ):
+      pause_invocation = False
       async with Aclosing(agent_to_transfer.run_async(ctx)) as agen:
         async for event in agen:
           yield event
+          if ctx.should_pause_invocation(event):
+            pause_invocation = True
 
-      ctx.set_agent_state(self.name, end_of_agent=True)
-      yield self._create_agent_state_event(ctx)
+      if pause_invocation:
+        return
+
+      if ctx.is_resumable:
+        ctx.set_agent_state(self.name, end_of_agent=True)
+        yield self._create_agent_state_event(ctx)
       return
 
     should_pause = False
