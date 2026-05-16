@@ -16,7 +16,9 @@ from __future__ import annotations
 
 from typing import Callable
 from typing import Dict
+from typing import TYPE_CHECKING
 
-from ...agents.readonly_context import ReadonlyContext
+if TYPE_CHECKING:
+  from ...agents.readonly_context import ReadonlyContext
 
-HeaderProvider = Callable[[ReadonlyContext], Dict[str, str]]
+HeaderProvider = Callable[["ReadonlyContext"], Dict[str, str]]

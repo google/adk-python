@@ -20,13 +20,15 @@ that are not part of the public API and follow RFC 7230 properly.
 **Security Notes:**
 
 - Header validation implements RFC 7230 §3.2 for proper HTTP header format
-- Only truly dangerous control characters are removed from header values
+- All ASCII control characters (0x00-0x1F) and DEL (0x7F) are removed from
+  header values to prevent injection
 - All functions log security-relevant warnings when appropriate
 
 **RFC 7230 Compliance:**
 
 - Header names: only letters, digits, and hyphens allowed
-- Header values: control characters (0x00-0x1F, 0x7F) are dangerous
+- Header values: control characters including CRLF (0x00-0x1F, 0x7F) are
+  removed to prevent injection
 
 **Attack Prevention:**
 
@@ -58,8 +60,11 @@ _DANGEROUS_CHARS = {
     "\x06",
     "\x07",
     "\x08",
+    "\x09",
+    "\x0a",
     "\x0b",
     "\x0c",
+    "\x0d",
     "\x0e",
     "\x0f",
     "\x10",
@@ -133,10 +138,10 @@ def sanitize_header_value(value: Any) -> str:
   if not isinstance(value, str):
     value = str(value)
 
-  # Remove only characters that are truly dangerous for HTTP headers
-  # These are control characters that can break parsing or enable injection
-  # We DON'T remove all \r\n sequences as that would break legitimate multi-line headers
-  # and violate RFC 7230 §3.2.4 which allows header folding
+  # Remove CRLF and control characters to prevent header injection.
+  # Header folding (obs-fold) was deprecated by RFC 7230 and obsoleted
+  # by RFC 9110. CRLF in header values is the primary vector for
+  # header injection and response splitting attacks.
   sanitized_chars = []
   for char in value:
     if char not in _DANGEROUS_CHARS:

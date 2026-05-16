@@ -163,9 +163,9 @@ def create_session_state_header_provider(
 
     validate_header_value(state_key, value, strict=strict)
     formatted_value = header_format.format(value=value)
-    # Strip CRLF from the interpolated value to prevent header injection.
-    # The format string is validated at construction time, but the runtime
-    # value comes from session state and must never contain CRLF here.
+    # Defense in depth: strip CRLF before sanitization. sanitize_header_value
+    # also strips these, but we strip early to prevent injection via format
+    # string interpolation.
     formatted_value = formatted_value.replace("\r", "").replace("\n", "")
     sanitized_value = sanitize_header_value(formatted_value)
 
@@ -193,6 +193,15 @@ def create_combined_header_provider(
       try:
         provider_headers = provider(ctx)
         if provider_headers:
+          overlapping = set(headers.keys()) & set(provider_headers.keys())
+          if overlapping:
+            logger.warning(
+                "Duplicate header names %s from header provider "
+                "%d/%d. Last value wins.",
+                overlapping,
+                i + 1,
+                num_providers,
+            )
           headers.update(provider_headers)
       except Exception as e:
         logger.error(f"Header provider {i+1}/{num_providers} failed: {e}")
@@ -301,7 +310,9 @@ class McpToolset(BaseToolset):
         MCP server.
       sampling_capabilities: Optional capabilities for sampling.
       credential_key: A user specified key used to load and save this credential
-        in a credential service. Used with auth_scheme.
+        in a credential service. Used with auth_scheme. Note: when both
+        credential_key and header_provider are configured, header_provider
+        values take precedence over auth headers for the same header names.
     """
 
     # --- BEGIN BOUND TOKEN PATCH ---
@@ -433,6 +444,10 @@ class McpToolset(BaseToolset):
           # Default to using scheme name as header
           headers = {self._auth_config.auth_scheme.name: credential.api_key}
 
+    # Sanitize all header values to prevent injection attacks.
+    if headers:
+      headers = {k: sanitize_header_value(v) for k, v in headers.items()}
+
     return headers
 
   async def _execute_with_session(
@@ -444,16 +459,16 @@ class McpToolset(BaseToolset):
     """Creates a session and executes a coroutine with it."""
     headers: Dict[str, str] = {}
 
-    # Add headers from header_provider if available
+    # Add auth headers from exchanged credential first
+    auth_headers = self._get_auth_headers(readonly_context)
+    if auth_headers:
+      headers.update(auth_headers)
+
+    # Add headers from header_provider (takes precedence over auth headers)
     if self._header_provider and readonly_context:
       provider_headers = self._header_provider(readonly_context)
       if provider_headers:
         headers.update(provider_headers)
-
-    # Add auth headers from exchanged credential if available
-    auth_headers = self._get_auth_headers(readonly_context)
-    if auth_headers:
-      headers.update(auth_headers)
 
     session = await self._mcp_session_manager.create_session(
         headers=headers if headers else None
@@ -760,4 +775,34 @@ class McpToolsetConfig(BaseToolConfig):
           " sse_connection_params, streamable_http_connection_params must be"
           " set."
       )
+    return self
+
+  @model_validator(mode="after")
+  def _validate_state_header_config(self):
+    """Validates state_header_mapping and state_header_format consistency."""
+    if not self.state_header_mapping:
+      if self.state_header_format:
+        raise ValueError(
+            "state_header_format cannot be set without state_header_mapping."
+        )
+      return self
+
+    # Validate header names in state_header_mapping values
+    for state_key, header_name in self.state_header_mapping.items():
+      validate_header_name(header_name)
+
+    # Validate state_header_format keys match header names
+    if self.state_header_format:
+      header_names = set(self.state_header_mapping.values())
+      for format_key in self.state_header_format:
+        if format_key not in header_names:
+          raise ValueError(
+              f'state_header_format key "{format_key}" does not match'
+              " any header name in state_header_mapping values."
+              f" Expected one of: {sorted(header_names)}"
+          )
+      # Validate format strings don't contain CRLF
+      for header_name, fmt in self.state_header_format.items():
+        validate_header_format(fmt)
+
     return self

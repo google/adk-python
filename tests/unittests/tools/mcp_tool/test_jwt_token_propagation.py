@@ -14,6 +14,7 @@
 
 """Tests for JWT token propagation feature in MCP toolset."""
 
+import logging
 import sys
 from unittest.mock import Mock
 
@@ -538,6 +539,10 @@ class TestRFC7230Compliance:
         ("nack\x15syn\x16etb\x17", "nacksynetb"),  # NAK, SYN, ETB
         ("can\x18em\x19sub\x1Aesc", "canemsubesc"),  # CAN, EM, SUB, ESC
         ("fs\x1ags\x1brs\x1cus", "fsgsrsus"),  # FS, GS, RS, US
+        ("tok\r\nX-Injected: evil", "tokX-Injected: evil"),  # CRLF
+        ("tok\nInjected: bad", "tokInjected: bad"),  # LF
+        ("tok\rAnother: header", "tokAnother: header"),  # CR
+        ("tab\ttest", "tabtest"),  # TAB should be removed
         ("space\x20test", "space test"),  # Space should be preserved
         (
             "normal!@#$%^&*()test",
@@ -671,3 +676,102 @@ class TestRFC7230Compliance:
           header_name="Authorization",
           header_format="Bearer {value}\r\nX-Injected: evil",
       )
+
+
+class TestMcpToolsetConfigValidation:
+  """Test suite for McpToolsetConfig state header validation."""
+
+  def test_format_without_mapping_raises(self):
+    """Test that state_header_format without mapping raises ValueError."""
+    with pytest.raises(ValueError, match="state_header_format cannot be set"):
+      McpToolsetConfig(
+          stdio_server_params=StdioServerParameters(
+              command="test_command", args=[]
+          ),
+          state_header_format={"Authorization": "Bearer {value}"},
+      )
+
+  def test_format_key_not_in_mapping_values_raises(self):
+    """Test that format key not matching any mapping value raises."""
+    with pytest.raises(ValueError, match="does not match"):
+      McpToolsetConfig(
+          stdio_server_params=StdioServerParameters(
+              command="test_command", args=[]
+          ),
+          state_header_mapping={"jwt_token": "Authorization"},
+          state_header_format={"X-Wrong-Header": "Bearer {value}"},
+      )
+
+  def test_invalid_header_name_in_mapping_raises(self):
+    """Test that invalid header name in mapping value raises ValueError."""
+    with pytest.raises(ValueError, match="invalid characters"):
+      McpToolsetConfig(
+          stdio_server_params=StdioServerParameters(
+              command="test_command", args=[]
+          ),
+          state_header_mapping={"jwt_token": "Authorization\n"},
+      )
+
+  def test_crlf_in_format_value_raises(self):
+    """Test that CRLF in format string raises ValueError."""
+    with pytest.raises(ValueError, match="CRLF"):
+      McpToolsetConfig(
+          stdio_server_params=StdioServerParameters(
+              command="test_command", args=[]
+          ),
+          state_header_mapping={"jwt_token": "Authorization"},
+          state_header_format={
+              "Authorization": "Bearer {value}\r\nX-Injected: evil"
+          },
+      )
+
+  def test_valid_config_passes_validation(self):
+    """Test that valid config passes all validation."""
+    config = McpToolsetConfig(
+        stdio_server_params=StdioServerParameters(
+            command="test_command", args=[]
+        ),
+        state_header_mapping={
+            "jwt_token": "Authorization",
+            "tenant_id": "X-Tenant-ID",
+        },
+        state_header_format={"Authorization": "Bearer {value}"},
+    )
+    assert config.state_header_mapping is not None
+
+
+class TestCombinedHeaderProviderDuplicateWarning:
+  """Test suite for duplicate header warning in combined provider."""
+
+  def test_warns_on_duplicate_headers(self, caplog):
+    """Test that duplicate header names trigger a warning."""
+    from google.adk.tools.mcp_tool.mcp_toolset import create_combined_header_provider
+
+    provider1 = lambda ctx: {"Authorization": "Bearer token1"}  # noqa: E731
+    provider2 = lambda ctx: {"Authorization": "Bearer token2"}  # noqa: E731
+
+    combined = create_combined_header_provider([provider1, provider2])
+
+    with caplog.at_level(logging.WARNING, logger="google_adk"):
+      headers = combined(Mock(spec=ReadonlyContext))
+
+    assert headers["Authorization"] == "Bearer token2"
+    assert "Duplicate header names" in caplog.text
+
+  def test_no_warning_without_duplicates(self, caplog):
+    """Test that no warning is logged when headers don't overlap."""
+    from google.adk.tools.mcp_tool.mcp_toolset import create_combined_header_provider
+
+    provider1 = lambda ctx: {"Authorization": "Bearer token1"}  # noqa: E731
+    provider2 = lambda ctx: {"X-Tenant-ID": "tenant-123"}  # noqa: E731
+
+    combined = create_combined_header_provider([provider1, provider2])
+
+    with caplog.at_level(logging.WARNING, logger="google_adk"):
+      headers = combined(Mock(spec=ReadonlyContext))
+
+    assert "Duplicate header names" not in caplog.text
+    assert headers == {
+        "Authorization": "Bearer token1",
+        "X-Tenant-ID": "tenant-123",
+    }

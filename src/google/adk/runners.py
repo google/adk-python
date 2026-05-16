@@ -438,7 +438,10 @@ class Runner:
       *,
       user_id: str,
       session_id: str,
-      new_message: types.Content,
+      new_message: Optional[types.Content] = None,
+      invocation_id: Optional[str] = None,
+      state_delta: Optional[dict[str, Any]] = None,
+      request_state: Optional[dict[str, Any]] = None,
       run_config: Optional[RunConfig] = None,
   ) -> Generator[Event, None, None]:
     """Runs the agent.
@@ -456,6 +459,9 @@ class Runner:
       user_id: The user ID of the session.
       session_id: The session ID of the session.
       new_message: A new message to append to the session.
+      invocation_id: The invocation id to resume.
+      state_delta: Optional state changes to apply to the session.
+      request_state: Optional ephemeral state for the request.
       run_config: The run config for the agent.
 
     Yields:
@@ -471,6 +477,9 @@ class Runner:
                 user_id=user_id,
                 session_id=session_id,
                 new_message=new_message,
+                invocation_id=invocation_id,
+                state_delta=state_delta,
+                request_state=request_state,
                 run_config=run_config,
             )
         ) as agen:
@@ -560,6 +569,10 @@ class Runner:
         is_resumable = (
             self.resumability_config and self.resumability_config.is_resumable
         )
+        # Three-branch decision tree:
+        #   A) invocation_id provided → resume that specific invocation
+        #   B) not resumable → must start a new invocation (requires new_message)
+        #   C) resumable, no explicit invocation_id → resolve or create new
         if invocation_id:
           if not is_resumable:
             raise ValueError(
@@ -613,8 +626,9 @@ class Runner:
             if invocation_context.end_of_agents.get(
                 invocation_context.agent.name
             ):
-              # Directly return if the current agent in invocation context is
-              # already final.
+              # Agent already completed in a prior invocation — skip execution
+              # and return immediately. This can happen when resuming a
+              # completed agent in a multi-agent pipeline.
               return
 
         async def execute(ctx: InvocationContext) -> AsyncGenerator[Event]:
