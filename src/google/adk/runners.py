@@ -30,6 +30,7 @@ from typing import TYPE_CHECKING
 import warnings
 
 from google.genai import types
+from opentelemetry import context
 
 from .agents.base_agent import BaseAgent
 from .agents.base_agent import BaseAgentState
@@ -537,10 +538,13 @@ class Runner:
     if new_message and not new_message.role:
       new_message.role = 'user'
 
+    caller_ctx = context.get_current()
+
     async def _run_with_trace(
         new_message: Optional[types.Content] = None,
         invocation_id: Optional[str] = None,
     ) -> AsyncGenerator[Event, None]:
+      caller_ctx_trace = context.get_current()
       with tracer.start_as_current_span('invocation'):
         session = await self._get_or_create_session(
             user_id=user_id,
@@ -600,9 +604,14 @@ class Runner:
               return
 
         async def execute(ctx: InvocationContext) -> AsyncGenerator[Event]:
+          caller_ctx_exec = context.get_current()
           async with Aclosing(ctx.agent.run_async(ctx)) as agen:
             async for event in agen:
-              yield event
+              token = context.attach(caller_ctx_exec)
+              try:
+                yield event
+              finally:
+                context.detach(token)
 
         async with Aclosing(
             self._exec_with_plugin(
@@ -613,7 +622,11 @@ class Runner:
             )
         ) as agen:
           async for event in agen:
-            yield event
+            token = context.attach(caller_ctx_trace)
+            try:
+              yield event
+            finally:
+              context.detach(token)
         # Run compaction after all events are yielded from the agent.
         # (We don't compact in the middle of an invocation, we only compact at
         # the end of an invocation.)
@@ -630,7 +643,11 @@ class Runner:
 
     async with Aclosing(_run_with_trace(new_message, invocation_id)) as agen:
       async for event in agen:
-        yield event
+        token = context.attach(caller_ctx)
+        try:
+          yield event
+        finally:
+          context.detach(token)
 
   async def rewind_async(
       self,
@@ -1104,6 +1121,9 @@ class Runner:
     # AUDIO by default.
     if run_config.response_modalities is None:
       run_config.response_modalities = ['AUDIO']
+
+    caller_ctx = context.get_current()
+
     if session is None and (user_id is None or session_id is None):
       raise ValueError(
           'Either session or user_id and session_id must be provided.'
@@ -1135,9 +1155,14 @@ class Runner:
     )
 
     async def execute(ctx: InvocationContext) -> AsyncGenerator[Event]:
+      caller_ctx_exec = context.get_current()
       async with Aclosing(ctx.agent.run_live(ctx)) as agen:
         async for event in agen:
-          yield event
+          token = context.attach(caller_ctx_exec)
+          try:
+            yield event
+          finally:
+            context.detach(token)
 
     async with Aclosing(
         self._exec_with_plugin(
@@ -1148,7 +1173,11 @@ class Runner:
         )
     ) as agen:
       async for event in agen:
-        yield event
+        token = context.attach(caller_ctx)
+        try:
+          yield event
+        finally:
+          context.detach(token)
 
   def _find_agent_to_run(
       self, session: Session, root_agent: BaseAgent
