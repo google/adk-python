@@ -280,7 +280,7 @@ class TestAgentEngineSandboxCodeExecutor:
     mock_json_output = MagicMock()
     mock_json_output.mime_type = "application/json"
     mock_json_output.data = json.dumps(
-        {"stdout": "created sandbox run", "stderr": ""}
+        {"msg_out": "created sandbox run", "msg_err": ""}
     ).encode("utf-8")
     mock_json_output.metadata = None
     mock_response.outputs = [mock_json_output]
@@ -368,7 +368,7 @@ class TestAgentEngineSandboxCodeExecutor:
     mock_json_output = MagicMock()
     mock_json_output.mime_type = "application/json"
     mock_json_output.data = json.dumps(
-        {"stdout": "created sandbox run", "stderr": ""}
+        {"msg_out": "created sandbox run", "msg_err": ""}
     ).encode("utf-8")
     mock_json_output.metadata = None
     mock_response.outputs = [mock_json_output]
