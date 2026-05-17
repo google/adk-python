@@ -15,12 +15,14 @@
 from typing import Any
 from typing import Optional
 
+from google.adk.agents.base_agent import BaseAgent
 from google.adk.agents.callback_context import CallbackContext
 from google.adk.agents.invocation_context import InvocationContext
 from google.adk.agents.llm_agent import Agent
 from google.adk.agents.run_config import RunConfig
 from google.adk.agents.sequential_agent import SequentialAgent
 from google.adk.artifacts.in_memory_artifact_service import InMemoryArtifactService
+from google.adk.events.event import Event
 from google.adk.features import FeatureName
 from google.adk.features._feature_registry import temporary_feature_override
 from google.adk.memory.in_memory_memory_service import InMemoryMemoryService
@@ -983,6 +985,109 @@ async def test_run_async_handles_none_parts_in_response():
   )
 
   assert tool_result == ''
+
+
+async def _run_agent_tool_with_parts(parts: list[types.Part]) -> Any:
+  """Drives AgentTool with an inner agent whose final event content is `parts`."""
+
+  class _StaticAgent(BaseAgent):
+
+    async def _run_async_impl(self, ctx):
+      yield Event(
+          invocation_id=ctx.invocation_id,
+          author=self.name,
+          content=types.Content(role='model', parts=parts),
+      )
+
+  inner = _StaticAgent(name='inner_agent', description='static')
+  agent_tool = AgentTool(agent=inner)
+
+  session_service = InMemorySessionService()
+  session = await session_service.create_session(
+      app_name='test_app', user_id='test_user'
+  )
+  invocation_context = InvocationContext(
+      invocation_id='invocation_id',
+      agent=inner,
+      session=session,
+      session_service=session_service,
+  )
+  tool_context = ToolContext(invocation_context=invocation_context)
+
+  return await agent_tool.run_async(
+      args={'request': 'test request'}, tool_context=tool_context
+  )
+
+
+@mark.asyncio
+async def test_run_async_extracts_text_only():
+  """Plain text parts pass through unchanged."""
+  result = await _run_agent_tool_with_parts([types.Part(text='hello world')])
+  assert result == 'hello world'
+
+
+@mark.asyncio
+async def test_run_async_extracts_code_execution_result_only():
+  """code_execution_result.output and executable_code.code are returned."""
+  result = await _run_agent_tool_with_parts([
+      types.Part(
+          executable_code=types.ExecutableCode(
+              language=types.Language.PYTHON, code='print(2 ** 10)'
+          )
+      ),
+      types.Part(
+          code_execution_result=types.CodeExecutionResult(
+              outcome=types.Outcome.OUTCOME_OK, output='1024\n'
+          )
+      ),
+  ])
+  assert result == 'print(2 ** 10)\n1024'
+
+
+@mark.asyncio
+async def test_run_async_extracts_text_and_code_execution_result():
+  """Mixed text + code parts are concatenated in order."""
+  result = await _run_agent_tool_with_parts([
+      types.Part(text='Here is the answer:'),
+      types.Part(
+          executable_code=types.ExecutableCode(
+              language=types.Language.PYTHON, code='print(2 ** 10)'
+          )
+      ),
+      types.Part(
+          code_execution_result=types.CodeExecutionResult(
+              outcome=types.Outcome.OUTCOME_OK, output='1024\n'
+          )
+      ),
+  ])
+  assert result == 'Here is the answer:\nprint(2 ** 10)\n1024'
+
+
+@mark.asyncio
+async def test_run_async_extracts_executable_code_only():
+  """executable_code.code alone is returned when no result part follows."""
+  result = await _run_agent_tool_with_parts([
+      types.Part(
+          executable_code=types.ExecutableCode(
+              language=types.Language.PYTHON, code='print("hi")'
+          )
+      ),
+  ])
+  assert result == 'print("hi")'
+
+
+@mark.asyncio
+async def test_run_async_skips_thought_parts():
+  """Parts marked thought=True are dropped regardless of kind."""
+  result = await _run_agent_tool_with_parts([
+      types.Part(text='thinking out loud', thought=True),
+      types.Part(
+          code_execution_result=types.CodeExecutionResult(
+              outcome=types.Outcome.OUTCOME_OK, output='42\n'
+          )
+      ),
+  ])
+  assert result == '42'
 
 
 class TestAgentToolWithCompositeAgents:

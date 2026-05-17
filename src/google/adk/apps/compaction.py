@@ -270,6 +270,9 @@ def _events_to_compact_for_token_threshold(
   events_to_compact = _truncate_events_before_pending_function_call(
       events_to_compact, pending_ids
   )
+  events_to_compact = _truncate_events_before_hitl_signal(
+      events_to_compact, _resolved_hitl_call_ids(events)
+  )
   if not events_to_compact:
     return []
 
@@ -340,6 +343,45 @@ def _truncate_events_before_pending_function_call(
   """Returns the leading contiguous events that avoid pending function calls."""
   for index, event in enumerate(events):
     if _has_pending_function_call(event, pending_ids):
+      return events[:index]
+  return events
+
+
+def _resolved_hitl_call_ids(events: list[Event]) -> set[str]:
+  """Returns HITL call ids resolved by a later function_response in `events`."""
+  hitl_position: dict[str, int] = {}
+  resolved: set[str] = set()
+  for index, event in enumerate(events):
+    if event.actions:
+      for call_id in event.actions.requested_tool_confirmations:
+        hitl_position.setdefault(call_id, index)
+      for call_id in event.actions.requested_auth_configs:
+        hitl_position.setdefault(call_id, index)
+    for resp_id in _event_function_response_ids(event):
+      hitl_pos = hitl_position.get(resp_id)
+      if hitl_pos is not None and index > hitl_pos:
+        resolved.add(resp_id)
+  return resolved
+
+
+def _is_pending_hitl(event: Event, resolved_call_ids: set[str]) -> bool:
+  """Returns True if the event has an HITL request not in `resolved_call_ids`."""
+  if not event.actions:
+    return False
+  requested = set(event.actions.requested_tool_confirmations) | set(
+      event.actions.requested_auth_configs
+  )
+  if not requested:
+    return False
+  return bool(requested - resolved_call_ids)
+
+
+def _truncate_events_before_hitl_signal(
+    events: list[Event], resolved_call_ids: set[str]
+) -> list[Event]:
+  """Returns the leading contiguous events before any pending HITL request."""
+  for index, event in enumerate(events):
+    if _is_pending_hitl(event, resolved_call_ids):
       return events[:index]
   return events
 
@@ -630,6 +672,9 @@ async def _run_compaction_for_sliding_window(
       pending_ids = _pending_function_call_ids(events)
       events_to_compact = _truncate_events_before_pending_function_call(
           events_to_compact, pending_ids
+      )
+      events_to_compact = _truncate_events_before_hitl_signal(
+          events_to_compact, _resolved_hitl_call_ids(events)
       )
 
   if not events_to_compact:
