@@ -1067,6 +1067,13 @@ async def test_get_session_with_config(session_service):
   assert len(events) == num_recent_events
   assert events[0].timestamp == num_test_events - num_recent_events + 1
 
+  # num_recent_events=0 should return no events (boundary case).
+  config = GetSessionConfig(num_recent_events=0)
+  session = await session_service.get_session(
+      app_name=app_name, user_id=user_id, session_id=session.id, config=config
+  )
+  assert session.events == []
+
   # Only expect events after timestamp 4.0 (inclusive), i.e., 2 events.
   after_timestamp = 4.0
   config = GetSessionConfig(after_timestamp=after_timestamp)
