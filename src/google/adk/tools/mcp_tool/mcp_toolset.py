@@ -163,10 +163,6 @@ def create_session_state_header_provider(
 
     validate_header_value(state_key, value, strict=strict)
     formatted_value = header_format.format(value=value)
-    # Defense in depth: strip CRLF before sanitization. sanitize_header_value
-    # also strips these, but we strip early to prevent injection via format
-    # string interpolation.
-    formatted_value = formatted_value.replace("\r", "").replace("\n", "")
     sanitized_value = sanitize_header_value(formatted_value)
 
     return {header_name: sanitized_value}
@@ -204,12 +200,13 @@ def create_combined_header_provider(
             )
           headers.update(provider_headers)
       except Exception as e:
-        logger.error(f"Header provider {i+1}/{num_providers} failed: {e}")
+        logger.error("Header provider %d/%d failed: %s", i + 1, num_providers, e)
         raise
 
     if headers:
       logger.debug(
-          f"Combined header provider generated {len(headers)} total headers"
+          "Combined header provider generated %d total headers",
+          len(headers),
       )
     return headers
 
@@ -444,10 +441,6 @@ class McpToolset(BaseToolset):
           # Default to using scheme name as header
           headers = {self._auth_config.auth_scheme.name: credential.api_key}
 
-    # Sanitize all header values to prevent injection attacks.
-    if headers:
-      headers = {k: sanitize_header_value(v) for k, v in headers.items()}
-
     return headers
 
   async def _execute_with_session(
@@ -469,6 +462,10 @@ class McpToolset(BaseToolset):
       provider_headers = self._header_provider(readonly_context)
       if provider_headers:
         headers.update(provider_headers)
+
+    # Sanitize all header values at the boundary to prevent injection.
+    if headers:
+      headers = {k: sanitize_header_value(v) for k, v in headers.items()}
 
     session = await self._mcp_session_manager.create_session(
         headers=headers if headers else None
@@ -611,7 +608,13 @@ class McpToolset(BaseToolset):
   def from_config(
       cls: type[McpToolset], config: ToolArgsConfig, config_abs_path: str
   ) -> McpToolset:
-    """Creates an McpToolset from a configuration object."""
+    """Creates an McpToolset from a configuration object.
+
+    Note: This method constructs the header_provider from the declarative
+    state_header_mapping in the config. Since McpToolsetConfig is a
+    serializable Pydantic model, it cannot hold callable objects. To use a
+    custom header_provider, construct McpToolset directly.
+    """
     mcp_toolset_config = McpToolsetConfig.model_validate(config.model_dump())
 
     if mcp_toolset_config.stdio_server_params:

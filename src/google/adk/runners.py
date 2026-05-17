@@ -458,7 +458,9 @@ class Runner:
     Args:
       user_id: The user ID of the session.
       session_id: The session ID of the session.
-      new_message: A new message to append to the session.
+      new_message: An optional new message to append to the session. When
+        omitted, either an invocation_id must be provided to resume a
+        previous invocation, or the app must be configured as resumable.
       invocation_id: The invocation id to resume.
       state_delta: Optional state changes to apply to the session.
       request_state: Optional ephemeral state for the request.
