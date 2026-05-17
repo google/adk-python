@@ -606,6 +606,24 @@ def adk_services_options(*, default_use_local_storage: bool = True):
 @feature_options()
 @adk_services_options(default_use_local_storage=True)
 @click.option(
+    "--interval",
+    type=int,
+    default=60,
+    show_default=True,
+    help=(
+        "Autosave interval in seconds (only used if --save_session_on_runtime"
+        " is set)."
+    ),
+)
+@click.option(
+    "--save_session_on_runtime",
+    type=bool,
+    is_flag=True,
+    show_default=True,
+    default=False,
+    help="Optional. Whether to save the session to a json file on runtime.",
+)
+@click.option(
     "--save_session",
     type=bool,
     is_flag=True,
@@ -653,9 +671,11 @@ def adk_services_options(*, default_use_local_storage: bool = True):
         exists=True, dir_okay=True, file_okay=False, resolve_path=True
     ),
 )
-def cli_run(
+def cli_run(  # type: ignore[misc]
     agent: str,
     save_session: bool,
+    save_session_on_runtime: bool,
+    interval: int,
     session_id: Optional[str],
     replay: Optional[str],
     resume: Optional[str],
@@ -663,7 +683,7 @@ def cli_run(
     artifact_service_uri: Optional[str] = None,
     memory_service_uri: Optional[str] = None,
     use_local_storage: bool = True,
-):
+) -> None:
   """Runs an interactive CLI for a certain agent.
 
   AGENT: The path to the agent source code folder.
@@ -684,6 +704,8 @@ def cli_run(
           input_file=replay,
           saved_session_file=resume,
           save_session=save_session,
+          save_session_on_runtime=save_session_on_runtime,
+          interval=interval,
           session_id=session_id,
           session_service_uri=session_service_uri,
           artifact_service_uri=artifact_service_uri,

@@ -191,6 +191,8 @@ async def test_run_cli_with_input_file(fake_agent, tmp_path: Path) -> None:
       input_file=str(input_path),
       saved_session_file=None,
       save_session=False,
+      save_session_on_runtime=False,
+      interval=60,
   )
 
 
@@ -217,6 +219,8 @@ async def test_run_cli_loads_services_module(
       input_file=str(input_path),
       saved_session_file=None,
       save_session=False,
+      save_session_on_runtime=False,
+      interval=60,
   )
 
   assert loaded_dirs == [str(agent_root.resolve())]
@@ -255,6 +259,8 @@ async def test_run_cli_app_uses_app_name_for_sessions(
       input_file=str(input_path),
       saved_session_file=None,
       save_session=False,
+      save_session_on_runtime=False,
+      interval=60,
   )
 
   assert created_app_names
@@ -283,6 +289,8 @@ async def test_run_cli_save_session(
       input_file=None,
       saved_session_file=None,
       save_session=True,
+      save_session_on_runtime=False,
+      interval=60,
   )
 
   assert session_file.exists()
@@ -355,6 +363,8 @@ async def test_run_cli_accepts_memory_scheme(
       session_service_uri="memory://",
       artifact_service_uri="memory://",
       memory_service_uri="memory://",
+      save_session_on_runtime=False,
+      interval=60,
   )
 
 
@@ -388,6 +398,8 @@ async def test_run_cli_invalid_memory_uri_surfaces_value_error(
         saved_session_file=None,
         save_session=False,
         memory_service_uri="unknown://x",
+        save_session_on_runtime=False,
+        interval=60,
     )
 
 
@@ -441,6 +453,8 @@ async def test_run_cli_passes_memory_service_to_input_file(
       saved_session_file=None,
       save_session=False,
       memory_service_uri="memory://",
+      save_session_on_runtime=False,
+      interval=60,
   )
 
   assert Path(captured_factory_args["base_dir"]) == parent_dir.resolve()
@@ -486,6 +500,8 @@ async def test_run_cli_loads_dotenv_before_memory_service_creation(
       saved_session_file=None,
       save_session=False,
       memory_service_uri="memory://",
+      save_session_on_runtime=False,
+      interval=60,
   )
 
   assert "create_memory" in call_order
