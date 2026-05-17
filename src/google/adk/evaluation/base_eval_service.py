@@ -25,6 +25,7 @@ from pydantic import BaseModel
 from pydantic import ConfigDict
 from pydantic import Field
 
+from .constants import DEFAULT_LIVE_TIMEOUT_SECONDS
 from .eval_case import Invocation
 from .eval_metrics import EvalMetric
 from .eval_result import EvalCaseResult
@@ -79,6 +80,18 @@ the quota.
 
 2) The tools used by the Agent could also have their SLA. Using a larger value
 could also overwhelm those tools.""",
+  )
+
+  use_live: bool = Field(
+      default=False,
+      description="""Whether to use live (bidirectional streaming) mode for
+inference. This is required for Live API models (e.g., gemini-*-live-*).""",
+  )
+
+  live_timeout_seconds: int = Field(
+      default=DEFAULT_LIVE_TIMEOUT_SECONDS,
+      description="""Timeout in seconds for waiting for model turn completion in
+live mode.""",
   )
 
 
