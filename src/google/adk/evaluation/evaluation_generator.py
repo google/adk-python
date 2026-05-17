@@ -284,7 +284,6 @@ class EvaluationGenerator:
     results = []
 
     for eval_case in eval_set.eval_cases:
-      # assume only static conversations are needed
       user_simulator = UserSimulatorProvider(
           user_simulator_config=user_simulator_config
       ).provide(eval_case)
