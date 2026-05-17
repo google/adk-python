@@ -1043,3 +1043,35 @@ class TestMCPGracefulErrorHandlingFlagContract:
         os.environ[disable] = saved_disable
       if saved_enable is not None:
         os.environ[enable] = saved_enable
+
+  @pytest.mark.asyncio
+  @patch("google.adk.tools.mcp_tool.mcp_session_manager.asyncio.wait_for")
+  async def test_create_session_does_not_use_wait_for_when_ge_is_enabled(
+      self, mock_wait_for
+  ):
+    """create_session must not wrap enter_async_context in asyncio.wait_for when GE is enabled."""
+    from google.adk.features import FeatureName
+    from google.adk.features._feature_registry import temporary_feature_override
+
+    manager = MCPSessionManager(
+        StdioConnectionParams(
+            server_params=StdioServerParameters(command="dummy", args=[]),
+            timeout=5.0,
+        )
+    )
+    with temporary_feature_override(
+        FeatureName._MCP_GRACEFUL_ERROR_HANDLING, True
+    ):
+      with patch(
+          "google.adk.tools.mcp_tool.mcp_session_manager.AsyncExitStack"
+      ) as mock_stack:
+        mock_stack.return_value.enter_async_context = AsyncMock()
+        with patch(
+            "google.adk.tools.mcp_tool.mcp_session_manager.SessionContext"
+        ):
+          with patch(
+              "google.adk.tools.mcp_tool.mcp_session_manager.stdio_client"
+          ):
+            await manager.create_session()
+
+    mock_wait_for.assert_not_called()

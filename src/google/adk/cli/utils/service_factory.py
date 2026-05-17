@@ -18,7 +18,6 @@ import logging
 import os
 from pathlib import Path
 from typing import Any
-from typing import Optional
 from urllib.parse import parse_qsl
 from urllib.parse import urlsplit
 from urllib.parse import urlunsplit
@@ -170,9 +169,9 @@ def _create_in_memory_artifact_service(
 def create_session_service_from_options(
     *,
     base_dir: Path | str,
-    session_service_uri: Optional[str] = None,
-    session_db_kwargs: Optional[dict[str, Any]] = None,
-    app_name_to_dir: Optional[dict[str, str]] = None,
+    session_service_uri: str | None = None,
+    session_db_kwargs: dict[str, Any] | None = None,
+    app_name_to_dir: dict[str, str] | None = None,
     use_local_storage: bool = True,
 ) -> BaseSessionService:
   """Creates a session service based on CLI/web options."""
@@ -242,7 +241,7 @@ def create_session_service_from_options(
 def create_memory_service_from_options(
     *,
     base_dir: Path | str,
-    memory_service_uri: Optional[str] = None,
+    memory_service_uri: str | None = None,
 ) -> BaseMemoryService:
   """Creates a memory service based on CLI/web options."""
   base_path = Path(base_dir)
@@ -272,7 +271,7 @@ def create_memory_service_from_options(
 def create_artifact_service_from_options(
     *,
     base_dir: Path | str,
-    artifact_service_uri: Optional[str] = None,
+    artifact_service_uri: str | None = None,
     strict_uri: bool = False,
     use_local_storage: bool = True,
 ) -> BaseArtifactService:
@@ -326,3 +325,23 @@ def create_artifact_service_from_options(
         base_path,
         exc,
     )
+
+
+def _create_task_store_from_options(
+    *,
+    task_store_uri: str | None = None,
+) -> Any:
+  """Creates an A2A task store based on CLI/web options."""
+  from a2a.server.tasks import InMemoryTaskStore
+
+  registry = get_service_registry()
+
+  if task_store_uri:
+    logger.info(
+        "Using A2A task store URI: %s",
+        _redact_uri_for_log(task_store_uri),
+    )
+    return registry._create_task_store_service(task_store_uri)
+
+  logger.info("Using in-memory A2A task store")
+  return InMemoryTaskStore()

@@ -30,6 +30,7 @@ from google.adk.a2a.converters.to_adk_event import convert_a2a_artifact_update_t
 from google.adk.a2a.converters.to_adk_event import convert_a2a_message_to_event
 from google.adk.a2a.converters.to_adk_event import convert_a2a_status_update_to_event
 from google.adk.a2a.converters.to_adk_event import convert_a2a_task_to_event
+from google.adk.a2a.converters.to_adk_event import MOCK_FUNCTION_CALL_FOR_REQUIRED_USER_INPUT
 from google.adk.a2a.converters.utils import _get_adk_metadata_key
 from google.adk.agents.invocation_context import InvocationContext
 from google.genai import types as genai_types
@@ -330,12 +331,95 @@ class TestToAdk:
     assert event.actions.state_delta == {"saved_key": "saved-value"}
     assert event.actions.transfer_to_agent == "agent-2"
     assert event.content is not None
-    assert event.content.parts == [mock_genai_part]
+    assert (
+        event.content.parts[0].function_call.name
+        == MOCK_FUNCTION_CALL_FOR_REQUIRED_USER_INPUT
+    )
+    assert (
+        event.content.parts[0].function_call.args["input_required"]
+        == "need input"
+    )
 
-  def test_convert_a2a_task_to_event_none(self):
-    """Test convert_a2a_task_to_event with None."""
-    with pytest.raises(ValueError, match="A2A task cannot be None"):
-      convert_a2a_task_to_event(None)
+  def test_convert_a2a_task_to_event_multiple_parts_replaces_last_text(self):
+    """Test converting A2A task with multiple text parts, only replacing the last text."""
+    part1 = Mock(spec=A2APart)
+    part1.root = Mock(spec=TextPart)
+    part1.root.metadata = {}
+    part2 = Mock(spec=A2APart)
+    part2.root = Mock(spec=TextPart)
+    part2.root.metadata = {}
+
+    task = Task(
+        id="task-1",
+        context_id="context-1",
+        kind="task",
+        status=TaskStatus(
+            state=TaskState.input_required,
+            timestamp="now",
+            message=Message(
+                message_id="m1",
+                role="agent",
+                parts=[part1, part2],
+            ),
+        ),
+    )
+
+    mock_genai_part_1 = genai_types.Part.from_text(text="Part 1")
+    mock_genai_part_2 = genai_types.Part.from_text(text="Part 2")
+
+    part_converter_mock = Mock()
+    part_converter_mock.side_effect = [[mock_genai_part_1], [mock_genai_part_2]]
+
+    event = convert_a2a_task_to_event(
+        task,
+        author="test-author",
+        invocation_context=self.mock_context,
+        part_converter=part_converter_mock,
+    )
+
+    assert event is not None
+    assert event.content is not None
+    assert len(event.content.parts) == 2
+    assert event.content.parts[0].text == "Part 1"
+    assert (
+        event.content.parts[1].function_call.name
+        == MOCK_FUNCTION_CALL_FOR_REQUIRED_USER_INPUT
+    )
+
+  def test_convert_a2a_task_to_event_no_text_parts(self):
+    """Test converting A2A task with no text parts should not inject function call."""
+    part1 = Mock(spec=A2APart)
+    part1.root = Mock()  # Not a TextPart
+    part1.root.metadata = {}
+
+    task = Task(
+        id="task-1",
+        context_id="context-1",
+        kind="task",
+        status=TaskStatus(
+            state=TaskState.input_required,
+            timestamp="now",
+            message=Message(
+                message_id="m1",
+                role="agent",
+                parts=[part1],
+            ),
+        ),
+    )
+    mock_image_part = genai_types.Part(
+        inline_data=genai_types.Blob(mime_type="image/jpeg", data=b"fake")
+    )
+
+    event = convert_a2a_task_to_event(
+        task,
+        author="test-author",
+        invocation_context=self.mock_context,
+        part_converter=Mock(return_value=[mock_image_part]),
+    )
+
+    assert event is not None
+    assert event.content is not None
+    assert event.content.parts == [mock_image_part]
 
   def test_convert_a2a_status_update_to_event_success(self):
     """Test successful conversion of A2A status update to Event."""

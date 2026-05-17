@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+from contextlib import asynccontextmanager
 import importlib
 import json
 import logging
@@ -24,7 +25,6 @@ import sys
 from typing import Any
 from typing import Literal
 from typing import Mapping
-from typing import Optional
 
 import click
 from fastapi import FastAPI
@@ -48,6 +48,7 @@ from .utils import evals
 from .utils.agent_change_handler import AgentChangeEventHandler
 from .utils.agent_loader import AgentLoader
 from .utils.base_agent_loader import BaseAgentLoader
+from .utils.service_factory import _create_task_store_from_options
 from .utils.service_factory import create_artifact_service_from_options
 from .utils.service_factory import create_memory_service_from_options
 from .utils.service_factory import create_session_service_from_options
@@ -75,28 +76,29 @@ def __getattr__(name: str):
 def get_fast_api_app(
     *,
     agents_dir: str,
-    agent_loader: Optional[BaseAgentLoader] = None,
-    session_service_uri: Optional[str] = None,
-    session_db_kwargs: Optional[Mapping[str, Any]] = None,
-    artifact_service_uri: Optional[str] = None,
-    memory_service_uri: Optional[str] = None,
+    agent_loader: BaseAgentLoader | None = None,
+    session_service_uri: str | None = None,
+    session_db_kwargs: Mapping[str, Any] | None = None,
+    artifact_service_uri: str | None = None,
+    memory_service_uri: str | None = None,
     use_local_storage: bool = True,
-    eval_storage_uri: Optional[str] = None,
-    allow_origins: Optional[list[str]] = None,
+    eval_storage_uri: str | None = None,
+    allow_origins: list[str] | None = None,
     web: bool,
     a2a: bool = False,
+    task_store_uri: str | None = None,
     host: str = "127.0.0.1",
     port: int = 8000,
-    url_prefix: Optional[str] = None,
+    url_prefix: str | None = None,
     trace_to_cloud: bool = False,
     otel_to_cloud: bool = False,
     reload_agents: bool = False,
-    lifespan: Optional[Lifespan[FastAPI]] = None,
-    extra_plugins: Optional[list[str]] = None,
-    logo_text: Optional[str] = None,
-    logo_image_url: Optional[str] = None,
+    lifespan: Lifespan[FastAPI] | None = None,
+    extra_plugins: list[str] | None = None,
+    logo_text: str | None = None,
+    logo_image_url: str | None = None,
     auto_create_session: bool = False,
-    trigger_sources: Optional[list[Literal["pubsub", "eventarc"]]] = None,
+    trigger_sources: list[Literal["pubsub", "eventarc"]] | None = None,
 ) -> FastAPI:
   """Constructs and returns a FastAPI application for serving ADK agents.
 
@@ -128,6 +130,8 @@ def get_fast_api_app(
     allow_origins: List of allowed origins for CORS.
     web: Whether to enable the web UI and serve its assets.
     a2a: Whether to enable Agent-to-Agent (A2A) protocol support.
+    task_store_uri: URI for the A2A task store. Uses in-memory task store if
+      None. Only used when ``a2a=True``.
     host: Host address for the server (defaults to 127.0.0.1).
     port: Port number for the server (defaults to 8000).
     url_prefix: Optional prefix for all URL routes.
@@ -272,6 +276,33 @@ def get_fast_api_app(
         web_assets_dir=ANGULAR_DIST_PATH,
     )
 
+  # Create the task store early so its engine can be disposed via the
+  # lifespan, preventing connection pool leaks on shutdown.
+  a2a_task_store = None
+  if a2a:
+    base_path = Path.cwd() / agents_dir
+    if base_path.exists() and base_path.is_dir():
+      a2a_task_store = _create_task_store_from_options(
+          task_store_uri=task_store_uri,
+      )
+
+  if a2a_task_store is not None and hasattr(a2a_task_store, "engine"):
+    outer_lifespan = lifespan
+
+    @asynccontextmanager
+    async def _a2a_lifespan(app_instance: FastAPI):
+      try:
+        if outer_lifespan:
+          async with outer_lifespan(app_instance) as ctx:
+            yield ctx
+        else:
+          yield
+      finally:
+        logger.info("Disposing A2A task store engine")
+        await a2a_task_store.engine.dispose()
+
+    lifespan = _a2a_lifespan
+
   app = adk_web_server.get_fast_api_app(
       lifespan=lifespan,
       allow_origins=allow_origins,
@@ -339,7 +370,7 @@ def get_fast_api_app(
       for doc in docs:
         _walk(doc)
 
-    def _parse_upload_filename(filename: Optional[str]) -> tuple[str, str]:
+    def _parse_upload_filename(filename: str | None) -> tuple[str, str]:
       if not filename:
         raise ValueError("Upload filename is missing.")
       filename = _normalize_relative_path(filename)
@@ -473,7 +504,7 @@ def get_fast_api_app(
 
     @app.post("/builder/save", response_model_exclude_none=True)
     async def builder_build(
-        files: list[UploadFile], tmp: Optional[bool] = False
+        files: list[UploadFile], tmp: bool | None = False
     ) -> bool:
       try:
         # Phase 1: parse filenames and read content into memory.
@@ -544,8 +575,8 @@ def get_fast_api_app(
     )
     async def get_agent_builder(
         app_name: str,
-        file_path: Optional[str] = None,
-        tmp: Optional[bool] = False,
+        file_path: str | None = None,
+        tmp: bool | None = False,
     ):
       try:
         app_root = _get_app_root(app_name)
@@ -584,11 +615,10 @@ def get_fast_api_app(
           headers={"Cache-Control": "no-store"},
       )
 
-  if a2a:
+  if a2a and a2a_task_store is not None:
     from a2a.server.apps import A2AStarletteApplication
     from a2a.server.request_handlers import DefaultRequestHandler
     from a2a.server.tasks import InMemoryPushNotificationConfigStore
-    from a2a.server.tasks import InMemoryTaskStore
     from a2a.types import AgentCard
     from a2a.utils.constants import AGENT_CARD_WELL_KNOWN_PATH
 
@@ -598,7 +628,6 @@ def get_fast_api_app(
     base_path = Path.cwd() / agents_dir
     # the root agents directory should be an existing folder
     if base_path.exists() and base_path.is_dir():
-      a2a_task_store = InMemoryTaskStore()
 
       def create_a2a_runner_loader(captured_app_name: str):
         """Factory function to create A2A runner with proper closure."""
