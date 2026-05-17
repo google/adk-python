@@ -19,6 +19,7 @@ import textwrap
 from typing import AsyncGenerator
 from typing import Optional
 from unittest.mock import AsyncMock
+from unittest.mock import MagicMock
 
 from google.adk.agents.base_agent import BaseAgent
 from google.adk.agents.context_cache_config import ContextCacheConfig
@@ -359,6 +360,80 @@ async def test_run_live_auto_create_session():
       app_name="live_app", user_id="user", session_id="missing"
   )
   assert session is not None
+
+
+class MockNativeAudioLiveAgent(MockLiveAgent):
+  """Mock live agent that reports itself as a native-audio model."""
+
+  @property
+  def canonical_model(self):
+    mock_model = MagicMock()
+    mock_model.model = "gemini-live-2.5-flash-native-audio"
+    return mock_model
+
+
+@pytest.mark.asyncio
+async def test_run_live_native_audio_model_forces_audio_modality():
+  """run_live should override TEXT modality to AUDIO for native-audio models."""
+  from google.adk.agents.live_request_queue import LiveRequestQueue
+
+  session_service = InMemorySessionService()
+  artifact_service = InMemoryArtifactService()
+
+  runner = Runner(
+      app_name="live_app",
+      agent=MockNativeAudioLiveAgent("native_audio_agent"),
+      session_service=session_service,
+      artifact_service=artifact_service,
+      auto_create_session=True,
+  )
+
+  live_queue = LiveRequestQueue()
+  run_config = RunConfig(response_modalities=["TEXT"])
+
+  agen = runner.run_live(
+      user_id="user",
+      session_id="session",
+      live_request_queue=live_queue,
+      run_config=run_config,
+  )
+  await agen.__anext__()
+  await agen.aclose()
+
+  assert run_config.response_modalities == ["AUDIO"]
+  assert run_config.output_audio_transcription is not None
+
+
+@pytest.mark.asyncio
+async def test_run_live_native_audio_model_enables_transcription_when_audio():
+  """run_live should enable transcription for native-audio models when AUDIO modality is already set."""
+  from google.adk.agents.live_request_queue import LiveRequestQueue
+
+  session_service = InMemorySessionService()
+  artifact_service = InMemoryArtifactService()
+
+  runner = Runner(
+      app_name="live_app",
+      agent=MockNativeAudioLiveAgent("native_audio_agent"),
+      session_service=session_service,
+      artifact_service=artifact_service,
+      auto_create_session=True,
+  )
+
+  live_queue = LiveRequestQueue()
+  run_config = RunConfig(response_modalities=["AUDIO"])
+
+  agen = runner.run_live(
+      user_id="user",
+      session_id="session2",
+      live_request_queue=live_queue,
+      run_config=run_config,
+  )
+  await agen.__anext__()
+  await agen.aclose()
+
+  assert run_config.response_modalities == ["AUDIO"]
+  assert run_config.output_audio_transcription is not None
 
 
 @pytest.mark.asyncio

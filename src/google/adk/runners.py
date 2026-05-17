@@ -1104,6 +1104,23 @@ class Runner:
     # AUDIO by default.
     if run_config.response_modalities is None:
       run_config.response_modalities = ['AUDIO']
+    # Native-audio models only support AUDIO modality. If TEXT was explicitly
+    # requested, override it and enable transcription so users can still read
+    # the audio output as text.
+    if hasattr(self.agent, 'canonical_model') and self.agent.canonical_model:
+      model_name = self.agent.canonical_model.model or ''
+      if 'native-audio' in model_name.lower():
+        if run_config.response_modalities != ['AUDIO']:
+          logger.warning(
+              'Model %s only supports AUDIO modality. Overriding'
+              ' response_modalities to [AUDIO].',
+              model_name,
+          )
+          run_config.response_modalities = ['AUDIO']
+        if not run_config.output_audio_transcription:
+          run_config.output_audio_transcription = (
+              types.AudioTranscriptionConfig()
+          )
     if session is None and (user_id is None or session_id is None):
       raise ValueError(
           'Either session or user_id and session_id must be provided.'
