@@ -651,6 +651,71 @@ def test_parse_response_usage_metadata():
   assert llm_response.usage_metadata.thoughts_token_count == 4
 
 
+@pytest.mark.asyncio
+@mock.patch('google.genai.Client')
+async def test_api_client_passes_credentials_when_provided(
+    mock_client_constructor, llm_request
+):
+  """Tests that credentials passed to __init__ are forwarded to genai.Client."""
+  mock_credentials = mock.Mock()
+
+  mock_client_instance = mock.Mock()
+  mock_client_instance.aio.models.generate_content = AsyncMock(
+      return_value=types.GenerateContentResponse(
+          candidates=[
+              types.Candidate(
+                  content=Content(
+                      parts=[Part.from_text(text='Test response')],
+                      role='model',
+                  )
+              )
+          ]
+      )
+  )
+  mock_client_constructor.return_value = mock_client_instance
+
+  apigee_llm = ApigeeLlm(
+      model=APIGEE_GEMINI_MODEL_ID,
+      proxy_url=PROXY_URL,
+      credentials=mock_credentials,
+  )
+  _ = [resp async for resp in apigee_llm.generate_content_async(llm_request)]
+
+  _, kwargs = mock_client_constructor.call_args
+  assert kwargs['credentials'] is mock_credentials
+
+
+@pytest.mark.asyncio
+@mock.patch('google.genai.Client')
+async def test_api_client_omits_credentials_when_not_provided(
+    mock_client_constructor, llm_request
+):
+  """Tests that credentials kwarg is not forwarded when not supplied."""
+  mock_client_instance = mock.Mock()
+  mock_client_instance.aio.models.generate_content = AsyncMock(
+      return_value=types.GenerateContentResponse(
+          candidates=[
+              types.Candidate(
+                  content=Content(
+                      parts=[Part.from_text(text='Test response')],
+                      role='model',
+                  )
+              )
+          ]
+      )
+  )
+  mock_client_constructor.return_value = mock_client_instance
+
+  apigee_llm = ApigeeLlm(
+      model=APIGEE_GEMINI_MODEL_ID,
+      proxy_url=PROXY_URL,
+  )
+  _ = [resp async for resp in apigee_llm.generate_content_async(llm_request)]
+
+  _, kwargs = mock_client_constructor.call_args
+  assert 'credentials' not in kwargs
+
+
 def test_parse_response_with_refusal():
   """Tests that CompletionsHTTPClient parses refusal correctly."""
   client = CompletionsHTTPClient(base_url='http://test')

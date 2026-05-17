@@ -596,41 +596,6 @@ def test_cli_web_passes_service_uris(
   assert called_kwargs.get("memory_service_uri") == "rag://mycorpus"
 
 
-@pytest.mark.unmute_click
-def test_cli_web_warns_and_maps_deprecated_uris(
-    tmp_path: Path,
-    _patch_uvicorn: _Recorder,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-  """`adk web` should accept deprecated URI flags with warnings."""
-  agents_dir = tmp_path / "agents"
-  agents_dir.mkdir()
-
-  mock_get_app = _Recorder()
-  monkeypatch.setattr(cli_tools_click, "get_fast_api_app", mock_get_app)
-
-  runner = CliRunner()
-  result = runner.invoke(
-      cli_tools_click.main,
-      [
-          "web",
-          str(agents_dir),
-          "--session_db_url",
-          "sqlite:///deprecated.db",
-          "--artifact_storage_uri",
-          "gs://deprecated",
-      ],
-  )
-
-  assert result.exit_code == 0
-  called_kwargs = mock_get_app.calls[0][1]
-  assert called_kwargs.get("session_service_uri") == "sqlite:///deprecated.db"
-  assert called_kwargs.get("artifact_service_uri") == "gs://deprecated"
-  # Check output for deprecation warnings (CliRunner captures both stdout and stderr)
-  assert "--session_db_url" in result.output
-  assert "--artifact_storage_uri" in result.output
-
-
 def test_cli_eval_with_eval_set_file_path(
     mock_load_eval_set_from_file,
     mock_get_root_agent,

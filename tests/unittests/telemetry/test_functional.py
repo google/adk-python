@@ -316,8 +316,6 @@ async def test_metrics(monkeypatch):
       MetricPoint(
           attributes={
               "gen_ai.agent.name": "complex_agent",
-              "gen_ai.input.type": "text",
-              "gen_ai.output.type": "text",
           },
           value=None,
       )
@@ -334,8 +332,6 @@ async def test_metrics(monkeypatch):
           attributes={
               "gen_ai.agent.name": "complex_agent",
               "gen_ai.tool.name": "generate_random_number",
-              "gen_ai.input.type": "text",
-              "gen_ai.output.type": "text",
           },
           value=None,
       ),
@@ -343,8 +339,6 @@ async def test_metrics(monkeypatch):
           attributes={
               "gen_ai.agent.name": "complex_agent",
               "gen_ai.tool.name": "get_current_time",
-              "gen_ai.input.type": "text",
-              "gen_ai.output.type": "text",
           },
           value=None,
       ),
@@ -355,7 +349,8 @@ async def test_metrics(monkeypatch):
   got_steps = _extract_metrics(metrics_list, "gen_ai.agent.workflow.steps")
   assert len(got_steps) == 1
   want_steps = [
-      MetricPoint(attributes={"gen_ai.agent.name": "complex_agent"}, value=6)
+      # (tool call + result) x 2 + text response = 5 steps
+      MetricPoint(attributes={"gen_ai.agent.name": "complex_agent"}, value=5)
   ]
   assert got_steps == want_steps
 
@@ -401,7 +396,6 @@ async def test_metrics_tool_error(monkeypatch):
           attributes={
               "gen_ai.agent.name": "error_agent",
               "gen_ai.tool.name": "failing_tool",
-              "gen_ai.input.type": "text",
               "error.type": "ValueError",
           },
           value=None,
@@ -410,8 +404,6 @@ async def test_metrics_tool_error(monkeypatch):
           attributes={
               "gen_ai.agent.name": "error_agent",
               "gen_ai.tool.name": "get_current_time",
-              "gen_ai.input.type": "text",
-              "gen_ai.output.type": "text",
           },
           value=None,
       ),

@@ -1137,6 +1137,49 @@ async def test_receive_multiple_tool_calls_buffered_until_turn_complete(
 
 
 @pytest.mark.asyncio
+async def test_receive_tool_calls_yielded_immediately_for_gemini_3_1(
+    mock_gemini_session,
+):
+  """Test that tool calls are yielded immediately for Gemini 3.1."""
+  connection = GeminiLlmConnection(
+      mock_gemini_session,
+      api_backend=GoogleLLMVariant.VERTEX_AI,
+      model_version='gemini-3.1-flash-live-preview',
+  )
+
+  mock_tool_call_msg = mock.create_autospec(
+      types.LiveServerMessage, instance=True
+  )
+  mock_tool_call_msg.usage_metadata = None
+  mock_tool_call_msg.server_content = None
+  mock_tool_call_msg.session_resumption_update = None
+  mock_tool_call_msg.go_away = None
+
+  function_call = types.FunctionCall(
+      name='test_tool',
+      args={'arg': 'value'},
+  )
+  mock_tool_call = mock.create_autospec(types.LiveServerToolCall, instance=True)
+  mock_tool_call.function_calls = [function_call]
+  mock_tool_call_msg.tool_call = mock_tool_call
+
+  async def mock_receive_generator():
+    yield mock_tool_call_msg
+
+  receive_mock = mock.Mock(return_value=mock_receive_generator())
+  mock_gemini_session.receive = receive_mock
+
+  responses = []
+  async for resp in connection.receive():
+    responses.append(resp)
+    break
+
+  assert len(responses) == 1
+  assert responses[0].content is not None
+  assert responses[0].content.parts[0].function_call.name == 'test_tool'
+
+
+@pytest.mark.asyncio
 async def test_receive_go_away(gemini_connection, mock_gemini_session):
   """Test receive yields go_away message."""
   mock_go_away = types.LiveServerGoAway(timeLeft='10s')

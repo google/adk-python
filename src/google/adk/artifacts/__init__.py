@@ -12,10 +12,17 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from __future__ import annotations
+
+import importlib
+from typing import TYPE_CHECKING
+
 from .base_artifact_service import BaseArtifactService
-from .file_artifact_service import FileArtifactService
-from .gcs_artifact_service import GcsArtifactService
-from .in_memory_artifact_service import InMemoryArtifactService
+
+if TYPE_CHECKING:
+  from .file_artifact_service import FileArtifactService
+  from .gcs_artifact_service import GcsArtifactService
+  from .in_memory_artifact_service import InMemoryArtifactService
 
 __all__ = [
     'BaseArtifactService',
@@ -23,3 +30,16 @@ __all__ = [
     'GcsArtifactService',
     'InMemoryArtifactService',
 ]
+
+_LAZY_MEMBERS: dict[str, str] = {
+    'FileArtifactService': 'file_artifact_service',
+    'GcsArtifactService': 'gcs_artifact_service',
+    'InMemoryArtifactService': 'in_memory_artifact_service',
+}
+
+
+def __getattr__(name: str):
+  if name in _LAZY_MEMBERS:
+    module = importlib.import_module(f'{__name__}.{_LAZY_MEMBERS[name]}')
+    return vars(module)[name]
+  raise AttributeError(f'module {__name__!r} has no attribute {name!r}')
