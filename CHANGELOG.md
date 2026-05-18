@@ -51,9 +51,7 @@
 
 ### Performance Improvements
 
-* lazy-load service registries and split apps.app to cut cold start ~8% ([bd062ec](https://github.com/google/adk-python/commit/bd062ec9eb4b48cc6d4ec45aaf0a1f8f847b6d7b))
-* lazy-load service registries and split apps.app to cut cold start ~8% ([6e6621c](https://github.com/google/adk-python/commit/6e6621c7680168cfb7e6ae36cb8718c529e46316))
-* lazy-load service registries and split apps.app to cut cold start ~8% ([6ca6a14](https://github.com/google/adk-python/commit/6ca6a14187f9c65982ae2f4d506a659171ee58ce))
+* lazy-load service registries and split apps.app to cut cold start ~8% ([bd062ec](https://github.com/google/adk-python/commit/bd062ec9eb4b48cc6d4ec45aaf0a1f8f847b6d7b), [6e6621c](https://github.com/google/adk-python/commit/6e6621c7680168cfb7e6ae36cb8718c529e46316), [6ca6a14](https://github.com/google/adk-python/commit/6ca6a14187f9c65982ae2f4d506a659171ee58ce))
 * **models:** guard debug log evaluation with isEnabledFor ([57d8fc7](https://github.com/google/adk-python/commit/57d8fc7d818dc3ba2cec56fa8199a11cde30a4c6))
 * **utils:** cache find_context_parameter introspection ([ec54bd4](https://github.com/google/adk-python/commit/ec54bd439e31c99a32d773ace04b73cb3a275675))
 
