@@ -438,7 +438,10 @@ class Runner:
       *,
       user_id: str,
       session_id: str,
-      new_message: types.Content,
+      new_message: Optional[types.Content] = None,
+      invocation_id: Optional[str] = None,
+      state_delta: Optional[dict[str, Any]] = None,
+      request_state: Optional[dict[str, Any]] = None,
       run_config: Optional[RunConfig] = None,
   ) -> Generator[Event, None, None]:
     """Runs the agent.
@@ -455,7 +458,12 @@ class Runner:
     Args:
       user_id: The user ID of the session.
       session_id: The session ID of the session.
-      new_message: A new message to append to the session.
+      new_message: An optional new message to append to the session. When
+        omitted, either an invocation_id must be provided to resume a
+        previous invocation, or the app must be configured as resumable.
+      invocation_id: The invocation id to resume.
+      state_delta: Optional state changes to apply to the session.
+      request_state: Optional ephemeral state for the request.
       run_config: The run config for the agent.
 
     Yields:
@@ -471,6 +479,9 @@ class Runner:
                 user_id=user_id,
                 session_id=session_id,
                 new_message=new_message,
+                invocation_id=invocation_id,
+                state_delta=state_delta,
+                request_state=request_state,
                 run_config=run_config,
             )
         ) as agen:
@@ -506,6 +517,7 @@ class Runner:
       invocation_id: Optional[str] = None,
       new_message: Optional[types.Content] = None,
       state_delta: Optional[dict[str, Any]] = None,
+      request_state: Optional[dict[str, Any]] = None,
       run_config: Optional[RunConfig] = None,
   ) -> AsyncGenerator[Event, None]:
     """Main entry method to run the agent in this runner.
@@ -523,6 +535,7 @@ class Runner:
         interrupted invocation.
       new_message: A new message to append to the session.
       state_delta: Optional state changes to apply to the session.
+      request_state: Optional ephemeral state for the request.
       run_config: The run config for the agent.
 
     Yields:
@@ -558,18 +571,36 @@ class Runner:
         is_resumable = (
             self.resumability_config and self.resumability_config.is_resumable
         )
-        if not is_resumable and not new_message:
-          raise ValueError(
-              'Running an agent requires a new_message or a resumable app. '
-              f'Session: {session_id}, User: {user_id}'
+        # Three-branch decision tree:
+        #   A) invocation_id provided → resume that specific invocation
+        #   B) not resumable → must start a new invocation (requires new_message)
+        #   C) resumable, no explicit invocation_id → resolve or create new
+        if invocation_id:
+          if not is_resumable:
+            raise ValueError(
+                f'invocation_id: {invocation_id} is provided but the app is not'
+                ' resumable.'
+            )
+          invocation_context = await self._setup_context_for_resumed_invocation(
+              session=session,
+              new_message=new_message,
+              invocation_id=invocation_id,
+              run_config=run_config,
+              state_delta=state_delta,
+              request_state=request_state,
           )
-
-        if not is_resumable:
+        elif not is_resumable:
+          if not new_message:
+            raise ValueError(
+                'Running an agent requires a new_message or a resumable app. '
+                f'Session: {session_id}, User: {user_id}'
+            )
           invocation_context = await self._setup_context_for_new_invocation(
               session=session,
               new_message=new_message,
               run_config=run_config,
               state_delta=state_delta,
+              request_state=request_state,
           )
         else:
           invocation_id = self._resolve_invocation_id(
@@ -581,6 +612,7 @@ class Runner:
                 new_message=new_message,
                 run_config=run_config,
                 state_delta=state_delta,
+                request_state=request_state,
             )
           else:
             invocation_context = (
@@ -590,13 +622,15 @@ class Runner:
                     invocation_id=invocation_id,
                     run_config=run_config,
                     state_delta=state_delta,
+                    request_state=request_state,
                 )
             )
             if invocation_context.end_of_agents.get(
                 invocation_context.agent.name
             ):
-              # Directly return if the current agent in invocation context is
-              # already final.
+              # Agent already completed in a prior invocation — skip execution
+              # and return immediately. This can happen when resuming a
+              # completed agent in a multi-agent pipeline.
               return
 
         async def execute(ctx: InvocationContext) -> AsyncGenerator[Event]:
@@ -1339,6 +1373,7 @@ class Runner:
       new_message: types.Content,
       run_config: RunConfig,
       state_delta: Optional[dict[str, Any]],
+      request_state: Optional[dict[str, Any]] = None,
   ) -> InvocationContext:
     """Sets up the context for a new invocation.
 
@@ -1347,6 +1382,7 @@ class Runner:
       new_message: The new message to process and append to the session.
       run_config: The run config of the agent.
       state_delta: Optional state changes to apply to the session.
+      request_state: Optional ephemeral state for the request.
 
     Returns:
       The invocation context for the new invocation.
@@ -1356,6 +1392,7 @@ class Runner:
         session,
         new_message=new_message,
         run_config=run_config,
+        request_state=request_state,
     )
     # Step 2: Handle new message, by running callbacks and appending to
     # session.
@@ -1380,6 +1417,7 @@ class Runner:
       invocation_id: Optional[str],
       run_config: RunConfig,
       state_delta: Optional[dict[str, Any]],
+      request_state: Optional[dict[str, Any]] = None,
   ) -> InvocationContext:
     """Sets up the context for a resumed invocation.
 
@@ -1389,6 +1427,7 @@ class Runner:
       invocation_id: The invocation id to resume.
       run_config: The run config of the agent.
       state_delta: Optional state changes to apply to the session.
+      request_state: Optional ephemeral state for the request.
 
     Returns:
       The invocation context for the resumed invocation.
@@ -1414,6 +1453,7 @@ class Runner:
         new_message=user_message,
         run_config=run_config,
         invocation_id=invocation_id,
+        request_state=request_state,
     )
     # Step 3: Maybe handle new message.
     if new_message:
@@ -1464,6 +1504,7 @@ class Runner:
       new_message: Optional[types.Content] = None,
       live_request_queue: Optional[LiveRequestQueue] = None,
       run_config: Optional[RunConfig] = None,
+      request_state: Optional[dict[str, Any]] = None,
   ) -> InvocationContext:
     """Creates a new invocation context.
 
@@ -1473,6 +1514,7 @@ class Runner:
         new_message: The new message for the context.
         live_request_queue: The live request queue for the context.
         run_config: The run config for the context.
+        request_state: The ephemeral state for the request.
 
     Returns:
         The new invocation context.
@@ -1507,6 +1549,7 @@ class Runner:
         live_request_queue=live_request_queue,
         run_config=run_config,
         resumability_config=self.resumability_config,
+        request_state=request_state if request_state is not None else {},
     )
 
   def _new_invocation_context_for_live(

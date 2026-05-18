@@ -128,6 +128,7 @@ async def dummy_run_async(
     session_id,
     new_message,
     state_delta=None,
+    request_state=None,
     run_config: Optional[RunConfig] = None,
     invocation_id: Optional[str] = None,
 ):
@@ -1358,9 +1359,18 @@ def test_agent_run_passes_invocation_id(
       invocation_id: Optional[str] = None,
       new_message: Optional[types.Content] = None,
       state_delta: Optional[dict[str, Any]] = None,
+      request_state: Optional[dict[str, Any]] = None,
       run_config: Optional[RunConfig] = None,
   ):
-    del self, user_id, session_id, new_message, state_delta, run_config
+    del (
+        self,
+        user_id,
+        session_id,
+        new_message,
+        state_delta,
+        request_state,
+        run_config,
+    )
     captured_invocation_id["invocation_id"] = invocation_id
     yield _event_1()
 
@@ -1395,9 +1405,18 @@ def test_agent_run_sse_splits_artifact_delta(
       invocation_id: Optional[str] = None,
       new_message: Optional[types.Content] = None,
       state_delta: Optional[dict[str, Any]] = None,
+      request_state: Optional[dict[str, Any]] = None,
       run_config: Optional[RunConfig] = None,
   ):
-    del user_id, session_id, invocation_id, new_message, state_delta, run_config
+    del (
+        user_id,
+        session_id,
+        invocation_id,
+        new_message,
+        state_delta,
+        request_state,
+        run_config,
+    )
     yield Event(
         author="dummy agent",
         invocation_id="invocation_id",
@@ -1451,9 +1470,18 @@ def test_agent_run_sse_does_not_split_artifact_delta_for_function_resume(
       invocation_id: Optional[str] = None,
       new_message: Optional[types.Content] = None,
       state_delta: Optional[dict[str, Any]] = None,
+      request_state: Optional[dict[str, Any]] = None,
       run_config: Optional[RunConfig] = None,
   ):
-    del user_id, session_id, invocation_id, new_message, state_delta, run_config
+    del (
+        user_id,
+        session_id,
+        invocation_id,
+        new_message,
+        state_delta,
+        request_state,
+        run_config,
+    )
     yield Event(
         author="dummy agent",
         invocation_id="invocation_id",
@@ -2570,6 +2598,7 @@ async def test_independent_telemetry_context(
       invocation_id: Optional[str] = None,
       new_message: Optional[types.Content] = None,
       state_delta: Optional[dict[str, Any]] = None,
+      request_state: Optional[dict[str, Any]] = None,
       run_config: Optional[RunConfig] = None,
   ):
     # Capture the value of is_visual_builder inside the request context

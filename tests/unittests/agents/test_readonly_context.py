@@ -25,6 +25,7 @@ def mock_invocation_context():
   mock_context.invocation_id = "test-invocation-id"
   mock_context.agent.name = "test-agent-name"
   mock_context.session.state = {"key1": "value1", "key2": "value2"}
+  mock_context.request_state = {}
   mock_context.user_id = "test-user-id"
   return mock_context
 

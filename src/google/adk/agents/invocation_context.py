@@ -171,6 +171,14 @@ class InvocationContext(BaseModel):
   agent_states: dict[str, dict[str, Any]] = Field(default_factory=dict)
   """The state of the agent for this invocation."""
 
+  request_state: dict[str, Any] = Field(default_factory=dict)
+  """The ephemeral state of the request.
+
+  This state is not persisted to the session and is only available for the
+  current invocation. It is used to pass sensitive information like tokens
+  that should not be stored in the session state.
+  """
+
   end_of_agents: dict[str, bool] = Field(default_factory=dict)
   """The end of agent status for each agent in this invocation."""
 

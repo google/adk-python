@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+from collections import ChainMap
 from types import MappingProxyType
 from typing import Any
 from typing import Optional
@@ -53,8 +54,19 @@ class ReadonlyContext:
 
   @property
   def state(self) -> MappingProxyType[str, Any]:
-    """The state of the current session. READONLY field."""
-    return MappingProxyType(self._invocation_context.session.state)
+    """The state of the current session. READONLY field.
+
+    Note: This property returns a merged view of ephemeral request_state and
+    persistent session.state using ChainMap. Changes to the underlying
+    request_state or session.state dictionaries will be reflected through
+    this view, but direct writes through this property are prevented.
+    """
+    return MappingProxyType(
+        ChainMap(
+            self._invocation_context.request_state,
+            self._invocation_context.session.state,
+        )
+    )
 
   @property
   def session(self) -> Session:

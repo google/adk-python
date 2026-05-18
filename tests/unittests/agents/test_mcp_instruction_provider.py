@@ -68,6 +68,7 @@ class TestMcpInstructionProvider:
 
     mock_invocation_context = MagicMock()
     mock_invocation_context.session.state = {}
+    mock_invocation_context.request_state = {}
     context = ReadonlyContext(mock_invocation_context)
 
     # Call
@@ -98,6 +99,7 @@ class TestMcpInstructionProvider:
 
     mock_invocation_context = MagicMock()
     mock_invocation_context.session.state = {"arg1": "value1", "arg2": "value2"}
+    mock_invocation_context.request_state = {}
     context = ReadonlyContext(mock_invocation_context)
 
     instruction = await self.provider(context)
@@ -119,6 +121,7 @@ class TestMcpInstructionProvider:
 
     mock_invocation_context = MagicMock()
     mock_invocation_context.session.state = {"arg1": "value1"}
+    mock_invocation_context.request_state = {}
     context = ReadonlyContext(mock_invocation_context)
 
     instruction = await self.provider(context)
@@ -137,6 +140,7 @@ class TestMcpInstructionProvider:
 
     mock_invocation_context = MagicMock()
     mock_invocation_context.session.state = {}
+    mock_invocation_context.request_state = {}
     context = ReadonlyContext(mock_invocation_context)
 
     # Call and assert
@@ -179,6 +183,7 @@ class TestMcpInstructionProvider:
 
     mock_invocation_context = MagicMock()
     mock_invocation_context.session.state = {}
+    mock_invocation_context.request_state = {}
     context = ReadonlyContext(mock_invocation_context)
 
     # Call
