@@ -88,8 +88,8 @@ _DEFAULT_SKILL_SYSTEM_INSTRUCTION = (
     "4. Use `run_skill_script` to run scripts from a skill's `scripts/` "
     "directory. Use `load_skill_resource` to view script content first if "
     "needed.\n"
-    "5. If `load_skill_resource` returns any error, do not retry the "
-    "same path. Report the error to the user and stop.\n"
+    "5. If `load_skill_resource` returns any error, do not retry any "
+    "path. Report the error to the user and stop.\n"
 )
 
 
