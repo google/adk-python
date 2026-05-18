@@ -7,14 +7,6 @@ on:
   pull_request_review:
     types:
       - 'submitted'
-  pull_request:
-    types:
-      - 'opened'
-      - 'ready_for_review'
-  issues:
-    types:
-      - 'opened'
-      - 'reopened'
   issue_comment:
     types:
       - 'created'
@@ -44,19 +36,11 @@ jobs:
           env | grep '^DEBUG_'
 
   dispatch:
-    # For PRs: only if not from a fork
-    # For issues: only on open/reopen
-    # For comments: only if user types @gemini-cli and is OWNER/MEMBER/COLLABORATOR
+    # Only trigger if user types @gemini-cli and author association is OWNER, MEMBER, or COLLABORATOR
     if: |-
-      (
-        github.event_name == 'pull_request' &&
-        github.event.pull_request.head.repo.fork == false &&
-        github.event.pull_request.draft == false
-      ) || (
-        github.event.sender.type == 'User' &&
-        startsWith(github.event.comment.body || github.event.review.body || github.event.issue.body, '@gemini-cli') &&
-        contains(fromJSON('["OWNER", "MEMBER", "COLLABORATOR"]'), github.event.comment.author_association || github.event.review.author_association || github.event.issue.author_association)
-      )
+      github.event.sender.type == 'User' &&
+      startsWith(github.event.comment.body || github.event.review.body, '@gemini-cli') &&
+      contains(fromJSON('["OWNER", "MEMBER", "COLLABORATOR"]'), github.event.comment.author_association || github.event.review.author_association)
     runs-on: 'ubuntu-latest'
     permissions:
       contents: 'read'
@@ -82,22 +66,43 @@ jobs:
 
       - name: 'Extract command'
         id: 'extract_command'
-        uses: 'actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea' # ratchet:actions/github-script@v7
+        uses: 'actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd' # ratchet:actions/github-script@v8.0.0
         env:
-          EVENT_TYPE: '${{ github.event_name }}.${{ github.event.action }}'
-          REQUEST: '${{ github.event.comment.body || github.event.review.body || github.event.issue.body }}'
+          REQUEST: '${{ github.event.comment.body || github.event.review.body }}'
+          IS_PR: '${{ !!(github.event.pull_request || github.event.issue.pull_request) }}'
         with:
           script: |
-            const eventType = process.env.EVENT_TYPE;
             const request = process.env.REQUEST;
+            const isPr = process.env.IS_PR === 'true';
             core.setOutput('request', request);
 
-            if (eventType === 'pull_request.opened' || eventType === 'pull_request.ready_for_review') {
-              core.setOutput('command', 'review');
-            } else if (request.startsWith("@gemini-cli /review")) {
-              core.setOutput('command', 'review');
-              const additionalContext = request.replace(/^@gemini-cli \/review/, '').trim();
-              core.setOutput('additional_context', additionalContext);
+            // Ensure request is on a PR targeting the main branch
+            let baseRef = '';
+            if (context.eventName === 'pull_request_review' || context.eventName === 'pull_request_review_comment') {
+              baseRef = context.payload.pull_request.base.ref;
+            } else if (context.eventName === 'issue_comment' && context.payload.issue.pull_request) {
+              const pr = await github.rest.pulls.get({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                pull_number: context.payload.issue.number
+              });
+              baseRef = pr.data.base.ref;
+            }
+
+            if (isPr && baseRef !== 'main') {
+              console.log(`Skipping: PR targets '${baseRef}', but only 'main' is allowed.`);
+              core.setOutput('command', 'fallthrough');
+              return;
+            }
+
+            if (request.startsWith("@gemini-cli /review")) {
+              if (isPr) {
+                core.setOutput('command', 'review');
+                const additionalContext = request.replace(/^@gemini-cli \/review/, '').trim();
+                core.setOutput('additional_context', additionalContext);
+              } else {
+                core.setOutput('command', 'fallthrough');
+              }
             } else if (request.startsWith("@gemini-cli")) {
               const additionalContext = request.replace(/^@gemini-cli/, '').trim();
               core.setOutput('command', 'invoke');

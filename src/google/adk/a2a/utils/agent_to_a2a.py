@@ -35,6 +35,7 @@ from ...memory.in_memory_memory_service import InMemoryMemoryService
 from ...runners import Runner
 from ...sessions.in_memory_session_service import InMemorySessionService
 from ..executor.a2a_agent_executor import A2aAgentExecutor
+from ..executor.config import A2aAgentExecutorConfig
 from ..experimental import a2a_experimental
 from .agent_card_builder import AgentCardBuilder
 
@@ -86,6 +87,7 @@ def to_a2a(
     task_store: TaskStore | None = None,
     runner: Runner | None = None,
     lifespan: Callable[[Starlette], AsyncIterator[None]] | None = None,
+    agent_executor_factory: Callable[[Runner], A2aAgentExecutor] | None = None,
 ) -> Starlette:
   """Convert an ADK agent to a A2A Starlette application.
 
@@ -95,20 +97,21 @@ def to_a2a(
       port: The port for the A2A RPC URL (default: 8000)
       protocol: The protocol for the A2A RPC URL (default: "http")
       agent_card: Optional pre-built AgentCard object or path to agent card
-                  JSON. If not provided, will be built automatically from the
-                  agent.
+        JSON. If not provided, will be built automatically from the agent.
       push_config_store: Optional A2A push notification config store. If not
-        provided, an in-memory store will be created so push-notification
-        config RPC methods are supported.
+        provided, an in-memory store will be created so push-notification config
+        RPC methods are supported.
       task_store: Optional A2A task store for persisting task state. If not
         provided, an in-memory store will be created.
       runner: Optional pre-built Runner object. If not provided, a default
-              runner will be created using in-memory services.
-      lifespan: Optional async context manager for Starlette lifespan
-        events. Use this to run startup/shutdown logic (e.g. initializing
-        database connections or loading resources). The context manager
-        receives the Starlette app instance and can set state on
-        ``app.state``.
+        runner will be created using in-memory services.
+      lifespan: Optional async context manager for Starlette lifespan events.
+        Use this to run startup/shutdown logic (e.g. initializing database
+        connections or loading resources). The context manager receives the
+        Starlette app instance and can set state on ``app.state``.
+      agent_executor_factory: Optional factory function that creates an instance
+        of A2aAgentExecutor. If not provided, a default A2aAgentExecutor will be
+        created.
 
   Returns:
       A Starlette application that can be run with uvicorn
@@ -148,7 +151,7 @@ def to_a2a(
   adk_logger = logging.getLogger("google_adk")
   adk_logger.setLevel(logging.INFO)
 
-  async def create_runner() -> Runner:
+  def create_runner() -> Runner:
     """Create a runner for the agent."""
     return Runner(
         app_name=agent.name or "adk_agent",
@@ -164,8 +167,10 @@ def to_a2a(
   if task_store is None:
     task_store = InMemoryTaskStore()
 
-  agent_executor = A2aAgentExecutor(
-      runner=runner or create_runner,
+  agent_executor = (
+      agent_executor_factory(runner or create_runner())
+      if agent_executor_factory is not None
+      else A2aAgentExecutor(runner=runner or create_runner)
   )
 
   if push_config_store is None:
