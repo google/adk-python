@@ -22,9 +22,16 @@ from pydantic import model_validator
 
 from ..agents.base_agent import BaseAgent
 from ..agents.context_cache_config import ContextCacheConfig
-from ..apps.base_events_summarizer import BaseEventsSummarizer
 from ..plugins.base_plugin import BasePlugin
-from ..utils.feature_decorator import experimental
+from ._configs import EventsCompactionConfig
+from ._configs import ResumabilityConfig
+
+__all__ = [
+    "App",
+    "EventsCompactionConfig",
+    "ResumabilityConfig",
+    "validate_app_name",
+]
 
 
 def validate_app_name(name: str) -> None:
@@ -36,76 +43,6 @@ def validate_app_name(name: str) -> None:
     )
   if name == "user":
     raise ValueError("App name cannot be 'user'; reserved for end-user input.")
-
-
-@experimental
-class ResumabilityConfig(BaseModel):
-  """The config of the resumability for an application.
-
-  The "resumability" in ADK refers to the ability to:
-  1. pause an invocation upon a long-running function call.
-  2. resume an invocation from the last event, if it's paused or failed midway
-  through.
-
-  Note: ADK resumes the invocation in a best-effort manner:
-  1. Tool call to resume needs to be idempotent because we only guarantee
-  an at-least-once behavior once resumed.
-  2. Any temporary / in-memory state will be lost upon resumption.
-  """
-
-  is_resumable: bool = False
-  """Whether the app supports agent resumption.
-  If enabled, the feature will be enabled for all agents in the app.
-  """
-
-
-@experimental
-class EventsCompactionConfig(BaseModel):
-  """The config of event compaction for an application."""
-
-  model_config = ConfigDict(
-      arbitrary_types_allowed=True,
-      extra="forbid",
-  )
-
-  summarizer: Optional[BaseEventsSummarizer] = None
-  """The event summarizer to use for compaction."""
-
-  compaction_interval: int
-  """The number of *new* user-initiated invocations that, once
-  fully represented in the session's events, will trigger a compaction."""
-
-  overlap_size: int
-  """The number of preceding invocations to include from the
-  end of the last compacted range. This creates an overlap between consecutive
-  compacted summaries, maintaining context."""
-
-  token_threshold: Optional[int] = Field(
-      default=None,
-      gt=0,
-  )
-  """Post-invocation token threshold trigger.
-
-  If set, ADK will attempt a post-invocation compaction when the most recently
-  observed prompt token count meets or exceeds this threshold.
-  """
-
-  event_retention_size: Optional[int] = Field(default=None, ge=0)
-  """Post-invocation raw event retention size.
-
-  If token-based post-invocation compaction is triggered, this keeps the last N
-  raw events un-compacted.
-  """
-
-  @model_validator(mode="after")
-  def _validate_token_params(self) -> EventsCompactionConfig:
-    token_threshold_set = self.token_threshold is not None
-    retention_size_set = self.event_retention_size is not None
-    if token_threshold_set != retention_size_set:
-      raise ValueError(
-          "token_threshold and event_retention_size must be set together."
-      )
-    return self
 
 
 class App(BaseModel):

@@ -11,11 +11,20 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+
+from __future__ import annotations
+
+import importlib
+from typing import TYPE_CHECKING
+
 from .base_session_service import BaseSessionService
-from .in_memory_session_service import InMemorySessionService
 from .session import Session
 from .state import State
-from .vertex_ai_session_service import VertexAiSessionService
+
+if TYPE_CHECKING:
+  from .database_session_service import DatabaseSessionService
+  from .in_memory_session_service import InMemorySessionService
+  from .vertex_ai_session_service import VertexAiSessionService
 
 __all__ = [
     'BaseSessionService',
@@ -26,16 +35,23 @@ __all__ = [
     'VertexAiSessionService',
 ]
 
+_LAZY_MEMBERS: dict[str, str] = {
+    'InMemorySessionService': 'in_memory_session_service',
+    'VertexAiSessionService': 'vertex_ai_session_service',
+}
+
 
 def __getattr__(name: str):
+  if name in _LAZY_MEMBERS:
+    module = importlib.import_module(f'{__name__}.{_LAZY_MEMBERS[name]}')
+    return vars(module)[name]
   if name == 'DatabaseSessionService':
     try:
-      from .database_session_service import DatabaseSessionService
-
-      return DatabaseSessionService
+      module = importlib.import_module(f'{__name__}.database_session_service')
     except ImportError as e:
       raise ImportError(
-          'DatabaseSessionService requires sqlalchemy>=2.0, please ensure it is'
-          ' installed correctly.'
+          'DatabaseSessionService requires sqlalchemy>=2.0, please ensure it'
+          ' is installed correctly.'
       ) from e
+    return vars(module)['DatabaseSessionService']
   raise AttributeError(f'module {__name__!r} has no attribute {name!r}')

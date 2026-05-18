@@ -52,12 +52,14 @@ jobs:
           ISSUE_NUMBER: '${{ github.event.pull_request.number || github.event.issue.number }}'
           REPOSITORY: '${{ github.repository }}'
           ADDITIONAL_CONTEXT: '${{ inputs.additional_context }}'
+          # Required to allow the Gemini CLI to process files in the ephemeral GitHub Actions runner
+          GEMINI_CLI_TRUST_WORKSPACE: 'true'
         with:
           gcp_location: '${{ vars.GOOGLE_CLOUD_LOCATION }}'
           gcp_project_id: '${{ vars.GOOGLE_CLOUD_PROJECT }}'
           gcp_service_account: '${{ vars.SERVICE_ACCOUNT_EMAIL }}'
           gcp_workload_identity_provider: '${{ vars.GCP_WIF_PROVIDER }}'
-          gemini_api_key: '${{ secrets.GEMINI_API_KEY }}'
+          gemini_api_key: '${{ secrets.GOOGLE_API_KEY }}'
           gemini_cli_version: '${{ vars.GEMINI_CLI_VERSION }}'
           gemini_debug: '${{ fromJSON(vars.GEMINI_DEBUG || vars.ACTIONS_STEP_DEBUG || false) }}'
           gemini_model: '${{ vars.GEMINI_MODEL }}'
@@ -91,32 +93,12 @@ jobs:
                     "GITHUB_PERSONAL_ACCESS_TOKEN",
                     "ghcr.io/github/github-mcp-server:v0.27.0"
                   ],
-                  "includeTools": [
-                    "add_issue_comment",
-                    "issue_read",
-                    "list_issues",
-                    "search_issues",
-                    "pull_request_read",
-                    "list_pull_requests",
-                    "search_pull_requests",
-                    "get_commit",
-                    "get_file_contents",
-                    "list_commits",
-                    "search_code"
-                  ],
                   "env": {
                     "GITHUB_PERSONAL_ACCESS_TOKEN": "${{ steps.mint_identity_token.outputs.token || secrets.GITHUB_TOKEN || github.token }}"
                   }
                 }
-              },
-              "tools": {
-                "core": [
-                  "run_shell_command(cat)",
-                  "run_shell_command(echo)",
-                  "run_shell_command(grep)",
-                  "run_shell_command(head)",
-                  "run_shell_command(tail)"
-                ]
               }
             }
-          prompt: '/gemini-invoke'
+          prompt: |-
+            /gemini-invoke
+            [IMPORTANT] Do not generate execution plans and do not ask for approval (such as suggesting `@gemini-cli /approve`). Perform the requested task or answer the question directly and immediately.

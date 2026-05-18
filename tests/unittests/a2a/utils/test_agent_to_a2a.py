@@ -357,7 +357,7 @@ class TestToA2A:
   @patch("google.adk.a2a.utils.agent_to_a2a.AgentCardBuilder")
   @patch("google.adk.a2a.utils.agent_to_a2a.Starlette")
   @patch("google.adk.a2a.utils.agent_to_a2a.Runner")
-  async def test_create_runner_function_creates_runner_correctly(
+  def test_create_runner_function_creates_runner_correctly(
       self,
       mock_runner_class,
       mock_starlette_class,
@@ -391,7 +391,7 @@ class TestToA2A:
     runner_func = call_args[1]["runner"]
 
     # Call the runner function to verify it creates Runner correctly
-    runner_result = await runner_func()
+    runner_result = runner_func()
 
     # Verify Runner was created with correct parameters
     mock_runner_class.assert_called_once_with(
@@ -420,7 +420,7 @@ class TestToA2A:
   @patch("google.adk.a2a.utils.agent_to_a2a.AgentCardBuilder")
   @patch("google.adk.a2a.utils.agent_to_a2a.Starlette")
   @patch("google.adk.a2a.utils.agent_to_a2a.Runner")
-  async def test_create_runner_function_with_agent_without_name(
+  def test_create_runner_function_with_agent_without_name(
       self,
       mock_runner_class,
       mock_starlette_class,
@@ -455,7 +455,7 @@ class TestToA2A:
     runner_func = call_args[1]["runner"]
 
     # Call the runner function to verify it creates Runner correctly
-    await runner_func()
+    runner_func()
 
     # Verify Runner was created with default app_name when agent has no name
     mock_runner_class.assert_called_once_with(

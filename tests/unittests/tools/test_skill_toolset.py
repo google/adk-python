@@ -13,6 +13,7 @@
 # limitations under the License.
 
 import asyncio
+import collections
 import logging
 import sys
 from unittest import mock
@@ -1859,14 +1860,14 @@ async def test_turn_scoped_skill_cache_eviction(mock_registry, mock_skill1):
   for i in range(16):
     await toolset._get_or_fetch_skill("skill1", f"turn-{i}")
 
-  assert len(toolset._invocation_cache) == 16
-  assert "turn-0" in toolset._invocation_cache
+  assert len(toolset._fetched_skill_cache) == 16
+  assert "turn-0" in toolset._fetched_skill_cache
 
   # Next turn should evict oldest (turn-0)
   await toolset._get_or_fetch_skill("skill1", "turn-16")
-  assert len(toolset._invocation_cache) == 16
-  assert "turn-0" not in toolset._invocation_cache
-  assert "turn-1" in toolset._invocation_cache
+  assert len(toolset._fetched_skill_cache) == 16
+  assert "turn-0" not in toolset._fetched_skill_cache
+  assert "turn-1" in toolset._fetched_skill_cache
 
 
 @pytest.mark.asyncio
@@ -1891,3 +1892,36 @@ async def test_turn_scoped_skill_cache_concurrency(mock_registry, mock_skill1):
 
   # Registry should have been called exactly once
   mock_registry.get_skill.assert_called_once_with(name="skill1")
+
+
+def test_skill_toolset_disables_invocation_cache():
+  """Verify SkillToolset disables tool invocation caching to allow dynamic tools."""
+  toolset = skill_toolset.SkillToolset()
+  assert toolset._use_invocation_cache is False
+
+
+@pytest.mark.asyncio
+async def test_close_cancels_futures_and_clears_cache():
+  # pylint: disable=protected-access
+  toolset = skill_toolset.SkillToolset()
+
+  # Create mock futures for testing close() behavior
+  loop = asyncio.get_running_loop()
+  fut1 = loop.create_future()
+  fut2 = loop.create_future()
+  fut2.set_result(None)  # Already done future
+
+  toolset._fetched_skill_cache = collections.OrderedDict(
+      {
+          "turn1": {
+              "skill1": fut1,
+              "skill2": fut2,
+          }
+      }
+  )
+
+  await toolset.close()
+
+  assert fut1.cancelled()
+  assert not fut2.cancelled()  # Done futures shouldn't/can't be cancelled
+  assert not toolset._fetched_skill_cache
