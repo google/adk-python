@@ -36,7 +36,14 @@ def test_list_accessible_data_agents_success(mock_requests):
   )
   assert result["status"] == "SUCCESS"
   assert result["response"] == ["agent1", "agent2"]
-  mock_requests.get.assert_called_once()
+  mock_requests.get.assert_called_once_with(
+      "https://geminidataanalytics.googleapis.com/v1beta/projects/test-project/locations/global/dataAgents:listAccessible",
+      headers={
+          "Authorization": "Bearer fake-token",
+          "Content-Type": "application/json",
+          "X-Goog-API-Client": "GOOGLE_ADK",
+      },
+  )
 
 
 @mock.patch.object(data_agent_tool, "requests", autospec=True)
@@ -65,7 +72,14 @@ def test_get_data_agent_info_success(mock_requests):
   result = data_agent_tool.get_data_agent_info("agent_name", mock_creds)
   assert result["status"] == "SUCCESS"
   assert result["response"] == "agent_info"
-  mock_requests.get.assert_called_once()
+  mock_requests.get.assert_called_once_with(
+      "https://geminidataanalytics.googleapis.com/v1beta/agent_name",
+      headers={
+          "Authorization": "Bearer fake-token",
+          "Content-Type": "application/json",
+          "X-Goog-API-Client": "GOOGLE_ADK",
+      },
+  )
 
 
 @mock.patch.object(data_agent_tool, "requests", autospec=True)
@@ -80,7 +94,9 @@ def test_get_data_agent_info_exception(mock_requests):
   mock_requests.get.assert_called_once()
 
 
-@mock.patch.object(data_agent_tool, "_get_stream", autospec=True)
+@mock.patch.object(
+    data_agent_tool._gda_stream_util, "get_stream", autospec=True
+)
 @mock.patch.object(data_agent_tool, "requests", autospec=True)
 @mock.patch.object(data_agent_tool, "get_data_agent_info", autospec=True)
 def test_ask_data_agent_success(
@@ -91,8 +107,8 @@ def test_ask_data_agent_success(
   mock_creds.token = "fake-token"
   mock_get_agent_info.return_value = {"status": "SUCCESS", "response": {}}
   mock_get_stream.return_value = [
-      {"Answer": "response1"},
-      {"Answer": "response2"},
+      {"text": {"parts": ["response1"], "textType": "THOUGHT"}},
+      {"text": {"parts": ["response2"], "textType": "FINAL_RESPONSE"}},
   ]
   mock_invocation_context = mock.Mock()
   mock_invocation_context.session.state = {}
@@ -108,14 +124,31 @@ def test_ask_data_agent_success(
   )
   assert result["status"] == "SUCCESS"
   assert result["response"] == [
-      {"Answer": "response1"},
-      {"Answer": "response2"},
+      {"text": {"parts": ["response1"], "textType": "THOUGHT"}},
+      {"text": {"parts": ["response2"], "textType": "FINAL_RESPONSE"}},
   ]
   mock_get_agent_info.assert_called_once()
-  mock_get_stream.assert_called_once()
+  mock_get_stream.assert_called_once_with(
+      "https://geminidataanalytics.googleapis.com/v1beta/projects/p/locations/l:chat",
+      {
+          "messages": [{"userMessage": {"text": "query"}}],
+          "dataAgentContext": {
+              "dataAgent": "projects/p/locations/l/dataAgents/a",
+          },
+          "clientIdEnum": "GOOGLE_ADK",
+      },
+      {
+          "Authorization": "Bearer fake-token",
+          "Content-Type": "application/json",
+          "X-Goog-API-Client": "GOOGLE_ADK",
+      },
+      mock_settings.max_query_result_rows,
+  )
 
 
-@mock.patch.object(data_agent_tool, "_get_stream", autospec=True)
+@mock.patch.object(
+    data_agent_tool._gda_stream_util, "get_stream", autospec=True
+)
 @mock.patch.object(data_agent_tool, "requests", autospec=True)
 @mock.patch.object(data_agent_tool, "get_data_agent_info", autospec=True)
 def test_ask_data_agent_exception(
@@ -141,71 +174,3 @@ def test_ask_data_agent_exception(
   assert result["status"] == "ERROR"
   assert "Chat failed!" in result["error_details"]
   mock_get_stream.assert_called_once()
-
-
-@pytest.mark.parametrize(
-    "case_file_path",
-    [
-        pytest.param("test_data/ask_data_insights_penguins_highest_mass.yaml"),
-    ],
-)
-@mock.patch.object(requests.Session, "post")
-def test_get_stream_from_file(mock_post, case_file_path):
-  """Runs a full integration test for the _get_stream function using data from a specific file."""
-  # 1. Construct the full, absolute path to the data file
-  full_path = pathlib.Path(__file__).parent.parent / "bigquery" / case_file_path
-
-  # 2. Load the test case data from the specified YAML file
-  with open(full_path, "r", encoding="utf-8") as f:
-    case_data = yaml.safe_load(f)
-
-  # 3. Prepare the mock stream and expected output from the loaded data
-  mock_stream_str = case_data["mock_api_stream"]
-  fake_stream_lines = [
-      line.encode("utf-8") for line in mock_stream_str.splitlines()
-  ]
-  # Load the expected output as a list of dictionaries, not a single string
-  expected_final_list = case_data["expected_output"]
-  data_retrieved = {
-      "Data Retrieved": {
-          "headers": ["island", "average_body_mass"],
-          "rows": [
-              ["Biscoe", "4716.017964071853"],
-              ["Dream", "3712.9032258064512"],
-              ["Torgersen", "3706.3725490196075"],
-          ],
-          "summary": "Showing all 3 rows.",
-      }
-  }
-  expected_final_list.insert(-1, data_retrieved)
-
-  # 4. Configure the mock for requests.post
-  mock_response = mock.Mock()
-  mock_response.iter_lines.return_value = fake_stream_lines
-  # Add raise_for_status mock which is called in the updated code
-  mock_response.raise_for_status.return_value = None
-  mock_post.return_value.__enter__.return_value = mock_response
-
-  # 5. Call the function under test
-  result = data_agent_tool._get_stream(  # pylint: disable=protected-access
-      url="fake_url",
-      ca_payload={},
-      headers={},
-      max_query_result_rows=50,
-  )
-
-  # 6. Assert that the final list of dicts matches the expected output
-  assert result == expected_final_list
-
-
-def test_get_http_headers_includes_client_id():
-  """Tests _get_http_headers includes the correct GDA client ID."""
-  mock_creds = mock.Mock()
-  mock_creds.token = "fake-token"
-
-  # pylint: disable=protected-access
-  headers = data_agent_tool._get_http_headers(mock_creds)
-
-  assert headers["X-Goog-API-Client"] == "GOOGLE_ADK"
-  assert headers["Content-Type"] == "application/json"
-  assert headers["Authorization"] == "Bearer fake-token"
