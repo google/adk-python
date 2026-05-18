@@ -542,10 +542,13 @@ class MCPSessionManager:
             sampling_capabilities=self._sampling_capabilities,
         )
 
-        session = await asyncio.wait_for(
-            exit_stack.enter_async_context(session_context),
-            timeout=timeout_in_seconds,
-        )
+        if is_feature_enabled(FeatureName._MCP_GRACEFUL_ERROR_HANDLING):  # pylint: disable=protected-access
+          session = await exit_stack.enter_async_context(session_context)
+        else:
+          session = await asyncio.wait_for(
+              exit_stack.enter_async_context(session_context),
+              timeout=timeout_in_seconds,
+          )
 
         # Store session, exit stack, and loop in the pool. The pool storage
         # remains a tuple for backward-compatibility with downstream tests
