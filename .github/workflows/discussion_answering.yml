@@ -6,6 +6,9 @@ on:
   discussion_comment:
     types: [created]
 
+permissions:
+  contents: read
+
 jobs:
   agent-answer-questions:
     if: >-
