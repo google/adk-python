@@ -1096,6 +1096,65 @@ def test_part_to_message_block_empty_response_stays_empty():
   assert result["content"] == ""
 
 
+def test_part_to_message_block_string_content_passes_through():
+  """A scalar string `content` value must not be iterated char-by-char."""
+  response_part = types.Part.from_function_response(
+      name="some_tool",
+      response={"content": "Hello"},
+  )
+  response_part.function_response.id = "test_id_str_content"
+
+  result = part_to_message_block(response_part)
+
+  assert result["content"] == "Hello"
+
+
+def test_part_to_message_block_load_skill_resource_response():
+  """LoadSkillResourceTool returns {content: <file text>} as a string."""
+  file_text = "Line one\nLine two\nLine three"
+  response_part = types.Part.from_function_response(
+      name="load_skill_resource",
+      response={
+          "skill_name": "my-skill",
+          "file_path": "references/doc.md",
+          "content": file_text,
+      },
+  )
+  response_part.function_response.id = "test_id_load_skill"
+
+  result = part_to_message_block(response_part)
+
+  assert result["content"] == file_text
+
+
+def test_part_to_message_block_empty_string_content_falls_through():
+  """`{"content": ""}` falls through to the JSON-dump fallback, not a crash."""
+  response_part = types.Part.from_function_response(
+      name="some_tool",
+      response={"content": ""},
+  )
+  response_part.function_response.id = "test_id_empty_content_only"
+
+  result = part_to_message_block(response_part)
+
+  assert json.loads(result["content"]) == {"content": ""}
+
+
+def test_part_to_message_block_empty_content_with_metadata_keeps_metadata():
+  """`content: ""` is falsy; sibling keys still reach the model via JSON dump."""
+  response_part = types.Part.from_function_response(
+      name="some_tool",
+      response={"content": "", "extra": "keep me"},
+  )
+  response_part.function_response.id = "test_id_empty_content_with_meta"
+
+  result = part_to_message_block(response_part)
+
+  parsed = json.loads(result["content"])
+  assert parsed["content"] == ""
+  assert parsed["extra"] == "keep me"
+
+
 # --- Tests for Bug #1: Streaming support ---
 
 
