@@ -14,13 +14,17 @@
 
 from __future__ import annotations
 
+import enum
 import logging
 import os
+from typing import Any
+from typing import Callable
 from typing import cast
 from typing import Optional
 from typing import TYPE_CHECKING
 
 import google.auth
+from google.auth.transport import mtls
 from opentelemetry.sdk._logs import LogRecordProcessor
 from opentelemetry.sdk._logs.export import BatchLogRecordProcessor
 from opentelemetry.sdk.metrics.export import MetricReader
@@ -39,6 +43,19 @@ logger = logging.getLogger('google_adk.' + __name__)
 
 _GCP_LOG_NAME_ENV_VARIABLE_NAME = 'GOOGLE_CLOUD_DEFAULT_LOG_NAME'
 _DEFAULT_LOG_NAME = 'adk-otel'
+
+_DEFAULT_TELEMETRY_TRACES_ENPOINT = 'https://telemetry.googleapis.com/v1/traces'
+_DEFAULT_MTLS_TELEMETRY_TRACES_ENPOINT = (
+    'https://telemetry.mtls.googleapis.com/v1/traces'
+)
+
+
+class _MtlsEndpoint(enum.Enum):
+  """The mTLS endpoint setting."""
+
+  AUTO = 'auto'
+  ALWAYS = 'always'
+  NEVER = 'never'
 
 
 def get_gcp_exporters(
@@ -100,10 +117,24 @@ def _get_gcp_span_exporter(credentials: Credentials) -> SpanProcessor:
   from google.auth.transport.requests import AuthorizedSession
   from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
 
+  session = AuthorizedSession(credentials=credentials)
+
+  use_client_cert = _use_client_cert_effective()
+  if use_client_cert:
+    client_cert_source = (
+        mtls.default_client_cert_source()
+        if mtls.has_default_client_cert_source()
+        else None
+    )
+    session.configure_mtls_channel()
+    endpoint = _get_api_endpoint(client_cert_source)
+  else:
+    endpoint = _DEFAULT_TELEMETRY_TRACES_ENPOINT
+
   return BatchSpanProcessor(
       OTLPSpanExporter(
-          session=AuthorizedSession(credentials=credentials),
-          endpoint='https://telemetry.googleapis.com/v1/traces',
+          session=session,
+          endpoint=endpoint,
       )
   )
 
@@ -158,3 +189,62 @@ def get_gcp_resource(project_id: Optional[str] = None) -> Resource:
         ' GCE, GKE or CloudRun related resource attributes may be missing'
     )
   return resource
+
+
+def _get_api_endpoint(
+    client_cert_source: Callable[[], tuple[bytes, bytes]] | None = None,
+) -> str:
+  """Returns API endpoint based on mTLS configuration and cert availability.
+
+  Args:
+      client_cert_source: A callable that returns the client certificate and
+        key, or None.
+
+  Returns:
+      str: The API endpoint to be used.
+  """
+  use_mtls_endpoint_str = os.getenv(
+      'GOOGLE_API_USE_MTLS_ENDPOINT', _MtlsEndpoint.AUTO.value
+  ).lower()
+
+  try:
+    use_mtls_endpoint = _MtlsEndpoint(use_mtls_endpoint_str)
+  except ValueError:
+    logger.warning(
+        'Environment variable `GOOGLE_API_USE_MTLS_ENDPOINT` must be one of '
+        '%s. Defaulting to %s.',
+        [e.value for e in _MtlsEndpoint],
+        _MtlsEndpoint.AUTO.value,
+    )
+    use_mtls_endpoint = _MtlsEndpoint.AUTO
+
+  if (use_mtls_endpoint is _MtlsEndpoint.ALWAYS) or (
+      use_mtls_endpoint is _MtlsEndpoint.AUTO and client_cert_source
+  ):
+    return _DEFAULT_MTLS_TELEMETRY_TRACES_ENPOINT
+
+  return _DEFAULT_TELEMETRY_TRACES_ENPOINT
+
+
+def _use_client_cert_effective() -> bool:
+  """Returns whether client certificate should be used for mTLS.
+
+  This checks if the google-auth version supports should_use_client_cert
+  automatic mTLS enablement. Alternatively, it reads from the
+  GOOGLE_API_USE_CLIENT_CERTIFICATE env var.
+
+  Returns:
+      bool: whether client certificate should be used for mTLS.
+  """
+  try:
+    return bool(mtls.should_use_client_cert())
+  except (ImportError, AttributeError):
+    use_client_cert_str = os.getenv(
+        'GOOGLE_API_USE_CLIENT_CERTIFICATE', 'false'
+    ).lower()
+    if use_client_cert_str not in ('true', 'false'):
+      logger.warning(
+          'Environment variable `GOOGLE_API_USE_CLIENT_CERTIFICATE` must be'
+          ' either `true` or `false`'
+      )
+    return use_client_cert_str == 'true'

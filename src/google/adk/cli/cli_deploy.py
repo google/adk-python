@@ -598,18 +598,12 @@ def _get_service_option_by_adk_version(
   parsed_version = parse(adk_version)
   options: list[str] = []
 
-  if parsed_version >= parse('1.3.0'):
-    if session_uri:
-      options.append(f'--session_service_uri={session_uri}')
-    if artifact_uri:
-      options.append(f'--artifact_service_uri={artifact_uri}')
-    if memory_uri:
-      options.append(f'--memory_service_uri={memory_uri}')
-  else:
-    if session_uri:
-      options.append(f'--session_db_url={session_uri}')
-    if parsed_version >= parse('1.2.0') and artifact_uri:
-      options.append(f'--artifact_storage_uri={artifact_uri}')
+  if session_uri:
+    options.append(f'--session_service_uri={session_uri}')
+  if artifact_uri:
+    options.append(f'--artifact_service_uri={artifact_uri}')
+  if memory_uri:
+    options.append(f'--memory_service_uri={memory_uri}')
 
   if use_local_storage is not None and parsed_version >= parse(
       _LOCAL_STORAGE_FLAG_MIN_VERSION

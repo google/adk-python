@@ -25,8 +25,8 @@ from pydantic import ConfigDict
 from pydantic import Field
 from pydantic import PrivateAttr
 
-from ..apps.app import EventsCompactionConfig
-from ..apps.app import ResumabilityConfig
+from ..apps._configs import EventsCompactionConfig
+from ..apps._configs import ResumabilityConfig
 from ..artifacts.base_artifact_service import BaseArtifactService
 from ..auth.auth_credential import AuthCredential
 from ..auth.credential_service.base_credential_service import BaseCredentialService

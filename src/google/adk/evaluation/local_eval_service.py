@@ -182,6 +182,8 @@ class LocalEvalService(BaseEvalService):
             eval_set_id=inference_request.eval_set_id,
             eval_case=eval_case,
             root_agent=self._root_agent,
+            use_live=inference_request.inference_config.use_live,
+            live_timeout_seconds=inference_request.inference_config.live_timeout_seconds,
         )
 
     inference_results = [run_inference(eval_case) for eval_case in eval_cases]
@@ -470,6 +472,8 @@ class LocalEvalService(BaseEvalService):
       eval_set_id: str,
       eval_case: EvalCase,
       root_agent: BaseAgent,
+      use_live: bool,
+      live_timeout_seconds: int,
   ) -> InferenceResult:
     initial_session = eval_case.session_input
     session_id = self._session_id_supplier()
@@ -482,17 +486,31 @@ class LocalEvalService(BaseEvalService):
 
     try:
       with client_label_context(EVAL_CLIENT_LABEL):
-        inferences = (
-            await EvaluationGenerator._generate_inferences_from_root_agent(
-                root_agent=root_agent,
-                user_simulator=self._user_simulator_provider.provide(eval_case),
-                initial_session=initial_session,
-                session_id=session_id,
-                session_service=self._session_service,
-                artifact_service=self._artifact_service,
-                memory_service=self._memory_service,
-            )
-        )
+        if use_live:
+          inferences = await EvaluationGenerator._generate_inferences_from_root_agent_live(
+              root_agent=root_agent,
+              user_simulator=self._user_simulator_provider.provide(eval_case),
+              initial_session=initial_session,
+              session_id=session_id,
+              session_service=self._session_service,
+              artifact_service=self._artifact_service,
+              memory_service=self._memory_service,
+              live_timeout_seconds=live_timeout_seconds,
+          )
+        else:
+          inferences = (
+              await EvaluationGenerator._generate_inferences_from_root_agent(
+                  root_agent=root_agent,
+                  user_simulator=self._user_simulator_provider.provide(
+                      eval_case
+                  ),
+                  initial_session=initial_session,
+                  session_id=session_id,
+                  session_service=self._session_service,
+                  artifact_service=self._artifact_service,
+                  memory_service=self._memory_service,
+              )
+          )
 
       inference_result.inferences = inferences
       inference_result.status = InferenceStatus.SUCCESS
