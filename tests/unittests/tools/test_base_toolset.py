@@ -41,14 +41,16 @@ class _TestingToolset(BaseToolset):
   def __init__(self, *args, tools: Optional[list[BaseTool]] = None, **kwargs):
     super().__init__(*args, **kwargs)
     self._tools = tools or []
+    self.get_tools_call_count = 0
 
   async def get_tools(
       self, readonly_context: Optional[ReadonlyContext] = None
   ) -> list[BaseTool]:
+    self.get_tools_call_count += 1
     return self._tools
 
   async def close(self) -> None:
-    pass
+    await super().close()
 
 
 @pytest.mark.asyncio
@@ -439,6 +441,14 @@ async def test_get_tools_with_prefix_caching():
   assert tools3 is not tools1  # Should be a new list instance
   assert tools3[0].name == 'test_tool1'
 
+  # The first invocation should still be cached after another invocation uses
+  # the same toolset.
+  tools1_again = await toolset.get_tools_with_prefix(
+      readonly_context=readonly_context1
+  )
+  assert tools1_again is tools1
+  assert toolset.get_tools_call_count == 2
+
   # Test disabling caching
   toolset._use_invocation_cache = False
   tools4 = await toolset.get_tools_with_prefix(
@@ -448,3 +458,16 @@ async def test_get_tools_with_prefix_caching():
       readonly_context=readonly_context2
   )
   assert tools4 is not tools5
+
+
+@pytest.mark.asyncio
+async def test_get_tools_with_prefix_close_clears_cache():
+  tool1 = _TestingTool(name='tool1', description='Test tool 1')
+  toolset = _TestingToolset(tools=[tool1], tool_name_prefix='test')
+
+  await toolset.get_tools_with_prefix()
+  assert toolset._cached_prefixed_tools
+
+  await toolset.close()
+
+  assert not toolset._cached_prefixed_tools
