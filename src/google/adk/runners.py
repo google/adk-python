@@ -66,6 +66,21 @@ if TYPE_CHECKING:
 logger = logging.getLogger('google_adk.' + __name__)
 
 
+class StopSignal:
+
+  def __init__(self) -> None:
+    self.stopped = False
+
+  def stop(self) -> None:
+    self.stopped = True
+
+  def reset(self) -> None:
+    self.stopped = False
+
+  def is_set(self) -> bool:
+    return self.stopped
+
+
 def _is_tool_call_or_response(event: Event) -> bool:
   return bool(event.get_function_calls() or event.get_function_responses())
 
@@ -507,6 +522,7 @@ class Runner:
       new_message: Optional[types.Content] = None,
       state_delta: Optional[dict[str, Any]] = None,
       run_config: Optional[RunConfig] = None,
+      stop_signal: Optional[StopSignal] = None,
   ) -> AsyncGenerator[Event, None]:
     """Main entry method to run the agent in this runner.
 
@@ -610,10 +626,13 @@ class Runner:
                 session=invocation_context.session,
                 execute_fn=execute,
                 is_live_call=False,
+                stop_signal=stop_signal,
             )
         ) as agen:
           async for event in agen:
             yield event
+            if event.interrupted:
+              return
         # Run compaction after all events are yielded from the agent.
         # (We don't compact in the middle of an invocation, we only compact at
         # the end of an invocation.)
@@ -837,6 +856,8 @@ class Runner:
       session: Session,
       execute_fn: Callable[[InvocationContext], AsyncGenerator[Event, None]],
       is_live_call: bool = False,
+      *,
+      stop_signal: Optional[StopSignal] = None,
   ) -> AsyncGenerator[Event, None]:
     """Wraps execution with plugin callbacks.
 
@@ -891,6 +912,17 @@ class Runner:
 
       async with Aclosing(execute_fn(invocation_context)) as agen:
         async for event in agen:
+          if stop_signal and stop_signal.is_set():
+            # See if the run_async execution is interrupted
+            # If an interruption is called, return an event that signifies as such
+            interrupted_event = Event(
+                invocation_id=invocation_context.invocation_id,
+                author='model',
+                interrupted=True,
+                content=types.Content(role='model', parts=[]),
+            )
+            yield interrupted_event
+
           _apply_run_config_custom_metadata(
               event, invocation_context.run_config
           )
