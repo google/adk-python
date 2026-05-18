@@ -1925,3 +1925,342 @@ async def test_close_cancels_futures_and_clears_cache():
   assert fut1.cancelled()
   assert not fut2.cancelled()  # Done futures shouldn't/can't be cancelled
   assert not toolset._fetched_skill_cache
+
+
+# --- Tests for max_activated_skills (rolling window) ---
+
+
+@pytest.mark.asyncio
+async def test_max_activated_skills_evicts_oldest(
+    mock_skill1, mock_skill2, tool_context_instance
+):
+  """When max_activated_skills is exceeded, the oldest skill is evicted."""
+  toolset = skill_toolset.SkillToolset(
+      [mock_skill1, mock_skill2], max_activated_skills=1
+  )
+  tool = skill_toolset.LoadSkillTool(toolset)
+
+  state_key = "_adk_activated_skill_test_agent"
+
+  # Load skill1
+  tool_context_instance.state.get.return_value = None
+  await tool.run_async(
+      args={"skill_name": "skill1"}, tool_context=tool_context_instance
+  )
+  tool_context_instance.state.__setitem__.assert_called_with(
+      state_key, ["skill1"]
+  )
+
+  # Load skill2 — skill1 should be evicted
+  tool_context_instance.state.get.return_value = ["skill1"]
+  await tool.run_async(
+      args={"skill_name": "skill2"}, tool_context=tool_context_instance
+  )
+  tool_context_instance.state.__setitem__.assert_called_with(
+      state_key, ["skill2"]
+  )
+
+
+@pytest.mark.asyncio
+async def test_max_activated_skills_keeps_recent_n(
+    tool_context_instance,
+):
+  """Rolling window keeps the N most recently activated skills."""
+  skills = []
+  for i in range(5):
+    skill = mock.create_autospec(models.Skill, instance=True)
+    skill.name = f"skill_{i}"
+    skill.instructions = f"instructions for skill_{i}"
+    frontmatter = mock.create_autospec(models.Frontmatter, instance=True)
+    frontmatter.name = f"skill_{i}"
+    frontmatter.metadata = {}
+    frontmatter.model_dump.return_value = {"name": f"skill_{i}"}
+    skill.frontmatter = frontmatter
+    skills.append(skill)
+
+  toolset = skill_toolset.SkillToolset(skills, max_activated_skills=3)
+  tool = skill_toolset.LoadSkillTool(toolset)
+
+  state_key = "_adk_activated_skill_test_agent"
+
+  # Sequentially load skills 0 through 4
+  current_state = []
+  for i in range(5):
+    tool_context_instance.state.get.return_value = list(current_state)
+    await tool.run_async(
+        args={"skill_name": f"skill_{i}"}, tool_context=tool_context_instance
+    )
+    # Capture what was set
+    call_args = tool_context_instance.state.__setitem__.call_args
+    current_state = call_args[0][1]
+
+  # After loading 5 skills with max=3, only the last 3 should remain
+  assert current_state == ["skill_2", "skill_3", "skill_4"]
+
+
+@pytest.mark.asyncio
+async def test_max_activated_skills_reloading_moves_to_end(
+    mock_skill1, mock_skill2, tool_context_instance
+):
+  """Re-loading an already active skill moves it to the end (most recent)."""
+  # Create a third skill
+  mock_skill3 = mock.create_autospec(models.Skill, instance=True)
+  mock_skill3.name = "skill3"
+  mock_skill3.instructions = "instructions for skill3"
+  frontmatter3 = mock.create_autospec(models.Frontmatter, instance=True)
+  frontmatter3.name = "skill3"
+  frontmatter3.metadata = {}
+  frontmatter3.model_dump.return_value = {"name": "skill3"}
+  mock_skill3.frontmatter = frontmatter3
+
+  toolset = skill_toolset.SkillToolset(
+      [mock_skill1, mock_skill2, mock_skill3], max_activated_skills=3
+  )
+  tool = skill_toolset.LoadSkillTool(toolset)
+
+  state_key = "_adk_activated_skill_test_agent"
+
+  # Start with all 3 loaded
+  tool_context_instance.state.get.return_value = [
+      "skill1",
+      "skill2",
+      "skill3",
+  ]
+
+  # Reload skill1 — should move to end
+  await tool.run_async(
+      args={"skill_name": "skill1"}, tool_context=tool_context_instance
+  )
+  call_args = tool_context_instance.state.__setitem__.call_args
+  assert call_args[0][1] == ["skill2", "skill3", "skill1"]
+
+
+@pytest.mark.asyncio
+async def test_no_max_activated_skills_unlimited(
+    tool_context_instance,
+):
+  """Without max_activated_skills, all skills are retained (no eviction)."""
+  skills = []
+  for i in range(10):
+    skill = mock.create_autospec(models.Skill, instance=True)
+    skill.name = f"skill_{i}"
+    skill.instructions = f"instructions for skill_{i}"
+    frontmatter = mock.create_autospec(models.Frontmatter, instance=True)
+    frontmatter.name = f"skill_{i}"
+    frontmatter.metadata = {}
+    frontmatter.model_dump.return_value = {"name": f"skill_{i}"}
+    skill.frontmatter = frontmatter
+    skills.append(skill)
+
+  toolset = skill_toolset.SkillToolset(skills)  # No max_activated_skills
+  tool = skill_toolset.LoadSkillTool(toolset)
+
+  state_key = "_adk_activated_skill_test_agent"
+
+  current_state = []
+  for i in range(10):
+    tool_context_instance.state.get.return_value = list(current_state)
+    await tool.run_async(
+        args={"skill_name": f"skill_{i}"}, tool_context=tool_context_instance
+    )
+    call_args = tool_context_instance.state.__setitem__.call_args
+    current_state = call_args[0][1]
+
+  # All 10 skills should be retained
+  assert len(current_state) == 10
+  assert current_state == [f"skill_{i}" for i in range(10)]
+
+
+@pytest.mark.asyncio
+async def test_evicted_skill_tools_not_resolved():
+  """After a skill is evicted, its additional tools are no longer resolved."""
+  # Create two skills, each declaring different additional tools
+  skill_a = mock.create_autospec(models.Skill, instance=True)
+  skill_a.name = "skill_a"
+  skill_a.instructions = "instructions A"
+  frontmatter_a = mock.create_autospec(models.Frontmatter, instance=True)
+  frontmatter_a.name = "skill_a"
+  frontmatter_a.metadata = {"adk_additional_tools": ["tool_alpha"]}
+  frontmatter_a.model_dump.return_value = {"name": "skill_a"}
+  skill_a.frontmatter = frontmatter_a
+
+  skill_b = mock.create_autospec(models.Skill, instance=True)
+  skill_b.name = "skill_b"
+  skill_b.instructions = "instructions B"
+  frontmatter_b = mock.create_autospec(models.Frontmatter, instance=True)
+  frontmatter_b.name = "skill_b"
+  frontmatter_b.metadata = {"adk_additional_tools": ["tool_beta"]}
+  frontmatter_b.model_dump.return_value = {"name": "skill_b"}
+  skill_b.frontmatter = frontmatter_b
+
+  # Create mock additional tools
+  tool_alpha = mock.create_autospec(skill_toolset.BaseTool, instance=True)
+  tool_alpha.name = "tool_alpha"
+  tool_beta = mock.create_autospec(skill_toolset.BaseTool, instance=True)
+  tool_beta.name = "tool_beta"
+
+  toolset = skill_toolset.SkillToolset(
+      [skill_a, skill_b],
+      additional_tools=[tool_alpha, tool_beta],
+      max_activated_skills=1,
+  )
+
+  # Simulate: skill_a was activated, then skill_b was activated (evicting A)
+  readonly_context = mock.create_autospec(ReadonlyContext, instance=True)
+  readonly_context.agent_name = "test_agent"
+  readonly_context.invocation_id = "inv-1"
+  # After eviction, only skill_b is in state
+  readonly_context.state.get.return_value = ["skill_b"]
+
+  tools = await toolset.get_tools(readonly_context=readonly_context)
+  tool_names = {t.name for t in tools}
+
+  # tool_beta should be present (skill_b is active)
+  assert "tool_beta" in tool_names
+  # tool_alpha should NOT be present (skill_a was evicted)
+  assert "tool_alpha" not in tool_names
+
+
+@pytest.mark.asyncio
+async def test_evicted_tool_call_raises_value_error():
+  """Simulates the LLM calling a tool from an evicted skill.
+
+  This mirrors what happens in the real flow: after skill eviction, the
+  tool is removed from tools_dict, so _get_tool raises ValueError.
+  This test validates that the tools_dict correctly excludes evicted tools.
+  """
+  # Skill with additional tool
+  skill_a = mock.create_autospec(models.Skill, instance=True)
+  skill_a.name = "skill_a"
+  skill_a.instructions = "instructions A"
+  frontmatter_a = mock.create_autospec(models.Frontmatter, instance=True)
+  frontmatter_a.name = "skill_a"
+  frontmatter_a.metadata = {"adk_additional_tools": ["expensive_api_tool"]}
+  frontmatter_a.model_dump.return_value = {"name": "skill_a"}
+  skill_a.frontmatter = frontmatter_a
+
+  skill_b = mock.create_autospec(models.Skill, instance=True)
+  skill_b.name = "skill_b"
+  skill_b.instructions = "instructions B"
+  frontmatter_b = mock.create_autospec(models.Frontmatter, instance=True)
+  frontmatter_b.name = "skill_b"
+  frontmatter_b.metadata = {}
+  frontmatter_b.model_dump.return_value = {"name": "skill_b"}
+  skill_b.frontmatter = frontmatter_b
+
+  expensive_tool = mock.create_autospec(skill_toolset.BaseTool, instance=True)
+  expensive_tool.name = "expensive_api_tool"
+
+  toolset = skill_toolset.SkillToolset(
+      [skill_a, skill_b],
+      additional_tools=[expensive_tool],
+      max_activated_skills=1,
+  )
+
+  # After eviction: only skill_b remains
+  readonly_context = mock.create_autospec(ReadonlyContext, instance=True)
+  readonly_context.agent_name = "test_agent"
+  readonly_context.invocation_id = "inv-2"
+  readonly_context.state.get.return_value = ["skill_b"]
+
+  tools = await toolset.get_tools(readonly_context=readonly_context)
+  tools_dict = {t.name: t for t in tools}
+
+  # The LLM might still try to call "expensive_api_tool" from history
+  assert "expensive_api_tool" not in tools_dict
+
+  # Simulate what _get_tool in functions.py would do
+  from google.genai import types as genai_types
+
+  fake_function_call = mock.MagicMock()
+  fake_function_call.name = "expensive_api_tool"
+
+  # This mirrors the behavior in flows/llm_flows/functions.py:_get_tool
+  with pytest.raises(ValueError, match="Tool 'expensive_api_tool' not found"):
+    from google.adk.flows.llm_flows.functions import _get_tool
+
+    _get_tool(fake_function_call, tools_dict)
+
+
+@pytest.mark.asyncio
+async def test_rolling_window_full_lifecycle_with_tool_resolution():
+  """End-to-end: load skills, evict, verify tool availability at each step."""
+  skills = []
+  additional_tools = []
+  for i in range(4):
+    skill = mock.create_autospec(models.Skill, instance=True)
+    skill.name = f"skill_{i}"
+    skill.instructions = f"instructions {i}"
+    frontmatter = mock.create_autospec(models.Frontmatter, instance=True)
+    frontmatter.name = f"skill_{i}"
+    frontmatter.metadata = {"adk_additional_tools": [f"tool_{i}"]}
+    frontmatter.model_dump.return_value = {"name": f"skill_{i}"}
+    skill.frontmatter = frontmatter
+    skills.append(skill)
+
+    tool = mock.create_autospec(skill_toolset.BaseTool, instance=True)
+    tool.name = f"tool_{i}"
+    additional_tools.append(tool)
+
+  toolset = skill_toolset.SkillToolset(
+      skills,
+      additional_tools=additional_tools,
+      max_activated_skills=2,
+  )
+
+  load_tool = skill_toolset.LoadSkillTool(toolset)
+  ctx = mock.create_autospec(skill_toolset.ToolContext, instance=True)
+  ctx._invocation_context = mock.MagicMock()
+  ctx.agent_name = "test_agent"
+  ctx.invocation_id = "inv-1"
+
+  readonly_context = mock.create_autospec(ReadonlyContext, instance=True)
+  readonly_context.agent_name = "test_agent"
+  readonly_context.invocation_id = "inv-1"
+
+  # Step 1: Load skill_0 and skill_1
+  current_state = []
+  for i in range(2):
+    ctx.state.get.return_value = list(current_state)
+    await load_tool.run_async(
+        args={"skill_name": f"skill_{i}"}, tool_context=ctx
+    )
+    current_state = ctx.state.__setitem__.call_args[0][1]
+
+  assert current_state == ["skill_0", "skill_1"]
+
+  readonly_context.state.get.return_value = list(current_state)
+  tools = await toolset.get_tools(readonly_context=readonly_context)
+  tool_names = {t.name for t in tools}
+  assert "tool_0" in tool_names
+  assert "tool_1" in tool_names
+  assert "tool_2" not in tool_names
+
+  # Step 2: Load skill_2 — should evict skill_0
+  ctx.state.get.return_value = list(current_state)
+  await load_tool.run_async(args={"skill_name": "skill_2"}, tool_context=ctx)
+  current_state = ctx.state.__setitem__.call_args[0][1]
+
+  assert current_state == ["skill_1", "skill_2"]
+
+  readonly_context.state.get.return_value = list(current_state)
+  tools = await toolset.get_tools(readonly_context=readonly_context)
+  tool_names = {t.name for t in tools}
+  assert "tool_0" not in tool_names  # evicted!
+  assert "tool_1" in tool_names
+  assert "tool_2" in tool_names
+
+  # Step 3: Load skill_3 — should evict skill_1
+  ctx.state.get.return_value = list(current_state)
+  await load_tool.run_async(args={"skill_name": "skill_3"}, tool_context=ctx)
+  current_state = ctx.state.__setitem__.call_args[0][1]
+
+  assert current_state == ["skill_2", "skill_3"]
+
+  readonly_context.state.get.return_value = list(current_state)
+  tools = await toolset.get_tools(readonly_context=readonly_context)
+  tool_names = {t.name for t in tools}
+  assert "tool_0" not in tool_names
+  assert "tool_1" not in tool_names  # evicted!
+  assert "tool_2" in tool_names
+  assert "tool_3" in tool_names

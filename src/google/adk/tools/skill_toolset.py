@@ -241,7 +241,17 @@ class LoadSkillTool(BaseTool):
     activated_skills = list(tool_context.state.get(state_key) or [])
     if skill_name not in activated_skills:
       activated_skills.append(skill_name)
-      tool_context.state[state_key] = activated_skills
+    else:
+      # Move to the end (most recently used) for rolling window.
+      activated_skills.remove(skill_name)
+      activated_skills.append(skill_name)
+
+    # Enforce rolling window: evict oldest skills if limit is exceeded.
+    max_skills = self._toolset._max_activated_skills
+    if max_skills is not None and len(activated_skills) > max_skills:
+      activated_skills = activated_skills[-max_skills:]
+
+    tool_context.state[state_key] = activated_skills
 
     return {
         "skill_name": skill_name,
@@ -886,6 +896,7 @@ class SkillToolset(BaseToolset):
       code_executor: BaseCodeExecutor | None = None,
       script_timeout: int = _DEFAULT_SCRIPT_TIMEOUT,
       additional_tools: list[ToolUnion] | None = None,
+      max_activated_skills: int | None = None,
   ):
     """Initializes the SkillToolset.
 
@@ -898,6 +909,10 @@ class SkillToolset(BaseToolset):
         scripts executed via exec().
       additional_tools: Optional list of `BaseTool` or `BaseToolset` instances
         to be made available to the agent when certain skills are activated.
+      max_activated_skills: Optional maximum number of skills to keep activated
+        simultaneously. When set, only the most recently activated skills are
+        retained (rolling window). Older skills and their associated tools are
+        evicted from the session state. Defaults to None (no limit).
     """
     super().__init__()
 
@@ -914,6 +929,7 @@ class SkillToolset(BaseToolset):
     self._registry = registry
     self._code_executor = code_executor
     self._script_timeout = script_timeout
+    self._max_activated_skills = max_activated_skills
     # Needed for mid-turn reloading of skill tools.
     self._use_invocation_cache = False
     # Cache fetched remote skill definitions per turn to reduce requests to registry
