@@ -24,6 +24,7 @@ build_llms_txt.py – produce llms.txt and llms-full.txt
 from __future__ import annotations
 
 import argparse
+import posixpath
 from pathlib import Path
 import re
 import sys
@@ -31,10 +32,15 @@ import textwrap
 from typing import List
 from typing import Tuple
 import urllib.error
+import urllib.parse
 import urllib.request
 
 RE_JAVA = re.compile(r"```java[ \t\r\n][\s\S]*?```", re.I | re.M)
 RE_SNIPPET = re.compile(r"^(\s*)--8<--\s+\"([^\"]+?)(?::([^\"]+))?\"$", re.M)
+RE_MD_LINK = re.compile(r"(\]\()([^)\n]+)(\))")
+RE_HTML_LINK = re.compile(r"((?:href|src)=[\"'])([^\"']+)([\"'])")
+
+ADK_DOCS_BASE_URL = "https://adk.dev"
 
 
 def fetch_adk_python_readme() -> str:
@@ -45,7 +51,95 @@ def fetch_adk_python_readme() -> str:
       return response.read().decode("utf-8")
   except (urllib.error.URLError, urllib.error.HTTPError) as e:
     print(f"Warning: Could not fetch adk-python README: {e}")
+    local_readme = Path(__file__).resolve().parents[3] / "README.md"
+    if local_readme.exists():
+      return local_readme.read_text(encoding="utf-8")
     return ""
+
+
+def normalize_adk_python_readme(md: str) -> str:
+  """Keep copied README links aligned with public, link-checkable targets."""
+  return (
+      md.replace(
+          "pip install git+https://github.com/google/adk-python.git@main",
+          "pip install git+https://github.com/google/adk-python.git",
+      )
+      .replace("https://google.github.io/adk-docs", ADK_DOCS_BASE_URL)
+      .replace(
+          "https://github.com/google-a2a/A2A/",
+          "https://github.com/a2aproject/A2A/",
+      )
+  )
+
+
+def docs_url_for_path(rel: Path) -> str:
+  """Return the public documentation URL for a docs-relative path."""
+  rel_posix = rel.as_posix()
+  if rel_posix == "index.md":
+    rel_posix = ""
+  elif rel_posix.endswith("/index.md"):
+    rel_posix = rel_posix[: -len("index.md")]
+  elif rel_posix.endswith(".md"):
+    rel_posix = rel_posix[:-3] + "/"
+  elif rel_posix.endswith("/index.html"):
+    rel_posix = rel_posix[: -len("index.html")]
+
+  return urllib.parse.urljoin(f"{ADK_DOCS_BASE_URL}/", rel_posix)
+
+
+def _is_external_or_anchor(url: str) -> bool:
+  parsed = urllib.parse.urlsplit(url)
+  return bool(parsed.scheme or parsed.netloc or url.startswith("#"))
+
+
+def docs_url_for_link(base_rel: Path, url: str) -> str:
+  """Resolve a docs-relative Markdown/HTML URL to a public docs URL."""
+  if _is_external_or_anchor(url):
+    return url
+
+  parsed = urllib.parse.urlsplit(url)
+  if parsed.path.startswith("/"):
+    path = parsed.path.lstrip("/")
+  else:
+    path = posixpath.normpath(
+        posixpath.join(base_rel.parent.as_posix(), parsed.path)
+    )
+
+  if path == ".":
+    path = ""
+  if path.endswith(".md"):
+    path = path[:-3] + "/"
+  elif path.endswith("/index.html"):
+    path = path[: -len("index.html")]
+  elif path.endswith(".html"):
+    path = path[:-5] + "/"
+
+  rebuilt = urllib.parse.urlunsplit(
+      ("", "", path, parsed.query, parsed.fragment)
+  )
+  return urllib.parse.urljoin(f"{ADK_DOCS_BASE_URL}/", rebuilt)
+
+
+def normalize_docs_links(md: str, base_rel: Path) -> str:
+  """Make copied docs pages self-contained by resolving relative links."""
+
+  def replace_md_link(match: re.Match[str]) -> str:
+    return (
+        match.group(1)
+        + docs_url_for_link(base_rel, match.group(2).strip())
+        + match.group(3)
+    )
+
+  def replace_html_link(match: re.Match[str]) -> str:
+    return (
+        match.group(1)
+        + docs_url_for_link(base_rel, match.group(2).strip())
+        + match.group(3)
+    )
+
+  return RE_HTML_LINK.sub(
+      replace_html_link, RE_MD_LINK.sub(replace_md_link, md)
+  )
 
 
 def strip_java(md: str) -> str:
@@ -210,7 +304,7 @@ def build_index(docs: Path) -> str:
   lines = [f"# {title}", "", f"> {summary}", ""]
 
   # Add adk-python repository README content
-  adk_readme = fetch_adk_python_readme()
+  adk_readme = normalize_adk_python_readme(fetch_adk_python_readme())
   if adk_readme:
     lines.append("## ADK Python Repository")
     lines.append("")
@@ -234,10 +328,7 @@ def build_index(docs: Path) -> str:
       continue
 
     rel = md.relative_to(docs)
-    # Construct the correct GitHub URL for the Markdown file
-    url = f"https://github.com/google/adk-docs/blob/main/docs/{rel}".replace(
-        " ", "%20"
-    )
+    url = docs_url_for_path(rel)
     h = first_heading(strip_java(md.read_text(encoding="utf-8"))) or rel.stem
     (
         secondary
@@ -250,7 +341,7 @@ def build_index(docs: Path) -> str:
   if python_api_dir.exists():
     primary.append((
         "Python API Reference",
-        "https://github.com/google/adk-docs/blob/main/docs/api-reference/python/",
+        f"{ADK_DOCS_BASE_URL}/api-reference/python/",
     ))
 
   def emit(name: str, items: List[Tuple[str, str]]):
@@ -275,7 +366,7 @@ def build_full(docs: Path) -> str:
   print(f"DEBUG: Docs Dir: {docs}")
 
   # Add adk-python repository README content at the beginning
-  adk_readme = fetch_adk_python_readme()
+  adk_readme = normalize_adk_python_readme(fetch_adk_python_readme())
   if adk_readme:
     # Expand snippets in README if any
     expanded_adk_readme = expand_code_snippets(
@@ -295,10 +386,12 @@ def build_full(docs: Path) -> str:
       continue
 
     md_content = md.read_text(encoding="utf-8")
-    print(f"DEBUG: Processing markdown file: {md.relative_to(docs)}")
+    rel = md.relative_to(docs)
+    print(f"DEBUG: Processing markdown file: {rel}")
     expanded_md_content = expand_code_snippets(
         strip_java(md_content), project_root
     )  # Changed back to project_root
+    expanded_md_content = normalize_docs_links(expanded_md_content, rel)
     out.append(expanded_md_content)  # Use expanded content
 
   # Process Python API reference HTML files

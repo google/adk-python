@@ -18,7 +18,7 @@
     </h3>
     <h3 align="center">
       Important Links:
-      <a href="https://google.github.io/adk-docs/">Docs</a>,
+      <a href="https://adk.dev/">Docs</a>,
       <a href="https://github.com/google/adk-samples">Samples</a>,
       <a href="https://github.com/google/adk-java">Java ADK</a> &
       <a href="https://github.com/google/adk-web">ADK Web</a>.
@@ -48,8 +48,8 @@ Agent Development Kit (ADK) is a flexible and modular framework for developing a
 ## 🤖 Agent2Agent (A2A) Protocol and ADK Integration
 
 For remote agent-to-agent communication, ADK integrates with the
-[A2A protocol](https://github.com/google-a2a/A2A/).
-See this [example](https://github.com/google-a2a/a2a-samples/tree/main/samples/python/agents/google_adk)
+[A2A protocol](https://github.com/a2aproject/A2A/).
+See this [example](https://github.com/a2aproject/a2a-samples/tree/main/samples/python/agents/adk_expense_reimbursement)
 for how they can work together.
 
 ## 🚀 Installation
@@ -70,7 +70,7 @@ This version is recommended for most users as it represents the most recent offi
 Bug fixes and new features are merged into the main branch on GitHub first. If you need access to changes that haven't been included in an official PyPI release yet, you can install directly from the main branch:
 
 ```bash
-pip install git+https://github.com/google/adk-python.git@main
+pip install git+https://github.com/google/adk-python.git
 ```
 
 Note: The development version is built directly from the latest code commits. While it includes the newest fixes and features, it may also contain experimental changes or bugs not present in the stable release. Use it primarily for testing upcoming changes or accessing critical fixes before they are officially released.
@@ -80,7 +80,7 @@ Note: The development version is built directly from the latest code commits. Wh
 Explore the full documentation for detailed guides on building, evaluating, and
 deploying agents:
 
-* **[Documentation](https://google.github.io/adk-docs)**
+* **[Documentation](https://adk.dev)**
 
 ## 🏁 Feature Highlight
 
@@ -139,7 +139,7 @@ adk eval \
 ## 🤝 Contributing
 
 We welcome contributions from the community! Whether it's bug reports, feature requests, documentation improvements, or code contributions, please see our
-- [General contribution guideline and flow](https://google.github.io/adk-docs/contributing-guide/).
+- [General contribution guideline and flow](https://adk.dev/community/contributing-guide/).
 - Then if you want to contribute code, please read [Code Contributing Guidelines](./CONTRIBUTING.md) to get started.
 
 ## 📄 License
@@ -176,7 +176,7 @@ A Custom Agent is essentially any class you create that inherits from `google.ad
 
 ### Why Use Them?
 
-While the standard [Workflow Agents](workflow-agents/index.md) (`SequentialAgent`, `LoopAgent`, `ParallelAgent`) cover common orchestration patterns, you'll need a Custom agent when your requirements include:
+While the standard [Workflow Agents](https://adk.dev/agents/workflow-agents/) (`SequentialAgent`, `LoopAgent`, `ParallelAgent`) cover common orchestration patterns, you'll need a Custom agent when your requirements include:
 
 * **Conditional Logic:** Executing different sub-agents or taking different paths based on runtime conditions or the results of previous steps.
 * **Complex State Management:** Implementing intricate logic for maintaining and updating state throughout the workflow beyond simple sequential passing.
@@ -185,7 +185,7 @@ While the standard [Workflow Agents](workflow-agents/index.md) (`SequentialAgent
 * **Unique Workflow Patterns:** Implementing orchestration logic that doesn't fit the standard sequential, parallel, or loop structures.
 
 
-![intro_components.png](../assets/custom-agent-flow.png)
+![intro_components.png](https://adk.dev/assets/custom-agent-flow.png)
 
 
 ## Implementing Custom Logic:
@@ -870,17 +870,17 @@ In the Agent Development Kit (ADK), an **Agent** is a self-contained execution u
 
 The foundation for all agents in ADK is the `BaseAgent` class. It serves as the fundamental blueprint. To create functional agents, you typically extend `BaseAgent` in one of three main ways, catering to different needs – from intelligent reasoning to structured process control.
 
-<img src="../assets/agent-types.png" alt="Types of agents in ADK">
+<img src="https://adk.dev/assets/agent-types.png" alt="Types of agents in ADK">
 
 ## Core Agent Categories
 
 ADK provides distinct agent categories to build sophisticated applications:
 
-1. [**LLM Agents (`LlmAgent`, `Agent`)**](llm-agents.md): These agents utilize Large Language Models (LLMs) as their core engine to understand natural language, reason, plan, generate responses, and dynamically decide how to proceed or which tools to use, making them ideal for flexible, language-centric tasks. [Learn more about LLM Agents...](llm-agents.md)
+1. [**LLM Agents (`LlmAgent`, `Agent`)**](https://adk.dev/agents/llm-agents/): These agents utilize Large Language Models (LLMs) as their core engine to understand natural language, reason, plan, generate responses, and dynamically decide how to proceed or which tools to use, making them ideal for flexible, language-centric tasks. [Learn more about LLM Agents...](https://adk.dev/agents/llm-agents/)
 
-2. [**Workflow Agents (`SequentialAgent`, `ParallelAgent`, `LoopAgent`)**](workflow-agents/index.md): These specialized agents control the execution flow of other agents in predefined, deterministic patterns (sequence, parallel, or loop) without using an LLM for the flow control itself, perfect for structured processes needing predictable execution. [Explore Workflow Agents...](workflow-agents/index.md)
+2. [**Workflow Agents (`SequentialAgent`, `ParallelAgent`, `LoopAgent`)**](https://adk.dev/agents/workflow-agents/): These specialized agents control the execution flow of other agents in predefined, deterministic patterns (sequence, parallel, or loop) without using an LLM for the flow control itself, perfect for structured processes needing predictable execution. [Explore Workflow Agents...](https://adk.dev/agents/workflow-agents/)
 
-3. [**Custom Agents**](custom-agents.md): Created by extending `BaseAgent` directly, these agents allow you to implement unique operational logic, specific control flows, or specialized integrations not covered by the standard types, catering to highly tailored application requirements. [Discover how to build Custom Agents...](custom-agents.md)
+3. [**Custom Agents**](https://adk.dev/agents/custom-agents/): Created by extending `BaseAgent` directly, these agents allow you to implement unique operational logic, specific control flows, or specialized integrations not covered by the standard types, catering to highly tailored application requirements. [Discover how to build Custom Agents...](https://adk.dev/agents/custom-agents/)
 
 ## Choosing the Right Agent Type
 
@@ -895,7 +895,7 @@ The following table provides a high-level comparison to help distinguish between
 
 ## Agents Working Together: Multi-Agent Systems
 
-While each agent type serves a distinct purpose, the true power often comes from combining them. Complex applications frequently employ [multi-agent architectures](multi-agents.md) where:
+While each agent type serves a distinct purpose, the true power often comes from combining them. Complex applications frequently employ [multi-agent architectures](https://adk.dev/agents/multi-agents/) where:
 
 * **LLM Agents** handle intelligent, language-based task execution.
 * **Workflow Agents** manage the overall process flow using standard patterns.
@@ -909,11 +909,11 @@ Understanding these core types is the first step toward building sophisticated, 
 
 Now that you have an overview of the different agent types available in ADK, dive deeper into how they work and how to use them effectively:
 
-* [**LLM Agents:**](llm-agents.md) Explore how to configure agents powered by large language models, including setting instructions, providing tools, and enabling advanced features like planning and code execution.
-* [**Workflow Agents:**](workflow-agents/index.md) Learn how to orchestrate tasks using `SequentialAgent`, `ParallelAgent`, and `LoopAgent` for structured and predictable processes.
-* [**Custom Agents:**](custom-agents.md) Discover the principles of extending `BaseAgent` to build agents with unique logic and integrations tailored to your specific needs.
-* [**Multi-Agents:**](multi-agents.md) Understand how to combine different agent types to create sophisticated, collaborative systems capable of tackling complex problems.
-* [**Models:**](models.md) Learn about the different LLM integrations available and how to select the right model for your agents.
+* [**LLM Agents:**](https://adk.dev/agents/llm-agents/) Explore how to configure agents powered by large language models, including setting instructions, providing tools, and enabling advanced features like planning and code execution.
+* [**Workflow Agents:**](https://adk.dev/agents/workflow-agents/) Learn how to orchestrate tasks using `SequentialAgent`, `ParallelAgent`, and `LoopAgent` for structured and predictable processes.
+* [**Custom Agents:**](https://adk.dev/agents/custom-agents/) Discover the principles of extending `BaseAgent` to build agents with unique logic and integrations tailored to your specific needs.
+* [**Multi-Agents:**](https://adk.dev/agents/multi-agents/) Understand how to combine different agent types to create sophisticated, collaborative systems capable of tackling complex problems.
+* [**Models:**](https://adk.dev/agents/models/) Learn about the different LLM integrations available and how to select the right model for your agents.
 
 
 # LLM Agent
@@ -923,7 +923,7 @@ acting as the "thinking" part of your application. It leverages the power of a
 Large Language Model (LLM) for reasoning, understanding natural language, making
 decisions, generating responses, and interacting with tools.
 
-Unlike deterministic [Workflow Agents](workflow-agents/index.md) that follow
+Unlike deterministic [Workflow Agents](https://adk.dev/agents/workflow-agents/) that follow
 predefined execution paths, `LlmAgent` behavior is non-deterministic. It uses
 the LLM to interpret instructions and context, deciding dynamically how to
 proceed, which tools to use (if any), or whether to transfer control to another
@@ -953,7 +953,7 @@ First, you need to establish what the agent *is* and what it's *for*.
 * **`model` (Required):** Specify the underlying LLM that will power this
   agent's reasoning. This is a string identifier like `"gemini-2.5-flash"`. The
   choice of model impacts the agent's capabilities, cost, and performance. See
-  the [Models](models.md) page for available options and considerations.
+  the [Models](https://adk.dev/agents/models/) page for available options and considerations.
 
 === "Python"
 
@@ -1024,7 +1024,7 @@ tells the agent:
 
 *(Note: For instructions that apply to *all* agents in a system, consider using
 `global_instruction` on the root agent, detailed further in the
-[Multi-Agents](multi-agents.md) section.)*
+[Multi-Agents](https://adk.dev/agents/multi-agents/) section.)*
 
 ## Equipping the Agent: Tools (`tools`)
 
@@ -1035,7 +1035,7 @@ calculations, fetch real-time data, or execute specific actions.
 * **`tools` (Optional):** Provide a list of tools the agent can use. Each item in the list can be:
     * A native function or method (wrapped as a `FunctionTool`). Python ADK automatically wraps the native function into a `FuntionTool` whereas, you must explicitly wrap your Java methods using `FunctionTool.create(...)`
     * An instance of a class inheriting from `BaseTool`.
-    * An instance of another agent (`AgentTool`, enabling agent-to-agent delegation - see [Multi-Agents](multi-agents.md)).
+    * An instance of another agent (`AgentTool`, enabling agent-to-agent delegation - see [Multi-Agents](https://adk.dev/agents/multi-agents/)).
 
 The LLM uses the function/tool names, descriptions (from docstrings or the
 `description` field), and parameter schemas to decide which tool to call based
@@ -1065,7 +1065,7 @@ on the conversation and its instructions.
 
 
 
-Learn more about Tools in the [Tools](../tools/index.md) section.
+Learn more about Tools in the [Tools](https://adk.dev/tools/) section.
 
 ## Advanced Configuration & Control
 
@@ -1160,8 +1160,8 @@ Control whether the agent receives the prior conversation history.
 
 For more complex reasoning involving multiple steps or executing code:
 
-* **`planner` (Optional):** Assign a `BasePlanner` instance to enable multi-step reasoning and planning before execution. (See [Multi-Agents](multi-agents.md) patterns).
-* **`code_executor` (Optional):** Provide a `BaseCodeExecutor` instance to allow the agent to execute code blocks (e.g., Python) found in the LLM's response. ([See Tools/Built-in tools](../tools/built-in-tools.md)).
+* **`planner` (Optional):** Assign a `BasePlanner` instance to enable multi-step reasoning and planning before execution. (See [Multi-Agents](https://adk.dev/agents/multi-agents/) patterns).
+* **`code_executor` (Optional):** Provide a `BaseCodeExecutor` instance to allow the agent to execute code blocks (e.g., Python) found in the LLM's response. ([See Tools/Built-in tools](https://adk.dev/tools/built-in-tools/)).
 
 ## Putting It Together: Example
 
@@ -1331,8 +1331,8 @@ _(This example demonstrates the core concepts. More complex agents might incorpo
 
 While this page covers the core configuration of `LlmAgent`, several related concepts provide more advanced control and are detailed elsewhere:
 
-* **Callbacks:** Intercepting execution points (before/after model calls, before/after tool calls) using `before_model_callback`, `after_model_callback`, etc. See [Callbacks](../callbacks/types-of-callbacks.md).
-* **Multi-Agent Control:** Advanced strategies for agent interaction, including planning (`planner`), controlling agent transfer (`disallow_transfer_to_parent`, `disallow_transfer_to_peers`), and system-wide instructions (`global_instruction`). See [Multi-Agents](multi-agents.md).
+* **Callbacks:** Intercepting execution points (before/after model calls, before/after tool calls) using `before_model_callback`, `after_model_callback`, etc. See [Callbacks](https://adk.dev/callbacks/types-of-callbacks/).
+* **Multi-Agent Control:** Advanced strategies for agent interaction, including planning (`planner`), controlling agent transfer (`disallow_transfer_to_parent`, `disallow_transfer_to_peers`), and system-wide instructions (`global_instruction`). See [Multi-Agents](https://adk.dev/agents/multi-agents/).
 
 
 # Using Different Models with ADK
@@ -1343,7 +1343,7 @@ While this page covers the core configuration of `LlmAgent`, several related con
 The Agent Development Kit (ADK) is designed for flexibility, allowing you to
 integrate various Large Language Models (LLMs) into your agents. While the setup
 for Google Gemini models is covered in the
-[Setup Foundation Models](../get-started/installation.md) guide, this page
+[Setup Foundation Models](https://adk.dev/get-started/installation/) guide, this page
 details how to leverage Gemini effectively and integrate other popular models,
 including those hosted externally or running locally.
 
@@ -1838,7 +1838,7 @@ Ensure your environment is configured for Vertex AI:
 ![python_only](https://img.shields.io/badge/Currently_supported_in-Python-blue){ title="This feature is currently available for Python. Java support is planned/ coming soon."}
 
 You can deploy various open and proprietary models from the
-[Vertex AI Model Garden](https://console.cloud.google.com/vertex-ai/model-garden)
+[Vertex AI Model Garden](https://cloud.google.com/vertex-ai/generative-ai/docs/model-garden/explore-models)
 to an endpoint.
 
 **Example:**
@@ -1981,9 +1981,9 @@ In ADK, a multi-agent system is an application where different agents, often for
 
 You can compose various types of agents derived from `BaseAgent` to build these systems:
 
-* **LLM Agents:** Agents powered by large language models. (See [LLM Agents](llm-agents.md))
-* **Workflow Agents:** Specialized agents (`SequentialAgent`, `ParallelAgent`, `LoopAgent`) designed to manage the execution flow of their sub-agents. (See [Workflow Agents](workflow-agents/index.md))
-* **Custom agents:** Your own agents inheriting from `BaseAgent` with specialized, non-LLM logic. (See [Custom Agents](custom-agents.md))
+* **LLM Agents:** Agents powered by large language models. (See [LLM Agents](https://adk.dev/agents/llm-agents/))
+* **Workflow Agents:** Specialized agents (`SequentialAgent`, `ParallelAgent`, `LoopAgent`) designed to manage the execution flow of their sub-agents. (See [Workflow Agents](https://adk.dev/agents/workflow-agents/))
+* **Custom agents:** Your own agents inheriting from `BaseAgent` with specialized, non-LLM logic. (See [Custom Agents](https://adk.dev/agents/custom-agents/))
 
 The following sections detail the core ADK primitives—such as agent hierarchy, workflow agents, and interaction mechanisms—that enable you to construct and manage these multi-agent systems effectively.
 
@@ -2036,8 +2036,8 @@ The foundation for structuring multi-agent systems is the parent-child relations
 
 ADK includes specialized agents derived from `BaseAgent` that don't perform tasks themselves but orchestrate the execution flow of their `sub_agents`.
 
-* **[`SequentialAgent`](workflow-agents/sequential-agents.md):** Executes its `sub_agents` one after another in the order they are listed.
-    * **Context:** Passes the *same* [`InvocationContext`](../runtime/index.md) sequentially, allowing agents to easily pass results via shared state.
+* **[`SequentialAgent`](https://adk.dev/agents/workflow-agents/sequential-agents/):** Executes its `sub_agents` one after another in the order they are listed.
+    * **Context:** Passes the *same* [`InvocationContext`](https://adk.dev/runtime/) sequentially, allowing agents to easily pass results via shared state.
 
 === "Python"
 
@@ -2056,7 +2056,7 @@ ADK includes specialized agents derived from `BaseAgent` that don't perform task
 
 
 
-* **[`ParallelAgent`](workflow-agents/parallel-agents.md):** Executes its `sub_agents` in parallel. Events from sub-agents may be interleaved.
+* **[`ParallelAgent`](https://adk.dev/agents/workflow-agents/parallel-agents/):** Executes its `sub_agents` in parallel. Events from sub-agents may be interleaved.
     * **Context:** Modifies the `InvocationContext.branch` for each child agent (e.g., `ParentBranch.ChildName`), providing a distinct contextual path which can be useful for isolating history in some memory implementations.
     * **State:** Despite different branches, all parallel children access the *same shared* `session.state`, enabling them to read initial state and write results (use distinct keys to avoid race conditions).
 
@@ -2078,8 +2078,8 @@ ADK includes specialized agents derived from `BaseAgent` that don't perform task
 
 
 
-  * **[`LoopAgent`](workflow-agents/loop-agents.md):** Executes its `sub_agents` sequentially in a loop.
-      * **Termination:** The loop stops if the optional `max_iterations` is reached, or if any sub-agent returns an [`Event`](../events/index.md) with `escalate=True` in it's Event Actions.
+  * **[`LoopAgent`](https://adk.dev/agents/workflow-agents/loop-agents/):** Executes its `sub_agents` sequentially in a loop.
+      * **Termination:** The loop stops if the optional `max_iterations` is reached, or if any sub-agent returns an [`Event`](https://adk.dev/events/) with `escalate=True` in it's Event Actions.
       * **Context & State:** Passes the *same* `InvocationContext` in each iteration, allowing state changes (e.g., counters, flags) to persist across loops.
 
 === "Python"
@@ -2118,12 +2118,12 @@ Agents within a system often need to exchange data or trigger actions in one ano
 
 #### a) Shared Session State (`session.state`)
 
-The most fundamental way for agents operating within the same invocation (and thus sharing the same [`Session`](../sessions/session.md) object via the `InvocationContext`) to communicate passively.
+The most fundamental way for agents operating within the same invocation (and thus sharing the same [`Session`](https://adk.dev/sessions/session/) object via the `InvocationContext`) to communicate passively.
 
-* **Mechanism:** One agent (or its tool/callback) writes a value (`context.state['data_key'] = processed_data`), and a subsequent agent reads it (`data = context.state.get('data_key')`). State changes are tracked via [`CallbackContext`](../callbacks/index.md).
-* **Convenience:** The `output_key` property on [`LlmAgent`](llm-agents.md) automatically saves the agent's final response text (or structured output) to the specified state key.
+* **Mechanism:** One agent (or its tool/callback) writes a value (`context.state['data_key'] = processed_data`), and a subsequent agent reads it (`data = context.state.get('data_key')`). State changes are tracked via [`CallbackContext`](https://adk.dev/callbacks/).
+* **Convenience:** The `output_key` property on [`LlmAgent`](https://adk.dev/agents/llm-agents/) automatically saves the agent's final response text (or structured output) to the specified state key.
 * **Nature:** Asynchronous, passive communication. Ideal for pipelines orchestrated by `SequentialAgent` or passing data across `LoopAgent` iterations.
-* **See Also:** [State Management](../sessions/state.md)
+* **See Also:** [State Management](https://adk.dev/sessions/state/)
 
 === "Python"
 
@@ -2145,7 +2145,7 @@ The most fundamental way for agents operating within the same invocation (and th
 
 #### b) LLM-Driven Delegation (Agent Transfer)
 
-Leverages an [`LlmAgent`](llm-agents.md)'s understanding to dynamically route tasks to other suitable agents within the hierarchy.
+Leverages an [`LlmAgent`](https://adk.dev/agents/llm-agents/)'s understanding to dynamically route tasks to other suitable agents within the hierarchy.
 
 * **Mechanism:** The agent's LLM generates a specific function call: `transfer_to_agent(agent_name='target_agent_name')`.
 * **Handling:** The `AutoFlow`, used by default when sub-agents are present or transfer isn't disallowed, intercepts this call. It identifies the target agent using `root_agent.find_agent()` and updates the `InvocationContext` to switch execution focus.
@@ -2180,7 +2180,7 @@ Leverages an [`LlmAgent`](llm-agents.md)'s understanding to dynamically route ta
 
 #### c) Explicit Invocation (`AgentTool`)
 
-Allows an [`LlmAgent`](llm-agents.md) to treat another `BaseAgent` instance as a callable function or [Tool](../tools/index.md).
+Allows an [`LlmAgent`](https://adk.dev/agents/llm-agents/) to treat another `BaseAgent` instance as a callable function or [Tool](https://adk.dev/tools/).
 
 * **Mechanism:** Wrap the target agent instance in `AgentTool` and include it in the parent `LlmAgent`'s `tools` list. `AgentTool` generates a corresponding function declaration for the LLM.
 * **Handling:** When the parent LLM generates a function call targeting the `AgentTool`, the framework executes `AgentTool.run_async`. This method runs the target agent, captures its final response, forwards any state/artifact changes back to the parent's context, and returns the response as the tool's result.
@@ -2234,7 +2234,7 @@ By combining ADK's composition primitives, you can implement various established
 
 ### Coordinator/Dispatcher Pattern
 
-* **Structure:** A central [`LlmAgent`](llm-agents.md) (Coordinator) manages several specialized `sub_agents`.
+* **Structure:** A central [`LlmAgent`](https://adk.dev/agents/llm-agents/) (Coordinator) manages several specialized `sub_agents`.
 * **Goal:** Route incoming requests to the appropriate specialist agent.
 * **ADK Primitives Used:**
     * **Hierarchy:** Coordinator has specialists listed in `sub_agents`.
@@ -2267,7 +2267,7 @@ By combining ADK's composition primitives, you can implement various established
 
 ### Sequential Pipeline Pattern
 
-* **Structure:** A [`SequentialAgent`](workflow-agents/sequential-agents.md) contains `sub_agents` executed in a fixed order.
+* **Structure:** A [`SequentialAgent`](https://adk.dev/agents/workflow-agents/sequential-agents/) contains `sub_agents` executed in a fixed order.
 * **Goal:** Implement a multi-step process where the output of one step feeds into the next.
 * **ADK Primitives Used:**
     * **Workflow:** `SequentialAgent` defines the order.
@@ -2298,7 +2298,7 @@ By combining ADK's composition primitives, you can implement various established
 
 ### Parallel Fan-Out/Gather Pattern
 
-* **Structure:** A [`ParallelAgent`](workflow-agents/parallel-agents.md) runs multiple `sub_agents` concurrently, often followed by a later agent (in a `SequentialAgent`) that aggregates results.
+* **Structure:** A [`ParallelAgent`](https://adk.dev/agents/workflow-agents/parallel-agents/) runs multiple `sub_agents` concurrently, often followed by a later agent (in a `SequentialAgent`) that aggregates results.
 * **Goal:** Execute independent tasks simultaneously to reduce latency, then combine their outputs.
 * **ADK Primitives Used:**
     * **Workflow:** `ParallelAgent` for concurrent execution (Fan-Out). Often nested within a `SequentialAgent` to handle the subsequent aggregation step (Gather).
@@ -2382,7 +2382,7 @@ By combining ADK's composition primitives, you can implement various established
 
 ### Review/Critique Pattern (Generator-Critic)
 
-* **Structure:** Typically involves two agents within a [`SequentialAgent`](workflow-agents/sequential-agents.md): a Generator and a Critic/Reviewer.
+* **Structure:** Typically involves two agents within a [`SequentialAgent`](https://adk.dev/agents/workflow-agents/sequential-agents/): a Generator and a Critic/Reviewer.
 * **Goal:** Improve the quality or validity of generated output by having a dedicated agent review it.
 * **ADK Primitives Used:**
     * **Workflow:** `SequentialAgent` ensures generation happens before review.
@@ -2422,7 +2422,7 @@ By combining ADK's composition primitives, you can implement various established
 
 ### Iterative Refinement Pattern
 
-* **Structure:** Uses a [`LoopAgent`](workflow-agents/loop-agents.md) containing one or more agents that work on a task over multiple iterations.
+* **Structure:** Uses a [`LoopAgent`](https://adk.dev/agents/workflow-agents/loop-agents/) containing one or more agents that work on a task over multiple iterations.
 * **Goal:** Progressively improve a result (e.g., code, text, plan) stored in the session state until a quality threshold is met or a maximum number of iterations is reached.
 * **ADK Primitives Used:**
     * **Workflow:** `LoopAgent` manages the repetition.
@@ -2539,7 +2539,7 @@ This section introduces "*workflow agents*" - **specialized agents that control 
 
 Workflow agents are specialized components in ADK designed purely for **orchestrating the execution flow of sub-agents**. Their primary role is to manage *how* and *when* other agents run, defining the control flow of a process.
 
-Unlike [LLM Agents](../llm-agents.md), which use Large Language Models for dynamic reasoning and decision-making, Workflow Agents operate based on **predefined logic**. They determine the execution sequence according to their type (e.g., sequential, parallel, loop) without consulting an LLM for the orchestration itself. This results in **deterministic and predictable execution patterns**.
+Unlike [LLM Agents](https://adk.dev/agents/llm-agents/), which use Large Language Models for dynamic reasoning and decision-making, Workflow Agents operate based on **predefined logic**. They determine the execution sequence according to their type (e.g., sequential, parallel, loop) without consulting an LLM for the orchestration itself. This results in **deterministic and predictable execution patterns**.
 
 ADK provides three core workflow agent types, each implementing a distinct execution pattern:
 
@@ -2551,7 +2551,7 @@ ADK provides three core workflow agent types, each implementing a distinct execu
 
     Executes sub-agents one after another, in **sequence**.
 
-    [:octicons-arrow-right-24: Learn more](sequential-agents.md)
+    [:octicons-arrow-right-24: Learn more](https://adk.dev/agents/workflow-agents/sequential-agents/)
 
 - :material-console-line: **Loop Agents**
 
@@ -2559,7 +2559,7 @@ ADK provides three core workflow agent types, each implementing a distinct execu
 
     **Repeatedly** executes its sub-agents until a specific termination condition is met.
 
-    [:octicons-arrow-right-24: Learn more](loop-agents.md)
+    [:octicons-arrow-right-24: Learn more](https://adk.dev/agents/workflow-agents/loop-agents/)
 
 - :material-console-line: **Parallel Agents**
 
@@ -2567,7 +2567,7 @@ ADK provides three core workflow agent types, each implementing a distinct execu
 
     Executes multiple sub-agents in **parallel**.
 
-    [:octicons-arrow-right-24: Learn more](parallel-agents.md)
+    [:octicons-arrow-right-24: Learn more](https://adk.dev/agents/workflow-agents/parallel-agents/)
 
 </div>
 
@@ -2594,7 +2594,7 @@ Use the `LoopAgent` when your workflow involves repetition or iterative refineme
 
 * You want to build an agent that can generate images of food, but sometimes when you want to generate a specific number of items (e.g. 5 bananas), it generates a different number of those items in the image (e.g. an image of 7 bananas). You have two tools: `Generate Image`, `Count Food Items`. Because you want to keep generating images until it either correctly generates the specified number of items, or after a certain number of iterations, you should build your agent using a `LoopAgent`.
 
-As with other [workflow agents](index.md), the `LoopAgent` is not powered by an LLM, and is thus deterministic in how it executes. That being said, workflow agents are only concerned only with their execution (i.e. in a loop), and not their internal logic; the tools or sub-agents of a workflow agent may or may not utilize LLMs.
+As with other [workflow agents](https://adk.dev/agents/workflow-agents/), the `LoopAgent` is not powered by an LLM, and is thus deterministic in how it executes. That being said, workflow agents are only concerned only with their execution (i.e. in a loop), and not their internal logic; the tools or sub-agents of a workflow agent may or may not utilize LLMs.
 
 ### How it Works
 
@@ -2608,7 +2608,7 @@ When the `LoopAgent`'s `Run Async` method is called, it performs the following a
     * **Max Iterations**: Set a maximum number of iterations in the `LoopAgent`. **The loop will terminate after that many iterations**.
     * **Escalation from sub-agent**: Design one or more sub-agents to evaluate a condition (e.g., "Is the document quality good enough?", "Has a consensus been reached?").  If the condition is met, the sub-agent can signal termination (e.g., by raising a custom event, setting a flag in a shared context, or returning a specific value).
 
-![Loop Agent](../../assets/loop-agent.png)
+![Loop Agent](https://adk.dev/assets/loop-agent.png)
 
 ### Full Example: Iterative Document Improvement
 
@@ -2627,7 +2627,7 @@ In this setup, the `LoopAgent` would manage the iterative process.  The `CriticA
 
     === "Python"
         ```py
-        # Part of agent.py --> Follow https://google.github.io/adk-docs/get-started/quickstart/ to learn the setup
+        # Part of agent.py --> Follow https://adk.dev/get-started/quickstart/ to learn the setup
         import asyncio
         import os
         from google.adk.agents import LoopAgent, LlmAgent, BaseAgent, SequentialAgent
@@ -2746,11 +2746,11 @@ In this setup, the `LoopAgent` would manage the iterative process.  The `CriticA
 
 # Parallel agents
 
-The `ParallelAgent` is a [workflow agent](index.md) that executes its sub-agents *concurrently*. This dramatically speeds up workflows where tasks can be performed independently.
+The `ParallelAgent` is a [workflow agent](https://adk.dev/agents/workflow-agents/) that executes its sub-agents *concurrently*. This dramatically speeds up workflows where tasks can be performed independently.
 
 Use `ParallelAgent` when: For scenarios prioritizing speed and involving independent, resource-intensive tasks, a `ParallelAgent` facilitates efficient parallel execution. **When sub-agents operate without dependencies, their tasks can be performed concurrently**, significantly reducing overall processing time.
 
-As with other [workflow agents](index.md), the `ParallelAgent` is not powered by an LLM, and is thus deterministic in how it executes. That being said, workflow agents are only concerned with their execution (i.e. executing sub-agents in parallel), and not their internal logic; the tools or sub-agents of a workflow agent may or may not utilize LLMs.
+As with other [workflow agents](https://adk.dev/agents/workflow-agents/), the `ParallelAgent` is not powered by an LLM, and is thus deterministic in how it executes. That being said, workflow agents are only concerned with their execution (i.e. executing sub-agents in parallel), and not their internal logic; the tools or sub-agents of a workflow agent may or may not utilize LLMs.
 
 ### Example
 
@@ -2772,7 +2772,7 @@ It's *crucial* to understand that sub-agents within a `ParallelAgent` run indepe
 * **External State Management:**  Use an external database, message queue, or other mechanism to manage shared state and facilitate communication between agents.
 * **Post-Processing:** Collect results from each branch, and then implement logic to coordinate data afterwards.
 
-![Parallel Agent](../../assets/parallel-agent.png){: width="600"}
+![Parallel Agent](https://adk.dev/assets/parallel-agent.png){: width="600"}
 
 ### Full Example: Parallel Web Research
 
@@ -2792,7 +2792,7 @@ These research tasks are independent.  Using a `ParallelAgent` allows them to ru
 
     === "Python"
         ```py
-         # Part of agent.py --> Follow https://google.github.io/adk-docs/get-started/quickstart/ to learn the setup
+         # Part of agent.py --> Follow https://adk.dev/get-started/quickstart/ to learn the setup
          # --- 1. Define Researcher Sub-Agents (to run in parallel) ---
          # Researcher 1: Renewable Energy
          researcher_agent_1 = LlmAgent(
@@ -2901,7 +2901,7 @@ These research tasks are independent.  Using a `ParallelAgent` allows them to ru
 
 ## The `SequentialAgent`
 
-The `SequentialAgent` is a [workflow agent](index.md) that executes its sub-agents in the order they are specified in the list.
+The `SequentialAgent` is a [workflow agent](https://adk.dev/agents/workflow-agents/) that executes its sub-agents in the order they are specified in the list.
 
 Use the `SequentialAgent` when you want the execution to occur in a fixed, strict order.
 
@@ -2909,7 +2909,7 @@ Use the `SequentialAgent` when you want the execution to occur in a fixed, stric
 
 * You want to build an agent that can summarize any webpage, using two tools: `Get Page Contents` and `Summarize Page`. Because the agent must always call `Get Page Contents` before calling `Summarize Page` (you can't summarize from nothing!), you should build your agent using a `SequentialAgent`.
 
-As with other [workflow agents](index.md), the `SequentialAgent` is not powered by an LLM, and is thus deterministic in how it executes. That being said, workflow agents are concerned only with their execution (i.e. in sequence), and not their internal logic; the tools or sub-agents of a workflow agent may or may not utilize LLMs.
+As with other [workflow agents](https://adk.dev/agents/workflow-agents/), the `SequentialAgent` is not powered by an LLM, and is thus deterministic in how it executes. That being said, workflow agents are concerned only with their execution (i.e. in sequence), and not their internal logic; the tools or sub-agents of a workflow agent may or may not utilize LLMs.
 
 ### How it works
 
@@ -2918,7 +2918,7 @@ When the `SequentialAgent`'s `Run Async` method is called, it performs the follo
 1. **Iteration:** It iterates through the sub agents list in the order they were provided.
 2. **Sub-Agent Execution:** For each sub-agent in the list, it calls the sub-agent's `Run Async` method.
 
-![Sequential Agent](../../assets/sequential-agent.png){: width="600"}
+![Sequential Agent](https://adk.dev/assets/sequential-agent.png){: width="600"}
 
 ### Full Example: Code Development Pipeline
 
@@ -2934,13 +2934,13 @@ A `SequentialAgent` is perfect for this:
 SequentialAgent(sub_agents=[CodeWriterAgent, CodeReviewerAgent, CodeRefactorerAgent])
 ```
 
-This ensures the code is written, *then* reviewed, and *finally* refactored, in a strict, dependable order. **The output from each sub-agent is passed to the next by storing them in state via [Output Key](../llm-agents.md#structuring-data-input_schema-output_schema-output_key)**.
+This ensures the code is written, *then* reviewed, and *finally* refactored, in a strict, dependable order. **The output from each sub-agent is passed to the next by storing them in state via [Output Key](https://adk.dev/agents/llm-agents/#structuring-data-input_schema-output_schema-output_key)**.
 
 ???+ "Code"
 
     === "Python"
         ```py
-        # Part of agent.py --> Follow https://google.github.io/adk-docs/get-started/quickstart/ to learn the setup
+        # Part of agent.py --> Follow https://adk.dev/get-started/quickstart/ to learn the setup
         # --- 1. Define Sub-Agents for Each Pipeline Stage ---
         # Code Writer Agent
         # Takes the initial specification (from user query) and writes code.
@@ -3036,10 +3036,10 @@ The Agent Development Kit (ADK) provides comprehensive API references for both P
     ---
     Explore the complete API documentation for the Python Agent Development Kit. Discover detailed information on all modules, classes, functions, and examples to build sophisticated AI agents with Python.
 
-    [:octicons-arrow-right-24: View Python API Docs](python/index.html) <br>
+    [:octicons-arrow-right-24: View Python API Docs](https://adk.dev/api-reference/python/) <br>
     <!-- Assuming your Python API docs are in a 'python' subdirectory -->
     <!-- Or link to an external ReadTheDocs, etc. -->
-    <!-- [:octicons-arrow-right-24: View Python API Docs](python/index.html) -->
+    <!-- [:octicons-arrow-right-24: View Python API Docs](https://adk.dev/api-reference/python/) -->
 
 <!-- This comment forces a block separation -->
 
@@ -3048,10 +3048,10 @@ The Agent Development Kit (ADK) provides comprehensive API references for both P
     ---
     Access the comprehensive Javadoc for the Java Agent Development Kit. This reference provides detailed specifications for all packages, classes, interfaces, and methods, enabling you to develop robust AI agents using Java.
 
-    [:octicons-arrow-right-24: View Java API Docs](java/index.html) <br>
+    [:octicons-arrow-right-24: View Java API Docs](https://adk.dev/api-reference/java/) <br>
     <!-- Assuming your Java API docs (Javadocs) are in a 'java' subdirectory -->
     <!-- Or link to an external Javadoc hosting site -->
-    <!-- [:octicons-arrow-right-24: View Java API Docs](java/index.html) -->
+    <!-- [:octicons-arrow-right-24: View Java API Docs](https://adk.dev/api-reference/java/) -->
 
 </div>
 
@@ -3633,7 +3633,7 @@ Callbacks are a cornerstone feature of ADK, providing a powerful mechanism to ho
 * **Before executing a tool (like a Python function or another agent) or after it finishes:** Similarly, `Before Tool` and `After Tool` callbacks give you control points specifically around the execution of tools invoked by the agent.
 
 
-![intro_components.png](../assets/callback_flow.png)
+![intro_components.png](https://adk.dev/assets/callback_flow.png)
 
 **Why use them?** Callbacks unlock significant flexibility and enable advanced agent capabilities:
 
@@ -3980,7 +3980,7 @@ These callbacks are available on *any* agent that inherits from `BaseAgent` (inc
         # import os
         # os.environ["GOOGLE_API_KEY"] = "YOUR_API_KEY_HERE" # <--- REPLACE with your actual key
         # # Or learn about other authentication methods (like Vertex AI):
-        # # https://google.github.io/adk-docs/agents/models/
+        # # https://adk.dev/agents/models/
 
         # ADK Imports
         from google.adk.agents import LlmAgent
@@ -4146,7 +4146,7 @@ These callbacks are available on *any* agent that inherits from `BaseAgent` (inc
         # import os
         # os.environ["GOOGLE_API_KEY"] = "YOUR_API_KEY_HERE" # <--- REPLACE with your actual key
         # # Or learn about other authentication methods (like Vertex AI):
-        # # https://google.github.io/adk-docs/agents/models/
+        # # https://adk.dev/agents/models/
 
 
         # ADK Imports
@@ -4851,7 +4851,7 @@ integrations here.*
     > e-commerce site, designed to offer the "Generative Recommendations" you find in the
     > [Shopper's Concierge demo](https://www.youtube.com/watch?v=LwHPYyw7u6U).
 
-* **[Google ADK + Vertex AI Live API](https://medium.com/google-cloud/google-adk-vertex-ai-live-api-125238982d5e)**
+* **[Bidi-streaming (live) in ADK](https://adk.dev/streaming/)**
 
     > Going Beyond the ADK CLI by Building Streaming Experiences with the Agent Development Kit and the Vertex AI Live API.
 
@@ -4902,7 +4902,7 @@ Discover video walkthroughs, talks, and demos showcasing ADK.
 
 Have an ADK resource to share (tutorial, translation, tool, video, example)?
 
-Refer to the steps in the [Contributing Guide](contributing-guide.md) for more
+Refer to the steps in the [Contributing Guide](https://adk.dev/community/contributing-guide/) for more
 information on how to get involved!
 
 Thank you for your contributions to Agent Development Kit! ❤️
@@ -5896,7 +5896,7 @@ To deploy your agent, you can use either the `adk deploy cloud_run` command _(re
 
 ## Agent sample
 
-For each of the commands, we will reference a the `Capital Agent` sample defined on the [LLM agent](../agents/llm-agents.md) page. We will assume it's in a directory (eg: `capital_agent`).
+For each of the commands, we will reference a the `Capital Agent` sample defined on the [LLM agent](https://adk.dev/agents/llm-agents/) page. We will assume it's in a directory (eg: `capital_agent`).
 
 To proceed, confirm that your agent code is configured as follows:
 
@@ -5916,7 +5916,7 @@ To proceed, confirm that your agent code is configured as follows:
 
 ## Environment variables
 
-Set your environment variables as described in the [Setup and Installation](../get-started/installation.md) guide.
+Set your environment variables as described in the [Setup and Installation](https://adk.dev/get-started/installation/) guide.
 
 ```bash
 export GOOGLE_CLOUD_PROJECT=your-project-id
@@ -6169,7 +6169,7 @@ export GOOGLE_GENAI_USE_VERTEXAI=True
 
     #### Code files
 
-    1. This is our Agent definition. This is the same code as present in [LLM agent](../agents/llm-agents.md) with two caveats:
+    1. This is our Agent definition. This is the same code as present in [LLM agent](https://adk.dev/agents/llm-agents/) with two caveats:
 
            * The Agent is now initialized as a **global public static variable**.
 
@@ -6371,7 +6371,7 @@ In this example we will deploy a simple agent to GKE. The agent will be a FastAP
 
 ## Agent sample
 
-For each of the commands, we will reference a `capital_agent` sample defined in on the [LLM agent](../agents/llm-agents.md) page. We will assume it's in a `capital_agent` directory.
+For each of the commands, we will reference a `capital_agent` sample defined in on the [LLM agent](https://adk.dev/agents/llm-agents/) page. We will assume it's in a `capital_agent` directory.
 
 To proceed, confirm that your agent code is configured as follows:
 
@@ -6381,7 +6381,7 @@ To proceed, confirm that your agent code is configured as follows:
 
 ## Environment variables
 
-Set your environment variables as described in the [Setup and Installation](../get-started/installation.md) guide. You also need to install the `kubectl` command line tool. You can find instructions to do so in the [Google Kubernetes Engine Documentation](https://cloud.google.com/kubernetes-engine/docs/how-to/cluster-access-for-kubectl).
+Set your environment variables as described in the [Setup and Installation](https://adk.dev/get-started/installation/) guide. You also need to install the `kubectl` command line tool. You can find instructions to do so in the [Google Kubernetes Engine Documentation](https://cloud.google.com/kubernetes-engine/docs/how-to/cluster-access-for-kubectl).
 
 ```bash
 export GOOGLE_CLOUD_PROJECT=your-project-id # Your GCP project ID
@@ -6758,7 +6758,7 @@ adk-default-service-name   LoadBalancer   34.118.228.70   34.63.153.253   80:325
 ```
 
 We can navigate to the external IP and interact with the agent via UI
-![alt text](../assets/agent-gke-deployment.png)
+![alt text](https://adk.dev/assets/agent-gke-deployment.png)
 
 ## Testing your agent
 
@@ -6909,7 +6909,7 @@ the next step is to deploy it so it can be accessed, queried, and used in
 production or integrated with other applications. Deployment moves your agent
 from your local development machine to a scalable and reliable environment.
 
-<img src="../assets/deploy-agent.png" alt="Deploying your agent">
+<img src="https://adk.dev/assets/deploy-agent.png" alt="Deploying your agent">
 
 ## Deployment Options
 
@@ -6918,11 +6918,11 @@ on your needs for production readiness or custom flexibility:
 
 ### Agent Engine in Vertex AI
 
-[Agent Engine](agent-engine.md) is a fully managed auto-scaling service on Google Cloud
+[Agent Engine](https://adk.dev/deploy/agent-engine/) is a fully managed auto-scaling service on Google Cloud
 specifically designed for deploying, managing, and scaling AI agents built with
 frameworks such as ADK.
 
-Learn more about [deploying your agent to Vertex AI Agent Engine](agent-engine.md).
+Learn more about [deploying your agent to Vertex AI Agent Engine](https://adk.dev/deploy/agent-engine/).
 
 ### Cloud Run
 
@@ -6930,7 +6930,7 @@ Learn more about [deploying your agent to Vertex AI Agent Engine](agent-engine.m
 Google Cloud that enables you to run your agent as a container-based
 application.
 
-Learn more about [deploying your agent to Cloud Run](cloud-run.md).
+Learn more about [deploying your agent to Cloud Run](https://adk.dev/deploy/cloud-run/).
 
 ### Google Kubernetes Engine (GKE)
 
@@ -6939,7 +6939,7 @@ Kubernetes service of Google Cloud that allows you to run your agent in a contai
 environment. GKE is a good option if you need more control over the deployment as well as
 for running Open Models.
 
-Learn more about [deploying your agent to GKE](gke.md).
+Learn more about [deploying your agent to GKE](https://adk.dev/deploy/gke/).
 
 
 # Why Evaluate Agents
@@ -6952,7 +6952,7 @@ Due to the probabilistic nature of models, deterministic "pass/fail" assertions 
 
 This may seem like a lot of extra work to set up, but the investment of automating evaluations pays off quickly. If you intend to progress beyond prototype, this is a highly recommended best practice.
 
-![intro_components.png](../assets/evaluate_agent.png)
+![intro_components.png](https://adk.dev/assets/evaluate_agent.png)
 
 ## Preparing for Agent Evaluations
 
@@ -7305,7 +7305,7 @@ Once a case is saved, you can click its ID in the list to inspect it. To make ch
 * **Delete** individual agent messages from the conversation.
 * **Delete** the entire evaluation case if it's no longer needed.
 
-![adk-eval-case.gif](../assets/adk-eval-case.gif)
+![adk-eval-case.gif](https://adk.dev/assets/adk-eval-case.gif)
 
 #### Step 3: Run the Evaluation with Custom Metrics
 
@@ -7316,7 +7316,7 @@ Once a case is saved, you can click its ID in the list to inspect it. To make ch
     * **Response match score**
 4. Click **Start** to run the evaluation using your custom criteria. The evaluation history will record the metrics used for each run.
 
-![adk-eval-config.gif](../assets/adk-eval-config.gif)
+![adk-eval-config.gif](https://adk.dev/assets/adk-eval-config.gif)
 
 #### Step 4: Analyze Results
 
@@ -7339,8 +7339,8 @@ Each trace row is interactive:
     * **Response**: The response received from the model.
     * **Graph**: A visual representation of the tool calls and agent logic flow.
 
-![adk-trace1.gif](../assets/adk-trace1.gif)
-![adk-trace2.gif](../assets/adk-trace2.gif)
+![adk-trace1.gif](https://adk.dev/assets/adk-trace1.gif)
+![adk-trace2.gif](https://adk.dev/assets/adk-trace2.gif)
 
 Blue rows in the trace view indicate that an event was generated from that interaction. Clicking on these blue rows will open the bottom event detail panel, providing deeper insights into the agent's execution flow.
 
@@ -7826,7 +7826,7 @@ to build, manage, evaluate and deploy AI-powered agents. It provides a robust
 and flexible environment for creating both conversational and non-conversational
 agents, capable of handling complex tasks and workflows.
 
-![intro_components.png](../assets/adk-components.png)
+![intro_components.png](https://adk.dev/assets/adk-components.png)
 
 ## Core Concepts
 
@@ -7834,7 +7834,7 @@ ADK is built around a few key primitives and concepts that make it
 powerful and flexible. Here are the essentials:
 
 * **Agent:** The fundamental worker unit designed for specific tasks. Agents can
-  use language models (`LlmAgent`) for complex reasoning, or act as deterministic controllers of the execution, which are called "[workflow agents](../agents/workflow-agents/index.md)" (`SequentialAgent`, `ParallelAgent`, `LoopAgent`).
+  use language models (`LlmAgent`) for complex reasoning, or act as deterministic controllers of the execution, which are called "[workflow agents](https://adk.dev/agents/workflow-agents/)" (`SequentialAgent`, `ParallelAgent`, `LoopAgent`).
 * **Tool:** Gives agents abilities beyond conversation, letting them interact
   with external APIs, search information, run code, or call other services.
 * **Callbacks:** Custom code snippets you provide to run at specific points in
@@ -7915,11 +7915,11 @@ agentic applications:
     services, allowing agents to recall user information across multiple
     sessions.
 
-![intro_components.png](../assets/adk-lifecycle.png)
+![intro_components.png](https://adk.dev/assets/adk-lifecycle.png)
 
 ## Get Started
 
-* Ready to build your first agent? [Try the quickstart](./quickstart.md)
+* Ready to build your first agent? [Try the quickstart](https://adk.dev/get-started/quickstart/)
 
 
 # Get Started
@@ -7937,7 +7937,7 @@ agents, capable of handling complex tasks and workflows.
 
     Install `google-adk` for Python or Java and get up and running in minutes.
 
-    [:octicons-arrow-right-24: More information](installation.md)
+    [:octicons-arrow-right-24: More information](https://adk.dev/get-started/installation/)
 
 -   :material-console-line: **Quickstart**
 
@@ -7945,7 +7945,7 @@ agents, capable of handling complex tasks and workflows.
 
     Create your first ADK agent with tools in minutes.
 
-    [:octicons-arrow-right-24: More information](quickstart.md)
+    [:octicons-arrow-right-24: More information](https://adk.dev/get-started/quickstart/)
 
 -   :material-console-line: **Quickstart (streaming)**
 
@@ -7953,7 +7953,7 @@ agents, capable of handling complex tasks and workflows.
 
     Create your first streaming ADK agent.
 
-    [:octicons-arrow-right-24: More information](streaming/quickstart-streaming.md)
+    [:octicons-arrow-right-24: More information](https://adk.dev/get-started/streaming/quickstart-streaming/)
 
 -   :material-console-line: **Tutorial**
 
@@ -7961,7 +7961,7 @@ agents, capable of handling complex tasks and workflows.
 
     Create your first ADK multi-agent.
 
-    [:octicons-arrow-right-24: More information](../tutorials/index.md)
+    [:octicons-arrow-right-24: More information](https://adk.dev/tutorials/)
 
 -   :material-rocket-launch-outline: **Discover sample agents**
 
@@ -7977,7 +7977,7 @@ agents, capable of handling complex tasks and workflows.
 
     Learn about the key components of building and deploying ADK agents.
 
-    [:octicons-arrow-right-24: More information](about.md)
+    [:octicons-arrow-right-24: More information](https://adk.dev/get-started/about/)
 
 </div>
 
@@ -8062,7 +8062,7 @@ agents, capable of handling complex tasks and workflows.
 
 ## Next steps
 
-* Try creating your first agent with the [**Quickstart**](quickstart.md)
+* Try creating your first agent with the [**Quickstart**](https://adk.dev/get-started/quickstart/)
 
 
 # Quickstart
@@ -8260,7 +8260,7 @@ application entirely on your machine and is recommended for internal development
 
 
 
-![intro_components.png](../assets/quickstart-flow-tool.png)
+![intro_components.png](https://adk.dev/assets/quickstart-flow-tool.png)
 
 ## 3. Set up the model {#set-up-the-model}
 
@@ -8360,18 +8360,18 @@ agent will be unable to function.
 
         **Step 3.** Now you can chat with your agent using the textbox:
 
-        ![adk-web-dev-ui-chat.png](../assets/adk-web-dev-ui-chat.png)
+        ![adk-web-dev-ui-chat.png](https://adk.dev/assets/adk-web-dev-ui-chat.png)
 
 
         **Step 4.**  By using the `Events` tab at the left, you can inspect
         individual function calls, responses and model responses by clicking on the
         actions:
 
-        ![adk-web-dev-ui-function-call.png](../assets/adk-web-dev-ui-function-call.png)
+        ![adk-web-dev-ui-function-call.png](https://adk.dev/assets/adk-web-dev-ui-function-call.png)
 
         On the `Events` tab, you can also click the `Trace` button to see the trace logs for each event that shows the latency of each function calls:
 
-        ![adk-web-dev-ui-trace.png](../assets/adk-web-dev-ui-trace.png)
+        ![adk-web-dev-ui-trace.png](https://adk.dev/assets/adk-web-dev-ui-trace.png)
 
         **Step 5.** You can also enable your microphone and talk to your agent:
 
@@ -8391,7 +8391,7 @@ agent will be unable to function.
                 ...
             ```
 
-        ![adk-web-dev-ui-audio.png](../assets/adk-web-dev-ui-audio.png)
+        ![adk-web-dev-ui-audio.png](https://adk.dev/assets/adk-web-dev-ui-audio.png)
 
     === "Terminal (adk run)"
 
@@ -8401,7 +8401,7 @@ agent will be unable to function.
         adk run multi_tool_agent
         ```
 
-        ![adk-run.png](../assets/adk-run.png)
+        ![adk-run.png](https://adk.dev/assets/adk-run.png)
 
         To exit, use Cmd/Ctrl+C.
 
@@ -8411,10 +8411,10 @@ agent will be unable to function.
         command, enabling you to test local cURL requests before you deploy your
         agent.
 
-        ![adk-api-server.png](../assets/adk-api-server.png)
+        ![adk-api-server.png](https://adk.dev/assets/adk-api-server.png)
 
         To learn how to use `adk api_server` for testing, refer to the
-        [documentation on testing](testing.md).
+        [documentation on testing](https://adk.dev/get-started/testing/).
 
 === "Java"
 
@@ -8460,12 +8460,12 @@ agent will be unable to function.
 
         **Step 3.** Now you can chat with your agent using the textbox:
 
-        ![adk-web-dev-ui-chat.png](../assets/adk-web-dev-ui-chat.png)
+        ![adk-web-dev-ui-chat.png](https://adk.dev/assets/adk-web-dev-ui-chat.png)
 
         **Step 4.** You can also inspect individual function calls, responses and
         model responses by clicking on the actions:
 
-        ![adk-web-dev-ui-function-call.png](../assets/adk-web-dev-ui-function-call.png)
+        ![adk-web-dev-ui-function-call.png](https://adk.dev/assets/adk-web-dev-ui-function-call.png)
 
     === "Maven"
 
@@ -8522,12 +8522,12 @@ You've successfully created and interacted with your first agent using ADK!
 ## 🛣️ Next steps
 
 * **Go to the tutorial**: Learn how to add memory, session, state to your agent:
-  [tutorial](../tutorials/index.md).
-* **Delve into advanced configuration:** Explore the [setup](installation.md)
+  [tutorial](https://adk.dev/tutorials/).
+* **Delve into advanced configuration:** Explore the [setup](https://adk.dev/get-started/installation/)
   section for deeper dives into project structure, configuration, and other
   interfaces.
 * **Understand Core Concepts:** Learn about
-  [agents concepts](../agents/index.md).
+  [agents concepts](https://adk.dev/agents/).
 
 
 # Streaming Quickstarts
@@ -8543,8 +8543,8 @@ This page provides quickstart examples to get you up and running with streaming 
     ---
     This example demonstrates how to set up a basic streaming interaction with an agent using Python ADK. It typically involves using the `Runner.run_live()` method and handling asynchronous events.
 
-    [:octicons-arrow-right-24: View Python Streaming Quickstart](quickstart-streaming.md) <br>
-    <!-- [:octicons-arrow-right-24: View Python Streaming Quickstart](python/quickstart-streaming.md) -->
+    [:octicons-arrow-right-24: View Python Streaming Quickstart](https://adk.dev/get-started/streaming/quickstart-streaming/) <br>
+    <!-- [:octicons-arrow-right-24: View Python Streaming Quickstart](https://adk.dev/get-started/streaming/quickstart-streaming/) -->
 
 <!-- This comment forces a block separation -->
 
@@ -8553,8 +8553,8 @@ This page provides quickstart examples to get you up and running with streaming 
     ---
     This example demonstrates how to set up a basic streaming interaction with an agent using Java ADK. It involves using the `Runner.runLive()` method, a `LiveRequestQueue`, and handling the `Flowable<Event>` stream.
 
-    [:octicons-arrow-right-24: View Java Streaming Quickstart](quickstart-streaming-java.md) <br>
-    <!-- [:octicons-arrow-right-24: View Java Streaming Quickstart](java/quickstart-streaming-java.md)) -->
+    [:octicons-arrow-right-24: View Java Streaming Quickstart](https://adk.dev/get-started/streaming/quickstart-streaming-java/) <br>
+    <!-- [:octicons-arrow-right-24: View Java Streaming Quickstart](https://adk.dev/get-started/streaming/quickstart-streaming-java/)) -->
 
 </div>
 
@@ -8587,7 +8587,7 @@ adk-agents/
                 └── ScienceTeacherAgent.java
 ```
 
-Follow the instructions in [Installation](../../get-started/installation.md) page to add `pom.xml` for using the ADK package.
+Follow the instructions in [Installation](https://adk.dev/get-started/installation/) page to add `pom.xml` for using the ADK package.
 
 !!! Note
     Feel free to use whichever name you like for the root directory of your project (instead of adk-agents)
@@ -8676,11 +8676,11 @@ the dropdown. Select "science-app".
 
 ## Try Dev UI with text
 
-With your favorite browser, navigate to: [http://127.0.0.1:8080/](http://127.0.0.1:8080/)
+With your favorite browser, navigate to: `http://127.0.0.1:8080/`
 
 You should see the following interface:
 
-![Dev UI](../../assets/quickstart-streaming-devui.png)
+![Dev UI](https://adk.dev/assets/quickstart-streaming-devui.png)
 
 Click the `Token Streaming` switch at the top right, and ask any questions for the science teacher such as `What's the electron?`. Then you should see the output text in streaming on the UI.
 
@@ -8891,7 +8891,7 @@ adk-streaming/  # Project folder
 
 Copy-paste the following code block into the `agent.py` file.
 
-For `model`, please double check the model ID as described earlier in the [Models section](#supported-models).
+For `model`, please double check the model ID as described earlier in the [Models section](https://adk.dev/get-started/streaming/quickstart-streaming/#supported-models).
 
 ```py
 from google.adk.agents import Agent
@@ -8902,7 +8902,7 @@ root_agent = Agent(
    name="basic_search_agent",
    # The Large Language Model (LLM) that agent will use.
    # Please fill in the latest model id that supports live from
-   # https://google.github.io/adk-docs/get-started/streaming/quickstart-streaming/#supported-models
+   # https://adk.dev/get-started/streaming/quickstart-streaming/#supported-models
    model="...",  # for example: model="gemini-2.5-flash-live-001" or model="gemini-2.5-flash-live-preview-04-09"
    # A short description of the agent's purpose.
    description="Agent to answer questions using Google Search.",
@@ -8917,7 +8917,7 @@ root_agent = Agent(
 
 Notice how easily you integrated [grounding with Google Search](https://ai.google.dev/gemini-api/docs/grounding?lang=python#configure-search) capabilities.  The `Agent` class and the `google_search` tool handle the complex interactions with the LLM and grounding with the search API, allowing you to focus on the agent's *purpose* and *behavior*.
 
-![intro_components.png](../../assets/quickstart-streaming-tool.png)
+![intro_components.png](https://adk.dev/assets/quickstart-streaming-tool.png)
 
 Copy-paste the following code block to `__init__.py` file.
 
@@ -9020,7 +9020,7 @@ Congratulations\! You've successfully created and interacted with your first Str
 
 ## Next steps: build custom streaming app
 
-In [Custom Audio Streaming app](../../streaming/custom-streaming.md) tutorial, it overviews the server and client code for a custom asynchronous web app built with ADK Streaming and [FastAPI](https://fastapi.tiangolo.com/), enabling real-time, bidirectional audio and text communication.
+In [Custom Audio Streaming app](https://adk.dev/streaming/) tutorial, it overviews the server and client code for a custom asynchronous web app built with ADK Streaming and [FastAPI](https://fastapi.tiangolo.com/), enabling real-time, bidirectional audio and text communication.
 
 
 # Testing your Agents
@@ -9196,7 +9196,7 @@ data: {"content":{"parts":[{"text":"OK. The weather in New York is sunny with a 
 
 ## Integrations
 
-ADK uses [Callbacks](../callbacks/index.md) to integrate with third-party
+ADK uses [Callbacks](https://adk.dev/callbacks/) to integrate with third-party
 observability tools. These integrations capture detailed traces of agent calls
 and interactions, which are crucial for understanding behavior, debugging
 issues, and evaluating performance.
@@ -9210,9 +9210,9 @@ issues, and evaluating performance.
 Now that you've verified the local operation of your agent, you're ready to move
 on to deploying your agent! Here are some ways you can deploy your agent:
 
-* Deploy to [Agent Engine](../deploy/agent-engine.md), the easiest way to deploy
+* Deploy to [Agent Engine](https://adk.dev/deploy/agent-engine/), the easiest way to deploy
   your ADK agents to a managed service in Vertex AI on Google Cloud.
-* Deploy to [Cloud Run](../deploy/cloud-run.md) and have full control over how
+* Deploy to [Cloud Run](https://adk.dev/deploy/cloud-run/) and have full control over how
   you scale and manage your agents using serverless architecture on Google
   Cloud.
 
@@ -9268,11 +9268,11 @@ from simple tasks to complex workflows.
 
 
 <p style="text-align:center;">
-  <a href="get-started/quickstart/" class="md-button" style="margin:3px">Quickstart</a>
-  <a href="tutorials/" class="md-button" style="margin:3px">Tutorials</a>
+  <a href="https://adk.dev/get-started/quickstart/" class="md-button" style="margin:3px">Quickstart</a>
+  <a href="https://adk.dev/tutorials/" class="md-button" style="margin:3px">Tutorials</a>
   <a href="http://github.com/google/adk-samples" class="md-button" target="_blank" style="margin:3px">Sample Agents</a>
-  <a href="api-reference/" class="md-button" style="margin:3px">API Reference</a>
-  <a href="contributing-guide/" class="md-button" style="margin:3px">Contribute ❤️</a>
+  <a href="https://adk.dev/api-reference/" class="md-button" style="margin:3px">API Reference</a>
+  <a href="https://adk.dev/community/contributing-guide/" class="md-button" style="margin:3px">Contribute ❤️</a>
 </p>
 
 ---
@@ -9291,7 +9291,7 @@ from simple tasks to complex workflows.
     for predictable pipelines, or leverage LLM-driven dynamic routing
     (`LlmAgent` transfer) for adaptive behavior.
 
-    [**Learn about agents**](agents/index.md)
+    [**Learn about agents**](https://adk.dev/agents/)
 
 -   :material-graph: **Multi-Agent Architecture**
 
@@ -9300,7 +9300,7 @@ from simple tasks to complex workflows.
     Build modular and scalable applications by composing multiple specialized
     agents in a hierarchy. Enable complex coordination and delegation.
 
-    [**Explore multi-agent systems**](agents/multi-agents.md)
+    [**Explore multi-agent systems**](https://adk.dev/agents/multi-agents/)
 
 -   :material-toolbox-outline: **Rich Tool Ecosystem**
 
@@ -9310,7 +9310,7 @@ from simple tasks to complex workflows.
     Exec), create custom functions, integrate 3rd-party libraries (LangChain,
     CrewAI), or even use other agents as tools.
 
-    [**Browse tools**](tools/index.md)
+    [**Browse tools**](https://adk.dev/tools/)
 
 -   :material-rocket-launch-outline: **Deployment Ready**
 
@@ -9320,7 +9320,7 @@ from simple tasks to complex workflows.
     Vertex AI Agent Engine, or integrate into custom infrastructure using Cloud
     Run or Docker.
 
-    [**Deploy agents**](deploy/index.md)
+    [**Deploy agents**](https://adk.dev/deploy/)
 
 -   :material-clipboard-check-outline: **Built-in Evaluation**
 
@@ -9330,7 +9330,7 @@ from simple tasks to complex workflows.
     response quality and the step-by-step execution trajectory against
     predefined test cases.
 
-    [**Evaluate agents**](evaluate/index.md)
+    [**Evaluate agents**](https://adk.dev/evaluate/)
 
 -   :material-console-line: **Building Safe and Secure Agents**
 
@@ -9339,7 +9339,7 @@ from simple tasks to complex workflows.
     Learn how to building powerful and trustworthy agents by implementing
     security and safety patterns and best practices into your agent's design.
 
-    [**Safety and Security**](safety/index.md)
+    [**Safety and Security**](https://adk.dev/safety/)
 
 </div>
 
@@ -9368,7 +9368,7 @@ ADK helps you both use and consume MCP tools in your agents, whether you're
 trying to build a tool to call an MCP service, or exposing an MCP server for
 other developers or agents to interact with your tools.
 
-Refer to the [MCP Tools documentation](../tools/mcp-tools.md) for code samples
+Refer to the [MCP Tools documentation](https://adk.dev/tools/mcp-tools/) for code samples
 and design patterns that help you use ADK together with MCP servers, including:
 
 - **Using Existing MCP Servers within ADK**: An ADK agent can act as an MCP
@@ -9384,16 +9384,16 @@ access data in your database. Google’s Agent Development Kit (ADK) has built i
 support for The MCP Toolbox for Databases.
 
 Refer to the
-[MCP Toolbox for Databases](../tools/google-cloud-tools.md#toolbox-tools-for-databases)
+[MCP Toolbox for Databases](https://adk.dev/tools/google-cloud-tools/#toolbox-tools-for-databases)
 documentation on how you can use ADK together with the MCP Toolbox for
-Databases. For getting started with the MCP Toolbox for Databases, a blog post [Tutorial : MCP Toolbox for Databases - Exposing Big Query Datasets](https://medium.com/google-cloud/tutorial-mcp-toolbox-for-databases-exposing-big-query-datasets-9321f0064f4e) and Codelab [MCP Toolbox for Databases:Making BigQuery datasets available to MCP clients](https://codelabs.developers.google.com/mcp-toolbox-bigquery-dataset?hl=en#0) are also available.
+Databases. For getting started with the MCP Toolbox for Databases, a blog post [Tutorial : MCP Toolbox for Databases - Exposing Big Query Datasets](https://cloud.google.com/bigquery/docs/pre-built-tools-with-mcp-toolbox) and Codelab [MCP Toolbox for Databases:Making BigQuery datasets available to MCP clients](https://codelabs.developers.google.com/mcp-toolbox-bigquery-dataset?hl=en#0) are also available.
 
-![GenAI Toolbox](../assets/mcp_db_toolbox.png)
+[MCP Toolbox for Databases](https://adk.dev/integrations/mcp-toolbox-for-databases/)
 
 ## ADK Agent and FastMCP server
 [FastMCP](https://github.com/jlowin/fastmcp) handles all the complex MCP protocol details and server management, so you can focus on building great tools. It's designed to be high-level and Pythonic; in most cases, decorating a function is all you need.
 
-Refer to the [MCP Tools documentation](../tools/mcp-tools.md) documentation on
+Refer to the [MCP Tools documentation](https://adk.dev/tools/mcp-tools/) documentation on
 how you can use ADK together with the FastMCP server running on Cloud Run.
 
 ## MCP Servers for Google Cloud Genmedia
@@ -9540,8 +9540,8 @@ async for event in runner.run_async(
 ![Agent Experiments](https://storage.googleapis.com/arize-phoenix-assets/assets/images/google-adk-experiments.png)
 
 ## Support and Resources
-- [Arize AX Documentation](https://arize.com/docs/ax/observe/tracing-integrations-auto/google-adk)
-- [Arize Community Slack](https://arize-ai.slack.com/join/shared_invite/zt-11t1vbu4x-xkBIHmOREQnYnYDH1GDfCg#/shared-invite/email)
+- [Arize AX Documentation](https://arize.com/docs/ax)
+- [Arize Community Slack](https://community.arize.com/)
 - [OpenInference Package](https://github.com/Arize-ai/openinference/tree/main/python/instrumentation/openinference-instrumentation-google-adk)
 
 
@@ -9672,7 +9672,7 @@ async for event in runner.run_async(
 
 ## Support and Resources
 - [Phoenix Documentation](https://arize.com/docs/phoenix/integrations/llm-providers/google-gen-ai/google-adk-tracing)
-- [Community Slack](https://arize-ai.slack.com/join/shared_invite/zt-11t1vbu4x-xkBIHmOREQnYnYDH1GDfCg#/shared-invite/email)
+- [Community Slack](https://community.arize.com/)
 - [OpenInference Package](https://github.com/Arize-ai/openinference/tree/main/python/instrumentation/openinference-instrumentation-google-adk)
 
 
@@ -9688,7 +9688,7 @@ Think of the Runtime as the **"engine"** of your agentic application. You define
 
 At its heart, the ADK Runtime operates on an **Event Loop**. This loop facilitates a back-and-forth communication between the `Runner` component and your defined "Execution Logic" (which includes your Agents, the LLM calls they make, Callbacks, and Tools).
 
-![intro_components.png](../assets/event-loop.png)
+![intro_components.png](https://adk.dev/assets/event-loop.png)
 
 In simple terms:
 
@@ -9847,7 +9847,7 @@ These players interact continuously through the Event Loop to process a user's r
 
 Let's trace a simplified flow for a typical user query that involves an LLM agent calling a tool:
 
-![intro_components.png](../assets/invocation-flow.png)
+![intro_components.png](https://adk.dev/assets/invocation-flow.png)
 
 ### Step-by-Step Breakdown
 
@@ -10301,7 +10301,7 @@ Tools can be designed with security in mind: we can create tools that expose the
 
 In-tool guardrails is an approach to create common and re-usable tools that expose deterministic controls that can be used by developers to set limits on each tool instantiation.
 
-This approach relies on the fact that tools receive two types of input: arguments,  which are set by the model, and [**`Tool Context`**](../tools/index.md#tool-context), which can be set deterministically by the agent developer. We can rely on the deterministically set information to validate that the model is behaving as-expected.
+This approach relies on the fact that tools receive two types of input: arguments,  which are set by the model, and [**`Tool Context`**](https://adk.dev/tools/#tool-context), which can be set deterministically by the agent developer. We can rely on the deterministically set information to validate that the model is behaving as-expected.
 
 For example, a query tool can be designed to expect a policy to be read from the Tool Context.
 
@@ -10329,7 +10329,7 @@ For example, a query tool can be designed to expect a policy to be read from the
 
 
 
-During the tool execution, [**`Tool Context`**](../tools/index.md#tool-context) will be passed to the tool:
+During the tool execution, [**`Tool Context`**](https://adk.dev/tools/#tool-context) will be passed to the tool:
 
 === "Python"
 
@@ -10373,7 +10373,7 @@ While these measures are robust against content safety, you need additional chec
 
 #### Model and Tool Callbacks
 
-When modifications to the tools to add guardrails aren't possible, the [**`Before Tool Callback`**](../callbacks/types-of-callbacks.md#before-tool-callback) function can be used to add pre-validation of calls. The callback has access to the agent's state, the requested tool and parameters. This approach is very general and can even be created to create a common library of re-usable tool policies. However, it might not be applicable for all tools if the information to enforce the guardrails isn't directly visible in the parameters.
+When modifications to the tools to add guardrails aren't possible, the [**`Before Tool Callback`**](https://adk.dev/callbacks/types-of-callbacks/#before-tool-callback) function can be used to add pre-validation of calls. The callback has access to the agent's state, the requested tool and parameters. This approach is very general and can even be created to create a common library of re-usable tool policies. However, it might not be applicable for all tools if the information to enforce the guardrails isn't directly visible in the parameters.
 
 === "Python"
 
@@ -10453,13 +10453,13 @@ Decide whether the request is safe or unsafe. If you are unsure, say safe. Outpu
 
 Code execution is a special tool that has extra security implications: sandboxing must be used to prevent model-generated code to compromise the local environment, potentially creating security issues.
 
-Google and the ADK provide several options for safe code execution. [Vertex Gemini Enterprise API code execution feature](https://cloud.google.com/vertex-ai/generative-ai/docs/multimodal/code-execution-api) enables agents to take advantage of sandboxed code execution server-side by enabling the tool\_execution tool. For code performing data analysis, you can use the [built-in Code Executor](../tools/built-in-tools.md#code-execution) tool in ADK to call the [Vertex Code Interpreter Extension](https://cloud.google.com/vertex-ai/generative-ai/docs/extensions/code-interpreter).
+Google and the ADK provide several options for safe code execution. [Vertex Gemini Enterprise API code execution feature](https://cloud.google.com/vertex-ai/generative-ai/docs/multimodal/code-execution-api) enables agents to take advantage of sandboxed code execution server-side by enabling the tool\_execution tool. For code performing data analysis, you can use the [built-in Code Executor](https://adk.dev/tools/built-in-tools/#code-execution) tool in ADK to call the [Vertex Code Interpreter Extension](https://cloud.google.com/vertex-ai/generative-ai/docs/extensions/code-interpreter).
 
 If none of these options satisfy your requirements, you can build your own code executor using the building blocks provided by the ADK. We recommend creating execution environments that are hermetic: no network connections and API calls permitted to avoid uncontrolled data exfiltration; and full clean up of data across execution to not create cross-user exfiltration concerns.
 
 ### Evaluations
 
-See [Evaluate Agents](../evaluate/index.md).
+See [Evaluate Agents](https://adk.dev/evaluate/).
 
 ### VPC-SC Perimeters and Network Controls
 
@@ -10855,13 +10855,13 @@ the storage backend that best suits your needs:
     *   **How it works:** Uses Google Cloud's Vertex AI infrastructure via API
         calls for session management.
     *   **Persistence:** Yes. Data is managed reliably and scalably via
-        [Vertex AI Agent Engine](https://google.github.io/adk-docs/deploy/agent-engine/).
+        [Vertex AI Agent Engine](https://adk.dev/deploy/agent-engine/).
     *   **Requires:**
         *   A Google Cloud project (`pip install vertexai`)
         *   A Google Cloud storage bucket that can be configured by this
             [step](https://cloud.google.com/vertex-ai/docs/pipelines/configure-project#storage).
         *   A Reasoning Engine resource name/ID that can setup following this
-            [tutorial](https://google.github.io/adk-docs/deploy/agent-engine/).
+            [tutorial](https://adk.dev/deploy/agent-engine/).
     *   **Best for:** Scalable production applications deployed on Google Cloud,
         especially when integrating with other Vertex AI features.
 
@@ -10909,7 +10909,7 @@ conversation history and temporary data are stored and persist.
 
 ## The Session Lifecycle
 
-<img src="../../assets/session_lifecycle.png" alt="Session lifecycle">
+<img src="https://adk.dev/assets/session-state.png" alt="Session lifecycle">
 
 Here’s a simplified flow of how `Session` and `SessionService` work together
 during a conversation turn:
@@ -11142,7 +11142,7 @@ These context objects are specifically designed to manage state changes within t
 
 This method abstracts away the manual creation of `EventActions` and `state_delta` for most common state update scenarios within callbacks and tools, making your code cleaner and less error-prone.
 
-For more comprehensive details on context objects, refer to the [Context documentation](../context/index.md).
+For more comprehensive details on context objects, refer to the [Context documentation](https://adk.dev/context/).
 
 === "Python"
 
@@ -11239,7 +11239,7 @@ In order to use voice/video streaming in ADK, you will need to use Gemini models
 - [Google AI Studio: Gemini Live API](https://ai.google.dev/gemini-api/docs/models#live-api)
 - [Vertex AI: Gemini Live API](https://cloud.google.com/vertex-ai/generative-ai/docs/live-api)
 
-There is also a [SSE](custom-streaming.md) version of the sample is available.
+There is also a [SSE](https://adk.dev/streaming/) version of the sample is available.
 
 ## 1. Install ADK {#1.-setup-installation}
 
@@ -11351,7 +11351,7 @@ root_agent = Agent(
 
 Notice how easily you integrated [grounding with Google Search](https://ai.google.dev/gemini-api/docs/grounding?lang=python#configure-search) capabilities.  The `Agent` class and the `google_search` tool handle the complex interactions with the LLM and grounding with the search API, allowing you to focus on the agent's *purpose* and *behavior*.
 
-![intro_components.png](../assets/quickstart-streaming-tool.png)
+![intro_components.png](https://adk.dev/assets/quickstart-streaming-tool.png)
 
 ## 3\. Interact with Your Streaming app {#3.-interact-with-your-streaming-app}
 
@@ -11369,17 +11369,17 @@ uvicorn main:app --reload
 
 Now you should see the UI like this:
 
-![ADK Streaming app](../assets/adk-streaming-text.png)
+![ADK Streaming app](https://adk.dev/assets/adk-streaming-text.png)
 
 Try asking a question `What time is it now?`. The agent will use Google Search to respond to your queries. You would notice that the UI shows the agent's response as streaming text. You can also send messages to the agent at any time, even while the agent is still responding. This demonstrates the bidirectional communication capability of ADK Streaming.
 
 4\. **Access the app with the audio mode:** Now click the `Start Audio` button. The app reconnects with the server in an audio mode, and the UI will show the following dialog for the first time:
 
-![ADK Streaming app](../assets/adk-streaming-audio-dialog.png)
+![ADK Streaming app](https://adk.dev/assets/adk-streaming-audio-dialog.png)
 
 Click `Allow while visiting the site`, then you will see the microphone icon will be shown at the top of the browser:
 
-![ADK Streaming app](../assets/adk-streaming-mic.png)
+![ADK Streaming app](https://adk.dev/assets/adk-streaming-mic.png)
 
 Now you can talk to the agent with voice. Ask questions like `What time is it now?` with voice and you will hear the agent responding in voice too. As Streaming for ADK supports [multiple languages](https://ai.google.dev/gemini-api/docs/live#supported-languages), it can also respond to question in the supported languages.
 
@@ -11952,7 +11952,7 @@ This article overviews the server and client code for a custom asynchronous web 
 - Automatic reconnection and error handling
 - Base64 encoding for audio data transmission
 
-There is also a [WebSocket](custom-streaming-ws.md) version of the sample is available.
+There is also a [WebSocket](https://adk.dev/streaming/) version of the sample is available.
 
 ## 1. Install ADK {#1.-setup-installation}
 
@@ -12057,17 +12057,17 @@ uvicorn main:app --reload
 
 Now you should see the UI like this:
 
-![ADK Streaming app](../assets/adk-streaming-text.png)
+![ADK Streaming app](https://adk.dev/assets/adk-streaming-text.png)
 
 Try asking a question `What time is it now?`. The agent will use Google Search to respond to your queries. You would notice that the UI shows the agent's response as streaming text. You can also send messages to the agent at any time, even while the agent is still responding. This demonstrates the bidirectional communication capability of ADK Streaming.
 
 4\. **Access the app with the audio mode:** Now click the `Start Audio` button. The app reconnects with the server in an audio mode, and the UI will show the following dialog for the first time:
 
-![ADK Streaming app](../assets/adk-streaming-audio-dialog.png)
+![ADK Streaming app](https://adk.dev/assets/adk-streaming-audio-dialog.png)
 
 Click `Allow while visiting the site`, then you will see the microphone icon will be shown at the top of the browser:
 
-![ADK Streaming app](../assets/adk-streaming-mic.png)
+![ADK Streaming app](https://adk.dev/assets/adk-streaming-mic.png)
 
 Now you can talk to the agent with voice. Ask questions like `What time is it now?` with voice and you will hear the agent responding in voice too. As Streaming for ADK supports [multiple languages](https://ai.google.dev/gemini-api/docs/live#supported-languages), it can also respond to question in the supported languages.
 
@@ -12091,7 +12091,7 @@ These console logs are important in case you develop your own streaming applicat
 
 6\. **Troubleshooting tips**
 
-- **When your browser can't connect to the server via SSH proxy:** SSH proxy used in various cloud services may not work with SSE. Please try without SSH proxy, such as using a local laptop, or try the [WebSocket](custom-streaming-ws.md) version.
+- **When your browser can't connect to the server via SSH proxy:** SSH proxy used in various cloud services may not work with SSE. Please try without SSH proxy, such as using a local laptop, or try the [WebSocket](https://adk.dev/streaming/) version.
 - **When `gemini-2.5-flash-exp` model doesn't work:** If you see any errors on the app server console with regard to `gemini-2.5-flash-exp` model availability, try replacing it with `gemini-2.5-flash-live-001` on `app/google_search_agent/agent.py` at line 6.
 
 ## 4. Agent definition
@@ -12115,7 +12115,7 @@ root_agent = Agent(
 
 Notice how easily you integrated [grounding with Google Search](https://ai.google.dev/gemini-api/docs/grounding?lang=python#configure-search) capabilities.  The `Agent` class and the `google_search` tool handle the complex interactions with the LLM and grounding with the search API, allowing you to focus on the agent's *purpose* and *behavior*.
 
-![intro_components.png](../assets/quickstart-streaming-tool.png)
+![intro_components.png](https://adk.dev/assets/quickstart-streaming-tool.png)
 
 
 The server and client architecture enables real-time, bidirectional communication between web clients and AI agents with proper session isolation and resource management.
@@ -12615,7 +12615,7 @@ To deploy this system in a production environment, consider implementing the fol
 
 # ADK Bidi-streaming development guide: Part 1 - Introduction
 
-Welcome to the world of bidirectional streaming with [Agent Development Kit (ADK)](https://google.github.io/adk-docs/). This article will transform your understanding of AI agent communication from traditional request-response patterns to dynamic, real-time conversations that feel as natural as talking to another person.
+Welcome to the world of bidirectional streaming with [Agent Development Kit (ADK)](https://adk.dev/). This article will transform your understanding of AI agent communication from traditional request-response patterns to dynamic, real-time conversations that feel as natural as talking to another person.
 
 Imagine building an AI assistant that doesn't just wait for you to finish speaking before responding, but actively listens and can be interrupted mid-sentence when you have a sudden thought. Picture creating customer support bots that handle audio, video, and text simultaneously while maintaining context throughout the conversation. This is the power of bidirectional streaming, and ADK makes it accessible to every developer.
 
@@ -13070,7 +13070,7 @@ text, audio, and video inputs, and they can provide text and audio output.
     In this quickstart, you'll build a simple agent and use streaming in ADK to
     implement low-latency and bidirectional voice and video communication.
 
-    - [Quickstart (Bidi-streaming)](../get-started/streaming/quickstart-streaming.md)
+    - [Quickstart (Bidi-streaming)](https://adk.dev/get-started/streaming/quickstart-streaming/)
 
 -   :material-console-line: **Custom Audio Streaming app sample**
 
@@ -13078,8 +13078,8 @@ text, audio, and video inputs, and they can provide text and audio output.
 
     This article overviews the server and client code for a custom asynchronous web app built with ADK Streaming and FastAPI, enabling real-time, bidirectional audio and text communication with both Server Sent Events (SSE) and WebSockets.
 
-    - [Custom Audio Streaming app sample (SSE)](custom-streaming.md)
-    - [Custom Audio Streaming app sample (WebSockets)](custom-streaming-ws.md)
+    - [Custom Audio Streaming app sample (SSE)](https://adk.dev/streaming/)
+    - [Custom Audio Streaming app sample (WebSockets)](https://adk.dev/streaming/)
 
 -   :material-console-line: **Bidi-streaming development guide series**
 
@@ -13087,7 +13087,7 @@ text, audio, and video inputs, and they can provide text and audio output.
 
     A series of articles for diving deeper into the Bidi-streaming development with ADK. You can learn basic concepts and use cases, the core API, and end-to-end application design.
 
-    - [Bidi-streaming development guide series: Part 1 - Introduction](dev-guide/part1.md)
+    - [Bidi-streaming development guide series: Part 1 - Introduction](https://adk.dev/streaming/dev-guide/part1/)
 
 -   :material-console-line: **Streaming Tools**
 
@@ -13095,7 +13095,7 @@ text, audio, and video inputs, and they can provide text and audio output.
 
     Streaming tools allows tools (functions) to stream intermediate results back to agents and agents can respond to those intermediate results. For example, we can use streaming tools to monitor the changes of the stock price and have the agent react to it. Another example is we can have the agent monitor the video stream, and when there is changes in video stream, the agent can report the changes.
 
-    - [Streaming Tools](streaming-tools.md)
+    - [Streaming Tools](https://adk.dev/streaming/streaming-tools/)
 
 -   :material-console-line: **Custom Audio Streaming app sample**
 
@@ -13103,15 +13103,15 @@ text, audio, and video inputs, and they can provide text and audio output.
 
     This article overviews the server and client code for a custom asynchronous web app built with ADK Streaming and FastAPI, enabling real-time, bidirectional audio and text communication with both Server Sent Events (SSE) and WebSockets.
 
-    - [Streaming Configurations](configuration.md)
+    - [Streaming Configurations](https://adk.dev/streaming/configuration/)
 
--   :material-console-line: **Blog post: Google ADK + Vertex AI Live API**
+-   :material-console-line: **Guide: Bidi-streaming (live) in ADK**
 
     ---
 
     This article shows how to use Bidi-streaming (live) in ADK for real-time audio/video streaming. It offers a Python server example using LiveRequestQueue to build custom, interactive AI agents.
 
-    - [Blog post: Google ADK + Vertex AI Live API](https://medium.com/google-cloud/google-adk-vertex-ai-live-api-125238982d5e)
+    - [Bidi-streaming (live) in ADK](https://adk.dev/streaming/)
 
 </div>
 
@@ -13458,7 +13458,7 @@ calendar_tool_set.configure_auth(
 
 The sequence diagram of auth request flow (where tools are requesting auth credentials) looks like below:
 
-![Authentication](../assets/auth_part1.svg)
+![Authentication](https://adk.dev/assets/auth_part1.svg)
 
 
 ### 2. Handling the Interactive OAuth/OIDC Flow (Client-Side)
@@ -13649,7 +13649,7 @@ if auth_request_function_call_id and auth_config:
 
 The sequence diagram of auth response flow (where Agent Client send back the auth response and ADK retries tool calling) looks like below:
 
-![Authentication](../assets/auth_part2.svg)
+![Authentication](https://adk.dev/assets/auth_part2.svg)
 
 ## Journey 2: Building Custom Tools (`FunctionTool`) Requiring Authentication
 
@@ -13657,7 +13657,7 @@ This section focuses on implementing the authentication logic *inside* your cust
 
 ### Prerequisites
 
-Your function signature *must* include [`tool_context: ToolContext`](../tools/index.md#tool-context). ADK automatically injects this object, providing access to state and auth mechanisms.
+Your function signature *must* include [`tool_context: ToolContext`](https://adk.dev/tools/#tool-context). ADK automatically injects this object, providing access to state and auth mechanisms.
 
 ```py
 from google.adk.tools import FunctionTool, ToolContext
@@ -15378,7 +15378,7 @@ connect your agents with:
 * **Databases** such as Spanner, AlloyDB, Postgres and more using the MCP Toolbox for
   databases.
 
-![Google Cloud Tools](../assets/google_cloud_tools.svg)
+[Google Cloud integrations](https://adk.dev/integrations/)
 
 ## Apigee API Hub Tools
 
@@ -15389,7 +15389,7 @@ APIs.
 
 **Prerequisites**
 
-1. [Install ADK](../get-started/installation.md)
+1. [Install ADK](https://adk.dev/get-started/installation/)
 2. Install the
    [Google Cloud CLI](https://cloud.google.com/sdk/docs/install?db=bigtable-docs#installation_instructions).
 3. [Apigee API hub](https://cloud.google.com/apigee/docs/apihub/what-is-api-hub)
@@ -15511,7 +15511,7 @@ agents.
 
 **Prerequisites**
 
-1. [Install ADK](../get-started/installation.md)
+1. [Install ADK](https://adk.dev/get-started/installation/)
 2. An existing
    [Application Integration](https://cloud.google.com/application-integration/docs/overview)
    workflow or
@@ -15552,13 +15552,13 @@ Connect your agent to enterprise applications using
    Application Integration in the same region as your connection by clicking on "QUICK SETUP" button.
 
 
-   ![Google Cloud Tools](../assets/application-integration-overview.png)
+   ![Google Cloud Tools](https://adk.dev/assets/application-integration-overview.png)
 
 2. Go to [Connection Tool](https://console.cloud.google.com/integrations/templates/connection-tool/locations/us-central1)
    template from the template library and click on "USE TEMPLATE" button.
 
 
-    ![Google Cloud Tools](../assets/use-connection-tool-template.png)
+    ![Google Cloud Tools](https://adk.dev/assets/use-connection-tool-template.png)
 
 3. Fill the Integration Name as **ExecuteConnection** (It is mandatory to use this integration name only) and
    select the region same as the connection region. Click on "CREATE".
@@ -15566,7 +15566,7 @@ Connect your agent to enterprise applications using
 4. Publish the integration by using the "PUBLISH" button on the Application Integration Editor.
 
 
-    ![Google Cloud Tools](../assets/publish-integration.png)
+    ![Google Cloud Tools](https://adk.dev/assets/publish-integration.png)
 
 **Steps:**
 
@@ -15746,7 +15746,7 @@ information on
 Toolbox, see the
 [documentation](https://mcp-toolbox.dev/documentation/introduction/).
 
-![GenAI Toolbox](../assets/mcp_db_toolbox.png)
+[MCP Toolbox for Databases](https://adk.dev/integrations/mcp-toolbox-for-databases/)
 
 ### Configure and deploy
 
@@ -15814,7 +15814,7 @@ function**, a class method, or even another specialized agent—designed to
 execute a distinct, predefined task. These tasks often involve interacting with
 external systems or data.
 
-<img src="../assets/agent-tool-call.png" alt="Agent tool call">
+<img src="https://adk.dev/assets/agent-tool-call.png" alt="Agent tool call">
 
 ### Key Characteristics
 
@@ -15847,13 +15847,13 @@ Think of the tools as a specialized toolkit that the agent's intelligent core (t
 
 ADK offers flexibility by supporting several types of tools:
 
-1. **[Function Tools](../tools/function-tools.md):** Tools created by you, tailored to your specific application's needs.
-    * **[Functions/Methods](../tools/function-tools.md#1-function-tool):** Define standard synchronous functions or methods in your code (e.g., Python def).
-    * **[Agents-as-Tools](../tools/function-tools.md#3-agent-as-a-tool):** Use another, potentially specialized, agent as a tool for a parent agent.
-    * **[Long Running Function Tools](../tools/function-tools.md#2-long-running-function-tool):** Support for tools that perform asynchronous operations or take significant time to complete.
-2. **[Built-in Tools](../tools/built-in-tools.md):** Ready-to-use tools provided by the framework for common tasks.
+1. **[Function Tools](https://adk.dev/tools/function-tools/):** Tools created by you, tailored to your specific application's needs.
+    * **[Functions/Methods](https://adk.dev/tools/function-tools/#1-function-tool):** Define standard synchronous functions or methods in your code (e.g., Python def).
+    * **[Agents-as-Tools](https://adk.dev/tools/function-tools/#3-agent-as-a-tool):** Use another, potentially specialized, agent as a tool for a parent agent.
+    * **[Long Running Function Tools](https://adk.dev/tools/function-tools/#2-long-running-function-tool):** Support for tools that perform asynchronous operations or take significant time to complete.
+2. **[Built-in Tools](https://adk.dev/tools/built-in-tools/):** Ready-to-use tools provided by the framework for common tasks.
         Examples: Google Search, Code Execution, Retrieval-Augmented Generation (RAG).
-3. **[Third-Party Tools](../tools/third-party-tools.md):** Integrate tools seamlessly from popular external libraries.
+3. **[Third-Party Tools](https://adk.dev/tools/third-party-tools/):** Integrate tools seamlessly from popular external libraries.
         Examples: LangChain Tools, CrewAI Tools.
 
 Navigate to the respective documentation pages linked above for detailed information and examples for each tool type.
@@ -16474,7 +16474,7 @@ This guide covers two primary integration patterns:
 
 Before you begin, ensure you have the following set up:
 
-* **Set up ADK:** Follow the standard ADK [setup instructions](../get-started/quickstart.md/#venv-install) in the quickstart.
+* **Set up ADK:** Follow the standard ADK [setup instructions](https://adk.dev/get-started/quickstart/#venv-install) in the quickstart.
 * **Install/update Python/Java:** MCP requires Python version of 3.10 or higher for Python or Java 17+.
 * **Setup Node.js and npx:** **(Python only)** Many community MCP servers are distributed as Node.js packages and run using `npx`. Install Node.js (which includes npx) if you haven't already. For details, see [https://nodejs.org/en](https://nodejs.org/en).
 * **Verify Installations:** **(Python only)** Confirm `adk` and `npx` are in your PATH within the activated virtual environment:
@@ -16587,7 +16587,7 @@ Once the ADK Web UI loads in your browser:
 
 You should see the agent interacting with the MCP file system server, and the server's responses (file listings, file content) relayed through the agent. The `adk web` console (terminal where you ran the command) might also show logs from the `npx` process if it outputs to stderr.
 
-<img src="../../assets/adk-tool-mcp-filesystem-adk-web-demo.png" alt="MCP with ADK Web - FileSystem Example">
+<img src="https://adk.dev/assets/adk-tool-mcp-filesystem-adk-web-demo.png" alt="MCP with ADK Web - FileSystem Example">
 
 
 ### Example 2: Google Maps MCP Server
@@ -16684,7 +16684,7 @@ from . import agent
 
 You should see the agent use the Google Maps MCP tools to provide directions or location-based information.
 
-<img src="../../assets/adk-tool-mcp-maps-adk-web-demo.png" alt="MCP with ADK Web - Google Maps Example">
+<img src="https://adk.dev/assets/adk-tool-mcp-maps-adk-web-demo.png" alt="MCP with ADK Web - Google Maps Example">
 
 
 ## 2. Building an MCP server with ADK tools (MCP server exposing ADK)
@@ -17079,7 +17079,7 @@ The process involves these main steps when you use `OpenAPIToolset`:
     * **Execution**: When called by the LLM, it constructs the correct HTTP request (URL, headers, query params, body) using the arguments provided by the LLM and the details from the OpenAPI spec. It handles authentication (if configured) and executes the API call using the `requests` library.
     * **Response Handling**: Returns the API response (typically JSON) back to the agent flow.
 
-5. **Authentication**: You can configure global authentication (like API keys or OAuth - see [Authentication](../tools/authentication.md) for details) when initializing `OpenAPIToolset`. This authentication configuration is automatically applied to all generated `RestApiTool` instances.
+5. **Authentication**: You can configure global authentication (like API keys or OAuth - see [Authentication](https://adk.dev/tools/authentication/) for details) when initializing `OpenAPIToolset`. This authentication configuration is automatically applied to all generated `RestApiTool` instances.
 
 ## Usage Workflow
 
@@ -17372,7 +17372,7 @@ ADK provides the `LangchainTool` wrapper to integrate tools from the LangChain e
 
 [Tavily](https://tavily.com/) provides a search API that returns answers derived from real-time search results, intended for use by applications like AI agents.
 
-1. Follow [ADK installation and setup](../get-started/installation.md) guide.
+1. Follow [ADK installation and setup](https://adk.dev/get-started/installation/) guide.
 
 2. **Install Dependencies:** Ensure you have the necessary LangChain packages installed. For example, to use the Tavily search tool, install its specific dependencies:
 
@@ -17510,7 +17510,7 @@ ADK provides the `CrewaiTool` wrapper to integrate tools from the CrewAI library
 
 [Serper API](https://serper.dev/) provides access to Google Search results programmatically. It allows applications, like AI agents, to perform real-time Google searches (including news, images, etc.) and get structured data back without needing to scrape web pages directly.
 
-1. Follow [ADK installation and setup](../get-started/installation.md) guide.
+1. Follow [ADK installation and setup](https://adk.dev/get-started/installation/) guide.
 
 2. **Install Dependencies:** Install the necessary CrewAI tools package. For example, to use the SerperDevTool:
 
@@ -17687,7 +17687,7 @@ await call_agent_async("what's the latest news on AI Agents?")
 
 </div>
 
-This tutorial extends from the [Quickstart example](https://google.github.io/adk-docs/get-started/quickstart/) for [Agent Development Kit](https://google.github.io/adk-docs/get-started/). Now, you're ready to dive deeper and construct a more sophisticated, **multi-agent system**.
+This tutorial extends from the [Quickstart example](https://adk.dev/get-started/quickstart/) for [Agent Development Kit](https://adk.dev/get-started/). Now, you're ready to dive deeper and construct a more sophisticated, **multi-agent system**.
 
 We'll embark on building a **Weather Bot agent team**, progressively layering advanced features onto a simple foundation. Starting with a single agent that can look up weather, we will incrementally add capabilities like:
 
@@ -19593,7 +19593,7 @@ applications with ADK. Explore our collection below and happy building:
     LiteLLM, orchestrating agent delegation, adding memory with session state,
     and ensuring safety via callbacks.
 
-    [:octicons-arrow-right-24: Start learning here](agent-team.md)
+    [:octicons-arrow-right-24: Start learning here](https://adk.dev/tutorials/agent-team/)
 
 </div>
 
@@ -32226,7 +32226,7 @@ await exit_stack.aclose()
 Example 2: (using async with):
 ```
 async def load_tools():
-async with MCPToolset(connection_params=SseServerParams(url=”http://0.0.0.0:8090/sse”)
+async with MCPToolset(connection_params=SseServerParams(url="http://" "0.0.0.0:8090/sse")
 ) as toolset:tools = await toolset.load_tools()
 agent = LlmAgent(…
 tools=tools
@@ -32273,7 +32273,7 @@ await exit_stack.aclose()
 Example 2: (using async with):
 ```
 async def load_tools():
-async with MCPToolset(connection_params=SseServerParams(url=”http://0.0.0.0:8090/sse”)
+async with MCPToolset(connection_params=SseServerParams(url="http://" "0.0.0.0:8090/sse")
 ) as toolset:tools = await toolset.load_tools()
 agent = LlmAgent(…
 tools=tools
