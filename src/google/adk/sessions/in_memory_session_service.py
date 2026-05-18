@@ -335,13 +335,25 @@ class InMemorySessionService(BaseSessionService):
     if session_id not in self.sessions[app_name][user_id]:
       _warning(f'session_id {session_id} not in sessions[app_name][user_id]')
       return event
+    storage_session = self.sessions[app_name][user_id][session_id]
+
+    if event.id and (
+        any(existing_event.id == event.id for existing_event in session.events)
+        or (
+            storage_session is not session
+            and any(
+                existing_event.id == event.id
+                for existing_event in storage_session.events
+            )
+        )
+    ):
+      return event
 
     # Update the in-memory session.
     await super().append_event(session=session, event=event)
     session.last_update_time = event.timestamp
 
     # Update the storage session
-    storage_session = self.sessions[app_name][user_id].get(session_id)
     if storage_session is not session:
       storage_session.events.append(event)
       storage_session.last_update_time = event.timestamp

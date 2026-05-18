@@ -1038,6 +1038,35 @@ async def test_append_event_when_session_is_same_ref_as_storage_session():
 
 
 @pytest.mark.asyncio
+async def test_in_memory_append_event_ignores_duplicate_event_id():
+  service = InMemorySessionService()
+  session = await service.create_session(app_name='my_app', user_id='user')
+  event = Event(
+      invocation_id='inv1',
+      author='user',
+      actions=EventActions(state_delta={'counter': 1}),
+  )
+
+  await service.append_event(session=session, event=event)
+
+  duplicate_event = Event(
+      id=event.id,
+      invocation_id='inv1',
+      author='user',
+      actions=EventActions(state_delta={'counter': 2}),
+  )
+  await service.append_event(session=session, event=duplicate_event)
+
+  final_session = await service.get_session(
+      app_name='my_app', user_id='user', session_id=session.id
+  )
+  assert [stored_event.id for stored_event in final_session.events] == [
+      event.id
+  ]
+  assert final_session.state['counter'] == 1
+
+
+@pytest.mark.asyncio
 async def test_get_session_with_config(session_service):
   app_name = 'my_app'
   user_id = 'user'
