@@ -24,6 +24,7 @@ from unittest.mock import ANY
 from unittest.mock import AsyncMock
 from unittest.mock import MagicMock
 from unittest.mock import Mock
+from unittest.mock import patch
 import warnings
 
 from google.adk.models.lite_llm import _append_fallback_user_content_if_missing
@@ -4954,3 +4955,34 @@ async def test_content_to_message_param_anthropic_no_signature_falls_back():
   # Falls back to reasoning_content when no signatures present
   assert result.get("reasoning_content") == "thinking without sig"
   assert "thinking_blocks" not in result
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "log_level,should_call",
+    [
+        (logging.WARNING, False),
+        (logging.INFO, False),
+        (logging.DEBUG, True),
+    ],
+)
+async def test_generate_content_async_skips_request_log_build_above_debug(
+    mock_acompletion, lite_llm_instance, log_level, should_call
+):
+  del mock_acompletion  # unused; lite_llm_instance is wired to it
+  litellm_logger = logging.getLogger("google_adk.google.adk.models.lite_llm")
+  original_level = litellm_logger.level
+  litellm_logger.setLevel(log_level)
+  try:
+    with patch(
+        "google.adk.models.lite_llm._build_request_log",
+        return_value="log",
+    ) as mock_build:
+      async for _ in lite_llm_instance.generate_content_async(
+          LLM_REQUEST_WITH_FUNCTION_DECLARATION
+      ):
+        pass
+
+      assert mock_build.called is should_call
+  finally:
+    litellm_logger.setLevel(original_level)
