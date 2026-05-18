@@ -34,6 +34,7 @@ if TYPE_CHECKING:
   from .google_llm import Gemini
   from .lite_llm import LiteLlm
   from .oci_genai_llm import OCIGenAILlm
+  from .oci_genai_openai_llm import OCIGenAIOpenAILlm
 
 __all__ = [
     'ApigeeLlm',
@@ -45,6 +46,7 @@ __all__ = [
     'LLMRegistry',
     'LiteLlm',
     'OCIGenAILlm',
+    'OCIGenAIOpenAILlm',
 ]
 
 _LAZY_PROVIDERS: dict[str, tuple[list[str], str]] = {
@@ -98,6 +100,9 @@ _LAZY_PROVIDERS: dict[str, tuple[list[str], str]] = {
         ],
         'oci_genai_llm',
     ),
+    # OCIGenAIOpenAILlm is not auto-routed: users instantiate it explicitly
+    # when they want the OpenAI-compat v1 transport instead of the native SDK.
+    'OCIGenAIOpenAILlm': ([], 'oci_genai_openai_llm'),
 }
 
 for _name, (_patterns, _module) in _LAZY_PROVIDERS.items():
