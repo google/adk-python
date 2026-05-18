@@ -23,6 +23,7 @@ from google.cloud import bigquery
 import requests
 
 from . import client
+from .. import _gda_stream_util
 from .config import BigQueryToolConfig
 
 _GDA_CLIENT_ID = "GOOGLE_ADK"
@@ -66,8 +67,9 @@ def ask_data_insights(
       A dictionary with two keys:
       - 'status': A string indicating the final status (e.g., "SUCCESS").
       - 'response': A list of dictionaries, where each dictionary
-        represents a step in the API's execution process (e.g., SQL
-        generation, data retrieval, final answer).
+        represents a step in the agent's execution process and can
+        contain keys like 'text', 'data', or 'Data Retrieved' indicating
+        thought process, SQL generation, data retrieval, or final answer.
 
   Example:
       A query joining multiple tables, showing the full return structure.
@@ -99,7 +101,18 @@ def ask_data_insights(
         "status": "SUCCESS",
         "response": [
           {
-            "SQL Generated": "SELECT t1.customer_name, SUM(t2.order_total) ... "
+            "text": {
+              "parts": [
+                "Analyzing context",
+                "Retrieved context for 2 tables."
+              ],
+              "textType": "THOUGHT"
+            }
+          },
+          {
+            "data": {
+              "generatedSql": "SELECT t1.customer_name, SUM(t2.order_total) ..."
+            }
           },
           {
             "Data Retrieved": {
@@ -109,7 +122,12 @@ def ask_data_insights(
             }
           },
           {
-            "Answer": "The customer who spent the most was Jane Doe."
+            "text": {
+              "parts": [
+                "The customer who spent the most was Jane Doe."
+              ],
+              "textType": "FINAL_RESPONSE"
+            }
           }
         ]
       }
@@ -155,7 +173,7 @@ def ask_data_insights(
         "clientIdEnum": _GDA_CLIENT_ID,
     }
 
-    resp = _get_stream(
+    resp = _gda_stream_util.get_stream(
         ca_url, ca_payload, headers, settings.max_query_result_rows
     )
   except Exception as ex:  # pylint: disable=broad-except
@@ -163,195 +181,5 @@ def ask_data_insights(
         "status": "ERROR",
         "error_details": str(ex),
     }
+
   return {"status": "SUCCESS", "response": resp}
-
-
-def _get_stream(
-    url: str,
-    ca_payload: Dict[str, Any],
-    headers: Dict[str, str],
-    max_query_result_rows: int,
-) -> List[Dict[str, Any]]:
-  """Sends a JSON request to a streaming API and returns a list of messages."""
-  s = requests.Session()
-
-  accumulator = ""
-  messages = []
-
-  with s.post(url, json=ca_payload, headers=headers, stream=True) as resp:
-    for line in resp.iter_lines():
-      if not line:
-        continue
-
-      decoded_line = str(line, encoding="utf-8")
-
-      if decoded_line == "[{":
-        accumulator = "{"
-      elif decoded_line == "}]":
-        accumulator += "}"
-      elif decoded_line == ",":
-        continue
-      else:
-        accumulator += decoded_line
-
-      if not _is_json(accumulator):
-        continue
-
-      data_json = json.loads(accumulator)
-      if "systemMessage" not in data_json:
-        if "error" in data_json:
-          _append_message(messages, _handle_error(data_json["error"]))
-        continue
-
-      system_message = data_json["systemMessage"]
-      if "text" in system_message:
-        _append_message(messages, _handle_text_response(system_message["text"]))
-      elif "schema" in system_message:
-        _append_message(
-            messages,
-            _handle_schema_response(system_message["schema"]),
-        )
-      elif "data" in system_message:
-        _append_message(
-            messages,
-            _handle_data_response(
-                system_message["data"], max_query_result_rows
-            ),
-        )
-      accumulator = ""
-  return messages
-
-
-def _is_json(s: str) -> bool:
-  """Checks if a string is a valid JSON object."""
-  try:
-    json.loads(s)
-  except ValueError:
-    return False
-  return True
-
-
-def _get_property(
-    data: Dict[str, Any], field_name: str, default: Any = ""
-) -> Any:
-  """Safely gets a property from a dictionary."""
-  return data.get(field_name, default)
-
-
-def _format_bq_table_ref(table_ref: Dict[str, str]) -> str:
-  """Formats a BigQuery table reference dictionary into a string."""
-  return f"{table_ref.get('projectId')}.{table_ref.get('datasetId')}.{table_ref.get('tableId')}"
-
-
-def _format_schema_as_dict(
-    data: Dict[str, Any],
-) -> Dict[str, List[Any]]:
-  """Extracts schema fields into a dictionary."""
-  fields = data.get("fields", [])
-  if not fields:
-    return {"columns": []}
-
-  column_details = []
-  headers = ["Column", "Type", "Description", "Mode"]
-  rows: List[List[str, str, str, str]] = []
-  for field in fields:
-    row_list = [
-        _get_property(field, "name"),
-        _get_property(field, "type"),
-        _get_property(field, "description", ""),
-        _get_property(field, "mode"),
-    ]
-    rows.append(row_list)
-
-  return {"headers": headers, "rows": rows}
-
-
-def _format_datasource_as_dict(datasource: Dict[str, Any]) -> Dict[str, Any]:
-  """Formats a full datasource object into a dictionary with its name and schema."""
-  source_name = _format_bq_table_ref(datasource["bigqueryTableReference"])
-
-  schema = _format_schema_as_dict(datasource["schema"])
-  return {"source_name": source_name, "schema": schema}
-
-
-def _handle_text_response(resp: Dict[str, Any]) -> Dict[str, str]:
-  """Formats a text response into a dictionary."""
-  parts = resp.get("parts", [])
-  return {"Answer": "".join(parts)}
-
-
-def _handle_schema_response(resp: Dict[str, Any]) -> Dict[str, Any]:
-  """Formats a schema response into a dictionary."""
-  if "query" in resp:
-    return {"Question": resp["query"].get("question", "")}
-  elif "result" in resp:
-    datasources = resp["result"].get("datasources", [])
-    # Format each datasource and join them with newlines
-    formatted_sources = [_format_datasource_as_dict(ds) for ds in datasources]
-    return {"Schema Resolved": formatted_sources}
-  return {}
-
-
-def _handle_data_response(
-    resp: Dict[str, Any], max_query_result_rows: int
-) -> Dict[str, Any]:
-  """Formats a data response into a dictionary."""
-  if "query" in resp:
-    query = resp["query"]
-    return {
-        "Retrieval Query": {
-            "Query Name": query.get("name", "N/A"),
-            "Question": query.get("question", "N/A"),
-        }
-    }
-  elif "generatedSql" in resp:
-    return {"SQL Generated": resp["generatedSql"]}
-  elif "result" in resp:
-    schema = resp["result"]["schema"]
-    headers = [field.get("name") for field in schema.get("fields", [])]
-
-    all_rows = resp["result"].get("data", [])
-    total_rows = len(all_rows)
-
-    compact_rows = []
-    for row_dict in all_rows[:max_query_result_rows]:
-      row_values = [row_dict.get(header) for header in headers]
-      compact_rows.append(row_values)
-
-    summary_string = f"Showing all {total_rows} rows."
-    if total_rows > max_query_result_rows:
-      summary_string = (
-          f"Showing the first {len(compact_rows)} of {total_rows} total rows."
-      )
-
-    return {
-        "Data Retrieved": {
-            "headers": headers,
-            "rows": compact_rows,
-            "summary": summary_string,
-        }
-    }
-
-  return {}
-
-
-def _handle_error(resp: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
-  """Formats an error response into a dictionary."""
-  return {
-      "Error": {
-          "Code": resp.get("code", "N/A"),
-          "Message": resp.get("message", "No message provided."),
-      }
-  }
-
-
-def _append_message(
-    messages: List[Dict[str, Any]], new_message: Dict[str, Any]
-):
-  if not new_message:
-    return
-
-  if messages and ("Data Retrieved" in messages[-1]):
-    messages.pop()
-
-  messages.append(new_message)
