@@ -22,6 +22,7 @@ import pickle
 import struct
 import unittest
 
+from google.adk.events.event_actions import EventActions
 from google.adk.sessions.schemas._safe_unpickle import safe_loads
 
 
@@ -104,6 +105,54 @@ class TestEventActionsRoundTrip(unittest.TestCase):
 
     def test_empty_dict(self):
         self.assertEqual(self._round_trip({}), {})
+
+class TestRealEventActionsRoundTrip(unittest.TestCase):
+    """Smoke test: real EventActions instances survive pickle -> safe_loads."""
+
+    def _round_trip(self, obj):
+        return safe_loads(pickle.dumps(obj))
+
+    def test_minimal_event_actions(self):
+        original = EventActions()
+        result = self._round_trip(original)
+        self.assertIsInstance(result, EventActions)
+        self.assertEqual(result.state_delta, {})
+        self.assertEqual(result.artifact_delta, {})
+
+    def test_event_actions_with_state_delta(self):
+        original = EventActions(
+            state_delta={"user_name": "alice", "turn_count": 3, "active": True},
+            artifact_delta={"report.pdf": 2},
+        )
+        result = self._round_trip(original)
+        self.assertIsInstance(result, EventActions)
+        self.assertEqual(result.state_delta, original.state_delta)
+        self.assertEqual(result.artifact_delta, original.artifact_delta)
+
+    def test_event_actions_with_transfer_and_escalate(self):
+        original = EventActions(
+            transfer_to_agent="specialist_agent",
+            escalate=True,
+            skip_summarization=True,
+        )
+        result = self._round_trip(original)
+        self.assertIsInstance(result, EventActions)
+        self.assertEqual(result.transfer_to_agent, "specialist_agent")
+        self.assertTrue(result.escalate)
+        self.assertTrue(result.skip_summarization)
+
+    def test_event_actions_with_complex_state_values(self):
+        original = EventActions(
+            state_delta={
+                "nested": {"a": [1, 2, 3], "b": None},
+                "count": 42,
+                "tags": ["ml", "security"],
+            },
+        )
+        result = self._round_trip(original)
+        self.assertIsInstance(result, EventActions)
+        self.assertEqual(result.state_delta["nested"]["a"], [1, 2, 3])
+        self.assertIsNone(result.state_delta["nested"]["b"])
 
 
 class TestEnvVarFallback(unittest.TestCase):
