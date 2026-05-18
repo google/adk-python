@@ -17,16 +17,24 @@
 from __future__ import annotations
 
 import json
+import logging
 from typing import AsyncGenerator
 
+from google.genai import types
 from typing_extensions import override
 
 from ...agents.invocation_context import InvocationContext
 from ...events.event import Event
 from ...models.llm_request import LlmRequest
 from ...tools.set_model_response_tool import SetModelResponseTool
+from ...utils._schema_utils import is_basemodel_schema
 from ...utils.output_schema_utils import can_use_output_schema_with_tools
 from ._base_llm_processor import BaseLlmRequestProcessor
+
+logger = logging.getLogger('google_adk.' + __name__)
+
+# Max tool rounds before forcing set_model_response (N-1) or terminating (N).
+_MAX_TOOL_ROUNDS = 25
 
 
 class _OutputSchemaRequestProcessor(BaseLlmRequestProcessor):
@@ -36,8 +44,6 @@ class _OutputSchemaRequestProcessor(BaseLlmRequestProcessor):
   async def run_async(
       self, invocation_context: InvocationContext, llm_request: LlmRequest
   ) -> AsyncGenerator[Event, None]:
-    from ...agents.llm_agent import LlmAgent
-
     agent = invocation_context.agent
 
     # Check if we need the processor: output_schema + tools + cannot use output
@@ -49,19 +55,55 @@ class _OutputSchemaRequestProcessor(BaseLlmRequestProcessor):
     ):
       return
 
+    # Count how many tool rounds have occurred in this invocation.
+    tool_rounds = sum(
+        1
+        for e in invocation_context._get_events(
+            current_invocation=True, current_branch=True
+        )
+        if e.get_function_responses()
+    )
+
+    # Terminate the invocation if the model never calls set_model_response.
+    if tool_rounds >= _MAX_TOOL_ROUNDS:
+      logger.error(
+          'Tool execution reached %d rounds without producing structured'
+          ' output via set_model_response. Breaking loop to prevent'
+          ' runaway API costs.',
+          tool_rounds,
+      )
+      invocation_context.end_invocation = True
+      return
+
     # Add the set_model_response tool to handle structured output
     set_response_tool = SetModelResponseTool(agent.output_schema)
     llm_request.append_tools([set_response_tool])
 
-    # Add instruction about using the set_model_response tool
-    instruction = (
-        'IMPORTANT: You have access to other tools, but you must provide '
-        'your final response using the set_model_response tool with the '
-        'required structured format. After using any other tools needed '
-        'to complete the task, always call set_model_response with your '
-        'final answer in the specified schema format.'
-    )
+    # Primitive types (str, int, etc.) produce a trivial tool signature
+    # that flash models tend to ignore use a stronger instruction.
+    if is_basemodel_schema(agent.output_schema):
+      instruction = (
+          'After completing any needed tool calls, provide your final'
+          ' response by calling set_model_response with the required'
+          ' fields.'
+      )
+    else:
+      instruction = (
+          'IMPORTANT: After using any needed tools, you MUST call'
+          ' set_model_response to provide your final answer.'
+          ' This is required to complete the task.'
+      )
     llm_request.append_instructions([instruction])
+
+    # On round N-1, restrict the model to only call set_model_response.
+    if tool_rounds >= _MAX_TOOL_ROUNDS - 1:
+      llm_request.config = llm_request.config or types.GenerateContentConfig()
+      llm_request.config.tool_config = types.ToolConfig(
+          function_calling_config=types.FunctionCallingConfig(
+              mode=types.FunctionCallingConfigMode.ANY,
+              allowed_function_names=['set_model_response'],
+          )
+      )
 
     return
     yield  # Generator requires yield statement in function body.

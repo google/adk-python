@@ -1109,6 +1109,7 @@ class BaseLlmFlow(ABC):
             )
         )
         yield final_event
+        return  # Skip further processing after set_model_response.
 
   async def _postprocess_run_processors_async(
       self, invocation_context: InvocationContext, llm_response: LlmResponse
@@ -1155,6 +1156,7 @@ class BaseLlmFlow(ABC):
             )
         )
         yield final_event
+        return  # Skip transfer_to_agent after set_model_response.
       transfer_to_agent = function_response_event.actions.transfer_to_agent
       if transfer_to_agent:
         agent_to_run = self._get_agent_to_run(
