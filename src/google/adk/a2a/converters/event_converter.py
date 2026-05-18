@@ -570,7 +570,10 @@ def convert_event_to_a2a_events(
 
     # Handle regular message content
     message = convert_event_to_a2a_message(
-        event, invocation_context, part_converter=part_converter
+        event,
+        invocation_context,
+        part_converter=part_converter,
+        role=Role.user if event.author == "user" else Role.agent,
     )
     if message:
       running_event = _create_status_update_event(
