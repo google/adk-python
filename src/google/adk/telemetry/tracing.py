@@ -358,12 +358,12 @@ def trace_call_llm(
     except AttributeError:
       pass
 
-  try:
-    llm_response_json = llm_response.model_dump_json(exclude_none=True)
-  except Exception:  # pylint: disable=broad-exception-caught
-    llm_response_json = '<not serializable>'
-
   if _should_add_request_response_to_spans():
+    try:
+      llm_response_json = llm_response.model_dump_json(exclude_none=True)
+    except Exception:  # pylint: disable=broad-exception-caught
+      llm_response_json = '<not serializable>'
+
     span.set_attribute(
         'gcp.vertex.agent.llm_response',
         llm_response_json,
