@@ -23,12 +23,15 @@ from google.adk.apps.base_events_summarizer import BaseEventsSummarizer
 from google.adk.apps.compaction import _run_compaction_for_sliding_window
 import google.adk.apps.compaction as compaction_module
 from google.adk.apps.llm_event_summarizer import LlmEventSummarizer
+from google.adk.auth.auth_schemes import CustomAuthScheme
+from google.adk.auth.auth_tool import AuthConfig
 from google.adk.events.event import Event
 from google.adk.events.event_actions import EventActions
 from google.adk.events.event_actions import EventCompaction
 from google.adk.flows.llm_flows import contents
 from google.adk.sessions.base_session_service import BaseSessionService
 from google.adk.sessions.session import Session
+from google.adk.tools.tool_confirmation import ToolConfirmation
 from google.genai import types
 from google.genai.types import Content
 from google.genai.types import Part
@@ -1319,3 +1322,455 @@ async def test_run_compaction_for_sliding_window_adds_summary_trace(
     self.assertIn('inv1', compacted_inv_ids)
     self.assertEqual(compacted_inv_ids.count('inv2'), 2)
     self.assertIn('inv3', compacted_inv_ids)
+
+  def _create_hitl_confirmation_event(
+      self,
+      timestamp: float,
+      invocation_id: str,
+      function_call_id: str,
+  ) -> Event:
+    """Creates a function response event with a tool confirmation request."""
+    return Event(
+        timestamp=timestamp,
+        invocation_id=invocation_id,
+        author='agent',
+        content=Content(
+            role='user',
+            parts=[
+                Part(
+                    function_response=types.FunctionResponse(
+                        id=function_call_id,
+                        name='tool',
+                        response={
+                            'error': 'This tool call requires confirmation.'
+                        },
+                    )
+                )
+            ],
+        ),
+        actions=EventActions(
+            requested_tool_confirmations={
+                function_call_id: ToolConfirmation(
+                    hint='Please confirm this action.'
+                )
+            },
+        ),
+    )
+
+  def _create_hitl_auth_event(
+      self,
+      timestamp: float,
+      invocation_id: str,
+      function_call_id: str,
+  ) -> Event:
+    """Creates a function response event with an auth credential request."""
+    return Event(
+        timestamp=timestamp,
+        invocation_id=invocation_id,
+        author='agent',
+        content=Content(
+            role='user',
+            parts=[
+                Part(
+                    function_response=types.FunctionResponse(
+                        id=function_call_id,
+                        name='tool',
+                        response={'error': 'Auth required.'},
+                    )
+                )
+            ],
+        ),
+        actions=EventActions(
+            requested_auth_configs={
+                function_call_id: AuthConfig(
+                    auth_scheme=CustomAuthScheme(type='custom'),
+                )
+            },
+        ),
+    )
+
+  async def test_sliding_window_excludes_hitl_confirmation_events(self):
+    """Sliding-window compaction stops before tool confirmation events."""
+    app = App(
+        name='test',
+        root_agent=Mock(spec=BaseAgent),
+        events_compaction_config=EventsCompactionConfig(
+            summarizer=self.mock_compactor,
+            compaction_interval=2,
+            overlap_size=0,
+        ),
+    )
+    # inv1: text, inv2: call + HITL confirmation response, inv3: text
+    # The HITL event (confirmation response) blocks compaction at that point.
+    # The preceding function call event is not HITL itself and gets compacted.
+    events = [
+        self._create_event(1.0, 'inv1', 'e1'),
+        self._create_function_call_event(2.0, 'inv2', 'call-1'),
+        self._create_hitl_confirmation_event(3.0, 'inv2', 'call-1'),
+        self._create_event(4.0, 'inv3', 'e3'),
+    ]
+    session = Session(app_name='test', user_id='u1', id='s1', events=events)
+
+    mock_compacted_event = self._create_compacted_event(
+        1.0, 2.0, 'Summary before hitl'
+    )
+    self.mock_compactor.maybe_summarize_events.return_value = (
+        mock_compacted_event
+    )
+
+    await _run_compaction_for_sliding_window(
+        app, session, self.mock_session_service
+    )
+
+    compacted_events_arg = self.mock_compactor.maybe_summarize_events.call_args[
+        1
+    ]['events']
+    compacted_inv_ids = [e.invocation_id for e in compacted_events_arg]
+    # inv1 text + inv2 function call are compacted; HITL response is protected.
+    self.assertEqual(compacted_inv_ids, ['inv1', 'inv2'])
+
+  async def test_sliding_window_excludes_hitl_auth_events(self):
+    """Sliding-window compaction stops before auth credential events."""
+    app = App(
+        name='test',
+        root_agent=Mock(spec=BaseAgent),
+        events_compaction_config=EventsCompactionConfig(
+            summarizer=self.mock_compactor,
+            compaction_interval=2,
+            overlap_size=0,
+        ),
+    )
+    events = [
+        self._create_event(1.0, 'inv1', 'e1'),
+        self._create_function_call_event(2.0, 'inv2', 'call-1'),
+        self._create_hitl_auth_event(3.0, 'inv2', 'call-1'),
+        self._create_event(4.0, 'inv3', 'e3'),
+    ]
+    session = Session(app_name='test', user_id='u1', id='s1', events=events)
+
+    mock_compacted_event = self._create_compacted_event(
+        1.0, 2.0, 'Summary before auth'
+    )
+    self.mock_compactor.maybe_summarize_events.return_value = (
+        mock_compacted_event
+    )
+
+    await _run_compaction_for_sliding_window(
+        app, session, self.mock_session_service
+    )
+
+    compacted_events_arg = self.mock_compactor.maybe_summarize_events.call_args[
+        1
+    ]['events']
+    compacted_inv_ids = [e.invocation_id for e in compacted_events_arg]
+    self.assertEqual(compacted_inv_ids, ['inv1', 'inv2'])
+
+  async def test_token_threshold_excludes_hitl_confirmation_events(self):
+    """Token-threshold compaction stops before tool confirmation events."""
+    app = App(
+        name='test',
+        root_agent=Mock(spec=BaseAgent),
+        events_compaction_config=EventsCompactionConfig(
+            summarizer=self.mock_compactor,
+            compaction_interval=999,
+            overlap_size=0,
+            token_threshold=50,
+            event_retention_size=0,
+        ),
+    )
+    events = [
+        self._create_event(1.0, 'inv1', 'e1'),
+        self._create_function_call_event(2.0, 'inv2', 'call-1'),
+        self._create_hitl_confirmation_event(3.0, 'inv2', 'call-1'),
+        self._create_event(4.0, 'inv3', 'e3', prompt_token_count=100),
+    ]
+    session = Session(app_name='test', user_id='u1', id='s1', events=events)
+
+    mock_compacted_event = self._create_compacted_event(
+        1.0, 2.0, 'Summary inv1-inv2'
+    )
+    self.mock_compactor.maybe_summarize_events.return_value = (
+        mock_compacted_event
+    )
+
+    await _run_compaction_for_sliding_window(
+        app, session, self.mock_session_service
+    )
+
+    compacted_events_arg = self.mock_compactor.maybe_summarize_events.call_args[
+        1
+    ]['events']
+    compacted_inv_ids = [e.invocation_id for e in compacted_events_arg]
+    self.assertEqual(compacted_inv_ids, ['inv1', 'inv2'])
+
+  async def test_token_threshold_excludes_hitl_auth_events(self):
+    """Token-threshold compaction stops before auth credential events."""
+    app = App(
+        name='test',
+        root_agent=Mock(spec=BaseAgent),
+        events_compaction_config=EventsCompactionConfig(
+            summarizer=self.mock_compactor,
+            compaction_interval=999,
+            overlap_size=0,
+            token_threshold=50,
+            event_retention_size=0,
+        ),
+    )
+    events = [
+        self._create_event(1.0, 'inv1', 'e1'),
+        self._create_function_call_event(2.0, 'inv2', 'call-1'),
+        self._create_hitl_auth_event(3.0, 'inv2', 'call-1'),
+        self._create_event(4.0, 'inv3', 'e3', prompt_token_count=100),
+    ]
+    session = Session(app_name='test', user_id='u1', id='s1', events=events)
+
+    mock_compacted_event = self._create_compacted_event(
+        1.0, 2.0, 'Summary inv1-inv2'
+    )
+    self.mock_compactor.maybe_summarize_events.return_value = (
+        mock_compacted_event
+    )
+
+    await _run_compaction_for_sliding_window(
+        app, session, self.mock_session_service
+    )
+
+    compacted_events_arg = self.mock_compactor.maybe_summarize_events.call_args[
+        1
+    ]['events']
+    compacted_inv_ids = [e.invocation_id for e in compacted_events_arg]
+    self.assertEqual(compacted_inv_ids, ['inv1', 'inv2'])
+
+  async def test_hitl_event_at_start_blocks_all_compaction(self):
+    """If the first candidate event has HITL, nothing is compacted."""
+    app = App(
+        name='test',
+        root_agent=Mock(spec=BaseAgent),
+        events_compaction_config=EventsCompactionConfig(
+            summarizer=self.mock_compactor,
+            compaction_interval=2,
+            overlap_size=0,
+        ),
+    )
+    # The very first event is an HITL confirmation (no preceding function call).
+    events = [
+        self._create_hitl_confirmation_event(1.0, 'inv1', 'call-1'),
+        self._create_event(2.0, 'inv2', 'e2'),
+        self._create_event(3.0, 'inv3', 'e3'),
+    ]
+    session = Session(app_name='test', user_id='u1', id='s1', events=events)
+
+    await _run_compaction_for_sliding_window(
+        app, session, self.mock_session_service
+    )
+
+    self.mock_compactor.maybe_summarize_events.assert_not_called()
+    self.mock_session_service.append_event.assert_not_called()
+
+  async def test_events_before_hitl_are_still_compacted(self):
+    """Events before the HITL event are compacted normally."""
+    app = App(
+        name='test',
+        root_agent=Mock(spec=BaseAgent),
+        events_compaction_config=EventsCompactionConfig(
+            summarizer=self.mock_compactor,
+            compaction_interval=2,
+            overlap_size=0,
+        ),
+    )
+    # inv1, inv2: text events, inv3: call + HITL confirmation, inv4: text
+    # The HITL event at index 3 blocks compaction; events before it are safe.
+    events = [
+        self._create_event(1.0, 'inv1', 'e1'),
+        self._create_event(2.0, 'inv2', 'e2'),
+        self._create_function_call_event(3.0, 'inv3', 'call-1'),
+        self._create_hitl_confirmation_event(4.0, 'inv3', 'call-1'),
+        self._create_event(5.0, 'inv4', 'e4'),
+    ]
+    session = Session(app_name='test', user_id='u1', id='s1', events=events)
+
+    mock_compacted_event = self._create_compacted_event(
+        1.0, 3.0, 'Summary inv1-inv3'
+    )
+    self.mock_compactor.maybe_summarize_events.return_value = (
+        mock_compacted_event
+    )
+
+    await _run_compaction_for_sliding_window(
+        app, session, self.mock_session_service
+    )
+
+    compacted_events_arg = self.mock_compactor.maybe_summarize_events.call_args[
+        1
+    ]['events']
+    compacted_inv_ids = [e.invocation_id for e in compacted_events_arg]
+    # inv1, inv2 (text) + inv3 function call compact; HITL response is not.
+    self.assertEqual(compacted_inv_ids, ['inv1', 'inv2', 'inv3'])
+
+  async def test_resolved_hitl_confirmation_is_compactable(self):
+    """A HITL confirmation followed by a resolved tool response is compactable."""
+    app = App(
+        name='test',
+        root_agent=Mock(spec=BaseAgent),
+        events_compaction_config=EventsCompactionConfig(
+            summarizer=self.mock_compactor,
+            compaction_interval=2,
+            overlap_size=0,
+        ),
+    )
+    # inv1: text, inv2: call + HITL request + resolved response (same call-1
+    # id), inv3: text. The resolved HITL is safe to compact.
+    events = [
+        self._create_event(1.0, 'inv1', 'e1'),
+        self._create_function_call_event(2.0, 'inv2', 'call-1'),
+        self._create_hitl_confirmation_event(3.0, 'inv2', 'call-1'),
+        self._create_function_response_event(4.0, 'inv2', 'call-1'),
+        self._create_event(5.0, 'inv3', 'e3'),
+    ]
+    session = Session(app_name='test', user_id='u1', id='s1', events=events)
+
+    mock_compacted_event = self._create_compacted_event(
+        1.0, 5.0, 'Summary including resolved hitl'
+    )
+    self.mock_compactor.maybe_summarize_events.return_value = (
+        mock_compacted_event
+    )
+
+    await _run_compaction_for_sliding_window(
+        app, session, self.mock_session_service
+    )
+
+    compacted_events_arg = self.mock_compactor.maybe_summarize_events.call_args[
+        1
+    ]['events']
+    compacted_inv_ids = [e.invocation_id for e in compacted_events_arg]
+    # Resolved HITL doesn't block; all events through inv3 compact together.
+    self.assertEqual(
+        compacted_inv_ids, ['inv1', 'inv2', 'inv2', 'inv2', 'inv3']
+    )
+
+  async def test_resolved_hitl_auth_is_compactable(self):
+    """A HITL auth request followed by a resolved tool response is compactable."""
+    app = App(
+        name='test',
+        root_agent=Mock(spec=BaseAgent),
+        events_compaction_config=EventsCompactionConfig(
+            summarizer=self.mock_compactor,
+            compaction_interval=2,
+            overlap_size=0,
+        ),
+    )
+    events = [
+        self._create_event(1.0, 'inv1', 'e1'),
+        self._create_function_call_event(2.0, 'inv2', 'call-1'),
+        self._create_hitl_auth_event(3.0, 'inv2', 'call-1'),
+        self._create_function_response_event(4.0, 'inv2', 'call-1'),
+        self._create_event(5.0, 'inv3', 'e3'),
+    ]
+    session = Session(app_name='test', user_id='u1', id='s1', events=events)
+
+    mock_compacted_event = self._create_compacted_event(
+        1.0, 5.0, 'Summary including resolved auth'
+    )
+    self.mock_compactor.maybe_summarize_events.return_value = (
+        mock_compacted_event
+    )
+
+    await _run_compaction_for_sliding_window(
+        app, session, self.mock_session_service
+    )
+
+    compacted_events_arg = self.mock_compactor.maybe_summarize_events.call_args[
+        1
+    ]['events']
+    compacted_inv_ids = [e.invocation_id for e in compacted_events_arg]
+    self.assertEqual(
+        compacted_inv_ids, ['inv1', 'inv2', 'inv2', 'inv2', 'inv3']
+    )
+
+  async def test_sliding_window_resolved_hitl_outside_window_is_compactable(
+      self,
+  ):
+    """A HITL whose resolver lives past the truncation point is compactable."""
+    app = App(
+        name='test',
+        root_agent=Mock(spec=BaseAgent),
+        events_compaction_config=EventsCompactionConfig(
+            summarizer=self.mock_compactor,
+            compaction_interval=2,
+            overlap_size=0,
+        ),
+    )
+    # inv1 text, inv2 call_a, inv3 HITL_a, inv4 call_b (unanswered),
+    # inv5 resolver_a. _truncate_events_before_pending_function_call prunes
+    # at inv4 because call_b has no response in the session, leaving
+    # resolver_a outside events_to_compact. The HITL still has to be
+    # recognized as resolved via the full-session lookup.
+    events = [
+        self._create_event(1.0, 'inv1', 'e1'),
+        self._create_function_call_event(2.0, 'inv2', 'call-a'),
+        self._create_hitl_confirmation_event(3.0, 'inv3', 'call-a'),
+        self._create_function_call_event(4.0, 'inv4', 'call-b'),
+        self._create_function_response_event(5.0, 'inv5', 'call-a'),
+    ]
+    session = Session(app_name='test', user_id='u1', id='s1', events=events)
+
+    mock_compacted_event = self._create_compacted_event(
+        1.0, 3.0, 'Summary including resolved hitl'
+    )
+    self.mock_compactor.maybe_summarize_events.return_value = (
+        mock_compacted_event
+    )
+
+    await _run_compaction_for_sliding_window(
+        app, session, self.mock_session_service
+    )
+
+    compacted_events_arg = self.mock_compactor.maybe_summarize_events.call_args[
+        1
+    ]['events']
+    compacted_inv_ids = [e.invocation_id for e in compacted_events_arg]
+    self.assertEqual(compacted_inv_ids, ['inv1', 'inv2', 'inv3'])
+
+  async def test_token_threshold_resolved_hitl_outside_window_is_compactable(
+      self,
+  ):
+    """Token-threshold: HITL with resolver past the truncation point compacts."""
+    app = App(
+        name='test',
+        root_agent=Mock(spec=BaseAgent),
+        events_compaction_config=EventsCompactionConfig(
+            summarizer=self.mock_compactor,
+            compaction_interval=999,
+            overlap_size=0,
+            token_threshold=50,
+            event_retention_size=0,
+        ),
+    )
+    events = [
+        self._create_event(1.0, 'inv1', 'e1'),
+        self._create_function_call_event(2.0, 'inv2', 'call-a'),
+        self._create_hitl_confirmation_event(3.0, 'inv3', 'call-a'),
+        self._create_function_call_event(4.0, 'inv4', 'call-b'),
+        self._create_function_response_event(
+            5.0, 'inv5', 'call-a', prompt_token_count=100
+        ),
+    ]
+    session = Session(app_name='test', user_id='u1', id='s1', events=events)
+
+    mock_compacted_event = self._create_compacted_event(
+        1.0, 3.0, 'Summary including resolved hitl'
+    )
+    self.mock_compactor.maybe_summarize_events.return_value = (
+        mock_compacted_event
+    )
+
+    await _run_compaction_for_sliding_window(
+        app, session, self.mock_session_service
+    )
+
+    compacted_events_arg = self.mock_compactor.maybe_summarize_events.call_args[
+        1
+    ]['events']
+    compacted_inv_ids = [e.invocation_id for e in compacted_events_arg]
+    self.assertEqual(compacted_inv_ids, ['inv1', 'inv2', 'inv3'])

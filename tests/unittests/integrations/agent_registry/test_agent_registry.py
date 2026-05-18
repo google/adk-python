@@ -607,6 +607,15 @@ class TestAgentRegistry:
     assert headers["Authorization"] == "Bearer fake-token"
     assert headers["x-goog-user-project"] == "quota-project"
 
+  def test_get_auth_headers_fallback_to_project_id(self, registry):
+    registry._credentials.token = "fake-token"
+    registry._credentials.refresh = MagicMock()
+    registry._credentials.quota_project_id = None
+
+    headers = registry._get_auth_headers()
+    assert headers["Authorization"] == "Bearer fake-token"
+    assert headers["x-goog-user-project"] == "test-project"
+
   @patch("httpx.Client")
   def test_make_request_raises_http_status_error(self, mock_httpx, registry):
     mock_response = MagicMock()
