@@ -41,6 +41,17 @@ if TYPE_CHECKING:
   from ..agents.base_agent import BaseAgent
 
 
+def _part_to_text(part: types.Part) -> str:
+  """Returns user-visible text from a Part, including code execution output."""
+  if part.text:
+    return part.text
+  if part.code_execution_result and part.code_execution_result.output:
+    return part.code_execution_result.output.rstrip('\n')
+  if part.executable_code and part.executable_code.code:
+    return part.executable_code.code
+  return ''
+
+
 def _get_input_schema(agent: BaseAgent) -> Optional[type[BaseModel]]:
   """Extracts the input_schema from an agent.
 
@@ -269,9 +280,8 @@ class AgentTool(BaseTool):
 
     if last_content is None or last_content.parts is None:
       return ''
-    merged_text = '\n'.join(
-        p.text for p in last_content.parts if p.text and not p.thought
-    )
+    parts_text = (_part_to_text(p) for p in last_content.parts if not p.thought)
+    merged_text = '\n'.join(t for t in parts_text if t)
     output_schema = _get_output_schema(self.agent)
     if output_schema:
       tool_result = validate_schema(output_schema, merged_text)

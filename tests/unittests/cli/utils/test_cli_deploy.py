@@ -147,7 +147,10 @@ def test_resolve_project_from_gcloud_fails(
             "gs://a",
             "rag://m",
             None,
-            "--session_db_url=sqlite://s --artifact_storage_uri=gs://a",
+            (
+                "--session_service_uri=sqlite://s --artifact_service_uri=gs://a"
+                " --memory_service_uri=rag://m"
+            ),
         ),
         (
             "0.5.0",
@@ -155,7 +158,10 @@ def test_resolve_project_from_gcloud_fails(
             "gs://a",
             "rag://m",
             None,
-            "--session_db_url=sqlite://s",
+            (
+                "--session_service_uri=sqlite://s --artifact_service_uri=gs://a"
+                " --memory_service_uri=rag://m"
+            ),
         ),
         (
             "1.3.0",
@@ -179,7 +185,7 @@ def test_resolve_project_from_gcloud_fails(
             "gs://a",
             None,
             None,
-            "--artifact_storage_uri=gs://a",
+            "--artifact_service_uri=gs://a",
         ),
         (
             "1.21.0",
