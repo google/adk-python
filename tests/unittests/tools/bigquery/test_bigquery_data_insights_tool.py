@@ -52,22 +52,32 @@ def test_ask_data_insights_pipeline_from_file(mock_post, case_file_path):
   mock_post.return_value.__enter__.return_value = mock_response
 
   # 5. Call the function under test
-  result = data_insights_tool._get_stream(  # pylint: disable=protected-access
-      url="fake_url",
-      ca_payload={},
-      headers={},
-      max_query_result_rows=50,
+  mock_creds = mock.Mock()
+  mock_creds.token = "fake-token"
+  mock_settings = mock.Mock()
+  mock_settings.max_query_result_rows = 50
+  result = data_insights_tool.ask_data_insights(
+      project_id="test-project",
+      user_query_with_context=case_data["user_question"],
+      table_references=[],
+      credentials=mock_creds,
+      settings=mock_settings,
   )
 
   # 6. Assert that the final list of dicts matches the expected output
-  assert result == expected_final_list
+  assert result["status"] == "SUCCESS"
+  assert result["response"] == expected_final_list
 
 
-@mock.patch.object(data_insights_tool, "_get_stream")
+@mock.patch.object(data_insights_tool._gda_stream_util, "get_stream")
 def test_ask_data_insights_success(mock_get_stream):
   """Tests the success path of ask_data_insights using decorators."""
   # 1. Configure the behavior of the mocked functions
-  mock_get_stream.return_value = "Final formatted string from stream"
+  mock_stream = [
+      {"text": {"parts": ["response1"], "textType": "THOUGHT"}},
+      {"text": {"parts": ["response2"], "textType": "FINAL_RESPONSE"}},
+  ]
+  mock_get_stream.return_value = mock_stream
 
   # 2. Create mock inputs for the function call
   mock_creds = mock.Mock()
@@ -86,7 +96,7 @@ def test_ask_data_insights_success(mock_get_stream):
 
   # 4. Assert the results are as expected
   assert result["status"] == "SUCCESS"
-  assert result["response"] == "Final formatted string from stream"
+  assert result["response"] == mock_stream
   mock_get_stream.assert_called_once()
 
   # Verify that the correct headers and client ID were passed to _get_stream
@@ -96,7 +106,7 @@ def test_ask_data_insights_success(mock_get_stream):
   assert headers["Authorization"] == "Bearer fake-token"
 
 
-@mock.patch.object(data_insights_tool, "_get_stream")
+@mock.patch.object(data_insights_tool._gda_stream_util, "get_stream")
 def test_ask_data_insights_handles_exception(mock_get_stream):
   """Tests the exception path of ask_data_insights using decorators."""
   # 1. Configure one of the mocks to raise an error
@@ -120,158 +130,3 @@ def test_ask_data_insights_handles_exception(mock_get_stream):
   assert result["status"] == "ERROR"
   assert "API call failed!" in result["error_details"]
   mock_get_stream.assert_called_once()
-
-
-@pytest.mark.parametrize(
-    "initial_messages, new_message, expected_list",
-    [
-        pytest.param(
-            [{"Thinking": None}, {"Schema Resolved": {}}],
-            {"SQL Generated": "SELECT 1"},
-            [
-                {"Thinking": None},
-                {"Schema Resolved": {}},
-                {"SQL Generated": "SELECT 1"},
-            ],
-            id="append_when_last_message_is_not_data",
-        ),
-        pytest.param(
-            [{"Thinking": None}, {"Data Retrieved": {"rows": [1]}}],
-            {"Data Retrieved": {"rows": [1, 2]}},
-            [{"Thinking": None}, {"Data Retrieved": {"rows": [1, 2]}}],
-            id="replace_when_last_message_is_data",
-        ),
-        pytest.param(
-            [],
-            {"Answer": "First Message"},
-            [{"Answer": "First Message"}],
-            id="append_to_an_empty_list",
-        ),
-        pytest.param(
-            [{"Data Retrieved": {}}],
-            {},
-            [{"Data Retrieved": {}}],
-            id="should_not_append_an_empty_new_message",
-        ),
-    ],
-)
-def test_append_message(initial_messages, new_message, expected_list):
-  """Tests the logic of replacing the last message if it's a data message."""
-  messages_copy = initial_messages.copy()
-  data_insights_tool._append_message(messages_copy, new_message)  # pylint: disable=protected-access
-  assert messages_copy == expected_list
-
-
-@pytest.mark.parametrize(
-    "response_dict, expected_output",
-    [
-        pytest.param(
-            {"parts": ["The answer", " is 42."]},
-            {"Answer": "The answer is 42."},
-            id="multiple_parts",
-        ),
-        pytest.param(
-            {"parts": ["Hello"]}, {"Answer": "Hello"}, id="single_part"
-        ),
-        pytest.param({}, {"Answer": ""}, id="empty_response"),
-    ],
-)
-def test_handle_text_response(response_dict, expected_output):
-  """Tests the text response handler."""
-  result = data_insights_tool._handle_text_response(response_dict)  # pylint: disable=protected-access
-  assert result == expected_output
-
-
-@pytest.mark.parametrize(
-    "response_dict, expected_output",
-    [
-        pytest.param(
-            {"query": {"question": "What is the schema?"}},
-            {"Question": "What is the schema?"},
-            id="schema_query_path",
-        ),
-        pytest.param(
-            {
-                "result": {
-                    "datasources": [{
-                        "bigqueryTableReference": {
-                            "projectId": "p",
-                            "datasetId": "d",
-                            "tableId": "t",
-                        },
-                        "schema": {
-                            "fields": [{"name": "col1", "type": "STRING"}]
-                        },
-                    }]
-                }
-            },
-            {
-                "Schema Resolved": [{
-                    "source_name": "p.d.t",
-                    "schema": {
-                        "headers": ["Column", "Type", "Description", "Mode"],
-                        "rows": [["col1", "STRING", "", ""]],
-                    },
-                }]
-            },
-            id="schema_result_path",
-        ),
-    ],
-)
-def test_handle_schema_response(response_dict, expected_output):
-  """Tests different paths of the schema response handler."""
-  result = data_insights_tool._handle_schema_response(response_dict)  # pylint: disable=protected-access
-  assert result == expected_output
-
-
-@pytest.mark.parametrize(
-    "response_dict, expected_output",
-    [
-        pytest.param(
-            {"generatedSql": "SELECT 1;"},
-            {"SQL Generated": "SELECT 1;"},
-            id="format_generated_sql",
-        ),
-        pytest.param(
-            {
-                "result": {
-                    "schema": {"fields": [{"name": "id"}, {"name": "name"}]},
-                    "data": [{"id": 1, "name": "A"}, {"id": 2, "name": "B"}],
-                }
-            },
-            {
-                "Data Retrieved": {
-                    "headers": ["id", "name"],
-                    "rows": [[1, "A"], [2, "B"]],
-                    "summary": "Showing all 2 rows.",
-                }
-            },
-            id="format_data_result_table",
-        ),
-    ],
-)
-def test_handle_data_response(response_dict, expected_output):
-  """Tests different paths of the data response handler, including truncation."""
-  result = data_insights_tool._handle_data_response(response_dict, 100)  # pylint: disable=protected-access
-  assert result == expected_output
-
-
-@pytest.mark.parametrize(
-    "response_dict, expected_output",
-    [
-        pytest.param(
-            {"code": 404, "message": "Not Found"},
-            {"Error": {"Code": 404, "Message": "Not Found"}},
-            id="full_error_message",
-        ),
-        pytest.param(
-            {"code": 500},
-            {"Error": {"Code": 500, "Message": "No message provided."}},
-            id="error_with_missing_message",
-        ),
-    ],
-)
-def test_handle_error(response_dict, expected_output):
-  """Tests the error response handler."""
-  result = data_insights_tool._handle_error(response_dict)  # pylint: disable=protected-access
-  assert result == expected_output
