@@ -119,6 +119,19 @@ class TestHelperMethods:
     )
     assert rewritten_dialogue == _EXPECTED_REWRITTEN_DIALOGUE_LONG
 
+  def test_summarize_conversation_with_function_calls(self):
+    """Tests _summarize_conversation with include_function_calls=True."""
+    rewritten_dialogue = LlmBackedUserSimulator._summarize_conversation(
+        _INPUT_EVENTS, include_function_calls=True
+    )
+    expected = (
+        "user: Can you help me?\n\n"
+        "helpful_assistant called tool 'get_user_name' with args: None\n\n"
+        "Tool 'get_user_name' returned: {'name': 'John Doe'}\n\n"
+        "helpful_assistant: Hi John, what can I do for you?"
+    )
+    assert rewritten_dialogue == expected
+
 
 async def to_async_iter(items):
   for item in items:
