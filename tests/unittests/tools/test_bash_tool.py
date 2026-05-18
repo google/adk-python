@@ -20,7 +20,9 @@ from unittest import mock
 import pytest
 
 if sys.platform == "win32":
-  pytest.skip("bash tool tests require Unix resource module", allow_module_level=True)
+    pytest.skip(
+        "bash tool tests require Unix resource module", allow_module_level=True
+    )
 
 import resource
 
