@@ -65,6 +65,8 @@ from ..a2a.converters.part_converter import A2APartToGenAIPartConverter
 from ..a2a.converters.part_converter import convert_a2a_part_to_genai_part
 from ..a2a.converters.part_converter import convert_genai_part_to_a2a_part
 from ..a2a.converters.part_converter import GenAIPartToA2APartConverter
+from ..a2a.converters.to_adk_event import _create_mock_function_call_for_required_user_input
+from ..a2a.converters.to_adk_event import MOCK_FUNCTION_CALL_FOR_REQUIRED_USER_INPUT
 from ..a2a.converters.utils import _get_adk_metadata_key
 from ..a2a.experimental import a2a_experimental
 from ..a2a.logs.log_utils import build_a2a_request_log
@@ -103,6 +105,22 @@ class A2AClientError(Exception):
   """Raised when A2A client operations fail."""
 
   pass
+
+
+def _add_mock_function_call(event: Event, state: TaskState) -> None:
+  """Generates a mock function call for input-required events if applicable."""
+  if event.content is None:
+    return
+
+  output_parts, long_running_tool_ids = (
+      _create_mock_function_call_for_required_user_input(
+          state,
+          event.content.parts,
+          event.long_running_tool_ids,
+      )
+  )
+  event.content.parts = output_parts
+  event.long_running_tool_ids = long_running_tool_ids
 
 
 @a2a_experimental
@@ -360,8 +378,40 @@ class RemoteA2aAgent(BaseAgent):
     if not function_call_event:
       return None
 
+    event = ctx.session.events[-1]
+    # If the user function_response replies to a function_call for non-ADK
+    # input-required events (fc.name = MOCK_FUNCTION_CALL_FOR_REQUIRED_USER_INPUT),
+    # the function_response part is replaced with text extracted from the
+    # function response.
+    # The implementation is based on the assumption that the user function_response
+    # event will contain a function_response with the name
+    # MOCK_FUNCTION_CALL_FOR_REQUIRED_USER_INPUT and the response will
+    # contain a "result" field with the user input as a string text.
+    mock_function_call = [
+        fc
+        for fc in function_call_event.get_function_calls()
+        if fc.name == MOCK_FUNCTION_CALL_FOR_REQUIRED_USER_INPUT
+    ]
+    if mock_function_call:
+      new_parts = []
+      for function_response in event.get_function_responses():
+        if (
+            function_response.name == MOCK_FUNCTION_CALL_FOR_REQUIRED_USER_INPUT
+            and function_response.response
+            and "result" in function_response.response
+        ):
+          text_value = function_response.response.get("result")
+          new_parts.append(
+              genai_types.Part(
+                  text=str(text_value),
+              )
+          )
+      new_event = event.model_copy(deep=True)
+      new_event.content.parts = new_parts
+      event = new_event
+
     a2a_message = convert_event_to_a2a_message(
-        ctx.session.events[-1], ctx, Role.user, self._genai_part_converter
+        event, ctx, Role.user, self._genai_part_converter
     )
     if function_call_event.custom_metadata:
       metadata = function_call_event.custom_metadata
@@ -472,6 +522,7 @@ class RemoteA2aAgent(BaseAgent):
           ):
             for part in event.content.parts:
               part.thought = True
+          _add_mock_function_call(event, task.status.state)
         elif (
             isinstance(update, A2ATaskStatusUpdateEvent)
             and update.status
@@ -487,6 +538,7 @@ class RemoteA2aAgent(BaseAgent):
           ):
             for part in event.content.parts:
               part.thought = True
+          _add_mock_function_call(event, update.status.state)
         elif isinstance(update, A2ATaskArtifactUpdateEvent) and (
             not update.append or update.last_chunk
         ):

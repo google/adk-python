@@ -26,9 +26,9 @@ from typing import Callable
 from typing import Generator
 from typing import List
 from typing import Optional
+from typing import TYPE_CHECKING
 import warnings
 
-from google.adk.apps.compaction import _run_compaction_for_sliding_window
 from google.genai import types
 
 from .agents.base_agent import BaseAgent
@@ -38,10 +38,7 @@ from .agents.invocation_context import InvocationContext
 from .agents.invocation_context import new_invocation_context_id
 from .agents.live_request_queue import LiveRequestQueue
 from .agents.run_config import RunConfig
-from .apps.app import App
-from .apps.app import ResumabilityConfig
 from .artifacts.base_artifact_service import BaseArtifactService
-from .artifacts.in_memory_artifact_service import InMemoryArtifactService
 from .auth.credential_service.base_credential_service import BaseCredentialService
 from .code_executors.built_in_code_executor import BuiltInCodeExecutor
 from .errors.session_not_found_error import SessionNotFoundError
@@ -51,18 +48,20 @@ from .flows.llm_flows import contents
 from .flows.llm_flows.functions import find_event_by_function_call_id
 from .flows.llm_flows.functions import find_matching_function_call
 from .memory.base_memory_service import BaseMemoryService
-from .memory.in_memory_memory_service import InMemoryMemoryService
 from .platform.thread import create_thread
 from .plugins.base_plugin import BasePlugin
 from .plugins.plugin_manager import PluginManager
 from .sessions.base_session_service import BaseSessionService
 from .sessions.base_session_service import GetSessionConfig
-from .sessions.in_memory_session_service import InMemorySessionService
 from .sessions.session import Session
 from .telemetry.tracing import tracer
 from .tools.base_toolset import BaseToolset
 from .utils._debug_output import print_event
 from .utils.context_utils import Aclosing
+
+if TYPE_CHECKING:
+  from .apps.app import App
+  from .apps.app import ResumabilityConfig
 
 logger = logging.getLogger('google_adk.' + __name__)
 
@@ -608,7 +607,7 @@ class Runner:
         async with Aclosing(
             self._exec_with_plugin(
                 invocation_context=invocation_context,
-                session=session,
+                session=invocation_context.session,
                 execute_fn=execute,
                 is_live_call=False,
             )
@@ -620,9 +619,11 @@ class Runner:
         # the end of an invocation.)
         if self.app and self.app.events_compaction_config:
           logger.debug('Running event compactor.')
+          from google.adk.apps.compaction import _run_compaction_for_sliding_window
+
           await _run_compaction_for_sliding_window(
               self.app,
-              session,
+              invocation_context.session,
               self.session_service,
               skip_token_compaction=invocation_context.token_compaction_checked,
           )
@@ -841,7 +842,7 @@ class Runner:
 
     Args:
       invocation_context: The invocation context
-      session: The current session
+      session: The current session (ignored, kept for backward compatibility)
       execute_fn: A callable that returns an AsyncGenerator of Events
       is_live_call: Whether this is a live call
 
@@ -866,7 +867,7 @@ class Runner:
       )
       if self._should_append_event(early_exit_event, is_live_call):
         await self.session_service.append_event(
-            session=session,
+            session=invocation_context.session,
             event=early_exit_event,
         )
       yield early_exit_event
@@ -931,13 +932,13 @@ class Runner:
                 )
                 if self._should_append_event(event, is_live_call):
                   await self.session_service.append_event(
-                      session=session, event=output_event
+                      session=invocation_context.session, event=output_event
                   )
 
                 for buffered_event in buffered_events:
                   logger.debug('Appending buffered event: %s', buffered_event)
                   await self.session_service.append_event(
-                      session=session, event=buffered_event
+                      session=invocation_context.session, event=buffered_event
                   )
                   yield buffered_event  # yield buffered events to caller
                 buffered_events = []
@@ -947,12 +948,12 @@ class Runner:
                 if self._should_append_event(event, is_live_call):
                   logger.debug('Appending non-buffered event: %s', event)
                   await self.session_service.append_event(
-                      session=session, event=output_event
+                      session=invocation_context.session, event=output_event
                   )
           else:
             if event.partial is not True:
               await self.session_service.append_event(
-                  session=session, event=output_event
+                  session=invocation_context.session, event=output_event
               )
 
           yield output_event
@@ -1004,8 +1005,8 @@ class Runner:
         file_name = f'artifact_{invocation_context.invocation_id}_{i}'
         await self.artifact_service.save_artifact(
             app_name=self.app_name,
-            user_id=session.user_id,
-            session_id=session.id,
+            user_id=invocation_context.session.user_id,
+            session_id=invocation_context.session.id,
             filename=file_name,
             artifact=part,
         )
@@ -1032,7 +1033,9 @@ class Runner:
     if function_call := invocation_context._find_matching_function_call(event):
       event.branch = function_call.branch
 
-    await self.session_service.append_event(session=session, event=event)
+    await self.session_service.append_event(
+        session=invocation_context.session, event=event
+    )
 
   async def run_live(
       self,
@@ -1127,7 +1130,9 @@ class Runner:
     )
 
     root_agent = self.agent
-    invocation_context.agent = self._find_agent_to_run(session, root_agent)
+    invocation_context.agent = self._find_agent_to_run(
+        invocation_context.session, root_agent
+    )
 
     async def execute(ctx: InvocationContext) -> AsyncGenerator[Event]:
       async with Aclosing(ctx.agent.run_live(ctx)) as agen:
@@ -1137,7 +1142,7 @@ class Runner:
     async with Aclosing(
         self._exec_with_plugin(
             invocation_context=invocation_context,
-            session=session,
+            session=invocation_context.session,
             execute_fn=execute,
             is_live_call=True,
         )
@@ -1355,14 +1360,16 @@ class Runner:
     # Step 2: Handle new message, by running callbacks and appending to
     # session.
     await self._handle_new_message(
-        session=session,
+        session=invocation_context.session,
         new_message=new_message,
         invocation_context=invocation_context,
         run_config=run_config,
         state_delta=state_delta,
     )
     # Step 3: Set agent to run for the invocation.
-    invocation_context.agent = self._find_agent_to_run(session, self.agent)
+    invocation_context.agent = self._find_agent_to_run(
+        invocation_context.session, self.agent
+    )
     return invocation_context
 
   async def _setup_context_for_resumed_invocation(
@@ -1411,7 +1418,7 @@ class Runner:
     # Step 3: Maybe handle new message.
     if new_message:
       await self._handle_new_message(
-          session=session,
+          session=invocation_context.session,
           new_message=user_message,
           invocation_context=invocation_context,
           run_config=run_config,
@@ -1425,7 +1432,9 @@ class Runner:
     # started from a sub-agent and paused on a sub-agent.
     # We should find the appropriate agent to run to continue the invocation.
     if self.agent.name not in invocation_context.end_of_agents:
-      invocation_context.agent = self._find_agent_to_run(session, self.agent)
+      invocation_context.agent = self._find_agent_to_run(
+          invocation_context.session, self.agent
+      )
     return invocation_context
 
   def _find_user_message_for_invocation(
@@ -1559,7 +1568,7 @@ class Runner:
       if 'save_input_blobs_as_artifacts' in run_config.model_fields_set:
         deprecated_save_blobs = run_config.save_input_blobs_as_artifacts
       await self._append_new_message_to_session(
-          session=session,
+          session=invocation_context.session,
           new_message=new_message,
           invocation_context=invocation_context,
           save_input_blobs_as_artifacts=deprecated_save_blobs,
@@ -1669,6 +1678,10 @@ class InMemoryRunner(Runner):
         app: Optional App instance.
         plugin_close_timeout: The timeout in seconds for plugin close methods.
     """
+    from .artifacts.in_memory_artifact_service import InMemoryArtifactService
+    from .memory.in_memory_memory_service import InMemoryMemoryService
+    from .sessions.in_memory_session_service import InMemorySessionService
+
     if app is None and app_name is None:
       app_name = 'InMemoryRunner'
     super().__init__(

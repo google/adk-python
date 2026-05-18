@@ -14,12 +14,15 @@
 
 """Unit tests for skill utilities."""
 
+import io
 from unittest import mock
+import zipfile
 
 from google.adk.skills import list_skills_in_dir
 from google.adk.skills import list_skills_in_gcs_dir as _list_skills_in_gcs_dir
 from google.adk.skills import load_skill_from_dir as _load_skill_from_dir
 from google.adk.skills import load_skill_from_gcs_dir as _load_skill_from_gcs_dir
+from google.adk.skills._utils import _load_skill_from_zip_bytes
 from google.adk.skills._utils import _read_skill_properties
 from google.adk.skills._utils import _validate_skill_dir
 import pytest
@@ -340,3 +343,23 @@ def test_list_skills_in_dir_missing_base_path(tmp_path):
 
   skills = list_skills_in_dir(tmp_path / "nonexistent")
   assert skills == {}
+
+
+def test__load_skill_from_zip_bytes():
+  """Tests loading a skill directly from in-memory zip file bytes."""
+
+  zip_buffer = io.BytesIO()
+  with zipfile.ZipFile(zip_buffer, "w") as z:
+    z.writestr(
+        "SKILL.md",
+        "---\nname: my-skill\ndescription: A skill\n---\nBody instructions",
+    )
+    z.writestr("references/ref1.md", "ref1 content")
+    z.writestr("scripts/script1.sh", "echo hello")
+
+  skill = _load_skill_from_zip_bytes(zip_buffer.getvalue())
+  assert skill.frontmatter.name == "my-skill"
+  assert skill.frontmatter.description == "A skill"
+  assert skill.instructions == "Body instructions"
+  assert skill.resources.get_reference("ref1.md") == "ref1 content"
+  assert skill.resources.get_script("script1.sh").src == "echo hello"
