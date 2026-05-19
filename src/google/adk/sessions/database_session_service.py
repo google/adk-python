@@ -523,8 +523,11 @@ class DatabaseSessionService(BaseSessionService):
       if config and config.num_recent_events is not None:
         stmt = stmt.limit(config.num_recent_events)
 
-      result = await sql_session.execute(stmt)
-      storage_events = result.scalars().all()
+      if config and config.num_recent_events == 0:
+        storage_events = []
+      else:
+        result = await sql_session.execute(stmt)
+        storage_events = result.scalars().all()
 
       # Fetch states from storage
       storage_app_state = await sql_session.get(
