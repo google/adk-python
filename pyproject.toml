@@ -115,7 +115,7 @@ optional-dependencies.eval = [
 ]
 # Optional extensions
 optional-dependencies.extensions = [
-  "anthropic>=0.43",                                                 # For anthropic model support
+  "anthropic>=0.78",                                                 # For anthropic model support; 0.78 introduced ThinkingConfigAdaptiveParam (required for Claude Opus 4.7).
   "beautifulsoup4>=3.2.2",                                           # For load_web_page tool.
   "crewai[tools]; python_version>='3.11' and python_version<'3.12'", # For CrewaiTool; chromadb/pypika fail on 3.12+
   "docker>=7",                                                       # For ContainerCodeExecutor
@@ -135,7 +135,7 @@ optional-dependencies.otel-gcp = [ "opentelemetry-instrumentation-google-genai>=
 optional-dependencies.slack = [ "slack-bolt>=1.22" ]
 optional-dependencies.test = [
   "a2a-sdk>=0.3,<0.4",
-  "anthropic>=0.43",                                                 # For anthropic model tests
+  "anthropic>=0.78",                                                 # For anthropic model tests; 0.78 introduced ThinkingConfigAdaptiveParam (required for Claude Opus 4.7).
   "crewai[tools]; python_version>='3.11' and python_version<'3.12'", # For CrewaiTool tests; chromadb/pypika fail on 3.12+
   "google-cloud-firestore>=2.11,<3",
   "google-cloud-iamconnectorcredentials>=0.1,<0.2",

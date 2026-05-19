@@ -75,20 +75,29 @@ def _build_anthropic_thinking_param(
 ) -> Union[
     anthropic_types.ThinkingConfigEnabledParam,
     anthropic_types.ThinkingConfigDisabledParam,
+    anthropic_types.ThinkingConfigAdaptiveParam,
     NotGiven,
 ]:
   """Maps genai ThinkingConfig to Anthropic's thinking parameter.
 
   Per ``google.genai.types.ThinkingConfig``, ``thinking_budget`` semantics are:
     * ``None``: not specified; the genai default is model-dependent. Anthropic
-      requires an explicit ``budget_tokens`` whenever thinking is enabled, so
-      we surface this as a ``ValueError`` to keep the developer's intent
+      requires an explicit choice whenever thinking is configured, so we
+      surface this as a ``ValueError`` to keep the developer's intent
       explicit (mirroring the Anthropic API).
-    * ``0``: thinking is DISABLED.
-    * ``-1``: AUTOMATIC; not supported by Anthropic models.
-    * positive int: budget in tokens (Anthropic requires ``>= 1024`` and
+    * ``0``: thinking is DISABLED (``thinking.type: "disabled"``).
+    * negative (e.g. ``-1`` AUTOMATIC): maps to Anthropic's adaptive thinking
+      (``thinking.type: "adaptive"``). The model picks the depth itself
+      (controlled by the separate ``output_config.effort`` parameter when
+      set). REQUIRED for Claude Opus 4.7 and later models that reject
+      ``"enabled"`` with a 400 error; also recommended for Opus 4.6 and
+      Sonnet 4.6 where ``"enabled"`` is deprecated.
+    * positive int: budget in tokens for legacy manual mode
+      (``thinking.type: "enabled"``; Anthropic requires ``>= 1024`` and
       ``< max_tokens``; validation is delegated to the Anthropic API so the
-      caller gets the canonical error message).
+      caller gets the canonical error message). Rejected by Claude Opus 4.7
+      -- callers targeting 4.7+ must use a negative value (adaptive) or
+      ``0`` (disabled).
   """
   if not config or not config.thinking_config:
     return NOT_GIVEN
@@ -98,19 +107,22 @@ def _build_anthropic_thinking_param(
   if thinking_budget is None:
     raise ValueError(
         "thinking_budget must be set explicitly when ThinkingConfig is"
-        " provided for Anthropic models. Use 0 to disable thinking, or a"
-        " positive integer (>= 1024) for the token budget."
+        " provided for Anthropic models. Use 0 to disable thinking, -1 for"
+        " adaptive (model-chosen depth), or a positive integer (>= 1024)"
+        " for manual budgeting."
     )
 
   if thinking_budget == 0:
     return anthropic_types.ThinkingConfigDisabledParam(type="disabled")
 
   if thinking_budget < 0:
-    raise ValueError(
-        f"thinking_budget={thinking_budget} is not supported for Anthropic"
-        " models (AUTOMATIC mode is unavailable). Use a positive integer"
-        " (>= 1024) for the token budget, or 0 to disable thinking."
-    )
+    # genai AUTOMATIC (-1) and any other negative value map to Anthropic
+    # adaptive thinking. Required for Claude Opus 4.7 (which returns a 400
+    # error for ``"enabled"``) and recommended for Opus 4.6 / Sonnet 4.6
+    # where ``"enabled"`` is deprecated. Adaptive does not accept a budget;
+    # depth is controlled by the model itself (or by the separate
+    # ``output_config.effort`` parameter when set).
+    return anthropic_types.ThinkingConfigAdaptiveParam(type="adaptive")
 
   return anthropic_types.ThinkingConfigEnabledParam(
       type="enabled",
