@@ -150,7 +150,7 @@ _FEATURE_REGISTRY: dict[FeatureName, FeatureConfig] = {
         FeatureStage.EXPERIMENTAL, default_on=True
     ),
     FeatureName.SKILL_TOOLSET: FeatureConfig(
-        FeatureStage.EXPERIMENTAL, default_on=True
+        FeatureStage.STABLE, default_on=True
     ),
     FeatureName.SPANNER_ADMIN_TOOLSET: FeatureConfig(
         FeatureStage.EXPERIMENTAL, default_on=True
