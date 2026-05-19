@@ -17,12 +17,9 @@ from __future__ import annotations
 
 import logging
 
-try:
-  from sqlalchemy import create_engine as create_sync_engine
-  from sqlalchemy import inspect
-  from sqlalchemy import text
-except ImportError:
-  pass
+from sqlalchemy import create_engine as create_sync_engine
+from sqlalchemy import inspect
+from sqlalchemy import text
 
 logger = logging.getLogger("google_adk." + __name__)
 

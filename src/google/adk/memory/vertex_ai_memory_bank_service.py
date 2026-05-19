@@ -203,13 +203,6 @@ class VertexAiMemoryBankService(BaseMemoryService):
           'agent_engine_id is required for VertexAiMemoryBankService.'
       )
 
-    try:
-      import vertexai
-    except ImportError as e:
-      from ..utils._dependency import missing_extra
-
-      raise missing_extra('google-cloud-aiplatform', 'gcp') from e
-
     self._project = project
     self._location = location
     self._agent_engine_id = agent_engine_id

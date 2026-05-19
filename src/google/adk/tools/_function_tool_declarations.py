@@ -162,21 +162,10 @@ def _build_response_json_schema(
       return_annotation = type_args[0]
 
   try:
-    try:
-      adapter = pydantic.TypeAdapter(
-          return_annotation,
-          config=pydantic.ConfigDict(arbitrary_types_allowed=True),
-      )
-    except pydantic.PydanticUserError as e:
-      # If it failed, maybe it was because of the config argument (e.g. for dataclasses).
-      # Retry without config.
-      logging.debug(
-          'Failed to build schema with config, retrying without config for'
-          ' %s: %s',
-          func.__name__,
-          e,
-      )
-      adapter = pydantic.TypeAdapter(return_annotation)
+    adapter = pydantic.TypeAdapter(
+        return_annotation,
+        config=pydantic.ConfigDict(arbitrary_types_allowed=True),
+    )
     return adapter.json_schema()
   except Exception:
     logging.warning(

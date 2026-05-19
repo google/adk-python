@@ -32,19 +32,15 @@ logger = logging.getLogger("google_adk." + __name__)
 class GoogleApiToOpenApiConverter:
   """Converts Google API Discovery documents to OpenAPI v3 format."""
 
-  def __init__(
-      self, api_name: str, api_version: str, *, discovery_url: str | None = None
-  ):
+  def __init__(self, api_name: str, api_version: str):
     """Initialize the converter with the API name and version.
 
     Args:
         api_name: The name of the Google API (e.g., "calendar")
         api_version: The version of the API (e.g., "v3")
-        discovery_url: Optional custom discovery document URL.
     """
     self._api_name = api_name
     self._api_version = api_version
-    self._discovery_url = discovery_url
     self._google_api_resource = None
     self._google_api_spec = None
     self._openapi_spec = {
@@ -64,14 +60,7 @@ class GoogleApiToOpenApiConverter:
           self._api_version,
       )
       # Build a resource object for the specified API
-      if self._discovery_url:
-        self._google_api_resource = build(
-            self._api_name,
-            self._api_version,
-            discoveryServiceUrl=self._discovery_url,
-        )
-      else:
-        self._google_api_resource = build(self._api_name, self._api_version)
+      self._google_api_resource = build(self._api_name, self._api_version)
 
       # Access the underlying API discovery document
       self._google_api_spec = self._google_api_resource._rootDesc

@@ -34,16 +34,14 @@ class AgentInfo(pydantic.BaseModel):
   sub_agents: list[str]
 
 
-async def get_tools_info(tools: list[ToolUnion]) -> list[Any]:
+def get_tools_info(tools: list[ToolUnion]) -> list[Any]:
   """Returns the info for a given list of tools."""
   final_tools = []
   for tool in tools:
     if isinstance(tool, BaseTool):
       final_tools.append(tool)
     elif isinstance(tool, BaseToolset):
-      # Await the async coroutine call natively!
-      tools_res = await tool.get_tools()
-      final_tools.extend(tools_res)
+      final_tools.extend(tool.get_tools())
     else:
       final_tools.append(FunctionTool(tool))
   return [
@@ -53,27 +51,27 @@ async def get_tools_info(tools: list[ToolUnion]) -> list[Any]:
   ]
 
 
-async def get_agents_dict(agent: LlmAgent) -> dict[str, AgentInfo]:
+def get_agents_dict(agent: LlmAgent) -> dict[str, AgentInfo]:
   """Returns a dict with info for the agent and its sub-agents."""
   agents_dict = {}
 
-  async def _traverse(current_agent: LlmAgent):
+  def _traverse(current_agent: LlmAgent):
     if current_agent.name in agents_dict:
       return
 
     sub_agent_names = []
     for sub_agent in current_agent.sub_agents:
       if isinstance(sub_agent, LlmAgent):
-        await _traverse(sub_agent)
+        _traverse(sub_agent)
         sub_agent_names.append(sub_agent.name)
 
     agents_dict[current_agent.name] = AgentInfo(
         name=current_agent.name,
         description=current_agent.description,
         instruction=current_agent.instruction,
-        tools=await get_tools_info(current_agent.tools),
+        tools=get_tools_info(current_agent.tools),
         sub_agents=sub_agent_names,
     )
 
-  await _traverse(agent)
+  _traverse(agent)
   return agents_dict

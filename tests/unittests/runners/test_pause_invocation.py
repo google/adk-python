@@ -21,8 +21,10 @@ from google.adk.agents.base_agent import BaseAgent
 from google.adk.agents.invocation_context import InvocationContext
 from google.adk.agents.llm_agent import LlmAgent
 from google.adk.agents.loop_agent import LoopAgent
+from google.adk.agents.loop_agent import LoopAgentState
 from google.adk.agents.parallel_agent import ParallelAgent
 from google.adk.agents.sequential_agent import SequentialAgent
+from google.adk.agents.sequential_agent import SequentialAgentState
 from google.adk.apps.app import App
 from google.adk.apps.app import ResumabilityConfig
 from google.adk.events.event import Event
@@ -41,9 +43,8 @@ def _transfer_call_part(agent_name: str) -> Part:
   )
 
 
-def test_tool():
-  """A test tool; returns None to simulate a pending long-running operation."""
-  return None
+def test_tool() -> str:
+  return "result"
 
 
 class _TestingAgent(BaseAgent):
@@ -123,11 +124,14 @@ class TestPauseInvocationWithSingleLlmAgent(BasePauseInvocationTest):
       runner: testing_utils.InMemoryRunner,
   ):
     """Tests that a single LlmAgent pauses on long running function call."""
-    actual = testing_utils.simplify_resumable_app_events(runner.run("test"))
-    behavioral = [e for e in actual if not isinstance(e[1], dict)]
-    assert behavioral == [
-        # execute_tools yields the interrupt event with long_running_tool_ids.
+    assert testing_utils.simplify_resumable_app_events(runner.run("test")) == [
         ("root_agent", Part.from_function_call(name="test_tool", args={})),
+        (
+            "root_agent",
+            Part.from_function_response(
+                name="test_tool", response={"result": "result"}
+            ),
+        ),
     ]
 
 
@@ -162,66 +166,65 @@ class TestPauseInvocationWithSequentialAgent(BasePauseInvocationTest):
       runner: testing_utils.InMemoryRunner,
   ):
     """Tests that a SequentialAgent pauses on the first sub-agent."""
-    actual = testing_utils.simplify_resumable_app_events(runner.run("test"))
-    behavioral = [e for e in actual if not isinstance(e[1], dict)]
-    assert behavioral == [
-        ("sub_agent_1", Part.from_function_call(name="test_tool", args={})),
-    ]
-
-  @pytest.mark.xfail(
-      reason=(
-          "Tests implementation details that are different in V2 and will be"
-          " deprecated."
-      )
-  )
-  @pytest.mark.asyncio
-  def test_pause_second_agent_on_long_running_function_call(
-      self,
-  ):
-    """Tests that a single LlmAgent pauses on long running function call."""
-    # Construct sub_agent_1 with regular FunctionTool (not long-running).
-    sub_agent_1 = LlmAgent(
-        name="sub_agent_1",
-        model=self.mock_model(
-            responses=[
-                Part.from_function_call(name="test_tool", args={}),
-                Part.from_text(text="model response after tool call"),
-            ]
+    assert testing_utils.simplify_resumable_app_events(runner.run("test")) == [
+        (
+            "root_agent",
+            SequentialAgentState(current_sub_agent="sub_agent_1").model_dump(
+                mode="json"
+            ),
         ),
-        tools=[FunctionTool(func=test_tool)],
-    )
-    sub_agent_2 = LlmAgent(
-        name="sub_agent_2",
-        model=self.mock_model(
-            responses=[Part.from_function_call(name="test_tool", args={})]
-        ),
-        tools=[LongRunningFunctionTool(func=test_tool)],
-    )
-    agent = SequentialAgent(
-        name="root_agent",
-        sub_agents=[sub_agent_1, sub_agent_2],
-    )
-    app = App(
-        name="test_app",
-        root_agent=agent,
-        resumability_config=ResumabilityConfig(is_resumable=True),
-    )
-    runner = testing_utils.InMemoryRunner(app=app)
-    actual = testing_utils.simplify_resumable_app_events(runner.run("test"))
-    behavioral = [e for e in actual if not isinstance(e[1], dict)]
-    assert behavioral == [
         ("sub_agent_1", Part.from_function_call(name="test_tool", args={})),
         (
             "sub_agent_1",
             Part.from_function_response(
-                name="test_tool", response={"result": None}
+                name="test_tool", response={"result": "result"}
+            ),
+        ),
+    ]
+
+  @pytest.mark.asyncio
+  def test_pause_second_agent_on_long_running_function_call(
+      self,
+      runner: testing_utils.InMemoryRunner,
+  ):
+    """Tests that a single LlmAgent pauses on long running function call."""
+    # Change the base sequential agent, so that the first agent does not pause.
+    runner.root_agent.sub_agents[0].tools = [FunctionTool(func=test_tool)]
+    runner.root_agent.sub_agents[0].model = self.mock_model(
+        responses=[
+            Part.from_function_call(name="test_tool", args={}),
+            Part.from_text(text="model response after tool call"),
+        ]
+    )
+    assert testing_utils.simplify_resumable_app_events(runner.run("test")) == [
+        (
+            "root_agent",
+            SequentialAgentState(current_sub_agent="sub_agent_1").model_dump(
+                mode="json"
+            ),
+        ),
+        ("sub_agent_1", Part.from_function_call(name="test_tool", args={})),
+        (
+            "sub_agent_1",
+            Part.from_function_response(
+                name="test_tool", response={"result": "result"}
             ),
         ),
         ("sub_agent_1", "model response after tool call"),
-        # Wrapper emits output before END_OF_AGENT.
-        ("root_agent", "model response after tool call"),
         ("sub_agent_1", END_OF_AGENT),
+        (
+            "root_agent",
+            SequentialAgentState(current_sub_agent="sub_agent_2").model_dump(
+                mode="json"
+            ),
+        ),
         ("sub_agent_2", Part.from_function_call(name="test_tool", args={})),
+        (
+            "sub_agent_2",
+            Part.from_function_response(
+                name="test_tool", response={"result": "result"}
+            ),
+        ),
     ]
 
 
@@ -312,24 +315,10 @@ class TestPauseInvocationWithNestedParallelAgent(BasePauseInvocationTest):
   @pytest.mark.asyncio
   def test_pause_on_multiple_long_running_function_calls(
       self,
+      runner: testing_utils.InMemoryRunner,
   ):
     """Tests that a ParallelAgent pauses on long running function calls."""
-    nested_sub_agent_1 = LlmAgent(
-        name="nested_sub_agent_1",
-        model=self.mock_model(
-            responses=[Part.from_function_call(name="test_tool", args={})]
-        ),
-        tools=[LongRunningFunctionTool(func=test_tool)],
-    )
-    nested_sub_agent_2 = _TestingAgent(
-        name="nested_sub_agent_2",
-        delay=0.5,
-    )
-    nested_parallel_agent = ParallelAgent(
-        name="nested_parallel_agent",
-        sub_agents=[nested_sub_agent_1, nested_sub_agent_2],
-    )
-    sub_agent_1 = LlmAgent(
+    runner.root_agent.sub_agents[0] = LlmAgent(
         name="sub_agent_1",
         model=self.mock_model(
             responses=[
@@ -338,16 +327,6 @@ class TestPauseInvocationWithNestedParallelAgent(BasePauseInvocationTest):
         ),
         tools=[LongRunningFunctionTool(func=test_tool)],
     )
-    agent = ParallelAgent(
-        name="root_agent",
-        sub_agents=[sub_agent_1, nested_parallel_agent],
-    )
-    app = App(
-        name="test_app",
-        root_agent=agent,
-        resumability_config=ResumabilityConfig(is_resumable=True),
-    )
-    runner = testing_utils.InMemoryRunner(app=app)
     simplified_events = testing_utils.simplify_resumable_app_events(
         runner.run("test")
     )
@@ -401,26 +380,34 @@ class TestPauseInvocationWithLoopAgent(BasePauseInvocationTest):
         max_iterations=2,
     )
 
-  @pytest.mark.xfail(
-      reason=(
-          "Tests implementation details that are different in V2 and will be"
-          " deprecated."
-      )
-  )
   @pytest.mark.asyncio
   def test_pause_on_long_running_function_call(
       self,
       runner: testing_utils.InMemoryRunner,
   ):
     """Tests that a LoopAgent pauses on long running function call."""
-    actual = testing_utils.simplify_resumable_app_events(runner.run("test"))
-    behavioral = [e for e in actual if not isinstance(e[1], dict)]
-    assert behavioral == [
+    assert testing_utils.simplify_resumable_app_events(runner.run("test")) == [
+        (
+            "root_agent",
+            LoopAgentState(current_sub_agent="sub_agent_1").model_dump(
+                mode="json"
+            ),
+        ),
         ("sub_agent_1", "sub agent 1 response"),
-        # Wrapper emits output before END_OF_AGENT.
-        ("root_agent", "sub agent 1 response"),
         ("sub_agent_1", END_OF_AGENT),
+        (
+            "root_agent",
+            LoopAgentState(current_sub_agent="sub_agent_2").model_dump(
+                mode="json"
+            ),
+        ),
         ("sub_agent_2", Part.from_function_call(name="test_tool", args={})),
+        (
+            "sub_agent_2",
+            Part.from_function_response(
+                name="test_tool", response={"result": "result"}
+            ),
+        ),
     ]
 
 
@@ -466,16 +453,18 @@ class TestPauseInvocationWithLlmAgentTree(BasePauseInvocationTest):
       runner: testing_utils.InMemoryRunner,
   ):
     """Tests that a tree of resumable LlmAgents yields checkpoint events."""
-    actual = testing_utils.simplify_resumable_app_events(runner.run("test"))
-    behavioral = [e for e in actual if not isinstance(e[1], dict)]
-    assert behavioral == [
+    assert testing_utils.simplify_resumable_app_events(runner.run("test")) == [
         ("root_agent", _transfer_call_part("sub_llm_agent_1")),
         ("root_agent", _TRANSFER_RESPONSE_PART),
-        ("root_agent", END_OF_AGENT),
         ("sub_llm_agent_1", _transfer_call_part("sub_llm_agent_2")),
         ("sub_llm_agent_1", _TRANSFER_RESPONSE_PART),
-        ("sub_llm_agent_1", END_OF_AGENT),
         ("sub_llm_agent_2", Part.from_function_call(name="test_tool", args={})),
+        (
+            "sub_llm_agent_2",
+            Part.from_function_response(
+                name="test_tool", response={"result": "result"}
+            ),
+        ),
     ]
 
 
@@ -522,17 +511,18 @@ class TestPauseInvocationWithWithTransferLoop(BasePauseInvocationTest):
       runner: testing_utils.InMemoryRunner,
   ):
     """Tests that a tree of resumable LlmAgents yields checkpoint events."""
-    actual = testing_utils.simplify_resumable_app_events(runner.run("test"))
-    behavioral = [e for e in actual if not isinstance(e[1], dict)]
-    assert behavioral == [
+    assert testing_utils.simplify_resumable_app_events(runner.run("test")) == [
         ("root_agent", _transfer_call_part("sub_llm_agent_1")),
         ("root_agent", _TRANSFER_RESPONSE_PART),
-        ("root_agent", END_OF_AGENT),
         ("sub_llm_agent_1", _transfer_call_part("sub_llm_agent_2")),
         ("sub_llm_agent_1", _TRANSFER_RESPONSE_PART),
-        ("sub_llm_agent_1", END_OF_AGENT),
         ("sub_llm_agent_2", _transfer_call_part("root_agent")),
         ("sub_llm_agent_2", _TRANSFER_RESPONSE_PART),
-        ("sub_llm_agent_2", END_OF_AGENT),
         ("root_agent", Part.from_function_call(name="test_tool", args={})),
+        (
+            "root_agent",
+            Part.from_function_response(
+                name="test_tool", response={"result": "result"}
+            ),
+        ),
     ]

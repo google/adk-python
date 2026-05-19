@@ -27,7 +27,6 @@ import pytest
 def mock_tool_context() -> ToolContext:
   """Fixture that provides a mock ToolContext for testing."""
   mock_invocation_context = MagicMock(spec=InvocationContext)
-  mock_invocation_context._state_schema = None
   mock_invocation_context.session = MagicMock(spec=Session)
   mock_invocation_context.session.state = MagicMock()
   return ToolContext(invocation_context=mock_invocation_context)
@@ -332,7 +331,6 @@ async def test_run_async_with_unexpected_argument():
 
   tool = FunctionTool(sample_func)
   mock_invocation_context = MagicMock(spec=InvocationContext)
-  mock_invocation_context._state_schema = None
   mock_invocation_context.session = MagicMock(spec=Session)
   # Add the missing state attribute to the session mock
   mock_invocation_context.session.state = MagicMock()
@@ -354,7 +352,6 @@ async def test_run_async_with_tool_context_and_unexpected_argument():
 
   tool = FunctionTool(sample_func_with_context)
   mock_invocation_context = MagicMock(spec=InvocationContext)
-  mock_invocation_context._state_schema = None
   mock_invocation_context.session = MagicMock(spec=Session)
   # Add the missing state attribute to the session mock
   mock_invocation_context.session.state = MagicMock()
@@ -382,7 +379,6 @@ async def test_run_async_with_require_confirmation():
 
   tool = FunctionTool(sample_func, require_confirmation=True)
   mock_invocation_context = MagicMock(spec=InvocationContext)
-  mock_invocation_context._state_schema = None
   mock_invocation_context.session = MagicMock(spec=Session)
   mock_invocation_context.session.state = MagicMock()
   mock_invocation_context.agent = MagicMock()

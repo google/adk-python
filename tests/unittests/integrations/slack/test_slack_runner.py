@@ -17,10 +17,6 @@ from unittest.mock import AsyncMock
 from unittest.mock import MagicMock
 from unittest.mock import patch
 
-import pytest
-
-pytest.importorskip("slack_bolt")
-
 from google.adk.integrations.slack import SlackRunner
 from google.adk.runners import Runner
 from google.genai import types

@@ -52,18 +52,6 @@ def test_get_gcp_exporters(
       "google.auth.default",
       auth_mock,
   )
-  monkeypatch.setattr(
-      "google.adk.telemetry.google_cloud._get_gcp_span_exporter",
-      lambda credentials: mock.MagicMock(),
-  )
-  monkeypatch.setattr(
-      "google.adk.telemetry.google_cloud._get_gcp_metrics_exporter",
-      lambda project_id: mock.MagicMock(),
-  )
-  monkeypatch.setattr(
-      "google.adk.telemetry.google_cloud._get_gcp_logs_exporter",
-      lambda project_id, credentials: mock.MagicMock(),
-  )
 
   # Act.
   otel_hooks = get_gcp_exporters(
@@ -215,5 +203,4 @@ def test_get_gcp_span_exporter_mtls(
   mock_exporter.assert_called_once_with(
       session=mock_session.return_value,
       endpoint=_DEFAULT_MTLS_TELEMETRY_TRACES_ENPOINT,
-      headers=None,
   )

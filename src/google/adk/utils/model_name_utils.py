@@ -172,5 +172,4 @@ def is_gemini_3_1_flash_live(model_string: Optional[str]) -> bool:
   """
   if not model_string:
     return False
-  model_name = extract_model_name(model_string)
-  return model_name.startswith('gemini-3.1-flash-live')
+  return model_string.startswith('gemini-3.1-flash-live')

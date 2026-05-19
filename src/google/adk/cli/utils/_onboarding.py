@@ -182,12 +182,7 @@ def handle_login_with_google() -> VertexAIAuth | ExpressModeAuth:
       )
 
   # Check for existing full GCP projects
-  try:
-    projects = gcp_utils.list_gcp_projects(limit=20)
-  except RuntimeError as e:
-    click.secho(str(e), fg="yellow")
-    projects = []
-
+  projects = gcp_utils.list_gcp_projects(limit=20)
   if projects:
     click.secho("Recently created Google Cloud projects found:", fg="green")
     click.echo("0. Enter project ID manually")

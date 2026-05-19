@@ -14,7 +14,7 @@
 
 """Tests for enhanced error messages in agent handling."""
 
-from google.adk.agents.llm_agent import LlmAgent
+from google.adk.agents import LlmAgent
 import pytest
 
 

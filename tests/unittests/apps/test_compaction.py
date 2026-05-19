@@ -28,7 +28,7 @@ from google.adk.auth.auth_tool import AuthConfig
 from google.adk.events.event import Event
 from google.adk.events.event_actions import EventActions
 from google.adk.events.event_actions import EventCompaction
-from google.adk.flows.llm_flows import contents as _contents
+from google.adk.flows.llm_flows import contents
 from google.adk.sessions.base_session_service import BaseSessionService
 from google.adk.sessions.session import Session
 from google.adk.tools.tool_confirmation import ToolConfirmation
@@ -868,7 +868,7 @@ class TestCompaction(unittest.IsolatedAsyncioTestCase):
         self._create_event(10.0, 'inv10', 'Event 10'),
     ]
 
-    result_contents = _contents._get_contents(None, events)
+    result_contents = contents._get_contents(None, events)
 
     # Expected contents:
     # Summary 1-4 (at timestamp 4.0)
@@ -898,7 +898,7 @@ class TestCompaction(unittest.IsolatedAsyncioTestCase):
         self._create_event(9.0, 'inv9', 'Event 9'),
     ]
 
-    result_contents = _contents._get_contents(None, events)
+    result_contents = contents._get_contents(None, events)
     expected_texts = [
         'Summary 1-3',
         'Event 4',
@@ -919,7 +919,7 @@ class TestCompaction(unittest.IsolatedAsyncioTestCase):
         self._create_compacted_event(1.0, 3.0, 'Summary 1-3', appended_ts=6.0),
     ]
 
-    result_contents = _contents._get_contents(None, events)
+    result_contents = contents._get_contents(None, events)
     expected_texts = ['Summary 1-3', 'Event 4', 'Event 5']
     actual_texts = [c.parts[0].text for c in result_contents]
     self.assertEqual(actual_texts, expected_texts)
@@ -932,7 +932,7 @@ class TestCompaction(unittest.IsolatedAsyncioTestCase):
         self._create_event(3.0, 'inv3', 'Event 3'),
     ]
 
-    result_contents = _contents._get_contents(None, events)
+    result_contents = contents._get_contents(None, events)
     expected_texts = ['Event 1', 'Event 2', 'Event 3']
     actual_texts = [c.parts[0].text for c in result_contents]
     self.assertEqual(actual_texts, expected_texts)
@@ -946,7 +946,7 @@ class TestCompaction(unittest.IsolatedAsyncioTestCase):
         self._create_event(3.0, 'inv3', 'Event 3'),
     ]
 
-    result_contents = _contents._get_contents(None, events)
+    result_contents = contents._get_contents(None, events)
     expected_texts = ['Summary 1-2', 'Event 3']
     actual_texts = [c.parts[0].text for c in result_contents]
     self.assertEqual(actual_texts, expected_texts)
@@ -963,7 +963,7 @@ class TestCompaction(unittest.IsolatedAsyncioTestCase):
         self._create_event(5.0, 'inv5', 'Event 5'),
     ]
 
-    result_contents = _contents._get_contents(None, events)
+    result_contents = contents._get_contents(None, events)
     expected_texts = ['Summary 1-2', 'Summary 3-4', 'Event 5']
     actual_texts = [c.parts[0].text for c in result_contents]
     self.assertEqual(actual_texts, expected_texts)
@@ -977,7 +977,7 @@ class TestCompaction(unittest.IsolatedAsyncioTestCase):
         self._create_compacted_event(2.0, 3.0, 'Summary 2-3'),
     ]
 
-    result_contents = _contents._get_contents(None, events)
+    result_contents = contents._get_contents(None, events)
     expected_texts = ['Event 1', 'Summary 2-3']
     actual_texts = [c.parts[0].text for c in result_contents]
     self.assertEqual(actual_texts, expected_texts)
@@ -990,10 +990,132 @@ class TestCompaction(unittest.IsolatedAsyncioTestCase):
         self._create_event(4.0, 'inv4', 'Event 4'),
     ]
 
-    result_contents = _contents._get_contents(None, events)
+    result_contents = contents._get_contents(None, events)
     expected_texts = ['Summary 1-2', 'Event 3', 'Event 4']
     actual_texts = [c.parts[0].text for c in result_contents]
     self.assertEqual(actual_texts, expected_texts)
+
+
+@pytest.mark.asyncio
+async def test_run_compaction_for_token_threshold_adds_summary_trace(
+    span_exporter: InMemorySpanExporter,
+):
+  session = Session(
+      app_name='app',
+      user_id='user',
+      id='session-id',
+      events=[
+          _create_trace_test_event(
+              timestamp=1.0, invocation_id='inv1', text='e1'
+          ),
+          _create_trace_test_event(
+              timestamp=2.0, invocation_id='inv2', text='e2'
+          ),
+          _create_trace_test_event(
+              timestamp=3.0,
+              invocation_id='inv3',
+              text='e3',
+              prompt_token_count=100,
+          ),
+      ],
+  )
+  session_service = AsyncMock(spec=BaseSessionService)
+  compacted_event = _create_trace_compacted_event(
+      start_ts=1.0, end_ts=2.0, summary_text='summary'
+  )
+  summarizer = _StubSummarizer(compacted_event)
+  config = EventsCompactionConfig(
+      summarizer=summarizer,
+      compaction_interval=999,
+      overlap_size=0,
+      token_threshold=50,
+      event_retention_size=1,
+  )
+
+  compacted = (
+      await (
+          compaction_module._run_compaction_for_token_threshold_config(
+              config=config,
+              session=session,
+              session_service=session_service,
+              agent=Mock(spec=BaseAgent),
+          )
+      )
+  )
+
+  assert compacted is True
+  spans = span_exporter.get_finished_spans()
+  summary_span = next(
+      span for span in spans if span.name == 'compact_events token_threshold'
+  )
+  assert summary_span.attributes['gen_ai.conversation.id'] == 'session-id'
+  assert (
+      summary_span.attributes['gen_ai.compaction.trigger'] == 'token_threshold'
+  )
+  assert summary_span.attributes['gen_ai.compaction.event_count'] == 2
+  assert summary_span.attributes['gen_ai.compaction.token_threshold'] == 50
+  assert summary_span.attributes['gen_ai.compaction.event_retention_size'] == 1
+  assert (
+      summary_span.attributes['gen_ai.compaction.result_event_id']
+      == 'compacted-event-id'
+  )
+
+
+@pytest.mark.asyncio
+async def test_run_compaction_for_sliding_window_adds_summary_trace(
+    span_exporter: InMemorySpanExporter,
+):
+  compacted_event = _create_trace_compacted_event(
+      start_ts=1.0, end_ts=4.0, summary_text='summary'
+  )
+  summarizer = _StubSummarizer(compacted_event)
+  app = App(
+      name='test',
+      root_agent=Mock(spec=BaseAgent),
+      events_compaction_config=EventsCompactionConfig(
+          summarizer=summarizer,
+          compaction_interval=2,
+          overlap_size=1,
+      ),
+  )
+  session = Session(
+      app_name='test',
+      user_id='u1',
+      id='session-id',
+      events=[
+          _create_trace_test_event(
+              timestamp=1.0, invocation_id='inv1', text='e1'
+          ),
+          _create_trace_test_event(
+              timestamp=2.0, invocation_id='inv2', text='e2'
+          ),
+          _create_trace_test_event(
+              timestamp=3.0, invocation_id='inv3', text='e3'
+          ),
+          _create_trace_test_event(
+              timestamp=4.0, invocation_id='inv4', text='e4'
+          ),
+      ],
+  )
+  session_service = AsyncMock(spec=BaseSessionService)
+
+  await _run_compaction_for_sliding_window(app, session, session_service)
+
+  spans = span_exporter.get_finished_spans()
+  summary_span = next(
+      span for span in spans if span.name == 'compact_events sliding_window'
+  )
+  assert summary_span.attributes['gen_ai.conversation.id'] == 'session-id'
+  assert (
+      summary_span.attributes['gen_ai.compaction.trigger'] == 'sliding_window'
+  )
+  assert summary_span.attributes['gen_ai.compaction.event_count'] == 4
+  assert summary_span.attributes['gen_ai.compaction.compaction_interval'] == 2
+  assert summary_span.attributes['gen_ai.compaction.overlap_size'] == 1
+  assert (
+      summary_span.attributes['gen_ai.compaction.result_event_id']
+      == 'compacted-event-id'
+  )
 
   async def test_sliding_window_excludes_pending_function_call_events(self):
     """Sliding-window compaction stops before pending function calls."""
@@ -1068,7 +1190,7 @@ class TestCompaction(unittest.IsolatedAsyncioTestCase):
     self.assertEqual(appended_event.actions.compaction.start_timestamp, 1.0)
     self.assertEqual(appended_event.actions.compaction.end_timestamp, 1.0)
 
-    result_contents = _contents._get_contents(None, events + [appended_event])
+    result_contents = contents._get_contents(None, events + [appended_event])
     self.assertEqual(result_contents[0].parts[0].text, 'Summary safe prefix')
     self.assertEqual(
         result_contents[1].parts[0].function_call.name,
@@ -1153,7 +1275,7 @@ class TestCompaction(unittest.IsolatedAsyncioTestCase):
     self.assertEqual(appended_event.actions.compaction.start_timestamp, 1.0)
     self.assertEqual(appended_event.actions.compaction.end_timestamp, 1.0)
 
-    result_contents = _contents._get_contents(None, events + [appended_event])
+    result_contents = contents._get_contents(None, events + [appended_event])
     self.assertEqual(result_contents[0].parts[0].text, 'Summary safe prefix')
     self.assertEqual(
         result_contents[1].parts[0].function_call.name,
@@ -1652,125 +1774,3 @@ class TestCompaction(unittest.IsolatedAsyncioTestCase):
     ]['events']
     compacted_inv_ids = [e.invocation_id for e in compacted_events_arg]
     self.assertEqual(compacted_inv_ids, ['inv1', 'inv2', 'inv3'])
-
-
-@pytest.mark.asyncio
-async def test_run_compaction_for_token_threshold_adds_summary_trace(
-    span_exporter: InMemorySpanExporter,
-):
-  session = Session(
-      app_name='app',
-      user_id='user',
-      id='session-id',
-      events=[
-          _create_trace_test_event(
-              timestamp=1.0, invocation_id='inv1', text='e1'
-          ),
-          _create_trace_test_event(
-              timestamp=2.0, invocation_id='inv2', text='e2'
-          ),
-          _create_trace_test_event(
-              timestamp=3.0,
-              invocation_id='inv3',
-              text='e3',
-              prompt_token_count=100,
-          ),
-      ],
-  )
-  session_service = AsyncMock(spec=BaseSessionService)
-  compacted_event = _create_trace_compacted_event(
-      start_ts=1.0, end_ts=2.0, summary_text='summary'
-  )
-  summarizer = _StubSummarizer(compacted_event)
-  config = EventsCompactionConfig(
-      summarizer=summarizer,
-      compaction_interval=999,
-      overlap_size=0,
-      token_threshold=50,
-      event_retention_size=1,
-  )
-
-  compacted = (
-      await (
-          compaction_module._run_compaction_for_token_threshold_config(
-              config=config,
-              session=session,
-              session_service=session_service,
-              agent=Mock(spec=BaseAgent),
-          )
-      )
-  )
-
-  assert compacted is True
-  spans = span_exporter.get_finished_spans()
-  summary_span = next(
-      span for span in spans if span.name == 'compact_events token_threshold'
-  )
-  assert summary_span.attributes['gen_ai.conversation.id'] == 'session-id'
-  assert (
-      summary_span.attributes['gen_ai.compaction.trigger'] == 'token_threshold'
-  )
-  assert summary_span.attributes['gen_ai.compaction.event_count'] == 2
-  assert summary_span.attributes['gen_ai.compaction.token_threshold'] == 50
-  assert summary_span.attributes['gen_ai.compaction.event_retention_size'] == 1
-  assert (
-      summary_span.attributes['gen_ai.compaction.result_event_id']
-      == 'compacted-event-id'
-  )
-
-
-@pytest.mark.asyncio
-async def test_run_compaction_for_sliding_window_adds_summary_trace(
-    span_exporter: InMemorySpanExporter,
-):
-  compacted_event = _create_trace_compacted_event(
-      start_ts=1.0, end_ts=4.0, summary_text='summary'
-  )
-  summarizer = _StubSummarizer(compacted_event)
-  app = App(
-      name='test',
-      root_agent=Mock(spec=BaseAgent),
-      events_compaction_config=EventsCompactionConfig(
-          summarizer=summarizer,
-          compaction_interval=2,
-          overlap_size=1,
-      ),
-  )
-  session = Session(
-      app_name='test',
-      user_id='u1',
-      id='session-id',
-      events=[
-          _create_trace_test_event(
-              timestamp=1.0, invocation_id='inv1', text='e1'
-          ),
-          _create_trace_test_event(
-              timestamp=2.0, invocation_id='inv2', text='e2'
-          ),
-          _create_trace_test_event(
-              timestamp=3.0, invocation_id='inv3', text='e3'
-          ),
-          _create_trace_test_event(
-              timestamp=4.0, invocation_id='inv4', text='e4'
-          ),
-      ],
-  )
-  session_service = AsyncMock(spec=BaseSessionService)
-
-  await _run_compaction_for_sliding_window(app, session, session_service)
-
-  spans = span_exporter.get_finished_spans()
-  summary_span = next(
-      span for span in spans if span.name == 'compact_events sliding_window'
-  )
-  assert summary_span.attributes['gen_ai.conversation.id'] == 'session-id'
-  assert (
-      summary_span.attributes['gen_ai.compaction.trigger'] == 'sliding_window'
-  )
-  assert summary_span.attributes['gen_ai.compaction.event_count'] == 4
-  assert summary_span.attributes['gen_ai.compaction.compaction_interval'] == 2
-  assert summary_span.attributes['gen_ai.compaction.overlap_size'] == 1
-  assert (
-      summary_span.attributes['gen_ai.compaction.result_event_id']
-      == 'compacted-event-id'
-  )

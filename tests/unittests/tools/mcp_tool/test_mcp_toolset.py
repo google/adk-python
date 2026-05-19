@@ -324,8 +324,16 @@ class TestMcpToolset:
         side_effect=Exception("Cleanup error")
     )
 
-    # Should not raise exception, should log the warning
+    custom_errlog = StringIO()
+    toolset._errlog = custom_errlog
+
+    # Should not raise exception
     await toolset.close()
+
+    # Should log the error
+    error_output = custom_errlog.getvalue()
+    assert "Warning: Error during McpToolset cleanup" in error_output
+    assert "Cleanup error" in error_output
 
   @pytest.mark.asyncio
   async def test_get_tools_with_timeout(self):

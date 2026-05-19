@@ -46,7 +46,6 @@ class _OutputSchemaRequestProcessor(BaseLlmRequestProcessor):
         not agent.output_schema
         or not agent.tools
         or can_use_output_schema_with_tools(agent.canonical_model)
-        or getattr(agent, 'mode', None) == 'task'
     ):
       return
 

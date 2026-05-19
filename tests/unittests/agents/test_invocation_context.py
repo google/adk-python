@@ -172,13 +172,15 @@ class TestInvocationContextWithAppResumablity:
 
     assert mock_invocation_context.should_pause_invocation(event_to_pause)
 
-  def test_should_pause_invocation_with_non_resumable_app(self, event_to_pause):
-    """Tests should_pause_invocation pauses even without resumability."""
+  def test_should_not_pause_invocation_with_non_resumable_app(
+      self, event_to_pause
+  ):
+    """Tests should_pause_invocation with a non-resumable app."""
     invocation_context = self._create_test_invocation_context(
         ResumabilityConfig(is_resumable=False)
     )
 
-    assert invocation_context.should_pause_invocation(event_to_pause)
+    assert not invocation_context.should_pause_invocation(event_to_pause)
 
   def test_should_not_pause_invocation_with_no_long_running_tool_ids(
       self, event_to_pause
@@ -310,9 +312,7 @@ class TestInvocationContextWithAppResumablity:
     )
     invocation_context.session.events = [event]
     invocation_context.populate_invocation_agent_states()
-    assert invocation_context.agent_states == {
-        'agent1': BaseAgentState().model_dump(mode='json')
-    }
+    assert invocation_context.agent_states == {'agent1': BaseAgentState()}
     assert invocation_context.end_of_agents == {'agent1': False}
 
   def test_populate_invocation_agent_states_user_message_event(self):

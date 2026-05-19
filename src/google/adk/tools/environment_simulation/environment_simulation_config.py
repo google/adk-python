@@ -25,7 +25,7 @@ from pydantic import BaseModel
 from pydantic import Field
 from pydantic import field_validator
 from pydantic import model_validator
-from pydantic import ValidationError
+from pydantic_core import ValidationError
 
 from ...features import experimental
 from ...features import FeatureName

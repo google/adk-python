@@ -55,6 +55,7 @@ class AgentBuilderAssistant:
       "BaseAgentConfig",
       "AgentRefConfig",
       "CodeConfig",
+      "ArgumentConfig",
       "ToolArgsConfig",
       "google__adk__tools__tool_configs__ToolConfig",
   )
@@ -255,18 +256,26 @@ class AgentBuilderAssistant:
         indent=2,
     )
     add(
-        "args: optional ToolArgsConfig of free key-value pairs forwarded to"
-        " the tool's from_config().",
+        "args: optional object of additional keyword arguments. Use simple "
+        "key-value pairs (ToolArgsConfig) or structured ArgumentConfig entries "
+        "when a list is required by callbacks.",
+        indent=2,
+    )
+
+    add()
+    add("ArgumentConfig")
+    add(
+        "Represents a single argument. value is required and may be any JSON "
+        "type. name is optional (null allowed). Often used in callback args.",
         indent=2,
     )
 
     add()
     add("CodeConfig")
     add(
-        "References Python code by fully qualified name (e.g."
-        " my_library.my_module.my_function). The referenced object must"
-        " already be constructed in Python; YAML cannot pass constructor"
-        " arguments.",
+        "References Python code for callbacks or dynamic tool creation."
+        " Requires name (dotted path). args is an optional list of"
+        " ArgumentConfig items executed when invoking the function.",
         indent=2,
     )
 
