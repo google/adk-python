@@ -140,14 +140,19 @@ class SetModelResponseTool(BaseTool):
     if self._is_basemodel:
       # For regular BaseModel, validate directly
       validated_response = self.output_schema.model_validate(args)
-      return validated_response.model_dump(exclude_none=True)
+      result = validated_response.model_dump(exclude_none=True)
     elif self._is_list_of_basemodel:
       # For list[BaseModel], extract and validate the 'items' field
       items = args.get('items', [])
       type_adapter = TypeAdapter(self.output_schema)
       validated_response = type_adapter.validate_python(items)
-      return [item.model_dump(exclude_none=True) for item in validated_response]
+      result = [
+          item.model_dump(exclude_none=True) for item in validated_response
+      ]
     else:
       # For other schema types (list[str], dict, etc.),
       # return the value directly without pydantic validation
-      return args.get('response')
+      result = args.get('response')
+
+    tool_context.actions.set_model_response = result
+    return result

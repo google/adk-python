@@ -173,6 +173,80 @@ class TestToA2A:
   @patch("google.adk.a2a.utils.agent_to_a2a.InMemoryTaskStore")
   @patch("google.adk.a2a.utils.agent_to_a2a.AgentCardBuilder")
   @patch("google.adk.a2a.utils.agent_to_a2a.Starlette")
+  def test_to_a2a_with_custom_task_store(
+      self,
+      mock_starlette_class,
+      mock_card_builder_class,
+      mock_task_store_class,
+      mock_request_handler_class,
+      mock_agent_executor_class,
+  ):
+    """Test to_a2a with a custom task store."""
+    # Arrange
+    mock_app = Mock(spec=Starlette)
+    mock_starlette_class.return_value = mock_app
+    mock_agent_executor = Mock(spec=A2aAgentExecutor)
+    mock_agent_executor_class.return_value = mock_agent_executor
+    mock_request_handler = Mock(spec=DefaultRequestHandler)
+    mock_request_handler_class.return_value = mock_request_handler
+    mock_card_builder = Mock(spec=AgentCardBuilder)
+    mock_card_builder_class.return_value = mock_card_builder
+    custom_task_store = Mock()
+
+    # Act
+    result = to_a2a(self.mock_agent, task_store=custom_task_store)
+
+    # Assert
+    assert result == mock_app
+    mock_task_store_class.assert_not_called()
+    mock_request_handler_class.assert_called_once_with(
+        agent_executor=mock_agent_executor,
+        push_config_store=ANY,
+        task_store=custom_task_store,
+    )
+
+  @patch("google.adk.a2a.utils.agent_to_a2a.A2aAgentExecutor")
+  @patch("google.adk.a2a.utils.agent_to_a2a.DefaultRequestHandler")
+  @patch("google.adk.a2a.utils.agent_to_a2a.InMemoryTaskStore")
+  @patch("google.adk.a2a.utils.agent_to_a2a.AgentCardBuilder")
+  @patch("google.adk.a2a.utils.agent_to_a2a.Starlette")
+  def test_to_a2a_default_task_store_when_none(
+      self,
+      mock_starlette_class,
+      mock_card_builder_class,
+      mock_task_store_class,
+      mock_request_handler_class,
+      mock_agent_executor_class,
+  ):
+    """Test to_a2a defaults to InMemoryTaskStore when task_store is None."""
+    # Arrange
+    mock_app = Mock(spec=Starlette)
+    mock_starlette_class.return_value = mock_app
+    mock_task_store = Mock(spec=InMemoryTaskStore)
+    mock_task_store_class.return_value = mock_task_store
+    mock_agent_executor = Mock(spec=A2aAgentExecutor)
+    mock_agent_executor_class.return_value = mock_agent_executor
+    mock_request_handler = Mock(spec=DefaultRequestHandler)
+    mock_request_handler_class.return_value = mock_request_handler
+    mock_card_builder = Mock(spec=AgentCardBuilder)
+    mock_card_builder_class.return_value = mock_card_builder
+
+    # Act
+    result = to_a2a(self.mock_agent, task_store=None)
+
+    # Assert
+    mock_task_store_class.assert_called_once()
+    mock_request_handler_class.assert_called_once_with(
+        agent_executor=mock_agent_executor,
+        push_config_store=ANY,
+        task_store=mock_task_store,
+    )
+
+  @patch("google.adk.a2a.utils.agent_to_a2a.A2aAgentExecutor")
+  @patch("google.adk.a2a.utils.agent_to_a2a.DefaultRequestHandler")
+  @patch("google.adk.a2a.utils.agent_to_a2a.InMemoryTaskStore")
+  @patch("google.adk.a2a.utils.agent_to_a2a.AgentCardBuilder")
+  @patch("google.adk.a2a.utils.agent_to_a2a.Starlette")
   def test_to_a2a_custom_host_port(
       self,
       mock_starlette_class,
@@ -283,7 +357,7 @@ class TestToA2A:
   @patch("google.adk.a2a.utils.agent_to_a2a.AgentCardBuilder")
   @patch("google.adk.a2a.utils.agent_to_a2a.Starlette")
   @patch("google.adk.a2a.utils.agent_to_a2a.Runner")
-  async def test_create_runner_function_creates_runner_correctly(
+  def test_create_runner_function_creates_runner_correctly(
       self,
       mock_runner_class,
       mock_starlette_class,
@@ -317,7 +391,7 @@ class TestToA2A:
     runner_func = call_args[1]["runner"]
 
     # Call the runner function to verify it creates Runner correctly
-    runner_result = await runner_func()
+    runner_result = runner_func()
 
     # Verify Runner was created with correct parameters
     mock_runner_class.assert_called_once_with(
@@ -346,7 +420,7 @@ class TestToA2A:
   @patch("google.adk.a2a.utils.agent_to_a2a.AgentCardBuilder")
   @patch("google.adk.a2a.utils.agent_to_a2a.Starlette")
   @patch("google.adk.a2a.utils.agent_to_a2a.Runner")
-  async def test_create_runner_function_with_agent_without_name(
+  def test_create_runner_function_with_agent_without_name(
       self,
       mock_runner_class,
       mock_starlette_class,
@@ -381,7 +455,7 @@ class TestToA2A:
     runner_func = call_args[1]["runner"]
 
     # Call the runner function to verify it creates Runner correctly
-    await runner_func()
+    runner_func()
 
     # Verify Runner was created with default app_name when agent has no name
     mock_runner_class.assert_called_once_with(

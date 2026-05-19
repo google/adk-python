@@ -1,0 +1,107 @@
+{
+  "events": [
+    {
+      "author": "user",
+      "content": {
+        "parts": [
+          {
+            "text": "Create a user account for Bob, age 25, with dark theme and French language."
+          }
+        ],
+        "role": "user"
+      },
+      "id": "e-1",
+      "invocationId": "i-1",
+      "nodeInfo": {
+        "path": ""
+      }
+    },
+    {
+      "author": "profile_agent",
+      "content": {
+        "parts": [
+          {
+            "functionCall": {
+              "args": {
+                "preferences": {
+                  "language": "French",
+                  "theme": "dark"
+                },
+                "profile": {
+                  "age": 25,
+                  "name": "Bob"
+                }
+              },
+              "id": "fc-1",
+              "name": "create_full_user_account"
+            }
+          }
+        ],
+        "role": "model"
+      },
+      "finishReason": "STOP",
+      "id": "e-2",
+      "invocationId": "i-1",
+      "longRunningToolIds": [],
+      "nodeInfo": {
+        "path": "profile_agent@1"
+      }
+    },
+    {
+      "author": "profile_agent",
+      "content": {
+        "parts": [
+          {
+            "functionResponse": {
+              "id": "fc-1",
+              "name": "create_full_user_account",
+              "response": {
+                "conversion_demo": {
+                  "preferences_converted": "JSON dict \u2192 UserPreferences instance",
+                  "profile_converted": "JSON dict \u2192 UserProfile instance"
+                },
+                "message": "Full account created for Bob!",
+                "preferences": {
+                  "language": "French",
+                  "notifications_enabled": true,
+                  "preferences_type": "UserPreferences",
+                  "theme": "dark"
+                },
+                "profile": {
+                  "age": 25,
+                  "email": "Not provided",
+                  "name": "Bob",
+                  "profile_type": "UserProfile"
+                },
+                "status": "account_created"
+              }
+            }
+          }
+        ],
+        "role": "user"
+      },
+      "id": "e-3",
+      "invocationId": "i-1",
+      "nodeInfo": {
+        "path": "profile_agent@1"
+      }
+    },
+    {
+      "author": "profile_agent",
+      "content": {
+        "parts": [
+          {
+            "text": "OK. I have created a user account for Bob, age 25, with a dark theme and French language preference."
+          }
+        ],
+        "role": "model"
+      },
+      "finishReason": "STOP",
+      "id": "e-4",
+      "invocationId": "i-1",
+      "nodeInfo": {
+        "path": "profile_agent@1"
+      }
+    }
+  ]
+}

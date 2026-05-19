@@ -358,12 +358,12 @@ def trace_call_llm(
     except AttributeError:
       pass
 
-  try:
-    llm_response_json = llm_response.model_dump_json(exclude_none=True)
-  except Exception:  # pylint: disable=broad-exception-caught
-    llm_response_json = '<not serializable>'
-
   if _should_add_request_response_to_spans():
+    try:
+      llm_response_json = llm_response.model_dump_json(exclude_none=True)
+    except Exception:  # pylint: disable=broad-exception-caught
+      llm_response_json = '<not serializable>'
+
     span.set_attribute(
         'gcp.vertex.agent.llm_response',
         llm_response_json,
@@ -694,12 +694,9 @@ def _is_gemini_agent(agent: BaseAgent) -> bool:
   if not isinstance(agent, LlmAgent):
     return False
 
-  if isinstance(agent.model, str):
-    return is_gemini_model(agent.model)
-
-  from ..models.google_llm import Gemini
-
-  return isinstance(agent.model, Gemini)
+  model = agent.model if agent.model != '' else agent._default_model
+  model_name = model if isinstance(model, str) else model.model
+  return is_gemini_model(model_name)
 
 
 def _set_common_generate_content_attributes(

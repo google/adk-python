@@ -27,6 +27,8 @@ from ..experimental import a2a_experimental
 from .part_converter import A2APartToGenAIPartConverter
 from .part_converter import convert_a2a_part_to_genai_part
 
+A2A_METADATA_KEY = 'a2a_metadata'
+
 
 @a2a_experimental
 class AgentRunRequest(BaseModel):
@@ -97,7 +99,7 @@ def convert_a2a_request_to_agent_run_request(
 
   custom_metadata = {}
   if request.metadata:
-    custom_metadata['a2a_metadata'] = request.metadata
+    custom_metadata[A2A_METADATA_KEY] = request.metadata
 
   output_parts = []
   for a2a_part in request.message.parts:

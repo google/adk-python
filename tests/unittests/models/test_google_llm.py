@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import logging
 import os
 import sys
 from typing import Optional
@@ -2263,3 +2264,96 @@ async def test_connect_speech_config_remains_none_when_both_are_none(
       # Verify the final speech_config is still None
       assert config_arg.speech_config is None
       assert isinstance(connection, GeminiLlmConnection)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "log_level,should_call",
+    [
+        (logging.WARNING, False),
+        (logging.INFO, False),
+        (logging.DEBUG, True),
+    ],
+)
+async def test_generate_content_async_skips_response_log_build_above_debug(
+    gemini_llm,
+    llm_request,
+    generate_content_response,
+    log_level,
+    should_call,
+):
+  gemini_logger = logging.getLogger("google_adk.google.adk.models.google_llm")
+  original_level = gemini_logger.level
+  gemini_logger.setLevel(log_level)
+  try:
+    with mock.patch(
+        "google.adk.models.google_llm._build_response_log",
+        return_value="log",
+    ) as mock_build:
+      with mock.patch.object(gemini_llm, "api_client") as mock_client:
+
+        async def mock_coro():
+          return generate_content_response
+
+        mock_client.aio.models.generate_content.return_value = mock_coro()
+
+        async for _ in gemini_llm.generate_content_async(
+            llm_request, stream=False
+        ):
+          pass
+
+      assert mock_build.called is should_call
+  finally:
+    gemini_logger.setLevel(original_level)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "log_level,should_call",
+    [
+        (logging.WARNING, False),
+        (logging.INFO, False),
+        (logging.DEBUG, True),
+    ],
+)
+async def test_generate_content_async_stream_skips_response_log_build_above_debug(
+    gemini_llm, llm_request, log_level, should_call
+):
+  mock_responses = [
+      types.GenerateContentResponse(
+          candidates=[
+              types.Candidate(
+                  content=Content(
+                      role="model", parts=[Part.from_text(text="hi")]
+                  ),
+                  finish_reason=types.FinishReason.STOP,
+              )
+          ]
+      ),
+  ]
+
+  gemini_logger = logging.getLogger("google_adk.google.adk.models.google_llm")
+  original_level = gemini_logger.level
+  gemini_logger.setLevel(log_level)
+  try:
+    with mock.patch(
+        "google.adk.models.google_llm._build_response_log",
+        return_value="log",
+    ) as mock_build:
+      with mock.patch.object(gemini_llm, "api_client") as mock_client:
+
+        async def mock_coro():
+          return MockAsyncIterator(mock_responses)
+
+        mock_client.aio.models.generate_content_stream.return_value = (
+            mock_coro()
+        )
+
+        async for _ in gemini_llm.generate_content_async(
+            llm_request, stream=True
+        ):
+          pass
+
+      assert mock_build.called is should_call
+  finally:
+    gemini_logger.setLevel(original_level)

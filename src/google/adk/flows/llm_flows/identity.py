@@ -34,10 +34,11 @@ class _IdentityLlmRequestProcessor(BaseLlmRequestProcessor):
       self, invocation_context: InvocationContext, llm_request: LlmRequest
   ) -> AsyncGenerator[Event, None]:
     agent = invocation_context.agent
-    si = f'You are an agent. Your internal name is "{agent.name}".'
-    if agent.description:
-      si += f' The description about you is "{agent.description}".'
-    llm_request.append_instructions([si])
+    if agent.mode != 'single_turn':
+      si = f'You are an agent. Your internal name is "{agent.name}".'
+      if agent.description:
+        si += f' The description about you is "{agent.description}".'
+      llm_request.append_instructions([si])
 
     # Maintain async generator behavior
     if False:  # Ensures it behaves as a generator

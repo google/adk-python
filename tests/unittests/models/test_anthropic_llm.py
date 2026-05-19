@@ -15,6 +15,7 @@
 import base64
 import json
 import os
+import re
 import sys
 from unittest import mock
 from unittest.mock import AsyncMock
@@ -1095,6 +1096,65 @@ def test_part_to_message_block_empty_response_stays_empty():
   assert result["content"] == ""
 
 
+def test_part_to_message_block_string_content_passes_through():
+  """A scalar string `content` value must not be iterated char-by-char."""
+  response_part = types.Part.from_function_response(
+      name="some_tool",
+      response={"content": "Hello"},
+  )
+  response_part.function_response.id = "test_id_str_content"
+
+  result = part_to_message_block(response_part)
+
+  assert result["content"] == "Hello"
+
+
+def test_part_to_message_block_load_skill_resource_response():
+  """LoadSkillResourceTool returns {content: <file text>} as a string."""
+  file_text = "Line one\nLine two\nLine three"
+  response_part = types.Part.from_function_response(
+      name="load_skill_resource",
+      response={
+          "skill_name": "my-skill",
+          "file_path": "references/doc.md",
+          "content": file_text,
+      },
+  )
+  response_part.function_response.id = "test_id_load_skill"
+
+  result = part_to_message_block(response_part)
+
+  assert result["content"] == file_text
+
+
+def test_part_to_message_block_empty_string_content_falls_through():
+  """`{"content": ""}` falls through to the JSON-dump fallback, not a crash."""
+  response_part = types.Part.from_function_response(
+      name="some_tool",
+      response={"content": ""},
+  )
+  response_part.function_response.id = "test_id_empty_content_only"
+
+  result = part_to_message_block(response_part)
+
+  assert json.loads(result["content"]) == {"content": ""}
+
+
+def test_part_to_message_block_empty_content_with_metadata_keeps_metadata():
+  """`content: ""` is falsy; sibling keys still reach the model via JSON dump."""
+  response_part = types.Part.from_function_response(
+      name="some_tool",
+      response={"content": "", "extra": "keep me"},
+  )
+  response_part.function_response.id = "test_id_empty_content_with_meta"
+
+  result = part_to_message_block(response_part)
+
+  parsed = json.loads(result["content"])
+  assert parsed["content"] == ""
+  assert parsed["extra"] == "keep me"
+
+
 # --- Tests for Bug #1: Streaming support ---
 
 
@@ -1443,15 +1503,30 @@ def test_build_anthropic_thinking_param_none_budget_raises():
     _build_anthropic_thinking_param(config)
 
 
-def test_build_anthropic_thinking_param_automatic_budget_raises():
-  """thinking_budget=-1 (AUTOMATIC) is not supported by Anthropic."""
+def test_build_anthropic_thinking_param_automatic_budget_uses_adaptive():
+  """thinking_budget=-1 (genai AUTOMATIC) maps to Anthropic adaptive thinking.
+
+  Required for Claude Opus 4.7 (which rejects ``"enabled"`` with a 400 error)
+  and recommended for Opus 4.6 / Sonnet 4.6 where ``"enabled"`` is deprecated.
+  """
   from google.adk.models.anthropic_llm import _build_anthropic_thinking_param
 
   config = types.GenerateContentConfig(
       thinking_config=types.ThinkingConfig(thinking_budget=-1),
   )
-  with pytest.raises(ValueError, match="AUTOMATIC mode is unavailable"):
-    _build_anthropic_thinking_param(config)
+  result = _build_anthropic_thinking_param(config)
+  assert result == anthropic_types.ThinkingConfigAdaptiveParam(type="adaptive")
+
+
+def test_build_anthropic_thinking_param_other_negative_uses_adaptive():
+  """Any negative thinking_budget (not just -1) maps to adaptive thinking."""
+  from google.adk.models.anthropic_llm import _build_anthropic_thinking_param
+
+  config = types.GenerateContentConfig(
+      thinking_config=types.ThinkingConfig(thinking_budget=-5),
+  )
+  result = _build_anthropic_thinking_param(config)
+  assert result == anthropic_types.ThinkingConfigAdaptiveParam(type="adaptive")
 
 
 def test_build_anthropic_thinking_param_no_config():
@@ -1905,3 +1980,157 @@ async def test_streaming_redacted_thinking_block_preserved_in_final():
 
   text_part = final.content.parts[1]
   assert text_part.text == "Done."
+
+
+def test_part_to_message_block_function_call_none_id():
+  """Function call with None ID should get a valid generated ID."""
+  part = types.Part.from_function_call(name="test_tool", args={"key": "value"})
+  part.function_call.id = None
+
+  result = part_to_message_block(part)
+  assert result["id"].startswith("toolu_")
+  assert re.fullmatch(r"[a-zA-Z0-9_-]+", result["id"])
+
+
+def test_part_to_message_block_function_call_empty_id():
+  """Function call with empty string ID should get a valid generated ID."""
+  part = types.Part.from_function_call(name="test_tool", args={"key": "value"})
+  part.function_call.id = ""
+
+  result = part_to_message_block(part)
+  assert result["id"].startswith("toolu_")
+  assert re.fullmatch(r"[a-zA-Z0-9_-]+", result["id"])
+
+
+def test_part_to_message_block_function_call_invalid_chars_id():
+  """Function call with invalid chars in ID should get a valid generated ID."""
+  part = types.Part.from_function_call(name="test_tool", args={"key": "value"})
+  part.function_call.id = "invalid id with spaces!"
+
+  result = part_to_message_block(part)
+  assert result["id"].startswith("toolu_")
+  assert re.fullmatch(r"[a-zA-Z0-9_-]+", result["id"])
+
+
+def test_part_to_message_block_function_response_none_id():
+  """Function response with None ID should get a valid generated ID."""
+  part = types.Part.from_function_response(
+      name="test_tool", response={"result": "ok"}
+  )
+  part.function_response.id = None
+
+  result = part_to_message_block(part)
+  assert result["tool_use_id"].startswith("toolu_")
+  assert re.fullmatch(r"[a-zA-Z0-9_-]+", result["tool_use_id"])
+
+
+def test_part_to_message_block_function_response_empty_id():
+  """Function response with empty ID should get a valid generated ID."""
+  part = types.Part.from_function_response(
+      name="test_tool", response={"result": "ok"}
+  )
+  part.function_response.id = ""
+
+  result = part_to_message_block(part)
+  assert result["tool_use_id"].startswith("toolu_")
+  assert re.fullmatch(r"[a-zA-Z0-9_-]+", result["tool_use_id"])
+
+
+def _make_tool_call_part(name: str, call_id: str | None) -> Part:
+  part = types.Part.from_function_call(name=name, args={})
+  part.function_call.id = call_id
+  return part
+
+
+def _make_tool_response_part(name: str, response_id: str | None) -> Part:
+  part = types.Part.from_function_response(name=name, response={"result": "ok"})
+  part.function_response.id = response_id
+  return part
+
+
+async def _capture_anthropic_messages(
+    llm: AnthropicLlm,
+    contents: list[Content],
+    generate_content_response,
+    generate_llm_response,
+) -> list[dict]:
+  llm_request = LlmRequest(
+      model="claude-sonnet-4-20250514",
+      contents=contents,
+      config=types.GenerateContentConfig(system_instruction="You are helpful"),
+  )
+  with mock.patch.object(llm, "_anthropic_client") as mock_client:
+    with mock.patch.object(
+        anthropic_llm,
+        "message_to_generate_content_response",
+        return_value=generate_llm_response,
+    ):
+
+      async def mock_coro():
+        return generate_content_response
+
+      mock_client.messages.create.return_value = mock_coro()
+      _ = [
+          r async for r in llm.generate_content_async(llm_request, stream=False)
+      ]
+
+  _, kwargs = mock_client.messages.create.call_args
+  return kwargs["messages"]
+
+
+@pytest.mark.parametrize(
+    "case_id,call_ids,response_ids,expected_unique",
+    [
+        (
+            "distinct_invalid_pair_uniquely",
+            ["bad A!", "bad B!"],
+            ["bad A!", "bad B!"],
+            2,
+        ),
+        ("matching_empty_ids_pair", [""], [""], 1),
+        ("none_and_empty_collapse", [None], [""], 1),
+        ("repeated_invalid_id_consistent", ["bad!"], ["bad!"], 1),
+    ],
+    ids=lambda v: v if isinstance(v, str) else None,
+)
+@pytest.mark.asyncio
+async def test_generate_content_async_pairs_invalid_tool_ids(
+    case_id,
+    call_ids,
+    response_ids,
+    expected_unique,
+    generate_content_response,
+    generate_llm_response,
+):
+  """Anthropic requests have matching, properly-counted tool_use/tool_result IDs."""
+  llm = AnthropicLlm(model="claude-sonnet-4-20250514")
+  contents = [
+      Content(role="user", parts=[Part.from_text(text="Hi")]),
+      Content(
+          role="model",
+          parts=[
+              _make_tool_call_part(f"tool_{i}", cid)
+              for i, cid in enumerate(call_ids)
+          ],
+      ),
+      Content(
+          role="user",
+          parts=[
+              _make_tool_response_part(f"tool_{i}", rid)
+              for i, rid in enumerate(response_ids)
+          ],
+      ),
+  ]
+
+  messages = await _capture_anthropic_messages(
+      llm, contents, generate_content_response, generate_llm_response
+  )
+
+  use_ids = [b["id"] for b in messages[1]["content"] if b["type"] == "tool_use"]
+  result_ids = [
+      b["tool_use_id"]
+      for b in messages[2]["content"]
+      if b["type"] == "tool_result"
+  ]
+  assert len(set(use_ids)) == expected_unique
+  assert set(use_ids) == set(result_ids)
