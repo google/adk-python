@@ -28,7 +28,7 @@ from google.adk.auth.auth_tool import AuthConfig
 from google.adk.events.event import Event
 from google.adk.events.event_actions import EventActions
 from google.adk.events.event_actions import EventCompaction
-from google.adk.flows.llm_flows import contents
+from google.adk.flows.llm_flows import contents as _contents
 from google.adk.sessions.base_session_service import BaseSessionService
 from google.adk.sessions.session import Session
 from google.adk.tools.tool_confirmation import ToolConfirmation
@@ -868,7 +868,7 @@ class TestCompaction(unittest.IsolatedAsyncioTestCase):
         self._create_event(10.0, 'inv10', 'Event 10'),
     ]
 
-    result_contents = contents._get_contents(None, events)
+    result_contents = _contents._get_contents(None, events)
 
     # Expected contents:
     # Summary 1-4 (at timestamp 4.0)
@@ -898,7 +898,7 @@ class TestCompaction(unittest.IsolatedAsyncioTestCase):
         self._create_event(9.0, 'inv9', 'Event 9'),
     ]
 
-    result_contents = contents._get_contents(None, events)
+    result_contents = _contents._get_contents(None, events)
     expected_texts = [
         'Summary 1-3',
         'Event 4',
@@ -919,7 +919,7 @@ class TestCompaction(unittest.IsolatedAsyncioTestCase):
         self._create_compacted_event(1.0, 3.0, 'Summary 1-3', appended_ts=6.0),
     ]
 
-    result_contents = contents._get_contents(None, events)
+    result_contents = _contents._get_contents(None, events)
     expected_texts = ['Summary 1-3', 'Event 4', 'Event 5']
     actual_texts = [c.parts[0].text for c in result_contents]
     self.assertEqual(actual_texts, expected_texts)
@@ -932,7 +932,7 @@ class TestCompaction(unittest.IsolatedAsyncioTestCase):
         self._create_event(3.0, 'inv3', 'Event 3'),
     ]
 
-    result_contents = contents._get_contents(None, events)
+    result_contents = _contents._get_contents(None, events)
     expected_texts = ['Event 1', 'Event 2', 'Event 3']
     actual_texts = [c.parts[0].text for c in result_contents]
     self.assertEqual(actual_texts, expected_texts)
@@ -946,7 +946,7 @@ class TestCompaction(unittest.IsolatedAsyncioTestCase):
         self._create_event(3.0, 'inv3', 'Event 3'),
     ]
 
-    result_contents = contents._get_contents(None, events)
+    result_contents = _contents._get_contents(None, events)
     expected_texts = ['Summary 1-2', 'Event 3']
     actual_texts = [c.parts[0].text for c in result_contents]
     self.assertEqual(actual_texts, expected_texts)
@@ -963,7 +963,7 @@ class TestCompaction(unittest.IsolatedAsyncioTestCase):
         self._create_event(5.0, 'inv5', 'Event 5'),
     ]
 
-    result_contents = contents._get_contents(None, events)
+    result_contents = _contents._get_contents(None, events)
     expected_texts = ['Summary 1-2', 'Summary 3-4', 'Event 5']
     actual_texts = [c.parts[0].text for c in result_contents]
     self.assertEqual(actual_texts, expected_texts)
@@ -977,7 +977,7 @@ class TestCompaction(unittest.IsolatedAsyncioTestCase):
         self._create_compacted_event(2.0, 3.0, 'Summary 2-3'),
     ]
 
-    result_contents = contents._get_contents(None, events)
+    result_contents = _contents._get_contents(None, events)
     expected_texts = ['Event 1', 'Summary 2-3']
     actual_texts = [c.parts[0].text for c in result_contents]
     self.assertEqual(actual_texts, expected_texts)
@@ -990,7 +990,7 @@ class TestCompaction(unittest.IsolatedAsyncioTestCase):
         self._create_event(4.0, 'inv4', 'Event 4'),
     ]
 
-    result_contents = contents._get_contents(None, events)
+    result_contents = _contents._get_contents(None, events)
     expected_texts = ['Summary 1-2', 'Event 3', 'Event 4']
     actual_texts = [c.parts[0].text for c in result_contents]
     self.assertEqual(actual_texts, expected_texts)
@@ -1190,7 +1190,7 @@ async def test_run_compaction_for_sliding_window_adds_summary_trace(
     self.assertEqual(appended_event.actions.compaction.start_timestamp, 1.0)
     self.assertEqual(appended_event.actions.compaction.end_timestamp, 1.0)
 
-    result_contents = contents._get_contents(None, events + [appended_event])
+    result_contents = _contents._get_contents(None, events + [appended_event])
     self.assertEqual(result_contents[0].parts[0].text, 'Summary safe prefix')
     self.assertEqual(
         result_contents[1].parts[0].function_call.name,
@@ -1275,7 +1275,7 @@ async def test_run_compaction_for_sliding_window_adds_summary_trace(
     self.assertEqual(appended_event.actions.compaction.start_timestamp, 1.0)
     self.assertEqual(appended_event.actions.compaction.end_timestamp, 1.0)
 
-    result_contents = contents._get_contents(None, events + [appended_event])
+    result_contents = _contents._get_contents(None, events + [appended_event])
     self.assertEqual(result_contents[0].parts[0].text, 'Summary safe prefix')
     self.assertEqual(
         result_contents[1].parts[0].function_call.name,

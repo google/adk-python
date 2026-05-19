@@ -576,11 +576,13 @@ async def _execute_single_function_call_async(
     if altered_function_response is not None:
       function_response = altered_function_response
 
-    if tool.is_long_running:
-      # Allow long-running function to return None to not provide function
-      # response.
-      if not function_response:
-        return None
+    if (tool.is_long_running or tool._defers_response) and not function_response:
+      # The tool either runs long (FR will arrive later via session
+      # injection) or defers its response by design (e.g., the LlmAgent
+      # wrapper for task delegation synthesizes the FR after the
+      # sub-agent completes).  Either way, skip the auto-FR build when
+      # the tool returned nothing.
+      return None
 
     # Note: State deltas are not applied here - they are collected in
     # tool_context.actions.state_delta and applied later when the session
@@ -644,6 +646,9 @@ async def handle_function_calls_live(
   function_response_events = [
       event for event in function_response_events if event is not None
   ]
+
+  for event in function_response_events:
+    event.live_session_id = function_call_event.live_session_id
 
   if not function_response_events:
     return None
@@ -812,10 +817,11 @@ async def _execute_single_function_call_live(
     if altered_function_response is not None:
       function_response = altered_function_response
 
-    if tool.is_long_running:
-      # Allow async function to return None to not provide function response.
-      if not function_response:
-        return None
+    if (tool.is_long_running or tool._defers_response) and not function_response:
+      # The tool either runs long (FR will arrive later via session
+      # injection) or defers its response by design.  Skip the auto-FR
+      # build when the tool returned nothing.
+      return None
 
     # Note: State deltas are not applied here - they are collected in
     # tool_context.actions.state_delta and applied later when the session
@@ -1199,6 +1205,7 @@ def merge_parallel_function_response_events(
       branch=base_event.branch,
       content=types.Content(role='user', parts=merged_parts),
       actions=merged_actions,  # Aggregated from all parallel events
+      live_session_id=base_event.live_session_id,
   )
 
   # Use the base_event as the timestamp

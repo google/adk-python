@@ -13,8 +13,6 @@
 # limitations under the License.
 
 import dataclasses
-import gc
-import sys
 from typing import Any
 from typing import Sequence
 
@@ -37,6 +35,7 @@ import pytest
 from ..testing_utils import InMemoryRunner
 from ..testing_utils import MockModel
 from ..testing_utils import TestInMemoryRunner
+from .utils import set_aclosing_wrapping_assertions
 
 
 @pytest.fixture
@@ -99,30 +98,7 @@ async def test_tracer_start_as_current_span(
   This is necessary because instrumentation utilizes contextvars, which ran into "ContextVar was created in a different Context" errors,
   when a given coroutine gets indeterminately suspended.
   """
-  firstiter, finalizer = sys.get_asyncgen_hooks()
-
-  def wrapped_firstiter(coro):
-    nonlocal firstiter
-    # Skip check for specific async context managers in tracing.py,
-    # as their internal generators are not expected to be Aclosing-wrapped.
-    if (
-        coro.__name__ == "use_inference_span"
-        or coro.__name__ == "_use_native_generate_content_span"
-        or coro.__name__ == "record_agent_invocation"
-        or coro.__name__ == "record_tool_execution"
-    ):
-      firstiter(coro)
-      return
-    assert any(
-        isinstance(referrer, Aclosing)
-        or isinstance(indirect_referrer, Aclosing)
-        for referrer in gc.get_referrers(coro)
-        # Some coroutines have a layer of indirection in Python 3.10
-        for indirect_referrer in gc.get_referrers(referrer)
-    ), f"Coro `{coro.__name__}` is not wrapped with Aclosing"
-    firstiter(coro)
-
-  sys.set_asyncgen_hooks(wrapped_firstiter, finalizer)
+  set_aclosing_wrapping_assertions()
 
   # Act
   async with Aclosing(test_runner.run_async_with_new_session_agen("")) as agen:
@@ -172,6 +148,7 @@ async def test_exception_preserves_attributes(
 
   # Assert
   spans = span_exporter.get_finished_spans()
+
   assert len(spans) > 1
   assert all(
       span.attributes is not None and len(span.attributes) > 0

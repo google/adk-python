@@ -77,9 +77,9 @@ def test_auto_to_auto(is_resumable: bool):
     assert testing_utils.simplify_resumable_app_events(runner.run('test1')) == [
         ('root_agent', transfer_call_part('sub_agent_1')),
         ('root_agent', TRANSFER_RESPONSE_PART),
+        ('root_agent', END_OF_AGENT),
         ('sub_agent_1', 'response1'),
         ('sub_agent_1', END_OF_AGENT),
-        ('root_agent', END_OF_AGENT),
     ]
     # Same session, different invocation.
     assert testing_utils.simplify_resumable_app_events(runner.run('test2')) == [
@@ -130,9 +130,9 @@ def test_auto_to_single(is_resumable: bool):
     assert testing_utils.simplify_resumable_app_events(runner.run('test1')) == [
         ('root_agent', transfer_call_part('sub_agent_1')),
         ('root_agent', TRANSFER_RESPONSE_PART),
+        ('root_agent', END_OF_AGENT),
         ('sub_agent_1', 'response1'),
         ('sub_agent_1', END_OF_AGENT),
-        ('root_agent', END_OF_AGENT),
     ]
     # Same session, different invocation.
     assert testing_utils.simplify_resumable_app_events(runner.run('test2')) == [
@@ -191,12 +191,12 @@ def test_auto_to_auto_to_single(is_resumable: bool):
     assert testing_utils.simplify_resumable_app_events(runner.run('test1')) == [
         ('root_agent', transfer_call_part('sub_agent_1')),
         ('root_agent', TRANSFER_RESPONSE_PART),
+        ('root_agent', END_OF_AGENT),
         ('sub_agent_1', transfer_call_part('sub_agent_1_1')),
         ('sub_agent_1', TRANSFER_RESPONSE_PART),
+        ('sub_agent_1', END_OF_AGENT),
         ('sub_agent_1_1', 'response1'),
         ('sub_agent_1_1', END_OF_AGENT),
-        ('sub_agent_1', END_OF_AGENT),
-        ('root_agent', END_OF_AGENT),
     ]
     # Same session, different invocation.
     assert testing_utils.simplify_resumable_app_events(runner.run('test2')) == [
@@ -263,6 +263,7 @@ def test_auto_to_sequential(is_resumable: bool):
     assert testing_utils.simplify_resumable_app_events(runner.run('test1')) == [
         ('root_agent', transfer_call_part('sub_agent_1')),
         ('root_agent', TRANSFER_RESPONSE_PART),
+        ('root_agent', END_OF_AGENT),
         (
             'sub_agent_1',
             SequentialAgentState(current_sub_agent='sub_agent_1_1').model_dump(
@@ -280,7 +281,6 @@ def test_auto_to_sequential(is_resumable: bool):
         ('sub_agent_1_2', 'response2'),
         ('sub_agent_1_2', END_OF_AGENT),
         ('sub_agent_1', END_OF_AGENT),
-        ('root_agent', END_OF_AGENT),
     ]
     # Same session, different invocation.
     assert testing_utils.simplify_resumable_app_events(runner.run('test2')) == [
@@ -359,6 +359,7 @@ def test_auto_to_sequential_to_auto(is_resumable: bool):
     assert testing_utils.simplify_resumable_app_events(runner.run('test1')) == [
         ('root_agent', transfer_call_part('sub_agent_1')),
         ('root_agent', TRANSFER_RESPONSE_PART),
+        ('root_agent', END_OF_AGENT),
         (
             'sub_agent_1',
             SequentialAgentState(current_sub_agent='sub_agent_1_1').model_dump(
@@ -387,7 +388,6 @@ def test_auto_to_sequential_to_auto(is_resumable: bool):
         ('sub_agent_1_3', 'response3'),
         ('sub_agent_1_3', END_OF_AGENT),
         ('sub_agent_1', END_OF_AGENT),
-        ('root_agent', END_OF_AGENT),
     ]
     # Same session, different invocation.
     assert testing_utils.simplify_resumable_app_events(runner.run('test2')) == [
@@ -469,6 +469,7 @@ def test_auto_to_loop(is_resumable: bool):
         # Transfers to sub_agent_1.
         ('root_agent', transfer_call_part('sub_agent_1')),
         ('root_agent', TRANSFER_RESPONSE_PART),
+        ('root_agent', END_OF_AGENT),
         # Loops.
         (
             'sub_agent_1',
@@ -510,7 +511,6 @@ def test_auto_to_loop(is_resumable: bool):
         ),
         ('sub_agent_1_2', END_OF_AGENT),
         ('sub_agent_1', END_OF_AGENT),
-        ('root_agent', END_OF_AGENT),
     ]
     # Same session, different invocation.
     assert testing_utils.simplify_resumable_app_events(runner.run('test2')) == [
@@ -564,24 +564,263 @@ def test_auto_to_auto_to_auto_forms_transfer_loop(is_resumable: bool):
     assert testing_utils.simplify_resumable_app_events(runner.run('test1')) == [
         ('root_agent', transfer_call_part('sub_agent_1')),
         ('root_agent', TRANSFER_RESPONSE_PART),
+        ('root_agent', END_OF_AGENT),
         ('sub_agent_1', transfer_call_part('sub_agent_2')),
         ('sub_agent_1', TRANSFER_RESPONSE_PART),
+        ('sub_agent_1', END_OF_AGENT),
         ('sub_agent_2', transfer_call_part('root_agent')),
         ('sub_agent_2', TRANSFER_RESPONSE_PART),
+        ('sub_agent_2', END_OF_AGENT),
         ('root_agent', 'response from root'),
         (
             'root_agent',
             END_OF_AGENT,
         ),  # First time root_agent marked as ended.
-        ('sub_agent_2', END_OF_AGENT),
-        ('sub_agent_1', END_OF_AGENT),
-        (
-            'root_agent',
-            END_OF_AGENT,
-        ),  # Second time root_agent marked as ended.
     ]
     # Same session, different invocation.
     assert testing_utils.simplify_resumable_app_events(runner.run('test2')) == [
         ('root_agent', 'response 2 from root'),
         ('root_agent', END_OF_AGENT),
     ]
+
+
+@pytest.mark.asyncio
+async def test_three_level_nested_dynamic_node_transfer():
+  """Verify parent relationship climbing in 3-level deep nested dynamic nodes.
+
+  Setup:
+    - root_agent with sub_agents=[mid_agent].
+    - mid_agent with sub_agents=[leaf_agent, target_agent].
+  Act:
+    - Run root_agent. Model responses trigger transfers:
+      Root -> Mid -> Leaf -> Target.
+  Assert:
+    - Events verify the full transfer chain and target response.
+  """
+  from google.adk.agents.llm_agent import LlmAgent
+
+  # Arrange
+  target_agent = LlmAgent(name='target_agent')
+  leaf_agent = LlmAgent(name='leaf_agent')
+  mid_agent = LlmAgent(name='mid_agent', sub_agents=[leaf_agent, target_agent])
+  root_agent = LlmAgent(name='root_agent', sub_agents=[mid_agent])
+
+  root_agent.model = testing_utils.MockModel.create(
+      responses=[transfer_call_part('mid_agent')]
+  )
+  mid_agent.model = testing_utils.MockModel.create(
+      responses=[transfer_call_part('leaf_agent')]
+  )
+  leaf_agent.model = testing_utils.MockModel.create(
+      responses=[transfer_call_part('target_agent')]
+  )
+  target_agent.model = testing_utils.MockModel.create(
+      responses=['hello from target']
+  )
+
+  app = App(name='test_app', root_agent=root_agent)
+  runner = testing_utils.InMemoryRunner(app=app)
+
+  # Act
+  events = runner.run('go')
+  simple_events = testing_utils.simplify_events(events)
+
+  # Assert
+  assert ('root_agent', transfer_call_part('mid_agent')) in simple_events
+  assert ('mid_agent', transfer_call_part('leaf_agent')) in simple_events
+  assert ('leaf_agent', transfer_call_part('target_agent')) in simple_events
+  assert ('target_agent', 'hello from target') in simple_events
+
+
+@pytest.mark.asyncio
+async def test_agent_transfer_hitl_resume_rehydration():
+  """Verify B's rehydration after transfer A -> B -> LRO confirmation on turn 2.
+
+  Setup:
+    - agent_a with sub_agents=[agent_b].
+    - agent_b with a LongRunningFunctionTool.
+  Act:
+    - Turn 1: Run agent_a. Model transfers to agent_b, which calls LRO.
+    - Turn 2: Resume with LRO function response.
+  Assert:
+    - Turn 1: Yields LRO interrupt.
+    - Turn 2: agent_b successfully rehydrates and completes.
+  """
+  from google.adk.agents.llm_agent import LlmAgent
+  from google.adk.tools.long_running_tool import LongRunningFunctionTool
+
+  # Arrange
+  def confirm_tool() -> None:
+    return None
+
+  lro_tool = LongRunningFunctionTool(confirm_tool)
+  agent_b = LlmAgent(name='agent_b', tools=[lro_tool])
+  agent_a = LlmAgent(name='agent_a', sub_agents=[agent_b], tools=[lro_tool])
+
+  agent_a.model = testing_utils.MockModel.create(
+      responses=[transfer_call_part('agent_b')]
+  )
+
+  LRO_ID = 'adk-test-lro-123'
+  agent_b.model = testing_utils.MockModel.create(
+      responses=[
+          testing_utils.types.Part(
+              function_call=testing_utils.types.FunctionCall(
+                  name='confirm_tool', args={}, id=LRO_ID
+              )
+          ),
+          'B task finished',
+      ]
+  )
+
+  from google.adk.runners import Runner
+  from google.adk.sessions.in_memory_session_service import InMemorySessionService
+
+  session_service = InMemorySessionService()
+  await session_service.create_session(
+      app_name='test_app', user_id='test_user', session_id='test_session'
+  )
+  runner = Runner(
+      app_name='test_app',
+      agent=agent_a,
+      session_service=session_service,
+  )
+
+  # Act: Turn 1
+  events1 = [
+      e
+      async for e in runner.run_async(
+          user_id='test_user',
+          session_id='test_session',
+          new_message=testing_utils.types.Content(
+              role='user', parts=[testing_utils.types.Part(text='start task')]
+          ),
+      )
+  ]
+
+  # Assert: Turn 1
+  assert any(e.long_running_tool_ids for e in events1)
+
+  # Arrange: Turn 2
+  lro_id = None
+  for e in events1:
+    if e.content and e.content.parts:
+      for p in e.content.parts:
+        if (
+            p.function_call
+            and p.function_call.name == 'confirm_tool'
+            and p.function_call.id
+        ):
+          lro_id = p.function_call.id
+          break
+      if lro_id:
+        break
+
+  if not lro_id:
+    for e in events1:
+      if e.long_running_tool_ids:
+        lro_id = list(e.long_running_tool_ids)[0]
+        break
+
+  assert lro_id is not None
+  invocation_id = events1[0].invocation_id
+
+  confirm_response = testing_utils.types.Content(
+      role='user',
+      parts=[
+          testing_utils.types.Part(
+              function_response=testing_utils.types.FunctionResponse(
+                  id=lro_id,
+                  name='confirm_tool',
+                  response={'result': 'done'},
+              )
+          )
+      ],
+  )
+
+  # Act: Turn 2
+  events2 = [
+      e
+      async for e in runner.run_async(
+          user_id='test_user',
+          session_id='test_session',
+          invocation_id=invocation_id,
+          new_message=confirm_response,
+      )
+  ]
+
+  # Assert: Turn 2
+  simplified2 = testing_utils.simplify_resumable_app_events(events2)
+  assert ('agent_b', 'B task finished') in simplified2
+
+
+@pytest.mark.asyncio
+async def test_llm_agent_transfer_inside_custom_node():
+  """Verify transfer from an LlmAgent called inside a custom dynamic node.
+
+  Setup:
+    - root_agent with sub_agents=[inner_agent, target_agent] to establish static sibling relation.
+    - A custom @node that calls inner_agent via ctx.run_node.
+    - A Workflow that executes the custom node.
+  Act:
+    - Run the workflow. inner_agent is executed and triggers transfer to target_agent.
+  Assert:
+    - The transfer is correctly resolved as SIBLING and target_agent executes.
+  """
+  from google.adk.agents.llm_agent import LlmAgent
+  from google.adk.runners import Runner
+  from google.adk.sessions.in_memory_session_service import InMemorySessionService
+  from google.adk.workflow import node
+  from google.adk.workflow import START
+  from google.adk.workflow import Workflow
+
+  # Arrange
+  target_agent = LlmAgent(name='target_agent')
+  inner_agent = LlmAgent(name='inner_agent')
+  # Establish static hierarchy for transfer resolution
+  root_agent = LlmAgent(
+      name='root_agent', sub_agents=[inner_agent, target_agent]
+  )
+
+  inner_agent.model = testing_utils.MockModel.create(
+      responses=[transfer_call_part('target_agent')]
+  )
+  target_agent.model = testing_utils.MockModel.create(
+      responses=['hello from target']
+  )
+
+  @node(rerun_on_resume=True)
+  async def custom_node(*, ctx, node_input):
+    # Call llm agent inside custom node
+    result = await ctx.run_node(inner_agent, node_input='go')
+    yield f'custom: {result}'
+
+  wf = Workflow(name='wf', edges=[(START, custom_node)])
+
+  session_service = InMemorySessionService()
+  await session_service.create_session(
+      app_name='test_app', user_id='test_user', session_id='test_session'
+  )
+  runner = Runner(
+      app_name='test_app',
+      node=wf,
+      session_service=session_service,
+  )
+
+  # Act
+  events = [
+      e
+      async for e in runner.run_async(
+          user_id='test_user',
+          session_id='test_session',
+          new_message=testing_utils.types.Content(
+              role='user', parts=[testing_utils.types.Part(text='start')]
+          ),
+      )
+  ]
+
+  simplified = testing_utils.simplify_events(events)
+
+  # Assert
+  assert ('inner_agent', transfer_call_part('target_agent')) in simplified
+  assert ('target_agent', 'hello from target') in simplified
