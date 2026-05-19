@@ -14,7 +14,6 @@ This release introduces v2.0.0 General Availability (GA) of the Google Agent Dev
 
 #### 2. Dynamic Agent Collaboration
 * **Native Inter-Agent Routing:** Provides seamless orchestration for inter-agent messaging, control state handoffs, and context variable propagation across collaborative multi-agent swarms.
-* **Unified Tool Ecosystems:** Enables rich collaborative tool invocation, allowing swarms of specialized agents to discover and execute internal scripts, OpenAPI REST services, and external Model Context Protocol (MCP) toolsets towards shared goals.
 
 ## [1.34.0](https://github.com/google/adk-python/compare/v1.33.0...v1.34.0) (2026-05-18)
 
