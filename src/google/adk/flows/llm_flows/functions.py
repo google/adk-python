@@ -645,6 +645,9 @@ async def handle_function_calls_live(
       event for event in function_response_events if event is not None
   ]
 
+  for event in function_response_events:
+    event.live_session_id = function_call_event.live_session_id
+
   if not function_response_events:
     return None
 
@@ -1199,6 +1202,7 @@ def merge_parallel_function_response_events(
       branch=base_event.branch,
       content=types.Content(role='user', parts=merged_parts),
       actions=merged_actions,  # Aggregated from all parallel events
+      live_session_id=base_event.live_session_id,
   )
 
   # Use the base_event as the timestamp

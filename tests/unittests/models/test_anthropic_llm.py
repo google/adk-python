@@ -1503,15 +1503,30 @@ def test_build_anthropic_thinking_param_none_budget_raises():
     _build_anthropic_thinking_param(config)
 
 
-def test_build_anthropic_thinking_param_automatic_budget_raises():
-  """thinking_budget=-1 (AUTOMATIC) is not supported by Anthropic."""
+def test_build_anthropic_thinking_param_automatic_budget_uses_adaptive():
+  """thinking_budget=-1 (genai AUTOMATIC) maps to Anthropic adaptive thinking.
+
+  Required for Claude Opus 4.7 (which rejects ``"enabled"`` with a 400 error)
+  and recommended for Opus 4.6 / Sonnet 4.6 where ``"enabled"`` is deprecated.
+  """
   from google.adk.models.anthropic_llm import _build_anthropic_thinking_param
 
   config = types.GenerateContentConfig(
       thinking_config=types.ThinkingConfig(thinking_budget=-1),
   )
-  with pytest.raises(ValueError, match="AUTOMATIC mode is unavailable"):
-    _build_anthropic_thinking_param(config)
+  result = _build_anthropic_thinking_param(config)
+  assert result == anthropic_types.ThinkingConfigAdaptiveParam(type="adaptive")
+
+
+def test_build_anthropic_thinking_param_other_negative_uses_adaptive():
+  """Any negative thinking_budget (not just -1) maps to adaptive thinking."""
+  from google.adk.models.anthropic_llm import _build_anthropic_thinking_param
+
+  config = types.GenerateContentConfig(
+      thinking_config=types.ThinkingConfig(thinking_budget=-5),
+  )
+  result = _build_anthropic_thinking_param(config)
+  assert result == anthropic_types.ThinkingConfigAdaptiveParam(type="adaptive")
 
 
 def test_build_anthropic_thinking_param_no_config():
