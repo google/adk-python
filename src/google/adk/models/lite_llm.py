@@ -281,7 +281,7 @@ def _infer_mime_type_from_uri(uri: str) -> Optional[str]:
 
 def _looks_like_openai_file_id(file_uri: str) -> bool:
   """Returns True when file_uri resembles an OpenAI/Azure file id."""
-  return file_uri.startswith("file-")
+  return file_uri.startswith(("file-", "assistant-"))
 
 
 def _is_http_url(uri: str) -> bool:
@@ -299,6 +299,8 @@ def _redact_file_uri_for_log(
   """Returns a privacy-preserving identifier for logs."""
   if display_name:
     return display_name
+  if file_uri.startswith("assistant-"):
+    return "assistant-<redacted>"
   if _looks_like_openai_file_id(file_uri):
     return "file-<redacted>"
   try:
