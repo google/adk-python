@@ -144,6 +144,9 @@ def _build_transfer_instructions(
   Returns:
     Instruction text for the LLM about agent transfers.
   """
+  if agent.mode in ('task', 'single_turn'):
+    return ''
+
   si = _build_transfer_instruction_body(tool_name, target_agents)
 
   if agent.parent_agent and not agent.disallow_transfer_to_parent:
@@ -154,8 +157,28 @@ If neither you nor the other agents are best for the question, transfer to your 
 
 
 def _get_transfer_targets(agent: LlmAgent) -> list[BaseAgent]:
+  """Gets the list of agents that the current agent can transfer to.
+
+  The transfer targets include:
+  1.  Sub-agents of the current agent, excluding those in 'single_turn' mode.
+  2.  The parent agent, if it exists and the current agent does not disallow
+      transfer to the parent.
+  3.  Peer agents (other sub-agents of the parent), if the current agent does
+      not disallow transfer to peers.
+
+  Args:
+    agent: The LlmAgent for which to find transfer targets.
+
+  Returns:
+    A list of BaseAgent instances that are valid transfer targets.
+  """
   result = []
-  result.extend(agent.sub_agents)
+  result.extend([
+      sub_agent
+      for sub_agent in agent.sub_agents
+      if not hasattr(sub_agent, 'mode')
+      or sub_agent.mode not in ('single_turn', 'task')
+  ])
 
   if not agent.parent_agent or not hasattr(
       agent.parent_agent, 'disallow_transfer_to_parent'
@@ -170,6 +193,7 @@ def _get_transfer_targets(agent: LlmAgent) -> list[BaseAgent]:
         peer_agent
         for peer_agent in agent.parent_agent.sub_agents
         if peer_agent.name != agent.name
+        and peer_agent.mode not in ('single_turn', 'task')
     ])
 
   return result

@@ -55,7 +55,6 @@ class AgentBuilderAssistant:
       "BaseAgentConfig",
       "AgentRefConfig",
       "CodeConfig",
-      "ArgumentConfig",
       "ToolArgsConfig",
       "google__adk__tools__tool_configs__ToolConfig",
   )
@@ -263,19 +262,10 @@ class AgentBuilderAssistant:
     )
 
     add()
-    add("ArgumentConfig")
-    add(
-        "Represents a single argument. value is required and may be any JSON "
-        "type. name is optional (null allowed). Often used in callback args.",
-        indent=2,
-    )
-
-    add()
     add("CodeConfig")
     add(
         "References Python code for callbacks or dynamic tool creation."
-        " Requires name (dotted path). args is an optional list of"
-        " ArgumentConfig items executed when invoking the function.",
+        " Requires name (dotted path).",
         indent=2,
     )
 

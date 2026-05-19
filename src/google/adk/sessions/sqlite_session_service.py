@@ -391,7 +391,7 @@ class SqliteSessionService(BaseSessionService):
 
       # Apply state delta if present
       has_session_state_delta = False
-      if event.actions and event.actions.state_delta:
+      if event.actions.state_delta:
         state_deltas = _session_util.extract_state_delta(
             event.actions.state_delta
         )

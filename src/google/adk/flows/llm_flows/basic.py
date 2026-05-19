@@ -54,7 +54,11 @@ def _build_basic_request(
   # support output_schema and tools together. we have a workaround to support
   # both output_schema and tools at the same time. see
   # _output_schema_processor.py for details
-  if agent.output_schema:
+  #
+  # task-mode agents skip output_schema configuration in
+  # the basic flow. Structured output for tasks is collected via the
+  # finish_task tool schema instead.
+  if getattr(agent, 'mode', None) != 'task' and agent.output_schema:
     if not agent.tools or can_use_output_schema_with_tools(model):
       llm_request.set_output_schema(agent.output_schema)
 
