@@ -250,6 +250,51 @@ def test_output_schema_with_tools_will_not_throw():
   )
 
 
+@pytest.mark.parametrize('mode', ['AUTO', 'ANY', None])
+def test_generate_content_config_json_response_with_function_calling_throws(
+    mode,
+):
+  def _a_tool():
+    pass
+
+  function_calling_config = (
+      types.FunctionCallingConfig(mode=mode) if mode else None
+  )
+  tool_config = (
+      types.ToolConfig(function_calling_config=function_calling_config)
+      if function_calling_config
+      else None
+  )
+
+  with pytest.raises(ValueError, match='response_mime_type="application/json"'):
+    LlmAgent(
+        name='test_agent',
+        tools=[_a_tool],
+        generate_content_config=types.GenerateContentConfig(
+            response_mime_type='application/json',
+            tool_config=tool_config,
+        ),
+    )
+
+
+def test_generate_content_config_json_response_with_function_calling_none():
+  def _a_tool():
+    pass
+
+  agent = LlmAgent(
+      name='test_agent',
+      tools=[_a_tool],
+      generate_content_config=types.GenerateContentConfig(
+          response_mime_type='application/json',
+          tool_config=types.ToolConfig(
+              function_calling_config=types.FunctionCallingConfig(mode='NONE')
+          ),
+      ),
+  )
+
+  assert agent.generate_content_config.response_mime_type == 'application/json'
+
+
 def test_before_model_callback():
   def _before_model_callback(
       callback_context: CallbackContext,

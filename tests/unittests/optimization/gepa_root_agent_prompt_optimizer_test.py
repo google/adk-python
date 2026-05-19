@@ -76,6 +76,8 @@ def mock_sampler(mocker):
 def mock_agent(mocker):
   agent = mocker.MagicMock(spec=Agent)
   agent.instruction = "Initial instruction"
+  agent.tools = []
+  agent.generate_content_config = None
   agent.sub_agents = {}
   agent.mode = None
   agent.clone.return_value = agent

@@ -943,6 +943,24 @@ class LlmAgent(BaseAgent):
 
   @model_validator(mode='after')
   def __model_validator_after(self) -> LlmAgent:
+    generate_content_config = self.generate_content_config
+    if (
+        self.tools
+        and generate_content_config
+        and generate_content_config.response_mime_type == 'application/json'
+    ):
+      tool_config = generate_content_config.tool_config
+      function_calling_config = (
+          tool_config.function_calling_config if tool_config else None
+      )
+      mode = function_calling_config.mode if function_calling_config else None
+      mode_value = getattr(mode, 'value', mode)
+      if mode_value is None or str(mode_value).upper() != 'NONE':
+        raise ValueError(
+            '`response_mime_type="application/json"` is incompatible with '
+            'function calling. Set `function_calling_config.mode` to "NONE" '
+            'or remove tools from the agent.'
+        )
     return self
 
   @field_validator('generate_content_config', mode='after')
