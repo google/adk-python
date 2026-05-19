@@ -2,28 +2,28 @@
 
 ## [2.0.0](https://github.com/google/adk-python/compare/v2.0.0b1...v2.0.0) (2026-05-19)
 
-### 📢 ADK 2.0.0 Stable Release (General Availability)
+### ADK 2.0 General Availability
 
-We are thrilled to introduce the official **v2.0.0 General Availability (GA)** release of the Google Agent Development Kit (ADK)! This monumental transition merges the active pre-GA engineering line (`v2-internal`) directly into `main`, delivering robust enterprise-grade foundations, cloud-native scalability, and first-class real-time transport protocols.
+This release introduces v2.0.0 General Availability (GA) of the Google Agent Development Kit (ADK), establishing production-grade workflow execution, cloud deployment pipelines, and fully verified real-time multimodal transport layers.
 
-### 🌟 Architectural Milestones & Key Highlights
+### Architectural Milestones
 
-#### 1. Core Workflow Engine & Production Stability
-* **Modular Agent Workflows:** Full stabilization of the model-agnostic workflow graph execution core (`Workflow`, `LlmAgentWrapper`, `FunctionNode`, `ParallelWorker`, `DynamicNodeScheduler`).
-* **Codebase Resiliency:** Strict private-by-default internal file and module namespace encapsulation (`_` prefix), complete eradication of production `assert` statements in favor of structured standard exceptions (`ValueError`, `TypeError`), and mandatory keyword-only parameters for public API methods to prevent positional argument misdirection.
+#### 1. Core Workflow Engine & Resiliency
+* **Agent Workflows:** Fully stabilizes the model-agnostic workflow graph execution framework (`Workflow`, `LlmAgentWrapper`, `FunctionNode`, `ParallelWorker`, `DynamicNodeScheduler`).
+* **Codebase Refactoring:** Implements internal module namespace encapsulation (`_` prefix), removes all production `assert` statements in favor of descriptive runtime exceptions, and enforces keyword-only parameters across public API methods to prevent argument misdirection.
 
-#### 2. First-Class Live API Support (Bidirectional Streaming)
-* **Real-time Transport Protocols:** Seamless integration for Gemini Live mode (`bidiGenerateContent`), bringing dedicated streaming support for native audio models (`gemini-live-2.5-flash-native-audio` and `gemini-3.1-flash-live-preview`).
-* **Robust Request Telemetry:** Configured `LiveRequestQueue` with clean websocket termination assertions (`Code 1000`), real-time multimodal frame ingestion, and transparent multi-turn session resumption handling.
+#### 2. Real-Time Bidirectional Streaming
+* **Live Protocol Integration:** Adds support for Gemini Live mode (`bidiGenerateContent`), enabling low-latency streaming across native audio models (`gemini-live-2.5-flash-native-audio`, `gemini-3.1-flash-live-preview`).
+* **Session Resumption & Queue Handling:** Introduces `LiveRequestQueue` with clean websocket termination validation (`Code 1000`) and transparent multi-turn session resumption.
 
-#### 3. Enterprise Integration & Cloud-Native Hosting (`adk deploy`)
-* **Vertex AI Agent Engines:** One-command production staging allowing ADK applications to build and deploy directly to remote cloud container environments (`ReasoningEngine`).
-* **Gemini Enterprise Agent Platform:** Native framework interoperability allowing hosted ADK web servers to act as direct enterprise application backends via `AgentSpace` gRPC handlers.
-* **Asynchronous Webhooks:** Support for event-driven and batch execution trigger routes (`--trigger_sources="pubsub,eventarc"`).
+#### 3. Cloud-Native Deployment (`adk deploy`)
+* **Vertex AI Agent Engines:** Enables one-command containerization and remote deployment to managed cloud runtime environments (`ReasoningEngine`).
+* **Gemini Enterprise Agent Platform:** Exports native gRPC handler bindings (`AgentSpace`) allowing ADK applications to operate directly as enterprise backend services.
+* **Event Webhooks:** Adds support for asynchronous and batch trigger routing (`--trigger_sources="pubsub,eventarc"`).
 
-#### 4. Advanced Services & Ecosystem Standardization
-* **Enterprise Storage Persistence:** Native support for `VertexAiSessionService` and `VertexAiMemoryBankService` featuring database session deduplication, exponential backoff retries for 429 rate limits, session TTL/expiration handling, and GCS artifact storage URI streaming.
-* **Modern JSON Schemas:** Complete framework migration to standard Pydantic-based JSON Schema definitions for LLM function calling, OpenAPI REST document parsing (`RestApiTool`), and Model Context Protocol (MCP) toolsets with OAuth PKCE authentication.
+#### 4. Ecosystem & Services Standardization
+* **Enterprise Storage Persistence:** Adds robust backend implementations for `VertexAiSessionService` and `VertexAiMemoryBankService`, featuring universal session deduplication, exponential backoff retries for rate limits, session TTL management, and GCS artifact streaming.
+* **Tool Calling Standards:** Migrates the framework to Pydantic-based JSON Schema generation for LLM tool declarations, OpenAPI document parsing (`RestApiTool`), and Model Context Protocol (MCP) toolsets with OAuth PKCE authentication.
 
 ## [1.34.0](https://github.com/google/adk-python/compare/v1.33.0...v1.34.0) (2026-05-18)
 
