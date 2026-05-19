@@ -8,11 +8,11 @@ This release introduces v2.0.0 General Availability (GA) of the Google Agent Dev
 
 ### Core Architecture Highlights
 
-#### 1. Multi-Agent Workflow Engine
+#### Multi-Agent Workflow Engine
 * **Flexible Execution Graphs:** Establishes a model-agnostic engine for orchestrating non-linear, conditional, and cyclical agent execution patterns.
 * **Intelligent Task Delegation:** Introduces modular workflow abstractions enabling parallel sub-agent workers, nested hierarchical team structures, and resilient dynamic scheduling across complex task execution steps.
 
-#### 2. Dynamic Agent Collaboration
+#### Dynamic Agent Collaboration
 * **Native Inter-Agent Routing:** Provides seamless orchestration for inter-agent messaging, control state handoffs, and context variable propagation across collaborative multi-agent swarms.
 
 ## [1.34.0](https://github.com/google/adk-python/compare/v1.33.0...v1.34.0) (2026-05-18)
