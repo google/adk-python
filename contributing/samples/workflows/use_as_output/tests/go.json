@@ -1,0 +1,63 @@
+{
+  "appName": "use_as_output",
+  "events": [
+    {
+      "author": "user",
+      "content": {
+        "parts": [
+          {
+            "text": "go"
+          }
+        ],
+        "role": "user"
+      },
+      "id": "e-1",
+      "invocationId": "i-1",
+      "nodeInfo": {
+        "path": ""
+      }
+    },
+    {
+      "author": "summarizer",
+      "content": {
+        "parts": [
+          {
+            "text": "Please provide the text you would like me to summarize!"
+          }
+        ],
+        "role": "model"
+      },
+      "finishReason": "STOP",
+      "id": "e-2",
+      "invocationId": "i-1",
+      "nodeInfo": {
+        "messageAsOutput": true,
+        "outputFor": [
+          "root_agent@1/orchestrate@1/summarizer@1",
+          "root_agent@1/orchestrate@1"
+        ],
+        "path": "root_agent@1/orchestrate@1/summarizer@1"
+      }
+    },
+    {
+      "author": "root_agent",
+      "id": "e-3",
+      "invocationId": "i-1",
+      "nodeInfo": {
+        "outputFor": [
+          "root_agent@1/finalize@1",
+          "root_agent@1"
+        ],
+        "path": "root_agent@1/finalize@1"
+      },
+      "output": "final: Please provide the text you would like me to summarize!"
+    }
+  ],
+  "id": "ba40366e-0563-469f-a4b2-09e007adf6ff",
+  "state": {
+    "__session_metadata__": {
+      "displayName": "go"
+    }
+  },
+  "userId": "user"
+}

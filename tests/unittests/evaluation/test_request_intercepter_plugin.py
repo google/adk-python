@@ -37,6 +37,7 @@ class TestRequestIntercepterPlugin:
     )
     mock_invocation_context = mocker.MagicMock()
     mock_invocation_context.session.state = {}
+    mock_invocation_context._state_schema = None
     callback_context = CallbackContext(mock_invocation_context)
     llm_response = LlmResponse()
 

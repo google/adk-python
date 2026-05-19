@@ -12,8 +12,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import importlib
 from typing import TYPE_CHECKING
+from typing import Any
+import importlib
 
 from .base_agent import BaseAgent
 from .context import Context
@@ -45,15 +46,13 @@ __all__ = [
     'RunConfig',
 ]
 
-
-def __getattr__(name: str):
+def __getattr__(name: str) -> Any:
   if name == 'McpInstructionProvider':
-    try:
-      module = importlib.import_module(f'{__name__}.mcp_instruction_provider')
-    except ImportError as e:
-      raise ImportError(
-          '`McpInstructionProvider` requires the `mcp` package.'
-          ' Install with: pip install google-adk[extensions]'
-      ) from e
-    return module.McpInstructionProvider
+    module = importlib.import_module('.mcp_instruction_provider', __name__)
+    attr = getattr(module, 'McpInstructionProvider')
+    globals()[name] = attr
+    return attr
   raise AttributeError(f'module {__name__!r} has no attribute {name!r}')
+
+def __dir__() -> list[str]:
+  return list(globals().keys()) + __all__

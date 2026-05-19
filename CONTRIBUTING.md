@@ -133,7 +133,7 @@ part before or alongside your code PR.
 1. **Clone the repository:**
 
    ```shell
-   gh repo clone google/adk-python
+   gh repo clone google/adk-python -- -b v2
    cd adk-python
    ```
 
@@ -142,78 +142,69 @@ part before or alongside your code PR.
    Check out
    [uv installation guide](https://docs.astral.sh/uv/getting-started/installation/).
 
-1. **Create and activate a virtual environment:**
+1. **Setup Development Tools:**
 
-   **NOTE**: ADK supports Python 3.10+. Python 3.11 and above is strongly
-   recommended.
-
-   Create a workspace venv using uv.
-
-   ```shell
-   uv venv --python "python3.11" ".venv"
-   ```
-
-   Activate the workspace venv.
+   We use `pre-commit` for code formatting and license enforcement,
+   `tox` with `tox-uv` for isolated multi-version testing, and
+   `addlicense` for Apache 2.0 license headers.
 
    ```shell
-   source .venv/bin/activate
+   uv tool install pre-commit
+   uv tool install tox --with tox-uv
    ```
 
-   **Windows**
+   Optionally, install Google's `addlicense` tool for license header
+   checks (requires Go):
 
    ```shell
-   source .\.venv\Scripts\activate
+   go install github.com/google/addlicense@latest
    ```
 
-1. **Install dependencies:**
+   If `addlicense` is not installed, the pre-commit hook will be
+   skipped and CI will catch missing headers.
 
-   ```shell
-   uv sync --all-extras
-   ```
-
-   **NOTE**: for convenience, installing all extra deps as a starting point.
-
-1. **Run unit tests:**
-
-   ```shell
-   pytest ./tests/unittests
-   ```
-
-   NOTE: for accurate repro of test failure, only include `test` as extra
-   dependencies.
-
-   ```shell
-   uv sync --extra test
-   pytest ./tests/unittests
-   ```
-
-   **Alternatively**, use the included `unittests.sh` script which handles
-   environment setup and restoration automatically:
-
-   ```shell
-   ./scripts/unittests.sh
-   ```
-
-   This script will:
-
-   - Set up the test environment with minimal dependencies (`test`, `eval`, `a2a`)
-   - Run the unit tests
-   - Restore the full development environment (`--all-extras`)
-
-1. **Auto-format the code:**
-
-   We use `pre-commit` to manage code style and formatting (including `isort` and `pyink`).
-
-   To run it manually on all files:
-
-   ```shell
-   pre-commit run --all-files
-   ```
-
-   You can also install it as a git hook to run automatically on every commit:
+   Install the git hooks to automatically format and check your code
+   before committing:
 
    ```shell
    pre-commit install
+   ```
+
+   The pre-commit hooks run `isort`, `pyink`, `addlicense`, and
+   `mdformat` automatically on each commit.
+
+1. **Create virtual environment and install dependencies:**
+
+   ```shell
+   uv venv --python "python3.11" ".venv"
+   source .venv/bin/activate
+   uv sync --all-extras
+   ```
+
+1. **Run unit tests locally (Fast):**
+
+   If you just want to run tests quickly while developing, run `pytest`:
+
+   ```shell
+   pytest ./tests/unittests
+   ```
+
+1. **Run multi-version unit tests (Required before PR):**
+
+   ADK guarantees compatibility across Python versions. You must run the full test suite across all supported versions using `tox`. This will execute tests in pristine, isolated environments.
+
+   ```shell
+   tox
+   ```
+
+   _(Note: `uv` will automatically download any Python interpreters you are missing!)_
+
+1. **Auto-format the code:**
+
+   If you installed the git hooks in Step 3, this happens automatically on commit. To run it manually across all files:
+
+   ```shell
+   pre-commit run --all-files
    ```
 
 1. **Build the wheel file:**
@@ -255,8 +246,26 @@ part before or alongside your code PR.
 [Contributing folder](https://github.com/google/adk-python/tree/main/contributing)
 has resources that are helpful for contributors.
 
-## Vibe Coding
+## AI-Assisted Development
 
-If you want to contribute by leveraging vibe coding, the AGENTS.md
-(https://github.com/google/adk-python/tree/main/AGENTS.md) could be used as
-context to your LLM.
+This repo includes built-in skills for AI coding agents
+(Antigravity, Gemini CLI, and others) to help with ADK development:
+
+- **`setup-dev-env`** — Set up the local development environment:
+  install dependencies, configure pre-commit hooks, and verify
+  the setup.
+
+- **`adk-debug`** — Debug ADK agents: inspect sessions, trace event
+  flows, check LLM requests/responses, diagnose tool call issues.
+  Supports both `adk web` (browser UI) and `adk run` (CLI) workflows.
+
+- **`adk-workflow`** — Build graph-based workflow agents: function
+  nodes, LLM agent nodes, edge patterns, routing, parallel processing
+  (fan-out and ParallelWorker), human-in-the-loop, state management,
+  and best practices. Includes reference docs and tested samples.
+
+These skills are in `.agents/skills/` and are automatically available
+when using compatible AI coding tools in this repo.
+
+The `AGENTS.md` file provides additional project context that can
+be used as LLM input.
