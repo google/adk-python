@@ -4,26 +4,25 @@
 
 ### ADK 2.0 General Availability
 
-This release introduces v2.0.0 General Availability (GA) of the Google Agent Development Kit (ADK), establishing production-grade workflow execution, cloud deployment pipelines, and fully verified real-time multimodal transport layers.
+This release introduces v2.0.0 General Availability (GA) of the Google Agent Development Kit (ADK), delivering robust enterprise foundations for multi-agent workflows, seamless dynamic agent collaboration, real-time multimodal interactions, and unified cloud deployment.
 
 ### Architectural Milestones
 
-#### 1. Core Workflow Engine & Resiliency
-* **Agent Workflows:** Fully stabilizes the model-agnostic workflow graph execution framework (`Workflow`, `LlmAgentWrapper`, `FunctionNode`, `ParallelWorker`, `DynamicNodeScheduler`).
-* **Codebase Refactoring:** Implements internal module namespace encapsulation (`_` prefix), removes all production `assert` statements in favor of descriptive runtime exceptions, and enforces keyword-only parameters across public API methods to prevent argument misdirection.
+#### 1. Multi-Agent Workflow Engine
+* **Flexible Execution Graphs:** Establishes a production-grade, model-agnostic engine for orchestrating non-linear and conditional agent execution patterns.
+* **Complex Task Delegation:** Introduces powerful workflow abstractions enabling parallel sub-agent workers, nested agent hierarchies, and resilient dynamic scheduling across diverse execution steps.
 
-#### 2. Real-Time Bidirectional Streaming
-* **Live Protocol Integration:** Adds support for Gemini Live mode (`bidiGenerateContent`), enabling low-latency streaming across native audio models (`gemini-live-2.5-flash-native-audio`, `gemini-3.1-flash-live-preview`).
-* **Session Resumption & Queue Handling:** Introduces `LiveRequestQueue` with clean websocket termination validation (`Code 1000`) and transparent multi-turn session resumption.
+#### 2. Advanced Agent Collaboration
+* **Native Inter-Agent Routing:** Seamlessly coordinates message handoffs and control state transfers between autonomous agents working on shared goals.
+* **Unified Tool Calling Standards:** Establishes rich, structured schema support allowing agents to invoke internal scripts, OpenAPI web services, and external Model Context Protocol (MCP) ecosystems collaboratively.
 
-#### 3. Cloud-Native Deployment (`adk deploy`)
-* **Vertex AI Agent Engines:** Enables one-command containerization and remote deployment to managed cloud runtime environments (`ReasoningEngine`).
-* **Gemini Enterprise Agent Platform:** Exports native gRPC handler bindings (`AgentSpace`) allowing ADK applications to operate directly as enterprise backend services.
-* **Event Webhooks:** Adds support for asynchronous and batch trigger routing (`--trigger_sources="pubsub,eventarc"`).
+#### 3. Real-Time Multimodal Streaming
+* **Low-Latency Live Interactions:** Integrates bidirectional streaming support for Gemini Live audio models, allowing asynchronous real-time speech and video frame analysis within active agent workflows.
+* **Persistent Session Management:** Enables transparent session resumption, allowing disconnected multi-turn dialogues to resume without losing long-term execution memory or context.
 
-#### 4. Ecosystem & Services Standardization
-* **Enterprise Storage Persistence:** Adds robust backend implementations for `VertexAiSessionService` and `VertexAiMemoryBankService`, featuring universal session deduplication, exponential backoff retries for rate limits, session TTL management, and GCS artifact streaming.
-* **Tool Calling Standards:** Migrates the framework to Pydantic-based JSON Schema generation for LLM tool declarations, OpenAPI document parsing (`RestApiTool`), and Model Context Protocol (MCP) toolsets with OAuth PKCE authentication.
+#### 4. Enterprise Cloud Deployment
+* **Vertex AI Agent Engines:** Enables seamless containerization and automated cloud staging to fully managed runtime environments with a single CLI command (`adk deploy agent_engine`).
+* **Gemini Enterprise Backend Services:** Supports instant integration into corporate security networks, allowing ADK web servers to operate directly as governed enterprise AI application backends.
 
 ## [1.34.0](https://github.com/google/adk-python/compare/v1.33.0...v1.34.0) (2026-05-18)
 
