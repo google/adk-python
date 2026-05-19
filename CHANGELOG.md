@@ -4,25 +4,17 @@
 
 ### ADK 2.0 General Availability
 
-This release introduces v2.0.0 General Availability (GA) of the Google Agent Development Kit (ADK), delivering robust enterprise foundations for multi-agent workflows, seamless dynamic agent collaboration, real-time multimodal interactions, and unified cloud deployment.
+This release introduces v2.0.0 General Availability (GA) of the Google Agent Development Kit (ADK), establishing production-grade foundations for multi-agent workflows and advanced dynamic agent collaboration.
 
-### Architectural Milestones
+### Core Architecture Highlights
 
 #### 1. Multi-Agent Workflow Engine
-* **Flexible Execution Graphs:** Establishes a production-grade, model-agnostic engine for orchestrating non-linear and conditional agent execution patterns.
-* **Complex Task Delegation:** Introduces powerful workflow abstractions enabling parallel sub-agent workers, nested agent hierarchies, and resilient dynamic scheduling across diverse execution steps.
+* **Flexible Execution Graphs:** Establishes a model-agnostic engine for orchestrating non-linear, conditional, and cyclical agent execution patterns.
+* **Intelligent Task Delegation:** Introduces modular workflow abstractions enabling parallel sub-agent workers, nested hierarchical team structures, and resilient dynamic scheduling across complex task execution steps.
 
-#### 2. Advanced Agent Collaboration
-* **Native Inter-Agent Routing:** Seamlessly coordinates message handoffs and control state transfers between autonomous agents working on shared goals.
-* **Unified Tool Calling Standards:** Establishes rich, structured schema support allowing agents to invoke internal scripts, OpenAPI web services, and external Model Context Protocol (MCP) ecosystems collaboratively.
-
-#### 3. Real-Time Multimodal Streaming
-* **Low-Latency Live Interactions:** Integrates bidirectional streaming support for Gemini Live audio models, allowing asynchronous real-time speech and video frame analysis within active agent workflows.
-* **Persistent Session Management:** Enables transparent session resumption, allowing disconnected multi-turn dialogues to resume without losing long-term execution memory or context.
-
-#### 4. Enterprise Cloud Deployment
-* **Vertex AI Agent Engines:** Enables seamless containerization and automated cloud staging to fully managed runtime environments with a single CLI command (`adk deploy agent_engine`).
-* **Gemini Enterprise Backend Services:** Supports instant integration into corporate security networks, allowing ADK web servers to operate directly as governed enterprise AI application backends.
+#### 2. Dynamic Agent Collaboration
+* **Native Inter-Agent Routing:** Provides seamless orchestration for inter-agent messaging, control state handoffs, and context variable propagation across collaborative multi-agent swarms.
+* **Unified Tool Ecosystems:** Enables rich collaborative tool invocation, allowing swarms of specialized agents to discover and execute internal scripts, OpenAPI REST services, and external Model Context Protocol (MCP) toolsets towards shared goals.
 
 ## [1.34.0](https://github.com/google/adk-python/compare/v1.33.0...v1.34.0) (2026-05-18)
 
