@@ -2944,6 +2944,20 @@ async def test_get_content_file_uri_file_id_required_preserves_file_id(
 
 
 @pytest.mark.asyncio
+async def test_get_content_file_uri_azure_preserves_assistant_file_id():
+  parts = [
+      types.Part(
+          file_data=types.FileData(
+              file_uri="assistant-abc123",
+              mime_type="application/pdf",
+          )
+      )
+  ]
+  content = await _get_content(parts, provider="azure", model="azure/gpt-4.1")
+  assert content == [{"type": "file", "file": {"file_id": "assistant-abc123"}}]
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "provider,model",
     [
