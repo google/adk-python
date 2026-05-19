@@ -41,7 +41,7 @@ ALLOWED_LABELS = [
 ]
 
 CONTRIBUTING_MD = read_file(
-    Path(__file__).resolve().parents[3] / "CONTRIBUTING.md"
+    Path(__file__).resolve().parents[4] / "CONTRIBUTING.md"
 )
 
 APPROVAL_INSTRUCTION = (
