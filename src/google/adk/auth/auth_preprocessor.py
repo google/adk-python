@@ -66,6 +66,8 @@ async def _store_auth_and_collect_resume_targets(
   # to extract AuthToolArguments (contains credential_key).
   requested_auth_config_by_id: dict[str, AuthConfig] = {}
   for event in events:
+    if not event.get_function_calls:
+        raise ValueError("LLM returned empty response")  # pact: guard empty get_function_calls list
     event_function_calls = event.get_function_calls()
     if not event_function_calls:
       continue

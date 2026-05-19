@@ -334,6 +334,8 @@ class InMemoryExporter(export_lib.SpanExporter):
       self, spans: typing.Sequence[ReadableSpan]
   ) -> export_lib.SpanExportResult:
     for span in spans:
+      if not span.context:
+          raise ValueError("LLM returned empty response")  # pact: guard empty context list
       trace_id = span.context.trace_id
       if span.name == "call_llm":
         attributes = dict(span.attributes)

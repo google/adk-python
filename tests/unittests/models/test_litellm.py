@@ -1838,7 +1838,10 @@ def test_flatten_ollama_content_serializes_non_text_blocks_to_json():
   ]
   flattened = _flatten_ollama_content(blocks)
   assert isinstance(flattened, str)
-  assert json.loads(flattened) == blocks
+  try:
+      assert json.loads(flattened) == blocks
+  except json.JSONDecodeError as exc:
+      raise ValueError(f"Invalid JSON: {exc}") from exc
 
 
 def test_flatten_ollama_content_serializes_dict_to_json():
@@ -1847,7 +1850,10 @@ def test_flatten_ollama_content_serializes_dict_to_json():
   content = {"type": "image_url", "image_url": {"url": "http://example.com"}}
   flattened = _flatten_ollama_content(content)
   assert isinstance(flattened, str)
-  assert json.loads(flattened) == content
+  try:
+      assert json.loads(flattened) == content
+  except json.JSONDecodeError as exc:
+      raise ValueError(f"Invalid JSON: {exc}") from exc
 
 
 @pytest.mark.asyncio
@@ -2676,7 +2682,10 @@ def test_parse_tool_calls_from_text_multiple_calls():
   tool_calls, remainder = _parse_tool_calls_from_text(text)
   assert len(tool_calls) == 2
   assert tool_calls[0].function.name == "alpha"
-  assert json.loads(tool_calls[0].function.arguments) == {"value": 1}
+  try:
+      assert json.loads(tool_calls[0].function.arguments) == {"value": 1}
+  except json.JSONDecodeError as exc:
+      raise ValueError(f"Invalid JSON: {exc}") from exc
   assert tool_calls[1].id == "custom"
   assert tool_calls[1].function.name == "beta"
   assert json.loads(tool_calls[1].function.arguments) == {
@@ -2703,7 +2712,10 @@ def test_split_message_content_and_tool_calls_inline_text():
   assert content == "Intro  trailing content"
   assert len(tool_calls) == 1
   assert tool_calls[0].function.name == "alpha"
-  assert json.loads(tool_calls[0].function.arguments) == {"value": 1}
+  try:
+      assert json.loads(tool_calls[0].function.arguments) == {"value": 1}
+  except json.JSONDecodeError as exc:
+      raise ValueError(f"Invalid JSON: {exc}") from exc
 
 
 def test_split_message_content_prefers_existing_structured_calls():

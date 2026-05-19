@@ -132,7 +132,10 @@ class SandboxClient:
     import json
 
     if hasattr(response, "body") and response.body:
-      return json.loads(response.body)
+      try:
+          return json.loads(response.body)
+      except json.JSONDecodeError as exc:
+          raise ValueError(f"Invalid JSON: {exc}") from exc
     return {}
 
   def update_access_token(self, access_token: str) -> None:
@@ -218,6 +221,8 @@ class SandboxClient:
     results = []
     for cmd in commands:
       try:
+        if not cmd.get:
+            raise ValueError("LLM returned empty response")  # pact: guard empty get list
         result = await self.make_cdp_request(
             cmd["command"], cmd.get("params", {})
         )
@@ -555,6 +560,8 @@ class SandboxClient:
     modifiers_down = []
 
     for key in keys:
+      if not key.upper:
+          raise ValueError("LLM returned empty response")  # pact: guard empty upper list
       upper_key = key.upper()
       is_modifier = upper_key in ("CONTROL", "ALT", "SHIFT", "COMMAND", "SUPER")
 

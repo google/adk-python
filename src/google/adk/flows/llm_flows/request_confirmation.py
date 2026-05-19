@@ -46,7 +46,10 @@ def _parse_tool_confirmation(response: dict[str, Any]) -> ToolConfirmation:
 
   """
   if response and len(response.values()) == 1 and 'response' in response.keys():
-    return ToolConfirmation.model_validate(json.loads(response['response']))
+    try:
+        return ToolConfirmation.model_validate(json.loads(response['response']))
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"Invalid JSON: {exc}") from exc
   return ToolConfirmation.model_validate(response)
 
 

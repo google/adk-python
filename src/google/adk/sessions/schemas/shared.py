@@ -51,7 +51,10 @@ class DynamicJSON(TypeDecorator):
       if dialect.name == "postgresql":
         return value  # JSONB returns dict directly
       else:
-        return json.loads(value)  # Deserialize from JSON string for TEXT
+        try:
+            return json.loads(value)  # Deserialize from JSON string for TEXT
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"Invalid JSON: {exc}") from exc
     return value
 
 

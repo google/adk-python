@@ -286,7 +286,10 @@ async def test_run_cli_save_session(
   )
 
   assert session_file.exists()
-  data = json.loads(session_file.read_text())
+  try:
+      data = json.loads(session_file.read_text())
+  except json.JSONDecodeError as exc:
+      raise ValueError(f"Invalid JSON: {exc}") from exc
   # The saved JSON should at least contain id and events keys
   assert "id" in data and "events" in data
 

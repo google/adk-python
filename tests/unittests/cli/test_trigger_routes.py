@@ -322,7 +322,10 @@ class TestTriggerPubSub:
     assert data["status"] == "success"
 
     assert len(captured_messages) == 1
-    parsed_msg = json.loads(captured_messages[0])
+    try:
+        parsed_msg = json.loads(captured_messages[0])
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"Invalid JSON: {exc}") from exc
     assert parsed_msg["data"] == "Hello from Pub/Sub"
     assert parsed_msg["attributes"] == {}
 
@@ -351,7 +354,10 @@ class TestTriggerPubSub:
     assert resp.json()["status"] == "success"
 
     assert len(captured_messages) == 1
-    parsed_msg = json.loads(captured_messages[0])
+    try:
+        parsed_msg = json.loads(captured_messages[0])
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"Invalid JSON: {exc}") from exc
     assert parsed_msg["data"] is None
     assert parsed_msg["attributes"] == {"key": "value", "action": "process"}
 
@@ -382,7 +388,10 @@ class TestTriggerPubSub:
     assert resp.json()["status"] == "success"
 
     assert len(captured_messages) == 1
-    parsed_msg = json.loads(captured_messages[0])
+    try:
+        parsed_msg = json.loads(captured_messages[0])
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"Invalid JSON: {exc}") from exc
     assert parsed_msg["data"] == {"order_id": 42, "amount": 99.99}
     assert parsed_msg["attributes"] == {}
 
@@ -520,7 +529,10 @@ class TestTriggerEventarc:
     assert resp.json()["status"] == "success"
 
     assert len(captured_messages) == 1
-    parsed_msg = json.loads(captured_messages[0])
+    try:
+        parsed_msg = json.loads(captured_messages[0])
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"Invalid JSON: {exc}") from exc
     assert parsed_msg["data"] == payload["data"]
     assert parsed_msg["attributes"]["ce-id"] == "evt-001"
     assert (
@@ -639,7 +651,10 @@ class TestTriggerEventarc:
     assert resp.json()["status"] == "success"
 
     assert len(captured_messages) == 1
-    parsed_msg = json.loads(captured_messages[0])
+    try:
+        parsed_msg = json.loads(captured_messages[0])
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"Invalid JSON: {exc}") from exc
     assert parsed_msg["data"] == payload["data"]
 
   def test_agent_error_returns_500(self, client, monkeypatch):
@@ -672,7 +687,10 @@ class TestTriggerEventarc:
     assert resp.status_code == 200
 
     assert len(captured_messages) == 1
-    parsed_msg = json.loads(captured_messages[0])
+    try:
+        parsed_msg = json.loads(captured_messages[0])
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"Invalid JSON: {exc}") from exc
     assert parsed_msg["data"] == {}
 
   def test_structured_mode_pubsub_wrapper(self, client, monkeypatch):
@@ -706,7 +724,10 @@ class TestTriggerEventarc:
     assert resp.json()["status"] == "success"
 
     assert len(captured_messages) == 1
-    parsed_msg = json.loads(captured_messages[0])
+    try:
+        parsed_msg = json.loads(captured_messages[0])
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"Invalid JSON: {exc}") from exc
     assert parsed_msg["data"] == "Hello from structured Eventarc"
     assert parsed_msg["attributes"] == {}
 
@@ -744,7 +765,10 @@ class TestTriggerEventarc:
     assert resp.json()["status"] == "success"
 
     assert len(captured_messages) == 1
-    parsed_msg = json.loads(captured_messages[0])
+    try:
+        parsed_msg = json.loads(captured_messages[0])
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"Invalid JSON: {exc}") from exc
     assert parsed_msg["data"] == "hello from eventarc"
     assert parsed_msg["attributes"] == {}
 
@@ -776,7 +800,10 @@ class TestTriggerEventarc:
     assert resp.json()["status"] == "success"
 
     assert len(captured_messages) == 1
-    parsed_msg = json.loads(captured_messages[0])
+    try:
+        parsed_msg = json.loads(captured_messages[0])
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"Invalid JSON: {exc}") from exc
     assert parsed_msg["data"] is None
     assert parsed_msg["attributes"] == {"key": "value"}
 
@@ -812,7 +839,10 @@ class TestTriggerEventarc:
     )
     assert resp.status_code == 200
     assert len(captured_message) == 1
-    received_data = json.loads(captured_message[0])
+    try:
+        received_data = json.loads(captured_message[0])
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"Invalid JSON: {exc}") from exc
     assert received_data["data"]["bucket"] == "my-bucket"
     assert received_data["data"]["name"] == "file.txt"
     assert received_data["attributes"]["ce-id"] == "12345"

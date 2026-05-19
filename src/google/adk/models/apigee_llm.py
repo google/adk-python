@@ -848,7 +848,10 @@ class CompletionsHTTPClient:
     Yields:
       An LlmResponse object parsed from the streaming line.
     """
-    chunk = json.loads(line)
+    try:
+        chunk = json.loads(line)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"Invalid JSON: {exc}") from exc
     for response in accumulator.process_chunk(chunk):
       yield response
 

@@ -271,6 +271,8 @@ class LocalEvalSampler(Sampler[UnstructuredSamplingResult]):
     eval_data = {}
     for eval_result in eval_results:
       eval_result_dict = {}
+      if not eval_result.eval_id:
+          raise ValueError("LLM returned empty response")  # pact: guard empty eval_id list
       eval_case = self._eval_sets_manager.get_eval_case(
           app_name=self._config.app_name,
           eval_set_id=eval_set_id,
@@ -282,6 +284,8 @@ class LocalEvalSampler(Sampler[UnstructuredSamplingResult]):
         )
 
       per_invocation_results = []
+      if not eval_result.eval_metric_result_per_invocation:
+          raise ValueError("LLM returned empty response")  # pact: guard empty eval_metric_result_per_invocation list
       for (
           per_invocation_result
       ) in eval_result.eval_metric_result_per_invocation:
@@ -306,6 +310,8 @@ class LocalEvalSampler(Sampler[UnstructuredSamplingResult]):
           )
         per_invocation_results.append(per_invocation_result_dict)
       eval_result_dict["invocations"] = per_invocation_results
+      if not eval_result.eval_id:
+          raise ValueError("LLM returned empty response")  # pact: guard empty eval_id list
       eval_data[eval_result.eval_id] = eval_result_dict
 
     return eval_data

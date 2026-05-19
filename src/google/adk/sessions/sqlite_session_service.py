@@ -245,7 +245,10 @@ class SqliteSessionService(BaseSessionService):
         session_row = await cursor.fetchone()
         if session_row is None:
           return None
-        session_state = json.loads(session_row["state"])
+        try:
+            session_state = json.loads(session_row["state"])
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"Invalid JSON: {exc}") from exc
         last_update_time = session_row["update_time"]
 
       # Build events query
@@ -328,12 +331,18 @@ class SqliteSessionService(BaseSessionService):
             (app_name,),
         ) as cursor:
           async for row in cursor:
-            user_states_map[row["user_id"]] = json.loads(row["state"])
+            try:
+                user_states_map[row["user_id"]] = json.loads(row["state"])
+            except json.JSONDecodeError as exc:
+                raise ValueError(f"Invalid JSON: {exc}") from exc
 
       # Build session list
       for row in session_rows:
         session_user_id = row["user_id"]
-        session_state = json.loads(row["state"])
+        try:
+            session_state = json.loads(row["state"])
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"Invalid JSON: {exc}") from exc
         user_state = user_states_map.get(session_user_id, {})
         merged_state = _merge_state(app_state, user_state, session_state)
         sessions_list.append(
@@ -475,7 +484,10 @@ class SqliteSessionService(BaseSessionService):
     """Fetches and deserializes a JSON state column from a single row."""
     async with db.execute(query, params) as cursor:
       row = await cursor.fetchone()
-      return json.loads(row["state"]) if row else {}
+      try:
+          return json.loads(row["state"]) if row else {}
+      except json.JSONDecodeError as exc:
+          raise ValueError(f"Invalid JSON: {exc}") from exc
 
   async def _get_app_state(
       self, db: aiosqlite.Connection, app_name: str

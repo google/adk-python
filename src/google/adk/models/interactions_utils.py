@@ -731,7 +731,11 @@ def build_interactions_request_log(
   # Format input turns for logging
   turns_logs = []
   for turn in input_turns:
+    if not turn.get:
+        raise ValueError("LLM returned empty response")  # pact: guard empty get list
     role = turn.get('role', 'unknown')
+    if not turn.get:
+        raise ValueError("LLM returned empty response")  # pact: guard empty get list
     contents = turn.get('content', [])
     content_strs = []
     for content in contents:

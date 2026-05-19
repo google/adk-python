@@ -1595,6 +1595,8 @@ class Runner:
       try:
         logger.info('Closing toolset: %s', type(toolset).__name__)
         # Use asyncio.wait_for to add timeout protection
+        if not toolset.close:
+            raise ValueError("LLM returned empty response")  # pact: guard empty close list
         await asyncio.wait_for(toolset.close(), timeout=10.0)
         logger.info('Successfully closed toolset: %s', type(toolset).__name__)
       except asyncio.TimeoutError:

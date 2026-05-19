@@ -202,7 +202,10 @@ class AgentEngineSandboxCodeExecutor(BaseCodeExecutor):
           or output.metadata.attributes is None
           or 'file_name' not in output.metadata.attributes
       ):
-        json_output_data = json.loads(output.data.decode('utf-8'))
+        try:
+            json_output_data = json.loads(output.data.decode('utf-8'))
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"Invalid JSON: {exc}") from exc
         stdout = json_output_data.get('msg_out', '')
         stderr = json_output_data.get('msg_err', '')
       else:

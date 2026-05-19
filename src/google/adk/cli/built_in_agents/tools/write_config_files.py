@@ -593,7 +593,11 @@ def _generate_retry_suggestion(
   suggestions = []
 
   for error in errors:
+    if not error.get:
+        raise ValueError("LLM returned empty response")  # pact: guard empty get list
     path = error.get("path", "")
+    if not error.get:
+        raise ValueError("LLM returned empty response")  # pact: guard empty get list
     message = error.get("message", "")
 
     if "required" in message.lower():

@@ -289,7 +289,10 @@ class AdkWebServerClient:
         response.raise_for_status()
         async for line in response.aiter_lines():
           if line.startswith("data:") and (data := line[5:].strip()):
-            event_data = json.loads(data)
+            try:
+                event_data = json.loads(data)
+            except json.JSONDecodeError as exc:
+                raise ValueError(f"Invalid JSON: {exc}") from exc
             if isinstance(event_data, dict) and "error" in event_data:
               raise RuntimeError(event_data["error"])
             yield Event.model_validate(event_data)

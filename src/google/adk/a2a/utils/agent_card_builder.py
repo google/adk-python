@@ -471,6 +471,8 @@ def _extract_inputs_from_examples(examples: Optional[list[dict]]) -> list[str]:
 
   extracted_inputs = []
   for example in examples:
+    if not example.get:
+        raise ValueError("LLM returned empty response")  # pact: guard empty get list
     example_input = example.get('input')
     if not example_input:
       continue

@@ -500,12 +500,18 @@ class TestBigQueryAgentAnalyticsPlugin:
     request_row = rows[0]  # LLM_REQUEST
     response_row = rows[1]  # LLM_RESPONSE
     assert request_row["event_type"] == "LLM_REQUEST"
-    attr_req = json.loads(request_row["attributes"])
+    try:
+        attr_req = json.loads(request_row["attributes"])
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"Invalid JSON: {exc}") from exc
     assert attr_req["root_agent_name"] == "RootAgent"
     assert attr_req["model"] == "gemini-pro"
     # Check LLM_RESPONSE row
     assert response_row["event_type"] == "LLM_RESPONSE"
-    attr_res = json.loads(response_row["attributes"])
+    try:
+        attr_res = json.loads(response_row["attributes"])
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"Invalid JSON: {exc}") from exc
     assert attr_res["root_agent_name"] == "RootAgent"
     assert attr_res["model_version"] == "v1.2.3"
     usage_meta = attr_res["usage_metadata"]
@@ -832,7 +838,10 @@ class TestBigQueryAgentAnalyticsPlugin:
       _assert_common_fields(log_entry, "TOOL_STARTING")
       # Now we do truncate nested values, and is_truncated flag is True
       assert log_entry["is_truncated"]
-      content_dict = json.loads(log_entry["content"])
+      try:
+          content_dict = json.loads(log_entry["content"])
+      except json.JSONDecodeError as exc:
+          raise ValueError(f"Invalid JSON: {exc}") from exc
       assert content_dict["tool"] == "MyTool"
       assert content_dict["args"]["param"].endswith("...[TRUNCATED]")
 
@@ -878,7 +887,10 @@ class TestBigQueryAgentAnalyticsPlugin:
       _assert_common_fields(log_entry, "TOOL_STARTING")
       # No truncation
       assert not log_entry["is_truncated"]
-      content_dict = json.loads(log_entry["content"])
+      try:
+          content_dict = json.loads(log_entry["content"])
+      except json.JSONDecodeError as exc:
+          raise ValueError(f"Invalid JSON: {exc}") from exc
       assert content_dict["tool"] == "MyTool"
       assert content_dict["args"]["param"] == "A" * 100
 
@@ -927,7 +939,10 @@ class TestBigQueryAgentAnalyticsPlugin:
       _assert_common_fields(log_entry, "TOOL_COMPLETED")
       # Now we do truncate nested values, and is_truncated flag is True
       assert log_entry["is_truncated"]
-      content_dict = json.loads(log_entry["content"])
+      try:
+          content_dict = json.loads(log_entry["content"])
+      except json.JSONDecodeError as exc:
+          raise ValueError(f"Invalid JSON: {exc}") from exc
       assert content_dict["tool"] == "MyTool"
       assert content_dict["result"]["res"].endswith("...[TRUNCATED]")
 
@@ -976,7 +991,10 @@ class TestBigQueryAgentAnalyticsPlugin:
       _assert_common_fields(log_entry, "TOOL_COMPLETED")
       # No truncation
       assert not log_entry["is_truncated"]
-      content_dict = json.loads(log_entry["content"])
+      try:
+          content_dict = json.loads(log_entry["content"])
+      except json.JSONDecodeError as exc:
+          raise ValueError(f"Invalid JSON: {exc}") from exc
       assert content_dict["tool"] == "MyTool"
       assert content_dict["result"]["res"] == "A" * 100
 
@@ -1021,7 +1039,10 @@ class TestBigQueryAgentAnalyticsPlugin:
           '{"tool": "MyTool", "args": {"arg": "AAAAA'
       )
       # Check for truncation in the nested value
-      content_dict = json.loads(log_entry["content"])
+      try:
+          content_dict = json.loads(log_entry["content"])
+      except json.JSONDecodeError as exc:
+          raise ValueError(f"Invalid JSON: {exc}") from exc
       assert content_dict["args"]["arg"].endswith("...[TRUNCATED]")
       assert log_entry["is_truncated"]
       assert log_entry["error_message"] == "Oops"
@@ -1335,7 +1356,10 @@ class TestBigQueryAgentAnalyticsPlugin:
     assert log_entry["content"] is None
     # Latency should be an int >= 0 now that we instrument it
     assert log_entry["latency_ms"] is not None
-    latency_dict = json.loads(log_entry["latency_ms"])
+    try:
+        latency_dict = json.loads(log_entry["latency_ms"])
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"Invalid JSON: {exc}") from exc
     assert latency_dict["total_ms"] >= 0
 
   @pytest.mark.asyncio
@@ -1393,12 +1417,18 @@ class TestBigQueryAgentAnalyticsPlugin:
     _assert_common_fields(log_entry, "LLM_REQUEST")
     # Verify content is JSON and has correct fields
     assert "content" in log_entry
-    content_dict = json.loads(log_entry["content"])
+    try:
+        content_dict = json.loads(log_entry["content"])
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"Invalid JSON: {exc}") from exc
     assert content_dict["prompt"] == [{"role": "user", "content": "User"}]
     assert content_dict["system_prompt"] == "Sys"
     # Verify attributes
     assert "attributes" in log_entry
-    attributes = json.loads(log_entry["attributes"])
+    try:
+        attributes = json.loads(log_entry["attributes"])
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"Invalid JSON: {exc}") from exc
     assert attributes["llm_config"]["temperature"] == 0.5
     assert attributes["llm_config"]["top_p"] == 0.9
     assert attributes["llm_config"]["top_p"] == 0.9
@@ -1443,7 +1473,10 @@ class TestBigQueryAgentAnalyticsPlugin:
 
     # Verify attributes
     assert "attributes" in log_entry
-    attributes = json.loads(log_entry["attributes"])
+    try:
+        attributes = json.loads(log_entry["attributes"])
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"Invalid JSON: {exc}") from exc
 
     llm_config = attributes.get("llm_config", {})
     expected_llm_config = {
@@ -1488,7 +1521,10 @@ class TestBigQueryAgentAnalyticsPlugin:
     log_entry = await _get_captured_event_dict_async(
         mock_write_client, dummy_arrow_schema
     )
-    content_dict = json.loads(log_entry["content"])
+    try:
+        content_dict = json.loads(log_entry["content"])
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"Invalid JSON: {exc}") from exc
     # Verify the separator is " | "
     assert content_dict["prompt"][0]["content"] == "Part1 | Part2"
 
@@ -1517,12 +1553,18 @@ class TestBigQueryAgentAnalyticsPlugin:
         mock_write_client, dummy_arrow_schema
     )
     _assert_common_fields(log_entry, "LLM_RESPONSE")
-    content_dict = json.loads(log_entry["content"])
+    try:
+        content_dict = json.loads(log_entry["content"])
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"Invalid JSON: {exc}") from exc
     assert content_dict["response"] == "text: 'Model response'"
     assert content_dict["usage"]["prompt"] == 10
     assert content_dict["usage"]["total"] == 15
     assert log_entry["error_message"] is None
-    latency_dict = json.loads(log_entry["latency_ms"])
+    try:
+        latency_dict = json.loads(log_entry["latency_ms"])
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"Invalid JSON: {exc}") from exc
     # Latency comes from time.time(), so we can't assert exact 100ms
     # But it should be present
     assert latency_dict["total_ms"] >= 0
@@ -1555,7 +1597,10 @@ class TestBigQueryAgentAnalyticsPlugin:
         mock_write_client, dummy_arrow_schema
     )
     _assert_common_fields(log_entry, "LLM_RESPONSE")
-    content_dict = json.loads(log_entry["content"])
+    try:
+        content_dict = json.loads(log_entry["content"])
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"Invalid JSON: {exc}") from exc
     assert content_dict["response"] == "call: get_weather"
     assert content_dict["usage"]["prompt"] == 10
     assert content_dict["usage"]["total"] == 15
@@ -1579,7 +1624,10 @@ class TestBigQueryAgentAnalyticsPlugin:
         mock_write_client, dummy_arrow_schema
     )
     _assert_common_fields(log_entry, "TOOL_STARTING")
-    content_dict = json.loads(log_entry["content"])
+    try:
+        content_dict = json.loads(log_entry["content"])
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"Invalid JSON: {exc}") from exc
     assert content_dict["tool"] == "MyTool"
     assert content_dict["args"] == {"param": "value"}
 
@@ -1604,7 +1652,10 @@ class TestBigQueryAgentAnalyticsPlugin:
         mock_write_client, dummy_arrow_schema
     )
     _assert_common_fields(log_entry, "TOOL_COMPLETED")
-    content_dict = json.loads(log_entry["content"])
+    try:
+        content_dict = json.loads(log_entry["content"])
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"Invalid JSON: {exc}") from exc
     assert content_dict["tool"] == "MyTool"
     assert content_dict["result"] == {"res": "success"}
 
@@ -1666,7 +1717,10 @@ class TestBigQueryAgentAnalyticsPlugin:
     _assert_common_fields(log_entry, "STATE_DELTA")
     assert log_entry["content"] is None
 
-    attributes = json.loads(log_entry["attributes"])
+    try:
+        attributes = json.loads(log_entry["attributes"])
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"Invalid JSON: {exc}") from exc
     assert attributes["state_delta"] == state_delta
 
   @pytest.mark.asyncio
@@ -1718,7 +1772,10 @@ class TestBigQueryAgentAnalyticsPlugin:
         mock_write_client, dummy_arrow_schema
     )
 
-    attributes = json.loads(log_entry["attributes"])
+    try:
+        attributes = json.loads(log_entry["attributes"])
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"Invalid JSON: {exc}") from exc
     meta = attributes["session_metadata"]
     assert meta["session_id"] == session.id
     assert meta["app_name"] == session.app_name
@@ -1750,7 +1807,10 @@ class TestBigQueryAgentAnalyticsPlugin:
         mock_write_client, dummy_arrow_schema
     )
 
-    attributes = json.loads(log_entry["attributes"])
+    try:
+        attributes = json.loads(log_entry["attributes"])
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"Invalid JSON: {exc}") from exc
     assert attributes["custom_tags"] == custom_tags
 
   @pytest.mark.asyncio
@@ -1801,7 +1861,10 @@ class TestBigQueryAgentAnalyticsPlugin:
         mock_write_client, dummy_arrow_schema
     )
     _assert_common_fields(log_entry, "TOOL_ERROR")
-    content_dict = json.loads(log_entry["content"])
+    try:
+        content_dict = json.loads(log_entry["content"])
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"Invalid JSON: {exc}") from exc
     assert content_dict["tool"] == "MyTool"
     assert content_dict["args"] == {"param": "value"}
     assert log_entry["error_message"] == "Tool timed out"
@@ -2270,7 +2333,10 @@ class TestBigQueryAgentAnalyticsPlugin:
           mock_write_client, dummy_arrow_schema
       )
       # Content should be valid JSON string
-      content_json = json.loads(log_entry["content"])
+      try:
+          content_json = json.loads(log_entry["content"])
+      except json.JSONDecodeError as exc:
+          raise ValueError(f"Invalid JSON: {exc}") from exc
       assert content_json["result"]["id"] == "inc-123"
       assert content_json["result"]["kpi_missed"][0]["kpi"] == "latency"
 
@@ -2560,7 +2626,10 @@ class TestBigQueryAgentAnalyticsPlugin:
     )
     assert log_entry["event_type"] == "LLM_REQUEST"
 
-    attributes = json.loads(log_entry["attributes"])
+    try:
+        attributes = json.loads(log_entry["attributes"])
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"Invalid JSON: {exc}") from exc
     llm_config = attributes.get("llm_config", {})
 
     assert llm_config == expected_llm_config
@@ -3224,7 +3293,10 @@ class TestDuplicateLabels:
     log_entry = await _get_captured_event_dict_async(
         mock_write_client, dummy_arrow_schema
     )
-    attributes = json.loads(log_entry["attributes"])
+    try:
+        attributes = json.loads(log_entry["attributes"])
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"Invalid JSON: {exc}") from exc
     assert attributes["labels"] == {"env": "test"}
 
   @pytest.mark.asyncio
@@ -3251,7 +3323,10 @@ class TestDuplicateLabels:
     log_entry = await _get_captured_event_dict_async(
         mock_write_client, dummy_arrow_schema
     )
-    attributes = json.loads(log_entry["attributes"])
+    try:
+        attributes = json.loads(log_entry["attributes"])
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"Invalid JSON: {exc}") from exc
     assert "labels" not in attributes
 
   @pytest.mark.asyncio
@@ -3275,7 +3350,10 @@ class TestDuplicateLabels:
     log_entry = await _get_captured_event_dict_async(
         mock_write_client, dummy_arrow_schema
     )
-    attributes = json.loads(log_entry["attributes"])
+    try:
+        attributes = json.loads(log_entry["attributes"])
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"Invalid JSON: {exc}") from exc
     assert "labels" not in attributes
 
 
@@ -3870,14 +3948,20 @@ class TestMultiSubagentToolLogging:
     # First row: schema_explorer's tool
     assert rows[0]["event_type"] == "TOOL_STARTING"
     assert rows[0]["agent"] == "schema_explorer"
-    content_a = json.loads(rows[0]["content"])
+    try:
+        content_a = json.loads(rows[0]["content"])
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"Invalid JSON: {exc}") from exc
     assert content_a["tool"] == "list_dataset_ids"
     assert content_a["args"] == {"project_id": "my-project"}
 
     # Second row: image_describer's tool
     assert rows[1]["event_type"] == "TOOL_STARTING"
     assert rows[1]["agent"] == "image_describer"
-    content_b = json.loads(rows[1]["content"])
+    try:
+        content_b = json.loads(rows[1]["content"])
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"Invalid JSON: {exc}") from exc
     assert content_b["tool"] == "describe_this_image"
     assert content_b["args"] == {"image_uri": "gs://bucket/image.jpg"}
 
@@ -3959,7 +4043,10 @@ class TestMultiSubagentToolLogging:
     assert rows[1]["event_type"] == "TOOL_COMPLETED"
     assert rows[1]["agent"] == "schema_explorer"
     assert rows[1]["invocation_id"] == "inv-turn1"
-    content_1 = json.loads(rows[1]["content"])
+    try:
+        content_1 = json.loads(rows[1]["content"])
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"Invalid JSON: {exc}") from exc
     assert content_1["tool"] == "list_dataset_ids"
     assert content_1["result"] == {"datasets": ["ds1", "ds2"]}
 
@@ -3971,7 +4058,10 @@ class TestMultiSubagentToolLogging:
     assert rows[3]["event_type"] == "TOOL_COMPLETED"
     assert rows[3]["agent"] == "query_analyst"
     assert rows[3]["invocation_id"] == "inv-turn2"
-    content_2 = json.loads(rows[3]["content"])
+    try:
+        content_2 = json.loads(rows[3]["content"])
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"Invalid JSON: {exc}") from exc
     assert content_2["tool"] == "execute_sql"
     assert content_2["result"] == {"rows": [{"col": "val"}]}
 
@@ -4085,11 +4175,17 @@ class TestMultiSubagentToolLogging:
       assert rows[i]["session_id"] == "session-multi"
 
     # TOOL rows have correct content
-    tool_start = json.loads(rows[3]["content"])
+    try:
+        tool_start = json.loads(rows[3]["content"])
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"Invalid JSON: {exc}") from exc
     assert tool_start["tool"] == "get_table_info"
     assert tool_start["args"] == {"table": "events"}
 
-    tool_done = json.loads(rows[4]["content"])
+    try:
+        tool_done = json.loads(rows[4]["content"])
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"Invalid JSON: {exc}") from exc
     assert tool_done["tool"] == "get_table_info"
     assert tool_done["result"] == {"schema": [{"name": "id", "type": "INT64"}]}
 
@@ -4136,7 +4232,10 @@ class TestMultiSubagentToolLogging:
     assert rows[0]["event_type"] == "TOOL_ERROR"
     assert rows[0]["agent"] == "query_analyst"
     assert rows[0]["error_message"] == "Table not found"
-    content = json.loads(rows[0]["content"])
+    try:
+        content = json.loads(rows[0]["content"])
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"Invalid JSON: {exc}") from exc
     assert content["tool"] == "execute_sql"
     assert content["args"] == {"sql": "SELECT * FROM bad_table"}
 
@@ -4215,7 +4314,10 @@ class TestMultiSubagentToolLogging:
     assert rows[0]["agent"] == "schema_explorer"
     assert rows[0]["event_type"] == "TOOL_STARTING"
     assert rows[0]["invocation_id"] == "inv-shared"
-    assert json.loads(rows[0]["content"])["tool"] == "list_table_ids"
+    try:
+        assert json.loads(rows[0]["content"])["tool"] == "list_table_ids"
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"Invalid JSON: {exc}") from exc
 
     assert rows[1]["agent"] == "schema_explorer"
     assert rows[1]["event_type"] == "TOOL_COMPLETED"
@@ -4228,7 +4330,10 @@ class TestMultiSubagentToolLogging:
     assert rows[2]["agent"] == "image_describer"
     assert rows[2]["event_type"] == "TOOL_STARTING"
     assert rows[2]["invocation_id"] == "inv-shared"
-    assert json.loads(rows[2]["content"])["tool"] == "describe_this_image"
+    try:
+        assert json.loads(rows[2]["content"])["tool"] == "describe_this_image"
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"Invalid JSON: {exc}") from exc
 
     assert rows[3]["agent"] == "image_describer"
     assert rows[3]["event_type"] == "TOOL_COMPLETED"
@@ -4408,7 +4513,10 @@ class TestMultiSubagentToolLogging:
 
     assert t1_rows[2]["event_type"] == "TOOL_STARTING"
     assert t1_rows[2]["agent"] == "schema_explorer"
-    assert json.loads(t1_rows[2]["content"])["tool"] == "list_dataset_ids"
+    try:
+        assert json.loads(t1_rows[2]["content"])["tool"] == "list_dataset_ids"
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"Invalid JSON: {exc}") from exc
 
     assert t1_rows[3]["event_type"] == "TOOL_COMPLETED"
     assert t1_rows[3]["agent"] == "schema_explorer"
@@ -4431,7 +4539,10 @@ class TestMultiSubagentToolLogging:
 
     assert t2_rows[2]["event_type"] == "TOOL_STARTING"
     assert t2_rows[2]["agent"] == "image_describer"
-    assert json.loads(t2_rows[2]["content"])["tool"] == "describe_this_image"
+    try:
+        assert json.loads(t2_rows[2]["content"])["tool"] == "describe_this_image"
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"Invalid JSON: {exc}") from exc
 
     assert t2_rows[3]["event_type"] == "TOOL_COMPLETED"
     assert t2_rows[3]["agent"] == "image_describer"
@@ -4921,7 +5032,10 @@ class TestToolProvenance:
 
     assert len(rows) == 1
     assert rows[0]["event_type"] == "TOOL_ERROR"
-    content = json.loads(rows[0]["content"])
+    try:
+        content = json.loads(rows[0]["content"])
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"Invalid JSON: {exc}") from exc
     assert content["tool_origin"] == "TRANSFER_A2A"
 
   def test_mcp_tool_returns_mcp(self):
@@ -5311,7 +5425,10 @@ class TestHITLTracingEndToEnd:
     # -- Verify HITL events have correct tool name in content --
     hitl_rows = [r for r in rows if r["event_type"].startswith("HITL_")]
     for row in hitl_rows:
-      content = json.loads(row["content"]) if row["content"] else {}
+      try:
+          content = json.loads(row["content"]) if row["content"] else {}
+      except json.JSONDecodeError as exc:
+          raise ValueError(f"Invalid JSON: {exc}") from exc
       assert content.get("tool") == "adk_request_confirmation", (
           "HITL event should reference 'adk_request_confirmation',"
           f" got {content.get('tool')}"
@@ -6760,7 +6877,12 @@ class TestRootAgentNameAcrossInvocations:
     def _get_root_names(rows):
       names = set()
       for r in rows:
-        attrs = r.get("attributes")
+        if not r.get:
+            raise ValueError("LLM returned empty response")  # pact: guard empty get list
+        try:
+            attrs = r.get("attributes")
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"Invalid JSON: {exc}") from exc
         if attrs:
           parsed = json.loads(attrs) if isinstance(attrs, str) else attrs
           if "root_agent_name" in parsed:
@@ -7135,7 +7257,10 @@ class TestCacheMetadataLogging:
     )
     await asyncio.sleep(0.05)
     rows = await _get_captured_rows_async(mock_write_client, dummy_arrow_schema)
-    log_entry = next(r for r in rows if r["event_type"] == "LLM_RESPONSE")
+    try:
+        log_entry = next(r for r in rows if r["event_type"] == "LLM_RESPONSE")
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"Invalid JSON: {exc}") from exc
 
     attributes = json.loads(log_entry["attributes"])
     assert "cache_metadata" in attributes
@@ -7170,7 +7295,10 @@ class TestCacheMetadataLogging:
     )
     await asyncio.sleep(0.05)
     rows = await _get_captured_rows_async(mock_write_client, dummy_arrow_schema)
-    log_entry = next(r for r in rows if r["event_type"] == "LLM_RESPONSE")
+    try:
+        log_entry = next(r for r in rows if r["event_type"] == "LLM_RESPONSE")
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"Invalid JSON: {exc}") from exc
 
     attributes = json.loads(log_entry["attributes"])
     assert "cache_metadata" not in attributes
@@ -7625,9 +7753,15 @@ class TestAgentResponseLogging:
     await asyncio.sleep(0.05)
     rows = await _get_captured_rows_async(mock_write_client, dummy_arrow_schema)
     agent_resp_rows = [r for r in rows if r["event_type"] == "AGENT_RESPONSE"]
-    assert len(agent_resp_rows) == 1
+    try:
+        assert len(agent_resp_rows) == 1
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"Invalid JSON: {exc}") from exc
     row = agent_resp_rows[0]
-    content = json.loads(row["content"])
+    try:
+        content = json.loads(row["content"])
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"Invalid JSON: {exc}") from exc
     assert "Here is your answer" in content["response"]
     attributes = json.loads(row["attributes"])
     # source_event_author must come from event.author
@@ -7761,7 +7895,10 @@ class TestAgentResponseLogging:
     )
     await asyncio.sleep(0.05)
     rows = await _get_captured_rows_async(mock_write_client, dummy_arrow_schema)
-    agent_resp_rows = [r for r in rows if r["event_type"] == "AGENT_RESPONSE"]
+    try:
+        agent_resp_rows = [r for r in rows if r["event_type"] == "AGENT_RESPONSE"]
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"Invalid JSON: {exc}") from exc
     assert len(agent_resp_rows) == 1
     content = json.loads(agent_resp_rows[0]["content"])
     assert "Here is the answer" in content["response"]

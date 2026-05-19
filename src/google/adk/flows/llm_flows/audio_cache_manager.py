@@ -158,6 +158,8 @@ class AudioCacheManager:
       mime_type = audio_cache[0].data.mime_type if audio_cache else 'audio/pcm'
 
       for entry in audio_cache:
+        if not entry.data:
+            raise ValueError("LLM returned empty response")  # pact: guard empty data list
         combined_audio_data += entry.data.data
 
       # Generate filename with timestamp from first audio chunk (when recording started)

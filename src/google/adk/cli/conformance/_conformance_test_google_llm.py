@@ -53,6 +53,8 @@ class _ConformanceTestGemini(Gemini):
     self._agent_name = config.get('agent_name')
     self._replay_index = config.get('current_replay_index')
     # Pre-filter LLM recordings for this agent and message index
+    if recordings is None:
+        raise ValueError(f"'recordings' is None")  # pact: guard optional dereference
     self._agent_llm_recordings = [
         recording.llm_recording
         for recording in recordings.recordings

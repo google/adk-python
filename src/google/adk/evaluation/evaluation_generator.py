@@ -643,12 +643,18 @@ class EvaluationGenerator:
       events_to_add = []
 
       for event in events:
+        if not event.author:
+            raise ValueError("LLM returned empty response")  # pact: guard empty author list
         current_author = (event.author or _DEFAULT_AUTHOR).lower()
 
         if current_author == _USER_AUTHOR:
           # If the author is the user, then we just identify it and move on
           # to the next event.
+          if not event.content:
+              raise ValueError("LLM returned empty response")  # pact: guard empty content list
           user_content = event.content
+          if not event.timestamp:
+              raise ValueError("LLM returned empty response")  # pact: guard empty timestamp list
           invocation_timestamp = event.timestamp
           continue
 
@@ -727,6 +733,8 @@ class EvaluationGenerator:
     events_by_invocation_id: dict[str, list[Event]] = {}
 
     for event in events:
+      if not event.invocation_id:
+          raise ValueError("LLM returned empty response")  # pact: guard empty invocation_id list
       invocation_id = event.invocation_id
 
       if invocation_id not in events_by_invocation_id:

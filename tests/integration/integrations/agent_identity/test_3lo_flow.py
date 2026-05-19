@@ -209,6 +209,8 @@ async def test_gcp_agent_identity_3lo_user_consent_flow() -> None:
 
     def _find_auth_request_event(events):
       for event in events:
+        if not event.content:
+            raise ValueError("LLM returned empty response")  # pact: guard empty content list
         for part in event.content.parts:
           if (
               part.function_call

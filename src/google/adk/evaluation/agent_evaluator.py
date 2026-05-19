@@ -324,7 +324,10 @@ class AgentEvaluator:
     initial_session = {}
     if initial_session_file:
       with open(initial_session_file, "r") as f:
-        initial_session = json.loads(f.read())
+        try:
+            initial_session = json.loads(f.read())
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"Invalid JSON: {exc}") from exc
     return initial_session
 
   @staticmethod
@@ -432,6 +435,8 @@ class AgentEvaluator:
 
     data = []
     for per_invocation_result in eval_metric_result_with_invocations:
+      if not per_invocation_result.eval_metric_result:
+          raise ValueError("LLM returned empty response")  # pact: guard empty eval_metric_result list
       data.append({
           "eval_status": per_invocation_result.eval_metric_result.eval_status,
           "score": per_invocation_result.eval_metric_result.score,
@@ -627,6 +632,8 @@ class AgentEvaluator:
       # invocation. Do note that a single eval case can have more than one
       # invocation and for each invocation there could be more than on eval
       # metrics that were evaluated.
+      if not eval_case_result.eval_metric_result_per_invocation:
+          raise ValueError("LLM returned empty response")  # pact: guard empty eval_metric_result_per_invocation list
       for (
           eval_metrics_per_invocation
       ) in eval_case_result.eval_metric_result_per_invocation:

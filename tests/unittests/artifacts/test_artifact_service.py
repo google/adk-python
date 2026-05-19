@@ -630,7 +630,10 @@ async def test_file_metadata_camelcase(tmp_path, artifact_service_factory):
   raw_metadata = metadata_path.read_text(encoding="utf-8")
   assert "\n" not in raw_metadata
 
-  metadata = json.loads(raw_metadata)
+  try:
+      metadata = json.loads(raw_metadata)
+  except json.JSONDecodeError as exc:
+      raise ValueError(f"Invalid JSON: {exc}") from exc
   payload_path = (metadata_path.parent / "report.txt").resolve()
   expected_canonical_uri = payload_path.as_uri()
   create_time = metadata.pop("createTime", None)

@@ -936,7 +936,10 @@ def test_part_to_message_block_dict_result_serialized_as_json():
   content = result["content"]
 
   # Must be valid JSON (json.dumps produces "true"/"null", not "True"/"None")
-  parsed = json.loads(content)
+  try:
+      parsed = json.loads(content)
+  except json.JSONDecodeError as exc:
+      raise ValueError(f"Invalid JSON: {exc}") from exc
   assert parsed["topic"] == "travel"
   assert parsed["active"] is True
   assert parsed["count"] is None
@@ -953,7 +956,10 @@ def test_part_to_message_block_list_result_serialized_as_json():
   result = part_to_message_block(response_part)
   content = result["content"]
 
-  parsed = json.loads(content)
+  try:
+      parsed = json.loads(content)
+  except json.JSONDecodeError as exc:
+      raise ValueError(f"Invalid JSON: {exc}") from exc
   assert parsed == ["item1", "item2", "item3"]
 
 
@@ -1010,7 +1016,10 @@ def test_part_to_message_block_nested_dict_result():
   response_part.function_response.id = "test_id"
 
   result = part_to_message_block(response_part)
-  parsed = json.loads(result["content"])
+  try:
+      parsed = json.loads(result["content"])
+  except json.JSONDecodeError as exc:
+      raise ValueError(f"Invalid JSON: {exc}") from exc
   assert parsed["has_more"] is False
   assert parsed["results"][0]["tags"] == ["a", "b"]
 
@@ -1039,7 +1048,10 @@ def test_part_to_message_block_arbitrary_dict_serialized_as_json():
   assert result["type"] == "tool_result"
   assert result["tool_use_id"] == "test_id"
   assert not result["is_error"]
-  parsed = json.loads(result["content"])
+  try:
+      parsed = json.loads(result["content"])
+  except json.JSONDecodeError as exc:
+      raise ValueError(f"Invalid JSON: {exc}") from exc
   assert parsed["skill_name"] == "my_skill"
   assert parsed["instructions"] == "Step 1: do this. Step 2: do that."
   assert parsed["frontmatter"]["version"] == "1.0"
@@ -1061,7 +1073,10 @@ def test_part_to_message_block_run_skill_script_response():
 
   result = part_to_message_block(response_part)
 
-  parsed = json.loads(result["content"])
+  try:
+      parsed = json.loads(result["content"])
+  except json.JSONDecodeError as exc:
+      raise ValueError(f"Invalid JSON: {exc}") from exc
   assert parsed["status"] == "success"
   assert parsed["stdout"] == "Done."
 
@@ -1079,7 +1094,10 @@ def test_part_to_message_block_error_response_not_dropped():
 
   result = part_to_message_block(response_part)
 
-  parsed = json.loads(result["content"])
+  try:
+      parsed = json.loads(result["content"])
+  except json.JSONDecodeError as exc:
+      raise ValueError(f"Invalid JSON: {exc}") from exc
   assert parsed["error_code"] == "SKILL_NOT_FOUND"
 
 
@@ -1137,7 +1155,10 @@ def test_part_to_message_block_empty_string_content_falls_through():
 
   result = part_to_message_block(response_part)
 
-  assert json.loads(result["content"]) == {"content": ""}
+  try:
+      assert json.loads(result["content"]) == {"content": ""}
+  except json.JSONDecodeError as exc:
+      raise ValueError(f"Invalid JSON: {exc}") from exc
 
 
 def test_part_to_message_block_empty_content_with_metadata_keeps_metadata():
@@ -1150,7 +1171,10 @@ def test_part_to_message_block_empty_content_with_metadata_keeps_metadata():
 
   result = part_to_message_block(response_part)
 
-  parsed = json.loads(result["content"])
+  try:
+      parsed = json.loads(result["content"])
+  except json.JSONDecodeError as exc:
+      raise ValueError(f"Invalid JSON: {exc}") from exc
   assert parsed["content"] == ""
   assert parsed["extra"] == "keep me"
 

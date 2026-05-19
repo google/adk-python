@@ -116,4 +116,7 @@ def validate_schema(schema: SchemaType, json_text: str) -> Any:
   else:
     # For other schema types (list[str], dict, Schema, etc.),
     # just parse JSON without pydantic validation
-    return json.loads(json_text)
+    try:
+        return json.loads(json_text)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"Invalid JSON: {exc}") from exc

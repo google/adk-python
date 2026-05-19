@@ -499,7 +499,10 @@ class TestGoogleCredentialsManager:
       # since the order of keys in JSON might differ
       import json
 
-      expected_data = json.loads(mock_creds_json)
+      try:
+          expected_data = json.loads(mock_creds_json)
+      except json.JSONDecodeError as exc:
+          raise ValueError(f"Invalid JSON: {exc}") from exc
       actual_data = (
           actual_json_arg
           if isinstance(actual_json_arg, dict)

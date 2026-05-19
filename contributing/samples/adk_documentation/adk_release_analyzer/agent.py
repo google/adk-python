@@ -123,7 +123,7 @@ def get_next_file_group(tool_context: ToolContext) -> dict[str, Any]:
         "processed": current_index,
     }
 
-  current_group = file_groups[current_index]
+  current_group = file_groups.get(current_index)
   file_paths = [f.get("relative_path", "?") for f in current_group]
   print(
       f"[Progress] Starting group {current_index + 1}/{len(file_groups)}:"

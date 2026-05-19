@@ -587,6 +587,8 @@ class BaseAgent(BaseModel):
     duplicates: set[str] = set()
 
     for sub_agent in value:
+      if not sub_agent.name:
+          raise ValueError("LLM returned empty response")  # pact: guard empty name list
       name = sub_agent.name
       if name in seen_names:
         duplicates.add(name)

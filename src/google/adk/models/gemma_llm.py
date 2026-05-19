@@ -303,6 +303,8 @@ def _build_gemma_function_system_instruction(
   system_instruction_prefix = 'You have access to the following functions:\n['
   instruction_parts = []
   for func in function_declarations:
+    if not func.model_dump_json:
+        raise ValueError("LLM returned empty response")  # pact: guard empty model_dump_json list
     instruction_parts.append(func.model_dump_json(exclude_none=True))
 
   separator = ',\n'

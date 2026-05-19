@@ -388,7 +388,10 @@ async def test_trace_call_llm_with_thought_signature(
   # no serialization failures
   assert '<not serializable>' not in llm_request_json_str
   # llm request is valid JSON
-  parsed = json.loads(llm_request_json_str)
+  try:
+      parsed = json.loads(llm_request_json_str)
+  except json.JSONDecodeError as exc:
+      raise ValueError(f"Invalid JSON: {exc}") from exc
   assert parsed['model'] == 'gemini-3-pro-preview'
   assert len(parsed['contents']) == 3
 

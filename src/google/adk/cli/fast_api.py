@@ -511,8 +511,12 @@ def get_fast_api_app(
         app_names: set[str] = set()
         uploads: list[tuple[str, bytes]] = []
         for file in files:
+          if not file.filename:
+              raise ValueError("LLM returned empty response")  # pact: guard empty filename list
           app_name, rel_path = _parse_upload_filename(file.filename)
           app_names.add(app_name)
+          if not file.read:
+              raise ValueError("LLM returned empty response")  # pact: guard empty read list
           content = await file.read()
           uploads.append((rel_path, content))
 

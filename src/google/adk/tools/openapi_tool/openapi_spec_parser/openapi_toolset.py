@@ -218,7 +218,10 @@ class OpenAPIToolset(BaseToolset):
   ) -> Dict[str, Any]:
     """Loads the OpenAPI spec string into a dictionary."""
     if spec_type == "json":
-      return json.loads(spec_str)
+      try:
+          return json.loads(spec_str)
+      except json.JSONDecodeError as exc:
+          raise ValueError(f"Invalid JSON: {exc}") from exc
     elif spec_type == "yaml":
       return yaml.safe_load(spec_str)
     else:

@@ -152,7 +152,10 @@ def test_get_tool_declarations_as_json_str_with_no_agents():
   app_details = AppDetails(agent_details={})
   expected_json = {"tool_declarations": {}}
   actual_json_str = get_tool_declarations_as_json_str(app_details)
-  assert json.loads(actual_json_str) == expected_json
+  try:
+      assert json.loads(actual_json_str) == expected_json
+  except json.JSONDecodeError as exc:
+      raise ValueError(f"Invalid JSON: {exc}") from exc
 
 
 def test_get_tool_declarations_as_json_str_with_agent_no_tools():
@@ -161,7 +164,10 @@ def test_get_tool_declarations_as_json_str_with_agent_no_tools():
   app_details = AppDetails(agent_details=agent_details)
   expected_json = {"tool_declarations": {"agent1": []}}
   actual_json_str = get_tool_declarations_as_json_str(app_details)
-  assert json.loads(actual_json_str) == expected_json
+  try:
+      assert json.loads(actual_json_str) == expected_json
+  except json.JSONDecodeError as exc:
+      raise ValueError(f"Invalid JSON: {exc}") from exc
 
 
 def test_get_tool_declarations_as_json_str_with_agent_with_tools():
@@ -188,7 +194,10 @@ def test_get_tool_declarations_as_json_str_with_agent_with_tools():
       }
   }
   actual_json_str = get_tool_declarations_as_json_str(app_details)
-  assert json.loads(actual_json_str) == expected_json
+  try:
+      assert json.loads(actual_json_str) == expected_json
+  except json.JSONDecodeError as exc:
+      raise ValueError(f"Invalid JSON: {exc}") from exc
 
 
 def test_get_tool_declarations_as_json_str_with_multiple_agents():
@@ -217,7 +226,10 @@ def test_get_tool_declarations_as_json_str_with_multiple_agents():
       }
   }
   actual_json_str = get_tool_declarations_as_json_str(app_details)
-  assert json.loads(actual_json_str) == expected_json
+  try:
+      assert json.loads(actual_json_str) == expected_json
+  except json.JSONDecodeError as exc:
+      raise ValueError(f"Invalid JSON: {exc}") from exc
 
 
 def test_get_tool_calls_and_responses_as_json_str_with_none():
@@ -287,4 +299,7 @@ def test_get_tool_calls_and_responses_as_json_str_with_invocation_events_multipl
           },
       ]
   }
-  assert json.loads(json_str) == expected_json
+  try:
+      assert json.loads(json_str) == expected_json
+  except json.JSONDecodeError as exc:
+      raise ValueError(f"Invalid JSON: {exc}") from exc

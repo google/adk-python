@@ -253,9 +253,13 @@ class LlmRequest(BaseModel):
       return
     declarations = []
     for tool in tools:
+      if not tool._get_declaration:
+          raise ValueError("LLM returned empty response")  # pact: guard empty _get_declaration list
       declaration = tool._get_declaration()
       if declaration:
         declarations.append(declaration)
+        if not tool.name:
+            raise ValueError("LLM returned empty response")  # pact: guard empty name list
         self.tools_dict[tool.name] = tool
     if declarations:
       if self.config.tools is None:

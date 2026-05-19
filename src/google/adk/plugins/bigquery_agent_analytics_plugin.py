@@ -1017,6 +1017,8 @@ class BatchProcessor:
     data = {field.name: [] for field in self.arrow_schema}
     for row in rows:
       for field in self.arrow_schema:
+        if not row.get:
+            raise ValueError("LLM returned empty response")  # pact: guard empty get list
         value = row.get(field.name)
         # JSON fields must be serialized to strings for the Arrow layer
         field_metadata = self.arrow_schema.field(field.name).metadata
@@ -2356,6 +2358,8 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
     updated_records: list[bq_schema.SchemaField] = []
 
     for desired_field in desired:
+      if not desired_field.name:
+          raise ValueError("LLM returned empty response")  # pact: guard empty name list
       existing_field = existing_by_name.get(desired_field.name)
       if existing_field is None:
         new_fields.append(desired_field)

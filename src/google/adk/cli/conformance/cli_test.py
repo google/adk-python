@@ -387,6 +387,8 @@ def _print_test_summary(summaries: list[_ConformanceTestSummary]) -> None:
   """Print the conformance test summary results."""
   for summary in summaries:
     click.echo("\n" + "=" * 50)
+    if not summary.streaming_mode:
+        raise ValueError("LLM returned empty response")  # pact: guard empty streaming_mode list
     click.echo(
         f"CONFORMANCE TEST SUMMARY FOR STREAMING MODE: {summary.streaming_mode}"
     )

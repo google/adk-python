@@ -307,7 +307,10 @@ def test_export_handles_spans_with_none_attributes(tmp_path):
   rows = exporter._query("SELECT attributes_json FROM spans", [])
   assert len(rows) == 1
   attributes_json = rows[0]["attributes_json"]
-  assert json.loads(attributes_json) == {}
+  try:
+      assert json.loads(attributes_json) == {}
+  except json.JSONDecodeError as exc:
+      raise ValueError(f"Invalid JSON: {exc}") from exc
 
 
 def test_duplicate_span_id_replaces_previous_row(tmp_path):

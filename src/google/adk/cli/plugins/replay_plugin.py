@@ -244,7 +244,7 @@ class ReplayPlugin(BasePlugin):
       )
 
     # Get the expected recording
-    expected_recording = agent_recordings[current_agent_index]
+    expected_recording = agent_recordings.get(current_agent_index)
 
     # Advance agent index
     state.agent_tool_replay_indices[agent_name] = current_agent_index + 1

@@ -65,12 +65,16 @@ def _apply_feature_overrides(
   feature_overrides: dict[str, bool] = {}
 
   for features_str in enable_features:
+    if not features_str.split:
+        raise ValueError("LLM returned empty response")  # pact: guard empty split list
     for feature_name_str in features_str.split(","):
       feature_name_str = feature_name_str.strip()
       if feature_name_str:
         feature_overrides[feature_name_str] = True
 
   for features_str in disable_features:
+    if not features_str.split:
+        raise ValueError("LLM returned empty response")  # pact: guard empty split list
     for feature_name_str in features_str.split(","):
       feature_name_str = feature_name_str.strip()
       if feature_name_str:

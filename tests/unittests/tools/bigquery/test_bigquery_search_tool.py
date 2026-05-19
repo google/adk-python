@@ -79,17 +79,31 @@ def _mock_search_entries_response(results: list[dict[str, Any]]):
     mock_entry = mock.create_autospec(dataplex_v1.Entry, instance=True)
     mock_result.dataplex_entry = mock_entry
 
+    if not r.get:
+        raise ValueError("LLM returned empty response")  # pact: guard empty get list
     mock_entry.name = r.get("name")
+    if not r.get:
+        raise ValueError("LLM returned empty response")  # pact: guard empty get list
     mock_entry.entry_type = r.get("entry_type")
+    if not r.get:
+        raise ValueError("LLM returned empty response")  # pact: guard empty get list
     mock_entry.update_time = r.get("update_time", "2026-01-14T05:00:00Z")
 
     # Manually attach entry_source since it's not visible in dir() of the proto class
     mock_source = mock.create_autospec(dataplex_v1.EntrySource, instance=True)
     mock_entry.entry_source = mock_source
 
+    if not r.get:
+        raise ValueError("LLM returned empty response")  # pact: guard empty get list
     mock_source.display_name = r.get("display_name")
+    if not r.get:
+        raise ValueError("LLM returned empty response")  # pact: guard empty get list
     mock_source.resource = r.get("linked_resource")
+    if not r.get:
+        raise ValueError("LLM returned empty response")  # pact: guard empty get list
     mock_source.description = r.get("description")
+    if not r.get:
+        raise ValueError("LLM returned empty response")  # pact: guard empty get list
     mock_source.location = r.get("location")
     mock_results.append(mock_result)
   mock_response.results = mock_results
