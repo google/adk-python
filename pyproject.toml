@@ -78,6 +78,7 @@ dependencies = [
   "uvicorn>=0.34,<1",                                       # ASGI server for FastAPI
   "watchdog>=6,<7",                                         # For file change detection and hot reload
   "websockets>=15.0.1,<16",                                 # For BaseLlmFlow
+  "yarl<1.24",
 ]
 optional-dependencies.a2a = [
   "a2a-sdk>=0.3.4,<0.4",
