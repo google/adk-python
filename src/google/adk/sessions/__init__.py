@@ -17,9 +17,11 @@ from __future__ import annotations
 import importlib
 from typing import TYPE_CHECKING
 
+from ..utils._dependency import missing_extra
 from .base_session_service import BaseSessionService
 from .session import Session
 from .state import State
+from .state import StateSchemaError
 
 if TYPE_CHECKING:
   from .database_session_service import DatabaseSessionService
@@ -32,6 +34,7 @@ __all__ = [
     'InMemorySessionService',
     'Session',
     'State',
+    'StateSchemaError',
     'VertexAiSessionService',
 ]
 
@@ -49,9 +52,6 @@ def __getattr__(name: str):
     try:
       module = importlib.import_module(f'{__name__}.database_session_service')
     except ImportError as e:
-      raise ImportError(
-          'DatabaseSessionService requires sqlalchemy>=2.0, please ensure it'
-          ' is installed correctly.'
-      ) from e
+      raise missing_extra('sqlalchemy', 'db') from e
     return vars(module)['DatabaseSessionService']
   raise AttributeError(f'module {__name__!r} has no attribute {name!r}')

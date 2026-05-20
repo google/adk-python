@@ -159,7 +159,7 @@ class GeminiLlmConnection(BaseLlmConnection):
     else:
       raise ValueError('Unsupported input type: %s' % type(input))
 
-  def __build_full_text_response(self, text: str):
+  def __build_full_text_response(self, text: str, is_thought: bool = False):
     """Builds a full text response.
 
     The text should not be partial and the returned LlmResponse is not
@@ -167,15 +167,20 @@ class GeminiLlmConnection(BaseLlmConnection):
 
     Args:
       text: The text to be included in the response.
+      is_thought: Whether the text is a thought.
 
     Returns:
       An LlmResponse containing the full text.
     """
+    part = types.Part.from_text(text=text)
+    if is_thought:
+      part.thought = True
     return LlmResponse(
         content=types.Content(
             role='model',
-            parts=[types.Part.from_text(text=text)],
+            parts=[part],
         ),
+        partial=False,
         live_session_id=self._gemini_session.session_id,
     )
 
@@ -187,6 +192,7 @@ class GeminiLlmConnection(BaseLlmConnection):
     """
 
     text = ''
+    is_thought = False
     tool_call_parts = []
     async with Aclosing(self._gemini_session.receive()) as agen:
       # TODO(b/440101573): Reuse StreamingResponseAggregator to accumulate
@@ -231,12 +237,20 @@ class GeminiLlmConnection(BaseLlmConnection):
                   message.server_content.grounding_metadata
               )
             if content.parts[0].text:
+              current_is_thought = getattr(content.parts[0], 'thought', False)
+              if text and current_is_thought != is_thought:
+                yield self.__build_full_text_response(text, is_thought)
+                text = ''
+                is_thought = False
+
               text += content.parts[0].text
+              is_thought = current_is_thought
               llm_response.partial = True
             # don't yield the merged text event when receiving audio data
             elif text and not content.parts[0].inline_data:
-              yield self.__build_full_text_response(text)
+              yield self.__build_full_text_response(text, is_thought)
               text = ''
+              is_thought = False
             yield llm_response
           # Note: in some cases, tool_call may arrive before
           # generation_complete, causing transcription to appear after
@@ -325,8 +339,9 @@ class GeminiLlmConnection(BaseLlmConnection):
               self._output_transcription_text = ''
           if message.server_content.turn_complete:
             if text:
-              yield self.__build_full_text_response(text)
+              yield self.__build_full_text_response(text, is_thought)
               text = ''
+              is_thought = False
             if tool_call_parts:
               logger.debug('Returning aggregated tool_call_parts')
               yield LlmResponse(
@@ -349,8 +364,9 @@ class GeminiLlmConnection(BaseLlmConnection):
           # safety threshold is triggered
           if message.server_content.interrupted:
             if text:
-              yield self.__build_full_text_response(text)
+              yield self.__build_full_text_response(text, is_thought)
               text = ''
+              is_thought = False
             else:
               yield LlmResponse(
                   interrupted=message.server_content.interrupted,
@@ -360,8 +376,9 @@ class GeminiLlmConnection(BaseLlmConnection):
         if message.tool_call:
           logger.debug('Received tool call: %s', message.tool_call)
           if text:
-            yield self.__build_full_text_response(text)
+            yield self.__build_full_text_response(text, is_thought)
             text = ''
+            is_thought = False
           tool_call_parts.extend([
               types.Part(function_call=function_call)
               for function_call in message.tool_call.function_calls
