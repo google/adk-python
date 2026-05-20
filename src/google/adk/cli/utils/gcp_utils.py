@@ -22,12 +22,12 @@ from typing import Dict
 from typing import List
 from typing import Optional
 from typing import Tuple
+from typing import cast
 
 import google.auth
 import google.auth.exceptions
 from google.auth.transport.requests import AuthorizedSession
 from google.auth.transport.requests import Request
-from google.cloud import resourcemanager_v3
 import requests
 
 _VERTEX_AI_ENDPOINT = "https://{location}-aiplatform.googleapis.com/v1beta1"
@@ -89,7 +89,7 @@ def _call_vertex_express_api(
     raise ValueError(f"Unsupported method: {method}")
 
   response.raise_for_status()
-  return response.json()
+  return cast(Dict[str, Any], response.json())
 
 
 def retrieve_express_project(
@@ -162,10 +162,10 @@ def list_gcp_projects(limit: int = 20) -> List[Tuple[str, str]]:
     A list of (project_id, name) tuples.
   """
   try:
-    client = resourcemanager_v3.ProjectsClient()
+    client = _create_projects_client()
     search_results = client.search_projects()
 
-    projects = []
+    projects: List[Tuple[str, str]] = []
     for project in search_results:
       if len(projects) >= limit:
         break
@@ -175,3 +175,9 @@ def list_gcp_projects(limit: int = 20) -> List[Tuple[str, str]]:
     return projects
   except Exception:
     return []
+
+
+def _create_projects_client() -> Any:
+  from google.cloud import resourcemanager_v3
+
+  return resourcemanager_v3.ProjectsClient()

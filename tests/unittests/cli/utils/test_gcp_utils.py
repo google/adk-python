@@ -140,12 +140,10 @@ class TestGcpUtils(unittest.TestCase):
         },
     )
 
-  @mock.patch(
-      "google.adk.cli.utils.gcp_utils.resourcemanager_v3.ProjectsClient"
-  )
-  def test_list_gcp_projects(self, mock_client_cls):
+  @mock.patch("google.adk.cli.utils.gcp_utils._create_projects_client")
+  def test_list_gcp_projects(self, mock_create_projects_client):
     mock_client = mock.Mock()
-    mock_client_cls.return_value = mock_client
+    mock_create_projects_client.return_value = mock_client
 
     mock_project1 = mock.Mock()
     mock_project1.project_id = "p1"
@@ -161,6 +159,18 @@ class TestGcpUtils(unittest.TestCase):
     self.assertEqual(len(projects), 2)
     self.assertEqual(projects[0], ("p1", "Project 1"))
     self.assertEqual(projects[1], ("p2", "p2"))
+
+  @mock.patch(
+      "google.adk.cli.utils.gcp_utils._create_projects_client",
+      side_effect=ModuleNotFoundError("google.cloud"),
+  )
+  def test_list_gcp_projects_missing_resource_manager_dependency(
+      self, mock_create_projects_client
+  ):
+    projects = gcp_utils.list_gcp_projects()
+
+    self.assertEqual(projects, [])
+    mock_create_projects_client.assert_called_once()
 
 
 if __name__ == "__main__":
