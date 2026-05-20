@@ -141,7 +141,7 @@ class TestGcpUtils(unittest.TestCase):
     )
 
   @mock.patch(
-      "google.adk.cli.utils.gcp_utils.resourcemanager_v3.ProjectsClient"
+      "google.cloud.resourcemanager_v3.ProjectsClient"
   )
   def test_list_gcp_projects(self, mock_client_cls):
     mock_client = mock.Mock()
@@ -161,6 +161,13 @@ class TestGcpUtils(unittest.TestCase):
     self.assertEqual(len(projects), 2)
     self.assertEqual(projects[0], ("p1", "Project 1"))
     self.assertEqual(projects[1], ("p2", "p2"))
+
+  @mock.patch.dict("sys.modules", {"google.cloud": None})
+  def test_list_gcp_projects_import_error(self):
+    with self.assertRaisesRegex(
+        RuntimeError, "Listing GCP projects requires the 'gcp' optional dependency"
+    ):
+      gcp_utils.list_gcp_projects()
 
 
 if __name__ == "__main__":

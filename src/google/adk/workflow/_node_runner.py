@@ -285,11 +285,16 @@ class NodeRunner:
       ctx.output = event.content
     if event.long_running_tool_ids is not None:
       ctx._interrupt_ids.update(event.long_running_tool_ids)
-    if event.actions.route is not None:
-      ctx.route = event.actions.route
-      ctx._route_emitted = True
-    if event.actions.transfer_to_agent is not None:
-      ctx.actions.transfer_to_agent = event.actions.transfer_to_agent
+    # Only propagate decisions from native events (authored by this node or unspecified).
+    # This prevents structured parent nodes (e.g. SequentialAgent) from intercepting
+    # and bubbling up actions already handled internally by their nested sub-agents.
+    is_native_node_event = not event.author or event.author == self._node.name
+    if event.actions and is_native_node_event:
+      if event.actions.route is not None:
+        ctx.route = event.actions.route
+        ctx._route_emitted = True
+      if event.actions.transfer_to_agent is not None:
+        ctx.actions.transfer_to_agent = event.actions.transfer_to_agent
 
     ctx.telemetry_context.add_event(event)
 
