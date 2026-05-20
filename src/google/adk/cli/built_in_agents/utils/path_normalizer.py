@@ -16,15 +16,13 @@
 
 from __future__ import annotations
 
-from pathlib import PurePosixPath
-from pathlib import PureWindowsPath
 import re
 
 _SEGMENT_SPLIT_PATTERN = re.compile(r"([/\\])")
 _BOUNDARY_CHARS = " \t\r\n'\"`"
 
 
-def _sanitize_generated_file_path(file_path: str) -> str:
+def sanitize_generated_file_path(file_path: str) -> str:
   """Strip stray quotes/whitespace around each path segment.
 
   The agent occasionally emits quoted paths such as `'tools/web.yaml'` which
@@ -60,21 +58,3 @@ def _sanitize_generated_file_path(file_path: str) -> str:
 
   sanitized = "".join(sanitized_segments).strip(_BOUNDARY_CHARS)
   return sanitized or trimmed
-
-
-def _to_posix_path(path_value: str) -> PurePosixPath:
-  """Normalize path separators by converting to a `PurePosixPath`.
-
-  Interpret Windows-style paths while still running on POSIX systems so that
-  downstream traversal and validation logic operates on a consistent
-  separator.
-
-  Args:
-    path_value: Raw path string that may contain backslashes.
-
-  Returns:
-    A `PurePosixPath` with forward-slash separators.
-  """
-  if "\\" in path_value:
-    path_value = PureWindowsPath(path_value).as_posix()
-  return PurePosixPath(path_value)
