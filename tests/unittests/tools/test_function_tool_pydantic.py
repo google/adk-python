@@ -280,5 +280,93 @@ async def test_run_async_with_optional_pydantic_models():
   assert result["theme"] == "dark"
   assert result["notifications"] is True
   assert result["preferences_type"] == "PreferencesModel"
-  assert result["preferences_type"] == "PreferencesModel"
-  assert result["preferences_type"] == "PreferencesModel"
+
+
+def test_preprocess_args_with_list_of_pydantic_models():
+  """Test _preprocess_args converts list of dicts to list of Pydantic models."""
+
+  def function_with_list(users: list[UserModel]) -> int:
+    return sum(u.age for u in users)
+
+  tool = FunctionTool(function_with_list)
+
+  input_args = {
+      "users": [
+          {"name": "Alice", "age": 30},
+          {"name": "Bob", "age": 25},
+      ]
+  }
+
+  processed_args = tool._preprocess_args(input_args)
+
+  assert isinstance(processed_args["users"], list)
+  assert len(processed_args["users"]) == 2
+  assert all(isinstance(u, UserModel) for u in processed_args["users"])
+  assert processed_args["users"][0].name == "Alice"
+  assert processed_args["users"][1].age == 25
+
+
+def test_preprocess_args_with_list_of_pydantic_models_already_converted():
+  """Test _preprocess_args leaves existing Pydantic model instances in list."""
+
+  def function_with_list(users: list[UserModel]) -> int:
+    return sum(u.age for u in users)
+
+  tool = FunctionTool(function_with_list)
+
+  existing = [UserModel(name="Alice", age=30)]
+  input_args = {"users": existing}
+
+  processed_args = tool._preprocess_args(input_args)
+
+  assert processed_args["users"][0] is existing[0]
+
+
+def test_preprocess_args_with_list_of_primitives_unchanged():
+  """Test _preprocess_args leaves list of primitives unchanged."""
+
+  def function_with_list(names: list[str], counts: list[int]) -> int:
+    return len(names) + sum(counts)
+
+  tool = FunctionTool(function_with_list)
+
+  input_args = {"names": ["Alice", "Bob"], "counts": [1, 2, 3]}
+  processed_args = tool._preprocess_args(input_args)
+
+  assert processed_args["names"] == ["Alice", "Bob"]
+  assert processed_args["counts"] == [1, 2, 3]
+
+
+def test_preprocess_args_with_list_of_pydantic_models_empty():
+  """Test _preprocess_args handles empty list for list[BaseModel]."""
+
+  def function_with_list(users: list[UserModel]) -> int:
+    return 0
+
+  tool = FunctionTool(function_with_list)
+
+  processed_args = tool._preprocess_args({"users": []})
+
+  assert processed_args["users"] == []
+
+
+@pytest.mark.asyncio
+async def test_run_async_with_list_of_pydantic_models():
+  """Test run_async end-to-end with list[BaseModel] conversion."""
+
+  def place_order(orders: list[UserModel]) -> int:
+    return sum(u.age for u in orders)
+
+  tool = FunctionTool(place_order)
+
+  tool_context_mock = MagicMock(spec=ToolContext)
+  invocation_context_mock = MagicMock(spec=InvocationContext)
+  session_mock = MagicMock(spec=Session)
+  invocation_context_mock.session = session_mock
+  tool_context_mock.invocation_context = invocation_context_mock
+
+  args = {"orders": [{"name": "Alice", "age": 30}, {"name": "Bob", "age": 20}]}
+
+  result = await tool.run_async(args=args, tool_context=tool_context_mock)
+
+  assert result == 50

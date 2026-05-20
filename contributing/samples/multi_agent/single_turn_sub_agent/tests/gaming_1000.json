@@ -1,0 +1,440 @@
+{
+  "events": [
+    {
+      "author": "user",
+      "content": {
+        "parts": [
+          {
+            "text": "gaming, $1000"
+          }
+        ],
+        "role": "user"
+      },
+      "id": "e-1",
+      "invocationId": "i-1",
+      "nodeInfo": {
+        "path": ""
+      }
+    },
+    {
+      "author": "root_agent",
+      "content": {
+        "parts": [
+          {
+            "text": "That sounds like a great budget for a gaming phone! To give you the best recommendation, could you tell me what size phone you prefer? Do you like something **small**, **large**, or is **any** size okay with you?"
+          }
+        ],
+        "role": "model"
+      },
+      "finishReason": "STOP",
+      "id": "e-2",
+      "invocationId": "i-1",
+      "nodeInfo": {
+        "path": "root_agent@1"
+      }
+    },
+    {
+      "author": "user",
+      "content": {
+        "parts": [
+          {
+            "text": "large"
+          }
+        ],
+        "role": "user"
+      },
+      "id": "e-3",
+      "invocationId": "i-2",
+      "nodeInfo": {
+        "path": ""
+      }
+    },
+    {
+      "author": "root_agent",
+      "content": {
+        "parts": [
+          {
+            "functionCall": {
+              "args": {
+                "budget": 1000,
+                "preferred_size": "large",
+                "primary_use": "gaming"
+              },
+              "id": "fc-1",
+              "name": "phone_recommender"
+            }
+          }
+        ],
+        "role": "model"
+      },
+      "finishReason": "STOP",
+      "id": "e-4",
+      "invocationId": "i-2",
+      "longRunningToolIds": [],
+      "nodeInfo": {
+        "path": "root_agent@1"
+      }
+    },
+    {
+      "author": "phone_recommender",
+      "branch": "phone_recommender@1",
+      "content": {
+        "parts": [
+          {
+            "functionCall": {
+              "args": {
+                "model_name": "Pixel 10 Pro XL"
+              },
+              "id": "fc-2",
+              "name": "check_phone_price"
+            }
+          }
+        ],
+        "role": "model"
+      },
+      "finishReason": "STOP",
+      "id": "e-5",
+      "invocationId": "i-2",
+      "longRunningToolIds": [],
+      "nodeInfo": {
+        "path": "root_agent@1/phone_recommender@1"
+      }
+    },
+    {
+      "author": "phone_recommender",
+      "branch": "phone_recommender@1",
+      "content": {
+        "parts": [
+          {
+            "functionResponse": {
+              "id": "fc-2",
+              "name": "check_phone_price",
+              "response": {
+                "result": 799.0
+              }
+            }
+          }
+        ],
+        "role": "user"
+      },
+      "id": "e-6",
+      "invocationId": "i-2",
+      "nodeInfo": {
+        "path": "root_agent@1/phone_recommender@1"
+      }
+    },
+    {
+      "author": "phone_recommender",
+      "branch": "phone_recommender@1",
+      "content": {
+        "parts": [
+          {
+            "functionCall": {
+              "args": {
+                "model_name": "Pixel 10 Pro Fold"
+              },
+              "id": "fc-3",
+              "name": "check_phone_price"
+            }
+          }
+        ],
+        "role": "model"
+      },
+      "finishReason": "STOP",
+      "id": "e-7",
+      "invocationId": "i-2",
+      "longRunningToolIds": [],
+      "nodeInfo": {
+        "path": "root_agent@1/phone_recommender@1"
+      }
+    },
+    {
+      "author": "phone_recommender",
+      "branch": "phone_recommender@1",
+      "content": {
+        "parts": [
+          {
+            "functionResponse": {
+              "id": "fc-3",
+              "name": "check_phone_price",
+              "response": {
+                "result": 799.0
+              }
+            }
+          }
+        ],
+        "role": "user"
+      },
+      "id": "e-8",
+      "invocationId": "i-2",
+      "nodeInfo": {
+        "path": "root_agent@1/phone_recommender@1"
+      }
+    },
+    {
+      "author": "phone_recommender",
+      "branch": "phone_recommender@1",
+      "content": {
+        "parts": [
+          {
+            "functionCall": {
+              "args": {
+                "model_name": "Pixel 10 Pro"
+              },
+              "id": "fc-4",
+              "name": "check_phone_price"
+            }
+          }
+        ],
+        "role": "model"
+      },
+      "finishReason": "STOP",
+      "id": "e-9",
+      "invocationId": "i-2",
+      "longRunningToolIds": [],
+      "nodeInfo": {
+        "path": "root_agent@1/phone_recommender@1"
+      }
+    },
+    {
+      "author": "phone_recommender",
+      "branch": "phone_recommender@1",
+      "content": {
+        "parts": [
+          {
+            "functionResponse": {
+              "id": "fc-4",
+              "name": "check_phone_price",
+              "response": {
+                "result": 799.0
+              }
+            }
+          }
+        ],
+        "role": "user"
+      },
+      "id": "e-10",
+      "invocationId": "i-2",
+      "nodeInfo": {
+        "path": "root_agent@1/phone_recommender@1"
+      }
+    },
+    {
+      "author": "phone_recommender",
+      "branch": "phone_recommender@1",
+      "content": {
+        "parts": [
+          {
+            "functionCall": {
+              "args": {
+                "model_name": "Pixel 10"
+              },
+              "id": "fc-5",
+              "name": "check_phone_price"
+            }
+          }
+        ],
+        "role": "model"
+      },
+      "finishReason": "STOP",
+      "id": "e-11",
+      "invocationId": "i-2",
+      "longRunningToolIds": [],
+      "nodeInfo": {
+        "path": "root_agent@1/phone_recommender@1"
+      }
+    },
+    {
+      "author": "phone_recommender",
+      "branch": "phone_recommender@1",
+      "content": {
+        "parts": [
+          {
+            "functionResponse": {
+              "id": "fc-5",
+              "name": "check_phone_price",
+              "response": {
+                "result": 799.0
+              }
+            }
+          }
+        ],
+        "role": "user"
+      },
+      "id": "e-12",
+      "invocationId": "i-2",
+      "nodeInfo": {
+        "path": "root_agent@1/phone_recommender@1"
+      }
+    },
+    {
+      "author": "phone_recommender",
+      "branch": "phone_recommender@1",
+      "content": {
+        "parts": [
+          {
+            "functionCall": {
+              "args": {
+                "model_name": "Pixel 10a"
+              },
+              "id": "fc-6",
+              "name": "check_phone_price"
+            }
+          }
+        ],
+        "role": "model"
+      },
+      "finishReason": "STOP",
+      "id": "e-13",
+      "invocationId": "i-2",
+      "longRunningToolIds": [],
+      "nodeInfo": {
+        "path": "root_agent@1/phone_recommender@1"
+      }
+    },
+    {
+      "author": "phone_recommender",
+      "branch": "phone_recommender@1",
+      "content": {
+        "parts": [
+          {
+            "functionResponse": {
+              "id": "fc-6",
+              "name": "check_phone_price",
+              "response": {
+                "result": 499.0
+              }
+            }
+          }
+        ],
+        "role": "user"
+      },
+      "id": "e-14",
+      "invocationId": "i-2",
+      "nodeInfo": {
+        "path": "root_agent@1/phone_recommender@1"
+      }
+    },
+    {
+      "author": "phone_recommender",
+      "branch": "phone_recommender@1",
+      "content": {
+        "parts": [
+          {
+            "functionCall": {
+              "args": {
+                "model_name": "Pixel 10 Pro XL",
+                "price": 799,
+                "reason": "The Pixel 10 Pro XL is the best fit for your gaming needs and preference for a large screen. At $799, it is well within your $1000 budget and provides the high performance and large display area required for an optimal gaming experience."
+              },
+              "id": "fc-7",
+              "name": "set_model_response"
+            }
+          }
+        ],
+        "role": "model"
+      },
+      "finishReason": "STOP",
+      "id": "e-15",
+      "invocationId": "i-2",
+      "longRunningToolIds": [],
+      "nodeInfo": {
+        "path": "root_agent@1/phone_recommender@1"
+      }
+    },
+    {
+      "actions": {
+        "setModelResponse": {
+          "model_name": "Pixel 10 Pro XL",
+          "price": 799.0,
+          "reason": "The Pixel 10 Pro XL is the best fit for your gaming needs and preference for a large screen. At $799, it is well within your $1000 budget and provides the high performance and large display area required for an optimal gaming experience."
+        }
+      },
+      "author": "phone_recommender",
+      "branch": "phone_recommender@1",
+      "content": {
+        "parts": [
+          {
+            "functionResponse": {
+              "id": "fc-7",
+              "name": "set_model_response",
+              "response": {
+                "model_name": "Pixel 10 Pro XL",
+                "price": 799.0,
+                "reason": "The Pixel 10 Pro XL is the best fit for your gaming needs and preference for a large screen. At $799, it is well within your $1000 budget and provides the high performance and large display area required for an optimal gaming experience."
+              }
+            }
+          }
+        ],
+        "role": "user"
+      },
+      "id": "e-16",
+      "invocationId": "i-2",
+      "nodeInfo": {
+        "path": "root_agent@1/phone_recommender@1"
+      }
+    },
+    {
+      "author": "phone_recommender",
+      "branch": "phone_recommender@1",
+      "content": {
+        "parts": [
+          {
+            "text": "{\"model_name\": \"Pixel 10 Pro XL\", \"price\": 799.0, \"reason\": \"The Pixel 10 Pro XL is the best fit for your gaming needs and preference for a large screen. At $799, it is well within your $1000 budget and provides the high performance and large display area required for an optimal gaming experience.\"}"
+          }
+        ],
+        "role": "model"
+      },
+      "id": "e-17",
+      "invocationId": "i-2",
+      "nodeInfo": {
+        "messageAsOutput": true,
+        "outputFor": [
+          "root_agent@1/phone_recommender@1"
+        ],
+        "path": "root_agent@1/phone_recommender@1"
+      }
+    },
+    {
+      "author": "root_agent",
+      "content": {
+        "parts": [
+          {
+            "functionResponse": {
+              "id": "fc-1",
+              "name": "phone_recommender",
+              "response": {
+                "model_name": "Pixel 10 Pro XL",
+                "price": 799.0,
+                "reason": "The Pixel 10 Pro XL is the best fit for your gaming needs and preference for a large screen. At $799, it is well within your $1000 budget and provides the high performance and large display area required for an optimal gaming experience."
+              }
+            }
+          }
+        ],
+        "role": "user"
+      },
+      "id": "e-18",
+      "invocationId": "i-2",
+      "nodeInfo": {
+        "path": "root_agent@1"
+      }
+    },
+    {
+      "author": "root_agent",
+      "content": {
+        "parts": [
+          {
+            "text": "OK! Based on what you're looking for, I recommend the **Pixel 10 Pro XL**.\n\n*   **Price:** $799\n*   **Why it's for you:** It\u2019s the perfect fit for your gaming needs and preference for a large screen. Since it's $799, it's well under your $1,000 budget while providing the high performance and large display area you need for the best gaming experience."
+          }
+        ],
+        "role": "model"
+      },
+      "finishReason": "STOP",
+      "id": "e-19",
+      "invocationId": "i-2",
+      "nodeInfo": {
+        "path": "root_agent@1"
+      }
+    }
+  ]
+}

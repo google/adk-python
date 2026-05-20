@@ -63,7 +63,7 @@
 
 #     # Import our caching classes
 #     from google.adk.agents.invocation_context import RealtimeCacheEntry
-#     from google.adk.flows.llm_flows.base_llm_flow import BaseLlmFlow
+#     from google.adk.agents.llm.base_llm_flow import BaseLlmFlow
 
 #     # Create a mock flow to test our methods
 #     flow = BaseLlmFlow()
@@ -160,7 +160,7 @@
 #     )
 
 #     from google.adk.events.event import Event
-#     from google.adk.flows.llm_flows.base_llm_flow import BaseLlmFlow
+#     from google.adk.agents.llm.base_llm_flow import BaseLlmFlow
 
 #     flow = BaseLlmFlow()
 

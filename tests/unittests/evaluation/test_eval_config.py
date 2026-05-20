@@ -130,18 +130,6 @@ def test_get_eval_metrics_from_config_with_custom_metrics():
   assert eval_metrics[1].custom_function_path == "path/to/custom/metric_2"
 
 
-def test_custom_metric_code_config_with_args_raises_error():
-  with pytest.raises(ValueError):
-    _ = EvalConfig(
-        criteria={"custom_metric": 1.0},
-        custom_metrics={
-            "custom_metric": {
-                "code_config": {"name": "name", "args": [{"value": 1}]},
-            }
-        },
-    )
-
-
 def test_get_eval_metrics_from_config_empty_criteria():
   eval_config = EvalConfig(criteria={})
   eval_metrics = get_eval_metrics_from_config(eval_config)

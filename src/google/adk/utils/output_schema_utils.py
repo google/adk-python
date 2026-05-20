@@ -41,7 +41,6 @@ def can_use_output_schema_with_tools(model: Union[str, BaseLlm]) -> bool:
       from ..models.lite_llm import LiteLlm
     except ImportError:
       LiteLlm = None
-
     if LiteLlm is not None and isinstance(model, LiteLlm):
       return True
 

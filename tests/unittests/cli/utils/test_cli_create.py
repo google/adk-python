@@ -182,7 +182,7 @@ def test_run_cmd_invalid_app_name(
 
   with pytest.raises(click.BadParameter, match="Invalid app name"):
     cli_create.run_cmd(
-        "my-agent",
+        "invalid name",
         model="gemini-2.5-flash",
         google_api_key=None,
         google_cloud_project=None,
