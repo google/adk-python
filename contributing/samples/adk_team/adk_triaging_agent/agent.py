@@ -244,7 +244,7 @@ def change_issue_type(issue_number: int, issue_type: str) -> dict[str, Any]:
 
 
 root_agent = Agent(
-    model="gemini-2.5-pro",
+    model="gemini-3.5-flash",
     name="adk_triaging_assistant",
     description="Triage ADK issues.",
     instruction=f"""
