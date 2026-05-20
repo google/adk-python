@@ -517,7 +517,6 @@ class BaseLlmFlow(ABC):
           llm_request.live_connect_config.session_resumption.handle = (
               invocation_context.live_session_resumption_handle
           )
-          llm_request.live_connect_config.session_resumption.transparent = True
 
         logger.info(
             'Establishing live connection for agent: %s',

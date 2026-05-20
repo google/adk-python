@@ -679,6 +679,12 @@ async def test_run_live_skips_send_history_on_resumption():
 
         # Verify that send_history was not called because we resumed.
         mock_connection.send_history.assert_not_called()
+        reconnect_request = mock_connect.call_args.args[0]
+        session_resumption = (
+            reconnect_request.live_connect_config.session_resumption
+        )
+        assert session_resumption.handle == 'test_handle'
+        assert session_resumption.transparent is not True
 
 
 @pytest.mark.asyncio
