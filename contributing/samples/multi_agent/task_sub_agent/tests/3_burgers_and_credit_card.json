@@ -1,0 +1,92 @@
+{
+  "events": [
+    {
+      "author": "user",
+      "content": {
+        "parts": [
+          {
+            "text": "3 burgers, credit card 1234-1234, cvv 123"
+          }
+        ],
+        "role": "user"
+      },
+      "id": "e-1",
+      "invocationId": "i-1",
+      "nodeInfo": {
+        "path": ""
+      }
+    },
+    {
+      "author": "coordinator",
+      "content": {
+        "parts": [
+          {
+            "functionCall": {
+              "args": {
+                "orders": [
+                  {
+                    "name": "burger",
+                    "quantity": 3
+                  }
+                ],
+                "payment_info": {
+                  "credit_card_number": "1234-1234",
+                  "cvv": "123"
+                }
+              },
+              "id": "fc-1",
+              "name": "place_order"
+            }
+          }
+        ],
+        "role": "model"
+      },
+      "finishReason": "STOP",
+      "id": "e-2",
+      "invocationId": "i-1",
+      "longRunningToolIds": [],
+      "nodeInfo": {
+        "path": "coordinator@1"
+      }
+    },
+    {
+      "author": "coordinator",
+      "content": {
+        "parts": [
+          {
+            "functionResponse": {
+              "id": "fc-1",
+              "name": "place_order",
+              "response": {
+                "result": "Successfully placed order for 3 items."
+              }
+            }
+          }
+        ],
+        "role": "user"
+      },
+      "id": "e-3",
+      "invocationId": "i-1",
+      "nodeInfo": {
+        "path": "coordinator@1"
+      }
+    },
+    {
+      "author": "coordinator",
+      "content": {
+        "parts": [
+          {
+            "text": "Your order for 3 burgers has been successfully placed."
+          }
+        ],
+        "role": "model"
+      },
+      "finishReason": "STOP",
+      "id": "e-4",
+      "invocationId": "i-1",
+      "nodeInfo": {
+        "path": "coordinator@1"
+      }
+    }
+  ]
+}

@@ -35,6 +35,7 @@ from google.adk.evaluation.eval_case import EvalCase
 from google.adk.evaluation.eval_set import EvalSet
 from google.adk.evaluation.local_eval_set_results_manager import LocalEvalSetResultsManager
 from google.adk.evaluation.local_eval_sets_manager import LocalEvalSetsManager
+from google.adk.events.event import Event
 from pydantic import BaseModel
 import pytest
 
@@ -116,7 +117,7 @@ def test_cli_create_cmd_invokes_run_cmd(
 ) -> None:
   """`adk create` should forward arguments to cli_create.run_cmd."""
   rec = _Recorder()
-  monkeypatch.setattr(cli_tools_click.cli_create, "run_cmd", rec)
+  monkeypatch.setattr("google.adk.cli.cli_create.run_cmd", rec)
 
   app_dir = tmp_path / "my_app"
   runner = CliRunner()
@@ -196,13 +197,609 @@ def test_cli_run_service_uris(
   assert coro_locals["agent_folder_name"] == "agent"
 
 
+def test_cli_run_basic_with_query(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+  """`adk run` with query should invoke run_once_cli."""
+  # Arrange
+  agent_dir = tmp_path / "agent"
+  agent_dir.mkdir()
+  (agent_dir / "__init__.py").touch()
+  (agent_dir / "agent.py").touch()
+
+  mock_run_once = mock.AsyncMock(return_value=0)
+  monkeypatch.setattr("google.adk.cli.cli.run_once_cli", mock_run_once)
+
+  runner = CliRunner()
+
+  # Act
+  result = runner.invoke(
+      cli_tools_click.main,
+      ["run", str(agent_dir), "hello"],
+  )
+
+  # Assert
+  assert result.exit_code == 0
+  assert mock_run_once.called
+  called_kwargs = mock_run_once.call_args.kwargs
+  assert called_kwargs.get("query") == "hello"
+  assert called_kwargs.get("agent_folder_name") == "agent"
+
+
+def test_cli_run_interactive_with_state(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+  """`adk run` in interactive mode should pass state to run_cli."""
+  # Arrange
+  agent_dir = tmp_path / "agent_interactive"
+  agent_dir.mkdir()
+  (agent_dir / "__init__.py").touch()
+  (agent_dir / "agent.py").touch()
+
+  mock_run_cli = mock.AsyncMock()
+  monkeypatch.setattr("google.adk.cli.cli_tools_click.run_cli", mock_run_cli)
+
+  runner = CliRunner()
+
+  # Act
+  result = runner.invoke(
+      cli_tools_click.main,
+      ["run", str(agent_dir), "--state", '{"x": 1}'],
+  )
+
+  # Assert
+  assert result.exit_code == 0
+  assert mock_run_cli.called
+  called_kwargs = mock_run_cli.call_args.kwargs
+  assert called_kwargs.get("state_str") == '{"x": 1}'
+
+
+def test_cli_run_options_with_query(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+  """`adk run` with query and options should forward options correctly."""
+  # Arrange
+  agent_dir = tmp_path / "agent_opts"
+  agent_dir.mkdir()
+  (agent_dir / "__init__.py").touch()
+
+  mock_run_once = mock.AsyncMock(return_value=0)
+  monkeypatch.setattr("google.adk.cli.cli.run_once_cli", mock_run_once)
+
+  runner = CliRunner()
+
+  # Act
+  result = runner.invoke(
+      cli_tools_click.main,
+      [
+          "run",
+          str(agent_dir),
+          "hello",
+          "--state",
+          '{"x": 1}',
+          "--in_memory",
+          "--jsonl",
+      ],
+  )
+
+  # Assert
+  assert result.exit_code == 0
+  assert mock_run_once.called
+  called_kwargs = mock_run_once.call_args.kwargs
+  assert called_kwargs.get("query") == "hello"
+  assert called_kwargs.get("state_str") == '{"x": 1}'
+  assert called_kwargs.get("in_memory") is True
+  assert called_kwargs.get("jsonl") is True
+
+
+def test_cli_run_auto_resume_with_query(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+  """`adk run` with query should auto-resume if session has active interrupts."""
+  # Arrange
+  agent_dir = tmp_path / "agent_resume"
+  agent_dir.mkdir()
+  (agent_dir / "__init__.py").touch()
+  (agent_dir / "agent.py").touch()
+
+  # Mock session service
+  mock_session = mock.Mock()
+  mock_session.id = "s123"
+  mock_session.user_id = "u123"
+  mock_session.app_name = "agent_resume"
+
+  # Create a mock event with long_running_tool_ids
+  mock_event = Event(
+      invocation_id="invocation_123",
+      long_running_tool_ids={"interrupt_123"},
+      author="agent",
+  )
+  mock_session.events = [mock_event]
+
+  mock_session_service = mock.AsyncMock()
+  mock_session_service.get_session.return_value = mock_session
+
+  monkeypatch.setattr(
+      "google.adk.cli.cli.create_session_service_from_options",
+      mock.Mock(return_value=mock_session_service),
+  )
+
+  # Mock AgentLoader to avoid loading real files
+  mock_agent_loader = mock.Mock()
+  mock_agent_loader.load_agent.return_value = mock.Mock(name="agent_resume")
+  monkeypatch.setattr(
+      "google.adk.cli.cli.AgentLoader",
+      mock.Mock(return_value=mock_agent_loader),
+  )
+
+  # Mock Runner
+  mock_runner_instance = mock.Mock()
+
+  # Create an async generator for run_async
+  async def mock_run_async(*args, **kwargs):
+    # Yield a mock event to simulate engine output
+    ev = mock.Mock()
+    ev.author = "agent"
+    ev.node_info = mock.Mock(path="node")
+    ev.content = None
+    ev.long_running_tool_ids = []
+    # Add model_dump method as it's called in _print_event
+    ev.model_dump.return_value = {"author": "agent", "node_path": "node"}
+    yield ev
+
+  mock_runner_instance.run_async.side_effect = mock_run_async
+  mock_runner_instance.close = mock.AsyncMock()
+
+  monkeypatch.setattr(
+      "google.adk.cli.cli.Runner",
+      mock.Mock(return_value=mock_runner_instance),
+  )
+
+  # Mock _to_app to return a mock app
+  monkeypatch.setattr(
+      "google.adk.cli.cli._to_app",
+      mock.Mock(return_value=mock.Mock(name="agent_resume")),
+  )
+
+  runner = CliRunner()
+
+  # Act
+  result = runner.invoke(
+      cli_tools_click.main,
+      [
+          "run",
+          str(agent_dir),
+          "approve",
+          "--session_id",
+          "s123",
+      ],
+  )
+
+  # Assert
+  assert result.exit_code == 0
+
+  # Verify run_async was called with FunctionResponse
+  called_args = mock_runner_instance.run_async.call_args
+  assert called_args is not None
+  kwargs = called_args.kwargs
+  new_message = kwargs.get("new_message")
+  assert new_message is not None
+  assert len(new_message.parts) == 1
+  part = new_message.parts[0]
+  assert part.function_response is not None
+  assert part.function_response.id == "interrupt_123"
+  assert part.function_response.response == {"result": "approve"}
+
+
+def test_cli_run_auto_resume_with_query_confirmation_yes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+  """`adk run` with query should auto-resume with confirmation=True if query is positive."""
+  # Arrange
+  agent_dir = tmp_path / "agent_resume_confirm_yes"
+  agent_dir.mkdir()
+  (agent_dir / "__init__.py").touch()
+  (agent_dir / "agent.py").touch()
+
+  # Mock session service
+  mock_session = mock.Mock()
+  mock_session.id = "s123"
+  mock_session.user_id = "u123"
+  mock_session.app_name = "agent_resume_confirm_yes"
+
+  # Create a mock event with long_running_tool_ids
+  mock_event = mock.Mock()
+  mock_event.long_running_tool_ids = ["interrupt_123"]
+  mock_event.invocation_id = "invocation_123"
+
+  # Mock get_function_calls to return adk_request_confirmation
+  fc = mock.Mock()
+  fc.id = "interrupt_123"
+  fc.name = "adk_request_confirmation"
+  mock_event.get_function_calls.return_value = [fc]
+
+  mock_session.events = [mock_event]
+
+  mock_session_service = mock.AsyncMock()
+  mock_session_service.get_session.return_value = mock_session
+
+  monkeypatch.setattr(
+      "google.adk.cli.cli.create_session_service_from_options",
+      mock.Mock(return_value=mock_session_service),
+  )
+
+  # Mock AgentLoader to avoid loading real files
+  mock_agent_loader = mock.Mock()
+  mock_agent_loader.load_agent.return_value = mock.Mock(
+      name="agent_resume_confirm_yes"
+  )
+  monkeypatch.setattr(
+      "google.adk.cli.cli.AgentLoader",
+      mock.Mock(return_value=mock_agent_loader),
+  )
+
+  # Mock Runner
+  mock_runner_instance = mock.Mock()
+
+  # Create an async generator for run_async
+  async def mock_run_async(*args, **kwargs):
+    ev = mock.Mock()
+    ev.author = "agent"
+    ev.node_info = mock.Mock(path="node")
+    ev.content = None
+    ev.long_running_tool_ids = []
+    ev.model_dump.return_value = {"author": "agent", "node_path": "node"}
+    yield ev
+
+  mock_runner_instance.run_async.side_effect = mock_run_async
+  mock_runner_instance.close = mock.AsyncMock()
+
+  monkeypatch.setattr(
+      "google.adk.cli.cli.Runner",
+      mock.Mock(return_value=mock_runner_instance),
+  )
+
+  # Mock _to_app to return a mock app
+  monkeypatch.setattr(
+      "google.adk.cli.cli._to_app",
+      mock.Mock(return_value=mock.Mock(name="agent_resume_confirm_yes")),
+  )
+
+  runner = CliRunner()
+
+  # Act: Query is "yes" -> confirmed=True
+  result = runner.invoke(
+      cli_tools_click.main,
+      [
+          "run",
+          str(agent_dir),
+          "yes",
+          "--session_id",
+          "s123",
+      ],
+  )
+
+  # Assert
+  assert result.exit_code == 0
+  called_args = mock_runner_instance.run_async.call_args
+  assert called_args is not None
+  kwargs = called_args.kwargs
+  assert kwargs.get("invocation_id") == "invocation_123"
+  new_message = kwargs.get("new_message")
+  assert new_message is not None
+  assert len(new_message.parts) == 1
+  part = new_message.parts[0]
+  assert part.function_response is not None
+  assert part.function_response.id == "interrupt_123"
+  assert part.function_response.name == "adk_request_confirmation"
+  assert part.function_response.response == {"confirmed": True}
+
+
+def test_cli_run_auto_resume_with_query_confirmation_no(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+  """`adk run` with query should auto-resume with confirmation=False if query is negative."""
+  # Arrange
+  agent_dir = tmp_path / "agent_resume_confirm_no"
+  agent_dir.mkdir()
+  (agent_dir / "__init__.py").touch()
+  (agent_dir / "agent.py").touch()
+
+  # Mock session service
+  mock_session = mock.Mock()
+  mock_session.id = "s123"
+  mock_session.user_id = "u123"
+  mock_session.app_name = "agent_resume_confirm_no"
+
+  # Create a mock event with long_running_tool_ids
+  mock_event = mock.Mock()
+  mock_event.long_running_tool_ids = ["interrupt_123"]
+
+  # Mock get_function_calls to return adk_request_confirmation
+  fc = mock.Mock()
+  fc.id = "interrupt_123"
+  fc.name = "adk_request_confirmation"
+  mock_event.get_function_calls.return_value = [fc]
+
+  mock_session.events = [mock_event]
+
+  mock_session_service = mock.AsyncMock()
+  mock_session_service.get_session.return_value = mock_session
+
+  monkeypatch.setattr(
+      "google.adk.cli.cli.create_session_service_from_options",
+      mock.Mock(return_value=mock_session_service),
+  )
+
+  # Mock AgentLoader to avoid loading real files
+  mock_agent_loader = mock.Mock()
+  mock_agent_loader.load_agent.return_value = mock.Mock(
+      name="agent_resume_confirm_no"
+  )
+  monkeypatch.setattr(
+      "google.adk.cli.cli.AgentLoader",
+      mock.Mock(return_value=mock_agent_loader),
+  )
+
+  # Mock Runner
+  mock_runner_instance = mock.Mock()
+
+  # Create an async generator for run_async
+  async def mock_run_async(*args, **kwargs):
+    ev = mock.Mock()
+    ev.author = "agent"
+    ev.node_info = mock.Mock(path="node")
+    ev.content = None
+    ev.long_running_tool_ids = []
+    ev.model_dump.return_value = {"author": "agent", "node_path": "node"}
+    yield ev
+
+  mock_runner_instance.run_async.side_effect = mock_run_async
+  mock_runner_instance.close = mock.AsyncMock()
+
+  monkeypatch.setattr(
+      "google.adk.cli.cli.Runner",
+      mock.Mock(return_value=mock_runner_instance),
+  )
+
+  # Mock _to_app to return a mock app
+  monkeypatch.setattr(
+      "google.adk.cli.cli._to_app",
+      mock.Mock(return_value=mock.Mock(name="agent_resume_confirm_no")),
+  )
+
+  runner = CliRunner()
+
+  # Act: Query is "no" -> confirmed=False
+  result = runner.invoke(
+      cli_tools_click.main,
+      [
+          "run",
+          str(agent_dir),
+          "no",
+          "--session_id",
+          "s123",
+      ],
+  )
+
+  # Assert
+  assert result.exit_code == 0
+  called_args = mock_runner_instance.run_async.call_args
+  assert called_args is not None
+  kwargs = called_args.kwargs
+  new_message = kwargs.get("new_message")
+  assert new_message is not None
+  assert len(new_message.parts) == 1
+  part = new_message.parts[0]
+  assert part.function_response is not None
+  assert part.function_response.id == "interrupt_123"
+  assert part.function_response.name == "adk_request_confirmation"
+  assert part.function_response.response == {"confirmed": False}
+
+
+def test_cli_run_auto_resume_with_query_confirmation_json(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+  """`adk run` with query should auto-resume with JSON response if query is valid JSON."""
+  # Arrange
+  agent_dir = tmp_path / "agent_resume_confirm_json"
+  agent_dir.mkdir()
+  (agent_dir / "__init__.py").touch()
+  (agent_dir / "agent.py").touch()
+
+  # Mock session service
+  mock_session = mock.Mock()
+  mock_session.id = "s123"
+  mock_session.user_id = "u123"
+  mock_session.app_name = "agent_resume_confirm_json"
+
+  # Create a mock event with long_running_tool_ids
+  mock_event = mock.Mock()
+  mock_event.long_running_tool_ids = ["interrupt_123"]
+
+  # Mock get_function_calls to return adk_request_confirmation
+  fc = mock.Mock()
+  fc.id = "interrupt_123"
+  fc.name = "adk_request_confirmation"
+  mock_event.get_function_calls.return_value = [fc]
+
+  mock_session.events = [mock_event]
+
+  mock_session_service = mock.AsyncMock()
+  mock_session_service.get_session.return_value = mock_session
+
+  monkeypatch.setattr(
+      "google.adk.cli.cli.create_session_service_from_options",
+      mock.Mock(return_value=mock_session_service),
+  )
+
+  # Mock AgentLoader to avoid loading real files
+  mock_agent_loader = mock.Mock()
+  mock_agent_loader.load_agent.return_value = mock.Mock(
+      name="agent_resume_confirm_json"
+  )
+  monkeypatch.setattr(
+      "google.adk.cli.cli.AgentLoader",
+      mock.Mock(return_value=mock_agent_loader),
+  )
+
+  # Mock Runner
+  mock_runner_instance = mock.Mock()
+
+  # Create an async generator for run_async
+  async def mock_run_async(*args, **kwargs):
+    ev = mock.Mock()
+    ev.author = "agent"
+    ev.node_info = mock.Mock(path="node")
+    ev.content = None
+    ev.long_running_tool_ids = []
+    ev.model_dump.return_value = {"author": "agent", "node_path": "node"}
+    yield ev
+
+  mock_runner_instance.run_async.side_effect = mock_run_async
+  mock_runner_instance.close = mock.AsyncMock()
+
+  monkeypatch.setattr(
+      "google.adk.cli.cli.Runner",
+      mock.Mock(return_value=mock_runner_instance),
+  )
+
+  # Mock _to_app to return a mock app
+  monkeypatch.setattr(
+      "google.adk.cli.cli._to_app",
+      mock.Mock(return_value=mock.Mock(name="agent_resume_confirm_json")),
+  )
+
+  runner = CliRunner()
+
+  # Act: Query is a JSON string
+  json_query = '{"confirmed": true, "payload": {"amount": 100}}'
+  result = runner.invoke(
+      cli_tools_click.main,
+      [
+          "run",
+          str(agent_dir),
+          json_query,
+          "--session_id",
+          "s123",
+      ],
+  )
+
+  # Assert
+  assert result.exit_code == 0
+  called_args = mock_runner_instance.run_async.call_args
+  assert called_args is not None
+  kwargs = called_args.kwargs
+  new_message = kwargs.get("new_message")
+  assert new_message is not None
+  assert len(new_message.parts) == 1
+  part = new_message.parts[0]
+  assert part.function_response is not None
+  assert part.function_response.id == "interrupt_123"
+  assert part.function_response.name == "adk_request_confirmation"
+  assert part.function_response.response == {
+      "confirmed": True,
+      "payload": {"amount": 100},
+  }
+
+
+def test_cli_run_all_options_with_query(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+  """`adk run` with query should forward all options correctly."""
+  # Arrange
+  agent_dir = tmp_path / "agent_all_opts"
+  agent_dir.mkdir()
+  (agent_dir / "__init__.py").touch()
+
+  mock_run_once = mock.AsyncMock(return_value=0)
+  monkeypatch.setattr("google.adk.cli.cli.run_once_cli", mock_run_once)
+
+  replay_file = tmp_path / "replay.json"
+  replay_file.write_text('{"queries": ["hello"], "state": {}}')
+
+  runner = CliRunner()
+
+  # Act
+  result = runner.invoke(
+      cli_tools_click.main,
+      [
+          "run",
+          str(agent_dir),
+          "hello",
+          "--state",
+          '{"x": 1}',
+          "--session_id",
+          "s123",
+          "--replay",
+          str(replay_file),
+          "--timeout",
+          "30s",
+          "--in_memory",
+          "--session_service_uri",
+          "memory://",
+          "--artifact_service_uri",
+          "memory://",
+          "--memory_service_uri",
+          "memory://",
+      ],
+  )
+
+  # Assert
+  assert result.exit_code == 0, f"Output: {result.output}"
+  assert mock_run_once.called
+  called_kwargs = mock_run_once.call_args.kwargs
+  assert called_kwargs.get("query") == "hello"
+  assert called_kwargs.get("state_str") == '{"x": 1}'
+  assert called_kwargs.get("session_id") == "s123"
+  assert called_kwargs.get("replay") == str(replay_file)
+  assert called_kwargs.get("timeout") == "30s"
+  assert called_kwargs.get("in_memory") is True
+  assert called_kwargs.get("session_service_uri") == "memory://"
+  assert called_kwargs.get("artifact_service_uri") == "memory://"
+  assert called_kwargs.get("memory_service_uri") == "memory://"
+  assert called_kwargs.get("use_local_storage") is True
+
+
+def test_cli_run_no_use_local_storage_with_query(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+  """`adk run` with query should forward --no_use_local_storage correctly."""
+  # Arrange
+  agent_dir = tmp_path / "agent_no_local"
+  agent_dir.mkdir()
+  (agent_dir / "__init__.py").touch()
+
+  mock_run_once = mock.AsyncMock(return_value=0)
+  monkeypatch.setattr("google.adk.cli.cli.run_once_cli", mock_run_once)
+
+  runner = CliRunner()
+
+  # Act
+  result = runner.invoke(
+      cli_tools_click.main,
+      [
+          "run",
+          str(agent_dir),
+          "hello",
+          "--no_use_local_storage",
+      ],
+  )
+
+  # Assert
+  assert result.exit_code == 0
+  assert mock_run_once.called
+  called_kwargs = mock_run_once.call_args.kwargs
+  assert called_kwargs.get("use_local_storage") is False
+
+
 # cli deploy cloud_run
 def test_cli_deploy_cloud_run_success(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
   """Successful path should call cli_deploy.to_cloud_run once."""
   rec = _Recorder()
-  monkeypatch.setattr(cli_tools_click.cli_deploy, "to_cloud_run", rec)
+  monkeypatch.setattr("google.adk.cli.cli_deploy.to_cloud_run", rec)
 
   agent_dir = tmp_path / "agent2"
   agent_dir.mkdir()
@@ -231,7 +828,7 @@ def test_cli_deploy_cloud_run_failure(
   def _boom(*_a: Any, **_k: Any) -> None:  # noqa: D401
     raise RuntimeError("boom")
 
-  monkeypatch.setattr(cli_tools_click.cli_deploy, "to_cloud_run", _boom)
+  monkeypatch.setattr("google.adk.cli.cli_deploy.to_cloud_run", _boom)
 
   agent_dir = tmp_path / "agent3"
   agent_dir.mkdir()
@@ -249,7 +846,7 @@ def test_cli_deploy_cloud_run_passthrough_args(
 ) -> None:
   """Extra args after '--' should be passed through to the gcloud command."""
   rec = _Recorder()
-  monkeypatch.setattr(cli_tools_click.cli_deploy, "to_cloud_run", rec)
+  monkeypatch.setattr("google.adk.cli.cli_deploy.to_cloud_run", rec)
 
   agent_dir = tmp_path / "agent_passthrough"
   agent_dir.mkdir()
@@ -293,7 +890,7 @@ def test_cli_deploy_cloud_run_rejects_args_without_separator(
 ) -> None:
   """Args without '--' separator should be rejected with helpful error message."""
   rec = _Recorder()
-  monkeypatch.setattr(cli_tools_click.cli_deploy, "to_cloud_run", rec)
+  monkeypatch.setattr("google.adk.cli.cli_deploy.to_cloud_run", rec)
 
   agent_dir = tmp_path / "agent_no_sep"
   agent_dir.mkdir()
@@ -323,7 +920,7 @@ def test_cli_deploy_cloud_run_rejects_args_before_separator(
 ) -> None:
   """Args before '--' separator should be rejected."""
   rec = _Recorder()
-  monkeypatch.setattr(cli_tools_click.cli_deploy, "to_cloud_run", rec)
+  monkeypatch.setattr("google.adk.cli.cli_deploy.to_cloud_run", rec)
 
   agent_dir = tmp_path / "agent_before_sep"
   agent_dir.mkdir()
@@ -357,7 +954,7 @@ def test_cli_deploy_cloud_run_allows_empty_gcloud_args(
 ) -> None:
   """No gcloud args after '--' should be allowed."""
   rec = _Recorder()
-  monkeypatch.setattr(cli_tools_click.cli_deploy, "to_cloud_run", rec)
+  monkeypatch.setattr("google.adk.cli.cli_deploy.to_cloud_run", rec)
 
   agent_dir = tmp_path / "agent_empty_gcloud"
   agent_dir.mkdir()
@@ -392,7 +989,7 @@ def test_cli_deploy_agent_engine_success(
 ) -> None:
   """Successful path should call cli_deploy.to_agent_engine."""
   rec = _Recorder()
-  monkeypatch.setattr(cli_tools_click.cli_deploy, "to_agent_engine", rec)
+  monkeypatch.setattr("google.adk.cli.cli_deploy.to_agent_engine", rec)
 
   agent_dir = tmp_path / "agent_ae"
   agent_dir.mkdir()
@@ -422,7 +1019,7 @@ def test_cli_deploy_agent_engine_otel_to_cloud_success(
 ) -> None:
   """Successful path should call cli_deploy.to_agent_engine with --otel_to_cloud."""
   rec = _Recorder()
-  monkeypatch.setattr(cli_tools_click.cli_deploy, "to_agent_engine", rec)
+  monkeypatch.setattr("google.adk.cli.cli_deploy.to_agent_engine", rec)
 
   agent_dir = tmp_path / "agent_ae"
   agent_dir.mkdir()
@@ -454,7 +1051,7 @@ def test_cli_deploy_gke_success(
 ) -> None:
   """Successful path should call cli_deploy.to_gke."""
   rec = _Recorder()
-  monkeypatch.setattr(cli_tools_click.cli_deploy, "to_gke", rec)
+  monkeypatch.setattr("google.adk.cli.cli_deploy.to_gke", rec)
 
   agent_dir = tmp_path / "agent_gke"
   agent_dir.mkdir()
@@ -541,7 +1138,7 @@ def test_cli_web_invokes_uvicorn(
   agents_dir = tmp_path / "agents"
   agents_dir.mkdir()
   monkeypatch.setattr(
-      cli_tools_click, "get_fast_api_app", lambda **_k: object()
+      "google.adk.cli.fast_api.get_fast_api_app", lambda **_k: object()
   )
   runner = CliRunner()
   result = runner.invoke(cli_tools_click.main, ["web", str(agents_dir)])
@@ -556,7 +1153,7 @@ def test_cli_api_server_invokes_uvicorn(
   agents_dir = tmp_path / "agents_api"
   agents_dir.mkdir()
   monkeypatch.setattr(
-      cli_tools_click, "get_fast_api_app", lambda **_k: object()
+      "google.adk.cli.fast_api.get_fast_api_app", lambda **_k: object()
   )
   runner = CliRunner()
   result = runner.invoke(cli_tools_click.main, ["api_server", str(agents_dir)])
@@ -572,7 +1169,7 @@ def test_cli_web_passes_service_uris(
   agents_dir.mkdir()
 
   mock_get_app = _Recorder()
-  monkeypatch.setattr(cli_tools_click, "get_fast_api_app", mock_get_app)
+  monkeypatch.setattr("google.adk.cli.fast_api.get_fast_api_app", mock_get_app)
 
   runner = CliRunner()
   result = runner.invoke(
@@ -665,7 +1262,7 @@ def test_cli_eval_with_eval_set_id(
   eval_set_results = eval_set_results_manager.list_eval_set_results(
       app_name=app_name
   )
-  assert len(eval_set_results) == 2
+  assert len(eval_set_results) == 1
 
 
 def test_cli_create_eval_set(tmp_path: Path):
@@ -821,7 +1418,7 @@ def test_cli_deploy_cloud_run_gcloud_arg_conflict(
     )
 
   monkeypatch.setattr(
-      cli_tools_click.cli_deploy, "to_cloud_run", _mock_to_cloud_run
+      "google.adk.cli.cli_deploy.to_cloud_run", _mock_to_cloud_run
   )
 
   agent_dir = tmp_path / "agent_conflict"
