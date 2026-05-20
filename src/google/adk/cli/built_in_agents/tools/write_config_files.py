@@ -31,7 +31,7 @@ import jsonschema
 import yaml
 
 from ..utils import load_agent_config_schema
-from ..utils.path_normalizer import sanitize_generated_file_path
+from ..utils._path_normalizer import _sanitize_generated_file_path as sanitize_generated_file_path
 from ..utils.resolve_root_directory import resolve_file_path
 from .write_files import write_files
 

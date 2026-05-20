@@ -1167,6 +1167,87 @@ def test_create_session_without_id(test_app, test_session_info):
   logger.info(f"Created session with generated ID: {data['id']}")
 
 
+def test_agent_builder_create_session_normalizes_root_directory(
+    builder_test_client, tmp_path: Path
+):
+  """Test Agent Builder session creation scopes root_directory to agents_dir."""
+  response = builder_test_client.post(
+      "/apps/__adk_agent_builder_assistant/users/user/sessions",
+      json={"state": {"root_directory": "sample_app/tmp/sample_app"}},
+  )
+
+  assert response.status_code == 200
+  data = response.json()
+  assert data["state"]["root_directory"] == str(
+      (tmp_path / "sample_app" / "tmp" / "sample_app").resolve()
+  )
+
+
+@pytest.mark.parametrize(
+    "root_directory",
+    ["'../outside'", '"../outside"', "`../outside`"],
+)
+def test_agent_builder_create_session_rejects_quoted_root_directory_escape(
+    builder_test_client,
+    root_directory: str,
+):
+  """Test Agent Builder session creation rejects quoted root escapes."""
+  response = builder_test_client.post(
+      "/apps/__adk_agent_builder_assistant/users/user/sessions",
+      json={"state": {"root_directory": root_directory}},
+  )
+
+  assert response.status_code == 400
+  assert "must stay within the agents directory" in response.json()["detail"]
+
+
+def test_agent_builder_update_session_rejects_root_directory_escape(
+    builder_test_client,
+):
+  """Test Agent Builder session updates reject escaped root_directory values."""
+  session_response = builder_test_client.post(
+      "/apps/__adk_agent_builder_assistant/users/user/sessions/session-1",
+      json={"state": {}},
+  )
+  assert session_response.status_code == 200
+
+  response = builder_test_client.patch(
+      "/apps/__adk_agent_builder_assistant/users/user/sessions/session-1",
+      json={"state_delta": {"root_directory": "../outside"}},
+  )
+
+  assert response.status_code == 400
+  assert "must stay within the agents directory" in response.json()["detail"]
+
+
+def test_agent_builder_run_rejects_root_directory_escape(
+    builder_test_client,
+):
+  """Test Agent Builder runs reject escaped root_directory values."""
+  session_response = builder_test_client.post(
+      "/apps/__adk_agent_builder_assistant/users/user/sessions/session-2",
+      json={"state": {}},
+  )
+  assert session_response.status_code == 200
+
+  response = builder_test_client.post(
+      "/run",
+      json={
+          "app_name": "__adk_agent_builder_assistant",
+          "user_id": "user",
+          "session_id": "session-2",
+          "new_message": {
+              "role": "user",
+              "parts": [{"text": "hello"}],
+          },
+          "state_delta": {"root_directory": "../outside"},
+      },
+  )
+
+  assert response.status_code == 400
+  assert "must stay within the agents directory" in response.json()["detail"]
+
+
 def test_get_session(test_app, create_test_session):
   """Test retrieving a session by ID."""
   info = create_test_session

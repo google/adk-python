@@ -20,6 +20,7 @@ import importlib
 import json
 import logging
 import os
+from pathlib import Path
 import re
 import sys
 import time
@@ -98,6 +99,8 @@ from ..utils.agent_info import get_agents_dict
 from ..utils.context_utils import Aclosing
 from ..utils.feature_decorator import experimental
 from ..version import __version__
+from .built_in_agents.utils._path_normalizer import _sanitize_generated_file_path as sanitize_generated_file_path
+from .built_in_agents.utils._path_normalizer import _to_posix_path as to_posix_path
 from .cli_eval import EVAL_SESSION_ID_PREFIX
 from .utils import cleanup
 from .utils import common
@@ -235,6 +238,46 @@ def _is_request_origin_allowed(
 
 
 _SAFE_HTTP_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
+_AGENT_BUILDER_APP_NAME = "__adk_agent_builder_assistant"
+
+
+def _normalize_agent_builder_state(
+    app_name: str,
+    state: Optional[dict[str, Any]],
+    agents_base_path: Path,
+) -> Optional[dict[str, Any]]:
+  """Validate and normalize Agent Builder root_directory values."""
+  if app_name != _AGENT_BUILDER_APP_NAME or state is None:
+    return state
+
+  if "root_directory" not in state:
+    return state
+
+  root_directory = state["root_directory"]
+  if not isinstance(root_directory, str):
+    raise InputValidationError("root_directory must be a string.")
+
+  normalized_root = sanitize_generated_file_path(root_directory)
+  if not normalized_root:
+    raise InputValidationError("root_directory must not be empty.")
+
+  root_path = to_posix_path(normalized_root)
+  if root_path.is_absolute():
+    raise InputValidationError(
+        "root_directory for Agent Builder must be relative to the agents"
+        " directory."
+    )
+
+  resolved_root = (agents_base_path / Path(root_path)).resolve(strict=False)
+  if not resolved_root.is_relative_to(agents_base_path):
+    raise InputValidationError(
+        "root_directory for Agent Builder must stay within the agents"
+        " directory."
+    )
+
+  normalized_state = dict(state)
+  normalized_state["root_directory"] = str(resolved_root)
+  return normalized_state
 
 
 class _OriginCheckMiddleware:
@@ -954,6 +997,7 @@ class AdkWebServer:
 
     # Run the FastAPI server.
     app = FastAPI(lifespan=internal_lifespan)
+    agents_base_path = (Path.cwd() / self.agents_dir).resolve()
 
     has_configured_allowed_origins = bool(allow_origins)
     if allow_origins:
@@ -1181,10 +1225,17 @@ class AdkWebServer:
         session_id: str,
         state: Optional[dict[str, Any]] = None,
     ) -> Session:
+      try:
+        normalized_state = _normalize_agent_builder_state(
+            app_name, state, agents_base_path
+        )
+      except InputValidationError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+
       return await self._create_session(
           app_name=app_name,
           user_id=user_id,
-          state=state,
+          state=normalized_state,
           session_id=session_id,
       )
 
@@ -1200,10 +1251,17 @@ class AdkWebServer:
       if not req:
         return await self._create_session(app_name=app_name, user_id=user_id)
 
+      try:
+        normalized_state = _normalize_agent_builder_state(
+            app_name, req.state, agents_base_path
+        )
+      except InputValidationError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+
       session = await self._create_session(
           app_name=app_name,
           user_id=user_id,
-          state=req.state,
+          state=normalized_state,
           session_id=req.session_id,
       )
 
@@ -1251,6 +1309,13 @@ class AdkWebServer:
       if not session:
         raise HTTPException(status_code=404, detail="Session not found")
 
+      try:
+        state_delta = _normalize_agent_builder_state(
+            app_name, req.state_delta, agents_base_path
+        )
+      except InputValidationError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+
       # Create an event to record the state change
       import uuid
 
@@ -1260,7 +1325,7 @@ class AdkWebServer:
       state_update_event = Event(
           invocation_id="p-" + str(uuid.uuid4()),
           author="user",
-          actions=EventActions(state_delta=req.state_delta),
+          actions=EventActions(state_delta=state_delta),
       )
 
       # Append the event to the session
@@ -1893,12 +1958,18 @@ class AdkWebServer:
       runner = await self.get_runner_async(req.app_name)
       _set_telemetry_context_if_needed(runner)
       try:
+        state_delta = _normalize_agent_builder_state(
+            req.app_name, req.state_delta, agents_base_path
+        )
+      except InputValidationError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+      try:
         async with Aclosing(
             runner.run_async(
                 user_id=req.user_id,
                 session_id=req.session_id,
                 new_message=req.new_message,
-                state_delta=req.state_delta,
+                state_delta=state_delta,
                 invocation_id=req.invocation_id,
             )
         ) as agen:
@@ -1915,6 +1986,12 @@ class AdkWebServer:
       stream_mode = StreamingMode.SSE if req.streaming else StreamingMode.NONE
       runner = await self.get_runner_async(req.app_name)
       _set_telemetry_context_if_needed(runner)
+      try:
+        state_delta = _normalize_agent_builder_state(
+            req.app_name, req.state_delta, agents_base_path
+        )
+      except InputValidationError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
 
       # Validate session existence before starting the stream.
       # We check directly here instead of eagerly advancing the
@@ -1941,7 +2018,7 @@ class AdkWebServer:
                 user_id=req.user_id,
                 session_id=req.session_id,
                 new_message=req.new_message,
-                state_delta=req.state_delta,
+                state_delta=state_delta,
                 run_config=RunConfig(streaming_mode=stream_mode),
                 invocation_id=req.invocation_id,
             )

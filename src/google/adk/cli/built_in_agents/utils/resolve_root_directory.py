@@ -16,14 +16,16 @@
 
 from __future__ import annotations
 
-import os
 from pathlib import Path
 from typing import Any
 from typing import Dict
 from typing import List
 from typing import Optional
 
-from .path_normalizer import sanitize_generated_file_path
+from google.adk.errors.input_validation_error import InputValidationError
+
+from ._path_normalizer import _sanitize_generated_file_path as sanitize_generated_file_path
+from ._path_normalizer import _to_posix_path as to_posix_path
 
 
 def resolve_file_path(
@@ -43,32 +45,33 @@ def resolve_file_path(
 
   Returns:
     Resolved absolute Path object
+
+  Raises:
+    InputValidationError: If the path resolves outside the configured root
+      directory.
   """
   normalized_path = sanitize_generated_file_path(file_path)
-  file_path_obj = Path(normalized_path)
+  if not normalized_path:
+    raise InputValidationError("File path must not be empty.")
 
-  # If already absolute, use as-is
-  if file_path_obj.is_absolute():
-    return file_path_obj
+  resolved_root = _resolve_root_directory(session_state, working_directory)
+  pure_path = to_posix_path(normalized_path)
+  candidate_path = Path(pure_path)
 
-  # Get root directory from session state, default to "./"
-  root_directory = "./"
-  if session_state and "root_directory" in session_state:
-    root_directory = session_state["root_directory"]
-
-  # Use the same resolution logic as the main function
-  root_path_obj = Path(root_directory)
-
-  if root_path_obj.is_absolute():
-    resolved_root = root_path_obj
+  if candidate_path.is_absolute():
+    resolved_path = candidate_path.resolve(strict=False)
   else:
-    if working_directory:
-      resolved_root = Path(working_directory) / root_directory
-    else:
-      resolved_root = Path(os.getcwd()) / root_directory
+    resolved_path = (resolved_root / candidate_path).resolve(strict=False)
 
-  # Resolve file path relative to root directory
-  return resolved_root / file_path_obj
+  try:
+    resolved_path.relative_to(resolved_root)
+  except ValueError as exc:
+    raise InputValidationError(
+        f"File path {file_path!r} resolves outside root directory"
+        f" {resolved_root}"
+    ) from exc
+
+  return resolved_path
 
 
 def resolve_file_paths(
@@ -90,3 +93,22 @@ def resolve_file_paths(
       resolve_file_path(path, session_state, working_directory)
       for path in file_paths
   ]
+
+
+def _resolve_root_directory(
+    session_state: Optional[Dict[str, Any]] = None,
+    working_directory: Optional[str] = None,
+) -> Path:
+  """Resolve the effective root directory for built-in agent file tools."""
+  root_directory = "./"
+  if session_state and "root_directory" in session_state:
+    root_directory = str(session_state["root_directory"])
+
+  normalized_root = sanitize_generated_file_path(root_directory) or "./"
+  root_path_obj = Path(to_posix_path(normalized_root))
+
+  if root_path_obj.is_absolute():
+    return root_path_obj.resolve(strict=False)
+
+  base_directory = Path(working_directory) if working_directory else Path.cwd()
+  return (base_directory / root_path_obj).resolve(strict=False)
