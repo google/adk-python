@@ -100,3 +100,35 @@ jobs:
           else
             echo "✅ No relevant Python files found."
           fi
+
+      - name: Check for hardcoded googleapis.com endpoints
+        run: |
+          git fetch origin ${GITHUB_BASE_REF}
+          CHANGED_FILES=$(git diff --diff-filter=ACMR --name-only origin/${GITHUB_BASE_REF}...HEAD | grep -E '\.py$' || true)
+          if [ -n "$CHANGED_FILES" ]; then
+            echo "Checking for hardcoded endpoints in: $CHANGED_FILES"
+
+            set +e
+            FILES_WITH_HARDCODED_ENDPOINTS=$(grep -lE 'https?://[a-zA-Z0-9.-]+\.googleapis\.com' $CHANGED_FILES | grep -v '.mtls.googleapis.com' || true)
+            set -e
+
+            if [ -n "$FILES_WITH_HARDCODED_ENDPOINTS" ]; then
+              echo "❌ Found forbidden hardcoded non-mTLS endpoints."
+              echo ""
+              echo "🛠️ RESOLUTION (based on cl/905035339):"
+              echo "Do not hardcode 'googleapis.com' URLs. Instead, implement dynamic endpoint selection:"
+              echo ""
+              echo "1. Initialize an AuthorizedSession with your credentials."
+              echo "2. Use 'mtls.has_default_client_cert_source() from google-auth' to check for available client certificates."
+              echo "3. If certificates are present, use 'session.configure_mtls_channel()'."
+              echo "4. Dynamically select the '.mtls.' variant of the endpoint when mTLS is active."
+              echo ""
+              echo "The following files require updates:"
+              echo "$FILES_WITH_HARDCODED_ENDPOINTS"
+              exit 1
+            else
+              echo "✅ All endpoints are compliant or dynamically managed."
+            fi
+          else
+            echo "✅ No relevant Python files found."
+          fi
