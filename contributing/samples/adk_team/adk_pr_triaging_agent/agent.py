@@ -220,7 +220,7 @@ def add_comment_to_pr(pr_number: int, comment: str) -> dict[str, Any]:
 
 
 root_agent = Agent(
-    model="gemini-2.5-pro",
+    model="gemini-3.5-flash",
     name="adk_pr_triaging_assistant",
     description="Triage ADK pull requests.",
     instruction=f"""
