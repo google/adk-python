@@ -14,16 +14,34 @@
 
 from __future__ import annotations
 
-import builtins
 import importlib.util
-import sys
-from typing import Any
 
-from google.adk.models.anthropic_llm import Claude
 from google.adk.models.base_llm import BaseLlm
 from google.adk.models.google_llm import Gemini
 from google.adk.utils.output_schema_utils import can_use_output_schema_with_tools
 import pytest
+
+_has_anthropic = importlib.util.find_spec("anthropic") is not None
+_has_litellm = importlib.util.find_spec("litellm") is not None
+
+_skip_anthropic = pytest.mark.skipif(
+    not _has_anthropic, reason="anthropic not installed"
+)
+_skip_litellm = pytest.mark.skipif(
+    not _has_litellm, reason="litellm not installed"
+)
+
+
+def _make_claude(model: str):
+  from google.adk.models.anthropic_llm import Claude
+
+  return Claude(model=model)
+
+
+def _make_litellm(model: str):
+  from google.adk.models.lite_llm import LiteLlm
+
+  return LiteLlm(model=model)
 
 
 @pytest.mark.parametrize(
@@ -41,9 +59,6 @@ import pytest
         ("gemini-1.5-pro", "1", False),
         ("gemini-1.5-pro", "0", False),
         ("gemini-1.5-pro", None, False),
-        (Claude(model="claude-3.7-sonnet"), "1", False),
-        (Claude(model="claude-3.7-sonnet"), "0", False),
-        (Claude(model="claude-3.7-sonnet"), None, False),
     ],
 )
 def test_can_use_output_schema_with_tools(
@@ -60,35 +75,45 @@ def test_can_use_output_schema_with_tools(
   assert can_use_output_schema_with_tools(model) == expected
 
 
-def test_can_use_output_schema_with_tools_with_litellm_model() -> None:
-  """Test LiteLlm detection when the optional module is available."""
-  if importlib.util.find_spec("litellm") is None:
-    pytest.skip("litellm is not installed")
+@_skip_anthropic
+@pytest.mark.parametrize(
+    "model, env_value, expected",
+    [
+        ("claude-3.7-sonnet", "1", False),
+        ("claude-3.7-sonnet", "0", False),
+        ("claude-3.7-sonnet", None, False),
+    ],
+)
+def test_can_use_output_schema_with_tools_claude(
+    monkeypatch, model, env_value, expected
+):
+  """Test can_use_output_schema_with_tools with Claude models."""
+  claude_model = _make_claude(model)
+  if env_value is not None:
+    monkeypatch.setenv("GOOGLE_GENAI_USE_VERTEXAI", env_value)
+  else:
+    monkeypatch.delenv("GOOGLE_GENAI_USE_VERTEXAI", raising=False)
+  assert can_use_output_schema_with_tools(claude_model) == expected
 
-  from google.adk.models.lite_llm import LiteLlm
 
-  assert can_use_output_schema_with_tools(LiteLlm(model="openai/gpt-4o"))
-
-
-def test_can_use_output_schema_with_tools_without_litellm_module(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-  """Test optional LiteLlm import failures do not affect other models."""
-  original_import = builtins.__import__
-
-  def _failing_import(
-      name: str,
-      globals_dict: dict[str, Any] | None = None,
-      locals_dict: dict[str, Any] | None = None,
-      fromlist: tuple[str, ...] = (),
-      level: int = 0,
-  ) -> Any:
-    if name.endswith("lite_llm"):
-      raise ImportError("litellm not installed")
-    return original_import(name, globals_dict, locals_dict, fromlist, level)
-
-  monkeypatch.delenv("GOOGLE_GENAI_USE_VERTEXAI", raising=False)
-  monkeypatch.delitem(sys.modules, "google.adk.models.lite_llm", raising=False)
-  monkeypatch.setattr(builtins, "__import__", _failing_import)
-
-  assert not can_use_output_schema_with_tools(Claude(model="claude-3.7-sonnet"))
+@_skip_litellm
+@pytest.mark.parametrize(
+    "model, env_value, expected",
+    [
+        ("openai/gpt-4o", "1", True),
+        ("openai/gpt-4o", "0", True),
+        ("openai/gpt-4o", None, True),
+        ("anthropic/claude-3.7-sonnet", None, True),
+        ("fireworks_ai/llama-v3p1-70b", None, True),
+    ],
+)
+def test_can_use_output_schema_with_tools_litellm(
+    monkeypatch, model, env_value, expected
+):
+  """Test can_use_output_schema_with_tools with LiteLLM models."""
+  litellm_model = _make_litellm(model)
+  if env_value is not None:
+    monkeypatch.setenv("GOOGLE_GENAI_USE_VERTEXAI", env_value)
+  else:
+    monkeypatch.delenv("GOOGLE_GENAI_USE_VERTEXAI", raising=False)
+  assert can_use_output_schema_with_tools(litellm_model) == expected

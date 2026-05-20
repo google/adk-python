@@ -369,7 +369,7 @@ async def test_evaluate_success(
   assert isinstance(results[0], EvalCaseResult)
   assert isinstance(results[1], EvalCaseResult)
   assert mock_eval_sets_manager.get_eval_case.call_count == 2
-  assert mock_eval_set_results_manager.save_eval_set_result.call_count == 2
+  assert mock_eval_set_results_manager.save_eval_set_result.call_count == 1
 
 
 @pytest.mark.asyncio

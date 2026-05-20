@@ -13,7 +13,10 @@
 # limitations under the License.
 from __future__ import annotations
 
+import re
+from typing import Any
 from typing import Optional
+from typing import Union
 
 from pydantic import BaseModel
 from pydantic import ConfigDict
@@ -33,13 +36,15 @@ __all__ = [
     "validate_app_name",
 ]
 
+_VALID_APP_NAME_RE = re.compile(r"^[a-zA-Z][a-zA-Z0-9_-]*$")
+
 
 def validate_app_name(name: str) -> None:
   """Ensures the provided application name is safe and intuitive."""
-  if not name.isidentifier():
+  if not _VALID_APP_NAME_RE.match(name):
     raise ValueError(
-        f"Invalid app name '{name}': must be a valid identifier consisting of"
-        " letters, digits, and underscores."
+        f"Invalid app name '{name}': must start with a letter and can only"
+        " consist of letters, digits, underscores, and hyphens."
     )
   if name == "user":
     raise ValueError("App name cannot be 'user'; reserved for end-user input.")
@@ -49,9 +54,11 @@ class App(BaseModel):
   """Represents an LLM-backed agentic application.
 
   An `App` is the top-level container for an agentic system powered by LLMs.
-  It manages a root agent (`root_agent`), which serves as the root of an agent
-  tree, enabling coordination and communication across all agents in the
-  hierarchy.
+  It manages either a root agent (`root_agent`) or a root node (`root_node`),
+  which serves as the entry point for execution.
+
+  Exactly one of `root_agent` or `root_node` must be provided.
+
   The `plugins` are application-wide components that provide shared capabilities
   and services to the entire system.
   """
@@ -64,8 +71,12 @@ class App(BaseModel):
   name: str
   """The name of the application."""
 
-  root_agent: BaseAgent
-  """The root agent in the application. One app can only have one root agent."""
+  # Change to Union[BaseAgent, BaseNode, None] after dependency is fixed.
+  root_agent: Union[BaseAgent, Any, None] = None
+  """The root agent or node in the application.
+
+  Accepts either a BaseAgent or a BaseNode instance.
+  """
 
   plugins: list[BasePlugin] = Field(default_factory=list)
   """The plugins in the application."""
@@ -83,6 +94,16 @@ class App(BaseModel):
   """
 
   @model_validator(mode="after")
-  def _validate_name(self) -> App:
+  def _validate(self) -> App:
     validate_app_name(self.name)
+    if self.root_agent is None:
+      raise ValueError("root_agent must be provided.")
+
+    from ..workflow._base_node import BaseNode
+
+    if not isinstance(self.root_agent, (BaseAgent, BaseNode)):
+      raise TypeError(
+          "root_agent must be a BaseAgent or BaseNode instance, got"
+          f" {type(self.root_agent).__name__}"
+      )
     return self

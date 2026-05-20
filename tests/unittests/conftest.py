@@ -14,6 +14,10 @@
 
 import os
 
+import pytest
+
+pytest.register_assert_rewrite('google.adk.cli.agent_test_runner')
+
 from pytest import fixture
 from pytest import FixtureRequest
 from pytest import hookimpl

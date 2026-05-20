@@ -576,11 +576,15 @@ async def _execute_single_function_call_async(
     if altered_function_response is not None:
       function_response = altered_function_response
 
-    if tool.is_long_running:
-      # Allow long-running function to return None to not provide function
-      # response.
-      if not function_response:
-        return None
+    if (
+        tool.is_long_running or tool._defers_response
+    ) and not function_response:
+      # The tool either runs long (FR will arrive later via session
+      # injection) or defers its response by design (e.g., the LlmAgent
+      # wrapper for task delegation synthesizes the FR after the
+      # sub-agent completes).  Either way, skip the auto-FR build when
+      # the tool returned nothing.
+      return None
 
     # Note: State deltas are not applied here - they are collected in
     # tool_context.actions.state_delta and applied later when the session
@@ -815,10 +819,13 @@ async def _execute_single_function_call_live(
     if altered_function_response is not None:
       function_response = altered_function_response
 
-    if tool.is_long_running:
-      # Allow async function to return None to not provide function response.
-      if not function_response:
-        return None
+    if (
+        tool.is_long_running or tool._defers_response
+    ) and not function_response:
+      # The tool either runs long (FR will arrive later via session
+      # injection) or defers its response by design.  Skip the auto-FR
+      # build when the tool returned nothing.
+      return None
 
     # Note: State deltas are not applied here - they are collected in
     # tool_context.actions.state_delta and applied later when the session

@@ -13,6 +13,7 @@
 # limitations under the License.
 
 import importlib
+from typing import Any
 from typing import TYPE_CHECKING
 
 from .base_agent import BaseAgent
@@ -46,14 +47,14 @@ __all__ = [
 ]
 
 
-def __getattr__(name: str):
+def __getattr__(name: str) -> Any:
   if name == 'McpInstructionProvider':
-    try:
-      module = importlib.import_module(f'{__name__}.mcp_instruction_provider')
-    except ImportError as e:
-      raise ImportError(
-          '`McpInstructionProvider` requires the `mcp` package.'
-          ' Install with: pip install google-adk[extensions]'
-      ) from e
-    return module.McpInstructionProvider
+    module = importlib.import_module('.mcp_instruction_provider', __name__)
+    attr = getattr(module, 'McpInstructionProvider')
+    globals()[name] = attr
+    return attr
   raise AttributeError(f'module {__name__!r} has no attribute {name!r}')
+
+
+def __dir__() -> list[str]:
+  return list(globals().keys()) + __all__
