@@ -46,7 +46,7 @@ else:
   )
 
 root_agent = Agent(
-    model="gemini-2.5-pro",
+    model="gemini-3.5-flash",
     name="adk_docs_updater",
     description=(
         "Update the ADK docs based on the code in the ADK Python codebase"
