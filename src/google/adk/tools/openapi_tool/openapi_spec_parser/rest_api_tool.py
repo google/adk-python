@@ -570,8 +570,13 @@ class RestApiTool(BaseTool):
 
 
 async def _request(**request_params) -> httpx.Response:
+  from ..._ssrf_protection import validate_url
+
+  url = request_params.get("url", "")
+  validate_url(url)
+
   async with httpx.AsyncClient(
       verify=request_params.pop("verify", True),
-      timeout=None,
+      timeout=30,
   ) as client:
     return await client.request(**request_params)

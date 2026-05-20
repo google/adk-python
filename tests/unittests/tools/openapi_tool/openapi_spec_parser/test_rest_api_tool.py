@@ -1117,7 +1117,7 @@ class TestRestApiTool:
       else:
         assert call_kwargs["verify"] == expected_verify_in_call
 
-  async def test_request_uses_no_default_timeout(
+  async def test_request_uses_finite_timeout(
       self,
       mock_tool_context,
       sample_endpoint,
@@ -1125,12 +1125,10 @@ class TestRestApiTool:
       sample_auth_scheme,
       sample_auth_credential,
   ):
-    """Test that _request creates AsyncClient with timeout=None.
+    """Test that _request creates AsyncClient with a finite timeout.
 
-    httpx defaults to a 5-second timeout, which is too short for many
-    real-world API calls. Verify that we explicitly disable the timeout
-    to match the previous requests-library behavior (no timeout).
-    Regression test for https://github.com/google/adk-python/issues/4431.
+    An unbounded timeout allows hanging connections and resource exhaustion.
+    Verify that the client uses a reasonable finite timeout.
     """
     mock_response = mock.create_autospec(requests.Response, instance=True)
     mock_response.json.return_value = {"result": "success"}
@@ -1157,7 +1155,7 @@ class TestRestApiTool:
 
       assert mock_async_client.called
       _, call_kwargs = mock_async_client.call_args
-      assert call_kwargs["timeout"] is None
+      assert call_kwargs["timeout"] == 30
 
   async def test_call_with_configure_verify(
       self,
@@ -1502,3 +1500,43 @@ def test_snake_to_lower_camel():
   assert snake_to_lower_camel("three_word_example") == "threeWordExample"
   assert not snake_to_lower_camel("")
   assert snake_to_lower_camel("alreadyCamelCase") == "alreadyCamelCase"
+
+
+class TestRequestSsrfProtection:
+
+  @pytest.mark.asyncio
+  async def test_request_blocks_localhost(self):
+    from google.adk.tools.openapi_tool.openapi_spec_parser.rest_api_tool import _request
+
+    with pytest.raises(ValueError, match="Blocked host"):
+      await _request(method="GET", url="http://localhost:8080/internal")
+
+  @pytest.mark.asyncio
+  async def test_request_blocks_loopback(self):
+    from google.adk.tools.openapi_tool.openapi_spec_parser.rest_api_tool import _request
+
+    with pytest.raises(ValueError, match="Blocked host"):
+      await _request(method="GET", url="http://127.0.0.1/internal")
+
+  @pytest.mark.asyncio
+  async def test_request_blocks_metadata_endpoint(self):
+    from google.adk.tools.openapi_tool.openapi_spec_parser.rest_api_tool import _request
+
+    with pytest.raises(ValueError, match="Blocked host"):
+      await _request(
+          method="GET", url="http://169.254.169.254/latest/meta-data/"
+      )
+
+  @pytest.mark.asyncio
+  async def test_request_blocks_private_ip(self):
+    from google.adk.tools.openapi_tool.openapi_spec_parser.rest_api_tool import _request
+
+    with pytest.raises(ValueError, match="Blocked host"):
+      await _request(method="GET", url="http://10.0.0.1/admin")
+
+  @pytest.mark.asyncio
+  async def test_request_blocks_file_scheme(self):
+    from google.adk.tools.openapi_tool.openapi_spec_parser.rest_api_tool import _request
+
+    with pytest.raises(ValueError, match="Unsupported url scheme"):
+      await _request(method="GET", url="file:///etc/passwd")
