@@ -99,17 +99,26 @@ def is_gemini_1_model(model_string: Optional[str]) -> bool:
   return re.match(r'^gemini-1\.\d+', model_name) is not None
 
 
-def is_gemini_2_or_above(model_string: Optional[str]) -> bool:
-  """Check if the model is a Gemini 2.0 or newer model using semantic versions.
+def is_gemini_eap_or_2_or_above(model_string: Optional[str]) -> bool:
+  """Check if the model is a Gemini EAP or a Gemini 2.0+ model.
+
+  EAP (Early Access Program) Gemini models follow a different naming
+  convention (see ``_is_gemini_eap_model``) and do not encode a numeric
+  version, so they are checked first. Otherwise the model name is parsed
+  as a semantic version and is considered a match when the major version
+  is ``>= 2``.
 
   Args:
     model_string: Either a simple model name or path-based model name
 
   Returns:
-    True if it's a Gemini 2.0+ model, False otherwise
+    True if it's a Gemini EAP model or a Gemini 2.0+ model, False otherwise
   """
   if not model_string:
     return False
+
+  if _is_gemini_eap_model(model_string):
+    return True
 
   model_name = extract_model_name(model_string)
   if not model_name.startswith('gemini-'):
@@ -127,7 +136,7 @@ def is_gemini_2_or_above(model_string: Optional[str]) -> bool:
   return parsed_version.major >= 2
 
 
-def is_gemini_eap_model(model_string: Optional[str]) -> bool:
+def _is_gemini_eap_model(model_string: Optional[str]) -> bool:
   """Check if the model is an Early Access Program (EAP) Gemini model.
 
   Matches names of the form ``gemini-<variant>-early-exp`` optionally

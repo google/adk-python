@@ -30,8 +30,9 @@ from typing import Tuple
 from unittest import mock
 
 import click
-from google.adk.cli import cli_deploy
 import pytest
+
+import src.google.adk.cli.cli_deploy as cli_deploy
 
 
 # Helpers
@@ -147,7 +148,10 @@ def test_resolve_project_from_gcloud_fails(
             "gs://a",
             "rag://m",
             None,
-            "--session_db_url=sqlite://s --artifact_storage_uri=gs://a",
+            (
+                "--session_service_uri=sqlite://s --artifact_service_uri=gs://a"
+                " --memory_service_uri=rag://m"
+            ),
         ),
         (
             "0.5.0",
@@ -155,7 +159,10 @@ def test_resolve_project_from_gcloud_fails(
             "gs://a",
             "rag://m",
             None,
-            "--session_db_url=sqlite://s",
+            (
+                "--session_service_uri=sqlite://s --artifact_service_uri=gs://a"
+                " --memory_service_uri=rag://m"
+            ),
         ),
         (
             "1.3.0",
@@ -179,7 +186,7 @@ def test_resolve_project_from_gcloud_fails(
             "gs://a",
             None,
             None,
-            "--artifact_storage_uri=gs://a",
+            "--artifact_service_uri=gs://a",
         ),
         (
             "1.21.0",
@@ -235,6 +242,8 @@ def test_agent_engine_app_template_compiles_with_windows_paths() -> None:
       adk_app_type="agent",
       trace_to_cloud_option=False,
       express_mode=False,
+      extra_imports="",
+      app_instantiation="agent=root_agent",
   )
   compile(rendered, "<agent_engine_app.py>", "exec")
 
@@ -314,7 +323,9 @@ def test_to_agent_engine_happy_path(
   assert "enable_tracing=True" in content
   reqs_path = tmp_dir / "requirements.txt"
   assert reqs_path.is_file()
-  assert "google-cloud-aiplatform[adk,agent_engines]" in reqs_path.read_text()
+  reqs_content = reqs_path.read_text()
+  assert "google-cloud-aiplatform[agent_engines]" in reqs_content
+  assert f"google-adk=={cli_deploy.__version__}" in reqs_content
   assert len(create_recorder.calls) == 1
   assert str(rmtree_recorder.get_last_call_args()[0]) == str(tmp_dir)
 
@@ -498,7 +509,7 @@ def test_to_gke_happy_path(
   dockerfile_path = tmp_path / "Dockerfile"
   assert dockerfile_path.is_file()
   dockerfile_content = dockerfile_path.read_text()
-  assert "CMD adk web --port=9090" in dockerfile_content
+  assert "CMD adk api_server --with_ui --port=9090" in dockerfile_content
   assert "RUN pip install google-adk==1.2.0" in dockerfile_content
 
   assert len(run_recorder.calls) == 3, "Expected 3 subprocess calls"

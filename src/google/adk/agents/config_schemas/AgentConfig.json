@@ -34,7 +34,7 @@
     },
     "ApiAuth": {
       "additionalProperties": false,
-      "description": "The generic reusable api auth config.\n\nDeprecated. Please use AuthConfig (google/cloud/aiplatform/master/auth.proto)\ninstead.",
+      "description": "The generic reusable api auth config.\n\nDeprecated. Please use AuthConfig (google/cloud/aiplatform/master/auth.proto)\ninstead. This data type is not supported in Gemini API.",
       "properties": {
         "apiKeyConfig": {
           "anyOf": [
@@ -54,7 +54,7 @@
     },
     "ApiAuthApiKeyConfig": {
       "additionalProperties": false,
-      "description": "The API secret.",
+      "description": "The API secret. This data type is not supported in Gemini API.",
       "properties": {
         "apiKeySecretVersion": {
           "anyOf": [
@@ -88,8 +88,21 @@
     },
     "ApiKeyConfig": {
       "additionalProperties": false,
-      "description": "Config for authentication with API key.",
+      "description": "Config for authentication with API key.\n\nThis data type is not supported in Gemini API.",
       "properties": {
+        "apiKeySecret": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Optional. The name of the SecretManager secret version resource storing the API key. Format: `projects/{project}/secrets/{secrete}/versions/{version}` - If both `api_key_secret` and `api_key_string` are specified, this field takes precedence over `api_key_string`. - If specified, the `secretmanager.versions.access` permission should be granted to Vertex AI Extension Service Agent (https://cloud.google.com/vertex-ai/docs/general/access-control#service-agents) on the specified resource.",
+          "title": "Apikeysecret"
+        },
         "apiKeyString": {
           "anyOf": [
             {
@@ -100,27 +113,21 @@
             }
           ],
           "default": null,
-          "description": "The API key to be used in the request directly.",
+          "description": "Optional. The API key to be used in the request directly.",
           "title": "Apikeystring"
-        }
-      },
-      "title": "ApiKeyConfig",
-      "type": "object"
-    },
-    "ApiSpec": {
-      "description": "The API spec that the external API implements.",
-      "enum": [
-        "API_SPEC_UNSPECIFIED",
-        "SIMPLE_SEARCH",
-        "ELASTIC_SEARCH"
-      ],
-      "title": "ApiSpec",
-      "type": "string"
-    },
-    "ArgumentConfig": {
-      "additionalProperties": false,
-      "description": "An argument passed to a function or a class's constructor.",
-      "properties": {
+        },
+        "httpElementLocation": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/HttpElementLocation"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Optional. The location of the API key."
+        },
         "name": {
           "anyOf": [
             {
@@ -131,22 +138,41 @@
             }
           ],
           "default": null,
+          "description": "Optional. The parameter name of the API key. E.g. If the API request is \"https://example.com/act?api_key=\", \"api_key\" would be the parameter name.",
           "title": "Name"
-        },
-        "value": {
-          "title": "Value"
         }
       },
-      "required": [
-        "value"
-      ],
-      "title": "ArgumentConfig",
+      "title": "ApiKeyConfig",
       "type": "object"
     },
+    "ApiSpec": {
+      "description": "The API spec that the external API implements.\n\nThis enum is not supported in Gemini API.",
+      "enum": [
+        "API_SPEC_UNSPECIFIED",
+        "SIMPLE_SEARCH",
+        "ELASTIC_SEARCH"
+      ],
+      "title": "ApiSpec",
+      "type": "string"
+    },
+
     "AuthConfig": {
       "additionalProperties": false,
-      "description": "Auth configuration to run the extension.",
+      "description": "The authentication config to access the API.",
       "properties": {
+        "apiKey": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "The authentication config to access the API. Only API key is supported. This field is not supported in Gemini API.",
+          "title": "Apikey"
+        },
         "apiKeyConfig": {
           "anyOf": [
             {
@@ -225,7 +251,7 @@
     },
     "AuthConfigGoogleServiceAccountConfig": {
       "additionalProperties": false,
-      "description": "Config for Google Service Account Authentication.",
+      "description": "Config for Google Service Account Authentication.\n\nThis data type is not supported in Gemini API.",
       "properties": {
         "serviceAccount": {
           "anyOf": [
@@ -246,7 +272,7 @@
     },
     "AuthConfigHttpBasicAuthConfig": {
       "additionalProperties": false,
-      "description": "Config for HTTP Basic Authentication.",
+      "description": "Config for HTTP Basic Authentication.\n\nThis data type is not supported in Gemini API.",
       "properties": {
         "credentialSecret": {
           "anyOf": [
@@ -267,7 +293,7 @@
     },
     "AuthConfigOauthConfig": {
       "additionalProperties": false,
-      "description": "Config for user oauth.",
+      "description": "Config for user oauth. This data type is not supported in Gemini API.",
       "properties": {
         "accessToken": {
           "anyOf": [
@@ -301,7 +327,7 @@
     },
     "AuthConfigOidcConfig": {
       "additionalProperties": false,
-      "description": "Config for user OIDC auth.",
+      "description": "Config for user OIDC auth.\n\nThis data type is not supported in Gemini API.",
       "properties": {
         "idToken": {
           "anyOf": [
@@ -334,7 +360,7 @@
       "type": "object"
     },
     "AuthType": {
-      "description": "Type of auth scheme.",
+      "description": "Type of auth scheme. This enum is not supported in Gemini API.",
       "enum": [
         "AUTH_TYPE_UNSPECIFIED",
         "NO_AUTH",
@@ -479,7 +505,7 @@
       "type": "object"
     },
     "Behavior": {
-      "description": "Defines the function behavior. Defaults to `BLOCKING`.",
+      "description": "Specifies the function Behavior.\n\nCurrently only supported by the BidiGenerateContent method. This enum is not\nsupported in Vertex AI.",
       "enum": [
         "UNSPECIFIED",
         "BLOCKING",
@@ -490,21 +516,8 @@
     },
     "Blob": {
       "additionalProperties": false,
-      "description": "Content blob.",
+      "description": "A content blob.\n\nA Blob contains data of a specific media type. It is used to represent images,\naudio, and video.",
       "properties": {
-        "displayName": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "description": "Optional. Display name of the blob. Used to provide a label or filename to distinguish blobs. This field is not currently used in the Gemini GenerateContent calls.",
-          "title": "Displayname"
-        },
         "data": {
           "anyOf": [
             {
@@ -516,8 +529,21 @@
             }
           ],
           "default": null,
-          "description": "Required. Raw bytes.",
+          "description": "Required. The raw bytes of the data.",
           "title": "Data"
+        },
+        "displayName": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Optional. The display name of the blob. Used to provide a label or filename to distinguish blobs. This field is only returned in `PromptMessage` for prompt management. It is used in the Gemini calls only when server-side tools (`code_execution`, `google_search`, and `url_context`) are enabled. This field is not supported in Gemini API.",
+          "title": "Displayname"
         },
         "mimeType": {
           "anyOf": [
@@ -543,21 +569,6 @@
         "name": {
           "title": "Name",
           "type": "string"
-        },
-        "args": {
-          "anyOf": [
-            {
-              "items": {
-                "$ref": "#/$defs/ArgumentConfig"
-              },
-              "type": "array"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Args"
         }
       },
       "required": [
@@ -568,7 +579,7 @@
     },
     "CodeExecutionResult": {
       "additionalProperties": false,
-      "description": "Result of executing the [ExecutableCode].\n\nOnly generated when using the [CodeExecution] tool, and always follows a\n`part` containing the [ExecutableCode].",
+      "description": "Result of executing the `ExecutableCode`.\n\nGenerated only when the `CodeExecution` tool is used.",
       "properties": {
         "outcome": {
           "anyOf": [
@@ -594,9 +605,58 @@
           "default": null,
           "description": "Optional. Contains stdout when code execution is successful, stderr or other description otherwise.",
           "title": "Output"
+        },
+        "id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "The identifier of the `ExecutableCode` part this result is for. Only populated if the corresponding `ExecutableCode` has an id.",
+          "title": "Id"
         }
       },
       "title": "CodeExecutionResult",
+      "type": "object"
+    },
+    "ComputerUse": {
+      "additionalProperties": false,
+      "description": "Tool to support computer use.",
+      "properties": {
+        "environment": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Environment"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Required. The environment being operated."
+        },
+        "excludedPredefinedFunctions": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "By default, predefined functions are included in the final model call.\n    Some of them can be explicitly excluded from being automatically included.\n    This can serve two purposes:\n      1. Using a more restricted / different action space.\n      2. Improving the definitions / instructions of predefined functions.",
+          "title": "Excludedpredefinedfunctions"
+        }
+      },
+      "title": "ComputerUse",
       "type": "object"
     },
     "Content": {
@@ -629,7 +689,7 @@
             }
           ],
           "default": null,
-          "description": "Optional. The producer of the content. Must be either 'user' or\n      'model'. Useful to set for multi-turn conversations; otherwise, can be\n      empty. If role is not specified, SDK will determine the role.",
+          "description": "Optional. The producer of the content. Must be either 'user' or 'model'. If not set, the service will default to 'user'.",
           "title": "Role"
         }
       },
@@ -640,18 +700,6 @@
       "additionalProperties": false,
       "description": "Describes the options to customize dynamic retrieval.",
       "properties": {
-        "mode": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/DynamicRetrievalConfigMode"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "description": "The mode of the predictor to be used in dynamic retrieval."
-        },
         "dynamicThreshold": {
           "anyOf": [
             {
@@ -664,13 +712,25 @@
           "default": null,
           "description": "Optional. The threshold to be used in dynamic retrieval. If not set, a system default value is used.",
           "title": "Dynamicthreshold"
+        },
+        "mode": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/DynamicRetrievalConfigMode"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "The mode of the predictor to be used in dynamic retrieval."
         }
       },
       "title": "DynamicRetrievalConfig",
       "type": "object"
     },
     "DynamicRetrievalConfigMode": {
-      "description": "Config for the dynamic retrieval config mode.",
+      "description": "The mode of the predictor to be used in dynamic retrieval.",
       "enum": [
         "MODE_UNSPECIFIED",
         "MODE_DYNAMIC"
@@ -680,8 +740,20 @@
     },
     "EnterpriseWebSearch": {
       "additionalProperties": false,
-      "description": "Tool to search public web data, powered by Vertex AI Search and Sec4 compliance.",
+      "description": "Tool to search public web data, powered by Vertex AI Search and Sec4 compliance.\n\nThis data type is not supported in Gemini API.",
       "properties": {
+        "blockingConfidence": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PhishBlockThreshold"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Optional. Sites with confidence level chosen & above this value will be blocked from the search results."
+        },
         "excludeDomains": {
           "anyOf": [
             {
@@ -713,7 +785,7 @@
     },
     "ExecutableCode": {
       "additionalProperties": false,
-      "description": "Code generated by the model that is meant to be executed, and the result returned to the model.\n\nGenerated when using the [CodeExecution] tool, in which the code will be\nautomatically executed, and a corresponding [CodeExecutionResult] will also be\ngenerated.",
+      "description": "Model-generated code executed server-side, results returned to the model.\n\nOnly generated when using the `CodeExecution` tool, in which the code will\nbe automatically executed, and a corresponding `CodeExecutionResult` will\nalso be generated.",
       "properties": {
         "code": {
           "anyOf": [
@@ -739,6 +811,19 @@
           ],
           "default": null,
           "description": "Required. Programming language of the `code`."
+        },
+        "id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Unique identifier of the `ExecutableCode` part. The server returns the `CodeExecutionResult` with the matching `id`.",
+          "title": "Id"
         }
       },
       "title": "ExecutableCode",
@@ -746,7 +831,7 @@
     },
     "ExternalApi": {
       "additionalProperties": false,
-      "description": "Retrieve from data source powered by external API for grounding.\n\nThe external API is not owned by Google, but need to follow the pre-defined\nAPI spec.",
+      "description": "Retrieve from data source powered by external API for grounding.\n\nThe external API is not owned by Google, but need to follow the pre-defined\nAPI spec. This data type is not supported in Gemini API.",
       "properties": {
         "apiAuth": {
           "anyOf": [
@@ -827,7 +912,7 @@
     },
     "ExternalApiElasticSearchParams": {
       "additionalProperties": false,
-      "description": "The search parameters to use for the ELASTIC_SEARCH spec.",
+      "description": "The search parameters to use for the ELASTIC_SEARCH spec.\n\nThis data type is not supported in Gemini API.",
       "properties": {
         "index": {
           "anyOf": [
@@ -874,7 +959,7 @@
     },
     "ExternalApiSimpleSearchParams": {
       "additionalProperties": false,
-      "description": "The search parameters to use for SIMPLE_SEARCH spec.",
+      "description": "The search parameters to use for SIMPLE_SEARCH spec.\n\nThis data type is not supported in Gemini API.",
       "properties": {},
       "title": "ExternalApiSimpleSearchParams",
       "type": "object"
@@ -1083,7 +1168,7 @@
     },
     "FileData": {
       "additionalProperties": false,
-      "description": "URI based data.",
+      "description": "URI-based data.\n\nA FileData message contains a URI pointing to data of a specific media type.\nIt is used to represent images, audio, and video stored in Google Cloud\nStorage.",
       "properties": {
         "displayName": {
           "anyOf": [
@@ -1095,7 +1180,7 @@
             }
           ],
           "default": null,
-          "description": "Optional. Display name of the file data. Used to provide a label or filename to distinguish file data. It is not currently used in the Gemini GenerateContent calls.",
+          "description": "Optional. The display name of the file. Used to provide a label or filename to distinguish files. This field is only returned in `PromptMessage` for prompt management. It is used in the Gemini calls only when server side tools (`code_execution`, `google_search`, and `url_context`) are enabled. This field is not supported in Gemini API.",
           "title": "Displayname"
         },
         "fileUri": {
@@ -1108,7 +1193,7 @@
             }
           ],
           "default": null,
-          "description": "Required. URI.",
+          "description": "Required. The URI of the file in Google Cloud Storage.",
           "title": "Fileuri"
         },
         "mimeType": {
@@ -1128,12 +1213,63 @@
       "title": "FileData",
       "type": "object"
     },
+    "FileSearch": {
+      "additionalProperties": false,
+      "description": "The FileSearch tool that retrieves knowledge from Semantic Retrieval corpora.\n\nFiles are imported to Semantic Retrieval corpora using the ImportFile API.\nThis data type is not supported in Vertex AI.",
+      "properties": {
+        "fileSearchStoreNames": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Required. The names of the file_search_stores to retrieve from. Example: `fileSearchStores/my-file-search-store-123`",
+          "title": "Filesearchstorenames"
+        },
+        "topK": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Optional. The number of semantic retrieval chunks to retrieve.",
+          "title": "Topk"
+        },
+        "metadataFilter": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Optional. Metadata filter to apply to the semantic retrieval documents and chunks.",
+          "title": "Metadatafilter"
+        }
+      },
+      "title": "FileSearch",
+      "type": "object"
+    },
     "FileSource": {
       "description": "Source of the File.",
       "enum": [
         "SOURCE_UNSPECIFIED",
         "UPLOADED",
-        "GENERATED"
+        "GENERATED",
+        "REGISTERED"
       ],
       "title": "FileSource",
       "type": "string"
@@ -1214,7 +1350,7 @@
             }
           ],
           "default": null,
-          "description": "The unique ID of the function call. If populated, the client to execute the\n   `function_call` and return the response with the matching `id`.",
+          "description": "The unique id of the function call. If populated, the client to execute the\n   `function_call` and return the response with the matching `id`.",
           "title": "Id"
         },
         "args": {
@@ -1241,8 +1377,37 @@
             }
           ],
           "default": null,
-          "description": "Required. The name of the function to call. Matches [FunctionDeclaration.name].",
+          "description": "Optional. The name of the function to call. Matches [FunctionDeclaration.name].",
           "title": "Name"
+        },
+        "partialArgs": {
+          "anyOf": [
+            {
+              "items": {
+                "$ref": "#/$defs/PartialArg"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Optional. The partial argument value of the function call. If provided, represents the arguments/fields that are streamed incrementally. This field is not supported in Gemini API.",
+          "title": "Partialargs"
+        },
+        "willContinue": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Optional. Whether this is the last part of the FunctionCall. If true, another partial message for the current FunctionCall is expected to follow. This field is not supported in Gemini API.",
+          "title": "Willcontinue"
         }
       },
       "title": "FunctionCall",
@@ -1252,18 +1417,6 @@
       "additionalProperties": false,
       "description": "Function calling config.",
       "properties": {
-        "mode": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/FunctionCallingConfigMode"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "description": "Optional. Function calling mode."
-        },
         "allowedFunctionNames": {
           "anyOf": [
             {
@@ -1279,38 +1432,52 @@
           "default": null,
           "description": "Optional. Function names to call. Only set when the Mode is ANY. Function names should match [FunctionDeclaration.name]. With mode set to ANY, model will predict a function call from the set of function names provided.",
           "title": "Allowedfunctionnames"
-        }
-      },
-      "title": "FunctionCallingConfig",
-      "type": "object"
-    },
-    "FunctionCallingConfigMode": {
-      "description": "Config for the function calling config mode.",
-      "enum": [
-        "MODE_UNSPECIFIED",
-        "AUTO",
-        "ANY",
-        "NONE"
-      ],
-      "title": "FunctionCallingConfigMode",
-      "type": "string"
-    },
-    "FunctionDeclaration": {
-      "additionalProperties": false,
-      "description": "Defines a function that the model can generate JSON inputs for.\n\nThe inputs are based on `OpenAPI 3.0 specifications\n<https://spec.openapis.org/oas/v3.0.3>`_.",
-      "properties": {
-        "behavior": {
+        },
+        "mode": {
           "anyOf": [
             {
-              "$ref": "#/$defs/Behavior"
+              "$ref": "#/$defs/FunctionCallingConfigMode"
             },
             {
               "type": "null"
             }
           ],
           "default": null,
-          "description": "Defines the function behavior."
+          "description": "Optional. Function calling mode."
         },
+        "streamFunctionCallArguments": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Optional. When set to true, arguments of a single function call will be streamed out in multiple parts/contents/responses. Partial parameter results will be returned in the [FunctionCall.partial_args] field. This field is not supported in Gemini API.",
+          "title": "Streamfunctioncallarguments"
+        }
+      },
+      "title": "FunctionCallingConfig",
+      "type": "object"
+    },
+    "FunctionCallingConfigMode": {
+      "description": "Function calling mode.",
+      "enum": [
+        "MODE_UNSPECIFIED",
+        "AUTO",
+        "ANY",
+        "NONE",
+        "VALIDATED"
+      ],
+      "title": "FunctionCallingConfigMode",
+      "type": "string"
+    },
+    "FunctionDeclaration": {
+      "additionalProperties": false,
+      "description": "Structured representation of a function declaration as defined by the [OpenAPI 3.0 specification](https://spec.openapis.org/oas/v3.0.3).\n\nIncluded in this declaration are the function name, description, parameters\nand response type. This FunctionDeclaration is a representation of a block of\ncode that can be used as a `Tool` by the model and executed by the client.",
+      "properties": {
         "description": {
           "anyOf": [
             {
@@ -1334,7 +1501,7 @@
             }
           ],
           "default": null,
-          "description": "Required. The name of the function to call. Must start with a letter or an underscore. Must be a-z, A-Z, 0-9, or contain underscores, dots and dashes, with a maximum length of 64.",
+          "description": "Required. The name of the function to call. Must start with a letter or an underscore. Must be a-z, A-Z, 0-9, or contain underscores, dots, colons and dashes, with a maximum length of 64.",
           "title": "Name"
         },
         "parameters": {
@@ -1347,7 +1514,7 @@
             }
           ],
           "default": null,
-          "description": "Optional. Describes the parameters to this function in JSON Schema Object format. Reflects the Open API 3.03 Parameter Object. string Key: the name of the parameter. Parameter names are case-sensitive. Schema Value: the Schema defining the type used for the parameter. For function with no parameters, this can be left unset. Parameter names must start with a letter or an underscore and must only contain chars a-z, A-Z, 0-9, or underscores with a maximum length of 64. Example with 1 required and 1 optional parameter: type: OBJECT properties: param1: type: STRING param2: type: INTEGER required: - param1"
+          "description": "Optional. Describes the parameters to this function in JSON Schema Object format. Reflects the Open API 3.03 Parameter Object. string Key: the name of the parameter. Parameter names are case sensitive. Schema Value: the Schema defining the type used for the parameter. For function with no parameters, this can be left unset. Parameter names must start with a letter or an underscore and must only contain chars a-z, A-Z, 0-9, or underscores with a maximum length of 64. Example with 1 required and 1 optional parameter: type: OBJECT properties: param1: type: STRING param2: type: INTEGER required: - param1"
         },
         "parametersJsonSchema": {
           "anyOf": [
@@ -1382,6 +1549,18 @@
           "default": null,
           "description": "Optional. Describes the output from this function in JSON Schema format. The value specified by the schema is the response value of the function. This field is mutually exclusive with `response`.",
           "title": "Responsejsonschema"
+        },
+        "behavior": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Behavior"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Optional. Specifies the function Behavior. Currently only supported by the BidiGenerateContent method. This field is not supported in Vertex AI."
         }
       },
       "title": "FunctionDeclaration",
@@ -1416,6 +1595,22 @@
           "default": null,
           "description": "Specifies how the response should be scheduled in the conversation. Only applicable to NON_BLOCKING function calls, is ignored otherwise. Defaults to WHEN_IDLE."
         },
+        "parts": {
+          "anyOf": [
+            {
+              "items": {
+                "$ref": "#/$defs/FunctionResponsePart"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "List of parts that constitute a function response. Each part may\n      have a different IANA MIME type.",
+          "title": "Parts"
+        },
         "id": {
           "anyOf": [
             {
@@ -1426,7 +1621,7 @@
             }
           ],
           "default": null,
-          "description": "Optional. The ID of the function call this response is for. Populated by the client to match the corresponding function call `id`.",
+          "description": "Optional. The id of the function call this response is for. Populated by the client to match the corresponding function call `id`.",
           "title": "Id"
         },
         "name": {
@@ -1460,6 +1655,133 @@
       "title": "FunctionResponse",
       "type": "object"
     },
+    "FunctionResponseBlob": {
+      "additionalProperties": false,
+      "description": "Raw media bytes for function response.\n\nText should not be sent as raw bytes, use the FunctionResponse.response\nfield.",
+      "properties": {
+        "mimeType": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Required. The IANA standard MIME type of the source data.",
+          "title": "Mimetype"
+        },
+        "data": {
+          "anyOf": [
+            {
+              "format": "base64url",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Required. Inline media bytes.",
+          "title": "Data"
+        },
+        "displayName": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Optional. Display name of the blob.\n      Used to provide a label or filename to distinguish blobs.",
+          "title": "Displayname"
+        }
+      },
+      "title": "FunctionResponseBlob",
+      "type": "object"
+    },
+    "FunctionResponseFileData": {
+      "additionalProperties": false,
+      "description": "URI based data for function response.",
+      "properties": {
+        "fileUri": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Required. URI.",
+          "title": "Fileuri"
+        },
+        "mimeType": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Required. The IANA standard MIME type of the source data.",
+          "title": "Mimetype"
+        },
+        "displayName": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Optional. Display name of the file.\n      Used to provide a label or filename to distinguish files.",
+          "title": "Displayname"
+        }
+      },
+      "title": "FunctionResponseFileData",
+      "type": "object"
+    },
+    "FunctionResponsePart": {
+      "additionalProperties": false,
+      "description": "A datatype containing media that is part of a `FunctionResponse` message.\n\nA `FunctionResponsePart` consists of data which has an associated datatype. A\n`FunctionResponsePart` can only contain one of the accepted types in\n`FunctionResponsePart.data`.\n\nA `FunctionResponsePart` must have a fixed IANA MIME type identifying the\ntype and subtype of the media if the `inline_data` field is filled with raw\nbytes.",
+      "properties": {
+        "inlineData": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/FunctionResponseBlob"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Optional. Inline media bytes."
+        },
+        "fileData": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/FunctionResponseFileData"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Optional. URI based data."
+        }
+      },
+      "title": "FunctionResponsePart",
+      "type": "object"
+    },
     "FunctionResponseScheduling": {
       "description": "Specifies how the response should be scheduled in the conversation.",
       "enum": [
@@ -1487,6 +1809,19 @@
           "default": null,
           "description": "Used to override HTTP request options."
         },
+        "shouldReturnHttpResponse": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": " If true, the raw HTTP response will be returned in the 'sdk_http_response' field.",
+          "title": "Shouldreturnhttpresponse"
+        },
         "systemInstruction": {
           "anyOf": [
             {
@@ -1494,6 +1829,10 @@
             },
             {
               "type": "string"
+            },
+            {
+              "description": "Fallback for invalid schema: core_schema.IsInstanceSchema (<class 'PIL.Image.Image'>)",
+              "type": "object"
             },
             {
               "$ref": "#/$defs/File"
@@ -1506,6 +1845,10 @@
                 "anyOf": [
                   {
                     "type": "string"
+                  },
+                  {
+                    "description": "Fallback for invalid schema: core_schema.IsInstanceSchema (<class 'PIL.Image.Image'>)",
+                    "type": "object"
                   },
                   {
                     "$ref": "#/$defs/File"
@@ -1681,7 +2024,7 @@
             }
           ],
           "default": null,
-          "description": "Output response mimetype of the generated candidate text.\n      Supported mimetype:\n        - `text/plain`: (default) Text output.\n        - `application/json`: JSON response in the candidates.\n      The model needs to be prompted to output the appropriate response type,\n      otherwise the behavior is undefined.\n      This is a preview feature.\n      ",
+          "description": "Output response mimetype of the generated candidate text.\n      Supported mimetype:\n        - `text/plain`: (default) Text output.\n        - `application/json`: JSON response in the candidates.\n      The model needs to be prompted to output the appropriate response type,\n      otherwise the behavior is undefined.\n      ",
           "title": "Responsemimetype"
         },
         "responseSchema": {
@@ -1691,14 +2034,30 @@
               "type": "object"
             },
             {
+              "description": "Fallback for invalid schema: core_schema.IsInstanceSchema (<class 'type'>)",
+              "type": "object"
+            },
+            {
               "$ref": "#/$defs/Schema"
+            },
+            {
+              "description": "Fallback for invalid schema: core_schema.IsInstanceSchema (<class 'types.GenericAlias'>)",
+              "type": "object"
+            },
+            {
+              "description": "Fallback for invalid schema: core_schema.IsInstanceSchema (<class 'types.UnionType'>)",
+              "type": "object"
+            },
+            {
+              "description": "Fallback for invalid schema: core_schema.IsInstanceSchema (<class 'typing._UnionGenericAlias'>)",
+              "type": "object"
             },
             {
               "type": "null"
             }
           ],
           "default": null,
-          "description": "The `Schema` object allows the definition of input and output data types.\n      These types can be objects, but also primitives and arrays.\n      Represents a select subset of an [OpenAPI 3.0 schema\n      object](https://spec.openapis.org/oas/v3.0.3#schema).\n      If set, a compatible response_mime_type must also be set.\n      Compatible mimetypes: `application/json`: Schema for JSON response.\n      ",
+          "description": "The `Schema` object allows the definition of input and output data types.\n      These types can be objects, but also primitives and arrays.\n      Represents a select subset of an [OpenAPI 3.0 schema\n      object](https://spec.openapis.org/oas/v3.0.3#schema).\n      If set, a compatible response_mime_type must also be set.\n      Compatible mimetypes: `application/json`: Schema for JSON response.\n\n      If `response_schema` doesn't process your schema correctly, try using\n      `response_json_schema` instead.\n      ",
           "title": "Responseschema"
         },
         "responseJsonSchema": {
@@ -1761,7 +2120,15 @@
                     "$ref": "#/$defs/google__genai__types__Tool"
                   },
                   {
+                    "description": "Fallback for invalid schema: core_schema.CallableSchema",
+                    "type": "object"
+                  },
+                  {
                     "$ref": "#/$defs/mcp__types__Tool"
+                  },
+                  {
+                    "description": "Fallback for invalid schema: core_schema.IsInstanceSchema (<class 'mcp.client.session.ClientSession'>)",
+                    "type": "object"
                   }
                 ]
               },
@@ -1896,6 +2263,55 @@
           ],
           "default": null,
           "description": "The thinking features configuration.\n      "
+        },
+        "imageConfig": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ImageConfig"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "The image generation configuration.\n      "
+        },
+        "enableEnhancedCivicAnswers": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Enables enhanced civic answers. It may not be available for all\n      models. This field is not supported in Vertex AI.\n      ",
+          "title": "Enableenhancedcivicanswers"
+        },
+        "modelArmorConfig": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ModelArmorConfig"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Settings for prompt and response sanitization using the Model Armor\n      service. If supplied, safety_settings must not be supplied.\n      "
+        },
+        "serviceTier": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ServiceTier"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "The service tier to use for the request. For example, ServiceTier.FLEX."
         }
       },
       "title": "GenerateContentConfig",
@@ -1903,7 +2319,7 @@
     },
     "GenerationConfigRoutingConfig": {
       "additionalProperties": false,
-      "description": "The configuration for routing the request to a specific model.",
+      "description": "The configuration for routing the request to a specific model.\n\nThis can be used to control which model is used for the generation, either\nautomatically or by specifying a model name. This data type is not supported\nin Gemini API.",
       "properties": {
         "autoMode": {
           "anyOf": [
@@ -1915,7 +2331,7 @@
             }
           ],
           "default": null,
-          "description": "Automated routing."
+          "description": "In this mode, the model is selected automatically based on the content of the request."
         },
         "manualMode": {
           "anyOf": [
@@ -1927,7 +2343,7 @@
             }
           ],
           "default": null,
-          "description": "Manual routing."
+          "description": "In this mode, the model is specified manually."
         }
       },
       "title": "GenerationConfigRoutingConfig",
@@ -1935,7 +2351,7 @@
     },
     "GenerationConfigRoutingConfigAutoRoutingMode": {
       "additionalProperties": false,
-      "description": "When automated routing is specified, the routing will be determined by the pretrained routing model and customer provided model routing preference.",
+      "description": "The configuration for automated routing.\n\nWhen automated routing is specified, the routing will be determined by the\npretrained routing model and customer provided model routing preference. This\ndata type is not supported in Gemini API.",
       "properties": {
         "modelRoutingPreference": {
           "anyOf": [
@@ -1962,7 +2378,7 @@
     },
     "GenerationConfigRoutingConfigManualRoutingMode": {
       "additionalProperties": false,
-      "description": "When manual routing is set, the specified model will be used directly.",
+      "description": "The configuration for manual routing.\n\nWhen manual routing is specified, the model will be selected based on the\nmodel name provided. This data type is not supported in Gemini API.",
       "properties": {
         "modelName": {
           "anyOf": [
@@ -1974,7 +2390,7 @@
             }
           ],
           "default": null,
-          "description": "The model name to use. Only the public LLM models are accepted. See [Supported models](https://cloud.google.com/vertex-ai/generative-ai/docs/model-reference/inference#supported-models).",
+          "description": "The name of the model to use. Only public LLM models are accepted.",
           "title": "Modelname"
         }
       },
@@ -1983,7 +2399,7 @@
     },
     "GoogleMaps": {
       "additionalProperties": false,
-      "description": "Tool to support Google Maps in Model.",
+      "description": "Tool to retrieve knowledge from Google Maps.",
       "properties": {
         "authConfig": {
           "anyOf": [
@@ -1995,7 +2411,20 @@
             }
           ],
           "default": null,
-          "description": "Optional. Auth config for the Google Maps tool."
+          "description": "The authentication config to access the API. Only API key is supported. This field is not supported in Gemini API."
+        },
+        "enableWidget": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Optional. Whether to return a widget context token in the GroundingMetadata of the response. Developers can use the widget context token to render a Google Maps widget with geospatial context related to the places that the model references in the response.",
+          "title": "Enablewidget"
         }
       },
       "title": "GoogleMaps",
@@ -2003,19 +2432,31 @@
     },
     "GoogleSearch": {
       "additionalProperties": false,
-      "description": "Tool to support Google Search in Model. Powered by Google.",
+      "description": "GoogleSearch tool type.\n\nTool to support Google Search in Model. Powered by Google.",
       "properties": {
-        "timeRangeFilter": {
+        "searchTypes": {
           "anyOf": [
             {
-              "$ref": "#/$defs/Interval"
+              "$ref": "#/$defs/SearchTypes"
             },
             {
               "type": "null"
             }
           ],
           "default": null,
-          "description": "Optional. Filter search results to a specific time range.\n      If customers set a start time, they must set an end time (and vice versa).\n      "
+          "description": "Optional. The set of search types to enable. If not set, web search is enabled by default."
+        },
+        "blockingConfidence": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PhishBlockThreshold"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Optional. Sites with confidence level chosen & above this value will be blocked from the search results. This field is not supported in Gemini API."
         },
         "excludeDomains": {
           "anyOf": [
@@ -2030,8 +2471,20 @@
             }
           ],
           "default": null,
-          "description": "Optional. List of domains to be excluded from the search results.\n      The default limit is 2000 domains.",
+          "description": "Optional. List of domains to be excluded from the search results. The default limit is 2000 domains. Example: [\"amazon.com\", \"facebook.com\"]. This field is not supported in Gemini API.",
           "title": "Excludedomains"
+        },
+        "timeRangeFilter": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Interval"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Optional. Filter search results to a specific time range. If customers set a start time, they must set an end time (and vice versa). This field is not supported in Vertex AI."
         }
       },
       "title": "GoogleSearch",
@@ -2058,7 +2511,7 @@
       "type": "object"
     },
     "HarmBlockMethod": {
-      "description": "Optional.\n\nSpecify if the threshold is used for probability or severity score. If not\nspecified, the threshold is used for probability score.",
+      "description": "The method for blocking content.\n\nIf not specified, the default behavior is to use the probability score. This\nenum is not supported in Gemini API.",
       "enum": [
         "HARM_BLOCK_METHOD_UNSPECIFIED",
         "SEVERITY",
@@ -2068,7 +2521,7 @@
       "type": "string"
     },
     "HarmBlockThreshold": {
-      "description": "Required. The harm block threshold.",
+      "description": "The threshold for blocking content.\n\nIf the harm probability exceeds this threshold, the content will be blocked.",
       "enum": [
         "HARM_BLOCK_THRESHOLD_UNSPECIFIED",
         "BLOCK_LOW_AND_ABOVE",
@@ -2081,20 +2534,34 @@
       "type": "string"
     },
     "HarmCategory": {
-      "description": "Required. Harm category.",
+      "description": "The harm category to be blocked.",
       "enum": [
         "HARM_CATEGORY_UNSPECIFIED",
-        "HARM_CATEGORY_HATE_SPEECH",
-        "HARM_CATEGORY_DANGEROUS_CONTENT",
         "HARM_CATEGORY_HARASSMENT",
+        "HARM_CATEGORY_HATE_SPEECH",
         "HARM_CATEGORY_SEXUALLY_EXPLICIT",
+        "HARM_CATEGORY_DANGEROUS_CONTENT",
         "HARM_CATEGORY_CIVIC_INTEGRITY",
         "HARM_CATEGORY_IMAGE_HATE",
         "HARM_CATEGORY_IMAGE_DANGEROUS_CONTENT",
         "HARM_CATEGORY_IMAGE_HARASSMENT",
-        "HARM_CATEGORY_IMAGE_SEXUALLY_EXPLICIT"
+        "HARM_CATEGORY_IMAGE_SEXUALLY_EXPLICIT",
+        "HARM_CATEGORY_JAILBREAK"
       ],
       "title": "HarmCategory",
+      "type": "string"
+    },
+    "HttpElementLocation": {
+      "description": "The location of the API key. This enum is not supported in Gemini API.",
+      "enum": [
+        "HTTP_IN_UNSPECIFIED",
+        "HTTP_IN_QUERY",
+        "HTTP_IN_HEADER",
+        "HTTP_IN_PATH",
+        "HTTP_IN_BODY",
+        "HTTP_IN_COOKIE"
+      ],
+      "title": "HttpElementLocation",
       "type": "string"
     },
     "HttpOptions": {
@@ -2113,6 +2580,18 @@
           "default": null,
           "description": "The base URL for the AI platform service endpoint.",
           "title": "Baseurl"
+        },
+        "baseUrlResourceScope": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ResourceScope"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "The resource scope used to constructing the resource name when base_url is set"
         },
         "apiVersion": {
           "anyOf": [
@@ -2209,6 +2688,48 @@
           ],
           "default": null,
           "description": "HTTP retry options for the request."
+        },
+        "httpxClient": {
+          "anyOf": [
+            {
+              "description": "Fallback for invalid schema: core_schema.IsInstanceSchema (<class 'httpx.Client'>)",
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "A custom httpx client to be used for the request.",
+          "title": "Httpxclient"
+        },
+        "httpxAsyncClient": {
+          "anyOf": [
+            {
+              "description": "Fallback for invalid schema: core_schema.IsInstanceSchema (<class 'httpx.AsyncClient'>)",
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "A custom httpx async client to be used for the request.",
+          "title": "Httpxasyncclient"
+        },
+        "aiohttpClient": {
+          "anyOf": [
+            {
+              "description": "Fallback for invalid schema: core_schema.IsInstanceSchema (<class 'aiohttp.client.ClientSession'>)",
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "A custom aiohttp client session to be used for the request.",
+          "title": "Aiohttpclient"
         }
       },
       "title": "HttpOptions",
@@ -2228,7 +2749,7 @@
             }
           ],
           "default": null,
-          "description": "Maximum number of attempts, including the original request.\n      If 0 or 1, it means no retries.",
+          "description": "Maximum number of attempts, including the original request.\n      If 0 or 1, it means no retries. If not specified, default to 5.",
           "title": "Attempts"
         },
         "initialDelay": {
@@ -2241,7 +2762,7 @@
             }
           ],
           "default": null,
-          "description": "Initial delay before the first retry, in fractions of a second.",
+          "description": "Initial delay before the first retry, in fractions of a second. If not specified, default to 1.0 second.",
           "title": "Initialdelay"
         },
         "maxDelay": {
@@ -2254,7 +2775,7 @@
             }
           ],
           "default": null,
-          "description": "Maximum delay between retries, in fractions of a second.",
+          "description": "Maximum delay between retries, in fractions of a second. If not specified, default to 60.0 seconds.",
           "title": "Maxdelay"
         },
         "expBase": {
@@ -2267,7 +2788,7 @@
             }
           ],
           "default": null,
-          "description": "Multiplier by which the delay increases after each attempt.",
+          "description": "Multiplier by which the delay increases after each attempt. If not specified, default to 2.0.",
           "title": "Expbase"
         },
         "jitter": {
@@ -2280,7 +2801,7 @@
             }
           ],
           "default": null,
-          "description": "Randomness factor for the delay.",
+          "description": "Randomness factor for the delay. If not specified, default to 1.0.",
           "title": "Jitter"
         },
         "httpStatusCodes": {
@@ -2296,21 +2817,24 @@
             }
           ],
           "default": null,
-          "description": "List of HTTP status codes that should trigger a retry.\n      If not specified, a default set of retryable codes may be used.",
+          "description": "List of HTTP status codes that should trigger a retry.\n      If not specified, a default set of retryable codes (408, 429, and 5xx) may be used.",
           "title": "Httpstatuscodes"
         }
       },
       "title": "HttpRetryOptions",
       "type": "object"
     },
-    "Interval": {
-      "additionalProperties": false,
-      "description": "Represents a time interval, encoded as a start time (inclusive) and an end time (exclusive).\n\nThe start time must be less than or equal to the end time.\nWhen the start equals the end time, the interval is an empty interval.\n(matches no time)\nWhen both start and end are unspecified, the interval matches any time.",
+    "Icon": {
+      "additionalProperties": true,
+      "description": "An icon for display in user interfaces.",
       "properties": {
-        "startTime": {
+        "src": {
+          "title": "Src",
+          "type": "string"
+        },
+        "mimeType": {
           "anyOf": [
             {
-              "format": "date-time",
               "type": "string"
             },
             {
@@ -2318,9 +2842,172 @@
             }
           ],
           "default": null,
-          "description": "The start time of the interval.",
-          "title": "Starttime"
+          "title": "Mimetype"
         },
+        "sizes": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Sizes"
+        }
+      },
+      "required": [
+        "src"
+      ],
+      "title": "Icon",
+      "type": "object"
+    },
+    "ImageConfig": {
+      "additionalProperties": false,
+      "description": "The image generation configuration to be used in GenerateContentConfig.",
+      "properties": {
+        "aspectRatio": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Aspect ratio of the generated images. Supported values are\n      \"1:1\", \"2:3\", \"3:2\", \"3:4\", \"4:3\", \"9:16\", \"16:9\", and \"21:9\".",
+          "title": "Aspectratio"
+        },
+        "imageSize": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Optional. Specifies the size of generated images. Supported\n      values are `1K`, `2K`, `4K`. If not specified, the model will use default\n      value `1K`.",
+          "title": "Imagesize"
+        },
+        "personGeneration": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Controls the generation of people. Supported values are:\n      ALLOW_ALL, ALLOW_ADULT, ALLOW_NONE.",
+          "title": "Persongeneration"
+        },
+        "prominentPeople": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ProminentPeople"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Optional. Controls whether prominent people (celebrities) generation is allowed. If used with personGeneration, personGeneration enum would take precedence. For instance, if ALLOW_NONE is set, all person generation would be blocked. If this field is unspecified, the default behavior is to allow prominent people. This field is not supported in Gemini API."
+        },
+        "outputMimeType": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "MIME type of the generated image. This field is not\n      supported in Gemini API.",
+          "title": "Outputmimetype"
+        },
+        "outputCompressionQuality": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Compression quality of the generated image (for\n      ``image/jpeg`` only). This field is not supported in Gemini API.",
+          "title": "Outputcompressionquality"
+        },
+        "imageOutputOptions": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ImageConfigImageOutputOptions"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Optional. The image output format for generated images. This field is not supported in Gemini API."
+        }
+      },
+      "title": "ImageConfig",
+      "type": "object"
+    },
+    "ImageConfigImageOutputOptions": {
+      "additionalProperties": false,
+      "description": "The image output format for generated images.\n\nThis data type is not supported in Gemini API.",
+      "properties": {
+        "compressionQuality": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Optional. The compression quality of the output image.",
+          "title": "Compressionquality"
+        },
+        "mimeType": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Optional. The image format that the output should be saved as.",
+          "title": "Mimetype"
+        }
+      },
+      "title": "ImageConfigImageOutputOptions",
+      "type": "object"
+    },
+    "ImageSearch": {
+      "additionalProperties": false,
+      "description": "Image search for grounding and related configurations.",
+      "properties": {},
+      "title": "ImageSearch",
+      "type": "object"
+    },
+    "Interval": {
+      "additionalProperties": false,
+      "description": "Represents a time interval, encoded as a Timestamp start (inclusive) and a Timestamp end (exclusive).\n\nThe start must be less than or equal to the end. When the start equals the\nend, the interval is empty (matches no time). When both start and end are\nunspecified, the interval matches any time.",
+      "properties": {
         "endTime": {
           "anyOf": [
             {
@@ -2332,15 +3019,29 @@
             }
           ],
           "default": null,
-          "description": "The end time of the interval.",
+          "description": "Optional. Exclusive end of the interval. If specified, a Timestamp matching this interval will have to be before the end.",
           "title": "Endtime"
+        },
+        "startTime": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Optional. Inclusive start of the interval. If specified, a Timestamp matching this interval will have to be the same or after the start.",
+          "title": "Starttime"
         }
       },
       "title": "Interval",
       "type": "object"
     },
     "Language": {
-      "description": "Required. Programming language of the `code`.",
+      "description": "Programming language of the `code`.",
       "enum": [
         "LANGUAGE_UNSPECIFIED",
         "PYTHON"
@@ -2464,10 +3165,68 @@
           "description": "Optional. LlmAgent.model. Provide a model name string (e.g. \"gemini-2.5-flash\"). If not set, the model will be inherited from the ancestor or fall back to the system default (gemini-2.5-flash unless overridden via LlmAgent.set_default_model). To construct a model instance from code, use model_code.",
           "title": "Model"
         },
+        "model_code": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CodeConfig"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Optional. A CodeConfig that instantiates a BaseLlm implementation such as LiteLlm with custom arguments (API base, fallbacks, etc.). Cannot be set together with `model`."
+        },
         "instruction": {
-          "description": "Required. LlmAgent.instruction.",
+          "description": "Required. LlmAgent.instruction. Dynamic instructions with placeholder support. Behavior: if static_instruction is None, goes to system_instruction; if static_instruction is set, goes to user content after static content.",
           "title": "Instruction",
           "type": "string"
+        },
+        "static_instruction": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Content"
+            },
+            {
+              "type": "string"
+            },
+            {
+              "description": "Fallback for invalid schema: core_schema.IsInstanceSchema (<class 'PIL.Image.Image'>)",
+              "type": "object"
+            },
+            {
+              "$ref": "#/$defs/File"
+            },
+            {
+              "$ref": "#/$defs/Part"
+            },
+            {
+              "items": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "description": "Fallback for invalid schema: core_schema.IsInstanceSchema (<class 'PIL.Image.Image'>)",
+                    "type": "object"
+                  },
+                  {
+                    "$ref": "#/$defs/File"
+                  },
+                  {
+                    "$ref": "#/$defs/Part"
+                  }
+                ]
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Optional. LlmAgent.static_instruction. Static content sent literally at position 0 without placeholder processing. When set, changes instruction behavior to go to user content instead of system_instruction. Supports context caching. Accepts types.ContentUnion (str, types.Content, types.Part, PIL.Image.Image, types.File, or list[PartUnion]).",
+          "title": "Static Instruction"
         },
         "disallow_transfer_to_parent": {
           "anyOf": [
@@ -2555,7 +3314,7 @@
             }
           ],
           "default": null,
-          "description": "Optional. LlmAgent.tools.\n\nExamples:\n\n  For ADK built-in tools in `google.adk.tools` package, they can be referenced\n  directly with the name:\n\n    ```\n    tools:\n      - name: google_search\n      - name: load_memory\n    ```\n\n  For user-defined tools, they can be referenced with fully qualified name:\n\n    ```\n    tools:\n      - name: my_library.my_tools.my_tool\n    ```\n\n  For tools that needs to be created via functions:\n\n    ```\n    tools:\n      - name: my_library.my_tools.create_tool\n        args:\n          - name: param1\n            value: value1\n          - name: param2\n            value: value2\n    ```\n\n  For more advanced tools, instead of specifying arguments in config, it's\n  recommended to define them in Python files and reference them. E.g.,\n\n    ```\n    # tools.py\n    my_mcp_toolset = MCPToolset(\n        connection_params=StdioServerParameters(\n            command=\"npx\",\n            args=[\"-y\", \"@notionhq/notion-mcp-server\"],\n            env={\"OPENAPI_MCP_HEADERS\": NOTION_HEADERS},\n        )\n    )\n    ```\n\n  Then, reference the toolset in config:\n\n  ```\n  tools:\n    - name: tools.my_mcp_toolset\n  ```",
+          "description": "Optional. LlmAgent.tools.\n\nExamples:\n\n  For ADK built-in tools in `google.adk.tools` package, they can be referenced\n  directly with the name:\n\n    ```\n    tools:\n      - name: google_search\n      - name: load_memory\n    ```\n\n  For user-defined tools, they can be referenced with fully qualified name:\n\n    ```\n    tools:\n      - name: my_library.my_tools.my_tool\n    ```\n\n  For tools that needs to be created via functions:\n\n    ```\n    tools:\n      - name: my_library.my_tools.create_tool\n        args:\n          - name: param1\n            value: value1\n          - name: param2\n            value: value2\n    ```\n\n  For more advanced tools, instead of specifying arguments in config, it's\n  recommended to define them in Python files and reference them. E.g.,\n\n    ```\n    # tools.py\n    my_mcp_toolset = McpToolset(\n        connection_params=StdioServerParameters(\n            command=\"npx\",\n            args=[\"-y\", \"@notionhq/notion-mcp-server\"],\n            env={\"OPENAPI_MCP_HEADERS\": NOTION_HEADERS},\n        )\n    )\n    ```\n\n  Then, reference the toolset in config:\n\n  ```\n  tools:\n    - name: tools.my_mcp_toolset\n  ```",
           "title": "Tools"
         },
         "before_model_callbacks": {
@@ -2731,6 +3490,39 @@
       "title": "LoopAgentConfig",
       "type": "object"
     },
+    "McpServer": {
+      "additionalProperties": false,
+      "description": "A MCPServer is a server that can be called by the model to perform actions.\n\nIt is a server that implements the MCP protocol. Next ID: 5. This data type is\nnot supported in Vertex AI.",
+      "properties": {
+        "name": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "The name of the MCPServer.",
+          "title": "Name"
+        },
+        "streamableHttpTransport": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/StreamableHttpTransport"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "A transport that can stream HTTP requests and responses."
+        }
+      },
+      "title": "McpServer",
+      "type": "object"
+    },
     "MediaResolution": {
       "description": "The media resolution to use.",
       "enum": [
@@ -2741,6 +3533,40 @@
       ],
       "title": "MediaResolution",
       "type": "string"
+    },
+    "ModelArmorConfig": {
+      "additionalProperties": false,
+      "description": "Configuration for Model Armor.\n\nModel Armor is a Google Cloud service that provides safety and security\nfiltering for prompts and responses. It helps protect your AI applications\nfrom risks such as harmful content, sensitive data leakage, and prompt\ninjection attacks. This data type is not supported in Gemini API.",
+      "properties": {
+        "promptTemplateName": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Optional. The resource name of the Model Armor template to use for prompt screening. A Model Armor template is a set of customized filters and thresholds that define how Model Armor screens content. If specified, Model Armor will use this template to check the user's prompt for safety and security risks before it is sent to the model. The name must be in the format `projects/{project}/locations/{location}/templates/{template}`.",
+          "title": "Prompttemplatename"
+        },
+        "responseTemplateName": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Optional. The resource name of the Model Armor template to use for response screening. A Model Armor template is a set of customized filters and thresholds that define how Model Armor screens content. If specified, Model Armor will use this template to check the model's response for safety and security risks before it is returned to the user. The name must be in the format `projects/{project}/locations/{location}/templates/{template}`.",
+          "title": "Responsetemplatename"
+        }
+      },
+      "title": "ModelArmorConfig",
+      "type": "object"
     },
     "ModelSelectionConfig": {
       "additionalProperties": false,
@@ -2764,7 +3590,7 @@
     },
     "MultiSpeakerVoiceConfig": {
       "additionalProperties": false,
-      "description": "The configuration for the multi-speaker setup.",
+      "description": "Configuration for a multi-speaker text-to-speech request.",
       "properties": {
         "speakerVoiceConfigs": {
           "anyOf": [
@@ -2779,7 +3605,7 @@
             }
           ],
           "default": null,
-          "description": "The configuration for the speaker to use.",
+          "description": "Required. A list of configurations for the voices of the speakers. Exactly two speaker voice configurations must be provided.",
           "title": "Speakervoiceconfigs"
         }
       },
@@ -2787,7 +3613,7 @@
       "type": "object"
     },
     "Outcome": {
-      "description": "Required. Outcome of the code execution.",
+      "description": "Outcome of the code execution.",
       "enum": [
         "OUTCOME_UNSPECIFIED",
         "OUTCOME_OK",
@@ -2877,42 +3703,41 @@
       "additionalProperties": false,
       "description": "A datatype containing media content.\n\nExactly one field within a Part should be set, representing the specific type\nof content being conveyed. Using multiple fields within the same `Part`\ninstance is considered invalid.",
       "properties": {
-        "videoMetadata": {
+        "mediaResolution": {
           "anyOf": [
             {
-              "$ref": "#/$defs/VideoMetadata"
+              "$ref": "#/$defs/PartMediaResolution"
             },
             {
               "type": "null"
             }
           ],
           "default": null,
-          "description": "Metadata for a given video."
+          "description": "Media resolution for the input media.\n    "
         },
-        "thought": {
+        "codeExecutionResult": {
           "anyOf": [
             {
-              "type": "boolean"
+              "$ref": "#/$defs/CodeExecutionResult"
             },
             {
               "type": "null"
             }
           ],
           "default": null,
-          "description": "Indicates if the part is thought from the model.",
-          "title": "Thought"
+          "description": "Optional. The result of executing the ExecutableCode."
         },
-        "inlineData": {
+        "executableCode": {
           "anyOf": [
             {
-              "$ref": "#/$defs/Blob"
+              "$ref": "#/$defs/ExecutableCode"
             },
             {
               "type": "null"
             }
           ],
           "default": null,
-          "description": "Optional. Inlined bytes data."
+          "description": "Optional. Code generated by the model that is intended to be executed."
         },
         "fileData": {
           "anyOf": [
@@ -2924,7 +3749,69 @@
             }
           ],
           "default": null,
-          "description": "Optional. URI based data."
+          "description": "Optional. The URI-based data of the part. This can be used to include files from Google Cloud Storage."
+        },
+        "functionCall": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/FunctionCall"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Optional. A predicted function call returned from the model. This contains the name of the function to call and the arguments to pass to the function."
+        },
+        "functionResponse": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/FunctionResponse"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Optional. The result of a function call. This is used to provide the model with the result of a function call that it predicted."
+        },
+        "inlineData": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Blob"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Optional. The inline data content of the part. This can be used to include images, audio, or video in a request."
+        },
+        "text": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Optional. The text content of the part. When sent from the VSCode Gemini Code Assist extension, references to @mentioned items will be converted to markdown boldface text. For example `@my-repo` will be converted to and sent as `**my-repo**` by the IDE agent.",
+          "title": "Text"
+        },
+        "thought": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Optional. Indicates whether the `part` represents the model's thought process or reasoning.",
+          "title": "Thought"
         },
         "thoughtSignature": {
           "anyOf": [
@@ -2937,58 +3824,126 @@
             }
           ],
           "default": null,
-          "description": "An opaque signature for the thought so it can be reused in subsequent requests.",
+          "description": "Optional. An opaque signature for the thought so it can be reused in subsequent requests.",
           "title": "Thoughtsignature"
         },
-        "codeExecutionResult": {
+        "videoMetadata": {
           "anyOf": [
             {
-              "$ref": "#/$defs/CodeExecutionResult"
+              "$ref": "#/$defs/VideoMetadata"
             },
             {
               "type": "null"
             }
           ],
           "default": null,
-          "description": "Optional. Result of executing the [ExecutableCode]."
+          "description": "Optional. Video metadata. The metadata should only be specified while the video data is presented in inline_data or file_data."
         },
-        "executableCode": {
+        "toolCall": {
           "anyOf": [
             {
-              "$ref": "#/$defs/ExecutableCode"
+              "$ref": "#/$defs/ToolCall"
             },
             {
               "type": "null"
             }
           ],
           "default": null,
-          "description": "Optional. Code generated by the model that is meant to be executed."
+          "description": "Server-side tool call. This field is populated when the model predicts a tool invocation that should be executed on the server. The client is expected to echo this message back to the API."
         },
-        "functionCall": {
+        "toolResponse": {
           "anyOf": [
             {
-              "$ref": "#/$defs/FunctionCall"
+              "$ref": "#/$defs/ToolResponse"
             },
             {
               "type": "null"
             }
           ],
           "default": null,
-          "description": "Optional. A predicted [FunctionCall] returned from the model that contains a string representing the [FunctionDeclaration.name] with the parameters and their values."
+          "description": "The output from a server-side ToolCall execution. This field is populated by the client with the results of executing the corresponding ToolCall."
         },
-        "functionResponse": {
+        "partMetadata": {
           "anyOf": [
             {
-              "$ref": "#/$defs/FunctionResponse"
+              "additionalProperties": true,
+              "type": "object"
             },
             {
               "type": "null"
             }
           ],
           "default": null,
-          "description": "Optional. The result output of a [FunctionCall] that contains a string representing the [FunctionDeclaration.name] and a structured JSON object containing any output from the function call. It is used as context to the model."
+          "description": "Custom metadata associated with the Part. Agents using genai.Part as content representation may need to keep track of the additional information. For example it can be name of a file/source from which the Part originates or a way to multiplex multiple Part streams. This field is not supported in Vertex AI.",
+          "title": "Partmetadata"
+        }
+      },
+      "title": "Part",
+      "type": "object"
+    },
+    "PartMediaResolution": {
+      "additionalProperties": false,
+      "description": "Media resolution for the input media.",
+      "properties": {
+        "level": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PartMediaResolutionLevel"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "The tokenization quality used for given media.\n    "
         },
-        "text": {
+        "numTokens": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Specifies the required sequence length for media tokenization.\n    ",
+          "title": "Numtokens"
+        }
+      },
+      "title": "PartMediaResolution",
+      "type": "object"
+    },
+    "PartMediaResolutionLevel": {
+      "description": "The tokenization quality used for given media.",
+      "enum": [
+        "MEDIA_RESOLUTION_UNSPECIFIED",
+        "MEDIA_RESOLUTION_LOW",
+        "MEDIA_RESOLUTION_MEDIUM",
+        "MEDIA_RESOLUTION_HIGH",
+        "MEDIA_RESOLUTION_ULTRA_HIGH"
+      ],
+      "title": "PartMediaResolutionLevel",
+      "type": "string"
+    },
+    "PartialArg": {
+      "additionalProperties": false,
+      "description": "Partial argument value of the function call.\n\nThis data type is not supported in Gemini API.",
+      "properties": {
+        "boolValue": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Optional. Represents a boolean value.",
+          "title": "Boolvalue"
+        },
+        "jsonPath": {
           "anyOf": [
             {
               "type": "string"
@@ -2998,16 +3953,83 @@
             }
           ],
           "default": null,
-          "description": "Optional. Text part (can be code).",
-          "title": "Text"
+          "description": "Required. A JSON Path (RFC 9535) to the argument being streamed. https://datatracker.ietf.org/doc/html/rfc9535. e.g. \"$.foo.bar[0].data\".",
+          "title": "Jsonpath"
+        },
+        "nullValue": {
+          "anyOf": [
+            {
+              "const": "NULL_VALUE",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Optional. Represents a null value.",
+          "title": "Nullvalue"
+        },
+        "numberValue": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Optional. Represents a double value.",
+          "title": "Numbervalue"
+        },
+        "stringValue": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Optional. Represents a string value.",
+          "title": "Stringvalue"
+        },
+        "willContinue": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Optional. Whether this is not the last part of the same json_path. If true, another PartialArg message for the current json_path is expected to follow.",
+          "title": "Willcontinue"
         }
       },
-      "title": "Part",
+      "title": "PartialArg",
       "type": "object"
+    },
+    "PhishBlockThreshold": {
+      "description": "Sites with confidence level chosen & above this value will be blocked from the search results.\n\nThis enum is not supported in Gemini API.",
+      "enum": [
+        "PHISH_BLOCK_THRESHOLD_UNSPECIFIED",
+        "BLOCK_LOW_AND_ABOVE",
+        "BLOCK_MEDIUM_AND_ABOVE",
+        "BLOCK_HIGH_AND_ABOVE",
+        "BLOCK_HIGHER_AND_ABOVE",
+        "BLOCK_VERY_HIGH_AND_ABOVE",
+        "BLOCK_ONLY_EXTREMELY_HIGH"
+      ],
+      "title": "PhishBlockThreshold",
+      "type": "string"
     },
     "PrebuiltVoiceConfig": {
       "additionalProperties": false,
-      "description": "The configuration for the prebuilt speaker to use.",
+      "description": "Configuration for a prebuilt voice.",
       "properties": {
         "voiceName": {
           "anyOf": [
@@ -3026,9 +4048,19 @@
       "title": "PrebuiltVoiceConfig",
       "type": "object"
     },
+    "ProminentPeople": {
+      "description": "Controls whether prominent people (celebrities) generation is allowed.\n\nIf used with personGeneration, personGeneration enum would take precedence.\nFor instance, if ALLOW_NONE is set, all person generation would be blocked. If\nthis field is unspecified, the default behavior is to allow prominent people.\nThis enum is not supported in Gemini API.",
+      "enum": [
+        "PROMINENT_PEOPLE_UNSPECIFIED",
+        "ALLOW_PROMINENT_PEOPLE",
+        "BLOCK_PROMINENT_PEOPLE"
+      ],
+      "title": "ProminentPeople",
+      "type": "string"
+    },
     "RagRetrievalConfig": {
       "additionalProperties": false,
-      "description": "Specifies the context retrieval config.",
+      "description": "Specifies the context retrieval config.\n\nThis data type is not supported in Gemini API.",
       "properties": {
         "filter": {
           "anyOf": [
@@ -3085,7 +4117,7 @@
     },
     "RagRetrievalConfigFilter": {
       "additionalProperties": false,
-      "description": "Config for filters.",
+      "description": "Config for filters. This data type is not supported in Gemini API.",
       "properties": {
         "metadataFilter": {
           "anyOf": [
@@ -3132,7 +4164,7 @@
     },
     "RagRetrievalConfigHybridSearch": {
       "additionalProperties": false,
-      "description": "Config for Hybrid Search.",
+      "description": "Config for Hybrid Search. This data type is not supported in Gemini API.",
       "properties": {
         "alpha": {
           "anyOf": [
@@ -3153,7 +4185,7 @@
     },
     "RagRetrievalConfigRanking": {
       "additionalProperties": false,
-      "description": "Config for ranking and reranking.",
+      "description": "Config for ranking and reranking.\n\nThis data type is not supported in Gemini API.",
       "properties": {
         "llmRanker": {
           "anyOf": [
@@ -3185,7 +4217,7 @@
     },
     "RagRetrievalConfigRankingLlmRanker": {
       "additionalProperties": false,
-      "description": "Config for LlmRanker.",
+      "description": "Config for LlmRanker. This data type is not supported in Gemini API.",
       "properties": {
         "modelName": {
           "anyOf": [
@@ -3206,7 +4238,7 @@
     },
     "RagRetrievalConfigRankingRankService": {
       "additionalProperties": false,
-      "description": "Config for Rank Service.",
+      "description": "Config for Rank Service. This data type is not supported in Gemini API.",
       "properties": {
         "modelName": {
           "anyOf": [
@@ -3225,9 +4257,78 @@
       "title": "RagRetrievalConfigRankingRankService",
       "type": "object"
     },
+    "ReplicatedVoiceConfig": {
+      "additionalProperties": false,
+      "description": "The configuration for the replicated voice to use.",
+      "properties": {
+        "mimeType": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "The mimetype of the voice sample. The only currently supported\n      value is `audio/wav`. This represents 16-bit signed little-endian wav\n      data, with a 24kHz sampling rate.\n      ",
+          "title": "Mimetype"
+        },
+        "voiceSampleAudio": {
+          "anyOf": [
+            {
+              "format": "base64url",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "The sample of the custom voice.\n      ",
+          "title": "Voicesampleaudio"
+        },
+        "consentAudio": {
+          "anyOf": [
+            {
+              "format": "base64url",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Recorded consent verifying ownership of the voice. This\n      represents 16-bit signed little-endian wav data, with a 24kHz sampling\n      rate.",
+          "title": "Consentaudio"
+        },
+        "voiceConsentSignature": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/VoiceConsentSignature"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Signature of a previously verified consent audio. This should be\n      populated with a signature generated by the server for a previous\n      request containing the consent_audio field. When provided, the\n      signature is verified instead of the consent_audio field to reduce\n      latency. Requests will fail if the signature is invalid or expired."
+        }
+      },
+      "title": "ReplicatedVoiceConfig",
+      "type": "object"
+    },
+    "ResourceScope": {
+      "description": "Resource scope.",
+      "enum": [
+        "COLLECTION"
+      ],
+      "title": "ResourceScope",
+      "type": "string"
+    },
     "Retrieval": {
       "additionalProperties": false,
-      "description": "Defines a retrieval tool that model can call to access external knowledge.",
+      "description": "Defines a retrieval tool that model can call to access external knowledge.\n\nThis data type is not supported in Gemini API.",
       "properties": {
         "disableAttribution": {
           "anyOf": [
@@ -3317,20 +4418,8 @@
     },
     "SafetySetting": {
       "additionalProperties": false,
-      "description": "Safety settings.",
+      "description": "A safety setting that affects the safety-blocking behavior.\n\nA SafetySetting consists of a harm category and a threshold for that category.",
       "properties": {
-        "method": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/HarmBlockMethod"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "description": "Determines if the harm block method uses probability or probability\n      and severity scores."
-        },
         "category": {
           "anyOf": [
             {
@@ -3341,7 +4430,19 @@
             }
           ],
           "default": null,
-          "description": "Required. Harm category."
+          "description": "Required. The harm category to be blocked."
+        },
+        "method": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/HarmBlockMethod"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Optional. The method for blocking content. If not specified, the default behavior is to use the probability score. This field is not supported in Gemini API."
         },
         "threshold": {
           "anyOf": [
@@ -3353,7 +4454,7 @@
             }
           ],
           "default": null,
-          "description": "Required. The harm block threshold."
+          "description": "Required. The threshold for blocking content. If the harm probability exceeds this threshold, the content will be blocked."
         }
       },
       "title": "SafetySetting",
@@ -3416,7 +4517,7 @@
             }
           ],
           "default": null,
-          "description": "Optional. The value should be validated against any (one or more) of the subschemas in the list.",
+          "description": "Optional. The instance must be valid against any (one or more) of the subschemas listed in `any_of`.",
           "title": "Anyof"
         },
         "default": {
@@ -3427,7 +4528,7 @@
             }
           ],
           "default": null,
-          "description": "Optional. Default value of the data.",
+          "description": "Optional. Default value to use if the field is not specified.",
           "title": "Default"
         },
         "description": {
@@ -3440,7 +4541,7 @@
             }
           ],
           "default": null,
-          "description": "Optional. The description of the data.",
+          "description": "Optional. Describes the data. The model uses this field to understand the purpose of the schema and how to use it. It is a best practice to provide a clear and descriptive explanation for the schema and its properties here, rather than in the prompt.",
           "title": "Description"
         },
         "enum": {
@@ -3456,7 +4557,7 @@
             }
           ],
           "default": null,
-          "description": "Optional. Possible values of the element of primitive type with enum format. Examples: 1. We can define direction as : {type:STRING, format:enum, enum:[\"EAST\", NORTH\", \"SOUTH\", \"WEST\"]} 2. We can define apartment number as : {type:INTEGER, format:enum, enum:[\"101\", \"201\", \"301\"]}",
+          "description": "Optional. Possible values of the field. This field can be used to restrict a value to a fixed set of values. To mark a field as an enum, set `format` to `enum` and provide the list of possible values in `enum`. For example: 1. To define directions: `{type:STRING, format:enum, enum:[\"EAST\", \"NORTH\", \"SOUTH\", \"WEST\"]}` 2. To define apartment numbers: `{type:INTEGER, format:enum, enum:[\"101\", \"201\", \"301\"]}`",
           "title": "Enum"
         },
         "example": {
@@ -3467,7 +4568,7 @@
             }
           ],
           "default": null,
-          "description": "Optional. Example of the object. Will only populated when the object is the root.",
+          "description": "Optional. Example of an instance of this schema.",
           "title": "Example"
         },
         "format": {
@@ -3480,7 +4581,7 @@
             }
           ],
           "default": null,
-          "description": "Optional. The format of the data. Supported formats: for NUMBER type: \"float\", \"double\" for INTEGER type: \"int32\", \"int64\" for STRING type: \"email\", \"byte\", etc",
+          "description": "Optional. The format of the data. For `NUMBER` type, format can be `float` or `double`. For `INTEGER` type, format can be `int32` or `int64`. For `STRING` type, format can be `email`, `byte`, `date`, `date-time`, `password`, and other formats to further refine the data type.",
           "title": "Format"
         },
         "items": {
@@ -3493,7 +4594,7 @@
             }
           ],
           "default": null,
-          "description": "Optional. SCHEMA FIELDS FOR TYPE ARRAY Schema of the elements of Type.ARRAY."
+          "description": "Optional. If type is `ARRAY`, `items` specifies the schema of elements in the array."
         },
         "maxItems": {
           "anyOf": [
@@ -3505,7 +4606,7 @@
             }
           ],
           "default": null,
-          "description": "Optional. Maximum number of the elements for Type.ARRAY.",
+          "description": "Optional. If type is `ARRAY`, `max_items` specifies the maximum number of items in an array.",
           "title": "Maxitems"
         },
         "maxLength": {
@@ -3518,7 +4619,7 @@
             }
           ],
           "default": null,
-          "description": "Optional. Maximum length of the Type.STRING",
+          "description": "Optional. If type is `STRING`, `max_length` specifies the maximum length of the string.",
           "title": "Maxlength"
         },
         "maxProperties": {
@@ -3531,7 +4632,7 @@
             }
           ],
           "default": null,
-          "description": "Optional. Maximum number of the properties for Type.OBJECT.",
+          "description": "Optional. If type is `OBJECT`, `max_properties` specifies the maximum number of properties that can be provided.",
           "title": "Maxproperties"
         },
         "maximum": {
@@ -3544,7 +4645,7 @@
             }
           ],
           "default": null,
-          "description": "Optional. Maximum value of the Type.INTEGER and Type.NUMBER",
+          "description": "Optional. If type is `INTEGER` or `NUMBER`, `maximum` specifies the maximum allowed value.",
           "title": "Maximum"
         },
         "minItems": {
@@ -3557,7 +4658,7 @@
             }
           ],
           "default": null,
-          "description": "Optional. Minimum number of the elements for Type.ARRAY.",
+          "description": "Optional. If type is `ARRAY`, `min_items` specifies the minimum number of items in an array.",
           "title": "Minitems"
         },
         "minLength": {
@@ -3570,7 +4671,7 @@
             }
           ],
           "default": null,
-          "description": "Optional. SCHEMA FIELDS FOR TYPE STRING Minimum length of the Type.STRING",
+          "description": "Optional. If type is `STRING`, `min_length` specifies the minimum length of the string.",
           "title": "Minlength"
         },
         "minProperties": {
@@ -3583,7 +4684,7 @@
             }
           ],
           "default": null,
-          "description": "Optional. Minimum number of the properties for Type.OBJECT.",
+          "description": "Optional. If type is `OBJECT`, `min_properties` specifies the minimum number of properties that can be provided.",
           "title": "Minproperties"
         },
         "minimum": {
@@ -3596,7 +4697,7 @@
             }
           ],
           "default": null,
-          "description": "Optional. SCHEMA FIELDS FOR TYPE INTEGER and NUMBER Minimum value of the Type.INTEGER and Type.NUMBER",
+          "description": "Optional. If type is `INTEGER` or `NUMBER`, `minimum` specifies the minimum allowed value.",
           "title": "Minimum"
         },
         "nullable": {
@@ -3609,7 +4710,7 @@
             }
           ],
           "default": null,
-          "description": "Optional. Indicates if the value may be null.",
+          "description": "Optional. Indicates if the value of this field can be null.",
           "title": "Nullable"
         },
         "pattern": {
@@ -3622,7 +4723,7 @@
             }
           ],
           "default": null,
-          "description": "Optional. Pattern of the Type.STRING to restrict a string to a regular expression.",
+          "description": "Optional. If type is `STRING`, `pattern` specifies a regular expression that the string must match.",
           "title": "Pattern"
         },
         "properties": {
@@ -3638,7 +4739,7 @@
             }
           ],
           "default": null,
-          "description": "Optional. SCHEMA FIELDS FOR TYPE OBJECT Properties of Type.OBJECT.",
+          "description": "Optional. If type is `OBJECT`, `properties` is a map of property names to schema definitions for each property of the object.",
           "title": "Properties"
         },
         "propertyOrdering": {
@@ -3654,7 +4755,7 @@
             }
           ],
           "default": null,
-          "description": "Optional. The order of the properties. Not a standard field in open api spec. Only used to support the order of the properties.",
+          "description": "Optional. Order of properties displayed or used where order matters. This is not a standard field in OpenAPI specification, but can be used to control the order of properties.",
           "title": "Propertyordering"
         },
         "required": {
@@ -3670,7 +4771,7 @@
             }
           ],
           "default": null,
-          "description": "Optional. Required properties of Type.OBJECT.",
+          "description": "Optional. If type is `OBJECT`, `required` lists the names of properties that must be present.",
           "title": "Required"
         },
         "title": {
@@ -3683,7 +4784,7 @@
             }
           ],
           "default": null,
-          "description": "Optional. The title of the Schema.",
+          "description": "Optional. Title for the schema.",
           "title": "Title"
         },
         "type": {
@@ -3696,10 +4797,42 @@
             }
           ],
           "default": null,
-          "description": "Optional. The type of the data."
+          "description": "Optional. Data type of the schema field."
         }
       },
       "title": "Schema",
+      "type": "object"
+    },
+    "SearchTypes": {
+      "additionalProperties": false,
+      "description": "Different types of search that can be enabled on the GoogleSearch tool.",
+      "properties": {
+        "webSearch": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/WebSearch"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Optional. Setting this field enables web search. Only text results are returned."
+        },
+        "imageSearch": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ImageSearch"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Optional. Setting this field enables image search. Image bytes are returned."
+        }
+      },
+      "title": "SearchTypes",
       "type": "object"
     },
     "SequentialAgentConfig": {
@@ -3778,9 +4911,20 @@
       "title": "SequentialAgentConfig",
       "type": "object"
     },
+    "ServiceTier": {
+      "description": "Pricing and performance service tier.",
+      "enum": [
+        "unspecified",
+        "flex",
+        "standard",
+        "priority"
+      ],
+      "title": "ServiceTier",
+      "type": "string"
+    },
     "SpeakerVoiceConfig": {
       "additionalProperties": false,
-      "description": "The configuration for the speaker to use.",
+      "description": "Configuration for a single speaker in a multi-speaker setup.",
       "properties": {
         "speaker": {
           "anyOf": [
@@ -3792,7 +4936,7 @@
             }
           ],
           "default": null,
-          "description": "The name of the speaker to use. Should be the same as in the\n          prompt.",
+          "description": "Required. The name of the speaker. This should be the same as the speaker name used in the prompt.",
           "title": "Speaker"
         },
         "voiceConfig": {
@@ -3805,7 +4949,7 @@
             }
           ],
           "default": null,
-          "description": "The configuration for the voice to use."
+          "description": "Required. The configuration for the voice of this speaker."
         }
       },
       "title": "SpeakerVoiceConfig",
@@ -3813,7 +4957,7 @@
     },
     "SpeechConfig": {
       "additionalProperties": false,
-      "description": "The speech generation configuration.",
+      "description": "Config for speech generation and transcription.",
       "properties": {
         "voiceConfig": {
           "anyOf": [
@@ -3825,19 +4969,7 @@
             }
           ],
           "default": null,
-          "description": "The configuration for the speaker to use.\n      "
-        },
-        "multiSpeakerVoiceConfig": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/MultiSpeakerVoiceConfig"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "description": "The configuration for the multi-speaker setup.\n          It is mutually exclusive with the voice_config field.\n          "
+          "description": "The configuration in case of single-voice output."
         },
         "languageCode": {
           "anyOf": [
@@ -3849,11 +4981,99 @@
             }
           ],
           "default": null,
-          "description": "Language code (ISO 639. e.g. en-US) for the speech synthesization.\n      Only available for Live API.\n      ",
+          "description": "Optional. The language code (ISO 639-1) for the speech synthesis.",
           "title": "Languagecode"
+        },
+        "multiSpeakerVoiceConfig": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/MultiSpeakerVoiceConfig"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "The configuration for a multi-speaker text-to-speech request. This field is mutually exclusive with `voice_config`."
         }
       },
       "title": "SpeechConfig",
+      "type": "object"
+    },
+    "StreamableHttpTransport": {
+      "additionalProperties": false,
+      "description": "A transport that can stream HTTP requests and responses.\n\nNext ID: 6. This data type is not supported in Vertex AI.",
+      "properties": {
+        "headers": {
+          "anyOf": [
+            {
+              "additionalProperties": {
+                "type": "string"
+              },
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Optional: Fields for authentication headers, timeouts, etc., if needed.",
+          "title": "Headers"
+        },
+        "sseReadTimeout": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Timeout for SSE read operations.",
+          "title": "Ssereadtimeout"
+        },
+        "terminateOnClose": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Whether to close the client session when the transport closes.",
+          "title": "Terminateonclose"
+        },
+        "timeout": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "HTTP timeout for regular operations.",
+          "title": "Timeout"
+        },
+        "url": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "The full URL for the MCPServer endpoint. Example: \"https://api.example.com/mcp\".",
+          "title": "Url"
+        }
+      },
+      "title": "StreamableHttpTransport",
       "type": "object"
     },
     "ThinkingConfig": {
@@ -3885,10 +5105,34 @@
           "default": null,
           "description": "Indicates the thinking budget in tokens. 0 is DISABLED. -1 is AUTOMATIC. The default values and allowed ranges are model dependent.\n      ",
           "title": "Thinkingbudget"
+        },
+        "thinkingLevel": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ThinkingLevel"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Optional. The number of thoughts tokens that the model should generate."
         }
       },
       "title": "ThinkingConfig",
       "type": "object"
+    },
+    "ThinkingLevel": {
+      "description": "The number of thoughts tokens that the model should generate.",
+      "enum": [
+        "THINKING_LEVEL_UNSPECIFIED",
+        "MINIMAL",
+        "LOW",
+        "MEDIUM",
+        "HIGH"
+      ],
+      "title": "ThinkingLevel",
+      "type": "string"
     },
     "ToolAnnotations": {
       "additionalProperties": true,
@@ -3965,35 +5209,182 @@
       "title": "ToolArgsConfig",
       "type": "object"
     },
-    "ToolCodeExecution": {
+    "ToolCall": {
       "additionalProperties": false,
-      "description": "Tool that executes code generated by the model, and automatically returns the result to the model.\n\nSee also [ExecutableCode]and [CodeExecutionResult] which are input and output\nto this tool.",
-      "properties": {},
-      "title": "ToolCodeExecution",
-      "type": "object"
-    },
-    "ToolComputerUse": {
-      "additionalProperties": false,
-      "description": "Tool to support computer use.",
+      "description": "A predicted server-side `ToolCall` returned from the model.\n\nThis message contains information about a tool that the model wants to invoke.\nThe client is NOT expected to execute this `ToolCall`. Instead, the\nclient should pass this `ToolCall` back to the API in a subsequent turn\nwithin a `Content` message, along with the corresponding `ToolResponse`.",
       "properties": {
-        "environment": {
+        "id": {
           "anyOf": [
             {
-              "$ref": "#/$defs/Environment"
+              "type": "string"
             },
             {
               "type": "null"
             }
           ],
           "default": null,
-          "description": "Required. The environment being operated."
+          "description": "Unique identifier of the tool call. The server returns the tool response with the matching `id`.",
+          "title": "Id"
+        },
+        "toolType": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ToolType"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "The type of tool that was called."
+        },
+        "args": {
+          "anyOf": [
+            {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "The tool call arguments. Example: {\"arg1\": \"value1\", \"arg2\": \"value2\"}.",
+          "title": "Args"
         }
       },
-      "title": "ToolComputerUse",
+      "title": "ToolCall",
       "type": "object"
     },
+    "ToolCodeExecution": {
+      "additionalProperties": false,
+      "description": "Tool that executes code generated by the model, and automatically returns the result to the model.\n\nSee also [ExecutableCode]and [CodeExecutionResult] which are input and output\nto this tool. This data type is not supported in Gemini API.",
+      "properties": {},
+      "title": "ToolCodeExecution",
+      "type": "object"
+    },
+    "ToolExecution": {
+      "additionalProperties": true,
+      "description": "Execution-related properties for a tool.",
+      "properties": {
+        "taskSupport": {
+          "anyOf": [
+            {
+              "enum": [
+                "forbidden",
+                "optional",
+                "required"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Tasksupport"
+        }
+      },
+      "title": "ToolExecution",
+      "type": "object"
+    },
+    "ToolParallelAiSearch": {
+      "additionalProperties": false,
+      "description": "ParallelAiSearch tool type.\n\nA tool that uses the Parallel.ai search engine for grounding. This data type\nis not supported in Gemini API.",
+      "properties": {
+        "apiKey": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Optional. The API key for ParallelAiSearch. If an API key is not provided, the system will attempt to verify access by checking for an active Parallel.ai subscription through the Google Cloud Marketplace. See https://docs.parallel.ai/search/search-quickstart for more details.",
+          "title": "Apikey"
+        },
+        "customConfigs": {
+          "anyOf": [
+            {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Optional. Custom configs for ParallelAiSearch. This field can be used to pass any parameter from the Parallel.ai Search API. See the Parallel.ai documentation for the full list of available parameters and their usage: https://docs.parallel.ai/api-reference/search-beta/search Currently only `source_policy`, `excerpts`, `max_results`, `mode`, `fetch_policy` can be set via this field. For example: { \"source_policy\": { \"include_domains\": [\"google.com\", \"wikipedia.org\"], \"exclude_domains\": [\"example.com\"] }, \"fetch_policy\": { \"max_age_seconds\": 3600 } }",
+          "title": "Customconfigs"
+        }
+      },
+      "title": "ToolParallelAiSearch",
+      "type": "object"
+    },
+    "ToolResponse": {
+      "additionalProperties": false,
+      "description": "The output from a server-side `ToolCall` execution.\n\nThis message contains the results of a tool invocation that was initiated by a\n`ToolCall` from the model. The client should pass this `ToolResponse` back to\nthe API in a subsequent turn within a `Content` message, along with the\ncorresponding `ToolCall`.",
+      "properties": {
+        "id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "The identifier of the tool call this response is for.",
+          "title": "Id"
+        },
+        "toolType": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ToolType"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "The type of tool that was called, matching the tool_type in the corresponding ToolCall."
+        },
+        "response": {
+          "anyOf": [
+            {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "The tool response.",
+          "title": "Response"
+        }
+      },
+      "title": "ToolResponse",
+      "type": "object"
+    },
+    "ToolType": {
+      "description": "The type of tool in the function call.",
+      "enum": [
+        "TOOL_TYPE_UNSPECIFIED",
+        "GOOGLE_SEARCH_WEB",
+        "GOOGLE_SEARCH_IMAGE",
+        "URL_CONTEXT",
+        "GOOGLE_MAPS",
+        "FILE_SEARCH"
+      ],
+      "title": "ToolType",
+      "type": "string"
+    },
     "Type": {
-      "description": "Optional. The type of the data.",
+      "description": "Data type of the schema field.",
       "enum": [
         "TYPE_UNSPECIFIED",
         "STRING",
@@ -4009,14 +5400,14 @@
     },
     "UrlContext": {
       "additionalProperties": false,
-      "description": "Tool to support URL context retrieval.",
+      "description": "Tool to support URL context.",
       "properties": {},
       "title": "UrlContext",
       "type": "object"
     },
     "VertexAISearch": {
       "additionalProperties": false,
-      "description": "Retrieve from Vertex AI Search datastore or engine for grounding.\n\ndatastore and engine are mutually exclusive. See\nhttps://cloud.google.com/products/agent-builder",
+      "description": "Retrieve from Vertex AI Search datastore or engine for grounding.\n\ndatastore and engine are mutually exclusive. See\nhttps://cloud.google.com/products/agent-builder. This data type is not\nsupported in Gemini API.",
       "properties": {
         "dataStoreSpecs": {
           "anyOf": [
@@ -4083,7 +5474,7 @@
             }
           ],
           "default": null,
-          "description": "Optional. Number of search results to return per query. The default value is 10. The maximum allowed value is 10.",
+          "description": "Optional. Number of search results to return per query. The default value is 10. The maximumm allowed value is 10.",
           "title": "Maxresults"
         }
       },
@@ -4092,7 +5483,7 @@
     },
     "VertexAISearchDataStoreSpec": {
       "additionalProperties": false,
-      "description": "Define data stores within engine to filter on in a search call and configurations for those data stores.\n\nFor more information, see\nhttps://cloud.google.com/generative-ai-app-builder/docs/reference/rpc/google.cloud.discoveryengine.v1#datastorespec",
+      "description": "Define data stores within engine to filter on in a search call and configurations for those data stores.\n\nFor more information, see\nhttps://cloud.google.com/generative-ai-app-builder/docs/reference/rpc/google.cloud.discoveryengine.v1#datastorespec.\nThis data type is not supported in Gemini API.",
       "properties": {
         "dataStore": {
           "anyOf": [
@@ -4126,7 +5517,7 @@
     },
     "VertexRagStore": {
       "additionalProperties": false,
-      "description": "Retrieve from Vertex RAG Store for grounding.",
+      "description": "Retrieve from Vertex RAG Store for grounding.\n\nThis data type is not supported in Gemini API.",
       "properties": {
         "ragCorpora": {
           "anyOf": [
@@ -4217,7 +5608,7 @@
     },
     "VertexRagStoreRagResource": {
       "additionalProperties": false,
-      "description": "The definition of the Rag resource.",
+      "description": "The definition of the Rag resource.\n\nThis data type is not supported in Gemini API.",
       "properties": {
         "ragCorpus": {
           "anyOf": [
@@ -4254,21 +5645,8 @@
     },
     "VideoMetadata": {
       "additionalProperties": false,
-      "description": "Describes how the video in the Part should be used by the model.",
+      "description": "Provides metadata for a video, including the start and end offsets for clipping and the frame rate.",
       "properties": {
-        "fps": {
-          "anyOf": [
-            {
-              "type": "number"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "description": "The frame rate of the video sent to the model. If not specified, the\n        default value will be 1.0. The fps range is (0.0, 24.0].",
-          "title": "Fps"
-        },
         "endOffset": {
           "anyOf": [
             {
@@ -4281,6 +5659,19 @@
           "default": null,
           "description": "Optional. The end offset of the video.",
           "title": "Endoffset"
+        },
+        "fps": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Optional. The frame rate of the video sent to the model. If not specified, the default value is 1.0. The valid range is (0.0, 24.0].",
+          "title": "Fps"
         },
         "startOffset": {
           "anyOf": [
@@ -4303,6 +5694,18 @@
       "additionalProperties": false,
       "description": "The configuration for the voice to use.",
       "properties": {
+        "replicatedVoiceConfig": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ReplicatedVoiceConfig"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "The configuration for a replicated voice, which is a clone of a\n      user's voice that can be used for speech synthesis. If this is unset, a\n      default voice is used."
+        },
         "prebuiltVoiceConfig": {
           "anyOf": [
             {
@@ -4313,10 +5716,38 @@
             }
           ],
           "default": null,
-          "description": "The configuration for the speaker to use.\n      "
+          "description": "The configuration for a prebuilt voice."
         }
       },
       "title": "VoiceConfig",
+      "type": "object"
+    },
+    "VoiceConsentSignature": {
+      "additionalProperties": false,
+      "description": "The signature of the voice consent check.",
+      "properties": {
+        "signature": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "The signature string.\n      ",
+          "title": "Signature"
+        }
+      },
+      "title": "VoiceConsentSignature",
+      "type": "object"
+    },
+    "WebSearch": {
+      "additionalProperties": false,
+      "description": "Standard web search for grounding and related configurations.\n\nOnly text results are returned.",
+      "properties": {},
+      "title": "WebSearch",
       "type": "object"
     },
     "google__adk__tools__tool_configs__ToolConfig": {
@@ -4351,6 +5782,90 @@
       "additionalProperties": false,
       "description": "Tool details of a tool that the model may use to generate a response.",
       "properties": {
+        "retrieval": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Retrieval"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Optional. Retrieval tool type. System will always execute the provided retrieval tool(s) to get external knowledge to answer the prompt. Retrieval results are presented to the model for generation. This field is not supported in Gemini API."
+        },
+        "computerUse": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ComputerUse"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Optional. Tool to support the model interacting directly with the\n      computer. If enabled, it automatically populates computer-use specific\n      Function Declarations."
+        },
+        "fileSearch": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/FileSearch"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Optional. FileSearch tool type. Tool to retrieve knowledge from Semantic Retrieval corpora. This field is not supported in Vertex AI."
+        },
+        "googleSearch": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/GoogleSearch"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Optional. GoogleSearch tool type. Tool to support Google Search in Model. Powered by Google."
+        },
+        "googleMaps": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/GoogleMaps"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Optional. Tool that allows grounding the model's response with\n      geospatial context related to the user's query."
+        },
+        "codeExecution": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ToolCodeExecution"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Optional. CodeExecution tool type. Enables the model to execute code as part of generation."
+        },
+        "enterpriseWebSearch": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/EnterpriseWebSearch"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Optional. Tool to support searching public web data, powered by Vertex AI Search and Sec4 compliance. This field is not supported in Gemini API."
+        },
         "functionDeclarations": {
           "anyOf": [
             {
@@ -4364,32 +5879,8 @@
             }
           ],
           "default": null,
-          "description": "List of function declarations that the tool supports.",
+          "description": "Optional. Function tool type. One or more function declarations to be passed to the model along with the current user query. Model may decide to call a subset of these functions by populating FunctionCall in the response. User should provide a FunctionResponse for each function call in the next turn. Based on the function responses, Model will generate the final response back to the user. Maximum 512 function declarations can be provided.",
           "title": "Functiondeclarations"
-        },
-        "retrieval": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/Retrieval"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "description": "Optional. Retrieval tool type. System will always execute the provided retrieval tool(s) to get external knowledge to answer the prompt. Retrieval results are presented to the model for generation."
-        },
-        "googleSearch": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/GoogleSearch"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "description": "Optional. Google Search tool type. Specialized retrieval tool\n      that is powered by Google Search."
         },
         "googleSearchRetrieval": {
           "anyOf": [
@@ -4401,31 +5892,19 @@
             }
           ],
           "default": null,
-          "description": "Optional. GoogleSearchRetrieval tool type. Specialized retrieval tool that is powered by Google search."
+          "description": "Optional. Specialized retrieval tool that is powered by Google Search."
         },
-        "enterpriseWebSearch": {
+        "parallelAiSearch": {
           "anyOf": [
             {
-              "$ref": "#/$defs/EnterpriseWebSearch"
+              "$ref": "#/$defs/ToolParallelAiSearch"
             },
             {
               "type": "null"
             }
           ],
           "default": null,
-          "description": "Optional. Enterprise web search tool type. Specialized retrieval\n      tool that is powered by Vertex AI Search and Sec4 compliance."
-        },
-        "googleMaps": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/GoogleMaps"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "description": "Optional. Google Maps tool type. Specialized retrieval tool\n      that is powered by Google Maps."
+          "description": "Optional. If specified, Vertex AI will use Parallel.ai to search for information to answer user queries. The search results will be grounded on Parallel.ai and presented to the model for response generation. This field is not supported in Gemini API."
         },
         "urlContext": {
           "anyOf": [
@@ -4439,29 +5918,21 @@
           "default": null,
           "description": "Optional. Tool to support URL context retrieval."
         },
-        "computerUse": {
+        "mcpServers": {
           "anyOf": [
             {
-              "$ref": "#/$defs/ToolComputerUse"
+              "items": {
+                "$ref": "#/$defs/McpServer"
+              },
+              "type": "array"
             },
             {
               "type": "null"
             }
           ],
           "default": null,
-          "description": "Optional. Tool to support the model interacting directly with the\n      computer. If enabled, it automatically populates computer-use specific\n      Function Declarations."
-        },
-        "codeExecution": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/ToolCodeExecution"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "description": "Optional. CodeExecution tool type. Enables the model to execute code as part of generation."
+          "description": "Optional. MCP Servers to connect to. This field is not supported in Vertex AI.",
+          "title": "Mcpservers"
         }
       },
       "title": "Tool",
@@ -4471,6 +5942,18 @@
       "additionalProperties": false,
       "description": "Tool config.\n\nThis config is shared for all tools provided in the request.",
       "properties": {
+        "retrievalConfig": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RetrievalConfig"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Optional. Retrieval config."
+        },
         "functionCallingConfig": {
           "anyOf": [
             {
@@ -4483,17 +5966,18 @@
           "default": null,
           "description": "Optional. Function calling config."
         },
-        "retrievalConfig": {
+        "includeServerSideToolInvocations": {
           "anyOf": [
             {
-              "$ref": "#/$defs/RetrievalConfig"
+              "type": "boolean"
             },
             {
               "type": "null"
             }
           ],
           "default": null,
-          "description": "Optional. Retrieval config."
+          "description": "If true, the API response will include the server-side tool calls and responses within the `Content` message. This allows clients to observe the server's tool invocations.",
+          "title": "Includeserversidetoolinvocations"
         }
       },
       "title": "ToolConfig",
@@ -4501,7 +5985,7 @@
     },
     "mcp__types__Tool": {
       "additionalProperties": true,
-      "description": "Definition for a tool that the client can call.",
+      "description": "Definition for a tool the client can call.",
       "properties": {
         "name": {
           "title": "Name",
@@ -4549,6 +6033,21 @@
           "default": null,
           "title": "Outputschema"
         },
+        "icons": {
+          "anyOf": [
+            {
+              "items": {
+                "$ref": "#/$defs/Icon"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Icons"
+        },
         "annotations": {
           "anyOf": [
             {
@@ -4572,6 +6071,17 @@
           ],
           "default": null,
           "title": "Meta"
+        },
+        "execution": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ToolExecution"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
         }
       },
       "required": [

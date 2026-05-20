@@ -16,6 +16,7 @@ from __future__ import annotations
 
 from typing import Any
 from typing import Optional
+from typing import Union
 
 from google.genai.types import Content
 from pydantic import alias_generators
@@ -110,5 +111,11 @@ class EventActions(BaseModel):
   rewind_before_invocation_id: Optional[str] = None
   """The invocation id to rewind to. This is only set for rewind event."""
 
+  route: Optional[Union[bool, int, str, list[Union[bool, int, str]]]] = None
+  """Route or list of routes for workflow graph edge matching."""
+
   render_ui_widgets: Optional[list[UiWidget]] = None
   """List of UI widgets to be rendered by the UI."""
+
+  set_model_response: Optional[Any] = None
+  """The model response structured output."""
