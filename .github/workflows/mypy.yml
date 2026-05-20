@@ -3,6 +3,9 @@ name: Mypy Type Check
 on:
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
   mypy:
     runs-on: ubuntu-latest

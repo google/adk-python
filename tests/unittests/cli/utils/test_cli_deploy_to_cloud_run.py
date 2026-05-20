@@ -28,8 +28,9 @@ from typing import Tuple
 from unittest import mock
 
 import click
-from google.adk.cli import cli_deploy
 import pytest
+
+import src.google.adk.cli.cli_deploy as cli_deploy
 
 
 class AgentDirFixture(Protocol):
@@ -142,7 +143,7 @@ def test_to_cloud_run_happy_path(
   assert dockerfile_path.is_file()
   dockerfile_content = dockerfile_path.read_text()
 
-  expected_command = "web" if with_ui else "api_server"
+  expected_command = "api_server --with_ui" if with_ui else "api_server"
   assert f"CMD adk {expected_command} --port=8080" in dockerfile_content
   assert "FROM python:3.11-slim" in dockerfile_content
   assert (

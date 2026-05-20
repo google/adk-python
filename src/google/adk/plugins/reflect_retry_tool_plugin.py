@@ -242,8 +242,8 @@ class ReflectAndRetryToolPlugin(BasePlugin):
     """
     if self.max_retries == 0:
       if self.throw_exception_if_retry_exceeded:
-        raise error
-      return self._get_tool_retry_exceed_msg(tool, error, tool_args)
+        raise self._ensure_exception(error)
+      return self._get_tool_retry_exceed_msg(tool, tool_args, error)
 
     scope_key = self._get_scope_key(tool_context)
     async with self._lock:
@@ -260,7 +260,7 @@ class ReflectAndRetryToolPlugin(BasePlugin):
 
       # Max Retry exceeded
       if self.throw_exception_if_retry_exceeded:
-        raise error
+        raise self._ensure_exception(error)
       else:
         return self._get_tool_retry_exceed_msg(tool, tool_args, error)
 

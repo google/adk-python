@@ -1236,3 +1236,86 @@ async def test_computer_use_tool_decoding_behavior(handle_function_calls):
   # Verify the image was converted to a blob
   assert len(response_part.parts) == 1
   assert response_part.parts[0].inline_data is not None
+
+
+@pytest.mark.asyncio
+async def test_handle_function_calls_live_preserves_live_session_id():
+  """Tests that handle_function_calls_live preserves live_session_id for single call."""
+
+  def simple_fn() -> dict[str, str]:
+    return {'result': 'test'}
+
+  tool1 = FunctionTool(simple_fn)
+  model = testing_utils.MockModel.create(responses=[])
+  agent = Agent(
+      name='test_agent',
+      model=model,
+      tools=[tool1],
+  )
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent, user_content=''
+  )
+
+  function_call1 = types.FunctionCall(id='call_1', name=tool1.name, args={})
+  content1 = types.Content(parts=[types.Part(function_call=function_call1)])
+  event1 = Event(
+      invocation_id=invocation_context.invocation_id,
+      author=agent.name,
+      content=content1,
+      live_session_id='test-live-session-id',
+  )
+  tools_dict = {tool1.name: tool1}
+
+  result_single = await handle_function_calls_live(
+      invocation_context,
+      event1,
+      tools_dict,
+  )
+
+  assert result_single is not None
+  assert result_single.live_session_id == 'test-live-session-id'
+
+
+@pytest.mark.asyncio
+async def test_handle_function_calls_live_parallel_preserves_live_session_id():
+  """Tests that handle_function_calls_live preserves live_session_id for parallel calls."""
+
+  def simple_fn() -> dict[str, str]:
+    return {'result': 'test'}
+
+  tool1 = FunctionTool(simple_fn)
+  tool2 = FunctionTool(simple_fn)
+  model = testing_utils.MockModel.create(responses=[])
+  agent = Agent(
+      name='test_agent',
+      model=model,
+      tools=[tool1, tool2],
+  )
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent, user_content=''
+  )
+
+  function_call1 = types.FunctionCall(id='call_1', name=tool1.name, args={})
+  function_call2 = types.FunctionCall(id='call_2', name=tool2.name, args={})
+  content2 = types.Content(
+      parts=[
+          types.Part(function_call=function_call1),
+          types.Part(function_call=function_call2),
+      ]
+  )
+  event2 = Event(
+      invocation_id=invocation_context.invocation_id,
+      author=agent.name,
+      content=content2,
+      live_session_id='test-live-session-id-parallel',
+  )
+  tools_dict = {tool1.name: tool1, tool2.name: tool2}
+
+  result_parallel = await handle_function_calls_live(
+      invocation_context,
+      event2,
+      tools_dict,
+  )
+
+  assert result_parallel is not None
+  assert result_parallel.live_session_id == 'test-live-session-id-parallel'

@@ -505,7 +505,7 @@ class TestAgentLoader:
       yaml_content = dedent("""
         agent_class: LlmAgent
         name: yaml_test_agent
-        model: gemini-2.0-flash
+        model: gemini-2.5-flash
         instruction: You are a test agent loaded from YAML configuration.
         description: A test agent created from YAML config
       """)
@@ -522,7 +522,7 @@ class TestAgentLoader:
       from google.adk.agents.llm_agent import LlmAgent
 
       if isinstance(agent, LlmAgent):
-        assert agent.model == "gemini-2.0-flash"
+        assert agent.model == "gemini-2.5-flash"
         # Handle instruction which can be string or InstructionProvider
         instruction_text = str(agent.instruction)
         assert "test agent loaded from YAML" in instruction_text
@@ -537,7 +537,7 @@ class TestAgentLoader:
       yaml_content = dedent("""
         agent_class: LlmAgent
         name: cached_yaml_test_agent
-        model: gemini-2.0-flash
+        model: gemini-2.5-flash
         instruction: You are a cached test agent.
       """)
 
@@ -576,7 +576,7 @@ class TestAgentLoader:
       # Create invalid YAML content with wrong field name
       invalid_yaml_content = dedent("""
         not_exist_field: invalid_yaml_test_agent
-        model: gemini-2.0-flash
+        model: gemini-2.5-flash
         instruction: You are a test agent with invalid YAML
       """)
 
@@ -794,7 +794,7 @@ class TestAgentLoader:
       yaml_content = dedent("""
         agent_class: LlmAgent
         name: special_yaml_test_agent
-        model: gemini-2.0-flash
+        model: gemini-2.5-flash
         instruction: You are a special test agent loaded from YAML configuration.
         description: A special test agent created from YAML config
       """)
@@ -825,7 +825,7 @@ class TestAgentLoader:
         from google.adk.agents.llm_agent import LlmAgent
 
         if isinstance(agent, LlmAgent):
-          assert agent.model == "gemini-2.0-flash"
+          assert agent.model == "gemini-2.5-flash"
           # Handle instruction which can be string or InstructionProvider
           instruction_text = str(agent.instruction)
           assert "special test agent loaded from YAML" in instruction_text
@@ -851,7 +851,7 @@ class TestAgentLoader:
       regular_yaml_content = dedent("""
         agent_class: LlmAgent
         name: regular_yaml_agent
-        model: gemini-2.0-flash
+        model: gemini-2.5-flash
         instruction: Regular agent from default directory.
       """)
       self.create_yaml_agent_structure(
@@ -862,7 +862,7 @@ class TestAgentLoader:
       custom_yaml_content = dedent("""
         agent_class: LlmAgent
         name: custom_yaml_agent
-        model: gemini-2.0-flash
+        model: gemini-2.5-flash
         instruction: Custom agent from custom directory.
       """)
       self.create_yaml_agent_structure(

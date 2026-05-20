@@ -52,14 +52,14 @@ class TestVertexAiSearchToolHelperFunctions:
   def test_extract_model_name_simple_model(self):
     """Test extraction of simple model names."""
     assert extract_model_name('gemini-2.5-pro') == 'gemini-2.5-pro'
-    assert extract_model_name('gemini-1.5-flash') == 'gemini-1.5-flash'
+    assert extract_model_name('gemini-2.5-flash') == 'gemini-2.5-flash'
     assert extract_model_name('gemini-1.0-pro') == 'gemini-1.0-pro'
     assert extract_model_name('claude-3-sonnet') == 'claude-3-sonnet'
 
   def test_extract_model_name_path_based_model(self):
     """Test extraction of path-based model names."""
-    path_model = 'projects/265104255505/locations/us-central1/publishers/google/models/gemini-2.0-flash-001'
-    assert extract_model_name(path_model) == 'gemini-2.0-flash-001'
+    path_model = 'projects/265104255505/locations/us-central1/publishers/google/models/gemini-2.5-flash'
+    assert extract_model_name(path_model) == 'gemini-2.5-flash'
 
     path_model_2 = 'projects/12345/locations/us-east1/publishers/google/models/gemini-1.5-pro-preview'
     assert extract_model_name(path_model_2) == 'gemini-1.5-pro-preview'
@@ -72,7 +72,7 @@ class TestVertexAiSearchToolHelperFunctions:
   def test_is_gemini_model_simple_names(self):
     """Test Gemini model detection with simple model names."""
     assert is_gemini_model('gemini-2.5-pro') is True
-    assert is_gemini_model('gemini-1.5-flash') is True
+    assert is_gemini_model('gemini-2.5-flash') is True
     assert is_gemini_model('gemini-1.0-pro') is True
     assert is_gemini_model('claude-3-sonnet') is False
     assert is_gemini_model('gpt-4') is False
@@ -80,7 +80,7 @@ class TestVertexAiSearchToolHelperFunctions:
 
   def test_is_gemini_model_path_based_names(self):
     """Test Gemini model detection with path-based model names."""
-    gemini_path = 'projects/265104255505/locations/us-central1/publishers/google/models/gemini-2.0-flash-001'
+    gemini_path = 'projects/265104255505/locations/us-central1/publishers/google/models/gemini-2.5-flash'
     assert is_gemini_model(gemini_path) is True
 
     non_gemini_path = 'projects/265104255505/locations/us-central1/publishers/google/models/claude-3-sonnet'
@@ -92,16 +92,17 @@ class TestVertexAiSearchToolHelperFunctions:
     assert is_gemini_1_model('gemini-1.0-pro') is True
     assert is_gemini_1_model('gemini-1.5-pro-preview') is True
     assert is_gemini_1_model('gemini-2.0-flash') is False
+    assert is_gemini_1_model('gemini-2.5-flash') is False
     assert is_gemini_1_model('gemini-2.5-pro') is False
     assert is_gemini_1_model('gemini-10.0-pro') is False  # Only 1.x versions
     assert is_gemini_1_model('claude-3-sonnet') is False
 
   def test_is_gemini_1_model_path_based_names(self):
     """Test Gemini 1.x model detection with path-based model names."""
-    gemini_1_path = 'projects/265104255505/locations/us-central1/publishers/google/models/gemini-1.5-flash-001'
+    gemini_1_path = 'projects/265104255505/locations/us-central1/publishers/google/models/gemini-1.5-flash'
     assert is_gemini_1_model(gemini_1_path) is True
 
-    gemini_2_path = 'projects/265104255505/locations/us-central1/publishers/google/models/gemini-2.0-flash-001'
+    gemini_2_path = 'projects/265104255505/locations/us-central1/publishers/google/models/gemini-2.5-flash'
     assert is_gemini_1_model(gemini_2_path) is False
 
   def test_edge_cases(self):
@@ -262,7 +263,7 @@ class TestVertexAiSearchTool:
     llm_request = LlmRequest(
         model=(
             'projects/265104255505/locations/us-central1/publishers/'
-            'google/models/gemini-2.0-flash-001'
+            'google/models/gemini-2.5-flash'
         ),
         config=types.GenerateContentConfig(),
     )
