@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 from typing import cast
 from typing import Optional
@@ -36,6 +37,7 @@ from ..plugins.plugin_manager import PluginManager
 from ..sessions.base_session_service import BaseSessionService
 from ..sessions.session import Session
 from ..tools.base_tool import BaseTool
+from ..workflow._base_node import BaseNode
 from .active_streaming_tool import ActiveStreamingTool
 from .base_agent import BaseAgent
 from .base_agent import BaseAgentState
@@ -161,12 +163,35 @@ class InvocationContext(BaseModel):
   Branch is used when multiple sub-agents shouldn't see their peer agents'
   conversation history.
   """
-  agent: BaseAgent
-  """The current agent of this invocation context. Readonly."""
+  isolation_scope: Optional[str] = None
+  """Scope tag for filtering session events visible to this agent.
+
+  When set, the LLM content-builder restricts session events to those
+  whose ``event.isolation_scope`` matches.  One usage today is the
+  Task API: task-mode and single_turn-mode agents are scoped under
+  the originating function-call id; chat coordinators are unscoped
+  and see only unscoped events.
+
+  ⚠️ DO NOT USE THIS FIELD DIRECTLY.  It is an internal mechanism
+  that may change without notice.
+  """
+  agent: Optional[BaseAgent | BaseNode] = None
+  """The current agent of this invocation context.
+
+  None when Runner drives a BaseNode (not a BaseAgent).
+  """
   user_content: Optional[types.Content] = None
   """The user content that started this invocation. Readonly."""
   session: Session
   """The current session of this invocation context. Readonly."""
+
+  node_path: Optional[str] = None
+  """The path of the current agent in the workflow call stack.
+
+  Used by workflow agents to track their position in nested agent hierarchies.
+  Format: "agent_1/agent_2/agent_3" where agent_1 is the outermost workflow.
+  None for non-workflow agents.
+  """
 
   agent_states: dict[str, dict[str, Any]] = Field(default_factory=dict)
   """The state of the agent for this invocation."""
@@ -212,8 +237,24 @@ class InvocationContext(BaseModel):
   plugin_manager: PluginManager = Field(default_factory=PluginManager)
   """The manager for keeping track of plugins in this invocation."""
 
+  _state_schema: Optional[type[BaseModel]] = None
+  """The Pydantic model declaring the expected state keys and types.
+
+  Propagated from the owning agent down the hierarchy.  When set,
+  ``ctx.state`` mutations and ``Event(state={...})`` deltas are
+  validated against this schema at runtime.
+  """
+
   canonical_tools_cache: Optional[list[BaseTool]] = None
   """The cache of canonical tools for this invocation."""
+
+  _event_queue: Optional[asyncio.Queue] = PrivateAttr(default=None)
+  """Shared event queue for all nodes in this invocation.
+
+  All nodes enqueue events here via ``_enqueue_event()``. The Runner
+  main loop is the sole consumer — it appends events to session and
+  yields them to SSE.
+  """
 
   credential_by_key: dict[str, AuthCredential] = Field(default_factory=dict)
   """The resolved credentials for this invocation, keyed by credential_key."""
@@ -232,6 +273,30 @@ class InvocationContext(BaseModel):
         self.resumability_config is not None
         and self.resumability_config.is_resumable
     )
+
+  async def _enqueue_event(self, event: Event) -> None:
+    """Enqueue an event for the Runner main loop to process.
+
+    Non-partial events block until the main loop has appended them
+    to session, ensuring session consistency before the node
+    continues. Partial events (SSE streaming) flow through without
+    blocking.
+    """
+    if self._event_queue is None:
+      raise RuntimeError(
+          "_enqueue_event called but _event_queue is not set. "
+          "Ensure the Runner initialises _event_queue on "
+          "InvocationContext."
+      )
+
+    if event.partial:
+      # Partial events: SSE streaming only, no session append, no blocking.
+      await self._event_queue.put((event, None))
+    else:
+      # Non-partial events: block until main loop appends to session.
+      processed = asyncio.Event()
+      await self._event_queue.put((event, processed))
+      await processed.wait()
 
   def set_agent_state(
       self,
@@ -296,24 +361,27 @@ class InvocationContext(BaseModel):
     if not self.is_resumable:
       return
     for event in self._get_events(current_invocation=True):
+      # Use node_info.path if available (workflow events), otherwise fall
+      # back to author (non-workflow events).
+      key = event.node_info.path or event.author
       if event.actions.end_of_agent:
-        self.end_of_agents[event.author] = True
+        self.end_of_agents[key] = True
         # Delete agent_state when it is end
-        self.agent_states.pop(event.author, None)
+        self.agent_states.pop(key, None)
       elif event.actions.agent_state is not None:
-        self.agent_states[event.author] = event.actions.agent_state
+        self.agent_states[key] = event.actions.agent_state
         # Invalidate the end_of_agent flag
-        self.end_of_agents[event.author] = False
+        self.end_of_agents[key] = False
       elif (
           event.author != "user"
           and event.content
-          and not self.agent_states.get(event.author)
+          and not self.agent_states.get(key)
       ):
         # If the agent has generated some contents but its agent_state is not
         # set, set its agent_state to an empty agent_state.
-        self.agent_states[event.author] = BaseAgentState()
+        self.agent_states[key] = BaseAgentState().model_dump(mode="json")
         # Invalidate the end_of_agent flag
-        self.end_of_agents[event.author] = False
+        self.end_of_agents[key] = False
 
   def increment_llm_call_count(
       self,
@@ -361,7 +429,12 @@ class InvocationContext(BaseModel):
           if event.invocation_id == self.invocation_id
       ]
     if current_branch:
-      results = [event for event in results if event.branch == self.branch]
+      results = [
+          event
+          for event in results
+          if event.branch == self.branch
+          or (event.branch is None and event.author == "user")
+      ]
     return results
 
   def should_pause_invocation(self, event: Event) -> bool:
@@ -379,8 +452,7 @@ class InvocationContext(BaseModel):
     running.
 
     Should meet all following conditions to pause an invocation:
-      1. The app is resumable.
-      2. The current event has a long running function call.
+      1. The current event has a long running function call.
 
     Args:
       event: The current event.
@@ -388,9 +460,6 @@ class InvocationContext(BaseModel):
     Returns:
       Whether to pause the invocation right after this event.
     """
-    if not self.is_resumable:
-      return False
-
     if not event.long_running_tool_ids or not event.get_function_calls():
       return False
 

@@ -21,15 +21,14 @@ import sys
 from typing import AsyncGenerator
 from typing import ClassVar
 
+from typing_extensions import deprecated
 from typing_extensions import override
 
 from ..events.event import Event
 from ..utils.context_utils import Aclosing
 from .base_agent import BaseAgent
 from .base_agent import BaseAgentState
-from .base_agent_config import BaseAgentConfig
 from .invocation_context import InvocationContext
-from .parallel_agent_config import ParallelAgentConfig
 
 
 def _create_branch_ctx_for_sub_agent(
@@ -147,6 +146,10 @@ async def _merge_agent_run_pre_3_11(
       task.cancel()
 
 
+@deprecated(
+    'ParallelAgent is deprecated and will be removed in future versions.'
+    ' Please use Workflow instead.'
+)
 class ParallelAgent(BaseAgent):
   """A shell agent that runs its sub-agents in parallel in an isolated manner.
 
@@ -156,9 +159,6 @@ class ParallelAgent(BaseAgent):
   - Running different algorithms simultaneously.
   - Generating multiple responses for review by a subsequent evaluation agent.
   """
-
-  config_type: ClassVar[type[BaseAgentConfig]] = ParallelAgentConfig
-  """The config type for this agent."""
 
   @override
   async def _run_async_impl(
