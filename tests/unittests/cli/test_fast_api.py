@@ -540,6 +540,31 @@ def _create_test_client(
     return TestClient(app)
 
 
+def test_web_reload_agents_uses_module_api_server_import(
+    mock_session_service,
+    mock_artifact_service,
+    mock_memory_service,
+    mock_agent_loader,
+    mock_eval_sets_manager,
+    mock_eval_set_results_manager,
+):
+  """Regression test for web reload mode with DevServer available."""
+  with patch("google.adk.cli.api_server.Observer") as mock_observer_class:
+    _create_test_client(
+        mock_session_service,
+        mock_artifact_service,
+        mock_memory_service,
+        mock_agent_loader,
+        mock_eval_sets_manager,
+        mock_eval_set_results_manager,
+        reload_agents=True,
+    )
+
+  observer = mock_observer_class.return_value
+  observer.schedule.assert_called_once()
+  observer.start.assert_called_once()
+
+
 def test_agent_with_bigquery_analytics_plugin(
     tmp_path,
     mock_session_service,
