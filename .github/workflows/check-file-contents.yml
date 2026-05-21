@@ -109,7 +109,7 @@ jobs:
             echo "Checking for hardcoded endpoints in: $CHANGED_FILES"
 
             set +e
-            FILES_WITH_HARDCODED_ENDPOINTS=$(grep -lE 'https?://[a-zA-Z0-9.-]+\.googleapis\.com' $CHANGED_FILES | grep -v '.mtls.googleapis.com' || true)
+            FILES_WITH_HARDCODED_ENDPOINTS=$(grep -rE 'https?://[a-zA-Z0-9.-]+\.googleapis\.com' $CHANGED_FILES | grep -v '.mtls.googleapis.com' || true)
             set -e
 
             if [ -n "$FILES_WITH_HARDCODED_ENDPOINTS" ]; then
