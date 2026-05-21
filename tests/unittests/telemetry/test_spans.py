@@ -27,6 +27,7 @@ from google.adk.models.llm_response import LlmResponse
 from google.adk.sessions.in_memory_session_service import InMemorySessionService
 from google.adk.telemetry._experimental_semconv import _safe_json_serialize_no_whitespaces
 from google.adk.telemetry.tracing import _safe_json_serialize
+from google.adk.telemetry.tracing import _use_extra_generate_content_attributes
 from google.adk.telemetry.tracing import ADK_CAPTURE_MESSAGE_CONTENT_IN_SPANS
 from google.adk.telemetry.tracing import GCP_MCP_SERVER_DESTINATION_ID
 from google.adk.telemetry.tracing import trace_agent_invocation
@@ -810,12 +811,14 @@ async def test_trace_send_data_disabling_request_response_content(
     return_value='test_system',
 )
 @pytest.mark.parametrize('capture_content', [True, False])
+@pytest.mark.parametrize('user_id', ['some-user-id', None])
 async def test_generate_content_span(
     mock_guess_system_name,
     mock_tracer,
     mock_otel_logger,
     monkeypatch,
     capture_content,
+    user_id,
 ):
   """Test native generate_content span creation with attributes and logs."""
   # Arrange
@@ -830,7 +833,7 @@ async def test_generate_content_span(
 
   agent = LlmAgent(name='test_agent', model='not-a-gemini-model')
   invocation_context = await _create_invocation_context(agent)
-
+  invocation_context.session.user_id = user_id
   system_instruction = types.Content(
       parts=[types.Part.from_text(text='You are a helpful assistant.')],
   )
@@ -889,10 +892,14 @@ async def test_generate_content_span(
   mock_span.set_attributes.assert_called_once_with({
       GEN_AI_AGENT_NAME: invocation_context.agent.name,
       GEN_AI_CONVERSATION_ID: invocation_context.session.id,
-      USER_ID: invocation_context.session.user_id,
       'gcp.vertex.agent.event_id': 'event-123',
       'gcp.vertex.agent.invocation_id': invocation_context.invocation_id,
   })
+
+  all_set_attribute_keys = [
+      call.args[0] for call in mock_span.set_attribute.call_args_list
+  ]
+  assert USER_ID not in all_set_attribute_keys
 
   # Assert Logs
   assert mock_otel_logger.emit.call_count == 4
@@ -932,8 +939,11 @@ async def test_generate_content_span(
   assert len(user_logs) == 2
   assert expected_user1_body == user_logs[0].body
   assert expected_user2_body == user_logs[1].body
+  expected_user_log_attributes = {GEN_AI_SYSTEM: 'test_system'}
+  if capture_content and user_id is not None:
+    expected_user_log_attributes[USER_ID] = user_id
   for log in user_logs:
-    assert log.attributes == {GEN_AI_SYSTEM: 'test_system'}
+    assert log.attributes == expected_user_log_attributes
 
   choice_log = next(
       (lr for lr in log_records if lr.event_name == 'gen_ai.choice'),
@@ -942,6 +952,52 @@ async def test_generate_content_span(
   assert choice_log is not None
   assert choice_log.body == expected_choice_body
   assert choice_log.attributes == {GEN_AI_SYSTEM: 'test_system'}
+
+
+@pytest.mark.asyncio
+@mock.patch(
+    'google.adk.telemetry.tracing._use_extra_generate_content_attributes'
+)
+async def test_generate_content_span_with_genai_instrumentation(
+    mock_use_extra,
+    monkeypatch,
+):
+  """Test that genai-instrumentation delegation branch does not forward USER_ID in attributes."""
+  monkeypatch.setattr(
+      'google.adk.telemetry.tracing._instrumented_with_opentelemetry_instrumentation_google_genai',
+      lambda: True,
+  )
+  # _is_gemini_agent returns true for gemini models.
+  agent = LlmAgent(name='test_agent', model='gemini-1.5-pro')
+  invocation_context = await _create_invocation_context(agent)
+
+  llm_request = LlmRequest(
+      model='gemini-1.5-pro',
+      contents=[types.Content(role='user', parts=[types.Part(text='Hello')])],
+  )
+
+  model_response_event = mock.MagicMock()
+  model_response_event.id = 'event-123'
+
+  mock_cm = mock.MagicMock()
+  mock_use_extra.return_value = mock_cm
+
+  async with use_inference_span(
+      llm_request, invocation_context, model_response_event
+  ):
+    pass
+
+  mock_use_extra.assert_called_once()
+  args, _ = mock_use_extra.call_args
+  common_attributes = args[0]
+
+  assert GEN_AI_AGENT_NAME in common_attributes
+  assert GEN_AI_CONVERSATION_ID in common_attributes
+  assert 'gcp.vertex.agent.event_id' in common_attributes
+  assert 'gcp.vertex.agent.invocation_id' in common_attributes
+
+  # USER_ID should NOT be in common_attributes passed to the genai instrumentor
+  assert USER_ID not in common_attributes
 
 
 def _mock_callable_tool():
@@ -1001,12 +1057,14 @@ def _mock_tool_dict() -> types.ToolDict:
     'capture_content',
     ['SPAN_AND_EVENT', 'EVENT_ONLY', 'SPAN_ONLY', 'NO_CONTENT'],
 )
+@pytest.mark.parametrize('user_id', ['some-user-id', None])
 async def test_generate_content_span_with_experimental_semconv(
     mock_guess_system_name,
     mock_tracer,
     mock_otel_logger,
     monkeypatch,
     capture_content,
+    user_id,
 ):
   """Test native generate_content span creation with attributes and logs with experimental semconv enabled."""
   # Arrange
@@ -1025,6 +1083,7 @@ async def test_generate_content_span_with_experimental_semconv(
 
   agent = LlmAgent(name='test_agent', model='not-a-gemini-model')
   invocation_context = await _create_invocation_context(agent)
+  invocation_context.session.user_id = user_id
 
   system_instruction = types.Content(
       parts=[types.Part.from_text(text='You are a helpful assistant.')],
@@ -1209,10 +1268,14 @@ async def test_generate_content_span_with_experimental_semconv(
   mock_span.set_attributes.assert_called_once_with({
       GEN_AI_AGENT_NAME: invocation_context.agent.name,
       GEN_AI_CONVERSATION_ID: invocation_context.session.id,
-      USER_ID: invocation_context.session.user_id,
       'gcp.vertex.agent.event_id': 'event-123',
       'gcp.vertex.agent.invocation_id': invocation_context.invocation_id,
   })
+
+  all_set_attribute_keys = [
+      call.args[0] for call in mock_span.set_attribute.call_args_list
+  ]
+  assert USER_ID not in all_set_attribute_keys
 
   if capture_content in ['SPAN_AND_EVENT', 'SPAN_ONLY']:
     mock_span.set_attribute.assert_any_call(
@@ -1259,6 +1322,15 @@ async def test_generate_content_span_with_experimental_semconv(
   assert operation_details_log.attributes is not None
 
   attributes = operation_details_log.attributes
+
+  if (
+      capture_content in ['EVENT_ONLY', 'SPAN_AND_EVENT']
+      and user_id is not None
+  ):
+    assert USER_ID in attributes
+    assert attributes[USER_ID] == user_id
+  else:
+    assert USER_ID not in attributes
 
   if capture_content in ['SPAN_AND_EVENT', 'EVENT_ONLY']:
     assert GEN_AI_SYSTEM_INSTRUCTIONS in attributes
@@ -1397,3 +1469,53 @@ def test_safe_json_serialize_no_whitespaces_circular_dict_returns_not_serializab
   obj = {}
   obj['self'] = obj
   assert _safe_json_serialize_no_whitespaces(obj) == '<not serializable>'
+
+
+def test_use_extra_generate_content_attributes_upgraded_version(monkeypatch):
+  # Arrange: Mock the presence of the new event-only context key in the contrib module
+  from opentelemetry.instrumentation import google_genai
+
+  mock_event_only_key = 'MOCKED_EVENT_ONLY_EXTRA_ATTRIBUTES_CONTEXT_KEY'
+  monkeypatch.setattr(
+      google_genai,
+      'GENERATE_CONTENT_EVENT_ONLY_EXTRA_ATTRIBUTES_CONTEXT_KEY',
+      mock_event_only_key,
+      raising=False,
+  )
+
+  # Act: Run the helper with mock.patch on the otel context
+  with mock.patch('opentelemetry.context.set_value') as mock_set_value:
+    with _use_extra_generate_content_attributes(
+        extra_attributes={'span.attr': 'value'},
+        log_only_extra_attributes={USER_ID: 'user_123'},
+    ):
+      pass
+
+    # Assert: Verify set_value was called with the mocked event-only key
+    mock_set_value.assert_any_call(
+        mock_event_only_key,
+        {USER_ID: 'user_123'},
+        context=mock.ANY,
+    )
+
+
+def test_use_extra_generate_content_attributes_older_version(monkeypatch):
+  # Arrange: Simulate an older version by deleting the key if present
+  from opentelemetry.instrumentation import google_genai
+
+  if hasattr(
+      google_genai, 'GENERATE_CONTENT_EVENT_ONLY_EXTRA_ATTRIBUTES_CONTEXT_KEY'
+  ):
+    monkeypatch.delattr(
+        google_genai, 'GENERATE_CONTENT_EVENT_ONLY_EXTRA_ATTRIBUTES_CONTEXT_KEY'
+    )
+
+  # Act & Assert: Ensure execution does not throw any ImportError/AttributeError
+  try:
+    with _use_extra_generate_content_attributes(
+        extra_attributes={'span.attr': 'value'},
+        log_only_extra_attributes={USER_ID: 'user_123'},
+    ):
+      pass
+  except Exception as e:  # pylint: disable=broad-exception-caught
+    pytest.fail(f'Graceful degradation failed: {e}')
