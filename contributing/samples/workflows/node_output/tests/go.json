@@ -1,0 +1,86 @@
+{
+  "appName": "node_output",
+  "events": [
+    {
+      "author": "user",
+      "content": {
+        "parts": [
+          {
+            "text": "go"
+          }
+        ],
+        "role": "user"
+      },
+      "id": "e-1",
+      "invocationId": "i-1",
+      "nodeInfo": {
+        "path": ""
+      }
+    },
+    {
+      "author": "root_agent",
+      "id": "e-2",
+      "invocationId": "i-1",
+      "nodeInfo": {
+        "outputFor": [
+          "root_agent@1/generate_string_output@1"
+        ],
+        "path": "root_agent@1/generate_string_output@1"
+      },
+      "output": "Processed input: go"
+    },
+    {
+      "author": "root_agent",
+      "id": "e-3",
+      "invocationId": "i-1",
+      "nodeInfo": {
+        "outputFor": [
+          "root_agent@1/generate_event_output@1"
+        ],
+        "path": "root_agent@1/generate_event_output@1"
+      },
+      "output": "Event wrapped output: Processed input: go"
+    },
+    {
+      "author": "generate_pydantic_output",
+      "content": {
+        "parts": [
+          {
+            "text": "{\"title\": \"The Impulse to Go: Decoding Humanity's Perpetual Motion\", \"description\": \"Investigating the fundamental human drive to 'go' - exploring its manifestations from ancient migrations and pioneering expeditions to the relentless pursuit of progress in science, technology, and personal growth, and what happens when we pause.\", \"category\": \"Human Behavior & Future Studies\"}"
+          }
+        ],
+        "role": "model"
+      },
+      "finishReason": "STOP",
+      "id": "e-4",
+      "invocationId": "i-1",
+      "nodeInfo": {
+        "messageAsOutput": true,
+        "outputFor": [
+          "root_agent@1/generate_pydantic_output@1"
+        ],
+        "path": "root_agent@1/generate_pydantic_output@1"
+      }
+    },
+    {
+      "author": "root_agent",
+      "id": "e-5",
+      "invocationId": "i-1",
+      "nodeInfo": {
+        "outputFor": [
+          "root_agent@1/consume_pydantic_output@1",
+          "root_agent@1"
+        ],
+        "path": "root_agent@1/consume_pydantic_output@1"
+      },
+      "output": "Received Pydantic Model!\nTitle: The Impulse to Go: Decoding Humanity's Perpetual Motion\nDescription: Investigating the fundamental human drive to 'go' - exploring its manifestations from ancient migrations and pioneering expeditions to the relentless pursuit of progress in science, technology, and personal growth, and what happens when we pause.\nCategory: Human Behavior & Future Studies"
+    }
+  ],
+  "id": "82ce71ce-e580-4ae2-b291-f82e90221bbd",
+  "state": {
+    "__session_metadata__": {
+      "displayName": "go"
+    }
+  },
+  "userId": "user"
+}

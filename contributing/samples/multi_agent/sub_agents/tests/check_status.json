@@ -1,0 +1,132 @@
+{
+  "events": [
+    {
+      "author": "user",
+      "content": {
+        "parts": [
+          {
+            "text": "Check the status of account ACC-123"
+          }
+        ],
+        "role": "user"
+      },
+      "id": "e-1",
+      "invocationId": "i-1",
+      "nodeInfo": {
+        "path": ""
+      }
+    },
+    {
+      "author": "sub_agents",
+      "content": {
+        "parts": [
+          {
+            "functionCall": {
+              "args": {
+                "agent_name": "info_agent"
+              },
+              "id": "fc-1",
+              "name": "transfer_to_agent"
+            }
+          }
+        ],
+        "role": "model"
+      },
+      "finishReason": "STOP",
+      "id": "e-2",
+      "invocationId": "i-1",
+      "longRunningToolIds": [],
+      "nodeInfo": {
+        "path": "sub_agents@1"
+      }
+    },
+    {
+      "actions": {
+        "transferToAgent": "info_agent"
+      },
+      "author": "sub_agents",
+      "content": {
+        "parts": [
+          {
+            "functionResponse": {
+              "id": "fc-1",
+              "name": "transfer_to_agent",
+              "response": {
+                "result": null
+              }
+            }
+          }
+        ],
+        "role": "user"
+      },
+      "id": "e-3",
+      "invocationId": "i-1",
+      "nodeInfo": {
+        "path": "sub_agents@1"
+      }
+    },
+    {
+      "author": "info_agent",
+      "content": {
+        "parts": [
+          {
+            "functionCall": {
+              "args": {
+                "account_id": "ACC-123"
+              },
+              "id": "fc-2",
+              "name": "get_account_status"
+            }
+          }
+        ],
+        "role": "model"
+      },
+      "finishReason": "STOP",
+      "id": "e-4",
+      "invocationId": "i-1",
+      "longRunningToolIds": [],
+      "nodeInfo": {
+        "path": "sub_agents@1/info_agent@1"
+      }
+    },
+    {
+      "author": "info_agent",
+      "content": {
+        "parts": [
+          {
+            "functionResponse": {
+              "id": "fc-2",
+              "name": "get_account_status",
+              "response": {
+                "result": "Account ACC-123 is active."
+              }
+            }
+          }
+        ],
+        "role": "user"
+      },
+      "id": "e-5",
+      "invocationId": "i-1",
+      "nodeInfo": {
+        "path": "sub_agents@1/info_agent@1"
+      }
+    },
+    {
+      "author": "info_agent",
+      "content": {
+        "parts": [
+          {
+            "text": "Account ACC-123 is active."
+          }
+        ],
+        "role": "model"
+      },
+      "finishReason": "STOP",
+      "id": "e-6",
+      "invocationId": "i-1",
+      "nodeInfo": {
+        "path": "sub_agents@1/info_agent@1"
+      }
+    }
+  ]
+}

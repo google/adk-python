@@ -14,12 +14,14 @@
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 from typing import Optional
 from typing import TYPE_CHECKING
 
 from google.genai import types
 from pydantic import BaseModel
+from pydantic import Field
 from pydantic import model_validator
 from typing_extensions import override
 
@@ -39,6 +41,17 @@ from .tool_context import ToolContext
 
 if TYPE_CHECKING:
   from ..agents.base_agent import BaseAgent
+
+
+def _part_to_text(part: types.Part) -> str:
+  """Returns user-visible text from a Part, including code execution output."""
+  if part.text:
+    return part.text
+  if part.code_execution_result and part.code_execution_result.output:
+    return part.code_execution_result.output.rstrip('\n')
+  if part.executable_code and part.executable_code.code:
+    return part.executable_code.code
+  return ''
 
 
 def _get_input_schema(agent: BaseAgent) -> Optional[type[BaseModel]]:
@@ -269,9 +282,8 @@ class AgentTool(BaseTool):
 
     if last_content is None or last_content.parts is None:
       return ''
-    merged_text = '\n'.join(
-        p.text for p in last_content.parts if p.text and not p.thought
-    )
+    parts_text = (_part_to_text(p) for p in last_content.parts if not p.thought)
+    merged_text = '\n'.join(t for t in parts_text if t)
     output_schema = _get_output_schema(self.agent)
     if output_schema:
       tool_result = validate_schema(output_schema, merged_text)
@@ -315,3 +327,103 @@ class AgentToolConfig(BaseToolConfig):
 
   include_plugins: bool = True
   """Whether to include plugins from parent runner context."""
+
+
+class _SingleTurnAgentTool(AgentTool):
+  """A tool that wraps a single-turn agent and runs it via ctx.run_node.
+
+  This is only used in mode='chat' LlmAgent.
+  """
+
+  @override
+  async def run_async(
+      self,
+      *,
+      args: dict[str, Any],
+      tool_context: ToolContext,
+  ) -> Any:
+    input_schema = _get_input_schema(self.agent)
+    if input_schema:
+      try:
+        node_input = input_schema.model_validate(args)
+      except Exception as e:
+        return f'Error validating input: {e}'
+    else:
+      node_input = args.get('request')
+
+    try:
+      return await tool_context.run_node(
+          self.agent, node_input=node_input, use_sub_branch=True
+      )
+    except Exception as e:
+      return f'Error running sub-agent: {e}'
+
+
+class _DefaultTaskInput(BaseModel):
+  request: str = Field(
+      description='Detailed instructions or context for the task sub-agent.'
+  )
+
+
+class _TaskAgentTool(AgentTool):
+  """A tool that wraps a task-mode agent and acts as a framework delegation marker.
+
+  This is only used in mode='chat' LlmAgent. The wrapper intercepts calls
+  to this tool to drive task sub-agent execution via ctx.run_node.
+  """
+
+  def __init__(
+      self,
+      agent: BaseAgent,
+      skip_summarization: bool = False,
+      *,
+      include_plugins: bool = True,
+      propagate_grounding_metadata: bool = False,
+  ):
+    super().__init__(
+        agent,
+        skip_summarization,
+        include_plugins=include_plugins,
+        propagate_grounding_metadata=propagate_grounding_metadata,
+    )
+    self._defers_response = True
+
+  @override
+  def _get_declaration(self) -> types.FunctionDeclaration:
+    from ..utils.variant_utils import GoogleLLMVariant
+
+    input_schema = _get_input_schema(self.agent) or _DefaultTaskInput
+
+    from . import _function_tool_declarations
+
+    result = (
+        _function_tool_declarations.build_function_declaration_with_json_schema(
+            func=input_schema
+        )
+    )
+    base_desc = self.agent.description or ''
+    suffix = (
+        '\nIMPORTANT: This tool delegates execution to a specialized agent.'
+        ' Do NOT call this tool in parallel with any other tools.'
+    )
+    result.description = f'{base_desc}{suffix}'.strip()
+    result.name = self.name
+
+    if self._api_variant != GoogleLLMVariant.GEMINI_API:
+      output_schema = _get_output_schema(self.agent)
+      if output_schema:
+        result.response_json_schema = {'type': 'object'}
+      else:
+        result.response_json_schema = {'type': 'string'}
+
+    return result
+
+  @override
+  async def run_async(
+      self,
+      *,
+      args: dict[str, Any],
+      tool_context: ToolContext,
+  ) -> Any:
+    # Framework handles task delegation dispatch directly via the wrapper.
+    return None
