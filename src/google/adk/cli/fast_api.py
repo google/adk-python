@@ -40,6 +40,7 @@ from watchdog.observers import Observer
 from ..auth.credential_service.in_memory_credential_service import InMemoryCredentialService
 from ..runners import Runner
 from .api_server import ApiServer
+from .dev_server import DevServer
 from .service_registry import load_services_module
 from .utils import envs
 from .utils.agent_change_handler import AgentChangeEventHandler
@@ -513,26 +514,10 @@ def get_fast_api_app(
   # Build  the Credential service
   credential_service = InMemoryCredentialService()
 
-  # Conditionally import and instantiate the appropriate server class
+  # Instantiate the appropriate server class based on web option
   # If web=True, use DevServer (includes all endpoints: production + dev)
   # If web=False, use ApiServer (production-safe endpoints only)
-  if web:
-    try:
-      from .dev_server import DevServer
-
-      ServerClass = DevServer
-    except ImportError:
-      logger.warning(
-          "DevServer not found, falling back to ApiServer. "
-          "Dev-only endpoints will not be available."
-      )
-      from .api_server import ApiServer
-
-      ServerClass = ApiServer
-  else:
-    from .api_server import ApiServer
-
-    ServerClass = ApiServer
+  ServerClass = DevServer if web else ApiServer
 
   adk_web_server = ServerClass(
       agent_loader=agent_loader,
