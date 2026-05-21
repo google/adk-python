@@ -132,7 +132,7 @@ def list_comments_on_issue(issue_number: int) -> dict[str, any]:
 
 
 root_agent = Agent(
-    model="gemini-2.5-pro",
+    model="gemini-3.5-flash",
     name="adk_issue_formatting_assistant",
     description="Check ADK issue format and content.",
     instruction=f"""

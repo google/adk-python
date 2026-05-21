@@ -72,7 +72,7 @@ def search_gemini_api_docs(queries: List[str]) -> Dict[str, Any]:
 
 
 root_agent = Agent(
-    model="gemini-2.5-pro",
+    model="gemini-3.5-flash",
     name="gemini_assistant",
     description="Answer questions about Gemini API.",
     instruction="""
