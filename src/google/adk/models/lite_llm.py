@@ -217,6 +217,7 @@ def _parse_tool_call_arguments(arguments: Any) -> Any:
 
   raise json_error
 
+
 # File MIME types supported for upload as file content (not decoded as text).
 # Note: text/* types are handled separately and decoded as text content.
 # These types are uploaded as files to providers that support it.
