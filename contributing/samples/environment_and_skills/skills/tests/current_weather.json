@@ -1,0 +1,196 @@
+{
+  "events": [
+    {
+      "author": "user",
+      "content": {
+        "parts": [
+          {
+            "text": "What is the current weather in SF?"
+          }
+        ],
+        "role": "user"
+      },
+      "id": "e-1",
+      "invocationId": "i-1",
+      "nodeInfo": {
+        "path": ""
+      }
+    },
+    {
+      "author": "skills_agent",
+      "content": {
+        "parts": [
+          {
+            "functionCall": {
+              "args": {},
+              "id": "fc-1",
+              "name": "list_skills"
+            }
+          }
+        ],
+        "role": "model"
+      },
+      "finishReason": "STOP",
+      "id": "e-2",
+      "invocationId": "i-1",
+      "longRunningToolIds": [],
+      "nodeInfo": {
+        "path": "skills_agent@1"
+      }
+    },
+    {
+      "author": "skills_agent",
+      "content": {
+        "parts": [
+          {
+            "functionResponse": {
+              "id": "fc-1",
+              "name": "list_skills",
+              "response": {
+                "result": "<available_skills>\n<skill>\n<name>\nsupport-hours-skill\n</name>\n<description>\nA skill to check customer support hours for a given location.\n</description>\n</skill>\n<skill>\n<name>\nweather-skill\n</name>\n<description>\nA skill that provides weather information based on reference data and scripts.\n</description>\n</skill>\n</available_skills>"
+              }
+            }
+          }
+        ],
+        "role": "user"
+      },
+      "id": "e-3",
+      "invocationId": "i-1",
+      "nodeInfo": {
+        "path": "skills_agent@1"
+      }
+    },
+    {
+      "author": "skills_agent",
+      "content": {
+        "parts": [
+          {
+            "functionCall": {
+              "args": {
+                "skill_name": "weather-skill"
+              },
+              "id": "fc-2",
+              "name": "load_skill"
+            }
+          }
+        ],
+        "role": "model"
+      },
+      "finishReason": "STOP",
+      "id": "e-4",
+      "invocationId": "i-1",
+      "longRunningToolIds": [],
+      "nodeInfo": {
+        "path": "skills_agent@1"
+      }
+    },
+    {
+      "actions": {
+        "stateDelta": {
+          "_adk_activated_skill_skills_agent": [
+            "weather-skill"
+          ]
+        }
+      },
+      "author": "skills_agent",
+      "content": {
+        "parts": [
+          {
+            "functionResponse": {
+              "id": "fc-2",
+              "name": "load_skill",
+              "response": {
+                "frontmatter": {
+                  "allowed_tools": null,
+                  "compatibility": null,
+                  "description": "A skill that provides weather information based on reference data and scripts.",
+                  "license": null,
+                  "metadata": {
+                    "adk_additional_tools": [
+                      "get_wind_speed"
+                    ]
+                  },
+                  "name": "weather-skill"
+                },
+                "instructions": "Step 1: Check 'references/weather_info.md' for the current weather.\nStep 2: If humidity is requested, run 'scripts/get_humidity.py' with the `location` argument.\nStep 3: If wind speed is requested, use the `get_wind_speed` tool.\nStep 4: Provide the complete weather update to the user.",
+                "skill_name": "weather-skill"
+              }
+            }
+          }
+        ],
+        "role": "user"
+      },
+      "id": "e-5",
+      "invocationId": "i-1",
+      "nodeInfo": {
+        "path": "skills_agent@1"
+      }
+    },
+    {
+      "author": "skills_agent",
+      "content": {
+        "parts": [
+          {
+            "functionCall": {
+              "args": {
+                "file_path": "references/weather_info.md",
+                "skill_name": "weather-skill"
+              },
+              "id": "fc-3",
+              "name": "load_skill_resource"
+            }
+          }
+        ],
+        "role": "model"
+      },
+      "finishReason": "STOP",
+      "id": "e-6",
+      "invocationId": "i-1",
+      "longRunningToolIds": [],
+      "nodeInfo": {
+        "path": "skills_agent@1"
+      }
+    },
+    {
+      "author": "skills_agent",
+      "content": {
+        "parts": [
+          {
+            "functionResponse": {
+              "id": "fc-3",
+              "name": "load_skill_resource",
+              "response": {
+                "content": "# Weather Information\n\n- **Location:** San Francisco, CA\n- **Condition:** Sunny \u2600\ufe0f\n- **Temperature:** 72\u00b0F (22\u00b0C)\n- **Forecast:** Clear skies all day.\n",
+                "file_path": "references/weather_info.md",
+                "skill_name": "weather-skill"
+              }
+            }
+          }
+        ],
+        "role": "user"
+      },
+      "id": "e-7",
+      "invocationId": "i-1",
+      "nodeInfo": {
+        "path": "skills_agent@1"
+      }
+    },
+    {
+      "author": "skills_agent",
+      "content": {
+        "parts": [
+          {
+            "text": "The current weather in San Francisco, CA is Sunny with a temperature of 72\u00b0F (22\u00b0C). The forecast is clear skies all day."
+          }
+        ],
+        "role": "model"
+      },
+      "finishReason": "STOP",
+      "id": "e-8",
+      "invocationId": "i-1",
+      "nodeInfo": {
+        "path": "skills_agent@1"
+      }
+    }
+  ]
+}

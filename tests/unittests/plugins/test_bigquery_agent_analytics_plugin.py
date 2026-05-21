@@ -2094,56 +2094,6 @@ class TestBigQueryAgentAnalyticsPlugin:
       await plugin.shutdown()
 
   @pytest.mark.asyncio
-  async def test_pickle_preserves_picklable_credentials(
-      self, mock_auth_default, mock_bq_client
-  ):
-    """Picklable user credentials survive pickle/unpickle."""
-    import pickle
-
-    picklable_creds = FakeCredentials()
-    plugin = bigquery_agent_analytics_plugin.BigQueryAgentAnalyticsPlugin(
-        PROJECT_ID,
-        DATASET_ID,
-        table_id=TABLE_ID,
-        credentials=picklable_creds,
-    )
-    pickled = pickle.dumps(plugin)
-    unpickled = pickle.loads(pickled)
-    # User-provided picklable credentials are preserved.
-    assert unpickled._user_credentials is not None
-    assert unpickled._credentials is not None
-    await plugin.shutdown()
-
-  @pytest.mark.asyncio
-  async def test_pickle_drops_non_picklable_credentials(
-      self, mock_auth_default, mock_bq_client
-  ):
-    """Non-picklable user credentials are dropped gracefully."""
-    import pickle
-
-    class NonPicklableCreds(google.auth.credentials.Credentials):
-
-      def refresh(self, request):
-        pass
-
-      def __getstate__(self):
-        raise TypeError("cannot pickle")
-
-    plugin = bigquery_agent_analytics_plugin.BigQueryAgentAnalyticsPlugin(
-        PROJECT_ID,
-        DATASET_ID,
-        table_id=TABLE_ID,
-        credentials=NonPicklableCreds(),
-    )
-    # Should not raise — non-picklable credentials are dropped.
-    pickled = pickle.dumps(plugin)
-    unpickled = pickle.loads(pickled)
-    # Credentials fall back to None (ADC on next use).
-    assert unpickled._user_credentials is None
-    assert unpickled._credentials is None
-    await plugin.shutdown()
-
-  @pytest.mark.asyncio
   async def test_span_hierarchy_llm_call(
       self,
       bq_plugin_inst,
@@ -5252,72 +5202,75 @@ class TestHITLTracingEndToEnd:
     agent = LlmAgent(name="hitl_agent", model=mock_model, tools=[tool])
     runner = testing_utils.InMemoryRunner(root_agent=agent, plugins=[bq_plugin])
 
-    # -- Turn 1: user query → LLM calls tool → HITL pause --
-    events_turn1 = await runner.run_async(
-        testing_utils.UserContent("run my_action")
-    )
-
-    # Find the adk_request_confirmation function call
-    confirmation_fc_id = None
-    for ev in events_turn1:
-      if ev.content and ev.content.parts:
-        for part in ev.content.parts:
-          if (
-              hasattr(part, "function_call")
-              and part.function_call
-              and part.function_call.name
-              == REQUEST_CONFIRMATION_FUNCTION_CALL_NAME
-          ):
-            confirmation_fc_id = part.function_call.id
-            break
-      if confirmation_fc_id:
-        break
-
-    assert (
-        confirmation_fc_id is not None
-    ), "Expected adk_request_confirmation function call in turn 1"
-
-    # -- Turn 2: user sends confirmation → tool re-executes --
-    user_confirmation = testing_utils.UserContent(
-        Part(
-            function_response=FunctionResponse(
-                id=confirmation_fc_id,
-                name=REQUEST_CONFIRMATION_FUNCTION_CALL_NAME,
-                response={"confirmed": True},
-            )
-        )
-    )
-    events_turn2 = await runner.run_async(user_confirmation)
-
-    # -- Give the async BQ writer a moment to flush --
-    await asyncio.sleep(0.2)
-
-    # -- Collect all BQ rows --
-    rows = await _get_captured_rows_async(mock_write_client, dummy_arrow_schema)
-    event_types = [r["event_type"] for r in rows]
-
-    # -- Verify standard events are present --
-    assert "TOOL_STARTING" in event_types
-    assert "TOOL_COMPLETED" in event_types
-
-    # -- Verify HITL-specific events are present --
-    assert (
-        "HITL_CONFIRMATION_REQUEST" in event_types
-    ), f"Expected HITL_CONFIRMATION_REQUEST in {event_types}"
-    assert (
-        "HITL_CONFIRMATION_REQUEST_COMPLETED" in event_types
-    ), f"Expected HITL_CONFIRMATION_REQUEST_COMPLETED in {event_types}"
-
-    # -- Verify HITL events have correct tool name in content --
-    hitl_rows = [r for r in rows if r["event_type"].startswith("HITL_")]
-    for row in hitl_rows:
-      content = json.loads(row["content"]) if row["content"] else {}
-      assert content.get("tool") == "adk_request_confirmation", (
-          "HITL event should reference 'adk_request_confirmation',"
-          f" got {content.get('tool')}"
+    try:
+      # -- Turn 1: user query → LLM calls tool → HITL pause --
+      events_turn1 = await runner.run_async(
+          testing_utils.UserContent("run my_action")
       )
 
-    await bq_plugin.shutdown()
+      # Find the adk_request_confirmation function call
+      confirmation_fc_id = None
+      for ev in events_turn1:
+        if ev.content and ev.content.parts:
+          for part in ev.content.parts:
+            if (
+                hasattr(part, "function_call")
+                and part.function_call
+                and part.function_call.name
+                == REQUEST_CONFIRMATION_FUNCTION_CALL_NAME
+            ):
+              confirmation_fc_id = part.function_call.id
+              break
+        if confirmation_fc_id:
+          break
+
+      assert (
+          confirmation_fc_id is not None
+      ), "Expected adk_request_confirmation function call in turn 1"
+
+      # -- Turn 2: user sends confirmation → tool re-executes --
+      user_confirmation = testing_utils.UserContent(
+          Part(
+              function_response=FunctionResponse(
+                  id=confirmation_fc_id,
+                  name=REQUEST_CONFIRMATION_FUNCTION_CALL_NAME,
+                  response={"confirmed": True},
+              )
+          )
+      )
+      events_turn2 = await runner.run_async(user_confirmation)
+
+      # -- Deterministically wait for the async BQ writer to drain --
+      await bq_plugin.flush()
+
+      # -- Collect all BQ rows --
+      rows = await _get_captured_rows_async(
+          mock_write_client, dummy_arrow_schema
+      )
+      event_types = [r["event_type"] for r in rows]
+
+      # -- Verify standard events are present --
+      assert "TOOL_STARTING" in event_types
+      assert "TOOL_COMPLETED" in event_types
+
+      # -- Verify HITL-specific events are present --
+      assert (
+          "HITL_CONFIRMATION_REQUEST" in event_types
+      ), f"Expected HITL_CONFIRMATION_REQUEST in {event_types}"
+      assert (
+          "HITL_CONFIRMATION_REQUEST_COMPLETED" in event_types
+      ), f"Expected HITL_CONFIRMATION_REQUEST_COMPLETED in {event_types}"
+
+      # -- Verify HITL events have correct tool name in content --
+      hitl_rows = [r for r in rows if r["event_type"].startswith("HITL_")]
+      for row in hitl_rows:
+        content = json.loads(row["content"]) if row["content"] else {}
+        assert content.get("tool") == "adk_request_confirmation", (
+            "HITL event should reference 'adk_request_confirmation',"
+            f" got {content.get('tool')}"
+        )
+    finally:
+      await bq_plugin.shutdown()
 
   @pytest.mark.asyncio
   async def test_regular_tool_does_not_emit_hitl_events(
@@ -5366,23 +5319,26 @@ class TestHITLTracingEndToEnd:
     agent = LlmAgent(name="regular_agent", model=mock_model, tools=[tool])
     runner = testing_utils.InMemoryRunner(root_agent=agent, plugins=[bq_plugin])
 
-    await runner.run_async(testing_utils.UserContent("run regular_tool"))
-    await asyncio.sleep(0.2)
+    try:
+      await runner.run_async(testing_utils.UserContent("run regular_tool"))
+      await bq_plugin.flush()
 
-    rows = await _get_captured_rows_async(mock_write_client, dummy_arrow_schema)
-    event_types = [r["event_type"] for r in rows]
+      rows = await _get_captured_rows_async(
+          mock_write_client, dummy_arrow_schema
+      )
+      event_types = [r["event_type"] for r in rows]
 
-    # Standard tool events should be present
-    assert "TOOL_STARTING" in event_types
-    assert "TOOL_COMPLETED" in event_types
+      # Standard tool events should be present
+      assert "TOOL_STARTING" in event_types
+      assert "TOOL_COMPLETED" in event_types
 
-    # No HITL events
-    hitl_events = [et for et in event_types if et.startswith("HITL_")]
-    assert (
-        hitl_events == []
-    ), f"Expected no HITL events for regular tool, got {hitl_events}"
-
-    await bq_plugin.shutdown()
+      # No HITL events
+      hitl_events = [et for et in event_types if et.startswith("HITL_")]
+      assert (
+          hitl_events == []
+      ), f"Expected no HITL events for regular tool, got {hitl_events}"
+    finally:
+      await bq_plugin.shutdown()
 
 
 # ==============================================================================

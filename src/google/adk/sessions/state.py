@@ -15,6 +15,47 @@
 from __future__ import annotations
 
 from typing import Any
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+  from pydantic import BaseModel
+
+
+class StateSchemaError(TypeError):
+  """Raised when a state mutation violates the declared state_schema."""
+
+
+def _validate_state_entry(
+    schema: type[BaseModel],
+    key: str,
+    value: Any,
+) -> None:
+  """Validates a single state key-value pair against a Pydantic schema.
+
+  Raises StateSchemaError if the key is not in the schema or the value
+  does not match the field's type annotation.  Prefixed keys (any key
+  containing ``:``) bypass validation.
+  """
+  if ":" in key:
+    return
+
+  fields = schema.model_fields
+  if key not in fields:
+    raise StateSchemaError(
+        f"Key '{key}' is not declared in state schema "
+        f"'{schema.__name__}'. Declared fields: {sorted(fields.keys())}"
+    )
+
+  from pydantic import TypeAdapter
+  from pydantic import ValidationError as PydanticValidationError
+
+  try:
+    TypeAdapter(fields[key].annotation).validate_python(value)
+  except PydanticValidationError as e:
+    raise StateSchemaError(
+        f"Value for '{key}' does not match type "
+        f"'{fields[key].annotation}' in '{schema.__name__}': {e}"
+    ) from e
 
 
 class State:
@@ -24,14 +65,22 @@ class State:
   USER_PREFIX = "user:"
   TEMP_PREFIX = "temp:"
 
-  def __init__(self, value: dict[str, Any], delta: dict[str, Any]):
+  def __init__(
+      self,
+      value: dict[str, Any],
+      delta: dict[str, Any],
+      schema: type[BaseModel] | None = None,
+  ):
     """
     Args:
       value: The current value of the state dict.
       delta: The delta change to the current value that hasn't been committed.
+      schema: Optional Pydantic model declaring the expected state keys and
+        types.  When set, mutations are validated against this schema.
     """
     self._value = value
     self._delta = delta
+    self._schema = schema
 
   def __getitem__(self, key: str) -> Any:
     """Returns the value of the state dict for the given key."""
@@ -39,8 +88,10 @@ class State:
       return self._delta[key]
     return self._value[key]
 
-  def __setitem__(self, key: str, value: Any):
+  def __setitem__(self, key: str, value: Any) -> None:
     """Sets the value of the state dict for the given key."""
+    if self._schema is not None:
+      _validate_state_entry(self._schema, key, value)
     # TODO: make new change only store in delta, so that self._value is only
     #   updated at the storage commit time.
     self._value[key] = value
@@ -68,8 +119,11 @@ class State:
       return default
     return self[key]
 
-  def update(self, delta: dict[str, Any]):
+  def update(self, delta: dict[str, Any]) -> None:
     """Updates the state dict with the given delta."""
+    if self._schema is not None:
+      for key, value in delta.items():
+        _validate_state_entry(self._schema, key, value)
     self._value.update(delta)
     self._delta.update(delta)
 

@@ -28,6 +28,13 @@ repos:
           else echo "Warning: addlicense not installed, skipping"; fi' --
         language: system
         files: \.(py|sh)$
+      - id: check-new-py-prefix
+        name: Check new Python files have _ prefix
+        description: Enforces private-by-default policy for new Python files (see .agents/skills/adk-style/references/visibility.md).
+        entry: scripts/check_new_py_files.sh
+        language: script
+        files: ^src/google/adk/.*\.py$
+        pass_filenames: false
   - repo: https://github.com/executablebooks/mdformat
     rev: 0.7.22
     hooks:

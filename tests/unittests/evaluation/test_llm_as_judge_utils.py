@@ -19,6 +19,7 @@ import json
 from google.adk.evaluation.app_details import AgentDetails
 from google.adk.evaluation.app_details import AppDetails
 from google.adk.evaluation.eval_case import IntermediateData
+from google.adk.evaluation.eval_case import Invocation
 from google.adk.evaluation.eval_case import InvocationEvent
 from google.adk.evaluation.eval_case import InvocationEvents
 from google.adk.evaluation.eval_rubrics import RubricScore
@@ -86,6 +87,49 @@ def test_get_text_from_content_with_mixed_parts():
       ]
   )
   assert get_text_from_content(content) == "Hello\nWorld"
+
+
+def test_get_text_from_content_with_invocation_include_intermediate_responses_in_final():
+  """Tests get_text_from_content on an Invocation with and without the flag."""
+  intermediate_text = "Let me check."
+  final_response_text = "Done."
+  invocation = Invocation(
+      user_content=genai_types.Content(parts=[genai_types.Part(text="user")]),
+      intermediate_data=InvocationEvents(
+          invocation_events=[
+              InvocationEvent(
+                  author="agent",
+                  content=genai_types.Content(
+                      parts=[genai_types.Part(text=intermediate_text)]
+                  ),
+              ),
+              InvocationEvent(
+                  author="tool",
+                  content=genai_types.Content(
+                      parts=[
+                          genai_types.Part(
+                              function_call=genai_types.FunctionCall(name="t")
+                          )
+                      ]
+                  ),
+              ),
+          ]
+      ),
+      final_response=genai_types.Content(
+          parts=[genai_types.Part(text=final_response_text)]
+      ),
+  )
+
+  # Flag off (default): only the final response text is returned.
+  assert get_text_from_content(invocation) == final_response_text
+
+  # Flag on: intermediate text is concatenated before the final response.
+  assert (
+      get_text_from_content(
+          invocation, include_intermediate_responses_in_final=True
+      )
+      == f"{intermediate_text}\n{final_response_text}"
+  )
 
 
 def test_get_eval_status_with_none_score():
