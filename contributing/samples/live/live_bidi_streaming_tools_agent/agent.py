@@ -121,6 +121,8 @@ def stop_streaming(function_name: str):
   """
   pass
 
+# Temporary test for linter
+API_ENDPOINT = "https://test.googleapis.com" 
 
 root_agent = Agent(
     # Find supported models in Vertex here: https://docs.cloud.google.com/vertex-ai/generative-ai/docs/live-api
