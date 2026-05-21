@@ -24,6 +24,8 @@ Prerequisites:
      - GOOGLE_CLOUD_PROJECT: Your GCP project ID
      - VMAAS_SERVICE_ACCOUNT: Your service account email
      - VMAAS_SANDBOX_NAME: (Optional) Existing sandbox resource name for BYOS mode
+     - VMAAS_SANDBOX_TEMPLATE_NAME: (Optional) Sandbox template name to create a new sandbox (mutually exclusive with VMAAS_SANDBOX_NAME)
+     - VMAAS_SANDBOX_SNAPSHOT_NAME: (Optional) Sandbox snapshot name to create a new sandbox (mutually exclusive with VMAAS_SANDBOX_NAME)
 
 Usage:
   # Run via ADK web UI
@@ -53,12 +55,17 @@ SERVICE_ACCOUNT = os.environ.get("VMAAS_SERVICE_ACCOUNT")
 SANDBOX_NAME = os.environ.get("SANDBOX_NAME") or os.environ.get(
     "VMAAS_SANDBOX_NAME"
 )
+SANDBOX_TEMPLATE_NAME = os.environ.get("VMAAS_SANDBOX_TEMPLATE_NAME")
+SANDBOX_SNAPSHOT_NAME = os.environ.get("VMAAS_SANDBOX_SNAPSHOT_NAME")
+
 
 # Create the sandbox computer
 sandbox_computer = AgentEngineSandboxComputer(
     project_id=PROJECT_ID,
     service_account_email=SERVICE_ACCOUNT,
     sandbox_name=SANDBOX_NAME,
+    sandbox_template_name=SANDBOX_TEMPLATE_NAME,
+    sandbox_snapshot_name=SANDBOX_SNAPSHOT_NAME,
     search_engine_url="https://www.google.com",
 )
 
