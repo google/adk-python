@@ -24,8 +24,8 @@ build_llms_txt.py – produce llms.txt and llms-full.txt
 from __future__ import annotations
 
 import argparse
-import posixpath
 from pathlib import Path
+import posixpath
 import re
 import sys
 import textwrap
