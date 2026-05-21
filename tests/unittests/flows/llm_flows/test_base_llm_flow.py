@@ -1069,3 +1069,63 @@ async def test_run_live_clears_resumption_handle_on_transfer():
   assert (
       invocation_context.run_config.session_resumption.handle == 'test_handle'
   )
+
+
+@pytest.mark.asyncio
+async def test_postprocess_live_yields_grounding_metadata_only():
+  """Test that _postprocess_live yields LlmResponse with only grounding_metadata."""
+  agent = Agent(name='test_agent')
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent
+  )
+  flow = BaseLlmFlowForTesting()
+
+  llm_request = LlmRequest()
+  grounding_metadata = types.GroundingMetadata(
+      web_search_queries=['test query'],
+  )
+  llm_response = LlmResponse(grounding_metadata=grounding_metadata)
+  model_response_event = Event(
+      id=Event.new_id(),
+      invocation_id=invocation_context.invocation_id,
+      author=agent.name,
+  )
+
+  events = []
+  async for event in flow._postprocess_live(
+      invocation_context, llm_request, llm_response, model_response_event
+  ):
+    events.append(event)
+
+  assert len(events) == 1
+  assert events[0].grounding_metadata == grounding_metadata
+
+
+@pytest.mark.asyncio
+async def test_postprocess_async_yields_grounding_metadata_only():
+  """Test that _postprocess_async yields LlmResponse with only grounding_metadata."""
+  agent = Agent(name='test_agent')
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent
+  )
+  flow = BaseLlmFlowForTesting()
+
+  llm_request = LlmRequest()
+  grounding_metadata = types.GroundingMetadata(
+      web_search_queries=['test query'],
+  )
+  llm_response = LlmResponse(grounding_metadata=grounding_metadata)
+  model_response_event = Event(
+      id=Event.new_id(),
+      invocation_id=invocation_context.invocation_id,
+      author=agent.name,
+  )
+
+  events = []
+  async for event in flow._postprocess_async(
+      invocation_context, llm_request, llm_response, model_response_event
+  ):
+    events.append(event)
+
+  assert len(events) == 1
+  assert events[0].grounding_metadata == grounding_metadata
