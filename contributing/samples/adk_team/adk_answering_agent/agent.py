@@ -38,7 +38,7 @@ else:
 
 
 root_agent = Agent(
-    model="gemini-2.5-pro",
+    model="gemini-3.5-flash",
     name="adk_answering_agent",
     description="Answer questions about ADK repo.",
     instruction=f"""
