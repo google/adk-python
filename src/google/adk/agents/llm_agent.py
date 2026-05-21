@@ -1049,54 +1049,7 @@ class LlmAgent(BaseAgent):
       from .llm.task._finish_task_tool import FinishTaskTool
 
       self.tools.append(FinishTaskTool(self))
-
-    Returns:
-      List of resolved tool objects.
-    """
-
-    resolved_tools = []
-    for tool_config in tool_configs:
-      if '.' not in tool_config.name:
-        # ADK built-in tools
-        module = importlib.import_module('google.adk.tools')
-        obj = getattr(module, tool_config.name)
-      else:
-        # User-defined tools
-        module_path, obj_name = tool_config.name.rsplit('.', 1)
-        module = importlib.import_module(module_path)
-        obj = getattr(module, obj_name)
-
-      if isinstance(obj, BaseTool) or isinstance(obj, BaseToolset):
-        logger.debug(
-            'Tool %s is an instance of BaseTool/BaseToolset.', tool_config.name
-        )
-        resolved_tools.append(obj)
-      elif inspect.isclass(obj) and (
-          issubclass(obj, BaseTool) or issubclass(obj, BaseToolset)
-      ):
-        logger.debug(
-            'Tool %s is a sub-class of BaseTool/BaseToolset.', tool_config.name
-        )
-        resolved_tools.append(
-            obj.from_config(tool_config.args, config_abs_path)
-        )
-      elif callable(obj):
-        if tool_config.args:
-          logger.debug(
-              'Tool %s is a user-defined tool-generating function.',
-              tool_config.name,
-          )
-          resolved_tools.append(obj(tool_config.args))
-        else:
-          logger.debug(
-              'Tool %s is a user-defined function tool.', tool_config.name
-          )
-          resolved_tools.append(obj)
-      else:
-        raise ValueError(f'Invalid tool YAML config: {tool_config}.')
-
-    return resolved_tools
-
+    
   @override
   @classmethod
   @experimental(FeatureName.AGENT_CONFIG)
@@ -1151,19 +1104,7 @@ class LlmAgent(BaseAgent):
       )
     if config.generate_content_config:
       kwargs['generate_content_config'] = config.generate_content_config
-    # Add sub-agents as tools based on their mode
-    from ..tools.agent_tool import _SingleTurnAgentTool
-    from ..tools.agent_tool import _TaskAgentTool
-
-    if self.sub_agents:
-      for sub_agent in self.sub_agents:
-        if isinstance(sub_agent, LlmAgent):
-          if sub_agent.mode is None:
-            sub_agent.mode = 'chat'
-          if sub_agent.mode == 'single_turn':
-            self.tools.append(_SingleTurnAgentTool(sub_agent))
-          elif sub_agent.mode == 'task':
-            self.tools.append(_TaskAgentTool(sub_agent))
+    return kwargs
 
 
 Agent: TypeAlias = LlmAgent
