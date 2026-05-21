@@ -682,6 +682,50 @@ async def test_run_live_skips_send_history_on_resumption():
 
 
 @pytest.mark.asyncio
+async def test_run_live_resumption_preserves_transparent_setting():
+  """Test that reconnect does not force transparent resumption."""
+  from google.adk.agents.live_request_queue import LiveRequestQueue
+
+  real_model = Gemini()
+  mock_connection = mock.AsyncMock()
+
+  async def mock_receive():
+    yield LlmResponse(
+        content=types.Content(parts=[types.Part.from_text(text='hi')])
+    )
+    raise RuntimeError('stop')
+
+  mock_connection.receive = mock.Mock(side_effect=mock_receive)
+
+  agent = Agent(name='test_agent', model=real_model)
+  run_config = RunConfig(session_resumption=types.SessionResumptionConfig())
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent, run_config=run_config
+  )
+  invocation_context.live_session_resumption_handle = 'test_handle'
+  invocation_context.live_request_queue = LiveRequestQueue()
+
+  flow = BaseLlmFlowForTesting()
+
+  with mock.patch.object(
+      flow, '_send_to_model', new_callable=AsyncMock
+  ) as mock_send:
+    with mock.patch(
+        'google.adk.models.google_llm.Gemini.connect'
+    ) as mock_connect:
+      mock_connect.return_value.__aenter__.return_value = mock_connection
+
+      with pytest.raises(RuntimeError, match='stop'):
+        async for _ in flow.run_live(invocation_context):
+          pass
+
+      llm_request = mock_connect.call_args.args[0]
+      session_resumption = llm_request.live_connect_config.session_resumption
+      assert session_resumption.handle == 'test_handle'
+      assert session_resumption.transparent is None
+
+
+@pytest.mark.asyncio
 async def test_live_session_resumption_go_away():
   """Test that go_away triggers reconnection."""
   from google.adk.agents.live_request_queue import LiveRequestQueue
