@@ -109,26 +109,20 @@ jobs:
             echo "Checking for hardcoded endpoints in: $CHANGED_FILES"
 
             set +e
-            FILES_WITH_HARDCODED_ENDPOINTS=$(grep -rE 'https?://[a-zA-Z0-9.-]+\.googleapis\.com' $CHANGED_FILES | grep -v '.mtls.googleapis.com' || true)
+            FILES_WITH_ENDPOINTS=$(grep -lE 'https?://[a-zA-Z0-9.-]+\.googleapis\.com' $CHANGED_FILES)
+            
+            if [ -n "$FILES_WITH_ENDPOINTS" ]; then
+              FILES_MISSING_MTLS=$(grep -L '.mtls.googleapis.com' $FILES_WITH_ENDPOINTS)
+            fi
             set -e
 
-            if [ -n "$FILES_WITH_HARDCODED_ENDPOINTS" ]; then
-              echo "❌ Found forbidden hardcoded non-mTLS endpoints."
-              echo ""
-              echo "🛠️ RESOLUTION (based on cl/905035339):"
-              echo "Do not hardcode 'googleapis.com' URLs. Instead, implement dynamic endpoint selection:"
-              echo ""
-              echo "1. Initialize an AuthorizedSession with your credentials."
-              echo "2. Use 'mtls.has_default_client_cert_source() from google-auth' to check for available client certificates."
-              echo "3. If certificates are present, use 'session.configure_mtls_channel()'."
-              echo "4. Dynamically select the '.mtls.' variant of the endpoint when mTLS is active."
-              echo ""
-              echo "The following files require updates:"
-              echo "$FILES_WITH_HARDCODED_ENDPOINTS"
+            if [ -n "$FILES_MISSING_MTLS" ]; then
+              echo "❌ Found hardcoded googleapis.com endpoints without mTLS support."
+              echo "The following files must define both standard and mTLS (.mtls.googleapis.com) endpoints"
+              echo "to support dynamic endpoint selection as required by security policy:"
+              echo "$FILES_MISSING_MTLS"
               exit 1
             else
-              echo "✅ All endpoints are compliant or dynamically managed."
+              echo "✅ All hardcoded endpoints have corresponding mTLS definitions or no endpoints found."
             fi
-          else
-            echo "✅ No relevant Python files found."
           fi
