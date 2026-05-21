@@ -36,7 +36,7 @@ workpaper_toolset = McpToolset(
                 "exec",
                 "--yes",
                 "--package",
-                "@bilig/headless@0.40.41",
+                "@bilig/workpaper@0.40.42",
                 "--",
                 "bilig-workpaper-mcp",
                 "--workpaper",

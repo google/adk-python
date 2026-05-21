@@ -15,7 +15,7 @@ Install the usual ADK sample dependencies and ensure Node.js/npm are available.
 The MCP server is launched automatically with `npm exec`:
 
 ```bash
-npm exec --yes --package @bilig/headless@0.40.41 -- \
+npm exec --yes --package @bilig/workpaper@0.40.42 -- \
   bilig-workpaper-mcp --workpaper ./quote.workpaper.json \
   --init-demo-workpaper --writable
 ```
