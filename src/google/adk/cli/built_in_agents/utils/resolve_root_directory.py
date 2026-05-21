@@ -31,7 +31,7 @@ def resolve_file_path(
     session_state: Optional[Dict[str, Any]] = None,
     working_directory: Optional[str] = None,
 ) -> Path:
-  """Resolve a file path using root directory from session state.
+  """Resolve a file path under the root directory from session state.
 
   This is a helper function that other tools can use to resolve file paths
   without needing to be async or return detailed resolution information.
@@ -43,32 +43,28 @@ def resolve_file_path(
 
   Returns:
     Resolved absolute Path object
+
+  Raises:
+    ValueError: If the resolved file path escapes the session root directory.
   """
   normalized_path = sanitize_generated_file_path(file_path)
   file_path_obj = Path(normalized_path)
+  resolved_root = _resolve_root_directory(session_state, working_directory)
 
-  # If already absolute, use as-is
   if file_path_obj.is_absolute():
-    return file_path_obj
-
-  # Get root directory from session state, default to "./"
-  root_directory = "./"
-  if session_state and "root_directory" in session_state:
-    root_directory = session_state["root_directory"]
-
-  # Use the same resolution logic as the main function
-  root_path_obj = Path(root_directory)
-
-  if root_path_obj.is_absolute():
-    resolved_root = root_path_obj
+    resolved_path = file_path_obj.resolve()
   else:
-    if working_directory:
-      resolved_root = Path(working_directory) / root_directory
-    else:
-      resolved_root = Path(os.getcwd()) / root_directory
+    resolved_path = (resolved_root / file_path_obj).resolve()
 
-  # Resolve file path relative to root directory
-  return resolved_root / file_path_obj
+  try:
+    resolved_path.relative_to(resolved_root)
+  except ValueError as exc:
+    raise ValueError(
+        f"Resolved path escapes project root: {resolved_path} is not under "
+        f"{resolved_root}"
+    ) from exc
+
+  return resolved_path
 
 
 def resolve_file_paths(
@@ -90,3 +86,22 @@ def resolve_file_paths(
       resolve_file_path(path, session_state, working_directory)
       for path in file_paths
   ]
+
+
+def _resolve_root_directory(
+    session_state: Optional[Dict[str, Any]] = None,
+    working_directory: Optional[str] = None,
+) -> Path:
+  """Resolve the trusted project root used for builder file operations."""
+  root_directory = "./"
+  if session_state and "root_directory" in session_state:
+    root_directory = session_state["root_directory"]
+
+  root_path_obj = Path(root_directory)
+  if root_path_obj.is_absolute():
+    return root_path_obj.resolve()
+
+  base_directory = (
+      Path(working_directory) if working_directory else Path(os.getcwd())
+  )
+  return (base_directory / root_path_obj).resolve()
