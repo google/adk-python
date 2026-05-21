@@ -40,11 +40,13 @@ from google.adk.models.lite_llm import _get_completion_inputs
 from google.adk.models.lite_llm import _get_content
 from google.adk.models.lite_llm import _get_provider_from_model
 from google.adk.models.lite_llm import _is_anthropic_model
+from google.adk.models.lite_llm import _looks_like_openai_file_id
 from google.adk.models.lite_llm import _message_to_generate_content_response
 from google.adk.models.lite_llm import _MISSING_TOOL_RESULT_MESSAGE
 from google.adk.models.lite_llm import _model_response_to_chunk
 from google.adk.models.lite_llm import _model_response_to_generate_content_response
 from google.adk.models.lite_llm import _parse_tool_calls_from_text
+from google.adk.models.lite_llm import _redact_file_uri_for_log
 from google.adk.models.lite_llm import _redirect_litellm_loggers_to_stdout
 from google.adk.models.lite_llm import _safe_json_serialize
 from google.adk.models.lite_llm import _schema_to_dict
@@ -4987,3 +4989,44 @@ async def test_generate_content_async_skips_request_log_build_above_debug(
       assert mock_build.called is should_call
   finally:
     litellm_logger.setLevel(original_level)
+
+
+@pytest.mark.parametrize(
+    "file_uri, expected",
+    [
+        ("file-abc123", True),
+        ("assistant-abc123", True),
+        ("https://example.com/file.pdf", False),
+        ("not-a-file-id", False),
+        ("", False),
+        ("FILE-abc123", False),
+    ],
+)
+def test_looks_like_openai_file_id(file_uri, expected):
+  """Both `file-` and `assistant-` (Azure assistants) prefixes count as OpenAI file IDs."""
+  assert _looks_like_openai_file_id(file_uri) is expected
+
+
+@pytest.mark.parametrize(
+    "file_uri, expected",
+    [
+        ("file-abc123", "file-<redacted>"),
+        ("assistant-abc123", "assistant-<redacted>"),
+    ],
+)
+def test_redact_file_uri_for_log_openai_prefixes(file_uri, expected):
+  """OpenAI-style IDs are redacted while preserving the prefix kind."""
+  assert _redact_file_uri_for_log(file_uri) == expected
+
+
+def test_redact_file_uri_for_log_uses_display_name_when_provided():
+  assert (
+      _redact_file_uri_for_log("file-abc123", display_name="my.pdf") == "my.pdf"
+  )
+
+
+def test_redact_file_uri_for_log_http_url_keeps_scheme_and_tail():
+  assert (
+      _redact_file_uri_for_log("https://example.com/path/file.pdf")
+      == "https://<redacted>/file.pdf"
+  )
