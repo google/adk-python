@@ -1397,3 +1397,245 @@ def test_safe_json_serialize_no_whitespaces_circular_dict_returns_not_serializab
   obj = {}
   obj['self'] = obj
   assert _safe_json_serialize_no_whitespaces(obj) == '<not serializable>'
+
+
+# ---------------------------------------------------------------------------
+# Tests for _detect_error_in_response
+# ---------------------------------------------------------------------------
+
+
+class _ErrorDetectingTool(BaseTool):
+  """A test tool whose _detect_error_in_response raises."""
+
+  async def run_async(self, *, args, tool_context):
+    return 'result'
+
+  def _detect_error_in_response(self, response: Any) -> Optional[str]:
+    raise RuntimeError('detection exploded')
+
+
+def test_base_tool_does_not_define_detect_error_in_response():
+  """BaseTool intentionally does not expose _detect_error_in_response as a public hook."""
+  tool = SimpleTestTool(name='t', description='d')
+  # The hook is opt-in per subclass; BaseTool itself must not declare it so
+  # that telemetry callers can use getattr(...) to skip detection.
+  assert not hasattr(tool, '_detect_error_in_response')
+
+
+def test_detect_error_function_tool_error():
+  from google.adk.tools.function_tool import FunctionTool
+
+  tool = FunctionTool(func=lambda: None)
+  assert (
+      tool._detect_error_in_response({'error': 'missing arg'}) == 'TOOL_ERROR'
+  )
+
+
+def test_detect_error_function_tool_no_error():
+  from google.adk.tools.function_tool import FunctionTool
+
+  tool = FunctionTool(func=lambda: None)
+  assert tool._detect_error_in_response({'result': 'ok'}) is None
+  assert tool._detect_error_in_response('plain string') is None
+  assert tool._detect_error_in_response(None) is None
+
+
+def test_detect_error_rest_api_tool():
+  from google.adk.tools.openapi_tool.openapi_spec_parser.rest_api_tool import RestApiTool
+
+  tool = RestApiTool.__new__(RestApiTool)
+  assert (
+      tool._detect_error_in_response({'error': 'Status Code: 404'})
+      == 'HTTP_ERROR'
+  )
+  assert tool._detect_error_in_response({'result': 'ok'}) is None
+  assert tool._detect_error_in_response({'text': 'html response'}) is None
+
+
+def test_detect_error_mcp_tool():
+  from google.adk.tools.mcp_tool.mcp_tool import McpTool as AdkMcpTool
+
+  tool = AdkMcpTool.__new__(AdkMcpTool)
+  assert (
+      tool._detect_error_in_response({'isError': True, 'content': []})
+      == 'MCP_TOOL_ERROR'
+  )
+  assert (
+      tool._detect_error_in_response({'isError': False, 'content': []}) is None
+  )
+  assert tool._detect_error_in_response({'content': [{'text': 'ok'}]}) is None
+
+
+def test_detect_error_google_tool():
+  from google.adk.tools.google_tool import GoogleTool
+
+  tool = GoogleTool.__new__(GoogleTool)
+  assert (
+      tool._detect_error_in_response(
+          {'status': 'ERROR', 'error_details': 'fail'}
+      )
+      == 'TOOL_ERROR'
+  )
+  assert tool._detect_error_in_response({'status': 'OK', 'data': []}) is None
+  assert (
+      tool._detect_error_in_response({'error': 'something'}) is None
+  )  # GoogleTool checks status, not error key
+
+
+def test_detect_error_bash_tool():
+  from google.adk.tools.bash_tool import ExecuteBashTool
+
+  tool = ExecuteBashTool.__new__(ExecuteBashTool)
+  assert (
+      tool._detect_error_in_response({'error': 'Execution failed'})
+      == 'TOOL_ERROR'
+  )
+  assert (
+      tool._detect_error_in_response(
+          {'error': 'timeout', 'stdout': '', 'stderr': ''}
+      )
+      == 'TOOL_ERROR'
+  )
+  assert (
+      tool._detect_error_in_response({'stdout': 'ok', 'returncode': 0}) is None
+  )
+
+
+def _environment_tool_classes():
+  from google.adk.tools.environment._tools import EditFileTool
+  from google.adk.tools.environment._tools import ExecuteTool
+  from google.adk.tools.environment._tools import ReadFileTool
+  from google.adk.tools.environment._tools import WriteFileTool
+
+  return [ExecuteTool, ReadFileTool, WriteFileTool, EditFileTool]
+
+
+@pytest.mark.parametrize(
+    'cls',
+    _environment_tool_classes(),
+    ids=lambda c: c.__name__,
+)
+@pytest.mark.parametrize(
+    'response,expected',
+    [
+        ({'status': 'error', 'error': 'fail'}, 'TOOL_ERROR'),
+        ({'status': 'ok', 'message': 'done'}, None),
+        # Environment tools check status, not the error key.
+        ({'error': 'something'}, None),
+    ],
+    ids=['status_error', 'status_ok', 'error_key_only'],
+)
+def test_detect_error_environment_tools(cls, response, expected):
+  tool = cls.__new__(cls)
+  assert tool._detect_error_in_response(response) == expected
+
+
+@pytest.mark.parametrize(
+    'cls_name',
+    ['LoadSkillTool', 'LoadSkillResourceTool', 'RunSkillScriptTool'],
+)
+@pytest.mark.parametrize(
+    'response,expected',
+    [
+        (
+            {'error': 'missing', 'error_code': 'INVALID_ARGUMENTS'},
+            'INVALID_ARGUMENTS',
+        ),
+        ({'error': 'generic'}, 'TOOL_ERROR'),
+        ({'skill_name': 'x', 'instructions': 'y'}, None),
+    ],
+    ids=['with_error_code', 'error_no_code', 'no_error'],
+)
+def test_detect_error_skill_tools(cls_name, response, expected):
+  skill_toolset = pytest.importorskip('google.adk.tools.skill_toolset')
+  cls = getattr(skill_toolset, cls_name)
+  tool = cls.__new__(cls)
+  assert tool._detect_error_in_response(response) == expected
+
+
+def test_detect_error_discovery_engine_search_tool():
+  mod = pytest.importorskip('google.adk.tools.discovery_engine_search_tool')
+  DiscoveryEngineSearchTool = mod.DiscoveryEngineSearchTool
+
+  tool = DiscoveryEngineSearchTool.__new__(DiscoveryEngineSearchTool)
+  assert (
+      tool._detect_error_in_response(
+          {'status': 'error', 'error_message': 'fail'}
+      )
+      == 'TOOL_ERROR'
+  )
+  assert tool._detect_error_in_response({'status': 'ok', 'results': []}) is None
+
+
+# ---------------------------------------------------------------------------
+# Tests for trace_tool_call with error_type parameter
+# ---------------------------------------------------------------------------
+
+
+def test_trace_tool_call_with_error_type(
+    monkeypatch, mock_span_fixture, mock_tool_fixture
+):
+  """error_type sets the span error.type attribute when no exception."""
+  monkeypatch.setattr(
+      'opentelemetry.trace.get_current_span', lambda: mock_span_fixture
+  )
+
+  trace_tool_call(
+      tool=mock_tool_fixture,
+      args={'x': 1},
+      function_response_event=None,
+      error=None,
+      error_type='HTTP_ERROR',
+  )
+
+  mock_span_fixture.set_attribute.assert_any_call('error.type', 'HTTP_ERROR')
+
+
+def test_trace_tool_call_error_takes_precedence_over_error_type(
+    monkeypatch, mock_span_fixture, mock_tool_fixture
+):
+  """When both error and error_type are provided, error takes precedence."""
+  monkeypatch.setattr(
+      'opentelemetry.trace.get_current_span', lambda: mock_span_fixture
+  )
+
+  trace_tool_call(
+      tool=mock_tool_fixture,
+      args={'x': 1},
+      function_response_event=None,
+      error=ValueError('boom'),
+      error_type='HTTP_ERROR',
+  )
+
+  # ValueError should be set, not HTTP_ERROR.
+  mock_span_fixture.set_attribute.assert_any_call('error.type', 'ValueError')
+  error_type_calls = [
+      c
+      for c in mock_span_fixture.set_attribute.call_args_list
+      if c == mock.call('error.type', mock.ANY)
+  ]
+  assert len(error_type_calls) == 1
+
+
+def test_trace_tool_call_no_error_no_error_type(
+    monkeypatch, mock_span_fixture, mock_tool_fixture
+):
+  """When neither error nor error_type is set, no error.type attribute."""
+  monkeypatch.setattr(
+      'opentelemetry.trace.get_current_span', lambda: mock_span_fixture
+  )
+
+  trace_tool_call(
+      tool=mock_tool_fixture,
+      args={'x': 1},
+      function_response_event=None,
+      error=None,
+      error_type=None,
+  )
+
+  error_type_calls = [
+      c
+      for c in mock_span_fixture.set_attribute.call_args_list
+      if c == mock.call('error.type', mock.ANY)
+  ]
+  assert len(error_type_calls) == 0

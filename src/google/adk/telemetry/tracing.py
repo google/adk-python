@@ -171,6 +171,7 @@ def trace_tool_call(
     function_response_event: Event | None,
     error: Exception | None = None,
     span: Span | None = None,
+    error_type: str | None = None,
 ):
   """Traces tool call.
 
@@ -180,6 +181,10 @@ def trace_tool_call(
     function_response_event: The event with the function response details.
     error: The exception raised during tool execution, if any.
     span: The span to record attributes on. If None, uses current span.
+    error_type: An error type string detected from the tool's response dict
+      (e.g., "HTTP_ERROR", "MCP_TOOL_ERROR"). Used when the tool returned an
+      error as a dict rather than raising an exception. Ignored if `error` is
+      also set (exception takes precedence).
   """
   span = span or trace.get_current_span()
 
@@ -196,6 +201,8 @@ def trace_tool_call(
       span.set_attribute(ERROR_TYPE, str(error.error_type))
     else:
       span.set_attribute(ERROR_TYPE, type(error).__name__)
+  elif error_type is not None:
+    span.set_attribute(ERROR_TYPE, error_type)
 
   # Special case for client side association with a remote tool call
   if (

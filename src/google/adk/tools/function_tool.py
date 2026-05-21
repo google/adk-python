@@ -255,6 +255,12 @@ You could retry calling this tool, but it is IMPORTANT for you to provide all th
 
     return await self._invoke_callable(self.func, args_to_call)
 
+  def _detect_error_in_response(self, response: Any) -> Optional[str]:
+    """Telemetry hook: returns an error type if the response indicates an error."""
+    if isinstance(response, dict) and response.get('error'):
+      return 'TOOL_ERROR'
+    return None
+
   async def _invoke_callable(
       self, target: Callable[..., Any], args_to_call: dict[str, Any]
   ) -> Any:
