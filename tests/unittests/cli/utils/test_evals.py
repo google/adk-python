@@ -25,11 +25,11 @@ import pytest
 
 @mock.patch.dict(os.environ, {'GOOGLE_CLOUD_PROJECT': 'test-project'})
 @mock.patch(
-    'google.adk.cli.utils.evals.GcsEvalSetResultsManager',
+    'google.adk.evaluation.gcs_eval_set_results_manager.GcsEvalSetResultsManager',
     autospec=True,
 )
 @mock.patch(
-    'google.adk.cli.utils.evals.GcsEvalSetsManager',
+    'google.adk.evaluation.gcs_eval_sets_manager.GcsEvalSetsManager',
     autospec=True,
 )
 def test_create_gcs_eval_managers_from_uri_success(
@@ -61,3 +61,15 @@ def test_create_gcs_eval_managers_from_uri_success(
 def test_create_gcs_eval_managers_from_uri_failure():
   with pytest.raises(ValueError):
     evals.create_gcs_eval_managers_from_uri('unsupported-uri')
+
+
+def test_evals_module_does_not_import_gcs_at_module_level():
+  """GCS classes should be lazy-imported, not at module level."""
+  import inspect
+
+  source = inspect.getsource(evals)
+  # The top-level imports should not contain direct GCS imports
+  # (they should be behind TYPE_CHECKING or inside functions)
+  module_globals = vars(evals)
+  assert 'GcsEvalSetResultsManager' not in module_globals
+  assert 'GcsEvalSetsManager' not in module_globals

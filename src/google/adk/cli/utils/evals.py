@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import os
+from typing import TYPE_CHECKING
 
 from pydantic import alias_generators
 from pydantic import BaseModel
@@ -22,9 +23,11 @@ from pydantic import ConfigDict
 
 from ...evaluation.eval_case import Invocation
 from ...evaluation.evaluation_generator import EvaluationGenerator
-from ...evaluation.gcs_eval_set_results_manager import GcsEvalSetResultsManager
-from ...evaluation.gcs_eval_sets_manager import GcsEvalSetsManager
 from ...sessions.session import Session
+
+if TYPE_CHECKING:
+  from ...evaluation.gcs_eval_set_results_manager import GcsEvalSetResultsManager
+  from ...evaluation.gcs_eval_sets_manager import GcsEvalSetsManager
 
 
 class GcsEvalManagers(BaseModel):
@@ -68,6 +71,9 @@ def create_gcs_eval_managers_from_uri(
       ValueError: If the eval_storage_uri is not supported.
   """
   if eval_storage_uri.startswith('gs://'):
+    from ...evaluation.gcs_eval_set_results_manager import GcsEvalSetResultsManager
+    from ...evaluation.gcs_eval_sets_manager import GcsEvalSetsManager
+
     gcs_bucket = eval_storage_uri.split('://')[1]
     eval_sets_manager = GcsEvalSetsManager(
         bucket_name=gcs_bucket, project=os.environ['GOOGLE_CLOUD_PROJECT']
