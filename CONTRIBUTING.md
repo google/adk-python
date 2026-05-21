@@ -269,3 +269,4 @@ when using compatible AI coding tools in this repo.
 
 The `AGENTS.md` file provides additional project context that can
 be used as LLM input.
+# Research note
