@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+import functools
 import inspect
 import logging
 from typing import Any
@@ -34,6 +35,16 @@ from .base_tool import BaseTool
 from .tool_context import ToolContext
 
 logger = logging.getLogger('google_adk.' + __name__)
+
+
+@functools.cache
+def _get_type_adapter(target_type: Any) -> pydantic.TypeAdapter | None:
+  """Returns a cached Pydantic TypeAdapter for the target type, or None if unsupported."""
+  try:
+    return pydantic.TypeAdapter(target_type)
+  except Exception:  # pylint: disable=broad-exception-caught
+    # If Pydantic doesn't support this type, cache None so we don't retry.
+    return None
 
 
 class FunctionTool(BaseTool):
@@ -124,35 +135,26 @@ class FunctionTool(BaseTool):
       if param_name in args and param.annotation != inspect.Parameter.empty:
         target_type = param.annotation
 
-        # Handle Optional[PydanticModel] types
-        if get_origin(param.annotation) is Union:
-          union_args = get_args(param.annotation)
-          # Find the non-None type in Optional[T] (which is Union[T, None])
-          non_none_types = [arg for arg in union_args if arg is not type(None)]
-          if len(non_none_types) == 1:
-            target_type = non_none_types[0]
+        # Use Pydantic TypeAdapter for automatic coercion and validation.
+        adapter = _get_type_adapter(target_type)
+        if adapter is None:
+          continue
 
-        # Check if the target type is a Pydantic model
-        if inspect.isclass(target_type) and issubclass(
-            target_type, pydantic.BaseModel
-        ):
-          # Skip conversion if the value is None and the parameter is Optional
-          if args[param_name] is None:
-            continue
-
-          # Convert to Pydantic model if it's not already the correct type
-          if not isinstance(args[param_name], target_type):
-            try:
-              converted_args[param_name] = target_type.model_validate(
-                  args[param_name]
-              )
-            except Exception as e:
-              logger.warning(
-                  f"Failed to convert argument '{param_name}' to Pydantic model"
-                  f' {target_type.__name__}: {e}'
-              )
-              # Keep the original value if conversion fails
-              pass
+        try:
+          converted_args[param_name] = adapter.validate_python(args[param_name])
+        except pydantic.ValidationError as e:
+          logger.warning(
+              "Failed to validate/convert argument '%s'. Received value %r"
+              ' (type %s), expected type %s. Value remains unchanged.'
+              ' Exception: %s',
+              param_name,
+              args[param_name],
+              type(args[param_name]).__name__,
+              target_type,
+              e,
+          )
+          # Keep the original value if conversion fails, matching previous behavior.
+          pass
 
     return converted_args
 
