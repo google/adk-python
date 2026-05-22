@@ -44,6 +44,7 @@ from .dev_server import DevServer
 from .service_registry import load_services_module
 from .utils import envs
 from .utils.agent_change_handler import AgentChangeEventHandler
+from .utils.agent_loader import is_single_agent_directory
 from .utils.base_agent_loader import BaseAgentLoader
 from .utils.service_factory import _create_task_store_from_options
 from .utils.service_factory import create_artifact_service_from_options
@@ -459,6 +460,16 @@ def get_fast_api_app(
 
     config_agent_utils._set_enforce_denylist(True)
 
+  # Detect single agent mode
+  agents_path = Path(agents_dir).resolve()
+  is_single_agent = is_single_agent_directory(agents_path)
+
+  original_agents_dir = agents_dir
+  single_agent_name = None
+  if is_single_agent:
+    single_agent_name = agents_path.name
+    agents_dir = str(agents_path.parent)
+
   # Set up eval managers.
   if eval_storage_uri:
     from .utils import evals
@@ -476,9 +487,11 @@ def get_fast_api_app(
     )
 
   # initialize Agent Loader if not passed as argument
+  this_module = sys.modules[__name__]
   if agent_loader is None:
-    this_module = sys.modules[__name__]
-    agent_loader = this_module.AgentLoader(agents_dir)
+    agent_loader = this_module.AgentLoader(original_agents_dir)
+  elif is_single_agent and isinstance(agent_loader, this_module.AgentLoader):
+    agent_loader._set_single_agent_mode(single_agent_name, agents_dir)
 
   # Load services.py from agents_dir for custom service registration.
   load_services_module(agents_dir)
@@ -536,6 +549,10 @@ def get_fast_api_app(
       trigger_sources=trigger_sources,
       default_llm_model=default_llm_model,
   )
+
+  # In single agent mode, use that agent as the default app.
+  if is_single_agent:
+    adk_web_server.default_app_name = single_agent_name
 
   # Callbacks & other optional args for when constructing the FastAPI instance
   extra_fast_api_args = {}

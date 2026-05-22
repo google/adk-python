@@ -255,7 +255,6 @@ async def test_tracer_start_as_current_span(
                                           ),
                                           'gen_ai.request.model': 'mock',
                                           'gen_ai.system': 'gemini',
-                                          'user.id': 'some_user',
                                       },
                                       children=[
                                           SpanDigest(
@@ -327,7 +326,6 @@ async def test_tracer_start_as_current_span(
                                           ),
                                           'gen_ai.request.model': 'mock',
                                           'gen_ai.system': 'gemini',
-                                          'user.id': 'some_user',
                                       },
                                   ),
                               ],
