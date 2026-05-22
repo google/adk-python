@@ -93,6 +93,42 @@ print(','.join(loaded))
   assert loaded_modules == "", f"Heavy modules loaded eagerly: {loaded_modules}"
 
 
+def test_skills_models_import_without_google_cloud_storage():
+  """Verify non-GCS skills imports do not require google-cloud-storage."""
+  code = """
+import importlib.abc
+import sys
+
+
+class BlockStorage(importlib.abc.MetaPathFinder):
+  def find_spec(self, fullname, path=None, target=None):
+    if fullname == 'google.cloud.storage':
+      raise ModuleNotFoundError('blocked google.cloud.storage')
+    return None
+
+
+sys.meta_path.insert(0, BlockStorage())
+from google.adk.skills import models
+print(models.Skill.__name__)
+"""
+  env = os.environ.copy()
+  src_path = str(_REPO_ROOT / "src")
+  env["PYTHONPATH"] = (
+      src_path
+      if not env.get("PYTHONPATH")
+      else f"{src_path}{os.pathsep}{env['PYTHONPATH']}"
+  )
+  result = subprocess.run(
+      [sys.executable, "-c", code],
+      cwd=_REPO_ROOT,
+      env=env,
+      capture_output=True,
+      text=True,
+      check=True,
+  )
+  assert result.stdout.strip() == "Skill"
+
+
 def test_a2a_remote_agent_config_raises_importerror():
   """Verify that accessing A2aRemoteAgentConfig without extra raises ImportError using mocks."""
   with mock.patch.dict("sys.modules", {"a2a": None}):

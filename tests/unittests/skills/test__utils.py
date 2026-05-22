@@ -190,9 +190,13 @@ Body content
   assert fm.license == "MIT"
 
 
-@mock.patch("google.cloud.storage.Client")
-def test__list_skills_in_gcs_dir(mock_client_class):
+@mock.patch("google.adk.skills._utils._get_storage_module")
+def test__list_skills_in_gcs_dir(mock_get_storage_module):
 
+  mock_client_class = mock.MagicMock()
+  mock_get_storage_module.return_value = mock.MagicMock(
+      Client=mock_client_class
+  )
   mock_client = mock.MagicMock()
   mock_client_class.return_value = mock_client
   mock_bucket = mock.MagicMock()
@@ -214,11 +218,15 @@ def test__list_skills_in_gcs_dir(mock_client_class):
   assert skills["my-skill"].name == "my-skill"
 
 
-@mock.patch("google.cloud.storage.Client")
+@mock.patch("google.adk.skills._utils._get_storage_module")
 @mock.patch("logging.warning")
 def test__list_skills_in_gcs_dir_skips_invalid(
-    mock_logging_warning, mock_client_class
+    mock_logging_warning, mock_get_storage_module
 ):
+  mock_client_class = mock.MagicMock()
+  mock_get_storage_module.return_value = mock.MagicMock(
+      Client=mock_client_class
+  )
   mock_client = mock.MagicMock()
   mock_client_class.return_value = mock_client
   mock_bucket = mock.MagicMock()
@@ -253,9 +261,13 @@ def test__list_skills_in_gcs_dir_skips_invalid(
   assert args[2] == "my-bucket"
 
 
-@mock.patch("google.cloud.storage.Client")
-def test__load_skill_from_gcs_dir(mock_client_class):
+@mock.patch("google.adk.skills._utils._get_storage_module")
+def test__load_skill_from_gcs_dir(mock_get_storage_module):
 
+  mock_client_class = mock.MagicMock()
+  mock_get_storage_module.return_value = mock.MagicMock(
+      Client=mock_client_class
+  )
   mock_client = mock.MagicMock()
   mock_client_class.return_value = mock_client
   mock_bucket = mock.MagicMock()

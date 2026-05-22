@@ -24,7 +24,6 @@ from typing import Union
 import zipfile
 
 from google.auth import credentials as auth
-from google.cloud import storage
 from pydantic import ValidationError
 import yaml
 
@@ -39,6 +38,18 @@ _ALLOWED_FRONTMATTER_KEYS = frozenset({
     "metadata",
     "compatibility",
 })
+
+
+def _get_storage_module():
+  try:
+    from google.cloud import storage
+  except ImportError as e:
+    raise ImportError(
+        "google-cloud-storage is required for GCS skill loading. Install it"
+        " with `pip install google-cloud-storage` or `pip install"
+        " 'google-adk[all]'`."
+    ) from e
+  return storage
 
 
 def _load_dir(directory: pathlib.Path) -> dict[str, str]:
@@ -407,6 +418,7 @@ def _list_skills_in_gcs_dir(
   Returns:
     Dictionary mapping skill IDs to their frontmatter.
   """
+  storage = _get_storage_module()
   client = storage.Client(project=project_id, credentials=credentials)
   bucket = client.bucket(bucket_name)
 
@@ -467,6 +479,7 @@ def _load_skill_from_gcs_dir(
       the directory name.
   """
 
+  storage = _get_storage_module()
   client = storage.Client(project=project_id, credentials=credentials)
   bucket = client.bucket(bucket_name)
 
