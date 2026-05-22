@@ -45,8 +45,9 @@ from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GEN_A
 from opentelemetry.trace import Span
 from opentelemetry.util.types import AttributeValue
 
-from ..models.llm_request import LlmRequest
-from ..models.llm_response import LlmResponse
+if TYPE_CHECKING:
+  from ..models.llm_request import LlmRequest
+  from ..models.llm_response import LlmResponse
 
 try:
   from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GEN_AI_TOOL_DEFINITIONS
