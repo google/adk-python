@@ -153,7 +153,10 @@ def test_description_empty():
 
 
 def test_description_too_long():
-  with pytest.raises(ValidationError, match="at most 1024 characters"):
+  with pytest.raises(
+      ValidationError,
+      match="at most 1024 characters. Description length: 1025",
+  ):
     models.Frontmatter(name="my-skill", description="x" * 1025)
 
 

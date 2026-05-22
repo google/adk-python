@@ -17,6 +17,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from typing import Any
 from typing import Optional
 from typing import TYPE_CHECKING
@@ -47,9 +48,9 @@ def _truncate(text: str, limit: int = MAX_OUTPUT_CHARS) -> str:
 
 _EXECUTE_TOOL_DESCRIPTION = """
 Run a shell command in the environment. For running programs, tests, and build
-commands ONLY. WARNING: Do NOT use for file reading -- use the ReadFile tool 
-instead. Shell commands like 'cat, head, tail will produce inferior results. 
-Good: Execute("python3 script.py"), Execute("pytest"), Execute("find ..."). 
+commands ONLY. WARNING: Do NOT use for file reading -- use the ReadFile tool
+instead. Shell commands like 'cat, head, tail will produce inferior results.
+Good: Execute("python3 script.py"), Execute("pytest"), Execute("find ...").
 Bad: Execute("head ..."), Execute("cat ...").
 """
 
@@ -58,12 +59,20 @@ Bad: Execute("head ..."), Execute("cat ...").
 class ExecuteTool(BaseTool):
   """Run a shell command in the environment's working directory."""
 
-  def __init__(self, environment: BaseEnvironment):
+  def __init__(
+      self,
+      environment: BaseEnvironment,
+      *,
+      max_output_chars: Optional[int] = None,
+  ):
     super().__init__(
         name='Execute',
         description=_EXECUTE_TOOL_DESCRIPTION,
     )
     self._environment = environment
+    self._max_output_chars = (
+        max_output_chars if max_output_chars is not None else MAX_OUTPUT_CHARS
+    )
 
   @override
   def _get_declaration(self) -> Optional[types.FunctionDeclaration]:
@@ -111,9 +120,15 @@ class ExecuteTool(BaseTool):
 
     result: dict[str, Any] = {'status': 'ok'}
     if execution_result.stdout:
-      result['stdout'] = _truncate(execution_result.stdout)
+      result['stdout'] = _truncate(
+          execution_result.stdout,
+          limit=self._max_output_chars,
+      )
     if execution_result.stderr:
-      result['stderr'] = _truncate(execution_result.stderr)
+      result['stderr'] = _truncate(
+          execution_result.stderr,
+          limit=self._max_output_chars,
+      )
     if execution_result.exit_code != 0:
       result['status'] = 'error'
       result['exit_code'] = execution_result.exit_code
@@ -127,7 +142,12 @@ class ExecuteTool(BaseTool):
 class ReadFileTool(BaseTool):
   """Read a file from the environment."""
 
-  def __init__(self, environment: BaseEnvironment):
+  def __init__(
+      self,
+      environment: BaseEnvironment,
+      *,
+      max_output_chars: Optional[int] = None,
+  ):
     super().__init__(
         name='ReadFile',
         description=(
@@ -136,6 +156,9 @@ class ReadFileTool(BaseTool):
         ),
     )
     self._environment = environment
+    self._max_output_chars = (
+        max_output_chars if max_output_chars is not None else MAX_OUTPUT_CHARS
+    )
 
   @override
   def _get_declaration(self) -> Optional[types.FunctionDeclaration]:
@@ -190,7 +213,13 @@ class ReadFileTool(BaseTool):
       cmd = f"cat -n '{path}' | sed -n '{sed_range}p'"
       res = await self._environment.execute(cmd)
       if res.exit_code == 0:
-        return {'status': 'ok', 'content': _truncate(res.stdout)}
+        return {
+            'status': 'ok',
+            'content': _truncate(
+                res.stdout,
+                limit=self._max_output_chars,
+            ),
+        }
 
     try:
       data_bytes = await self._environment.read_file(path)
@@ -217,7 +246,13 @@ class ReadFileTool(BaseTool):
       numbered = ''.join(
           f'{start + i:6d}\t{line}' for i, line in enumerate(selected)
       )
-      result = {'status': 'ok', 'content': _truncate(numbered)}
+      result = {
+          'status': 'ok',
+          'content': _truncate(
+              numbered,
+              limit=self._max_output_chars,
+          ),
+      }
       if start > 1 or end < total:
         result['total_lines'] = total
       return result
@@ -347,7 +382,13 @@ class EditFileTool(BaseTool):
     except FileNotFoundError:
       return {'status': 'error', 'error': f'File not found: {path}'}
 
-    count = content.count(old_string)
+    # Normalize line breaks in old_string to \n and use regex for flexible matching
+    normalized_old = old_string.replace('\r\n', '\n')
+    pattern = re.escape(normalized_old).replace('\n', '\r?\n')
+
+    matches = re.findall(pattern, content)
+    count = len(matches)
+
     if count == 0:
       return {
           'status': 'error',
@@ -365,6 +406,6 @@ class EditFileTool(BaseTool):
           ),
       }
 
-    new_content = content.replace(old_string, new_string, 1)
+    new_content = re.sub(pattern, lambda m: new_string, content, count=1)
     await self._environment.write_file(path, new_content)
     return {'status': 'ok', 'message': f'Edited {path}'}

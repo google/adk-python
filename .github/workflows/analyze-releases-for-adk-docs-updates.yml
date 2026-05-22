@@ -51,7 +51,7 @@ jobs:
         if: ${{ github.event.inputs.resume == 'true' }}
         uses: actions/cache/restore@v4
         with:
-          path: contributing/samples/adk_documentation/adk_release_analyzer/sessions.db
+          path: contributing/samples/adk_team/adk_documentation/adk_release_analyzer/sessions.db
           key: analyzer-session-db
 
       - name: Run Analyzing Script
@@ -64,9 +64,9 @@ jobs:
           DOC_REPO: 'adk-docs'
           CODE_REPO: 'adk-python'
           INTERACTIVE: 0
-          PYTHONPATH: contributing/samples/adk_documentation
+          PYTHONPATH: contributing/samples/adk_team
         run: >-
-          python -m adk_release_analyzer.main
+          python -m adk_documentation.adk_release_analyzer.main
           ${{ github.event.inputs.resume == 'true' && '--resume' || '' }}
           ${{ github.event.inputs.start_tag && format('--start-tag {0}', github.event.inputs.start_tag) || '' }}
           ${{ github.event.inputs.end_tag && format('--end-tag {0}', github.event.inputs.end_tag) || '' }}
@@ -75,5 +75,5 @@ jobs:
         if: always()
         uses: actions/cache/save@v4
         with:
-          path: contributing/samples/adk_documentation/adk_release_analyzer/sessions.db
+          path: contributing/samples/adk_team/adk_documentation/adk_release_analyzer/sessions.db
           key: analyzer-session-db

@@ -48,6 +48,12 @@ _COMPACTION_CUSTOM_METADATA_KEY = '_compaction'
 _USAGE_METADATA_CUSTOM_METADATA_KEY = '_usage_metadata'
 
 
+def _quote_filter_literal(value: str) -> str:
+  """Quotes filter values so embedded metacharacters stay inside the literal."""
+  escaped_value = value.replace('\\', '\\\\').replace('"', '\\"')
+  return f'"{escaped_value}"'
+
+
 def _set_internal_custom_metadata(
     metadata_dict: dict[str, Any], *, key: str, value: dict[str, Any]
 ) -> None:
@@ -86,6 +92,13 @@ class VertexAiSessionService(BaseSessionService):
         visit
         https://cloud.google.com/vertex-ai/generative-ai/docs/start/express-mode/overview
     """
+    try:
+      import vertexai
+    except ImportError as e:
+      from ..utils._dependency import missing_extra
+
+      raise missing_extra('google-cloud-aiplatform', 'gcp') from e
+
     self._project = project
     self._location = location
     self._agent_engine_id = agent_engine_id
@@ -228,7 +241,7 @@ class VertexAiSessionService(BaseSessionService):
       sessions = []
       config = {}
       if user_id is not None:
-        config['filter'] = f'user_id="{user_id}"'
+        config['filter'] = f'user_id={_quote_filter_literal(user_id)}'
       sessions_iterator = await api_client.agent_engines.sessions.list(
           name=f'reasoningEngines/{reasoning_engine_id}',
           config=config,

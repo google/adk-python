@@ -2,20 +2,20 @@
 
 We'd love to accept your patches and contributions to this project.
 
--   [How to contribute](#how-to-contribute)
--   [Before you begin](#before-you-begin)
-    -   [Sign our Contributor License Agreement](#sign-our-contributor-license-agreement)
-    -   [Review our community guidelines](#review-our-community-guidelines)
--   [Contribution workflow](#contribution-workflow)
-    -   [Finding Issues to Work On](#finding-issues-to-work-on)
-    -   [Requirement for PRs](#requirement-for-prs)
-    -   [Large or Complex Changes](#large-or-complex-changes)
-    -   [Testing Requirements](#testing-requirements)
-    -   [Unit Tests](#unit-tests)
-    -   [Manual End-to-End (E2E) Tests](#manual-end-to-end-e2e-tests)
-    -   [Documentation](#documentation)
-    -   [Development Setup](#development-setup)
-    -   [Code reviews](#code-reviews)
+- [How to contribute](#how-to-contribute)
+- [Before you begin](#before-you-begin)
+  - [Sign our Contributor License Agreement](#sign-our-contributor-license-agreement)
+  - [Review our community guidelines](#review-our-community-guidelines)
+- [Contribution workflow](#contribution-workflow)
+  - [Finding Issues to Work On](#finding-issues-to-work-on)
+  - [Requirement for PRs](#requirement-for-prs)
+  - [Large or Complex Changes](#large-or-complex-changes)
+  - [Testing Requirements](#testing-requirements)
+  - [Unit Tests](#unit-tests)
+  - [Manual End-to-End (E2E) Tests](#manual-end-to-end-e2e-tests)
+  - [Documentation](#documentation)
+  - [Development Setup](#development-setup)
+  - [Code reviews](#code-reviews)
 
 ## Before you begin
 
@@ -49,32 +49,31 @@ information on using pull requests.
 
 ### Finding Issues to Work On
 
--   Browse issues labeled **`good first issue`** (newcomer-friendly) or **`help
-    wanted`** (general contributions).
--   For other issues, please kindly ask before contributing to avoid
-    duplication.
+- Browse issues labeled **`good first issue`** (newcomer-friendly) or **`help wanted`** (general contributions).
+- For other issues, please kindly ask before contributing to avoid
+  duplication.
 
 ### Requirement for PRs
 
--   All PRs, other than small documentation or typo fixes, should have an Issue
-    associated. If a relevant issue doesn't exist, please create one first or
-    you may instead describe the bug or feature directly within the PR
-    description, following the structure of our issue templates.
--   Small, focused PRs. Keep changes minimal—one concern per PR.
--   For bug fixes or features, please provide logs or screenshot after the fix
-    is applied to help reviewers better understand the fix.
--   Please include a `testing plan` section in your PR to describe how you
-    will test. This will save time for PR review. See `Testing Requirements`
-    section for more details.
+- All PRs, other than small documentation or typo fixes, should have an Issue
+  associated. If a relevant issue doesn't exist, please create one first or
+  you may instead describe the bug or feature directly within the PR
+  description, following the structure of our issue templates.
+- Small, focused PRs. Keep changes minimal—one concern per PR.
+- For bug fixes or features, please provide logs or screenshot after the fix
+  is applied to help reviewers better understand the fix.
+- Please include a `testing plan` section in your PR to describe how you
+  will test. This will save time for PR review. See `Testing Requirements`
+  section for more details.
 
 ### Large or Complex Changes
 
 For substantial features or architectural revisions:
 
--   Open an Issue First: Outline your proposal, including design considerations
-    and impact.
--   Gather Feedback: Discuss with maintainers and the community to ensure
-    alignment and avoid duplicate work
+- Open an Issue First: Outline your proposal, including design considerations
+  and impact.
+- Gather Feedback: Discuss with maintainers and the community to ensure
+  alignment and avoid duplicate work
 
 ### Testing Requirements
 
@@ -88,16 +87,16 @@ passed `pytest` results.
 
 Requirements for unit tests:
 
--   **Coverage:** Cover new features, edge cases, error conditions, and typical
-    use cases.
--   **Location:** Add or update tests under `tests/unittests/`, following
-    existing naming conventions (e.g., `test_<module>_<feature>.py`).
--   **Framework:** Use `pytest`. Tests should be:
-    -   Fast and isolated.
-    -   Written clearly with descriptive names.
-    -   Free of external dependencies (use mocks or fixtures as needed).
--   **Quality:** Aim for high readability and maintainability; include
-    docstrings or comments for complex scenarios.
+- **Coverage:** Cover new features, edge cases, error conditions, and typical
+  use cases.
+- **Location:** Add or update tests under `tests/unittests/`, following
+  existing naming conventions (e.g., `test_<module>_<feature>.py`).
+- **Framework:** Use `pytest`. Tests should be:
+  - Fast and isolated.
+  - Written clearly with descriptive names.
+  - Free of external dependencies (use mocks or fixtures as needed).
+- **Quality:** Aim for high readability and maintainability; include
+  docstrings or comments for complex scenarios.
 
 #### Manual End-to-End (E2E) Tests
 
@@ -107,20 +106,20 @@ is not impacted.
 
 Depending on your change:
 
--   **ADK Web:**
+- **ADK Web:**
 
-    -   Use the `adk web` to verify functionality.
-    -   Capture and attach relevant screenshots demonstrating the UI/UX changes
-        or outputs.
-    -   Label screenshots clearly in your PR description.
+  - Use the `adk web` to verify functionality.
+  - Capture and attach relevant screenshots demonstrating the UI/UX changes
+    or outputs.
+  - Label screenshots clearly in your PR description.
 
--   **Runner:**
+- **Runner:**
 
-    -   Provide the testing setup. For example, the agent definition, and the
-        runner setup.
-    -   Execute the `runner` tool to reproduce workflows.
-    -   Include the command used and console output showing test results.
-    -   Highlight sections of the log that directly relate to your change.
+  - Provide the testing setup. For example, the agent definition, and the
+    runner setup.
+  - Execute the `runner` tool to reproduce workflows.
+  - Include the command used and console output showing test results.
+  - Highlight sections of the log that directly relate to your change.
 
 ### Documentation
 
@@ -131,125 +130,142 @@ part before or alongside your code PR.
 
 ## Development Setup
 
-1.  **Clone the repository:**
+1. **Clone the repository:**
 
-    ```shell
-    gh repo clone google/adk-python
-    cd adk-python
-    ```
+   ```shell
+   gh repo clone google/adk-python -- -b v2
+   cd adk-python
+   ```
 
-2.  **Install uv:**
+1. **Install uv:**
 
-    Check out
-    [uv installation guide](https://docs.astral.sh/uv/getting-started/installation/).
+   Check out
+   [uv installation guide](https://docs.astral.sh/uv/getting-started/installation/).
 
-3.  **Create and activate a virtual environment:**
+1. **Setup Development Tools:**
 
-    **NOTE**: ADK supports Python 3.10+. Python 3.11 and above is strongly
-    recommended.
+   We use `pre-commit` for code formatting and license enforcement,
+   `tox` with `tox-uv` for isolated multi-version testing, and
+   `addlicense` for Apache 2.0 license headers.
 
-    Create a workspace venv using uv.
+   ```shell
+   uv tool install pre-commit
+   uv tool install tox --with tox-uv
+   ```
 
-    ```shell
-    uv venv --python "python3.11" ".venv"
-    ```
+   Optionally, install Google's `addlicense` tool for license header
+   checks (requires Go):
 
-    Activate the workspace venv.
+   ```shell
+   go install github.com/google/addlicense@latest
+   ```
 
-    ```shell
-    source .venv/bin/activate
-    ```
+   If `addlicense` is not installed, the pre-commit hook will be
+   skipped and CI will catch missing headers.
 
-    **Windows**
+   Install the git hooks to automatically format and check your code
+   before committing:
 
-    ```shell
-    source .\.venv\Scripts\activate
-    ```
+   ```shell
+   pre-commit install
+   ```
 
-4.  **Install dependencies:**
+   The pre-commit hooks run `isort`, `pyink`, `addlicense`, and
+   `mdformat` automatically on each commit.
 
-    ```shell
-    uv sync --all-extras
-    ```
+1. **Create virtual environment and install dependencies:**
 
-    **NOTE**: for convenience, installing all extra deps as a starting point.
+   ```shell
+   uv venv --python "python3.11" ".venv"
+   source .venv/bin/activate
+   uv sync --all-extras
+   ```
 
-5.  **Run unit tests:**
+1. **Run unit tests locally (Fast):**
 
-    ```shell
-    pytest ./tests/unittests
-    ```
+   If you just want to run tests quickly while developing, run `pytest`:
 
-    NOTE: for accurate repro of test failure, only include `test` as extra
-    dependencies.
+   ```shell
+   pytest ./tests/unittests
+   ```
 
-    ```shell
-    uv sync --extra test
-    pytest ./tests/unittests
-    ```
+1. **Run multi-version unit tests (Required before PR):**
 
-    **Alternatively**, use the included `unittests.sh` script which handles
-    environment setup and restoration automatically:
+   ADK guarantees compatibility across Python versions. You must run the full test suite across all supported versions using `tox`. This will execute tests in pristine, isolated environments.
 
-    ```shell
-    ./scripts/unittests.sh
-    ```
+   ```shell
+   tox
+   ```
 
-    This script will:
-    -   Set up the test environment with minimal dependencies (`test`, `eval`, `a2a`)
-    -   Run the unit tests
-    -   Restore the full development environment (`--all-extras`)
+   _(Note: `uv` will automatically download any Python interpreters you are missing!)_
 
-6.  **Auto-format the code:**
+1. **Auto-format the code:**
 
-    **NOTE**: We use `isort` and `pyink` for styles. Use the included
-    autoformat.sh to auto-format.
+   If you installed the git hooks in Step 3, this happens automatically on commit. To run it manually across all files:
 
-    ```shell
-    ./autoformat.sh
-    ```
+   ```shell
+   pre-commit run --all-files
+   ```
 
-7.  **Build the wheel file:**
+1. **Build the wheel file:**
 
-    ```shell
-    uv build
-    ```
+   ```shell
+   uv build
+   ```
 
-8.  **Test the locally built wheel file:** Have a simple testing folder setup as
-    mentioned in the
-    [quickstart](https://google.github.io/adk-docs/get-started/quickstart/).
+1. **Test the locally built wheel file:** Have a simple testing folder setup as
+   mentioned in the
+   [quickstart](https://google.github.io/adk-docs/get-started/quickstart/).
 
-    Then following below steps to test your changes:
+   Then following below steps to test your changes:
 
-    Create a clean venv and activate it:
+   Create a clean venv and activate it:
 
-    ```shell
-    VENV_PATH=~/venvs/adk-quickstart
-    ```
+   ```shell
+   VENV_PATH=~/venvs/adk-quickstart
+   ```
 
-    ```shell
-    command -v deactivate >/dev/null 2>&1 && deactivate
-    ```
+   ```shell
+   command -v deactivate >/dev/null 2>&1 && deactivate
+   ```
 
-    ```shell
-    rm -rf $VENV_PATH \
-      && python3 -m venv $VENV_PATH \
-      && source $VENV_PATH/bin/activate
-    ```
+   ```shell
+   rm -rf $VENV_PATH \
+     && python3 -m venv $VENV_PATH \
+     && source $VENV_PATH/bin/activate
+   ```
 
-    Install the locally built wheel file:
+   Install the locally built wheel file:
 
-    ```shell
-    pip install dist/google_adk-<version>-py3-none-any.whl
-    ```
+   ```shell
+   pip install dist/google_adk-<version>-py3-none-any.whl
+   ```
 
 ## Contributing Resources
 
 [Contributing folder](https://github.com/google/adk-python/tree/main/contributing)
 has resources that are helpful for contributors.
 
-## Vibe Coding
+## AI-Assisted Development
 
-If you want to contribute by leveraging vibe coding, the AGENTS.md
-(https://github.com/google/adk-python/tree/main/AGENTS.md) could be used as
-context to your LLM.
+This repo includes built-in skills for AI coding agents
+(Antigravity, Gemini CLI, and others) to help with ADK development:
+
+- **`setup-dev-env`** — Set up the local development environment:
+  install dependencies, configure pre-commit hooks, and verify
+  the setup.
+
+- **`adk-debug`** — Debug ADK agents: inspect sessions, trace event
+  flows, check LLM requests/responses, diagnose tool call issues.
+  Supports both `adk web` (browser UI) and `adk run` (CLI) workflows.
+
+- **`adk-workflow`** — Build graph-based workflow agents: function
+  nodes, LLM agent nodes, edge patterns, routing, parallel processing
+  (fan-out and ParallelWorker), human-in-the-loop, state management,
+  and best practices. Includes reference docs and tested samples.
+
+These skills are in `.agents/skills/` and are automatically available
+when using compatible AI coding tools in this repo.
+
+The `AGENTS.md` file provides additional project context that can
+be used as LLM input.

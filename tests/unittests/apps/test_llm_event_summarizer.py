@@ -14,7 +14,6 @@
 
 import unittest
 from unittest.mock import AsyncMock
-from unittest.mock import Mock
 
 from google.adk.apps.llm_event_summarizer import LlmEventSummarizer
 from google.adk.events.event import Event
@@ -22,6 +21,8 @@ from google.adk.events.event_actions import EventActions
 from google.adk.events.event_actions import EventCompaction
 from google.adk.models.base_llm import BaseLlm
 from google.adk.models.llm_request import LlmRequest
+from google.adk.models.llm_response import LlmResponse
+from google.genai import types
 from google.genai.types import Content
 from google.genai.types import FunctionCall
 from google.genai.types import FunctionResponse
@@ -57,10 +58,13 @@ class TestLlmEventSummarizer(unittest.IsolatedAsyncioTestCase):
     expected_prompt = self.compactor._DEFAULT_PROMPT_TEMPLATE.format(
         conversation_history=expected_conversation_history
     )
-    mock_llm_response = Mock(content=Content(parts=[Part(text='Summary')]))
+    llm_response = LlmResponse(
+        content=Content(parts=[Part(text='Summary')]),
+        usage_metadata=None,
+    )
 
     async def async_gen():
-      yield mock_llm_response
+      yield llm_response
 
     self.mock_llm.generate_content_async.return_value = async_gen()
 
@@ -72,6 +76,7 @@ class TestLlmEventSummarizer(unittest.IsolatedAsyncioTestCase):
         'Summary',
     )
     self.assertEqual(compacted_event.author, 'user')
+    self.assertIsNone(compacted_event.usage_metadata)
     self.assertIsNotNone(compacted_event.actions)
     self.assertIsNotNone(compacted_event.actions.compaction)
     self.assertEqual(compacted_event.actions.compaction.start_timestamp, 1.0)
@@ -94,15 +99,41 @@ class TestLlmEventSummarizer(unittest.IsolatedAsyncioTestCase):
     events = [
         self._create_event(1.0, 'Hello', 'user'),
     ]
-    mock_llm_response = Mock(content=None)
+    llm_response = LlmResponse(content=None, usage_metadata=None)
 
     async def async_gen():
-      yield mock_llm_response
+      yield llm_response
 
     self.mock_llm.generate_content_async.return_value = async_gen()
 
     compacted_event = await self.compactor.maybe_summarize_events(events=events)
     self.assertIsNone(compacted_event)
+
+  async def test_maybe_compact_events_includes_usage_metadata(self):
+    events = [
+        self._create_event(1.0, 'Hello', 'user'),
+        self._create_event(2.0, 'Hi there!', 'model'),
+    ]
+    usage_metadata = types.GenerateContentResponseUsageMetadata(
+        prompt_token_count=10,
+        candidates_token_count=5,
+    )
+    llm_response = LlmResponse(
+        content=Content(parts=[Part(text='Summary')]),
+        usage_metadata=usage_metadata,
+    )
+
+    async def async_gen():
+      yield llm_response
+
+    self.mock_llm.generate_content_async.return_value = async_gen()
+
+    compacted_event = await self.compactor.maybe_summarize_events(events=events)
+
+    self.assertIsNotNone(compacted_event)
+    self.assertEqual(compacted_event.usage_metadata, usage_metadata)
+    self.assertEqual(compacted_event.usage_metadata.prompt_token_count, 10)
+    self.assertEqual(compacted_event.usage_metadata.candidates_token_count, 5)
 
   async def test_maybe_compact_events_empty_input(self):
     compacted_event = await self.compactor.maybe_summarize_events(events=[])

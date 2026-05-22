@@ -280,11 +280,9 @@ class TestConvertPartToInteractionContent:
     assert result['type'] == 'function_result'
     assert result['call_id'] == 'call_123'
     assert result['name'] == 'get_weather'
-    # Dict should be JSON serialized
-    assert json.loads(result['result']) == {
-        'temperature': 20,
-        'condition': 'sunny',
-    }
+    # Dict should be passed through directly (not JSON-serialized).
+    assert result['result'] == {'temperature': 20, 'condition': 'sunny'}
+    assert isinstance(result['result'], dict)
 
   def test_function_response_simple(self):
     """Test converting a function response Part with simple response."""
@@ -299,8 +297,37 @@ class TestConvertPartToInteractionContent:
     assert result['type'] == 'function_result'
     assert result['call_id'] == 'call_123'
     assert result['name'] == 'check_weather'
-    # Dict should be JSON serialized
-    assert json.loads(result['result']) == {'message': 'Weather is sunny'}
+    # Dict should be passed through directly (not JSON-serialized).
+    assert result['result'] == {'message': 'Weather is sunny'}
+
+  def test_function_response_dict_not_double_serialized(self):
+    """Regression test: avoid double-serializing bash tool outputs.
+
+    Bash tool responses contain JSON structures (stdout/stderr). When these
+    dict responses were json.dumps()'d before being sent to the Interactions
+    API, the API's own serialization would escape the already-escaped content,
+    producing unreadable output like:
+      {"result":"\\\"{\\\\\\\"error\\\\\\\":\\\\\\\"...\\\\\\\"}\\\""
+    """
+    bash_response = {
+        'stdout': '{"name": "test", "version": "1.0"}\n',
+        'stderr': '',
+    }
+    part = types.Part(
+        function_response=types.FunctionResponse(
+            id='call_bash',
+            name='bash',
+            response=bash_response,
+        )
+    )
+    result = interactions_utils.convert_part_to_interaction_content(part)
+    # The result value must be the dict itself, NOT a JSON string.
+    assert isinstance(result['result'], dict)
+    assert result['result'] == bash_response
+    # Verify there's no double-escaping: if result were a JSON string,
+    # serializing it again would add backslashes before the internal quotes.
+    wire_json = json.dumps(result)
+    assert '\\\\' not in wire_json
 
   def test_inline_data_image(self):
     """Test converting an inline image Part."""

@@ -100,10 +100,11 @@ _LITELLM_STRUCTURED_TYPES = {"json_object", "json_schema"}
 _JSON_DECODER = json.JSONDecoder()
 
 # Mapping of major MIME type prefixes to LiteLLM content types for URL blocks.
+# Audio is handled separately as `input_audio` content blocks because LiteLLM
+# (and OpenAI) do not accept an `audio_url` content type.
 _MEDIA_URL_CONTENT_TYPE_BY_MAJOR_MIME_TYPE = {
     "image": "image_url",
     "video": "video_url",
-    "audio": "audio_url",
 }
 
 # Mapping of LiteLLM finish_reason strings to FinishReason enum values
@@ -346,6 +347,18 @@ def _media_url_content_type(mime_type: str) -> str | None:
   return _MEDIA_URL_CONTENT_TYPE_BY_MAJOR_MIME_TYPE.get(major_mime_type)
 
 
+def _audio_format_from_mime_type(mime_type: str) -> str:
+  """Maps an audio MIME type to the format string for `input_audio` blocks."""
+  subtype = _normalize_mime_type(mime_type).split("/", 1)[1]
+  if subtype.startswith("x-"):
+    subtype = subtype[2:]
+  if subtype == "mpeg":
+    return "mp3"
+  if subtype in ("wave", "vnd.wave"):
+    return "wav"
+  return subtype
+
+
 def _iter_reasoning_texts(reasoning_value: Any) -> Iterable[str]:
   """Yields textual fragments from provider specific reasoning payloads."""
   if reasoning_value is None:
@@ -543,7 +556,7 @@ def _safe_json_serialize(obj) -> str:
   try:
     # Try direct JSON serialization first
     return json.dumps(obj, ensure_ascii=False)
-  except (TypeError, OverflowError):
+  except (TypeError, ValueError, OverflowError):
     return str(obj)
 
 
@@ -794,9 +807,14 @@ async def _content_to_message_param(
           if isinstance(response, str)
           else _safe_json_serialize(response)
       )
+      # gemma4 requires role='tool_responses' for recognizing function_response parts as responses
+      # from the tool call, instead of OpenAI-compatible 'tool' role used by other models.
+      # Earlier Gemma versions before version 4 do not support tool use,
+      # so this check is intentionally scoped to only look for "gemma4" in the model name.
+      tool_role = "tool_responses" if "gemma4" in model.lower() else "tool"
       tool_messages.append(
           ChatCompletionToolMessage(
-              role="tool",
+              role=tool_role,
               tool_call_id=part.function_response.id,
               content=response_content,
           )
@@ -811,6 +829,7 @@ async def _content_to_message_param(
     follow_up = await _content_to_message_param(
         types.Content(role=content.role, parts=non_tool_parts),
         provider=provider,
+        model=model,
     )
     follow_up_messages = (
         follow_up if isinstance(follow_up, list) else [follow_up]
@@ -921,12 +940,16 @@ async def _content_to_message_param(
     )
 
 
-def _ensure_tool_results(messages: List[Message]) -> List[Message]:
+def _ensure_tool_results(messages: List[Message], model: str) -> List[Message]:
   """Insert placeholder tool messages for missing tool results.
 
   LiteLLM-backed providers like OpenAI and Anthropic reject histories where an
   assistant tool call is not followed by tool responses before the next
   non-tool message. This helps recover from interrupted tool execution.
+
+  For models that expect a different tool response role (e.g. Gemma4 models,
+  which require 'tool_responses' instead of 'tool'), the role is adjusted
+  accordingly.
   """
   if not messages:
     return messages
@@ -935,17 +958,19 @@ def _ensure_tool_results(messages: List[Message]) -> List[Message]:
 
   healed_messages: List[Message] = []
   pending_tool_call_ids: List[str] = []
+  expected_tool_role = "tool_responses" if "gemma4" in model.lower() else "tool"
 
   for message in messages:
     role = message.get("role")
-    if pending_tool_call_ids and role != "tool":
+
+    if pending_tool_call_ids and role != expected_tool_role:
       logger.warning(
           "Missing tool results for tool_call_id(s): %s",
           pending_tool_call_ids,
       )
       healed_messages.extend(
           ChatCompletionToolMessage(
-              role="tool",
+              role=expected_tool_role,
               tool_call_id=tool_call_id,
               content=_MISSING_TOOL_RESULT_MESSAGE,
           )
@@ -958,13 +983,14 @@ def _ensure_tool_results(messages: List[Message]) -> List[Message]:
       pending_tool_call_ids = [
           tool_call.get("id") for tool_call in tool_calls if tool_call.get("id")
       ]
-    elif role == "tool":
+    elif role == expected_tool_role:
       tool_call_id = message.get("tool_call_id")
       if tool_call_id in pending_tool_call_ids:
         pending_tool_call_ids.remove(tool_call_id)
 
     healed_messages.append(message)
 
+  # Final block also uses expected_tool_role
   if pending_tool_call_ids:
     logger.warning(
         "Missing tool results for tool_call_id(s): %s",
@@ -972,7 +998,7 @@ def _ensure_tool_results(messages: List[Message]) -> List[Message]:
     )
     healed_messages.extend(
         ChatCompletionToolMessage(
-            role="tool",
+            role=expected_tool_role,
             tool_call_id=tool_call_id,
             content=_MISSING_TOOL_RESULT_MESSAGE,
         )
@@ -1038,6 +1064,15 @@ async def _get_content(
         })
         continue
       base64_string = base64.b64encode(part.inline_data.data).decode("utf-8")
+      if mime_type.startswith("audio/"):
+        content_objects.append({
+            "type": "input_audio",
+            "input_audio": {
+                "data": base64_string,
+                "format": _audio_format_from_mime_type(mime_type),
+            },
+        })
+        continue
       data_uri = f"data:{mime_type};base64,{base64_string}"
       # LiteLLM providers extract the MIME type from the data URI; avoid
       # passing a separate `format` field that some backends reject.
@@ -1883,7 +1918,7 @@ async def _get_completion_inputs(
             content=llm_request.config.system_instruction,
         ),
     )
-  messages = _ensure_tool_results(messages)
+  messages = _ensure_tool_results(messages, model)
 
   # 2. Convert tool declarations
   tools: Optional[List[Dict]] = None
@@ -2189,7 +2224,8 @@ class LiteLlm(BaseLlm):
 
     self._maybe_append_user_content(llm_request)
     _append_fallback_user_content_if_missing(llm_request)
-    logger.debug(_build_request_log(llm_request))
+    if logger.isEnabledFor(logging.DEBUG):
+      logger.debug(_build_request_log(llm_request))
 
     effective_model = llm_request.model or self.model
     messages, tools, response_format, generation_params = (
