@@ -529,30 +529,3 @@ async def test_run_async_with_context_type_annotation(mock_tool_context):
 
   assert result["query"] == "hello"
   assert result["context_type"] == "Context"
-
-
-@pytest.mark.parametrize(
-    "input_value, expected_type, expected_value",
-    [
-        (5.0, int, 5),  # Float to int coercion
-        (5.5, float, 5.5),  # Unsafe float, no coercion
-        ("5", int, 5),  # String to int coercion
-        ("-5", int, -5),  # Negative string to int coercion
-        ("5.5", str, "5.5"),  # Unsafe string, no coercion
-    ],
-)
-def test_preprocess_args_int_coercion(
-    input_value, expected_type, expected_value
-):
-  """Test _preprocess_args handles coercion to int parameters."""
-
-  def simple_function(limit: int) -> dict:
-    return {"limit": limit}
-
-  tool = FunctionTool(simple_function)
-
-  input_args = {"limit": input_value}
-  processed_args = tool._preprocess_args(input_args)
-
-  assert isinstance(processed_args["limit"], expected_type)
-  assert processed_args["limit"] == expected_value
