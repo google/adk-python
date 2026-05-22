@@ -15,6 +15,7 @@
 # Pydantic model conversion tests
 
 from typing import Optional
+from typing import Union
 from unittest.mock import MagicMock
 
 from google.adk.agents.invocation_context import InvocationContext
@@ -38,6 +39,14 @@ class PreferencesModel(pydantic.BaseModel):
 
   theme: str = "light"
   notifications: bool = True
+
+
+class CompanyModel(pydantic.BaseModel):
+  """Test Pydantic model for company data."""
+
+  company_name: str
+  industry: str
+  employee_count: int
 
 
 def sync_function_with_pydantic_model(user: UserModel) -> dict:
@@ -87,6 +96,17 @@ def function_with_mixed_args(
       "user_type": str(type(user).__name__),
       "count": count,
   }
+
+
+def function_with_union_entity(
+    entity: Union[UserModel, CompanyModel],
+) -> str:
+  """Function whose argument may be either of two Pydantic models."""
+  if isinstance(entity, UserModel):
+    return f"user:{entity.name}"
+  if isinstance(entity, CompanyModel):
+    return f"company:{entity.company_name}"
+  return f"unexpected:{type(entity)}"
 
 
 def test_preprocess_args_with_dict_to_pydantic_conversion():
@@ -370,3 +390,94 @@ async def test_run_async_with_list_of_pydantic_models():
   result = await tool.run_async(args=args, tool_context=tool_context_mock)
 
   assert result == 50
+
+
+# ---------------------------------------------------------------------------
+# Union[ModelA, ModelB] regression tests  (issue #5799)
+# ---------------------------------------------------------------------------
+
+
+def test_preprocess_args_union_first_branch_converted():
+  """A dict matching the first Union branch is converted to that model."""
+  tool = FunctionTool(function_with_union_entity)
+
+  processed = tool._preprocess_args({"entity": {"name": "Alice", "age": 30}})
+
+  assert isinstance(processed["entity"], UserModel), (
+      f"Expected UserModel, got {type(processed['entity'])}"
+  )
+  assert processed["entity"].name == "Alice"
+
+
+def test_preprocess_args_union_second_branch_converted():
+  """A dict matching the second Union branch is converted to that model."""
+  tool = FunctionTool(function_with_union_entity)
+
+  processed = tool._preprocess_args(
+      {
+          "entity": {
+              "company_name": "Acme",
+              "industry": "tech",
+              "employee_count": 100,
+          }
+      }
+  )
+
+  assert isinstance(processed["entity"], CompanyModel), (
+      f"Expected CompanyModel, got {type(processed['entity'])}"
+  )
+  assert processed["entity"].company_name == "Acme"
+
+
+def test_preprocess_args_union_already_correct_type_unchanged():
+  """If the arg is already a Pydantic instance it must not be re-converted."""
+  tool = FunctionTool(function_with_union_entity)
+
+  user = UserModel(name="Bob", age=25)
+  processed = tool._preprocess_args({"entity": user})
+
+  assert processed["entity"] is user
+
+
+def test_preprocess_args_union_optional_backward_compat():
+  """Optional[T] (Union[T, None]) conversion must still work."""
+  tool = FunctionTool(function_with_optional_pydantic_model)
+
+  processed = tool._preprocess_args({
+      "user": {"name": "Carol", "age": 40},
+      "preferences": {"theme": "light"},
+  })
+
+  assert isinstance(processed["user"], UserModel)
+  assert processed["user"].name == "Carol"
+  assert isinstance(processed["preferences"], PreferencesModel)
+
+
+@pytest.mark.asyncio
+async def test_run_async_union_end_to_end():
+  """run_async end-to-end: Union dict arg must reach the function as a model."""
+  tool = FunctionTool(function_with_union_entity)
+
+  tool_context_mock = MagicMock(spec=ToolContext)
+  invocation_context_mock = MagicMock(spec=InvocationContext)
+  session_mock = MagicMock(spec=Session)
+  invocation_context_mock.session = session_mock
+  tool_context_mock.invocation_context = invocation_context_mock
+
+  result = await tool.run_async(
+      args={"entity": {"name": "Dave", "age": 20}},
+      tool_context=tool_context_mock,
+  )
+  assert result == "user:Dave"
+
+  result2 = await tool.run_async(
+      args={
+          "entity": {
+              "company_name": "Corp",
+              "industry": "finance",
+              "employee_count": 500,
+          }
+      },
+      tool_context=tool_context_mock,
+  )
+  assert result2 == "company:Corp"
