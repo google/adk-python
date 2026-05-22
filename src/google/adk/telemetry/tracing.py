@@ -694,12 +694,9 @@ def _is_gemini_agent(agent: BaseAgent) -> bool:
   if not isinstance(agent, LlmAgent):
     return False
 
-  if isinstance(agent.model, str):
-    return is_gemini_model(agent.model)
-
-  from ..models.google_llm import Gemini
-
-  return isinstance(agent.model, Gemini)
+  model = agent.model if agent.model != '' else agent._default_model
+  model_name = model if isinstance(model, str) else model.model
+  return is_gemini_model(model_name)
 
 
 def _set_common_generate_content_attributes(

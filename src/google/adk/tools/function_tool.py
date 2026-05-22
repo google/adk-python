@@ -20,6 +20,7 @@ from typing import Any
 from typing import Callable
 from typing import get_args
 from typing import get_origin
+from typing import get_type_hints
 from typing import Optional
 from typing import Union
 
@@ -27,6 +28,8 @@ from google.genai import types
 import pydantic
 from typing_extensions import override
 
+from ..utils._schema_utils import get_list_inner_type
+from ..utils._schema_utils import is_list_of_basemodel
 from ..utils.context_utils import Aclosing
 from ..utils.context_utils import find_context_parameter
 from ._automatic_function_calling_util import build_function_declaration
@@ -119,39 +122,71 @@ class FunctionTool(BaseTool):
     """
     signature = inspect.signature(self.func)
     converted_args = args.copy()
+    try:
+      type_hints = get_type_hints(self.func)
+    except TypeError:
+      # Handle callable objects that are not functions or classes
+      if hasattr(self.func, '__call__'):
+        try:
+          type_hints = get_type_hints(self.func.__call__)
+        except TypeError:
+          type_hints = {}
+      else:
+        type_hints = {}
 
     for param_name, param in signature.parameters.items():
-      if param_name in args and param.annotation != inspect.Parameter.empty:
-        target_type = param.annotation
+      if param_name in args:
+        target_type = type_hints.get(param_name, param.annotation)
+        if target_type != inspect.Parameter.empty:
 
-        # Handle Optional[PydanticModel] types
-        if get_origin(param.annotation) is Union:
-          union_args = get_args(param.annotation)
-          # Find the non-None type in Optional[T] (which is Union[T, None])
-          non_none_types = [arg for arg in union_args if arg is not type(None)]
-          if len(non_none_types) == 1:
-            target_type = non_none_types[0]
+          # Handle Optional[PydanticModel] types
+          if get_origin(param.annotation) is Union:
+            union_args = get_args(param.annotation)
+            # Find the non-None type in Optional[T] (which is Union[T, None])
+            non_none_types = [
+                arg for arg in union_args if arg is not type(None)
+            ]
+            if len(non_none_types) == 1:
+              target_type = non_none_types[0]
 
-        # Check if the target type is a Pydantic model
-        if inspect.isclass(target_type) and issubclass(
-            target_type, pydantic.BaseModel
-        ):
-          # Skip conversion if the value is None and the parameter is Optional
-          if args[param_name] is None:
-            continue
+          # Check if the target type is a Pydantic model
+          if inspect.isclass(target_type) and issubclass(
+              target_type, pydantic.BaseModel
+          ):
+            # Skip conversion if the value is None and the parameter is Optional
+            if args[param_name] is None:
+              continue
 
-          # Convert to Pydantic model if it's not already the correct type
-          if not isinstance(args[param_name], target_type):
+            # Convert to Pydantic model if it's not already the correct type
+            if not isinstance(args[param_name], target_type):
+              try:
+                converted_args[param_name] = target_type.model_validate(
+                    args[param_name]
+                )
+              except Exception as e:
+                logger.warning(
+                    f"Failed to convert argument '{param_name}' to Pydantic"
+                    f' model {target_type.__name__}: {e}'
+                )
+                # Keep the original value if conversion fails
+                pass
+          # Handle list[BaseModel] types
+          elif is_list_of_basemodel(target_type) and isinstance(
+              args[param_name], list
+          ):
+            item_type = get_list_inner_type(target_type)
             try:
-              converted_args[param_name] = target_type.model_validate(
-                  args[param_name]
-              )
+              converted_args[param_name] = [
+                  item_type.model_validate(item)
+                  if isinstance(item, dict)
+                  else item
+                  for item in args[param_name]
+              ]
             except Exception as e:
               logger.warning(
-                  f"Failed to convert argument '{param_name}' to Pydantic model"
-                  f' {target_type.__name__}: {e}'
+                  f"Failed to convert argument '{param_name}' to"
+                  f' list[{item_type.__name__}]: {e}'
               )
-              # Keep the original value if conversion fails
               pass
 
     return converted_args

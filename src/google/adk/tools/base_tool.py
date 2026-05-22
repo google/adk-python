@@ -33,13 +33,13 @@ from pydantic import BaseModel
 
 from ..utils.variant_utils import get_google_llm_variant
 from ..utils.variant_utils import GoogleLLMVariant
-from .tool_context import ToolContext
 
 logger = logging.getLogger("google_adk." + __name__)
 
 if TYPE_CHECKING:
   from ..models.llm_request import LlmRequest
   from .tool_configs import ToolArgsConfig
+  from .tool_context import ToolContext
 
 SelfTool = TypeVar("SelfTool", bound="BaseTool")
 
@@ -55,6 +55,27 @@ class BaseTool(ABC):
   is_long_running: bool = False
   """Whether the tool is a long running operation, which typically returns a
   resource id first and finishes the operation later."""
+
+  _defers_response: bool = False
+  """⚠️ Internal — do not set this from external code.
+
+  When True, the auto FunctionResponse build is skipped whenever
+  ``run_async`` returns a falsy value (typically ``None``).  In that
+  case, some other orchestrator (e.g., the LlmAgent wrapper for task
+  delegation, or an external system for webhook-style callbacks)
+  produces the matching FR later in the conversation.
+
+  When ``run_async`` returns a non-falsy value, the FR is built
+  normally — same as for any regular tool.
+
+  Compare with ``is_long_running``, which has the same skip-on-empty
+  semantics but additionally marks the call as long-running on the
+  emitted event (``event.long_running_tool_ids``), affecting A2A
+  conversion, plugin logging, and interrupt tracking.
+
+  Currently set only by ADK-internal tools (e.g. ``_TaskAgentTool``).
+  Not part of the public API and may change without notice.
+  """
 
   custom_metadata: Optional[dict[str, Any]] = None
   """The custom metadata of the BaseTool.
@@ -76,6 +97,7 @@ class BaseTool(ABC):
     self.name = name
     self.description = description
     self.is_long_running = is_long_running
+    self._defers_response = False
     self.custom_metadata = custom_metadata
 
   def _get_declaration(self) -> Optional[types.FunctionDeclaration]:

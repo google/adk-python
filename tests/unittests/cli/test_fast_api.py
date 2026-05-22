@@ -112,7 +112,7 @@ def _event_state_delta(state_delta: dict[str, Any]):
 
 
 # Define mocked async generator functions for the Runner
-async def dummy_run_live(self, session, live_request_queue):
+async def dummy_run_live(self, session, live_request_queue, **kwargs):
   yield _event_1()
   await asyncio.sleep(0)
 
@@ -1683,10 +1683,10 @@ def test_get_eval_set_result_not_found(test_app):
   assert response.status_code == 404
 
 
-def test_list_metrics_info(test_app):
+def test_list_metrics_info(builder_test_client):
   """Test listing metrics info."""
-  url = "/apps/test_app/metrics-info"
-  response = test_app.get(url)
+  url = "/dev/apps/test_app/metrics-info"
+  response = builder_test_client.get(url)
 
   # Verify the response
   assert response.status_code == 200
@@ -1706,7 +1706,7 @@ def test_debug_trace(test_app):
   """Test the debug trace endpoint."""
   # This test will likely return 404 since we haven't set up trace data,
   # but it tests that the endpoint exists and handles missing traces correctly.
-  url = "/debug/trace/nonexistent-event"
+  url = "/dev/apps/test_app/debug/trace/nonexistent-event"
   response = test_app.get(url)
 
   # Verify we get a 404 for a nonexistent trace
@@ -1719,56 +1719,6 @@ def test_openapi_json_schema_accessible(test_app):
   response = test_app.get("/openapi.json")
   assert response.status_code == 200
   logger.info("OpenAPI /openapi.json endpoint is accessible")
-
-
-def test_get_event_graph_returns_dot_src_for_app_agent():
-  """Ensure graph endpoint unwraps App instances before building the graph."""
-  from google.adk.cli.adk_web_server import AdkWebServer
-
-  root_agent = DummyAgent(name="dummy_agent")
-  app_agent = App(name="test_app", root_agent=root_agent)
-
-  class Loader:
-
-    def load_agent(self, app_name):
-      return app_agent
-
-    def list_agents(self):
-      return [app_agent.name]
-
-  session_service = AsyncMock()
-  session = Session(
-      id="session_id",
-      app_name="test_app",
-      user_id="user",
-      state={},
-      events=[Event(author="dummy_agent")],
-  )
-  event_id = session.events[0].id
-  session_service.get_session.return_value = session
-
-  adk_web_server = AdkWebServer(
-      agent_loader=Loader(),
-      session_service=session_service,
-      memory_service=MagicMock(),
-      artifact_service=MagicMock(),
-      credential_service=MagicMock(),
-      eval_sets_manager=MagicMock(),
-      eval_set_results_manager=MagicMock(),
-      agents_dir=".",
-  )
-
-  fast_api_app = adk_web_server.get_fast_api_app(
-      setup_observer=lambda _observer, _server: None,
-      tear_down_observer=lambda _observer, _server: None,
-  )
-
-  client = TestClient(fast_api_app)
-  response = client.get(
-      f"/apps/test_app/users/user/sessions/session_id/events/{event_id}/graph"
-  )
-  assert response.status_code == 200
-  assert "dotSrc" in response.json()
 
 
 def test_a2a_agent_discovery(test_app_with_a2a):
@@ -2132,12 +2082,14 @@ def test_builder_final_save_preserves_files_and_cleans_tmp(
           ("app/sub_agent.yaml", b"name: sub\n", "application/x-yaml"),
       ),
   ]
-  response = builder_test_client.post("/builder/save?tmp=true", files=files)
+  response = builder_test_client.post(
+      "/dev/apps/app/builder/save?tmp=true", files=files
+  )
   assert response.status_code == 200
   assert response.json() is True
 
   response = builder_test_client.post(
-      "/builder/save",
+      "/dev/apps/app/builder/save",
       files=[(
           "files",
           (
@@ -2158,7 +2110,7 @@ def test_builder_final_save_preserves_files_and_cleans_tmp(
 
 def test_builder_save_rejects_cross_origin_post(builder_test_client, tmp_path):
   response = builder_test_client.post(
-      "/builder/save?tmp=true",
+      "/dev/apps/app/builder/save?tmp=true",
       headers={"origin": "https://evil.com"},
       files=[(
           "files",
@@ -2173,7 +2125,7 @@ def test_builder_save_rejects_cross_origin_post(builder_test_client, tmp_path):
 
 def test_builder_save_allows_same_origin_post(builder_test_client, tmp_path):
   response = builder_test_client.post(
-      "/builder/save?tmp=true",
+      "/dev/apps/app/builder/save?tmp=true",
       headers={"origin": "http://testserver"},
       files=[(
           "files",
@@ -2188,7 +2140,7 @@ def test_builder_save_allows_same_origin_post(builder_test_client, tmp_path):
 
 def test_builder_get_allows_cross_origin_get(builder_test_client):
   response = builder_test_client.get(
-      "/builder/app/missing?tmp=true",
+      "/dev/apps/missing/builder?tmp=true",
       headers={"origin": "https://evil.com"},
   )
 
@@ -2201,12 +2153,12 @@ def test_builder_cancel_deletes_tmp_idempotent(builder_test_client, tmp_path):
   tmp_agent_root.mkdir(parents=True, exist_ok=True)
   (tmp_agent_root / "root_agent.yaml").write_text("name: app\n")
 
-  response = builder_test_client.post("/builder/app/app/cancel")
+  response = builder_test_client.post("/dev/apps/app/builder/cancel")
   assert response.status_code == 200
   assert response.json() is True
   assert not (tmp_path / "app" / "tmp").exists()
 
-  response = builder_test_client.post("/builder/app/app/cancel")
+  response = builder_test_client.post("/dev/apps/app/builder/cancel")
   assert response.status_code == 200
   assert response.json() is True
   assert not (tmp_path / "app" / "tmp").exists()
@@ -2221,7 +2173,7 @@ def test_builder_get_tmp_true_recreates_tmp(builder_test_client, tmp_path):
   (nested_dir / "nested.yaml").write_text("nested: true\n")
 
   assert not (app_root / "tmp").exists()
-  response = builder_test_client.get("/builder/app/app?tmp=true")
+  response = builder_test_client.get("/dev/apps/app/builder?tmp=true")
   assert response.status_code == 200
   assert response.text == "name: app\n"
 
@@ -2230,7 +2182,7 @@ def test_builder_get_tmp_true_recreates_tmp(builder_test_client, tmp_path):
   assert (tmp_agent_root / "nested" / "nested.yaml").is_file()
 
   response = builder_test_client.get(
-      "/builder/app/app?tmp=true&file_path=nested/nested.yaml"
+      "/dev/apps/app/builder?tmp=true&file_path=nested/nested.yaml"
   )
   assert response.status_code == 200
   assert response.text == "nested: true\n"
@@ -2239,7 +2191,7 @@ def test_builder_get_tmp_true_recreates_tmp(builder_test_client, tmp_path):
 def test_builder_get_tmp_true_missing_app_returns_empty(
     builder_test_client, tmp_path
 ):
-  response = builder_test_client.get("/builder/app/missing?tmp=true")
+  response = builder_test_client.get("/dev/apps/missing/builder?tmp=true")
   assert response.status_code == 200
   assert response.text == ""
   assert not (tmp_path / "missing").exists()
@@ -2247,7 +2199,7 @@ def test_builder_get_tmp_true_missing_app_returns_empty(
 
 def test_builder_save_rejects_traversal(builder_test_client, tmp_path):
   response = builder_test_client.post(
-      "/builder/save?tmp=true",
+      "/dev/apps/app/builder/save?tmp=true",
       files=[(
           "files",
           ("app/../escape.yaml", b"nope\n", "application/x-yaml"),
@@ -2261,7 +2213,7 @@ def test_builder_save_rejects_traversal(builder_test_client, tmp_path):
 def test_builder_save_rejects_py_files(builder_test_client, tmp_path):
   """Uploading .py files via /builder/save is rejected."""
   response = builder_test_client.post(
-      "/builder/save?tmp=true",
+      "/dev/apps/app/builder/save?tmp=true",
       files=[(
           "files",
           ("app/agent.py", b"import os\nos.system('id')\n", "text/plain"),
@@ -2283,7 +2235,7 @@ def test_builder_save_rejects_non_yaml_extensions(
       (".pth", b"import os"),
   ]:
     response = builder_test_client.post(
-        "/builder/save?tmp=true",
+        "/dev/apps/app/builder/save?tmp=true",
         files=[(
             "files",
             (f"app/file{ext}", content, "application/octet-stream"),
@@ -2295,7 +2247,7 @@ def test_builder_save_rejects_non_yaml_extensions(
 def test_builder_save_allows_yaml_files(builder_test_client, tmp_path):
   """Uploading .yaml and .yml files is allowed."""
   response = builder_test_client.post(
-      "/builder/save?tmp=true",
+      "/dev/apps/app/builder/save?tmp=true",
       files=[(
           "files",
           ("app/root_agent.yaml", b"name: app\n", "application/x-yaml"),
@@ -2305,7 +2257,7 @@ def test_builder_save_allows_yaml_files(builder_test_client, tmp_path):
   assert response.json() is True
 
   response = builder_test_client.post(
-      "/builder/save?tmp=true",
+      "/dev/apps/app/builder/save?tmp=true",
       files=[(
           "files",
           ("app/sub_agent.yml", b"name: sub\n", "application/x-yaml"),
@@ -2323,7 +2275,7 @@ args:
   key: value
 """
   response = builder_test_client.post(
-      "/builder/save?tmp=true",
+      "/dev/apps/app/builder/save?tmp=true",
       files=[(
           "files",
           ("app/root_agent.yaml", yaml_with_args, "application/x-yaml"),
@@ -2343,7 +2295,7 @@ tools:
       param: value
 """
   response = builder_test_client.post(
-      "/builder/save?tmp=true",
+      "/dev/apps/app/builder/save?tmp=true",
       files=[(
           "files",
           ("app/root_agent.yaml", yaml_with_nested_args, "application/x-yaml"),
@@ -2354,7 +2306,7 @@ tools:
 
 
 def test_builder_get_rejects_non_yaml_file_paths(builder_test_client, tmp_path):
-  """GET /builder/app/{app_name}?file_path=... rejects non-YAML extensions."""
+  """GET /dev/apps/{app_name}/builder?file_path=... rejects non-YAML extensions."""
   app_root = tmp_path / "app"
   app_root.mkdir(parents=True, exist_ok=True)
   (app_root / ".env").write_text("SECRET=supersecret\n")
@@ -2363,26 +2315,26 @@ def test_builder_get_rejects_non_yaml_file_paths(builder_test_client, tmp_path):
 
   for file_path in [".env", "agent.py", "config.json"]:
     response = builder_test_client.get(
-        f"/builder/app/app?file_path={file_path}"
+        f"/dev/apps/app/builder?file_path={file_path}"
     )
     assert response.status_code == 200, f"Expected 200 for {file_path}"
     assert response.text == "", f"Expected empty response for {file_path}"
 
 
 def test_builder_get_allows_yaml_file_paths(builder_test_client, tmp_path):
-  """GET /builder/app/{app_name}?file_path=... allows YAML extensions."""
+  """GET /dev/apps/{app_name}/builder?file_path=... allows YAML extensions."""
   app_root = tmp_path / "app"
   app_root.mkdir(parents=True, exist_ok=True)
   (app_root / "sub_agent.yaml").write_text("name: sub\n")
   (app_root / "tool.yml").write_text("name: tool\n")
 
   response = builder_test_client.get(
-      "/builder/app/app?file_path=sub_agent.yaml"
+      "/dev/apps/app/builder?file_path=sub_agent.yaml"
   )
   assert response.status_code == 200
   assert response.text == "name: sub\n"
 
-  response = builder_test_client.get("/builder/app/app?file_path=tool.yml")
+  response = builder_test_client.get("/dev/apps/app/builder?file_path=tool.yml")
   assert response.status_code == 200
   assert response.text == "name: tool\n"
 
@@ -2405,28 +2357,28 @@ def test_builder_endpoints_not_registered_without_web(
       mock_eval_set_results_manager,
       web=False,
   )
-  # /builder/save should return 404/405, not 200
+  # /dev/apps/app/builder/save should return 404/405, not 200
   response = client.post(
-      "/builder/save",
+      "/dev/apps/app/builder/save",
       files=[
           ("files", ("app/agent.yaml", b"name: test\n", "application/x-yaml"))
       ],
   )
   assert response.status_code in (404, 405)
 
-  # /builder/app/{name}/cancel should also be absent
-  response = client.post("/builder/app/app/cancel")
+  # /dev/apps/{name}/builder/cancel should also be absent
+  response = client.post("/dev/apps/app/builder/cancel")
   assert response.status_code in (404, 405)
 
-  # /builder/app/{name} GET should also be absent
-  response = client.get("/builder/app/app")
+  # /dev/apps/{name}/builder GET should also be absent
+  response = client.get("/dev/apps/app/builder")
   assert response.status_code in (404, 405)
 
 
 def test_builder_endpoints_registered_with_web(builder_test_client):
   """Builder endpoints are available when web=True."""
   response = builder_test_client.post(
-      "/builder/save?tmp=true",
+      "/dev/apps/app/builder/save?tmp=true",
       files=[
           ("files", ("app/agent.yaml", b"name: test\n", "application/x-yaml"))
       ],
@@ -2676,6 +2628,312 @@ async def test_independent_telemetry_context(
 
   assert captured_visual_builder_values.get("yaml_app") == True
   assert captured_visual_builder_values.get("yaml_app_after_sleep") == True
+
+
+def test_default_app_name_middleware_and_resolution(
+    mock_session_service,
+    mock_artifact_service,
+    mock_memory_service,
+    mock_agent_loader,
+    mock_eval_sets_manager,
+    mock_eval_set_results_manager,
+    monkeypatch,
+):
+  """Test that when ADK_DEFAULT_APP_NAME is set, path rewriting works for get_session and run."""
+  # Set environment variable
+  monkeypatch.setenv("ADK_DEFAULT_APP_NAME", "test_app")
+
+  test_app = _create_test_client(
+      mock_session_service,
+      mock_artifact_service,
+      mock_memory_service,
+      mock_agent_loader,
+      mock_eval_sets_manager,
+      mock_eval_set_results_manager,
+  )
+
+  # Create session for test_app
+  async def setup_session():
+    await mock_session_service.create_session(
+        app_name="test_app",
+        user_id="test_user",
+        session_id="test_session",
+        state={},
+    )
+
+  asyncio.run(setup_session())
+
+  # 1. Test path rewriting for GET /users/{user_id}/sessions/{session_id}
+  response = test_app.get("/users/test_user/sessions/test_session")
+  assert response.status_code == 200
+  assert response.json()["id"] == "test_session"
+
+  # 2. Test app_name omission in /run request payload
+  payload = {
+      "user_id": "test_user",
+      "session_id": "test_session",
+      "new_message": {"role": "user", "parts": [{"text": "Hello"}]},
+  }
+  response = test_app.post("/run", json=payload)
+  assert response.status_code == 200
+  assert isinstance(response.json(), list)
+
+
+def test_default_app_name_not_set_raises_error(test_app, monkeypatch):
+  """Test that omitting app_name when ADK_DEFAULT_APP_NAME is not set raises 400/404."""
+  # Make sure environment variable is NOT set
+  monkeypatch.delenv("ADK_DEFAULT_APP_NAME", raising=False)
+
+  # 1. Accessing /users/{user_id}/sessions/{session_id} should return 404 because no rewrite happened
+  response = test_app.get("/users/test_user/sessions/test_session")
+  assert response.status_code == 404
+
+  # 2. Accessing /run with omitted app_name should return 400
+  payload = {
+      "user_id": "test_user",
+      "session_id": "test_session",
+      "new_message": {"role": "user", "parts": [{"text": "Hello"}]},
+  }
+  response = test_app.post("/run", json=payload)
+  assert response.status_code == 400
+  assert "app_name is required" in response.json()["detail"]
+
+
+def test_run_live_websocket_default_app_name(
+    mock_session_service,
+    mock_artifact_service,
+    mock_memory_service,
+    mock_agent_loader,
+    mock_eval_sets_manager,
+    mock_eval_set_results_manager,
+    monkeypatch,
+):
+  """Test that /run_live websocket endpoint resolves app_name using ADK_DEFAULT_APP_NAME."""
+  monkeypatch.setenv("ADK_DEFAULT_APP_NAME", "test_app")
+
+  test_app = _create_test_client(
+      mock_session_service,
+      mock_artifact_service,
+      mock_memory_service,
+      mock_agent_loader,
+      mock_eval_sets_manager,
+      mock_eval_set_results_manager,
+  )
+
+  async def setup_session():
+    await mock_session_service.create_session(
+        app_name="test_app",
+        user_id="user",
+        session_id="session",
+        state={},
+    )
+
+  asyncio.run(setup_session())
+
+  url = "/run_live?user_id=user&session_id=session&modalities=AUDIO"
+
+  with test_app.websocket_connect(url) as ws:
+    data = ws.receive_json()
+    assert data["author"] == "dummy agent"
+
+
+def test_run_live_websocket_missing_app_name_raises_error(
+    test_app, monkeypatch
+):
+  """Test that /run_live websocket connection fails when app_name and ADK_DEFAULT_APP_NAME are both missing."""
+  from fastapi.websockets import WebSocketDisconnect
+
+  monkeypatch.delenv("ADK_DEFAULT_APP_NAME", raising=False)
+
+  url = "/run_live?user_id=user&session_id=session&modalities=AUDIO"
+
+  with pytest.raises(WebSocketDisconnect) as exc_info:
+    with test_app.websocket_connect(url) as ws:
+      ws.receive_json()
+  assert exc_info.value.code == 1008
+
+
+def test_is_single_agent_directory(tmp_path):
+  """Verify that is_single_agent_directory only identifies directories with agent.py or root_agent.yaml."""
+  from google.adk.cli.utils.agent_loader import is_single_agent_directory
+
+  # Directory with agent.py (should be identified as agent)
+  agent_py_dir = tmp_path / "agent_py_dir"
+  agent_py_dir.mkdir()
+  (agent_py_dir / "agent.py").write_text("root_agent = 'dummy'")
+  assert is_single_agent_directory(str(agent_py_dir)) is True
+
+  # Directory with root_agent.yaml (should be identified as agent)
+  yaml_dir = tmp_path / "yaml_dir"
+  yaml_dir.mkdir()
+  (yaml_dir / "root_agent.yaml").write_text("root_agent: dummy")
+  assert is_single_agent_directory(str(yaml_dir)) is True
+
+  # Normal directory or standard package with __init__.py only (should NOT be identified as agent)
+  normal_pkg = tmp_path / "normal_pkg"
+  normal_pkg.mkdir()
+  (normal_pkg / "__init__.py").write_text(
+      "from .app import App\nimport something"
+  )
+  assert is_single_agent_directory(str(normal_pkg)) is False
+
+
+def test_agent_loader_single_agent_mode(tmp_path):
+  """Verify that AgentLoader automatically detects and configures single agent mode."""
+  agent_folder = tmp_path / "my_test_agent"
+  agent_folder.mkdir()
+  (agent_folder / "agent.py").write_text("root_agent = 'dummy'")
+
+  loader = fast_api_module.AgentLoader(str(agent_folder))
+
+  assert loader._is_single_agent is True
+  assert loader._single_agent_name == "my_test_agent"
+  assert loader.agents_dir == str(tmp_path)
+  assert loader.list_agents() == ["my_test_agent"]
+
+
+def test_single_agent_mode_detection(
+    tmp_path,
+    mock_session_service,
+    mock_artifact_service,
+    mock_memory_service,
+    mock_eval_sets_manager,
+    mock_eval_set_results_manager,
+):
+  """Verify that pointing agents_dir to a single agent folder enables single agent mode."""
+  agent_folder = tmp_path / "my_only_agent"
+  agent_folder.mkdir()
+  (agent_folder / "agent.py").write_text("root_agent = None")
+
+  with (
+      patch.object(signal, "signal", autospec=True, return_value=None),
+      patch.object(
+          fast_api_module,
+          "create_session_service_from_options",
+          autospec=True,
+          return_value=mock_session_service,
+      ),
+      patch.object(
+          fast_api_module,
+          "create_artifact_service_from_options",
+          autospec=True,
+          return_value=mock_artifact_service,
+      ),
+      patch.object(
+          fast_api_module,
+          "create_memory_service_from_options",
+          autospec=True,
+          return_value=mock_memory_service,
+      ),
+      patch.object(
+          fast_api_module,
+          "LocalEvalSetsManager",
+          autospec=True,
+          return_value=mock_eval_sets_manager,
+      ),
+      patch.object(
+          fast_api_module,
+          "LocalEvalSetResultsManager",
+          autospec=True,
+          return_value=mock_eval_set_results_manager,
+      ),
+  ):
+    app = get_fast_api_app(
+        agents_dir=str(agent_folder),
+        web=True,
+        session_service_uri="",
+        artifact_service_uri="",
+        memory_service_uri="",
+        allow_origins=None,
+        a2a=False,
+        host="127.0.0.1",
+        port=8000,
+    )
+    client = TestClient(app)
+
+    response = client.get("/list-apps")
+    assert response.status_code == 200
+    assert response.json() == ["my_only_agent"]
+
+
+def test_single_agent_mode_sets_default_app(
+    tmp_path,
+    mock_session_service,
+    mock_artifact_service,
+    mock_memory_service,
+    mock_eval_sets_manager,
+    mock_eval_set_results_manager,
+    monkeypatch,
+):
+  """Verify that in single agent mode, the agent is used as default app."""
+  # Set environment variable to something else, but single mode should take precedence.
+  monkeypatch.setenv("ADK_DEFAULT_APP_NAME", "some_other_app")
+
+  agent_folder = tmp_path / "my_only_agent"
+  agent_folder.mkdir()
+  (agent_folder / "agent.py").write_text("root_agent = None")
+
+  # Setup session data in the in-memory service
+  async def setup_session():
+    await mock_session_service.create_session(
+        app_name="my_only_agent",
+        user_id="test_user",
+        session_id="test_session",
+        state={},
+    )
+
+  asyncio.run(setup_session())
+
+  with (
+      patch.object(signal, "signal", autospec=True, return_value=None),
+      patch.object(
+          fast_api_module,
+          "create_session_service_from_options",
+          autospec=True,
+          return_value=mock_session_service,
+      ),
+      patch.object(
+          fast_api_module,
+          "create_artifact_service_from_options",
+          autospec=True,
+          return_value=mock_artifact_service,
+      ),
+      patch.object(
+          fast_api_module,
+          "create_memory_service_from_options",
+          autospec=True,
+          return_value=mock_memory_service,
+      ),
+      patch.object(
+          fast_api_module,
+          "LocalEvalSetsManager",
+          autospec=True,
+          return_value=mock_eval_sets_manager,
+      ),
+      patch.object(
+          fast_api_module,
+          "LocalEvalSetResultsManager",
+          autospec=True,
+          return_value=mock_eval_set_results_manager,
+      ),
+  ):
+    app = get_fast_api_app(
+        agents_dir=str(agent_folder),
+        web=True,
+        session_service_uri="",
+        artifact_service_uri="",
+        memory_service_uri="",
+        allow_origins=None,
+        a2a=False,
+        host="127.0.0.1",
+        port=8000,
+    )
+    client = TestClient(app)
+
+    # Accessing /users/{user_id}/sessions/{session_id} should work because of rewrite
+    response = client.get("/users/test_user/sessions/test_session")
+    assert response.status_code == 200
+    assert response.json()["id"] == "test_session"
 
 
 if __name__ == "__main__":
