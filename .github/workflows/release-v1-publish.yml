@@ -1,8 +1,8 @@
-# Step 6 (v2): Builds and publishes the v2 package to PyPI from a release/v{version} branch.
-# Reads version from .release-please-manifest-v2.json, converts to PEP 440,
+# Step 6 (v1): Builds and publishes the v1 package to PyPI from a release/v{version} branch.
+# Reads version from .release-please-manifest-v1.json, converts to PEP 440,
 # updates version.py, then builds and publishes.
-# Creates a merge-back PR (step 7) to sync release changes to v2.
-name: "Release v2: Publish to PyPi"
+# Creates a merge-back PR (step 7) to sync release changes to v1.
+name: "Release v1: Publish to PyPi"
 
 on:
   workflow_dispatch:
@@ -18,7 +18,7 @@ jobs:
       - name: Validate branch
         run: |
           if [[ ! "${GITHUB_REF_NAME}" =~ ^release/v[0-9]+\.[0-9]+\.[0-9]+ ]]; then
-            echo "Error: Must run from a release/v* branch (e.g., release/v2.0.0-alpha.2)"
+            echo "Error: Must run from a release/v* branch (e.g., release/v1.34.1)"
             exit 1
           fi
 
@@ -27,15 +27,15 @@ jobs:
       - name: Extract version from manifest and convert to PEP 440
         id: version
         run: |
-          VERSION=$(jq -r '.["."]' .github/.release-please-manifest-v2.json)
+          VERSION=$(jq -r '.["."]' .github/.release-please-manifest-v1.json)
           echo "semver=$VERSION" >> $GITHUB_OUTPUT
           echo "Semver version: $VERSION"
 
           # Convert semver pre-release to PEP 440:
-          #   2.0.0-alpha.1 -> 2.0.0a1
-          #   2.0.0-beta.1  -> 2.0.0b1
-          #   2.0.0-rc.1    -> 2.0.0rc1
-          #   2.0.0         -> 2.0.0 (no change for stable)
+          #   1.35.0-alpha.1 -> 1.35.0a1
+          #   1.35.0-beta.1  -> 1.35.0b1
+          #   1.35.0-rc.1    -> 1.35.0rc1
+          #   1.35.0         -> 1.35.0 (no change for stable)
           PEP440=$(echo "$VERSION" | sed -E 's/-alpha\./a/; s/-beta\./b/; s/-rc\./rc/')
           echo "pep440=$PEP440" >> $GITHUB_OUTPUT
           echo "PEP 440 version: $PEP440"
@@ -73,7 +73,7 @@ jobs:
           PEP440_VERSION: ${{ steps.version.outputs.pep440 }}
         run: |
           gh pr create \
-            --base v2 \
+            --base v1 \
             --head "${GITHUB_REF_NAME}" \
-            --title "chore: merge release v${PEP440_VERSION} to v2" \
-            --body "Syncs version bump and CHANGELOG from release v${SEMVER_VERSION} to v2."
+            --title "chore: merge release v${PEP440_VERSION} to v1" \
+            --body "Syncs version bump and CHANGELOG from release v${SEMVER_VERSION} to v1."

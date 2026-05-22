@@ -285,11 +285,17 @@ async def test_receive_populates_live_session_id(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    'conn_fixture',
+    ['gemini_api_connection', 'gemini_connection'],
+)
 async def test_receive_transcript_finished_on_interrupt(
-    gemini_api_connection,
+    conn_fixture,
     mock_gemini_session,
+    request,
 ):
   """Test receive finishes transcription on interrupt signal."""
+  connection = request.getfixturevalue(conn_fixture)
 
   message1 = mock.Mock()
   message1.usage_metadata = None
@@ -345,7 +351,7 @@ async def test_receive_transcript_finished_on_interrupt(
   receive_mock = mock.Mock(return_value=mock_receive_generator())
   mock_gemini_session.receive = receive_mock
 
-  responses = [resp async for resp in gemini_api_connection.receive()]
+  responses = [resp async for resp in connection.receive()]
 
   assert len(responses) == 5
   assert responses[4].interrupted is True
@@ -365,11 +371,17 @@ async def test_receive_transcript_finished_on_interrupt(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    'conn_fixture',
+    ['gemini_api_connection', 'gemini_connection'],
+)
 async def test_receive_transcript_finished_on_generation_complete(
-    gemini_api_connection,
+    conn_fixture,
     mock_gemini_session,
+    request,
 ):
   """Test receive finishes transcription on generation_complete signal."""
+  connection = request.getfixturevalue(conn_fixture)
 
   message1 = mock.Mock()
   message1.usage_metadata = None
@@ -425,7 +437,7 @@ async def test_receive_transcript_finished_on_generation_complete(
   receive_mock = mock.Mock(return_value=mock_receive_generator())
   mock_gemini_session.receive = receive_mock
 
-  responses = [resp async for resp in gemini_api_connection.receive()]
+  responses = [resp async for resp in connection.receive()]
 
   assert len(responses) == 4
 
@@ -444,11 +456,17 @@ async def test_receive_transcript_finished_on_generation_complete(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    'conn_fixture',
+    ['gemini_api_connection', 'gemini_connection'],
+)
 async def test_receive_transcript_finished_on_turn_complete(
-    gemini_api_connection,
+    conn_fixture,
     mock_gemini_session,
+    request,
 ):
   """Test receive finishes transcription on interrupt or complete signals."""
+  connection = request.getfixturevalue(conn_fixture)
 
   message1 = mock.Mock()
   message1.usage_metadata = None
@@ -504,7 +522,7 @@ async def test_receive_transcript_finished_on_turn_complete(
   receive_mock = mock.Mock(return_value=mock_receive_generator())
   mock_gemini_session.receive = receive_mock
 
-  responses = [resp async for resp in gemini_api_connection.receive()]
+  responses = [resp async for resp in connection.receive()]
 
   assert len(responses) == 5
   assert responses[4].turn_complete is True
@@ -867,6 +885,7 @@ async def test_receive_grounding_metadata_standalone(
   mock_server_content.interrupted = False
   mock_server_content.input_transcription = None
   mock_server_content.output_transcription = None
+  mock_server_content.generation_complete = False
 
   mock_message = mock.create_autospec(types.LiveServerMessage, instance=True)
   mock_message.usage_metadata = None
@@ -911,6 +930,7 @@ async def test_receive_grounding_metadata_with_content(
   mock_server_content.interrupted = False
   mock_server_content.input_transcription = None
   mock_server_content.output_transcription = None
+  mock_server_content.generation_complete = False
 
   mock_message = mock.create_autospec(types.LiveServerMessage, instance=True)
   mock_message.usage_metadata = None
@@ -981,6 +1001,7 @@ async def test_receive_tool_call_and_grounding_metadata_with_native_audio(
   mock_server_content.interrupted = False
   mock_server_content.input_transcription = None
   mock_server_content.output_transcription = None
+  mock_server_content.generation_complete = False
 
   mock_metadata_msg = mock.create_autospec(
       types.LiveServerMessage, instance=True
@@ -1001,6 +1022,7 @@ async def test_receive_tool_call_and_grounding_metadata_with_native_audio(
   mock_turn_complete_content.interrupted = False
   mock_turn_complete_content.input_transcription = None
   mock_turn_complete_content.output_transcription = None
+  mock_turn_complete_content.generation_complete = False
 
   mock_turn_complete_msg = mock.create_autospec(
       types.LiveServerMessage, instance=True
