@@ -139,15 +139,46 @@ class FunctionTool(BaseTool):
         target_type = type_hints.get(param_name, param.annotation)
         if target_type != inspect.Parameter.empty:
 
-          # Handle Optional[PydanticModel] types
+          # Handle Optional[PydanticModel] and Union[Model, Model, ...] types
           if get_origin(param.annotation) is Union:
             union_args = get_args(param.annotation)
-            # Find the non-None type in Optional[T] (which is Union[T, None])
+            # Separate None from the concrete types in the union.
             non_none_types = [
                 arg for arg in union_args if arg is not type(None)
             ]
             if len(non_none_types) == 1:
+              # Simple Optional[T] — unwrap and let the single-model path
+              # below handle the conversion.
               target_type = non_none_types[0]
+            elif len(non_none_types) > 1 and isinstance(args[param_name], dict):
+              # Union[ModelA, ModelB, ...] — if the value is already an
+              # instance of one of the union members, leave it alone.
+              # Otherwise try each Pydantic branch in declaration order
+              # until one validates successfully.
+              if not any(
+                  isinstance(args[param_name], t)
+                  for t in non_none_types
+                  if inspect.isclass(t)
+              ):
+                pydantic_types = [
+                    t
+                    for t in non_none_types
+                    if inspect.isclass(t) and issubclass(t, pydantic.BaseModel)
+                ]
+                for candidate_type in pydantic_types:
+                  try:
+                    converted_args[param_name] = candidate_type.model_validate(
+                        args[param_name]
+                    )
+                    break
+                  except Exception:
+                    continue
+                else:
+                  logger.warning(
+                      f"Failed to convert argument '{param_name}' to any of"
+                      f' the Union Pydantic types: {pydantic_types}'
+                  )
+              continue
 
           # Check if the target type is a Pydantic model
           if inspect.isclass(target_type) and issubclass(
