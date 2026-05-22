@@ -852,6 +852,38 @@ async def test_connect_without_custom_headers(gemini_llm, llm_request):
         )
 
 
+@pytest.mark.asyncio
+async def test_connect_copies_thinking_config_to_live_config(
+    gemini_llm, llm_request
+):
+  """Test that live connections preserve thinking_config from generate config."""
+  thinking_config = types.ThinkingConfig(
+      thinking_budget=10,
+      include_thoughts=True,
+  )
+  llm_request.config.thinking_config = thinking_config
+  llm_request.live_connect_config = types.LiveConnectConfig()
+
+  mock_live_session = mock.AsyncMock()
+
+  with mock.patch.object(gemini_llm, "_live_api_client") as mock_live_client:
+
+    class MockLiveConnect:
+
+      async def __aenter__(self):
+        return mock_live_session
+
+      async def __aexit__(self, *args):
+        pass
+
+    mock_live_client.aio.live.connect.return_value = MockLiveConnect()
+
+    async with gemini_llm.connect(llm_request):
+      mock_live_client.aio.live.connect.assert_called_once()
+      config_arg = mock_live_client.aio.live.connect.call_args.kwargs["config"]
+      assert config_arg.thinking_config == thinking_config
+
+
 @pytest.mark.parametrize(
     (
         "api_backend, "
