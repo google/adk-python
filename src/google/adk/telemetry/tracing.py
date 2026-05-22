@@ -560,18 +560,15 @@ def use_generate_content_span(
       'gcp.vertex.agent.event_id': model_response_event.id,
       'gcp.vertex.agent.invocation_id': invocation_context.invocation_id,
   }
-  if (
-      _is_gemini_agent(invocation_context.agent)
-      and _instrumented_with_opentelemetry_instrumentation_google_genai()
-  ):
-    with _use_extra_generate_content_attributes(common_attributes):
-      yield
-  else:
+  if _should_emit_native_telemetry(invocation_context.agent):
     with _use_native_generate_content_span_stable_semconv(
         llm_request=llm_request,
         common_attributes=common_attributes,
     ) as span:
       yield span.span
+  else:
+    with _use_extra_generate_content_attributes(common_attributes):
+      yield
 
 
 @asynccontextmanager
@@ -594,13 +591,7 @@ async def use_inference_span(
       'gcp.vertex.agent.event_id': model_response_event.id,
       'gcp.vertex.agent.invocation_id': invocation_context.invocation_id,
   }
-  if (
-      _is_gemini_agent(invocation_context.agent)
-      and _instrumented_with_opentelemetry_instrumentation_google_genai()
-  ):
-    with _use_extra_generate_content_attributes(common_attributes):
-      yield
-  else:
+  if _should_emit_native_telemetry(invocation_context.agent):
     async with _use_native_generate_content_span(
         llm_request=llm_request,
         common_attributes=common_attributes,
@@ -618,6 +609,9 @@ async def use_inference_span(
             gc_span.operation_details_attributes,
             gc_span.operation_details_common_attributes,
         )
+  else:
+    with _use_extra_generate_content_attributes(common_attributes):
+      yield
 
 
 def _should_log_prompt_response_content() -> bool:
@@ -659,6 +653,17 @@ def _instrumented_with_opentelemetry_instrumentation_google_genai() -> bool:
     maybe_wrapped_function = wrapped  # pyright: ignore[reportAny]
 
   return False
+
+
+def _should_emit_native_telemetry(agent: BaseAgent) -> bool:
+  """If the google-genai instrumentation lib is active AND this is a Gemini agent, then the lib already emits inference metrics."""
+  if (
+      _instrumented_with_opentelemetry_instrumentation_google_genai()
+      and _is_gemini_agent(agent)
+  ):
+    return False
+
+  return True
 
 
 @contextmanager
