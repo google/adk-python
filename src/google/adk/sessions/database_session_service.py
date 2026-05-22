@@ -744,13 +744,15 @@ class DatabaseSessionService(BaseSessionService):
         storage_session.update_time = update_time
         sql_session.add(schema.StorageEvent.from_event(session, event))
 
+        # Read revision fields before commit. Post-commit ORM attribute access
+        # can lazy-load expired columns and trigger MissingGreenlet with asyncpg
+        # when pool_pre_ping is enabled.
+        last_update_time = storage_session.get_update_timestamp(is_sqlite)
+        storage_update_marker = storage_session.get_update_marker()
         await sql_session.commit()
 
-        # Update timestamp with commit time
-        session.last_update_time = storage_session.get_update_timestamp(
-            is_sqlite
-        )
-        session._storage_update_marker = storage_session.get_update_marker()
+        session.last_update_time = last_update_time
+        session._storage_update_marker = storage_update_marker
 
     # Also update the in-memory session
     await super().append_event(session=session, event=event)
