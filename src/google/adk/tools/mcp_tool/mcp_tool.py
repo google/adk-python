@@ -461,6 +461,12 @@ class McpTool(BaseAuthenticatedTool):
       )
     return result
 
+  def _detect_error_in_response(self, response: Any) -> Optional[str]:
+    """Telemetry hook: returns an error type if the response indicates an error."""
+    if isinstance(response, dict) and response.get("isError"):
+      return "MCP_TOOL_ERROR"
+    return None
+
   def _resolve_progress_callback(
       self, tool_context: ToolContext
   ) -> Optional[ProgressFnT]:

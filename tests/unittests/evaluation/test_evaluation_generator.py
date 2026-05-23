@@ -453,6 +453,62 @@ class TestGenerateInferencesForSingleUserInvocationLive:
     with pytest.raises(StopAsyncIteration):
       await gen.__anext__()
 
+  @pytest.mark.asyncio
+  async def test_generate_inferences_live_with_synthetic_events(self, mocker):
+    """Tests live inference generation with synthetic events."""
+    mock_live_request_queue = mocker.MagicMock()
+    event_queue = asyncio.Queue()
+    turn_complete_event = asyncio.Event()
+
+    user_content = types.Content(parts=[types.Part(text="User query")])
+    invocation_id = "inv1"
+
+    transcription = types.Transcription(text="Partial transcription")
+    partial_event = Event(
+        author="agent",
+        content=types.Content(parts=[]),
+        invocation_id=invocation_id,
+        output_transcription=transcription,
+        partial=True,
+    )
+
+    gen = EvaluationGenerator._generate_inferences_for_single_user_invocation_live(
+        live_request_queue=mock_live_request_queue,
+        event_queue=event_queue,
+        user_message=user_content,
+        current_invocation_id=invocation_id,
+        turn_complete_event=turn_complete_event,
+        live_timeout_seconds=300,
+        agent_name="custom_agent_name",
+    )
+
+    # First yield should be the user message
+    first_event = await gen.__anext__()
+    assert first_event.author == "user"
+    assert first_event.content == user_content
+    assert first_event.invocation_id == invocation_id
+
+    # Mock turn_complete_event.wait to avoid blocking
+    turn_complete_event.wait = mocker.AsyncMock()
+
+    # Put the partial event in the queue
+    await event_queue.put(partial_event)
+
+    # Now advance
+    second_event = await gen.__anext__()
+    assert second_event == partial_event
+
+    # Next should be the synthetic event
+    third_event = await gen.__anext__()
+    assert third_event.author == "custom_agent_name"
+    assert third_event.invocation_id == invocation_id
+    assert third_event.content.role == "model"
+    assert third_event.content.parts[0].text == "Partial transcription"
+
+    # The generator should be exhausted now
+    with pytest.raises(StopAsyncIteration):
+      await gen.__anext__()
+
 
 @pytest.fixture
 def mock_runner(mocker):
