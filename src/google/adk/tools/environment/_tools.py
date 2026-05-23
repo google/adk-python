@@ -17,6 +17,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from typing import Any
 from typing import Optional
 from typing import TYPE_CHECKING
@@ -135,6 +136,12 @@ class ExecuteTool(BaseTool):
       result['status'] = 'error'
       result['error'] = f'Command timed out after {DEFAULT_TIMEOUT}s.'
     return result
+
+  def _detect_error_in_response(self, response: Any) -> Optional[str]:
+    """Telemetry hook: returns an error type if the response indicates an error."""
+    if isinstance(response, dict) and response.get('status') == 'error':
+      return 'TOOL_ERROR'
+    return None
 
 
 @experimental
@@ -260,6 +267,12 @@ class ReadFileTool(BaseTool):
     except Exception as e:
       return {'status': 'error', 'error': str(e)}
 
+  def _detect_error_in_response(self, response: Any) -> Optional[str]:
+    """Telemetry hook: returns an error type if the response indicates an error."""
+    if isinstance(response, dict) and response.get('status') == 'error':
+      return 'TOOL_ERROR'
+    return None
+
 
 @experimental
 class WriteFileTool(BaseTool):
@@ -310,6 +323,12 @@ class WriteFileTool(BaseTool):
     except Exception as e:
       return {'status': 'error', 'error': str(e)}
     return {'status': 'ok', 'message': f'Wrote {path}'}
+
+  def _detect_error_in_response(self, response: Any) -> Optional[str]:
+    """Telemetry hook: returns an error type if the response indicates an error."""
+    if isinstance(response, dict) and response.get('status') == 'error':
+      return 'TOOL_ERROR'
+    return None
 
 
 @experimental
@@ -381,7 +400,13 @@ class EditFileTool(BaseTool):
     except FileNotFoundError:
       return {'status': 'error', 'error': f'File not found: {path}'}
 
-    count = content.count(old_string)
+    # Normalize line breaks in old_string to \n and use regex for flexible matching
+    normalized_old = old_string.replace('\r\n', '\n')
+    pattern = re.escape(normalized_old).replace('\n', '\r?\n')
+
+    matches = re.findall(pattern, content)
+    count = len(matches)
+
     if count == 0:
       return {
           'status': 'error',
@@ -399,6 +424,12 @@ class EditFileTool(BaseTool):
           ),
       }
 
-    new_content = content.replace(old_string, new_string, 1)
+    new_content = re.sub(pattern, lambda m: new_string, content, count=1)
     await self._environment.write_file(path, new_content)
     return {'status': 'ok', 'message': f'Edited {path}'}
+
+  def _detect_error_in_response(self, response: Any) -> Optional[str]:
+    """Telemetry hook: returns an error type if the response indicates an error."""
+    if isinstance(response, dict) and response.get('status') == 'error':
+      return 'TOOL_ERROR'
+    return None

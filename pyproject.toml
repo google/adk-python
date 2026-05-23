@@ -47,6 +47,7 @@ dependencies = [
   "packaging>=21",
   "pydantic>=2.12,<3",
   "python-dotenv>=1,<2",
+  "python-multipart>=0.0.9,<1",
   # go/keep-sorted start
   "pyyaml>=6.0.2,<7",
   "requests>=2.32.4,<3",
