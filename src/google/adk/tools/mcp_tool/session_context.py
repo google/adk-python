@@ -150,10 +150,15 @@ class SessionContext:
     """Run the complete session context within a single task."""
     try:
       async with AsyncExitStack() as exit_stack:
-        transports = await asyncio.wait_for(
-            exit_stack.enter_async_context(self._client),
-            timeout=self._timeout,
-        )
+        # The MCP client uses AnyIO TaskGroup/CancelScope internally,
+        # which must be entered and exited in the same task. asyncio.wait_for
+        # runs its target in a nested task and can cancel from a different
+        # task on timeout, producing "Attempted to exit cancel scope in a
+        # different task" errors. The connection-establishment timeout
+        # is still enforced by MCPSessionManager.create_session via its
+        # outer asyncio.wait_for around
+        # exit_stack.enter_async_context(SessionContext(...)).
+        transports = await exit_stack.enter_async_context(self._client)
         # The streamable http client returns a GetSessionCallback in addition
         # to the read/write MemoryObjectStreams needed to build the
         # ClientSession. We limit to the first two values to be compatible
