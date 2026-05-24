@@ -1200,8 +1200,10 @@ async def test_run_compaction_for_sliding_window_adds_summary_trace(
     self.assertEqual(result_contents[2].parts[0].text, 'e3')
 
   @pytest.mark.xfail(
-      reason='Sliding-window compaction folds unresolved long-running tool calls '
-      'before the resume response arrives.'
+      reason=(
+          'Sliding-window compaction folds unresolved long-running tool calls '
+          'before the resume response arrives.'
+      )
   )
   async def test_sliding_window_compacts_long_running_function_call_before_resume(
       self,
@@ -1393,7 +1395,11 @@ async def test_run_compaction_for_sliding_window_adds_summary_trace(
     # Ensure the long-running function call remains visible (one of the
     # content items should be a function_call with the expected name).
     assert any(
-        (c.parts and c.parts[0].function_call and c.parts[0].function_call.name == 'long_running_tool_func')
+        (
+            c.parts
+            and c.parts[0].function_call
+            and c.parts[0].function_call.name == 'long_running_tool_func'
+        )
         for c in result_contents
     )
 

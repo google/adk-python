@@ -307,7 +307,9 @@ def _event_function_call_ids(event: Event) -> set[str]:
 def _event_function_response_ids(event: Event) -> set[str]:
   """Returns function response ids found in an event."""
   # Ignore intermediate/pending LRF responses marked on the event.
-  if event.actions and getattr(event.actions, 'is_intermediate_long_running_response', False):
+  if event.actions and getattr(
+      event.actions, 'is_intermediate_long_running_response', False
+  ):
     return set()
 
   function_response_ids: set[str] = set()
