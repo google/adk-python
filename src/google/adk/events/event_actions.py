@@ -119,3 +119,10 @@ class EventActions(BaseModel):
 
   set_model_response: Optional[Any] = None
   """The model response structured output."""
+
+  # Marks a function_response event as an intermediate/pending response
+  # emitted by a long-running tool. When True, compaction should treat the
+  # event's function response as non-final and not use it to consider a
+  # function call resolved.
+  is_intermediate_long_running_response: Optional[bool] = None
+  """If true, the function_response is intermediate/pending for an LRF."""

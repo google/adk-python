@@ -1029,6 +1029,16 @@ async def _process_function_live_helper(
             ' pending.'
         )
     }
+    # Mark the tool context actions so downstream compaction logic knows
+    # this function_response is an intermediate/pending update and should
+    # not be treated as a final response that resolves the corresponding
+    # function call.
+    try:
+      tool_context.actions.is_intermediate_long_running_response = True
+    except Exception:
+      # Defensive: do not let instrumentation or missing actions break
+      # tool execution.
+      logger.debug('Unable to mark intermediate long-running response')
   else:
     # Check if we should run tools in thread pool to avoid blocking event loop
     thread_pool_config = invocation_context.run_config.tool_thread_pool_config
