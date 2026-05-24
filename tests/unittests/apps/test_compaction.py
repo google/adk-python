@@ -19,6 +19,7 @@ from unittest.mock import Mock
 from google.adk.agents.base_agent import BaseAgent
 from google.adk.apps.app import App
 from google.adk.apps.app import EventsCompactionConfig
+from google.adk.apps.app import ResumabilityConfig
 from google.adk.apps.base_events_summarizer import BaseEventsSummarizer
 from google.adk.apps.compaction import _run_compaction_for_sliding_window
 import google.adk.apps.compaction as compaction_module
@@ -1197,6 +1198,204 @@ async def test_run_compaction_for_sliding_window_adds_summary_trace(
         'tool',
     )
     self.assertEqual(result_contents[2].parts[0].text, 'e3')
+
+  @pytest.mark.xfail(
+      reason='Sliding-window compaction folds unresolved long-running tool calls '
+      'before the resume response arrives.'
+  )
+  async def test_sliding_window_compacts_long_running_function_call_before_resume(
+      self,
+  ):
+    """Long-running tool resumes should survive sliding-window compaction."""
+    app = App(
+        name='test',
+        root_agent=Mock(spec=BaseAgent),
+        resumability_config=ResumabilityConfig(is_resumable=True),
+        events_compaction_config=EventsCompactionConfig(
+            summarizer=self.mock_compactor,
+            compaction_interval=2,
+            overlap_size=0,
+        ),
+    )
+    function_call_id = 'long-running-call-1'
+    events = [
+        self._create_event(1.0, 'inv1', 'e1'),
+        Event(
+            timestamp=2.0,
+            invocation_id='inv2',
+            author='agent',
+            content=Content(
+                role='model',
+                parts=[
+                    Part(
+                        function_call=types.FunctionCall(
+                            id=function_call_id,
+                            name='long_running_tool_func',
+                            args={},
+                        )
+                    )
+                ],
+            ),
+            long_running_tool_ids={function_call_id},
+        ),
+        Event(
+            timestamp=3.0,
+            invocation_id='inv2',
+            author='agent',
+            content=Content(
+                role='user',
+                parts=[
+                    Part(
+                        function_response=types.FunctionResponse(
+                            id=function_call_id,
+                            name='long_running_tool_func',
+                            response={'status': 'pending'},
+                        )
+                    )
+                ],
+            ),
+        ),
+        self._create_event(4.0, 'inv3', 'e3'),
+    ]
+    session = Session(app_name='test', user_id='u1', id='s1', events=events)
+
+    mock_compacted_event = self._create_compacted_event(
+        1.0, 4.0, 'Summary inv1-inv3'
+    )
+    self.mock_compactor.maybe_summarize_events.return_value = (
+        mock_compacted_event
+    )
+
+    await _run_compaction_for_sliding_window(
+        app, session, self.mock_session_service
+    )
+
+    appended_event = self.mock_session_service.append_event.call_args[1][
+        'event'
+    ]
+    resume_event = Event(
+        timestamp=5.0,
+        invocation_id='inv4',
+        author='user',
+        content=Content(
+            role='user',
+            parts=[
+                Part(
+                    function_response=types.FunctionResponse(
+                        id=function_call_id,
+                        name='long_running_tool_func',
+                        response={'status': 'confirmed'},
+                    )
+                )
+            ],
+        ),
+    )
+
+    _contents._get_contents(None, events + [appended_event, resume_event])
+
+  async def test_sliding_window_preserves_long_running_call_until_resume(
+      self,
+  ):
+    """Regression: intermediate LRF responses must not resolve the call for compaction."""
+    app = App(
+        name='test',
+        root_agent=Mock(spec=BaseAgent),
+        resumability_config=ResumabilityConfig(is_resumable=True),
+        events_compaction_config=EventsCompactionConfig(
+            summarizer=self.mock_compactor,
+            compaction_interval=2,
+            overlap_size=0,
+        ),
+    )
+    function_call_id = 'long-running-call-1'
+    events = [
+        self._create_event(1.0, 'inv1', 'e1'),
+        Event(
+            timestamp=2.0,
+            invocation_id='inv2',
+            author='agent',
+            content=Content(
+                role='model',
+                parts=[
+                    Part(
+                        function_call=types.FunctionCall(
+                            id=function_call_id,
+                            name='long_running_tool_func',
+                            args={},
+                        )
+                    )
+                ],
+            ),
+            long_running_tool_ids={function_call_id},
+        ),
+        # Intermediate/pending response — mark as intermediate via actions
+        Event(
+            timestamp=3.0,
+            invocation_id='inv2',
+            author='agent',
+            content=Content(
+                role='user',
+                parts=[
+                    Part(
+                        function_response=types.FunctionResponse(
+                            id=function_call_id,
+                            name='long_running_tool_func',
+                            response={'status': 'pending'},
+                        )
+                    )
+                ],
+            ),
+            actions=EventActions(is_intermediate_long_running_response=True),
+        ),
+        self._create_event(4.0, 'inv3', 'e3'),
+    ]
+    session = Session(app_name='test', user_id='u1', id='s1', events=events)
+
+    mock_compacted_event = self._create_compacted_event(
+        1.0, 4.0, 'Summary inv1-inv3'
+    )
+    self.mock_compactor.maybe_summarize_events.return_value = (
+        mock_compacted_event
+    )
+
+    await _run_compaction_for_sliding_window(
+        app, session, self.mock_session_service
+    )
+
+    appended_event = self.mock_session_service.append_event.call_args[1][
+        'event'
+    ]
+
+    # Now simulate the actual resume arriving later and build contents — this
+    # should not raise and the long-running call should still be resolvable.
+    resume_event = Event(
+        timestamp=5.0,
+        invocation_id='inv4',
+        author='user',
+        content=Content(
+            role='user',
+            parts=[
+                Part(
+                    function_response=types.FunctionResponse(
+                        id=function_call_id,
+                        name='long_running_tool_func',
+                        response={'status': 'confirmed'},
+                    )
+                )
+            ],
+        ),
+    )
+
+    result_contents = _contents._get_contents(
+        None, events + [appended_event, resume_event]
+    )
+
+    # Ensure the long-running function call remains visible (one of the
+    # content items should be a function_call with the expected name).
+    assert any(
+        (c.parts and c.parts[0].function_call and c.parts[0].function_call.name == 'long_running_tool_func')
+        for c in result_contents
+    )
 
   async def test_token_threshold_excludes_pending_function_call_events(self):
     """Token-threshold compaction stays contiguous before pending calls."""
