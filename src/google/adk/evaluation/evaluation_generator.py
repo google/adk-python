@@ -662,6 +662,7 @@ class EvaluationGenerator:
             final_response = event.content
             final_event = event
 
+          should_add_event = event.grounding_metadata is not None
           for p in event.content.parts:
             if (
                 p.function_call
@@ -669,16 +670,35 @@ class EvaluationGenerator:
                 or p.text
                 or p.inline_data
             ):
-              events_to_add.append(event)
+              should_add_event = True
               break
+          if should_add_event:
+            events_to_add.append(event)
+        elif event.grounding_metadata is not None:
+          events_to_add.append(event)
 
-      invocation_events = [
-          InvocationEvent(author=e.author, content=e.content)
-          for e in events_to_add
-          if final_event is None
-          or e is not final_event
-          or e.get_function_calls()
-      ]
+      invocation_events = []
+      for e in events_to_add:
+        # Keep the final event only when it carries tool calls (so the judge
+        # still sees the function call) or grounding metadata; every other
+        # event is always included.
+        if (
+            e is final_event
+            and not e.get_function_calls()
+            and not e.grounding_metadata
+        ):
+          continue
+        invocation_events.append(
+            InvocationEvent(
+                author=e.author,
+                content=(
+                    e.content
+                    if e is not final_event or e.get_function_calls()
+                    else None
+                ),
+                grounding_metadata=e.grounding_metadata,
+            )
+        )
       invocations.append(
           Invocation(
               invocation_id=invocation_id,

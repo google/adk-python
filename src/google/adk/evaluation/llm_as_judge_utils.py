@@ -153,6 +153,20 @@ class _ToolCallsAndResponses(EvalBaseModel):
   tool_calls_and_response: list[_ToolCallAndResponse]
 
 
+class _GroundingMetadataEntry(EvalBaseModel):
+  """Internal data model to capture grounding metadata from an invocation."""
+
+  step: int
+  author: str
+  grounding_metadata: genai_types.GroundingMetadata
+
+
+class _GroundingMetadataEntries(EvalBaseModel):
+  """Internal data model used for serializing grounding metadata."""
+
+  grounding_metadata: list[_GroundingMetadataEntry]
+
+
 def get_tool_calls_and_responses_as_json_str(
     intermediate_data: Optional[IntermediateDataType],
 ) -> str:
@@ -182,6 +196,37 @@ def get_tool_calls_and_responses_as_json_str(
   )
 
   return internal_tool_calls_and_responses.model_dump_json(
+      indent=2,
+      exclude_unset=True,
+      exclude_defaults=True,
+      exclude_none=True,
+  )
+
+
+def get_grounding_metadata_as_json_str(
+    intermediate_data: Optional[IntermediateDataType],
+) -> str:
+  """Returns a JSON string representation of grounding metadata."""
+  if not isinstance(intermediate_data, InvocationEvents):
+    return "No grounding metadata was provided."
+
+  grounding_metadata = []
+  for idx, invocation_event in enumerate(intermediate_data.invocation_events):
+    if invocation_event.grounding_metadata:
+      grounding_metadata.append(
+          _GroundingMetadataEntry(
+              step=idx,
+              author=invocation_event.author,
+              grounding_metadata=invocation_event.grounding_metadata,
+          )
+      )
+
+  if not grounding_metadata:
+    return "No grounding metadata was provided."
+
+  return _GroundingMetadataEntries(
+      grounding_metadata=grounding_metadata
+  ).model_dump_json(
       indent=2,
       exclude_unset=True,
       exclude_defaults=True,
