@@ -26,8 +26,12 @@ from typing import Mapping
 from typing import Optional
 
 import click
-from fastapi import FastAPI, File, HTTPException, UploadFile
-from fastapi.responses import FileResponse, PlainTextResponse
+from fastapi import FastAPI
+from fastapi import File
+from fastapi import HTTPException
+from fastapi import UploadFile
+from fastapi.responses import FileResponse
+from fastapi.responses import PlainTextResponse
 from opentelemetry.sdk.trace import export
 from opentelemetry.sdk.trace import TracerProvider
 from starlette.types import Lifespan
@@ -36,9 +40,11 @@ from watchdog.observers import Observer
 from ..auth.credential_service.in_memory_credential_service import InMemoryCredentialService
 from ..runners import Runner
 from .api_server import ApiServer
+from .dev_server import DevServer
 from .service_registry import load_services_module
 from .utils import envs
 from .utils.agent_change_handler import AgentChangeEventHandler
+from .utils.agent_loader import is_single_agent_directory
 from .utils.base_agent_loader import BaseAgentLoader
 from .utils.service_factory import _create_task_store_from_options
 from .utils.service_factory import create_artifact_service_from_options
@@ -79,6 +85,7 @@ def _register_builder_endpoints(app: FastAPI, web: bool, agents_dir: str):
     return
 
   import shutil
+
   import yaml
 
   agents_base_path = (Path.cwd() / agents_dir).resolve()
@@ -447,13 +454,21 @@ def get_fast_api_app(
     The configured FastAPI application instance.
   """
 
-
-
   # Enable denylist enforcement for config loads if web UI is enabled.
   if web:
     from ..agents import config_agent_utils
 
     config_agent_utils._set_enforce_denylist(True)
+
+  # Detect single agent mode
+  agents_path = Path(agents_dir).resolve()
+  is_single_agent = is_single_agent_directory(agents_path)
+
+  original_agents_dir = agents_dir
+  single_agent_name = None
+  if is_single_agent:
+    single_agent_name = agents_path.name
+    agents_dir = str(agents_path.parent)
 
   # Set up eval managers.
   if eval_storage_uri:
@@ -467,12 +482,16 @@ def get_fast_api_app(
   else:
     this_module = sys.modules[__name__]
     eval_sets_manager = this_module.LocalEvalSetsManager(agents_dir=agents_dir)
-    eval_set_results_manager = this_module.LocalEvalSetResultsManager(agents_dir=agents_dir)
+    eval_set_results_manager = this_module.LocalEvalSetResultsManager(
+        agents_dir=agents_dir
+    )
 
   # initialize Agent Loader if not passed as argument
+  this_module = sys.modules[__name__]
   if agent_loader is None:
-    this_module = sys.modules[__name__]
-    agent_loader = this_module.AgentLoader(agents_dir)
+    agent_loader = this_module.AgentLoader(original_agents_dir)
+  elif is_single_agent and isinstance(agent_loader, this_module.AgentLoader):
+    agent_loader._set_single_agent_mode(single_agent_name, agents_dir)
 
   # Load services.py from agents_dir for custom service registration.
   load_services_module(agents_dir)
@@ -508,26 +527,10 @@ def get_fast_api_app(
   # Build  the Credential service
   credential_service = InMemoryCredentialService()
 
-  # Conditionally import and instantiate the appropriate server class
+  # Instantiate the appropriate server class based on web option
   # If web=True, use DevServer (includes all endpoints: production + dev)
   # If web=False, use ApiServer (production-safe endpoints only)
-  if web:
-    try:
-      from .dev_server import DevServer
-
-      ServerClass = DevServer
-    except ImportError:
-      logger.warning(
-          "DevServer not found, falling back to ApiServer. "
-          "Dev-only endpoints will not be available."
-      )
-      from .api_server import ApiServer
-
-      ServerClass = ApiServer
-  else:
-    from .api_server import ApiServer
-
-    ServerClass = ApiServer
+  ServerClass = DevServer if web else ApiServer
 
   adk_web_server = ServerClass(
       agent_loader=agent_loader,
@@ -546,6 +549,10 @@ def get_fast_api_app(
       trigger_sources=trigger_sources,
       default_llm_model=default_llm_model,
   )
+
+  # In single agent mode, use that agent as the default app.
+  if is_single_agent:
+    adk_web_server.default_app_name = single_agent_name
 
   # Callbacks & other optional args for when constructing the FastAPI instance
   extra_fast_api_args = {}

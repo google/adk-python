@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import logging
+
 from typing_extensions import deprecated
 
 from .api_server import _parse_cors_origins

@@ -2,9 +2,9 @@ name: Python Unit Tests
 
 on:
   push:
-    branches: [ main ]
+    branches: [main, v1, v2]
   pull_request:
-    branches: [ main, v2 ]
+    branches: [main, v1, v2]
 
 permissions:
   contents: read
@@ -12,6 +12,7 @@ permissions:
 jobs:
   test:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     strategy:
       matrix:
         python-version: ["3.10", "3.11", "3.12", "3.13", "3.14"]

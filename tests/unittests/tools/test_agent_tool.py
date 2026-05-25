@@ -1090,7 +1090,6 @@ async def test_run_async_skips_thought_parts():
   assert result == '42'
 
 
-
 class TestAgentToolWithCompositeAgents:
   """Tests for AgentTool wrapping composite agents (SequentialAgent, etc.)."""
 

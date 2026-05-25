@@ -60,7 +60,7 @@ async def get_weather(city: str, tool_context: ToolContext) -> dict:
   if 'weather_requests' not in tool_context.state:
     tool_context.state['weather_requests'] = []
   tool_context.state['weather_requests'].append(
-      {'city': city, 'timestamp': time.time(), 'result': result}
+      {'city': city, 'result': result}
   )
 
   return {
@@ -108,14 +108,12 @@ async def get_currency_rate(
       'from': from_currency,
       'to': to_currency,
       'rate': rate,
-      'timestamp': time.time(),
   })
 
   return {
       'from_currency': from_currency,
       'to_currency': to_currency,
       'exchange_rate': rate,
-      'timestamp': time.time(),
   }
 
 
@@ -163,7 +161,6 @@ async def calculate_distance(
       'city1': city1,
       'city2': city2,
       'distance': distance,
-      'timestamp': time.time(),
   })
 
   return {
@@ -204,7 +201,7 @@ async def get_population(cities: List[str], tool_context: ToolContext) -> dict:
   if 'population_requests' not in tool_context.state:
     tool_context.state['population_requests'] = []
   tool_context.state['population_requests'].append(
-      {'cities': cities, 'results': results, 'timestamp': time.time()}
+      {'cities': cities, 'results': results}
   )
 
   return {

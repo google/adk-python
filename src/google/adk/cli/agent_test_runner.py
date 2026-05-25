@@ -881,6 +881,7 @@ def rebuild_tests(path: str):
       # Write back to file
       with open(test_file, "w") as f:
         json.dump(session_data, f, indent=2, sort_keys=True)
+        f.write("\n")
 
       print(f"Successfully rebuilt {test_file}")
 

@@ -18,11 +18,11 @@ from typing import Any
 from typing import Dict
 from typing import List
 
+from google.adk.tools import _gda_stream_util
 from google.auth.credentials import Credentials
 from google.cloud import bigquery
 import requests
 
-from google.adk.tools import _gda_stream_util
 from . import client
 from .config import BigQueryToolConfig
 
