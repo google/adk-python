@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import asyncio
+import asyncio  # noqa: F401
 import time
 
 from adk_triaging_agent import agent
@@ -149,9 +149,14 @@ async def main():
     existing_component_label = specific_issue.get("existing_component_label")
 
     prompt = (
-        f"Triage GitHub issue #{issue_number}.\n\n"
-        f'Title: "{issue_title}"\n'
-        f'Body: "{issue_body}"\n\n'
+        f"Triage GitHub issue #{issue_number}.
+
+"
+        f'Title: "{issue_title}"
+'
+        f'Body: "{issue_body}"
+
+'
         f"Issue state: needs_component_label={needs_component_label}, "
         f"needs_owner={needs_owner}, "
         f"existing_component_label={existing_component_label}"
@@ -165,7 +170,8 @@ async def main():
     )
 
   response = await call_agent_async(runner, USER_ID, session.id, prompt)
-  print(f"<<<< Agent Final Output: {response}\n")
+  print(f"<<<< Agent Final Output: {response}
+")
 
 
 if __name__ == "__main__":
