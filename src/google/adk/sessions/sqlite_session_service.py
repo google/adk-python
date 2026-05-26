@@ -27,6 +27,7 @@ from urllib.parse import urlparse
 import aiosqlite
 from google.adk.platform import time as platform_time
 from google.adk.platform import uuid as platform_uuid
+from google.adk.utils import json_utils
 from typing_extensions import override
 
 from . import _session_util
@@ -245,7 +246,7 @@ class SqliteSessionService(BaseSessionService):
         session_row = await cursor.fetchone()
         if session_row is None:
           return None
-        session_state = json.loads(session_row["state"])
+        session_state = json_utils.safe_json_loads(session_row["state"], context='session state')
         last_update_time = session_row["update_time"]
 
       # Build events query
@@ -328,12 +329,12 @@ class SqliteSessionService(BaseSessionService):
             (app_name,),
         ) as cursor:
           async for row in cursor:
-            user_states_map[row["user_id"]] = json.loads(row["state"])
+            user_states_map[row["user_id"]] = json_utils.safe_json_loads(row["state"], context='session state')
 
       # Build session list
       for row in session_rows:
         session_user_id = row["user_id"]
-        session_state = json.loads(row["state"])
+        session_state = json_utils.safe_json_loads(row["state"], context='session state')
         user_state = user_states_map.get(session_user_id, {})
         merged_state = _merge_state(app_state, user_state, session_state)
         sessions_list.append(
@@ -391,7 +392,7 @@ class SqliteSessionService(BaseSessionService):
 
       # Apply state delta if present
       has_session_state_delta = False
-      if event.actions.state_delta:
+      if event.actions and event.actions.state_delta:
         state_deltas = _session_util.extract_state_delta(
             event.actions.state_delta
         )
@@ -475,7 +476,7 @@ class SqliteSessionService(BaseSessionService):
     """Fetches and deserializes a JSON state column from a single row."""
     async with db.execute(query, params) as cursor:
       row = await cursor.fetchone()
-      return json.loads(row["state"]) if row else {}
+      return json_utils.safe_json_loads(row["state"], context='session state') if row else {}
 
   async def _get_app_state(
       self, db: aiosqlite.Connection, app_name: str
