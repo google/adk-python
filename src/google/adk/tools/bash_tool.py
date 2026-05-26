@@ -247,3 +247,9 @@ class ExecuteBashTool(BaseTool):
           "stdout": stdout_res,
           "stderr": stderr_res,
       }
+
+  def _detect_error_in_response(self, response: Any) -> Optional[str]:
+    """Telemetry hook: returns an error type if the response indicates an error."""
+    if isinstance(response, dict) and response.get("error"):
+      return "TOOL_ERROR"
+    return None

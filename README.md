@@ -93,7 +93,7 @@ root_agent = Workflow(
 # Interactive CLI
 adk run path/to/my_agent
 
-# Web UI
+# Web UI (supports multi-agent directories or pointing directly to a single agent folder)
 adk web path/to/agents_dir
 ```
 
