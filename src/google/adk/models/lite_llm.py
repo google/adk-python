@@ -2224,7 +2224,8 @@ class LiteLlm(BaseLlm):
 
     self._maybe_append_user_content(llm_request)
     _append_fallback_user_content_if_missing(llm_request)
-    logger.debug(_build_request_log(llm_request))
+    if logger.isEnabledFor(logging.DEBUG):
+      logger.debug(_build_request_log(llm_request))
 
     effective_model = llm_request.model or self.model
     messages, tools, response_format, generation_params = (

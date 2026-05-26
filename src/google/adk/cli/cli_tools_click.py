@@ -23,6 +23,7 @@ import json
 import logging
 import os
 from pathlib import Path
+import sys
 import tempfile
 import textwrap
 from typing import Optional
@@ -32,17 +33,13 @@ from click.core import ParameterSource
 from fastapi import FastAPI
 import uvicorn
 
-from . import cli_create
-from . import cli_deploy
 from .. import version
 from ..agents.run_config import StreamingMode
 from ..evaluation.constants import MISSING_EVAL_DEPENDENCIES_MESSAGE
 from ..features import FeatureName
 from ..features import override_feature_enabled
 from .cli import run_cli
-from .fast_api import get_fast_api_app
 from .utils import envs
-from .utils import evals
 from .utils import logs
 
 LOG_LEVELS = click.Choice(
@@ -489,6 +486,8 @@ def cli_create_cmd(
 
     adk create path/to/my_app
   """
+  from . import cli_create
+
   cli_create.run_cmd(
       app_name,
       model=model,
@@ -647,50 +646,207 @@ def adk_services_options(*, default_use_local_storage: bool = True):
     ),
     callback=validate_exclusive,
 )
+@click.option(
+    "--state",
+    type=str,
+    help="Optional. Initial state for the run as a JSON string.",
+)
+@click.option(
+    "--timeout",
+    type=str,
+    help="Optional. Timeout for a single turn or query (e.g., 30s, 5m).",
+)
+@click.option(
+    "--in_memory",
+    is_flag=True,
+    help="Optional. Do not persist session data (use in-memory storage).",
+)
+@click.option(
+    "--jsonl",
+    is_flag=True,
+    help="Optional. Output structured JSONL instead of human-readable text.",
+)
+@click.option(
+    "--default_llm_model",
+    type=str,
+    help=(
+        "Optional. Sets the default LLM model used when the agent does not set"
+        " a model explicitly."
+    ),
+    default=None,
+)
 @click.argument(
     "agent",
     type=click.Path(
         exists=True, dir_okay=True, file_okay=False, resolve_path=True
     ),
 )
+@click.argument("query", type=str, required=False)
 def cli_run(
     agent: str,
+    query: Optional[str],
     save_session: bool,
     session_id: Optional[str],
     replay: Optional[str],
     resume: Optional[str],
+    state: Optional[str] = None,
+    timeout: Optional[str] = None,
+    in_memory: bool = False,
+    jsonl: bool = False,
     session_service_uri: Optional[str] = None,
     artifact_service_uri: Optional[str] = None,
     memory_service_uri: Optional[str] = None,
     use_local_storage: bool = True,
+    default_llm_model: Optional[str] = None,
 ):
-  """Runs an interactive CLI for a certain agent.
+  """Runs an agent. If no query is provided, enters interactive mode.
 
   AGENT: The path to the agent source code folder.
+  QUERY: Optional. The user message to send to the agent for a single-step run.
 
   Example:
 
     adk run path/to/my_agent
+    adk run path/to/my_agent "hello"
   """
   logs.log_to_tmp_folder()
 
   agent_parent_folder = os.path.dirname(agent)
   agent_folder_name = os.path.basename(agent)
 
-  asyncio.run(
-      run_cli(
-          agent_parent_dir=agent_parent_folder,
-          agent_folder_name=agent_folder_name,
-          input_file=replay,
-          saved_session_file=resume,
-          save_session=save_session,
-          session_id=session_id,
-          session_service_uri=session_service_uri,
-          artifact_service_uri=artifact_service_uri,
-          memory_service_uri=memory_service_uri,
-          use_local_storage=use_local_storage,
+  # If query is provided, we run in single-step mode (JSONL output)
+  if query is not None:
+    from .cli import run_once_cli
+
+    exit_code = asyncio.run(
+        run_once_cli(
+            agent_parent_dir=agent_parent_folder,
+            agent_folder_name=agent_folder_name,
+            query=query,
+            state_str=state,
+            session_id=session_id,
+            replay=replay,
+            timeout=timeout,
+            in_memory=in_memory,
+            jsonl=jsonl,
+            session_service_uri=session_service_uri,
+            artifact_service_uri=artifact_service_uri,
+            memory_service_uri=memory_service_uri,
+            use_local_storage=use_local_storage,
+            default_llm_model=default_llm_model,
+        )
+    )
+    sys.exit(exit_code)
+  else:
+    # Legacy interactive mode
+    asyncio.run(
+        run_cli(
+            agent_parent_dir=agent_parent_folder,
+            agent_folder_name=agent_folder_name,
+            input_file=replay,
+            saved_session_file=resume,
+            save_session=save_session,
+            session_id=session_id,
+            state_str=state,
+            timeout=timeout,
+            in_memory=in_memory,
+            jsonl=jsonl,
+            session_service_uri=session_service_uri,
+            artifact_service_uri=artifact_service_uri,
+            memory_service_uri=memory_service_uri,
+            use_local_storage=use_local_storage,
+            default_llm_model=default_llm_model,
+        )
+    )
+
+
+@main.command(
+    "test",
+    cls=HelpfulCommand,
+    context_settings={
+        "allow_extra_args": True,
+        "allow_interspersed_args": True,
+        "ignore_unknown_options": True,
+    },
+)
+@click.argument(
+    "folder",
+    type=click.Path(
+        exists=True, dir_okay=True, file_okay=False, resolve_path=True
+    ),
+    default=".",
+)
+@click.option(
+    "--rebuild",
+    is_flag=True,
+    help="Rebuild test files by running the real agent with user messages.",
+)
+@click.pass_context
+def cli_test(ctx, folder: str, rebuild: bool):
+  """Runs pytest on agent test JSON files under the specified folder.
+
+  FOLDER: The path to the folder containing agents and tests.
+  Defaults to the current directory if not specified.
+
+  Example:
+      adk test path/to/agents
+  """
+  import sys
+
+  if rebuild:
+    from .agent_test_runner import rebuild_tests
+
+    click.echo(f"Rebuilding tests in {folder}...")
+    rebuild_tests(folder)
+    sys.exit(0)
+
+  # Parse arguments to separate pytest args (after --) from regular args
+  pytest_args = []
+  if "--" in ctx.args:
+    separator_index = ctx.args.index("--")
+    pytest_args = ctx.args[separator_index + 1 :]
+    regular_args = ctx.args[:separator_index]
+
+    if regular_args:
+      click.secho(
+          "Error: Unexpected arguments after folder and before '--':"
+          f" {' '.join(regular_args)}. \nOnly arguments after '--' are passed"
+          " to pytest.",
+          fg="red",
+          err=True,
       )
-  )
+      ctx.exit(2)
+  else:
+    # If no '--', all remaining arguments are passed to pytest
+    pytest_args = ctx.args
+
+  import subprocess
+
+  os.environ["ADK_TEST_FOLDER"] = folder
+
+  current_dir = Path(__file__).parent
+  test_runner_path = current_dir / "agent_test_runner.py"
+
+  if not test_runner_path.exists():
+    click.secho(
+        f"Error: Test runner not found at {test_runner_path}",
+        fg="red",
+        err=True,
+    )
+    sys.exit(1)
+
+  click.echo(f"Running tests in {folder} using runner {test_runner_path}...")
+
+  result = subprocess.run([
+      sys.executable,
+      "-m",
+      "pytest",
+      str(test_runner_path),
+      "-v",
+      "-s",
+      *pytest_args,
+  ])
+  sys.exit(result.returncode)
 
 
 def eval_options():
@@ -841,6 +997,8 @@ def cli_eval(
   eval_set_results_manager = None
 
   if eval_storage_uri:
+    from .utils import evals
+
     gcs_eval_managers = evals.create_gcs_eval_managers_from_uri(
         eval_storage_uri
     )
@@ -1556,11 +1714,34 @@ def fast_api_common_options():
   return decorator
 
 
+def _check_windows_reload(reload: bool) -> bool:
+  """Checks if reload is enabled on Windows and forces it to False if so."""
+  if sys.platform == "win32" and reload:
+    click.secho(
+        "WARNING: The --reload flag is not supported on Windows because it"
+        " forces Uvicorn to use SelectorEventLoop, which does not support"
+        " subprocesses (needed for executing tools). Forcing --no-reload.",
+        fg="yellow",
+        err=True,
+    )
+    return False
+  return reload
+
+
 @main.command("web")
 @feature_options()
 @fast_api_common_options()
 @web_options()
 @adk_services_options(default_use_local_storage=True)
+@click.option(
+    "--default_llm_model",
+    type=str,
+    help=(
+        "Optional. Sets the default LLM model used when the agent does not set"
+        " a model explicitly."
+    ),
+    default=None,
+)
 @click.argument(
     "agents_dir",
     type=click.Path(
@@ -1570,6 +1751,7 @@ def fast_api_common_options():
 )
 def cli_web(
     agents_dir: str,
+    default_llm_model: Optional[str] = None,
     eval_storage_uri: Optional[str] = None,
     log_level: str = "INFO",
     allow_origins: Optional[list[str]] = None,
@@ -1592,13 +1774,15 @@ def cli_web(
 ):
   """Starts a FastAPI server with Web UI for agents.
 
-  AGENTS_DIR: The directory of agents, where each subdirectory is a single
-  agent, containing at least `__init__.py` and `agent.py` files.
+  AGENTS_DIR: The directory of agents (where each subdirectory is a single
+  agent containing `agent.py` or `root_agent.yaml` files) or a path pointing
+  directly to a single agent folder.
 
   Example:
 
     adk web --session_service_uri=[uri] --port=[port] path/to/agents_dir
   """
+  reload = _check_windows_reload(reload)
   logs.setup_adk_logger(getattr(logging, log_level.upper()))
 
   @asynccontextmanager
@@ -1623,6 +1807,8 @@ def cli_web(
         fg="green",
     )
 
+  from .fast_api import get_fast_api_app
+
   app = get_fast_api_app(
       agents_dir=agents_dir,
       session_service_uri=session_service_uri,
@@ -1644,6 +1830,7 @@ def cli_web(
       logo_text=logo_text,
       logo_image_url=logo_image_url,
       trigger_sources=trigger_sources,
+      default_llm_model=default_llm_model,
   )
   config = uvicorn.Config(
       app,
@@ -1677,6 +1864,12 @@ def cli_web(
         "Automatically create a session if it doesn't exist when calling /run."
     ),
 )
+@click.option(
+    "--with_ui",
+    is_flag=True,
+    default=False,
+    help="Serve ADK Web UI if set.",
+)
 def cli_api_server(
     agents_dir: str,
     eval_storage_uri: Optional[str] = None,
@@ -1697,17 +1890,22 @@ def cli_api_server(
     extra_plugins: Optional[list[str]] = None,
     auto_create_session: bool = False,
     trigger_sources: Optional[list[str]] = None,
+    with_ui: bool = False,
 ):
   """Starts a FastAPI server for agents.
 
-  AGENTS_DIR: The directory of agents, where each subdirectory is a single
-  agent, containing at least `__init__.py` and `agent.py` files.
+  AGENTS_DIR: The directory of agents (where each subdirectory is a single
+  agent containing `agent.py` or `root_agent.yaml` files) or a path pointing
+  directly to a single agent folder.
 
   Example:
 
     adk api_server --session_service_uri=[uri] --port=[port] path/to/agents_dir
   """
+  reload = _check_windows_reload(reload)
   logs.setup_adk_logger(getattr(logging, log_level.upper()))
+
+  from .fast_api import get_fast_api_app
 
   config = uvicorn.Config(
       get_fast_api_app(
@@ -1718,7 +1916,7 @@ def cli_api_server(
           use_local_storage=use_local_storage,
           eval_storage_uri=eval_storage_uri,
           allow_origins=allow_origins,
-          web=False,
+          web=with_ui,
           trace_to_cloud=trace_to_cloud,
           otel_to_cloud=otel_to_cloud,
           a2a=a2a,
@@ -1949,6 +2147,8 @@ def cli_deploy_cloud_run(
       ctx.exit(2)
 
   try:
+    from . import cli_deploy
+
     cli_deploy.to_cloud_run(
         agent_folder=agent,
         project=project,
@@ -2233,6 +2433,8 @@ def cli_deploy_agent_engine(
           "Do not pass both --validate-agent-import and"
           " --skip-agent-import-validation."
       )
+    from . import cli_deploy
+
     cli_deploy.to_agent_engine(
         agent_folder=agent,
         project=project,
@@ -2417,6 +2619,8 @@ def cli_deploy_gke(
   """
   try:
     _warn_if_with_ui(with_ui)
+    from . import cli_deploy
+
     cli_deploy.to_gke(
         agent_folder=agent,
         project=project,

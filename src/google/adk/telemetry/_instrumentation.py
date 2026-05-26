@@ -22,8 +22,6 @@ from typing import Any
 from typing import AsyncIterator
 from typing import TYPE_CHECKING
 
-logger = logging.getLogger("google_adk." + __name__)
-
 from opentelemetry import trace
 import opentelemetry.context as context_api
 
@@ -35,6 +33,8 @@ if TYPE_CHECKING:
   from ..agents.base_agent import BaseAgent
   from ..agents.invocation_context import InvocationContext
   from ..tools.base_tool import BaseTool
+
+logger = logging.getLogger("google_adk." + __name__)
 
 
 def _get_elapsed_ms(span: trace.Span | None, fallback_start: float) -> float:
@@ -68,13 +68,34 @@ class TelemetryContext:
 
   otel_context: context_api.Context
   function_response_event: event_lib.Event | None = None
+  error_type: str | None = None
+
+
+def _record_agent_metrics(
+    agent_name: str,
+    elapsed_ms: float,
+    user_content: Any,
+    events: Any,
+    caught_error: Exception | None,
+) -> None:
+  try:
+    _metrics.record_agent_invocation_duration(
+        agent_name,
+        elapsed_ms,
+        caught_error,
+    )
+    _metrics.record_agent_request_size(agent_name, user_content)
+    _metrics.record_agent_response_size(agent_name, events)
+    _metrics.record_agent_workflow_steps(agent_name, events)
+  except Exception:  # pylint: disable=broad-exception-caught
+    logger.exception("Failed to record agent metrics for agent %s", agent_name)
 
 
 @contextlib.asynccontextmanager
 async def record_agent_invocation(
     ctx: InvocationContext, agent: BaseAgent
 ) -> AsyncIterator[TelemetryContext]:
-  """Unified context manager for consolidated metrics and tracing."""
+  """Unified context manager for consolidated agent invocation telemetry."""
   start_time = time.monotonic()
   caught_error: Exception | None = None
   span: trace.Span | None = None
@@ -90,19 +111,13 @@ async def record_agent_invocation(
     raise
   finally:
     elapsed_ms = _get_elapsed_ms(span, start_time)
-    try:
-      _metrics.record_agent_invocation_duration(
-          agent.name,
-          elapsed_ms,
-          caught_error,
-      )
-      _metrics.record_agent_request_size(agent.name, ctx.user_content)
-      _metrics.record_agent_response_size(agent.name, ctx.session.events)
-      _metrics.record_agent_workflow_steps(agent.name, ctx.session.events)
-    except Exception:  # pylint: disable=broad-exception-caught
-      logger.exception(
-          "Failed to record agent metrics for agent %s", agent.name
-      )
+    _record_agent_metrics(
+        agent.name,
+        elapsed_ms,
+        ctx.user_content,
+        ctx.session.events,
+        caught_error,
+    )
 
 
 @contextlib.asynccontextmanager
@@ -134,6 +149,7 @@ async def record_tool_execution(
             args=function_args,
             function_response_event=response_event,
             error=caught_error,
+            error_type=tel_ctx.error_type,
         )
   finally:
     try:

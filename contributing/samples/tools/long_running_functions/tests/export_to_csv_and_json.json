@@ -1,0 +1,226 @@
+{
+  "events": [
+    {
+      "author": "user",
+      "content": {
+        "parts": [
+          {
+            "text": "export to csv and json"
+          }
+        ],
+        "role": "user"
+      },
+      "id": "e-1",
+      "invocationId": "i-1",
+      "nodeInfo": {
+        "path": ""
+      }
+    },
+    {
+      "author": "long_running_functions",
+      "content": {
+        "parts": [
+          {
+            "functionCall": {
+              "args": {
+                "export_type": "csv"
+              },
+              "id": "fc-1",
+              "name": "export_data"
+            }
+          },
+          {
+            "functionCall": {
+              "args": {
+                "export_type": "json"
+              },
+              "id": "fc-2",
+              "name": "export_data"
+            }
+          }
+        ],
+        "role": "model"
+      },
+      "finishReason": "STOP",
+      "id": "e-2",
+      "invocationId": "i-1",
+      "longRunningToolIds": [
+        "fc-1",
+        "fc-2"
+      ],
+      "nodeInfo": {
+        "path": "long_running_functions@1"
+      }
+    },
+    {
+      "author": "long_running_functions",
+      "content": {
+        "parts": [
+          {
+            "functionResponse": {
+              "id": "fc-1",
+              "name": "export_data",
+              "response": {
+                "message": "Exporting csv data. This may take some time.",
+                "progress": "0%",
+                "status": "in-progress"
+              }
+            }
+          },
+          {
+            "functionResponse": {
+              "id": "fc-2",
+              "name": "export_data",
+              "response": {
+                "message": "Exporting json data. This may take some time.",
+                "progress": "0%",
+                "status": "in-progress"
+              }
+            }
+          }
+        ],
+        "role": "user"
+      },
+      "id": "e-3",
+      "invocationId": "i-1",
+      "nodeInfo": {
+        "path": "long_running_functions@1"
+      }
+    },
+    {
+      "author": "long_running_functions",
+      "content": {
+        "parts": [
+          {
+            "text": "I've started exporting your data to both CSV and JSON formats. This may take some time. I will notify you when it's complete."
+          }
+        ],
+        "role": "model"
+      },
+      "finishReason": "STOP",
+      "id": "e-4",
+      "invocationId": "i-1",
+      "nodeInfo": {
+        "path": "long_running_functions@1"
+      }
+    },
+    {
+      "author": "user",
+      "content": {
+        "parts": [
+          {
+            "functionResponse": {
+              "id": "fc-1",
+              "name": "export_data",
+              "response": {
+                "progress": "50%",
+                "status": "in-progress"
+              }
+            }
+          }
+        ],
+        "role": "user"
+      },
+      "id": "e-5",
+      "invocationId": "i-1",
+      "nodeInfo": {
+        "path": ""
+      }
+    },
+    {
+      "author": "long_running_functions",
+      "content": {
+        "parts": [
+          {
+            "text": "I've started exporting your data to both CSV and JSON formats. This may take some time to complete."
+          }
+        ],
+        "role": "model"
+      },
+      "finishReason": "STOP",
+      "id": "e-6",
+      "invocationId": "i-1",
+      "nodeInfo": {
+        "path": "long_running_functions@1"
+      }
+    },
+    {
+      "author": "user",
+      "content": {
+        "parts": [
+          {
+            "functionResponse": {
+              "id": "fc-2",
+              "name": "export_data",
+              "response": {
+                "status": "completed"
+              }
+            }
+          }
+        ],
+        "role": "user"
+      },
+      "id": "e-7",
+      "invocationId": "i-1",
+      "nodeInfo": {
+        "path": ""
+      }
+    },
+    {
+      "author": "long_running_functions",
+      "content": {
+        "parts": [
+          {
+            "text": "I've started exporting your data to CSV and JSON. The JSON export is complete, and the CSV export is 50% complete. I'll let you know when the CSV export is finished."
+          }
+        ],
+        "role": "model"
+      },
+      "finishReason": "STOP",
+      "id": "e-8",
+      "invocationId": "i-1",
+      "nodeInfo": {
+        "path": "long_running_functions@1"
+      }
+    },
+    {
+      "author": "user",
+      "content": {
+        "parts": [
+          {
+            "functionResponse": {
+              "id": "fc-1",
+              "name": "export_data",
+              "response": {
+                "status": "completed"
+              }
+            }
+          }
+        ],
+        "role": "user"
+      },
+      "id": "e-9",
+      "invocationId": "i-1",
+      "nodeInfo": {
+        "path": ""
+      }
+    },
+    {
+      "author": "long_running_functions",
+      "content": {
+        "parts": [
+          {
+            "text": "I have exported the data to both CSV and JSON formats."
+          }
+        ],
+        "role": "model"
+      },
+      "finishReason": "STOP",
+      "id": "e-10",
+      "invocationId": "i-1",
+      "nodeInfo": {
+        "path": "long_running_functions@1"
+      }
+    }
+  ]
+}

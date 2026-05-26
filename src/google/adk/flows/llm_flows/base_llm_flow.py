@@ -286,7 +286,7 @@ async def _handle_after_model_callback(
   # First run callbacks from the plugins.
   callback_response = (
       await invocation_context.plugin_manager.run_after_model_callback(
-          callback_context=CallbackContext(invocation_context),
+          callback_context=callback_context,
           llm_response=llm_response,
       )
   )
@@ -490,6 +490,9 @@ class BaseLlmFlow(ABC):
         yield event
     if invocation_context.end_invocation:
       return
+
+    agent = invocation_context.agent
+    llm_request.model = agent.canonical_live_model.model
 
     llm = self.__get_llm(invocation_context)
     logger.debug(
@@ -853,20 +856,22 @@ class BaseLlmFlow(ABC):
     # Long running tool calls should have been handled before this point.
     # If there are still long running tool calls, it means the agent is paused
     # before, and its branch hasn't been resumed yet.
-    if (
-        invocation_context.is_resumable
-        and events
-        and len(events) > 1
-        # TODO: here we are using the last 2 events to decide whether to pause
-        # the invocation. But this is just being optimistic, we should find a
-        # way to pause when the long running tool call is followed by more than
-        # one text responses.
-        and (
-            invocation_context.should_pause_invocation(events[-1])
-            or invocation_context.should_pause_invocation(events[-2])
-        )
-    ):
-      return
+    if invocation_context.is_resumable and events and len(events) > 1:
+      pause = False
+      if invocation_context.should_pause_invocation(events[-1]):
+        pause = True
+      elif invocation_context.should_pause_invocation(events[-2]):
+        # NOTE: This only checks the last 2 events. If an LRO is followed by
+        # multiple text responses, this check may not trigger correctly.
+        # This is a known limitation of the current 2-event window.
+        # Check if the function call in events[-2] is resolved by events[-1]
+        fc_ids = {fc.id for fc in events[-2].get_function_calls()}
+        fr_ids = {fr.id for fr in events[-1].get_function_responses()}
+        if fc_ids and not fc_ids.issubset(fr_ids):
+          pause = True
+
+      if pause:
+        return
 
     if (
         invocation_context.is_resumable
@@ -976,6 +981,7 @@ class BaseLlmFlow(ABC):
         not llm_response.content
         and not llm_response.error_code
         and not llm_response.interrupted
+        and not llm_response.grounding_metadata
     ):
       return
 
@@ -1040,6 +1046,7 @@ class BaseLlmFlow(ABC):
         and not llm_response.output_transcription
         and not llm_response.usage_metadata
         and not llm_response.live_session_resumption_update
+        and not llm_response.grounding_metadata
     ):
       return
 
@@ -1155,6 +1162,15 @@ class BaseLlmFlow(ABC):
             )
         )
         yield final_event
+
+      # NOTE: This recursive nested execution block is preserved as a backward-compatible
+      # fallback for deprecated execution paths (such as legacy `SequentialAgent`) that
+      # do not run under the modern ADK 2.0 `DynamicNodeScheduler`.
+      #
+      # In modern resumable workflow environments, this block is safely bypassed
+      # because the scheduler wrapper (e.g., `_llm_agent_wrapper.py`) intercepts the
+      # `transfer_to_agent` action at the outer execution frame and exits, returning
+      # control to the top-level coordinator.
       transfer_to_agent = function_response_event.actions.transfer_to_agent
       if transfer_to_agent:
         agent_to_run = self._get_agent_to_run(
@@ -1404,6 +1420,9 @@ class BaseLlmFlow(ABC):
       )
       config['_adk_replay_indexes'] = replay_indexes
       return model
+
+    if invocation_context.live_request_queue is not None:
+      return agent.canonical_live_model
 
     if not hasattr(agent, 'canonical_model'):
       raise TypeError(
