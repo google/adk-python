@@ -24,6 +24,7 @@ from typing import Any
 from typing import Dict
 from typing import List
 from typing import Tuple
+from unittest import mock
 
 import click
 from google.adk.agents.base_agent import BaseAgent
@@ -85,7 +86,13 @@ def _patch_types_and_runner(monkeypatch: pytest.MonkeyPatch) -> None:
       message = a[2] if len(a) >= 3 else k["new_message"]
       text = message.parts[0].text if message.parts else ""
       response = _Content("assistant", [_Part(f"echo:{text}")])
-      yield types.SimpleNamespace(author="assistant", content=response)
+      ev = types.SimpleNamespace(
+          author="assistant",
+          content=response,
+          node_info=None,
+          long_running_tool_ids=[],
+      )
+      yield ev
 
     async def close(self, *a: Any, **k: Any) -> None:
       ...

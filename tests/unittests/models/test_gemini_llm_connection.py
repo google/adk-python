@@ -285,11 +285,17 @@ async def test_receive_populates_live_session_id(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    'conn_fixture',
+    ['gemini_api_connection', 'gemini_connection'],
+)
 async def test_receive_transcript_finished_on_interrupt(
-    gemini_api_connection,
+    conn_fixture,
     mock_gemini_session,
+    request,
 ):
   """Test receive finishes transcription on interrupt signal."""
+  connection = request.getfixturevalue(conn_fixture)
 
   message1 = mock.Mock()
   message1.usage_metadata = None
@@ -345,7 +351,7 @@ async def test_receive_transcript_finished_on_interrupt(
   receive_mock = mock.Mock(return_value=mock_receive_generator())
   mock_gemini_session.receive = receive_mock
 
-  responses = [resp async for resp in gemini_api_connection.receive()]
+  responses = [resp async for resp in connection.receive()]
 
   assert len(responses) == 5
   assert responses[4].interrupted is True
@@ -365,11 +371,17 @@ async def test_receive_transcript_finished_on_interrupt(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    'conn_fixture',
+    ['gemini_api_connection', 'gemini_connection'],
+)
 async def test_receive_transcript_finished_on_generation_complete(
-    gemini_api_connection,
+    conn_fixture,
     mock_gemini_session,
+    request,
 ):
   """Test receive finishes transcription on generation_complete signal."""
+  connection = request.getfixturevalue(conn_fixture)
 
   message1 = mock.Mock()
   message1.usage_metadata = None
@@ -425,7 +437,7 @@ async def test_receive_transcript_finished_on_generation_complete(
   receive_mock = mock.Mock(return_value=mock_receive_generator())
   mock_gemini_session.receive = receive_mock
 
-  responses = [resp async for resp in gemini_api_connection.receive()]
+  responses = [resp async for resp in connection.receive()]
 
   assert len(responses) == 4
 
@@ -444,11 +456,17 @@ async def test_receive_transcript_finished_on_generation_complete(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    'conn_fixture',
+    ['gemini_api_connection', 'gemini_connection'],
+)
 async def test_receive_transcript_finished_on_turn_complete(
-    gemini_api_connection,
+    conn_fixture,
     mock_gemini_session,
+    request,
 ):
   """Test receive finishes transcription on interrupt or complete signals."""
+  connection = request.getfixturevalue(conn_fixture)
 
   message1 = mock.Mock()
   message1.usage_metadata = None
@@ -504,7 +522,7 @@ async def test_receive_transcript_finished_on_turn_complete(
   receive_mock = mock.Mock(return_value=mock_receive_generator())
   mock_gemini_session.receive = receive_mock
 
-  responses = [resp async for resp in gemini_api_connection.receive()]
+  responses = [resp async for resp in connection.receive()]
 
   assert len(responses) == 5
   assert responses[4].turn_complete is True
@@ -867,6 +885,7 @@ async def test_receive_grounding_metadata_standalone(
   mock_server_content.interrupted = False
   mock_server_content.input_transcription = None
   mock_server_content.output_transcription = None
+  mock_server_content.generation_complete = False
 
   mock_message = mock.create_autospec(types.LiveServerMessage, instance=True)
   mock_message.usage_metadata = None
@@ -911,6 +930,7 @@ async def test_receive_grounding_metadata_with_content(
   mock_server_content.interrupted = False
   mock_server_content.input_transcription = None
   mock_server_content.output_transcription = None
+  mock_server_content.generation_complete = False
 
   mock_message = mock.create_autospec(types.LiveServerMessage, instance=True)
   mock_message.usage_metadata = None
@@ -981,6 +1001,7 @@ async def test_receive_tool_call_and_grounding_metadata_with_native_audio(
   mock_server_content.interrupted = False
   mock_server_content.input_transcription = None
   mock_server_content.output_transcription = None
+  mock_server_content.generation_complete = False
 
   mock_metadata_msg = mock.create_autospec(
       types.LiveServerMessage, instance=True
@@ -1001,6 +1022,7 @@ async def test_receive_tool_call_and_grounding_metadata_with_native_audio(
   mock_turn_complete_content.interrupted = False
   mock_turn_complete_content.input_transcription = None
   mock_turn_complete_content.output_transcription = None
+  mock_turn_complete_content.generation_complete = False
 
   mock_turn_complete_msg = mock.create_autospec(
       types.LiveServerMessage, instance=True
@@ -1200,6 +1222,87 @@ async def test_receive_go_away(gemini_connection, mock_gemini_session):
 
   assert len(responses) == 1
   assert responses[0].go_away == mock_go_away
+
+
+@pytest.mark.asyncio
+async def test_receive_aggregates_thoughts_separately(
+    gemini_connection, mock_gemini_session
+):
+  """Test receive aggregates thoughts and regular text separately."""
+
+  part1 = types.Part.from_text(text='thought 1')
+  part1.thought = True
+  message1 = types.LiveServerMessage(
+      server_content=types.LiveServerContent(
+          model_turn=types.Content(role='model', parts=[part1]),
+      )
+  )
+
+  part2 = types.Part.from_text(text=' thought 2')
+  part2.thought = True
+  message2 = types.LiveServerMessage(
+      server_content=types.LiveServerContent(
+          model_turn=types.Content(role='model', parts=[part2]),
+      )
+  )
+
+  part3 = types.Part.from_text(text='answer')
+  part3.thought = False
+  message3 = types.LiveServerMessage(
+      server_content=types.LiveServerContent(
+          model_turn=types.Content(role='model', parts=[part3]),
+      )
+  )
+
+  message4 = types.LiveServerMessage(
+      server_content=types.LiveServerContent(
+          turn_complete=True,
+      )
+  )
+
+  async def mock_receive_generator():
+    yield message1
+    yield message2
+    yield message3
+    yield message4
+
+  receive_mock = mock.Mock(return_value=mock_receive_generator())
+  mock_gemini_session.receive = receive_mock
+
+  responses = [resp async for resp in gemini_connection.receive()]
+
+  # Expected responses:
+  # 1. Message 1 (partial thought)
+  # 2. Message 2 (partial thought)
+  # 3. Aggregated thought (full)
+  # 4. Message 3 (partial answer)
+  # 5. Aggregated answer (full)
+  # 6. Turn complete message
+
+  assert len(responses) == 6
+
+  # Check partials
+  assert responses[0].content.parts[0].text == 'thought 1'
+  assert responses[0].partial is True
+  assert responses[1].content.parts[0].text == ' thought 2'
+  assert responses[1].partial is True
+
+  # Check aggregated thought
+  assert responses[2].content.parts[0].text == 'thought 1 thought 2'
+  assert responses[2].content.parts[0].thought is True
+  assert responses[2].partial is False
+
+  # Check partial answer
+  assert responses[3].content.parts[0].text == 'answer'
+  assert responses[3].partial is True
+
+  # Check aggregated answer
+  assert responses[4].content.parts[0].text == 'answer'
+  assert not getattr(responses[4].content.parts[0], 'thought', False)
+  assert responses[4].partial is False
+
+  # Check turn complete
+  assert responses[5].turn_complete is True
 
 
 @pytest.mark.asyncio

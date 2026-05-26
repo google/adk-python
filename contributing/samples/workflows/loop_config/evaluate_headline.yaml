@@ -1,0 +1,6 @@
+agent_class: LlmAgent
+name: evaluate_headline
+instruction: |
+  Grade whether the headline is related to technology or software engineering.
+output_schema_code: .agent.Feedback
+output_key: feedback
