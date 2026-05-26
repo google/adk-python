@@ -3,10 +3,13 @@
   "packages": {
     ".": {
       "release-type": "python",
+      "versioning": "prerelease",
+      "prerelease": true,
+      "prerelease-type": "alpha",
       "package-name": "google-adk",
       "include-component-in-tag": false,
       "skip-github-release": true,
-      "changelog-path": "CHANGELOG.md",
+      "changelog-path": "CHANGELOG-v2.md",
       "changelog-sections": [
         {
           "type": "feat",
@@ -56,5 +59,5 @@
       ]
     }
   },
-  "last-release-sha": "e6537decc910d64a31e6646064e8290b02af4511"
+  "last-release-sha": "4af7cbb5c8319208337e18b0a6bc55288b51b0b1"
 }
