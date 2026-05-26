@@ -24,6 +24,7 @@ import json
 import logging
 import mimetypes
 from typing import Any
+from typing import Optional
 from typing import TYPE_CHECKING
 import warnings
 
@@ -249,6 +250,13 @@ class LoadSkillTool(BaseTool):
         "frontmatter": skill.frontmatter.model_dump(),
     }
 
+  def _detect_error_in_response(self, response: Any) -> Optional[str]:
+    """Telemetry hook: returns an error type if the response indicates an error."""
+    if isinstance(response, dict) and response.get("error"):
+      error_code = response.get("error_code")
+      return error_code if error_code else "TOOL_ERROR"
+    return None
+
 
 @experimental(FeatureName.SKILL_TOOLSET)
 class LoadSkillResourceTool(BaseTool):
@@ -360,6 +368,13 @@ class LoadSkillResourceTool(BaseTool):
         "file_path": file_path,
         "content": content,
     }
+
+  def _detect_error_in_response(self, response: Any) -> Optional[str]:
+    """Telemetry hook: returns an error type if the response indicates an error."""
+    if isinstance(response, dict) and response.get("error"):
+      error_code = response.get("error_code")
+      return error_code if error_code else "TOOL_ERROR"
+    return None
 
   @override
   async def process_llm_request(
@@ -872,6 +887,13 @@ class RunSkillScriptTool(BaseTool):
         short_options,
         positional_args,  # pylint: disable=protected-access
     )
+
+  def _detect_error_in_response(self, response: Any) -> Optional[str]:
+    """Telemetry hook: returns an error type if the response indicates an error."""
+    if isinstance(response, dict) and response.get("error"):
+      error_code = response.get("error_code")
+      return error_code if error_code else "TOOL_ERROR"
+    return None
 
 
 @experimental(FeatureName.SKILL_TOOLSET)
