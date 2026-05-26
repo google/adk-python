@@ -35,6 +35,7 @@ import httpx
 import tenacity
 from typing_extensions import override
 
+from ..utils import json_utils
 from ..utils.env_utils import is_env_enabled
 from .google_llm import Gemini
 from .llm_response import LlmResponse
@@ -848,7 +849,7 @@ class CompletionsHTTPClient:
     Yields:
       An LlmResponse object parsed from the streaming line.
     """
-    chunk = json.loads(line)
+    chunk = json_utils.safe_json_loads(line, context='streaming response')
     for response in accumulator.process_chunk(chunk):
       yield response
 
@@ -1161,7 +1162,7 @@ class ChatCompletionsResponseHandler:
     args_delta = func.get('arguments', '')
     if args_delta:
       try:
-        args = json.loads(args_delta)
+        args = json_utils.safe_json_loads(args_delta, context='streaming response')
         chunk_part.function_call.args = args
         if not part.function_call.args:
           part.function_call.args = dict(args)
