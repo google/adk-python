@@ -434,8 +434,14 @@ def _to_system_instructions(
 def set_operation_details_common_attributes(
     operation_details_common_attributes: MutableMapping[str, AttributeValue],
     attributes: Mapping[str, AttributeValue],
-):
+    log_only_attributes: Mapping[str, AttributeValue] | None = None,
+) -> None:
   operation_details_common_attributes.update(attributes)
+  if log_only_attributes and get_content_capturing_mode() in (
+      'EVENT_ONLY',
+      'SPAN_AND_EVENT',
+  ):
+    operation_details_common_attributes.update(log_only_attributes)
 
 
 async def set_operation_details_attributes_from_request(

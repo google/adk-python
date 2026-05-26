@@ -58,14 +58,19 @@ jobs:
                 console.log(`Committer: ${committer}`);
 
                 // Check if this is a Copybara commit
-                if (committer !== 'Copybara-Service') {
+                const isCopybara = committer === 'Copybara-Service' ||
+                                   commit.author?.email === 'genai-sdk-bot@google.com' ||
+                                   message.includes('GitOrigin-RevId:') ||
+                                   message.includes('PiperOrigin-RevId:');
+
+                if (!isCopybara) {
                   console.log('Not a Copybara commit, skipping');
                   continue;
                 }
 
                 // Extract PR number from commit message
-                // Pattern: "Merge https://github.com/google/adk-python/pull/3333"
-                const prMatch = message.match(/Merge https:\/\/github\.com\/google\/adk-python\/pull\/(\d+)/);
+                // Pattern matches both "Merge https://..." and "Merge: https://..."
+                const prMatch = message.match(/Merge:?\s+https:\/\/github\.com\/google\/adk-python\/pull\/(\d+)/);
 
                 if (!prMatch) {
                   console.log('No PR number found in Copybara commit message');
