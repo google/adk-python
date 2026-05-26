@@ -2943,3 +2943,194 @@ class TestRemoteA2aAgentDeepcopy:
         copied_config.request_interceptors[0]
         is not config.request_interceptors[0]
     )
+
+
+class TestRemoteA2aAgentWorkflowOutput:
+  """Tests that RemoteA2aAgent surfaces a workflow-node output value.
+
+  Without ``_promote_response_to_output``, a ``RemoteA2aAgent`` used as
+  a Workflow node leaves ``ctx.output`` as None, which causes
+  downstream JoinNode aggregation to record ``None`` for that
+  predecessor.
+  """
+
+  def _make_agent(self) -> RemoteA2aAgent:
+    return RemoteA2aAgent(
+        name="remote_agent",
+        agent_card=create_test_agent_card(),
+    )
+
+  def test_promotes_text_content_to_output(self):
+    agent = self._make_agent()
+    event = Event(
+        author="remote_agent",
+        content=genai_types.Content(
+            role="model",
+            parts=[genai_types.Part(text="Findings: ok")],
+        ),
+    )
+
+    agent._promote_response_to_output(event)
+
+    assert event.output == "Findings: ok"
+    assert event.node_info.message_as_output is True
+
+  def test_joins_multiple_text_parts(self):
+    agent = self._make_agent()
+    event = Event(
+        author="remote_agent",
+        content=genai_types.Content(
+            role="model",
+            parts=[
+                genai_types.Part(text="line1\n"),
+                genai_types.Part(text="line2"),
+            ],
+        ),
+    )
+
+    agent._promote_response_to_output(event)
+
+    assert event.output == "line1\nline2"
+
+  def test_skips_thought_parts(self):
+    agent = self._make_agent()
+    event = Event(
+        author="remote_agent",
+        content=genai_types.Content(
+            role="model",
+            parts=[
+                genai_types.Part(text="streaming update", thought=True),
+            ],
+        ),
+    )
+
+    agent._promote_response_to_output(event)
+
+    assert event.output is None
+    assert event.node_info.message_as_output is None
+
+  def test_skips_function_call_parts(self):
+    """input-required events carry a mock function call and no text."""
+    agent = self._make_agent()
+    event = Event(
+        author="remote_agent",
+        content=genai_types.Content(
+            role="model",
+            parts=[
+                genai_types.Part(
+                    function_call=genai_types.FunctionCall(
+                        id="fc1",
+                        name="mock_function_call_for_required_user_input",
+                        args={"input_required": "Please confirm"},
+                    )
+                ),
+            ],
+        ),
+    )
+
+    agent._promote_response_to_output(event)
+
+    assert event.output is None
+
+  def test_skips_partial_events(self):
+    agent = self._make_agent()
+    event = Event(
+        author="remote_agent",
+        partial=True,
+        content=genai_types.Content(
+            role="model",
+            parts=[genai_types.Part(text="streaming...")],
+        ),
+    )
+
+    agent._promote_response_to_output(event)
+
+    assert event.output is None
+
+  def test_skips_events_not_authored_by_agent(self):
+    agent = self._make_agent()
+    event = Event(
+        author="some_other_agent",
+        content=genai_types.Content(
+            role="model",
+            parts=[genai_types.Part(text="Not mine")],
+        ),
+    )
+
+    agent._promote_response_to_output(event)
+
+    assert event.output is None
+
+  def test_preserves_existing_output(self):
+    agent = self._make_agent()
+    event = Event(
+        author="remote_agent",
+        output="preset",
+        content=genai_types.Content(
+            role="model",
+            parts=[genai_types.Part(text="text")],
+        ),
+    )
+
+    agent._promote_response_to_output(event)
+
+    assert event.output == "preset"
+
+  def test_no_content_no_output(self):
+    agent = self._make_agent()
+    event = Event(author="remote_agent")
+
+    agent._promote_response_to_output(event)
+
+    assert event.output is None
+
+  @pytest.mark.asyncio
+  async def test_run_impl_promotes_output_for_each_event(self):
+    """``_run_impl`` calls ``_promote_response_to_output`` per event.
+
+    Uses a subclass that overrides ``_run_async_impl`` to yield a
+    deterministic event, then drives ``_run_impl`` through the public
+    workflow node entry point.
+    """
+
+    yielded_event = Event(
+        author="remote_agent",
+        content=genai_types.Content(
+            role="model",
+            parts=[genai_types.Part(text="agent reply")],
+        ),
+    )
+
+    class _StubRemoteAgent(RemoteA2aAgent):
+
+      async def _run_async_impl(self, ctx):
+        yield yielded_event
+
+    agent = _StubRemoteAgent(
+        name="remote_agent",
+        agent_card=create_test_agent_card(),
+    )
+
+    from google.adk.apps.app import App
+    from google.adk.workflow._join_node import JoinNode
+    from google.adk.workflow._workflow import Workflow
+
+    from tests.unittests import testing_utils
+
+    workflow = Workflow(
+        name="wf",
+        edges=[("START", agent, JoinNode(name="join"))],
+    )
+    app_instance = App(name="t", root_agent=workflow)
+    runner = testing_utils.InMemoryRunner(app=app_instance)
+    events = await runner.run_async(testing_utils.get_user_content("start"))
+
+    join_outputs = [
+        e
+        for e in events
+        if isinstance(e, Event)
+        and e.output is not None
+        and "join" in (e.node_info.path or "")
+    ]
+    assert join_outputs, "JoinNode should emit an aggregated output event"
+    assert join_outputs[0].output == {"remote_agent": "agent reply"}

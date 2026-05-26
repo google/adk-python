@@ -815,6 +815,52 @@ class RemoteA2aAgent(BaseAgent):
     # This makes the function into an async generator but the yield is still unreachable
     yield
 
+  async def _run_impl(
+      self,
+      *,
+      ctx: Any,
+      node_input: Any,
+  ) -> AsyncGenerator[Any, None]:
+    """Runs the agent as a workflow node.
+
+    Promotes textual response content to ``event.output`` so the
+    workflow scheduler propagates it downstream. Without this, a
+    ``JoinNode`` that aggregates parallel ``RemoteA2aAgent`` predecessors
+    sees ``None`` for each predecessor because ``BaseAgent._run_impl``
+    never sets ``event.output`` and ``RemoteA2aAgent`` carries its
+    response only in ``event.content``.
+    """
+    async for event in super()._run_impl(ctx=ctx, node_input=node_input):
+      self._promote_response_to_output(event)
+      yield event
+
+  def _promote_response_to_output(self, event: Event) -> None:
+    """Sets ``event.output`` from non-thought text parts, if any.
+
+    Skips partial events, events not authored by this agent, and events
+    whose content carries only thoughts, function calls, or function
+    responses (e.g. input-required mock function calls).
+    """
+    if event.partial or event.output is not None:
+      return
+    if event.author != self.name:
+      return
+    if not event.content or not event.content.parts:
+      return
+
+    text_chunks = [
+        part.text
+        for part in event.content.parts
+        if part.text
+        and not part.thought
+        and not part.function_call
+        and not part.function_response
+    ]
+    if not text_chunks:
+      return
+    event.output = "".join(text_chunks)
+    event.node_info.message_as_output = True
+
   async def cleanup(self) -> None:
     """Clean up resources, especially the HTTP client if owned by this agent."""
     if self._httpx_client_needs_cleanup and self._httpx_client:
