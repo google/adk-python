@@ -29,6 +29,9 @@ import warnings
 import click
 from packaging.version import parse
 
+from ..version import __version__
+from .utils import _onboarding
+
 _IS_WINDOWS = os.name == 'nt'
 _GCLOUD_CMD = 'gcloud.cmd' if _IS_WINDOWS else 'gcloud'
 _LOCAL_STORAGE_FLAG_MIN_VERSION: Final[str] = '1.21.0'
@@ -60,7 +63,8 @@ def _ensure_agent_engine_dependency(requirements_txt_path: str) -> None:
   with open(requirements_txt_path, 'a', encoding='utf-8') as f:
     if requirements and not requirements.endswith('\n'):
       f.write('\n')
-    f.write(_AGENT_ENGINE_REQUIREMENT + '\n')
+    f.write('google-cloud-aiplatform[agent_engines]\n')
+    f.write(f'google-adk=={__version__}\n')
 
 
 _DOCKERFILE_TEMPLATE: Final[str] = """
@@ -106,6 +110,7 @@ _AGENT_ENGINE_APP_TEMPLATE: Final[str] = """
 import os
 import vertexai
 from vertexai.agent_engines import AdkApp
+{extra_imports}
 
 if {is_config_agent}:
   from google.adk.agents import config_agent_utils
@@ -123,7 +128,7 @@ else:
   )
 
 adk_app = AdkApp(
-    {adk_app_type}={adk_app_object},
+    {app_instantiation},
     enable_tracing={trace_to_cloud_option},
 )
 """
@@ -596,18 +601,12 @@ def _get_service_option_by_adk_version(
   parsed_version = parse(adk_version)
   options: list[str] = []
 
-  if parsed_version >= parse('1.3.0'):
-    if session_uri:
-      options.append(f'--session_service_uri={session_uri}')
-    if artifact_uri:
-      options.append(f'--artifact_service_uri={artifact_uri}')
-    if memory_uri:
-      options.append(f'--memory_service_uri={memory_uri}')
-  else:
-    if session_uri:
-      options.append(f'--session_db_url={session_uri}')
-    if parsed_version >= parse('1.2.0') and artifact_uri:
-      options.append(f'--artifact_storage_uri={artifact_uri}')
+  if session_uri:
+    options.append(f'--session_service_uri={session_uri}')
+  if artifact_uri:
+    options.append(f'--artifact_service_uri={artifact_uri}')
+  if memory_uri:
+    options.append(f'--memory_service_uri={memory_uri}')
 
   if use_local_storage is not None and parsed_version >= parse(
       _LOCAL_STORAGE_FLAG_MIN_VERSION
@@ -724,7 +723,7 @@ def to_cloud_run(
         gcp_region=region,
         app_name=app_name,
         port=port,
-        command='web' if with_ui else 'api_server',
+        command='api_server --with_ui' if with_ui else 'api_server',
         install_agent_deps=install_agent_deps,
         service_option=_get_service_option_by_adk_version(
             adk_version,
@@ -1021,7 +1020,9 @@ def to_agent_engine(
       if not os.path.exists(requirements_txt_path):
         click.echo(f'Creating {requirements_txt_path}...')
         with open(requirements_txt_path, 'w', encoding='utf-8') as f:
-          f.write(_AGENT_ENGINE_REQUIREMENT + '\n')
+          f.write('google-cloud-aiplatform[agent_engines]\n')
+          f.write(f'google-adk=={__version__}\n')
+          click.echo(f'Using google-adk=={__version__} in requirements')
         click.echo(f'Created {requirements_txt_path}')
     _ensure_agent_engine_dependency(requirements_txt_path)
     agent_config['requirements_file'] = f'{temp_folder}/requirements.txt'
@@ -1094,24 +1095,18 @@ def to_agent_engine(
 
     from ..utils._google_client_headers import get_tracking_headers
 
-    if project and region:
-      click.echo('Initializing Vertex AI...')
-      client = vertexai.Client(
-          project=project,
-          location=region,
-          http_options={'headers': get_tracking_headers()},
-      )
-    elif api_key:
-      click.echo('Initializing Vertex AI in Express Mode with API key...')
-      client = vertexai.Client(
-          api_key=api_key, http_options={'headers': get_tracking_headers()}
-      )
-    else:
-      click.echo(
-          'No project/region or api_key provided. '
-          'Please specify either project/region or api_key.'
-      )
-      return
+    if not project or not region:
+      click.echo('No project/region provided. Starting onboarding flow...')
+      auth_info = _onboarding.handle_login_with_google()
+      project = auth_info.project_id
+      region = auth_info.region
+
+    click.echo('Initializing Vertex AI...')
+    client = vertexai.Client(
+        project=project,
+        location=region,
+        http_options={'headers': get_tracking_headers()},
+    )
     click.echo('Vertex AI initialized.')
 
     is_config_agent = False
@@ -1136,18 +1131,26 @@ def to_agent_engine(
           ' or "app".'
       )
       return
-    with open(adk_app_file, 'w', encoding='utf-8') as f:
-      f.write(
-          _AGENT_ENGINE_APP_TEMPLATE.format(
-              app_name=app_name,
-              trace_to_cloud_option=trace_to_cloud,
-              is_config_agent=is_config_agent,
-              agent_folder=f'./{temp_folder}',
-              adk_app_object=adk_app_object,
-              adk_app_type=adk_app_type,
-              express_mode=api_key is not None,
-          )
+    extra_imports = ''
+    app_instantiation = f'{adk_app_type}={adk_app_object}'
+    if adk_app_type == 'agent':
+      extra_imports = 'from google.adk.apps import App'
+      app_instantiation = (
+          f"app=App(name='{app_name}', root_agent={adk_app_object})"
       )
+
+    template_content = _AGENT_ENGINE_APP_TEMPLATE.format(
+        app_name=app_name,
+        trace_to_cloud_option=trace_to_cloud,
+        is_config_agent=is_config_agent,
+        agent_folder=f'./{temp_folder}',
+        adk_app_object=adk_app_object,
+        app_instantiation=app_instantiation,
+        extra_imports=extra_imports,
+        express_mode=api_key is not None,
+    )
+    with open(adk_app_file, 'w', encoding='utf-8') as f:
+      f.write(template_content)
     click.echo(f'Created {adk_app_file}')
     click.echo('Files and dependencies resolved')
     if absolutize_imports:
@@ -1286,7 +1289,7 @@ def to_gke(
         gcp_region=region,
         app_name=app_name,
         port=port,
-        command='web' if with_ui else 'api_server',
+        command='api_server --with_ui' if with_ui else 'api_server',
         install_agent_deps=install_agent_deps,
         service_option=_get_service_option_by_adk_version(
             adk_version,

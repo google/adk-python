@@ -1,0 +1,96 @@
+{
+  "events": [
+    {
+      "author": "user",
+      "content": {
+        "parts": [
+          {
+            "text": "credit card 1234-1234, cvv 123"
+          }
+        ],
+        "role": "user"
+      },
+      "id": "e-1",
+      "invocationId": "i-1",
+      "nodeInfo": {
+        "path": ""
+      }
+    },
+    {
+      "author": "coordinator",
+      "content": {
+        "parts": [
+          {
+            "functionCall": {
+              "args": {
+                "request": "The user has provided payment info. Please find out what food they would like to order."
+              },
+              "id": "fc-1",
+              "name": "order_collector"
+            }
+          }
+        ],
+        "role": "model"
+      },
+      "finishReason": "STOP",
+      "id": "e-2",
+      "invocationId": "i-1",
+      "longRunningToolIds": [],
+      "nodeInfo": {
+        "path": "coordinator@1"
+      }
+    },
+    {
+      "author": "order_collector",
+      "content": {
+        "parts": [
+          {
+            "text": "Hello! What would you like to order today? We have Pizza, Burgers, and Salads available. Please let me know your choice and the quantity."
+          }
+        ],
+        "role": "model"
+      },
+      "finishReason": "STOP",
+      "id": "e-3",
+      "invocationId": "i-1",
+      "isolationScope": "fc-1",
+      "nodeInfo": {
+        "path": "coordinator@1/order_collector@fc-1"
+      }
+    },
+    {
+      "author": "user",
+      "content": {
+        "parts": [
+          {
+            "text": "3 burgers"
+          }
+        ],
+        "role": "user"
+      },
+      "id": "e-4",
+      "invocationId": "i-2",
+      "nodeInfo": {
+        "path": ""
+      }
+    },
+    {
+      "author": "order_collector",
+      "content": {
+        "parts": [
+          {
+            "text": "I have added 3 Burgers to your order. Would you like to add any Pizza or Salad, or is that all for today?"
+          }
+        ],
+        "role": "model"
+      },
+      "finishReason": "STOP",
+      "id": "e-5",
+      "invocationId": "i-2",
+      "isolationScope": "fc-1",
+      "nodeInfo": {
+        "path": "coordinator@1/order_collector@fc-1"
+      }
+    }
+  ]
+}

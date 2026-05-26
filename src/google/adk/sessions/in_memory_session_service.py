@@ -342,10 +342,11 @@ class InMemorySessionService(BaseSessionService):
 
     # Update the storage session
     storage_session = self.sessions[app_name][user_id].get(session_id)
-    storage_session.events.append(event)
-    storage_session.last_update_time = event.timestamp
+    if storage_session is not session:
+      storage_session.events.append(event)
+      storage_session.last_update_time = event.timestamp
 
-    if event.actions and event.actions.state_delta:
+    if event.actions.state_delta:
       state_deltas = _session_util.extract_state_delta(
           event.actions.state_delta
       )

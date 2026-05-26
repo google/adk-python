@@ -14,12 +14,17 @@
 
 """Unit tests for skill utilities."""
 
+import builtins
+import io
+import sys
 from unittest import mock
+import zipfile
 
 from google.adk.skills import list_skills_in_dir
 from google.adk.skills import list_skills_in_gcs_dir as _list_skills_in_gcs_dir
 from google.adk.skills import load_skill_from_dir as _load_skill_from_dir
 from google.adk.skills import load_skill_from_gcs_dir as _load_skill_from_gcs_dir
+from google.adk.skills._utils import _load_skill_from_zip_bytes
 from google.adk.skills._utils import _read_skill_properties
 from google.adk.skills._utils import _validate_skill_dir
 import pytest
@@ -340,3 +345,53 @@ def test_list_skills_in_dir_missing_base_path(tmp_path):
 
   skills = list_skills_in_dir(tmp_path / "nonexistent")
   assert skills == {}
+
+
+def test__load_skill_from_zip_bytes():
+  """Tests loading a skill directly from in-memory zip file bytes."""
+
+  zip_buffer = io.BytesIO()
+  with zipfile.ZipFile(zip_buffer, "w") as z:
+    z.writestr(
+        "SKILL.md",
+        "---\nname: my-skill\ndescription: A skill\n---\nBody instructions",
+    )
+    z.writestr("references/ref1.md", "ref1 content")
+    z.writestr("scripts/script1.sh", "echo hello")
+
+  skill = _load_skill_from_zip_bytes(zip_buffer.getvalue())
+  assert skill.frontmatter.name == "my-skill"
+  assert skill.frontmatter.description == "A skill"
+  assert skill.instructions == "Body instructions"
+  assert skill.resources.get_reference("ref1.md") == "ref1 content"
+  assert skill.resources.get_script("script1.sh").src == "echo hello"
+
+
+def test__list_skills_in_gcs_dir_import_error():
+  """Tests list_skills_in_gcs_dir raises ImportError when storage missing."""
+  real_import = builtins.__import__
+
+  def mock_import(name, globals=None, locals=None, fromlist=(), level=0):
+    if name == "google.cloud" and "storage" in (fromlist or ()):
+      raise ImportError("No module named 'google.cloud.storage'")
+    return real_import(name, globals, locals, fromlist, level)
+
+  with mock.patch("builtins.__import__", mock_import):
+    with pytest.raises(ImportError, match="google-cloud-storage is required"):
+      _list_skills_in_gcs_dir("my-bucket", "skills/")
+
+
+def test__load_skill_from_gcs_dir_import_error():
+  """Tests load_skill_from_gcs_dir raises ImportError when storage missing."""
+  real_import = builtins.__import__
+
+  def mock_import(name, globals=None, locals=None, fromlist=(), level=0):
+    if name == "google.cloud" and "storage" in (fromlist or ()):
+      raise ImportError("No module named 'google.cloud.storage'")
+    return real_import(name, globals, locals, fromlist, level)
+
+  with mock.patch("builtins.__import__", mock_import):
+    with pytest.raises(ImportError, match="google-cloud-storage is required"):
+      _load_skill_from_gcs_dir("my-bucket", "skills/my-skill/")
+
+

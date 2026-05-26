@@ -16,12 +16,14 @@
 
 from __future__ import annotations
 
+import io
 import logging
 import pathlib
+from typing import Dict
 from typing import Union
+import zipfile
 
 from google.auth import credentials as auth
-from google.cloud import storage
 from pydantic import ValidationError
 import yaml
 
@@ -177,6 +179,96 @@ def _load_skill_from_dir(skill_dir: Union[str, pathlib.Path]) -> models.Skill:
   )
 
 
+def _load_skill_from_zip_bytes(zip_bytes: bytes) -> models.Skill:
+  """Load a complete skill directly from in-memory zip file bytes.
+
+  Args:
+    zip_bytes: The raw bytes of the zip file containing the skill.
+
+  Returns:
+    Skill object with all components loaded.
+
+  Raises:
+    FileNotFoundError: If SKILL.md is not found in the archive.
+    ValueError: If SKILL.md is invalid or contains dangerous paths.
+  """
+  with zipfile.ZipFile(io.BytesIO(zip_bytes)) as z:
+    # Security check for zip slip
+    for member in z.infolist():
+      filename = member.filename
+      if (
+          filename.startswith("/")
+          or filename.startswith("../")
+          or "/../" in filename
+      ):
+        raise ValueError(f"Dangerous zip entry ignored: {filename}")
+
+    # Find SKILL.md or skill.md
+    skill_md_content = None
+    for name in ("SKILL.md", "skill.md"):
+      try:
+        skill_md_content = z.read(name).decode("utf-8")
+        break
+      except KeyError:
+        continue
+
+    if skill_md_content is None:
+      raise FileNotFoundError("SKILL.md not found in zipped filesystem.")
+
+    parsed, body = _parse_skill_md_content(skill_md_content)
+    skill_name = parsed.get("name")
+    if not skill_name:
+      raise ValueError("SKILL.md frontmatter must contain 'name'")
+    if (
+        not isinstance(skill_name, str)
+        or pathlib.Path(skill_name).name != skill_name
+    ):
+      raise ValueError(f"Invalid skill name in SKILL.md: {skill_name}")
+
+    frontmatter = models.Frontmatter.model_validate(parsed)
+
+    # Helper to load files under a directory prefix inside the zip
+    def _load_zip_dir(prefix: str) -> dict[str, str]:
+      result = {}
+      if not prefix.endswith("/"):
+        prefix += "/"
+      for info in z.infolist():
+        if info.is_dir():
+          continue
+        if info.filename.startswith(prefix):
+          # Avoid cache files or similar
+          if "__pycache__" in info.filename:
+            continue
+          relative_path = info.filename[len(prefix) :]
+          if not relative_path:
+            continue
+          try:
+            result[relative_path] = z.read(info).decode("utf-8")
+          except UnicodeDecodeError:
+            continue
+      return result
+
+    references = _load_zip_dir("references")
+    assets = _load_zip_dir("assets")
+    raw_scripts = _load_zip_dir("scripts")
+    scripts = {
+        name: models.Script(src=content)
+        for name, content in raw_scripts.items()
+    }
+
+    resources = models.Resources(
+        references=references,
+        assets=assets,
+        scripts=scripts,
+    )
+
+    return models.Skill(
+        frontmatter=frontmatter,
+        instructions=body,
+        resources=resources,
+    )
+
+
 def _validate_skill_dir(
     skill_dir: Union[str, pathlib.Path],
 ) -> list[str]:
@@ -314,6 +406,14 @@ def _list_skills_in_gcs_dir(
   Returns:
     Dictionary mapping skill IDs to their frontmatter.
   """
+  try:
+    from google.cloud import storage
+  except ImportError as e:
+    raise ImportError(
+        "google-cloud-storage is required to list skills in GCS. Install it"
+        " with `pip install google-cloud-storage` or `pip install google-adk[gcp]`."
+    ) from e
+
   client = storage.Client(project=project_id, credentials=credentials)
   bucket = client.bucket(bucket_name)
 
@@ -373,6 +473,13 @@ def _load_skill_from_gcs_dir(
     ValueError: If SKILL.md is invalid or the skill name does not match
       the directory name.
   """
+  try:
+    from google.cloud import storage
+  except ImportError as e:
+    raise ImportError(
+        "google-cloud-storage is required to load skills from GCS. Install it"
+        " with `pip install google-cloud-storage` or `pip install google-adk[gcp]`."
+    ) from e
 
   client = storage.Client(project=project_id, credentials=credentials)
   bucket = client.bucket(bucket_name)

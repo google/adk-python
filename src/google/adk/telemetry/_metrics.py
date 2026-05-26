@@ -27,7 +27,6 @@ logger = logging.getLogger("google_adk." + __name__)
 
 # TODO(b/477553411): add these attributes to Otel semconv.
 GEN_AI_AGENT_VERSION = "gen_ai.agent.version"
-GEN_AI_INPUT_TYPE = "gen_ai.input.type"
 GEN_AI_TOOL_VERSION = "gen_ai.tool.version"
 
 # Initialize meter
@@ -65,119 +64,61 @@ _agent_workflow_steps = meter.create_histogram(
 )
 
 
+def record_agent_invocation_duration(
+    agent_name: str,
+    elapsed_ms: float,
+    error: Exception | None = None,
+):
+  """Records the duration of the agent invocation."""
+  attrs = {gen_ai_attributes.GEN_AI_AGENT_NAME: agent_name}
+  if error is not None:
+    attrs[error_attributes.ERROR_TYPE] = type(error).__name__
+  _agent_invocation_duration.record(elapsed_ms, attributes=attrs)
+
+
 def record_agent_request_size(
     agent_name: str, user_content: types.Content | None
 ):
   """Records the size of the agent request."""
   size = _get_content_size(user_content)
-  attrs = {
-      gen_ai_attributes.GEN_AI_AGENT_NAME: agent_name,
-      GEN_AI_INPUT_TYPE: _get_modality_from_content(user_content),
-  }
+  attrs = {gen_ai_attributes.GEN_AI_AGENT_NAME: agent_name}
   _agent_request_size.record(size, attributes=attrs)
-
-
-def record_agent_invocation_duration(
-    agent_name: str,
-    elapsed_ms: float,
-    user_content: types.Content | None,
-    events: list[Event],
-    error: Exception | None = None,
-):
-  """Records the duration of the agent invocation."""
-  response_content: types.Content | None = None
-  for event in reversed(events):
-    if event.author == agent_name and event.content:
-      response_content = event.content
-      break
-
-  attrs = {
-      gen_ai_attributes.GEN_AI_AGENT_NAME: agent_name,
-      GEN_AI_INPUT_TYPE: _get_modality_from_content(user_content),
-      gen_ai_attributes.GEN_AI_OUTPUT_TYPE: _get_modality_from_content(
-          response_content
-      ),
-  }
-  if error is not None:
-    attrs[error_attributes.ERROR_TYPE] = type(error).__name__
-  _agent_invocation_duration.record(elapsed_ms, attributes=attrs)
 
 
 def record_agent_response_size(agent_name: str, events: list[Event]):
   """Records the size of the agent response by extracting content from events."""
   response_content: types.Content | None = None
   for event in reversed(events):
-    # Need to look for author matching agent_name and having content
     if event.author == agent_name and event.content:
       response_content = event.content
       break
 
   size = _get_content_size(response_content)
-  attrs = {
-      gen_ai_attributes.GEN_AI_AGENT_NAME: agent_name,
-      gen_ai_attributes.GEN_AI_OUTPUT_TYPE: _get_modality_from_content(
-          response_content
-      ),
-  }
+  attrs = {gen_ai_attributes.GEN_AI_AGENT_NAME: agent_name}
   _agent_response_size.record(size, attributes=attrs)
 
 
-def record_agent_workflow_steps(agent_name: str, steps_count: int):
-  """Records the number of steps in the agent workflow."""
-  attrs = {
-      gen_ai_attributes.GEN_AI_AGENT_NAME: agent_name,
-  }
-  _agent_workflow_steps.record(steps_count, attributes=attrs)
+def record_agent_workflow_steps(agent_name: str, events: list[Event]):
+  """Records the number of steps in the agent workflow by counting the number of events."""
+  attrs = {gen_ai_attributes.GEN_AI_AGENT_NAME: agent_name}
+  count = sum(1 for event in events if event.author == agent_name)
+  _agent_workflow_steps.record(count, attributes=attrs)
 
 
 def record_tool_execution_duration(
     tool_name: str,
     agent_name: str,
     elapsed_ms: float,
-    input_content: types.Content | None,
-    output_content: types.Content | None,
     error: Exception | None = None,
 ):
   """Records the duration of the tool execution."""
   attrs = {
       gen_ai_attributes.GEN_AI_AGENT_NAME: agent_name,
       gen_ai_attributes.GEN_AI_TOOL_NAME: tool_name,
-      GEN_AI_INPUT_TYPE: _get_modality_from_content(input_content),
   }
   if error is not None:
     attrs[error_attributes.ERROR_TYPE] = type(error).__name__
-  else:
-    attrs[gen_ai_attributes.GEN_AI_OUTPUT_TYPE] = _get_modality_from_content(
-        output_content
-    )
   _tool_execution_duration.record(elapsed_ms, attributes=attrs)
-
-
-# Helper functions copied from metrics_plugin.py
-
-
-def _get_modality_from_content(
-    content: types.Content | None,
-) -> str:
-  if content is None or not content.parts:
-    return "unknown"
-  modalities = set()
-  for part in content.parts:
-    if part.text is not None:
-      modalities.add("text")
-    inline_data = part.inline_data
-    if inline_data and inline_data.mime_type:
-      mime = inline_data.mime_type
-      if "/" in mime:
-        modalities.add(mime.split("/")[0])
-    file_data = part.file_data
-    if file_data and file_data.mime_type:
-      mime = file_data.mime_type
-      if "/" in mime:
-        modalities.add(mime.split("/")[0])
-  if not modalities:
-    return "text"
-  return ",".join(sorted(modalities))
 
 
 def _get_content_size(

@@ -32,7 +32,6 @@ from google.adk.auth.auth_preprocessor import TOOLSET_AUTH_CREDENTIAL_ID_PREFIX
 from google.adk.auth.auth_tool import AuthConfig
 from google.adk.auth.auth_tool import AuthToolArguments
 from google.adk.flows.llm_flows.base_llm_flow import _resolve_toolset_auth
-from google.adk.flows.llm_flows.base_llm_flow import BaseLlmFlow
 from google.adk.flows.llm_flows.base_llm_flow import TOOLSET_AUTH_CREDENTIAL_ID_PREFIX as FLOW_PREFIX
 from google.adk.flows.llm_flows.functions import build_auth_request_event
 from google.adk.flows.llm_flows.functions import REQUEST_EUC_FUNCTION_CALL_NAME
@@ -89,18 +88,19 @@ class TestToolsetAuthPrefixConstant:
   """Test that prefix constants are consistent."""
 
   def test_prefix_constants_match(self):
-    """Ensure auth_preprocessor and base_llm_flow use the same prefix."""
+    """Ensure auth_preprocessor and _reasoning use the same prefix."""
     assert TOOLSET_AUTH_CREDENTIAL_ID_PREFIX == FLOW_PREFIX
     assert TOOLSET_AUTH_CREDENTIAL_ID_PREFIX == "_adk_toolset_auth_"
 
 
 class TestResolveToolsetAuth:
-  """Tests for _resolve_toolset_auth method in BaseLlmFlow."""
+  """Tests for _resolve_toolset_auth."""
 
   @pytest.fixture
   def mock_invocation_context(self):
     """Create a mock invocation context."""
     ctx = Mock(spec=InvocationContext)
+    ctx._state_schema = None
     ctx.invocation_id = "test-invocation-id"
     ctx.end_invocation = False
     ctx.branch = None
@@ -170,7 +170,7 @@ class TestResolveToolsetAuth:
     )
 
     with patch(
-        "google.adk.flows.llm_flows.base_llm_flow.CredentialManager"
+        "google.adk.auth.credential_manager.CredentialManager"
     ) as MockCredentialManager:
       mock_manager = AsyncMock()
       mock_manager.get_auth_credential = AsyncMock(return_value=mock_credential)
@@ -216,7 +216,7 @@ class TestResolveToolsetAuth:
       return m
 
     with patch(
-        "google.adk.flows.llm_flows.base_llm_flow.CredentialManager",
+        "google.adk.auth.credential_manager.CredentialManager",
         side_effect=create_mock_cm,
     ):
       events = []
@@ -242,7 +242,7 @@ class TestResolveToolsetAuth:
     mock_agent.tools = [toolset]
 
     with patch(
-        "google.adk.flows.llm_flows.base_llm_flow.CredentialManager"
+        "google.adk.auth.credential_manager.CredentialManager"
     ) as MockCredentialManager:
       mock_manager = AsyncMock()
       mock_manager.get_auth_credential = AsyncMock(return_value=None)
@@ -286,7 +286,7 @@ class TestResolveToolsetAuth:
     mock_agent.tools = [toolset1, toolset2]
 
     with patch(
-        "google.adk.flows.llm_flows.base_llm_flow.CredentialManager"
+        "google.adk.auth.credential_manager.CredentialManager"
     ) as MockCredentialManager:
       mock_manager = AsyncMock()
       mock_manager.get_auth_credential = AsyncMock(return_value=None)
@@ -335,6 +335,7 @@ class TestCallbackContextGetAuthResponse:
   def mock_invocation_context(self):
     """Create a mock invocation context."""
     ctx = Mock(spec=InvocationContext)
+    ctx._state_schema = None
     ctx.session = Mock()
     ctx.session.state = {}
     return ctx
@@ -377,6 +378,7 @@ class TestBuildAuthRequestEvent:
   def mock_invocation_context(self):
     """Create a mock invocation context."""
     ctx = Mock(spec=InvocationContext)
+    ctx._state_schema = None
     ctx.invocation_id = "test-invocation-id"
     ctx.branch = None
     ctx.agent = Mock()
