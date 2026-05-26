@@ -949,22 +949,17 @@ def test_agent_tool_with_input_schema_uses_json_schema_feature(
 async def test_run_async_handles_none_parts_in_response():
   """Verify run_async handles None parts in response without raising TypeError."""
 
-  # Mock model for the tool_agent that returns content with parts=None
-  # This simulates the condition causing the TypeError
-  tool_agent_model = testing_utils.MockModel.create(
-      responses=[
-          LlmResponse(
-              content=types.Content(parts=None),
-          )
-      ]
-  )
+  class _StaticAgentWithNoneParts(BaseAgent):
 
-  tool_agent = Agent(
-      name='tool_agent',
-      model=tool_agent_model,
-  )
+    async def _run_async_impl(self, ctx):
+      yield Event(
+          invocation_id=ctx.invocation_id,
+          author=self.name,
+          content=types.Content(role='model', parts=None),
+      )
 
-  agent_tool = AgentTool(agent=tool_agent)
+  inner = _StaticAgentWithNoneParts(name='inner_agent', description='static')
+  agent_tool = AgentTool(agent=inner)
 
   session_service = InMemorySessionService()
   session = await session_service.create_session(
@@ -973,7 +968,7 @@ async def test_run_async_handles_none_parts_in_response():
 
   invocation_context = InvocationContext(
       invocation_id='invocation_id',
-      agent=tool_agent,
+      agent=inner,
       session=session,
       session_service=session_service,
   )

@@ -308,6 +308,7 @@ def test_auto_to_sequential_to_auto(is_resumable: bool):
       'response2',
       'response3',
       'response4',
+      'response5',
   ]
   mock_model = testing_utils.MockModel.create(responses=response)
   # root (auto) - sub_agent_1 (seq) - sub_agent_1_1 (single)
@@ -387,6 +388,7 @@ def test_auto_to_sequential_to_auto(is_resumable: bool):
         ('sub_agent_1_2', TRANSFER_RESPONSE_PART),
         ('sub_agent_1_2_1', 'response2'),
         ('sub_agent_1_2_1', END_OF_AGENT),
+        ('sub_agent_1_2', 'response3'),
         ('sub_agent_1_2', END_OF_AGENT),
         (
             'sub_agent_1',
@@ -394,13 +396,13 @@ def test_auto_to_sequential_to_auto(is_resumable: bool):
                 mode='json'
             ),
         ),
-        ('sub_agent_1_3', 'response3'),
+        ('sub_agent_1_3', 'response4'),
         ('sub_agent_1_3', END_OF_AGENT),
         ('sub_agent_1', END_OF_AGENT),
     ]
     # Same session, different invocation.
     assert testing_utils.simplify_resumable_app_events(runner.run('test2')) == [
-        ('root_agent', 'response4'),
+        ('root_agent', 'response5'),
         ('root_agent', END_OF_AGENT),
     ]
 
