@@ -25,7 +25,7 @@ Expecting `+ye.join(", ")+", got '"+(this.terminals_[y]||y)+"'":qe="Parse error 
     stroke: ${e.requirementBorderColor};
     stroke-width: ${e.requirementBorderSize};
   }
-  
+
   .reqTitle, .reqLabel{
     fill:  ${e.requirementTextColor};
   }

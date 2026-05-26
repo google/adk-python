@@ -51,5 +51,5 @@ jobs:
           GCS_BUCKET_NAME: ${{ secrets.GCS_BUCKET_NAME }}
           ADK_DOCS_ROOT_PATH: /tmp/adk-docs
           ADK_PYTHON_ROOT_PATH: /tmp/adk-python
-          PYTHONPATH: contributing/samples
+          PYTHONPATH: ${{ github.workspace }}/contributing/samples/adk_team
         run: python -m adk_answering_agent.upload_docs_to_vertex_ai_search
