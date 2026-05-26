@@ -33,6 +33,7 @@ jobs:
           pip install requests google-adk
 
       - name: Run Triaging Script
+        working-directory: contributing/samples/adk_team
         env:
           GITHUB_TOKEN: ${{ secrets.ADK_TRIAGE_AGENT }}
           GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
@@ -41,5 +42,4 @@ jobs:
           REPO: 'adk-python'
           PULL_REQUEST_NUMBER: ${{ github.event.pull_request.number || github.event.inputs.pr_number }}
           INTERACTIVE: ${{ vars.PR_TRIAGE_INTERACTIVE }}
-          PYTHONPATH: contributing/samples/adk_team
         run: python -m adk_pr_triaging_agent.main
