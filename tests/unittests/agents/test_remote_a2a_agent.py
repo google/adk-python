@@ -2970,8 +2970,7 @@ class TestRemoteA2aAgentWorkflowOutput:
         ),
     )
 
-    agent._promote_response_to_output(event)
-
+    assert agent._promote_response_to_output(event) is True
     assert event.output == "Findings: ok"
     assert event.node_info.message_as_output is True
 
@@ -3080,9 +3079,130 @@ class TestRemoteA2aAgentWorkflowOutput:
     agent = self._make_agent()
     event = Event(author="remote_agent")
 
-    agent._promote_response_to_output(event)
-
+    assert agent._promote_response_to_output(event) is False
     assert event.output is None
+
+  def _make_text_event(
+      self, text: str = "reply", task_state: str | None = None
+  ) -> Event:
+    event = Event(
+        author="remote_agent",
+        content=genai_types.Content(
+            role="model",
+            parts=[genai_types.Part(text=text)],
+        ),
+    )
+    if task_state is not None:
+      event.custom_metadata = {
+          A2A_METADATA_PREFIX + "response": {"status": {"state": task_state}}
+      }
+    return event
+
+  @pytest.mark.parametrize(
+      "state",
+      [
+          "submitted",
+          "working",
+          "input-required",
+          "auth-required",
+          "unknown",
+      ],
+  )
+  def test_skips_non_final_task_states(self, state):
+    """Streaming converters may leave non-final text un-thoughted.
+
+    The task-state check on ``custom_metadata['a2a:response']`` is the
+    guard that prevents ``ctx.output`` from being overwritten by an
+    intermediate event and then raising on the real final event.
+    """
+    agent = self._make_agent()
+    event = self._make_text_event(text="in-progress chunk", task_state=state)
+
+    assert agent._promote_response_to_output(event) is False
+    assert event.output is None
+
+  @pytest.mark.parametrize(
+      "state",
+      ["completed", "failed", "canceled", "rejected"],
+  )
+  def test_promotes_terminal_task_states(self, state):
+    agent = self._make_agent()
+    event = self._make_text_event(text="final answer", task_state=state)
+
+    assert agent._promote_response_to_output(event) is True
+    assert event.output == "final answer"
+
+  def test_promotes_when_response_metadata_absent(self):
+    """Non-Task A2A responses (plain Message) carry no task status."""
+    agent = self._make_agent()
+    event = self._make_text_event(text="message reply")
+
+    assert agent._promote_response_to_output(event) is True
+    assert event.output == "message reply"
+
+  @pytest.mark.asyncio
+  async def test_run_impl_promotes_only_first_terminal_event(self):
+    """Guards against ``ValueError: Output already set``.
+
+    When the v2 converter path emits a ``working`` text event followed
+    by a ``completed`` text event, the first must be passed through
+    untouched and only the terminal event promoted. After that, any
+    further promotable event must also be left alone.
+    """
+
+    working = self._make_text_event(
+        text="thinking out loud", task_state="working"
+    )
+    completed = self._make_text_event(
+        text="final answer", task_state="completed"
+    )
+    trailing = self._make_text_event(
+        text="ignored trailing artifact", task_state="completed"
+    )
+
+    class _StubRemoteAgent(RemoteA2aAgent):
+
+      async def _run_async_impl(self, ctx):
+        yield working
+        yield completed
+        yield trailing
+
+    agent = _StubRemoteAgent(
+        name="remote_agent",
+        agent_card=create_test_agent_card(),
+    )
+
+    from google.adk.apps.app import App
+    from google.adk.workflow._join_node import JoinNode
+    from google.adk.workflow._workflow import Workflow
+
+    from tests.unittests import testing_utils
+
+    workflow = Workflow(
+        name="wf",
+        edges=[("START", agent, JoinNode(name="join"))],
+    )
+    app_instance = App(name="t", root_agent=workflow)
+    runner = testing_utils.InMemoryRunner(app=app_instance)
+
+    events = await runner.run_async(testing_utils.get_user_content("start"))
+
+    # No "Output already set" raised, and the JoinNode aggregates the
+    # terminal event's text — not the working intermediate, not the
+    # trailing artifact.
+    join_outputs = [
+        e
+        for e in events
+        if isinstance(e, Event)
+        and e.output is not None
+        and "join" in (e.node_info.path or "")
+    ]
+    assert join_outputs
+    assert join_outputs[0].output == {"remote_agent": "final answer"}
+
+    assert working.output is None
+    assert completed.output == "final answer"
+    assert trailing.output is None
 
   @pytest.mark.asyncio
   async def test_run_impl_promotes_output_for_each_event(self):
