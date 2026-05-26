@@ -130,6 +130,12 @@ class SessionContext:
       if not self._task:
         self._task = asyncio.create_task(self._run())
 
+        def _retrieve_exception(t: asyncio.Task):
+          if not t.cancelled():
+            t.exception()
+
+        self._task.add_done_callback(_retrieve_exception)
+
     await self._ready_event.wait()
 
     if self._task.cancelled():

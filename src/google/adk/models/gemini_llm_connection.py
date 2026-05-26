@@ -307,10 +307,10 @@ class GeminiLlmConnection(BaseLlmConnection):
                   live_session_id=live_session_id,
               )
               self._output_transcription_text = ''
-          # The Gemini API might not send a transcription finished signal.
+          # The Gemini API or Vertex AI might not send a transcription finished signal.
           # Instead, we rely on generation_complete, turn_complete or
           # interrupted signals to flush any pending transcriptions.
-          if self._api_backend == GoogleLLMVariant.GEMINI_API and (
+          if (
               message.server_content.interrupted
               or message.server_content.turn_complete
               or message.server_content.generation_complete
