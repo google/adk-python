@@ -33,13 +33,13 @@ from pydantic import BaseModel
 
 from ..utils.variant_utils import get_google_llm_variant
 from ..utils.variant_utils import GoogleLLMVariant
-from .tool_context import ToolContext
 
 logger = logging.getLogger("google_adk." + __name__)
 
 if TYPE_CHECKING:
   from ..models.llm_request import LlmRequest
   from .tool_configs import ToolArgsConfig
+  from .tool_context import ToolContext
 
 SelfTool = TypeVar("SelfTool", bound="BaseTool")
 

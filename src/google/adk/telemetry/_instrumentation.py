@@ -68,6 +68,7 @@ class TelemetryContext:
 
   otel_context: context_api.Context
   function_response_event: event_lib.Event | None = None
+  error_type: str | None = None
 
 
 def _record_agent_metrics(
@@ -148,6 +149,7 @@ async def record_tool_execution(
             args=function_args,
             function_response_event=response_event,
             error=caught_error,
+            error_type=tel_ctx.error_type,
         )
   finally:
     try:
