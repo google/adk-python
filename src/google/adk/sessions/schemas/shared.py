@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 
+from google.adk.utils import json_utils
 from sqlalchemy import Dialect
 from sqlalchemy import Text
 from sqlalchemy.dialects import mysql
@@ -51,7 +52,7 @@ class DynamicJSON(TypeDecorator):
       if dialect.name == "postgresql":
         return value  # JSONB returns dict directly
       else:
-        return json.loads(value)  # Deserialize from JSON string for TEXT
+        return json_utils.safe_json_loads(value, context='session state')
     return value
 
 
