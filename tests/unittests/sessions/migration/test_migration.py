@@ -187,6 +187,62 @@ def test_migrate_from_sqlalchemy_pickle(tmp_path):
   dest_session.close()
 
 
+def test_migrate_from_sqlalchemy_pickle_preserves_safe_actions_pickle(tmp_path):
+  """Migration should preserve normal v0 EventActions pickle payloads."""
+  source_db_path = tmp_path / "source_pickle_safe_actions.db"
+  dest_db_path = tmp_path / "dest_json_safe_actions.db"
+  source_db_url = f"sqlite:///{source_db_path}"
+  dest_db_url = f"sqlite:///{dest_db_path}"
+
+  source_engine = create_engine(source_db_url)
+  v0.Base.metadata.create_all(source_engine)
+  SourceSession = sessionmaker(bind=source_engine)
+
+  now = datetime.now(timezone.utc)
+  with SourceSession() as source_session:
+    source_session.add(
+        v0.StorageSession(
+            app_name="app1",
+            user_id="user1",
+            id="session1",
+            state={},
+            create_time=now,
+            update_time=now,
+        )
+    )
+    source_session.commit()
+
+    actions = EventActions(
+        state_delta={"skey": "updated"},
+        artifact_delta={"artifact.txt": 2},
+    )
+    source_session.add(
+        v0.StorageEvent(
+            id="event1",
+            app_name="app1",
+            user_id="user1",
+            session_id="session1",
+            invocation_id="invoke1",
+            author="user",
+            actions=actions,
+            timestamp=now,
+        )
+    )
+    source_session.commit()
+
+  mfsp.migrate(source_db_url, dest_db_url)
+
+  dest_engine = create_engine(dest_db_url)
+  DestSession = sessionmaker(bind=dest_engine)
+  with DestSession() as dest_session:
+    event_res = dest_session.query(v1.StorageEvent).first()
+    assert event_res is not None
+    assert event_res.event_data["actions"]["state_delta"] == {"skey": "updated"}
+    assert event_res.event_data["actions"]["artifact_delta"] == {
+        "artifact.txt": 2
+    }
+
+
 def test_migrate_from_sqlalchemy_pickle_blocks_unsafe_actions_pickle(
     tmp_path, monkeypatch
 ):
@@ -219,6 +275,7 @@ def test_migrate_from_sqlalchemy_pickle_blocks_unsafe_actions_pickle(
     source_session.commit()
 
     class Evil:
+
       def __reduce__(self):
         # This is intentionally non-destructive: it only sets an env var.
         return (
@@ -228,8 +285,10 @@ def test_migrate_from_sqlalchemy_pickle_blocks_unsafe_actions_pickle(
 
     source_session.execute(
         text(
-            "INSERT INTO events (id, app_name, user_id, session_id, invocation_id, author, actions, timestamp) "
-            "VALUES (:id, :app_name, :user_id, :session_id, :invocation_id, :author, :actions, :timestamp)"
+            "INSERT INTO events (id, app_name, user_id, session_id,"
+            " invocation_id, author, actions, timestamp) VALUES (:id,"
+            " :app_name, :user_id, :session_id, :invocation_id, :author,"
+            " :actions, :timestamp)"
         ),
         {
             "id": "event1",
