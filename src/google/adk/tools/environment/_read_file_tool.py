@@ -17,6 +17,7 @@
 from __future__ import annotations
 
 import logging
+import shlex
 from typing import Any
 from typing import Optional
 from typing import TYPE_CHECKING
@@ -109,8 +110,9 @@ class ReadFileTool(BaseTool):
         sed_range = f'{start},{end_line}'
       else:
         sed_range = f'{start},$'
-      # TODO: use shlex.quote to quote `path` and `sed_range`.
-      cmd = f"cat -n '{path}' | sed -n '{sed_range}p'"
+      path_arg = shlex.quote(path)
+      sed_arg = shlex.quote(f'{sed_range}p')
+      cmd = f'cat -n {path_arg} | sed -n {sed_arg}'
       res = await self._environment.execute(cmd)
       if res.exit_code == 0:
         return {
