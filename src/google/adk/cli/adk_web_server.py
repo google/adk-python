@@ -371,6 +371,7 @@ class RunAgentRequest(common.BaseModel):
   function_call_event_id: Optional[str] = None
   # for resume long-running functions
   invocation_id: Optional[str] = None
+  custom_metadata: Optional[dict[str, Any]] = None
 
 
 class CreateSessionRequest(common.BaseModel):
@@ -1892,6 +1893,11 @@ class AdkWebServer:
       self.current_app_name_ref.value = req.app_name
       runner = await self.get_runner_async(req.app_name)
       _set_telemetry_context_if_needed(runner)
+      run_config = (
+          RunConfig(custom_metadata=req.custom_metadata)
+          if req.custom_metadata
+          else None
+      )
       try:
         async with Aclosing(
             runner.run_async(
@@ -1900,6 +1906,7 @@ class AdkWebServer:
                 new_message=req.new_message,
                 state_delta=req.state_delta,
                 invocation_id=req.invocation_id,
+                run_config=run_config,
             )
         ) as agen:
           events = [event async for event in agen]
@@ -1936,13 +1943,17 @@ class AdkWebServer:
 
       # Convert the events to properly formatted SSE
       async def event_generator():
+        run_config = RunConfig(
+            streaming_mode=stream_mode,
+            custom_metadata=req.custom_metadata,
+        )
         async with Aclosing(
             runner.run_async(
                 user_id=req.user_id,
                 session_id=req.session_id,
                 new_message=req.new_message,
                 state_delta=req.state_delta,
-                run_config=RunConfig(streaming_mode=stream_mode),
+                run_config=run_config,
                 invocation_id=req.invocation_id,
             )
         ) as agen:
