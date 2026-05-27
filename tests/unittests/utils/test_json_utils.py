@@ -80,7 +80,9 @@ def test_error_wraps_json_decode_error():
 def test_context_none_no_suffix():
   with pytest.raises(ValueError) as exc_info:
     safe_json_loads('{bad}', context=None)
-  assert ' in ' not in str(exc_info.value)
+  msg = str(exc_info.value)
+  assert msg.startswith('Invalid JSON:'), msg
+  assert not msg.startswith('Invalid JSON in '), msg
 
 
 def test_unicode_content():
