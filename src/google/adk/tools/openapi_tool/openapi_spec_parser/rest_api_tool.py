@@ -161,9 +161,9 @@ class RestApiTool(BaseTool):
           request completes, so the factory must return a fresh client on each
           call. This lets callers configure proxies, HTTP/2, custom transports
           (e.g. request signing), or any other ``httpx.AsyncClient`` option
-          that ``ssl_verify`` can't reach. When ``None`` (default), behaviour
-          is unchanged: a fresh ``httpx.AsyncClient(verify=..., timeout=None)``
-          is created per request. Mirrors the pattern exposed for MCP by
+          that ``ssl_verify`` can't reach. When ``None`` (default), a fresh
+          ``httpx.AsyncClient(verify=..., timeout=None)`` is created per
+          request. Mirrors the pattern exposed for MCP by
           ``StreamableHTTPConnectionParams.httpx_client_factory``.
         credential_key: Optional stable key used for interactive auth and
           credential caching.

@@ -139,8 +139,9 @@ class OpenAPIToolset(BaseToolset):
         ``ssl_verify`` can't reach (proxies, HTTP/2, custom transports such as
         request signing). The returned client is used as an async context
         manager and closed after each request, so the factory must return a
-        fresh client on every call. Defaults to ``None``, which preserves
-        today's behaviour. Mirrors the pattern exposed for MCP by
+        fresh client on every call. Defaults to ``None``, in which case each
+        generated tool constructs its own ``httpx.AsyncClient`` per request.
+        Mirrors the pattern exposed for MCP by
         ``StreamableHTTPConnectionParams.httpx_client_factory``.
       preserve_property_names: If True, preserve the original property names
         from the OpenAPI spec instead of converting them to snake_case. This
