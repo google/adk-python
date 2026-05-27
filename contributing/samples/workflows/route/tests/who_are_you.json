@@ -1,0 +1,106 @@
+{
+  "appName": "route",
+  "events": [
+    {
+      "author": "user",
+      "content": {
+        "parts": [
+          {
+            "text": "who are you"
+          }
+        ],
+        "role": "user"
+      },
+      "id": "e-1",
+      "invocationId": "i-1",
+      "nodeInfo": {
+        "path": ""
+      }
+    },
+    {
+      "actions": {
+        "stateDelta": {
+          "input": "who are you"
+        }
+      },
+      "author": "root_agent",
+      "id": "e-2",
+      "invocationId": "i-1",
+      "nodeInfo": {
+        "path": "root_agent@1/process_input@1"
+      }
+    },
+    {
+      "actions": {
+        "stateDelta": {
+          "category": {
+            "category": "question"
+          }
+        }
+      },
+      "author": "classify_input",
+      "content": {
+        "parts": [
+          {
+            "text": "{\"category\": \"question\"}"
+          }
+        ],
+        "role": "model"
+      },
+      "finishReason": "STOP",
+      "id": "e-3",
+      "invocationId": "i-1",
+      "nodeInfo": {
+        "messageAsOutput": true,
+        "outputFor": [
+          "root_agent@1/classify_input@1"
+        ],
+        "path": "root_agent@1/classify_input@1"
+      }
+    },
+    {
+      "actions": {
+        "route": "question"
+      },
+      "author": "root_agent",
+      "id": "e-4",
+      "invocationId": "i-1",
+      "nodeInfo": {
+        "path": "root_agent@1/route_on_category@1"
+      }
+    },
+    {
+      "author": "answer_question",
+      "content": {
+        "parts": [
+          {
+            "text": "I am a large language model, trained by Google."
+          }
+        ],
+        "role": "model"
+      },
+      "finishReason": "STOP",
+      "id": "e-5",
+      "invocationId": "i-1",
+      "nodeInfo": {
+        "messageAsOutput": true,
+        "outputFor": [
+          "root_agent@1/answer_question@1",
+          "root_agent@1"
+        ],
+        "path": "root_agent@1/answer_question@1"
+      }
+    }
+  ],
+  "id": "f1ec33bf-99ef-49a5-b64a-e4d31f85db85",
+  "state": {
+    "__session_metadata__": {
+      "displayName": "who are you"
+    },
+    "category": {
+      "category": "question"
+    },
+    "input": "who are you"
+  },
+  "userId": "user"
+}

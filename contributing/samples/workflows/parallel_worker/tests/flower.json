@@ -1,0 +1,225 @@
+{
+  "appName": "parallel_worker",
+  "events": [
+    {
+      "author": "user",
+      "content": {
+        "parts": [
+          {
+            "text": "flower"
+          }
+        ],
+        "role": "user"
+      },
+      "id": "e-1",
+      "invocationId": "i-1",
+      "nodeInfo": {
+        "path": ""
+      }
+    },
+    {
+      "actions": {
+        "stateDelta": {
+          "topic": "flower"
+        }
+      },
+      "author": "root_agent",
+      "id": "e-2",
+      "invocationId": "i-1",
+      "nodeInfo": {
+        "path": "root_agent@1/process_input@1"
+      }
+    },
+    {
+      "author": "find_related_topics",
+      "content": {
+        "parts": [
+          {
+            "text": "[\"gardening\", \"plants\", \"botany\"]"
+          }
+        ],
+        "role": "model"
+      },
+      "finishReason": "STOP",
+      "id": "e-3",
+      "invocationId": "i-1",
+      "nodeInfo": {
+        "messageAsOutput": true,
+        "outputFor": [
+          "root_agent@1/find_related_topics@1"
+        ],
+        "path": "root_agent@1/find_related_topics@1"
+      }
+    },
+    {
+      "author": "root_agent",
+      "branch": "make_upper_case@1",
+      "id": "e-4",
+      "invocationId": "i-1",
+      "nodeInfo": {
+        "outputFor": [
+          "root_agent@1/make_upper_case@1/make_upper_case@1"
+        ],
+        "path": "root_agent@1/make_upper_case@1/make_upper_case@1"
+      },
+      "output": "GARDENING"
+    },
+    {
+      "author": "root_agent",
+      "branch": "make_upper_case@2",
+      "id": "e-5",
+      "invocationId": "i-1",
+      "nodeInfo": {
+        "outputFor": [
+          "root_agent@1/make_upper_case@1/make_upper_case@2"
+        ],
+        "path": "root_agent@1/make_upper_case@1/make_upper_case@2"
+      },
+      "output": "PLANTS"
+    },
+    {
+      "author": "root_agent",
+      "branch": "make_upper_case@3",
+      "id": "e-6",
+      "invocationId": "i-1",
+      "nodeInfo": {
+        "outputFor": [
+          "root_agent@1/make_upper_case@1/make_upper_case@3"
+        ],
+        "path": "root_agent@1/make_upper_case@1/make_upper_case@3"
+      },
+      "output": "BOTANY"
+    },
+    {
+      "author": "root_agent",
+      "id": "e-7",
+      "invocationId": "i-1",
+      "nodeInfo": {
+        "outputFor": [
+          "root_agent@1/make_upper_case@1"
+        ],
+        "path": "root_agent@1/make_upper_case@1"
+      },
+      "output": [
+        "GARDENING",
+        "PLANTS",
+        "BOTANY"
+      ]
+    },
+    {
+      "author": "explain_topic",
+      "branch": "explain_topic@1",
+      "content": {
+        "parts": [
+          {
+            "text": "{\"topic\": \"GARDENING\", \"explanation\": \"Gardening is the practice of growing and cultivating plants, and flowers are a central element in many gardening practices. Gardeners often plant, nurture, and arrange flowers for their aesthetic beauty, fragrance, or to attract pollinators, making flowers an integral part of the gardening world.\"}"
+          }
+        ],
+        "role": "model"
+      },
+      "finishReason": "STOP",
+      "id": "e-8",
+      "invocationId": "i-1",
+      "nodeInfo": {
+        "messageAsOutput": true,
+        "outputFor": [
+          "root_agent@1/explain_topic@1/explain_topic@1"
+        ],
+        "path": "root_agent@1/explain_topic@1/explain_topic@1"
+      }
+    },
+    {
+      "author": "explain_topic",
+      "branch": "explain_topic@2",
+      "content": {
+        "parts": [
+          {
+            "text": "{\"topic\": \"PLANTS\", \"explanation\": \"A flower is a reproductive part of many types of plants. Plants are the larger biological kingdom to which flowers belong, as flowers grow on and are integral components of flowering plants (angiosperms).\"}"
+          }
+        ],
+        "role": "model"
+      },
+      "finishReason": "STOP",
+      "id": "e-9",
+      "invocationId": "i-1",
+      "nodeInfo": {
+        "messageAsOutput": true,
+        "outputFor": [
+          "root_agent@1/explain_topic@1/explain_topic@2"
+        ],
+        "path": "root_agent@1/explain_topic@1/explain_topic@2"
+      }
+    },
+    {
+      "author": "explain_topic",
+      "branch": "explain_topic@3",
+      "content": {
+        "parts": [
+          {
+            "text": "{\"topic\": \"BOTANY\", \"explanation\": \"Botany is the scientific study of plants, including their structure, growth, reproduction, metabolism, development, diseases, and chemical properties. Flowers are the reproductive organs of many plants, specifically angiosperms, and are therefore a primary subject of study within botany, with botanists analyzing their morphology, physiology, ecology, and evolutionary significance.\"}"
+          }
+        ],
+        "role": "model"
+      },
+      "finishReason": "STOP",
+      "id": "e-10",
+      "invocationId": "i-1",
+      "nodeInfo": {
+        "messageAsOutput": true,
+        "outputFor": [
+          "root_agent@1/explain_topic@1/explain_topic@3"
+        ],
+        "path": "root_agent@1/explain_topic@1/explain_topic@3"
+      }
+    },
+    {
+      "author": "root_agent",
+      "id": "e-11",
+      "invocationId": "i-1",
+      "nodeInfo": {
+        "outputFor": [
+          "root_agent@1/explain_topic@1"
+        ],
+        "path": "root_agent@1/explain_topic@1"
+      },
+      "output": [
+        {
+          "explanation": "Gardening is the practice of growing and cultivating plants, and flowers are a central element in many gardening practices. Gardeners often plant, nurture, and arrange flowers for their aesthetic beauty, fragrance, or to attract pollinators, making flowers an integral part of the gardening world.",
+          "topic": "GARDENING"
+        },
+        {
+          "explanation": "A flower is a reproductive part of many types of plants. Plants are the larger biological kingdom to which flowers belong, as flowers grow on and are integral components of flowering plants (angiosperms).",
+          "topic": "PLANTS"
+        },
+        {
+          "explanation": "Botany is the scientific study of plants, including their structure, growth, reproduction, metabolism, development, diseases, and chemical properties. Flowers are the reproductive organs of many plants, specifically angiosperms, and are therefore a primary subject of study within botany, with botanists analyzing their morphology, physiology, ecology, and evolutionary significance.",
+          "topic": "BOTANY"
+        }
+      ]
+    },
+    {
+      "author": "root_agent",
+      "content": {
+        "parts": [
+          {
+            "text": "GARDENING: Gardening is the practice of growing and cultivating plants, and flowers are a central element in many gardening practices. Gardeners often plant, nurture, and arrange flowers for their aesthetic beauty, fragrance, or to attract pollinators, making flowers an integral part of the gardening world.\n\n---\n\nPLANTS: A flower is a reproductive part of many types of plants. Plants are the larger biological kingdom to which flowers belong, as flowers grow on and are integral components of flowering plants (angiosperms).\n\n---\n\nBOTANY: Botany is the scientific study of plants, including their structure, growth, reproduction, metabolism, development, diseases, and chemical properties. Flowers are the reproductive organs of many plants, specifically angiosperms, and are therefore a primary subject of study within botany, with botanists analyzing their morphology, physiology, ecology, and evolutionary significance."
+          }
+        ],
+        "role": "user"
+      },
+      "id": "e-12",
+      "invocationId": "i-1",
+      "nodeInfo": {
+        "path": "root_agent@1/aggregate@1"
+      }
+    }
+  ],
+  "id": "70e3790b-df94-4567-93c9-3c60abc6a4e6",
+  "state": {
+    "__session_metadata__": {
+      "displayName": "flower"
+    },
+    "topic": "flower"
+  },
+  "userId": "user"
+}
