@@ -1624,10 +1624,10 @@ def test_detect_error_bash_tool():
 
 
 def _environment_tool_classes():
-  from google.adk.tools.environment._tools import EditFileTool
-  from google.adk.tools.environment._tools import ExecuteTool
-  from google.adk.tools.environment._tools import ReadFileTool
-  from google.adk.tools.environment._tools import WriteFileTool
+  from google.adk.tools.environment._edit_file_tool import EditFileTool
+  from google.adk.tools.environment._execute_tool import ExecuteTool
+  from google.adk.tools.environment._read_file_tool import ReadFileTool
+  from google.adk.tools.environment._write_file_tool import WriteFileTool
 
   return [ExecuteTool, ReadFileTool, WriteFileTool, EditFileTool]
 

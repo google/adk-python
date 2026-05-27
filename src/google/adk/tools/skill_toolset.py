@@ -26,7 +26,6 @@ import mimetypes
 from typing import Any
 from typing import Optional
 from typing import TYPE_CHECKING
-import warnings
 
 from google.genai import types
 from typing_extensions import override
@@ -34,8 +33,6 @@ from typing_extensions import override
 from ..agents.readonly_context import ReadonlyContext
 from ..code_executors.base_code_executor import BaseCodeExecutor
 from ..code_executors.code_execution_utils import CodeExecutionInput
-from ..features import experimental
-from ..features import FeatureName
 from ..skills import models
 from ..skills import prompt
 from ..skills import SkillRegistry
@@ -59,7 +56,7 @@ _BINARY_FILE_DETECTED_MSG = (
     " conversation history for you to analyze."
 )
 
-_DEFAULT_SKILL_SYSTEM_INSTRUCTION = (
+DEFAULT_SKILL_SYSTEM_INSTRUCTION = (
     "You can use specialized 'skills' to help you with complex tasks. "
     "You MUST use the skill tools to interact with these skills.\n\n"
     "Skills are folders of instructions and resources that extend your "
@@ -93,7 +90,6 @@ _DEFAULT_SKILL_SYSTEM_INSTRUCTION = (
 )
 
 
-@experimental(FeatureName.SKILL_TOOLSET)
 class ListSkillsTool(BaseTool):
   """Tool to list all available skills."""
 
@@ -123,7 +119,6 @@ class ListSkillsTool(BaseTool):
     return prompt.format_skills_as_xml(skills)
 
 
-@experimental(FeatureName.SKILL_TOOLSET)
 class SearchSkillsTool(BaseTool):
   """Tool to search for relevant skills in the registry."""
 
@@ -186,7 +181,6 @@ class SearchSkillsTool(BaseTool):
       }
 
 
-@experimental(FeatureName.SKILL_TOOLSET)
 class LoadSkillTool(BaseTool):
   """Tool to load a skill's instructions."""
 
@@ -262,7 +256,6 @@ class LoadSkillTool(BaseTool):
     return None
 
 
-@experimental(FeatureName.SKILL_TOOLSET)
 class LoadSkillResourceTool(BaseTool):
   """Tool to load resources (references, assets, or scripts) from a skill."""
 
@@ -746,7 +739,6 @@ class _SkillScriptCodeExecutor:
     return "\n".join(code_lines)
 
 
-@experimental(FeatureName.SKILL_TOOLSET)
 class RunSkillScriptTool(BaseTool):
   """Tool to execute scripts from a skill's scripts/ directory."""
 
@@ -917,7 +909,6 @@ class RunSkillScriptTool(BaseTool):
     return None
 
 
-@experimental(FeatureName.SKILL_TOOLSET)
 class SkillToolset(BaseToolset):
   """A toolset for managing and interacting with agent skills."""
 
@@ -1106,7 +1097,7 @@ class SkillToolset(BaseToolset):
       self, *, tool_context: ToolContext, llm_request: LlmRequest
   ) -> None:
     """Processes the outgoing LLM request to include available skills."""
-    instructions = [_DEFAULT_SKILL_SYSTEM_INSTRUCTION]
+    instructions = [DEFAULT_SKILL_SYSTEM_INSTRUCTION]
 
     has_list_skills = any(isinstance(t, ListSkillsTool) for t in self._tools)
 
@@ -1133,16 +1124,3 @@ class SkillToolset(BaseToolset):
           cached.cancel()
     self._fetched_skill_cache.clear()
     await super().close()
-
-
-def __getattr__(name: str) -> Any:
-  if name == "DEFAULT_SKILL_SYSTEM_INSTRUCTION":
-    warnings.warn(
-        "DEFAULT_SKILL_SYSTEM_INSTRUCTION is experimental. Its content "
-        "is internal implementation and will change in minor/patch releases "
-        "to tune agent performance.",
-        UserWarning,
-        stacklevel=2,
-    )
-    return _DEFAULT_SKILL_SYSTEM_INSTRUCTION
-  raise AttributeError(f"module {__name__} has no attribute {name}")
