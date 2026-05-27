@@ -142,11 +142,16 @@ class LocalEnvironment(BaseEnvironment):
     return await asyncio.to_thread(self._sync_write, resolved, content)
 
   def _resolve_path(self, path: str | Path) -> Path:
-    """Resolve a relative path against the working directory."""
-    path_obj = Path(path)
-    if path_obj.is_absolute():
-      return path_obj
-    return self.working_dir / path_obj
+    """Resolve a file path inside the working directory."""
+    candidate = Path(path)
+    working_dir = self.working_dir.resolve()
+    if not candidate.is_absolute():
+      candidate = working_dir / candidate
+
+    resolved = candidate.resolve()
+    if not resolved.is_relative_to(working_dir):
+      raise ValueError(f'Path escapes working directory: {path}')
+    return resolved
 
   @staticmethod
   def _sync_read(path: Path) -> bytes:
