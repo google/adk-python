@@ -645,7 +645,7 @@ class EvaluationGenerator:
       ):
         app_details = app_details_per_invocation[invocation_id]
 
-      events_to_add = []
+      events_to_add: list[Event] = []
 
       for event in events:
         current_author = (event.author or _DEFAULT_AUTHOR).lower()
@@ -683,7 +683,8 @@ class EvaluationGenerator:
         # still sees the function call) or grounding metadata; every other
         # event is always included.
         if (
-            e is final_event
+            final_event is not None
+            and e is final_event
             and not e.get_function_calls()
             and not e.grounding_metadata
         ):

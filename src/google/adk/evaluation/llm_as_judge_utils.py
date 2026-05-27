@@ -17,6 +17,7 @@ from __future__ import annotations
 import enum
 import statistics
 from typing import Any
+from typing import cast
 from typing import Optional
 from typing import Union
 
@@ -224,11 +225,14 @@ def get_grounding_metadata_as_json_str(
   if not grounding_metadata:
     return "No grounding metadata was provided."
 
-  return _GroundingMetadataEntries(
-      grounding_metadata=grounding_metadata
-  ).model_dump_json(
-      indent=2,
-      exclude_unset=True,
-      exclude_defaults=True,
-      exclude_none=True,
+  return cast(
+      str,
+      _GroundingMetadataEntries(
+          grounding_metadata=grounding_metadata
+      ).model_dump_json(
+          indent=2,
+          exclude_unset=True,
+          exclude_defaults=True,
+          exclude_none=True,
+      ),
   )
