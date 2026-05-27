@@ -26,10 +26,8 @@ from google.genai import types
 
 def get_weather(location: str, tool_context: ToolContext) -> Dict[str, Any]:
   """Get weather information for a location.
-
   Args:
     location: The city or location to get weather for.
-
   Returns:
     A dictionary containing weather information.
   """
@@ -48,12 +46,10 @@ def get_weather(location: str, tool_context: ToolContext) -> Dict[str, Any]:
 
 async def calculate_async(operation: str, x: float, y: float) -> Dict[str, Any]:
   """Perform async mathematical calculations.
-
   Args:
     operation: The operation to perform (add, subtract, multiply, divide).
     x: First number.
     y: Second number.
-
   Returns:
     A dictionary containing the calculation result.
   """
@@ -80,10 +76,8 @@ async def calculate_async(operation: str, x: float, y: float) -> Dict[str, Any]:
 
 def log_activity(message: str, tool_context: ToolContext) -> Dict[str, str]:
   """Log an activity message with timestamp.
-
   Args:
     message: The message to log.
-
   Returns:
     A dictionary confirming the log entry.
   """

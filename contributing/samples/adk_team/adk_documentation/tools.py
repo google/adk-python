@@ -624,12 +624,12 @@ def get_changed_files_summary(
       repo_name: The name of the repository.
       start_tag: The older tag (base) for the comparison.
       end_tag: The newer tag (head) for the comparison.
-      local_repo_path: Optional absolute path to local git repo. If provided and
-        valid, uses git diff instead of GitHub API to get complete file list
-        (avoids 300-file limit).
-      path_filter: Optional path prefix to filter files. Only files whose path
-        starts with this prefix will be included. Example: "src/google/adk/" to
-        only include ADK source files.
+      local_repo_path: Optional absolute path to local git repo. If provided
+          and valid, uses git diff instead of GitHub API to get complete
+          file list (avoids 300-file limit).
+      path_filter: Optional path prefix to filter files. Only files whose
+          path starts with this prefix will be included. Example:
+          "src/google/adk/" to only include ADK source files.
 
   Returns:
       A dictionary containing the status and a summary of changed files.

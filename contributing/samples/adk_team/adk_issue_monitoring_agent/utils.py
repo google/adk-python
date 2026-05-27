@@ -112,10 +112,10 @@ def get_issue_comments(
 
 
 def get_target_issues(owner: str, repo: str) -> list[int]:
-  """Fetches issues.
-
-  If INITIAL_FULL_SCAN is True, fetches ALL open issues. If False, fetches only
-  issues updated in the last 24 hours using the 'since' parameter.
+  """
+  Fetches issues.
+  If INITIAL_FULL_SCAN is True, fetches ALL open issues.
+  If False, fetches only issues updated in the last 24 hours using the 'since' parameter.
   """
   from datetime import datetime
   from datetime import timedelta

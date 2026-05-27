@@ -141,10 +141,19 @@ def search_hotels(
 
   Args:
     location_name (str): The geographical location (e.g., city or town) for the
-      hotel search.
-    Example: { "location_name": "Seattle" }
-    Example: { "location_name": "New York" }
-    Example: { "location_name": "Los Angeles" }
+                         hotel search.
+    Example:
+    {
+        "location_name": "Seattle"
+    }
+    Example:
+    {
+        "location_name": "New York"
+    }
+    Example:
+    {
+        "location_name": "Los Angeles"
+    }
 
   Returns:
       The hotels name, rating and description.

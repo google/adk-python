@@ -13,7 +13,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Cache Performance Experiments for ADK Context Caching
+"""
+Cache Performance Experiments for ADK Context Caching
 
 This script runs two experiments to compare caching performance:
 A. Gemini 2.0 Flash: Cache enabled vs disabled (explicit caching test)
@@ -102,7 +103,8 @@ async def run_cache_comparison_experiment(
     reverse_order: bool = False,
     request_delay: float = 2.0,
 ) -> Dict[str, Any]:
-  """Run a cache performance comparison experiment for a specific model.
+  """
+  Run a cache performance comparison experiment for a specific model.
 
   Args:
       model_name: Model to test (e.g., "gemini-2.5-flash")

@@ -37,7 +37,8 @@ _counter_lock = threading.Lock()
 
 
 def get_api_call_count() -> int:
-  """Returns the total number of API calls made since the last reset.
+  """
+  Returns the total number of API calls made since the last reset.
 
   Returns:
       int: The global count of API calls.
@@ -54,8 +55,8 @@ def reset_api_call_count() -> None:
 
 
 def _increment_api_call_count() -> None:
-  """Atomically increments the global API call counter.
-
+  """
+  Atomically increments the global API call counter.
   Required because the agent may run tools in parallel threads.
   """
   global _api_call_count
@@ -96,7 +97,8 @@ _session.headers.update({
 
 
 def get_request(url: str, params: Optional[Dict[str, Any]] = None) -> Any:
-  """Sends a GET request to the GitHub API with automatic retries.
+  """
+  Sends a GET request to the GitHub API with automatic retries.
 
   Args:
       url (str): The URL endpoint.
@@ -119,7 +121,8 @@ def get_request(url: str, params: Optional[Dict[str, Any]] = None) -> Any:
 
 
 def post_request(url: str, payload: Any) -> Any:
-  """Sends a POST request to the GitHub API with automatic retries.
+  """
+  Sends a POST request to the GitHub API with automatic retries.
 
   Args:
       url (str): The URL endpoint.
@@ -139,7 +142,8 @@ def post_request(url: str, payload: Any) -> Any:
 
 
 def patch_request(url: str, payload: Any) -> Any:
-  """Sends a PATCH request to the GitHub API with automatic retries.
+  """
+  Sends a PATCH request to the GitHub API with automatic retries.
 
   Args:
       url (str): The URL endpoint.
@@ -159,7 +163,8 @@ def patch_request(url: str, payload: Any) -> Any:
 
 
 def delete_request(url: str) -> Any:
-  """Sends a DELETE request to the GitHub API with automatic retries.
+  """
+  Sends a DELETE request to the GitHub API with automatic retries.
 
   Args:
       url (str): The URL endpoint.
@@ -180,7 +185,8 @@ def delete_request(url: str) -> Any:
 
 
 def error_response(error_message: str) -> Dict[str, Any]:
-  """Creates a standardized error response dictionary for tool outputs.
+  """
+  Creates a standardized error response dictionary for tool outputs.
 
   Args:
       error_message (str): The error details.
@@ -194,18 +200,18 @@ def error_response(error_message: str) -> Dict[str, Any]:
 def get_old_open_issue_numbers(
     owner: str, repo: str, days_old: Optional[float] = None
 ) -> List[int]:
-  """Finds open issues older than the specified threshold using server-side filtering.
+  """
+  Finds open issues older than the specified threshold using server-side filtering.
 
   OPTIMIZATION:
-  Instead of fetching ALL issues and filtering in Python (which wastes API
-  calls),
+  Instead of fetching ALL issues and filtering in Python (which wastes API calls),
   this uses the GitHub Search API `created:<DATE` syntax.
 
   Args:
       owner (str): Repository owner.
       repo (str): Repository name.
       days_old (Optional[float]): Filter issues older than this many days.
-        Defaults to STALE_HOURS_THRESHOLD / 24.
+                                  Defaults to STALE_HOURS_THRESHOLD / 24.
 
   Returns:
       List[int]: A list of issue numbers matching the criteria.

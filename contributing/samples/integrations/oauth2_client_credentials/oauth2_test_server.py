@@ -11,7 +11,8 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""Weather API OAuth2 Test Server
+"""
+Weather API OAuth2 Test Server
 
 A simple FastAPI server that implements OAuth2 flows for weather API testing:
 - Client Credentials Flow

@@ -121,8 +121,7 @@ def eat(tool_context: ToolContext) -> str:
   """Feed Bingo the digital pet.
 
   Use this tool when:
-  - The user explicitly mentions feeding the pet (e.g., "feed Bingo", "give
-  food", "here's a treat")
+  - The user explicitly mentions feeding the pet (e.g., "feed Bingo", "give food", "here's a treat")
   - Bingo is very hungry or starving and asks for food directly
 
   Args:

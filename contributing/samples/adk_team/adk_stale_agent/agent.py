@@ -56,15 +56,15 @@ _MAINTAINERS_CACHE: Optional[List[str]] = None
 
 
 def _get_cached_maintainers() -> List[str]:
-  """Fetches the list of repository maintainers.
+  """
+  Fetches the list of repository maintainers.
 
   This function relies on `utils.get_request` for network resilience.
   `get_request` is configured with an HTTPAdapter that automatically performs
   exponential backoff retries (up to 6 times) for 5xx errors and rate limits.
 
   If the retries are exhausted or the data format is invalid, this function
-  raises a RuntimeError to prevent the bot from running with incorrect
-  permissions.
+  raises a RuntimeError to prevent the bot from running with incorrect permissions.
 
   Returns:
       List[str]: A list of GitHub usernames with push access.
@@ -104,7 +104,8 @@ def _get_cached_maintainers() -> List[str]:
 
 
 def load_prompt_template(filename: str) -> str:
-  """Loads the raw text content of a prompt file.
+  """
+  Loads the raw text content of a prompt file.
 
   Args:
       filename (str): The name of the file (e.g., 'PROMPT_INSTRUCTION.txt').
@@ -121,8 +122,8 @@ PROMPT_TEMPLATE = load_prompt_template("PROMPT_INSTRUCTION.txt")
 
 
 def _fetch_graphql_data(item_number: int) -> Dict[str, Any]:
-  """Executes the GraphQL query to fetch raw issue data, including comments,
-
+  """
+  Executes the GraphQL query to fetch raw issue data, including comments,
   edits, and timeline events.
 
   Args:
@@ -132,8 +133,7 @@ def _fetch_graphql_data(item_number: int) -> Dict[str, Any]:
       Dict[str, Any]: The raw 'issue' object from the GraphQL response.
 
   Raises:
-      RequestException: If the GraphQL query returns errors or the issue is not
-      found.
+      RequestException: If the GraphQL query returns errors or the issue is not found.
   """
   query = """
     query($owner: String!, $name: String!, $number: Int!, $commentLimit: Int!, $timelineLimit: Int!, $editLimit: Int!) {
@@ -208,8 +208,8 @@ def _fetch_graphql_data(item_number: int) -> Dict[str, Any]:
 def _build_history_timeline(
     data: Dict[str, Any],
 ) -> Tuple[List[Dict[str, Any]], List[datetime], Optional[datetime]]:
-  """Parses raw GraphQL data into a unified, chronologically sorted history list.
-
+  """
+  Parses raw GraphQL data into a unified, chronologically sorted history list.
   Also extracts specific event times needed for logic checks.
 
   Args:
@@ -219,8 +219,7 @@ def _build_history_timeline(
       Tuple[List[Dict], List[datetime], Optional[datetime]]:
           - history: A list of normalized event dictionaries sorted by time.
           - label_events: A list of timestamps when the stale label was applied.
-          - last_bot_alert_time: Timestamp of the last bot silent-edit alert (if
-          any).
+          - last_bot_alert_time: Timestamp of the last bot silent-edit alert (if any).
   """
   issue_author = data.get("author", {}).get("login")
   history = []
@@ -307,7 +306,8 @@ def _build_history_timeline(
 def _replay_history_to_find_state(
     history: List[Dict[str, Any]], maintainers: List[str], issue_author: str
 ) -> Dict[str, Any]:
-  """Replays the unified event history to determine the absolute last actor and their role.
+  """
+  Replays the unified event history to determine the absolute last actor and their role.
 
   Args:
       history (List[Dict]): Chronologically sorted list of events.
@@ -318,8 +318,7 @@ def _replay_history_to_find_state(
       Dict[str, Any]: A dictionary containing the last state of the issue:
           - last_action_role (str): 'author', 'maintainer', or 'other_user'.
           - last_activity_time (datetime): Timestamp of the last human action.
-          - last_action_type (str): The type of the last action (e.g.,
-          'commented').
+          - last_action_type (str): The type of the last action (e.g., 'commented').
           - last_comment_text (Optional[str]): The text of the last comment.
           - last_actor_name (str): The specific username of the last actor.
   """
@@ -360,7 +359,8 @@ def _replay_history_to_find_state(
 
 
 def get_issue_state(item_number: int) -> Dict[str, Any]:
-  """Retrieves the comprehensive state of a GitHub issue using GraphQL.
+  """
+  Retrieves the comprehensive state of a GitHub issue using GraphQL.
 
   This function orchestrates the fetching, parsing, and analysis of the issue's
   history to determine if it is stale, active, or pending maintainer review.
@@ -370,8 +370,7 @@ def get_issue_state(item_number: int) -> Dict[str, Any]:
 
   Returns:
       Dict[str, Any]: A comprehensive state dictionary for the LLM agent.
-          Contains keys such as 'last_action_role', 'is_stale',
-          'days_since_activity',
+          Contains keys such as 'last_action_role', 'is_stale', 'days_since_activity',
           and 'maintainer_alert_needed'.
   """
   try:
@@ -461,7 +460,8 @@ def get_issue_state(item_number: int) -> Dict[str, Any]:
 
 
 def _format_days(hours: float) -> str:
-  """Formats a duration in hours into a clean day string.
+  """
+  Formats a duration in hours into a clean day string.
 
   Example:
       168.0 -> "7"
@@ -472,7 +472,8 @@ def _format_days(hours: float) -> str:
 
 
 def add_label_to_issue(item_number: int, label_name: str) -> dict[str, Any]:
-  """Adds a label to the issue.
+  """
+  Adds a label to the issue.
 
   Args:
       item_number (int): The GitHub issue number.
@@ -490,7 +491,8 @@ def add_label_to_issue(item_number: int, label_name: str) -> dict[str, Any]:
 def remove_label_from_issue(
     item_number: int, label_name: str
 ) -> dict[str, Any]:
-  """Removes a label from the issue.
+  """
+  Removes a label from the issue.
 
   Args:
       item_number (int): The GitHub issue number.
@@ -506,7 +508,8 @@ def remove_label_from_issue(
 
 
 def add_stale_label_and_comment(item_number: int) -> dict[str, Any]:
-  """Marks the issue as stale with a comment and label.
+  """
+  Marks the issue as stale with a comment and label.
 
   Args:
       item_number (int): The GitHub issue number.
@@ -535,7 +538,8 @@ def add_stale_label_and_comment(item_number: int) -> dict[str, Any]:
 
 
 def alert_maintainer_of_edit(item_number: int) -> dict[str, Any]:
-  """Posts a comment alerting maintainers of a silent description update.
+  """
+  Posts a comment alerting maintainers of a silent description update.
 
   Args:
       item_number (int): The GitHub issue number.
@@ -553,7 +557,8 @@ def alert_maintainer_of_edit(item_number: int) -> dict[str, Any]:
 
 
 def close_as_stale(item_number: int) -> dict[str, Any]:
-  """Closes the issue as not planned/stale.
+  """
+  Closes the issue as not planned/stale.
 
   Args:
       item_number (int): The GitHub issue number.

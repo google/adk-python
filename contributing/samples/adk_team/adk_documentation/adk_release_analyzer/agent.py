@@ -149,11 +149,13 @@ def save_group_recommendations(
   Args:
       tool_context: The tool context providing access to state.
       group_index: The index of the group these recommendations belong to.
-      recommendations: List of recommendation dicts with keys: - summary: Brief
-        summary of the change - doc_file: Path to the doc file to update -
-        current_state: Current content in the doc - proposed_change: What should
-          be changed - reasoning: Why this change is needed - reference:
-          Reference to the code file
+      recommendations: List of recommendation dicts with keys:
+          - summary: Brief summary of the change
+          - doc_file: Path to the doc file to update
+          - current_state: Current content in the doc
+          - proposed_change: What should be changed
+          - reasoning: Why this change is needed
+          - reference: Reference to the code file
 
   Returns:
       A dictionary confirming the save operation.
@@ -225,12 +227,12 @@ def save_release_info(
       start_tag: The starting release tag.
       end_tag: The ending release tag.
       compare_url: The GitHub compare URL.
-      file_groups: List of file groups, where each group is a list of file info
-        dicts.
+      file_groups: List of file groups, where each group is a list of file
+          info dicts.
       release_summary: A high-level summary of all changes in this release,
-        including the main themes (e.g., "new feature X", "refactoring Y", "bug
-        fixes in Z"). This helps individual analyzers understand the bigger
-        picture.
+          including the main themes (e.g., "new feature X", "refactoring Y",
+          "bug fixes in Z"). This helps individual analyzers understand the
+          bigger picture.
       all_changed_files: List of all changed file paths (for cross-reference).
 
   Returns:

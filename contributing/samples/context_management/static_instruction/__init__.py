@@ -1,7 +1,6 @@
 """Static Instruction Test Agent Package.
 
-This package contains a sample agent for testing static instruction
-functionality
+This package contains a sample agent for testing static instruction functionality
 and context caching optimization features.
 
 The agent demonstrates:

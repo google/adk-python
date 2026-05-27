@@ -24,13 +24,10 @@ There are two ways to use progress callbacks:
    Pass a ProgressFnT callback that receives (progress, total, message).
 
 2. Factory function (per-tool callbacks with runtime context):
-   Pass a ProgressCallbackFactory that takes (tool_name, callback_context,
-   **kwargs)
-   and returns a ProgressFnT or None. This allows different tools to have
-   different
+   Pass a ProgressCallbackFactory that takes (tool_name, callback_context, **kwargs)
+   and returns a ProgressFnT or None. This allows different tools to have different
    progress handling logic, and the factory can access and modify session state
-   via the CallbackContext. The **kwargs ensures forward compatibility for
-   future
+   via the CallbackContext. The **kwargs ensures forward compatibility for future
    parameters.
 
 IMPORTANT: Progress callbacks only work when the MCP server actually sends
@@ -96,9 +93,9 @@ def progress_callback_factory(
 
   Args:
     tool_name: The name of the MCP tool.
-    callback_context: The callback context providing access to session, state,
-      artifacts, and other runtime information. Allows modifying state via
-      ctx.state['key'] = value. May be None if not available.
+    callback_context: The callback context providing access to session,
+      state, artifacts, and other runtime information. Allows modifying
+      state via ctx.state['key'] = value. May be None if not available.
     **kwargs: Additional keyword arguments for future extensibility.
 
   Returns:

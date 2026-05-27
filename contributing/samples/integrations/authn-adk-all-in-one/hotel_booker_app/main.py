@@ -90,7 +90,9 @@ def close_db(exception):
 
 
 def is_token_valid(token: str):
-  """Validates a JWT token using the public key from the OIDC jwks_uri."""
+  """
+  Validates a JWT token using the public key from the OIDC jwks_uri.
+  """
   if not token:
     return False, "Token is empty."
 

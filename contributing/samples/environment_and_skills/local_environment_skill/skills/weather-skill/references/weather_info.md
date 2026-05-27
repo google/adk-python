@@ -1,17 +1,17 @@
 # Weather Information
 
--   **Location:** San Francisco, CA
+- **Location:** San Francisco, CA
 
--   **Condition:** Sunny ☀️
+- **Condition:** Sunny ☀️
 
--   **Temperature:** 72°F (22°C)
+- **Temperature:** 72°F (22°C)
 
--   **Forecast:** Clear skies all day.
+- **Forecast:** Clear skies all day.
 
--   **Location:** Sunnyvale, CA
+- **Location:** Sunnyvale, CA
 
--   **Condition:** Sunny ☀️
+- **Condition:** Sunny ☀️
 
--   **Temperature:** 75°F (24°C)
+- **Temperature:** 75°F (24°C)
 
--   **Forecast:** Warm and sunny.
+- **Forecast:** Warm and sunny.

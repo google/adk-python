@@ -12,7 +12,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""This agent aims to test the Langchain tool with Langchain's StructuredTool"""
+"""
+This agent aims to test the Langchain tool with Langchain's StructuredTool
+"""
 
 from google.adk.agents.llm_agent import Agent
 from google.adk.tools.langchain_tool import LangchainTool

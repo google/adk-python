@@ -116,7 +116,9 @@ prime_agent = Agent(
 
 
 def get_current_weather(location: str):
-  """Returns the current weather."""
+  """
+  Returns the current weather.
+  """
   if location == "New York":
     return "Sunny"
   else:

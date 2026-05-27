@@ -46,10 +46,10 @@ generate_pydantic_output = Agent(
 
 
 def consume_pydantic_output(node_input: TopicDetails):
-  """Relying on the FunctionNode's automatic type parsing.
-
-  The framework will coerce the dictionary or JSON into a TopicDetails object
-  automatically.
+  """
+  Relying on the FunctionNode's automatic type parsing.
+  The framework will coerce the dictionary or JSON into a TopicDetails
+  object automatically.
   """
   return (
       "Received Pydantic Model!\n"

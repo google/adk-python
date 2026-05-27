@@ -4,41 +4,32 @@
 
 This sample demonstrates how to use **Skills** and the **SkillToolset** in ADK.
 
-Skills are specialized folders of instructions, reference materials, assets, and
-scripts that extend an agent's capabilities. The agent can dynamically search
-for, load, and run resources/scripts from these skills depending on the user's
-query.
+Skills are specialized folders of instructions, reference materials, assets, and scripts that extend an agent's capabilities. The agent can dynamically search for, load, and run resources/scripts from these skills depending on the user's query.
 
 This sample showcases:
 
-1.  **Programmatic Skills**: Creating a skill directly within Python
-    (`support-hours-skill`).
-1.  **Directory-based Skills**: Loading a skill from a directory structure
-    (`weather-skill`).
-1.  **Skill Metadata & Additional Tools**: Declaring that a skill requires
-    specific tools, making them dynamically active only when that skill is
-    loaded.
-1.  **Script Execution**: Executing a Python script inside a skill using a code
-    executor.
+1. **Programmatic Skills**: Creating a skill directly within Python (`support-hours-skill`).
+1. **Directory-based Skills**: Loading a skill from a directory structure (`weather-skill`).
+1. **Skill Metadata & Additional Tools**: Declaring that a skill requires specific tools, making them dynamically active only when that skill is loaded.
+1. **Script Execution**: Executing a Python script inside a skill using a code executor.
 
 ## Sample Inputs
 
--   `What are the support hours for Tokyo?`
+- `What are the support hours for Tokyo?`
 
-    *Triggers the support-hours-skill which checks get_timezone and reads
-    support_policy.txt*
+  *Triggers the support-hours-skill which checks get_timezone and reads support_policy.txt*
 
--   `What is the current weather in SF?`
+- `What is the current weather in SF?`
 
-    *Loads weather-skill and reads weather_info.md reference file*
+  *Loads weather-skill and reads weather_info.md reference file*
 
--   `Can you fetch the current humidity for Mountain View?`
+- `Can you fetch the current humidity for Mountain View?`
 
-    *Executes scripts/get_humidity.py via run_skill_script*
+  *Executes scripts/get_humidity.py via run_skill_script*
 
--   `What is the wind speed in Seattle?`
+- `What is the wind speed in Seattle?`
 
-    *Loads weather-skill which dynamically activates and calls get_wind_speed*
+  *Loads weather-skill which dynamically activates and calls get_wind_speed*
 
 ## Graph
 
@@ -82,8 +73,7 @@ support_hours_skill = models.Skill(
 
 ### 2. Loading a Skill from a Directory
 
-Skills can be organized as folders. Each folder must contain a `SKILL.md` file.
-The folder structure typically looks like:
+Skills can be organized as folders. Each folder must contain a `SKILL.md` file. The folder structure typically looks like:
 
 ```
 weather-skill/
@@ -106,8 +96,7 @@ weather_skill = load_skill_from_dir(
 
 ### 3. Registering a SkillToolset
 
-Use `SkillToolset` to bundle all your skills and any dynamic tools. Then pass
-this toolset to your agent's `tools` list:
+Use `SkillToolset` to bundle all your skills and any dynamic tools. Then pass this toolset to your agent's `tools` list:
 
 ```python
 from google.adk.tools.skill_toolset import SkillToolset

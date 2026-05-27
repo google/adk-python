@@ -38,7 +38,8 @@ USER_ID = "stale_bot_user"
 
 
 async def process_single_issue(issue_number: int) -> Tuple[float, int]:
-  """Processes a single GitHub issue using the AI agent and logs execution metrics.
+  """
+  Processes a single GitHub issue using the AI agent and logs execution metrics.
 
   Args:
       issue_number (int): The GitHub issue number to audit.
@@ -46,12 +47,10 @@ async def process_single_issue(issue_number: int) -> Tuple[float, int]:
   Returns:
       Tuple[float, int]: A tuple containing:
           - duration (float): Time taken to process the issue in seconds.
-          - api_calls (int): The number of API calls made during this specific
-          execution.
+          - api_calls (int): The number of API calls made during this specific execution.
 
   Raises:
-      Exception: catches generic exceptions to prevent one failure from stopping
-      the batch.
+      Exception: catches generic exceptions to prevent one failure from stopping the batch.
   """
   start_time = time.perf_counter()
 
@@ -103,7 +102,8 @@ async def process_single_issue(issue_number: int) -> Tuple[float, int]:
 
 
 async def main():
-  """Main entry point to run the stale issue bot concurrently.
+  """
+  Main entry point to run the stale issue bot concurrently.
 
   Fetches old issues and processes them in batches to respect API rate limits
   and concurrency constraints.

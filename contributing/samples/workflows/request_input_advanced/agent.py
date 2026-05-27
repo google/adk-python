@@ -48,7 +48,9 @@ process_request = Agent(
 
 
 def evaluate_request(request: TimeOffRequest):
-  """If days <= 1, it's auto-approved. Otherwise, routes to manager review."""
+  """
+  If days <= 1, it's auto-approved. Otherwise, routes to manager review.
+  """
   if request.days <= 1:
     return TimeOffDecision(approved=True)
   else:

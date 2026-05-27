@@ -18,7 +18,9 @@ import sqlite3
 
 
 class HotelBooker:
-  """Core business logic for hotel booking, independent of any web framework."""
+  """
+  Core business logic for hotel booking, independent of any web framework.
+  """
 
   def __init__(self, db_name="data.db"):
     self.db_name = db_name
@@ -31,7 +33,9 @@ class HotelBooker:
     return conn
 
   def _initialize_db(self):
-    """Drops, creates, and populates the database tables with sample data."""
+    """
+    Drops, creates, and populates the database tables with sample data.
+    """
     conn = None
     try:
       conn = self._get_db_connection()

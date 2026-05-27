@@ -46,8 +46,8 @@ PROMPT_TEMPLATE = load_prompt_template("PROMPT_INSTRUCTION.txt")
 def flag_issue_as_spam(
     item_number: int, detection_reason: str
 ) -> dict[str, Any]:
-  """Flags an issue as spam by adding a label and leaving a comment for maintainers.
-
+  """
+  Flags an issue as spam by adding a label and leaving a comment for maintainers.
   Includes idempotency checks to avoid duplicate POST actions.
 
   Args:

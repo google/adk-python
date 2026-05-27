@@ -14,10 +14,8 @@
 
 """OAuth Authentication sample: FunctionNode with GitHub OAuth2 token request.
 
-Demonstrates how to use `auth_config` with GitHub OAuth2 on a FunctionNode to
-pause
-the workflow, request an OAuth token from the user, and use it to list the
-user's
+Demonstrates how to use `auth_config` with GitHub OAuth2 on a FunctionNode to pause
+the workflow, request an OAuth token from the user, and use it to list the user's
 GitHub repositories.
 
 Flow:

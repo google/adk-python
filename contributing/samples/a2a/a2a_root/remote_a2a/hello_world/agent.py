@@ -26,7 +26,6 @@ def roll_die(sides: int, tool_context: ToolContext) -> int:
   Args:
     sides: The integer number of sides the die has.
     tool_context: the tool context
-
   Returns:
     An integer of the result of rolling the die.
   """

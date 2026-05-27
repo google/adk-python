@@ -69,8 +69,7 @@ def get_weather_data(city: str = "San Francisco", credential=None) -> str:
 
   Args:
       city: City name to get weather for
-      credential: API credential (automatically injected by
-        AuthenticatedFunctionTool)
+      credential: API credential (automatically injected by AuthenticatedFunctionTool)
 
   Returns:
       Current weather information for the city.

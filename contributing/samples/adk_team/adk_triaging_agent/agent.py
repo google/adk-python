@@ -152,7 +152,6 @@ def list_untriaged_issues(issue_count: int) -> dict[str, Any]:
 
 def add_label_to_issue(issue_number: int, label: str) -> dict[str, Any]:
   """Add the specified component label to the given issue number.
-
   Args:
     issue_number: issue number of the GitHub issue.
     label: label to assign

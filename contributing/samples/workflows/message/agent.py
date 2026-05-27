@@ -68,8 +68,8 @@ async def multiple_messages(node_input: Any = None):
 
 
 async def stream_sentence(node_input: Any = None):
-  """Demonstrates streaming by sending a sentence in chunks.
-
+  """
+  Demonstrates streaming by sending a sentence in chunks.
   The `partial=True` flag tells the UI that this is part of an ongoing message.
   """
   yield Event(message="#4 Starting to stream...")

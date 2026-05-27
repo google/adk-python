@@ -46,15 +46,16 @@ def analyze_data_patterns(
 
   Args:
       data: The input data to analyze. Can be structured (JSON, CSV) or
-        unstructured text data. For structured data, include column headers and
-        ensure proper formatting. For time series data, include timestamps in
-        ISO format.
-      analysis_type: Type of analysis to perform. Options include: -
-        "comprehensive": Full statistical and trend analysis - "statistical":
-        Basic statistical measures only - "trends": Time series and trend
-        analysis - "anomalies": Outlier and anomaly detection - "correlations":
-        Correlation and relationship analysis - "predictive": Forecasting and
-        prediction models
+            unstructured text data. For structured data, include column headers
+            and ensure proper formatting. For time series data, include
+            timestamps in ISO format.
+      analysis_type: Type of analysis to perform. Options include:
+                    - "comprehensive": Full statistical and trend analysis
+                    - "statistical": Basic statistical measures only
+                    - "trends": Time series and trend analysis
+                    - "anomalies": Outlier and anomaly detection
+                    - "correlations": Correlation and relationship analysis
+                    - "predictive": Forecasting and prediction models
 
   Returns:
       Dictionary containing analysis results with the following structure:
@@ -94,8 +95,7 @@ def research_literature(
   """Research academic and professional literature on specified topics.
 
   This tool performs comprehensive literature research across multiple academic
-  databases, professional journals, conference proceedings, and industry
-  reports.
+  databases, professional journals, conference proceedings, and industry reports.
   It can analyze research trends, identify key authors and institutions, extract
   methodological approaches, and synthesize findings across multiple sources.
 
@@ -105,23 +105,27 @@ def research_literature(
   the specified field of study.
 
   Args:
-      topic: The research topic or query. Can be specific (e.g., "context
-        caching in large language models") or broad (e.g., "machine learning
-        optimization"). Use specific keywords and phrases for better results.
-        Boolean operators (AND, OR, NOT) are supported for complex queries.
-      sources: List of preferred sources to search. Options include: -
-        "academic": Peer-reviewed academic journals and papers - "conference":
-        Conference proceedings and presentations - "industry": Industry reports
-        and white papers - "patents": Patent databases and intellectual property
-        - "preprints": ArXiv, bioRxiv and other preprint servers - "books":
-        Academic and professional books
-      depth: Research depth level: - "comprehensive": Full literature review
-        with detailed analysis - "focused": Targeted search on specific aspects
-        - "overview": High-level survey of the field - "technical": Deep
-        technical implementation details
-      time_range: Time range for literature search: - "recent": Last 2 years -
-        "current": Last 5 years - "historical": All available time periods -
-        "decade": Last 10 years
+      topic: The research topic or query. Can be specific (e.g., "context caching
+             in large language models") or broad (e.g., "machine learning optimization").
+             Use specific keywords and phrases for better results. Boolean operators
+             (AND, OR, NOT) are supported for complex queries.
+      sources: List of preferred sources to search. Options include:
+              - "academic": Peer-reviewed academic journals and papers
+              - "conference": Conference proceedings and presentations
+              - "industry": Industry reports and white papers
+              - "patents": Patent databases and intellectual property
+              - "preprints": ArXiv, bioRxiv and other preprint servers
+              - "books": Academic and professional books
+      depth: Research depth level:
+             - "comprehensive": Full literature review with detailed analysis
+             - "focused": Targeted search on specific aspects
+             - "overview": High-level survey of the field
+             - "technical": Deep technical implementation details
+      time_range: Time range for literature search:
+                 - "recent": Last 2 years
+                 - "current": Last 5 years
+                 - "historical": All available time periods
+                 - "decade": Last 10 years
 
   Returns:
       Dictionary containing research results:
@@ -173,12 +177,10 @@ def generate_test_scenarios(
 ) -> Dict[str, Any]:
   """Generate comprehensive test scenarios for system validation.
 
-  This tool creates detailed test scenarios, test cases, and validation
-  protocols
+  This tool creates detailed test scenarios, test cases, and validation protocols
   for various types of systems including software applications, AI models,
   distributed systems, and hardware components. It supports multiple testing
-  methodologies including unit testing, integration testing, performance
-  testing,
+  methodologies including unit testing, integration testing, performance testing,
   security testing, and user acceptance testing.
 
   The tool can generate both positive and negative test cases, edge cases,
@@ -187,26 +189,33 @@ def generate_test_scenarios(
   coverage and reliable validation results.
 
   Args:
-      system_type: Type of system to test. Supported types include: -
-        "software": Software applications and services - "ai_model": Machine
-        learning and AI model testing - "distributed": Distributed systems and
-        microservices - "database": Database systems and data integrity - "api":
-        API endpoints and web services - "hardware": Hardware components and
-        embedded systems - "security": Security systems and protocols
-      complexity: Test complexity level: - "basic": Essential functionality
-        tests only - "medium": Standard test suite with common scenarios -
-        "advanced": Comprehensive testing with edge cases - "expert": Exhaustive
-        testing with stress and chaos scenarios
-      coverage: List of testing areas to cover: - "functionality": Core feature
-        testing - "performance": Speed, throughput, and scalability -
-        "security": Authentication, authorization, data protection -
-        "usability": User experience and interface testing - "compatibility":
-        Cross-platform and integration testing - "reliability": Fault tolerance
-        and recovery testing
-      constraints: Testing constraints and requirements: { "time_limit":
-        "Maximum testing duration", "resources": "Available testing resources",
-        "environment": "Testing environment specifications", "compliance":
-        "Regulatory or standard requirements" }
+      system_type: Type of system to test. Supported types include:
+                  - "software": Software applications and services
+                  - "ai_model": Machine learning and AI model testing
+                  - "distributed": Distributed systems and microservices
+                  - "database": Database systems and data integrity
+                  - "api": API endpoints and web services
+                  - "hardware": Hardware components and embedded systems
+                  - "security": Security systems and protocols
+      complexity: Test complexity level:
+                 - "basic": Essential functionality tests only
+                 - "medium": Standard test suite with common scenarios
+                 - "advanced": Comprehensive testing with edge cases
+                 - "expert": Exhaustive testing with stress and chaos scenarios
+      coverage: List of testing areas to cover:
+               - "functionality": Core feature testing
+               - "performance": Speed, throughput, and scalability
+               - "security": Authentication, authorization, data protection
+               - "usability": User experience and interface testing
+               - "compatibility": Cross-platform and integration testing
+               - "reliability": Fault tolerance and recovery testing
+      constraints: Testing constraints and requirements:
+                  {
+                      "time_limit": "Maximum testing duration",
+                      "resources": "Available testing resources",
+                      "environment": "Testing environment specifications",
+                      "compliance": "Regulatory or standard requirements"
+                  }
 
   Returns:
       Dictionary containing generated test scenarios:
@@ -264,35 +273,42 @@ def optimize_system_performance(
 ) -> Dict[str, Any]:
   """Analyze system performance and provide detailed optimization recommendations.
 
-  This tool performs comprehensive system performance analysis including
-  bottleneck
-  identification, resource utilization assessment, scalability planning, and
-  provides
+  This tool performs comprehensive system performance analysis including bottleneck
+  identification, resource utilization assessment, scalability planning, and provides
   specific optimization strategies tailored to the system type and constraints.
 
   Args:
-      system_type: Type of system to optimize: - "web_application": Frontend and
-        backend web services - "database": Relational, NoSQL, or distributed
-        databases - "ml_pipeline": Machine learning training and inference
-        systems - "distributed_cache": Caching layers and distributed memory
-        systems - "microservices": Service-oriented architectures -
-        "data_processing": ETL, stream processing, batch systems -
-        "api_gateway": Request routing and API management systems
-      current_metrics: Current performance metrics including: {
-        "response_time_p95": "95th percentile response time in ms",
-        "throughput_rps": "Requests per second", "cpu_utilization": "Average CPU
-        usage percentage", "memory_usage": "Memory consumption in GB",
-        "error_rate": "Error percentage", "availability": "System uptime
-        percentage" }
-      target_improvements: Desired performance targets: {
-        "response_time_improvement": "Target reduction in response time",
-        "throughput_increase": "Desired increase in throughput",
-        "cost_reduction": "Target cost optimization percentage",
-        "availability_target": "Desired uptime percentage" }
-      constraints: Operational constraints: { "budget_limit": "Maximum budget
-        for improvements", "timeline": "Implementation timeline constraints",
-        "technology_restrictions": "Required or forbidden technologies",
-        "compliance_requirements": "Security/regulatory constraints" }
+      system_type: Type of system to optimize:
+                  - "web_application": Frontend and backend web services
+                  - "database": Relational, NoSQL, or distributed databases
+                  - "ml_pipeline": Machine learning training and inference systems
+                  - "distributed_cache": Caching layers and distributed memory systems
+                  - "microservices": Service-oriented architectures
+                  - "data_processing": ETL, stream processing, batch systems
+                  - "api_gateway": Request routing and API management systems
+      current_metrics: Current performance metrics including:
+                      {
+                          "response_time_p95": "95th percentile response time in ms",
+                          "throughput_rps": "Requests per second",
+                          "cpu_utilization": "Average CPU usage percentage",
+                          "memory_usage": "Memory consumption in GB",
+                          "error_rate": "Error percentage",
+                          "availability": "System uptime percentage"
+                      }
+      target_improvements: Desired performance targets:
+                          {
+                              "response_time_improvement": "Target reduction in response time",
+                              "throughput_increase": "Desired increase in throughput",
+                              "cost_reduction": "Target cost optimization percentage",
+                              "availability_target": "Desired uptime percentage"
+                          }
+      constraints: Operational constraints:
+                  {
+                      "budget_limit": "Maximum budget for improvements",
+                      "timeline": "Implementation timeline constraints",
+                      "technology_restrictions": "Required or forbidden technologies",
+                      "compliance_requirements": "Security/regulatory constraints"
+                  }
 
   Returns:
       Comprehensive optimization analysis:
@@ -300,12 +316,10 @@ def optimize_system_performance(
           "performance_analysis": {
               "bottlenecks_identified": ["Critical performance bottlenecks"],
               "root_cause_analysis": "Detailed analysis of performance issues",
-              "current_vs_target": "Gap analysis between current and target
-              metrics"
+              "current_vs_target": "Gap analysis between current and target metrics"
           },
           "optimization_recommendations": {
-              "infrastructure_changes": ["Hardware/cloud resource
-              recommendations"],
+              "infrastructure_changes": ["Hardware/cloud resource recommendations"],
               "architecture_improvements": ["System design optimizations"],
               "code_optimizations": ["Software-level improvements"],
               "configuration_tuning": ["Parameter and setting adjustments"]
@@ -313,14 +327,12 @@ def optimize_system_performance(
           "implementation_roadmap": {
               "phase_1_quick_wins": ["Immediate improvements (0-2 weeks)"],
               "phase_2_medium_term": ["Medium-term optimizations (1-3 months)"],
-              "phase_3_strategic": ["Long-term architectural changes (3-12
-              months)"]
+              "phase_3_strategic": ["Long-term architectural changes (3-12 months)"]
           },
           "expected_outcomes": {
               "performance_improvements": "Projected performance gains",
               "cost_implications": "Expected costs and savings",
-              "risk_assessment": "Implementation risks and mitigation
-              strategies"
+              "risk_assessment": "Implementation risks and mitigation strategies"
           }
       }
   """
@@ -359,29 +371,31 @@ def analyze_security_vulnerabilities(
 ) -> Dict[str, Any]:
   """Perform comprehensive security vulnerability analysis and risk assessment.
 
-  This tool conducts detailed security analysis including vulnerability
-  identification,
+  This tool conducts detailed security analysis including vulnerability identification,
   threat modeling, compliance gap analysis, and provides prioritized remediation
   strategies based on risk levels and business impact.
 
   Args:
-      system_components: List of system components to analyze: - "web_frontend":
-        User interfaces, SPAs, mobile apps - "api_endpoints": REST/GraphQL APIs,
-        microservices - "database_layer": Data storage and access systems -
-        "authentication": User auth, SSO, identity management -
-        "data_processing": ETL, analytics, ML pipelines - "infrastructure":
-        Servers, containers, cloud services - "network_layer": Load balancers,
-        firewalls, CDNs
-      security_scope: Analysis depth: - "basic": Standard vulnerability scanning
-        - "comprehensive": Full security assessment - "compliance_focused":
-        Regulatory compliance analysis - "threat_modeling": Advanced threat
-        analysis
-      compliance_frameworks: Required compliance standards: ["SOC2", "GDPR",
-        "HIPAA", "PCI-DSS", "ISO27001"]
-      threat_model: Threat landscape consideration: - "startup": Basic threat
-        model for early-stage companies - "enterprise": Corporate threat
-        landscape - "high_security": Government/financial sector threats -
-        "public_facing": Internet-exposed systems
+      system_components: List of system components to analyze:
+                        - "web_frontend": User interfaces, SPAs, mobile apps
+                        - "api_endpoints": REST/GraphQL APIs, microservices
+                        - "database_layer": Data storage and access systems
+                        - "authentication": User auth, SSO, identity management
+                        - "data_processing": ETL, analytics, ML pipelines
+                        - "infrastructure": Servers, containers, cloud services
+                        - "network_layer": Load balancers, firewalls, CDNs
+      security_scope: Analysis depth:
+                     - "basic": Standard vulnerability scanning
+                     - "comprehensive": Full security assessment
+                     - "compliance_focused": Regulatory compliance analysis
+                     - "threat_modeling": Advanced threat analysis
+      compliance_frameworks: Required compliance standards:
+                            ["SOC2", "GDPR", "HIPAA", "PCI-DSS", "ISO27001"]
+      threat_model: Threat landscape consideration:
+                   - "startup": Basic threat model for early-stage companies
+                   - "enterprise": Corporate threat landscape
+                   - "high_security": Government/financial sector threats
+                   - "public_facing": Internet-exposed systems
 
   Returns:
       Security analysis results:
@@ -451,23 +465,30 @@ def design_scalability_architecture(
   maintaining performance, reliability, and cost-effectiveness.
 
   Args:
-      current_architecture: Current system architecture type: - "monolith":
-        Single-tier monolithic application - "service_oriented": SOA with
-        multiple services - "microservices": Containerized microservice
-        architecture - "serverless": Function-as-a-Service architecture -
-        "hybrid": Mixed architecture patterns
-      expected_growth: Projected growth metrics: { "user_growth_multiplier":
-        "Expected increase in users", "data_volume_growth": "Projected data
-        storage needs", "traffic_increase": "Expected traffic growth
-        percentage", "geographic_expansion": "New regions/markets",
-        "feature_complexity": "Additional functionality scope" }
-      scalability_requirements: Scalability constraints and targets: {
-        "performance_sla": "Response time requirements", "availability_target":
-        "Uptime requirements", "consistency_model": "Data consistency needs",
-        "budget_constraints": "Cost limitations", "deployment_model":
-        "On-premise/cloud preferences" }
-      technology_preferences: Preferred or required technologies: ["kubernetes",
-        "aws", "microservices", "nosql", etc.]
+      current_architecture: Current system architecture type:
+                           - "monolith": Single-tier monolithic application
+                           - "service_oriented": SOA with multiple services
+                           - "microservices": Containerized microservice architecture
+                           - "serverless": Function-as-a-Service architecture
+                           - "hybrid": Mixed architecture patterns
+      expected_growth: Projected growth metrics:
+                      {
+                          "user_growth_multiplier": "Expected increase in users",
+                          "data_volume_growth": "Projected data storage needs",
+                          "traffic_increase": "Expected traffic growth percentage",
+                          "geographic_expansion": "New regions/markets",
+                          "feature_complexity": "Additional functionality scope"
+                      }
+      scalability_requirements: Scalability constraints and targets:
+                               {
+                                   "performance_sla": "Response time requirements",
+                                   "availability_target": "Uptime requirements",
+                                   "consistency_model": "Data consistency needs",
+                                   "budget_constraints": "Cost limitations",
+                                   "deployment_model": "On-premise/cloud preferences"
+                               }
+      technology_preferences: Preferred or required technologies:
+                             ["kubernetes", "aws", "microservices", "nosql", etc.]
 
   Returns:
       Scalability architecture design:
@@ -478,8 +499,7 @@ def design_scalability_architecture(
               "technology_stack": "Recommended technologies and frameworks"
           },
           "scalability_patterns": {
-              "horizontal_scaling": "Auto-scaling and load distribution
-              strategies",
+              "horizontal_scaling": "Auto-scaling and load distribution strategies",
               "data_partitioning": "Database sharding and data distribution",
               "caching_strategy": "Multi-level caching implementation",
               "async_processing": "Background job and queue systems"
@@ -544,40 +564,40 @@ def benchmark_performance(
 ) -> Dict[str, Any]:
   """Perform comprehensive performance benchmarking and analysis.
 
-  This tool conducts detailed performance benchmarking across multiple
-  dimensions
+  This tool conducts detailed performance benchmarking across multiple dimensions
   including response time, throughput, resource utilization, scalability limits,
   and system stability under various load conditions. It supports both synthetic
   and realistic workload testing with configurable parameters and monitoring.
 
-  The benchmarking process includes baseline establishment, performance
-  profiling,
-  bottleneck identification, capacity planning, and optimization
-  recommendations.
-  It can simulate various user patterns, network conditions, and system
-  configurations
+  The benchmarking process includes baseline establishment, performance profiling,
+  bottleneck identification, capacity planning, and optimization recommendations.
+  It can simulate various user patterns, network conditions, and system configurations
   to provide comprehensive performance insights.
 
   Args:
       system_name: Name or identifier of the system to benchmark. Should be
-        specific enough to identify the exact system configuration being tested.
-      metrics: List of performance metrics to measure: - "latency": Response
-        time and request processing delays - "throughput": Requests per second
-        and data processing rates - "cpu": CPU utilization and processing
-        efficiency - "memory": Memory usage and allocation patterns - "disk":
-        Disk I/O performance and storage operations - "network": Network
-        bandwidth and communication overhead - "scalability": System behavior
-        under increasing load - "stability": Long-term performance and
-        reliability
-      duration: Benchmarking duration: - "quick": 5-10 minutes for rapid
-        assessment - "standard": 30-60 minutes for comprehensive testing -
-        "extended": 2-4 hours for stability and endurance testing -
-        "continuous": Ongoing monitoring and measurement
-      load_profile: Type of load pattern to simulate: - "constant": Steady,
-        consistent load throughout test - "realistic": Variable load mimicking
-        real usage patterns - "peak": High-intensity load testing for capacity
-        limits - "stress": Beyond-capacity testing for failure analysis -
-        "spike": Sudden load increases to test elasticity
+                  specific enough to identify the exact system configuration
+                  being tested.
+      metrics: List of performance metrics to measure:
+              - "latency": Response time and request processing delays
+              - "throughput": Requests per second and data processing rates
+              - "cpu": CPU utilization and processing efficiency
+              - "memory": Memory usage and allocation patterns
+              - "disk": Disk I/O performance and storage operations
+              - "network": Network bandwidth and communication overhead
+              - "scalability": System behavior under increasing load
+              - "stability": Long-term performance and reliability
+      duration: Benchmarking duration:
+               - "quick": 5-10 minutes for rapid assessment
+               - "standard": 30-60 minutes for comprehensive testing
+               - "extended": 2-4 hours for stability and endurance testing
+               - "continuous": Ongoing monitoring and measurement
+      load_profile: Type of load pattern to simulate:
+                   - "constant": Steady, consistent load throughout test
+                   - "realistic": Variable load mimicking real usage patterns
+                   - "peak": High-intensity load testing for capacity limits
+                   - "stress": Beyond-capacity testing for failure analysis
+                   - "spike": Sudden load increases to test elasticity
 
   Returns:
       Dictionary containing comprehensive benchmark results:
