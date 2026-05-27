@@ -14,14 +14,13 @@
 
 """Tests for JSON utility functions."""
 
-import pytest
-
 from google.adk.utils.json_utils import safe_json_loads
+import pytest
 
 
 def test_parses_object():
   result = safe_json_loads('{"key": "value"}')
-  assert result == {"key": "value"}
+  assert result == {'key': 'value'}
 
 
 def test_parses_array():
@@ -31,12 +30,12 @@ def test_parses_array():
 
 def test_parses_nested_structure():
   result = safe_json_loads('{"a": {"b": [1, null, true]}}')
-  assert result == {"a": {"b": [1, None, True]}}
+  assert result == {'a': {'b': [1, None, True]}}
 
 
 def test_parses_string_value():
   result = safe_json_loads('"hello"')
-  assert result == "hello"
+  assert result == 'hello'
 
 
 def test_parses_number():
@@ -74,6 +73,7 @@ def test_error_wraps_json_decode_error():
     safe_json_loads('{bad}', context='test')
   assert exc_info.value.__cause__ is not None
   import json
+
   assert isinstance(exc_info.value.__cause__, json.JSONDecodeError)
 
 
@@ -85,4 +85,4 @@ def test_context_none_no_suffix():
 
 def test_unicode_content():
   result = safe_json_loads('{"emoji": "🎉", "chinese": "你好"}')
-  assert result == {"emoji": "🎉", "chinese": "你好"}
+  assert result == {'emoji': '🎉', 'chinese': '你好'}

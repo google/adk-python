@@ -682,7 +682,9 @@ class AnthropicLlm(BaseLlm):
         all_parts.append(types.Part.from_text(text=text_blocks[idx]))
       if idx in tool_use_blocks:
         acc = tool_use_blocks[idx]
-        args = json_utils.safe_json_loads(acc.args_json) if acc.args_json else {}
+        args = (
+            json_utils.safe_json_loads(acc.args_json) if acc.args_json else {}
+        )
         part = types.Part.from_function_call(name=acc.name, args=args)
         part.function_call.id = acc.id
         all_parts.append(part)

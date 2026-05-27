@@ -325,7 +325,9 @@ class AgentEvaluator:
     initial_session = {}
     if initial_session_file:
       with open(initial_session_file, "r") as f:
-        initial_session = json_utils.safe_json_loads(f.read(), context=initial_session_file)
+        initial_session = json_utils.safe_json_loads(
+            f.read(), context=initial_session_file
+        )
     return initial_session
 
   @staticmethod

@@ -27,9 +27,10 @@ from typing import get_origin
 from typing import Optional
 
 from google.genai import types
-from . import json_utils
 from pydantic import BaseModel
 from pydantic import TypeAdapter
+
+from . import json_utils
 
 # Use SchemaUnion from google.genai.types to support all schema types
 # that the underlying API supports.

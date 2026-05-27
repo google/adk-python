@@ -131,7 +131,9 @@ class SandboxClient:
       The parsed JSON response as a dict.
     """
     if hasattr(response, "body") and response.body:
-      return json_utils.safe_json_loads(response.body, context='sandbox response')
+      return json_utils.safe_json_loads(
+          response.body, context="sandbox response"
+      )
     return {}
 
   def update_access_token(self, access_token: str) -> None:

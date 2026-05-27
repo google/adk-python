@@ -52,7 +52,7 @@ class DynamicJSON(TypeDecorator):
       if dialect.name == "postgresql":
         return value  # JSONB returns dict directly
       else:
-        return json_utils.safe_json_loads(value, context='session state')
+        return json_utils.safe_json_loads(value, context="session state")
     return value
 
 

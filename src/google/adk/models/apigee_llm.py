@@ -1162,7 +1162,9 @@ class ChatCompletionsResponseHandler:
     args_delta = func.get('arguments', '')
     if args_delta:
       try:
-        args = json_utils.safe_json_loads(args_delta, context='streaming response')
+        args = json_utils.safe_json_loads(
+            args_delta, context='streaming response'
+        )
         chunk_part.function_call.args = args
         if not part.function_call.args:
           part.function_call.args = dict(args)
