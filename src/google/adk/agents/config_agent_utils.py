@@ -539,7 +539,7 @@ def resolve_agent_reference(
   if ref_config.config_path:
     if os.path.isabs(ref_config.config_path):
       raise ValueError(
-          f"Absolute paths are not allowed in AgentTool config_path:"
+          "Absolute paths are not allowed in AgentTool config_path:"
           f" {ref_config.config_path!r}"
       )
     agent_dir = os.path.dirname(referencing_agent_config_abs_path)
@@ -547,7 +547,7 @@ def resolve_agent_reference(
         os.path.join(agent_dir, ref_config.config_path)
     )
     canonical_agent_dir = os.path.normpath(agent_dir)
-    if not resolved_path.startswith(canonical_agent_dir + os.sep):
+    if not resolved_path.startswith(canonical_agent_dir + os.path.sep):
       raise ValueError(
           f"Path traversal detected: config_path {ref_config.config_path!r}"
           " resolves outside the agent directory"

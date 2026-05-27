@@ -15,7 +15,8 @@
 from __future__ import annotations
 
 import os
-from typing import Any, TYPE_CHECKING
+from typing import Any
+from typing import TYPE_CHECKING
 
 from pydantic import alias_generators
 from pydantic import BaseModel
