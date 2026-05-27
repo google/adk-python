@@ -220,6 +220,12 @@ class DiscoveryEngineSearchTool(FunctionTool):
     except GoogleAPICallError as e:
       return {'status': 'error', 'error_message': str(e)}
 
+  def _detect_error_in_response(self, response: Any) -> Optional[str]:
+    """Telemetry hook: returns an error type if the response indicates an error."""
+    if isinstance(response, dict) and response.get('status') == 'error':
+      return 'TOOL_ERROR'
+    return None
+
   def _do_search(
       self,
       query: str,

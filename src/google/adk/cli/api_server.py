@@ -1043,7 +1043,7 @@ class ApiServer:
             root_agent_name=root_agent.name,
             description=root_agent.description,
             language="python",
-            agents=get_agents_dict(root_agent),
+            agents=await get_agents_dict(root_agent),
         )
       else:
         raise HTTPException(

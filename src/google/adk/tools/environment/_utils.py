@@ -12,31 +12,15 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-name: Pre-commit Checks
+"""Shared utilities for environment tools."""
 
-on:
-  push:
-    branches: [main, v1, v2]
-    paths:
-      - '**.py'
-      - '.pre-commit-config.yaml'
-      - 'pyproject.toml'
-  pull_request:
-    branches: [main, v1, v2]
-    paths:
-      - '**.py'
-      - '.pre-commit-config.yaml'
-      - 'pyproject.toml'
+from __future__ import annotations
 
-permissions:
-  contents: read
+from ._constants import MAX_OUTPUT_CHARS
 
-jobs:
-  pre-commit:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout Code
-        uses: actions/checkout@v6
 
-      - name: Run pre-commit checks
-        uses: pre-commit/action@v3.0.1
+def truncate(text: str, limit: int = MAX_OUTPUT_CHARS) -> str:
+  """Truncate text to *limit* characters with a notice."""
+  if len(text) <= limit:
+    return text
+  return text[:limit] + f'\n... (truncated, {len(text)} total chars)'
