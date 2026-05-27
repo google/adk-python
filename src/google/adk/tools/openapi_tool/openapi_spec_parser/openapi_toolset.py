@@ -133,12 +133,14 @@ class OpenAPIToolset(BaseToolset):
         context. Useful for adding custom headers like correlation IDs,
         authentication tokens, or other request metadata.
       httpx_client_factory: Optional zero-argument callable returning an
-        ``httpx.AsyncClient`` to use for every generated tool's API calls.
-        When provided, it takes precedence over the per-tool default client
+        ``httpx.AsyncClient`` to use for every generated tool's API calls. When
+        provided, it takes precedence over the per-tool default client
         construction and unlocks ``httpx.AsyncClient`` options that
         ``ssl_verify`` can't reach (proxies, HTTP/2, custom transports such as
-        request signing, shared connection pools). Defaults to ``None``, which
-        preserves today's behaviour. Mirrors the pattern exposed for MCP by
+        request signing). The returned client is used as an async context
+        manager and closed after each request, so the factory must return a
+        fresh client on every call. Defaults to ``None``, which preserves
+        today's behaviour. Mirrors the pattern exposed for MCP by
         ``StreamableHTTPConnectionParams.httpx_client_factory``.
       preserve_property_names: If True, preserve the original property names
         from the OpenAPI spec instead of converting them to snake_case. This

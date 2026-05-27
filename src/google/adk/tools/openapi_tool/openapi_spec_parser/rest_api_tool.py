@@ -75,15 +75,16 @@ def snake_to_lower_camel(snake_case_string: str):
 
 AuthPreparationState = Literal["pending", "done"]
 
-HttpxClientFactory = Callable[..., httpx.AsyncClient]
-"""Type alias for a factory returning an ``httpx.AsyncClient``.
+HttpxClientFactory = Callable[[], httpx.AsyncClient]
+"""Type alias for a zero-argument factory returning an ``httpx.AsyncClient``.
 
 When supplied to ``RestApiTool`` or ``OpenAPIToolset``, the factory is invoked
-once per API call and its returned client is used (as an async context
-manager) to issue the request, in place of the default
-``httpx.AsyncClient(verify=..., timeout=None)``. This unlocks knobs that the
-narrower ``ssl_verify`` parameter can't reach: proxies, HTTP/2, custom
-transports (e.g. request-signing), shared connection pools, and so on.
+once per API call and its returned client is used as an async context manager
+to issue the request, in place of the default
+``httpx.AsyncClient(verify=..., timeout=None)``. Because the client is closed
+when the request completes, the factory must return a fresh client on every
+call. This unlocks knobs that the narrower ``ssl_verify`` parameter can't
+reach: proxies, HTTP/2, custom transports (e.g. request-signing), and so on.
 """
 
 
@@ -155,13 +156,14 @@ class RestApiTool(BaseTool):
           context. Useful for adding custom headers like correlation IDs,
           authentication tokens, or other request metadata.
         httpx_client_factory: Optional zero-argument callable returning an
-          ``httpx.AsyncClient``. When provided, the returned client is used to
-          issue the request, allowing callers to configure proxies, HTTP/2,
-          custom transports (e.g. request signing), shared connection pools,
-          or any other ``httpx.AsyncClient`` option that ``ssl_verify`` can't
-          reach. When ``None`` (default), behaviour is unchanged: a fresh
-          ``httpx.AsyncClient(verify=..., timeout=None)`` is created per
-          request. Mirrors the pattern exposed for MCP by
+          ``httpx.AsyncClient``. When provided, the returned client is used as
+          an async context manager to issue the request and is closed once the
+          request completes, so the factory must return a fresh client on each
+          call. This lets callers configure proxies, HTTP/2, custom transports
+          (e.g. request signing), or any other ``httpx.AsyncClient`` option
+          that ``ssl_verify`` can't reach. When ``None`` (default), behaviour
+          is unchanged: a fresh ``httpx.AsyncClient(verify=..., timeout=None)``
+          is created per request. Mirrors the pattern exposed for MCP by
           ``StreamableHTTPConnectionParams.httpx_client_factory``.
         credential_key: Optional stable key used for interactive auth and
           credential caching.
