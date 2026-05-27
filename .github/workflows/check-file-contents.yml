@@ -111,7 +111,7 @@ jobs:
             # 1. Identify files containing any googleapis.com URL.
             set +e
             FILES_WITH_ENDPOINTS=$(grep -lE 'https?://[a-zA-Z0-9.-]+\.googleapis\.com' $CHANGED_FILES)
-            
+
             # 2. From those, identify files that are MISSING the required mTLS version.
             if [ -n "$FILES_WITH_ENDPOINTS" ]; then
               FILES_MISSING_MTLS=$(grep -L '.mtls.googleapis.com' $FILES_WITH_ENDPOINTS)
