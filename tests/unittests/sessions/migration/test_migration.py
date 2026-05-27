@@ -17,6 +17,8 @@ from __future__ import annotations
 
 from datetime import datetime
 from datetime import timezone
+import os
+import pickle
 
 from google.adk.events.event_actions import EventActions
 from google.adk.sessions.migration import _schema_check_utils
@@ -25,6 +27,7 @@ from google.adk.sessions.schemas import v0
 from google.adk.sessions.schemas import v1
 import pytest
 from sqlalchemy import create_engine
+from sqlalchemy import text
 from sqlalchemy.orm import sessionmaker
 
 
@@ -182,6 +185,68 @@ def test_migrate_from_sqlalchemy_pickle(tmp_path):
   assert event_res.event_data["actions"]["state_delta"] == {"skey": 4}
 
   dest_session.close()
+
+
+def test_migrate_from_sqlalchemy_pickle_blocks_unsafe_actions_pickle(
+    tmp_path, monkeypatch
+):
+  """Migration should not execute arbitrary globals from a pickled actions blob."""
+  monkeypatch.delenv("ADK_MIGRATION_PICKLE_RCE", raising=False)
+
+  source_db_path = tmp_path / "source_pickle_unsafe_actions.db"
+  dest_db_path = tmp_path / "dest_json_unsafe_actions.db"
+  source_db_url = f"sqlite:///{source_db_path}"
+  dest_db_url = f"sqlite:///{dest_db_path}"
+
+  source_engine = create_engine(source_db_url)
+  v0.Base.metadata.create_all(source_engine)
+  SourceSession = sessionmaker(bind=source_engine)
+
+  # Populate source DB with a valid session row to satisfy the FK constraint,
+  # then insert a malicious pickled actions blob directly as raw bytes.
+  now = datetime.now(timezone.utc)
+  with SourceSession() as source_session:
+    source_session.add(
+        v0.StorageSession(
+            app_name="app1",
+            user_id="user1",
+            id="session1",
+            state={},
+            create_time=now,
+            update_time=now,
+        )
+    )
+    source_session.commit()
+
+    class Evil:
+      def __reduce__(self):
+        # This is intentionally non-destructive: it only sets an env var.
+        return (
+            exec,
+            ("import os; os.environ['ADK_MIGRATION_PICKLE_RCE']='1'",),
+        )
+
+    source_session.execute(
+        text(
+            "INSERT INTO events (id, app_name, user_id, session_id, invocation_id, author, actions, timestamp) "
+            "VALUES (:id, :app_name, :user_id, :session_id, :invocation_id, :author, :actions, :timestamp)"
+        ),
+        {
+            "id": "event1",
+            "app_name": "app1",
+            "user_id": "user1",
+            "session_id": "session1",
+            "invocation_id": "invoke1",
+            "author": "user",
+            "actions": pickle.dumps(Evil()),
+            "timestamp": now,
+        },
+    )
+    source_session.commit()
+
+  mfsp.migrate(source_db_url, dest_db_url)
+
+  assert os.environ.get("ADK_MIGRATION_PICKLE_RCE") is None
 
 
 def test_migrate_from_sqlalchemy_pickle_with_async_driver_urls(tmp_path):

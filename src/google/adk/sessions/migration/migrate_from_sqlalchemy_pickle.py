@@ -18,6 +18,7 @@ from __future__ import annotations
 import argparse
 from datetime import datetime
 from datetime import timezone
+import io
 import json
 import logging
 import pickle
@@ -36,6 +37,44 @@ from sqlalchemy import text
 from sqlalchemy.orm import sessionmaker
 
 logger = logging.getLogger("google_adk." + __name__)
+
+_ALLOWED_PICKLE_GLOBALS: set[tuple[str, str]] = {
+    # Builtin containers/primitives.
+    ("builtins", "dict"),
+    ("builtins", "list"),
+    ("builtins", "set"),
+    ("builtins", "tuple"),
+    ("builtins", "str"),
+    ("builtins", "bytes"),
+    ("builtins", "bytearray"),
+    ("builtins", "int"),
+    ("builtins", "float"),
+    ("builtins", "bool"),
+    # Expected pickled payload for v0 session schema events.
+    ("google.adk.events.event_actions", "EventActions"),
+}
+
+
+class _RestrictedUnpickler(pickle.Unpickler):
+  """Restricted unpickler for migrating legacy v0 schema actions.
+
+  The v0 session schema stored `EventActions` as a pickled blob. During
+  migration we treat the raw bytes read from the source DB as untrusted input
+  and only allow the minimum set of safe globals needed to reconstruct
+  `EventActions`.
+  """
+
+  def find_class(self, module: str, name: str):  # noqa: ANN001
+    if (module, name) in _ALLOWED_PICKLE_GLOBALS:
+      return super().find_class(module, name)
+    raise pickle.UnpicklingError(
+        f"Blocked global during migration unpickle: {module}.{name}"
+    )
+
+
+def _restricted_pickle_loads(data: bytes) -> Any:
+  """Load a pickle payload using the restricted unpickler."""
+  return _RestrictedUnpickler(io.BytesIO(data)).load()
 
 
 def _to_datetime_obj(val: Any) -> datetime | Any:
@@ -59,7 +98,7 @@ def _row_to_event(row: dict) -> Event:
   if actions_val is not None:
     try:
       if isinstance(actions_val, bytes):
-        actions = pickle.loads(actions_val)
+        actions = _restricted_pickle_loads(actions_val)
       else:  # for spanner - it might return object directly
         actions = actions_val
     except Exception as e:
