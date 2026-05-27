@@ -20,7 +20,7 @@ Verifies that EditFileTool correctly handles line break differences.
 from pathlib import Path
 
 from google.adk.environment._local_environment import LocalEnvironment
-from google.adk.tools.environment._tools import EditFileTool
+from google.adk.tools.environment._edit_file_tool import EditFileTool
 import pytest
 import pytest_asyncio
 

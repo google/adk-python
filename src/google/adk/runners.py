@@ -455,6 +455,7 @@ class Runner:
       user_id: str,
       session_id: str,
       new_message: Optional[types.Content] = None,
+      state_delta: Optional[dict[str, Any]] = None,
       run_config: Optional[RunConfig] = None,
       yield_user_message: bool = False,
       node: Optional['BaseNode'] = None,
@@ -512,7 +513,9 @@ class Runner:
 
       # Append user message to session for history
       if new_message:
-        user_event = await self._append_user_event(ic, new_message)
+        user_event = await self._append_user_event(
+            ic, new_message, state_delta=state_delta
+        )
         if yield_user_message and user_event:
           yield user_event
 
@@ -706,14 +709,26 @@ class Runner:
     return invocation_ids.pop()
 
   async def _append_user_event(
-      self, ic: InvocationContext, content: types.Content
+      self,
+      ic: InvocationContext,
+      content: types.Content,
+      *,
+      state_delta: Optional[dict[str, Any]] = None,
   ) -> Event:
     """Append a user message event to the session and return it."""
-    event = Event(
-        invocation_id=ic.invocation_id,
-        author='user',
-        content=content,
-    )
+    if state_delta:
+      event = Event(
+          invocation_id=ic.invocation_id,
+          author='user',
+          actions=EventActions(state_delta=state_delta),
+          content=content,
+      )
+    else:
+      event = Event(
+          invocation_id=ic.invocation_id,
+          author='user',
+          content=content,
+      )
     # when a paused task delegation is in flight, stamp
     # the new user message with that task's isolation_scope so the
     # task agent's content-build (scoped to <fc_id>) sees it.
@@ -989,6 +1004,7 @@ class Runner:
               user_id=user_id,
               session_id=session_id,
               new_message=new_message,
+              state_delta=state_delta,
               run_config=run_config,
               yield_user_message=yield_user_message,
               node=agent_to_run,
@@ -1008,6 +1024,7 @@ class Runner:
               user_id=user_id,
               session_id=session_id,
               new_message=new_message,
+              state_delta=state_delta,
               run_config=run_config,
               yield_user_message=yield_user_message,
           )
