@@ -18,9 +18,9 @@ import os
 from unittest import mock
 
 import google.adk
-from google.adk.tools.bigquery.client import DP_USER_AGENT
-from google.adk.tools.bigquery.client import get_bigquery_client
-from google.adk.tools.bigquery.client import get_dataplex_catalog_client
+from google.adk.integrations.bigquery.client import DP_USER_AGENT
+from google.adk.integrations.bigquery.client import get_bigquery_client
+from google.adk.integrations.bigquery.client import get_dataplex_catalog_client
 from google.adk.utils._telemetry_context import _is_visual_builder
 from google.api_core.gapic_v1 import client_info as gapic_client_info
 import google.auth

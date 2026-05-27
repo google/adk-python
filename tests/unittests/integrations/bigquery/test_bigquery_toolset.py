@@ -14,9 +14,9 @@
 
 from __future__ import annotations
 
-from google.adk.tools.bigquery import BigQueryCredentialsConfig
-from google.adk.tools.bigquery import BigQueryToolset
-from google.adk.tools.bigquery.config import BigQueryToolConfig
+from google.adk.integrations.bigquery import BigQueryCredentialsConfig
+from google.adk.integrations.bigquery import BigQueryToolset
+from google.adk.integrations.bigquery.config import BigQueryToolConfig
 from google.adk.tools.google_tool import GoogleTool
 import pytest
 

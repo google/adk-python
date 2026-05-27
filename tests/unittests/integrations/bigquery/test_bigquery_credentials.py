@@ -14,7 +14,7 @@
 
 from unittest import mock
 
-from google.adk.tools.bigquery import BigQueryCredentialsConfig
+from google.adk.integrations.bigquery import BigQueryCredentialsConfig
 # Mock the Google OAuth and API dependencies
 import google.auth.credentials
 import google.oauth2.credentials
@@ -30,6 +30,7 @@ class TestBigQueryCredentials:
 
   def test_valid_credentials_object_auth_credentials(self):
     """Test that providing valid Credentials object works correctly with
+
     google.auth.credentials.Credentials.
 
     When a user already has valid OAuth credentials, they should be able
@@ -52,6 +53,7 @@ class TestBigQueryCredentials:
 
   def test_valid_credentials_object_oauth2_credentials(self):
     """Test that providing valid Credentials object works correctly with
+
     google.oauth2.credentials.Credentials.
 
     When a user already has valid OAuth credentials, they should be able

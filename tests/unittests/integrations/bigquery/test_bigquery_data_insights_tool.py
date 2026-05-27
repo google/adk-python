@@ -15,7 +15,7 @@
 import pathlib
 from unittest import mock
 
-from google.adk.tools.bigquery import data_insights_tool
+from google.adk.integrations.bigquery import data_insights_tool
 import pytest
 import yaml
 

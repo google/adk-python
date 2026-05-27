@@ -17,7 +17,7 @@ from __future__ import annotations
 import warnings
 
 from google.adk.features._feature_registry import _WARNED_FEATURES
-from google.adk.tools.bigquery.config import BigQueryToolConfig
+from google.adk.integrations.bigquery.config import BigQueryToolConfig
 import pytest
 
 

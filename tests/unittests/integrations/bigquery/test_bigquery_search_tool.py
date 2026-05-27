@@ -53,8 +53,8 @@ except ImportError:
   sys.modules["fastapi.openapi.models"] = mock.MagicMock()
 
 
-from google.adk.tools.bigquery import search_tool
-from google.adk.tools.bigquery.config import BigQueryToolConfig
+from google.adk.integrations.bigquery import search_tool
+from google.adk.integrations.bigquery.config import BigQueryToolConfig
 from google.api_core import exceptions as api_exceptions
 from google.auth.credentials import Credentials
 from google.cloud import dataplex_v1
@@ -107,7 +107,7 @@ class TestSearchCatalog(parameterized.TestCase):
     # Patch get_dataplex_catalog_client
     self.mock_get_dataplex_client = self.enter_context(
         mock.patch(
-            "google.adk.tools.bigquery.client.get_dataplex_catalog_client",
+            "google.adk.integrations.bigquery.client.get_dataplex_catalog_client",
             autospec=True,
         )
     )

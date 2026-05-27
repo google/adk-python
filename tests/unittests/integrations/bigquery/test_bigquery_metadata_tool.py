@@ -17,9 +17,9 @@ from __future__ import annotations
 import os
 from unittest import mock
 
-from google.adk.tools.bigquery import client as bq_client_lib
-from google.adk.tools.bigquery import metadata_tool
-from google.adk.tools.bigquery.config import BigQueryToolConfig
+from google.adk.integrations.bigquery import client as bq_client_lib
+from google.adk.integrations.bigquery import metadata_tool
+from google.adk.integrations.bigquery.config import BigQueryToolConfig
 import google.auth
 from google.auth.exceptions import DefaultCredentialsError
 from google.cloud import bigquery
