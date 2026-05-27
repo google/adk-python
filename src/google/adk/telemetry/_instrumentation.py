@@ -114,8 +114,8 @@ async def record_agent_invocation(
     _record_agent_metrics(
         agent.name,
         elapsed_ms,
-        ctx.user_content,
-        ctx.session.events,
+        getattr(ctx, "user_content", None),
+        getattr(getattr(ctx, "session", None), "events", []),
         caught_error,
     )
 
