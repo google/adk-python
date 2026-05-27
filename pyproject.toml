@@ -33,69 +33,85 @@ classifiers = [
 dynamic = [ "version" ]
 
 dependencies = [
-  "aiosqlite>=0.21",                                        # For SQLite database
-  "anyio>=4.9,<5",                                          # For MCP Session Manager
-  "authlib>=1.6.6,<2",                                      # For RestAPI Tool
-  "click>=8.1.8,<9",                                        # For CLI tools
-  "fastapi>=0.124.1,<1",                                    # FastAPI framework
-  "google-api-python-client>=2.157,<3",                     # Google API client discovery
-  "google-auth[pyopenssl]>=2.47",                           # Google Auth library
-  "google-cloud-aiplatform[agent-engines]>=1.148.1,<2",     # For VertexAI integrations, e.g. example store.
-  "google-cloud-bigquery>=2.2",
-  "google-cloud-bigquery-storage>=2",
-  "google-cloud-bigtable>=2.32",                            # For Bigtable database
-  "google-cloud-dataplex>=1.7,<3",                          # For Dataplex Catalog Search tool
-  "google-cloud-discoveryengine>=0.13.12,<0.14",            # For Discovery Engine Search Tool
-  "google-cloud-pubsub>=2,<3",                              # For Pub/Sub Tool
-  "google-cloud-secret-manager>=2.22,<3",                   # Fetching secrets in RestAPI Tool
-  "google-cloud-spanner>=3.56,<4",                          # For Spanner database
-  "google-cloud-speech>=2.30,<3",                           # For Audio Transcription
-  "google-cloud-storage>=2.18,<4",                          # For GCS Artifact service
-  "google-genai>=1.72,<2",                                  # Google GenAI SDK
-  "graphviz>=0.20.2,<1",                                    # Graphviz for graph rendering
-  "httpx>=0.27,<1",                                         # HTTP client library
-  "jsonschema>=4.23,<5",                                    # Agent Builder config validation
-  "mcp>=1.24,<2",                                           # For MCP Toolset
-  "opentelemetry-api>=1.36,<=1.41.1",                       # OpenTelemetry - allow 1.39+ up to latest published at time of resolution.
-  "opentelemetry-exporter-gcp-logging>=1.9.0a0,<=1.12.0a0",
-  "opentelemetry-exporter-gcp-monitoring>=1.9.0a0,<2",
-  "opentelemetry-exporter-gcp-trace>=1.9,<2",
-  "opentelemetry-exporter-otlp-proto-http>=1.36",
-  "opentelemetry-resourcedetector-gcp>=1.9.0a0,<2",
+  "aiosqlite>=0.21",
+  "authlib>=1.6.6,<2",
+  "click>=8.1.8,<9",
+  "fastapi>=0.124.1,<1",
+  "google-auth[pyopenssl]>=2.47",
+  "google-genai>=1.72,<2",
+  "graphviz>=0.20.2,<1",
+  "httpx>=0.27,<1",
+  "jsonschema>=4.23,<5",
+  "opentelemetry-api>=1.36,<=1.41.1",
   "opentelemetry-sdk>=1.36,<=1.41.1",
-  "pyarrow>=14",
-  "pydantic>=2.12,<3",                                      # For data validation/models
-  "python-dateutil>=2.9.0.post0,<3",                        # For Vertext AI Session Service
-  "python-dotenv>=1,<2",                                    # To manage environment variables
-  "pyyaml>=6.0.2,<7",                                       # For APIHubToolset.
+  "packaging>=21",
+  "pydantic>=2.12,<3",
+  "python-dotenv>=1,<2",
+  "python-multipart>=0.0.9,<1",
+  # go/keep-sorted start
+  "pyyaml>=6.0.2,<7",
   "requests>=2.32.4,<3",
-  "sqlalchemy>=2,<3",                                       # SQL database ORM
-  "sqlalchemy-spanner>=1.14",                               # Spanner database session service
-  "starlette>=0.49.1,<1",                                   # For FastAPI CLI
-  "tenacity>=9,<10",                                        # For Retry management
+  "starlette>=0.49.1,<1",
+  "tenacity>=9,<10",
   "typing-extensions>=4.5,<5",
-  "tzlocal>=5.3,<6",                                        # Time zone utilities
-  "uvicorn>=0.34,<1",                                       # ASGI server for FastAPI
-  "watchdog>=6,<7",                                         # For file change detection and hot reload
-  "websockets>=15.0.1,<16",                                 # For BaseLlmFlow
+  "tzlocal>=5.3,<6",
+  "uvicorn>=0.34,<1",
+  "watchdog>=6,<7",
+  "websockets>=15.0.1,<16",
+  # go/keep-sorted end
 ]
+
 optional-dependencies.a2a = [
   "a2a-sdk>=0.3.4,<0.4",
 ]
 optional-dependencies.agent-identity = [
   "google-cloud-iamconnectorcredentials>=0.1,<0.2",
 ]
+optional-dependencies.all = [
+  "anyio>=4.9,<5",
+  "google-api-python-client>=2.157,<3",
+  "google-cloud-aiplatform[agent-engines]>=1.148.1,<2",
+  "google-cloud-bigquery>=2.2",
+  "google-cloud-bigquery-storage>=2",
+  "google-cloud-bigtable>=2.32",
+  "google-cloud-dataplex>=1.7,<3",
+  "google-cloud-discoveryengine>=0.13.12,<0.14",
+  "google-cloud-pubsub>=2,<3",
+  "google-cloud-resource-manager>=1.12,<2",
+  "google-cloud-secret-manager>=2.22,<3",
+  "google-cloud-spanner>=3.56,<4",
+  "google-cloud-speech>=2.30,<3",
+  "google-cloud-storage>=2.18,<4",
+  "mcp>=1.24,<2",
+  "opentelemetry-exporter-gcp-logging>=1.9.0a0,<=1.12.0a0",
+  "opentelemetry-exporter-gcp-monitoring>=1.9.0a0,<2",
+  "opentelemetry-exporter-gcp-trace>=1.9,<2",
+  "opentelemetry-exporter-otlp-proto-http>=1.36",
+  "opentelemetry-resourcedetector-gcp>=1.9.0a0,<2",
+  "pyarrow>=14",
+  "python-dateutil>=2.9.0.post0,<3",
+  "sqlalchemy>=2,<3",
+  "sqlalchemy-spanner>=1.14",
+]
+
 optional-dependencies.community = [
   "google-adk-community",
 ]
+optional-dependencies.db = [
+  "sqlalchemy>=2,<3",
+  "sqlalchemy-spanner>=1.14",
+]
+
 optional-dependencies.dev = [
   "flit>=3.10",
-  "isort>=6",
   "mypy>=1.15",
   "pre-commit>=4",
   "pyink>=25.12",
   "pylint>=2.6",
+  "tox>=4.23.2",
+  "tox-uv>=1.33.2",
 ]
+
 optional-dependencies.docs = [
   "autodoc-pydantic",
   "furo",
@@ -105,6 +121,7 @@ optional-dependencies.docs = [
   "sphinx-click",
   "sphinx-rtd-theme",
 ]
+
 optional-dependencies.eval = [
   "gepa>=0.1",
   "google-cloud-aiplatform[evaluation]>=1.148",
@@ -113,51 +130,113 @@ optional-dependencies.eval = [
   "rouge-score>=0.1.2",
   "tabulate>=0.9",
 ]
-# Optional extensions
+
 optional-dependencies.extensions = [
-  "anthropic>=0.43",                                                 # For anthropic model support
+  "anthropic>=0.78",                                                 # For anthropic model support; 0.78 introduced ThinkingConfigAdaptiveParam (required for Claude Opus 4.7).
   "beautifulsoup4>=3.2.2",                                           # For load_web_page tool.
   "crewai[tools]; python_version>='3.11' and python_version<'3.12'", # For CrewaiTool; chromadb/pypika fail on 3.12+
   "docker>=7",                                                       # For ContainerCodeExecutor
   "google-cloud-firestore>=2.11,<3",                                 # For Firestore services
   "google-cloud-parametermanager>=0.4,<1",
-  "k8s-agent-sandbox>=0.1.1.post3",                                  # For GkeCodeExecutor sandbox mode
-  "kubernetes>=29",                                                  # For GkeCodeExecutor
-  "langgraph>=0.2.60,<0.4.8",                                        # For LangGraphAgent
-  "litellm>=1.83.7,<=1.83.14",                                       # For LiteLlm class. Lower bound: 5 CVE patches (2026-04). Upper bound pinned to current latest; bump deliberately. See #5488.
-  "llama-index-embeddings-google-genai>=0.3",                        # For files retrieval using LlamaIndex.
-  "llama-index-readers-file>=0.4",                                   # For retrieval using LlamaIndex.
-  "lxml>=5.3",                                                       # For load_web_page tool.
-  "pypika>=0.50",                                                    # For crewai->chromadb dependency
-  "toolbox-adk>=1,<2",                                               # For tools.toolbox_toolset.ToolboxToolset
+  "k8s-agent-sandbox>=0.1.1.post3",
+  "kubernetes>=29",
+  "langgraph>=0.2.60,<0.4.8",
+  "litellm>=1.83.7,<=1.83.14",
+  "llama-index-embeddings-google-genai>=0.3",
+  "llama-index-readers-file>=0.4",
+  "lxml>=5.3",
+  "pypika>=0.50",
+  "toolbox-adk>=1,<2",
 ]
+
+optional-dependencies.gcp = [
+  "google-cloud-aiplatform[agent-engines]>=1.148.1,<2",
+  "google-cloud-bigquery>=2.2",
+  "google-cloud-bigquery-storage>=2",
+  "google-cloud-bigtable>=2.32",
+  "google-cloud-dataplex>=1.7,<3",
+  "google-cloud-discoveryengine>=0.13.12,<0.14",
+  "google-cloud-pubsub>=2,<3",
+  "google-cloud-resource-manager>=1.12,<2",
+  "google-cloud-secret-manager>=2.22,<3",
+  "google-cloud-spanner>=3.56,<4",
+  "google-cloud-speech>=2.30,<3",
+  "google-cloud-storage>=2.18,<4",
+  "opentelemetry-exporter-gcp-logging>=1.9.0a0,<=1.12.0a0",
+  "opentelemetry-exporter-gcp-monitoring>=1.9.0a0,<2",
+  "opentelemetry-exporter-gcp-trace>=1.9,<2",
+  "opentelemetry-exporter-otlp-proto-http>=1.36",
+  "opentelemetry-resourcedetector-gcp>=1.9.0a0,<2",
+  "pyarrow>=14",
+  "python-dateutil>=2.9.0.post0,<3",
+]
+
+optional-dependencies.mcp = [
+  "anyio>=4.9,<5",
+  "mcp>=1.24,<2",
+]
+
 optional-dependencies.otel-gcp = [ "opentelemetry-instrumentation-google-genai>=0.6b0,<1" ]
 optional-dependencies.slack = [ "slack-bolt>=1.22" ]
 optional-dependencies.test = [
   "a2a-sdk>=0.3,<0.4",
-  "anthropic>=0.43",                                                 # For anthropic model tests
+  "anthropic>=0.78",                                                 # For anthropic model tests; 0.78 introduced ThinkingConfigAdaptiveParam (required for Claude Opus 4.7).
+  "anyio>=4.9,<5",
   "crewai[tools]; python_version>='3.11' and python_version<'3.12'", # For CrewaiTool tests; chromadb/pypika fail on 3.12+
+  "gepa>=0.1",
+  "google-api-python-client>=2.157,<3",
+  "google-cloud-aiplatform[agent-engines,evaluation]>=1.148.1,<2",
+  "google-cloud-bigquery>=2.2",
+  "google-cloud-bigquery-storage>=2",
+  "google-cloud-bigtable>=2.32",
+  "google-cloud-dataplex>=1.7,<3",
+  "google-cloud-discoveryengine>=0.13.12,<0.14",
   "google-cloud-firestore>=2.11,<3",
   "google-cloud-iamconnectorcredentials>=0.1,<0.2",
   "google-cloud-parametermanager>=0.4,<1",
-  "kubernetes>=29",                                                  # For GkeCodeExecutor
+  "google-cloud-pubsub>=2,<3",
+  "google-cloud-resource-manager>=1.12,<2",
+  "google-cloud-secret-manager>=2.22,<3",
+  "google-cloud-spanner>=3.56,<4",
+  "google-cloud-speech>=2.30,<3",
+  "google-cloud-storage>=2.18,<4",
+  "jinja2>=3.1.4,<4",
+  "kubernetes>=29",
   "langchain-community>=0.3.17",
-  "langgraph>=0.2.60,<0.4.8",                                        # For LangGraphAgent
-  "litellm>=1.83.7,<=1.83.14",                                       # For LiteLLM tests. Lower bound: 5 CVE patches (2026-04). Upper bound pinned to current latest; bump deliberately. See #5488.
-  "llama-index-readers-file>=0.4",                                   # For retrieval tests
-  "openai>=1.100.2",                                                 # For LiteLLM
+  "langgraph>=0.2.60,<0.4.8",
+  "litellm>=1.83.7,<=1.83.14",
+  "llama-index-readers-file>=0.4",
+  "mcp>=1.24,<2",
+  "openai>=1.100.2",
+  "opentelemetry-exporter-gcp-logging>=1.9.0a0,<=1.12.0a0",
+  "opentelemetry-exporter-gcp-monitoring>=1.9.0a0,<2",
+  "opentelemetry-exporter-gcp-trace>=1.9,<2",
+  "opentelemetry-exporter-otlp-proto-http>=1.36",
   "opentelemetry-instrumentation-google-genai>=0.3b0,<1",
-  "pypika>=0.50",                                                    # For crewai->chromadb dependency
+  "opentelemetry-resourcedetector-gcp>=1.9.0a0,<2",
+  "pandas>=2.2.3",
+  "pyarrow>=14",
+  "pypika>=0.50",
   "pytest>=9,<10",
   "pytest-asyncio>=0.25",
   "pytest-mock>=3.14",
   "pytest-xdist>=3.6.1",
+  "python-dateutil>=2.9.0.post0,<3",
   "python-multipart>=0.0.9",
   "rouge-score>=0.1.2",
   "slack-bolt>=1.22",
+  "sqlalchemy>=2,<3",
+  "sqlalchemy-spanner>=1.14",
   "tabulate>=0.9",
+  "tomli>=2,<3; python_version<'3.11'",
 ]
+
 optional-dependencies.toolbox = [ "toolbox-adk>=1,<2" ]
+
+optional-dependencies.tools = [
+  "google-api-python-client>=2.157,<3",
+]
+
 urls.changelog = "https://github.com/google/adk-python/blob/main/CHANGELOG.md"
 urls.documentation = "https://google.github.io/adk-docs/"
 urls.homepage = "https://google.github.io/adk-docs/"
@@ -166,7 +245,7 @@ scripts.adk = "google.adk.cli:main"
 
 [tool.flit.sdist]
 include = [ 'src/**/*', 'README.md', 'pyproject.toml', 'LICENSE' ]
-exclude = [ 'src/**/*.sh' ]
+exclude = [ 'src/**/*.sh', 'src/**/README.md' ]
 
 [tool.flit.module]
 name = "google.adk"
@@ -175,7 +254,7 @@ include = [ "py.typed" ]
 [tool.isort]
 profile = "google"
 single_line_exclusions = [  ]
-line_length = 200                           # Prevent line wrap flickering.
+line_length = 200
 known_third_party = [ "google.adk", "a2a" ]
 
 [tool.pytest.ini_options]
@@ -184,7 +263,7 @@ asyncio_default_fixture_loop_scope = "function"
 asyncio_mode = "auto"
 
 [tool.mypy]
-python_version = "3.10"
+python_version = "3.11"
 exclude = [ "tests/", "contributing/samples/" ]
 plugins = [ "pydantic.mypy" ]
 strict = true
@@ -192,7 +271,6 @@ disable_error_code = [ "import-not-found", "import-untyped", "unused-ignore" ]
 follow_imports = "skip"
 
 [tool.pyink]
-# Format py files following Google style-guide
 line-length = 80
 unstable = true
 pyink-indentation = 2

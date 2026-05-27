@@ -109,3 +109,35 @@ def test_helpful_error_for_litellm_without_extensions():
   assert 'litellm package' in error_msg
   assert 'pip install' in error_msg
   assert 'Provider-style models' in error_msg
+
+
+def test_resolve_with_prefix():
+  """Test that model resolution can be overridden with a prefix."""
+  assert models.LLMRegistry.resolve('gemini:gemini-1.5-flash') is Gemini
+  assert models.LLMRegistry.resolve('Claude:claude-3-opus@20240229') is Claude
+  assert models.LLMRegistry.resolve('lite:openai/gpt-4o') is LiteLlm
+  assert models.LLMRegistry.resolve('LiteLlm:openai/gpt-4o') is LiteLlm
+
+
+def test_new_llm_with_prefix(mocker):
+  """Test that new_llm strips prefix when creating instance if it matches class."""
+  mock_class = mocker.MagicMock()
+  mock_class.__name__ = 'MockLlm'
+  mocker.patch.object(models.LLMRegistry, 'resolve', return_value=mock_class)
+
+  models.LLMRegistry.new_llm('mock:gpt-4')
+  mock_class.assert_called_once_with(model='gpt-4')
+
+  mock_class.reset_mock()
+  models.LLMRegistry.new_llm('MockLlm:gpt-4')
+  mock_class.assert_called_once_with(model='gpt-4')
+
+
+def test_new_llm_with_non_matching_prefix(mocker):
+  """Test that new_llm keeps prefix if it does not match class."""
+  mock_class = mocker.MagicMock()
+  mock_class.__name__ = 'MockLlm'
+  mocker.patch.object(models.LLMRegistry, 'resolve', return_value=mock_class)
+
+  models.LLMRegistry.new_llm('custom:gpt-4')
+  mock_class.assert_called_once_with(model='custom:gpt-4')

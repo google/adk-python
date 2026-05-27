@@ -83,7 +83,6 @@ class McpToolset(BaseToolset):
 
     # Use in an agent
     agent = LlmAgent(
-        model='gemini-2.5-flash',
         name='enterprise_assistant',
         instruction='Help user accessing their file systems',
         tools=[toolset],
@@ -436,7 +435,7 @@ class McpToolset(BaseToolset):
       await self._mcp_session_manager.close()
     except Exception as e:
       # Log the error but don't re-raise to avoid blocking shutdown
-      print(f"Warning: Error during McpToolset cleanup: {e}", file=self._errlog)
+      logger.warning("Error during McpToolset cleanup: %s", e)
 
   @override
   def get_auth_config(self) -> Optional[AuthConfig]:

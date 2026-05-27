@@ -19,13 +19,13 @@
 from __future__ import annotations
 
 import asyncio
+import collections
 import json
 import logging
 import mimetypes
 from typing import Any
 from typing import Optional
 from typing import TYPE_CHECKING
-import warnings
 
 from google.genai import types
 from typing_extensions import override
@@ -33,10 +33,9 @@ from typing_extensions import override
 from ..agents.readonly_context import ReadonlyContext
 from ..code_executors.base_code_executor import BaseCodeExecutor
 from ..code_executors.code_execution_utils import CodeExecutionInput
-from ..features import experimental
-from ..features import FeatureName
 from ..skills import models
 from ..skills import prompt
+from ..skills import SkillRegistry
 from .base_tool import BaseTool
 from .base_toolset import BaseToolset
 from .function_tool import FunctionTool
@@ -57,7 +56,7 @@ _BINARY_FILE_DETECTED_MSG = (
     " conversation history for you to analyze."
 )
 
-_DEFAULT_SKILL_SYSTEM_INSTRUCTION = (
+DEFAULT_SKILL_SYSTEM_INSTRUCTION = (
     "You can use specialized 'skills' to help you with complex tasks. "
     "You MUST use the skill tools to interact with these skills.\n\n"
     "Skills are folders of instructions and resources that extend your "
@@ -87,7 +86,6 @@ _DEFAULT_SKILL_SYSTEM_INSTRUCTION = (
 )
 
 
-@experimental(FeatureName.SKILL_TOOLSET)
 class ListSkillsTool(BaseTool):
   """Tool to list all available skills."""
 
@@ -117,7 +115,68 @@ class ListSkillsTool(BaseTool):
     return prompt.format_skills_as_xml(skills)
 
 
-@experimental(FeatureName.SKILL_TOOLSET)
+class SearchSkillsTool(BaseTool):
+  """Tool to search for relevant skills in the registry."""
+
+  def __init__(self, toolset: "SkillToolset"):
+    if not toolset._registry:
+      raise ValueError("SearchSkillsTool requires a configured skill registry.")
+    description = toolset._registry.search_tool_description() or (
+        "Searches for relevant skills in the registry based on a semantic or"
+        " keyword query."
+    )
+    super().__init__(
+        name="search_skills",
+        description=description,
+    )
+    self._toolset = toolset
+
+  def _get_declaration(self) -> types.FunctionDeclaration | None:
+    properties = {
+        "query": {
+            "type": "string",
+            "description": "Semantic or keyword search query.",
+        },
+    }
+    return types.FunctionDeclaration(
+        name=self.name,
+        description=self.description,
+        parameters_json_schema={
+            "type": "object",
+            "properties": properties,
+            "required": ["query"],
+        },
+    )
+
+  async def run_async(
+      self, *, args: dict[str, Any], tool_context: ToolContext
+  ) -> Any:
+    query = args.get("query")
+    if not query:
+      return {
+          "error": "Argument 'query' is required.",
+          "error_code": "INVALID_ARGUMENTS",
+      }
+    try:
+      results = await self._toolset._registry.search_skills(query=query)
+      formatted_results = []
+      for r in results:
+        if r.name in self._toolset._skills:
+          logger.warning(
+              "Skill naming conflict: skill '%s' already exists locally."
+              " Registry skill is filtered.",
+              r.name,
+          )
+          continue
+        formatted_results.append(r.model_dump())
+      return formatted_results
+    except Exception as e:
+      return {
+          "error": f"Failed to search skills from registry: {e}",
+          "error_code": "REGISTRY_ERROR",
+      }
+
+
 class LoadSkillTool(BaseTool):
   """Tool to load a skill's instructions."""
 
@@ -154,7 +213,16 @@ class LoadSkillTool(BaseTool):
           "error_code": "INVALID_ARGUMENTS",
       }
 
-    skill = self._toolset._get_skill(skill_name)
+    try:
+      skill = await self._toolset._get_or_fetch_skill(
+          skill_name, tool_context.invocation_id
+      )
+    except Exception as e:
+      return {
+          "error": f"Failed to fetch skill '{skill_name}' from registry: {e}",
+          "error_code": "REGISTRY_ERROR",
+      }
+
     if not skill:
       return {
           "error": f"Skill '{skill_name}' not found.",
@@ -176,8 +244,14 @@ class LoadSkillTool(BaseTool):
         "frontmatter": skill.frontmatter.model_dump(),
     }
 
+  def _detect_error_in_response(self, response: Any) -> Optional[str]:
+    """Telemetry hook: returns an error type if the response indicates an error."""
+    if isinstance(response, dict) and response.get("error"):
+      error_code = response.get("error_code")
+      return error_code if error_code else "TOOL_ERROR"
+    return None
 
-@experimental(FeatureName.SKILL_TOOLSET)
+
 class LoadSkillResourceTool(BaseTool):
   """Tool to load resources (references, assets, or scripts) from a skill."""
 
@@ -233,7 +307,16 @@ class LoadSkillResourceTool(BaseTool):
           "error_code": "INVALID_ARGUMENTS",
       }
 
-    skill = self._toolset._get_skill(skill_name)
+    try:
+      skill = await self._toolset._get_or_fetch_skill(
+          skill_name, tool_context.invocation_id
+      )
+    except Exception as e:
+      return {
+          "error": f"Failed to fetch skill '{skill_name}' from registry: {e}",
+          "error_code": "REGISTRY_ERROR",
+      }
+
     if not skill:
       return {
           "error": f"Skill '{skill_name}' not found.",
@@ -279,6 +362,13 @@ class LoadSkillResourceTool(BaseTool):
         "content": content,
     }
 
+  def _detect_error_in_response(self, response: Any) -> Optional[str]:
+    """Telemetry hook: returns an error type if the response indicates an error."""
+    if isinstance(response, dict) and response.get("error"):
+      error_code = response.get("error_code")
+      return error_code if error_code else "TOOL_ERROR"
+    return None
+
   @override
   async def process_llm_request(
       self, *, tool_context: ToolContext, llm_request: Any
@@ -305,7 +395,19 @@ class LoadSkillResourceTool(BaseTool):
       if not skill_name or not file_path:
         continue
 
-      skill = self._toolset._get_skill(skill_name)
+      try:
+        skill = await self._toolset._get_or_fetch_skill(
+            skill_name, tool_context.invocation_id
+        )
+      except Exception as e:
+        logger.warning(
+            "Failed to fetch skill '%s' from registry during LLM request"
+            " processing: %s",
+            skill_name,
+            e,
+        )
+        continue
+
       if not skill:
         continue
 
@@ -616,7 +718,6 @@ class _SkillScriptCodeExecutor:
     return "\n".join(code_lines)
 
 
-@experimental(FeatureName.SKILL_TOOLSET)
 class RunSkillScriptTool(BaseTool):
   """Tool to execute scripts from a skill's scripts/ directory."""
 
@@ -725,7 +826,16 @@ class RunSkillScriptTool(BaseTool):
           "error_code": "INVALID_ARGUMENTS",
       }
 
-    skill = self._toolset._get_skill(skill_name)
+    try:
+      skill = await self._toolset._get_or_fetch_skill(
+          skill_name, tool_context.invocation_id
+      )
+    except Exception as e:
+      return {
+          "error": f"Failed to fetch skill '{skill_name}' from registry: {e}",
+          "error_code": "REGISTRY_ERROR",
+      }
+
     if not skill:
       return {
           "error": f"Skill '{skill_name}' not found.",
@@ -770,16 +880,23 @@ class RunSkillScriptTool(BaseTool):
         positional_args,  # pylint: disable=protected-access
     )
 
+  def _detect_error_in_response(self, response: Any) -> Optional[str]:
+    """Telemetry hook: returns an error type if the response indicates an error."""
+    if isinstance(response, dict) and response.get("error"):
+      error_code = response.get("error_code")
+      return error_code if error_code else "TOOL_ERROR"
+    return None
 
-@experimental(FeatureName.SKILL_TOOLSET)
+
 class SkillToolset(BaseToolset):
   """A toolset for managing and interacting with agent skills."""
 
   def __init__(
       self,
-      skills: list[models.Skill],
+      skills: list[models.Skill] | None = None,
       *,
-      code_executor: Optional[BaseCodeExecutor] = None,
+      registry: SkillRegistry | None = None,
+      code_executor: BaseCodeExecutor | None = None,
       script_timeout: int = _DEFAULT_SCRIPT_TIMEOUT,
       additional_tools: list[ToolUnion] | None = None,
   ):
@@ -787,12 +904,17 @@ class SkillToolset(BaseToolset):
 
     Args:
       skills: List of skills to register.
+      registry: Optional skill registry for dynamic loading.
       code_executor: Optional code executor for script execution.
       script_timeout: Timeout in seconds for shell script execution via
         subprocess.run. Defaults to 300 seconds. Does not apply to Python
         scripts executed via exec().
+      additional_tools: Optional list of `BaseTool` or `BaseToolset` instances
+        to be made available to the agent when certain skills are activated.
     """
     super().__init__()
+
+    skills = skills or []
 
     # Check for duplicate skill names
     seen: set[str] = set()
@@ -802,9 +924,17 @@ class SkillToolset(BaseToolset):
       seen.add(skill.name)
 
     self._skills = {skill.name: skill for skill in skills}
+    self._registry = registry
     self._code_executor = code_executor
     self._script_timeout = script_timeout
+    # Needed for mid-turn reloading of skill tools.
     self._use_invocation_cache = False
+    # Cache fetched remote skill definitions per turn to reduce requests to registry
+    self._fetched_skill_cache: collections.OrderedDict[
+        str,
+        dict[str, models.Skill | asyncio.Future[models.Skill | None] | None],
+    ] = collections.OrderedDict()
+    self._max_cache_turns = 16
 
     self._provided_tools_by_name = {}
     self._provided_toolsets = []
@@ -824,6 +954,8 @@ class SkillToolset(BaseToolset):
         LoadSkillResourceTool(self),
         RunSkillScriptTool(self),
     ]
+    if self._registry:
+      self._tools.append(SearchSkillsTool(self))
 
   async def get_tools(
       self, readonly_context: ReadonlyContext | None = None
@@ -851,7 +983,9 @@ class SkillToolset(BaseToolset):
 
     additional_tool_names = set()
     for skill_name in activated_skills:
-      skill = self._skills.get(skill_name)
+      skill = await self._get_or_fetch_skill(
+          skill_name, readonly_context.invocation_id
+      )
       if skill:
         additional_tools = skill.frontmatter.metadata.get(
             "adk_additional_tools"
@@ -892,6 +1026,48 @@ class SkillToolset(BaseToolset):
     """Retrieves a skill by name."""
     return self._skills.get(skill_name)
 
+  async def _get_or_fetch_skill(
+      self, skill_name: str, invocation_id: str | None = None
+  ) -> models.Skill | None:
+    """Retrieves a skill by name, falling back to the registry if configured."""
+    skill = self._get_skill(skill_name)
+    if skill:
+      return skill
+
+    if not self._registry:
+      return None
+
+    if invocation_id:
+      if invocation_id not in self._fetched_skill_cache:
+        # Enforce bounded cache (FIFO eviction)
+        if len(self._fetched_skill_cache) >= self._max_cache_turns:
+          self._fetched_skill_cache.popitem(last=False)
+        self._fetched_skill_cache[invocation_id] = {}
+
+      turn_cache = self._fetched_skill_cache[invocation_id]
+      if skill_name in turn_cache:
+        cached = turn_cache[skill_name]
+        if isinstance(cached, asyncio.Future):
+          return await cached
+        return cached
+
+      loop = asyncio.get_running_loop()
+      fut = loop.create_future()
+      turn_cache[skill_name] = fut
+
+      try:
+        skill = await self._registry.get_skill(name=skill_name)
+        fut.set_result(skill)
+        turn_cache[skill_name] = skill
+        return skill
+      except Exception as e:
+        fut.set_exception(e)
+        fut.exception()
+        turn_cache.pop(skill_name, None)
+        raise
+
+    return await self._registry.get_skill(name=skill_name)
+
   def _list_skills(self) -> list[models.Skill]:
     """Lists all available skills."""
     return list(self._skills.values())
@@ -900,7 +1076,7 @@ class SkillToolset(BaseToolset):
       self, *, tool_context: ToolContext, llm_request: LlmRequest
   ) -> None:
     """Processes the outgoing LLM request to include available skills."""
-    instructions = [_DEFAULT_SKILL_SYSTEM_INSTRUCTION]
+    instructions = [DEFAULT_SKILL_SYSTEM_INSTRUCTION]
 
     has_list_skills = any(isinstance(t, ListSkillsTool) for t in self._tools)
 
@@ -909,17 +1085,21 @@ class SkillToolset(BaseToolset):
       skills_xml = prompt.format_skills_as_xml(skills)
       instructions.append(skills_xml)
 
+    if self._registry:
+      instructions.append(
+          "\nIf the locally available skills are not sufficient to complete "
+          "your task, you can use the `search_skills` tool to discover "
+          "additional skills from the registry."
+      )
+
     llm_request.append_instructions(instructions)
 
-
-def __getattr__(name: str) -> Any:
-  if name == "DEFAULT_SKILL_SYSTEM_INSTRUCTION":
-    warnings.warn(
-        "DEFAULT_SKILL_SYSTEM_INSTRUCTION is experimental. Its content "
-        "is internal implementation and will change in minor/patch releases "
-        "to tune agent performance.",
-        UserWarning,
-        stacklevel=2,
-    )
-    return _DEFAULT_SKILL_SYSTEM_INSTRUCTION
-  raise AttributeError(f"module {__name__} has no attribute {name}")
+  @override
+  async def close(self) -> None:
+    """Performs cleanup and releases resources held by the toolset."""
+    for turn_cache in self._fetched_skill_cache.values():
+      for cached in turn_cache.values():
+        if isinstance(cached, asyncio.Future) and not cached.done():
+          cached.cancel()
+    self._fetched_skill_cache.clear()
+    await super().close()
