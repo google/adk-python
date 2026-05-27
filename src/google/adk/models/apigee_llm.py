@@ -573,7 +573,7 @@ class CompletionsHTTPClient:
         try:
           for res in self._parse_streaming_line(line, accumulator):
             yield res
-        except json.JSONDecodeError:
+        except ValueError:
           logger.warning('Failed to parse JSON chunk: %s', line)
           continue
 
@@ -1161,17 +1161,14 @@ class ChatCompletionsResponseHandler:
     func = tool_call.get('function', {})
     args_delta = func.get('arguments', '')
     if args_delta:
-      try:
-        args = json_utils.safe_json_loads(
-            args_delta, context='streaming response'
-        )
-        chunk_part.function_call.args = args
-        if not part.function_call.args:
-          part.function_call.args = dict(args)
-        else:
-          part.function_call.args.update(args)
-      except json.JSONDecodeError as e:
-        raise ValueError(f'Failed to parse arguments: {args_delta}') from e
+      args = json_utils.safe_json_loads(
+          args_delta, context='streaming response'
+      )
+      chunk_part.function_call.args = args
+      if not part.function_call.args:
+        part.function_call.args = dict(args)
+      else:
+        part.function_call.args.update(args)
 
     func_name = func.get('name')
     if func_name:
