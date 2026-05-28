@@ -1917,3 +1917,90 @@ async def test_close_cancels_futures_and_clears_cache():
   assert fut1.cancelled()
   assert not fut2.cancelled()  # Done futures shouldn't/can't be cancelled
   assert not toolset._fetched_skill_cache
+
+
+@pytest.mark.asyncio
+async def test_process_llm_request_with_tool_name_prefix(
+    mock_skill1, mock_skill2, tool_context_instance, mock_registry
+):
+  toolset = skill_toolset.SkillToolset(
+      [mock_skill1, mock_skill2],
+      registry=mock_registry,
+      tool_name_prefix="my_prefix",
+  )
+
+  # Manually remove ListSkillsTool from self._tools to simulate it not being available
+  # so that instructions[1] is generated with available_skills
+  toolset._tools = [
+      t
+      for t in toolset._tools
+      if not isinstance(t, skill_toolset.ListSkillsTool)
+  ]
+
+  llm_req = mock.create_autospec(llm_request_model.LlmRequest, instance=True)
+
+  await toolset.process_llm_request(
+      tool_context=tool_context_instance, llm_request=llm_req
+  )
+
+  llm_req.append_instructions.assert_called_once()
+  args, _ = llm_req.append_instructions.call_args
+  instructions = args[0]
+  assert len(instructions) == 3
+  assert "`my_prefix_load_skill`" in instructions[0]
+  assert "`my_prefix_load_skill_resource`" in instructions[0]
+  assert "`my_prefix_run_skill_script`" in instructions[0]
+  assert "my_prefix_search_skills" in instructions[2]
+
+
+@pytest.mark.asyncio
+async def test_skill_toolset_with_list_tool_filter():
+  toolset = skill_toolset.SkillToolset(
+      tool_filter=["list_skills", "load_skill"]
+  )
+  tools = await toolset.get_tools()
+  tool_names = [t.name for t in tools]
+  assert "list_skills" in tool_names
+  assert "load_skill" in tool_names
+  assert "load_skill_resource" not in tool_names
+  assert "run_skill_script" not in tool_names
+
+
+@pytest.mark.asyncio
+async def test_skill_toolset_with_predicate_tool_filter():
+  # Filter to only tools containing 'resource' in their name
+  toolset = skill_toolset.SkillToolset(
+      tool_filter=lambda tool, ctx=None: "resource" in tool.name
+  )
+  tools = await toolset.get_tools()
+  tool_names = [t.name for t in tools]
+  assert tool_names == ["load_skill_resource"]
+
+
+@pytest.mark.asyncio
+async def test_skill_toolset_with_dynamic_tools_filter(
+    mock_skill1, tool_context_instance
+):
+  mock_skill1.frontmatter.metadata = {
+      "adk_additional_tools": ["my_custom_tool"]
+  }
+
+  custom_tool = mock.create_autospec(skill_toolset.BaseTool, instance=True)
+  custom_tool.name = "my_custom_tool"
+
+  toolset = skill_toolset.SkillToolset(
+      skills=[mock_skill1],
+      additional_tools=[custom_tool],
+      tool_filter=["list_skills", "my_custom_tool"],
+  )
+
+  state_key = "_adk_activated_skill_test_agent"
+  tool_context_instance.state.get.side_effect = lambda key, default=None: (
+      ["skill1"] if key == state_key else default
+  )
+
+  tools = await toolset.get_tools(readonly_context=tool_context_instance)
+  tool_names = [t.name for t in tools]
+  assert "list_skills" in tool_names
+  assert "my_custom_tool" in tool_names
+  assert "load_skill" not in tool_names
