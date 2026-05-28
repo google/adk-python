@@ -250,7 +250,7 @@ class AgentRegistry:
           if mtls.has_default_client_cert_source()
           else None
       )
-      session.configure_mtls_channel()
+      session.configure_mtls_channel(client_cert_source)
 
     base_url = _get_agent_registry_base_url(client_cert_source)
 
