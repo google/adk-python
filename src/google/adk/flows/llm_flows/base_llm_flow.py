@@ -438,7 +438,7 @@ async def _process_agent_tools(
     llm_request: The LLM request to populate with tool declarations.
   """
   agent = invocation_context.agent
-  if not hasattr(agent, 'tools') or not agent.tools:
+  if agent is None or not hasattr(agent, 'tools') or not agent.tools:
     return
 
   multiple_tools = len(agent.tools) > 1
