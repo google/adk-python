@@ -1606,7 +1606,7 @@ class Runner:
         run_config: The run config for the agent.
         session: The session to use. This parameter is deprecated, please use
           `user_id` and `session_id` instead.
-        metadata: Optional per-request metadata that will be passed to callbacks.
+        metadata: Optional per-request metadata passed to callbacks.
 
     Yields:
         AsyncGenerator[Event, None]: An asynchronous generator that yields
@@ -1816,7 +1816,7 @@ class Runner:
           shown).
         verbose: If True, shows detailed tool calls and responses. Defaults to
           False for cleaner output showing only final agent responses.
-        metadata: Optional per-request metadata that will be passed to callbacks.
+        metadata: Optional per-request metadata passed to callbacks.
 
     Returns:
         list[Event]: All events from all messages.
