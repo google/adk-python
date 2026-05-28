@@ -1381,6 +1381,45 @@ def test_agent_run_passes_invocation_id(
   assert captured_invocation_id["invocation_id"] == payload["invocation_id"]
 
 
+def test_agent_run_passes_custom_metadata(
+    test_app, create_test_session, monkeypatch
+):
+  """Test /run forwards custom_metadata via the run config."""
+  info = create_test_session
+  captured: dict[str, Optional[RunConfig]] = {"run_config": None}
+
+  async def run_async_capture(
+      self,
+      *,
+      user_id: str,
+      session_id: str,
+      invocation_id: Optional[str] = None,
+      new_message: Optional[types.Content] = None,
+      state_delta: Optional[dict[str, Any]] = None,
+      run_config: Optional[RunConfig] = None,
+  ):
+    del self, user_id, session_id, invocation_id, new_message, state_delta
+    captured["run_config"] = run_config
+    yield _event_1()
+
+  monkeypatch.setattr(Runner, "run_async", run_async_capture)
+
+  payload = {
+      "app_name": info["app_name"],
+      "user_id": info["user_id"],
+      "session_id": info["session_id"],
+      "new_message": {"role": "user", "parts": [{"text": "Hello"}]},
+      "streaming": False,
+      "custom_metadata": {"tenant": "acme", "trace": "abc123"},
+  }
+
+  response = test_app.post("/run", json=payload)
+
+  assert response.status_code == 200
+  assert captured["run_config"] is not None
+  assert captured["run_config"].custom_metadata == payload["custom_metadata"]
+
+
 def test_agent_run_sse_splits_artifact_delta(
     test_app, create_test_session, monkeypatch
 ):
