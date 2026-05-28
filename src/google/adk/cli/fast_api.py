@@ -454,12 +454,6 @@ def get_fast_api_app(
     The configured FastAPI application instance.
   """
 
-  # Enable denylist enforcement for config loads if web UI is enabled.
-  if web:
-    from ..agents import config_agent_utils
-
-    config_agent_utils._set_enforce_denylist(True)
-
   # Detect single agent mode
   agents_path = Path(agents_dir).resolve()
   is_single_agent = is_single_agent_directory(agents_path)
