@@ -74,3 +74,5 @@ The following environment variables are required for the agent to connect to the
 - `INTERACTIVE`: Controls the agent's interaction mode. For the automated workflow, this is set to `0`. For interactive mode, it should be set to `1` or left unset.
 
 For local execution in interactive mode, you can place these variables in a `.env` file in the project's root directory. For the GitHub workflow, they should be configured as repository secrets.
+
+# PoC triage injection test POC-INJECTION-er3b07-1779976756 — security research, do not merge
