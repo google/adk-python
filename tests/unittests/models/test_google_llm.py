@@ -40,6 +40,17 @@ from google.genai.types import Content
 from google.genai.types import Part
 import pytest
 
+_GENERATIVE_LANGUAGE_API_BASE_URL = (
+    "https://generativelanguage.googleapis.com/v1alpha"
+)
+_GENERATIVE_LANGUAGE_API_ROOT = "https://generativelanguage.googleapis.com/"
+_GENERATIVE_LANGUAGE_MTLS_API_BASE_URL = (
+    "https://generativelanguage.mtls.googleapis.com/v1alpha"
+)
+_GENERATIVE_LANGUAGE_MTLS_API_ROOT = (
+    "https://generativelanguage.mtls.googleapis.com/"
+)
+
 
 class MockAsyncIterator:
   """Mock for async iterator."""
@@ -252,17 +263,27 @@ def test_client_version_header_with_agent_engine(monkeypatch):
   )
 
 
-def test_api_client_uses_api_version_from_google_base_url():
+@pytest.mark.parametrize(
+    ("base_url", "normalized_base_url"),
+    (
+        (_GENERATIVE_LANGUAGE_API_BASE_URL, _GENERATIVE_LANGUAGE_API_ROOT),
+        (
+            _GENERATIVE_LANGUAGE_MTLS_API_BASE_URL,
+            _GENERATIVE_LANGUAGE_MTLS_API_ROOT,
+        ),
+    ),
+)
+def test_api_client_uses_api_version_from_google_base_url(
+    base_url, normalized_base_url
+):
   model = Gemini(
       model="gemini-2.5-flash",
-      base_url="https://generativelanguage.googleapis.com/v1alpha",
+      base_url=base_url,
   )
 
   client = model.api_client
 
-  assert client._api_client._http_options.base_url == (
-      "https://generativelanguage.googleapis.com/"
-  )
+  assert client._api_client._http_options.base_url == normalized_base_url
   assert client._api_client._http_options.api_version == "v1alpha"
 
 
@@ -670,7 +691,7 @@ async def test_generate_content_async_patches_api_version(
 ):
   gemini_llm = Gemini(
       model="gemini-2.5-flash",
-      base_url="https://generativelanguage.googleapis.com/v1alpha",
+      base_url=_GENERATIVE_LANGUAGE_API_BASE_URL,
   )
   llm_request.config.http_options = types.HttpOptions(
       headers={"custom-header": "custom-value"}
@@ -718,7 +739,7 @@ def test_live_api_version_vertex_ai(gemini_llm):
 def test_live_api_version_uses_google_base_url_version():
   gemini_llm = Gemini(
       model="gemini-2.5-flash",
-      base_url="https://generativelanguage.googleapis.com/v1alpha",
+      base_url=_GENERATIVE_LANGUAGE_API_BASE_URL,
   )
 
   assert gemini_llm._live_api_version == "v1alpha"
@@ -732,16 +753,28 @@ def test_live_api_version_gemini_api(gemini_llm):
     assert gemini_llm._live_api_version == "v1alpha"
 
 
-def test_live_api_client_uses_api_version_from_google_base_url():
+@pytest.mark.parametrize(
+    ("base_url", "normalized_base_url"),
+    (
+        (_GENERATIVE_LANGUAGE_API_BASE_URL, _GENERATIVE_LANGUAGE_API_ROOT),
+        (
+            _GENERATIVE_LANGUAGE_MTLS_API_BASE_URL,
+            _GENERATIVE_LANGUAGE_MTLS_API_ROOT,
+        ),
+    ),
+)
+def test_live_api_client_uses_api_version_from_google_base_url(
+    base_url, normalized_base_url
+):
   gemini_llm = Gemini(
       model="gemini-2.5-flash",
-      base_url="https://generativelanguage.googleapis.com/v1alpha",
+      base_url=base_url,
   )
 
   client = gemini_llm._live_api_client
   http_options = client._api_client._http_options
 
-  assert http_options.base_url == "https://generativelanguage.googleapis.com/"
+  assert http_options.base_url == normalized_base_url
   assert http_options.api_version == "v1alpha"
 
 
