@@ -1593,6 +1593,70 @@ async def test_run_async_passes_get_session_config():
 
 
 @pytest.mark.asyncio
+async def test_run_async_teardown_on_aclose():
+  """Closing run_async generator using aclose() should abort and cancel the running agent task."""
+  import asyncio
+
+  session_service = InMemorySessionService()
+  artifact_service = InMemoryArtifactService()
+
+  was_cancelled = {"value": False}
+
+  class CancellingAgent(BaseAgent):
+
+    def __init__(self, name: str):
+      super().__init__(name=name, sub_agents=[])
+
+    async def _run_async_impl(
+        self, invocation_context: InvocationContext
+    ) -> AsyncGenerator[Event, None]:
+      try:
+        yield Event(
+            invocation_id=invocation_context.invocation_id,
+            author=self.name,
+            content=types.Content(
+                role="model", parts=[types.Part(text="First response")]
+            ),
+        )
+        # Block simulating slow ongoing task
+        await asyncio.sleep(5.0)
+        yield Event(
+            invocation_id=invocation_context.invocation_id,
+            author=self.name,
+            content=types.Content(
+                role="model", parts=[types.Part(text="Second response")]
+            ),
+        )
+      except (asyncio.CancelledError, GeneratorExit):
+        was_cancelled["value"] = True
+        raise
+
+  runner = Runner(
+      app_name=TEST_APP_ID,
+      agent=CancellingAgent("cancel_agent"),
+      session_service=session_service,
+      artifact_service=artifact_service,
+      auto_create_session=True,
+  )
+
+  # Given a run session
+  agen = runner.run_async(
+      user_id=TEST_USER_ID,
+      session_id=TEST_SESSION_ID,
+      new_message=types.Content(role="user", parts=[types.Part(text="hello")]),
+  )
+
+  # When the client reads the first event and then calls aclose()
+  event = await agen.__anext__()
+  assert event.content.parts[0].text == "First response"
+
+  await agen.aclose()
+
+  # Then the running agent was immediately aborted and cancelled
+  assert was_cancelled["value"] is True
+
+
+@pytest.mark.asyncio
 async def test_run_live_passes_get_session_config():
   """run_live should forward RunConfig.get_session_config to get_session."""
   from google.adk.agents.live_request_queue import LiveRequestQueue

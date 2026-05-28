@@ -83,10 +83,14 @@ def _build_skill_system_instruction(prefix: str | None = None) -> str:
       "of them in order.\n"
       f"3. The `{p}load_skill_resource` tool is for viewing files within a "
       "skill's directory (e.g., `references/*`, `assets/*`, `scripts/*`). "
-      "Do NOT use other tools to access these files.\n"
+      "It is ONLY for skill-bundled files — do NOT use it to access "
+      "documents or files provided by the user at runtime. Do NOT use "
+      "other tools to access skill files.\n"
       f"4. Use `{p}run_skill_script` to run scripts from a skill's `scripts/` "
       f"directory. Use `{p}load_skill_resource` to view script content first if "
       "needed.\n"
+      f"5. If `{p}load_skill_resource` returns any error, do not retry any "
+      "path. Report the error to the user and stop.\n"
   )
 
 
@@ -348,6 +352,23 @@ class LoadSkillResourceTool(BaseTool):
       }
 
     if content is None:
+      # Invocation-scoped failure counter. Counts RESOURCE_NOT_FOUND across ALL
+      # paths so the guard fires even when the LLM hallucinates a different path
+      # on each retry. The `temp:` prefix prevents persistence to durable
+      # session storage; invocation_id isolates in-memory backends.
+      counter_key = f"temp:_adk_skill_resource_not_found_count_{tool_context.invocation_id}"
+      fail_count = int(tool_context.state.get(counter_key) or 0) + 1
+      tool_context.state[counter_key] = fail_count
+      if fail_count > 1:
+        return {
+            "error": (
+                f"Resource '{file_path}' not found in skill '{skill_name}'."
+                f" This is resource lookup failure #{fail_count} this"
+                " invocation. Do not retry any path — report the error to"
+                " the user and stop."
+            ),
+            "error_code": "RESOURCE_NOT_FOUND_FATAL",
+        }
       return {
           "error": f"Resource '{file_path}' not found in skill '{skill_name}'.",
           "error_code": "RESOURCE_NOT_FOUND",

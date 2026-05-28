@@ -814,7 +814,7 @@ class Runner:
     try:
       await task
     except asyncio.CancelledError:
-      logger.error('Root node %s was cancelled.', node_name)
+      logger.warning('Root node %s was cancelled.', node_name)
     except Exception:
       logger.error('Root node %s failed.', node_name, exc_info=True)
       raise
