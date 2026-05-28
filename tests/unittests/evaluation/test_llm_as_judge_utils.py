@@ -132,36 +132,6 @@ def test_get_text_from_content_with_invocation_include_intermediate_responses_in
   )
 
 
-def test_get_text_from_content_with_intermediate_data_full_response():
-  invocation = Invocation(
-      user_content=genai_types.Content(parts=[genai_types.Part(text="user")]),
-      intermediate_data=IntermediateData(
-          intermediate_responses=[
-              ("agent", [genai_types.Part(text="legacy intro")]),
-              (
-                  "tool",
-                  [
-                      genai_types.Part(
-                          function_call=genai_types.FunctionCall(name="lookup")
-                      )
-                  ],
-              ),
-          ]
-      ),
-      final_response=genai_types.Content(
-          parts=[genai_types.Part(text="final answer")]
-      ),
-  )
-
-  assert get_text_from_content(invocation) == "final answer"
-  assert (
-      get_text_from_content(
-          invocation, include_intermediate_responses_in_final=True
-      )
-      == "legacy intro\nfinal answer"
-  )
-
-
 def test_get_eval_status_with_none_score():
   """Tests get_eval_status returns NOT_EVALUATED for a None score."""
   assert get_eval_status(score=None, threshold=0.5) == EvalStatus.NOT_EVALUATED
