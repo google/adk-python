@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -18,7 +18,6 @@ import inspect
 import logging
 from typing import Any
 from typing import Callable
-from typing import Dict
 from typing import Optional
 from typing import Union
 
@@ -27,14 +26,15 @@ from typing_extensions import override
 from ..auth.auth_credential import AuthCredential
 from ..auth.auth_tool import AuthConfig
 from ..auth.credential_manager import CredentialManager
-from ..utils.feature_decorator import experimental
+from ..features import experimental
+from ..features import FeatureName
 from .function_tool import FunctionTool
 from .tool_context import ToolContext
 
 logger = logging.getLogger("google_adk." + __name__)
 
 
-@experimental
+@experimental(FeatureName.AUTHENTICATED_FUNCTION_TOOL)
 class AuthenticatedFunctionTool(FunctionTool):
   """A FunctionTool that handles authentication before the actual tool logic
   gets called. Functions can accept a special `credential` argument which is the
@@ -58,7 +58,7 @@ class AuthenticatedFunctionTool(FunctionTool):
           the tool doesn't configure any credentials
           (auth_config.raw_auth_credential is missing) or the credentials
           configured is not enough to authenticate the tool (e.g. an OAuth
-          client id and client secrect is configured.) and needs client input
+          client id and client secret are configured) and needs client input
           (e.g. client need to involve the end user in an oauth flow and get
           back the oauth response.)
     """

@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -13,7 +13,7 @@
 # limitations under the License.
 
 """
-module containing utilities for conversion betwen A2A Part and Google GenAI Part
+module containing utilities for conversion between A2A Part and Google GenAI Part
 """
 
 from __future__ import annotations
@@ -22,25 +22,15 @@ import base64
 from collections.abc import Callable
 import json
 import logging
+from typing import List
 from typing import Optional
+from typing import Union
 
-from .utils import _get_adk_metadata_key
-
-try:
-  from a2a import types as a2a_types
-except ImportError as e:
-  import sys
-
-  if sys.version_info < (3, 10):
-    raise ImportError(
-        'A2A requires Python 3.10 or above. Please upgrade your Python version.'
-    ) from e
-  else:
-    raise e
-
+from a2a import types as a2a_types
 from google.genai import types as genai_types
 
 from ..experimental import a2a_experimental
+from .utils import _get_adk_metadata_key
 
 logger = logging.getLogger('google_adk.' + __name__)
 
@@ -50,13 +40,17 @@ A2A_DATA_PART_METADATA_TYPE_FUNCTION_CALL = 'function_call'
 A2A_DATA_PART_METADATA_TYPE_FUNCTION_RESPONSE = 'function_response'
 A2A_DATA_PART_METADATA_TYPE_CODE_EXECUTION_RESULT = 'code_execution_result'
 A2A_DATA_PART_METADATA_TYPE_EXECUTABLE_CODE = 'executable_code'
+A2A_DATA_PART_TEXT_MIME_TYPE = 'text/plain'
+A2A_DATA_PART_START_TAG = b'<a2a_datapart_json>'
+A2A_DATA_PART_END_TAG = b'</a2a_datapart_json>'
 
 
 A2APartToGenAIPartConverter = Callable[
-    [a2a_types.Part], Optional[genai_types.Part]
+    [a2a_types.Part], Union[Optional[genai_types.Part], List[genai_types.Part]]
 ]
 GenAIPartToA2APartConverter = Callable[
-    [genai_types.Part], Optional[a2a_types.Part]
+    [genai_types.Part],
+    Union[Optional[a2a_types.Part], List[a2a_types.Part]],
 ]
 
 
@@ -67,13 +61,18 @@ def convert_a2a_part_to_genai_part(
   """Convert an A2A Part to a Google GenAI Part."""
   part = a2a_part.root
   if isinstance(part, a2a_types.TextPart):
-    return genai_types.Part(text=part.text)
+    thought = None
+    if part.metadata:
+      thought = part.metadata.get(_get_adk_metadata_key('thought'))
+    return genai_types.Part(text=part.text, thought=thought)
 
   if isinstance(part, a2a_types.FilePart):
     if isinstance(part.file, a2a_types.FileWithUri):
       return genai_types.Part(
           file_data=genai_types.FileData(
-              file_uri=part.file.uri, mime_type=part.file.mime_type
+              file_uri=part.file.uri,
+              mime_type=part.file.mime_type,
+              display_name=part.file.name,
           )
       )
 
@@ -82,6 +81,7 @@ def convert_a2a_part_to_genai_part(
           inline_data=genai_types.Blob(
               data=base64.b64decode(part.file.bytes),
               mime_type=part.file.mime_type,
+              display_name=part.file.name,
           )
       )
     else:
@@ -107,10 +107,25 @@ def convert_a2a_part_to_genai_part(
           part.metadata[_get_adk_metadata_key(A2A_DATA_PART_METADATA_TYPE_KEY)]
           == A2A_DATA_PART_METADATA_TYPE_FUNCTION_CALL
       ):
+        # Restore thought_signature if present
+        thought_signature = None
+        thought_sig_key = _get_adk_metadata_key('thought_signature')
+        if thought_sig_key in part.metadata:
+          sig_value = part.metadata[thought_sig_key]
+          if isinstance(sig_value, bytes):
+            thought_signature = sig_value
+          elif isinstance(sig_value, str):
+            try:
+              thought_signature = base64.b64decode(sig_value)
+            except Exception:
+              logger.warning(
+                  'Failed to decode thought_signature: %s', sig_value
+              )
         return genai_types.Part(
             function_call=genai_types.FunctionCall.model_validate(
                 part.data, by_alias=True
-            )
+            ),
+            thought_signature=thought_signature,
         )
       if (
           part.metadata[_get_adk_metadata_key(A2A_DATA_PART_METADATA_TYPE_KEY)]
@@ -139,7 +154,16 @@ def convert_a2a_part_to_genai_part(
                 part.data, by_alias=True
             )
         )
-    return genai_types.Part(text=json.dumps(part.data))
+    return genai_types.Part(
+        inline_data=genai_types.Blob(
+            data=A2A_DATA_PART_START_TAG
+            + part.model_dump_json(by_alias=True, exclude_none=True).encode(
+                'utf-8'
+            )
+            + A2A_DATA_PART_END_TAG,
+            mime_type=A2A_DATA_PART_TEXT_MIME_TYPE,
+        )
+    )
 
   logger.warning(
       'Cannot convert unsupported part type: %s for A2A part: %s',
@@ -155,7 +179,7 @@ def convert_genai_part_to_a2a_part(
 ) -> Optional[a2a_types.Part]:
   """Convert a Google GenAI Part to an A2A Part."""
 
-  if part.text:
+  if part.text is not None:
     a2a_part = a2a_types.TextPart(text=part.text)
     if part.thought is not None:
       a2a_part.metadata = {_get_adk_metadata_key('thought'): part.thought}
@@ -167,15 +191,31 @@ def convert_genai_part_to_a2a_part(
             file=a2a_types.FileWithUri(
                 uri=part.file_data.file_uri,
                 mime_type=part.file_data.mime_type,
+                name=part.file_data.display_name,
             )
         )
     )
 
   if part.inline_data:
+    if (
+        part.inline_data.mime_type == A2A_DATA_PART_TEXT_MIME_TYPE
+        and part.inline_data.data is not None
+        and part.inline_data.data.startswith(A2A_DATA_PART_START_TAG)
+        and part.inline_data.data.endswith(A2A_DATA_PART_END_TAG)
+    ):
+      return a2a_types.Part(
+          root=a2a_types.DataPart.model_validate_json(
+              part.inline_data.data[
+                  len(A2A_DATA_PART_START_TAG) : -len(A2A_DATA_PART_END_TAG)
+              ]
+          )
+      )
+    # The default case for inline_data is to convert it to FileWithBytes.
     a2a_part = a2a_types.FilePart(
         file=a2a_types.FileWithBytes(
             bytes=base64.b64encode(part.inline_data.data).decode('utf-8'),
             mime_type=part.inline_data.mime_type,
+            name=part.inline_data.display_name,
         )
     )
 
@@ -191,19 +231,25 @@ def convert_genai_part_to_a2a_part(
   # Convert the funcall and function response to A2A DataPart.
   # This is mainly for converting human in the loop and auth request and
   # response.
-  # TODO once A2A defined how to suervice such information, migrate below
+  # TODO once A2A defined how to service such information, migrate below
   # logic accordingly
   if part.function_call:
+    fc_metadata = {
+        _get_adk_metadata_key(
+            A2A_DATA_PART_METADATA_TYPE_KEY
+        ): A2A_DATA_PART_METADATA_TYPE_FUNCTION_CALL
+    }
+    # Preserve thought_signature if present
+    if part.thought_signature is not None:
+      fc_metadata[_get_adk_metadata_key('thought_signature')] = (
+          base64.b64encode(part.thought_signature).decode('utf-8')
+      )
     return a2a_types.Part(
         root=a2a_types.DataPart(
             data=part.function_call.model_dump(
                 by_alias=True, exclude_none=True
             ),
-            metadata={
-                _get_adk_metadata_key(
-                    A2A_DATA_PART_METADATA_TYPE_KEY
-                ): A2A_DATA_PART_METADATA_TYPE_FUNCTION_CALL
-            },
+            metadata=fc_metadata,
         )
     )
 

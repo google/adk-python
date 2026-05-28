@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -16,9 +16,9 @@
 from unittest.mock import Mock
 from unittest.mock import patch
 
+from google.adk.integrations.bigquery.bigquery_credentials import BigQueryCredentialsConfig
+from google.adk.integrations.bigquery.config import BigQueryToolConfig
 from google.adk.tools._google_credentials import GoogleCredentialsManager
-from google.adk.tools.bigquery.bigquery_credentials import BigQueryCredentialsConfig
-from google.adk.tools.bigquery.config import BigQueryToolConfig
 from google.adk.tools.google_tool import GoogleTool
 from google.adk.tools.spanner.settings import SpannerToolSettings
 from google.adk.tools.tool_context import ToolContext

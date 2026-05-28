@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -131,6 +131,7 @@ class ContainerCodeExecutor(BaseCodeExecutor):
         ['python3', '-c', code_execution_input.code],
         demux=True,
     )
+    logger.debug('Executed code:\n```\n%s\n```', code_execution_input.code)
 
     if exec_result.output and exec_result.output[0]:
       output = exec_result.output[0].decode('utf-8')

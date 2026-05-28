@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -25,13 +25,14 @@ from pydantic import BaseModel
 from pydantic import ConfigDict
 from pydantic import Field
 
+from .constants import DEFAULT_LIVE_TIMEOUT_SECONDS
 from .eval_case import Invocation
 from .eval_metrics import EvalMetric
 from .eval_result import EvalCaseResult
 
 
 class EvaluateConfig(BaseModel):
-  """Contains configurations need to run an evaluations."""
+  """Contains configurations needed to run evaluations."""
 
   model_config = ConfigDict(
       alias_generator=alias_generators.to_camel,
@@ -81,6 +82,18 @@ the quota.
 could also overwhelm those tools.""",
   )
 
+  use_live: bool = Field(
+      default=False,
+      description="""Whether to use live (bidirectional streaming) mode for
+inference. This is required for Live API models (e.g., gemini-*-live-*).""",
+  )
+
+  live_timeout_seconds: int = Field(
+      default=DEFAULT_LIVE_TIMEOUT_SECONDS,
+      description="""Timeout in seconds for waiting for model turn completion in
+live mode.""",
+  )
+
 
 class InferenceRequest(BaseModel):
   """Represent a request to perform inferences for the eval cases in an eval set."""
@@ -94,11 +107,11 @@ class InferenceRequest(BaseModel):
       description="""The name of the app to which the eval case belongs to."""
   )
 
-  eval_set_id: str = Field(description="""Id of the eval set.""")
+  eval_set_id: str = Field(description="""ID of the eval set.""")
 
   eval_case_ids: Optional[list[str]] = Field(
       default=None,
-      description="""Id of the eval cases for which inferences need to be
+      description="""ID of the eval cases for which inferences need to be
 generated.
 
 All the eval case ids should belong to the EvalSet.
@@ -133,10 +146,10 @@ class InferenceResult(BaseModel):
       description="""The name of the app to which the eval case belongs to."""
   )
 
-  eval_set_id: str = Field(description="""Id of the eval set.""")
+  eval_set_id: str = Field(description="""ID of the eval set.""")
 
   eval_case_id: str = Field(
-      description="""Id of the eval case for which inferences were generated.""",
+      description="""ID of the eval case for which inferences were generated.""",
   )
 
   inferences: Optional[list[Invocation]] = Field(
@@ -145,7 +158,7 @@ class InferenceResult(BaseModel):
   )
 
   session_id: Optional[str] = Field(
-      description="""Id of the inference session."""
+      description="""ID of the inference session."""
   )
 
   status: InferenceStatus = Field(

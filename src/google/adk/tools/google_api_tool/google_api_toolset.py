@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -34,8 +34,8 @@ from .googleapi_to_openapi_converter import GoogleApiToOpenApiConverter
 class GoogleApiToolset(BaseToolset):
   """Google API Toolset contains tools for interacting with Google APIs.
 
-  Usually one toolsets will contains tools only related to one Google API, e.g.
-  Google Bigquery API toolset will contains tools only related to Google
+  Usually one toolsets will contain tools only related to one Google API, e.g.
+  Google Bigquery API toolset will contain tools only related to Google
   Bigquery API, like list dataset tool, list table tool etc.
 
   Args:

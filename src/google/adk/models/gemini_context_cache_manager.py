@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -21,8 +21,8 @@ import json
 import logging
 import time
 from typing import Optional
+from typing import TYPE_CHECKING
 
-from google.genai import Client
 from google.genai import types
 
 from ..utils.feature_decorator import experimental
@@ -31,6 +31,12 @@ from .llm_request import LlmRequest
 from .llm_response import LlmResponse
 
 logger = logging.getLogger("google_adk." + __name__)
+
+# Gemini API requires a minimum of 4096 tokens for cached content.
+_GEMINI_MIN_CACHE_TOKENS = 4096
+
+if TYPE_CHECKING:
+  from google.genai import Client
 
 
 @experimental
@@ -115,6 +121,19 @@ class GeminiContextCacheManager:
                 llm_request, cache_metadata.cache_name, cache_contents_count
             )
             return cache_metadata
+
+          # Cache creation failed (e.g., below Gemini's 4096 token minimum).
+          # Preserve the original contents_count so the fingerprint stays
+          # stable for subsequent calls instead of resetting to total.
+          logger.debug(
+              "Cache creation failed, preserving prefix fingerprint "
+              "(contents_count=%d)",
+              cache_contents_count,
+          )
+          return CacheMetadata(
+              fingerprint=current_fingerprint,
+              contents_count=cache_contents_count,
+          )
 
         # Fingerprints don't match - recalculate with total contents
         logger.debug(
@@ -298,6 +317,15 @@ class GeminiContextCacheManager:
           "Previous request too small for caching (%d < %d tokens)",
           llm_request.cacheable_contents_token_count,
           llm_request.cache_config.min_tokens,
+      )
+      return None
+
+    # Check client-side to avoid unnecessary API round-trips.
+    if llm_request.cacheable_contents_token_count < _GEMINI_MIN_CACHE_TOKENS:
+      logger.info(
+          "Request below Gemini minimum cache size (%d < %d tokens)",
+          llm_request.cacheable_contents_token_count,
+          _GEMINI_MIN_CACHE_TOKENS,
       )
       return None
 

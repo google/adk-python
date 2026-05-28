@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -20,30 +20,80 @@ Please do not rely on the implementation details.
 
 from __future__ import annotations
 
-from contextlib import AbstractAsyncContextManager
+from contextlib import aclosing
+import functools
+import inspect
+import typing
 from typing import Any
-from typing import AsyncGenerator
+from typing import Callable
+from typing import get_args
+from typing import get_origin
+from typing import Union
+
+# Re-export aclosing for backward compatibility
+Aclosing = aclosing
 
 
-class Aclosing(AbstractAsyncContextManager):
-  """Async context manager for safely finalizing an asynchronously cleaned-up
-  resource such as an async generator, calling its ``aclose()`` method.
-  Needed to correctly close contexts for OTel spans.
-  See https://github.com/google/adk-python/issues/1670#issuecomment-3115891100.
+def _is_context_type(annotation: Any) -> bool:
+  """Check if an annotation is the Context type.
 
-  Based on
-  https://docs.python.org/3/library/contextlib.html#contextlib.aclosing
-  which is available in Python 3.10+.
+  This checks if the annotation is exactly Context or a type alias of Context
+  (e.g., ToolContext, CallbackContext). Also handles Optional[Context] types.
 
-  TODO: replace all occurences with contextlib.aclosing once Python 3.9 is no
-  longer supported.
+  Args:
+    annotation: The type annotation to check.
+
+  Returns:
+    True if the annotation is the Context type, False otherwise.
   """
+  from ..agents.context import Context
 
-  def __init__(self, async_generator: AsyncGenerator[Any, None]):
-    self.async_generator = async_generator
+  if annotation is inspect.Parameter.empty:
+    return False
 
-  async def __aenter__(self):
-    return self.async_generator
+  # Handle Optional[Context] and Union types
+  origin = get_origin(annotation)
+  if origin is Union:
+    args = get_args(annotation)
+    return any(
+        _is_context_type(arg) for arg in args if not isinstance(arg, type(None))
+    )
 
-  async def __aexit__(self, *exc_info):
-    await self.async_generator.aclose()
+  # Check if it's exactly the Context type (or an alias like ToolContext)
+  return annotation is Context
+
+
+@functools.lru_cache(maxsize=1024)
+def find_context_parameter(func: Callable[..., Any]) -> str | None:
+  """Find the parameter name that has a Context type annotation.
+
+  This function inspects the signature of a callable and returns the name
+  of the first parameter that is annotated with Context or a type alias of
+  Context (e.g., ToolContext, CallbackContext).
+
+  Args:
+    func: The callable to inspect.
+
+  Returns:
+    The parameter name if found, None otherwise.
+  """
+  if func is None:
+    return None
+  try:
+    signature = inspect.signature(func)
+  except (ValueError, TypeError):
+    return None
+  # Resolve string annotations (e.g., 'Context')
+  try:
+    type_hints = typing.get_type_hints(func)
+  except Exception:
+    # get_type_hints can fail for various reasons (e.g., unresolvable forward
+    # references). In such cases, we fall back to inspecting the parameter
+    # annotations directly.
+    type_hints = {}
+
+  for name, param in signature.parameters.items():
+    annotation = type_hints.get(name, param.annotation)
+    if _is_context_type(annotation):
+      return name
+  return None

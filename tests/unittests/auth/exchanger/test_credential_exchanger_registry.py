@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -126,7 +126,7 @@ class TestCredentialExchangerRegistry:
     assert isinstance(retrieved_exchanger, BaseCredentialExchanger)
 
   def test_get_exchanger_nonexistent_type_returns_none(self):
-    """Test that get_exchanger returns None for non-existent credential types."""
+    """Test that get_exchanger returns None for nonexistent credential types."""
     registry = CredentialExchangerRegistry()
 
     # Try to get an exchanger that was never registered

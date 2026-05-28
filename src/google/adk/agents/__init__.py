@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -12,7 +12,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import importlib
+from typing import Any
+from typing import TYPE_CHECKING
+
 from .base_agent import BaseAgent
+from .context import Context
 from .invocation_context import InvocationContext
 from .live_request_queue import LiveRequest
 from .live_request_queue import LiveRequestQueue
@@ -23,11 +28,16 @@ from .parallel_agent import ParallelAgent
 from .run_config import RunConfig
 from .sequential_agent import SequentialAgent
 
+if TYPE_CHECKING:
+  from .mcp_instruction_provider import McpInstructionProvider
+
 __all__ = [
     'Agent',
     'BaseAgent',
+    'Context',
     'LlmAgent',
     'LoopAgent',
+    'McpInstructionProvider',
     'ParallelAgent',
     'SequentialAgent',
     'InvocationContext',
@@ -35,3 +45,16 @@ __all__ = [
     'LiveRequestQueue',
     'RunConfig',
 ]
+
+
+def __getattr__(name: str) -> Any:
+  if name == 'McpInstructionProvider':
+    module = importlib.import_module('.mcp_instruction_provider', __name__)
+    attr = getattr(module, 'McpInstructionProvider')
+    globals()[name] = attr
+    return attr
+  raise AttributeError(f'module {__name__!r} has no attribute {name!r}')
+
+
+def __dir__() -> list[str]:
+  return list(globals().keys()) + __all__

@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -68,7 +68,7 @@ class BasePlugin(ABC):
   callback in the chain. For example, if a plugin modifies the tool input with
   before_tool_callback, the modified tool input will be passed to the
   before_tool_callback of the next plugin, and further passed to the agent
-  callbacks if not short circuited.
+  callbacks if not short-circuited.
 
   To use a plugin, implement the desired callback methods and pass an instance
   of your custom plugin class to the ADK Runner.
@@ -155,10 +155,10 @@ class BasePlugin(ABC):
   async def on_event_callback(
       self, *, invocation_context: InvocationContext, event: Event
   ) -> Optional[Event]:
-    """Callback executed after an event is yielded from runner.
+    """Callback executed when the runner produces an event.
 
-    This is the ideal place to make modification to the event before the event
-    is handled by the underlying agent app.
+    This is the ideal place to modify the event before it is persisted to the
+    session service and yielded to the caller.
 
     Args:
       invocation_context: The context for the entire invocation.
@@ -184,6 +184,14 @@ class BasePlugin(ABC):
 
     Returns:
       None
+    """
+    pass
+
+  async def close(self) -> None:
+    """Method executed when the runner is closed.
+
+    This method is used for cleanup tasks such as closing network connections
+    or releasing resources.
     """
     pass
 

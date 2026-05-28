@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -230,8 +230,12 @@ async def test_langgraph_agent(
   }
 
   mock_parent_context = MagicMock(spec=InvocationContext)
+  mock_parent_context._state_schema = None
   mock_session = MagicMock()
   mock_parent_context.session = mock_session
+  mock_parent_context.user_content = types.Content(
+      role="user", parts=[types.Part.from_text(text="test prompt")]
+  )
   mock_parent_context.branch = "parent_agent"
   mock_parent_context.end_invocation = False
   mock_session.events = events_list

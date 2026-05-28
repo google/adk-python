@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -83,7 +83,7 @@ def llm_request():
 
 
 @pytest.mark.asyncio
-async def test_generate_content_asyn_with_function(
+async def test_generate_content_async_with_function(
     oss_llm_with_function, llm_request
 ):
   responses = [
@@ -98,7 +98,7 @@ async def test_generate_content_asyn_with_function(
 
 
 @pytest.mark.asyncio
-async def test_generate_content_asyn_stream_with_function(
+async def test_generate_content_async_stream_with_function(
     oss_llm_with_function, llm_request
 ):
   responses = [

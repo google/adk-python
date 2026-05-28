@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -12,18 +12,24 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import importlib
 from pathlib import Path
+import sys
 import textwrap
+from typing import AsyncGenerator
 from typing import Optional
+from unittest.mock import AsyncMock
 
 from google.adk.agents.base_agent import BaseAgent
 from google.adk.agents.context_cache_config import ContextCacheConfig
 from google.adk.agents.invocation_context import InvocationContext
 from google.adk.agents.llm_agent import LlmAgent
+from google.adk.agents.run_config import RunConfig
 from google.adk.apps.app import App
 from google.adk.apps.app import ResumabilityConfig
 from google.adk.artifacts.in_memory_artifact_service import InMemoryArtifactService
 from google.adk.cli.utils.agent_loader import AgentLoader
+from google.adk.errors.session_not_found_error import SessionNotFoundError
 from google.adk.events.event import Event
 from google.adk.plugins.base_plugin import BasePlugin
 from google.adk.runners import Runner
@@ -51,12 +57,32 @@ class MockAgent(BaseAgent):
     if parent_agent:
       self.parent_agent = parent_agent
 
-  async def _run_async_impl(self, invocation_context):
+  async def _run_async_impl(
+      self, invocation_context: InvocationContext
+  ) -> AsyncGenerator[Event, None]:
     yield Event(
         invocation_id=invocation_context.invocation_id,
         author=self.name,
         content=types.Content(
             role="model", parts=[types.Part(text="Test response")]
+        ),
+    )
+
+
+class MockLiveAgent(BaseAgent):
+  """Mock live agent for unit testing."""
+
+  def __init__(self, name: str):
+    super().__init__(name=name, sub_agents=[])
+
+  async def _run_live_impl(
+      self, invocation_context: InvocationContext
+  ) -> AsyncGenerator[Event, None]:
+    yield Event(
+        invocation_id=invocation_context.invocation_id,
+        author=self.name,
+        content=types.Content(
+            role="model", parts=[types.Part(text="live hello")]
         ),
     )
 
@@ -75,13 +101,34 @@ class MockLlmAgent(LlmAgent):
     self.disallow_transfer_to_parent = disallow_transfer_to_parent
     self.parent_agent = parent_agent
 
-  async def _run_async_impl(self, invocation_context):
+  async def _run_async_impl(
+      self, invocation_context: InvocationContext
+  ) -> AsyncGenerator[Event, None]:
     yield Event(
         invocation_id=invocation_context.invocation_id,
         author=self.name,
         content=types.Content(
             role="model", parts=[types.Part(text="Test LLM response")]
         ),
+    )
+
+
+class MockAgentWithMetadata(BaseAgent):
+  """Mock agent that returns event-level custom metadata."""
+
+  def __init__(self, name: str):
+    super().__init__(name=name, sub_agents=[])
+
+  async def _run_async_impl(
+      self, invocation_context: InvocationContext
+  ) -> AsyncGenerator[Event, None]:
+    yield Event(
+        invocation_id=invocation_context.invocation_id,
+        author=self.name,
+        content=types.Content(
+            role="model", parts=[types.Part(text="Test response")]
+        ),
+        custom_metadata={"event_key": "event_value"},
     )
 
 
@@ -92,11 +139,13 @@ class MockPlugin(BasePlugin):
       "Modified user message ON_USER_CALLBACK_MSG from MockPlugin"
   )
   ON_EVENT_CALLBACK_MSG = "Modified event ON_EVENT_CALLBACK_MSG from MockPlugin"
+  ON_EVENT_CALLBACK_METADATA = {"plugin_key": "plugin_value"}
 
   def __init__(self):
     super().__init__(name="mock_plugin")
     self.enable_user_message_callback = False
     self.enable_event_callback = False
+    self.user_content_seen_in_before_run_callback = None
 
   async def on_user_message_callback(
       self,
@@ -109,6 +158,15 @@ class MockPlugin(BasePlugin):
     return types.Content(
         role="model",
         parts=[types.Part(text=self.ON_USER_CALLBACK_MSG)],
+    )
+
+  async def before_run_callback(
+      self,
+      *,
+      invocation_context: InvocationContext,
+  ) -> None:
+    self.user_content_seen_in_before_run_callback = (
+        invocation_context.user_content
     )
 
   async def on_event_callback(
@@ -127,6 +185,7 @@ class MockPlugin(BasePlugin):
             ],
             role=event.content.role,
         ),
+        custom_metadata=self.ON_EVENT_CALLBACK_METADATA,
     )
 
 
@@ -187,7 +246,7 @@ async def test_session_not_found_message_includes_alignment_hint():
       new_message=types.Content(role="user", parts=[]),
   )
 
-  with pytest.raises(ValueError) as excinfo:
+  with pytest.raises(SessionNotFoundError) as excinfo:
     await agen.__anext__()
 
   await agen.aclose()
@@ -200,9 +259,166 @@ async def test_session_not_found_message_includes_alignment_hint():
 
 
 @pytest.mark.asyncio
+async def test_session_auto_creation():
+
+  class RunnerWithMismatch(Runner):
+
+    def _infer_agent_origin(
+        self, agent: BaseAgent
+    ) -> tuple[Optional[str], Optional[Path]]:
+      del agent
+      return "expected_app", Path("/workspace/agents/expected_app")
+
+  session_service = InMemorySessionService()
+  runner = RunnerWithMismatch(
+      app_name="expected_app",
+      agent=MockLlmAgent("test_agent"),
+      session_service=session_service,
+      artifact_service=InMemoryArtifactService(),
+      auto_create_session=True,
+  )
+
+  agen = runner.run_async(
+      user_id="user",
+      session_id="missing",
+      new_message=types.Content(role="user", parts=[types.Part(text="hi")]),
+  )
+
+  event = await agen.__anext__()
+  await agen.aclose()
+
+  # Verify that session_id="missing" doesn't error out - session is auto-created
+  assert event.author == "test_agent"
+  assert event.content.parts[0].text == "Test LLM response"
+
+
+@pytest.mark.asyncio
+async def test_rewind_auto_create_session_on_missing_session():
+  """When auto_create_session=True, rewind should create session if missing.
+
+  The newly created session won't contain the target invocation, so
+  `rewind_async` should raise an Invocation ID not found error (rather than
+  a session not found error), demonstrating auto-creation occurred.
+  """
+  session_service = InMemorySessionService()
+  runner = Runner(
+      app_name="auto_create_app",
+      agent=MockLlmAgent("agent_for_rewind"),
+      session_service=session_service,
+      artifact_service=InMemoryArtifactService(),
+      auto_create_session=True,
+  )
+
+  with pytest.raises(ValueError, match=r"Invocation ID not found: inv_missing"):
+    await runner.rewind_async(
+        user_id="user",
+        session_id="missing",
+        rewind_before_invocation_id="inv_missing",
+    )
+
+  # Verify the session actually exists now due to auto-creation.
+  session = await session_service.get_session(
+      app_name="auto_create_app", user_id="user", session_id="missing"
+  )
+  assert session is not None
+  assert session.app_name == "auto_create_app"
+
+
+@pytest.mark.asyncio
+async def test_run_live_auto_create_session():
+  """run_live should auto-create session when missing and yield events."""
+  session_service = InMemorySessionService()
+  artifact_service = InMemoryArtifactService()
+  runner = Runner(
+      app_name="live_app",
+      agent=MockLiveAgent("live_agent"),
+      session_service=session_service,
+      artifact_service=artifact_service,
+      auto_create_session=True,
+  )
+
+  # An empty LiveRequestQueue is sufficient for our mock agent.
+  from google.adk.agents.live_request_queue import LiveRequestQueue
+
+  live_queue = LiveRequestQueue()
+
+  agen = runner.run_live(
+      user_id="user",
+      session_id="missing",
+      live_request_queue=live_queue,
+  )
+
+  event = await agen.__anext__()
+  await agen.aclose()
+
+  assert event.author == "live_agent"
+  assert event.content.parts[0].text == "live hello"
+
+  # Session should have been created automatically.
+  session = await session_service.get_session(
+      app_name="live_app", user_id="user", session_id="missing"
+  )
+  assert session is not None
+
+
+@pytest.mark.asyncio
+async def test_run_live_persists_event_callback_modifications():
+  """run_live should persist the same event it streams after callback changes."""
+  session_service = InMemorySessionService()
+  artifact_service = InMemoryArtifactService()
+  plugin = MockPlugin()
+  plugin.enable_event_callback = True
+  runner = Runner(
+      app_name="live_app",
+      agent=MockLiveAgent("live_agent"),
+      session_service=session_service,
+      artifact_service=artifact_service,
+      plugins=[plugin],
+  )
+  await session_service.create_session(
+      app_name="live_app", user_id="user", session_id="live_session"
+  )
+
+  from google.adk.agents.live_request_queue import LiveRequestQueue
+
+  live_queue = LiveRequestQueue()
+  agen = runner.run_live(
+      user_id="user",
+      session_id="live_session",
+      live_request_queue=live_queue,
+  )
+
+  streamed_event = await agen.__anext__()
+  await agen.aclose()
+
+  session = await session_service.get_session(
+      app_name="live_app", user_id="user", session_id="live_session"
+  )
+  persisted_event = session.events[0]
+
+  assert streamed_event.author == "live_agent"
+  assert streamed_event.invocation_id
+  assert streamed_event.content.parts[0].text == (
+      MockPlugin.ON_EVENT_CALLBACK_MSG
+  )
+  assert streamed_event.custom_metadata == MockPlugin.ON_EVENT_CALLBACK_METADATA
+
+  assert persisted_event.id == streamed_event.id
+  assert persisted_event.timestamp == streamed_event.timestamp
+  assert persisted_event.author == streamed_event.author
+  assert persisted_event.invocation_id == streamed_event.invocation_id
+  assert persisted_event.content.parts[0].text == (
+      MockPlugin.ON_EVENT_CALLBACK_MSG
+  )
+  assert (
+      persisted_event.custom_metadata == MockPlugin.ON_EVENT_CALLBACK_METADATA
+  )
+
+
+@pytest.mark.asyncio
 async def test_runner_allows_nested_agent_directories(tmp_path, monkeypatch):
   project_root = tmp_path / "workspace"
-  agent_dir = project_root / "agents" / "examples" / "001_hello_world"
+  agent_dir = project_root / "agents" / "examples" / "hello_world"
   agent_dir.mkdir(parents=True)
   # Make package structure importable.
   for pkg_dir in [
@@ -242,13 +458,13 @@ async def test_runner_allows_nested_agent_directories(tmp_path, monkeypatch):
 
   monkeypatch.chdir(project_root)
   loader = AgentLoader(agents_dir="agents/examples")
-  loaded_agent = loader.load_agent("001_hello_world")
+  loaded_agent = loader.load_agent("hello_world")
 
   assert isinstance(loaded_agent, BaseAgent)
   session_service = InMemorySessionService()
   artifact_service = InMemoryArtifactService()
   runner = Runner(
-      app_name="001_hello_world",
+      app_name="hello_world",
       agent=loaded_agent,
       session_service=session_service,
       artifact_service=artifact_service,
@@ -256,7 +472,7 @@ async def test_runner_allows_nested_agent_directories(tmp_path, monkeypatch):
   assert runner._app_name_alignment_hint is None
 
   session = await session_service.create_session(
-      app_name="001_hello_world",
+      app_name="hello_world",
       user_id="user",
   )
   agen = runner.run_async(
@@ -462,6 +678,76 @@ async def test_runner_allows_nested_agent_directories(tmp_path, monkeypatch):
     result = self.runner._find_agent_to_run(session, self.root_agent)
     assert result == self.sub_agent2
 
+  def test_find_agent_to_run_skips_function_response_when_not_resumable(self):
+    """Test that function response scenario is skipped when not resumable."""
+    function_call = types.FunctionCall(id="func_456", name="test_func", args={})
+    function_response = types.FunctionResponse(
+        id="func_456", name="test_func", response={}
+    )
+
+    call_event = Event(
+        invocation_id="inv1",
+        author="non_transferable",
+        content=types.Content(
+            role="model", parts=[types.Part(function_call=function_call)]
+        ),
+    )
+
+    response_event = Event(
+        invocation_id="inv2",
+        author="user",
+        content=types.Content(
+            role="user", parts=[types.Part(function_response=function_response)]
+        ),
+    )
+
+    session = Session(
+        id="test_session",
+        user_id="test_user",
+        app_name="test_app",
+        events=[call_event, response_event],
+    )
+
+    self.runner.resumability_config = ResumabilityConfig(is_resumable=False)
+
+    result = self.runner._find_agent_to_run(session, self.root_agent)
+    assert result == self.root_agent
+
+  def test_find_agent_to_run_uses_function_response_when_resumable(self):
+    """Test that function response scenario is used when resumable."""
+    function_call = types.FunctionCall(id="func_456", name="test_func", args={})
+    function_response = types.FunctionResponse(
+        id="func_456", name="test_func", response={}
+    )
+
+    call_event = Event(
+        invocation_id="inv1",
+        author="non_transferable",
+        content=types.Content(
+            role="model", parts=[types.Part(function_call=function_call)]
+        ),
+    )
+
+    response_event = Event(
+        invocation_id="inv2",
+        author="user",
+        content=types.Content(
+            role="user", parts=[types.Part(function_response=function_response)]
+        ),
+    )
+
+    session = Session(
+        id="test_session",
+        user_id="test_user",
+        app_name="test_app",
+        events=[call_event, response_event],
+    )
+
+    self.runner.resumability_config = ResumabilityConfig(is_resumable=True)
+
+    result = self.runner._find_agent_to_run(session, self.root_agent)
+    assert result == self.non_transferable_agent
+
   def test_is_transferable_across_agent_tree_with_llm_agent(self):
     """Test _is_transferable_across_agent_tree with LLM agent."""
     result = self.runner._is_transferable_across_agent_tree(self.sub_agent1)
@@ -480,6 +766,41 @@ async def test_runner_allows_nested_agent_directories(tmp_path, monkeypatch):
     # MockAgent inherits from BaseAgent, not LlmAgent, so it should return False
     result = self.runner._is_transferable_across_agent_tree(non_llm_agent)
     assert result is False
+
+
+@pytest.mark.asyncio
+async def test_run_config_custom_metadata_propagates_to_events():
+  session_service = InMemorySessionService()
+  runner = Runner(
+      app_name=TEST_APP_ID,
+      agent=MockAgentWithMetadata("metadata_agent"),
+      session_service=session_service,
+      artifact_service=InMemoryArtifactService(),
+  )
+  await session_service.create_session(
+      app_name=TEST_APP_ID, user_id=TEST_USER_ID, session_id=TEST_SESSION_ID
+  )
+
+  run_config = RunConfig(custom_metadata={"request_id": "req-1"})
+  events = [
+      event
+      async for event in runner.run_async(
+          user_id=TEST_USER_ID,
+          session_id=TEST_SESSION_ID,
+          new_message=types.Content(role="user", parts=[types.Part(text="hi")]),
+          run_config=run_config,
+      )
+  ]
+
+  assert events[0].custom_metadata is not None
+  assert events[0].custom_metadata["request_id"] == "req-1"
+  assert events[0].custom_metadata["event_key"] == "event_value"
+
+  session = await session_service.get_session(
+      app_name=TEST_APP_ID, user_id=TEST_USER_ID, session_id=TEST_SESSION_ID
+  )
+  user_event = next(event for event in session.events if event.author == "user")
+  assert user_event.custom_metadata == {"request_id": "req-1"}
 
 
 class TestRunnerWithPlugins:
@@ -535,6 +856,11 @@ class TestRunnerWithPlugins:
     modified_user_message = generated_event.content.parts[0].text
 
     assert modified_user_message == MockPlugin.ON_USER_CALLBACK_MSG
+    assert self.plugin.user_content_seen_in_before_run_callback is not None
+    assert (
+        self.plugin.user_content_seen_in_before_run_callback.parts[0].text
+        == MockPlugin.ON_USER_CALLBACK_MSG
+    )
 
   @pytest.mark.asyncio
   async def test_runner_modifies_event_after_execution(self):
@@ -547,25 +873,102 @@ class TestRunnerWithPlugins:
 
     assert modified_event_message == MockPlugin.ON_EVENT_CALLBACK_MSG
 
-  def test_runner_init_raises_error_with_app_and_app_name_and_agent(self):
-    """Test that ValueError is raised when app, app_name and agent are provided."""
+  @pytest.mark.asyncio
+  async def test_runner_persists_event_callback_modifications(self):
+    """Event callback output should be persisted, not only streamed."""
+    self.plugin.enable_event_callback = True
+
+    events = await self.run_test()
+    streamed_event = events[0]
+
+    session = await self.session_service.get_session(
+        app_name=TEST_APP_ID, user_id=TEST_USER_ID, session_id=TEST_SESSION_ID
+    )
+    persisted_event = session.events[1]
+
+    assert streamed_event.author == "test_agent"
+    assert streamed_event.invocation_id
+    assert streamed_event.content.parts[0].text == (
+        MockPlugin.ON_EVENT_CALLBACK_MSG
+    )
+    assert (
+        streamed_event.custom_metadata == MockPlugin.ON_EVENT_CALLBACK_METADATA
+    )
+
+    assert persisted_event.id == streamed_event.id
+    assert persisted_event.timestamp == streamed_event.timestamp
+    assert persisted_event.author == streamed_event.author
+    assert persisted_event.invocation_id == streamed_event.invocation_id
+    assert persisted_event.content.parts[0].text == (
+        MockPlugin.ON_EVENT_CALLBACK_MSG
+    )
+    assert (
+        persisted_event.custom_metadata == MockPlugin.ON_EVENT_CALLBACK_METADATA
+    )
+
+  @pytest.mark.asyncio
+  async def test_runner_close_calls_plugin_close(self):
+    """Test that runner.close() calls plugin manager close."""
+    # Mock the plugin manager's close method
+    self.runner.plugin_manager.close = AsyncMock()
+
+    await self.runner.close()
+
+    self.runner.plugin_manager.close.assert_awaited_once()
+
+  @pytest.mark.asyncio
+  async def test_runner_passes_plugin_close_timeout(self):
+    """Test that runner passes plugin_close_timeout to PluginManager."""
+    runner = Runner(
+        app_name="test_app",
+        agent=MockLlmAgent("test_agent"),
+        session_service=self.session_service,
+        artifact_service=self.artifact_service,
+        plugins=[self.plugin],
+        plugin_close_timeout=10.0,
+    )
+    assert runner.plugin_manager._close_timeout == 10.0
+
+  @pytest.mark.filterwarnings(
+      "ignore:The `plugins` argument is deprecated:DeprecationWarning"
+  )
+  def test_runner_init_raises_error_with_app_and_agent(self):
+    """Test that ValueError is raised when app and agent are provided."""
     with pytest.raises(
         ValueError,
-        match="When app is provided, app_name should not be provided.",
+        match="Only one of app, agent, or node may be provided.",
     ):
       Runner(
           app=App(name="test_app", root_agent=self.root_agent),
-          app_name="test_app",
           agent=self.root_agent,
           session_service=self.session_service,
           artifact_service=self.artifact_service,
       )
 
+  @pytest.mark.filterwarnings(
+      "ignore:The `plugins` argument is deprecated:DeprecationWarning"
+  )
+  def test_runner_init_allows_app_name_override_with_app(self):
+    """Test that app_name can override app.name when both are provided."""
+    app = App(name="test_app", root_agent=self.root_agent)
+    runner = Runner(
+        app=app,
+        app_name="override_name",
+        session_service=self.session_service,
+        artifact_service=self.artifact_service,
+    )
+    assert runner.app_name == "override_name"
+    assert runner.agent == self.root_agent
+    assert runner.app == app
+
   def test_runner_init_raises_error_without_app_and_app_name(self):
     """Test ValueError is raised when app is not provided and app_name is missing."""
     with pytest.raises(
         ValueError,
-        match="Either app or both app_name and agent must be provided.",
+        match=(
+            "app_name is required when agent is provided|One of app, agent, or"
+            " node must be provided"
+        ),
     ):
       Runner(
           agent=self.root_agent,
@@ -577,7 +980,10 @@ class TestRunnerWithPlugins:
     """Test ValueError is raised when app is not provided and agent is missing."""
     with pytest.raises(
         ValueError,
-        match="Either app or both app_name and agent must be provided.",
+        match=(
+            "app_name is required when agent is provided|One of app, agent, or"
+            " node must be provided"
+        ),
     ):
       Runner(
           app_name="test_app",
@@ -773,6 +1179,553 @@ class TestRunnerCacheConfig:
         "ContextCacheConfig(cache_intervals=30, ttl=14400s, min_tokens=4096)"
     )
     assert str(runner.context_cache_config) == expected_str
+
+
+class TestRunnerResolveApp:
+  """Tests for Runner._resolve_app and node support."""
+
+  def setup_method(self):
+    self.session_service = InMemorySessionService()
+    self.artifact_service = InMemoryArtifactService()
+    self.root_agent = MockLlmAgent("root_agent")
+
+  def test_resolve_app_with_agent_wraps_in_app(self):
+    """Test that a bare agent is wrapped into an App."""
+    runner = Runner(
+        app_name="test_app",
+        agent=self.root_agent,
+        session_service=self.session_service,
+        artifact_service=self.artifact_service,
+    )
+    assert runner.app is not None
+    assert runner.app.root_agent is self.root_agent
+    assert runner.app_name == "test_app"
+    assert runner.agent is self.root_agent
+
+  def test_resolve_app_with_node_wraps_in_app(self):
+    """Test that a bare node is wrapped into an App."""
+    from google.adk.workflow._base_node import BaseNode
+
+    node = BaseNode(name="test_node")
+    runner = Runner(
+        node=node,
+        session_service=self.session_service,
+        artifact_service=self.artifact_service,
+    )
+    assert runner.app is not None
+    assert runner.app.root_agent is node
+    assert runner.app_name == "test_node"
+    assert runner.agent is node
+
+  def test_resolve_app_with_node_and_app_name(self):
+    """Test that app_name overrides node.name."""
+    from google.adk.workflow._base_node import BaseNode
+
+    node = BaseNode(name="node_name")
+    runner = Runner(
+        app_name="custom_name",
+        node=node,
+        session_service=self.session_service,
+        artifact_service=self.artifact_service,
+    )
+    assert runner.app_name == "custom_name"
+
+  def test_resolve_app_rejects_app_and_agent(self):
+    """Test that providing both app and agent raises."""
+    app = App(name="test_app", root_agent=self.root_agent)
+    with pytest.raises(ValueError, match="Only one of app, agent, or node"):
+      Runner(
+          app=app,
+          agent=self.root_agent,
+          session_service=self.session_service,
+      )
+
+  def test_resolve_app_rejects_app_and_node(self):
+    """Test that providing both app and node raises."""
+    from google.adk.workflow._base_node import BaseNode
+
+    app = App(name="test_app", root_agent=self.root_agent)
+    node = BaseNode(name="test_node")
+    with pytest.raises(ValueError, match="Only one of app, agent, or node"):
+      Runner(
+          app=app,
+          node=node,
+          session_service=self.session_service,
+      )
+
+  def test_resolve_app_rejects_agent_and_node(self):
+    """Test that providing both agent and node raises."""
+    from google.adk.workflow._base_node import BaseNode
+
+    node = BaseNode(name="test_node")
+    with pytest.raises(ValueError, match="Only one of app, agent, or node"):
+      Runner(
+          app_name="test_app",
+          agent=self.root_agent,
+          node=node,
+          session_service=self.session_service,
+      )
+
+  def test_resolve_app_rejects_none(self):
+    """Test that providing no app, agent, or node raises."""
+    with pytest.raises(
+        ValueError, match="One of app, agent, or node must be provided"
+    ):
+      Runner(
+          app_name="test_app",
+          session_service=self.session_service,
+      )
+
+  def test_resolve_app_extracts_node_from_app(self):
+    """Test that Runner extracts node from App into agent field."""
+    from google.adk.workflow._base_node import BaseNode
+
+    node = BaseNode(name="test_node")
+    app = App(name="test_app", root_agent=node)
+    runner = Runner(
+        app=app,
+        session_service=self.session_service,
+        artifact_service=self.artifact_service,
+    )
+    assert runner.agent is node
+    assert runner.app_name == "test_app"
+    assert runner.context_cache_config is None
+    assert runner.resumability_config is None
+
+
+class TestRunnerShouldAppendEvent:
+  """Tests for Runner._should_append_event method."""
+
+  def setup_method(self):
+    """Set up test fixtures."""
+    self.session_service = InMemorySessionService()
+    self.artifact_service = InMemoryArtifactService()
+    self.root_agent = MockLlmAgent("root_agent")
+    self.runner = Runner(
+        app_name="test_app",
+        agent=self.root_agent,
+        session_service=self.session_service,
+        artifact_service=self.artifact_service,
+    )
+
+  def test_should_append_event_finished_input_transcription(self):
+    event = Event(
+        invocation_id="inv1",
+        author="user",
+        input_transcription=types.Transcription(text="hello", finished=True),
+    )
+    assert self.runner._should_append_event(event, is_live_call=True) is True
+
+  def test_should_append_event_unfinished_input_transcription(self):
+    event = Event(
+        invocation_id="inv1",
+        author="user",
+        input_transcription=types.Transcription(text="hello", finished=False),
+    )
+    assert self.runner._should_append_event(event, is_live_call=True) is True
+
+  def test_should_append_event_finished_output_transcription(self):
+    event = Event(
+        invocation_id="inv1",
+        author="model",
+        output_transcription=types.Transcription(text="world", finished=True),
+    )
+    assert self.runner._should_append_event(event, is_live_call=True) is True
+
+  def test_should_append_event_unfinished_output_transcription(self):
+    event = Event(
+        invocation_id="inv1",
+        author="model",
+        output_transcription=types.Transcription(text="world", finished=False),
+    )
+    assert self.runner._should_append_event(event, is_live_call=True) is True
+
+  def test_should_not_append_event_live_model_audio(self):
+    event = Event(
+        invocation_id="inv1",
+        author="model",
+        content=types.Content(
+            parts=[
+                types.Part(
+                    inline_data=types.Blob(data=b"123", mime_type="audio/pcm")
+                )
+            ]
+        ),
+    )
+    assert self.runner._should_append_event(event, is_live_call=True) is False
+
+  def test_should_append_event_non_live_model_audio(self):
+    event = Event(
+        invocation_id="inv1",
+        author="model",
+        content=types.Content(
+            parts=[
+                types.Part(
+                    inline_data=types.Blob(data=b"123", mime_type="audio/pcm")
+                )
+            ]
+        ),
+    )
+    assert self.runner._should_append_event(event, is_live_call=False) is True
+
+  def test_should_append_event_other_event(self):
+    event = Event(
+        invocation_id="inv1",
+        author="model",
+        content=types.Content(parts=[types.Part(text="text")]),
+    )
+    assert self.runner._should_append_event(event, is_live_call=True) is True
+
+  def test_should_not_append_event_live_model_video(self):
+    event = Event(
+        invocation_id="inv1",
+        author="model",
+        content=types.Content(
+            parts=[
+                types.Part(
+                    inline_data=types.Blob(data=b"123", mime_type="video/mp4")
+                )
+            ]
+        ),
+    )
+    assert self.runner._should_append_event(event, is_live_call=True) is False
+
+  def test_should_append_event_non_live_model_video(self):
+    event = Event(
+        invocation_id="inv1",
+        author="model",
+        content=types.Content(
+            parts=[
+                types.Part(
+                    inline_data=types.Blob(data=b"123", mime_type="video/mp4")
+                )
+            ]
+        ),
+    )
+    assert self.runner._should_append_event(event, is_live_call=False) is True
+
+
+@pytest.fixture
+def user_agent_module(tmp_path, monkeypatch):
+  """Fixture that creates a temporary user agent module for testing.
+
+  Yields a callable that creates an agent module with the given name and
+  returns the loaded agent.
+  """
+  created_modules = []
+  original_path = None
+
+  def _create_agent(agent_dir_name: str):
+    nonlocal original_path
+    agent_dir = tmp_path / "agents" / agent_dir_name
+    agent_dir.mkdir(parents=True, exist_ok=True)
+    (tmp_path / "agents" / "__init__.py").write_text("", encoding="utf-8")
+    (agent_dir / "__init__.py").write_text("", encoding="utf-8")
+
+    agent_source = f"""\
+from google.adk.agents.llm_agent import LlmAgent
+
+class MyAgent(LlmAgent):
+    pass
+
+root_agent = MyAgent(name="{agent_dir_name}", model="gemini-2.5-flash")
+"""
+    (agent_dir / "agent.py").write_text(agent_source, encoding="utf-8")
+
+    monkeypatch.chdir(tmp_path)
+    if original_path is None:
+      original_path = str(tmp_path)
+      sys.path.insert(0, original_path)
+
+    module_name = f"agents.{agent_dir_name}.agent"
+    module = importlib.import_module(module_name)
+    created_modules.append(module_name)
+    return module.root_agent
+
+  yield _create_agent
+
+  # Cleanup
+  if original_path and original_path in sys.path:
+    sys.path.remove(original_path)
+  for mod_name in list(sys.modules.keys()):
+    if mod_name.startswith("agents"):
+      del sys.modules[mod_name]
+
+
+class TestRunnerInferAgentOrigin:
+  """Tests for Runner._infer_agent_origin method."""
+
+  def setup_method(self):
+    """Set up test fixtures."""
+    self.session_service = InMemorySessionService()
+    self.artifact_service = InMemoryArtifactService()
+
+  def test_infer_agent_origin_uses_adk_metadata_when_available(self):
+    """Test that _infer_agent_origin uses _adk_origin_* metadata when set."""
+    agent = MockLlmAgent("test_agent")
+    # Simulate metadata set by AgentLoader
+    agent._adk_origin_app_name = "my_app"
+    agent._adk_origin_path = Path("/workspace/agents/my_app")
+
+    runner = Runner(
+        app_name="my_app",
+        agent=agent,
+        session_service=self.session_service,
+        artifact_service=self.artifact_service,
+    )
+
+    origin_name, origin_path = runner._infer_agent_origin(agent)
+    assert origin_name == "my_app"
+    assert origin_path == Path("/workspace/agents/my_app")
+
+  def test_infer_agent_origin_no_false_positive_for_direct_llm_agent(self):
+    """Test that using LlmAgent directly doesn't trigger mismatch warning.
+
+    Regression test for GitHub issue #3143: Users who instantiate LlmAgent
+    directly and run from a directory that is a parent of the ADK installation
+    were getting false positive 'App name mismatch' warnings.
+
+    This also verifies that _infer_agent_origin returns None for ADK internal
+    modules (google.adk.*).
+    """
+    agent = LlmAgent(
+        name="my_custom_agent",
+        model="gemini-2.5-flash",
+    )
+
+    runner = Runner(
+        app_name="my_custom_agent",
+        agent=agent,
+        session_service=self.session_service,
+        artifact_service=self.artifact_service,
+    )
+
+    # Should return None for ADK internal modules
+    origin_name, _ = runner._infer_agent_origin(agent)
+    assert origin_name is None
+    # No mismatch warning should be generated
+    assert runner._app_name_alignment_hint is None
+
+  def test_infer_agent_origin_with_subclassed_agent_in_user_code(
+      self, user_agent_module
+  ):
+    """Test that subclassed agents in user code still trigger origin inference."""
+    agent = user_agent_module("my_agent")
+
+    runner = Runner(
+        app_name="my_agent",
+        agent=agent,
+        session_service=self.session_service,
+        artifact_service=self.artifact_service,
+    )
+
+    # Should infer origin correctly from user's code
+    origin_name, origin_path = runner._infer_agent_origin(agent)
+    assert origin_name == "my_agent"
+    assert runner._app_name_alignment_hint is None
+
+  def test_infer_agent_origin_detects_mismatch_for_user_agent(
+      self, user_agent_module
+  ):
+    """Test that mismatched app_name is detected for user-defined agents."""
+    agent = user_agent_module("actual_name")
+
+    runner = Runner(
+        app_name="wrong_name",  # Intentionally wrong
+        agent=agent,
+        session_service=self.session_service,
+        artifact_service=self.artifact_service,
+    )
+
+    # Should detect the mismatch
+    assert runner._app_name_alignment_hint is not None
+    assert "wrong_name" in runner._app_name_alignment_hint
+    assert "actual_name" in runner._app_name_alignment_hint
+
+
+@pytest.mark.asyncio
+async def test_run_async_passes_get_session_config():
+  """run_async should forward RunConfig.get_session_config to get_session."""
+  from google.adk.sessions.base_session_service import GetSessionConfig
+
+  session_service = InMemorySessionService()
+
+  # Pre-create a session with multiple events.
+  session = await session_service.create_session(
+      app_name=TEST_APP_ID, user_id=TEST_USER_ID, session_id=TEST_SESSION_ID
+  )
+  for i in range(10):
+    await session_service.append_event(
+        session=session,
+        event=Event(
+            invocation_id=f"inv_{i}",
+            author="user",
+            content=types.Content(
+                role="user", parts=[types.Part(text=f"message {i}")]
+            ),
+        ),
+    )
+
+  runner = Runner(
+      app_name=TEST_APP_ID,
+      agent=MockAgent("test_agent"),
+      session_service=session_service,
+      artifact_service=InMemoryArtifactService(),
+  )
+
+  # Run with num_recent_events=3 to only load recent events.
+  config = RunConfig(
+      get_session_config=GetSessionConfig(num_recent_events=3),
+  )
+
+  events = []
+  async for event in runner.run_async(
+      user_id=TEST_USER_ID,
+      session_id=TEST_SESSION_ID,
+      new_message=types.Content(role="user", parts=[types.Part(text="hello")]),
+      run_config=config,
+  ):
+    events.append(event)
+
+  # Agent should still produce output (session was found).
+  assert len(events) >= 1
+  assert events[0].author == "test_agent"
+
+
+@pytest.mark.asyncio
+async def test_run_live_passes_get_session_config():
+  """run_live should forward RunConfig.get_session_config to get_session."""
+  from google.adk.agents.live_request_queue import LiveRequestQueue
+  from google.adk.sessions.base_session_service import GetSessionConfig
+
+  session_service = InMemorySessionService()
+
+  # Pre-create session.
+  await session_service.create_session(
+      app_name=TEST_APP_ID, user_id=TEST_USER_ID, session_id=TEST_SESSION_ID
+  )
+
+  runner = Runner(
+      app_name=TEST_APP_ID,
+      agent=MockLiveAgent("live_agent"),
+      session_service=session_service,
+      artifact_service=InMemoryArtifactService(),
+  )
+
+  config = RunConfig(
+      get_session_config=GetSessionConfig(num_recent_events=5),
+  )
+
+  live_queue = LiveRequestQueue()
+  agen = runner.run_live(
+      user_id=TEST_USER_ID,
+      session_id=TEST_SESSION_ID,
+      live_request_queue=live_queue,
+      run_config=config,
+  )
+
+  event = await agen.__anext__()
+  await agen.aclose()
+
+  assert event.author == "live_agent"
+  assert event.content.parts[0].text == "live hello"
+
+
+@pytest.mark.asyncio
+async def test_rewind_async_passes_get_session_config():
+  """rewind_async should forward RunConfig.get_session_config to get_session."""
+  from google.adk.sessions.base_session_service import GetSessionConfig
+
+  session_service = InMemorySessionService()
+
+  runner = Runner(
+      app_name=TEST_APP_ID,
+      agent=MockAgent("test_agent"),
+      session_service=session_service,
+      artifact_service=InMemoryArtifactService(),
+      auto_create_session=True,
+  )
+
+  config = RunConfig(
+      get_session_config=GetSessionConfig(num_recent_events=5),
+  )
+
+  # rewind_async on a fresh session will raise because the invocation_id
+  # doesn't exist, but it demonstrates that the config path works.
+  with pytest.raises(ValueError, match=r"Invocation ID not found"):
+    await runner.rewind_async(
+        user_id=TEST_USER_ID,
+        session_id="new_session",
+        rewind_before_invocation_id="inv_missing",
+        run_config=config,
+    )
+
+
+@pytest.mark.asyncio
+async def test_run_debug_passes_get_session_config():
+  """run_debug should forward RunConfig.get_session_config to get_session."""
+  from google.adk.sessions.base_session_service import GetSessionConfig
+
+  session_service = InMemorySessionService()
+
+  runner = Runner(
+      app_name=TEST_APP_ID,
+      agent=MockAgent("test_agent"),
+      session_service=session_service,
+      artifact_service=InMemoryArtifactService(),
+  )
+
+  config = RunConfig(
+      get_session_config=GetSessionConfig(num_recent_events=5),
+  )
+
+  events = await runner.run_debug(
+      "hello",
+      run_config=config,
+      quiet=True,
+  )
+
+  assert len(events) >= 1
+  assert events[0].author == "test_agent"
+
+
+@pytest.mark.asyncio
+async def test_get_session_config_limits_events():
+  """Verify that num_recent_events actually limits loaded events."""
+  from google.adk.sessions.base_session_service import GetSessionConfig
+
+  session_service = InMemorySessionService()
+
+  # Create session and add events.
+  session = await session_service.create_session(
+      app_name=TEST_APP_ID, user_id=TEST_USER_ID, session_id=TEST_SESSION_ID
+  )
+  for i in range(10):
+    await session_service.append_event(
+        session=session,
+        event=Event(
+            invocation_id=f"inv_{i}",
+            author="user",
+            content=types.Content(
+                role="user", parts=[types.Part(text=f"message {i}")]
+            ),
+        ),
+    )
+
+  # Without config: should load all events.
+  full_session = await session_service.get_session(
+      app_name=TEST_APP_ID, user_id=TEST_USER_ID, session_id=TEST_SESSION_ID
+  )
+  assert len(full_session.events) == 10
+
+  # With config: should limit events.
+  limited_session = await session_service.get_session(
+      app_name=TEST_APP_ID,
+      user_id=TEST_USER_ID,
+      session_id=TEST_SESSION_ID,
+      config=GetSessionConfig(num_recent_events=3),
+  )
+  assert len(limited_session.events) == 3
 
 
 if __name__ == "__main__":

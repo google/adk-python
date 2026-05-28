@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -14,7 +14,6 @@
 
 from __future__ import annotations
 
-import logging
 from typing import List
 from typing import Literal
 from typing import Optional
@@ -22,14 +21,17 @@ from typing import Optional
 from google.genai import types
 from pydantic import ConfigDict
 from pydantic import Field
+from pydantic import model_validator
+from typing_extensions import deprecated
 
 from ..tools.tool_configs import ToolConfig
 from .base_agent_config import BaseAgentConfig
 from .common_configs import CodeConfig
 
-logger = logging.getLogger('google_adk.' + __name__)
 
-
+@deprecated(
+    'LlmAgentConfig is deprecated and will be removed in future versions.'
+)
 class LlmAgentConfig(BaseAgentConfig):
   """The config for the YAML schema of a LlmAgent."""
 
@@ -52,10 +54,30 @@ class LlmAgentConfig(BaseAgentConfig):
   model: Optional[str] = Field(
       default=None,
       description=(
-          'Optional. LlmAgent.model. If not set, the model will be inherited'
-          ' from the ancestor.'
+          'Optional. LlmAgent.model. Provide a model name string (e.g.'
+          ' "gemini-3-flash-preview"). If not set, the model will be inherited'
+          ' from the ancestor or fall back to the system default'
+          ' (gemini-3-flash-preview unless overridden via'
+          ' LlmAgent.set_default_model). To construct a model instance from'
+          ' code, use model_code.'
       ),
   )
+
+  model_code: Optional[CodeConfig] = Field(
+      default=None,
+      description=(
+          'Optional. A CodeConfig that instantiates a BaseLlm implementation'
+          ' such as LiteLlm with custom arguments (API base, fallbacks,'
+          ' etc.). Cannot be set together with `model`.'
+      ),
+  )
+
+  @model_validator(mode='after')
+  def _validate_model_sources(self) -> LlmAgentConfig:
+    if self.model and self.model_code:
+      raise ValueError('Only one of `model` or `model_code` should be set.')
+
+    return self
 
   instruction: str = Field(
       description=(

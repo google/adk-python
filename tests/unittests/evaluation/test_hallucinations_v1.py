@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -105,7 +105,7 @@ class TestParseSentences:
     """Tests _parse_sentences method with sentences containing newlines."""
     text_with_newlines = """<sentence>This is a sentence with
 \n\nnewlines.</sentence>
-<sentence>This sentence will not be parsed</stenence>"""
+<sentence>This sentence won't be parsed because tag is misspelled</stenence>"""
     assert _parse_sentences(text_with_newlines) == [
         "This is a sentence with\n\n\nnewlines."
     ]

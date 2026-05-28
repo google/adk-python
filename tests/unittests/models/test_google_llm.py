@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import logging
 import os
 import sys
 from typing import Optional
@@ -22,14 +23,19 @@ from google.adk import version as adk_version
 from google.adk.agents.context_cache_config import ContextCacheConfig
 from google.adk.models.cache_metadata import CacheMetadata
 from google.adk.models.gemini_llm_connection import GeminiLlmConnection
-from google.adk.models.google_llm import _AGENT_ENGINE_TELEMETRY_ENV_VARIABLE_NAME
-from google.adk.models.google_llm import _AGENT_ENGINE_TELEMETRY_TAG
+from google.adk.models.google_llm import _build_function_declaration_log
 from google.adk.models.google_llm import _build_request_log
+from google.adk.models.google_llm import _RESOURCE_EXHAUSTED_POSSIBLE_FIX_MESSAGE
+from google.adk.models.google_llm import _ResourceExhaustedError
 from google.adk.models.google_llm import Gemini
 from google.adk.models.llm_request import LlmRequest
 from google.adk.models.llm_response import LlmResponse
+from google.adk.utils._client_labels_utils import _AGENT_ENGINE_TELEMETRY_ENV_VARIABLE_NAME
+from google.adk.utils._client_labels_utils import _AGENT_ENGINE_TELEMETRY_TAG
+from google.adk.utils._google_client_headers import get_tracking_headers
 from google.adk.utils.variant_utils import GoogleLLMVariant
 from google.genai import types
+from google.genai.errors import ClientError
 from google.genai.types import Content
 from google.genai.types import Part
 import pytest
@@ -71,13 +77,13 @@ def generate_content_response():
 
 @pytest.fixture
 def gemini_llm():
-  return Gemini(model="gemini-1.5-flash")
+  return Gemini(model="gemini-2.5-flash")
 
 
 @pytest.fixture
 def llm_request():
   return LlmRequest(
-      model="gemini-1.5-flash",
+      model="gemini-2.5-flash",
       contents=[Content(role="user", parts=[Part.from_text(text="Hello")])],
       config=types.GenerateContentConfig(
           temperature=0.1,
@@ -104,7 +110,7 @@ def cache_metadata():
 @pytest.fixture
 def llm_request_with_cache(cache_metadata):
   return LlmRequest(
-      model="gemini-1.5-flash",
+      model="gemini-2.5-flash",
       contents=[Content(role="user", parts=[Part.from_text(text="Hello")])],
       config=types.GenerateContentConfig(
           temperature=0.1,
@@ -121,7 +127,7 @@ def llm_request_with_cache(cache_metadata):
 @pytest.fixture
 def llm_request_with_computer_use():
   return LlmRequest(
-      model="gemini-1.5-flash",
+      model="gemini-2.5-flash",
       contents=[Content(role="user", parts=[Part.from_text(text="Hello")])],
       config=types.GenerateContentConfig(
           temperature=0.1,
@@ -138,13 +144,6 @@ def llm_request_with_computer_use():
   )
 
 
-@pytest.fixture
-def mock_os_environ():
-  initial_env = os.environ.copy()
-  with mock.patch.dict(os.environ, initial_env, clear=False) as m:
-    yield m
-
-
 def test_supported_models():
   models = Gemini.supported_models()
   assert len(models) == 4
@@ -157,8 +156,34 @@ def test_supported_models():
   )
 
 
+def test_gemini_api_client_creation_with_projects_prefix():
+  model = Gemini(
+      model="projects/test-project/locations/test-location/publishers/google/models/gemini-2.5-pro"
+  )
+  with mock.patch("google.genai.Client", autospec=True) as mock_client:
+    _ = model.api_client
+    mock_client.assert_called_once()
+    _, kwargs = mock_client.call_args
+    assert kwargs["vertexai"] is True
+    assert "project" not in kwargs
+    assert "location" not in kwargs
+
+
+def test_gemini_live_api_client_creation_with_projects_prefix():
+  model = Gemini(
+      model="projects/test-project/locations/test-location/publishers/google/models/gemini-2.5-pro"
+  )
+  with mock.patch("google.genai.Client", autospec=True) as mock_client:
+    _ = model._live_api_client
+    assert mock_client.call_count == 2
+
+    # Second call is for _live_api_client
+    _, kwargs = mock_client.call_args_list[1]
+    assert kwargs["vertexai"] is True
+
+
 def test_client_version_header():
-  model = Gemini(model="gemini-1.5-flash")
+  model = Gemini(model="gemini-2.5-flash")
   client = model.api_client
 
   # Check that ADK version and Python version are present in headers
@@ -189,12 +214,15 @@ def test_client_version_header():
   )
 
 
-def test_client_version_header_with_agent_engine(mock_os_environ):
-  os.environ[_AGENT_ENGINE_TELEMETRY_ENV_VARIABLE_NAME] = "my_test_project"
-  model = Gemini(model="gemini-1.5-flash")
+def test_client_version_header_with_agent_engine(monkeypatch):
+  monkeypatch.setenv(
+      _AGENT_ENGINE_TELEMETRY_ENV_VARIABLE_NAME, "my_test_project"
+  )
+  model = Gemini(model="gemini-2.5-flash")
   client = model.api_client
 
-  # Check that ADK version with telemetry tag and Python version are present in headers
+  # Check that ADK version with telemetry tag and Python version are present in
+  # headers
   adk_version_with_telemetry = (
       f"google-adk/{adk_version.__version__}+{_AGENT_ENGINE_TELEMETRY_TAG}"
   )
@@ -222,6 +250,36 @@ def test_client_version_header_with_agent_engine(mock_os_environ):
       sdk in user_agent_header
       for sdk in ["google-genai-sdk/", "vertex-genai-modules/"]
   )
+
+
+def test_api_client_uses_api_version_from_google_base_url():
+  model = Gemini(
+      model="gemini-2.5-flash",
+      base_url="https://generativelanguage.googleapis.com/v1alpha",
+  )
+
+  client = model.api_client
+
+  assert client._api_client._http_options.base_url == (
+      "https://generativelanguage.googleapis.com/"
+  )
+  assert client._api_client._http_options.api_version == "v1alpha"
+
+
+def test_api_client_preserves_custom_base_url_path():
+  model = Gemini(
+      model="gemini-2.5-flash",
+      base_url="https://proxy.example.com/gemini/v1alpha",
+  )
+
+  client = model.api_client
+
+  assert client._api_client._http_options.base_url == (
+      "https://proxy.example.com/gemini/v1alpha"
+  )
+  # Non-Google base URLs aren't normalized, so the SDK's default api_version
+  # ("v1beta") applies even though the URL path looks like a version suffix.
+  assert client._api_client._http_options.api_version == "v1beta"
 
 
 def test_maybe_append_user_content(gemini_llm, llm_request):
@@ -385,6 +443,60 @@ async def test_generate_content_async_stream_preserves_thinking_and_text_parts(
     mock_client.aio.models.generate_content_stream.assert_called_once()
 
 
+@pytest.mark.parametrize("stream", [True, False])
+@pytest.mark.asyncio
+async def test_generate_content_async_resource_exhausted_error(
+    stream, gemini_llm, llm_request
+):
+  with mock.patch.object(gemini_llm, "api_client") as mock_client:
+    err = ClientError(code=429, response_json={})
+    err.code = 429
+    if stream:
+      mock_client.aio.models.generate_content_stream.side_effect = err
+    else:
+      mock_client.aio.models.generate_content.side_effect = err
+
+    with pytest.raises(_ResourceExhaustedError) as excinfo:
+      responses = []
+      async for resp in gemini_llm.generate_content_async(
+          llm_request, stream=stream
+      ):
+        responses.append(resp)
+    assert _RESOURCE_EXHAUSTED_POSSIBLE_FIX_MESSAGE in str(excinfo.value)
+    assert excinfo.value.code == 429
+    if stream:
+      mock_client.aio.models.generate_content_stream.assert_called_once()
+    else:
+      mock_client.aio.models.generate_content.assert_called_once()
+
+
+@pytest.mark.parametrize("stream", [True, False])
+@pytest.mark.asyncio
+async def test_generate_content_async_other_client_error(
+    stream, gemini_llm, llm_request
+):
+  with mock.patch.object(gemini_llm, "api_client") as mock_client:
+    err = ClientError(code=500, response_json={})
+    err.code = 500
+    if stream:
+      mock_client.aio.models.generate_content_stream.side_effect = err
+    else:
+      mock_client.aio.models.generate_content.side_effect = err
+
+    with pytest.raises(ClientError) as excinfo:
+      responses = []
+      async for resp in gemini_llm.generate_content_async(
+          llm_request, stream=stream
+      ):
+        responses.append(resp)
+    assert excinfo.value.code == 500
+    assert not isinstance(excinfo.value, _ResourceExhaustedError)
+    if stream:
+      mock_client.aio.models.generate_content_stream.assert_called_once()
+    else:
+      mock_client.aio.models.generate_content.assert_called_once()
+
+
 @pytest.mark.asyncio
 async def test_connect(gemini_llm, llm_request):
   # Create a mock connection
@@ -415,8 +527,9 @@ async def test_generate_content_async_with_custom_headers(
   """Test that tracking headers are updated when custom headers are provided."""
   # Add custom headers to the request config
   custom_headers = {"custom-header": "custom-value"}
-  for key in gemini_llm._tracking_headers:
-    custom_headers[key] = "custom " + gemini_llm._tracking_headers[key]
+  tracking_headers = get_tracking_headers()
+  for key in tracking_headers:
+    custom_headers[key] = "custom " + tracking_headers[key]
   llm_request.config.http_options = types.HttpOptions(headers=custom_headers)
 
   with mock.patch.object(gemini_llm, "api_client") as mock_client:
@@ -439,8 +552,9 @@ async def test_generate_content_async_with_custom_headers(
     config_arg = call_args.kwargs["config"]
 
     for key, value in config_arg.http_options.headers.items():
-      if key in gemini_llm._tracking_headers:
-        assert value == gemini_llm._tracking_headers[key] + " custom"
+      tracking_headers = get_tracking_headers()
+      if key in tracking_headers:
+        assert value == tracking_headers[key] + " custom"
       else:
         assert value == custom_headers[key]
 
@@ -489,7 +603,7 @@ async def test_generate_content_async_stream_with_custom_headers(
     config_arg = call_args.kwargs["config"]
 
     expected_headers = custom_headers.copy()
-    expected_headers.update(gemini_llm._tracking_headers)
+    expected_headers.update(get_tracking_headers())
     assert config_arg.http_options.headers == expected_headers
 
     assert len(responses) == 2
@@ -543,9 +657,53 @@ async def test_generate_content_async_patches_tracking_headers(
     assert final_config.http_options is not None
     assert (
         final_config.http_options.headers["x-goog-api-client"]
-        == gemini_llm._tracking_headers["x-goog-api-client"]
+        == get_tracking_headers()["x-goog-api-client"]
     )
 
+    assert len(responses) == 2 if stream else 1
+
+
+@pytest.mark.parametrize("stream", [True, False])
+@pytest.mark.asyncio
+async def test_generate_content_async_patches_api_version(
+    stream, llm_request, generate_content_response
+):
+  gemini_llm = Gemini(
+      model="gemini-2.5-flash",
+      base_url="https://generativelanguage.googleapis.com/v1alpha",
+  )
+  llm_request.config.http_options = types.HttpOptions(
+      headers={"custom-header": "custom-value"}
+  )
+
+  with mock.patch.object(gemini_llm, "api_client") as mock_client:
+    if stream:
+
+      async def mock_coro():
+        return MockAsyncIterator([generate_content_response])
+
+      mock_client.aio.models.generate_content_stream.return_value = mock_coro()
+    else:
+
+      async def mock_coro():
+        return generate_content_response
+
+      mock_client.aio.models.generate_content.return_value = mock_coro()
+
+    responses = [
+        resp
+        async for resp in gemini_llm.generate_content_async(
+            llm_request, stream=stream
+        )
+    ]
+
+    if stream:
+      call_args = mock_client.aio.models.generate_content_stream.call_args
+    else:
+      call_args = mock_client.aio.models.generate_content.call_args
+
+    final_config = call_args.kwargs["config"]
+    assert final_config.http_options.api_version == "v1alpha"
     assert len(responses) == 2 if stream else 1
 
 
@@ -557,12 +715,34 @@ def test_live_api_version_vertex_ai(gemini_llm):
     assert gemini_llm._live_api_version == "v1beta1"
 
 
+def test_live_api_version_uses_google_base_url_version():
+  gemini_llm = Gemini(
+      model="gemini-2.5-flash",
+      base_url="https://generativelanguage.googleapis.com/v1alpha",
+  )
+
+  assert gemini_llm._live_api_version == "v1alpha"
+
+
 def test_live_api_version_gemini_api(gemini_llm):
   """Test that _live_api_version returns 'v1alpha' for Gemini API backend."""
   with mock.patch.object(
       gemini_llm, "_api_backend", GoogleLLMVariant.GEMINI_API
   ):
     assert gemini_llm._live_api_version == "v1alpha"
+
+
+def test_live_api_client_uses_api_version_from_google_base_url():
+  gemini_llm = Gemini(
+      model="gemini-2.5-flash",
+      base_url="https://generativelanguage.googleapis.com/v1alpha",
+  )
+
+  client = gemini_llm._live_api_client
+  http_options = client._api_client._http_options
+
+  assert http_options.base_url == "https://generativelanguage.googleapis.com/"
+  assert http_options.api_version == "v1alpha"
 
 
 def test_live_api_client_properties(gemini_llm):
@@ -577,7 +757,7 @@ def test_live_api_client_properties(gemini_llm):
     assert http_options.api_version == "v1beta1"
 
     # Check that tracking headers are included
-    tracking_headers = gemini_llm._tracking_headers
+    tracking_headers = get_tracking_headers()
     for key, value in tracking_headers.items():
       assert key in http_options.headers
       assert value in http_options.headers[key]
@@ -615,7 +795,7 @@ async def test_connect_with_custom_headers(gemini_llm, llm_request):
 
       # Verify that tracking headers were merged with custom headers
       expected_headers = custom_headers.copy()
-      expected_headers.update(gemini_llm._tracking_headers)
+      expected_headers.update(get_tracking_headers())
       assert config_arg.http_options.headers == expected_headers
 
       # Verify that API version was set
@@ -649,20 +829,27 @@ async def test_connect_without_custom_headers(gemini_llm, llm_request):
 
     mock_live_client.aio.live.connect.return_value = MockLiveConnect()
 
-    async with gemini_llm.connect(llm_request) as connection:
-      # Verify that the connect method was called with the right config
-      mock_live_client.aio.live.connect.assert_called_once()
-      call_args = mock_live_client.aio.live.connect.call_args
-      config_arg = call_args.kwargs["config"]
+    with mock.patch(
+        "google.adk.models.google_llm.GeminiLlmConnection"
+    ) as MockGeminiLlmConnection:
+      async with gemini_llm.connect(llm_request) as connection:
+        # Verify that the connect method was called with the right config
+        mock_live_client.aio.live.connect.assert_called_once()
+        call_args = mock_live_client.aio.live.connect.call_args
+        config_arg = call_args.kwargs["config"]
 
-      # Verify that http_options remains None since no custom headers were provided
-      assert config_arg.http_options is None
+        # Verify that http_options remains None since no custom headers were provided
+        assert config_arg.http_options is None
 
-      # Verify that system instruction and tools were still set
-      assert config_arg.system_instruction is not None
-      assert config_arg.tools == llm_request.config.tools
+        # Verify that system instruction and tools were still set
+        assert config_arg.system_instruction is not None
+        assert config_arg.tools == llm_request.config.tools
 
-      assert isinstance(connection, GeminiLlmConnection)
+        MockGeminiLlmConnection.assert_called_once_with(
+            mock_live_session,
+            api_backend=gemini_llm._api_backend,
+            model_version=llm_request.model,
+        )
 
 
 @pytest.mark.parametrize(
@@ -703,7 +890,7 @@ async def test_preprocess_request_handles_backend_specific_fields(
   """
   # Arrange: Create a request with fields that need to be preprocessed.
   llm_request_with_files = LlmRequest(
-      model="gemini-1.5-flash",
+      model="gemini-2.5-flash",
       contents=[
           Content(
               role="user",
@@ -749,9 +936,9 @@ async def test_preprocess_request_handles_backend_specific_fields(
 @pytest.mark.asyncio
 async def test_generate_content_async_stream_aggregated_content_regardless_of_finish_reason():
   """Test that aggregated content is generated regardless of finish_reason."""
-  gemini_llm = Gemini(model="gemini-1.5-flash")
+  gemini_llm = Gemini(model="gemini-2.5-flash")
   llm_request = LlmRequest(
-      model="gemini-1.5-flash",
+      model="gemini-2.5-flash",
       contents=[Content(role="user", parts=[Part.from_text(text="Hello")])],
       config=types.GenerateContentConfig(
           temperature=0.1,
@@ -822,9 +1009,9 @@ async def test_generate_content_async_stream_aggregated_content_regardless_of_fi
 @pytest.mark.asyncio
 async def test_generate_content_async_stream_with_thought_and_text_error_handling():
   """Test that aggregated content with thought and text preserves error information."""
-  gemini_llm = Gemini(model="gemini-1.5-flash")
+  gemini_llm = Gemini(model="gemini-2.5-flash")
   llm_request = LlmRequest(
-      model="gemini-1.5-flash",
+      model="gemini-2.5-flash",
       contents=[Content(role="user", parts=[Part.from_text(text="Hello")])],
       config=types.GenerateContentConfig(
           temperature=0.1,
@@ -889,9 +1076,9 @@ async def test_generate_content_async_stream_with_thought_and_text_error_handlin
 @pytest.mark.asyncio
 async def test_generate_content_async_stream_error_info_none_for_stop_finish_reason():
   """Test that error_code and error_message are None when finish_reason is STOP."""
-  gemini_llm = Gemini(model="gemini-1.5-flash")
+  gemini_llm = Gemini(model="gemini-2.5-flash")
   llm_request = LlmRequest(
-      model="gemini-1.5-flash",
+      model="gemini-2.5-flash",
       contents=[Content(role="user", parts=[Part.from_text(text="Hello")])],
       config=types.GenerateContentConfig(
           temperature=0.1,
@@ -952,9 +1139,9 @@ async def test_generate_content_async_stream_error_info_none_for_stop_finish_rea
 @pytest.mark.asyncio
 async def test_generate_content_async_stream_error_info_set_for_non_stop_finish_reason():
   """Test that error_code and error_message are set for non-STOP finish reasons."""
-  gemini_llm = Gemini(model="gemini-1.5-flash")
+  gemini_llm = Gemini(model="gemini-2.5-flash")
   llm_request = LlmRequest(
-      model="gemini-1.5-flash",
+      model="gemini-2.5-flash",
       contents=[Content(role="user", parts=[Part.from_text(text="Hello")])],
       config=types.GenerateContentConfig(
           temperature=0.1,
@@ -1015,9 +1202,9 @@ async def test_generate_content_async_stream_error_info_set_for_non_stop_finish_
 @pytest.mark.asyncio
 async def test_generate_content_async_stream_no_aggregated_content_without_text():
   """Test that no aggregated content is generated when there's no accumulated text."""
-  gemini_llm = Gemini(model="gemini-1.5-flash")
+  gemini_llm = Gemini(model="gemini-2.5-flash")
   llm_request = LlmRequest(
-      model="gemini-1.5-flash",
+      model="gemini-2.5-flash",
       contents=[Content(role="user", parts=[Part.from_text(text="Hello")])],
       config=types.GenerateContentConfig(
           temperature=0.1,
@@ -1060,18 +1247,24 @@ async def test_generate_content_async_stream_no_aggregated_content_without_text(
         )
     ]
 
-    # Should have only 1 response (no aggregated content generated)
-    assert len(responses) == 1
-    # Verify it's a function call, not text
+    # With progressive SSE streaming enabled by default, we get 2 responses:
+    # 1. Partial response with function call
+    # 2. Final aggregated response with function call
+    assert len(responses) == 2
+    # First response is partial
+    assert responses[0].partial is True
     assert responses[0].content.parts[0].function_call is not None
+    # Second response is the final aggregated response
+    assert responses[1].partial is False
+    assert responses[1].content.parts[0].function_call is not None
 
 
 @pytest.mark.asyncio
 async def test_generate_content_async_stream_mixed_text_function_call_text():
   """Test streaming with pattern: [text, function_call, text] to verify proper aggregation."""
-  gemini_llm = Gemini(model="gemini-1.5-flash")
+  gemini_llm = Gemini(model="gemini-2.5-flash")
   llm_request = LlmRequest(
-      model="gemini-1.5-flash",
+      model="gemini-2.5-flash",
       contents=[Content(role="user", parts=[Part.from_text(text="Hello")])],
       config=types.GenerateContentConfig(
           temperature=0.1,
@@ -1138,45 +1331,41 @@ async def test_generate_content_async_stream_mixed_text_function_call_text():
         )
     ]
 
-    # Should have multiple responses:
+    # With progressive SSE streaming enabled, we get 4 responses:
     # 1. Partial text "First text"
-    # 2. Aggregated "First text" when function call interrupts
-    # 3. Function call
-    # 4. Partial text " second text"
-    # 5. Final aggregated " second text"
-    assert len(responses) == 5
+    # 2. Partial function call
+    # 3. Partial text " second text"
+    # 4. Final aggregated response with all parts (text + FC + text)
+    assert len(responses) == 4
 
     # First partial text
     assert responses[0].partial is True
     assert responses[0].content.parts[0].text == "First text"
 
-    # Aggregated first text (when function call interrupts)
-    assert responses[1].content.parts[0].text == "First text"
-    assert (
-        responses[1].partial is None
-    )  # Aggregated responses don't have partial flag
+    # Partial function call
+    assert responses[1].partial is True
+    assert responses[1].content.parts[0].function_call is not None
+    assert responses[1].content.parts[0].function_call.name == "test_func"
 
-    # Function call
-    assert responses[2].content.parts[0].function_call is not None
-    assert responses[2].content.parts[0].function_call.name == "test_func"
+    # Partial second text
+    assert responses[2].partial is True
+    assert responses[2].content.parts[0].text == " second text"
 
-    # Second partial text
-    assert responses[3].partial is True
-    assert responses[3].content.parts[0].text == " second text"
-
-    # Final aggregated text with error info
-    assert responses[4].content.parts[0].text == " second text"
-    assert (
-        responses[4].error_code is None
-    )  # STOP finish reason should have None error_code
+    # Final aggregated response with all parts
+    assert responses[3].partial is False
+    assert len(responses[3].content.parts) == 3
+    assert responses[3].content.parts[0].text == "First text"
+    assert responses[3].content.parts[1].function_call.name == "test_func"
+    assert responses[3].content.parts[2].text == " second text"
+    assert responses[3].error_code is None  # STOP finish reason
 
 
 @pytest.mark.asyncio
 async def test_generate_content_async_stream_multiple_text_parts_in_single_response():
   """Test streaming with multiple text parts in a single response."""
-  gemini_llm = Gemini(model="gemini-1.5-flash")
+  gemini_llm = Gemini(model="gemini-2.5-flash")
   llm_request = LlmRequest(
-      model="gemini-1.5-flash",
+      model="gemini-2.5-flash",
       contents=[Content(role="user", parts=[Part.from_text(text="Hello")])],
       config=types.GenerateContentConfig(
           temperature=0.1,
@@ -1226,9 +1415,9 @@ async def test_generate_content_async_stream_multiple_text_parts_in_single_respo
 @pytest.mark.asyncio
 async def test_generate_content_async_stream_complex_mixed_thought_text_function():
   """Test complex streaming with thought, text, and function calls mixed."""
-  gemini_llm = Gemini(model="gemini-1.5-flash")
+  gemini_llm = Gemini(model="gemini-2.5-flash")
   llm_request = LlmRequest(
-      model="gemini-1.5-flash",
+      model="gemini-2.5-flash",
       contents=[Content(role="user", parts=[Part.from_text(text="Hello")])],
       config=types.GenerateContentConfig(
           temperature=0.1,
@@ -1320,36 +1509,35 @@ async def test_generate_content_async_stream_complex_mixed_thought_text_function
         )
     ]
 
-    # Should properly separate thought and regular text across aggregations
-    assert len(responses) > 5  # Multiple partial + aggregated responses
+    # With progressive SSE streaming, we get 6 responses:
+    # 5 partial responses + 1 final aggregated response
+    assert len(responses) == 6
 
-    # Verify we get both thought and regular text parts in aggregated responses
-    aggregated_responses = [
-        r
-        for r in responses
-        if r.partial is None and r.content and len(r.content.parts) > 1
-    ]
-    assert (
-        len(aggregated_responses) > 0
-    )  # Should have at least one aggregated response with multiple parts
+    # All but the last should be partial
+    for i in range(5):
+      assert responses[i].partial is True
 
-    # Final aggregated response should have both thought and text
+    # Final aggregated response should have all parts
     final_response = responses[-1]
-    assert (
-        final_response.error_code is None
-    )  # STOP finish reason should have None error_code
-    assert len(final_response.content.parts) == 2  # thought part + text part
+    assert final_response.partial is False
+    assert final_response.error_code is None  # STOP finish reason
+    # Final response aggregates: thought + text + FC + thought + text
+    assert len(final_response.content.parts) == 5
     assert final_response.content.parts[0].thought is True
-    assert "More thinking..." in final_response.content.parts[0].text
-    assert final_response.content.parts[1].text == " and conclusion"
+    assert "Thinking..." in final_response.content.parts[0].text
+    assert final_response.content.parts[1].text == "Here's my answer"
+    assert final_response.content.parts[2].function_call.name == "lookup"
+    assert final_response.content.parts[3].thought is True
+    assert "More thinking..." in final_response.content.parts[3].text
+    assert final_response.content.parts[4].text == " and conclusion"
 
 
 @pytest.mark.asyncio
 async def test_generate_content_async_stream_two_separate_text_aggregations():
   """Test that [text, function_call, text] results in two separate text aggregations."""
-  gemini_llm = Gemini(model="gemini-1.5-flash")
+  gemini_llm = Gemini(model="gemini-2.5-flash")
   llm_request = LlmRequest(
-      model="gemini-1.5-flash",
+      model="gemini-2.5-flash",
       contents=[Content(role="user", parts=[Part.from_text(text="Hello")])],
       config=types.GenerateContentConfig(
           temperature=0.1,
@@ -1435,44 +1623,23 @@ async def test_generate_content_async_stream_two_separate_text_aggregations():
         )
     ]
 
-    # Find the aggregated text responses (non-partial, text-only)
-    aggregated_text_responses = [
-        r
-        for r in responses
-        if (
-            r.partial is None
-            and r.content
-            and r.content.parts
-            and r.content.parts[0].text
-            and not r.content.parts[0].function_call
-        )
-    ]
+    # With progressive SSE streaming, we get 6 responses:
+    # 5 partial responses + 1 final aggregated response
+    assert len(responses) == 6
 
-    # Should have two separate text aggregations: "First chunk" and "Second chunk"
-    assert len(aggregated_text_responses) >= 2
+    # All but the last should be partial
+    for i in range(5):
+      assert responses[i].partial is True
 
-    # First aggregation should contain "First chunk"
-    first_aggregation = aggregated_text_responses[0]
-    assert first_aggregation.content.parts[0].text == "First chunk"
-
-    # Final aggregation should contain "Second chunk" and have error info
-    final_aggregation = aggregated_text_responses[-1]
-    assert final_aggregation.content.parts[0].text == "Second chunk"
-    assert (
-        final_aggregation.error_code is None
-    )  # STOP finish reason should have None error_code
-
-    # Verify the function call is preserved between aggregations
-    function_call_responses = [
-        r
-        for r in responses
-        if (r.content and r.content.parts and r.content.parts[0].function_call)
-    ]
-    assert len(function_call_responses) == 1
-    assert (
-        function_call_responses[0].content.parts[0].function_call.name
-        == "divide"
-    )
+    # Final response should be aggregated with all parts
+    final_response = responses[-1]
+    assert final_response.partial is False
+    assert final_response.error_code is None  # STOP finish reason
+    # Final response aggregates: text1 + text2 + FC + text3 + text4
+    assert len(final_response.content.parts) == 3
+    assert final_response.content.parts[0].text == "First chunk"
+    assert final_response.content.parts[1].function_call.name == "divide"
+    assert final_response.content.parts[2].text == "Second chunk"
 
 
 @pytest.mark.asyncio
@@ -1481,7 +1648,7 @@ async def test_computer_use_removes_system_instruction():
   llm = Gemini()
 
   llm_request = LlmRequest(
-      model="gemini-1.5-flash",
+      model="gemini-2.5-flash",
       contents=[
           types.Content(role="user", parts=[types.Part.from_text(text="Hello")])
       ],
@@ -1510,7 +1677,7 @@ async def test_computer_use_preserves_system_instruction_when_no_computer_use():
 
   original_instruction = "You are a helpful assistant"
   llm_request = LlmRequest(
-      model="gemini-1.5-flash",
+      model="gemini-2.5-flash",
       contents=[
           types.Content(role="user", parts=[types.Part.from_text(text="Hello")])
       ],
@@ -1538,7 +1705,7 @@ async def test_computer_use_with_no_config():
   llm = Gemini()
 
   llm_request = LlmRequest(
-      model="gemini-1.5-flash",
+      model="gemini-2.5-flash",
       contents=[
           types.Content(role="user", parts=[types.Part.from_text(text="Hello")])
       ],
@@ -1555,7 +1722,7 @@ async def test_computer_use_with_no_tools():
 
   original_instruction = "You are a helpful assistant"
   llm_request = LlmRequest(
-      model="gemini-1.5-flash",
+      model="gemini-2.5-flash",
       contents=[
           types.Content(role="user", parts=[types.Part.from_text(text="Hello")])
       ],
@@ -1589,7 +1756,7 @@ async def test_adapt_computer_use_tool_wait():
   )
 
   llm_request = LlmRequest(
-      model="gemini-1.5-flash",
+      model="gemini-2.5-flash",
       config=types.GenerateContentConfig(),
   )
 
@@ -1610,9 +1777,10 @@ async def test_adapt_computer_use_tool_wait():
   assert wait_5_seconds_tool._coordinate_space == (1000, 1000)
 
   # Verify calling the new tool calls the original with 5 seconds
+  # The wrapper adds tool_context parameter
   result = await wait_5_seconds_tool.func()
   assert result == "mock_result"
-  mock_wait_func.assert_awaited_once_with(5)
+  mock_wait_func.assert_awaited_once_with(5, tool_context=None)
 
 
 @pytest.mark.asyncio
@@ -1621,7 +1789,7 @@ async def test_adapt_computer_use_tool_no_wait():
   llm = Gemini()
 
   llm_request = LlmRequest(
-      model="gemini-1.5-flash",
+      model="gemini-2.5-flash",
       config=types.GenerateContentConfig(),
   )
 
@@ -1642,11 +1810,15 @@ async def test_generate_content_async_with_cache_metadata_integration(
 ):
   """Test integration between Google LLM and cache manager with proper parameter order.
 
-  This test specifically validates that the cache manager's populate_cache_metadata_in_response
-  method is called with the correct parameter order: (llm_response, cache_metadata).
+  This test specifically validates that the cache manager's
+  populate_cache_metadata_in_response
+  method is called with the correct parameter order: (llm_response,
+  cache_metadata).
 
-  This test would have caught the parameter order bug where cache_metadata and llm_response
-  were passed in the wrong order, causing 'CacheMetadata' object has no attribute 'usage_metadata' errors.
+  This test would have caught the parameter order bug where cache_metadata and
+  llm_response
+  were passed in the wrong order, causing 'CacheMetadata' object has no
+  attribute 'usage_metadata' errors.
   """
 
   # Create a mock response with usage metadata including cached tokens
@@ -1729,6 +1901,54 @@ async def test_generate_content_async_with_cache_metadata_integration(
       assert second_arg.invocations_used == cache_metadata.invocations_used
 
 
+def test_build_function_declaration_log():
+  """Test that _build_function_declaration_log formats function declarations correctly."""
+  # Test case 1: Function with parameters and response
+  func_decl1 = types.FunctionDeclaration(
+      name="test_func1",
+      description="Test function 1",
+      parameters=types.Schema(
+          type=types.Type.OBJECT,
+          properties={
+              "param1": types.Schema(
+                  type=types.Type.STRING, description="param1 desc"
+              )
+          },
+      ),
+      response=types.Schema(type=types.Type.BOOLEAN, description="return bool"),
+  )
+  log1 = _build_function_declaration_log(func_decl1)
+  assert log1 == (
+      "test_func1: {'param1': {'description': 'param1 desc', 'type':"
+      " <Type.STRING: 'STRING'>}} -> {'description': 'return bool', 'type':"
+      " <Type.BOOLEAN: 'BOOLEAN'>}"
+  )
+
+  # Test case 2: Function with JSON schema parameters and response
+  func_decl2 = types.FunctionDeclaration(
+      name="test_func2",
+      description="Test function 2",
+      parameters_json_schema={
+          "type": "object",
+          "properties": {"param2": {"type": "integer"}},
+      },
+      response_json_schema={"type": "string"},
+  )
+  log2 = _build_function_declaration_log(func_decl2)
+  assert log2 == (
+      "test_func2: {'type': 'object', 'properties': {'param2': {'type':"
+      " 'integer'}}} -> {'type': 'string'}"
+  )
+
+  # Test case 3: Function with no parameters and no response
+  func_decl3 = types.FunctionDeclaration(
+      name="test_func3",
+      description="Test function 3",
+  )
+  log3 = _build_function_declaration_log(func_decl3)
+  assert log3 == "test_func3: {} "
+
+
 def test_build_request_log_with_config_multiple_tool_types():
   """Test that _build_request_log includes config with multiple tool types."""
   func_decl = types.FunctionDeclaration(
@@ -1744,7 +1964,7 @@ def test_build_request_log_with_config_multiple_tool_types():
   )
 
   llm_request = LlmRequest(
-      model="gemini-1.5-flash",
+      model="gemini-2.5-flash",
       contents=[Content(role="user", parts=[Part.from_text(text="Hello")])],
       config=types.GenerateContentConfig(
           temperature=0.7,
@@ -1801,7 +2021,7 @@ def test_build_request_log_function_declarations_in_second_tool():
   )
 
   llm_request = LlmRequest(
-      model="gemini-1.5-flash",
+      model="gemini-2.5-flash",
       contents=[Content(role="user", parts=[Part.from_text(text="Hello")])],
       config=types.GenerateContentConfig(
           temperature=0.5,
@@ -1837,7 +2057,7 @@ def test_build_request_log_fallback_to_repr_on_all_failures(monkeypatch):
   """Test that _build_request_log falls back to repr() if model_dump fails."""
 
   llm_request = LlmRequest(
-      model="gemini-1.5-flash",
+      model="gemini-2.5-flash",
       contents=[Content(role="user", parts=[Part.from_text(text="Hello")])],
       config=types.GenerateContentConfig(
           temperature=0.7,
@@ -2044,3 +2264,96 @@ async def test_connect_speech_config_remains_none_when_both_are_none(
       # Verify the final speech_config is still None
       assert config_arg.speech_config is None
       assert isinstance(connection, GeminiLlmConnection)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "log_level,should_call",
+    [
+        (logging.WARNING, False),
+        (logging.INFO, False),
+        (logging.DEBUG, True),
+    ],
+)
+async def test_generate_content_async_skips_response_log_build_above_debug(
+    gemini_llm,
+    llm_request,
+    generate_content_response,
+    log_level,
+    should_call,
+):
+  gemini_logger = logging.getLogger("google_adk.google.adk.models.google_llm")
+  original_level = gemini_logger.level
+  gemini_logger.setLevel(log_level)
+  try:
+    with mock.patch(
+        "google.adk.models.google_llm._build_response_log",
+        return_value="log",
+    ) as mock_build:
+      with mock.patch.object(gemini_llm, "api_client") as mock_client:
+
+        async def mock_coro():
+          return generate_content_response
+
+        mock_client.aio.models.generate_content.return_value = mock_coro()
+
+        async for _ in gemini_llm.generate_content_async(
+            llm_request, stream=False
+        ):
+          pass
+
+      assert mock_build.called is should_call
+  finally:
+    gemini_logger.setLevel(original_level)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "log_level,should_call",
+    [
+        (logging.WARNING, False),
+        (logging.INFO, False),
+        (logging.DEBUG, True),
+    ],
+)
+async def test_generate_content_async_stream_skips_response_log_build_above_debug(
+    gemini_llm, llm_request, log_level, should_call
+):
+  mock_responses = [
+      types.GenerateContentResponse(
+          candidates=[
+              types.Candidate(
+                  content=Content(
+                      role="model", parts=[Part.from_text(text="hi")]
+                  ),
+                  finish_reason=types.FinishReason.STOP,
+              )
+          ]
+      ),
+  ]
+
+  gemini_logger = logging.getLogger("google_adk.google.adk.models.google_llm")
+  original_level = gemini_logger.level
+  gemini_logger.setLevel(log_level)
+  try:
+    with mock.patch(
+        "google.adk.models.google_llm._build_response_log",
+        return_value="log",
+    ) as mock_build:
+      with mock.patch.object(gemini_llm, "api_client") as mock_client:
+
+        async def mock_coro():
+          return MockAsyncIterator(mock_responses)
+
+        mock_client.aio.models.generate_content_stream.return_value = (
+            mock_coro()
+        )
+
+        async for _ in gemini_llm.generate_content_async(
+            llm_request, stream=True
+        ):
+          pass
+
+      assert mock_build.called is should_call
+  finally:
+    gemini_logger.setLevel(original_level)

@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -19,6 +19,8 @@ from google.adk.agents.context_cache_config import ContextCacheConfig
 from google.adk.apps.app import App
 from google.adk.apps.app import ResumabilityConfig
 from google.adk.plugins.base_plugin import BasePlugin
+from google.adk.workflow._base_node import BaseNode
+import pytest
 
 
 class TestApp:
@@ -168,3 +170,56 @@ class TestApp:
         resumability_config=None,
     )
     assert app.resumability_config is None
+
+  def test_app_rejects_invalid_name(self):
+    """Test that invalid application names are rejected."""
+    mock_agent = Mock(spec=BaseAgent)
+
+    with pytest.raises(ValueError):
+      App(name="../escape_attempt", root_agent=mock_agent)
+
+    with pytest.raises(ValueError):
+      App(name="nested/path", root_agent=mock_agent)
+
+    with pytest.raises(ValueError):
+      App(name="windows\\path", root_agent=mock_agent)
+
+  def test_app_name_must_be_valid(self):
+    mock_agent = Mock(spec=BaseAgent)
+
+    # Hyphens are allowed
+    App(name="valid-name", root_agent=mock_agent)
+
+    with pytest.raises(ValueError):
+      App(name="invalid name", root_agent=mock_agent)
+
+    with pytest.raises(ValueError):
+      App(name="invalid@name", root_agent=mock_agent)
+
+  def test_app_name_cannot_be_user(self):
+    mock_agent = Mock(spec=BaseAgent)
+
+    with pytest.raises(ValueError):
+      App(name="user", root_agent=mock_agent)
+
+
+class TestAppRootNode:
+  """Tests for App.root_agent accepting BaseNode."""
+
+  def test_app_with_root_node(self):
+    """Test App creation with a BaseNode as root_agent."""
+    node = BaseNode(name="test_node")
+    app = App(name="test_app", root_agent=node)
+    assert app.root_agent is node
+
+  def test_app_rejects_none_root_agent(self):
+    """Test that not providing root_agent raises."""
+    with pytest.raises(ValueError, match="root_agent must be provided"):
+      App(name="test_app")
+
+  def test_app_rejects_invalid_root_agent(self):
+    """Test that root_agent must be a BaseAgent or BaseNode instance."""
+    with pytest.raises(
+        TypeError, match="root_agent must be a BaseAgent or BaseNode"
+    ):
+      App(name="test_app", root_agent="not_a_node")

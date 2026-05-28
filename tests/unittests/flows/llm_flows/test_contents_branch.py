@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -57,6 +57,18 @@ async def test_branch_filtering_child_sees_parent():
           author="child_agent",
           content=types.ModelContent("Child agent response"),
           branch="parent_agent.child_agent",  # Current branch - should be included
+      ),
+      Event(
+          invocation_id="inv4",
+          author="child_agent",
+          content=types.ModelContent("Excluded response 1"),
+          branch="parent_agent.child_agent000",  # Prefix match BUT not itself/ancestor - should be excluded
+      ),
+      Event(
+          invocation_id="inv5",
+          author="child_agent",
+          content=types.ModelContent("Excluded response 2"),
+          branch="parent_agent.child",  # Prefix match BUT not itself/ancestor - should be excluded
       ),
   ]
   invocation_context.session.events = events

@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -14,6 +14,7 @@
 
 """Unit tests for canonical_xxx fields in LlmAgent."""
 
+import logging
 from typing import Any
 from typing import Optional
 from unittest import mock
@@ -22,8 +23,12 @@ from google.adk.agents.callback_context import CallbackContext
 from google.adk.agents.invocation_context import InvocationContext
 from google.adk.agents.llm_agent import LlmAgent
 from google.adk.agents.readonly_context import ReadonlyContext
+from google.adk.models.anthropic_llm import Claude
+from google.adk.models.google_llm import Gemini
+from google.adk.models.lite_llm import LiteLlm
 from google.adk.models.llm_request import LlmRequest
 from google.adk.models.registry import LLMRegistry
+from google.adk.planners.built_in_planner import BuiltInPlanner
 from google.adk.sessions.in_memory_session_service import InMemorySessionService
 from google.adk.tools.google_search_tool import google_search
 from google.adk.tools.google_search_tool import GoogleSearchTool
@@ -49,11 +54,24 @@ async def _create_readonly_context(
   return ReadonlyContext(invocation_context)
 
 
-def test_canonical_model_empty():
-  agent = LlmAgent(name='test_agent')
-
-  with pytest.raises(ValueError):
-    _ = agent.canonical_model
+@pytest.mark.parametrize(
+    ('default_model', 'expected_model_name', 'expected_model_type'),
+    [
+        (LlmAgent.DEFAULT_MODEL, LlmAgent.DEFAULT_MODEL, Gemini),
+        ('gemini-2.5-flash', 'gemini-2.5-flash', Gemini),
+    ],
+)
+def test_canonical_model_default_fallback(
+    default_model, expected_model_name, expected_model_type
+):
+  original_default = LlmAgent._default_model
+  LlmAgent.set_default_model(default_model)
+  try:
+    agent = LlmAgent(name='test_agent')
+    assert isinstance(agent.canonical_model, expected_model_type)
+    assert agent.canonical_model.model == expected_model_name
+  finally:
+    LlmAgent.set_default_model(original_default)
 
 
 def test_canonical_model_str():
@@ -76,6 +94,35 @@ def test_canonical_model_inherit():
   )
 
   assert sub_agent.canonical_model == parent_agent.canonical_model
+
+
+def test_canonical_live_model_default_fallback():
+  original_default = LlmAgent._default_live_model
+  LlmAgent.set_default_live_model('gemini-2.0-flash')
+  try:
+    agent = LlmAgent(name='test_agent')
+    assert agent.canonical_live_model.model == 'gemini-2.0-flash'
+  finally:
+    LlmAgent.set_default_live_model(original_default)
+
+
+def test_canonical_live_model_str():
+  agent = LlmAgent(name='test_agent', model='gemini-pro')
+  assert agent.canonical_live_model.model == 'gemini-pro'
+
+
+def test_canonical_live_model_llm():
+  llm = LLMRegistry.new_llm('gemini-pro')
+  agent = LlmAgent(name='test_agent', model=llm)
+  assert agent.canonical_live_model == llm
+
+
+def test_canonical_live_model_inherit():
+  sub_agent = LlmAgent(name='sub_agent')
+  parent_agent = LlmAgent(
+      name='parent_agent', model='gemini-pro', sub_agents=[sub_agent]
+  )
+  assert sub_agent.canonical_live_model == parent_agent.canonical_live_model
 
 
 async def test_canonical_instruction_str():
@@ -167,27 +214,7 @@ async def test_async_canonical_global_instruction():
   assert bypass_state_injection
 
 
-def test_output_schema_will_disable_transfer(caplog: pytest.LogCaptureFixture):
-  with caplog.at_level('WARNING'):
-
-    class Schema(BaseModel):
-      pass
-
-    agent = LlmAgent(
-        name='test_agent',
-        output_schema=Schema,
-    )
-
-    # Transfer is automatically disabled
-    assert agent.disallow_transfer_to_parent
-    assert agent.disallow_transfer_to_peers
-    assert (
-        'output_schema cannot co-exist with agent transfer configurations.'
-        in caplog.text
-    )
-
-
-def test_output_schema_with_sub_agents_will_throw():
+def test_output_schema_with_sub_agents_will_not_throw():
   class Schema(BaseModel):
     pass
 
@@ -195,12 +222,18 @@ def test_output_schema_with_sub_agents_will_throw():
       name='sub_agent',
   )
 
-  with pytest.raises(ValueError):
-    _ = LlmAgent(
-        name='test_agent',
-        output_schema=Schema,
-        sub_agents=[sub_agent],
-    )
+  agent = LlmAgent(
+      name='test_agent',
+      output_schema=Schema,
+      sub_agents=[sub_agent],
+  )
+
+  # Transfer is not disabled
+  assert not agent.disallow_transfer_to_parent
+  assert not agent.disallow_transfer_to_peers
+
+  assert agent.output_schema == Schema
+  assert agent.sub_agents == [sub_agent]
 
 
 def test_output_schema_with_tools_will_not_throw():
@@ -232,17 +265,35 @@ def test_before_model_callback():
   assert agent.before_model_callback is not None
 
 
-def test_validate_generate_content_config_thinking_config_throw():
-  with pytest.raises(ValueError):
-    _ = LlmAgent(
-        name='test_agent',
-        generate_content_config=types.GenerateContentConfig(
-            thinking_config=types.ThinkingConfig()
-        ),
-    )
+def test_validate_generate_content_config_thinking_config_allow():
+  """Tests that thinking_config is now allowed directly in the agent init."""
+  agent = LlmAgent(
+      name='test_agent',
+      generate_content_config=types.GenerateContentConfig(
+          thinking_config=types.ThinkingConfig(include_thoughts=True)
+      ),
+  )
+  assert agent.generate_content_config.thinking_config.include_thoughts is True
+
+
+def test_thinking_config_precedence_warning():
+  """Tests that a UserWarning is issued when both manual config and planner exist."""
+
+  config = types.GenerateContentConfig(
+      thinking_config=types.ThinkingConfig(include_thoughts=True)
+  )
+  planner = BuiltInPlanner(
+      thinking_config=types.ThinkingConfig(include_thoughts=True)
+  )
+
+  with pytest.warns(
+      UserWarning, match="planner's configuration will take precedence"
+  ):
+    LlmAgent(name='test_agent', generate_content_config=config, planner=planner)
 
 
 def test_validate_generate_content_config_tools_throw():
+  """Tests that tools cannot be set directly in config."""
   with pytest.raises(ValueError):
     _ = LlmAgent(
         name='test_agent',
@@ -253,6 +304,7 @@ def test_validate_generate_content_config_tools_throw():
 
 
 def test_validate_generate_content_config_system_instruction_throw():
+  """Tests that system instructions cannot be set directly in config."""
   with pytest.raises(ValueError):
     _ = LlmAgent(
         name='test_agent',
@@ -263,6 +315,8 @@ def test_validate_generate_content_config_system_instruction_throw():
 
 
 def test_validate_generate_content_config_response_schema_throw():
+  """Tests that response schema cannot be set directly in config."""
+
   class Schema(BaseModel):
     pass
 
@@ -425,3 +479,127 @@ class TestCanonicalTools:
     assert len(tools) == 1
     assert tools[0].name == 'vertex_ai_search'
     assert tools[0].__class__.__name__ == 'VertexAiSearchTool'
+
+  async def test_multiple_tools_resolution(self):
+    """Test that multiple tools are resolved correctly."""
+
+    def _tool_1():
+      pass
+
+    def _tool_2():
+      pass
+
+    agent = LlmAgent(
+        name='test_agent',
+        model='gemini-pro',
+        tools=[_tool_1, _tool_2],
+    )
+    ctx = await _create_readonly_context(agent)
+    tools = await agent.canonical_tools(ctx)
+
+    assert len(tools) == 2
+    assert tools[0].name == '_tool_1'
+    assert tools[1].name == '_tool_2'
+
+  async def test_canonical_tools_graceful_degradation_on_toolset_error(self):
+    """Test that canonical_tools returns tools from working toolsets when one fails."""
+    from google.adk.tools.base_tool import BaseTool
+    from google.adk.tools.base_toolset import BaseToolset
+
+    class FailingToolset(BaseToolset):
+
+      async def get_tools(self, readonly_context=None):
+        raise ConnectionError('MCP server unavailable')
+
+    class WorkingToolset(BaseToolset):
+
+      async def get_tools(self, readonly_context=None):
+        tool = mock.MagicMock(spec=BaseTool)
+        tool.name = 'working_tool'
+        tool._get_declaration = mock.MagicMock(return_value=None)
+        return [tool]
+
+    def _regular_tool():
+      pass
+
+    agent = LlmAgent(
+        name='test_agent',
+        model='gemini-pro',
+        tools=[_regular_tool, FailingToolset(), WorkingToolset()],
+    )
+    ctx = await _create_readonly_context(agent)
+    tools = await agent.canonical_tools(ctx)
+
+    # Should have the regular tool + working toolset tool, but not crash
+    assert len(tools) == 2
+    assert tools[0].name == '_regular_tool'
+    assert tools[1].name == 'working_tool'
+
+
+# Tests for multi-provider model support via string model names
+@pytest.mark.parametrize(
+    'model_name',
+    [
+        'gemini-2.5-flash',
+        'gemini-2.5-pro',
+    ],
+)
+def test_agent_with_gemini_string_model(model_name):
+  """Test that Agent accepts Gemini model strings and resolves to Gemini."""
+  agent = LlmAgent(name='test_agent', model=model_name)
+  assert isinstance(agent.canonical_model, Gemini)
+  assert agent.canonical_model.model == model_name
+
+
+@pytest.mark.parametrize(
+    'model_name',
+    [
+        'claude-3-5-sonnet-v2@20241022',
+        'claude-sonnet-4@20250514',
+    ],
+)
+def test_agent_with_claude_string_model(model_name):
+  """Test that Agent accepts Claude model strings and resolves to Claude."""
+  agent = LlmAgent(name='test_agent', model=model_name)
+  assert isinstance(agent.canonical_model, Claude)
+  assert agent.canonical_model.model == model_name
+
+
+@pytest.mark.parametrize(
+    'model_name',
+    [
+        'openai/gpt-4o',
+        'groq/llama3-70b-8192',
+        'anthropic/claude-3-opus-20240229',
+    ],
+)
+def test_agent_with_litellm_string_model(model_name):
+  """Test that Agent accepts LiteLLM provider strings."""
+  agent = LlmAgent(name='test_agent', model=model_name)
+  assert isinstance(agent.canonical_model, LiteLlm)
+  assert agent.canonical_model.model == model_name
+
+
+def test_builtin_planner_overwrite_logging(caplog):
+  """Tests that the planner logs an DEBUG message when overwriting a config."""
+
+  planner = BuiltInPlanner(
+      thinking_config=types.ThinkingConfig(include_thoughts=True)
+  )
+
+  # Create a request that already has a thinking_config
+  req = LlmRequest(
+      contents=[],
+      config=types.GenerateContentConfig(
+          thinking_config=types.ThinkingConfig(include_thoughts=True)
+      ),
+  )
+
+  with caplog.at_level(
+      logging.DEBUG, logger='google_adk.google.adk.planners.built_in_planner'
+  ):
+    planner.apply_thinking_config(req)
+  assert (
+      'Overwriting `thinking_config` from `generate_content_config`'
+      in caplog.text
+  )

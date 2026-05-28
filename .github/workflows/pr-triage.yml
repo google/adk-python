@@ -20,10 +20,10 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: '3.11'
 
@@ -41,5 +41,5 @@ jobs:
           REPO: 'adk-python'
           PULL_REQUEST_NUMBER: ${{ github.event.pull_request.number || github.event.inputs.pr_number }}
           INTERACTIVE: ${{ vars.PR_TRIAGE_INTERACTIVE }}
-          PYTHONPATH: contributing/samples
+          PYTHONPATH: contributing/samples/adk_team
         run: python -m adk_pr_triaging_agent.main

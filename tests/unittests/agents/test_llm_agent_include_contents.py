@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -221,8 +221,8 @@ async def test_include_contents_none_sequential_agents():
 
   simplified_events = [event for event in events if event.content]
   assert len(simplified_events) == 2
-  assert simplified_events[0].author == "agent1"
-  assert simplified_events[1].author == "agent2"
+  assert "Agent1 response" in str(simplified_events[0].content)
+  assert "Agent2 final response" in str(simplified_events[1].content)
 
   # Agent1 sees original user request
   agent1_contents = testing_utils.simplify_contents(

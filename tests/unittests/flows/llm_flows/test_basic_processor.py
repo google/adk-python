@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -13,6 +13,8 @@
 # limitations under the License.
 
 """Tests for basic LLM request processor."""
+
+from unittest import mock
 
 from google.adk.agents.invocation_context import InvocationContext
 from google.adk.agents.llm_agent import LlmAgent
@@ -61,7 +63,7 @@ class TestBasicLlmRequestProcessor:
     """Test that processor sets output_schema when agent has no tools."""
     agent = LlmAgent(
         name='test_agent',
-        model='gemini-1.5-flash',
+        model='gemini-2.5-flash',
         output_schema=OutputSchema,
         tools=[],  # No tools
     )
@@ -80,11 +82,11 @@ class TestBasicLlmRequestProcessor:
     assert llm_request.config.response_mime_type == 'application/json'
 
   @pytest.mark.asyncio
-  async def test_skips_output_schema_when_tools_present(self):
+  async def test_skips_output_schema_when_tools_present(self, mocker):
     """Test that processor skips output_schema when agent has tools."""
     agent = LlmAgent(
         name='test_agent',
-        model='gemini-1.5-flash',
+        model='gemini-2.5-flash',
         output_schema=OutputSchema,
         tools=[FunctionTool(func=dummy_tool)],  # Has tools
     )
@@ -92,6 +94,11 @@ class TestBasicLlmRequestProcessor:
     invocation_context = await _create_invocation_context(agent)
     llm_request = LlmRequest()
     processor = _BasicLlmRequestProcessor()
+
+    can_use_output_schema_with_tools = mocker.patch(
+        'google.adk.flows.llm_flows.basic.can_use_output_schema_with_tools',
+        mock.MagicMock(return_value=False),
+    )
 
     # Process the request
     events = []
@@ -102,12 +109,50 @@ class TestBasicLlmRequestProcessor:
     assert llm_request.config.response_schema is None
     assert llm_request.config.response_mime_type != 'application/json'
 
+    # Should have checked if output schema can be used with tools
+    can_use_output_schema_with_tools.assert_called_once_with(
+        agent.canonical_model
+    )
+
+  @pytest.mark.asyncio
+  async def test_sets_output_schema_when_tools_present(self, mocker):
+    """Test that processor skips output_schema when agent has tools."""
+    agent = LlmAgent(
+        name='test_agent',
+        model='gemini-2.5-flash',
+        output_schema=OutputSchema,
+        tools=[FunctionTool(func=dummy_tool)],  # Has tools
+    )
+
+    invocation_context = await _create_invocation_context(agent)
+    llm_request = LlmRequest()
+    processor = _BasicLlmRequestProcessor()
+
+    can_use_output_schema_with_tools = mocker.patch(
+        'google.adk.flows.llm_flows.basic.can_use_output_schema_with_tools',
+        mock.MagicMock(return_value=True),
+    )
+
+    # Process the request
+    events = []
+    async for event in processor.run_async(invocation_context, llm_request):
+      events.append(event)
+
+    # Should have set response_schema since output schema can be used with tools
+    assert llm_request.config.response_schema == OutputSchema
+    assert llm_request.config.response_mime_type == 'application/json'
+
+    # Should have checked if output schema can be used with tools
+    can_use_output_schema_with_tools.assert_called_once_with(
+        agent.canonical_model
+    )
+
   @pytest.mark.asyncio
   async def test_no_output_schema_no_tools(self):
     """Test that processor works normally when agent has no output_schema or tools."""
     agent = LlmAgent(
         name='test_agent',
-        model='gemini-1.5-flash',
+        model='gemini-2.5-flash',
         # No output_schema, no tools
     )
 
@@ -129,7 +174,7 @@ class TestBasicLlmRequestProcessor:
     """Test that processor sets the model name correctly."""
     agent = LlmAgent(
         name='test_agent',
-        model='gemini-1.5-flash',
+        model='gemini-2.5-flash',
     )
 
     invocation_context = await _create_invocation_context(agent)
@@ -142,4 +187,23 @@ class TestBasicLlmRequestProcessor:
       events.append(event)
 
     # Should have set the model name
-    assert llm_request.model == 'gemini-1.5-flash'
+    assert llm_request.model == 'gemini-2.5-flash'
+
+  @pytest.mark.asyncio
+  async def test_skips_output_schema_for_task_mode(self):
+    """Test that processor skips output_schema when agent is in task mode."""
+    agent = LlmAgent(
+        name='test_agent',
+        model='gemini-2.5-flash',
+        mode='task',
+        output_schema=OutputSchema,
+    )
+
+    invocation_context = await _create_invocation_context(agent)
+    llm_request = LlmRequest()
+    processor = _BasicLlmRequestProcessor()
+
+    async for _ in processor.run_async(invocation_context, llm_request):
+      pass
+
+    assert llm_request.config.response_schema is None

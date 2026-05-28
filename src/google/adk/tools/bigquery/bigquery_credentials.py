@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -14,28 +14,13 @@
 
 from __future__ import annotations
 
-from ...utils.feature_decorator import experimental
-from .._google_credentials import BaseGoogleCredentialsConfig
+import warnings
 
-BIGQUERY_TOKEN_CACHE_KEY = "bigquery_token_cache"
-BIGQUERY_DEFAULT_SCOPE = ["https://www.googleapis.com/auth/bigquery"]
+from google.adk.integrations.bigquery.bigquery_credentials import *
 
-
-@experimental
-class BigQueryCredentialsConfig(BaseGoogleCredentialsConfig):
-  """BigQuery Credentials Configuration for Google API tools (Experimental).
-
-  Please do not use this in production, as it may be deprecated later.
-  """
-
-  def __post_init__(self) -> BigQueryCredentialsConfig:
-    """Populate default scope if scopes is None."""
-    super().__post_init__()
-
-    if not self.scopes:
-      self.scopes = BIGQUERY_DEFAULT_SCOPE
-
-    # Set the token cache key
-    self._token_cache_key = BIGQUERY_TOKEN_CACHE_KEY
-
-    return self
+warnings.warn(
+    "google.adk.tools.bigquery.bigquery_credentials is moved to"
+    " google.adk.integrations.bigquery.bigquery_credentials",
+    DeprecationWarning,
+    stacklevel=2,
+)

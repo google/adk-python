@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -14,6 +14,7 @@
 
 import asyncio
 import contextlib
+from typing import Any
 from typing import AsyncGenerator
 from typing import Generator
 from typing import Optional
@@ -142,6 +143,9 @@ def simplify_resumable_app_events(
   for event in events:
     if event.content:
       results.append((event.author, simplify_content(event.content)))
+    elif event.output and isinstance(event.output, (str, dict)):
+      # Single_turn agents strip event.content and set event.output instead.
+      results.append((event.author, event.output))
     elif event.actions.end_of_agent:
       results.append((event.author, END_OF_AGENT))
     elif event.actions.agent_state is not None:
@@ -220,6 +224,7 @@ class InMemoryRunner:
       response_modalities: list[str] = None,
       plugins: list[BasePlugin] = [],
       app: Optional[App] = None,
+      node: Any = None,
   ):
     """Initializes the InMemoryRunner.
 
@@ -229,8 +234,19 @@ class InMemoryRunner:
       plugins: The plugins to use in the runner, won't be used if app is
         provided.
       app: The app to use in the runner.
+      node: The root node to run.
     """
-    if not app:
+    if node:
+      self.app_name = node.name
+      self.root_agent = None
+      self.runner = Runner(
+          node=node,
+          artifact_service=InMemoryArtifactService(),
+          session_service=InMemorySessionService(),
+          memory_service=InMemoryMemoryService(),
+          plugins=plugins,
+      )
+    elif not app:
       self.app_name = 'test_app'
       self.root_agent = root_agent
       self.runner = Runner(
@@ -330,6 +346,9 @@ class MockModel(BaseLlm):
           list[types.Part], list[LlmResponse], list[str], list[list[types.Part]]
       ],
       error: Union[Exception, None] = None,
+      usage_metadata: Optional[
+          types.GenerateContentResponseUsageMetadata
+      ] = None,
   ):
     if error and not responses:
       return cls(responses=[], error=error)
@@ -340,14 +359,18 @@ class MockModel(BaseLlm):
       return cls(responses=responses)
     else:
       responses = [
-          LlmResponse(content=ModelContent(item))
+          LlmResponse(
+              content=ModelContent(item),
+              usage_metadata=usage_metadata,
+          )
           if isinstance(item, list) and isinstance(item[0], types.Part)
           # responses is list[list[Part]]
           else LlmResponse(
               content=ModelContent(
                   # responses is list[str] or list[Part]
                   [Part(text=item) if isinstance(item, str) else item]
-              )
+              ),
+              usage_metadata=usage_metadata,
           )
           for item in responses
           if item
@@ -363,7 +386,7 @@ class MockModel(BaseLlm):
   def generate_content(
       self, llm_request: LlmRequest, stream: bool = False
   ) -> Generator[LlmResponse, None, None]:
-    if self.error:
+    if self.error is not None:
       raise self.error
     # Increasement of the index has to happen before the yield.
     self.response_index += 1
@@ -375,6 +398,8 @@ class MockModel(BaseLlm):
   async def generate_content_async(
       self, llm_request: LlmRequest, stream: bool = False
   ) -> AsyncGenerator[LlmResponse, None]:
+    if self.error is not None:
+      raise self.error
     # Increasement of the index has to happen before the yield.
     self.response_index += 1
     self.requests.append(llm_request)
@@ -407,6 +432,10 @@ class MockLlmConnection(BaseLlmConnection):
   async def receive(self) -> AsyncGenerator[LlmResponse, None]:
     """Yield each of the pre-defined LlmResponses."""
     for response in self.llm_responses:
+      # Yield control to allow other tasks (like send_task) to run first.
+      # This ensures user content gets persisted before the mock response
+      # is yielded.
+      await asyncio.sleep(0)
       yield response
 
   async def close(self):

@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -16,6 +16,8 @@
 
 from __future__ import annotations
 
+import asyncio
+from unittest.mock import AsyncMock
 from unittest.mock import Mock
 
 from google.adk.models.llm_response import LlmResponse
@@ -267,3 +269,97 @@ async def test_all_callbacks_are_supported(
       "on_model_error_callback",
   ]
   assert set(plugin1.call_log) == set(expected_callbacks)
+
+
+@pytest.mark.asyncio
+async def test_close_calls_plugin_close(
+    service: PluginManager, plugin1: TestPlugin
+):
+  """Tests that close calls the close method on registered plugins."""
+  plugin1.close = AsyncMock()
+  service.register_plugin(plugin1)
+
+  await service.close()
+
+  plugin1.close.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_close_raises_runtime_error_on_plugin_exception(
+    service: PluginManager, plugin1: TestPlugin
+):
+  """Tests that close raises a RuntimeError if a plugin's close fails."""
+  plugin1.close = AsyncMock(side_effect=ValueError("Shutdown error"))
+  service.register_plugin(plugin1)
+
+  with pytest.raises(
+      RuntimeError, match="Failed to close plugins: 'plugin1': ValueError"
+  ):
+    await service.close()
+
+  plugin1.close.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_close_with_timeout(plugin1: TestPlugin):
+  """Tests that close respects the timeout and raises on failure."""
+  service = PluginManager(close_timeout=0.1)
+
+  async def slow_close():
+    await asyncio.sleep(0.2)
+
+  plugin1.close = slow_close
+  service.register_plugin(plugin1)
+
+  with pytest.raises(RuntimeError) as excinfo:
+    await service.close()
+
+  assert "Failed to close plugins: 'plugin1': TimeoutError" in str(
+      excinfo.value
+  )
+
+
+@pytest.mark.asyncio
+async def test_close_is_noop_after_set_skip_closing_plugins(
+    plugin1: TestPlugin,
+):
+  """Tests that close is a no-op after set_skip_closing_plugins(True)."""
+  plugin1.close = AsyncMock()
+  service = PluginManager(plugins=[plugin1])
+  service.set_skip_closing_plugins(True)
+
+  await service.close()
+
+  plugin1.close.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_set_skip_closing_plugins_bypasses_close_timeout(
+    plugin1: TestPlugin,
+):
+  """Tests that set_skip_closing_plugins(True) bypasses close timeout."""
+
+  async def slow_close():
+    await asyncio.sleep(10)  # Would otherwise time out.
+
+  plugin1.close = slow_close
+  service = PluginManager(plugins=[plugin1], close_timeout=0.01)
+  service.set_skip_closing_plugins(True)
+
+  # Should return immediately without raising.
+  await service.close()
+
+
+@pytest.mark.asyncio
+async def test_set_skip_closing_plugins_false_reverts_to_closing(
+    plugin1: TestPlugin,
+):
+  """Tests that set_skip_closing_plugins(False) re-enables closing."""
+  plugin1.close = AsyncMock()
+  service = PluginManager(plugins=[plugin1])
+  service.set_skip_closing_plugins(True)
+  service.set_skip_closing_plugins(False)
+
+  await service.close()
+
+  plugin1.close.assert_awaited_once()

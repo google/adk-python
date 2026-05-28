@@ -6,6 +6,9 @@ on:
   discussion_comment:
     types: [created]
 
+permissions:
+  contents: read
+
 jobs:
   agent-answer-questions:
     if: >-
@@ -15,16 +18,16 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: '3.11'
 
       - name: Authenticate to Google Cloud
         id: auth
-        uses: 'google-github-actions/auth@v2'
+        uses: 'google-github-actions/auth@v3'
         with:
           credentials_json: '${{ secrets.ADK_GCP_SA_KEY }}'
 
@@ -45,7 +48,7 @@ jobs:
           OWNER: 'google'
           REPO: 'adk-python'
           INTERACTIVE: 0
-          PYTHONPATH: contributing/samples
+          PYTHONPATH: contributing/samples/adk_team
         run: |
           # Write discussion data to temporary file to avoid secret masking issues
           cat > /tmp/discussion.json << 'EOF'

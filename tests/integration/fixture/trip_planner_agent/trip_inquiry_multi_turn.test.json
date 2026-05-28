@@ -89,7 +89,7 @@
               {
                 "id": null,
                 "args": {
-                  "agent_name": "indentify_agent"
+                  "agent_name": "identify_agent"
                 },
                 "name": "transfer_to_agent"
               }

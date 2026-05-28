@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -12,53 +12,38 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import asyncio
+import base64
 from io import StringIO
+import pickle
 import sys
-import unittest
 from unittest.mock import AsyncMock
+from unittest.mock import MagicMock
 from unittest.mock import Mock
-from unittest.mock import patch
 
+from fastapi.openapi.models import OAuth2
+from google.adk.agents.readonly_context import ReadonlyContext
 from google.adk.auth.auth_credential import AuthCredential
+from google.adk.auth.auth_credential import AuthCredentialTypes
+from google.adk.auth.auth_credential import HttpAuth
+from google.adk.auth.auth_credential import HttpCredentials
+from google.adk.auth.auth_credential import OAuth2Auth
+from google.adk.auth.auth_tool import AuthConfig
+from google.adk.tools.load_mcp_resource_tool import LoadMcpResourceTool
+from google.adk.tools.mcp_tool.mcp_session_manager import MCPSessionManager
+from google.adk.tools.mcp_tool.mcp_session_manager import SseConnectionParams
+from google.adk.tools.mcp_tool.mcp_session_manager import StdioConnectionParams
+from google.adk.tools.mcp_tool.mcp_session_manager import StreamableHTTPConnectionParams
+from google.adk.tools.mcp_tool.mcp_tool import MCPTool
+from google.adk.tools.mcp_tool.mcp_toolset import McpToolset
+from google.adk.tools.tool_configs import ToolArgsConfig
+from mcp import StdioServerParameters
+from mcp.types import BlobResourceContents
+from mcp.types import ListResourcesResult
+from mcp.types import ReadResourceResult
+from mcp.types import Resource
+from mcp.types import TextResourceContents
 import pytest
-
-# Skip all tests in this module if Python version is less than 3.10
-pytestmark = pytest.mark.skipif(
-    sys.version_info < (3, 10), reason="MCP tool requires Python 3.10+"
-)
-
-# Import dependencies with version checking
-try:
-  from google.adk.agents.readonly_context import ReadonlyContext
-  from google.adk.tools.mcp_tool.mcp_session_manager import MCPSessionManager
-  from google.adk.tools.mcp_tool.mcp_session_manager import SseConnectionParams
-  from google.adk.tools.mcp_tool.mcp_session_manager import StdioConnectionParams
-  from google.adk.tools.mcp_tool.mcp_session_manager import StreamableHTTPConnectionParams
-  from google.adk.tools.mcp_tool.mcp_tool import MCPTool
-  from google.adk.tools.mcp_tool.mcp_toolset import MCPToolset
-  from mcp import StdioServerParameters
-except ImportError as e:
-  if sys.version_info < (3, 10):
-    # Create dummy classes to prevent NameError during test collection
-    # Tests will be skipped anyway due to pytestmark
-    class DummyClass:
-      pass
-
-    class StdioServerParameters:
-
-      def __init__(self, command="test_command", args=None):
-        self.command = command
-        self.args = args or []
-
-    MCPSessionManager = DummyClass
-    SseConnectionParams = DummyClass
-    StdioConnectionParams = DummyClass
-    StreamableHTTPConnectionParams = DummyClass
-    MCPTool = DummyClass
-    MCPToolset = DummyClass
-    ReadonlyContext = DummyClass
-  else:
-    raise e
 
 
 class MockMCPTool:
@@ -80,8 +65,8 @@ class MockListToolsResult:
     self.tools = tools
 
 
-class TestMCPToolset:
-  """Test suite for MCPToolset class."""
+class TestMcpToolset:
+  """Test suite for McpToolset class."""
 
   def setup_method(self):
     """Set up test fixtures."""
@@ -96,19 +81,27 @@ class TestMCPToolset:
 
   def test_init_basic(self):
     """Test basic initialization with StdioServerParameters."""
-    toolset = MCPToolset(connection_params=self.mock_stdio_params)
+    toolset = McpToolset(connection_params=self.mock_stdio_params)
 
     # Note: StdioServerParameters gets converted to StdioConnectionParams internally
     assert toolset._errlog == sys.stderr
     assert toolset._auth_scheme is None
     assert toolset._auth_credential is None
+    assert toolset._use_mcp_resources is False
+
+  def test_init_with_use_mcp_resources(self):
+    """Test initialization with use_mcp_resources."""
+    toolset = McpToolset(
+        connection_params=self.mock_stdio_params, use_mcp_resources=True
+    )
+    assert toolset._use_mcp_resources is True
 
   def test_init_with_stdio_connection_params(self):
     """Test initialization with StdioConnectionParams."""
     stdio_params = StdioConnectionParams(
         server_params=self.mock_stdio_params, timeout=10.0
     )
-    toolset = MCPToolset(connection_params=stdio_params)
+    toolset = McpToolset(connection_params=stdio_params)
 
     assert toolset._connection_params == stdio_params
 
@@ -117,7 +110,7 @@ class TestMCPToolset:
     sse_params = SseConnectionParams(
         url="https://example.com/mcp", headers={"Authorization": "Bearer token"}
     )
-    toolset = MCPToolset(connection_params=sse_params)
+    toolset = McpToolset(connection_params=sse_params)
 
     assert toolset._connection_params == sse_params
 
@@ -127,14 +120,14 @@ class TestMCPToolset:
         url="https://example.com/mcp",
         headers={"Content-Type": "application/json"},
     )
-    toolset = MCPToolset(connection_params=http_params)
+    toolset = McpToolset(connection_params=http_params)
 
     assert toolset._connection_params == http_params
 
   def test_init_with_tool_filter_list(self):
     """Test initialization with tool filter as list."""
     tool_filter = ["tool1", "tool2"]
-    toolset = MCPToolset(
+    toolset = McpToolset(
         connection_params=self.mock_stdio_params, tool_filter=tool_filter
     )
 
@@ -145,17 +138,15 @@ class TestMCPToolset:
   def test_init_with_auth(self):
     """Test initialization with authentication."""
     # Create real auth scheme instances
-    from fastapi.openapi.models import OAuth2
 
     auth_scheme = OAuth2(flows={})
-    from google.adk.auth.auth_credential import OAuth2Auth
 
     auth_credential = AuthCredential(
         auth_type="oauth2",
         oauth2=OAuth2Auth(client_id="test_id", client_secret="test_secret"),
     )
 
-    toolset = MCPToolset(
+    toolset = McpToolset(
         connection_params=self.mock_stdio_params,
         auth_scheme=auth_scheme,
         auth_credential=auth_credential,
@@ -164,10 +155,46 @@ class TestMCPToolset:
     assert toolset._auth_scheme == auth_scheme
     assert toolset._auth_credential == auth_credential
 
+  def test_init_with_auth_and_credential_key(self):
+    """Test initialization with authentication and a custom credential_key."""
+
+    auth_scheme = OAuth2(flows={})
+
+    auth_credential = AuthCredential(
+        auth_type="oauth2",
+        oauth2=OAuth2Auth(client_id="test_id", client_secret="test_secret"),
+    )
+
+    toolset = McpToolset(
+        connection_params=self.mock_stdio_params,
+        auth_scheme=auth_scheme,
+        auth_credential=auth_credential,
+        credential_key="my_custom_key",
+    )
+
+    assert toolset._auth_scheme == auth_scheme
+    assert toolset._auth_credential == auth_credential
+    assert toolset._auth_config.credential_key == "my_custom_key"
+
+  def test_from_config_with_credential_key(self):
+    """Test that from_config correctly parses credential_key."""
+
+    auth_scheme = OAuth2(flows={})
+
+    config = ToolArgsConfig(
+        stdio_server_params=self.mock_stdio_params,
+        auth_scheme=auth_scheme,
+        credential_key="my_custom_key",
+    )
+    toolset = McpToolset.from_config(config, "")
+
+    assert isinstance(toolset._auth_scheme, OAuth2)
+    assert toolset._auth_config.credential_key == "my_custom_key"
+
   def test_init_missing_connection_params(self):
     """Test initialization with missing connection params raises error."""
     with pytest.raises(ValueError, match="Missing connection params"):
-      MCPToolset(connection_params=None)
+      McpToolset(connection_params=None)
 
   @pytest.mark.asyncio
   async def test_get_tools_basic(self):
@@ -182,17 +209,21 @@ class TestMCPToolset:
         return_value=MockListToolsResult(mock_tools)
     )
 
-    toolset = MCPToolset(connection_params=self.mock_stdio_params)
+    toolset = McpToolset(
+        connection_params=self.mock_stdio_params, use_mcp_resources=True
+    )
     toolset._mcp_session_manager = self.mock_session_manager
 
     tools = await toolset.get_tools()
 
-    assert len(tools) == 3
-    for tool in tools:
+    assert len(tools) == 4
+    for tool in tools[:3]:
       assert isinstance(tool, MCPTool)
+    assert isinstance(tools[3], LoadMcpResourceTool)
     assert tools[0].name == "tool1"
     assert tools[1].name == "tool2"
     assert tools[2].name == "tool3"
+    assert tools[3].name == "load_mcp_resource"
 
   @pytest.mark.asyncio
   async def test_get_tools_with_list_filter(self):
@@ -208,7 +239,7 @@ class TestMCPToolset:
     )
 
     tool_filter = ["tool1", "tool3"]
-    toolset = MCPToolset(
+    toolset = McpToolset(
         connection_params=self.mock_stdio_params, tool_filter=tool_filter
     )
     toolset._mcp_session_manager = self.mock_session_manager
@@ -236,7 +267,7 @@ class TestMCPToolset:
       """Filter for file-related tools only."""
       return "file" in tool.name
 
-    toolset = MCPToolset(
+    toolset = McpToolset(
         connection_params=self.mock_stdio_params, tool_filter=file_tools_filter
     )
     toolset._mcp_session_manager = self.mock_session_manager
@@ -258,7 +289,7 @@ class TestMCPToolset:
     expected_headers = {"X-Tenant-ID": "test-tenant"}
     header_provider = Mock(return_value=expected_headers)
 
-    toolset = MCPToolset(
+    toolset = McpToolset(
         connection_params=self.mock_stdio_params,
         header_provider=header_provider,
     )
@@ -275,7 +306,7 @@ class TestMCPToolset:
   @pytest.mark.asyncio
   async def test_close_success(self):
     """Test successful cleanup."""
-    toolset = MCPToolset(connection_params=self.mock_stdio_params)
+    toolset = McpToolset(connection_params=self.mock_stdio_params)
     toolset._mcp_session_manager = self.mock_session_manager
 
     await toolset.close()
@@ -285,7 +316,7 @@ class TestMCPToolset:
   @pytest.mark.asyncio
   async def test_close_with_exception(self):
     """Test cleanup when session manager raises exception."""
-    toolset = MCPToolset(connection_params=self.mock_stdio_params)
+    toolset = McpToolset(connection_params=self.mock_stdio_params)
     toolset._mcp_session_manager = self.mock_session_manager
 
     # Mock close to raise an exception
@@ -293,21 +324,386 @@ class TestMCPToolset:
         side_effect=Exception("Cleanup error")
     )
 
-    custom_errlog = StringIO()
-    toolset._errlog = custom_errlog
-
-    # Should not raise exception
+    # Should not raise exception, should log the warning
     await toolset.close()
 
-    # Should log the error
-    error_output = custom_errlog.getvalue()
-    assert "Warning: Error during McpToolset cleanup" in error_output
-    assert "Cleanup error" in error_output
+  @pytest.mark.asyncio
+  async def test_get_tools_with_timeout(self):
+    """Test get_tools with timeout."""
+    stdio_params = StdioConnectionParams(
+        server_params=self.mock_stdio_params, timeout=0.01
+    )
+    toolset = McpToolset(connection_params=stdio_params)
+    toolset._mcp_session_manager = self.mock_session_manager
+
+    async def long_running_list_tools():
+      await asyncio.sleep(0.1)
+      return MockListToolsResult([])
+
+    self.mock_session.list_tools = long_running_list_tools
+
+    with pytest.raises(
+        ConnectionError, match="Failed to get tools from MCP server."
+    ):
+      await toolset.get_tools()
 
   @pytest.mark.asyncio
   async def test_get_tools_retry_decorator(self):
     """Test that get_tools has retry decorator applied."""
-    toolset = MCPToolset(connection_params=self.mock_stdio_params)
+    toolset = McpToolset(connection_params=self.mock_stdio_params)
 
     # Check that the method has the retry decorator
     assert hasattr(toolset.get_tools, "__wrapped__")
+
+  @pytest.mark.asyncio
+  async def test_mcp_toolset_with_prefix(self):
+    """Test that McpToolset correctly applies the tool_name_prefix."""
+    # Mock the connection parameters
+    mock_connection_params = MagicMock()
+    mock_connection_params.timeout = None
+
+    # Mock the MCPSessionManager and its create_session method
+    mock_session_manager = MagicMock()
+    mock_session = MagicMock()
+
+    # Mock the list_tools response from the MCP server
+    mock_tool1 = MagicMock()
+    mock_tool1.name = "tool1"
+    mock_tool1.description = "tool 1 desc"
+    mock_tool2 = MagicMock()
+    mock_tool2.name = "tool2"
+    mock_tool2.description = "tool 2 desc"
+    list_tools_result = MagicMock()
+    list_tools_result.tools = [mock_tool1, mock_tool2]
+    mock_session.list_tools = AsyncMock(return_value=list_tools_result)
+    mock_session_manager.create_session = AsyncMock(return_value=mock_session)
+
+    # Create an instance of McpToolset with a prefix
+    toolset = McpToolset(
+        connection_params=mock_connection_params,
+        tool_name_prefix="my_prefix",
+        use_mcp_resources=True,
+    )
+
+    # Replace the internal session manager with our mock
+    toolset._mcp_session_manager = mock_session_manager
+
+    # Get the tools from the toolset
+    tools = await toolset.get_tools()
+
+    # The get_tools method in McpToolset returns MCPTool objects, which are
+    # instances of BaseTool. The prefixing is handled by the BaseToolset,
+    # so we need to call get_tools_with_prefix to get the prefixed tools.
+    prefixed_tools = await toolset.get_tools_with_prefix()
+
+    # Assert that the tools are prefixed correctly
+    assert len(prefixed_tools) == 3
+    assert prefixed_tools[0].name == "my_prefix_tool1"
+    assert prefixed_tools[1].name == "my_prefix_tool2"
+    assert prefixed_tools[2].name == "my_prefix_load_mcp_resource"
+
+    # Assert that the original tools are not modified
+    assert tools[0].name == "tool1"
+    assert tools[1].name == "tool2"
+    assert tools[2].name == "load_mcp_resource"
+
+  def test_init_with_progress_callback(self):
+    """Test initialization with progress_callback."""
+
+    async def my_progress_callback(
+        progress: float, total: float | None, message: str | None
+    ) -> None:
+      pass
+
+    toolset = McpToolset(
+        connection_params=self.mock_stdio_params,
+        progress_callback=my_progress_callback,
+    )
+
+    assert toolset._progress_callback == my_progress_callback
+
+  @pytest.mark.asyncio
+  async def test_get_tools_passes_progress_callback_to_mcp_tools(self):
+    """Test that get_tools passes progress_callback to created MCPTool instances."""
+    progress_updates = []
+
+    async def my_progress_callback(
+        progress: float, total: float | None, message: str | None
+    ) -> None:
+      progress_updates.append((progress, total, message))
+
+    mock_tools = [MockMCPTool("tool1"), MockMCPTool("tool2")]
+    self.mock_session.list_tools = AsyncMock(
+        return_value=MockListToolsResult(mock_tools)
+    )
+
+    toolset = McpToolset(
+        connection_params=self.mock_stdio_params,
+        progress_callback=my_progress_callback,
+    )
+    toolset._mcp_session_manager = self.mock_session_manager
+
+    tools = await toolset.get_tools()
+
+    assert len(tools) == 2
+    # Verify each tool has the progress_callback set
+    for tool in tools:
+      assert tool._progress_callback == my_progress_callback
+
+  def test_init_with_progress_callback_factory(self):
+    """Test initialization with a ProgressCallbackFactory."""
+
+    def my_callback_factory(tool_name: str, *, readonly_context=None, **kwargs):
+      async def callback(
+          progress: float, total: float | None, message: str | None
+      ) -> None:
+        pass
+
+      return callback
+
+    toolset = McpToolset(
+        connection_params=self.mock_stdio_params,
+        progress_callback=my_callback_factory,
+    )
+
+    assert toolset._progress_callback == my_callback_factory
+
+  @pytest.mark.asyncio
+  async def test_get_tools_passes_factory_to_mcp_tools(self):
+    """Test that get_tools passes factory directly to MCPTool instances.
+
+    The factory is resolved at runtime in McpTool._run_async_impl, not at
+    tool creation time. This allows the factory to receive ReadonlyContext.
+    """
+
+    def my_callback_factory(tool_name: str, *, readonly_context=None, **kwargs):
+      async def callback(
+          progress: float, total: float | None, message: str | None
+      ) -> None:
+        pass
+
+      return callback
+
+    mock_tools = [MockMCPTool("tool1"), MockMCPTool("tool2")]
+    self.mock_session.list_tools = AsyncMock(
+        return_value=MockListToolsResult(mock_tools)
+    )
+
+    toolset = McpToolset(
+        connection_params=self.mock_stdio_params,
+        progress_callback=my_callback_factory,
+    )
+    toolset._mcp_session_manager = self.mock_session_manager
+
+    tools = await toolset.get_tools()
+
+    assert len(tools) == 2
+    # Factory is passed directly to each tool (resolved at runtime)
+    for tool in tools:
+      assert tool._progress_callback == my_callback_factory
+
+  @pytest.mark.asyncio
+  async def test_list_resources(self):
+    """Test listing resources."""
+    resources = [
+        Resource(
+            name="file1.txt", mime_type="text/plain", uri="file:///file1.txt"
+        ),
+        Resource(
+            name="data.json",
+            mime_type="application/json",
+            uri="file:///data.json",
+        ),
+    ]
+    list_resources_result = ListResourcesResult(resources=resources)
+    self.mock_session.list_resources = AsyncMock(
+        return_value=list_resources_result
+    )
+
+    toolset = McpToolset(connection_params=self.mock_stdio_params)
+    toolset._mcp_session_manager = self.mock_session_manager
+
+    result = await toolset.list_resources()
+
+    assert result == ["file1.txt", "data.json"]
+    self.mock_session.list_resources.assert_called_once()
+
+  @pytest.mark.asyncio
+  async def test_get_resource_info_success(self):
+    """Test getting resource info for an existing resource."""
+    resources = [
+        Resource(
+            name="file1.txt", mime_type="text/plain", uri="file:///file1.txt"
+        ),
+        Resource(
+            name="data.json",
+            mime_type="application/json",
+            uri="file:///data.json",
+        ),
+    ]
+    list_resources_result = ListResourcesResult(resources=resources)
+    self.mock_session.list_resources = AsyncMock(
+        return_value=list_resources_result
+    )
+
+    toolset = McpToolset(connection_params=self.mock_stdio_params)
+    toolset._mcp_session_manager = self.mock_session_manager
+
+    result = await toolset.get_resource_info("data.json")
+
+    assert result == {
+        "name": "data.json",
+        "mime_type": "application/json",
+        "uri": "file:///data.json",
+    }
+    self.mock_session.list_resources.assert_called_once()
+
+  @pytest.mark.asyncio
+  async def test_get_resource_info_not_found(self):
+    """Test getting resource info for a non-existent resource."""
+    resources = [
+        Resource(
+            name="file1.txt", mime_type="text/plain", uri="file:///file1.txt"
+        ),
+    ]
+    list_resources_result = ListResourcesResult(resources=resources)
+    self.mock_session.list_resources = AsyncMock(
+        return_value=list_resources_result
+    )
+
+    toolset = McpToolset(connection_params=self.mock_stdio_params)
+    toolset._mcp_session_manager = self.mock_session_manager
+
+    with pytest.raises(
+        ValueError, match="Resource with name 'other.json' not found."
+    ):
+      await toolset.get_resource_info("other.json")
+
+  @pytest.mark.parametrize(
+      "name,mime_type,content,encoding",
+      [
+          ("file1.txt", "text/plain", "hello world", None),
+          (
+              "data.json",
+              "application/json",
+              '{"key": "value"}',
+              None,
+          ),
+          (
+              "file1_b64.txt",
+              "text/plain",
+              base64.b64encode(b"hello world").decode("ascii"),
+              "base64",
+          ),
+          (
+              "data_b64.json",
+              "application/json",
+              base64.b64encode(b'{"key": "value"}').decode("ascii"),
+              "base64",
+          ),
+          (
+              "data.bin",
+              "application/octet-stream",
+              base64.b64encode(b"\x01\x02\x03").decode("ascii"),
+              "base64",
+          ),
+      ],
+  )
+  @pytest.mark.asyncio
+  async def test_read_resource(self, name, mime_type, content, encoding):
+    """Test reading various resource types."""
+    uri = f"file:///{name}"
+    # Mock list_resources for get_resource_info
+    resources = [Resource(name=name, mime_type=mime_type, uri=uri)]
+    list_resources_result = ListResourcesResult(resources=resources)
+    self.mock_session.list_resources = AsyncMock(
+        return_value=list_resources_result
+    )
+
+    # Mock read_resource
+    if encoding == "base64":
+      contents = [
+          BlobResourceContents(uri=uri, mimeType=mime_type, blob=content)
+      ]
+    else:
+      contents = [
+          TextResourceContents(uri=uri, mimeType=mime_type, text=content)
+      ]
+
+    read_resource_result = ReadResourceResult(contents=contents)
+    self.mock_session.read_resource = AsyncMock(
+        return_value=read_resource_result
+    )
+
+    toolset = McpToolset(connection_params=self.mock_stdio_params)
+    toolset._mcp_session_manager = self.mock_session_manager
+
+    result = await toolset.read_resource(name)
+
+    assert result == contents
+    self.mock_session.list_resources.assert_called_once()
+    self.mock_session.read_resource.assert_called_once_with(uri=uri)
+
+  @pytest.mark.asyncio
+  async def test_sampling_callback_invoked(self):
+
+    called = {"value": False}
+
+    async def mock_sampling_handler(messages, params=None, context=None):
+      called["value"] = True
+
+      assert isinstance(messages, list)
+      assert messages[0]["role"] == "user"
+
+      return {
+          "model": "test-model",
+          "role": "assistant",
+          "content": {"type": "text", "text": "sampling response"},
+          "stopReason": "endTurn",
+      }
+
+    toolset = McpToolset(
+        connection_params=StreamableHTTPConnectionParams(
+            url="http://localhost:9999",
+            timeout=10,
+        ),
+        sampling_callback=mock_sampling_handler,
+    )
+
+    messages = [{"role": "user", "content": {"type": "text", "text": "hello"}}]
+
+    result = await toolset._sampling_callback(messages)
+
+    assert called["value"] is True
+    assert result["role"] == "assistant"
+    assert result["content"]["text"] == "sampling response"
+
+  @pytest.mark.asyncio
+  async def test_get_auth_headers_includes_additional_headers(self):
+    credential = AuthCredential(
+        auth_type=AuthCredentialTypes.HTTP,
+        http=HttpAuth(
+            scheme="bearer",
+            credentials=HttpCredentials(token="token"),
+            additional_headers={"X-API-Key": "secret"},
+        ),
+    )
+    auth_config = AuthConfig(
+        auth_scheme=OAuth2(flows={}),
+        raw_auth_credential=credential,
+    )
+    auth_config.exchanged_auth_credential = credential
+    toolset = McpToolset(connection_params=self.mock_stdio_params)
+    toolset._auth_config = auth_config
+
+    headers = toolset._get_auth_headers()
+
+    assert headers["Authorization"] == "Bearer token"
+    assert headers["X-API-Key"] == "secret"
+
+  def test_pickle_mcp_toolset(self):
+    toolset = McpToolset(connection_params=self.mock_stdio_params)
+    pickled = pickle.dumps(toolset)
+    unpickled = pickle.loads(pickled)
+    assert unpickled._connection_params == self.mock_stdio_params
+    assert unpickled._errlog == sys.stderr

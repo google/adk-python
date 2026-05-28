@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -17,6 +17,7 @@ from __future__ import annotations
 import copy
 import logging
 from typing import Optional
+import urllib.parse
 
 from google.genai import types
 
@@ -24,6 +25,11 @@ from ..agents.invocation_context import InvocationContext
 from .base_plugin import BasePlugin
 
 logger = logging.getLogger('google_adk.' + __name__)
+
+# Schemes supported by our current LLM connectors. Vertex exposes `gs://` while
+# hosted endpoints use HTTPS. Expand this list when BaseLlm surfaces provider
+# capabilities.
+_MODEL_ACCESSIBLE_URI_SCHEMES = {'gs', 'https', 'http'}
 
 
 class SaveFilesAsArtifactsPlugin(BasePlugin):
@@ -41,13 +47,23 @@ class SaveFilesAsArtifactsPlugin(BasePlugin):
   tool to the agent, or load the artifacts in your own tool to use the files.
   """
 
-  def __init__(self, name: str = 'save_files_as_artifacts_plugin'):
+  def __init__(
+      self,
+      name: str = 'save_files_as_artifacts_plugin',
+      *,
+      attach_file_reference: bool = True,
+  ):
     """Initialize the save files as artifacts plugin.
 
     Args:
       name: The name of the plugin instance.
+      attach_file_reference: Whether to attach a file reference to the
+        user message. If False, only save the files as artifacts without
+        adding a file reference, and the files will not be directly
+        accessible to the model.
     """
     super().__init__(name)
+    self._attach_file_reference = attach_file_reference
 
   async def on_user_message_callback(
       self,
@@ -67,6 +83,7 @@ class SaveFilesAsArtifactsPlugin(BasePlugin):
       return None
 
     new_parts = []
+    pending_delta: dict[str, int] = {}
     modified = False
 
     for i, part in enumerate(user_message.parts):
@@ -76,7 +93,8 @@ class SaveFilesAsArtifactsPlugin(BasePlugin):
 
       try:
         # Use display_name if available, otherwise generate a filename
-        file_name = part.inline_data.display_name
+        inline_data = part.inline_data
+        file_name = inline_data.display_name
         if not file_name:
           file_name = f'artifact_{invocation_context.invocation_id}_{i}'
           logger.info(
@@ -87,7 +105,7 @@ class SaveFilesAsArtifactsPlugin(BasePlugin):
         display_name = file_name
 
         # Create a copy to stop mutation of the saved artifact if the original part is modified
-        await invocation_context.artifact_service.save_artifact(
+        version = await invocation_context.artifact_service.save_artifact(
             app_name=invocation_context.app_name,
             user_id=invocation_context.user_id,
             session_id=invocation_context.session.id,
@@ -95,10 +113,23 @@ class SaveFilesAsArtifactsPlugin(BasePlugin):
             artifact=copy.copy(part),
         )
 
-        # Replace the inline data with a placeholder text (using the clean name)
-        new_parts.append(
-            types.Part(text=f'[Uploaded Artifact: "{display_name}"]')
+        placeholder_part = types.Part(
+            text=f'[Uploaded Artifact: "{display_name}"]'
         )
+        new_parts.append(placeholder_part)
+
+        if self._attach_file_reference:
+          file_part = await self._build_file_reference_part(
+              invocation_context=invocation_context,
+              filename=file_name,
+              version=version,
+              mime_type=inline_data.mime_type,
+              display_name=display_name,
+          )
+          if file_part:
+            new_parts.append(file_part)
+        pending_delta[file_name] = version
+
         modified = True
         logger.info(f'Successfully saved artifact: {file_name}')
 
@@ -109,6 +140,79 @@ class SaveFilesAsArtifactsPlugin(BasePlugin):
         continue
 
     if modified:
+      # Store pending delta in state until it can be written to event actions.
+      state = invocation_context.session.state
+      state.setdefault(self.name + ':pending_delta', {})
+      state[self.name + ':pending_delta'] |= pending_delta
       return types.Content(role=user_message.role, parts=new_parts)
     else:
       return None
+
+  async def before_agent_callback(
+      self, *, agent: BaseAgent, callback_context: CallbackContext
+  ) -> Optional[types.Content]:
+    """Writes the pending delta to event actions."""
+    pending_delta = callback_context.state.get(self.name + ':pending_delta')
+    if pending_delta:
+      try:
+        callback_context.actions.artifact_delta |= pending_delta
+      except TypeError as e:
+        logger.warning('Incompatible pending_delta type: %s', e)
+      finally:
+        callback_context.state[self.name + ':pending_delta'] = {}
+    return None
+
+  async def _build_file_reference_part(
+      self,
+      *,
+      invocation_context: InvocationContext,
+      filename: str,
+      version: int,
+      mime_type: Optional[str],
+      display_name: str,
+  ) -> Optional[types.Part]:
+    """Constructs a file reference part if the artifact URI is model-accessible."""
+
+    artifact_service = invocation_context.artifact_service
+    if not artifact_service:
+      return None
+
+    try:
+      artifact_version = await artifact_service.get_artifact_version(
+          app_name=invocation_context.app_name,
+          user_id=invocation_context.user_id,
+          session_id=invocation_context.session.id,
+          filename=filename,
+          version=version,
+      )
+    except Exception as exc:  # pylint: disable=broad-except
+      logger.warning(
+          'Failed to resolve artifact version for %s: %s', filename, exc
+      )
+      return None
+
+    if (
+        not artifact_version
+        or not artifact_version.canonical_uri
+        or not _is_model_accessible_uri(artifact_version.canonical_uri)
+    ):
+      return None
+
+    file_data = types.FileData(
+        file_uri=artifact_version.canonical_uri,
+        mime_type=mime_type or artifact_version.mime_type,
+        display_name=display_name,
+    )
+    return types.Part(file_data=file_data)
+
+
+def _is_model_accessible_uri(uri: str) -> bool:
+  try:
+    parsed = urllib.parse.urlparse(uri)
+  except ValueError:
+    return False
+
+  if not parsed.scheme:
+    return False
+
+  return parsed.scheme.lower() in _MODEL_ACCESSIBLE_URI_SCHEMES

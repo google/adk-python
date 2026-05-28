@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -108,9 +108,9 @@ class GcsEvalSetsManager(EvalSetsManager):
     """Creates an empty EvalSet and saves it to GCS.
 
     Raises:
-      ValueError: If eval set id is not valid or an eval set already exists.
+      ValueError: If Eval Set ID is not valid or an eval set already exists.
     """
-    self._validate_id(id_name="Eval Set Id", id_value=eval_set_id)
+    self._validate_id(id_name="Eval Set ID", id_value=eval_set_id)
     new_eval_set_blob_name = self._get_eval_set_blob_name(app_name, eval_set_id)
     if self.bucket.blob(new_eval_set_blob_name).exists():
       raise ValueError(

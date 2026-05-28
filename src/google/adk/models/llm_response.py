@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 from typing import Optional
 
@@ -33,7 +34,7 @@ class LlmResponse(BaseModel):
   Attributes:
     content: The content of the response.
     grounding_metadata: The grounding metadata of the response.
-    partial: Indicates whether the text content is part of a unfinished text
+    partial: Indicates whether the text content is part of an unfinished text
       stream. Only used for streaming mode and when the content is plain text.
     turn_complete: Indicates whether the response from the model is complete.
       Only used for streaming mode.
@@ -55,6 +56,9 @@ class LlmResponse(BaseModel):
   )
   """The pydantic model config."""
 
+  model_version: Optional[str] = None
+  """Output only. The model version used to generate the response."""
+
   content: Optional[types.Content] = None
   """The generative content of the response.
 
@@ -66,7 +70,7 @@ class LlmResponse(BaseModel):
   """The grounding metadata of the response."""
 
   partial: Optional[bool] = None
-  """Indicates whether the text content is part of a unfinished text stream.
+  """Indicates whether the text content is part of an unfinished text stream.
 
   Only used for streaming mode and when the content is plain text.
   """
@@ -107,6 +111,12 @@ class LlmResponse(BaseModel):
   ] = None
   """The session resumption update of the LlmResponse"""
 
+  live_session_id: Optional[str] = None
+  """The session ID of the Live session."""
+
+  go_away: Optional[types.LiveServerGoAway] = None
+  """The GoAway signal from the Live model."""
+
   input_transcription: Optional[types.Transcription] = None
   """Audio transcription of user input."""
 
@@ -132,6 +142,31 @@ class LlmResponse(BaseModel):
   This field is automatically populated when citation is enabled.
   """
 
+  interaction_id: Optional[str] = None
+  """The interaction ID from the interactions API.
+
+  This field is populated when using the interactions API for model invocation.
+  It can be used to identify and chain interactions for stateful conversations.
+  """
+
+  def get_function_calls(self) -> list[types.FunctionCall]:
+    """Returns the function calls in the response."""
+    func_calls = []
+    if self.content and self.content.parts:
+      for part in self.content.parts:
+        if part.function_call:
+          func_calls.append(part.function_call)
+    return func_calls
+
+  def get_function_responses(self) -> list[types.FunctionResponse]:
+    """Returns the function responses in the response."""
+    func_responses = []
+    if self.content and self.content.parts:
+      for part in self.content.parts:
+        if part.function_response:
+          func_responses.append(part.function_response)
+    return func_responses
+
   @staticmethod
   def create(
       generate_content_response: types.GenerateContentResponse,
@@ -148,7 +183,9 @@ class LlmResponse(BaseModel):
     usage_metadata = generate_content_response.usage_metadata
     if generate_content_response.candidates:
       candidate = generate_content_response.candidates[0]
-      if candidate.content and candidate.content.parts:
+      if (
+          candidate.content and candidate.content.parts
+      ) or candidate.finish_reason == types.FinishReason.STOP:
         return LlmResponse(
             content=candidate.content,
             grounding_metadata=candidate.grounding_metadata,
@@ -157,6 +194,7 @@ class LlmResponse(BaseModel):
             citation_metadata=candidate.citation_metadata,
             avg_logprobs=candidate.avg_logprobs,
             logprobs_result=candidate.logprobs_result,
+            model_version=generate_content_response.model_version,
         )
       else:
         return LlmResponse(
@@ -167,6 +205,7 @@ class LlmResponse(BaseModel):
             finish_reason=candidate.finish_reason,
             avg_logprobs=candidate.avg_logprobs,
             logprobs_result=candidate.logprobs_result,
+            model_version=generate_content_response.model_version,
         )
     else:
       if generate_content_response.prompt_feedback:
@@ -175,10 +214,18 @@ class LlmResponse(BaseModel):
             error_code=prompt_feedback.block_reason,
             error_message=prompt_feedback.block_reason_message,
             usage_metadata=usage_metadata,
+            model_version=generate_content_response.model_version,
         )
       else:
+        # Some model backends can legitimately complete a turn without
+        # candidates (for example, tool-driven UI turns with no text). Treat
+        # this as an empty successful response rather than an unknown error.
+        logging.warning(
+            'Received empty candidates and no prompt feedback in model '
+            'response. Treating as a successful empty response.'
+        )
         return LlmResponse(
-            error_code='UNKNOWN_ERROR',
-            error_message='Unknown error.',
+            content=types.Content(role='model', parts=[]),
             usage_metadata=usage_metadata,
+            model_version=generate_content_response.model_version,
         )

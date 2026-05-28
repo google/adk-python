@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -242,8 +242,8 @@ class ReflectAndRetryToolPlugin(BasePlugin):
     """
     if self.max_retries == 0:
       if self.throw_exception_if_retry_exceeded:
-        raise error
-      return self._get_tool_retry_exceed_msg(tool, error, tool_args)
+        raise self._ensure_exception(error)
+      return self._get_tool_retry_exceed_msg(tool, tool_args, error)
 
     scope_key = self._get_scope_key(tool_context)
     async with self._lock:
@@ -260,7 +260,7 @@ class ReflectAndRetryToolPlugin(BasePlugin):
 
       # Max Retry exceeded
       if self.throw_exception_if_retry_exceeded:
-        raise error
+        raise self._ensure_exception(error)
       else:
         return self._get_tool_retry_exceed_msg(tool, tool_args, error)
 

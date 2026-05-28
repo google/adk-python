@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -14,7 +14,9 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
+import sys
 from typing import Any
 from typing import List
 from typing import Literal
@@ -70,16 +72,37 @@ class PluginManager:
   tool calls, or model requests.
   """
 
-  def __init__(self, plugins: Optional[List[BasePlugin]] = None):
+  def __init__(
+      self,
+      plugins: Optional[List[BasePlugin]] = None,
+      close_timeout: float = 5.0,
+  ):
     """Initializes the plugin service.
 
     Args:
       plugins: An optional list of plugins to register upon initialization.
+      close_timeout: The timeout in seconds for each plugin's close method.
     """
     self.plugins: List[BasePlugin] = []
+    self._close_timeout = close_timeout
+    self._skip_closing_plugins = False
     if plugins:
       for plugin in plugins:
         self.register_plugin(plugin)
+
+  def set_skip_closing_plugins(self, value: bool) -> None:
+    """Controls whether `close()` will tear down the registered plugins.
+
+    Set to True when the plugins are owned by another component (e.g. a parent
+    `Runner` whose plugin list this manager is sharing). When set, subsequent
+    calls to `close()` become a no-op so the shared plugins are not torn down
+    while still in use.
+
+    Args:
+      value: True to skip closing the plugins; False (default) to close them
+        normally.
+    """
+    self._skip_closing_plugins = value
 
   def register_plugin(self, plugin: BasePlugin) -> None:
     """Registers a new plugin.
@@ -102,7 +125,7 @@ class PluginManager:
       plugin_name: The name of the plugin to retrieve.
 
     Returns:
-      The plugin instance if found, otherwise `None`.
+      The plugin instance if found; otherwise, `None`.
     """
     return next((p for p in self.plugins if p.name == plugin_name), None)
 
@@ -297,3 +320,52 @@ class PluginManager:
         raise RuntimeError(error_message) from e
 
     return None
+
+  async def close(self) -> None:
+    """Calls the close method on all registered plugins concurrently.
+
+    If this manager was constructed with `skip_closing_plugins=True`, this
+    method is a no-op so plugins owned by another component (e.g. a parent
+    `Runner`) are not torn down while still in use.
+
+    Raises:
+      RuntimeError: If one or more plugins failed to close, containing
+        details of all failures.
+    """
+    if self._skip_closing_plugins:
+      logger.debug(
+          "Skipping plugin close; plugins are owned by another component."
+      )
+      return
+    exceptions = {}
+    # We iterate sequentially to avoid creating new tasks which can cause issues
+    # with some libraries (like anyio/mcp) that rely on task-local context.
+    for plugin in self.plugins:
+      try:
+        if sys.version_info >= (3, 11):
+          async with asyncio.timeout(self._close_timeout):
+            await plugin.close()
+        else:
+          # For Python < 3.11, we use wait_for which creates a new task.
+          # This might still cause issues with task-local contexts, but
+          # asyncio.timeout is not available.
+          await asyncio.wait_for(plugin.close(), timeout=self._close_timeout)
+      except Exception as e:
+        exceptions[plugin.name] = e
+        if isinstance(e, (asyncio.TimeoutError, asyncio.CancelledError)):
+          logger.warning(
+              "Timeout/Cancelled while closing plugin: %s", plugin.name
+          )
+        else:
+          logger.error(
+              "Error during close of plugin %s: %s",
+              plugin.name,
+              e,
+              exc_info=e,
+          )
+
+    if exceptions:
+      error_summary = ", ".join(
+          f"'{name}': {type(exc).__name__}" for name, exc in exceptions.items()
+      )
+      raise RuntimeError(f"Failed to close plugins: {error_summary}")

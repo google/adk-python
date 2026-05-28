@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -49,8 +49,8 @@ from .eval_set import EvalSet
 from .eval_sets_manager import EvalSetsManager
 from .evaluator import EvalStatus
 from .in_memory_eval_sets_manager import InMemoryEvalSetsManager
-from .local_eval_sets_manager import convert_eval_set_to_pydanctic_schema
-from .user_simulator_provider import UserSimulatorProvider
+from .local_eval_sets_manager import convert_eval_set_to_pydantic_schema
+from .simulation.user_simulator_provider import UserSimulatorProvider
 
 logger = logging.getLogger("google_adk." + __name__)
 
@@ -90,7 +90,7 @@ class _EvalMetricResultWithInvocation(BaseModel):
   """
 
   actual_invocation: Invocation
-  expected_invocation: Invocation
+  expected_invocation: Invocation | None = None
   eval_metric_result: EvalMetricResult
 
 
@@ -121,9 +121,9 @@ class AgentEvaluator:
         the agent. There is convention in place here, where the code is going to
         look for 'root_agent' or `get_agent_async` in the loaded module.
       eval_set: The eval set.
-      criteria: Evauation criterias, a dictionary of metric names to their
+      criteria: Evaluation criteria, a dictionary of metric names to their
         respective thresholds. This field is deprecated.
-      eval_config: The evauation config.
+      eval_config: The evaluation config.
       num_runs: Number of times all entries in the eval dataset should be
         assessed.
       agent_name: The name of the agent, if trying to evaluate something other
@@ -283,7 +283,7 @@ class AgentEvaluator:
       try:
         eval_set = EvalSet.model_validate_json(content)
         assert len(initial_session) == 0, (
-            "Intial session should be specified as a part of EvalSet file."
+            "Initial session should be specified as a part of EvalSet file."
             " Explicit initial session is only needed, when specifying data in"
             " the older schema."
         )
@@ -315,7 +315,7 @@ class AgentEvaluator:
         "data": data,
         "initial_session": initial_session,
     }
-    return convert_eval_set_to_pydanctic_schema(
+    return convert_eval_set_to_pydantic_schema(
         eval_set_id=str(uuid.uuid4()), eval_set_in_json_format=[eval_data]
     )
 
@@ -438,22 +438,32 @@ class AgentEvaluator:
           "threshold": threshold,
           "prompt": AgentEvaluator._convert_content_to_text(
               per_invocation_result.expected_invocation.user_content
+              if per_invocation_result.expected_invocation
+              else per_invocation_result.actual_invocation.user_content
           ),
           "expected_response": AgentEvaluator._convert_content_to_text(
               per_invocation_result.expected_invocation.final_response
+              if per_invocation_result.expected_invocation
+              else None
           ),
           "actual_response": AgentEvaluator._convert_content_to_text(
               per_invocation_result.actual_invocation.final_response
           ),
           "expected_tool_calls": AgentEvaluator._convert_tool_calls_to_text(
               per_invocation_result.expected_invocation.intermediate_data
+              if per_invocation_result.expected_invocation
+              else None
           ),
           "actual_tool_calls": AgentEvaluator._convert_tool_calls_to_text(
               per_invocation_result.actual_invocation.intermediate_data
           ),
       })
 
-    print(tabulate(pd.DataFrame(data), headers="keys", tablefmt="grid"))
+    print(
+        tabulate(
+            pd.DataFrame(data), headers="keys", tablefmt="grid", maxcolwidths=25
+        )
+    )
     print("\n\n")  # Few empty lines for visual clarity
 
   @staticmethod

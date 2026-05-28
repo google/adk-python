@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -22,24 +22,46 @@ from typing import Optional
 from packaging.version import InvalidVersion
 from packaging.version import Version
 
+from .env_utils import is_env_enabled
+
+_DISABLE_GEMINI_MODEL_ID_CHECK_ENV_VAR = 'ADK_DISABLE_GEMINI_MODEL_ID_CHECK'
+
+
+def is_gemini_model_id_check_disabled() -> bool:
+  """Returns True when Gemini model-id validation should be bypassed.
+
+  This opt-in environment variable is intended for internal usage where model
+  ids may not follow the public ``gemini-*`` naming convention.
+  """
+  return is_env_enabled(_DISABLE_GEMINI_MODEL_ID_CHECK_ENV_VAR)
+
 
 def extract_model_name(model_string: str) -> str:
   """Extract the actual model name from either simple or path-based format.
 
   Args:
-    model_string: Either a simple model name like "gemini-2.5-pro" or
-                  a path-based model name like "projects/.../models/gemini-2.0-flash-001"
+    model_string: Either a simple model name like "gemini-2.5-pro" or a
+      path-based model name like "projects/.../models/gemini-2.5-flash"
 
   Returns:
     The extracted model name (e.g., "gemini-2.5-pro")
   """
   # Pattern for path-based model names
-  path_pattern = (
-      r'^projects/[^/]+/locations/[^/]+/publishers/[^/]+/models/(.+)$'
+  # Need to support both Vertex/Gemini and Apigee model paths.
+  path_patterns = (
+      r'^projects/[^/]+/locations/[^/]+/publishers/[^/]+/models/(.+)$',
+      r'^apigee/(?:[^/]+/)?(?:[^/]+/)?(.+)$',
   )
-  match = re.match(path_pattern, model_string)
-  if match:
-    return match.group(1)
+  # Check against all path-based patterns
+  for pattern in path_patterns:
+    match = re.match(pattern, model_string)
+    if match:
+      # Return the captured group (the model name)
+      return match.group(1)
+
+  # Handle 'models/' prefixed names like "models/gemini-2.5-pro"
+  if model_string.startswith('models/'):
+    return model_string[len('models/') :]
 
   # If it's not a path-based model, return as-is (simple model name)
   return model_string
@@ -77,17 +99,26 @@ def is_gemini_1_model(model_string: Optional[str]) -> bool:
   return re.match(r'^gemini-1\.\d+', model_name) is not None
 
 
-def is_gemini_2_or_above(model_string: Optional[str]) -> bool:
-  """Check if the model is a Gemini 2.0 or newer model using semantic versions.
+def is_gemini_eap_or_2_or_above(model_string: Optional[str]) -> bool:
+  """Check if the model is a Gemini EAP or a Gemini 2.0+ model.
+
+  EAP (Early Access Program) Gemini models follow a different naming
+  convention (see ``_is_gemini_eap_model``) and do not encode a numeric
+  version, so they are checked first. Otherwise the model name is parsed
+  as a semantic version and is considered a match when the major version
+  is ``>= 2``.
 
   Args:
     model_string: Either a simple model name or path-based model name
 
   Returns:
-    True if it's a Gemini 2.0+ model, False otherwise
+    True if it's a Gemini EAP model or a Gemini 2.0+ model, False otherwise
   """
   if not model_string:
     return False
+
+  if _is_gemini_eap_model(model_string):
+    return True
 
   model_name = extract_model_name(model_string)
   if not model_name.startswith('gemini-'):
@@ -103,3 +134,42 @@ def is_gemini_2_or_above(model_string: Optional[str]) -> bool:
     return False
 
   return parsed_version.major >= 2
+
+
+def _is_gemini_eap_model(model_string: Optional[str]) -> bool:
+  """Check if the model is an Early Access Program (EAP) Gemini model.
+
+  Matches names of the form ``gemini-<variant>-early-exp`` optionally
+  followed by a numeric suffix, e.g. ``gemini-flash-early-exp`` or
+  ``gemini-flash-early-exp3``. ``<variant>`` is one or more
+  alphanumeric/underscore segments separated by ``-`` (e.g. ``flash``,
+  ``pro``, ``flash-lite``).
+
+  Args:
+    model_string: Either a simple model name or path-based model name.
+
+  Returns:
+    True if it matches the EAP naming convention, False otherwise.
+  """
+  if not model_string:
+    return False
+
+  model_name = extract_model_name(model_string)
+  return (
+      re.match(r'^gemini-[a-z0-9_]+(?:-[a-z0-9_]+)*-early-exp\d*$', model_name)
+      is not None
+  )
+
+
+def is_gemini_3_1_flash_live(model_string: Optional[str]) -> bool:
+  """Check if the model is a Gemini 3.1 Flash Live model.
+
+  Args:
+    model_string: The model name
+
+  Returns:
+    True if it's a Gemini 3.1 Flash Live model, False otherwise
+  """
+  if not model_string:
+    return False
+  return model_string.startswith('gemini-3.1-flash-live')

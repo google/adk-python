@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -27,7 +27,9 @@ from ..models.llm_response import LlmResponse
 from ..models.registry import LLMRegistry
 from ..utils.context_utils import Aclosing
 from ..utils.feature_decorator import experimental
+from ._retry_options_utils import add_default_retry_options_if_not_present
 from .common import EvalBaseModel
+from .eval_case import ConversationScenario
 from .eval_case import Invocation
 from .eval_metrics import BaseCriterion
 from .eval_metrics import EvalMetric
@@ -60,9 +62,13 @@ class LlmAsJudge(Evaluator):
   """
 
   def __init__(
-      self, eval_metric: EvalMetric, criterion_type: type[BaseCriterion]
+      self,
+      eval_metric: EvalMetric,
+      criterion_type: type[BaseCriterion],
+      expected_invocations_required=False,
   ):
     self._eval_metric = eval_metric
+    self._expected_invocations_required = expected_invocations_required
 
     expected_criterion_type_error = ValueError(
         f"`{eval_metric.metric_name}` metric expects a criterion of type"
@@ -84,7 +90,7 @@ class LlmAsJudge(Evaluator):
 
   @abstractmethod
   def format_auto_rater_prompt(
-      self, actual: Invocation, expected: Invocation
+      self, actual: Invocation, expected: Optional[Invocation]
   ) -> str:
     """Formats the auto-rater prompt to evaluate the given invocation."""
 
@@ -112,8 +118,21 @@ class LlmAsJudge(Evaluator):
   async def evaluate_invocations(
       self,
       actual_invocations: list[Invocation],
-      expected_invocations: list[Invocation],
+      expected_invocations: Optional[list[Invocation]] = None,
+      conversation_scenario: Optional[ConversationScenario] = None,
   ) -> EvaluationResult:
+    if self._expected_invocations_required and expected_invocations is None:
+      raise ValueError("expected_invocations is needed by this metric.")
+    del conversation_scenario  # not supported for per-invocation evaluation.
+
+    # If expected_invocation are not required by the metric and if they are not
+    # supplied, we provide a list of None.
+    expected_invocations = (
+        [None] * len(actual_invocations)
+        if expected_invocations is None
+        else expected_invocations
+    )
+
     per_invocation_results = []
     for actual, expected in zip(actual_invocations, expected_invocations):
       auto_rater_prompt = self.format_auto_rater_prompt(actual, expected)
@@ -125,8 +144,10 @@ class LlmAsJudge(Evaluator):
                   role="user",
               )
           ],
-          config=self._judge_model_options.judge_model_config,
+          config=self._judge_model_options.judge_model_config
+          or genai_types.GenerateContentConfig(),
       )
+      add_default_retry_options_if_not_present(llm_request)
       num_samples = self._judge_model_options.num_samples
       invocation_result_samples = []
       for _ in range(num_samples):

@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -34,6 +34,9 @@ from ..evaluation.constants import MISSING_EVAL_DEPENDENCIES_MESSAGE
 from ..evaluation.eval_case import get_all_tool_calls
 from ..evaluation.eval_case import IntermediateDataType
 from ..evaluation.eval_metrics import EvalMetric
+from ..evaluation.eval_metrics import Interval
+from ..evaluation.eval_metrics import MetricInfo
+from ..evaluation.eval_metrics import MetricValueInfo
 from ..evaluation.eval_result import EvalCaseResult
 from ..evaluation.eval_sets_manager import EvalSetsManager
 from ..utils.context_utils import Aclosing
@@ -68,6 +71,19 @@ def _get_agent_module(agent_module_file_path: str):
   file_path = os.path.join(agent_module_file_path, "__init__.py")
   module_name = "agent"
   return _import_from_path(module_name, file_path)
+
+
+def get_default_metric_info(
+    metric_name: str, description: str = ""
+) -> MetricInfo:
+  """Returns a default MetricInfo for a metric."""
+  return MetricInfo(
+      metric_name=metric_name,
+      description=description,
+      metric_value_info=MetricValueInfo(
+          interval=Interval(min_value=0.0, max_value=1.0)
+      ),
+  )
 
 
 def get_root_agent(agent_module_file_path: str) -> Agent:
@@ -201,30 +217,36 @@ def pretty_print_eval_result(eval_result: EvalCaseResult):
           for r in metric_result.criterion.rubrics
       }
       for rubric_score in metric_result.details.rubric_scores:
-        rubric = rubrics_by_id.get(rubric_score.rubric_id)
+        rubric_text = rubrics_by_id.get(rubric_score.rubric_id)
+        if not rubric_text:
+          rubric_text = rubric_score.rubric_id
         click.echo(
-            f"Rubric: {rubric}, "
+            f"Rubric: {rubric_text}, "
             f"Score: {rubric_score.score}, "
             f"Reasoning: {rubric_score.rationale}"
         )
 
   data = []
   for per_invocation_result in eval_result.eval_metric_result_per_invocation:
+    actual_invocation = per_invocation_result.actual_invocation
+    expected_invocation = per_invocation_result.expected_invocation
     row_data = {
-        "prompt": _convert_content_to_text(
-            per_invocation_result.expected_invocation.user_content
-        ),
-        "expected_response": _convert_content_to_text(
-            per_invocation_result.expected_invocation.final_response
+        "prompt": _convert_content_to_text(actual_invocation.user_content),
+        "expected_response": (
+            _convert_content_to_text(expected_invocation.final_response)
+            if expected_invocation
+            else None
         ),
         "actual_response": _convert_content_to_text(
-            per_invocation_result.actual_invocation.final_response
+            actual_invocation.final_response
         ),
-        "expected_tool_calls": _convert_tool_calls_to_text(
-            per_invocation_result.expected_invocation.intermediate_data
+        "expected_tool_calls": (
+            _convert_tool_calls_to_text(expected_invocation.intermediate_data)
+            if expected_invocation
+            else None
         ),
         "actual_tool_calls": _convert_tool_calls_to_text(
-            per_invocation_result.actual_invocation.intermediate_data
+            actual_invocation.intermediate_data
         ),
     }
     for metric_result in per_invocation_result.eval_metric_results:
@@ -239,6 +261,8 @@ def pretty_print_eval_result(eval_result: EvalCaseResult):
         }
         for rubric_score in metric_result.details.rubric_scores:
           rubric = rubrics_by_id.get(rubric_score.rubric_id)
+          if not rubric:
+            rubric = rubric_score.rubric_id
           row_data[f"Rubric: {rubric}"] = (
               f"Reasoning: {rubric_score.rationale}, "
               f"Score: {rubric_score.score}"
@@ -250,11 +274,25 @@ def pretty_print_eval_result(eval_result: EvalCaseResult):
     )
     click.echo("Invocation Details:")
     df = pd.DataFrame(data)
+
+    # Identify columns where ALL values are exactly None
+    columns_to_keep = []
     for col in df.columns:
-      if df[col].dtype == "object":
-        df[col] = df[col].str.wrap(40)
-    click.echo(tabulate(df, headers="keys", tablefmt="grid"))
-  click.echo("\n\n")  # Few empty lines for visual clarity
+      # Check if all elements in the column are NOT None
+      if not df[col].apply(lambda x: x is None).all():
+        columns_to_keep.append(col)
+
+    # Select only the columns to keep
+    df_result = df[columns_to_keep]
+
+    for col in df_result.columns:
+      if df_result[col].dtype == "object":
+        df_result[col] = df_result[col].str.wrap(40)
+
+    click.echo(
+        tabulate(df_result, headers="keys", tablefmt="grid", maxcolwidths=25)
+    )
+    click.echo("\n\n")  # Few empty lines for visual clarity
 
 
 def get_eval_sets_manager(

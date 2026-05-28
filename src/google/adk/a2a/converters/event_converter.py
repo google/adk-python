@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -22,7 +22,6 @@ from typing import Any
 from typing import Dict
 from typing import List
 from typing import Optional
-import uuid
 
 from a2a.server.events import Event as A2AEvent
 from a2a.types import DataPart
@@ -34,6 +33,8 @@ from a2a.types import TaskState
 from a2a.types import TaskStatus
 from a2a.types import TaskStatusUpdateEvent
 from a2a.types import TextPart
+from google.adk.platform import time as platform_time
+from google.adk.platform import uuid as platform_uuid
 from google.genai import types as genai_types
 
 from ...agents.invocation_context import InvocationContext
@@ -131,6 +132,7 @@ def _get_context_metadata(
         _get_adk_metadata_key("session_id"): invocation_context.session.id,
         _get_adk_metadata_key("invocation_id"): event.invocation_id,
         _get_adk_metadata_key("author"): event.author,
+        _get_adk_metadata_key("event_id"): event.id,
     }
 
     # Add optional metadata fields if present
@@ -140,6 +142,7 @@ def _get_context_metadata(
         ("custom_metadata", event.custom_metadata),
         ("usage_metadata", event.usage_metadata),
         ("error_code", event.error_code),
+        ("actions", event.actions),
     ]
 
     for field_name, field_value in optional_fields:
@@ -228,7 +231,11 @@ def convert_a2a_task_to_event(
       message = Message(
           message_id="", role=Role.agent, parts=a2a_task.artifacts[-1].parts
       )
-    elif a2a_task.status and a2a_task.status.message:
+    elif (
+        a2a_task.status
+        and a2a_task.status.message
+        and a2a_task.status.message.parts
+    ):
       message = a2a_task.status.message
     elif a2a_task.history:
       message = a2a_task.history[-1]
@@ -248,7 +255,7 @@ def convert_a2a_task_to_event(
         invocation_id=(
             invocation_context.invocation_id
             if invocation_context
-            else str(uuid.uuid4())
+            else platform_uuid.new_uuid()
         ),
         author=author or "a2a agent",
         branch=invocation_context.branch if invocation_context else None,
@@ -293,7 +300,7 @@ def convert_a2a_message_to_event(
         invocation_id=(
             invocation_context.invocation_id
             if invocation_context
-            else str(uuid.uuid4())
+            else platform_uuid.new_uuid()
         ),
         author=author or "a2a agent",
         branch=invocation_context.branch if invocation_context else None,
@@ -301,13 +308,15 @@ def convert_a2a_message_to_event(
     )
 
   try:
-    parts = []
+    output_parts = []
     long_running_tool_ids = set()
 
     for a2a_part in a2a_message.parts:
       try:
-        part = part_converter(a2a_part)
-        if part is None:
+        parts = part_converter(a2a_part)
+        if not isinstance(parts, list):
+          parts = [parts] if parts else []
+        if not parts:
           logger.warning("Failed to convert A2A part, skipping: %s", a2a_part)
           continue
 
@@ -321,16 +330,18 @@ def convert_a2a_message_to_event(
             )
             is True
         ):
-          long_running_tool_ids.add(part.function_call.id)
+          for part in parts:
+            if part.function_call:
+              long_running_tool_ids.add(part.function_call.id)
 
-        parts.append(part)
+        output_parts.extend(parts)
 
       except Exception as e:
         logger.error("Failed to convert A2A part: %s, error: %s", a2a_part, e)
         # Continue processing other parts instead of failing completely
         continue
 
-    if not parts:
+    if not output_parts:
       logger.warning(
           "No parts could be converted from A2A message %s", a2a_message
       )
@@ -339,7 +350,7 @@ def convert_a2a_message_to_event(
         invocation_id=(
             invocation_context.invocation_id
             if invocation_context
-            else str(uuid.uuid4())
+            else platform_uuid.new_uuid()
         ),
         author=author or "a2a agent",
         branch=invocation_context.branch if invocation_context else None,
@@ -348,7 +359,7 @@ def convert_a2a_message_to_event(
         else None,
         content=genai_types.Content(
             role="model",
-            parts=parts,
+            parts=output_parts,
         ),
     )
 
@@ -360,7 +371,7 @@ def convert_a2a_message_to_event(
 @a2a_experimental
 def convert_event_to_a2a_message(
     event: Event,
-    invocation_context: InvocationContext,
+    invocation_context: InvocationContext | None = None,
     role: Role = Role.agent,
     part_converter: GenAIPartToA2APartConverter = convert_genai_part_to_a2a_part,
 ) -> Optional[Message]:
@@ -380,22 +391,24 @@ def convert_event_to_a2a_message(
   """
   if not event:
     raise ValueError("Event cannot be None")
-  if not invocation_context:
-    raise ValueError("Invocation context cannot be None")
 
   if not event.content or not event.content.parts:
     return None
 
   try:
-    a2a_parts = []
+    output_parts = []
     for part in event.content.parts:
-      a2a_part = part_converter(part)
-      if a2a_part:
-        a2a_parts.append(a2a_part)
+      a2a_parts = part_converter(part)
+      if not isinstance(a2a_parts, list):
+        a2a_parts = [a2a_parts] if a2a_parts else []
+      for a2a_part in a2a_parts:
+        output_parts.append(a2a_part)
         _process_long_running_tool(a2a_part, event)
 
-    if a2a_parts:
-      return Message(message_id=str(uuid.uuid4()), role=role, parts=a2a_parts)
+    if output_parts:
+      return Message(
+          message_id=platform_uuid.new_uuid(), role=role, parts=output_parts
+      )
 
   except Exception as e:
     logger.error("Failed to convert event to status message: %s", e)
@@ -435,7 +448,7 @@ def _create_error_status_event(
       status=TaskStatus(
           state=TaskState.failed,
           message=Message(
-              message_id=str(uuid.uuid4()),
+              message_id=platform_uuid.new_uuid(),
               role=Role.agent,
               parts=[TextPart(text=error_message)],
               metadata={
@@ -444,7 +457,9 @@ def _create_error_status_event(
               if event.error_code
               else {},
           ),
-          timestamp=datetime.now(timezone.utc).isoformat(),
+          timestamp=datetime.fromtimestamp(
+              platform_time.get_time(), tz=timezone.utc
+          ).isoformat(),
       ),
       final=False,
   )
@@ -466,14 +481,15 @@ def _create_status_update_event(
     task_id: Optional task ID to use for generated events.
     context_id: Optional Context ID to use for generated events.
 
-
   Returns:
     A TaskStatusUpdateEvent with RUNNING state.
   """
   status = TaskStatus(
       state=TaskState.working,
       message=message,
-      timestamp=datetime.now(timezone.utc).isoformat(),
+      timestamp=datetime.fromtimestamp(
+          platform_time.get_time(), tz=timezone.utc
+      ).isoformat(),
   )
 
   if any(
@@ -554,7 +570,10 @@ def convert_event_to_a2a_events(
 
     # Handle regular message content
     message = convert_event_to_a2a_message(
-        event, invocation_context, part_converter=part_converter
+        event,
+        invocation_context,
+        part_converter=part_converter,
+        role=Role.user if event.author == "user" else Role.agent,
     )
     if message:
       running_event = _create_status_update_event(

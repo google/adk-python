@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -24,10 +24,17 @@ from typing import Any
 from typing import Dict
 from typing import List
 from typing import Tuple
+from unittest import mock
 
 import click
 from google.adk.agents.base_agent import BaseAgent
+from google.adk.apps.app import App
+from google.adk.artifacts.file_artifact_service import FileArtifactService
+from google.adk.artifacts.in_memory_artifact_service import InMemoryArtifactService
+from google.adk.auth.credential_service.in_memory_credential_service import InMemoryCredentialService
 import google.adk.cli.cli as cli
+from google.adk.cli.utils.service_factory import create_artifact_service_from_options
+from google.adk.sessions.in_memory_session_service import InMemorySessionService
 import pytest
 
 
@@ -79,7 +86,13 @@ def _patch_types_and_runner(monkeypatch: pytest.MonkeyPatch) -> None:
       message = a[2] if len(a) >= 3 else k["new_message"]
       text = message.parts[0].text if message.parts else ""
       response = _Content("assistant", [_Part(f"echo:{text}")])
-      yield types.SimpleNamespace(author="assistant", content=response)
+      ev = types.SimpleNamespace(
+          author="assistant",
+          content=response,
+          node_info=None,
+          long_running_tool_ids=[],
+      )
+      yield ev
 
     async def close(self, *a: Any, **k: Any) -> None:
       ...
@@ -108,6 +121,28 @@ def fake_agent(tmp_path: Path):
   return parent_dir, "fake_agent"
 
 
+@pytest.fixture()
+def fake_app_agent(tmp_path: Path):
+  """Create an agent package that exposes an App."""
+
+  parent_dir = tmp_path / "agents"
+  parent_dir.mkdir()
+  agent_dir = parent_dir / "fake_app_agent"
+  agent_dir.mkdir()
+  (agent_dir / "__init__.py").write_text(dedent("""
+    from google.adk.agents.base_agent import BaseAgent
+    from google.adk.apps.app import App
+    class FakeAgent(BaseAgent):
+      def __init__(self, name):
+        super().__init__(name=name)
+
+    root_agent = FakeAgent(name="fake_root")
+    app = App(name="custom_cli_app", root_agent=root_agent)
+    """))
+
+  return parent_dir, "fake_app_agent", "custom_cli_app"
+
+
 # _run_input_file
 @pytest.mark.asyncio
 async def test_run_input_file_outputs(
@@ -128,9 +163,9 @@ async def test_run_input_file_outputs(
   input_path = tmp_path / "input.json"
   input_path.write_text(json.dumps(input_json))
 
-  artifact_service = cli.InMemoryArtifactService()
-  session_service = cli.InMemorySessionService()
-  credential_service = cli.InMemoryCredentialService()
+  artifact_service = InMemoryArtifactService()
+  session_service = InMemorySessionService()
+  credential_service = InMemoryCredentialService()
   dummy_root = BaseAgent(name="root")
 
   session = await cli.run_input_file(
@@ -166,6 +201,73 @@ async def test_run_cli_with_input_file(fake_agent, tmp_path: Path) -> None:
   )
 
 
+@pytest.mark.asyncio
+async def test_run_cli_loads_services_module(
+    fake_agent, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+  """run_cli should load custom services from the agents directory."""
+  parent_dir, folder_name = fake_agent
+  input_json = {"state": {}, "queries": ["ping"]}
+  input_path = tmp_path / "input.json"
+  input_path.write_text(json.dumps(input_json))
+
+  loaded_dirs: list[str] = []
+  monkeypatch.setattr(
+      cli, "load_services_module", lambda path: loaded_dirs.append(path)
+  )
+
+  agent_root = parent_dir / folder_name
+
+  await cli.run_cli(
+      agent_parent_dir=str(parent_dir),
+      agent_folder_name=folder_name,
+      input_file=str(input_path),
+      saved_session_file=None,
+      save_session=False,
+  )
+
+  assert loaded_dirs == [str(agent_root.resolve())]
+
+
+@pytest.mark.asyncio
+async def test_run_cli_app_uses_app_name_for_sessions(
+    fake_app_agent, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+  """run_cli should honor the App-provided name when creating sessions."""
+  parent_dir, folder_name, app_name = fake_app_agent
+  created_app_names: List[str] = []
+
+  class _SpySessionService(InMemorySessionService):
+
+    async def create_session(self, *, app_name: str, **kwargs: Any) -> Any:
+      created_app_names.append(app_name)
+      return await super().create_session(app_name=app_name, **kwargs)
+
+  spy_session_service = _SpySessionService()
+
+  def _session_factory(**_: Any) -> InMemorySessionService:
+    return spy_session_service
+
+  monkeypatch.setattr(
+      cli, "create_session_service_from_options", _session_factory
+  )
+
+  input_json = {"state": {}, "queries": ["ping"]}
+  input_path = tmp_path / "input_app.json"
+  input_path.write_text(json.dumps(input_json))
+
+  await cli.run_cli(
+      agent_parent_dir=str(parent_dir),
+      agent_folder_name=folder_name,
+      input_file=str(input_path),
+      saved_session_file=None,
+      save_session=False,
+  )
+
+  assert created_app_names
+  assert all(name == app_name for name in created_app_names)
+
+
 # _run_cli (interactive + save session branch)
 @pytest.mark.asyncio
 async def test_run_cli_save_session(
@@ -196,16 +298,218 @@ async def test_run_cli_save_session(
   assert "id" in data and "events" in data
 
 
+def test_create_artifact_service_defaults_to_file(tmp_path: Path) -> None:
+  """Service factory should default to FileArtifactService when URI is unset."""
+  service = create_artifact_service_from_options(
+      base_dir=tmp_path,
+      use_local_storage=True,
+  )
+  assert isinstance(service, FileArtifactService)
+  expected_root = Path(tmp_path) / ".adk" / "artifacts"
+  assert service.root_dir == expected_root
+  assert expected_root.exists()
+
+
+def test_create_artifact_service_uses_shared_root(
+    tmp_path: Path,
+) -> None:
+  """Artifact service should use a single file artifact service."""
+  service = create_artifact_service_from_options(
+      base_dir=tmp_path,
+      use_local_storage=True,
+  )
+  assert isinstance(service, FileArtifactService)
+  expected_root = Path(tmp_path) / ".adk" / "artifacts"
+  assert service.root_dir == expected_root
+  assert expected_root.exists()
+
+
+def test_create_artifact_service_respects_memory_uri(tmp_path: Path) -> None:
+  """Service factory should honor memory:// URIs."""
+  service = create_artifact_service_from_options(
+      base_dir=tmp_path, artifact_service_uri="memory://"
+  )
+  assert isinstance(service, InMemoryArtifactService)
+
+
+def test_create_artifact_service_accepts_file_uri(tmp_path: Path) -> None:
+  """Service factory should allow custom local roots via file:// URIs."""
+  custom_root = tmp_path / "custom_artifacts"
+  service = create_artifact_service_from_options(
+      base_dir=tmp_path, artifact_service_uri=custom_root.as_uri()
+  )
+  assert isinstance(service, FileArtifactService)
+  assert service.root_dir == custom_root
+  assert custom_root.exists()
+
+
+@pytest.mark.asyncio
+async def test_run_cli_accepts_memory_scheme(
+    fake_agent, tmp_path: Path
+) -> None:
+  """run_cli should allow configuring in-memory services via memory:// URIs."""
+  parent_dir, folder_name = fake_agent
+  input_json = {"state": {}, "queries": []}
+  input_path = tmp_path / "noop.json"
+  input_path.write_text(json.dumps(input_json))
+
+  await cli.run_cli(
+      agent_parent_dir=str(parent_dir),
+      agent_folder_name=folder_name,
+      input_file=str(input_path),
+      saved_session_file=None,
+      save_session=False,
+      session_service_uri="memory://",
+      artifact_service_uri="memory://",
+      memory_service_uri="memory://",
+  )
+
+
+@pytest.mark.asyncio
+async def test_run_cli_invalid_memory_uri_surfaces_value_error(
+    fake_agent, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+  """run_cli should let ValueError propagate for invalid memory service URIs."""
+  parent_dir, folder_name = fake_agent
+  input_json = {"state": {}, "queries": []}
+  input_path = tmp_path / "invalid_memory_uri.json"
+  input_path.write_text(json.dumps(input_json))
+
+  def _raise_invalid_memory_uri(
+      *,
+      base_dir: Path | str,
+      memory_service_uri: str | None = None,
+  ) -> object:
+    del base_dir, memory_service_uri
+    raise ValueError("Unsupported memory service URI: unknown://x")
+
+  monkeypatch.setattr(
+      cli, "create_memory_service_from_options", _raise_invalid_memory_uri
+  )
+
+  with pytest.raises(ValueError, match="Unsupported memory service URI"):
+    await cli.run_cli(
+        agent_parent_dir=str(parent_dir),
+        agent_folder_name=folder_name,
+        input_file=str(input_path),
+        saved_session_file=None,
+        save_session=False,
+        memory_service_uri="unknown://x",
+    )
+
+
+@pytest.mark.asyncio
+async def test_run_cli_passes_memory_service_to_input_file(
+    fake_agent, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+  """run_cli should construct and pass the configured memory service."""
+  parent_dir, folder_name = fake_agent
+  input_json = {"state": {}, "queries": []}
+  input_path = tmp_path / "memory_input.json"
+  input_path.write_text(json.dumps(input_json))
+
+  memory_service_sentinel = object()
+  captured_factory_args: dict[str, Any] = {}
+  captured_memory_service: dict[str, Any] = {}
+
+  def _memory_factory(
+      *,
+      base_dir: Path | str,
+      memory_service_uri: str | None = None,
+  ) -> object:
+    captured_factory_args["base_dir"] = base_dir
+    captured_factory_args["memory_service_uri"] = memory_service_uri
+    return memory_service_sentinel
+
+  async def _run_input_file(
+      app_name: str,
+      user_id: str,
+      agent_or_app: BaseAgent | App,
+      artifact_service: Any,
+      session_service: Any,
+      credential_service: InMemoryCredentialService,
+      input_path: str,
+      memory_service: Any = None,
+  ) -> object:
+    del app_name, user_id, agent_or_app, artifact_service
+    del session_service, credential_service, input_path
+    captured_memory_service["value"] = memory_service
+    return object()
+
+  monkeypatch.setattr(
+      cli, "create_memory_service_from_options", _memory_factory
+  )
+  monkeypatch.setattr(cli, "run_input_file", _run_input_file)
+
+  await cli.run_cli(
+      agent_parent_dir=str(parent_dir),
+      agent_folder_name=folder_name,
+      input_file=str(input_path),
+      saved_session_file=None,
+      save_session=False,
+      memory_service_uri="memory://",
+  )
+
+  assert Path(captured_factory_args["base_dir"]) == parent_dir.resolve()
+  assert captured_factory_args["memory_service_uri"] == "memory://"
+  assert captured_memory_service["value"] is memory_service_sentinel
+
+
+@pytest.mark.asyncio
+async def test_run_cli_loads_dotenv_before_memory_service_creation(
+    fake_agent, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+  """run_cli should load agent .env values before creating memory service."""
+  parent_dir, folder_name = fake_agent
+  input_json = {"state": {}, "queries": []}
+  input_path = tmp_path / "dotenv_order_input.json"
+  input_path.write_text(json.dumps(input_json))
+
+  call_order: list[str] = []
+
+  def _load_dotenv_for_agent(agent_name: str, agents_dir: str) -> None:
+    del agent_name, agents_dir
+    call_order.append("load_dotenv")
+
+  def _memory_factory(
+      *,
+      base_dir: Path | str,
+      memory_service_uri: str | None = None,
+  ) -> object:
+    del base_dir, memory_service_uri
+    call_order.append("create_memory")
+    return object()
+
+  monkeypatch.setenv("ADK_DISABLE_LOAD_DOTENV", "0")
+  monkeypatch.setattr(cli.envs, "load_dotenv_for_agent", _load_dotenv_for_agent)
+  monkeypatch.setattr(
+      cli, "create_memory_service_from_options", _memory_factory
+  )
+
+  await cli.run_cli(
+      agent_parent_dir=str(parent_dir),
+      agent_folder_name=folder_name,
+      input_file=str(input_path),
+      saved_session_file=None,
+      save_session=False,
+      memory_service_uri="memory://",
+  )
+
+  assert "create_memory" in call_order
+  assert "load_dotenv" in call_order
+  assert call_order.index("load_dotenv") < call_order.index("create_memory")
+
+
 @pytest.mark.asyncio
 async def test_run_interactively_whitespace_and_exit(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
   """run_interactively should skip blank input, echo once, then exit."""
   # make a session that belongs to dummy agent
-  session_service = cli.InMemorySessionService()
+  session_service = InMemorySessionService()
   sess = await session_service.create_session(app_name="dummy", user_id="u")
-  artifact_service = cli.InMemoryArtifactService()
-  credential_service = cli.InMemoryCredentialService()
+  artifact_service = InMemoryArtifactService()
+  credential_service = InMemoryCredentialService()
   root_agent = BaseAgent(name="root")
 
   # fake user input: blank -> 'hello' -> 'exit'

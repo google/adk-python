@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -15,28 +15,19 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-import sys
 from typing import Any
 from typing import Optional
 
-from pydantic import BaseModel
-
-try:
-  from a2a.server.agent_execution import RequestContext
-except ImportError as e:
-  if sys.version_info < (3, 10):
-    raise ImportError(
-        'A2A requires Python 3.10 or above. Please upgrade your Python version.'
-    ) from e
-  else:
-    raise e
-
+from a2a.server.agent_execution import RequestContext
 from google.genai import types as genai_types
+from pydantic import BaseModel
 
 from ...runners import RunConfig
 from ..experimental import a2a_experimental
 from .part_converter import A2APartToGenAIPartConverter
 from .part_converter import convert_a2a_part_to_genai_part
+
+A2A_METADATA_KEY = 'a2a_metadata'
 
 
 @a2a_experimental
@@ -108,14 +99,21 @@ def convert_a2a_request_to_agent_run_request(
 
   custom_metadata = {}
   if request.metadata:
-    custom_metadata['a2a_metadata'] = request.metadata
+    custom_metadata[A2A_METADATA_KEY] = request.metadata
+
+  output_parts = []
+  for a2a_part in request.message.parts:
+    genai_parts = part_converter(a2a_part)
+    if not isinstance(genai_parts, list):
+      genai_parts = [genai_parts] if genai_parts else []
+    output_parts.extend(genai_parts)
 
   return AgentRunRequest(
       user_id=_get_user_id(request),
       session_id=request.context_id,
       new_message=genai_types.Content(
           role='user',
-          parts=[part_converter(part) for part in request.message.parts],
+          parts=output_parts,
       ),
       run_config=RunConfig(custom_metadata=custom_metadata),
   )

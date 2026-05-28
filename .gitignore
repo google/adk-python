@@ -98,3 +98,26 @@ Thumbs.db
 *.bak
 *.tmp
 *.temp
+
+# AI Coding Tools - Project-specific configs
+# Developers should symlink or copy AGENTS.md and add their own overrides locally
+.adk/
+.claude/
+.jetski*
+.antigravity*
+CLAUDE.md
+.cursor/
+.cursorrules
+.cursorignore
+.windsurfrules
+.aider*
+.continue/
+.codeium/
+.githubnext/
+.roo/
+.rooignore
+.bolt/
+.v0/
+
+# Conformance test outputs (timestamped folders from --test mode)
+**/conformance/20*-*-*_*-*-*/

@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import importlib
 import inspect
 import logging
@@ -40,6 +41,8 @@ from typing_extensions import TypeAlias
 
 from ..code_executors.base_code_executor import BaseCodeExecutor
 from ..events.event import Event
+from ..features import experimental
+from ..features import FeatureName
 from ..flows.llm_flows.auto_flow import AutoFlow
 from ..flows.llm_flows.base_llm_flow import BaseLlmFlow
 from ..flows.llm_flows.single_flow import SingleFlow
@@ -53,8 +56,9 @@ from ..tools.base_toolset import BaseToolset
 from ..tools.function_tool import FunctionTool
 from ..tools.tool_configs import ToolConfig
 from ..tools.tool_context import ToolContext
+from ..utils._schema_utils import SchemaType
+from ..utils._schema_utils import validate_schema
 from ..utils.context_utils import Aclosing
-from ..utils.feature_decorator import experimental
 from .base_agent import BaseAgent
 from .base_agent import BaseAgentState
 from .base_agent_config import BaseAgentConfig
@@ -85,6 +89,16 @@ AfterModelCallback: TypeAlias = Union[
     list[_SingleAfterModelCallback],
 ]
 
+_SingleOnModelErrorCallback: TypeAlias = Callable[
+    [CallbackContext, LlmRequest, Exception],
+    Union[Awaitable[Optional[LlmResponse]], Optional[LlmResponse]],
+]
+
+OnModelErrorCallback: TypeAlias = Union[
+    _SingleOnModelErrorCallback,
+    list[_SingleOnModelErrorCallback],
+]
+
 _SingleBeforeToolCallback: TypeAlias = Callable[
     [BaseTool, dict[str, Any], ToolContext],
     Union[Awaitable[Optional[dict]], Optional[dict]],
@@ -103,6 +117,16 @@ _SingleAfterToolCallback: TypeAlias = Callable[
 AfterToolCallback: TypeAlias = Union[
     _SingleAfterToolCallback,
     list[_SingleAfterToolCallback],
+]
+
+_SingleOnToolErrorCallback: TypeAlias = Callable[
+    [BaseTool, dict[str, Any], ToolContext, Exception],
+    Union[Awaitable[Optional[dict]], Optional[dict]],
+]
+
+OnToolErrorCallback: TypeAlias = Union[
+    _SingleOnToolErrorCallback,
+    list[_SingleOnToolErrorCallback],
 ]
 
 InstructionProvider: TypeAlias = Callable[
@@ -157,20 +181,46 @@ async def _convert_tool_union_to_tools(
     return [FunctionTool(func=tool_union)]
 
   # At this point, tool_union must be a BaseToolset
-  return await tool_union.get_tools_with_prefix(ctx)
+  try:
+    return await tool_union.get_tools_with_prefix(ctx)
+  except Exception as e:
+    logger.warning(
+        'Failed to get tools from toolset %s: %s',
+        type(tool_union).__name__,
+        e,
+    )
+    return []
 
 
 class LlmAgent(BaseAgent):
   """LLM-based Agent."""
 
+  DEFAULT_MODEL: ClassVar[str] = 'gemini-3-flash-preview'
+  """System default model used when no model is set on an agent."""
+
+  DEFAULT_LIVE_MODEL: ClassVar[str] = 'gemini-live-2.5-flash-native-audio'
+  """System default model used for live mode when no model is set on an agent."""
+
+  _default_model: ClassVar[Union[str, BaseLlm]] = DEFAULT_MODEL
+  """Current default model used when an agent has no model set."""
+
+  _default_live_model: ClassVar[Union[str, BaseLlm]] = DEFAULT_LIVE_MODEL
+  """Current default model used for live mode when an agent has no model set."""
+
   model: Union[str, BaseLlm] = ''
   """The model to use for the agent.
 
-  When not set, the agent will inherit the model from its ancestor.
+  When not set, the agent will inherit the model from its ancestor. If no
+  ancestor provides a model, the agent uses the default model configured via
+  LlmAgent.set_default_model. The built-in default is gemini-3-flash-preview.
   """
 
   config_type: ClassVar[Type[BaseAgentConfig]] = LlmAgentConfig
-  """The config type for this agent."""
+  """The config type for this agent.
+
+  DEPRECATED: This attribute is deprecated and will be removed in a future
+  version, along with the AgentConfig YAML loader.
+  """
 
   instruction: Union[str, InstructionProvider] = ''
   """Dynamic instructions for the LLM model, guiding the agent's behavior.
@@ -257,18 +307,33 @@ class LlmAgent(BaseAgent):
   """The additional content generation configurations.
 
   NOTE: not all fields are usable, e.g. tools must be configured via `tools`,
-  thinking_config must be configured via `planner` in LlmAgent.
+  thinking_config can be configured here or via the `planner`. If both are set, the planner's configuration takes precedence.
 
   For example: use this config to adjust model temperature, configure safety
   settings, etc.
   """
 
+  mode: Literal['chat', 'task', 'single_turn'] | None = None
+  """The delegation mode for this agent.
+
+  Options:
+    chat: Standard chat agent reachable via transfer_to_agent.
+    task: Task agent that chats with the user to accomplish a task.
+    single_turn: Agents that complete a task without chatting with the user.
+
+  Default value is chat as a sub-agent, single_turn as a node in a workflow.
+  """
+
+  parallel_worker: bool | None = None
+  """Whether to run the agent in parallel worker mode."""
+
   # LLM-based agent transfer configs - Start
   disallow_transfer_to_parent: bool = False
   """Disallows LLM-controlled transferring to the parent agent.
 
-  NOTE: Setting this as True also prevents this agent to continue reply to the
-  end-user. This behavior prevents one-way transfer, in which end-user may be
+  NOTE: Setting this as True also prevents this agent from continuing to reply
+  to the end-user, and will transfer control back to the parent agent in the
+  next turn. This behavior prevents one-way transfer, in which end-user may be
   stuck with one agent that cannot transfer to other agents in the agent tree.
   """
   disallow_transfer_to_peers: bool = False
@@ -287,12 +352,20 @@ class LlmAgent(BaseAgent):
   # Controlled input/output configurations - Start
   input_schema: Optional[type[BaseModel]] = None
   """The input schema when agent is used as a tool."""
-  output_schema: Optional[type[BaseModel]] = None
+  output_schema: Optional[SchemaType] = None
   """The output schema when agent replies.
 
+  Supports all schema types that the underlying Google GenAI API supports:
+    - type[BaseModel]: e.g., MySchema
+    - list[type[BaseModel]]: e.g., list[MySchema]
+    - list[primitive]: e.g., list[str], list[int]
+    - dict: Raw dict schemas
+    - Schema: Google's Schema type
+
   NOTE:
-    When this is set, agent can ONLY reply and CANNOT use any tools, such as
-    function tools, RAGs, agent transfer, etc.
+    The ADK supports using `output_schema` and `tools` together. It works by
+    exposing tools during the thought loop and enforcing structure only on the
+    final output.
   """
   output_key: Optional[str] = None
   """The key in session state to store the output of the agent.
@@ -353,6 +426,21 @@ class LlmAgent(BaseAgent):
     The content to return to the user. When present, the actual model response
     will be ignored and the provided content will be returned to user.
   """
+  on_model_error_callback: Optional[OnModelErrorCallback] = None
+  """Callback or list of callbacks to be called when a model call encounters an error.
+
+  When a list of callbacks is provided, the callbacks will be called in the
+  order they are listed until a callback does not return None.
+
+  Args:
+    callback_context: CallbackContext,
+    llm_request: LlmRequest, The raw model request.
+    error: The error from the model call.
+
+  Returns:
+    The content to return to the user. When present, the error will be
+    ignored and the provided content will be returned to user.
+  """
   before_tool_callback: Optional[BeforeToolCallback] = None
   """Callback or list of callbacks to be called before calling the tool.
 
@@ -383,6 +471,21 @@ class LlmAgent(BaseAgent):
   Returns:
     When present, the returned dict will be used as tool result.
   """
+  on_tool_error_callback: Optional[OnToolErrorCallback] = None
+  """Callback or list of callbacks to be called when a tool call encounters an error.
+
+  When a list of callbacks is provided, the callbacks will be called in the
+  order they are listed until a callback does not return None.
+
+  Args:
+    tool: The tool to be called.
+    args: The arguments to the tool.
+    tool_context: ToolContext,
+    error: The error from the tool call.
+
+  Returns:
+    When present, the returned dict will be used as tool result.
+  """
   # Callbacks - End
 
   @override
@@ -391,7 +494,7 @@ class LlmAgent(BaseAgent):
   ) -> AsyncGenerator[Event, None]:
     agent_state = self._load_agent_state(ctx, BaseAgentState)
 
-    # If there is an sub-agent to resume, run it and then end the current
+    # If there is a sub-agent to resume, run it and then end the current
     # agent.
     if agent_state is not None and (
         agent_to_transfer := self._get_subagent_to_resume(ctx)
@@ -404,18 +507,23 @@ class LlmAgent(BaseAgent):
       yield self._create_agent_state_event(ctx)
       return
 
+    should_pause = False
     async with Aclosing(self._llm_flow.run_async(ctx)) as agen:
       async for event in agen:
         self.__maybe_save_output_to_state(event)
         yield event
         if ctx.should_pause_invocation(event):
-          return
+          # Do not pause immediately, wait until the long-running tool call is
+          # executed.
+          should_pause = True
+    if should_pause:
+      return
 
     if ctx.is_resumable:
       events = ctx._get_events(current_invocation=True, current_branch=True)
-      if events and ctx.should_pause_invocation(events[-1]):
+      if events and any(ctx.should_pause_invocation(e) for e in events[-2:]):
         return
-      # Only yield an end state if the last event is no longer a long running
+      # Only yield an end state if the last event is no longer a long-running
       # tool call.
       ctx.set_agent_state(self.name, end_of_agent=True)
       yield self._create_agent_state_event(ctx)
@@ -430,6 +538,27 @@ class LlmAgent(BaseAgent):
         yield event
       if ctx.end_invocation:
         return
+
+  @override
+  async def _run_impl(
+      self,
+      *,
+      ctx: Context,
+      node_input: Any,
+  ) -> AsyncGenerator[Any, None]:
+    """Runs the agent as a node in a workflow graph."""
+    from ..utils.context_utils import Aclosing
+    from ..workflow._llm_agent_wrapper import run_llm_agent_as_node
+
+    async with Aclosing(
+        run_llm_agent_as_node(self, ctx=ctx, node_input=node_input)
+    ) as agen:
+      async for event in agen:
+        # Keep the agent's true event author so the outer NodeRunner does
+        # not overwrite it with the parent workflow's event_author.
+        if event.author:
+          ctx.event_author = event.author
+        yield event
 
   @property
   def canonical_model(self) -> BaseLlm:
@@ -447,7 +576,59 @@ class LlmAgent(BaseAgent):
         if isinstance(ancestor_agent, LlmAgent):
           return ancestor_agent.canonical_model
         ancestor_agent = ancestor_agent.parent_agent
-      raise ValueError(f'No model found for {self.name}.')
+      return self._resolve_default_model()
+
+  @property
+  def canonical_live_model(self) -> BaseLlm:
+    """The resolved self.model field as BaseLlm for live mode.
+
+    This method is only for use by Agent Development Kit.
+    """
+    if isinstance(self.model, BaseLlm):
+      return self.model
+    elif self.model:  # model is non-empty str
+      return LLMRegistry.new_llm(self.model)
+    else:  # find model from ancestors.
+      ancestor_agent = self.parent_agent
+      while ancestor_agent is not None:
+        if isinstance(ancestor_agent, LlmAgent):
+          return ancestor_agent.canonical_live_model
+        ancestor_agent = ancestor_agent.parent_agent
+      return self._resolve_default_live_model()
+
+  @classmethod
+  def set_default_model(cls, model: Union[str, BaseLlm]) -> None:
+    """Overrides the default model used when an agent has no model set."""
+    if not isinstance(model, (str, BaseLlm)):
+      raise TypeError('Default model must be a model name or BaseLlm.')
+    if isinstance(model, str) and not model:
+      raise ValueError('Default model must be a non-empty string.')
+    cls._default_model = model
+
+  @classmethod
+  def _resolve_default_model(cls) -> BaseLlm:
+    """Resolves the current default model to a BaseLlm instance."""
+    default_model = cls._default_model
+    if isinstance(default_model, BaseLlm):
+      return default_model
+    return LLMRegistry.new_llm(default_model)
+
+  @classmethod
+  def set_default_live_model(cls, model: Union[str, BaseLlm]) -> None:
+    """Overrides the default model used for live mode when an agent has no model set."""
+    if not isinstance(model, (str, BaseLlm)):
+      raise TypeError('Default live model must be a model name or BaseLlm.')
+    if isinstance(model, str) and not model:
+      raise ValueError('Default live model must be a non-empty string.')
+    cls._default_live_model = model
+
+  @classmethod
+  def _resolve_default_live_model(cls) -> BaseLlm:
+    """Resolves the current default live model to a BaseLlm instance."""
+    default_live_model = cls._default_live_model
+    if isinstance(default_live_model, BaseLlm):
+      return default_live_model
+    return LLMRegistry.new_llm(default_live_model)
 
   async def canonical_instruction(
       self, ctx: ReadonlyContext
@@ -508,23 +689,27 @@ class LlmAgent(BaseAgent):
       return global_instruction, True
 
   async def canonical_tools(
-      self, ctx: ReadonlyContext = None
+      self, ctx: Optional[ReadonlyContext] = None
   ) -> list[BaseTool]:
     """The resolved self.tools field as a list of BaseTool based on the context.
 
     This method is only for use by Agent Development Kit.
     """
-    resolved_tools = []
     # We may need to wrap some built-in tools if there are other tools
     # because the built-in tools cannot be used together with other tools.
     # TODO(b/448114567): Remove once the workaround is no longer needed.
     multiple_tools = len(self.tools) > 1
-    for tool_union in self.tools:
-      resolved_tools.extend(
-          await _convert_tool_union_to_tools(
-              tool_union, ctx, self.model, multiple_tools
-          )
-      )
+    model = self.canonical_model
+
+    results = await asyncio.gather(*(
+        _convert_tool_union_to_tools(tool_union, ctx, model, multiple_tools)
+        for tool_union in self.tools
+    ))
+
+    resolved_tools = []
+    for tools in results:
+      resolved_tools.extend(tools)
+
     return resolved_tools
 
   @property
@@ -554,6 +739,20 @@ class LlmAgent(BaseAgent):
     return [self.after_model_callback]
 
   @property
+  def canonical_on_model_error_callbacks(
+      self,
+  ) -> list[_SingleOnModelErrorCallback]:
+    """The resolved self.on_model_error_callback field as a list of _SingleOnModelErrorCallback.
+
+    This method is only for use by Agent Development Kit.
+    """
+    if not self.on_model_error_callback:
+      return []
+    if isinstance(self.on_model_error_callback, list):
+      return self.on_model_error_callback
+    return [self.on_model_error_callback]
+
+  @property
   def canonical_before_tool_callbacks(
       self,
   ) -> list[BeforeToolCallback]:
@@ -580,6 +779,20 @@ class LlmAgent(BaseAgent):
     if isinstance(self.after_tool_callback, list):
       return self.after_tool_callback
     return [self.after_tool_callback]
+
+  @property
+  def canonical_on_tool_error_callbacks(
+      self,
+  ) -> list[OnToolErrorCallback]:
+    """The resolved self.on_tool_error_callback field as a list of OnToolErrorCallback.
+
+    This method is only for use by Agent Development Kit.
+    """
+    if not self.on_tool_error_callback:
+      return []
+    if isinstance(self.on_tool_error_callback, list):
+      return self.on_tool_error_callback
+    return [self.on_tool_error_callback]
 
   @property
   def _llm_flow(self) -> BaseLlmFlow:
@@ -641,8 +854,42 @@ class LlmAgent(BaseAgent):
     """Find the agent to run under the root agent by name."""
     agent_to_run = self.root_agent.find_agent(agent_name)
     if not agent_to_run:
-      raise ValueError(f'Agent {agent_name} not found in the agent tree.')
+      available = self._get_available_agent_names()
+      error_msg = (
+          f"Agent '{agent_name}' not found.\n"
+          f"Available agents: {', '.join(available)}\n\n"
+          'Possible causes:\n'
+          '  1. Agent not registered before being referenced\n'
+          '  2. Agent name mismatch (typo or case sensitivity)\n'
+          '  3. Timing issue (agent referenced before creation)\n\n'
+          'Suggested fixes:\n'
+          '  - Verify agent is registered with root agent\n'
+          '  - Check agent name spelling and case\n'
+          '  - Ensure agents are created before being referenced'
+      )
+      raise ValueError(error_msg)
     return agent_to_run
+
+  def _get_available_agent_names(self) -> list[str]:
+    """Helper to get all agent names in the tree for error reporting.
+
+    This is a private helper method used only for error message formatting.
+    Traverses the agent tree starting from root_agent and collects all
+    agent names for display in error messages.
+
+    Returns:
+      List of all agent names in the agent tree.
+    """
+    agents = []
+
+    def collect_agents(agent):
+      agents.append(agent.name)
+      if hasattr(agent, 'sub_agents') and agent.sub_agents:
+        for sub_agent in agent.sub_agents:
+          collect_agents(sub_agent)
+
+    collect_agents(self.root_agent)
+    return agents
 
   def __get_transfer_to_agent_or_none(
       self, event: Event, from_agent: str
@@ -671,12 +918,23 @@ class LlmAgent(BaseAgent):
           event.author,
       )
       return
-    if (
-        self.output_key
-        and event.is_final_response()
-        and event.content
-        and event.content.parts
-    ):
+
+    if not self.output_key:
+      return
+
+    # Handle text responses
+    if event.is_final_response() and event.content and event.content.parts:
+
+      # Skip if no text parts at all to avoid overwriting state_delta values
+      # already set (e.g. after_tool_callback with skip_summarization
+      # on function_response-only events).
+      has_text_part = any(
+          part.text is not None and not part.thought
+          for part in event.content.parts
+      )
+
+      if not has_text_part:
+        return
 
       result = ''.join(
           part.text
@@ -689,38 +947,12 @@ class LlmAgent(BaseAgent):
         # Do not attempt to parse it as JSON.
         if not result.strip():
           return
-        result = self.output_schema.model_validate_json(result).model_dump(
-            exclude_none=True
-        )
+        result = validate_schema(self.output_schema, result)
       event.actions.state_delta[self.output_key] = result
 
   @model_validator(mode='after')
   def __model_validator_after(self) -> LlmAgent:
-    self.__check_output_schema()
     return self
-
-  def __check_output_schema(self):
-    if not self.output_schema:
-      return
-
-    if (
-        not self.disallow_transfer_to_parent
-        or not self.disallow_transfer_to_peers
-    ):
-      logger.warning(
-          'Invalid config for agent %s: output_schema cannot co-exist with'
-          ' agent transfer configurations. Setting'
-          ' disallow_transfer_to_parent=True, disallow_transfer_to_peers=True',
-          self.name,
-      )
-      self.disallow_transfer_to_parent = True
-      self.disallow_transfer_to_peers = True
-
-    if self.sub_agents:
-      raise ValueError(
-          f'Invalid config for agent {self.name}: if output_schema is set,'
-          ' sub_agents must be empty to disable agent transfer.'
-      )
 
   @field_validator('generate_content_config', mode='after')
   @classmethod
@@ -729,8 +961,6 @@ class LlmAgent(BaseAgent):
   ) -> types.GenerateContentConfig:
     if not generate_content_config:
       return types.GenerateContentConfig()
-    if generate_content_config.thinking_config:
-      raise ValueError('Thinking config should be set via LlmAgent.planner.')
     if generate_content_config.tools:
       raise ValueError('All tools must be set via LlmAgent.tools.')
     if generate_content_config.system_instruction:
@@ -743,8 +973,48 @@ class LlmAgent(BaseAgent):
       )
     return generate_content_config
 
+  @override
+  def model_post_init(self, __context: Any) -> None:
+    """Provides a warning if multiple thinking configurations are found."""
+    super().model_post_init(__context)
+
+    from ..planners.built_in_planner import BuiltInPlanner
+
+    if (
+        self.generate_content_config is not None
+        and self.generate_content_config.thinking_config is not None
+        and isinstance(self.planner, BuiltInPlanner)
+        and self.planner.thinking_config is not None
+    ):
+      warnings.warn(
+          'Both `thinking_config` in `generate_content_config` and a '
+          'planner with `thinking_config` are provided. The '
+          "planner's configuration will take precedence.",
+          UserWarning,
+          stacklevel=3,
+      )
+
+    if self.mode == 'task':
+      from .llm.task._finish_task_tool import FinishTaskTool
+
+      self.tools.append(FinishTaskTool(self))
+
+    # Add sub-agents as tools based on their mode
+    from ..tools.agent_tool import _SingleTurnAgentTool
+    from ..tools.agent_tool import _TaskAgentTool
+
+    if self.sub_agents:
+      for sub_agent in self.sub_agents:
+        if isinstance(sub_agent, LlmAgent):
+          if sub_agent.mode is None:
+            sub_agent.mode = 'chat'
+          if sub_agent.mode == 'single_turn':
+            self.tools.append(_SingleTurnAgentTool(sub_agent))
+          elif sub_agent.mode == 'task':
+            self.tools.append(_TaskAgentTool(sub_agent))
+
   @classmethod
-  @experimental
+  @experimental(FeatureName.AGENT_CONFIG)
   def _resolve_tools(
       cls, tool_configs: list[ToolConfig], config_abs_path: str
   ) -> list[Any]:
@@ -803,7 +1073,7 @@ class LlmAgent(BaseAgent):
 
   @override
   @classmethod
-  @experimental
+  @experimental(FeatureName.AGENT_CONFIG)
   def _parse_config(
       cls: Type[LlmAgent],
       config: LlmAgentConfig,
@@ -813,7 +1083,9 @@ class LlmAgent(BaseAgent):
     from .config_agent_utils import resolve_callbacks
     from .config_agent_utils import resolve_code_reference
 
-    if config.model:
+    if config.model_code:
+      kwargs['model'] = resolve_code_reference(config.model_code)
+    elif config.model:
       kwargs['model'] = config.model
     if config.instruction:
       kwargs['instruction'] = config.instruction

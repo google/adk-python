@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections import deque
 from contextlib import AsyncExitStack
 from datetime import timedelta
 import functools
@@ -22,32 +23,56 @@ import hashlib
 import json
 import logging
 import sys
+import threading
 from typing import Any
 from typing import Dict
 from typing import Optional
+from typing import Protocol
+from typing import runtime_checkable
 from typing import TextIO
 from typing import Union
 
-import anyio
+from mcp import ClientSession
+from mcp import SamplingCapability
+from mcp import StdioServerParameters
+from mcp.client.session import SamplingFnT
+from mcp.client.sse import sse_client
+from mcp.client.stdio import stdio_client
+from mcp.client.streamable_http import create_mcp_http_client
+from mcp.client.streamable_http import McpHttpClientFactory
+from mcp.client.streamable_http import streamablehttp_client
 from pydantic import BaseModel
+from pydantic import ConfigDict
 
-try:
-  from mcp import ClientSession
-  from mcp import StdioServerParameters
-  from mcp.client.sse import sse_client
-  from mcp.client.stdio import stdio_client
-  from mcp.client.streamable_http import streamablehttp_client
-except ImportError as e:
-
-  if sys.version_info < (3, 10):
-    raise ImportError(
-        'MCP Tool requires Python 3.10 or above. Please upgrade your Python'
-        ' version.'
-    ) from e
-  else:
-    raise e
+from ...features import FeatureName
+from ...features import is_feature_enabled
+from .session_context import SessionContext
 
 logger = logging.getLogger('google_adk.' + __name__)
+
+
+def _has_cancelled_error_context(exc: BaseException) -> bool:
+  """Returns True if `exc` is/was caused by `asyncio.CancelledError`.
+
+  Cancellation can be translated into other exceptions during teardown (e.g.
+  connection errors) while still retaining the original cancellation in an
+  exception's context chain.
+  """
+
+  seen: set[int] = set()
+  queue = deque([exc])
+  while queue:
+    current = queue.popleft()
+    if id(current) in seen:
+      continue
+    seen.add(id(current))
+    if isinstance(current, asyncio.CancelledError):
+      return True
+    if current.__cause__ is not None:
+      queue.append(current.__cause__)
+    if current.__context__ is not None:
+      queue.append(current.__context__)
+  return False
 
 
 class StdioConnectionParams(BaseModel):
@@ -76,12 +101,22 @@ class SseConnectionParams(BaseModel):
         server.
       sse_read_timeout: Timeout in seconds for reading data from the MCP SSE
         server.
+      httpx_client_factory: Factory function to create a custom HTTPX client. If
+        not provided, a default factory will be used.
   """
+
+  model_config = ConfigDict(arbitrary_types_allowed=True)
 
   url: str
   headers: dict[str, Any] | None = None
   timeout: float = 5.0
   sse_read_timeout: float = 60 * 5.0
+  httpx_client_factory: CheckableMcpHttpClientFactory = create_mcp_http_client
+
+
+@runtime_checkable
+class CheckableMcpHttpClientFactory(McpHttpClientFactory, Protocol):
+  pass
 
 
 class StreamableHTTPConnectionParams(BaseModel):
@@ -99,21 +134,30 @@ class StreamableHTTPConnectionParams(BaseModel):
         Streamable HTTP server.
       terminate_on_close: Whether to terminate the MCP Streamable HTTP server
         when the connection is closed.
+      httpx_client_factory: Factory function to create a custom HTTPX client. If
+        not provided, a default factory will be used.
   """
+
+  model_config = ConfigDict(arbitrary_types_allowed=True)
 
   url: str
   headers: dict[str, Any] | None = None
   timeout: float = 5.0
   sse_read_timeout: float = 60 * 5.0
   terminate_on_close: bool = True
+  httpx_client_factory: CheckableMcpHttpClientFactory = create_mcp_http_client
 
 
-def retry_on_closed_resource(func):
-  """Decorator to automatically retry action when MCP session is closed.
+def retry_on_errors(func):
+  """Decorator to automatically retry action when MCP session errors occur.
 
-  When MCP session was closed, the decorator will automatically retry the
+  When MCP session errors occur, the decorator will automatically retry the
   action once. The create_session method will handle creating a new session
   if the old one was disconnected.
+
+  Cancellation is not retried and must be allowed to propagate. In async
+  runtimes, cancellation may surface as `asyncio.CancelledError` or as another
+  exception while the task is cancelling.
 
   Args:
       func: The function to decorate.
@@ -126,10 +170,18 @@ def retry_on_closed_resource(func):
   async def wrapper(self, *args, **kwargs):
     try:
       return await func(self, *args, **kwargs)
-    except anyio.ClosedResourceError:
-      # Simply retry the function - create_session will handle
-      # detecting and replacing disconnected sessions
-      logger.info('Retrying %s due to closed resource', func.__name__)
+    except Exception as e:
+      task = asyncio.current_task()
+      if task is not None:
+        cancelling = getattr(task, 'cancelling', None)
+        if cancelling is not None and cancelling() > 0:
+          raise
+      if _has_cancelled_error_context(e):
+        raise
+      # If an error is thrown, we will retry the function to reconnect to the
+      # server. create_session will handle detecting and replacing disconnected
+      # sessions.
+      logger.info('Retrying %s due to error: %s', func.__name__, e)
       return await func(self, *args, **kwargs)
 
   return wrapper
@@ -152,6 +204,9 @@ class MCPSessionManager:
           StreamableHTTPConnectionParams,
       ],
       errlog: TextIO = sys.stderr,
+      *,
+      sampling_callback: Optional[SamplingFnT] = None,
+      sampling_capabilities: Optional[SamplingCapability] = None,
   ):
     """Initializes the MCP session manager.
 
@@ -161,7 +216,13 @@ class MCPSessionManager:
           parameters but it's not configurable for now.
         errlog: (Optional) TextIO stream for error logging. Use only for
           initializing a local stdio MCP session.
+        sampling_callback: Optional callback to handle sampling requests from the
+          MCP server.
+        sampling_capabilities: Optional capabilities for sampling.
     """
+    self._sampling_callback = sampling_callback
+    self._sampling_capabilities = sampling_capabilities
+
     if isinstance(connection_params, StdioServerParameters):
       # So far timeout is not configurable. Given MCP is still evolving, we
       # would expect stdio_client to evolve to accept timeout parameter like
@@ -178,11 +239,31 @@ class MCPSessionManager:
       self._connection_params = connection_params
     self._errlog = errlog
 
-    # Session pool: maps session keys to (session, exit_stack) tuples
-    self._sessions: Dict[str, tuple[ClientSession, AsyncExitStack]] = {}
+    # Session pool: maps session keys to (session, exit_stack, loop) tuples.
+    # Kept as a tuple for backward-compatibility with downstream tests
+    # that construct or unpack entries directly.
+    self._sessions: Dict[
+        str, tuple[ClientSession, AsyncExitStack, asyncio.AbstractEventLoop]
+    ] = {}
 
-    # Lock to prevent race conditions in session creation
-    self._session_lock = asyncio.Lock()
+    # Sibling pool: maps session keys to their SessionContext. Stored
+    # separately from `_sessions` so the tuple shape above stays stable.
+    # Used by McpTool to access `_run_guarded` for transport-crash detection.
+    self._session_contexts: Dict[str, SessionContext] = {}
+
+    # Map of event loops to their respective locks to prevent race conditions
+    # across different event loops in session creation.
+    self._session_lock_map: dict[asyncio.AbstractEventLoop, asyncio.Lock] = {}
+    self._lock_map_lock = threading.Lock()
+
+  @property
+  def _session_lock(self) -> asyncio.Lock:
+    """Returns an asyncio.Lock bound to the current event loop."""
+    current_loop = asyncio.get_running_loop()
+    with self._lock_map_lock:
+      if current_loop not in self._session_lock_map:
+        self._session_lock_map[current_loop] = asyncio.Lock()
+      return self._session_lock_map[current_loop]
 
   def _generate_session_key(
       self, merged_headers: Optional[Dict[str, str]] = None
@@ -251,6 +332,86 @@ class MCPSessionManager:
     """
     return session._read_stream._closed or session._write_stream._closed
 
+  def _get_session_context(
+      self, headers: Optional[Dict[str, str]] = None
+  ) -> Optional[SessionContext]:
+    """Returns the SessionContext for the session matching the given headers.
+
+    Note: This method reads from the session-context pool without acquiring
+    ``_session_lock``. This is safe because it is called immediately after
+    ``create_session()`` (which populates the entry under the lock) within
+    the same task, and dict reads are atomic in CPython.
+
+    Args:
+        headers: Optional headers used to identify the session.
+
+    Returns:
+        The SessionContext if a matching session exists, None otherwise.
+    """
+    merged_headers = self._merge_headers(headers)
+    session_key = self._generate_session_key(merged_headers)
+    return self._session_contexts.get(session_key)
+
+  async def _cleanup_session(
+      self,
+      session_key: str,
+      exit_stack: AsyncExitStack,
+      stored_loop: asyncio.AbstractEventLoop,
+  ):
+    """Cleans up a session, handling different event loops safely.
+
+    Args:
+        session_key: The session key to clean up.
+        exit_stack: The AsyncExitStack managing the session resources.
+        stored_loop: The event loop on which the session was created.
+    """
+    current_loop = asyncio.get_running_loop()
+    try:
+      if stored_loop is current_loop:
+        await exit_stack.aclose()
+      elif stored_loop.is_closed():
+        logger.warning(
+            f'Error cleaning up session {session_key}: original event loop'
+            ' is closed, resources may be leaked.'
+        )
+      else:
+        # The old loop is still running in another thread;
+        # schedule cleanup on it.
+        logger.info(
+            f'Scheduling cleanup of session {session_key} on its original'
+            ' event loop.'
+        )
+        future = asyncio.run_coroutine_threadsafe(
+            exit_stack.aclose(), stored_loop
+        )
+
+        # Attach a callback so errors don't go unnoticed
+        def cleanup_done(f: asyncio.Future):
+          try:
+            if f.exception():
+              logger.warning(
+                  f'Error cleaning up session {session_key} on original'
+                  f' loop: {f.exception()}'
+              )
+          except Exception as e:
+            logger.warning(
+                f'Failed to check cleanup status for {session_key}: {e}'
+            )
+
+        future.add_done_callback(cleanup_done)
+    except Exception as e:
+      logger.warning(
+          f'Error during session cleanup for {session_key}: {e}',
+          exc_info=True,
+      )
+    finally:
+      if session_key in self._sessions:
+        del self._sessions[session_key]
+      # Also drop the SessionContext reference so we don't leak the
+      # SessionContext after its underlying session is gone.
+      if session_key in self._session_contexts:
+        del self._session_contexts[session_key]
+
   def _create_client(self, merged_headers: Optional[Dict[str, str]] = None):
     """Creates an MCP client based on the connection parameters.
 
@@ -275,6 +436,7 @@ class MCPSessionManager:
           headers=merged_headers,
           timeout=self._connection_params.timeout,
           sse_read_timeout=self._connection_params.sse_read_timeout,
+          httpx_client_factory=self._connection_params.httpx_client_factory,
       )
     elif isinstance(self._connection_params, StreamableHTTPConnectionParams):
       client = streamablehttp_client(
@@ -285,6 +447,7 @@ class MCPSessionManager:
               seconds=self._connection_params.sse_read_timeout
           ),
           terminate_on_close=self._connection_params.terminate_on_close,
+          httpx_client_factory=self._connection_params.httpx_client_factory,
       )
     else:
       raise ValueError(
@@ -321,73 +484,130 @@ class MCPSessionManager:
     async with self._session_lock:
       # Check if we have an existing session
       if session_key in self._sessions:
-        session, exit_stack = self._sessions[session_key]
+        session, exit_stack, stored_loop = self._sessions[session_key]
 
-        # Check if the existing session is still connected
-        if not self._is_session_disconnected(session):
+        # Check if the existing session is still connected and bound to
+        # the current loop. When the feature flag is on, we ALSO check the
+        # SessionContext's background task: a crashed transport can leave
+        # the session's read/write streams open even though the underlying
+        # task has already died (e.g. after a 4xx/5xx HTTP response).
+        # Without that extra check, callers would reuse a dead session and
+        # hang on the next call. The check is gated because it triggers
+        # session re-creation in some test mocks where `_task` looks
+        # "not alive" but the streams are otherwise reusable.
+        current_loop = asyncio.get_running_loop()
+        if is_feature_enabled(FeatureName._MCP_GRACEFUL_ERROR_HANDLING):  # pylint: disable=protected-access
+          ctx = self._session_contexts.get(session_key)
+          ctx_alive = ctx is None or ctx._is_task_alive  # pylint: disable=protected-access
+        else:
+          ctx_alive = True  # Pre-fix: do not consult task aliveness
+        if (
+            stored_loop is current_loop
+            and not self._is_session_disconnected(session)
+            and ctx_alive
+        ):
           # Session is still good, return it
           return session
         else:
-          # Session is disconnected, clean it up
-          logger.info('Cleaning up disconnected session: %s', session_key)
-          try:
-            await exit_stack.aclose()
-          except Exception as e:
-            logger.warning('Error during disconnected session cleanup: %s', e)
-          finally:
-            del self._sessions[session_key]
+          # Session is disconnected, dead, or from a different loop; clean up.
+          logger.info(
+              'Cleaning up session (disconnected or different loop): %s',
+              session_key,
+          )
+          await self._cleanup_session(session_key, exit_stack, stored_loop)
 
       # Create a new session (either first time or replacing disconnected one)
       exit_stack = AsyncExitStack()
+      timeout_in_seconds = (
+          self._connection_params.timeout
+          if hasattr(self._connection_params, 'timeout')
+          else None
+      )
+      sse_read_timeout_in_seconds = (
+          self._connection_params.sse_read_timeout
+          if hasattr(self._connection_params, 'sse_read_timeout')
+          else None
+      )
 
       try:
         client = self._create_client(merged_headers)
+        is_stdio = isinstance(self._connection_params, StdioConnectionParams)
 
-        transports = await exit_stack.enter_async_context(client)
-        # The streamable http client returns a GetSessionCallback in addition to the read/write MemoryObjectStreams
-        # needed to build the ClientSession, we limit then to the two first values to be compatible with all clients.
-        if isinstance(self._connection_params, StdioConnectionParams):
-          session = await exit_stack.enter_async_context(
-              ClientSession(
-                  *transports[:2],
-                  read_timeout_seconds=timedelta(
-                      seconds=self._connection_params.timeout
-                  ),
-              )
-          )
+        session_context = SessionContext(
+            client=client,
+            timeout=timeout_in_seconds,
+            sse_read_timeout=sse_read_timeout_in_seconds,
+            is_stdio=is_stdio,
+            sampling_callback=self._sampling_callback,
+            sampling_capabilities=self._sampling_capabilities,
+        )
+
+        if is_feature_enabled(FeatureName._MCP_GRACEFUL_ERROR_HANDLING):  # pylint: disable=protected-access
+          session = await exit_stack.enter_async_context(session_context)
         else:
-          session = await exit_stack.enter_async_context(
-              ClientSession(*transports[:2])
+          session = await asyncio.wait_for(
+              exit_stack.enter_async_context(session_context),
+              timeout=timeout_in_seconds,
           )
-        await session.initialize()
 
-        # Store session and exit stack in the pool
-        self._sessions[session_key] = (session, exit_stack)
+        # Store session, exit stack, and loop in the pool. The pool storage
+        # remains a tuple for backward-compatibility with downstream tests
+        # that construct or unpack entries directly.
+        self._sessions[session_key] = (
+            session,
+            exit_stack,
+            asyncio.get_running_loop(),
+        )
+        # Track the SessionContext in a sibling dict so McpTool can call
+        # `_run_guarded` on it. Stored separately to avoid changing the
+        # shape of `_sessions` (which is a public-ish internal surface).
+        self._session_contexts[session_key] = session_context
         logger.debug('Created new session: %s', session_key)
         return session
 
-      except Exception:
+      except Exception as e:
         # If session creation fails, clean up the exit stack
         if exit_stack:
-          await exit_stack.aclose()
-        raise
+          try:
+            await exit_stack.aclose()
+          except Exception as exit_stack_error:
+            logger.warning(
+                'Error during session creation cleanup: %s', exit_stack_error
+            )
+        raise ConnectionError(f'Failed to create MCP session: {e}') from e
+
+  def __getstate__(self):
+    """Custom pickling to exclude non-picklable runtime objects."""
+    state = self.__dict__.copy()
+    # Remove unpicklable entries or those that shouldn't persist across pickle
+    state['_sessions'] = {}
+    state['_session_contexts'] = {}
+    state['_session_lock_map'] = {}
+
+    # Locks and file-like objects cannot be pickled
+    state.pop('_lock_map_lock', None)
+    state.pop('_errlog', None)
+
+    return state
+
+  def __setstate__(self, state):
+    """Custom unpickling to restore state."""
+    self.__dict__.update(state)
+    # Re-initialize members that were not pickled
+    self._sessions = {}
+    self._session_contexts = {}
+    self._session_lock_map = {}
+    self._lock_map_lock = threading.Lock()
+    # If _errlog was removed during pickling, default to sys.stderr
+    if not hasattr(self, '_errlog') or self._errlog is None:
+      self._errlog = sys.stderr
 
   async def close(self):
     """Closes all sessions and cleans up resources."""
     async with self._session_lock:
       for session_key in list(self._sessions.keys()):
-        _, exit_stack = self._sessions[session_key]
-        try:
-          await exit_stack.aclose()
-        except Exception as e:
-          # Log the error but don't re-raise to avoid blocking shutdown
-          print(
-              'Warning: Error during MCP session cleanup for'
-              f' {session_key}: {e}',
-              file=self._errlog,
-          )
-        finally:
-          del self._sessions[session_key]
+        _, exit_stack, stored_loop = self._sessions[session_key]
+        await self._cleanup_session(session_key, exit_stack, stored_loop)
 
 
 SseServerParams = SseConnectionParams
