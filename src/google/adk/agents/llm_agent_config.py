@@ -14,8 +14,6 @@
 
 from __future__ import annotations
 
-import logging
-from typing import Any
 from typing import List
 from typing import Literal
 from typing import Optional
@@ -24,14 +22,16 @@ from google.genai import types
 from pydantic import ConfigDict
 from pydantic import Field
 from pydantic import model_validator
+from typing_extensions import deprecated
 
 from ..tools.tool_configs import ToolConfig
 from .base_agent_config import BaseAgentConfig
 from .common_configs import CodeConfig
 
-logger = logging.getLogger('google_adk.' + __name__)
 
-
+@deprecated(
+    'LlmAgentConfig is deprecated and will be removed in future versions.'
+)
 class LlmAgentConfig(BaseAgentConfig):
   """The config for the YAML schema of a LlmAgent."""
 
@@ -71,25 +71,6 @@ class LlmAgentConfig(BaseAgentConfig):
           ' etc.). Cannot be set together with `model`.'
       ),
   )
-
-  @model_validator(mode='before')
-  @classmethod
-  def _normalize_model_code(cls, data: Any) -> dict[str, Any] | Any:
-    if not isinstance(data, dict):
-      return data
-
-    model_value = data.get('model')
-    model_code = data.get('model_code')
-    if isinstance(model_value, dict) and model_code is None:
-      logger.warning(
-          'Detected legacy `model` mapping. Use `model_code` to provide a'
-          ' CodeConfig for custom model construction.'
-      )
-      data = dict(data)
-      data['model_code'] = model_value
-      data['model'] = None
-
-    return data
 
   @model_validator(mode='after')
   def _validate_model_sources(self) -> LlmAgentConfig:
