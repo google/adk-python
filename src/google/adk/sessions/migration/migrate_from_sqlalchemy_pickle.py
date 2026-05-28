@@ -24,6 +24,7 @@ import logging
 import pickle
 import sys
 from typing import Any
+from typing import cast
 
 from google.adk.events.event import Event
 from google.adk.events.event_actions import EventActions
@@ -51,7 +52,48 @@ _ALLOWED_PICKLE_GLOBALS: set[tuple[str, str]] = {
     ("builtins", "float"),
     ("builtins", "bool"),
     # Expected pickled payload for v0 session schema events.
+    ("fastapi.openapi.models", "APIKey"),
+    ("fastapi.openapi.models", "APIKeyIn"),
+    ("fastapi.openapi.models", "HTTPBase"),
+    ("fastapi.openapi.models", "HTTPBearer"),
+    ("fastapi.openapi.models", "OAuth2"),
+    ("fastapi.openapi.models", "OAuthFlow"),
+    ("fastapi.openapi.models", "OAuthFlowAuthorizationCode"),
+    ("fastapi.openapi.models", "OAuthFlowClientCredentials"),
+    ("fastapi.openapi.models", "OAuthFlowImplicit"),
+    ("fastapi.openapi.models", "OAuthFlowPassword"),
+    ("fastapi.openapi.models", "OAuthFlows"),
+    ("fastapi.openapi.models", "OpenIdConnect"),
+    ("fastapi.openapi.models", "SecurityBase"),
+    ("fastapi.openapi.models", "SecurityScheme"),
+    ("fastapi.openapi.models", "SecuritySchemeType"),
+    ("google.adk.auth.auth_credential", "AuthCredential"),
+    ("google.adk.auth.auth_credential", "AuthCredentialTypes"),
+    ("google.adk.auth.auth_credential", "HttpAuth"),
+    ("google.adk.auth.auth_credential", "HttpCredentials"),
+    ("google.adk.auth.auth_credential", "OAuth2Auth"),
+    ("google.adk.auth.auth_credential", "ServiceAccountCredential"),
+    ("google.adk.auth.auth_schemes", "CustomAuthScheme"),
+    ("google.adk.auth.auth_schemes", "ExtendedOAuth2"),
+    ("google.adk.auth.auth_schemes", "OAuthGrantType"),
+    ("google.adk.auth.auth_schemes", "OpenIdConnectWithConfig"),
+    ("google.adk.auth.auth_tool", "AuthConfig"),
     ("google.adk.events.event_actions", "EventActions"),
+    ("google.adk.events.event_actions", "EventCompaction"),
+    ("google.adk.tools.tool_confirmation", "ToolConfirmation"),
+    ("google.genai.types", "Blob"),
+    ("google.genai.types", "CodeExecutionResult"),
+    ("google.genai.types", "Content"),
+    ("google.genai.types", "ExecutableCode"),
+    ("google.genai.types", "FileData"),
+    ("google.genai.types", "FunctionCall"),
+    ("google.genai.types", "FunctionResponse"),
+    ("google.genai.types", "FunctionResponseBlob"),
+    ("google.genai.types", "FunctionResponseFileData"),
+    ("google.genai.types", "FunctionResponsePart"),
+    ("google.genai.types", "Part"),
+    ("google.genai.types", "PartMediaResolution"),
+    ("google.genai.types", "VideoMetadata"),
 }
 
 
@@ -64,7 +106,7 @@ class _RestrictedUnpickler(pickle.Unpickler):
   `EventActions`.
   """
 
-  def find_class(self, module: str, name: str):  # noqa: ANN001
+  def find_class(self, module: str, name: str) -> Any:  # noqa: ANN001
     if (module, name) in _ALLOWED_PICKLE_GLOBALS:
       return super().find_class(module, name)
     raise pickle.UnpicklingError(
@@ -72,8 +114,12 @@ class _RestrictedUnpickler(pickle.Unpickler):
     )
 
 
-def _restricted_pickle_loads(data: bytes) -> Any:
-  """Load a pickle payload using the restricted unpickler."""
+def _restricted_pickle_loads(
+    data: bytes, *, allow_unsafe_unpickling: bool = False
+) -> Any:
+  """Load a pickle payload using the restricted unpickler by default."""
+  if allow_unsafe_unpickling:
+    return pickle.loads(data)
   return _RestrictedUnpickler(io.BytesIO(data)).load()
 
 
@@ -90,7 +136,9 @@ def _to_datetime_obj(val: Any) -> datetime | Any:
   return val
 
 
-def _row_to_event(row: dict) -> Event:
+def _row_to_event(
+    row: dict[str, Any], *, allow_unsafe_unpickling: bool = False
+) -> Event:
   """Converts event row (dict) to event object, handling missing columns and deserializing."""
 
   actions_val = row.get("actions")
@@ -98,7 +146,9 @@ def _row_to_event(row: dict) -> Event:
   if actions_val is not None:
     try:
       if isinstance(actions_val, bytes):
-        actions = _restricted_pickle_loads(actions_val)
+        actions = _restricted_pickle_loads(
+            actions_val, allow_unsafe_unpickling=allow_unsafe_unpickling
+        )
       else:  # for spanner - it might return object directly
         actions = actions_val
     except Exception as e:
@@ -114,7 +164,7 @@ def _row_to_event(row: dict) -> Event:
   else:
     actions = EventActions()
 
-  def _safe_json_load(val):
+  def _safe_json_load(val: Any) -> dict[str, Any] | None:
     data = None
     if isinstance(val, str):
       try:
@@ -124,7 +174,7 @@ def _row_to_event(row: dict) -> Event:
         return None
     elif isinstance(val, dict):
       data = val  # for postgres JSONB
-    return data
+    return cast(dict[str, Any] | None, data)
 
   content_dict = _safe_json_load(row.get("content"))
   grounding_metadata_dict = _safe_json_load(row.get("grounding_metadata"))
@@ -186,13 +236,13 @@ def _row_to_event(row: dict) -> Event:
   )
 
 
-def _get_state_dict(state_val: Any) -> dict:
+def _get_state_dict(state_val: Any) -> dict[str, Any]:
   """Safely load dict from JSON string or return dict if already dict."""
   if isinstance(state_val, dict):
     return state_val
   if isinstance(state_val, str):
     try:
-      return json.loads(state_val)
+      return cast(dict[str, Any], json.loads(state_val))
     except json.JSONDecodeError:
       logger.warning(
           "Failed to parse state JSON string, defaulting to empty dict."
@@ -202,7 +252,11 @@ def _get_state_dict(state_val: Any) -> dict:
 
 
 # --- Migration Logic ---
-def migrate(source_db_url: str, dest_db_url: str):
+def migrate(
+    source_db_url: str,
+    dest_db_url: str,
+    allow_unsafe_unpickling: bool = False,
+) -> None:
   """Migrates data from old pickle schema to new JSON schema."""
   # Convert async driver URLs to sync URLs for SQLAlchemy's synchronous engine.
   # This allows users to provide URLs like 'postgresql+asyncpg://...' and have
@@ -211,6 +265,11 @@ def migrate(source_db_url: str, dest_db_url: str):
   dest_sync_url = _schema_check_utils.to_sync_url(dest_db_url)
 
   logger.info(f"Connecting to source database: {source_db_url}")
+  if allow_unsafe_unpickling:
+    logger.warning(
+        "Unsafe pickle migration mode is enabled. Only use this with a trusted"
+        " source database."
+    )
   try:
     source_engine = create_engine(source_sync_url)
     SourceSession = sessionmaker(bind=source_engine)
@@ -304,7 +363,10 @@ def migrate(source_db_url: str, dest_db_url: str):
             text("SELECT * FROM events")
         ).mappings():
           try:
-            event_obj = _row_to_event(dict(row))
+            event_obj = _row_to_event(
+                dict(row),
+                allow_unsafe_unpickling=allow_unsafe_unpickling,
+            )
             new_event = v1.StorageEvent(
                 id=event_obj.id,
                 app_name=row["app_name"],
@@ -348,9 +410,22 @@ if __name__ == "__main__":
       required=True,
       help="SQLAlchemy URL of destination database",
   )
+  parser.add_argument(
+      "--allow_unsafe_unpickling",
+      "--allow-unsafe-unpickling",
+      action="store_true",
+      help=(
+          "Allow legacy pickle payloads to use Python's unsafe pickle loader."
+          " Only use this with a trusted source database."
+      ),
+  )
   args = parser.parse_args()
   try:
-    migrate(args.source_db_url, args.dest_db_url)
+    migrate(
+        args.source_db_url,
+        args.dest_db_url,
+        allow_unsafe_unpickling=args.allow_unsafe_unpickling,
+    )
   except Exception as e:
     logger.error(f"Migration failed: {e}")
     sys.exit(1)
