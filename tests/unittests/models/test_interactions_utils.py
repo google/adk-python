@@ -20,16 +20,26 @@ from collections.abc import Callable
 from datetime import datetime
 from datetime import timezone
 import json
-from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 from google.adk.models import interactions_utils
 from google.adk.models.llm_request import LlmRequest
+from google.genai import interactions
 from google.genai import types
-from google.genai._interactions.types.interaction import Interaction
-from google.genai._interactions.types.interaction_complete_event import InteractionCompleteEvent
-from google.genai._interactions.types.interaction_start_event import InteractionStartEvent
-from google.genai._interactions.types.interaction_status_update import InteractionStatusUpdate
+from google.genai.interactions import CodeExecutionResultStep
+from google.genai.interactions import FunctionCallStep
+from google.genai.interactions import FunctionResultStep
+from google.genai.interactions import ImageContent
+from google.genai.interactions import Interaction
+from google.genai.interactions import InteractionCompletedEvent
+from google.genai.interactions import InteractionCreatedEvent
+from google.genai.interactions import ModelOutputStep
+from google.genai.interactions import StepDelta
+from google.genai.interactions import StepStart
+from google.genai.interactions import StepStop
+from google.genai.interactions import TextContent
+from google.genai.interactions import ThoughtStep
+from google.genai.interactions import Usage
 import pytest
 
 
@@ -73,21 +83,6 @@ class _FakeApiClient:
     self.aio = _FakeAio(events)
 
 
-def _build_function_call_delta_event(
-    *, function_id: str, name: str, arguments: dict[str, object]
-) -> SimpleNamespace:
-  """Build a version-agnostic content.delta event for a function call."""
-  return SimpleNamespace(
-      event_type='content.delta',
-      delta=SimpleNamespace(
-          type='function_call',
-          id=function_id,
-          name=name,
-          arguments=arguments,
-      ),
-  )
-
-
 def _build_llm_request() -> LlmRequest:
   """Build a minimal request for interactions streaming tests."""
   return LlmRequest(
@@ -102,69 +97,75 @@ def _build_llm_request() -> LlmRequest:
   )
 
 
-def _build_lifecycle_streamed_events() -> list[object]:
+@pytest.fixture
+def fc_step() -> FunctionCallStep:
+  """Fixture providing a basic FunctionCallStep."""
+  return FunctionCallStep(
+      type='function_call',
+      id='call_1',
+      name='get_weather',
+      arguments={'city': 'Tokyo'},
+  )
+
+
+def _build_lifecycle_streamed_events(fc_step: FunctionCallStep) -> list[object]:
   """Build streamed events with lifecycle updates carrying the ID."""
   now = datetime.now(timezone.utc)
+
+  interaction = Interaction(
+      id='interaction_123',
+      created=now,
+      updated=now,
+      status='requires_action',
+      steps=[fc_step],
+  )
+
   return [
-      InteractionStartEvent(
-          event_type='interaction.start',
-          interaction=Interaction(
-              id='interaction_123',
-              created=now,
-              updated=now,
-              status='in_progress',
-          ),
+      InteractionCreatedEvent(
+          event_type='interaction.created',
+          interaction=interaction,
       ),
-      _build_function_call_delta_event(
-          function_id='call_1',
-          name='get_weather',
-          arguments={'city': 'Tokyo'},
-      ),
-      InteractionStatusUpdate(
-          event_type='interaction.status_update',
-          interaction_id='interaction_123',
-          status='requires_action',
+      InteractionCompletedEvent(
+          event_type='interaction.completed',
+          interaction=interaction,
       ),
   ]
 
 
-def _build_complete_streamed_events() -> list[object]:
+def _build_complete_streamed_events(fc_step: FunctionCallStep) -> list[object]:
   """Build streamed events with the ID on an interaction.complete event."""
   now = datetime.now(timezone.utc)
+
+  interaction = Interaction(
+      id='interaction_complete_123',
+      created=now,
+      updated=now,
+      status='requires_action',
+      steps=[fc_step],
+  )
+
   return [
-      _build_function_call_delta_event(
-          function_id='call_1',
-          name='get_weather',
-          arguments={'city': 'Tokyo'},
-      ),
-      InteractionCompleteEvent(
-          event_type='interaction.complete',
-          interaction=Interaction(
-              id='interaction_complete_123',
-              created=now,
-              updated=now,
-              status='requires_action',
-          ),
+      InteractionCompletedEvent(
+          event_type='interaction.completed',
+          interaction=interaction,
       ),
   ]
 
 
-def _build_legacy_streamed_events() -> list[object]:
+def _build_legacy_streamed_events(fc_step: FunctionCallStep) -> list[object]:
   """Build streamed events with the ID on the legacy interaction event."""
+  now = datetime.now(timezone.utc)
+
+  interaction = Interaction(
+      id='interaction_legacy_123',
+      created=now,
+      updated=now,
+      status='requires_action',
+      steps=[fc_step],
+  )
+
   return [
-      _build_function_call_delta_event(
-          function_id='call_1',
-          name='get_weather',
-          arguments={'city': 'Tokyo'},
-      ),
-      SimpleNamespace(
-          event_type='interaction',
-          id='interaction_legacy_123',
-          status='requires_action',
-          error=None,
-          outputs=None,
-          usage=None,
-      ),
+      interaction,
   ]
 
 
@@ -194,13 +195,27 @@ async def _collect_function_call_interaction_ids(
 
 
 class TestConvertPartToInteractionContent:
-  """Tests for convert_part_to_interaction_content."""
+  """Tests for _convert_part_to_interaction_content."""
 
   def test_text_part(self):
     """Test converting a text Part."""
     part = types.Part(text='Hello, world!')
-    result = interactions_utils.convert_part_to_interaction_content(part)
-    assert result == {'type': 'text', 'text': 'Hello, world!'}
+    result = interactions_utils._convert_part_to_interaction_content(part)
+    assert result == {
+        'type': 'user_input',
+        'content': [{'type': 'text', 'text': 'Hello, world!'}],
+    }
+
+  def test_text_part_model_role(self):
+    """Test converting a text Part for model role."""
+    part = types.Part(text='Hello, user!')
+    result = interactions_utils._convert_part_to_interaction_content(
+        part, role='model'
+    )
+    assert result == {
+        'type': 'model_output',
+        'content': [{'type': 'text', 'text': 'Hello, user!'}],
+    }
 
   def test_function_call_part(self):
     """Test converting a function call Part."""
@@ -211,7 +226,7 @@ class TestConvertPartToInteractionContent:
             args={'city': 'London'},
         )
     )
-    result = interactions_utils.convert_part_to_interaction_content(part)
+    result = interactions_utils._convert_part_to_interaction_content(part)
     assert result == {
         'type': 'function_call',
         'id': 'call_123',
@@ -227,7 +242,7 @@ class TestConvertPartToInteractionContent:
             args={'city': 'London'},
         )
     )
-    result = interactions_utils.convert_part_to_interaction_content(part)
+    result = interactions_utils._convert_part_to_interaction_content(part)
     assert result['id'] == ''
     assert result['name'] == 'get_weather'
 
@@ -241,17 +256,15 @@ class TestConvertPartToInteractionContent:
         ),
         thought_signature=b'test_signature_bytes',
     )
-    result = interactions_utils.convert_part_to_interaction_content(part)
+    result = interactions_utils._convert_part_to_interaction_content(part)
     assert result['type'] == 'function_call'
     assert result['id'] == 'call_456'
     assert result['name'] == 'my_tool'
     assert result['arguments'] == {'doc': 'content'}
-    # thought_signature should be base64 encoded
-    assert 'thought_signature' in result
+    # signature should be base64 encoded
+    assert 'signature' in result
 
-    assert (
-        base64.b64decode(result['thought_signature']) == b'test_signature_bytes'
-    )
+    assert base64.b64decode(result['signature']) == b'test_signature_bytes'
 
   def test_function_call_part_without_thought_signature(self):
     """Test converting a function call Part without thought_signature."""
@@ -262,10 +275,10 @@ class TestConvertPartToInteractionContent:
             args={},
         )
     )
-    result = interactions_utils.convert_part_to_interaction_content(part)
+    result = interactions_utils._convert_part_to_interaction_content(part)
     assert result['type'] == 'function_call'
-    # thought_signature should not be present
-    assert 'thought_signature' not in result
+    # signature should not be present
+    assert 'signature' not in result
 
   def test_function_response_dict(self):
     """Test converting a function response Part with dict response."""
@@ -276,13 +289,15 @@ class TestConvertPartToInteractionContent:
             response={'temperature': 20, 'condition': 'sunny'},
         )
     )
-    result = interactions_utils.convert_part_to_interaction_content(part)
+    result = interactions_utils._convert_part_to_interaction_content(part)
     assert result['type'] == 'function_result'
     assert result['call_id'] == 'call_123'
     assert result['name'] == 'get_weather'
-    # Dict should be passed through directly (not JSON-serialized).
-    assert result['result'] == {'temperature': 20, 'condition': 'sunny'}
-    assert isinstance(result['result'], dict)
+    # Dict should be passed through directly (not JSON-serialized)
+    assert result['result'] == {
+        'temperature': 20,
+        'condition': 'sunny',
+    }
 
   def test_function_response_simple(self):
     """Test converting a function response Part with simple response."""
@@ -293,12 +308,29 @@ class TestConvertPartToInteractionContent:
             response={'message': 'Weather is sunny'},
         )
     )
-    result = interactions_utils.convert_part_to_interaction_content(part)
+    result = interactions_utils._convert_part_to_interaction_content(part)
     assert result['type'] == 'function_result'
     assert result['call_id'] == 'call_123'
     assert result['name'] == 'check_weather'
-    # Dict should be passed through directly (not JSON-serialized).
+    # Dict should be JSON serialized
     assert result['result'] == {'message': 'Weather is sunny'}
+
+  def test_convert_part_to_interaction_content_function_response_error(self):
+    part = types.Part(
+        function_response=types.FunctionResponse(
+            name='my_function',
+            id='call_123',
+            response={'error': 'something went wrong'},
+        )
+    )
+    result = interactions_utils._convert_part_to_interaction_content(part)
+    assert result == interactions.FunctionResultStepParam(
+        type='function_result',
+        name='my_function',
+        call_id='call_123',
+        result={'error': 'something went wrong'},
+        is_error=True,
+    )
 
   def test_function_response_dict_not_double_serialized(self):
     """Regression test: avoid double-serializing bash tool outputs.
@@ -320,7 +352,7 @@ class TestConvertPartToInteractionContent:
             response=bash_response,
         )
     )
-    result = interactions_utils.convert_part_to_interaction_content(part)
+    result = interactions_utils._convert_part_to_interaction_content(part)
     # The result value must be the dict itself, NOT a JSON string.
     assert isinstance(result['result'], dict)
     assert result['result'] == bash_response
@@ -337,11 +369,16 @@ class TestConvertPartToInteractionContent:
             mime_type='image/png',
         )
     )
-    result = interactions_utils.convert_part_to_interaction_content(part)
+    result = interactions_utils._convert_part_to_interaction_content(part)
     assert result == {
-        'type': 'image',
-        'data': b'image_data',
-        'mime_type': 'image/png',
+        'type': 'user_input',
+        'content': [{
+            'type': 'image',
+            'data': (
+                'aW1hZ2VfZGF0YQ=='
+            ),  # base64.b64encode(b'image_data').decode('utf-8')
+            'mime_type': 'image/png',
+        }],
     }
 
   def test_inline_data_audio(self):
@@ -352,11 +389,16 @@ class TestConvertPartToInteractionContent:
             mime_type='audio/mp3',
         )
     )
-    result = interactions_utils.convert_part_to_interaction_content(part)
+    result = interactions_utils._convert_part_to_interaction_content(part)
     assert result == {
-        'type': 'audio',
-        'data': b'audio_data',
-        'mime_type': 'audio/mp3',
+        'type': 'user_input',
+        'content': [{
+            'type': 'audio',
+            'data': (
+                'YXVkaW9fZGF0YQ=='
+            ),  # base64.b64encode(b'audio_data').decode('utf-8')
+            'mime_type': 'audio/mp3',
+        }],
     }
 
   def test_inline_data_video(self):
@@ -367,11 +409,16 @@ class TestConvertPartToInteractionContent:
             mime_type='video/mp4',
         )
     )
-    result = interactions_utils.convert_part_to_interaction_content(part)
+    result = interactions_utils._convert_part_to_interaction_content(part)
     assert result == {
-        'type': 'video',
-        'data': b'video_data',
-        'mime_type': 'video/mp4',
+        'type': 'user_input',
+        'content': [{
+            'type': 'video',
+            'data': (
+                'dmlkZW9fZGF0YQ=='
+            ),  # base64.b64encode(b'video_data').decode('utf-8')
+            'mime_type': 'video/mp4',
+        }],
     }
 
   def test_inline_data_document(self):
@@ -382,11 +429,16 @@ class TestConvertPartToInteractionContent:
             mime_type='application/pdf',
         )
     )
-    result = interactions_utils.convert_part_to_interaction_content(part)
+    result = interactions_utils._convert_part_to_interaction_content(part)
     assert result == {
-        'type': 'document',
-        'data': b'doc_data',
-        'mime_type': 'application/pdf',
+        'type': 'user_input',
+        'content': [{
+            'type': 'document',
+            'data': (
+                'ZG9jX2RhdGE='
+            ),  # base64.b64encode(b'doc_data').decode('utf-8')
+            'mime_type': 'application/pdf',
+        }],
     }
 
   def test_file_data_image(self):
@@ -397,11 +449,14 @@ class TestConvertPartToInteractionContent:
             mime_type='image/png',
         )
     )
-    result = interactions_utils.convert_part_to_interaction_content(part)
+    result = interactions_utils._convert_part_to_interaction_content(part)
     assert result == {
-        'type': 'image',
-        'uri': 'gs://bucket/image.png',
-        'mime_type': 'image/png',
+        'type': 'user_input',
+        'content': [{
+            'type': 'image',
+            'uri': 'gs://bucket/image.png',
+            'mime_type': 'image/png',
+        }],
     }
 
   def test_text_with_thought_flag(self):
@@ -410,22 +465,25 @@ class TestConvertPartToInteractionContent:
     # When text is present, the convert function returns text type (not thought)
     # because text check comes before thought check in the implementation
     part = types.Part(text='Let me think about this...', thought=True)
-    result = interactions_utils.convert_part_to_interaction_content(part)
+    result = interactions_utils._convert_part_to_interaction_content(part)
     # Text content is returned as-is (thought flag not represented in output)
-    assert result == {'type': 'text', 'text': 'Let me think about this...'}
+    assert result == {
+        'type': 'user_input',
+        'content': [{'type': 'text', 'text': 'Let me think about this...'}],
+    }
 
   def test_thought_only_part(self):
     """Test converting a thought-only Part with signature."""
     signature_bytes = b'test-thought-signature'
     part = types.Part(thought=True, thought_signature=signature_bytes)
-    result = interactions_utils.convert_part_to_interaction_content(part)
+    result = interactions_utils._convert_part_to_interaction_content(part)
     expected_signature = base64.b64encode(signature_bytes).decode('utf-8')
     assert result == {'type': 'thought', 'signature': expected_signature}
 
   def test_thought_only_part_without_signature(self):
     """Test converting a thought-only Part without signature."""
     part = types.Part(thought=True)
-    result = interactions_utils.convert_part_to_interaction_content(part)
+    result = interactions_utils._convert_part_to_interaction_content(part)
     assert result == {'type': 'thought'}
 
   def test_code_execution_result(self):
@@ -436,7 +494,7 @@ class TestConvertPartToInteractionContent:
             outcome=types.Outcome.OUTCOME_OK,
         )
     )
-    result = interactions_utils.convert_part_to_interaction_content(part)
+    result = interactions_utils._convert_part_to_interaction_content(part)
     assert result == {
         'type': 'code_execution_result',
         'call_id': '',
@@ -452,7 +510,7 @@ class TestConvertPartToInteractionContent:
             outcome=types.Outcome.OUTCOME_FAILED,
         )
     )
-    result = interactions_utils.convert_part_to_interaction_content(part)
+    result = interactions_utils._convert_part_to_interaction_content(part)
     assert result == {
         'type': 'code_execution_result',
         'call_id': '',
@@ -468,7 +526,7 @@ class TestConvertPartToInteractionContent:
             outcome=types.Outcome.OUTCOME_DEADLINE_EXCEEDED,
         )
     )
-    result = interactions_utils.convert_part_to_interaction_content(part)
+    result = interactions_utils._convert_part_to_interaction_content(part)
     assert result == {
         'type': 'code_execution_result',
         'call_id': '',
@@ -484,7 +542,7 @@ class TestConvertPartToInteractionContent:
             language='PYTHON',
         )
     )
-    result = interactions_utils.convert_part_to_interaction_content(part)
+    result = interactions_utils._convert_part_to_interaction_content(part)
     assert result == {
         'type': 'code_execution_call',
         'id': '',
@@ -497,12 +555,12 @@ class TestConvertPartToInteractionContent:
   def test_empty_part(self):
     """Test converting an empty Part returns None."""
     part = types.Part()
-    result = interactions_utils.convert_part_to_interaction_content(part)
+    result = interactions_utils._convert_part_to_interaction_content(part)
     assert result is None
 
 
-class TestConvertContentToTurn:
-  """Tests for convert_content_to_turn."""
+class TestConvertContentToStep:
+  """Tests for _convert_content_to_step."""
 
   def test_user_content(self):
     """Test converting user content."""
@@ -510,11 +568,11 @@ class TestConvertContentToTurn:
         role='user',
         parts=[types.Part(text='Hello!')],
     )
-    result = interactions_utils.convert_content_to_turn(content)
-    assert result == {
-        'role': 'user',
+    result = interactions_utils._convert_content_to_step(content)
+    assert result == [{
+        'type': 'user_input',
         'content': [{'type': 'text', 'text': 'Hello!'}],
-    }
+    }]
 
   def test_model_content(self):
     """Test converting model content."""
@@ -522,11 +580,11 @@ class TestConvertContentToTurn:
         role='model',
         parts=[types.Part(text='Hi there!')],
     )
-    result = interactions_utils.convert_content_to_turn(content)
-    assert result == {
-        'role': 'model',
+    result = interactions_utils._convert_content_to_step(content)
+    assert result == [{
+        'type': 'model_output',
         'content': [{'type': 'text', 'text': 'Hi there!'}],
-    }
+    }]
 
   def test_multiple_parts(self):
     """Test converting content with multiple parts."""
@@ -539,30 +597,60 @@ class TestConvertContentToTurn:
             ),
         ],
     )
-    result = interactions_utils.convert_content_to_turn(content)
-    assert result['role'] == 'user'
-    assert len(result['content']) == 2
-    assert result['content'][0] == {'type': 'text', 'text': 'Look at this:'}
-    assert result['content'][1]['type'] == 'image'
+    result = interactions_utils._convert_content_to_step(content)
+    assert len(result) == 2
+    assert result[0]['type'] == 'user_input'
+    assert result[0]['content'][0] == {'type': 'text', 'text': 'Look at this:'}
+    assert result[1]['type'] == 'user_input'
+    assert result[1]['content'][0]['type'] == 'image'
+
+  def test_interleaved_parts(self):
+    """Test converting content with interleaved text and media parts."""
+    content = types.Content(
+        role='user',
+        parts=[
+            types.Part(text='First:'),
+            types.Part(
+                inline_data=types.Blob(data=b'img1', mime_type='image/png')
+            ),
+            types.Part(text='Second:'),
+            types.Part(
+                inline_data=types.Blob(data=b'img2', mime_type='image/jpeg')
+            ),
+            types.Part(text='End'),
+        ],
+    )
+    result = interactions_utils._convert_content_to_step(content)
+    assert len(result) == 5
+    assert result[0]['type'] == 'user_input'
+    assert result[0]['content'][0] == {'type': 'text', 'text': 'First:'}
+    assert result[1]['type'] == 'user_input'
+    assert result[1]['content'][0]['type'] == 'image'
+    assert result[2]['type'] == 'user_input'
+    assert result[2]['content'][0] == {'type': 'text', 'text': 'Second:'}
+    assert result[3]['type'] == 'user_input'
+    assert result[3]['content'][0]['type'] == 'image'
+    assert result[4]['type'] == 'user_input'
+    assert result[4]['content'][0] == {'type': 'text', 'text': 'End'}
 
   def test_default_role(self):
     """Test that default role is 'user' when not specified."""
     content = types.Content(parts=[types.Part(text='Hi')])
-    result = interactions_utils.convert_content_to_turn(content)
-    assert result['role'] == 'user'
+    result = interactions_utils._convert_content_to_step(content)
+    assert result[0]['type'] == 'user_input'
 
 
-class TestConvertContentsToTurns:
-  """Tests for convert_contents_to_turns."""
+class TestConvertContentsToSteps:
+  """Tests for convert_contents_to_steps."""
 
   def test_single_content(self):
     """Test converting a list with single content."""
     contents = [
         types.Content(role='user', parts=[types.Part(text='What is 2+2?')]),
     ]
-    result = interactions_utils.convert_contents_to_turns(contents)
+    result = interactions_utils._convert_contents_to_steps(contents)
     assert len(result) == 1
-    assert result[0]['role'] == 'user'
+    assert result[0]['type'] == 'user_input'
     assert result[0]['content'][0]['text'] == 'What is 2+2?'
 
   def test_multi_turn_conversation(self):
@@ -572,11 +660,11 @@ class TestConvertContentsToTurns:
         types.Content(role='model', parts=[types.Part(text='Hello!')]),
         types.Content(role='user', parts=[types.Part(text='How are you?')]),
     ]
-    result = interactions_utils.convert_contents_to_turns(contents)
+    result = interactions_utils._convert_contents_to_steps(contents)
     assert len(result) == 3
-    assert result[0]['role'] == 'user'
-    assert result[1]['role'] == 'model'
-    assert result[2]['role'] == 'user'
+    assert result[0]['type'] == 'user_input'
+    assert result[1]['type'] == 'model_output'
+    assert result[2]['type'] == 'user_input'
 
   def test_empty_content_skipped(self):
     """Test that empty contents are skipped."""
@@ -584,13 +672,13 @@ class TestConvertContentsToTurns:
         types.Content(role='user', parts=[types.Part(text='Hi')]),
         types.Content(role='model', parts=[]),  # Empty parts
     ]
-    result = interactions_utils.convert_contents_to_turns(contents)
+    result = interactions_utils._convert_contents_to_steps(contents)
     # Only the first content should be included
     assert len(result) == 1
 
 
 class TestConvertToolsConfig:
-  """Tests for convert_tools_config_to_interactions_format."""
+  """Tests for _convert_tools_config_to_interactions_format."""
 
   def test_function_declaration(self):
     """Test converting function declarations."""
@@ -651,43 +739,43 @@ class TestConvertToolsConfig:
     assert result == []
 
 
-class TestConvertInteractionOutputToPart:
-  """Tests for convert_interaction_output_to_part."""
+class TestConvertInteractionOutputToParts:
+  """Tests for convert_interaction_output_to_parts."""
 
   def test_text_output(self):
     """Test converting text output."""
-    output = MagicMock()
-    output.type = 'text'
-    output.text = 'Hello!'
-    result = interactions_utils.convert_interaction_output_to_part(output)
+    output = ModelOutputStep(
+        type='model_output', content=[TextContent(type='text', text='Hello!')]
+    )
+    result_list = interactions_utils._convert_interaction_step_to_parts(output)
+    result = result_list[0] if result_list else None
     assert result.text == 'Hello!'
 
   def test_function_call_output(self):
     """Test converting function call output."""
-    output = MagicMock()
-    output.type = 'function_call'
-    output.id = 'call_123'
-    output.name = 'get_weather'
-    output.arguments = {'city': 'London'}
-    result = interactions_utils.convert_interaction_output_to_part(output)
+    output = FunctionCallStep(
+        type='function_call',
+        id='call_123',
+        name='get_weather',
+        arguments={'city': 'London'},
+    )
+    result_list = interactions_utils._convert_interaction_step_to_parts(output)
+    result = result_list[0] if result_list else None
     assert result.function_call.id == 'call_123'
     assert result.function_call.name == 'get_weather'
     assert result.function_call.args == {'city': 'London'}
 
   def test_function_call_output_with_thought_signature(self):
     """Test converting function call output with thought_signature."""
-    output = MagicMock(
-        spec=['type', 'id', 'name', 'arguments', 'thought_signature']
+    output = FunctionCallStep(
+        type='function_call',
+        id='call_sig_123',
+        name='gemini3_tool',
+        arguments={'content': 'hello'},
+        signature=base64.b64encode(b'gemini3_signature').decode('utf-8'),
     )
-    output.type = 'function_call'
-    output.id = 'call_sig_123'
-    output.name = 'gemini3_tool'
-    output.arguments = {'content': 'hello'}
-    # thought_signature is base64 encoded in the output
-    output.thought_signature = base64.b64encode(b'gemini3_signature').decode(
-        'utf-8'
-    )
-    result = interactions_utils.convert_interaction_output_to_part(output)
+    result_list = interactions_utils._convert_interaction_step_to_parts(output)
+    result = result_list[0] if result_list else None
     assert result.function_call.id == 'call_sig_123'
     assert result.function_call.name == 'gemini3_tool'
     assert result.function_call.args == {'content': 'hello'}
@@ -696,88 +784,121 @@ class TestConvertInteractionOutputToPart:
 
   def test_function_call_output_without_thought_signature(self):
     """Test converting function call output without thought_signature."""
-    output = MagicMock(spec=['type', 'id', 'name', 'arguments'])
-    output.type = 'function_call'
-    output.id = 'call_no_sig'
-    output.name = 'regular_tool'
-    output.arguments = {}
-    result = interactions_utils.convert_interaction_output_to_part(output)
+    output = FunctionCallStep(
+        type='function_call',
+        id='call_no_sig',
+        name='regular_tool',
+        arguments={},
+    )
+    result_list = interactions_utils._convert_interaction_step_to_parts(output)
+    result = result_list[0] if result_list else None
     assert result.function_call.id == 'call_no_sig'
     assert result.function_call.name == 'regular_tool'
     # thought_signature should be None
     assert result.thought_signature is None
 
-  def test_function_result_output_with_items_list(self):
-    """Test converting function result output with items list.
-
-    The implementation handles the case where result has an 'items' attribute
-    that returns a list-like structure. This test validates that path.
-    """
-    output = MagicMock()
-    output.type = 'function_result'
-    output.call_id = 'call_123'
-    # Create a mock that has .items returning a dict (for FunctionResponse)
-    output.result = MagicMock()
-    output.result.items = {'weather': 'Sunny'}  # items attribute returns dict
-    result = interactions_utils.convert_interaction_output_to_part(output)
+  def test_function_result_output(self):
+    """Test converting function result output."""
+    output = FunctionResultStep(
+        type='function_result',
+        call_id='call_123',
+        result={'weather': 'Sunny'},
+    )
+    result_list = interactions_utils._convert_interaction_step_to_parts(output)
+    result = result_list[0] if result_list else None
     assert result.function_response.id == 'call_123'
     assert result.function_response.response == {'weather': 'Sunny'}
 
   def test_image_output_with_data(self):
     """Test converting image output with inline data."""
-    output = MagicMock()
-    output.type = 'image'
-    output.data = b'image_bytes'
-    output.uri = None
-    output.mime_type = 'image/png'
-    result = interactions_utils.convert_interaction_output_to_part(output)
+    output = ModelOutputStep(
+        type='model_output',
+        content=[
+            ImageContent(
+                type='image',
+                data=base64.b64encode(b'image_bytes').decode('utf-8'),
+                mime_type='image/png',
+            )
+        ],
+    )
+    result_list = interactions_utils._convert_interaction_step_to_parts(output)
+    result = result_list[0] if result_list else None
     assert result.inline_data.data == b'image_bytes'
     assert result.inline_data.mime_type == 'image/png'
 
   def test_image_output_with_uri(self):
     """Test converting image output with URI."""
-    output = MagicMock()
-    output.type = 'image'
-    output.data = None
-    output.uri = 'gs://bucket/image.png'
-    output.mime_type = 'image/png'
-    result = interactions_utils.convert_interaction_output_to_part(output)
+    output = ModelOutputStep(
+        type='model_output',
+        content=[
+            ImageContent(
+                type='image',
+                uri='gs://bucket/image.png',
+                mime_type='image/png',
+            )
+        ],
+    )
+    result_list = interactions_utils._convert_interaction_step_to_parts(output)
+    result = result_list[0] if result_list else None
     assert result.file_data.file_uri == 'gs://bucket/image.png'
     assert result.file_data.mime_type == 'image/png'
 
   def test_code_execution_result_output(self):
     """Test converting code execution result output."""
-    output = MagicMock()
-    output.type = 'code_execution_result'
-    output.result = 'Output from code'
-    output.is_error = False  # Indicate successful execution
-    result = interactions_utils.convert_interaction_output_to_part(output)
+    output = CodeExecutionResultStep(
+        type='code_execution_result',
+        call_id='',
+        result='Output from code',
+        is_error=False,
+    )
+    result_list = interactions_utils._convert_interaction_step_to_parts(output)
+    result = result_list[0] if result_list else None
     assert result.code_execution_result.output == 'Output from code'
     assert result.code_execution_result.outcome == types.Outcome.OUTCOME_OK
 
   def test_code_execution_result_error_output(self):
     """Test converting code execution result output with error."""
-    output = MagicMock()
-    output.type = 'code_execution_result'
-    output.result = 'Error: division by zero'
-    output.is_error = True  # Indicate failed execution
-    result = interactions_utils.convert_interaction_output_to_part(output)
+    output = CodeExecutionResultStep(
+        type='code_execution_result',
+        call_id='',
+        result='Error: division by zero',
+        is_error=True,
+    )
+    result_list = interactions_utils._convert_interaction_step_to_parts(output)
+    result = result_list[0] if result_list else None
     assert result.code_execution_result.output == 'Error: division by zero'
     assert result.code_execution_result.outcome == types.Outcome.OUTCOME_FAILED
 
-  def test_thought_output_returns_none(self):
-    """Test that thought output returns None (not exposed as Part)."""
-    output = MagicMock()
-    output.type = 'thought'
-    output.signature = 'thinking...'
-    result = interactions_utils.convert_interaction_output_to_part(output)
-    assert result is None
+  def test_thought_output_returns_empty(self):
+    """Test that thought output returns empty list (not exposed as Part)."""
+    output = ThoughtStep(type='thought', signature='thinking...')
+    result = interactions_utils._convert_interaction_step_to_parts(output)
+    assert result == []
 
   def test_no_type_attribute(self):
     """Test handling output without type attribute."""
     output = MagicMock(spec=[])  # No 'type' attribute
-    result = interactions_utils.convert_interaction_output_to_part(output)
-    assert result is None
+    result = interactions_utils._convert_interaction_step_to_parts(output)
+    assert result == []
+
+  def test_code_execution_call_output_uppercase_python(self):
+    """Test converting code execution call output with uppercase PYTHON."""
+    from google.genai.interactions import CodeExecutionCallStep
+
+    mock_args = MagicMock()
+    mock_args.code = 'print("hello")'
+    mock_args.language = 'PYTHON'
+
+    output = CodeExecutionCallStep.model_construct(
+        type='code_execution_call',
+        id='',
+        arguments=mock_args,
+    )
+    result_list = interactions_utils._convert_interaction_step_to_parts(output)
+    result = result_list[0] if result_list else None
+    assert result is not None
+    assert result.executable_code.code == 'print("hello")'
+    assert result.executable_code.language == types.Language.PYTHON
 
 
 class TestConvertInteractionToLlmResponse:
@@ -785,18 +906,19 @@ class TestConvertInteractionToLlmResponse:
 
   def test_successful_text_response(self):
     """Test converting a successful text response."""
-    interaction = MagicMock()
-    interaction.id = 'interaction_123'
-    interaction.status = 'completed'
-    text_output = MagicMock()
-    text_output.type = 'text'
-    text_output.text = 'The answer is 4.'
-    interaction.outputs = [text_output]
-    interaction.usage = MagicMock()
-    interaction.usage.total_input_tokens = 10
-    interaction.usage.total_output_tokens = 5
-    interaction.error = None
-
+    interaction = Interaction(
+        id='interaction_123',
+        status='completed',
+        created=datetime.now(timezone.utc),
+        updated=datetime.now(timezone.utc),
+        steps=[
+            ModelOutputStep(
+                type='model_output',
+                content=[TextContent(type='text', text='The answer is 4.')],
+            )
+        ],
+        usage=Usage(total_input_tokens=10, total_output_tokens=5),
+    )
     result = interactions_utils.convert_interaction_to_llm_response(interaction)
 
     assert result.interaction_id == 'interaction_123'
@@ -808,13 +930,14 @@ class TestConvertInteractionToLlmResponse:
 
   def test_failed_response(self):
     """Test converting a failed response."""
-    interaction = MagicMock()
-    interaction.id = 'interaction_123'
-    interaction.status = 'failed'
-    interaction.outputs = []
-    interaction.error = MagicMock()
-    interaction.error.code = 'INVALID_REQUEST'
-    interaction.error.message = 'Bad request'
+    interaction = Interaction(
+        id='interaction_123',
+        status='failed',
+        created=datetime.now(timezone.utc),
+        updated=datetime.now(timezone.utc),
+        steps=[],
+    )
+    interaction.error = MagicMock(code='INVALID_REQUEST', message='Bad request')
 
     result = interactions_utils.convert_interaction_to_llm_response(interaction)
 
@@ -824,18 +947,20 @@ class TestConvertInteractionToLlmResponse:
 
   def test_requires_action_response(self):
     """Test converting a requires_action response (function call)."""
-    interaction = MagicMock()
-    interaction.id = 'interaction_123'
-    interaction.status = 'requires_action'
-    fc_output = MagicMock()
-    fc_output.type = 'function_call'
-    fc_output.id = 'call_1'
-    fc_output.name = 'get_weather'
-    fc_output.arguments = {'city': 'Paris'}
-    interaction.outputs = [fc_output]
-    interaction.usage = None
-    interaction.error = None
-
+    interaction = Interaction(
+        id='interaction_123',
+        status='requires_action',
+        created=datetime.now(timezone.utc),
+        updated=datetime.now(timezone.utc),
+        steps=[
+            FunctionCallStep(
+                type='function_call',
+                id='call_1',
+                name='get_weather',
+                arguments={'city': 'Paris'},
+            )
+        ],
+    )
     result = interactions_utils.convert_interaction_to_llm_response(interaction)
 
     assert result.interaction_id == 'interaction_123'
@@ -1030,12 +1155,11 @@ class TestConvertInteractionEventToLlmResponse:
 
   def test_text_delta_event(self):
     """Test converting a text delta event."""
-    event = MagicMock()
-    event.event_type = 'content.delta'
-    event.delta = MagicMock()
-    event.delta.type = 'text'
-    event.delta.text = 'Hello world'
-
+    event = StepDelta(
+        event_type='step.delta',
+        index=0,
+        delta={'type': 'text', 'text': 'Hello world'},
+    )
     aggregated_parts = []
     result = interactions_utils.convert_interaction_event_to_llm_response(
         event, aggregated_parts, interaction_id='int_123'
@@ -1047,96 +1171,24 @@ class TestConvertInteractionEventToLlmResponse:
     assert result.interaction_id == 'int_123'
     assert len(aggregated_parts) == 1
 
-  def test_function_call_delta_with_thought_signature(self):
-    """Test converting a function call delta with thought_signature."""
-    event = MagicMock()
-    event.event_type = 'content.delta'
-    event.delta = MagicMock(
-        spec=['type', 'id', 'name', 'arguments', 'thought_signature']
-    )
-    event.delta.type = 'function_call'
-    event.delta.id = 'fc_delta_123'
-    event.delta.name = 'streaming_tool'
-    event.delta.arguments = {'param': 'value'}
-    # thought_signature is base64 encoded in the delta
-    event.delta.thought_signature = base64.b64encode(b'delta_signature').decode(
-        'utf-8'
-    )
-
-    aggregated_parts = []
-    result = interactions_utils.convert_interaction_event_to_llm_response(
-        event, aggregated_parts, interaction_id='int_456'
-    )
-
-    # Function calls return None (added to aggregated_parts only)
-    assert result is None
-    assert len(aggregated_parts) == 1
-    fc_part = aggregated_parts[0]
-    assert fc_part.function_call.id == 'fc_delta_123'
-    assert fc_part.function_call.name == 'streaming_tool'
-    assert fc_part.function_call.args == {'param': 'value'}
-    # thought_signature should be decoded back to bytes
-    assert fc_part.thought_signature == b'delta_signature'
-
-  def test_function_call_delta_without_thought_signature(self):
-    """Test converting a function call delta without thought_signature."""
-    event = MagicMock()
-    event.event_type = 'content.delta'
-    event.delta = MagicMock(spec=['type', 'id', 'name', 'arguments'])
-    event.delta.type = 'function_call'
-    event.delta.id = 'fc_no_sig'
-    event.delta.name = 'regular_tool'
-    event.delta.arguments = {}
-
-    aggregated_parts = []
-    result = interactions_utils.convert_interaction_event_to_llm_response(
-        event, aggregated_parts, interaction_id='int_789'
-    )
-
-    # Function calls return None
-    assert result is None
-    assert len(aggregated_parts) == 1
-    fc_part = aggregated_parts[0]
-    assert fc_part.function_call.name == 'regular_tool'
-    # thought_signature should be None
-    assert fc_part.thought_signature is None
-
-  def test_function_call_delta_without_name_skipped(self):
-    """Test that function call delta without name is skipped."""
-    event = MagicMock()
-    event.event_type = 'content.delta'
-    event.delta = MagicMock(spec=['type', 'id', 'name', 'arguments'])
-    event.delta.type = 'function_call'
-    event.delta.id = 'fc_no_name'
-    event.delta.name = None  # No name
-    event.delta.arguments = {}
-
-    aggregated_parts = []
-    result = interactions_utils.convert_interaction_event_to_llm_response(
-        event, aggregated_parts, interaction_id='int_000'
-    )
-
-    # Should be skipped (no name)
-    assert result is None
-    assert not aggregated_parts
-
   def test_image_delta_with_data(self):
     """Test converting an image delta with inline data."""
-    event = MagicMock()
-    event.event_type = 'content.delta'
-    event.delta = MagicMock()
-    event.delta.type = 'image'
-    event.delta.data = b'image_bytes'
-    event.delta.uri = None
-    event.delta.mime_type = 'image/png'
-
+    event = StepDelta(
+        event_type='step.delta',
+        index=0,
+        delta={
+            'type': 'image',
+            'data': base64.b64encode(b'image_bytes').decode('utf-8'),
+            'mime_type': 'image/png',
+        },
+    )
     aggregated_parts = []
     result = interactions_utils.convert_interaction_event_to_llm_response(
         event, aggregated_parts, interaction_id='int_img'
     )
 
     assert result is not None
-    assert not result.partial
+    assert result.partial
     assert result.content.parts[0].inline_data.data == b'image_bytes'
     assert len(aggregated_parts) == 1
 
@@ -1153,13 +1205,129 @@ class TestConvertInteractionEventToLlmResponse:
     assert result is None
     assert not aggregated_parts
 
+  def test_function_call_streaming_flow(self):
+    """Test the complete streaming flow for function calls (Start, Delta, Stop)."""
+    # 1. StepStart
+    start_event = StepStart(
+        event_type='step.start',
+        index=0,
+        step=FunctionCallStep(
+            type='function_call',
+            id='call_1',
+            name='get_weather',
+            arguments={},
+        ),
+    )
+    aggregated_parts: list[types.Part] = []
+    result1 = interactions_utils.convert_interaction_event_to_llm_response(
+        start_event, aggregated_parts, interaction_id='int_123'
+    )
+
+    assert result1 is not None
+    assert result1.partial is True
+    assert len(aggregated_parts) == 1
+    fc = aggregated_parts[-1].function_call
+    assert fc
+    assert fc.name == 'get_weather'
+    assert fc.id == 'call_1'
+    assert fc.partial_args == []
+
+    # 2. StepDelta
+    delta_event1 = StepDelta(
+        event_type='step.delta',
+        index=0,
+        delta={'type': 'arguments_delta', 'arguments': '{"city": '},
+    )
+    result2 = interactions_utils.convert_interaction_event_to_llm_response(
+        delta_event1, aggregated_parts, interaction_id='int_123'
+    )
+
+    assert result2 is not None
+    assert result2.partial is True
+    assert (
+        result2.content.parts[0].function_call.partial_args[0].string_value
+        == '{"city": '
+    )
+
+    delta_event2 = StepDelta(
+        event_type='step.delta',
+        index=0,
+        delta={'type': 'arguments_delta', 'arguments': '"Paris"}'},
+    )
+    result3 = interactions_utils.convert_interaction_event_to_llm_response(
+        delta_event2, aggregated_parts, interaction_id='int_123'
+    )
+
+    assert result3 is not None
+    assert len(aggregated_parts[0].function_call.partial_args) == 2
+
+    # 3. StepStop
+    stop_event = StepStop(
+        event_type='step.stop',
+        index=0,
+    )
+    result4 = interactions_utils.convert_interaction_event_to_llm_response(
+        stop_event, aggregated_parts, interaction_id='int_123'
+    )
+
+    assert result4 is None
+    assert aggregated_parts[0].function_call.args == {'city': 'Paris'}
+    assert aggregated_parts[0].function_call.partial_args is None
+
+  def test_function_call_streaming_json_parse_error(self, caplog):
+    """Test function call streaming returns an error response on JSON parse error."""
+    # 1. StepStart
+    start_event = StepStart(
+        event_type='step.start',
+        index=0,
+        step=FunctionCallStep(
+            type='function_call',
+            id='call_err',
+            name='bad_json_tool',
+            arguments={},
+        ),
+    )
+    aggregated_parts = []
+    interactions_utils.convert_interaction_event_to_llm_response(
+        start_event, aggregated_parts, interaction_id='int_err'
+    )
+
+    # 2. StepDelta (invalid JSON)
+    delta_event = StepDelta(
+        event_type='step.delta',
+        index=0,
+        delta={'type': 'arguments_delta', 'arguments': '{"broken": "json'},
+    )
+    interactions_utils.convert_interaction_event_to_llm_response(
+        delta_event, aggregated_parts, interaction_id='int_err'
+    )
+
+    # 3. StepStop
+    stop_event = StepStop(
+        event_type='step.stop',
+        index=0,
+    )
+    result = interactions_utils.convert_interaction_event_to_llm_response(
+        stop_event, aggregated_parts, interaction_id='int_err'
+    )
+
+    # Assert an error LlmResponse is returned
+    assert result is not None
+    assert result.error_code == 'JSON_PARSE_ERROR'
+    assert result.error_message == 'Failed to parse function call arguments'
+    assert result.turn_complete is True
+    assert result.interaction_id == 'int_err'
+
+    # The logging check can remain to ensure the raw exception is still logged.
+    assert 'Failed to parse function call args' in caplog.text
+
 
 @pytest.mark.parametrize(
     ('streamed_events_factory', 'expected_ids'),
     [
         pytest.param(
             _build_lifecycle_streamed_events,
-            ['interaction_123', 'interaction_123'],
+            ['interaction_123'],
             id='lifecycle-events',
         ),
         pytest.param(
@@ -1175,11 +1343,12 @@ class TestConvertInteractionEventToLlmResponse:
     ],
 )
 def test_generate_content_via_interactions_stream_extracts_interaction_id(
-    streamed_events_factory: Callable[[], list[object]],
+    streamed_events_factory: Callable[[FunctionCallStep], list[object]],
     expected_ids: list[str],
+    fc_step: FunctionCallStep,
 ):
   """Streamed interaction IDs should be preserved across event variants."""
-  streamed_events = streamed_events_factory()
+  streamed_events = streamed_events_factory(fc_step)
 
   assert (
       asyncio.run(_collect_function_call_interaction_ids(streamed_events))
