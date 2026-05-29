@@ -49,7 +49,6 @@ def create_oauth2_session(
       logger.warning("OpenIdConnect scheme missing token_endpoint")
       return None, None
     token_endpoint = auth_scheme.token_endpoint
-    scopes = auth_scheme.scopes or []
   elif isinstance(auth_scheme, OAuth2):
     # Support both authorization code and client credentials flows
     if (
@@ -57,13 +56,11 @@ def create_oauth2_session(
         and auth_scheme.flows.authorizationCode.tokenUrl
     ):
       token_endpoint = auth_scheme.flows.authorizationCode.tokenUrl
-      scopes = list(auth_scheme.flows.authorizationCode.scopes.keys())
     elif (
         auth_scheme.flows.clientCredentials
         and auth_scheme.flows.clientCredentials.tokenUrl
     ):
       token_endpoint = auth_scheme.flows.clientCredentials.tokenUrl
-      scopes = list(auth_scheme.flows.clientCredentials.scopes.keys())
     else:
       logger.warning(
           "OAuth2 scheme missing required flow configuration. Expected either"
@@ -84,11 +81,12 @@ def create_oauth2_session(
   ):
     return None, None
 
+  # Scope is intentionally omitted: token exchange and refresh don't require
+  # it per RFC 6749, and some providers reject it on these requests.
   return (
       OAuth2Session(
           auth_credential.oauth2.client_id,
           auth_credential.oauth2.client_secret,
-          scope=" ".join(scopes),
           redirect_uri=auth_credential.oauth2.redirect_uri,
           state=auth_credential.oauth2.state,
           token_endpoint_auth_method=auth_credential.oauth2.token_endpoint_auth_method,
