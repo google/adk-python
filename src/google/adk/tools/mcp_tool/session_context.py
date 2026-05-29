@@ -9,7 +9,7 @@
 # Unless required by applicable law or agreed to in writing, software
 # distributed under the License is distributed on an "AS IS" BASIS,
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and:
+# See the License for the specific language governing permissions and
 # limitations under the License.
 
 from __future__ import annotations
@@ -18,12 +18,22 @@ import asyncio
 from contextlib import AsyncExitStack
 from datetime import timedelta
 import logging
+from typing import Any
 from typing import AsyncContextManager
+from typing import Coroutine
 from typing import Optional
+from typing import TypeVar
 
 from mcp import ClientSession
+from mcp import SamplingCapability
+from mcp.client.session import SamplingFnT
+
+from ...features import FeatureName
+from ...features import is_feature_enabled
 
 logger = logging.getLogger('google_adk.' + __name__)
+
+_T = TypeVar('_T')
 
 
 class SessionContext:
@@ -55,8 +65,8 @@ class SessionContext:
       sse_read_timeout: Optional[float],
       is_stdio: bool = False,
       *,
-      sampling_callback: Optional[object] = None,
-      sampling_capabilities: Optional[object] = None,
+      sampling_callback: Optional[SamplingFnT] = None,
+      sampling_capabilities: Optional[SamplingCapability] = None,
   ):
     """
     Args:
@@ -79,6 +89,8 @@ class SessionContext:
     self._close_event = asyncio.Event()
     self._task: Optional[asyncio.Task] = None
     self._task_lock = asyncio.Lock()
+    self._sampling_callback = sampling_callback
+    self._sampling_capabilities = sampling_capabilities
 
   @property
   def session(self) -> Optional[ClientSession]:
