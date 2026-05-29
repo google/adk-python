@@ -32,9 +32,9 @@ def run_command(args: list[str]) -> tuple[int, str, str]:
     return -1, "", str(e)
 
 
-def verify_cla(pr_number: str) -> bool:
-  """Verifies if the Google CLA is signed for the given PR number."""
-  print(f"[*] Fetching status checks for PR #{pr_number}...")
+def fetch_pr_data(pr_number: str) -> dict | None:
+  """Fetches all PR metadata in one shot from GitHub."""
+  print(f"[*] Fetching PR #{pr_number} metadata from GitHub...")
   cmd = [
       "gh",
       "pr",
@@ -43,7 +43,21 @@ def verify_cla(pr_number: str) -> bool:
       "--repo",
       "google/adk-python",
       "--json",
-      "statusCheckRollup",
+      ",".join([
+          "number",
+          "title",
+          "body",
+          "state",
+          "url",
+          "author",
+          "additions",
+          "deletions",
+          "changedFiles",
+          "labels",
+          "statusCheckRollup",
+          "assignees",
+          "closingIssuesReferences",
+      ]),
   ]
   code, stdout, stderr = run_command(cmd)
   if code != 0:
@@ -51,15 +65,17 @@ def verify_cla(pr_number: str) -> bool:
         f"Error: Failed to fetch PR details from GitHub: {stderr}",
         file=sys.stderr,
     )
-    sys.exit(1)
-
+    return None
   try:
-    data = json.loads(stdout)
+    return json.loads(stdout)
   except json.JSONDecodeError:
     print("Error: Failed to parse GitHub API JSON response.", file=sys.stderr)
-    sys.exit(1)
+    return None
 
-  status_checks = data.get("statusCheckRollup", [])
+
+def verify_cla(pr_data: dict) -> bool:
+  """Verifies if the Google CLA is signed using cached PR data."""
+  status_checks = pr_data.get("statusCheckRollup") or []
   cla_check = None
   for check in status_checks:
     if check.get("name") == "cla/google":
@@ -107,6 +123,47 @@ def verify_cla(pr_number: str) -> bool:
 
   print("✅ Google CLA is verified and signed (status SUCCESS).")
   return True
+
+
+def get_current_user() -> str | None:
+  """Fetches the login name of the current authenticated GitHub user."""
+  cmd = ["gh", "api", "user", "-q", ".login"]
+  code, stdout, stderr = run_command(cmd)
+  if code != 0:
+    return None
+  return stdout.strip()
+
+
+def verify_pr_assignment(pr_data: dict, pr_number: str) -> bool:
+  """Checks if the PR is assigned to the current user using cached PR data."""
+  print(f"\n[*] Verifying assignment for PR #{pr_number}...")
+
+  # Fetch the current logged in user
+  current_user = get_current_user()
+  if not current_user:
+    print(
+        "Warning: Could not determine current GitHub user. Skipping assignment"
+        " check."
+    )
+    return True
+
+  print(f"[*] Current GitHub user: {current_user}")
+
+  assignees = pr_data.get("assignees") or []
+  assignee_logins = [a.get("login") for a in assignees if a.get("login")]
+
+  if current_user in assignee_logins:
+    print(f"✅ Pull Request #{pr_number} is assigned to you.")
+    return True
+
+  assignees_str = ", ".join(assignee_logins) if assignee_logins else "None"
+  print(
+      f"⚠️  WARNING: Pull Request #{pr_number} is NOT assigned to you!"
+      f" Current assignees: {assignees_str}"
+  )
+  print("\n[!] ACTION REQUIRED: The Pull Request is not assigned to you.")
+  print("    Please ask the user if they want to take over the PR.")
+  return False
 
 
 def update_pr_branch(pr_number: str) -> None:
@@ -177,11 +234,25 @@ def main() -> None:
   )
   args = parser.parse_args()
 
-  # Step 1: Verify CLA
-  if not verify_cla(args.pr_number):
+  # Step 0: Fetch PR data in one-shot
+  pr_data = fetch_pr_data(args.pr_number)
+  if not pr_data:
+    sys.exit(1)
+
+  # Step 1: Verify CLA using cached PR data
+  if not verify_cla(pr_data):
     sys.exit(2)  # Exit code 2 indicates compliance refusal
 
-  # Step 2: Update branch
+  # Step 2: Output the PR metadata JSON directly to standard output
+  print("\n[PR_METADATA_JSON]")
+  print(json.dumps(pr_data, indent=2))
+  print("[/PR_METADATA_JSON]")
+
+  # Step 3: Verify PR Assignment using cached PR data
+  if not verify_pr_assignment(pr_data, args.pr_number):
+    sys.exit(3)  # Exit code 3 indicates assignment block
+
+  # Step 4: Update branch
   if not args.skip_update:
     update_pr_branch(args.pr_number)
 
