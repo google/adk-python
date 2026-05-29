@@ -13,6 +13,7 @@
 # limitations under the License.
 
 from typing import Optional
+from unittest.mock import AsyncMock
 from unittest.mock import MagicMock
 from unittest.mock import patch
 
@@ -29,6 +30,7 @@ from google.adk.sessions.session import Session
 from google.adk.tools.openapi_tool.auth.auth_helpers import openid_dict_to_scheme_credential
 from google.adk.tools.openapi_tool.auth.auth_helpers import token_to_scheme_credential
 from google.adk.tools.openapi_tool.auth.credential_exchangers.auto_auth_credential_exchanger import OAuth2CredentialExchanger
+from google.adk.tools.openapi_tool.openapi_spec_parser import tool_auth_handler
 from google.adk.tools.openapi_tool.openapi_spec_parser.tool_auth_handler import ToolAuthHandler
 from google.adk.tools.openapi_tool.openapi_spec_parser.tool_auth_handler import ToolContextCredentialStore
 from google.adk.tools.tool_context import ToolContext
@@ -223,9 +225,7 @@ async def test_openid_connect_existing_token(
   assert result.auth_credential == existing_credential
 
 
-@patch(
-    'google.adk.tools.openapi_tool.openapi_spec_parser.tool_auth_handler.OAuth2CredentialRefresher'
-)
+@patch.object(tool_auth_handler, 'OAuth2CredentialRefresher')
 @pytest.mark.asyncio
 async def test_openid_connect_existing_oauth2_token_refresh(
     mock_oauth2_refresher, openid_connect_scheme, openid_connect_credential
@@ -292,3 +292,64 @@ async def test_openid_connect_existing_oauth2_token_refresh(
   assert result.state == 'done'
   # The result should contain the refreshed credential after exchange
   assert result.auth_credential is not None
+
+
+@patch.object(tool_auth_handler, 'OAuth2CredentialRefresher')
+@pytest.mark.asyncio
+async def test_refreshed_credential_is_persisted_to_store(
+    mock_oauth2_refresher, openid_connect_scheme, openid_connect_credential
+):
+  """Test that refreshed OAuth2 credentials are persisted back to the store."""
+  # Create existing OAuth2 credential with an "old" refresh token.
+  existing_credential = AuthCredential(
+      auth_type=AuthCredentialTypes.OPEN_ID_CONNECT,
+      oauth2=OAuth2Auth(
+          client_id='test_client_id',
+          client_secret='test_client_secret',
+          access_token='old_access_token',
+          refresh_token='old_refresh_token',
+      ),
+  )
+
+  # The refresher will return a credential with rotated tokens.
+  refreshed_credential = AuthCredential(
+      auth_type=AuthCredentialTypes.OPEN_ID_CONNECT,
+      oauth2=OAuth2Auth(
+          client_id='test_client_id',
+          client_secret='test_client_secret',
+          access_token='new_access_token',
+          refresh_token='new_refresh_token',
+      ),
+  )
+
+  mock_refresher_instance = MagicMock()
+  mock_refresher_instance.is_refresh_needed = AsyncMock(return_value=True)
+  mock_refresher_instance.refresh = AsyncMock(return_value=refreshed_credential)
+  mock_oauth2_refresher.return_value = mock_refresher_instance
+
+  tool_context = create_mock_tool_context()
+  credential_store = ToolContextCredentialStore(tool_context=tool_context)
+
+  # Store the existing (stale) credential.
+  key = credential_store.get_credential_key(
+      openid_connect_scheme, openid_connect_credential
+  )
+  credential_store.store_credential(key, existing_credential)
+
+  handler = ToolAuthHandler(
+      tool_context,
+      openid_connect_scheme,
+      openid_connect_credential,
+      credential_store=credential_store,
+  )
+
+  await handler.prepare_auth_credentials()
+
+  # The critical assertion: the *refreshed* credential must now be in the
+  # store so that the next invocation reads the new tokens, not the old ones.
+  persisted = credential_store.get_credential(
+      openid_connect_scheme, openid_connect_credential
+  )
+  assert persisted is not None
+  assert persisted.oauth2.access_token == 'new_access_token'
+  assert persisted.oauth2.refresh_token == 'new_refresh_token'

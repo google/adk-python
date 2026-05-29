@@ -252,7 +252,8 @@ class Gemini(BaseLlm):
         aggregator = StreamingResponseAggregator()
         async with Aclosing(responses) as agen:
           async for response in agen:
-            logger.debug(_build_response_log(response))
+            if logger.isEnabledFor(logging.DEBUG):
+              logger.debug(_build_response_log(response))
             async with Aclosing(
                 aggregator.process_response(response)
             ) as aggregator_gen:
@@ -274,7 +275,8 @@ class Gemini(BaseLlm):
             config=llm_request.config,
         )
         logger.info('Response received from the model.')
-        logger.debug(_build_response_log(response))
+        if logger.isEnabledFor(logging.DEBUG):
+          logger.debug(_build_response_log(response))
 
         llm_response = LlmResponse.create(response)
         if cache_metadata:
