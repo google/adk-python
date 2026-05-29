@@ -22,7 +22,6 @@ from . import _code_execution
 from . import _nl_planning
 from . import _output_schema_processor
 from . import basic
-from . import compaction
 from . import contents
 from . import context_cache_processor
 from . import identity
@@ -36,6 +35,7 @@ logger = logging.getLogger('google_adk.' + __name__)
 
 def _create_request_processors():
   """Create the standard request processor list for a single-agent flow."""
+  from . import compaction
   from ...auth import auth_preprocessor
 
   return [
