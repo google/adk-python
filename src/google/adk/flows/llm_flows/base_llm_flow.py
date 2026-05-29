@@ -269,7 +269,10 @@ async def _handle_after_model_callback(
       tools = await agent.canonical_tools(readonly_context)
       invocation_context.canonical_tools_cache = tools
 
-    if not any(tool.name == 'google_search_agent' for tool in tools):
+    if not any(
+        tool.name in {'google_search_agent', 'enterprise_search_agent'}
+        for tool in tools
+    ):
       return response
     ground_metadata = invocation_context.session.state.get(
         'temp:_adk_grounding_metadata', None

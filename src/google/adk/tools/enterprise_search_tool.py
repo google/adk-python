@@ -41,12 +41,18 @@ class EnterpriseWebSearchTool(BaseTool):
 
   """
 
-  def __init__(self):
-    """Initializes the Enterprise Web Search tool."""
+  def __init__(self, *, bypass_multi_tools_limit: bool = False):
+    """Initializes the Enterprise web search tool.
+
+    Args:
+      bypass_multi_tools_limit: Whether to bypass the multi tools limitation,
+        so that the tool can be used with other tools in the same agent.
+    """
     # Name and description are not used because this is a model built-in tool.
     super().__init__(
         name='enterprise_web_search', description='enterprise_web_search'
     )
+    self.bypass_multi_tools_limit = bypass_multi_tools_limit
 
   @override
   async def process_llm_request(

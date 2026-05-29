@@ -1,4 +1,4 @@
-# Copyright 2026 Google LLC
+# Copyright 2025 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -18,39 +18,38 @@ from typing import Union
 
 from ..agents.llm_agent import LlmAgent
 from ..models.base_llm import BaseLlm
-from ..utils.context_utils import Aclosing
-from ._forwarding_artifact_service import ForwardingArtifactService
 from ._search_agent_tool import _SearchAgentTool
-from .google_search_tool import google_search
+from .enterprise_search_tool import enterprise_web_search_tool
 
 
-def create_google_search_agent(model: Union[str, BaseLlm]) -> LlmAgent:
-  """Create a sub-agent that only uses google_search tool."""
+def create_enterprise_search_agent(model: Union[str, BaseLlm]) -> LlmAgent:
+  """Create a sub-agent that only uses enterprise_web_search tool."""
   return LlmAgent(
-      name='google_search_agent',
+      name='enterprise_search_agent',
       model=model,
       description=(
-          'An agent for performing Google search using the `google_search` tool'
+          'An agent for performing Enterprise search using the'
+          ' `enterprise_web_search` tool'
       ),
       instruction="""
-        You are a specialized Google search agent.
+        You are a specialized Enterprise search agent.
 
-        When given a search query, use the `google_search` tool to find the related information.
+        When given a search query, use the `enterprise_web_search` tool to find the related information.
       """,
-      tools=[google_search],
+      tools=[enterprise_web_search_tool],
   )
 
 
-class GoogleSearchAgentTool(_SearchAgentTool):
-  """A tool that wraps a sub-agent that only uses google_search tool.
+class EnterpriseSearchAgentTool(_SearchAgentTool):
+  """A tool that wraps a sub-agent that only uses enterprise_web_search tool.
 
-  This is a workaround to support using google_search tool with other tools.
+  This is a workaround to support using enterprise_web_search tool with other tools.
   TODO(b/448114567): Remove once the workaround is no longer needed.
 
   Attributes:
-    model: The model to use for the sub-agent.
+    agent: The sub-agent that this tool wraps.
   """
 
   def __init__(self, agent: LlmAgent):
     self.agent = agent
-    super().__init__(agent=self.agent, propagate_grounding_metadata=True)
+    super().__init__(agent=self.agent)
