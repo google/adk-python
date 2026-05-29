@@ -160,6 +160,10 @@ class ParallelAgent(BaseAgent):
 
   - Running different algorithms simultaneously.
   - Generating multiple responses for review by a subsequent evaluation agent.
+
+  .. deprecated::
+    ParallelAgent is deprecated and will be removed in future versions.
+    Please use Workflow instead.
   """
 
   config_type: ClassVar[type[BaseAgentConfig]] = ParallelAgentConfig

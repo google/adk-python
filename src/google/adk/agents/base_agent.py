@@ -45,10 +45,12 @@ from ..features import experimental
 from ..features import FeatureName
 from ..telemetry import _instrumentation
 from ..utils.context_utils import Aclosing
-from ..workflow._base_node import BaseNode
-from .base_agent_config import BaseAgentConfig
+from ..workflow import BaseNode
+from .base_agent_config import BaseAgentConfig as BaseAgentConfig
 from .callback_context import CallbackContext
 from .context import Context
+
+__all__ = ['BaseAgentConfig']
 
 if TYPE_CHECKING:
   from .invocation_context import InvocationContext

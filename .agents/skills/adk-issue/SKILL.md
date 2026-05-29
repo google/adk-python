@@ -7,9 +7,14 @@ description: Analyze and triage GitHub issues for the adk-python repository. Use
 
 This skill provides a structured workflow for analyzing, verifying, and triaging GitHub issues from the `google/adk-python` repository. When a user provides a GitHub issue number or link, use this skill to perform deep investigation and report your findings.
 
-## Issue Triage Workflow
+> [!IMPORTANT]
+> ## CRITICAL EXECUTION RULE: STOP AFTER STEP 2
+> * **Phase 1 (Triage & Report) is strictly read-only**: Do NOT modify any code, create new branches, or write any implementation in your first response.
+> * **STOP and ask**: You must present the analysis report first and explicitly ask the user:
+>   > "Would you like me to create and implement a fix for this issue in the workspace? (Note: The changes and tests will be created in a new branch but NOT committed, so you can review and iterate on them.)"
+> * **Wait for Approval**: Only proceed with Phase 2 (Step 3: Implementation) in a subsequent turn *after* the user explicitly approves the recommendation.
 
-Follow this 3-step process to analyze the issue:
+## Phase 1: Triage and Analysis (Read-Only)
 
 ### Step 1: Retrieve and Parse the Issue
 1. **Extract the issue number**: Parse the number from the link or prompt (e.g., `https://github.com/google/adk-python/issues/5882` -> `5882`).
@@ -63,13 +68,15 @@ Search for any existing pull requests that attempt to resolve the issue:
   gh pr view <pr_number> --repo google/adk-python --json number,title,state,url,body,author
   ```
 - **Analyze progress**: Check if the PR is open, merged, or closed, and if it successfully fixes the issue according to the repository's testing patterns.
+- **Present the structured report**: Format and present your findings structured as a premium report following the **Report Template** below.
 - **Offer to create a fix**: If no existing PR is found, you MUST explicitly ask the user: "Would you like me to create and implement a fix for this issue in the workspace? (Note: The changes and tests will be created in a new branch but NOT committed, so you can review and iterate on them.)"
 
 ---
 
-### Step 3: Report & Propose Fix
-1. **Present the structured report**: Follow the **Report Template** below to format your findings.
-2. **Propose a fix**: If there is no existing PR addressing the issue, explicitly ask the user if they would like you to implement the fix in the workspace. When implementing the fix:
+## Phase 2: Implementation (After User Approval)
+
+### Step 3: Propose and Implement Fix
+Once the user has approved the implementation of the fix in the workspace, follow these rules:
    - **Do NOT commit the changes**: Leave them uncommitted in the workspace so the user can review and iterate on them.
    - **Base the branch on remote HEAD**: When creating the new branch, ensure it is based on the remote tracking branch HEAD (`origin/main`), not the current local branch. For example:
      ```bash

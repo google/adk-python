@@ -61,10 +61,10 @@ from ..utils._schema_utils import validate_schema
 from ..utils.context_utils import Aclosing
 from .base_agent import BaseAgent
 from .base_agent import BaseAgentState
-from .base_agent_config import BaseAgentConfig
+from .base_agent_config import BaseAgentConfig as BaseAgentConfig
 from .callback_context import CallbackContext
 from .invocation_context import InvocationContext
-from .llm_agent_config import LlmAgentConfig
+from .llm_agent_config import LlmAgentConfig as LlmAgentConfig
 from .readonly_context import ReadonlyContext
 
 logger = logging.getLogger('google_adk.' + __name__)
@@ -1006,11 +1006,16 @@ class LlmAgent(BaseAgent):
     if self.sub_agents:
       for sub_agent in self.sub_agents:
         if isinstance(sub_agent, LlmAgent):
-          if sub_agent.mode is None:
-            sub_agent.mode = 'chat'
-          if sub_agent.mode == 'single_turn':
+          mode = getattr(sub_agent, 'mode', None)
+          if mode is None:
+            try:
+              sub_agent.mode = 'chat'
+              mode = 'chat'
+            except (AttributeError, TypeError):
+              continue
+          if mode == 'single_turn':
             self.tools.append(_SingleTurnAgentTool(sub_agent))
-          elif sub_agent.mode == 'task':
+          elif mode == 'task':
             self.tools.append(_TaskAgentTool(sub_agent))
 
   @classmethod

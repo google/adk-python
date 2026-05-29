@@ -11,6 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+from __future__ import annotations
 
 import asyncio
 import collections
@@ -753,6 +754,10 @@ async def test_execute_script_python_success(mock_skill1):
   assert "import runpy" in code_input.code
   assert "sys.argv = ['scripts/run.py']" in code_input.code
   assert (
+      "sys.path.insert(0, os.path.dirname(os.path.abspath('scripts/run.py')))"
+      in code_input.code
+  )
+  assert (
       "runpy.run_path('scripts/run.py', run_name='__main__')" in code_input.code
   )
 
@@ -1139,8 +1144,17 @@ async def test_execute_script_extensionless_unsupported(mock_skill1):
 # ── Integration tests using real UnsafeLocalCodeExecutor ──
 
 
-def _make_skill_with_script(skill_name, script_name, script):
+def _make_skill_with_script(
+    skill_name: str, script_name: str, script: models.Script
+) -> models.Skill:
   """Creates a minimal mock Skill with a single script."""
+  return _make_skill_with_scripts(skill_name, {script_name: script})
+
+
+def _make_skill_with_scripts(
+    skill_name: str, scripts: dict[str, models.Script]
+) -> models.Skill:
+  """Creates a minimal mock Skill with scripts."""
   skill = mock.create_autospec(models.Skill, instance=True)
   skill.name = skill_name
   skill.description = f"Test skill {skill_name}"
@@ -1161,16 +1175,14 @@ def _make_skill_with_script(skill_name, script_name, script):
   )
 
   def get_script(name):
-    if name == script_name:
-      return script
-    return None
+    return scripts.get(name)
 
   skill.resources.get_script.side_effect = get_script
   skill.resources.get_reference.return_value = None
   skill.resources.get_asset.return_value = None
   skill.resources.list_references.return_value = []
   skill.resources.list_assets.return_value = []
-  skill.resources.list_scripts.return_value = [script_name]
+  skill.resources.list_scripts.return_value = list(scripts)
   return skill
 
 
@@ -1202,6 +1214,36 @@ async def test_integration_python_stdout():
   assert "status" in result, f"Result missing status: {result}"
   assert result["status"] == "success"
   assert result["stdout"] == "hello world\n"
+  assert result["stderr"] == ""
+
+
+@pytest.mark.asyncio
+async def test_integration_python_imports_sibling_script_module():
+  """Real executor: Python scripts can import helpers from scripts/."""
+  skill = _make_skill_with_scripts(
+      "test_skill",
+      {
+          "run.py": models.Script(
+              src="from helper import message\nprint(message())"
+          ),
+          "helper.py": models.Script(
+              src="def message():\n  return 'hello from helper'"
+          ),
+      },
+  )
+  toolset = _make_real_executor_toolset([skill])
+  tool = skill_toolset.RunSkillScriptTool(toolset)
+  ctx = _make_tool_context_with_agent()
+  result = await tool.run_async(
+      args={
+          "skill_name": "test_skill",
+          "file_path": "run.py",
+      },
+      tool_context=ctx,
+  )
+  assert "status" in result, f"Result missing status: {result}"
+  assert result["status"] == "success"
+  assert result["stdout"] == "hello from helper\n"
   assert result["stderr"] == ""
 
 

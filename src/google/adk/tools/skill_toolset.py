@@ -57,6 +57,7 @@ _BINARY_FILE_DETECTED_MSG = (
     " conversation history for you to analyze."
 )
 
+
 def _build_skill_system_instruction(prefix: str | None = None) -> str:
   p = f"{prefix}_" if prefix else ""
 
@@ -75,7 +76,7 @@ def _build_skill_system_instruction(prefix: str | None = None) -> str:
       "bash.\n\n"
       "This is very important:\n\n"
       f"1. If a skill seems relevant to the current user query, you MUST use "
-      f"the `{p}load_skill` tool with `skill_name=\"<SKILL_NAME>\"` to read "
+      f'the `{p}load_skill` tool with `skill_name="<SKILL_NAME>"` to read '
       "its full instructions before proceeding.\n"
       "2. Once you have read the instructions, follow them exactly as "
       "documented before replying to the user. For example, If the "
@@ -87,7 +88,8 @@ def _build_skill_system_instruction(prefix: str | None = None) -> str:
       "documents or files provided by the user at runtime. Do NOT use "
       "other tools to access skill files.\n"
       f"4. Use `{p}run_skill_script` to run scripts from a skill's `scripts/` "
-      f"directory. Use `{p}load_skill_resource` to view script content first if "
+      f"directory. Use `{p}load_skill_resource` to view script content"
+      " first if "
       "needed.\n"
       f"5. If `{p}load_skill_resource` returns any error, do not retry any "
       "path. Report the error to the user and stop.\n"
@@ -687,6 +689,10 @@ class _SkillScriptCodeExecutor:
 
       code_lines.extend([
           f"      sys.argv = {argv_list!r}",
+          (
+              "      sys.path.insert(0,"
+              f" os.path.dirname(os.path.abspath({file_path!r})))"
+          ),
           "      try:",
           f"        runpy.run_path({file_path!r}, run_name='__main__')",
           "      except SystemExit as e:",
@@ -1106,7 +1112,9 @@ class SkillToolset(BaseToolset):
       self, *, tool_context: ToolContext, llm_request: LlmRequest
   ) -> None:
     """Processes the outgoing LLM request to include available skills."""
-    instructions = [_build_skill_system_instruction(prefix=self.tool_name_prefix)]
+    instructions = [
+        _build_skill_system_instruction(prefix=self.tool_name_prefix)
+    ]
 
     has_list_skills = any(isinstance(t, ListSkillsTool) for t in self._tools)
 
@@ -1134,5 +1142,6 @@ class SkillToolset(BaseToolset):
           cached.cancel()
     self._fetched_skill_cache.clear()
     await super().close()
+
 
 DEFAULT_SKILL_SYSTEM_INSTRUCTION = _build_skill_system_instruction()
