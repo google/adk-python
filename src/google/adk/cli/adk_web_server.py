@@ -21,6 +21,7 @@ from typing_extensions import deprecated
 from .api_server import _parse_cors_origins
 from .api_server import RunAgentRequest
 from .dev_server import DevServer
+from .utils.base_agent_loader import BaseAgentLoader as BaseAgentLoader
 
 logger = logging.getLogger("google_adk." + __name__)
 
