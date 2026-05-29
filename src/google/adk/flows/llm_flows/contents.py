@@ -52,14 +52,22 @@ class _ContentLlmRequestProcessor(BaseLlmRequestProcessor):
       ):
         preserve_function_call_ids = True
       else:
-        # Anthropic pairs tool_use/tool_result by id, so `adk-*` fallback
-        # ids must survive replay.
+        # Some non-Gemini providers pair tool calls/results by id, so `adk-*`
+        # fallback ids must survive replay.
         try:
           from ...models.anthropic_llm import AnthropicLlm
         except (ImportError, OSError):
           AnthropicLlm = None
+        try:
+          from ...labs.openai_responses import OpenAIResponsesLlm
+        except (ImportError, OSError):
+          OpenAIResponsesLlm = None
         if AnthropicLlm is not None and isinstance(
             canonical_model, AnthropicLlm
+        ):
+          preserve_function_call_ids = True
+        if OpenAIResponsesLlm is not None and isinstance(
+            canonical_model, OpenAIResponsesLlm
         ):
           preserve_function_call_ids = True
 
