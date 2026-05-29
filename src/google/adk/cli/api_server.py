@@ -38,6 +38,7 @@ from typing import Optional
 from fastapi import FastAPI
 from fastapi import HTTPException
 from fastapi import Query
+from fastapi import Request
 from fastapi import Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse
@@ -1405,7 +1406,7 @@ class ApiServer:
         _is_visual_builder.set(False)
 
     @app.post("/run", response_model_exclude_none=True)
-    async def run_agent(req: RunAgentRequest) -> list[Event]:
+    async def run_agent(req: RunAgentRequest, request: Request) -> list[Event]:
       app_name = req.app_name or self.default_app_name
       if not app_name:
         raise HTTPException(
@@ -1421,23 +1422,54 @@ class ApiServer:
           if req.custom_metadata
           else None
       )
+
+      async def worker():
+        try:
+          async with Aclosing(
+              runner.run_async(
+                  user_id=req.user_id,
+                  session_id=req.session_id,
+                  new_message=req.new_message,
+                  state_delta=req.state_delta,
+                  invocation_id=req.invocation_id,
+                  run_config=run_config,
+              )
+          ) as agen:
+            return [event async for event in agen]
+        except SessionNotFoundError as e:
+          raise HTTPException(status_code=404, detail=str(e)) from e
+
+      worker_task = asyncio.create_task(worker())
+
+      async def monitor():
+        try:
+          while True:
+            message = await request.receive()
+            if message.get("type") == "http.disconnect":
+              logger.warning(
+                  "Client disconnected. Aborting agent run for session %s.",
+                  req.session_id,
+              )
+              worker_task.cancel()
+              break
+        except asyncio.CancelledError:
+          pass
+        except Exception as e:  # pylint: disable=broad-exception-caught
+          logger.error("Exception in disconnect monitor: %s", e, exc_info=True)
+
+      monitor_task = asyncio.create_task(monitor())
+
       try:
-        async with Aclosing(
-            runner.run_async(
-                user_id=req.user_id,
-                session_id=req.session_id,
-                new_message=req.new_message,
-                state_delta=req.state_delta,
-                invocation_id=req.invocation_id,
-                run_config=run_config,
-            )
-        ) as agen:
-          events = [event async for event in agen]
-      except SessionNotFoundError as e:
-        raise HTTPException(status_code=404, detail=str(e)) from e
-      logger.info("Generated %s events in agent run", len(events))
-      logger.debug("Events generated: %s", events)
-      return events
+        events = await worker_task
+        logger.info("Generated %s events in agent run", len(events))
+        logger.debug("Events generated: %s", events)
+        return events
+      except asyncio.CancelledError:
+        if await request.is_disconnected():
+          return Response(status_code=499)
+        raise
+      finally:
+        monitor_task.cancel()
 
     @app.post("/run_sse")
     async def run_agent_sse(req: RunAgentRequest) -> StreamingResponse:

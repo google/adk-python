@@ -297,15 +297,20 @@ class Runner:
           DeprecationWarning,
       )
 
-    # Normalize to App — wrap bare agent or node.
+    # Normalize to App — wrap bare agent or node. Uses model_construct to
+    # bypass App._validate for the legacy (app_name, agent) API, which v1
+    # accepted with arbitrary names and root_agent types. Direct App(name=...)
+    # construction still validates strictly.
     if agent is not None:
       if not app_name:
         raise ValueError(
             'app_name is required when agent is provided without app.'
         )
-      return App(name=app_name, root_agent=agent, plugins=plugins or [])
+      return App.model_construct(
+          name=app_name, root_agent=agent, plugins=plugins or []
+      )
     if node is not None:
-      return App(
+      return App.model_construct(
           name=app_name or getattr(node, 'name', 'default'),
           root_agent=node,
           plugins=plugins or [],
@@ -583,6 +588,17 @@ class Runner:
             yield event
       finally:
         await self._cleanup_root_task(task, self.agent.name)
+        await ic.plugin_manager.run_after_run_callback(invocation_context=ic)
+        if self.app and self.app.events_compaction_config:
+          logger.debug('Running event compactor.')
+          from google.adk.apps.compaction import _run_compaction_for_sliding_window
+
+          await _run_compaction_for_sliding_window(
+              self.app,
+              session,
+              self.session_service,
+              skip_token_compaction=ic.token_compaction_checked,
+          )
 
   async def _run_node_live(
       self,
@@ -814,7 +830,7 @@ class Runner:
     try:
       await task
     except asyncio.CancelledError:
-      logger.error('Root node %s was cancelled.', node_name)
+      logger.warning('Root node %s was cancelled.', node_name)
     except Exception:
       logger.error('Root node %s failed.', node_name, exc_info=True)
       raise
