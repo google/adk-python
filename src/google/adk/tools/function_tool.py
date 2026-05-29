@@ -124,12 +124,13 @@ class FunctionTool(BaseTool):
     converted_args = args.copy()
     try:
       type_hints = get_type_hints(self.func)
-    except TypeError:
-      # Handle callable objects that are not functions or classes
+    except (TypeError, NameError):
+      # NameError: unresolved forward refs (e.g. recursive type aliases).
+      # TypeError: non-function callables.
       if hasattr(self.func, '__call__'):
         try:
           type_hints = get_type_hints(self.func.__call__)
-        except TypeError:
+        except (TypeError, NameError):
           type_hints = {}
       else:
         type_hints = {}

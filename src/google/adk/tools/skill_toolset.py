@@ -38,6 +38,7 @@ from ..skills import prompt
 from ..skills import SkillRegistry
 from .base_tool import BaseTool
 from .base_toolset import BaseToolset
+from .base_toolset import ToolPredicate
 from .function_tool import FunctionTool
 from .tool_context import ToolContext
 
@@ -56,34 +57,43 @@ _BINARY_FILE_DETECTED_MSG = (
     " conversation history for you to analyze."
 )
 
-DEFAULT_SKILL_SYSTEM_INSTRUCTION = (
-    "You can use specialized 'skills' to help you with complex tasks. "
-    "You MUST use the skill tools to interact with these skills.\n\n"
-    "Skills are folders of instructions and resources that extend your "
-    "capabilities for specialized tasks. Each skill folder contains:\n"
-    "- **SKILL.md** (required): The main instruction file with skill "
-    "metadata and detailed markdown instructions.\n"
-    "- **references/** (Optional): Additional documentation or examples for "
-    "skill usage.\n"
-    "- **assets/** (Optional): Templates, scripts or other resources used by "
-    "the skill.\n"
-    "- **scripts/** (Optional): Executable scripts that can be run via "
-    "bash.\n\n"
-    "This is very important:\n\n"
-    "1. If a skill seems relevant to the current user query, you MUST use "
-    'the `load_skill` tool with `skill_name="<SKILL_NAME>"` to read '
-    "its full instructions before proceeding.\n"
-    "2. Once you have read the instructions, follow them exactly as "
-    "documented before replying to the user. For example, If the "
-    "instruction lists multiple steps, please make sure you complete all "
-    "of them in order.\n"
-    "3. The `load_skill_resource` tool is for viewing files within a "
-    "skill's directory (e.g., `references/*`, `assets/*`, `scripts/*`). "
-    "Do NOT use other tools to access these files.\n"
-    "4. Use `run_skill_script` to run scripts from a skill's `scripts/` "
-    "directory. Use `load_skill_resource` to view script content first if "
-    "needed.\n"
-)
+
+def _build_skill_system_instruction(prefix: str | None = None) -> str:
+  p = f"{prefix}_" if prefix else ""
+
+  return (
+      "You can use specialized 'skills' to help you with complex tasks. "
+      "You MUST use the skill tools to interact with these skills.\n\n"
+      "Skills are folders of instructions and resources that extend your "
+      "capabilities for specialized tasks. Each skill folder contains:\n"
+      "- **SKILL.md** (required): The main instruction file with skill "
+      "metadata and detailed markdown instructions.\n"
+      "- **references/** (Optional): Additional documentation or examples for "
+      "skill usage.\n"
+      "- **assets/** (Optional): Templates, scripts or other resources used by "
+      "the skill.\n"
+      "- **scripts/** (Optional): Executable scripts that can be run via "
+      "bash.\n\n"
+      "This is very important:\n\n"
+      f"1. If a skill seems relevant to the current user query, you MUST use "
+      f'the `{p}load_skill` tool with `skill_name="<SKILL_NAME>"` to read '
+      "its full instructions before proceeding.\n"
+      "2. Once you have read the instructions, follow them exactly as "
+      "documented before replying to the user. For example, If the "
+      "instruction lists multiple steps, please make sure you complete all "
+      "of them in order.\n"
+      f"3. The `{p}load_skill_resource` tool is for viewing files within a "
+      "skill's directory (e.g., `references/*`, `assets/*`, `scripts/*`). "
+      "It is ONLY for skill-bundled files — do NOT use it to access "
+      "documents or files provided by the user at runtime. Do NOT use "
+      "other tools to access skill files.\n"
+      f"4. Use `{p}run_skill_script` to run scripts from a skill's `scripts/` "
+      f"directory. Use `{p}load_skill_resource` to view script content"
+      " first if "
+      "needed.\n"
+      f"5. If `{p}load_skill_resource` returns any error, do not retry any "
+      "path. Report the error to the user and stop.\n"
+  )
 
 
 class ListSkillsTool(BaseTool):
@@ -344,6 +354,23 @@ class LoadSkillResourceTool(BaseTool):
       }
 
     if content is None:
+      # Invocation-scoped failure counter. Counts RESOURCE_NOT_FOUND across ALL
+      # paths so the guard fires even when the LLM hallucinates a different path
+      # on each retry. The `temp:` prefix prevents persistence to durable
+      # session storage; invocation_id isolates in-memory backends.
+      counter_key = f"temp:_adk_skill_resource_not_found_count_{tool_context.invocation_id}"
+      fail_count = int(tool_context.state.get(counter_key) or 0) + 1
+      tool_context.state[counter_key] = fail_count
+      if fail_count > 1:
+        return {
+            "error": (
+                f"Resource '{file_path}' not found in skill '{skill_name}'."
+                f" This is resource lookup failure #{fail_count} this"
+                " invocation. Do not retry any path — report the error to"
+                " the user and stop."
+            ),
+            "error_code": "RESOURCE_NOT_FOUND_FATAL",
+        }
       return {
           "error": f"Resource '{file_path}' not found in skill '{skill_name}'.",
           "error_code": "RESOURCE_NOT_FOUND",
@@ -662,6 +689,10 @@ class _SkillScriptCodeExecutor:
 
       code_lines.extend([
           f"      sys.argv = {argv_list!r}",
+          (
+              "      sys.path.insert(0,"
+              f" os.path.dirname(os.path.abspath({file_path!r})))"
+          ),
           "      try:",
           f"        runpy.run_path({file_path!r}, run_name='__main__')",
           "      except SystemExit as e:",
@@ -899,6 +930,8 @@ class SkillToolset(BaseToolset):
       code_executor: BaseCodeExecutor | None = None,
       script_timeout: int = _DEFAULT_SCRIPT_TIMEOUT,
       additional_tools: list[ToolUnion] | None = None,
+      tool_name_prefix: str | None = None,
+      tool_filter: ToolPredicate | list[str] | None = None,
   ):
     """Initializes the SkillToolset.
 
@@ -911,8 +944,10 @@ class SkillToolset(BaseToolset):
         scripts executed via exec().
       additional_tools: Optional list of `BaseTool` or `BaseToolset` instances
         to be made available to the agent when certain skills are activated.
+      tool_name_prefix: Optional prefix to prepend to tool names.
+      tool_filter: Optional filter to select specific tools.
     """
-    super().__init__()
+    super().__init__(tool_filter=tool_filter, tool_name_prefix=tool_name_prefix)
 
     skills = skills or []
 
@@ -964,7 +999,8 @@ class SkillToolset(BaseToolset):
     dynamic_tools = await self._resolve_additional_tools_from_state(
         readonly_context
     )
-    return self._tools + dynamic_tools
+    all_tools = self._tools + dynamic_tools
+    return [t for t in all_tools if self._is_tool_selected(t, readonly_context)]
 
   async def _resolve_additional_tools_from_state(
       self, readonly_context: ReadonlyContext | None
@@ -1076,7 +1112,9 @@ class SkillToolset(BaseToolset):
       self, *, tool_context: ToolContext, llm_request: LlmRequest
   ) -> None:
     """Processes the outgoing LLM request to include available skills."""
-    instructions = [DEFAULT_SKILL_SYSTEM_INSTRUCTION]
+    instructions = [
+        _build_skill_system_instruction(prefix=self.tool_name_prefix)
+    ]
 
     has_list_skills = any(isinstance(t, ListSkillsTool) for t in self._tools)
 
@@ -1086,9 +1124,10 @@ class SkillToolset(BaseToolset):
       instructions.append(skills_xml)
 
     if self._registry:
+      p = f"{self.tool_name_prefix}_" if self.tool_name_prefix else ""
       instructions.append(
           "\nIf the locally available skills are not sufficient to complete "
-          "your task, you can use the `search_skills` tool to discover "
+          f"your task, you can use the `{p}search_skills` tool to discover "
           "additional skills from the registry."
       )
 
@@ -1103,3 +1142,6 @@ class SkillToolset(BaseToolset):
           cached.cancel()
     self._fetched_skill_cache.clear()
     await super().close()
+
+
+DEFAULT_SKILL_SYSTEM_INSTRUCTION = _build_skill_system_instruction()
