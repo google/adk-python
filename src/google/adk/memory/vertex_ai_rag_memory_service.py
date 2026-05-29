@@ -108,6 +108,13 @@ class VertexAiRagMemoryService(BaseMemoryService):
         vector_distance_threshold: Only returns contexts with vector distance
           smaller than the threshold.
     """
+    try:
+      import vertexai
+    except ImportError as e:
+      from ..utils._dependency import missing_extra
+
+      raise missing_extra("google-cloud-aiplatform", "gcp") from e
+
     self._vertex_rag_store = types.VertexRagStore(
         rag_resources=[
             types.VertexRagStoreRagResource(rag_corpus=rag_corpus),

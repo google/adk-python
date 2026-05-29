@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -129,6 +129,12 @@ class SessionContext:
 
       if not self._task:
         self._task = asyncio.create_task(self._run())
+
+        def _retrieve_exception(t: asyncio.Task):
+          if not t.cancelled():
+            t.exception()
+
+        self._task.add_done_callback(_retrieve_exception)
 
     await self._ready_event.wait()
 
@@ -292,7 +298,17 @@ class SessionContext:
                   sampling_capabilities=self._sampling_capabilities,
               )
           )
-        await asyncio.wait_for(session.initialize(), timeout=self._timeout)
+        # pylint: disable-next=protected-access
+        if is_feature_enabled(FeatureName._MCP_GRACEFUL_ERROR_HANDLING):
+          # Use anyio.fail_after to keep session.initialize within the AnyIO
+          # cancel scope instead of asyncio.wait_for which runs in a nested
+          # task.
+          import anyio
+
+          with anyio.fail_after(self._timeout):
+            await session.initialize()
+        else:
+          await asyncio.wait_for(session.initialize(), timeout=self._timeout)
         logger.debug('Session has been successfully initialized')
 
         self._session = session

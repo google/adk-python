@@ -69,3 +69,26 @@ async def test_with_description():
       == """\
 You are an agent. Your internal name is "agent". The description about you is "test description"."""
   )
+
+
+@pytest.mark.asyncio
+async def test_single_turn_agent():
+  request = LlmRequest(
+      model="gemini-1.5-flash",
+      config=types.GenerateContentConfig(system_instruction=""),
+  )
+  agent = Agent(
+      name="agent",
+      mode="single_turn",
+  )
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent
+  )
+
+  async for _ in identity.request_processor.run_async(
+      invocation_context,
+      request,
+  ):
+    pass
+
+  assert request.config.system_instruction == ""
