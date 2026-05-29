@@ -297,15 +297,20 @@ class Runner:
           DeprecationWarning,
       )
 
-    # Normalize to App — wrap bare agent or node.
+    # Normalize to App — wrap bare agent or node. Uses model_construct to
+    # bypass App._validate for the legacy (app_name, agent) API, which v1
+    # accepted with arbitrary names and root_agent types. Direct App(name=...)
+    # construction still validates strictly.
     if agent is not None:
       if not app_name:
         raise ValueError(
             'app_name is required when agent is provided without app.'
         )
-      return App(name=app_name, root_agent=agent, plugins=plugins or [])
+      return App.model_construct(
+          name=app_name, root_agent=agent, plugins=plugins or []
+      )
     if node is not None:
-      return App(
+      return App.model_construct(
           name=app_name or getattr(node, 'name', 'default'),
           root_agent=node,
           plugins=plugins or [],
@@ -455,6 +460,7 @@ class Runner:
       user_id: str,
       session_id: str,
       new_message: Optional[types.Content] = None,
+      state_delta: Optional[dict[str, Any]] = None,
       run_config: Optional[RunConfig] = None,
       yield_user_message: bool = False,
       node: Optional['BaseNode'] = None,
@@ -512,7 +518,9 @@ class Runner:
 
       # Append user message to session for history
       if new_message:
-        user_event = await self._append_user_event(ic, new_message)
+        user_event = await self._append_user_event(
+            ic, new_message, state_delta=state_delta
+        )
         if yield_user_message and user_event:
           yield user_event
 
@@ -580,6 +588,17 @@ class Runner:
             yield event
       finally:
         await self._cleanup_root_task(task, self.agent.name)
+        await ic.plugin_manager.run_after_run_callback(invocation_context=ic)
+        if self.app and self.app.events_compaction_config:
+          logger.debug('Running event compactor.')
+          from google.adk.apps.compaction import _run_compaction_for_sliding_window
+
+          await _run_compaction_for_sliding_window(
+              self.app,
+              session,
+              self.session_service,
+              skip_token_compaction=ic.token_compaction_checked,
+          )
 
   async def _run_node_live(
       self,
@@ -706,14 +725,26 @@ class Runner:
     return invocation_ids.pop()
 
   async def _append_user_event(
-      self, ic: InvocationContext, content: types.Content
+      self,
+      ic: InvocationContext,
+      content: types.Content,
+      *,
+      state_delta: Optional[dict[str, Any]] = None,
   ) -> Event:
     """Append a user message event to the session and return it."""
-    event = Event(
-        invocation_id=ic.invocation_id,
-        author='user',
-        content=content,
-    )
+    if state_delta:
+      event = Event(
+          invocation_id=ic.invocation_id,
+          author='user',
+          actions=EventActions(state_delta=state_delta),
+          content=content,
+      )
+    else:
+      event = Event(
+          invocation_id=ic.invocation_id,
+          author='user',
+          content=content,
+      )
     # when a paused task delegation is in flight, stamp
     # the new user message with that task's isolation_scope so the
     # task agent's content-build (scoped to <fc_id>) sees it.
@@ -799,7 +830,7 @@ class Runner:
     try:
       await task
     except asyncio.CancelledError:
-      logger.error('Root node %s was cancelled.', node_name)
+      logger.warning('Root node %s was cancelled.', node_name)
     except Exception:
       logger.error('Root node %s failed.', node_name, exc_info=True)
       raise
@@ -989,6 +1020,7 @@ class Runner:
               user_id=user_id,
               session_id=session_id,
               new_message=new_message,
+              state_delta=state_delta,
               run_config=run_config,
               yield_user_message=yield_user_message,
               node=agent_to_run,
@@ -1008,6 +1040,7 @@ class Runner:
               user_id=user_id,
               session_id=session_id,
               new_message=new_message,
+              state_delta=state_delta,
               run_config=run_config,
               yield_user_message=yield_user_message,
           )
