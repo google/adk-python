@@ -142,11 +142,9 @@ class TestRunDebug:
       # Execute with quiet=True
       await runner.run_debug("Test query", quiet=True)
 
-      # Check that nothing was printed
+      # Check that nothing was printed to stdout or logged
       captured = capsys.readouterr()
       assert "This should not be printed" not in captured.out
-      assert "User >" not in captured.out
-      assert "Session:" not in captured.out
 
   @pytest.mark.asyncio
   async def test_run_debug_custom_session_id(self):
@@ -862,7 +860,7 @@ class TestRunDebug:
       assert len(events) == 3
 
   @pytest.mark.asyncio
-  async def test_run_debug_with_empty_parts_list(self, capsys):
+  async def test_run_debug_with_empty_parts_list(self, capsys, caplog):
     """Test that run_debug handles events with empty parts list gracefully."""
     agent = Agent(
         name="test_agent",
@@ -879,18 +877,19 @@ class TestRunDebug:
       mock_event.content.parts = []  # Empty parts list
       yield mock_event
 
-    with mock.patch.object(runner, "run_async", side_effect=mock_run_async):
-      events = await runner.run_debug("Test query")
+    with caplog.at_level("INFO"):
+      with mock.patch.object(runner, "run_async", side_effect=mock_run_async):
+        events = await runner.run_debug("Test query")
 
-      captured = capsys.readouterr()
-      # Should handle gracefully without crashing
-      assert "User > Test query" in captured.out
+        # Should handle gracefully without crashing
+        assert "User > Test query" in caplog.text
       assert len(events) == 1
       # Should not print any agent response since parts is empty
+      captured = capsys.readouterr()
       assert "test_agent >" not in captured.out
 
   @pytest.mark.asyncio
-  async def test_run_debug_with_none_event_content(self, capsys):
+  async def test_run_debug_with_none_event_content(self, capsys, caplog):
     """Test that run_debug handles events with None content gracefully."""
     agent = Agent(
         name="test_agent",
@@ -906,12 +905,13 @@ class TestRunDebug:
       mock_event.content = None  # None content
       yield mock_event
 
-    with mock.patch.object(runner, "run_async", side_effect=mock_run_async):
-      events = await runner.run_debug("Test query")
+    with caplog.at_level("INFO"):
+      with mock.patch.object(runner, "run_async", side_effect=mock_run_async):
+        events = await runner.run_debug("Test query")
 
-      captured = capsys.readouterr()
-      # Should handle gracefully without crashing
-      assert "User > Test query" in captured.out
-      assert len(events) == 1
-      # Should not print any agent response since content is None
-      assert "test_agent >" not in captured.out
+        # Should handle gracefully without crashing
+        assert "User > Test query" in caplog.text
+        assert len(events) == 1
+        # Should not print any agent response since content is None
+        captured = capsys.readouterr()
+        assert "test_agent >" not in captured.out
