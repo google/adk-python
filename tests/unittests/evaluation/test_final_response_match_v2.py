@@ -15,6 +15,8 @@
 from __future__ import annotations
 
 from google.adk.evaluation.eval_case import Invocation
+from google.adk.evaluation.eval_case import InvocationEvent
+from google.adk.evaluation.eval_case import InvocationEvents
 from google.adk.evaluation.eval_metrics import BaseCriterion
 from google.adk.evaluation.eval_metrics import EvalMetric
 from google.adk.evaluation.eval_metrics import EvalStatus
@@ -127,6 +129,8 @@ The answer should be a json alone which follows the json structure below:
 
 def _create_test_evaluator_gemini(
     threshold: float,
+    *,
+    include_intermediate_responses_in_final: bool = False,
 ) -> FinalResponseMatchV2Evaluator:
   evaluator = FinalResponseMatchV2Evaluator(
       EvalMetric(
@@ -134,6 +138,9 @@ def _create_test_evaluator_gemini(
           threshold=threshold,
           criterion=BaseCriterion(
               threshold=0.5,
+              include_intermediate_responses_in_final=(
+                  include_intermediate_responses_in_final
+              ),
           ),
       ),
   )
@@ -168,6 +175,21 @@ def _create_test_invocations(
   return actual_invocation, expected_invocation
 
 
+def _add_intermediate_text(invocation: Invocation, text: str) -> Invocation:
+  invocation.intermediate_data = InvocationEvents(
+      invocation_events=[
+          InvocationEvent(
+              author="agent",
+              content=genai_types.Content(
+                  parts=[genai_types.Part(text=text)],
+                  role="model",
+              ),
+          ),
+      ]
+  )
+  return invocation
+
+
 def test_format_auto_rater_prompt():
   evaluator = _create_test_evaluator_gemini(threshold=0.8)
   actual_invocation, expected_invocation = _create_test_invocations(
@@ -191,6 +213,59 @@ The answer should be a json alone which follows the json structure below:
   "reasoning":
 }
 """
+
+
+def test_format_auto_rater_prompt_uses_empty_text_for_missing_final_response():
+  evaluator = _create_test_evaluator_gemini(threshold=0.8)
+  actual_invocation, expected_invocation = _create_test_invocations(
+      "candidate text", "reference text"
+  )
+  actual_invocation.final_response = None
+  expected_invocation.final_response = None
+
+  prompt = evaluator.format_auto_rater_prompt(
+      actual_invocation, expected_invocation
+  )
+
+  assert "None" not in prompt
+  assert '"Agent response": ,' in prompt
+  assert '"Reference response": ,' in prompt
+
+
+def test_format_auto_rater_prompt_ignores_intermediate_by_default():
+  evaluator = _create_test_evaluator_gemini(threshold=0.8)
+  actual_invocation, expected_invocation = _create_test_invocations(
+      "candidate final", "reference final"
+  )
+  _add_intermediate_text(actual_invocation, "candidate intro")
+  _add_intermediate_text(expected_invocation, "reference intro")
+
+  prompt = evaluator.format_auto_rater_prompt(
+      actual_invocation, expected_invocation
+  )
+
+  assert "candidate final" in prompt
+  assert "reference final" in prompt
+  assert "candidate intro" not in prompt
+  assert "reference intro" not in prompt
+
+
+def test_format_auto_rater_prompt_includes_intermediate_when_enabled():
+  evaluator = _create_test_evaluator_gemini(
+      threshold=0.8, include_intermediate_responses_in_final=True
+  )
+  actual_invocation, expected_invocation = _create_test_invocations(
+      "candidate final", "reference final"
+  )
+  _add_intermediate_text(actual_invocation, "candidate intro")
+  _add_intermediate_text(expected_invocation, "reference intro")
+
+  prompt = evaluator.format_auto_rater_prompt(
+      actual_invocation, expected_invocation
+  )
+
+  assert "candidate intro\ncandidate final" in prompt
+  assert "reference intro\nreference final" in prompt
 
 
 def test_convert_auto_rater_response_to_score_valid():
