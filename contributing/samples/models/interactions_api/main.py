@@ -16,16 +16,10 @@
 
 This script tests the following features:
 1. Basic text generation
-2. Google Search tool (via bypass_multi_tools_limit)
+2. Google Search tool
 3. Multi-turn conversations with stateful interactions
 4. Google Search tool (additional coverage)
 5. Custom function tool (get_current_weather)
-
-NOTE: The Interactions API does NOT support mixing custom function calling tools
-with built-in tools. To work around this, we use bypass_multi_tools_limit=True
-on GoogleSearchTool, which converts it to a function calling tool (via
-GoogleSearchAgentTool). The bypass only triggers when len(agent.tools) > 1,
-so we include both GoogleSearchTool and get_current_weather in the agent.
 
 NOTE: Code execution via UnsafeLocalCodeExecutor is not compatible with function
 calling mode because the model tries to call a function instead of outputting
@@ -41,7 +35,6 @@ import asyncio
 import logging
 from pathlib import Path
 import time
-from typing import Optional
 
 from dotenv import load_dotenv
 from google.adk.agents.run_config import RunConfig
@@ -49,6 +42,7 @@ from google.adk.cli.utils import logs
 from google.adk.runners import InMemoryRunner
 from google.adk.runners import Runner
 from google.genai import types
+import httpx
 
 from .agent import root_agent
 
@@ -67,7 +61,8 @@ async def call_agent_async(
     prompt: str,
     agent_name: str = "",
     show_interaction_id: bool = True,
-) -> tuple[str, Optional[str]]:
+    additional_parts: list[types.Part] | None = None,
+) -> tuple[str, str | None]:
   """Call the agent asynchronously with the user's prompt.
 
   Args:
@@ -77,13 +72,16 @@ async def call_agent_async(
     prompt: The prompt to send
     agent_name: The expected agent name for filtering responses
     show_interaction_id: Whether to show interaction IDs in output
+    additional_parts: Optional list of additional content parts (e.g. files)
 
   Returns:
     A tuple of (response_text, interaction_id)
   """
-  content = types.Content(
-      role="user", parts=[types.Part.from_text(text=prompt)]
-  )
+  parts = [types.Part.from_text(text=prompt)]
+  if additional_parts:
+    parts.extend(additional_parts)
+
+  content = types.Content(role="user", parts=parts)
 
   final_response_text = ""
   last_interaction_id = None
@@ -264,6 +262,39 @@ async def test_custom_function_tool(runner: Runner, session_id: str):
   return interaction_id
 
 
+async def test_pdf_summarization(runner: Runner, session_id: str) -> str | None:
+  """Test PDF summarization using the Interactions API."""
+  print("\n" + "=" * 60)
+  print("TEST 6: PDF Summarization")
+  print("=" * 60)
+
+  url = "https://storage.googleapis.com/cloud-samples-data/generative-ai/pdf/2403.05530.pdf"
+  print(f"Downloading {url}...")
+  async with httpx.AsyncClient() as client:
+    response = await client.get(
+        url, headers={"User-Agent": "Mozilla/5.0"}, follow_redirects=True
+    )
+    response.raise_for_status()
+    pdf_bytes = response.content
+
+  pdf_part = types.Part.from_bytes(data=pdf_bytes, mime_type="application/pdf")
+  response, interaction_id = await call_agent_async(
+      runner,
+      USER_ID,
+      session_id,
+      "Please summarize the attached PDF document.",
+      additional_parts=[pdf_part],
+  )
+
+  assert response, "Expected a non-empty response"
+  assert len(response) > 0, f"Expected summary in response: {response}"
+  assert (
+      "gemini" in response.lower() or "multimodal" in response.lower()
+  ), f"Expected summary of PDF in response: {response}"
+  print("PASSED: PDF Summarization works")
+  return interaction_id
+
+
 def check_interactions_api_available() -> bool:
   """Check if the interactions API is available in the SDK."""
   try:
@@ -311,6 +342,7 @@ async def run_all_tests():
     await test_multi_turn_conversation(runner, session.id)
     await test_google_search_tool(runner, session.id)
     await test_custom_function_tool(runner, session.id)
+    await test_pdf_summarization(runner, session.id)
 
     print("\n" + "=" * 60)
     print("ALL TESTS PASSED (Interactions API)")
