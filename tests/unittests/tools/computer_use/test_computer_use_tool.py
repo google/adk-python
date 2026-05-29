@@ -420,6 +420,124 @@ class TestComputerUseTool:
     # Verify llm_request is unchanged (process_llm_request is now a no-op)
     assert llm_request.tools_dict == {}
 
+  @pytest.mark.asyncio
+  async def test_run_async_with_safety_confirmation(
+      self, mock_computer_function, tool_context
+  ):
+    """Test run_async with safety confirmation."""
+    from google.adk.tools.tool_confirmation import ToolConfirmation
+
+    # Set up a proper signature for the mock function
+    def dummy_func():
+      pass
+
+    # Create a specific mock function for this test
+    calls = []
+    mock_state = ComputerState(
+        screenshot=b"test_screenshot", url="https://example.com"
+    )
+
+    async def specific_mock_func():
+      calls.append(())
+      return mock_state
+
+    specific_mock_func.__name__ = "dummy_func"
+    specific_mock_func.__signature__ = inspect.signature(dummy_func)
+    specific_mock_func.calls = calls
+
+    tool = ComputerUseTool(func=specific_mock_func, screen_size=(1920, 1080))
+    tool_context.function_call_id = "test_fc_id"
+
+    # Test case 1: require confirmation, not yet confirmed
+    args = {"safety_decision": {"decision": "require_confirmation"}}
+    result = await tool.run_async(args=args, tool_context=tool_context)
+
+    # Check that confirmation was requested
+    assert "test_fc_id" in tool_context.actions.requested_tool_confirmations
+    assert (
+        tool_context.actions.requested_tool_confirmations["test_fc_id"].hint
+        == "This computer use action requires safety confirmation."
+    )
+    assert result == {
+        "error": (
+            "This tool call requires confirmation, please approve or reject."
+        )
+    }
+    assert len(calls) == 0
+
+    # Test case 2: confirmed
+    tool_context.tool_confirmation = ToolConfirmation(confirmed=True)
+    result = await tool.run_async(args=args, tool_context=tool_context)
+
+    # Should execute normally
+    assert len(calls) == 1
+    assert result == {
+        "image": {
+            "mimetype": "image/png",
+            "data": base64.b64encode(b"test_screenshot").decode("utf-8"),
+        },
+        "url": "https://example.com",
+        "safety_acknowledgement": "true",
+    }
+
+    # Test case 3: rejected
+    tool_context.tool_confirmation = ToolConfirmation(confirmed=False)
+    result = await tool.run_async(args=args, tool_context=tool_context)
+    assert result == {"error": "This tool call is rejected."}
+
+  @pytest.mark.asyncio
+  async def test_run_async_with_safety_decision_dict(
+      self, mock_computer_function, tool_context
+  ):
+    """Test run_async with safety decision as a dictionary."""
+    from google.adk.tools.tool_confirmation import ToolConfirmation
+
+    # Set up a proper signature for the mock function
+    def dummy_func():
+      pass
+
+    calls = []
+    mock_state = ComputerState(screenshot=b"test", url="https://example.com")
+
+    async def specific_mock_func():
+      calls.append(())
+      return mock_state
+
+    specific_mock_func.__name__ = "dummy_func"
+    specific_mock_func.__signature__ = inspect.signature(dummy_func)
+    specific_mock_func.calls = calls
+
+    tool = ComputerUseTool(func=specific_mock_func, screen_size=(1920, 1080))
+    tool_context.function_call_id = "test_fc_id_dict"
+
+    args = {
+        "safety_decision": {
+            "explanation": (
+                "I need you to complete the challenge by clicking the 'I'm not"
+                " a robot' checkbox."
+            ),
+            "decision": "require_confirmation",
+        }
+    }
+    result = await tool.run_async(args=args, tool_context=tool_context)
+
+    assert (
+        "test_fc_id_dict" in tool_context.actions.requested_tool_confirmations
+    )
+    assert (
+        tool_context.actions.requested_tool_confirmations[
+            "test_fc_id_dict"
+        ].hint
+        == "I need you to complete the challenge by clicking the 'I'm not a"
+        " robot' checkbox."
+    )
+    assert result == {
+        "error": (
+            "This tool call requires confirmation, please approve or reject."
+        )
+    }
+    assert len(calls) == 0
+
   def test_inheritance(self, mock_computer_function):
     """Test that ComputerUseTool inherits from FunctionTool."""
     from google.adk.tools.function_tool import FunctionTool

@@ -39,6 +39,16 @@ from .base_agent_loader import BaseAgentLoader
 
 logger = logging.getLogger("google_adk." + __name__)
 
+
+def is_single_agent_directory(path: Path | str) -> bool:
+  """Returns True if the directory contains a single agent configuration or file."""
+  p = Path(path).resolve()
+  return (
+      p.joinpath("agent.py").is_file()
+      or p.joinpath("root_agent.yaml").is_file()
+  )
+
+
 # Special agents directory for agents with names starting with double underscore
 SPECIAL_AGENTS_DIR = os.path.join(
     os.path.dirname(__file__), "..", "built_in_agents"
@@ -60,9 +70,35 @@ class AgentLoader(BaseAgentLoader):
   """
 
   def __init__(self, agents_dir: str):
-    self.agents_dir = str(Path(agents_dir))
+    agents_path = Path(agents_dir).resolve()
+    is_single_agent = is_single_agent_directory(agents_path)
+    if is_single_agent:
+      self._is_single_agent = True
+      self._single_agent_name = agents_path.name
+      self.agents_dir = str(agents_path.parent)
+    else:
+      self._is_single_agent = False
+      self._single_agent_name = None
+      self.agents_dir = str(agents_path)
+
     self._original_sys_path = None
     self._agent_cache: dict[str, Union[BaseAgent, App]] = {}
+
+  @property
+  def is_single_agent(self) -> bool:
+    """Returns True if the loader is in single agent mode."""
+    return self._is_single_agent
+
+  @property
+  def single_agent_name(self) -> Optional[str]:
+    """Returns the name of the agent in single agent mode."""
+    return self._single_agent_name
+
+  def _set_single_agent_mode(self, name: str, agents_dir: str) -> None:
+    """Internal method to force single agent mode. Use with care."""
+    self._is_single_agent = True
+    self._single_agent_name = name
+    self.agents_dir = agents_dir
 
   def _load_from_module_or_package(
       self, agent_name: str
@@ -82,7 +118,9 @@ class AgentLoader(BaseAgentLoader):
       # Check for "root_agent" directly in "{agent_name}" module/package
       elif hasattr(module_candidate, "root_agent"):
         logger.debug("Found root_agent directly in %s", agent_name)
-        if isinstance(module_candidate.root_agent, BaseAgent):
+        from ...workflow._base_node import BaseNode
+
+        if isinstance(module_candidate.root_agent, (BaseAgent, BaseNode)):
           return module_candidate.root_agent
         else:
           logger.warning(
@@ -129,7 +167,9 @@ class AgentLoader(BaseAgentLoader):
         return module_candidate.app
       elif hasattr(module_candidate, "root_agent"):
         logger.info("Found root_agent in %s.agent", agent_name)
-        if isinstance(module_candidate.root_agent, BaseAgent):
+        from ...workflow._base_node import BaseNode
+
+        if isinstance(module_candidate.root_agent, (BaseAgent, BaseNode)):
           return module_candidate.root_agent
         else:
           logger.warning(
@@ -199,6 +239,13 @@ class AgentLoader(BaseAgentLoader):
     else:
       name_to_check = agent_name
       check_dir = self.agents_dir
+
+    if self._is_single_agent and not agent_name.startswith("__"):
+      if agent_name != self._single_agent_name:
+        raise ValueError(
+            f"Agent not found: {agent_name!r}. In single agent mode, only "
+            f"'{self._single_agent_name}' is accessible."
+        )
 
     if not self._VALID_AGENT_NAME_RE.match(name_to_check):
       raise ValueError(
@@ -344,7 +391,8 @@ class AgentLoader(BaseAgentLoader):
 
     if isinstance(loaded, App):
       _attach_metadata(loaded)
-      _attach_metadata(loaded.root_agent)
+      if loaded.root_agent is not None:
+        _attach_metadata(loaded.root_agent)
     else:
       _attach_metadata(loaded)
 
@@ -363,6 +411,8 @@ class AgentLoader(BaseAgentLoader):
   @override
   def list_agents(self) -> list[str]:
     """Lists all agents available in the agent loader (sorted alphabetically)."""
+    if self._is_single_agent:
+      return [self._single_agent_name]
     base_path = Path.cwd() / self.agents_dir
     agent_names = [
         x
