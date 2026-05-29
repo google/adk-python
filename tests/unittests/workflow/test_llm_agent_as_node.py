@@ -1093,6 +1093,35 @@ async def test_chat_mode_yields_events_directly():
   assert events[0].output is None
 
 
+def test_chat_mode_agent_following_non_start_raises_validation_error():
+  """Wiring a chat-mode agent following a non-START node raises ValueError."""
+  agent = _make_v1_agent(mode='chat')
+  predecessor = TestingNode(name='pred', output='some output')
+
+  with pytest.raises(ValueError) as exc_info:
+    Workflow(
+        name='wf',
+        edges=[('START', predecessor), (predecessor, agent)],
+    )
+
+  assert (
+      "The agent 'test_v1_agent' has been added to the workflow with"
+      " mode='chat' following node 'pred'."
+      in str(exc_info.value)
+  )
+
+
+def test_chat_mode_agent_from_start_allowed():
+  """Wiring a chat-mode agent directly from START is allowed and validated without error."""
+  agent = _make_v1_agent(mode='chat')
+
+  wf = Workflow(
+      name='wf',
+      edges=[('START', agent)],
+  )
+  assert wf.graph is not None
+
+
 @pytest.mark.asyncio
 async def test_three_layer_llm_agent_transfer_round_trip(
     request: pytest.FixtureRequest,
