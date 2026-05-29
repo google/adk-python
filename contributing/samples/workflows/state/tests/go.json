@@ -1,0 +1,91 @@
+{
+  "appName": "state",
+  "events": [
+    {
+      "author": "user",
+      "content": {
+        "parts": [
+          {
+            "text": "go"
+          }
+        ],
+        "role": "user"
+      },
+      "id": "e-1",
+      "invocationId": "i-1",
+      "nodeInfo": {
+        "path": ""
+      }
+    },
+    {
+      "actions": {
+        "stateDelta": {
+          "original_text": "go"
+        }
+      },
+      "author": "state_sample",
+      "id": "e-2",
+      "invocationId": "i-1",
+      "nodeInfo": {
+        "outputFor": [
+          "state_sample@1/process_initial_input@1"
+        ],
+        "path": "state_sample@1/process_initial_input@1"
+      },
+      "output": "go"
+    },
+    {
+      "actions": {
+        "stateDelta": {
+          "uppercased_text": "GO"
+        }
+      },
+      "author": "state_sample",
+      "id": "e-3",
+      "invocationId": "i-1",
+      "nodeInfo": {
+        "path": "state_sample@1/update_state_via_event@1"
+      }
+    },
+    {
+      "actions": {
+        "stateDelta": {
+          "appended_text": "GO (Original was: go)"
+        }
+      },
+      "author": "state_sample",
+      "id": "e-4",
+      "invocationId": "i-1",
+      "nodeInfo": {
+        "outputFor": [
+          "state_sample@1/read_state_via_ctx@1"
+        ],
+        "path": "state_sample@1/read_state_via_ctx@1"
+      },
+      "output": "GO (Original was: go)"
+    },
+    {
+      "author": "state_sample",
+      "id": "e-5",
+      "invocationId": "i-1",
+      "nodeInfo": {
+        "outputFor": [
+          "state_sample@1/read_state_via_param@1",
+          "state_sample@1"
+        ],
+        "path": "state_sample@1/read_state_via_param@1"
+      },
+      "output": "Final Result: GO (Original was: go)!"
+    }
+  ],
+  "id": "89d894be-5d57-4d5c-9a29-ccc15b3b5eb7",
+  "state": {
+    "__session_metadata__": {
+      "displayName": "go"
+    },
+    "appended_text": "GO (Original was: go)",
+    "original_text": "go",
+    "uppercased_text": "GO"
+  },
+  "userId": "user"
+}
