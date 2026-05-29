@@ -85,9 +85,24 @@ class PluginManager:
     """
     self.plugins: List[BasePlugin] = []
     self._close_timeout = close_timeout
+    self._skip_closing_plugins = False
     if plugins:
       for plugin in plugins:
         self.register_plugin(plugin)
+
+  def set_skip_closing_plugins(self, value: bool) -> None:
+    """Controls whether `close()` will tear down the registered plugins.
+
+    Set to True when the plugins are owned by another component (e.g. a parent
+    `Runner` whose plugin list this manager is sharing). When set, subsequent
+    calls to `close()` become a no-op so the shared plugins are not torn down
+    while still in use.
+
+    Args:
+      value: True to skip closing the plugins; False (default) to close them
+        normally.
+    """
+    self._skip_closing_plugins = value
 
   def register_plugin(self, plugin: BasePlugin) -> None:
     """Registers a new plugin.
@@ -309,10 +324,19 @@ class PluginManager:
   async def close(self) -> None:
     """Calls the close method on all registered plugins concurrently.
 
+    If this manager was constructed with `skip_closing_plugins=True`, this
+    method is a no-op so plugins owned by another component (e.g. a parent
+    `Runner`) are not torn down while still in use.
+
     Raises:
       RuntimeError: If one or more plugins failed to close, containing
         details of all failures.
     """
+    if self._skip_closing_plugins:
+      logger.debug(
+          "Skipping plugin close; plugins are owned by another component."
+      )
+      return
     exceptions = {}
     # We iterate sequentially to avoid creating new tasks which can cause issues
     # with some libraries (like anyio/mcp) that rely on task-local context.

@@ -14,6 +14,10 @@ For all matters regarding ADK development, please use the appropriate skill:
   - Read `.agents/skills/adk-git/SKILL.md` for full instructions.
 - **`adk-sample-creator`**: Use this skill when creating new samples demonstrating features or agent patterns, or when adding examples to subdirectories under `contributing/`.
   - Read `.agents/skills/adk-sample-creator/SKILL.md` for full instructions.
+- **`adk-review`**: Use this skill to review local changes for errors, style compliance, unintended outcomes, and to check if associated design docs, guides, samples, or tests need updates.
+  - Read `.agents/skills/adk-review/SKILL.md` for full instructions.
+- **`adk-issue`**: Use this skill when analyzing and triaging GitHub issues for the adk-python repository to verify legitimacy, recommend fixes, and check for existing PRs.
+  - Read `.agents/skills/adk-issue/SKILL.md` for full instructions.
 
 ## Project Overview
 

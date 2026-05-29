@@ -124,12 +124,13 @@ class FunctionTool(BaseTool):
     converted_args = args.copy()
     try:
       type_hints = get_type_hints(self.func)
-    except TypeError:
-      # Handle callable objects that are not functions or classes
+    except (TypeError, NameError):
+      # NameError: unresolved forward refs (e.g. recursive type aliases).
+      # TypeError: non-function callables.
       if hasattr(self.func, '__call__'):
         try:
           type_hints = get_type_hints(self.func.__call__)
-        except TypeError:
+        except (TypeError, NameError):
           type_hints = {}
       else:
         type_hints = {}
@@ -148,6 +149,24 @@ class FunctionTool(BaseTool):
             ]
             if len(non_none_types) == 1:
               target_type = non_none_types[0]
+            elif len(non_none_types) > 1 and all(
+                inspect.isclass(t) and issubclass(t, pydantic.BaseModel)
+                for t in non_none_types
+            ):
+              if args[param_name] is None or isinstance(
+                  args[param_name], tuple(non_none_types)
+              ):
+                continue
+              try:
+                converted_args[param_name] = pydantic.TypeAdapter(
+                    param.annotation
+                ).validate_python(args[param_name])
+              except Exception as e:
+                logger.warning(
+                    f"Failed to convert argument '{param_name}' to"
+                    f' {param.annotation}: {e}'
+                )
+              continue
 
           # Check if the target type is a Pydantic model
           if inspect.isclass(target_type) and issubclass(
@@ -254,6 +273,12 @@ You could retry calling this tool, but it is IMPORTANT for you to provide all th
         return {'error': 'This tool call is rejected.'}
 
     return await self._invoke_callable(self.func, args_to_call)
+
+  def _detect_error_in_response(self, response: Any) -> Optional[str]:
+    """Telemetry hook: returns an error type if the response indicates an error."""
+    if isinstance(response, dict) and response.get('error'):
+      return 'TOOL_ERROR'
+    return None
 
   async def _invoke_callable(
       self, target: Callable[..., Any], args_to_call: dict[str, Any]
