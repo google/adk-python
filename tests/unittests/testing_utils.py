@@ -346,6 +346,9 @@ class MockModel(BaseLlm):
           list[types.Part], list[LlmResponse], list[str], list[list[types.Part]]
       ],
       error: Union[Exception, None] = None,
+      usage_metadata: Optional[
+          types.GenerateContentResponseUsageMetadata
+      ] = None,
   ):
     if error and not responses:
       return cls(responses=[], error=error)
@@ -356,14 +359,18 @@ class MockModel(BaseLlm):
       return cls(responses=responses)
     else:
       responses = [
-          LlmResponse(content=ModelContent(item))
+          LlmResponse(
+              content=ModelContent(item),
+              usage_metadata=usage_metadata,
+          )
           if isinstance(item, list) and isinstance(item[0], types.Part)
           # responses is list[list[Part]]
           else LlmResponse(
               content=ModelContent(
                   # responses is list[str] or list[Part]
                   [Part(text=item) if isinstance(item, str) else item]
-              )
+              ),
+              usage_metadata=usage_metadata,
           )
           for item in responses
           if item

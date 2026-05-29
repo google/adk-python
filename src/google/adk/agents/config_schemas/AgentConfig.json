@@ -155,7 +155,6 @@
       "title": "ApiSpec",
       "type": "string"
     },
-
     "AuthConfig": {
       "additionalProperties": false,
       "description": "The authentication config to access the API.",
@@ -422,6 +421,7 @@
     },
     "BaseAgentConfig": {
       "additionalProperties": true,
+      "deprecated": true,
       "description": "The config for the YAML schema of a BaseAgent.\n\nDo not use this class directly. It's the base class for all agent configs.",
       "properties": {
         "agent_class": {
@@ -564,7 +564,7 @@
     },
     "CodeConfig": {
       "additionalProperties": false,
-      "description": "Code reference config for a variable, a function, or a class.\n\nThis config is used for configuring callbacks and tools.",
+      "description": "Code reference config for a variable, a function, or a class.\n\nOnly references an object by name. YAML cannot pass constructor args; to\nuse a configured object, build it in Python and reference its FQN here.",
       "properties": {
         "name": {
           "title": "Name",
@@ -2045,11 +2045,7 @@
               "type": "object"
             },
             {
-              "description": "Fallback for invalid schema: core_schema.IsInstanceSchema (<class 'types.UnionType'>)",
-              "type": "object"
-            },
-            {
-              "description": "Fallback for invalid schema: core_schema.IsInstanceSchema (<class 'typing._UnionGenericAlias'>)",
+              "description": "Fallback for invalid schema: core_schema.IsInstanceSchema (<class 'typing.Union'>)",
               "type": "object"
             },
             {
@@ -2286,7 +2282,7 @@
             }
           ],
           "default": null,
-          "description": "Enables enhanced civic answers. It may not be available for all\n      models. This field is not supported in Vertex AI.\n      ",
+          "description": "Enables enhanced civic answers. It may not be available for all\n      models. This field is not supported in Gemini Enterprise Agent Platform.\n      ",
           "title": "Enableenhancedcivicanswers"
         },
         "modelArmorConfig": {
@@ -2674,7 +2670,7 @@
             }
           ],
           "default": null,
-          "description": "Extra parameters to add to the request body.\n      The structure must match the backend API's request structure.\n      - VertexAI backend API docs: https://cloud.google.com/vertex-ai/docs/reference/rest\n      - GeminiAPI backend API docs: https://ai.google.dev/api/rest",
+          "description": "Extra parameters to add to the request body.\n      The structure must match the backend API's request structure.\n      - Gemini Enterprise Agent Platform backend API docs: https://cloud.google.com/vertex-ai/docs/reference/rest\n      - GeminiAPI backend API docs: https://ai.google.dev/api/rest",
           "title": "Extrabody"
         },
         "retryOptions": {
@@ -3085,6 +3081,7 @@
     },
     "LlmAgentConfig": {
       "additionalProperties": false,
+      "deprecated": true,
       "description": "The config for the YAML schema of a LlmAgent.",
       "properties": {
         "agent_class": {
@@ -3162,7 +3159,7 @@
             }
           ],
           "default": null,
-          "description": "Optional. LlmAgent.model. Provide a model name string (e.g. \"gemini-2.5-flash\"). If not set, the model will be inherited from the ancestor or fall back to the system default (gemini-2.5-flash unless overridden via LlmAgent.set_default_model). To construct a model instance from code, use model_code.",
+          "description": "Optional. LlmAgent.model. Provide a model name string (e.g. \"gemini-3-flash-preview\"). If not set, the model will be inherited from the ancestor or fall back to the system default (gemini-3-flash-preview unless overridden via LlmAgent.set_default_model). To construct a model instance from code, use model_code.",
           "title": "Model"
         },
         "model_code": {
@@ -3403,6 +3400,7 @@
     },
     "LoopAgentConfig": {
       "additionalProperties": false,
+      "deprecated": true,
       "description": "The config for the YAML schema of a LoopAgent.",
       "properties": {
         "agent_class": {
@@ -3625,6 +3623,7 @@
     },
     "ParallelAgentConfig": {
       "additionalProperties": false,
+      "deprecated": true,
       "description": "The config for the YAML schema of a ParallelAgent.",
       "properties": {
         "agent_class": {
@@ -4837,6 +4836,7 @@
     },
     "SequentialAgentConfig": {
       "additionalProperties": false,
+      "deprecated": true,
       "description": "The config for the YAML schema of a SequentialAgent.",
       "properties": {
         "agent_class": {
@@ -6092,6 +6092,7 @@
       "type": "object"
     }
   },
+  "deprecated": true,
   "description": "The config for the YAML schema to create an agent.",
   "oneOf": [
     {

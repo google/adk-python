@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from __future__ import annotations
 
 from contextlib import asynccontextmanager
 import importlib
@@ -453,12 +454,6 @@ def get_fast_api_app(
   Returns:
     The configured FastAPI application instance.
   """
-
-  # Enable denylist enforcement for config loads if web UI is enabled.
-  if web:
-    from ..agents import config_agent_utils
-
-    config_agent_utils._set_enforce_denylist(True)
 
   # Detect single agent mode
   agents_path = Path(agents_dir).resolve()
