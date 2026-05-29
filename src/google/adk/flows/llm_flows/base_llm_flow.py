@@ -39,8 +39,11 @@ from ...agents.run_config import StreamingMode
 from ...auth.auth_tool import AuthConfig
 from ...events.event import Event
 from ...models.base_llm_connection import BaseLlmConnection
+from ...models.google_llm import Gemini
+from ...models.google_llm import GoogleLLMVariant
 from ...models.llm_request import LlmRequest
 from ...models.llm_response import LlmResponse
+from ...telemetry import _instrumentation
 from ...telemetry import tracing
 from ...telemetry.tracing import trace_call_llm
 from ...telemetry.tracing import trace_send_data
@@ -374,18 +377,14 @@ async def _run_and_handle_error(
     return None
 
   try:
-    async with Aclosing(response_generator) as agen:
-      async with tracing.use_inference_span(
-          llm_request,
-          invocation_context,
-          model_response_event,
-      ) as gc_span:
+    async with _instrumentation.record_inference_telemetry(
+        llm_request,
+        invocation_context,
+        model_response_event,
+    ) as tel_ctx:
+      async with Aclosing(response_generator) as agen:
         async for llm_response in agen:
-          if gc_span:
-            tracing.trace_inference_result(
-                gc_span,
-                llm_response,
-            )
+          tel_ctx.record_llm_response(llm_response)
           yield llm_response
   except Exception as model_error:
     callback_context = CallbackContext(
@@ -517,7 +516,18 @@ class BaseLlmFlow(ABC):
           llm_request.live_connect_config.session_resumption.handle = (
               invocation_context.live_session_resumption_handle
           )
-          llm_request.live_connect_config.session_resumption.transparent = True
+
+          # Only set transparent=True for Vertex AI backend, as the Gemini API
+          # backend explicitly rejects it.
+          if (
+              isinstance(llm, Gemini)
+              and llm._api_backend == GoogleLLMVariant.VERTEX_AI  # pylint: disable=protected-access
+          ):
+            session_resumption = (
+                llm_request.live_connect_config.session_resumption
+            )
+            if session_resumption.transparent is None:
+              session_resumption.transparent = True
 
         logger.info(
             'Establishing live connection for agent: %s',
