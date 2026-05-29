@@ -46,7 +46,7 @@ class Event(LlmResponse):
 
   invocation_id: str = ''
   """The invocation ID of the event. Should be non-empty before appending to a session."""
-  author: str
+  author: str = ''
   """'user' or the name of the agent, indicating who appended the event to the
   session."""
   actions: EventActions = Field(default_factory=EventActions)
