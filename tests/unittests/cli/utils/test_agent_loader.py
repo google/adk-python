@@ -308,11 +308,21 @@ class TestAgentLoader:
     del self
     windows_path = "C:\\Users\\dev\\agents\\"
 
+    class MockWindowsPath(PureWindowsPath):
+
+      def resolve(self):
+        return self
+
     with monkeypatch.context() as m:
       m.setattr(
           agent_loader_module,
           "Path",
-          lambda path_str: PureWindowsPath(path_str),
+          MockWindowsPath,
+      )
+      m.setattr(
+          agent_loader_module,
+          "is_single_agent_directory",
+          lambda path: False,
       )
       loader = AgentLoader(windows_path)
 
@@ -458,7 +468,7 @@ class TestAgentLoader:
   def test_sys_path_modification(self):
     """Test that agents_dir is added to sys.path correctly."""
     with tempfile.TemporaryDirectory() as temp_dir:
-      temp_path = Path(temp_dir)
+      temp_path = Path(temp_dir).resolve()
 
       # Create agent
       self.create_agent_structure(temp_path, "path_agent", "module")

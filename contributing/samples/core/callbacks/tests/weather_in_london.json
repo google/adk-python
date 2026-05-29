@@ -1,0 +1,89 @@
+{
+  "events": [
+    {
+      "author": "user",
+      "content": {
+        "parts": [
+          {
+            "text": "weather in London"
+          }
+        ],
+        "role": "user"
+      },
+      "id": "e-1",
+      "invocationId": "i-1",
+      "nodeInfo": {
+        "path": ""
+      }
+    },
+    {
+      "author": "callback_demo_agent",
+      "content": {
+        "parts": [
+          {
+            "functionCall": {
+              "args": {
+                "city": "London"
+              },
+              "id": "fc-1",
+              "name": "get_weather"
+            }
+          },
+          {
+            "text": "\n\nafter_model_callback: [Token Usage: Input=22, Output=5]"
+          }
+        ],
+        "role": "model"
+      },
+      "finishReason": "STOP",
+      "id": "e-2",
+      "invocationId": "i-1",
+      "longRunningToolIds": [],
+      "nodeInfo": {
+        "path": "callback_demo_agent@1"
+      }
+    },
+    {
+      "author": "callback_demo_agent",
+      "content": {
+        "parts": [
+          {
+            "functionResponse": {
+              "id": "fc-1",
+              "name": "get_weather",
+              "response": {
+                "result": "Weather in London is always rainy (intercepted by callback)."
+              }
+            }
+          }
+        ],
+        "role": "user"
+      },
+      "id": "e-3",
+      "invocationId": "i-1",
+      "nodeInfo": {
+        "path": "callback_demo_agent@1"
+      }
+    },
+    {
+      "author": "callback_demo_agent",
+      "content": {
+        "parts": [
+          {
+            "text": "The weather in London is always rainy (intercepted by callback)."
+          },
+          {
+            "text": "\n\nafter_model_callback: [Token Usage: Input=133, Output=13]"
+          }
+        ],
+        "role": "model"
+      },
+      "finishReason": "STOP",
+      "id": "e-4",
+      "invocationId": "i-1",
+      "nodeInfo": {
+        "path": "callback_demo_agent@1"
+      }
+    }
+  ]
+}
