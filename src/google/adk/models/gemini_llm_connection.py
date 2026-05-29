@@ -159,7 +159,12 @@ class GeminiLlmConnection(BaseLlmConnection):
     else:
       raise ValueError('Unsupported input type: %s' % type(input))
 
-  def __build_full_text_response(self, text: str, is_thought: bool = False):
+  def __build_full_text_response(
+      self,
+      text: str,
+      is_thought: bool = False,
+      grounding_metadata: types.GroundingMetadata | None = None,
+  ):
     """Builds a full text response.
 
     The text should not be partial and the returned LlmResponse is not
@@ -168,6 +173,7 @@ class GeminiLlmConnection(BaseLlmConnection):
     Args:
       text: The text to be included in the response.
       is_thought: Whether the text is a thought.
+      grounding_metadata: The grounding metadata to include.
 
     Returns:
       An LlmResponse containing the full text.
@@ -180,6 +186,7 @@ class GeminiLlmConnection(BaseLlmConnection):
             role='model',
             parts=[part],
         ),
+        grounding_metadata=grounding_metadata,
         partial=False,
         live_session_id=self._gemini_session.session_id,
     )
@@ -194,6 +201,7 @@ class GeminiLlmConnection(BaseLlmConnection):
     text = ''
     is_thought = False
     tool_call_parts = []
+    pending_grounding_metadata = None
     async with Aclosing(self._gemini_session.receive()) as agen:
       # TODO(b/440101573): Reuse StreamingResponseAggregator to accumulate
       # partial content and emit responses as needed.
@@ -209,6 +217,10 @@ class GeminiLlmConnection(BaseLlmConnection):
           )
         if message.server_content:
           content = message.server_content.model_turn
+          if message.server_content.grounding_metadata:
+            pending_grounding_metadata = (
+                message.server_content.grounding_metadata
+            )
 
           # Standalone grounding_metadata event (when content is empty)
           if (
@@ -221,6 +233,9 @@ class GeminiLlmConnection(BaseLlmConnection):
                 interrupted=message.server_content.interrupted,
                 model_version=self._model_version,
                 live_session_id=live_session_id,
+                turn_complete_reason=getattr(
+                    message.server_content, 'turn_complete_reason', None
+                ),
             )
 
           if content and content.parts:
@@ -229,6 +244,9 @@ class GeminiLlmConnection(BaseLlmConnection):
                 interrupted=message.server_content.interrupted,
                 model_version=self._model_version,
                 live_session_id=live_session_id,
+                turn_complete_reason=getattr(
+                    message.server_content, 'turn_complete_reason', None
+                ),
             )
             # grounding_metadata is yielded again at turn_complete,
             # so avoid duplicating it here if turn_complete is true.
@@ -338,10 +356,14 @@ class GeminiLlmConnection(BaseLlmConnection):
               )
               self._output_transcription_text = ''
           if message.server_content.turn_complete:
+            g_metadata_to_yield = pending_grounding_metadata
             if text:
-              yield self.__build_full_text_response(text, is_thought)
+              yield self.__build_full_text_response(
+                  text, is_thought, g_metadata_to_yield
+              )
               text = ''
               is_thought = False
+              g_metadata_to_yield = None
             if tool_call_parts:
               logger.debug('Returning aggregated tool_call_parts')
               yield LlmResponse(
@@ -353,9 +375,13 @@ class GeminiLlmConnection(BaseLlmConnection):
             yield LlmResponse(
                 turn_complete=True,
                 interrupted=message.server_content.interrupted,
-                grounding_metadata=message.server_content.grounding_metadata,
+                grounding_metadata=message.server_content.grounding_metadata
+                or g_metadata_to_yield,
                 model_version=self._model_version,
                 live_session_id=live_session_id,
+                turn_complete_reason=getattr(
+                    message.server_content, 'turn_complete_reason', None
+                ),
             )
             break
           # in case of empty content or parts, we still surface it
