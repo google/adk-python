@@ -1381,6 +1381,45 @@ def test_agent_run_passes_invocation_id(
   assert captured_invocation_id["invocation_id"] == payload["invocation_id"]
 
 
+def test_agent_run_passes_custom_metadata(
+    test_app, create_test_session, monkeypatch
+):
+  """Test /run forwards custom_metadata via the run config."""
+  info = create_test_session
+  captured: dict[str, Optional[RunConfig]] = {"run_config": None}
+
+  async def run_async_capture(
+      self,
+      *,
+      user_id: str,
+      session_id: str,
+      invocation_id: Optional[str] = None,
+      new_message: Optional[types.Content] = None,
+      state_delta: Optional[dict[str, Any]] = None,
+      run_config: Optional[RunConfig] = None,
+  ):
+    del self, user_id, session_id, invocation_id, new_message, state_delta
+    captured["run_config"] = run_config
+    yield _event_1()
+
+  monkeypatch.setattr(Runner, "run_async", run_async_capture)
+
+  payload = {
+      "app_name": info["app_name"],
+      "user_id": info["user_id"],
+      "session_id": info["session_id"],
+      "new_message": {"role": "user", "parts": [{"text": "Hello"}]},
+      "streaming": False,
+      "custom_metadata": {"tenant": "acme", "trace": "abc123"},
+  }
+
+  response = test_app.post("/run", json=payload)
+
+  assert response.status_code == 200
+  assert captured["run_config"] is not None
+  assert captured["run_config"].custom_metadata == payload["custom_metadata"]
+
+
 def test_agent_run_sse_splits_artifact_delta(
     test_app, create_test_session, monkeypatch
 ):
@@ -2934,6 +2973,95 @@ def test_single_agent_mode_sets_default_app(
     response = client.get("/users/test_user/sessions/test_session")
     assert response.status_code == 200
     assert response.json()["id"] == "test_session"
+
+
+def test_agent_run_disconnect_aborts_run(
+    test_app, create_test_session, monkeypatch
+):
+  """Test that /run endpoint aborts agent execution on client disconnect.
+
+  Verifies that when the client connection is dropped during an active agent
+  run:
+  1. The background agent execution generator task is cancelled.
+  2. The endpoint returns a clean 499 (Client Closed Request) status code.
+  """
+  import starlette.requests
+
+  info = create_test_session
+  trigger_disconnect: dict[str, bool] = {"value": False}
+  was_cancelled: dict[str, bool] = {"value": False}
+
+  async def run_async_mock(
+      self,
+      *,
+      user_id: str,
+      session_id: str,
+      invocation_id: Optional[str] = None,
+      new_message: Optional[types.Content] = None,
+      state_delta: Optional[dict[str, Any]] = None,
+      run_config: Optional[RunConfig] = None,
+  ):
+    del (
+        self,
+        user_id,
+        session_id,
+        invocation_id,
+        new_message,
+        state_delta,
+        run_config,
+    )
+    try:
+      # Yield first pulse event
+      yield _event_1()
+      # Simulate connection drop mid-run
+      trigger_disconnect["value"] = True
+      # Run a long async operation to allow the monitor to trigger cancellation
+      await asyncio.sleep(1.0)
+      yield _event_2()
+    except asyncio.CancelledError:
+      was_cancelled["value"] = True
+      raise
+
+  monkeypatch.setattr(Runner, "run_async", run_async_mock)
+
+  # Monkeypatch starlette.requests.Request.__init__ to inject simulated disconnect
+  original_init = starlette.requests.Request.__init__
+
+  def custom_init(self, *args, **kwargs):
+    original_init(self, *args, **kwargs)
+    original_receive = self._receive
+    call_count = 0
+
+    async def mock_receive():
+      nonlocal call_count
+      call_count += 1
+      if call_count == 1:
+        return await original_receive()
+
+      # Subsequent calls block until simulated connection drop is triggered
+      while not trigger_disconnect["value"]:
+        await asyncio.sleep(0.01)
+      return {"type": "http.disconnect"}
+
+    self._receive = mock_receive
+    self.__dict__["receive"] = mock_receive
+
+  monkeypatch.setattr(starlette.requests.Request, "__init__", custom_init)
+
+  payload = {
+      "app_name": info["app_name"],
+      "user_id": info["user_id"],
+      "session_id": info["session_id"],
+      "new_message": {"role": "user", "parts": [{"text": "Hello agent"}]},
+      "streaming": False,
+  }
+
+  # When standard /run POST request is initiated and mid-run connection drop occurs
+  response = test_app.post("/run", json=payload)
+
+  # Then the response status should be 499 and the running generator was cancelled
+  assert response.status_code == 499
+  assert was_cancelled["value"] is True
 
 
 if __name__ == "__main__":
