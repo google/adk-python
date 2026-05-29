@@ -81,6 +81,12 @@ class LlmResponse(BaseModel):
   Only used for streaming mode.
   """
 
+  turn_complete_reason: Optional[types.TurnCompleteReason] = None
+  """The reason why the turn is complete.
+
+  Only used for streaming mode.
+  """
+
   finish_reason: Optional[types.FinishReason] = None
   """The finish reason of the response."""
 
