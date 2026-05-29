@@ -28,7 +28,9 @@ from ..events.event import Event
 from ..utils.context_utils import Aclosing
 from .base_agent import BaseAgent
 from .base_agent import BaseAgentState
+from .base_agent_config import BaseAgentConfig
 from .invocation_context import InvocationContext
+from .parallel_agent_config import ParallelAgentConfig
 
 
 def _create_branch_ctx_for_sub_agent(
@@ -158,6 +160,17 @@ class ParallelAgent(BaseAgent):
 
   - Running different algorithms simultaneously.
   - Generating multiple responses for review by a subsequent evaluation agent.
+
+  .. deprecated::
+    ParallelAgent is deprecated and will be removed in future versions.
+    Please use Workflow instead.
+  """
+
+  config_type: ClassVar[type[BaseAgentConfig]] = ParallelAgentConfig
+  """The config type for this agent.
+
+  DEPRECATED: This attribute is deprecated and will be removed in a future
+  version, along with the AgentConfig YAML loader.
   """
 
   @override
