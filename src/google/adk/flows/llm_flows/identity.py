@@ -34,7 +34,7 @@ class _IdentityLlmRequestProcessor(BaseLlmRequestProcessor):
       self, invocation_context: InvocationContext, llm_request: LlmRequest
   ) -> AsyncGenerator[Event, None]:
     agent = invocation_context.agent
-    if agent.mode != 'single_turn':
+    if getattr(agent, 'mode', None) != 'single_turn':
       si = f'You are an agent. Your internal name is "{agent.name}".'
       if agent.description:
         si += f' The description about you is "{agent.description}".'
