@@ -775,3 +775,19 @@ def test_get_next_pending_nodes() -> None:
       'NodeA', routes_to_match=['route1', 'unknown_route']
   )
   assert set(next_nodes) == {'NodeB', 'NodeC'}
+
+
+def test_chat_agent_wiring_validation_only_runs_on_llm_agent() -> None:
+  """Tests that _validate_chat_agent_wiring checks non-LlmAgent nodes safely."""
+  node_a = TestingNode(name='NodeA')
+  node_b = TestingNode(name='NodeB')
+  # Set mode='chat' on a non-LlmAgent node
+  object.__setattr__(node_b, 'mode', 'chat')
+
+  graph = Graph(
+      edges=[
+          Edge(from_node=START, to_node=node_a),
+          Edge(from_node=node_a, to_node=node_b),
+      ],
+  )
+  graph.validate_graph()  # Should not raise because node_b is a TestingNode, not LlmAgent
