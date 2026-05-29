@@ -298,7 +298,17 @@ class SessionContext:
                   sampling_capabilities=self._sampling_capabilities,
               )
           )
-        await asyncio.wait_for(session.initialize(), timeout=self._timeout)
+        # pylint: disable-next=protected-access
+        if is_feature_enabled(FeatureName._MCP_GRACEFUL_ERROR_HANDLING):
+          # Use anyio.fail_after to keep session.initialize within the AnyIO
+          # cancel scope instead of asyncio.wait_for which runs in a nested
+          # task.
+          import anyio
+
+          with anyio.fail_after(self._timeout):
+            await session.initialize()
+        else:
+          await asyncio.wait_for(session.initialize(), timeout=self._timeout)
         logger.debug('Session has been successfully initialized')
 
         self._session = session

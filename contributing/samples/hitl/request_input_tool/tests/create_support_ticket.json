@@ -1,0 +1,159 @@
+{
+  "events": [
+    {
+      "author": "user",
+      "content": {
+        "parts": [
+          {
+            "text": "I want to file a technical ticket for a database crash."
+          }
+        ],
+        "role": "user"
+      },
+      "id": "e-1",
+      "invocationId": "i-1",
+      "nodeInfo": {
+        "path": ""
+      }
+    },
+    {
+      "author": "support_assistant_agent",
+      "content": {
+        "parts": [
+          {
+            "functionCall": {
+              "args": {
+                "message": "I can help with that. Please provide the description and priority of the database crash:",
+                "response_schema": {
+                  "properties": {
+                    "description": {
+                      "description": "Detailed explanation of the database crash problem.",
+                      "title": "Description",
+                      "type": "string"
+                    },
+                    "priority": {
+                      "description": "Ticket priority: LOW, MEDIUM, HIGH, or CRITICAL.",
+                      "title": "Priority",
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "description",
+                    "priority"
+                  ],
+                  "title": "TicketClarification",
+                  "type": "object"
+                }
+              },
+              "id": "fc-1",
+              "name": "adk_request_input"
+            }
+          }
+        ],
+        "role": "model"
+      },
+      "finishReason": "STOP",
+      "id": "e-2",
+      "invocationId": "i-1",
+      "longRunningToolIds": [
+        "fc-1"
+      ],
+      "nodeInfo": {
+        "path": "support_assistant_agent@1"
+      }
+    },
+    {
+      "author": "user",
+      "content": {
+        "parts": [
+          {
+            "functionResponse": {
+              "id": "fc-1",
+              "name": "adk_request_input",
+              "response": {
+                "description": "The MySQL server is throwing OOM errors and restarting repeatedly.",
+                "priority": "HIGH"
+              }
+            }
+          }
+        ],
+        "role": "user"
+      },
+      "id": "e-3",
+      "invocationId": "i-1",
+      "nodeInfo": {
+        "path": ""
+      }
+    },
+    {
+      "author": "support_assistant_agent",
+      "content": {
+        "parts": [
+          {
+            "functionCall": {
+              "args": {
+                "ticket": {
+                  "category": "database",
+                  "description": "The MySQL server is throwing OOM errors and restarting repeatedly.",
+                  "priority": "HIGH",
+                  "title": "Database crash"
+                }
+              },
+              "id": "fc-2",
+              "name": "create_support_ticket"
+            }
+          }
+        ],
+        "role": "model"
+      },
+      "finishReason": "STOP",
+      "id": "e-4",
+      "invocationId": "i-1",
+      "longRunningToolIds": [],
+      "nodeInfo": {
+        "path": "support_assistant_agent@1"
+      }
+    },
+    {
+      "author": "support_assistant_agent",
+      "content": {
+        "parts": [
+          {
+            "functionResponse": {
+              "id": "fc-2",
+              "name": "create_support_ticket",
+              "response": {
+                "message": "Successfully created ticket 'Database crash' [Category: database, Priority: HIGH].",
+                "status": "success",
+                "ticket_id": "INC-98471"
+              }
+            }
+          }
+        ],
+        "role": "user"
+      },
+      "id": "e-5",
+      "invocationId": "i-1",
+      "nodeInfo": {
+        "path": "support_assistant_agent@1"
+      }
+    },
+    {
+      "author": "support_assistant_agent",
+      "content": {
+        "parts": [
+          {
+            "text": "Successfully created ticket 'Database crash' [Category: database, Priority: HIGH] with ticket ID INC-98471."
+          }
+        ],
+        "role": "model"
+      },
+      "finishReason": "STOP",
+      "id": "e-6",
+      "invocationId": "i-1",
+      "nodeInfo": {
+        "path": "support_assistant_agent@1"
+      }
+    }
+  ]
+}
