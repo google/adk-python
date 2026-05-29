@@ -17,12 +17,11 @@ from __future__ import annotations
 import contextlib
 import dataclasses
 import logging
+import sys
 import time
 from typing import Any
 from typing import AsyncIterator
 from typing import TYPE_CHECKING
-
-logger = logging.getLogger("google_adk." + __name__)
 
 from opentelemetry import trace
 import opentelemetry.context as context_api
@@ -34,16 +33,24 @@ from ..events import event as event_lib
 if TYPE_CHECKING:
   from ..agents.base_agent import BaseAgent
   from ..agents.invocation_context import InvocationContext
+  from ..models.llm_request import LlmRequest
+  from ..models.llm_response import LlmResponse
   from ..tools.base_tool import BaseTool
 
+logger = logging.getLogger("google_adk." + __name__)
 
-def _get_elapsed_ms(span: trace.Span | None, fallback_start: float) -> float:
+
+def _get_elapsed_ms(
+    span: trace.Span | tracing.GenerateContentSpan | None,
+    fallback_start: float,
+) -> float:
   """Guarantees consistent time source for duration calculation.
 
   Note: This must be called with an ended span.
 
   Args:
-    span (trace.Span | None): The ended span to extract duration from.
+    span (trace.Span | tracing.GenerateContentSpan | None): The ended span to
+      extract duration from.
     fallback_start (float): Fallback start time in seconds (monotonic).
 
   Returns:
@@ -52,6 +59,7 @@ def _get_elapsed_ms(span: trace.Span | None, fallback_start: float) -> float:
   if span is None:
     return (time.monotonic() - fallback_start) * 1000
 
+  span = span.span if hasattr(span, "span") else span
   start_ns = getattr(span, "start_time", None)
   end_ns = getattr(span, "end_time", None)
 
@@ -66,15 +74,46 @@ def _get_elapsed_ms(span: trace.Span | None, fallback_start: float) -> float:
 class TelemetryContext:
   """Stores all telemetry related state."""
 
-  otel_context: context_api.Context
+  otel_context: context_api.Context | None = None
   function_response_event: event_lib.Event | None = None
+  error_type: str | None = None
+  span: tracing.GenerateContentSpan | trace.Span | None = None
+  _llm_responses: list[LlmResponse] = dataclasses.field(default_factory=list)
+
+  @property
+  def llm_responses(self) -> list[LlmResponse]:
+    return self._llm_responses
+
+  def record_llm_response(self, response: LlmResponse) -> None:
+    self._llm_responses.append(response)
+    tracing.trace_inference_result(self.span, response)
+
+
+def _record_agent_metrics(
+    agent_name: str,
+    elapsed_ms: float,
+    user_content: Any,
+    events: Any,
+    caught_error: Exception | None,
+) -> None:
+  try:
+    _metrics.record_agent_invocation_duration(
+        agent_name,
+        elapsed_ms,
+        caught_error,
+    )
+    _metrics.record_agent_request_size(agent_name, user_content)
+    _metrics.record_agent_response_size(agent_name, events)
+    _metrics.record_agent_workflow_steps(agent_name, events)
+  except Exception:  # pylint: disable=broad-exception-caught
+    logger.exception("Failed to record agent metrics for agent %s", agent_name)
 
 
 @contextlib.asynccontextmanager
 async def record_agent_invocation(
     ctx: InvocationContext, agent: BaseAgent
 ) -> AsyncIterator[TelemetryContext]:
-  """Unified context manager for consolidated metrics and tracing."""
+  """Unified context manager for consolidated agent invocation telemetry."""
   start_time = time.monotonic()
   caught_error: Exception | None = None
   span: trace.Span | None = None
@@ -90,19 +129,13 @@ async def record_agent_invocation(
     raise
   finally:
     elapsed_ms = _get_elapsed_ms(span, start_time)
-    try:
-      _metrics.record_agent_invocation_duration(
-          agent.name,
-          elapsed_ms,
-          caught_error,
-      )
-      _metrics.record_agent_request_size(agent.name, ctx.user_content)
-      _metrics.record_agent_response_size(agent.name, ctx.session.events)
-      _metrics.record_agent_workflow_steps(agent.name, ctx.session.events)
-    except Exception:  # pylint: disable=broad-exception-caught
-      logger.exception(
-          "Failed to record agent metrics for agent %s", agent.name
-      )
+    _record_agent_metrics(
+        agent.name,
+        elapsed_ms,
+        getattr(ctx, "user_content", None),
+        getattr(getattr(ctx, "session", None), "events", []),
+        caught_error,
+    )
 
 
 @contextlib.asynccontextmanager
@@ -134,6 +167,7 @@ async def record_tool_execution(
             args=function_args,
             function_response_event=response_event,
             error=caught_error,
+            error_type=tel_ctx.error_type,
         )
   finally:
     try:
@@ -146,4 +180,50 @@ async def record_tool_execution(
     except Exception:  # pylint: disable=broad-exception-caught
       logger.exception(
           "Failed to record tool execution duration for tool %s", tool.name
+      )
+
+
+@contextlib.asynccontextmanager
+async def record_inference_telemetry(
+    llm_request: LlmRequest,
+    invocation_context: InvocationContext,
+    model_response_event: event_lib.Event,
+) -> AsyncIterator[TelemetryContext]:
+  """Unified async context manager for consolidated inference metrics."""
+  start_time = time.monotonic()
+  tel_ctx: TelemetryContext = TelemetryContext()
+  try:
+    async with tracing.use_inference_span(
+        llm_request,
+        invocation_context,
+        model_response_event,
+    ) as gc_span:
+      tel_ctx.span = gc_span
+      yield tel_ctx
+  finally:
+    inference_error = sys.exc_info()[1]
+    elapsed_ms = _get_elapsed_ms(tel_ctx.span, start_time)
+    agent = invocation_context.agent
+    try:
+      if agent is not None and tracing._should_emit_native_telemetry(agent):
+        _metrics.record_client_operation_duration(
+            agent_name=agent.name,
+            elapsed_ms=elapsed_ms,
+            llm_request=llm_request,
+            responses=tel_ctx.llm_responses,
+            error=(
+                inference_error
+                if isinstance(inference_error, Exception)
+                else None
+            ),
+        )
+        _metrics.record_client_token_usage(
+            agent_name=agent.name,
+            llm_request=llm_request,
+            responses=tel_ctx.llm_responses,
+        )
+    except Exception:  # pylint: disable=broad-exception-caught
+      logger.exception(
+          "Failed to record inference metrics for agent %s",
+          agent.name if agent is not None else "<unknown>",
       )

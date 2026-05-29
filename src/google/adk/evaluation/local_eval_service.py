@@ -217,17 +217,24 @@ class LocalEvalService(BaseEvalService):
         for inference_result in evaluate_request.inference_results
     ]
 
+    results_by_set = {}
+
     for evaluation_task in asyncio.as_completed(evaluation_tasks):
       inference_result, eval_case_result = await evaluation_task
-
-      if self._eval_set_results_manager:
-        self._eval_set_results_manager.save_eval_set_result(
-            app_name=inference_result.app_name,
-            eval_set_id=inference_result.eval_set_id,
-            eval_case_results=[eval_case_result],
-        )
-
+      results_by_set.setdefault(inference_result.eval_set_id, []).append(
+          (inference_result.app_name, eval_case_result)
+      )
       yield eval_case_result
+
+    if self._eval_set_results_manager:
+      for eval_set_id, results in results_by_set.items():
+        app_name = results[0][0]
+        cases = [r[1] for r in results]
+        self._eval_set_results_manager.save_eval_set_result(
+            app_name=app_name,
+            eval_set_id=eval_set_id,
+            eval_case_results=cases,
+        )
 
   async def _evaluate_single_inference_result(
       self, inference_result: InferenceResult, evaluate_config: EvaluateConfig

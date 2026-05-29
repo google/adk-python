@@ -31,12 +31,16 @@ def _mock_meter_setup(monkeypatch):
   request_size_hist = mock.MagicMock(spec=metrics.Histogram)
   response_size_hist = mock.MagicMock(spec=metrics.Histogram)
   steps_hist = mock.MagicMock(spec=metrics.Histogram)
+  client_duration_hist = mock.MagicMock(spec=metrics.Histogram)
+  client_token_usage_hist = mock.MagicMock(spec=metrics.Histogram)
 
   agent_duration_hist.name = "agent_invocation_duration"
   tool_duration_hist.name = "tool_execution_duration"
   request_size_hist.name = "agent_request_size"
   response_size_hist.name = "agent_response_size"
   steps_hist.name = "agent_workflow_steps"
+  client_duration_hist.name = "client_operation_duration"
+  client_token_usage_hist.name = "client_token_usage"
 
   def create_histogram_side_effect(name, **_kwargs):
     if name == "gen_ai.agent.invocation.duration":
@@ -49,6 +53,10 @@ def _mock_meter_setup(monkeypatch):
       return response_size_hist
     elif name == "gen_ai.agent.workflow.steps":
       return steps_hist
+    elif name == "gen_ai.client.operation.duration":
+      return client_duration_hist
+    elif name == "gen_ai.client.token.usage":
+      return client_token_usage_hist
     raise ValueError(f"Unknown metric name: {name}")
 
   mock_meter.create_histogram.side_effect = create_histogram_side_effect
@@ -62,6 +70,10 @@ def _mock_meter_setup(monkeypatch):
   monkeypatch.setattr(_metrics, "_agent_request_size", request_size_hist)
   monkeypatch.setattr(_metrics, "_agent_response_size", response_size_hist)
   monkeypatch.setattr(_metrics, "_agent_workflow_steps", steps_hist)
+  monkeypatch.setattr(
+      _metrics, "_client_operation_duration", client_duration_hist
+  )
+  monkeypatch.setattr(_metrics, "_client_token_usage", client_token_usage_hist)
 
   return {
       "meter": mock_meter,
@@ -70,6 +82,8 @@ def _mock_meter_setup(monkeypatch):
       "request_size": request_size_hist,
       "response_size": response_size_hist,
       "steps": steps_hist,
+      "client_duration": client_duration_hist,
+      "client_token_usage": client_token_usage_hist,
   }
 
 
@@ -234,3 +248,89 @@ def test_record_tool_execution_duration_with_error(mock_meter_setup):
 )
 def test_get_content_size(content, expected_size):
   assert _metrics._get_content_size(content) == expected_size
+
+
+def test_record_client_operation_duration(mock_meter_setup):
+  """Tests record_client_operation_duration records correctly."""
+  llm_request = mock.MagicMock(
+      contents=[types.Content(parts=[types.Part(text="hello")])]
+  )
+  response = mock.MagicMock(
+      content=types.Content(parts=[types.Part(text="hello response")])
+  )
+  _metrics.record_client_operation_duration(
+      agent_name="test_agent",
+      elapsed_ms=100.0,
+      llm_request=llm_request,
+      responses=[response],
+  )
+  client_duration_hist = mock_meter_setup["client_duration"]
+  client_duration_hist.record.assert_called_once()
+  args, kwargs = client_duration_hist.record.call_args
+  assert args[0] == 0.1
+  want_attributes = {
+      "gen_ai.agent.name": "test_agent",
+      "gen_ai.operation.name": "generate_content",
+      "gen_ai.provider.name": "gemini",
+      "gen_ai.request.model": llm_request.model,
+      "gen_ai.response.model": response.model_version,
+  }
+  assert kwargs["attributes"] == want_attributes
+
+
+def test_record_client_token_usage(mock_meter_setup):
+  """Tests record_client_token_usage records correctly under different usage conditions."""
+  llm_request = mock.MagicMock(
+      contents=[types.Content(parts=[types.Part(text="hello")])],
+      model="test-model",
+  )
+  response = mock.MagicMock(
+      content=types.Content(parts=[types.Part(text="hello response")]),
+      model_version="test-model-v1",
+      usage_metadata=types.GenerateContentResponseUsageMetadata(
+          prompt_token_count=20,
+          candidates_token_count=30,
+          tool_use_prompt_token_count=5,
+          thoughts_token_count=10,
+      ),
+  )
+  _metrics.record_client_token_usage(
+      agent_name="test_agent",
+      llm_request=llm_request,
+      responses=[response],
+  )
+  client_token_usage_hist = mock_meter_setup["client_token_usage"]
+  assert client_token_usage_hist.record.call_count == 2
+
+  base_attributes = {
+      "gen_ai.agent.name": "test_agent",
+      "gen_ai.operation.name": "generate_content",
+      "gen_ai.provider.name": "gemini",
+      "gen_ai.request.model": "test-model",
+      "gen_ai.response.model": "test-model-v1",
+  }
+
+  input_call = None
+  output_call = None
+
+  for args, kwargs in client_token_usage_hist.record.call_args_list:
+    token_type = kwargs.get("attributes", {}).get("gen_ai.token.type")
+    if token_type == "input":
+      input_call = (args, kwargs)
+    elif token_type == "output":
+      output_call = (args, kwargs)
+
+  assert input_call is not None, "Missing 'input' token usage record"
+  assert output_call is not None, "Missing 'output' token usage record"
+
+  # Verify input tokens (prompt_token_count + tool_use_prompt_token_count)
+  assert input_call[0][0] == 25
+  assert input_call[1]["attributes"] == base_attributes | {
+      "gen_ai.token.type": "input"
+  }
+
+  # Verify output tokens (candidates_token_count + thoughts_token_count)
+  assert output_call[0][0] == 40
+  assert output_call[1]["attributes"] == base_attributes | {
+      "gen_ai.token.type": "output"
+  }

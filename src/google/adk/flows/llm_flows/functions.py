@@ -68,6 +68,48 @@ _TOOL_THREAD_POOLS: dict[int, ThreadPoolExecutor] = {}
 _TOOL_THREAD_POOL_LOCK = threading.Lock()
 
 
+def _detect_error_type_for_telemetry(
+    tool: BaseTool,
+    tool_context: ToolContext,
+    function_response: Any,
+) -> Optional[str]:
+  """Detects an error type from a tool response for telemetry purposes.
+
+  This does not modify the response. `_detect_error_in_response` is an optional
+  per-tool hook accessed via `getattr` to avoid adding a public API on
+  `BaseTool`. Any exception raised by the detector is logged and swallowed so
+  that telemetry logic never breaks tool execution.
+
+  Args:
+    tool: The tool whose response is being inspected.
+    tool_context: The tool context for the current invocation. Detection is
+      skipped when the tool is requesting auth or confirmation.
+    function_response: The raw response returned by the tool.
+
+  Returns:
+    The error type string reported by the tool's `_detect_error_in_response`
+    hook, or `None` if no error was detected, no hook is defined, or the hook
+    raised an exception.
+  """
+  try:
+    if (
+        tool_context.actions.requested_auth_configs
+        or tool_context.actions.requested_tool_confirmations
+    ):
+      return None
+    detector = getattr(tool, '_detect_error_in_response', None)
+    if detector is None:
+      return None
+    return detector(function_response)
+  except Exception:  # pylint: disable=broad-exception-caught
+    # Never let telemetry logic break tool execution.
+    logger.exception(
+        'Error while detecting error type for telemetry from tool %r.',
+        getattr(tool, 'name', tool),
+    )
+    return None
+
+
 def _is_live_request_queue_annotation(param: inspect.Parameter) -> bool:
   """Check whether a parameter is annotated as LiveRequestQueue.
 
@@ -482,6 +524,7 @@ async def _execute_single_function_call_async(
   function_args = (
       copy.deepcopy(function_call.args) if function_call.args else {}
   )
+  detected_error_type: Optional[str] = None
 
   tool_context = _create_tool_context(
       invocation_context, function_call, tool_confirmation
@@ -505,7 +548,7 @@ async def _execute_single_function_call_async(
       raise tool_error
 
   async def _run_with_trace():
-    nonlocal function_args
+    nonlocal function_args, detected_error_type
 
     # Step 1: Check if plugin before_tool_callback overrides the function
     # response.
@@ -576,11 +619,19 @@ async def _execute_single_function_call_async(
     if altered_function_response is not None:
       function_response = altered_function_response
 
-    if tool.is_long_running:
-      # Allow long-running function to return None to not provide function
-      # response.
-      if not function_response:
-        return None
+    if (
+        tool.is_long_running or tool._defers_response
+    ) and not function_response:
+      # The tool either runs long (FR will arrive later via session
+      # injection) or defers its response by design (e.g., the LlmAgent
+      # wrapper for task delegation synthesizes the FR after the
+      # sub-agent completes).  Either way, skip the auto-FR build when
+      # the tool returned nothing.
+      return None
+
+    detected_error_type = _detect_error_type_for_telemetry(
+        tool, tool_context, function_response
+    )
 
     # Note: State deltas are not applied here - they are collected in
     # tool_context.actions.state_delta and applied later when the session
@@ -596,6 +647,7 @@ async def _execute_single_function_call_async(
       tool, agent, function_args
   ) as tel_ctx:
     tel_ctx.function_response_event = await _run_with_trace()
+    tel_ctx.error_type = detected_error_type
     return tel_ctx.function_response_event
 
 
@@ -644,6 +696,9 @@ async def handle_function_calls_live(
   function_response_events = [
       event for event in function_response_events if event is not None
   ]
+
+  for event in function_response_events:
+    event.live_session_id = function_call_event.live_session_id
 
   if not function_response_events:
     return None
@@ -711,6 +766,7 @@ async def _execute_single_function_call_live(
   function_args = (
       copy.deepcopy(function_call.args) if function_call.args else {}
   )
+  detected_error_type: Optional[str] = None
 
   tool_context = _create_tool_context(invocation_context, function_call)
 
@@ -731,7 +787,7 @@ async def _execute_single_function_call_live(
     raise tool_error
 
   async def _run_with_trace():
-    nonlocal function_args
+    nonlocal function_args, detected_error_type
 
     # Do not use "args" as the variable name, because it is a reserved keyword
     # in python debugger.
@@ -812,10 +868,17 @@ async def _execute_single_function_call_live(
     if altered_function_response is not None:
       function_response = altered_function_response
 
-    if tool.is_long_running:
-      # Allow async function to return None to not provide function response.
-      if not function_response:
-        return None
+    if (
+        tool.is_long_running or tool._defers_response
+    ) and not function_response:
+      # The tool either runs long (FR will arrive later via session
+      # injection) or defers its response by design.  Skip the auto-FR
+      # build when the tool returned nothing.
+      return None
+
+    detected_error_type = _detect_error_type_for_telemetry(
+        tool, tool_context, function_response
+    )
 
     # Note: State deltas are not applied here - they are collected in
     # tool_context.actions.state_delta and applied later when the session
@@ -831,6 +894,7 @@ async def _execute_single_function_call_live(
       tool, agent, function_args
   ) as tel_ctx:
     tel_ctx.function_response_event = await _run_with_trace()
+    tel_ctx.error_type = detected_error_type
     return tel_ctx.function_response_event
 
 
@@ -1199,6 +1263,7 @@ def merge_parallel_function_response_events(
       branch=base_event.branch,
       content=types.Content(role='user', parts=merged_parts),
       actions=merged_actions,  # Aggregated from all parallel events
+      live_session_id=base_event.live_session_id,
   )
 
   # Use the base_event as the timestamp
