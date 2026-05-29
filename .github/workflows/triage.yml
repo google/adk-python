@@ -17,8 +17,7 @@ jobs:
     if: >-
       github.repository == 'google/adk-python' && (
         github.event_name == 'schedule' ||
-        github.event.action == 'opened' ||
-        github.event.label.name == 'planned'
+        github.event.action == 'opened'
       )
     permissions:
       issues: write
@@ -51,5 +50,5 @@ jobs:
           ISSUE_TITLE: ${{ github.event.issue.title }}
           ISSUE_BODY: ${{ github.event.issue.body }}
           ISSUE_COUNT_TO_PROCESS: '3' # Process 3 issues at a time on schedule
-          PYTHONPATH: contributing/samples
+          PYTHONPATH: contributing/samples/adk_team
         run: python -m adk_triaging_agent.main

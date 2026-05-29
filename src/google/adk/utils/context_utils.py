@@ -21,7 +21,9 @@ Please do not rely on the implementation details.
 from __future__ import annotations
 
 from contextlib import aclosing
+import functools
 import inspect
+import typing
 from typing import Any
 from typing import Callable
 from typing import get_args
@@ -61,6 +63,7 @@ def _is_context_type(annotation: Any) -> bool:
   return annotation is Context
 
 
+@functools.lru_cache(maxsize=1024)
 def find_context_parameter(func: Callable[..., Any]) -> str | None:
   """Find the parameter name that has a Context type annotation.
 
@@ -80,7 +83,17 @@ def find_context_parameter(func: Callable[..., Any]) -> str | None:
     signature = inspect.signature(func)
   except (ValueError, TypeError):
     return None
+  # Resolve string annotations (e.g., 'Context')
+  try:
+    type_hints = typing.get_type_hints(func)
+  except Exception:
+    # get_type_hints can fail for various reasons (e.g., unresolvable forward
+    # references). In such cases, we fall back to inspecting the parameter
+    # annotations directly.
+    type_hints = {}
+
   for name, param in signature.parameters.items():
-    if _is_context_type(param.annotation):
+    annotation = type_hints.get(name, param.annotation)
+    if _is_context_type(annotation):
       return name
   return None

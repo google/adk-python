@@ -15,10 +15,12 @@
 """Tests for context_utils module."""
 
 from typing import Optional
+from unittest import mock
 
 from google.adk.agents.callback_context import CallbackContext
 from google.adk.agents.context import Context
 from google.adk.tools.tool_context import ToolContext
+from google.adk.utils import context_utils
 from google.adk.utils.context_utils import find_context_parameter
 
 
@@ -29,6 +31,30 @@ class TestFindContextParameter:
     """Test detection of Context type annotation."""
 
     def my_tool(query: str, ctx: Context) -> str:
+      return query
+
+    assert find_context_parameter(my_tool) == 'ctx'
+
+  def test_find_context_parameter_with_string_annotation(self):
+    """Test detection of string annotation 'Context'."""
+
+    def my_tool(query: str, ctx: 'Context') -> str:
+      return query
+
+    assert find_context_parameter(my_tool) == 'ctx'
+
+  def test_find_context_parameter_with_string_tool_context(self):
+    """Test detection of string annotation 'ToolContext'."""
+
+    def my_tool(query: str, ctx: 'ToolContext') -> str:
+      return query
+
+    assert find_context_parameter(my_tool) == 'ctx'
+
+  def test_find_context_parameter_with_string_optional_context(self):
+    """Test detection of string annotation 'Optional[Context]'."""
+
+    def my_tool(query: str, ctx: 'Optional[Context]' = None) -> str:
       return query
 
     assert find_context_parameter(my_tool) == 'ctx'
@@ -105,3 +131,25 @@ class TestFindContextParameter:
       return query
 
     assert find_context_parameter(my_tool) == 'ctx'
+
+
+class TestFindContextParameterCaching:
+  """Tests for find_context_parameter caching behavior."""
+
+  def test_repeated_calls_inspect_signature_once(self):
+    """Repeated calls with the same function reuse the cached result."""
+
+    def my_tool(ctx: Context) -> str:
+      return 'ok'
+
+    find_context_parameter.cache_clear()
+
+    with mock.patch.object(
+        context_utils.inspect,
+        'signature',
+        wraps=context_utils.inspect.signature,
+    ) as spy:
+      for _ in range(10):
+        assert find_context_parameter(my_tool) == 'ctx'
+
+    assert spy.call_count == 1

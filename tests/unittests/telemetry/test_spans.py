@@ -25,7 +25,11 @@ from google.adk.errors.tool_execution_error import ToolExecutionError
 from google.adk.models.llm_request import LlmRequest
 from google.adk.models.llm_response import LlmResponse
 from google.adk.sessions.in_memory_session_service import InMemorySessionService
+from google.adk.telemetry._experimental_semconv import _safe_json_serialize_no_whitespaces
+from google.adk.telemetry.tracing import _safe_json_serialize
+from google.adk.telemetry.tracing import _use_extra_generate_content_attributes
 from google.adk.telemetry.tracing import ADK_CAPTURE_MESSAGE_CONTENT_IN_SPANS
+from google.adk.telemetry.tracing import GCP_MCP_SERVER_DESTINATION_ID
 from google.adk.telemetry.tracing import trace_agent_invocation
 from google.adk.telemetry.tracing import trace_call_llm
 from google.adk.telemetry.tracing import trace_inference_result
@@ -34,6 +38,7 @@ from google.adk.telemetry.tracing import trace_send_data
 from google.adk.telemetry.tracing import trace_tool_call
 from google.adk.telemetry.tracing import use_inference_span
 from google.adk.tools.base_tool import BaseTool
+from google.adk.tools.tool_context import ToolContext
 from google.genai import types
 from mcp import ClientSession as McpClientSession
 from mcp import ListToolsResult as McpListToolsResult
@@ -56,7 +61,7 @@ import pytest
 try:
   from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GEN_AI_TOOL_DEFINITIONS
 except ImportError:
-  GEN_AI_TOOL_DEFINITIONS = 'gen_ai.tool_definitions'
+  GEN_AI_TOOL_DEFINITIONS = 'gen_ai.tool.definitions'
 
 
 class Event:
@@ -70,6 +75,15 @@ class Event:
     return ''
 
 
+# Create a minimal concrete BaseTool for testing
+class SimpleTestTool(BaseTool):
+
+  async def run_async(
+      self, *, args: dict[str, Any], tool_context: ToolContext
+  ) -> Any:
+    return 'SimpleTestTool result'
+
+
 @pytest.fixture
 def mock_span_fixture():
   return mock.MagicMock()
@@ -77,18 +91,21 @@ def mock_span_fixture():
 
 @pytest.fixture
 def mock_tool_fixture():
-  tool = mock.Mock(spec=BaseTool)
-  tool.name = 'sample_tool'
-  tool.description = 'A sample tool for testing.'
-  return tool
+  return SimpleTestTool(
+      name='sample_tool',
+      description='A sample tool for testing.',
+  )
 
 
 @pytest.fixture
 def mock_event_fixture():
   event_mock = mock.create_autospec(Event, instance=True)
+  event_mock.id = 'test_event_id'
   event_mock.model_dumps_json.return_value = (
       '{"default_event_key": "default_event_value"}'
   )
+  event_mock.content = mock.MagicMock()
+  event_mock.content.parts = []
   return event_mock
 
 
@@ -152,6 +169,7 @@ async def test_trace_call_llm(monkeypatch, mock_span_fixture):
       config=types.GenerateContentConfig(
           top_p=0.95,
           max_output_tokens=1024,
+          thinking_config=types.ThinkingConfig(thinking_budget=10),
       ),
   )
   llm_response = LlmResponse(
@@ -161,8 +179,18 @@ async def test_trace_call_llm(monkeypatch, mock_span_fixture):
           total_token_count=100,
           prompt_token_count=50,
           candidates_token_count=50,
+          thoughts_token_count=10,
       ),
   )
+  # We dynamically assign system_instruction_tokens rather than passing it
+  # to the GenerateContentResponseUsageMetadata constructor to ensure backward
+  # compatibility with older versions of the google-genai SDK that do not have
+  # this property defined in their Pydantic models.
+  try:
+    llm_response.usage_metadata.system_instruction_tokens = 5
+  except Exception:
+    pass
+
   trace_call_llm(invocation_context, 'test_event_id', llm_request, llm_response)
 
   expected_calls = [
@@ -172,9 +200,16 @@ async def test_trace_call_llm(monkeypatch, mock_span_fixture):
       mock.call('gcp.vertex.agent.llm_response', mock.ANY),
       mock.call('gen_ai.usage.input_tokens', 50),
       mock.call('gen_ai.usage.output_tokens', 50),
+      mock.call('gen_ai.usage.experimental.reasoning_tokens_limit', 10),
+      mock.call('gen_ai.usage.experimental.reasoning_tokens', 10),
       mock.call('gen_ai.response.finish_reasons', ['stop']),
   ]
-  assert mock_span_fixture.set_attribute.call_count == 12
+  if hasattr(llm_response.usage_metadata, 'system_instruction_tokens'):
+    expected_calls.append(
+        mock.call('gen_ai.usage.experimental.system_instruction_tokens', 5)
+    )
+
+  assert mock_span_fixture.set_attribute.call_count == len(expected_calls) + 5
   mock_span_fixture.set_attribute.assert_has_calls(
       expected_calls, any_order=True
   )
@@ -359,6 +394,91 @@ async def test_trace_call_llm_with_thought_signature(
   assert len(parsed['contents']) == 3
 
 
+def test_trace_tool_call_with_destination_id(
+    monkeypatch, mock_span_fixture, mock_tool_fixture, mock_event_fixture
+):
+  """Test trace_tool_call sets destination ID span attribute when present."""
+  # Arrange
+  monkeypatch.setattr(
+      'opentelemetry.trace.get_current_span', lambda: mock_span_fixture
+  )
+
+  test_dest_id = 'urn:mcp:googleapis.com:project:1234:location:global:bigquery'
+  tool = mock_tool_fixture
+  tool.custom_metadata = {
+      GCP_MCP_SERVER_DESTINATION_ID: test_dest_id,
+      'other_meta': 'value',
+  }
+
+  # Act
+  trace_tool_call(
+      tool=tool,
+      args={},
+      function_response_event=mock_event_fixture,
+  )
+
+  # Assert
+  mock_span_fixture.set_attribute.assert_any_call(
+      GCP_MCP_SERVER_DESTINATION_ID, test_dest_id
+  )
+
+
+def test_trace_tool_call_without_destination_id(
+    monkeypatch, mock_span_fixture, mock_tool_fixture, mock_event_fixture
+):
+  """Test trace_tool_call does not set destination ID span attribute when not present."""
+  # Arrange
+  monkeypatch.setattr(
+      'opentelemetry.trace.get_current_span', lambda: mock_span_fixture
+  )
+
+  tool = mock_tool_fixture
+  tool.custom_metadata = {
+      'other_meta': 'value',
+  }
+
+  # Act
+  trace_tool_call(
+      tool=tool,
+      args={},
+      function_response_event=mock_event_fixture,
+  )
+
+  # Assert
+  called_with_dest_id = any(
+      call_args[0][0] == GCP_MCP_SERVER_DESTINATION_ID
+      for call_args in mock_span_fixture.set_attribute.call_args_list
+  )
+  assert not called_with_dest_id
+
+
+def test_trace_tool_call_with_empty_custom_metadata(
+    monkeypatch, mock_span_fixture, mock_tool_fixture, mock_event_fixture
+):
+  """Test trace_tool_call handles empty custom_metadata gracefully."""
+  # Arrange
+  monkeypatch.setattr(
+      'opentelemetry.trace.get_current_span', lambda: mock_span_fixture
+  )
+
+  tool = mock_tool_fixture
+  tool.custom_metadata = {}
+
+  # Act
+  trace_tool_call(
+      tool=tool,
+      args={},
+      function_response_event=mock_event_fixture,
+  )
+
+  # Assert
+  called_with_dest_id = any(
+      call_args[0][0] == GCP_MCP_SERVER_DESTINATION_ID
+      for call_args in mock_span_fixture.set_attribute.call_args_list
+  )
+  assert not called_with_dest_id
+
+
 def test_trace_tool_call_with_scalar_response(
     monkeypatch, mock_span_fixture, mock_tool_fixture, mock_event_fixture
 ):
@@ -399,7 +519,7 @@ def test_trace_tool_call_with_scalar_response(
       mock.call('gen_ai.operation.name', 'execute_tool'),
       mock.call('gen_ai.tool.name', mock_tool_fixture.name),
       mock.call('gen_ai.tool.description', mock_tool_fixture.description),
-      mock.call('gen_ai.tool.type', 'BaseTool'),
+      mock.call('gen_ai.tool.type', 'SimpleTestTool'),
       mock.call('gen_ai.tool.call.id', test_tool_call_id),
       mock.call('gcp.vertex.agent.tool_call_args', json.dumps(test_args)),
       mock.call('gcp.vertex.agent.event_id', test_event_id),
@@ -459,7 +579,7 @@ def test_trace_tool_call_with_dict_response(
       mock.call('gen_ai.operation.name', 'execute_tool'),
       mock.call('gen_ai.tool.name', mock_tool_fixture.name),
       mock.call('gen_ai.tool.description', mock_tool_fixture.description),
-      mock.call('gen_ai.tool.type', 'BaseTool'),
+      mock.call('gen_ai.tool.type', 'SimpleTestTool'),
       mock.call('gen_ai.tool.call.id', test_tool_call_id),
       mock.call('gcp.vertex.agent.tool_call_args', json.dumps(test_args)),
       mock.call('gcp.vertex.agent.event_id', test_event_id),
@@ -691,12 +811,14 @@ async def test_trace_send_data_disabling_request_response_content(
     return_value='test_system',
 )
 @pytest.mark.parametrize('capture_content', [True, False])
+@pytest.mark.parametrize('user_id', ['some-user-id', None])
 async def test_generate_content_span(
     mock_guess_system_name,
     mock_tracer,
     mock_otel_logger,
     monkeypatch,
     capture_content,
+    user_id,
 ):
   """Test native generate_content span creation with attributes and logs."""
   # Arrange
@@ -711,7 +833,7 @@ async def test_generate_content_span(
 
   agent = LlmAgent(name='test_agent', model='not-a-gemini-model')
   invocation_context = await _create_invocation_context(agent)
-
+  invocation_context.session.user_id = user_id
   system_instruction = types.Content(
       parts=[types.Part.from_text(text='You are a helpful assistant.')],
   )
@@ -770,10 +892,14 @@ async def test_generate_content_span(
   mock_span.set_attributes.assert_called_once_with({
       GEN_AI_AGENT_NAME: invocation_context.agent.name,
       GEN_AI_CONVERSATION_ID: invocation_context.session.id,
-      USER_ID: invocation_context.session.user_id,
       'gcp.vertex.agent.event_id': 'event-123',
       'gcp.vertex.agent.invocation_id': invocation_context.invocation_id,
   })
+
+  all_set_attribute_keys = [
+      call.args[0] for call in mock_span.set_attribute.call_args_list
+  ]
+  assert USER_ID not in all_set_attribute_keys
 
   # Assert Logs
   assert mock_otel_logger.emit.call_count == 4
@@ -813,8 +939,11 @@ async def test_generate_content_span(
   assert len(user_logs) == 2
   assert expected_user1_body == user_logs[0].body
   assert expected_user2_body == user_logs[1].body
+  expected_user_log_attributes = {GEN_AI_SYSTEM: 'test_system'}
+  if capture_content and user_id is not None:
+    expected_user_log_attributes[USER_ID] = user_id
   for log in user_logs:
-    assert log.attributes == {GEN_AI_SYSTEM: 'test_system'}
+    assert log.attributes == expected_user_log_attributes
 
   choice_log = next(
       (lr for lr in log_records if lr.event_name == 'gen_ai.choice'),
@@ -823,6 +952,52 @@ async def test_generate_content_span(
   assert choice_log is not None
   assert choice_log.body == expected_choice_body
   assert choice_log.attributes == {GEN_AI_SYSTEM: 'test_system'}
+
+
+@pytest.mark.asyncio
+@mock.patch(
+    'google.adk.telemetry.tracing._use_extra_generate_content_attributes'
+)
+async def test_generate_content_span_with_genai_instrumentation(
+    mock_use_extra,
+    monkeypatch,
+):
+  """Test that genai-instrumentation delegation branch does not forward USER_ID in attributes."""
+  monkeypatch.setattr(
+      'google.adk.telemetry.tracing._instrumented_with_opentelemetry_instrumentation_google_genai',
+      lambda: True,
+  )
+  # _is_gemini_agent returns true for gemini models.
+  agent = LlmAgent(name='test_agent', model='gemini-1.5-pro')
+  invocation_context = await _create_invocation_context(agent)
+
+  llm_request = LlmRequest(
+      model='gemini-1.5-pro',
+      contents=[types.Content(role='user', parts=[types.Part(text='Hello')])],
+  )
+
+  model_response_event = mock.MagicMock()
+  model_response_event.id = 'event-123'
+
+  mock_cm = mock.MagicMock()
+  mock_use_extra.return_value = mock_cm
+
+  async with use_inference_span(
+      llm_request, invocation_context, model_response_event
+  ):
+    pass
+
+  mock_use_extra.assert_called_once()
+  args, _ = mock_use_extra.call_args
+  common_attributes = args[0]
+
+  assert GEN_AI_AGENT_NAME in common_attributes
+  assert GEN_AI_CONVERSATION_ID in common_attributes
+  assert 'gcp.vertex.agent.event_id' in common_attributes
+  assert 'gcp.vertex.agent.invocation_id' in common_attributes
+
+  # USER_ID should NOT be in common_attributes passed to the genai instrumentor
+  assert USER_ID not in common_attributes
 
 
 def _mock_callable_tool():
@@ -882,12 +1057,14 @@ def _mock_tool_dict() -> types.ToolDict:
     'capture_content',
     ['SPAN_AND_EVENT', 'EVENT_ONLY', 'SPAN_ONLY', 'NO_CONTENT'],
 )
+@pytest.mark.parametrize('user_id', ['some-user-id', None])
 async def test_generate_content_span_with_experimental_semconv(
     mock_guess_system_name,
     mock_tracer,
     mock_otel_logger,
     monkeypatch,
     capture_content,
+    user_id,
 ):
   """Test native generate_content span creation with attributes and logs with experimental semconv enabled."""
   # Arrange
@@ -906,6 +1083,7 @@ async def test_generate_content_span_with_experimental_semconv(
 
   agent = LlmAgent(name='test_agent', model='not-a-gemini-model')
   invocation_context = await _create_invocation_context(agent)
+  invocation_context.session.user_id = user_id
 
   system_instruction = types.Content(
       parts=[types.Part.from_text(text='You are a helpful assistant.')],
@@ -1090,10 +1268,14 @@ async def test_generate_content_span_with_experimental_semconv(
   mock_span.set_attributes.assert_called_once_with({
       GEN_AI_AGENT_NAME: invocation_context.agent.name,
       GEN_AI_CONVERSATION_ID: invocation_context.session.id,
-      USER_ID: invocation_context.session.user_id,
       'gcp.vertex.agent.event_id': 'event-123',
       'gcp.vertex.agent.invocation_id': invocation_context.invocation_id,
   })
+
+  all_set_attribute_keys = [
+      call.args[0] for call in mock_span.set_attribute.call_args_list
+  ]
+  assert USER_ID not in all_set_attribute_keys
 
   if capture_content in ['SPAN_AND_EVENT', 'SPAN_ONLY']:
     mock_span.set_attribute.assert_any_call(
@@ -1140,6 +1322,15 @@ async def test_generate_content_span_with_experimental_semconv(
   assert operation_details_log.attributes is not None
 
   attributes = operation_details_log.attributes
+
+  if (
+      capture_content in ['EVENT_ONLY', 'SPAN_AND_EVENT']
+      and user_id is not None
+  ):
+    assert USER_ID in attributes
+    assert attributes[USER_ID] == user_id
+  else:
+    assert USER_ID not in attributes
 
   if capture_content in ['SPAN_AND_EVENT', 'EVENT_ONLY']:
     assert GEN_AI_SYSTEM_INSTRUCTIONS in attributes
@@ -1203,7 +1394,7 @@ def test_trace_tool_call_with_tool_execution_error(
       mock.call('gen_ai.operation.name', 'execute_tool'),
       mock.call('gen_ai.tool.name', mock_tool_fixture.name),
       mock.call('gen_ai.tool.description', mock_tool_fixture.description),
-      mock.call('gen_ai.tool.type', 'BaseTool'),
+      mock.call('gen_ai.tool.type', 'SimpleTestTool'),
       mock.call('error.type', 'INTERNAL_SERVER_ERROR'),
       mock.call('gcp.vertex.agent.tool_call_args', json.dumps(test_args)),
       mock.call(
@@ -1266,3 +1457,307 @@ def test_trace_tool_call_with_standard_error(
       mock.call('error.type', 'ValueError')
       in mock_span_fixture.set_attribute.call_args_list
   )
+
+
+def test_safe_json_serialize_circular_dict_returns_not_serializable():
+  obj = {}
+  obj['self'] = obj
+  assert _safe_json_serialize(obj) == '<not serializable>'
+
+
+def test_safe_json_serialize_no_whitespaces_circular_dict_returns_not_serializable():
+  obj = {}
+  obj['self'] = obj
+  assert _safe_json_serialize_no_whitespaces(obj) == '<not serializable>'
+
+
+def test_use_extra_generate_content_attributes_upgraded_version(monkeypatch):
+  # Arrange: Mock the presence of the new event-only context key in the contrib module
+  from opentelemetry.instrumentation import google_genai
+
+  mock_event_only_key = 'MOCKED_EVENT_ONLY_EXTRA_ATTRIBUTES_CONTEXT_KEY'
+  monkeypatch.setattr(
+      google_genai,
+      'GENERATE_CONTENT_EVENT_ONLY_EXTRA_ATTRIBUTES_CONTEXT_KEY',
+      mock_event_only_key,
+      raising=False,
+  )
+
+  # Act: Run the helper with mock.patch on the otel context
+  with mock.patch('opentelemetry.context.set_value') as mock_set_value:
+    with _use_extra_generate_content_attributes(
+        extra_attributes={'span.attr': 'value'},
+        log_only_extra_attributes={USER_ID: 'user_123'},
+    ):
+      pass
+
+    # Assert: Verify set_value was called with the mocked event-only key
+    mock_set_value.assert_any_call(
+        mock_event_only_key,
+        {USER_ID: 'user_123'},
+        context=mock.ANY,
+    )
+
+
+def test_use_extra_generate_content_attributes_older_version(monkeypatch):
+  # Arrange: Simulate an older version by deleting the key if present
+  from opentelemetry.instrumentation import google_genai
+
+  if hasattr(
+      google_genai, 'GENERATE_CONTENT_EVENT_ONLY_EXTRA_ATTRIBUTES_CONTEXT_KEY'
+  ):
+    monkeypatch.delattr(
+        google_genai, 'GENERATE_CONTENT_EVENT_ONLY_EXTRA_ATTRIBUTES_CONTEXT_KEY'
+    )
+
+  # Act & Assert: Ensure execution does not throw any ImportError/AttributeError
+  try:
+    with _use_extra_generate_content_attributes(
+        extra_attributes={'span.attr': 'value'},
+        log_only_extra_attributes={USER_ID: 'user_123'},
+    ):
+      pass
+  except Exception as e:  # pylint: disable=broad-exception-caught
+    pytest.fail(f'Graceful degradation failed: {e}')
+
+
+# ---------------------------------------------------------------------------
+# Tests for _detect_error_in_response
+# ---------------------------------------------------------------------------
+
+
+class _ErrorDetectingTool(BaseTool):
+  """A test tool whose _detect_error_in_response raises."""
+
+  async def run_async(self, *, args, tool_context):
+    return 'result'
+
+  def _detect_error_in_response(self, response: Any) -> Optional[str]:
+    raise RuntimeError('detection exploded')
+
+
+def test_base_tool_does_not_define_detect_error_in_response():
+  """BaseTool intentionally does not expose _detect_error_in_response as a public hook."""
+  tool = SimpleTestTool(name='t', description='d')
+  # The hook is opt-in per subclass; BaseTool itself must not declare it so
+  # that telemetry callers can use getattr(...) to skip detection.
+  assert not hasattr(tool, '_detect_error_in_response')
+
+
+def test_detect_error_function_tool_error():
+  from google.adk.tools.function_tool import FunctionTool
+
+  tool = FunctionTool(func=lambda: None)
+  assert (
+      tool._detect_error_in_response({'error': 'missing arg'}) == 'TOOL_ERROR'
+  )
+
+
+def test_detect_error_function_tool_no_error():
+  from google.adk.tools.function_tool import FunctionTool
+
+  tool = FunctionTool(func=lambda: None)
+  assert tool._detect_error_in_response({'result': 'ok'}) is None
+  assert tool._detect_error_in_response('plain string') is None
+  assert tool._detect_error_in_response(None) is None
+
+
+def test_detect_error_rest_api_tool():
+  from google.adk.tools.openapi_tool.openapi_spec_parser.rest_api_tool import RestApiTool
+
+  tool = RestApiTool.__new__(RestApiTool)
+  assert (
+      tool._detect_error_in_response({'error': 'Status Code: 404'})
+      == 'HTTP_ERROR'
+  )
+  assert tool._detect_error_in_response({'result': 'ok'}) is None
+  assert tool._detect_error_in_response({'text': 'html response'}) is None
+
+
+def test_detect_error_mcp_tool():
+  from google.adk.tools.mcp_tool.mcp_tool import McpTool as AdkMcpTool
+
+  tool = AdkMcpTool.__new__(AdkMcpTool)
+  assert (
+      tool._detect_error_in_response({'isError': True, 'content': []})
+      == 'MCP_TOOL_ERROR'
+  )
+  assert (
+      tool._detect_error_in_response({'isError': False, 'content': []}) is None
+  )
+  assert tool._detect_error_in_response({'content': [{'text': 'ok'}]}) is None
+
+
+def test_detect_error_google_tool():
+  from google.adk.tools.google_tool import GoogleTool
+
+  tool = GoogleTool.__new__(GoogleTool)
+  assert (
+      tool._detect_error_in_response(
+          {'status': 'ERROR', 'error_details': 'fail'}
+      )
+      == 'TOOL_ERROR'
+  )
+  assert tool._detect_error_in_response({'status': 'OK', 'data': []}) is None
+  assert (
+      tool._detect_error_in_response({'error': 'something'}) is None
+  )  # GoogleTool checks status, not error key
+
+
+def test_detect_error_bash_tool():
+  from google.adk.tools.bash_tool import ExecuteBashTool
+
+  tool = ExecuteBashTool.__new__(ExecuteBashTool)
+  assert (
+      tool._detect_error_in_response({'error': 'Execution failed'})
+      == 'TOOL_ERROR'
+  )
+  assert (
+      tool._detect_error_in_response(
+          {'error': 'timeout', 'stdout': '', 'stderr': ''}
+      )
+      == 'TOOL_ERROR'
+  )
+  assert (
+      tool._detect_error_in_response({'stdout': 'ok', 'returncode': 0}) is None
+  )
+
+
+def _environment_tool_classes():
+  from google.adk.tools.environment._edit_file_tool import EditFileTool
+  from google.adk.tools.environment._execute_tool import ExecuteTool
+  from google.adk.tools.environment._read_file_tool import ReadFileTool
+  from google.adk.tools.environment._write_file_tool import WriteFileTool
+
+  return [ExecuteTool, ReadFileTool, WriteFileTool, EditFileTool]
+
+
+@pytest.mark.parametrize(
+    'cls',
+    _environment_tool_classes(),
+    ids=lambda c: c.__name__,
+)
+@pytest.mark.parametrize(
+    'response,expected',
+    [
+        ({'status': 'error', 'error': 'fail'}, 'TOOL_ERROR'),
+        ({'status': 'ok', 'message': 'done'}, None),
+        # Environment tools check status, not the error key.
+        ({'error': 'something'}, None),
+    ],
+    ids=['status_error', 'status_ok', 'error_key_only'],
+)
+def test_detect_error_environment_tools(cls, response, expected):
+  tool = cls.__new__(cls)
+  assert tool._detect_error_in_response(response) == expected
+
+
+@pytest.mark.parametrize(
+    'cls_name',
+    ['LoadSkillTool', 'LoadSkillResourceTool', 'RunSkillScriptTool'],
+)
+@pytest.mark.parametrize(
+    'response,expected',
+    [
+        (
+            {'error': 'missing', 'error_code': 'INVALID_ARGUMENTS'},
+            'INVALID_ARGUMENTS',
+        ),
+        ({'error': 'generic'}, 'TOOL_ERROR'),
+        ({'skill_name': 'x', 'instructions': 'y'}, None),
+    ],
+    ids=['with_error_code', 'error_no_code', 'no_error'],
+)
+def test_detect_error_skill_tools(cls_name, response, expected):
+  skill_toolset = pytest.importorskip('google.adk.tools.skill_toolset')
+  cls = getattr(skill_toolset, cls_name)
+  tool = cls.__new__(cls)
+  assert tool._detect_error_in_response(response) == expected
+
+
+def test_detect_error_discovery_engine_search_tool():
+  mod = pytest.importorskip('google.adk.tools.discovery_engine_search_tool')
+  DiscoveryEngineSearchTool = mod.DiscoveryEngineSearchTool
+
+  tool = DiscoveryEngineSearchTool.__new__(DiscoveryEngineSearchTool)
+  assert (
+      tool._detect_error_in_response(
+          {'status': 'error', 'error_message': 'fail'}
+      )
+      == 'TOOL_ERROR'
+  )
+  assert tool._detect_error_in_response({'status': 'ok', 'results': []}) is None
+
+
+# ---------------------------------------------------------------------------
+# Tests for trace_tool_call with error_type parameter
+# ---------------------------------------------------------------------------
+
+
+def test_trace_tool_call_with_error_type(
+    monkeypatch, mock_span_fixture, mock_tool_fixture
+):
+  """error_type sets the span error.type attribute when no exception."""
+  monkeypatch.setattr(
+      'opentelemetry.trace.get_current_span', lambda: mock_span_fixture
+  )
+
+  trace_tool_call(
+      tool=mock_tool_fixture,
+      args={'x': 1},
+      function_response_event=None,
+      error=None,
+      error_type='HTTP_ERROR',
+  )
+
+  mock_span_fixture.set_attribute.assert_any_call('error.type', 'HTTP_ERROR')
+
+
+def test_trace_tool_call_error_takes_precedence_over_error_type(
+    monkeypatch, mock_span_fixture, mock_tool_fixture
+):
+  """When both error and error_type are provided, error takes precedence."""
+  monkeypatch.setattr(
+      'opentelemetry.trace.get_current_span', lambda: mock_span_fixture
+  )
+
+  trace_tool_call(
+      tool=mock_tool_fixture,
+      args={'x': 1},
+      function_response_event=None,
+      error=ValueError('boom'),
+      error_type='HTTP_ERROR',
+  )
+
+  # ValueError should be set, not HTTP_ERROR.
+  mock_span_fixture.set_attribute.assert_any_call('error.type', 'ValueError')
+  error_type_calls = [
+      c
+      for c in mock_span_fixture.set_attribute.call_args_list
+      if c == mock.call('error.type', mock.ANY)
+  ]
+  assert len(error_type_calls) == 1
+
+
+def test_trace_tool_call_no_error_no_error_type(
+    monkeypatch, mock_span_fixture, mock_tool_fixture
+):
+  """When neither error nor error_type is set, no error.type attribute."""
+  monkeypatch.setattr(
+      'opentelemetry.trace.get_current_span', lambda: mock_span_fixture
+  )
+
+  trace_tool_call(
+      tool=mock_tool_fixture,
+      args={'x': 1},
+      function_response_event=None,
+      error=None,
+      error_type=None,
+  )
+
+  error_type_calls = [
+      c
+      for c in mock_span_fixture.set_attribute.call_args_list
+      if c == mock.call('error.type', mock.ANY)
+  ]
+  assert len(error_type_calls) == 0

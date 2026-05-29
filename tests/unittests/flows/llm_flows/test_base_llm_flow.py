@@ -17,7 +17,9 @@
 from unittest import mock
 from unittest.mock import AsyncMock
 
+from google.adk.agents.live_request_queue import LiveRequestQueue
 from google.adk.agents.llm_agent import Agent
+from google.adk.agents.run_config import RunConfig
 from google.adk.events.event import Event
 from google.adk.flows.llm_flows.base_llm_flow import _handle_after_model_callback
 from google.adk.flows.llm_flows.base_llm_flow import BaseLlmFlow
@@ -29,6 +31,7 @@ from google.adk.tools.base_toolset import BaseToolset
 from google.adk.tools.google_search_tool import GoogleSearchTool
 from google.genai import types
 import pytest
+from websockets.exceptions import ConnectionClosed
 
 from ... import testing_utils
 
@@ -284,7 +287,6 @@ async def test_handle_after_model_callback_grounding_with_no_callbacks(
       invocation_id=invocation_context.invocation_id,
       author=agent.name,
   )
-  flow = BaseLlmFlowForTesting()
 
   result = await _handle_after_model_callback(
       invocation_context, llm_response, event
@@ -341,7 +343,6 @@ async def test_handle_after_model_callback_grounding_with_callback_override(
       invocation_id=invocation_context.invocation_id,
       author=agent.name,
   )
-  flow = BaseLlmFlowForTesting()
 
   result = await _handle_after_model_callback(
       invocation_context, llm_response, event
@@ -403,7 +404,6 @@ async def test_handle_after_model_callback_grounding_with_plugin_override(
       invocation_id=invocation_context.invocation_id,
       author=agent.name,
   )
-  flow = BaseLlmFlowForTesting()
 
   result = await _handle_after_model_callback(
       invocation_context, llm_response, event
@@ -430,6 +430,7 @@ async def test_handle_after_model_callback_caches_canonical_tools():
 
       def __init__(self):
         super().__init__(name='google_search_agent', description='Mock search')
+        self.propagate_grounding_metadata = True
 
       async def call(self, **kwargs):
         return 'mock result'
@@ -459,7 +460,6 @@ async def test_handle_after_model_callback_caches_canonical_tools():
         invocation_id=invocation_context.invocation_id,
         author=agent.name,
     )
-    flow = BaseLlmFlowForTesting()
 
     # Call _handle_after_model_callback multiple times with the same context
     result1 = await _handle_after_model_callback(
@@ -487,3 +487,777 @@ async def test_handle_after_model_callback_caches_canonical_tools():
     assert result1.grounding_metadata == {'foo': 'bar'}
     assert result2.grounding_metadata == {'foo': 'bar'}
     assert result3.grounding_metadata == {'foo': 'bar'}
+
+
+@pytest.mark.asyncio
+async def test_run_live_reconnects_on_connection_closed():
+  """Test that run_live reconnects when ConnectionClosed occurs."""
+
+  real_model = Gemini()
+  mock_connection = mock.AsyncMock()
+
+  async def mock_receive():
+    # Simulate receiving a session resumption handle from the server.
+    yield LlmResponse(
+        live_session_resumption_update=types.LiveServerSessionResumptionUpdate(
+            new_handle='test_handle'
+        )
+    )
+    # Simulate connection dropping, triggering reconnection logic.
+    raise ConnectionClosed(None, None)
+
+  mock_connection.receive = mock.Mock(side_effect=mock_receive)
+
+  agent = Agent(name='test_agent', model=real_model)
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent
+  )
+  invocation_context.live_request_queue = LiveRequestQueue()
+
+  flow = BaseLlmFlowForTesting()
+
+  with mock.patch.object(
+      flow, '_send_to_model', new_callable=AsyncMock
+  ) as mock_send:
+    mock_connection_2 = mock.AsyncMock()
+
+    # We need a way to break the infinite loop in run_live for testing.
+    class NonRetryableError(Exception):
+      pass
+
+    async def mock_receive_2():
+      yield LlmResponse(
+          content=types.Content(parts=[types.Part.from_text(text='hi')])
+      )
+      # Raise non-retryable exception to exit the loop and finish test.
+      raise NonRetryableError('stop')
+
+    mock_connection_2.receive = mock.Mock(side_effect=mock_receive_2)
+
+    mock_aenter = mock.AsyncMock()
+    # First connection attempt uses mock_connection (drops), second uses mock_connection_2 (stops test).
+    mock_aenter.side_effect = [mock_connection, mock_connection_2]
+
+    with mock.patch(
+        'google.adk.models.google_llm.Gemini.connect'
+    ) as mock_connect:
+      mock_connect.return_value.__aenter__ = mock_aenter
+
+      events = []
+      try:
+        async for event in flow.run_live(invocation_context):
+          events.append(event)
+      except NonRetryableError:
+        pass
+
+      # Verify that we attempted to connect twice (initial + reconnect).
+      assert mock_connect.call_count == 2
+      assert invocation_context.live_session_resumption_handle == 'test_handle'
+
+
+@pytest.mark.asyncio
+async def test_run_live_reconnects_on_api_error():
+  """Test that run_live reconnects when APIError occurs."""
+  from google.genai.errors import APIError
+
+  real_model = Gemini()
+  mock_connection = mock.AsyncMock()
+
+  async def mock_receive():
+    # Simulate receiving a session resumption handle from the server.
+    yield LlmResponse(
+        live_session_resumption_update=types.LiveServerSessionResumptionUpdate(
+            new_handle='test_handle'
+        )
+    )
+    # Simulate an API error occurring, triggering reconnection logic.
+    raise APIError(1000, {})
+
+  mock_connection.receive = mock.Mock(side_effect=mock_receive)
+
+  agent = Agent(name='test_agent', model=real_model)
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent
+  )
+  invocation_context.live_request_queue = LiveRequestQueue()
+
+  flow = BaseLlmFlowForTesting()
+
+  with mock.patch.object(
+      flow, '_send_to_model', new_callable=AsyncMock
+  ) as mock_send:
+    mock_connection_2 = mock.AsyncMock()
+
+    # We need a way to break the infinite loop in run_live for testing.
+    class NonRetryableError(Exception):
+      pass
+
+    async def mock_receive_2():
+      yield LlmResponse(
+          content=types.Content(parts=[types.Part.from_text(text='hi')])
+      )
+      # Raise non-retryable exception to exit the loop and finish test.
+      raise NonRetryableError('stop')
+
+    mock_connection_2.receive = mock.Mock(side_effect=mock_receive_2)
+
+    mock_aenter = mock.AsyncMock()
+    # First connection attempt uses mock_connection (fails with APIError), second uses mock_connection_2 (stops test).
+    mock_aenter.side_effect = [mock_connection, mock_connection_2]
+
+    with mock.patch(
+        'google.adk.models.google_llm.Gemini.connect'
+    ) as mock_connect:
+      mock_connect.return_value.__aenter__ = mock_aenter
+
+      events = []
+      try:
+        async for event in flow.run_live(invocation_context):
+          events.append(event)
+      except NonRetryableError:
+        pass
+
+      # Verify that we attempted to connect twice (initial + reconnect).
+      assert mock_connect.call_count == 2
+      assert invocation_context.live_session_resumption_handle == 'test_handle'
+
+
+@pytest.mark.asyncio
+async def test_run_live_skips_send_history_on_resumption():
+  """Test that run_live skips send_history when resuming a session."""
+
+  real_model = Gemini()
+  mock_connection = mock.AsyncMock()
+
+  agent = Agent(name='test_agent', model=real_model)
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent
+  )
+  # Set resumption handle to simulate a resumed session.
+  invocation_context.live_session_resumption_handle = 'test_handle'
+  invocation_context.live_request_queue = LiveRequestQueue()
+
+  flow = BaseLlmFlowForTesting()
+
+  async def mock_preprocess(ctx, req):
+    req.contents = [types.Content(parts=[types.Part.from_text(text='history')])]
+    if False:
+      yield
+
+  with mock.patch.object(
+      flow, '_preprocess_async', side_effect=mock_preprocess
+  ):
+    with mock.patch.object(
+        flow, '_send_to_model', new_callable=AsyncMock
+    ) as mock_send:
+
+      # We need a way to break the infinite loop in run_live for testing.
+      class StopError(Exception):
+        pass
+
+      async def mock_receive():
+        yield LlmResponse(
+            content=types.Content(parts=[types.Part.from_text(text='hi')])
+        )
+        # Raise StopError to exit the loop and finish test.
+        raise StopError('stop')
+
+      mock_connection.receive = mock.Mock(side_effect=mock_receive)
+
+      with mock.patch(
+          'google.adk.models.google_llm.Gemini.connect'
+      ) as mock_connect:
+        mock_connect.return_value.__aenter__.return_value = mock_connection
+
+        try:
+          async for _ in flow.run_live(invocation_context):
+            pass
+        except StopError:
+          pass
+
+        # Verify that send_history was not called because we resumed.
+        mock_connection.send_history.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_live_session_resumption_go_away():
+  """Test that go_away triggers reconnection."""
+
+  real_model = Gemini()
+  mock_connection = mock.AsyncMock()
+
+  agent = Agent(name='test_agent', model=real_model)
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent
+  )
+  invocation_context.live_request_queue = LiveRequestQueue()
+  invocation_context.live_session_resumption_handle = 'old_handle'
+
+  flow = BaseLlmFlowForTesting()
+
+  with mock.patch.object(
+      flow, '_send_to_model', new_callable=AsyncMock
+  ) as mock_send:
+    mock_connection_2 = mock.AsyncMock()
+
+    # We need a way to break the infinite loop in run_live for testing.
+    class StopError(Exception):
+      pass
+
+    async def mock_receive_1():
+      # Simulate receiving a go_away signal from the server.
+      yield LlmResponse(go_away=types.LiveServerGoAway())
+
+    async def mock_receive_2():
+      yield LlmResponse(
+          content=types.Content(parts=[types.Part.from_text(text='hi')])
+      )
+      # Raise StopError to exit the loop and finish test.
+      raise StopError('stop')
+
+    mock_connection.receive = mock.Mock(side_effect=mock_receive_1)
+    mock_connection_2.receive = mock.Mock(side_effect=mock_receive_2)
+
+    mock_aenter = mock.AsyncMock()
+    # First connection attempt uses mock_connection (receives go_away), second uses mock_connection_2 (stops test).
+    mock_aenter.side_effect = [mock_connection, mock_connection_2]
+
+    with mock.patch(
+        'google.adk.models.google_llm.Gemini.connect'
+    ) as mock_connect:
+      mock_connect.return_value.__aenter__ = mock_aenter
+
+      try:
+        async for _ in flow.run_live(invocation_context):
+          pass
+      except StopError:
+        pass
+
+      # Verify that we attempted to connect twice (initial + reconnect after go_away).
+      assert mock_connect.call_count == 2
+
+
+@pytest.mark.asyncio
+async def test_run_live_no_reconnect_without_handle():
+  """Test that run_live does not reconnect when handle is missing."""
+
+  real_model = Gemini()
+  mock_connection = mock.AsyncMock()
+
+  async def mock_receive():
+    # Simulate connection drop without any handle update.
+    if False:
+      yield
+    raise ConnectionClosed(None, None)
+
+  mock_connection.receive = mock.Mock(side_effect=mock_receive)
+
+  agent = Agent(name='test_agent', model=real_model)
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent
+  )
+  invocation_context.live_request_queue = LiveRequestQueue()
+  # Ensure no handle is set
+  invocation_context.live_session_resumption_handle = None
+
+  flow = BaseLlmFlowForTesting()
+
+  with mock.patch.object(
+      flow, '_send_to_model', new_callable=AsyncMock
+  ) as mock_send:
+    with mock.patch(
+        'google.adk.models.google_llm.Gemini.connect'
+    ) as mock_connect:
+      mock_connect.return_value.__aenter__.return_value = mock_connection
+
+      with pytest.raises(ConnectionClosed):
+        async for _ in flow.run_live(invocation_context):
+          pass
+
+      # Verify that we only attempted to connect once.
+      assert mock_connect.call_count == 1
+
+
+@pytest.mark.asyncio
+async def test_run_live_reconnect_limit():
+  """Test that run_live stops reconnecting after 5 attempts."""
+
+  real_model = Gemini()
+
+  connection_cnt = 0
+
+  async def mock_connect_impl(*args, **kwargs):
+    nonlocal connection_cnt
+    connection_cnt += 1
+    conn = mock.AsyncMock()
+
+    async def mock_receive():
+      if connection_cnt == 1:
+        # Yield handle only on the first connection.
+        yield LlmResponse(
+            live_session_resumption_update=types.LiveServerSessionResumptionUpdate(
+                new_handle='test_handle'
+            ),
+            turn_complete=True,
+        )
+      # All subsequent receives (and all receives on later connections) fail.
+      raise ConnectionClosed(None, None)
+
+    conn.receive = mock.Mock(side_effect=mock_receive)
+    return conn
+
+  agent = Agent(name='test_agent', model=real_model)
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent
+  )
+  invocation_context.live_request_queue = LiveRequestQueue()
+
+  flow = BaseLlmFlowForTesting()
+
+  with mock.patch.object(
+      flow, '_send_to_model', new_callable=AsyncMock
+  ) as mock_send:
+    with mock.patch(
+        'google.adk.models.google_llm.Gemini.connect'
+    ) as mock_connect:
+      # Mock the async context manager
+      mock_connect.return_value.__aenter__.side_effect = mock_connect_impl
+
+      with pytest.raises(ConnectionClosed):
+        async for _ in flow.run_live(invocation_context):
+          pass
+
+      from google.adk.flows.llm_flows.base_llm_flow import DEFAULT_MAX_RECONNECT_ATTEMPTS
+
+      # 1 initial attempt + DEFAULT_MAX_RECONNECT_ATTEMPTS retries
+      assert mock_connect.call_count == DEFAULT_MAX_RECONNECT_ATTEMPTS + 1
+
+
+@pytest.mark.asyncio
+async def test_run_live_reconnect_reset_attempt():
+  """Test that attempt counter is reset on successful communication."""
+  from google.adk.flows.llm_flows.base_llm_flow import DEFAULT_MAX_RECONNECT_ATTEMPTS
+
+  real_model = Gemini()
+
+  connection_cnt = 0
+
+  async def mock_connect_impl(*args, **kwargs):
+    nonlocal connection_cnt
+    connection_cnt += 1
+    conn = mock.AsyncMock()
+
+    async def mock_receive():
+      if connection_cnt <= 2:
+        # Yield handle on the first two connections.
+        yield LlmResponse(
+            live_session_resumption_update=types.LiveServerSessionResumptionUpdate(
+                new_handle='test_handle'
+            ),
+            turn_complete=True,
+        )
+      # All subsequent receives fail.
+      raise ConnectionClosed(None, None)
+
+    conn.receive = mock.Mock(side_effect=mock_receive)
+    return conn
+
+  agent = Agent(name='test_agent', model=real_model)
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent
+  )
+  invocation_context.live_request_queue = LiveRequestQueue()
+
+  flow = BaseLlmFlowForTesting()
+
+  with mock.patch.object(
+      flow, '_send_to_model', new_callable=AsyncMock
+  ) as mock_send:
+    with mock.patch(
+        'google.adk.models.google_llm.Gemini.connect'
+    ) as mock_connect:
+      mock_connect.return_value.__aenter__.side_effect = mock_connect_impl
+
+      with pytest.raises(ConnectionClosed):
+        async for _ in flow.run_live(invocation_context):
+          pass
+
+      # We expect 2 successful attempts + DEFAULT_MAX_RECONNECT_ATTEMPTS failed attempts
+      # Total calls = 2 + 5 = 7
+      assert mock_connect.call_count == DEFAULT_MAX_RECONNECT_ATTEMPTS + 2
+
+
+@pytest.mark.asyncio
+async def test_postprocess_live_session_resumption_update():
+  """Test that _postprocess_live yields live_session_resumption_update."""
+  agent = Agent(name='test_agent')
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent
+  )
+  flow = BaseLlmFlowForTesting()
+
+  llm_request = LlmRequest()
+  llm_response = LlmResponse(
+      live_session_resumption_update=types.LiveServerSessionResumptionUpdate(
+          new_handle='test_handle'
+      )
+  )
+  model_response_event = Event(
+      id=Event.new_id(),
+      invocation_id=invocation_context.invocation_id,
+      author=agent.name,
+  )
+
+  events = []
+  async for event in flow._postprocess_live(
+      invocation_context, llm_request, llm_response, model_response_event
+  ):
+    events.append(event)
+
+  assert len(events) == 1
+  assert events[0].live_session_resumption_update is not None
+  assert events[0].live_session_resumption_update.new_handle == 'test_handle'
+
+
+@pytest.mark.asyncio
+async def test_receive_from_model_author_attribution():
+  """Test that _receive_from_model sets the correct author for events based on LlmResponse."""
+  agent = Agent(name='test_agent')
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent
+  )
+  flow = BaseLlmFlowForTesting()
+
+  mock_connection = mock.AsyncMock()
+
+  # Case 1: input_transcription is set -> author should be 'user'
+  response_1 = LlmResponse(
+      input_transcription=types.Transcription(text='test', finished=True)
+  )
+
+  # Case 2: default -> author should be agent.name
+  response_2 = LlmResponse(
+      content=types.Content(
+          role='model', parts=[types.Part.from_text(text='hello')]
+      )
+  )
+
+  # Case 3: content.role is 'user' -> author should be 'user'
+  response_3 = LlmResponse(
+      content=types.Content(
+          role='user', parts=[types.Part.from_text(text='user text')]
+      )
+  )
+
+  class StopTest(Exception):
+    pass
+
+  async def mock_receive():
+    yield response_1
+    yield response_2
+    yield response_3
+    raise StopTest()
+
+  mock_connection.receive = mock.Mock(side_effect=mock_receive)
+
+  events = []
+  try:
+    async for event in flow._receive_from_model(
+        mock_connection, 'event_id', invocation_context, LlmRequest()
+    ):
+      events.append(event)
+  except StopTest:
+    pass
+
+  assert len(events) == 3
+  assert events[0].author == 'user'
+  assert events[1].author == 'test_agent'
+  assert events[2].author == 'user'
+
+
+@pytest.mark.asyncio
+async def test_run_live_clears_resumption_handle_on_transfer():
+  """Test that run_live clears session resumption handles when transferring to another agent."""
+
+  agent = Agent(name='test_agent')
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent
+  )
+  invocation_context.live_session_resumption_handle = 'test_handle'
+  invocation_context.live_request_queue = LiveRequestQueue()
+
+  # Set up run_config with session_resumption
+  run_config = RunConfig()
+  session_resumption = types.SessionResumptionConfig()
+  session_resumption.handle = 'test_handle'
+  run_config.session_resumption = session_resumption
+  invocation_context.run_config = run_config
+
+  flow = BaseLlmFlowForTesting()
+
+  # Mock _receive_from_model to yield an event that triggers transfer
+  part = types.Part(
+      function_response=types.FunctionResponse(name='transfer_to_agent')
+  )
+  content = types.Content(parts=[part])
+  transfer_event = Event(
+      id=Event.new_id(),
+      invocation_id=invocation_context.invocation_id,
+      author=agent.name,
+  )
+  transfer_event.content = content
+  transfer_event.actions = mock.Mock()
+  transfer_event.actions.transfer_to_agent = 'sub_agent'
+
+  class StopTest(Exception):
+    pass
+
+  receive_call_count = 0
+
+  async def mock_receive_from_model(*args, **kwargs):
+    nonlocal receive_call_count
+    receive_call_count += 1
+    if receive_call_count == 1:
+      yield transfer_event
+    else:
+      raise StopTest()
+
+  flow._receive_from_model = mock.Mock(side_effect=mock_receive_from_model)
+
+  # Mock _get_agent_to_run to return a mock agent
+  mock_sub_agent = mock.Mock()
+  mock_sub_agent.run_live = mock.Mock()
+
+  async def mock_run_live_sub_agent(child_ctx, *args, **kwargs):
+    # Verify handles are cleared before sub-agent runs
+    assert child_ctx.live_session_resumption_handle is None
+    assert child_ctx.run_config.session_resumption.handle is None
+    for item in []:
+      yield item
+
+  mock_sub_agent.run_live.side_effect = mock_run_live_sub_agent
+
+  flow._get_agent_to_run = mock.Mock(return_value=mock_sub_agent)
+
+  # Mock _send_to_model to prevent it from running indefinitely
+  flow._send_to_model = mock.AsyncMock()
+
+  with mock.patch(
+      'google.adk.models.google_llm.Gemini.connect'
+  ) as mock_connect:
+    mock_connection = mock.AsyncMock()
+    mock_connect.return_value.__aenter__.return_value = mock_connection
+
+    try:
+      async for _ in flow.run_live(invocation_context):
+        pass
+    except StopTest:
+      pass
+
+  # Verify that parent's resumption handles were not cleared
+  assert invocation_context.live_session_resumption_handle == 'test_handle'
+  assert (
+      invocation_context.run_config.session_resumption.handle == 'test_handle'
+  )
+
+
+@pytest.mark.asyncio
+async def test_postprocess_live_yields_grounding_metadata_only():
+  """Test that _postprocess_live yields LlmResponse with only grounding_metadata."""
+  agent = Agent(name='test_agent')
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent
+  )
+  flow = BaseLlmFlowForTesting()
+
+  llm_request = LlmRequest()
+  grounding_metadata = types.GroundingMetadata(
+      web_search_queries=['test query'],
+  )
+  llm_response = LlmResponse(grounding_metadata=grounding_metadata)
+  model_response_event = Event(
+      id=Event.new_id(),
+      invocation_id=invocation_context.invocation_id,
+      author=agent.name,
+  )
+
+  events = []
+  async for event in flow._postprocess_live(
+      invocation_context, llm_request, llm_response, model_response_event
+  ):
+    events.append(event)
+
+  assert len(events) == 1
+  assert events[0].grounding_metadata == grounding_metadata
+
+
+@pytest.mark.asyncio
+async def test_postprocess_async_yields_grounding_metadata_only():
+  """Test that _postprocess_async yields LlmResponse with only grounding_metadata."""
+  agent = Agent(name='test_agent')
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent
+  )
+  flow = BaseLlmFlowForTesting()
+
+  llm_request = LlmRequest()
+  grounding_metadata = types.GroundingMetadata(
+      web_search_queries=['test query'],
+  )
+  llm_response = LlmResponse(grounding_metadata=grounding_metadata)
+  model_response_event = Event(
+      id=Event.new_id(),
+      invocation_id=invocation_context.invocation_id,
+      author=agent.name,
+  )
+
+  events = []
+  async for event in flow._postprocess_async(
+      invocation_context, llm_request, llm_response, model_response_event
+  ):
+    events.append(event)
+
+  assert len(events) == 1
+  assert events[0].grounding_metadata == grounding_metadata
+
+
+@pytest.mark.asyncio
+async def test_run_live_reconnect_does_not_set_transparent():
+  """Test that run_live reconnect does not set transparent=True."""
+
+  real_model = Gemini()
+  mock_connection = mock.AsyncMock()
+
+  async def mock_receive():
+    yield LlmResponse(
+        live_session_resumption_update=types.LiveServerSessionResumptionUpdate(
+            new_handle='test_handle'
+        )
+    )
+    raise ConnectionClosed(None, None)
+
+  mock_connection.receive = mock.Mock(side_effect=mock_receive)
+
+  agent = Agent(name='test_agent', model=real_model)
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent
+  )
+  invocation_context.live_request_queue = LiveRequestQueue()
+  invocation_context.run_config = RunConfig()
+
+  flow = BaseLlmFlowForTesting()
+
+  with mock.patch.object(flow, '_send_to_model', new_callable=AsyncMock):
+
+    async def mock_preprocess(ctx, req):
+      req.live_connect_config.session_resumption = (
+          ctx.run_config.session_resumption
+      )
+      yield Event(id=Event.new_id(), author='test')
+
+    with mock.patch.object(
+        flow, '_preprocess_async', side_effect=mock_preprocess
+    ):
+      mock_connection_2 = mock.AsyncMock()
+
+      class StopTestError(Exception):
+        pass
+
+      async def mock_receive_2():
+        yield LlmResponse(
+            content=types.Content(parts=[types.Part.from_text(text='hi')])
+        )
+        raise StopTestError('stop')
+
+      mock_connection_2.receive = mock.Mock(side_effect=mock_receive_2)
+
+      mock_aenter = mock.AsyncMock()
+      mock_aenter.side_effect = [mock_connection, mock_connection_2]
+
+      with mock.patch(
+          'google.adk.models.google_llm.Gemini.connect'
+      ) as mock_connect:
+        mock_connect.return_value.__aenter__ = mock_aenter
+
+        try:
+          async for _ in flow.run_live(invocation_context):
+            pass
+        except StopTestError:
+          pass
+
+        assert mock_connect.call_count == 2
+        second_call_req = mock_connect.call_args_list[1][0][0]
+        session_resump = second_call_req.live_connect_config.session_resumption
+        assert session_resump.transparent is None
+
+
+@pytest.mark.asyncio
+async def test_run_live_reconnect_sets_transparent_for_vertex():
+  """Test that run_live reconnect sets transparent=True for vertex backend."""
+
+  real_model = Gemini(
+      model='projects/test-project/locations/us-central1/publishers/google/models/gemini-2.0-flash-exp'
+  )
+  mock_connection = mock.AsyncMock()
+
+  async def mock_receive():
+    yield LlmResponse(
+        live_session_resumption_update=types.LiveServerSessionResumptionUpdate(
+            new_handle='test_handle'
+        )
+    )
+    raise ConnectionClosed(None, None)
+
+  mock_connection.receive = mock.Mock(side_effect=mock_receive)
+
+  agent = Agent(name='test_agent', model=real_model)
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent
+  )
+  invocation_context.live_request_queue = LiveRequestQueue()
+  invocation_context.run_config = RunConfig()
+
+  flow = BaseLlmFlowForTesting()
+
+  with mock.patch.object(flow, '_send_to_model', new_callable=AsyncMock):
+
+    async def mock_preprocess(ctx, req):
+      req.live_connect_config.session_resumption = (
+          ctx.run_config.session_resumption
+      )
+      yield Event(id=Event.new_id(), author='test')
+
+    with mock.patch.object(
+        flow, '_preprocess_async', side_effect=mock_preprocess
+    ):
+      mock_connection_2 = mock.AsyncMock()
+
+      class StopTestError(Exception):
+        pass
+
+      async def mock_receive_2():
+        yield LlmResponse(
+            content=types.Content(parts=[types.Part.from_text(text='hi')])
+        )
+        raise StopTestError('stop')
+
+      mock_connection_2.receive = mock.Mock(side_effect=mock_receive_2)
+
+      mock_aenter = mock.AsyncMock()
+      mock_aenter.side_effect = [mock_connection, mock_connection_2]
+
+      with mock.patch(
+          'google.adk.models.google_llm.Gemini.connect'
+      ) as mock_connect:
+        mock_connect.return_value.__aenter__ = mock_aenter
+
+        try:
+          async for _ in flow.run_live(invocation_context):
+            pass
+        except StopTestError:
+          pass
+
+        assert mock_connect.call_count == 2
+        second_call_req = mock_connect.call_args_list[1][0][0]
+        session_resump = second_call_req.live_connect_config.session_resumption
+        assert session_resump.transparent

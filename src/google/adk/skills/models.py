@@ -26,14 +26,20 @@ from pydantic import ConfigDict
 from pydantic import Field
 from pydantic import field_validator
 
-_NAME_PATTERN = re.compile(r"^[a-z0-9]+(-[a-z0-9]+)*$")
+from ..features import FeatureName
+from ..features import is_feature_enabled
+
+_KEBAB_NAME_PATTERN = re.compile(r"^[a-z0-9]+(-[a-z0-9]+)*$")
+_SNAKE_OR_KEBAB_NAME_PATTERN = re.compile(
+    r"^([a-z0-9]+(-[a-z0-9]+)*|[a-z0-9]+(_[a-z0-9]+)*)$"
+)
 
 
 class Frontmatter(BaseModel):
   """L1 skill content: metadata parsed from SKILL.md for skill discovery.
 
   Attributes:
-      name: Skill name in kebab-case (required).
+      name: Skill name in kebab-case or snake_case (required).
       description: What the skill does and when the model should use it
         (required).
       license: License for the skill (optional).
@@ -78,11 +84,23 @@ class Frontmatter(BaseModel):
     v = unicodedata.normalize("NFKC", v)
     if len(v) > 64:
       raise ValueError("name must be at most 64 characters")
-    if not _NAME_PATTERN.match(v):
-      raise ValueError(
-          "name must be lowercase kebab-case (a-z, 0-9, hyphens),"
-          " with no leading, trailing, or consecutive hyphens"
+    if is_feature_enabled(FeatureName.SNAKE_CASE_SKILL_NAME):
+      pattern = _SNAKE_OR_KEBAB_NAME_PATTERN
+      msg = (
+          "name must be lowercase kebab-case (a-z, 0-9, hyphens) or"
+          " snake_case (a-z, 0-9, underscores), with no leading, trailing,"
+          " or consecutive delimiters. Mixing hyphens and underscores is"
+          " not allowed."
       )
+    else:
+      pattern = _KEBAB_NAME_PATTERN
+      msg = (
+          "name must be lowercase kebab-case (a-z, 0-9,"
+          " hyphens), with no leading, trailing, or"
+          " consecutive delimiters"
+      )
+    if not pattern.match(v):
+      raise ValueError(msg)
     return v
 
   @field_validator("description")
@@ -90,8 +108,12 @@ class Frontmatter(BaseModel):
   def _validate_description(cls, v: str) -> str:
     if not v:
       raise ValueError("description must not be empty")
-    if len(v) > 1024:
-      raise ValueError("description must be at most 1024 characters")
+    description_len = len(v)
+    if description_len > 1024:
+      raise ValueError(
+          "description must be at most 1024 characters. Description length:"
+          f" {description_len}"
+      )
     return v
 
   @field_validator("compatibility")

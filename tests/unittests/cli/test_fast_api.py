@@ -15,6 +15,7 @@
 import asyncio
 import json
 import logging
+import os
 from pathlib import Path
 import signal
 import tempfile
@@ -26,6 +27,7 @@ from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 from google.adk.agents.base_agent import BaseAgent
+from google.adk.agents.llm_agent import LlmAgent
 from google.adk.agents.run_config import RunConfig
 from google.adk.apps.app import App
 from google.adk.artifacts.base_artifact_service import ArtifactVersion
@@ -39,6 +41,7 @@ from google.adk.evaluation.eval_result import EvalSetResult
 from google.adk.evaluation.in_memory_eval_sets_manager import InMemoryEvalSetsManager
 from google.adk.events.event import Event
 from google.adk.events.event_actions import EventActions
+from google.adk.plugins.bigquery_agent_analytics_plugin import BigQueryAgentAnalyticsPlugin
 from google.adk.runners import Runner
 from google.adk.sessions.in_memory_session_service import InMemorySessionService
 from google.adk.sessions.session import Session
@@ -109,7 +112,7 @@ def _event_state_delta(state_delta: dict[str, Any]):
 
 
 # Define mocked async generator functions for the Runner
-async def dummy_run_live(self, session, live_request_queue):
+async def dummy_run_live(self, session, live_request_queue, **kwargs):
   yield _event_1()
   await asyncio.sleep(0)
 
@@ -186,19 +189,39 @@ def mock_agent_loader():
       pass
 
     def load_agent(self, app_name):
+      if app_name == "yaml_app" or app_name == "bq_app":
+        agent = DummyAgent(name="yaml_agent")
+        agent._config = MagicMock(logging=None)
+        return agent
       return root_agent
 
     def list_agents(self):
-      return ["test_app"]
+      return ["test_app", "yaml_app", "bq_app"]
 
     def list_agents_detailed(self):
-      return [{
-          "name": "test_app",
-          "root_agent_name": "test_agent",
-          "description": "A test agent for unit testing",
-          "language": "python",
-          "is_computer_use": False,
-      }]
+      return [
+          {
+              "name": "test_app",
+              "root_agent_name": "test_agent",
+              "description": "A test agent for unit testing",
+              "language": "python",
+              "is_computer_use": False,
+          },
+          {
+              "name": "yaml_app",
+              "root_agent_name": "yaml_agent",
+              "description": "A yaml agent for unit testing",
+              "language": "yaml",
+              "is_computer_use": False,
+          },
+          {
+              "name": "bq_app",
+              "root_agent_name": "yaml_agent",
+              "description": "A bq agent for unit testing",
+              "language": "yaml",
+              "is_computer_use": False,
+          },
+      ]
 
   return MockAgentLoader(".")
 
@@ -517,6 +540,110 @@ def _create_test_client(
     return TestClient(app)
 
 
+def test_agent_with_bigquery_analytics_plugin(
+    tmp_path,
+    mock_session_service,
+    mock_artifact_service,
+    mock_memory_service,
+    mock_agent_loader,
+    mock_eval_sets_manager,
+    mock_eval_set_results_manager,
+):
+  """Verify that plugins.yaml is correctly read to attach BigQueryAgentAnalyticsPlugin."""
+  app_name = "bq_app"
+  app_dir = tmp_path / app_name
+  app_dir.mkdir(parents=True)
+
+  plugins_yaml_content = """\
+bigquery_agent_analytics:
+  project_id: test-project
+  dataset_id: test-dataset
+  table_id: test-table
+  dataset_location: US
+"""
+  (app_dir / "plugins.yaml").write_text(plugins_yaml_content)
+
+  with (
+      patch.object(signal, "signal", autospec=True, return_value=None),
+      patch.object(
+          fast_api_module,
+          "create_session_service_from_options",
+          autospec=True,
+          return_value=mock_session_service,
+      ),
+      patch.object(
+          fast_api_module,
+          "create_artifact_service_from_options",
+          autospec=True,
+          return_value=mock_artifact_service,
+      ),
+      patch.object(
+          fast_api_module,
+          "create_memory_service_from_options",
+          autospec=True,
+          return_value=mock_memory_service,
+      ),
+      patch.object(
+          fast_api_module,
+          "AgentLoader",
+          autospec=True,
+          return_value=mock_agent_loader,
+      ),
+      patch.object(
+          fast_api_module,
+          "LocalEvalSetsManager",
+          autospec=True,
+          return_value=mock_eval_sets_manager,
+      ),
+      patch.object(
+          fast_api_module,
+          "LocalEvalSetResultsManager",
+          autospec=True,
+          return_value=mock_eval_set_results_manager,
+      ),
+      patch.object(
+          os.path,
+          "exists",
+          autospec=True,
+          side_effect=lambda p: p.endswith("plugins.yaml")
+          or p.endswith("root_agent.yaml"),
+      ),
+  ):
+    from google.adk.cli.adk_web_server import AdkWebServer
+
+    adk_web_server = AdkWebServer(
+        agent_loader=mock_agent_loader,
+        session_service=mock_session_service,
+        memory_service=mock_memory_service,
+        artifact_service=mock_artifact_service,
+        credential_service=MagicMock(),
+        eval_sets_manager=mock_eval_sets_manager,
+        eval_set_results_manager=mock_eval_set_results_manager,
+        agents_dir=str(tmp_path),
+    )
+
+    runner = asyncio.run(adk_web_server.get_runner_async(app_name))
+
+    # Assert that the plugin was attached
+    assert any(
+        isinstance(p, BigQueryAgentAnalyticsPlugin) for p in runner.app.plugins
+    )
+
+    # Check the configuration of the plugin
+    bq_plugin = next(
+        p
+        for p in runner.app.plugins
+        if isinstance(p, BigQueryAgentAnalyticsPlugin)
+    )
+    assert bq_plugin.project_id == "test-project"
+    assert bq_plugin.dataset_id == "test-dataset"
+    assert bq_plugin.table_id == "test-table"
+    assert bq_plugin.location == "US"
+
+    # Assert that the internal visual builder flag is set on the app
+    assert getattr(runner.app, "_is_visual_builder_app", False) is True
+
+
 @pytest.fixture
 def test_app(
     mock_session_service,
@@ -593,7 +720,7 @@ def builder_test_client(
         session_service_uri="",
         artifact_service_uri="",
         memory_service_uri="",
-        allow_origins=["*"],
+        allow_origins=None,
         a2a=False,
         host="127.0.0.1",
         port=8000,
@@ -722,7 +849,10 @@ def test_app_with_a2a(
           "google.adk.cli.fast_api.LocalEvalSetResultsManager",
           return_value=mock_eval_set_results_manager,
       ),
-      patch("a2a.server.tasks.InMemoryTaskStore") as mock_task_store,
+      patch(
+          "google.adk.cli.fast_api._create_task_store_from_options",
+          return_value=MagicMock(),
+      ),
       patch(
           "google.adk.a2a.executor.a2a_agent_executor.A2aAgentExecutor"
       ) as mock_executor,
@@ -732,7 +862,6 @@ def test_app_with_a2a(
       patch("a2a.server.apps.A2AStarletteApplication") as mock_a2a_app,
   ):
     # Configure mocks
-    mock_task_store.return_value = MagicMock()
     mock_executor.return_value = MagicMock()
     mock_handler.return_value = MagicMock()
 
@@ -799,6 +928,198 @@ def test_list_apps_detailed(test_app):
     assert not app["isComputerUse"]
 
   logger.info(f"Listed apps: {data}")
+
+
+def test_get_adk_app_info_llm_agent(test_app, mock_agent_loader):
+  """Test retrieving app info when root agent is an LlmAgent."""
+  agent = LlmAgent(
+      name="test_llm_agent", description="test description", model="test_model"
+  )
+  with patch.object(mock_agent_loader, "load_agent", return_value=agent):
+    response = test_app.get("/apps/test_app/app-info")
+    assert response.status_code == 200
+    data = response.json()
+    assert data["name"] == "test_app"
+    assert data["rootAgentName"] == "test_llm_agent"
+    assert data["description"] == "test description"
+    assert data["language"] == "python"
+    assert "agents" in data
+    assert "test_llm_agent" in data["agents"]
+
+
+def test_get_adk_app_info_llm_agent_with_subagents(test_app, mock_agent_loader):
+  """Test retrieving app info when root agent is an LlmAgent with sub_agents and tools."""
+
+  def sub_tool1(a: int) -> str:
+    """Sub tool 1."""
+    return str(a)
+
+  def sub_tool2(b: str) -> str:
+    """Sub tool 2."""
+    return b
+
+  sub_agent1 = LlmAgent(
+      name="sub_agent1",
+      description="sub description 1",
+      model="test_model",
+      tools=[sub_tool1],
+  )
+  sub_agent2 = LlmAgent(
+      name="sub_agent2",
+      description="sub description 2",
+      model="test_model",
+      tools=[sub_tool2],
+  )
+  agent = LlmAgent(
+      name="test_llm_agent",
+      description="test description",
+      model="test_model",
+      sub_agents=[sub_agent1, sub_agent2],
+  )
+  with patch.object(mock_agent_loader, "load_agent", return_value=agent):
+    response = test_app.get("/apps/test_app/app-info")
+    assert response.status_code == 200
+    data = response.json()
+    assert data["rootAgentName"] == "test_llm_agent"
+    assert "test_llm_agent" in data["agents"]
+    assert "sub_agent1" in data["agents"]
+    assert "sub_agent2" in data["agents"]
+
+    # Verify tools for sub_agent1
+    agent1_info = data["agents"]["sub_agent1"]
+    assert "tools" in agent1_info
+    assert len(agent1_info["tools"]) == 1
+    tool1 = agent1_info["tools"][0]
+    field_name1 = (
+        "functionDeclarations"
+        if "functionDeclarations" in tool1
+        else "function_declarations"
+    )
+    assert field_name1 in tool1
+    assert tool1[field_name1][0]["name"] == "sub_tool1"
+
+    # Verify tools for sub_agent2
+    agent2_info = data["agents"]["sub_agent2"]
+    assert "tools" in agent2_info
+    assert len(agent2_info["tools"]) == 1
+    tool2 = agent2_info["tools"][0]
+    field_name2 = (
+        "functionDeclarations"
+        if "functionDeclarations" in tool2
+        else "function_declarations"
+    )
+    assert field_name2 in tool2
+    assert tool2[field_name2][0]["name"] == "sub_tool2"
+
+
+def test_get_adk_app_info_triple_nested_agents_with_tools(
+    test_app, mock_agent_loader
+):
+  """Test retrieving app info when there are triple nested agents with tools."""
+
+  def tool1(a: int) -> str:
+    """Tool 1."""
+    return str(a)
+
+  def tool2(b: str) -> str:
+    """Tool 2."""
+    return b
+
+  def tool3(c: float) -> str:
+    """Tool 3."""
+    return str(c)
+
+  # Level 3 (deepest)
+  agent3 = LlmAgent(
+      name="agent3",
+      description="Level 3 agent",
+      model="test_model",
+      tools=[tool3],
+  )
+
+  # Level 2
+  agent2 = LlmAgent(
+      name="agent2",
+      description="Level 2 agent",
+      model="test_model",
+      tools=[tool2],
+      sub_agents=[agent3],
+  )
+
+  # Level 1 (root)
+  root_agent = LlmAgent(
+      name="root_agent",
+      description="Level 1 agent",
+      model="test_model",
+      tools=[tool1],
+      sub_agents=[agent2],
+  )
+
+  with patch.object(mock_agent_loader, "load_agent", return_value=root_agent):
+    response = test_app.get("/apps/test_app/app-info")
+    assert response.status_code == 200
+    data = response.json()
+    assert data["rootAgentName"] == "root_agent"
+    assert "root_agent" in data["agents"]
+    assert "agent2" in data["agents"]
+    assert "agent3" in data["agents"]
+
+    # Verify each has its tools
+    for agent_name, exp_tool_name in [
+        ("root_agent", "tool1"),
+        ("agent2", "tool2"),
+        ("agent3", "tool3"),
+    ]:
+      ai = data["agents"][agent_name]
+      assert len(ai["tools"]) == 1
+      tool = ai["tools"][0]
+      field_name = (
+          "functionDeclarations"
+          if "functionDeclarations" in tool
+          else "function_declarations"
+      )
+      assert tool[field_name][0]["name"] == exp_tool_name
+
+
+def test_get_adk_app_info_llm_agent_with_function_tool(
+    test_app, mock_agent_loader
+):
+  """Test retrieving app info when root agent has tools."""
+
+  def my_tool(a: int, b: str) -> str:
+    """A dummy tool function."""
+    return f"{a} {b}"
+
+  agent = LlmAgent(
+      name="test_llm_agent",
+      description="test description",
+      model="test_model",
+      tools=[my_tool],
+  )
+  with patch.object(mock_agent_loader, "load_agent", return_value=agent):
+    response = test_app.get("/apps/test_app/app-info")
+    assert response.status_code == 200
+    data = response.json()
+    assert data["rootAgentName"] == "test_llm_agent"
+    assert "test_llm_agent" in data["agents"]
+    agent_info = data["agents"]["test_llm_agent"]
+    assert "tools" in agent_info
+    assert len(agent_info["tools"]) == 1
+
+    # Verify tool serialization
+    tool = agent_info["tools"][0]
+    func_decls = tool["functionDeclarations"]
+    assert len(func_decls) == 1
+    assert func_decls[0]["name"] == "my_tool"
+
+
+def test_get_adk_app_info_non_llm_agent(test_app, mock_agent_loader):
+  """Test retrieving app info when root agent is not an LlmAgent raises 400."""
+  agent = DummyAgent("dummy_agent")
+  with patch.object(mock_agent_loader, "load_agent", return_value=agent):
+    response = test_app.get("/apps/test_app/app-info")
+    assert response.status_code == 400
+    assert "Root agent is not an LlmAgent" in response.json()["detail"]
 
 
 def test_create_session_with_id(test_app, test_session_info):
@@ -1058,6 +1379,45 @@ def test_agent_run_passes_invocation_id(
 
   assert response.status_code == 200
   assert captured_invocation_id["invocation_id"] == payload["invocation_id"]
+
+
+def test_agent_run_passes_custom_metadata(
+    test_app, create_test_session, monkeypatch
+):
+  """Test /run forwards custom_metadata via the run config."""
+  info = create_test_session
+  captured: dict[str, Optional[RunConfig]] = {"run_config": None}
+
+  async def run_async_capture(
+      self,
+      *,
+      user_id: str,
+      session_id: str,
+      invocation_id: Optional[str] = None,
+      new_message: Optional[types.Content] = None,
+      state_delta: Optional[dict[str, Any]] = None,
+      run_config: Optional[RunConfig] = None,
+  ):
+    del self, user_id, session_id, invocation_id, new_message, state_delta
+    captured["run_config"] = run_config
+    yield _event_1()
+
+  monkeypatch.setattr(Runner, "run_async", run_async_capture)
+
+  payload = {
+      "app_name": info["app_name"],
+      "user_id": info["user_id"],
+      "session_id": info["session_id"],
+      "new_message": {"role": "user", "parts": [{"text": "Hello"}]},
+      "streaming": False,
+      "custom_metadata": {"tenant": "acme", "trace": "abc123"},
+  }
+
+  response = test_app.post("/run", json=payload)
+
+  assert response.status_code == 200
+  assert captured["run_config"] is not None
+  assert captured["run_config"].custom_metadata == payload["custom_metadata"]
 
 
 def test_agent_run_sse_splits_artifact_delta(
@@ -1362,10 +1722,10 @@ def test_get_eval_set_result_not_found(test_app):
   assert response.status_code == 404
 
 
-def test_list_metrics_info(test_app):
+def test_list_metrics_info(builder_test_client):
   """Test listing metrics info."""
-  url = "/apps/test_app/metrics-info"
-  response = test_app.get(url)
+  url = "/dev/apps/test_app/metrics-info"
+  response = builder_test_client.get(url)
 
   # Verify the response
   assert response.status_code == 200
@@ -1385,7 +1745,7 @@ def test_debug_trace(test_app):
   """Test the debug trace endpoint."""
   # This test will likely return 404 since we haven't set up trace data,
   # but it tests that the endpoint exists and handles missing traces correctly.
-  url = "/debug/trace/nonexistent-event"
+  url = "/dev/apps/test_app/debug/trace/nonexistent-event"
   response = test_app.get(url)
 
   # Verify we get a 404 for a nonexistent trace
@@ -1398,56 +1758,6 @@ def test_openapi_json_schema_accessible(test_app):
   response = test_app.get("/openapi.json")
   assert response.status_code == 200
   logger.info("OpenAPI /openapi.json endpoint is accessible")
-
-
-def test_get_event_graph_returns_dot_src_for_app_agent():
-  """Ensure graph endpoint unwraps App instances before building the graph."""
-  from google.adk.cli.adk_web_server import AdkWebServer
-
-  root_agent = DummyAgent(name="dummy_agent")
-  app_agent = App(name="test_app", root_agent=root_agent)
-
-  class Loader:
-
-    def load_agent(self, app_name):
-      return app_agent
-
-    def list_agents(self):
-      return [app_agent.name]
-
-  session_service = AsyncMock()
-  session = Session(
-      id="session_id",
-      app_name="test_app",
-      user_id="user",
-      state={},
-      events=[Event(author="dummy_agent")],
-  )
-  event_id = session.events[0].id
-  session_service.get_session.return_value = session
-
-  adk_web_server = AdkWebServer(
-      agent_loader=Loader(),
-      session_service=session_service,
-      memory_service=MagicMock(),
-      artifact_service=MagicMock(),
-      credential_service=MagicMock(),
-      eval_sets_manager=MagicMock(),
-      eval_set_results_manager=MagicMock(),
-      agents_dir=".",
-  )
-
-  fast_api_app = adk_web_server.get_fast_api_app(
-      setup_observer=lambda _observer, _server: None,
-      tear_down_observer=lambda _observer, _server: None,
-  )
-
-  client = TestClient(fast_api_app)
-  response = client.get(
-      f"/apps/test_app/users/user/sessions/session_id/events/{event_id}/graph"
-  )
-  assert response.status_code == 200
-  assert "dotSrc" in response.json()
 
 
 def test_a2a_agent_discovery(test_app_with_a2a):
@@ -1495,7 +1805,9 @@ def test_a2a_request_handler_uses_push_config_store(
           "google.adk.cli.fast_api.LocalEvalSetResultsManager",
           return_value=mock_eval_set_results_manager,
       ),
-      patch("a2a.server.tasks.InMemoryTaskStore") as mock_task_store,
+      patch(
+          "google.adk.cli.fast_api._create_task_store_from_options",
+      ) as mock_create_task_store,
       patch(
           "a2a.server.tasks.InMemoryPushNotificationConfigStore"
       ) as mock_push_config_store_class,
@@ -1508,7 +1820,7 @@ def test_a2a_request_handler_uses_push_config_store(
       patch("a2a.server.apps.A2AStarletteApplication") as mock_a2a_app,
   ):
     mock_task_store_instance = MagicMock()
-    mock_task_store.return_value = mock_task_store_instance
+    mock_create_task_store.return_value = mock_task_store_instance
     mock_push_config_store = MagicMock()
     mock_push_config_store_class.return_value = mock_push_config_store
     mock_executor_instance = MagicMock()
@@ -1538,6 +1850,242 @@ def test_a2a_request_handler_uses_push_config_store(
     )
 
 
+def test_a2a_request_handler_uses_task_store_uri(
+    mock_session_service,
+    mock_artifact_service,
+    mock_memory_service,
+    mock_agent_loader,
+    mock_eval_sets_manager,
+    mock_eval_set_results_manager,
+    temp_agents_dir_with_a2a,
+    monkeypatch,
+):
+  """Test A2A request handler uses task store created from URI."""
+  with (
+      patch("signal.signal", return_value=None),
+      patch(
+          "google.adk.cli.fast_api.create_session_service_from_options",
+          return_value=mock_session_service,
+      ),
+      patch(
+          "google.adk.cli.fast_api.create_artifact_service_from_options",
+          return_value=mock_artifact_service,
+      ),
+      patch(
+          "google.adk.cli.fast_api.create_memory_service_from_options",
+          return_value=mock_memory_service,
+      ),
+      patch(
+          "google.adk.cli.fast_api.AgentLoader",
+          return_value=mock_agent_loader,
+      ),
+      patch(
+          "google.adk.cli.fast_api.LocalEvalSetsManager",
+          return_value=mock_eval_sets_manager,
+      ),
+      patch(
+          "google.adk.cli.fast_api.LocalEvalSetResultsManager",
+          return_value=mock_eval_set_results_manager,
+      ),
+      patch(
+          "google.adk.cli.fast_api._create_task_store_from_options",
+      ) as mock_create_task_store,
+      patch(
+          "google.adk.a2a.executor.a2a_agent_executor.A2aAgentExecutor"
+      ) as mock_executor,
+      patch(
+          "a2a.server.request_handlers.DefaultRequestHandler"
+      ) as mock_handler,
+      patch("a2a.server.apps.A2AStarletteApplication") as mock_a2a_app,
+  ):
+    custom_task_store = MagicMock()
+    mock_create_task_store.return_value = custom_task_store
+    mock_executor_instance = MagicMock()
+    mock_executor.return_value = mock_executor_instance
+    mock_handler.return_value = MagicMock()
+    mock_a2a_app_instance = MagicMock()
+    mock_a2a_app_instance.routes.return_value = []
+    mock_a2a_app.return_value = mock_a2a_app_instance
+
+    test_uri = "postgresql+asyncpg://user:pass@host/db"
+    monkeypatch.chdir(temp_agents_dir_with_a2a)
+    _ = get_fast_api_app(
+        agents_dir=".",
+        web=True,
+        session_service_uri="",
+        artifact_service_uri="",
+        memory_service_uri="",
+        allow_origins=["*"],
+        a2a=True,
+        task_store_uri=test_uri,
+        host="127.0.0.1",
+        port=8000,
+    )
+
+    mock_create_task_store.assert_called_once_with(
+        task_store_uri=test_uri,
+    )
+    mock_handler.assert_called_once()
+    call_kwargs = mock_handler.call_args[1]
+    assert call_kwargs["task_store"] is custom_task_store
+
+
+def test_a2a_task_store_engine_disposed_on_shutdown(
+    mock_session_service,
+    mock_artifact_service,
+    mock_memory_service,
+    mock_agent_loader,
+    mock_eval_sets_manager,
+    mock_eval_set_results_manager,
+    temp_agents_dir_with_a2a,
+    monkeypatch,
+):
+  """Test that the A2A task store engine is disposed on app shutdown."""
+  mock_engine = AsyncMock()
+  custom_task_store = MagicMock()
+  custom_task_store.engine = mock_engine
+
+  with (
+      patch("signal.signal", return_value=None),
+      patch(
+          "google.adk.cli.fast_api.create_session_service_from_options",
+          return_value=mock_session_service,
+      ),
+      patch(
+          "google.adk.cli.fast_api.create_artifact_service_from_options",
+          return_value=mock_artifact_service,
+      ),
+      patch(
+          "google.adk.cli.fast_api.create_memory_service_from_options",
+          return_value=mock_memory_service,
+      ),
+      patch(
+          "google.adk.cli.fast_api.AgentLoader",
+          return_value=mock_agent_loader,
+      ),
+      patch(
+          "google.adk.cli.fast_api.LocalEvalSetsManager",
+          return_value=mock_eval_sets_manager,
+      ),
+      patch(
+          "google.adk.cli.fast_api.LocalEvalSetResultsManager",
+          return_value=mock_eval_set_results_manager,
+      ),
+      patch(
+          "google.adk.cli.fast_api._create_task_store_from_options",
+          return_value=custom_task_store,
+      ),
+      patch(
+          "google.adk.a2a.executor.a2a_agent_executor.A2aAgentExecutor"
+      ) as mock_executor,
+      patch(
+          "a2a.server.request_handlers.DefaultRequestHandler"
+      ) as mock_handler,
+      patch("a2a.server.apps.A2AStarletteApplication") as mock_a2a_app,
+  ):
+    mock_executor.return_value = MagicMock()
+    mock_handler.return_value = MagicMock()
+    mock_a2a_app_instance = MagicMock()
+    mock_a2a_app_instance.routes.return_value = []
+    mock_a2a_app.return_value = mock_a2a_app_instance
+
+    monkeypatch.chdir(temp_agents_dir_with_a2a)
+    app = get_fast_api_app(
+        agents_dir=".",
+        web=True,
+        session_service_uri="",
+        artifact_service_uri="",
+        memory_service_uri="",
+        allow_origins=["*"],
+        a2a=True,
+        task_store_uri="postgresql+asyncpg://user:pass@host/db",
+        host="127.0.0.1",
+        port=8000,
+    )
+
+    # Exercise the lifespan to trigger shutdown cleanup.
+    # TestClient enters/exits the lifespan context on __enter__/__exit__.
+    with TestClient(app):
+      pass
+
+    mock_engine.dispose.assert_awaited_once()
+
+
+def test_a2a_in_memory_task_store_no_engine_dispose(
+    mock_session_service,
+    mock_artifact_service,
+    mock_memory_service,
+    mock_agent_loader,
+    mock_eval_sets_manager,
+    mock_eval_set_results_manager,
+    temp_agents_dir_with_a2a,
+    monkeypatch,
+):
+  """Test that in-memory task stores (no engine attr) skip disposal."""
+  custom_task_store = MagicMock(spec=[])  # no attributes at all
+
+  with (
+      patch("signal.signal", return_value=None),
+      patch(
+          "google.adk.cli.fast_api.create_session_service_from_options",
+          return_value=mock_session_service,
+      ),
+      patch(
+          "google.adk.cli.fast_api.create_artifact_service_from_options",
+          return_value=mock_artifact_service,
+      ),
+      patch(
+          "google.adk.cli.fast_api.create_memory_service_from_options",
+          return_value=mock_memory_service,
+      ),
+      patch(
+          "google.adk.cli.fast_api.AgentLoader",
+          return_value=mock_agent_loader,
+      ),
+      patch(
+          "google.adk.cli.fast_api.LocalEvalSetsManager",
+          return_value=mock_eval_sets_manager,
+      ),
+      patch(
+          "google.adk.cli.fast_api.LocalEvalSetResultsManager",
+          return_value=mock_eval_set_results_manager,
+      ),
+      patch(
+          "google.adk.cli.fast_api._create_task_store_from_options",
+          return_value=custom_task_store,
+      ),
+      patch(
+          "google.adk.a2a.executor.a2a_agent_executor.A2aAgentExecutor"
+      ) as mock_executor,
+      patch(
+          "a2a.server.request_handlers.DefaultRequestHandler"
+      ) as mock_handler,
+      patch("a2a.server.apps.A2AStarletteApplication") as mock_a2a_app,
+  ):
+    mock_executor.return_value = MagicMock()
+    mock_handler.return_value = MagicMock()
+    mock_a2a_app_instance = MagicMock()
+    mock_a2a_app_instance.routes.return_value = []
+    mock_a2a_app.return_value = mock_a2a_app_instance
+
+    monkeypatch.chdir(temp_agents_dir_with_a2a)
+    app = get_fast_api_app(
+        agents_dir=".",
+        web=True,
+        session_service_uri="",
+        artifact_service_uri="",
+        memory_service_uri="",
+        allow_origins=["*"],
+        a2a=True,
+        host="127.0.0.1",
+        port=8000,
+    )
+
+    # Lifespan should complete without errors even with no engine.
+    with TestClient(app):
+      pass
+
+
 def test_a2a_disabled_by_default(test_app):
   """Test that A2A functionality is disabled by default."""
   # The regular test_app fixture has a2a=False
@@ -1560,23 +2108,27 @@ def test_patch_memory(test_app, create_test_session, mock_memory_service):
   logger.info("Add session to memory test completed successfully")
 
 
-def test_builder_final_save_preserves_tools_and_cleans_tmp(
+def test_builder_final_save_preserves_files_and_cleans_tmp(
     builder_test_client, tmp_path
 ):
   files = [
-      ("files", ("app/__init__.py", b"from . import agent\n", "text/plain")),
-      ("files", ("app/tools.py", b"def tool():\n  return 1\n", "text/plain")),
       (
           "files",
           ("app/root_agent.yaml", b"name: app\n", "application/x-yaml"),
       ),
+      (
+          "files",
+          ("app/sub_agent.yaml", b"name: sub\n", "application/x-yaml"),
+      ),
   ]
-  response = builder_test_client.post("/builder/save?tmp=true", files=files)
+  response = builder_test_client.post(
+      "/dev/apps/app/builder/save?tmp=true", files=files
+  )
   assert response.status_code == 200
   assert response.json() is True
 
   response = builder_test_client.post(
-      "/builder/save",
+      "/dev/apps/app/builder/save",
       files=[(
           "files",
           (
@@ -1589,10 +2141,50 @@ def test_builder_final_save_preserves_tools_and_cleans_tmp(
   assert response.status_code == 200
   assert response.json() is True
 
-  assert (tmp_path / "app" / "tools.py").is_file()
+  assert (tmp_path / "app" / "sub_agent.yaml").is_file()
   assert not (tmp_path / "app" / "tmp" / "app").exists()
   tmp_dir = tmp_path / "app" / "tmp"
   assert not tmp_dir.exists() or not any(tmp_dir.iterdir())
+
+
+def test_builder_save_rejects_cross_origin_post(builder_test_client, tmp_path):
+  response = builder_test_client.post(
+      "/dev/apps/app/builder/save?tmp=true",
+      headers={"origin": "https://evil.com"},
+      files=[(
+          "files",
+          ("app/root_agent.yaml", b"name: app\n", "application/x-yaml"),
+      )],
+  )
+
+  assert response.status_code == 403
+  assert response.text == "Forbidden: origin not allowed"
+  assert not (tmp_path / "app" / "tmp" / "app").exists()
+
+
+def test_builder_save_allows_same_origin_post(builder_test_client, tmp_path):
+  response = builder_test_client.post(
+      "/dev/apps/app/builder/save?tmp=true",
+      headers={"origin": "http://testserver"},
+      files=[(
+          "files",
+          ("app/root_agent.yaml", b"name: app\n", "application/x-yaml"),
+      )],
+  )
+
+  assert response.status_code == 200
+  assert response.json() is True
+  assert (tmp_path / "app" / "tmp" / "app" / "root_agent.yaml").is_file()
+
+
+def test_builder_get_allows_cross_origin_get(builder_test_client):
+  response = builder_test_client.get(
+      "/dev/apps/missing/builder?tmp=true",
+      headers={"origin": "https://evil.com"},
+  )
+
+  assert response.status_code == 200
+  assert response.text == ""
 
 
 def test_builder_cancel_deletes_tmp_idempotent(builder_test_client, tmp_path):
@@ -1600,12 +2192,12 @@ def test_builder_cancel_deletes_tmp_idempotent(builder_test_client, tmp_path):
   tmp_agent_root.mkdir(parents=True, exist_ok=True)
   (tmp_agent_root / "root_agent.yaml").write_text("name: app\n")
 
-  response = builder_test_client.post("/builder/app/app/cancel")
+  response = builder_test_client.post("/dev/apps/app/builder/cancel")
   assert response.status_code == 200
   assert response.json() is True
   assert not (tmp_path / "app" / "tmp").exists()
 
-  response = builder_test_client.post("/builder/app/app/cancel")
+  response = builder_test_client.post("/dev/apps/app/builder/cancel")
   assert response.status_code == 200
   assert response.json() is True
   assert not (tmp_path / "app" / "tmp").exists()
@@ -1620,7 +2212,7 @@ def test_builder_get_tmp_true_recreates_tmp(builder_test_client, tmp_path):
   (nested_dir / "nested.yaml").write_text("nested: true\n")
 
   assert not (app_root / "tmp").exists()
-  response = builder_test_client.get("/builder/app/app?tmp=true")
+  response = builder_test_client.get("/dev/apps/app/builder?tmp=true")
   assert response.status_code == 200
   assert response.text == "name: app\n"
 
@@ -1629,7 +2221,7 @@ def test_builder_get_tmp_true_recreates_tmp(builder_test_client, tmp_path):
   assert (tmp_agent_root / "nested" / "nested.yaml").is_file()
 
   response = builder_test_client.get(
-      "/builder/app/app?tmp=true&file_path=nested/nested.yaml"
+      "/dev/apps/app/builder?tmp=true&file_path=nested/nested.yaml"
   )
   assert response.status_code == 200
   assert response.text == "nested: true\n"
@@ -1638,7 +2230,7 @@ def test_builder_get_tmp_true_recreates_tmp(builder_test_client, tmp_path):
 def test_builder_get_tmp_true_missing_app_returns_empty(
     builder_test_client, tmp_path
 ):
-  response = builder_test_client.get("/builder/app/missing?tmp=true")
+  response = builder_test_client.get("/dev/apps/missing/builder?tmp=true")
   assert response.status_code == 200
   assert response.text == ""
   assert not (tmp_path / "missing").exists()
@@ -1646,16 +2238,191 @@ def test_builder_get_tmp_true_missing_app_returns_empty(
 
 def test_builder_save_rejects_traversal(builder_test_client, tmp_path):
   response = builder_test_client.post(
-      "/builder/save?tmp=true",
+      "/dev/apps/app/builder/save?tmp=true",
       files=[(
           "files",
           ("app/../escape.yaml", b"nope\n", "application/x-yaml"),
       )],
   )
-  assert response.status_code == 200
-  assert response.json() is False
+  assert response.status_code == 400
   assert not (tmp_path / "escape.yaml").exists()
   assert not (tmp_path / "app" / "tmp" / "escape.yaml").exists()
+
+
+def test_builder_save_rejects_py_files(builder_test_client, tmp_path):
+  """Uploading .py files via /builder/save is rejected."""
+  response = builder_test_client.post(
+      "/dev/apps/app/builder/save?tmp=true",
+      files=[(
+          "files",
+          ("app/agent.py", b"import os\nos.system('id')\n", "text/plain"),
+      )],
+  )
+  assert response.status_code == 400
+  assert not (tmp_path / "app" / "tmp" / "app" / "agent.py").exists()
+
+
+def test_builder_save_rejects_non_yaml_extensions(
+    builder_test_client, tmp_path
+):
+  """Uploading non-YAML files (.json, .txt, .sh, etc.) is rejected."""
+  for ext, content in [
+      (".py", b"print('hi')"),
+      (".json", b"{}"),
+      (".txt", b"hello"),
+      (".sh", b"#!/bin/bash"),
+      (".pth", b"import os"),
+  ]:
+    response = builder_test_client.post(
+        "/dev/apps/app/builder/save?tmp=true",
+        files=[(
+            "files",
+            (f"app/file{ext}", content, "application/octet-stream"),
+        )],
+    )
+    assert response.status_code == 400, f"Expected 400 for {ext}"
+
+
+def test_builder_save_allows_yaml_files(builder_test_client, tmp_path):
+  """Uploading .yaml and .yml files is allowed."""
+  response = builder_test_client.post(
+      "/dev/apps/app/builder/save?tmp=true",
+      files=[(
+          "files",
+          ("app/root_agent.yaml", b"name: app\n", "application/x-yaml"),
+      )],
+  )
+  assert response.status_code == 200
+  assert response.json() is True
+
+  response = builder_test_client.post(
+      "/dev/apps/app/builder/save?tmp=true",
+      files=[(
+          "files",
+          ("app/sub_agent.yml", b"name: sub\n", "application/x-yaml"),
+      )],
+  )
+  assert response.status_code == 200
+  assert response.json() is True
+
+
+def test_builder_save_rejects_args_key(builder_test_client, tmp_path):
+  """Uploading YAML with an `args` key is rejected (RCE prevention)."""
+  yaml_with_args = b"""\
+name: my_tool
+args:
+  key: value
+"""
+  response = builder_test_client.post(
+      "/dev/apps/app/builder/save?tmp=true",
+      files=[(
+          "files",
+          ("app/root_agent.yaml", yaml_with_args, "application/x-yaml"),
+      )],
+  )
+  assert response.status_code == 400
+  assert "args" in response.json()["detail"]
+  assert not (tmp_path / "app" / "tmp" / "app" / "root_agent.yaml").exists()
+
+
+def test_builder_save_rejects_nested_args_key(builder_test_client, tmp_path):
+  """Uploading YAML with a nested `args` key is rejected."""
+  yaml_with_nested_args = b"""\
+tools:
+  - name: some_tool
+    args:
+      param: value
+"""
+  response = builder_test_client.post(
+      "/dev/apps/app/builder/save?tmp=true",
+      files=[(
+          "files",
+          ("app/root_agent.yaml", yaml_with_nested_args, "application/x-yaml"),
+      )],
+  )
+  assert response.status_code == 400
+  assert "args" in response.json()["detail"]
+
+
+def test_builder_get_rejects_non_yaml_file_paths(builder_test_client, tmp_path):
+  """GET /dev/apps/{app_name}/builder?file_path=... rejects non-YAML extensions."""
+  app_root = tmp_path / "app"
+  app_root.mkdir(parents=True, exist_ok=True)
+  (app_root / ".env").write_text("SECRET=supersecret\n")
+  (app_root / "agent.py").write_text("root_agent = None\n")
+  (app_root / "config.json").write_text("{}\n")
+
+  for file_path in [".env", "agent.py", "config.json"]:
+    response = builder_test_client.get(
+        f"/dev/apps/app/builder?file_path={file_path}"
+    )
+    assert response.status_code == 200, f"Expected 200 for {file_path}"
+    assert response.text == "", f"Expected empty response for {file_path}"
+
+
+def test_builder_get_allows_yaml_file_paths(builder_test_client, tmp_path):
+  """GET /dev/apps/{app_name}/builder?file_path=... allows YAML extensions."""
+  app_root = tmp_path / "app"
+  app_root.mkdir(parents=True, exist_ok=True)
+  (app_root / "sub_agent.yaml").write_text("name: sub\n")
+  (app_root / "tool.yml").write_text("name: tool\n")
+
+  response = builder_test_client.get(
+      "/dev/apps/app/builder?file_path=sub_agent.yaml"
+  )
+  assert response.status_code == 200
+  assert response.text == "name: sub\n"
+
+  response = builder_test_client.get("/dev/apps/app/builder?file_path=tool.yml")
+  assert response.status_code == 200
+  assert response.text == "name: tool\n"
+
+
+def test_builder_endpoints_not_registered_without_web(
+    mock_session_service,
+    mock_artifact_service,
+    mock_memory_service,
+    mock_agent_loader,
+    mock_eval_sets_manager,
+    mock_eval_set_results_manager,
+):
+  """Builder endpoints must not be registered when web=False (e.g. deploy)."""
+  client = _create_test_client(
+      mock_session_service,
+      mock_artifact_service,
+      mock_memory_service,
+      mock_agent_loader,
+      mock_eval_sets_manager,
+      mock_eval_set_results_manager,
+      web=False,
+  )
+  # /dev/apps/app/builder/save should return 404/405, not 200
+  response = client.post(
+      "/dev/apps/app/builder/save",
+      files=[
+          ("files", ("app/agent.yaml", b"name: test\n", "application/x-yaml"))
+      ],
+  )
+  assert response.status_code in (404, 405)
+
+  # /dev/apps/{name}/builder/cancel should also be absent
+  response = client.post("/dev/apps/app/builder/cancel")
+  assert response.status_code in (404, 405)
+
+  # /dev/apps/{name}/builder GET should also be absent
+  response = client.get("/dev/apps/app/builder")
+  assert response.status_code in (404, 405)
+
+
+def test_builder_endpoints_registered_with_web(builder_test_client):
+  """Builder endpoints are available when web=True."""
+  response = builder_test_client.post(
+      "/dev/apps/app/builder/save?tmp=true",
+      files=[
+          ("files", ("app/agent.yaml", b"name: test\n", "application/x-yaml"))
+      ],
+  )
+  assert response.status_code == 200
 
 
 def test_agent_run_resume_without_message_success(
@@ -1766,6 +2533,535 @@ def test_returns_404_without_auto_create(
   response = test_app.post(endpoint, json=payload)
   assert response.status_code == 404
   assert "Session not found" in response.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_independent_telemetry_context(
+    mock_session_service,
+    mock_artifact_service,
+    mock_memory_service,
+    mock_agent_loader,
+    mock_eval_sets_manager,
+    mock_eval_set_results_manager,
+    monkeypatch,
+):
+  """Test that two agents have independent is_visual_builder context variables."""
+  from google.adk.utils._telemetry_context import _is_visual_builder
+  import httpx
+
+  # We use httpx.AsyncClient to send concurrent requests to the FastAPI app.
+  # This proves that is_visual_builder doesn't leak across concurrent requests.
+  captured_visual_builder_values = {}
+
+  async def run_async_capture(
+      self,
+      *,
+      user_id: str,
+      session_id: str,
+      invocation_id: Optional[str] = None,
+      new_message: Optional[types.Content] = None,
+      state_delta: Optional[dict[str, Any]] = None,
+      run_config: Optional[RunConfig] = None,
+  ):
+    # Capture the value of is_visual_builder inside the request context
+    captured_visual_builder_values[self.app.name] = _is_visual_builder.get()
+
+    # Sleep to ensure both requests overlap in time
+    await asyncio.sleep(0.1)
+
+    # Read again to ensure it wasn't overwritten by the other concurrent request
+    captured_visual_builder_values[self.app.name + "_after_sleep"] = (
+        _is_visual_builder.get()
+    )
+
+    yield _event_1()
+
+  monkeypatch.setattr(Runner, "run_async", run_async_capture)
+
+  with (
+      patch.object(signal, "signal", autospec=True, return_value=None),
+      patch.object(
+          fast_api_module,
+          "create_session_service_from_options",
+          autospec=True,
+          return_value=mock_session_service,
+      ),
+      patch.object(
+          fast_api_module,
+          "create_artifact_service_from_options",
+          autospec=True,
+          return_value=mock_artifact_service,
+      ),
+      patch.object(
+          fast_api_module,
+          "create_memory_service_from_options",
+          autospec=True,
+          return_value=mock_memory_service,
+      ),
+      patch.object(
+          fast_api_module,
+          "AgentLoader",
+          autospec=True,
+          return_value=mock_agent_loader,
+      ),
+      patch.object(
+          fast_api_module,
+          "LocalEvalSetsManager",
+          autospec=True,
+          return_value=mock_eval_sets_manager,
+      ),
+      patch.object(
+          fast_api_module,
+          "LocalEvalSetResultsManager",
+          autospec=True,
+          return_value=mock_eval_set_results_manager,
+      ),
+      patch.object(
+          os.path,
+          "exists",
+          autospec=True,
+          side_effect=lambda p: "yaml_app" in p
+          and p.endswith("root_agent.yaml"),
+      ),
+  ):
+    app = get_fast_api_app(
+        agents_dir=".",
+        web=True,
+        session_service_uri="",
+        artifact_service_uri="",
+        memory_service_uri="",
+        allow_origins=["*"],
+        a2a=False,
+        host="127.0.0.1",
+        port=8000,
+    )
+
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(
+        transport=transport, base_url="http://test"
+    ) as client:
+      # Send concurrent requests
+      req1 = client.post(
+          "/run",
+          json={
+              "app_name": "test_app",
+              "user_id": "test_user",
+              "session_id": "test_session",
+              "new_message": {"role": "user", "parts": [{"text": "Hello"}]},
+          },
+      )
+      req2 = client.post(
+          "/run",
+          json={
+              "app_name": "yaml_app",
+              "user_id": "test_user",
+              "session_id": "test_session",
+              "new_message": {"role": "user", "parts": [{"text": "Hello"}]},
+          },
+      )
+
+      await asyncio.gather(req1, req2)
+
+  assert captured_visual_builder_values.get("test_app") == False
+  assert captured_visual_builder_values.get("test_app_after_sleep") == False
+
+  assert captured_visual_builder_values.get("yaml_app") == True
+  assert captured_visual_builder_values.get("yaml_app_after_sleep") == True
+
+
+def test_default_app_name_middleware_and_resolution(
+    mock_session_service,
+    mock_artifact_service,
+    mock_memory_service,
+    mock_agent_loader,
+    mock_eval_sets_manager,
+    mock_eval_set_results_manager,
+    monkeypatch,
+):
+  """Test that when ADK_DEFAULT_APP_NAME is set, path rewriting works for get_session and run."""
+  # Set environment variable
+  monkeypatch.setenv("ADK_DEFAULT_APP_NAME", "test_app")
+
+  test_app = _create_test_client(
+      mock_session_service,
+      mock_artifact_service,
+      mock_memory_service,
+      mock_agent_loader,
+      mock_eval_sets_manager,
+      mock_eval_set_results_manager,
+  )
+
+  # Create session for test_app
+  async def setup_session():
+    await mock_session_service.create_session(
+        app_name="test_app",
+        user_id="test_user",
+        session_id="test_session",
+        state={},
+    )
+
+  asyncio.run(setup_session())
+
+  # 1. Test path rewriting for GET /users/{user_id}/sessions/{session_id}
+  response = test_app.get("/users/test_user/sessions/test_session")
+  assert response.status_code == 200
+  assert response.json()["id"] == "test_session"
+
+  # 2. Test app_name omission in /run request payload
+  payload = {
+      "user_id": "test_user",
+      "session_id": "test_session",
+      "new_message": {"role": "user", "parts": [{"text": "Hello"}]},
+  }
+  response = test_app.post("/run", json=payload)
+  assert response.status_code == 200
+  assert isinstance(response.json(), list)
+
+
+def test_default_app_name_not_set_raises_error(test_app, monkeypatch):
+  """Test that omitting app_name when ADK_DEFAULT_APP_NAME is not set raises 400/404."""
+  # Make sure environment variable is NOT set
+  monkeypatch.delenv("ADK_DEFAULT_APP_NAME", raising=False)
+
+  # 1. Accessing /users/{user_id}/sessions/{session_id} should return 404 because no rewrite happened
+  response = test_app.get("/users/test_user/sessions/test_session")
+  assert response.status_code == 404
+
+  # 2. Accessing /run with omitted app_name should return 400
+  payload = {
+      "user_id": "test_user",
+      "session_id": "test_session",
+      "new_message": {"role": "user", "parts": [{"text": "Hello"}]},
+  }
+  response = test_app.post("/run", json=payload)
+  assert response.status_code == 400
+  assert "app_name is required" in response.json()["detail"]
+
+
+def test_run_live_websocket_default_app_name(
+    mock_session_service,
+    mock_artifact_service,
+    mock_memory_service,
+    mock_agent_loader,
+    mock_eval_sets_manager,
+    mock_eval_set_results_manager,
+    monkeypatch,
+):
+  """Test that /run_live websocket endpoint resolves app_name using ADK_DEFAULT_APP_NAME."""
+  monkeypatch.setenv("ADK_DEFAULT_APP_NAME", "test_app")
+
+  test_app = _create_test_client(
+      mock_session_service,
+      mock_artifact_service,
+      mock_memory_service,
+      mock_agent_loader,
+      mock_eval_sets_manager,
+      mock_eval_set_results_manager,
+  )
+
+  async def setup_session():
+    await mock_session_service.create_session(
+        app_name="test_app",
+        user_id="user",
+        session_id="session",
+        state={},
+    )
+
+  asyncio.run(setup_session())
+
+  url = "/run_live?user_id=user&session_id=session&modalities=AUDIO"
+
+  with test_app.websocket_connect(url) as ws:
+    data = ws.receive_json()
+    assert data["author"] == "dummy agent"
+
+
+def test_run_live_websocket_missing_app_name_raises_error(
+    test_app, monkeypatch
+):
+  """Test that /run_live websocket connection fails when app_name and ADK_DEFAULT_APP_NAME are both missing."""
+  from fastapi.websockets import WebSocketDisconnect
+
+  monkeypatch.delenv("ADK_DEFAULT_APP_NAME", raising=False)
+
+  url = "/run_live?user_id=user&session_id=session&modalities=AUDIO"
+
+  with pytest.raises(WebSocketDisconnect) as exc_info:
+    with test_app.websocket_connect(url) as ws:
+      ws.receive_json()
+  assert exc_info.value.code == 1008
+
+
+def test_is_single_agent_directory(tmp_path):
+  """Verify that is_single_agent_directory only identifies directories with agent.py or root_agent.yaml."""
+  from google.adk.cli.utils.agent_loader import is_single_agent_directory
+
+  # Directory with agent.py (should be identified as agent)
+  agent_py_dir = tmp_path / "agent_py_dir"
+  agent_py_dir.mkdir()
+  (agent_py_dir / "agent.py").write_text("root_agent = 'dummy'")
+  assert is_single_agent_directory(str(agent_py_dir)) is True
+
+  # Directory with root_agent.yaml (should be identified as agent)
+  yaml_dir = tmp_path / "yaml_dir"
+  yaml_dir.mkdir()
+  (yaml_dir / "root_agent.yaml").write_text("root_agent: dummy")
+  assert is_single_agent_directory(str(yaml_dir)) is True
+
+  # Normal directory or standard package with __init__.py only (should NOT be identified as agent)
+  normal_pkg = tmp_path / "normal_pkg"
+  normal_pkg.mkdir()
+  (normal_pkg / "__init__.py").write_text(
+      "from .app import App\nimport something"
+  )
+  assert is_single_agent_directory(str(normal_pkg)) is False
+
+
+def test_agent_loader_single_agent_mode(tmp_path):
+  """Verify that AgentLoader automatically detects and configures single agent mode."""
+  agent_folder = tmp_path / "my_test_agent"
+  agent_folder.mkdir()
+  (agent_folder / "agent.py").write_text("root_agent = 'dummy'")
+
+  loader = fast_api_module.AgentLoader(str(agent_folder))
+
+  assert loader._is_single_agent is True
+  assert loader._single_agent_name == "my_test_agent"
+  assert loader.agents_dir == str(tmp_path)
+  assert loader.list_agents() == ["my_test_agent"]
+
+
+def test_single_agent_mode_detection(
+    tmp_path,
+    mock_session_service,
+    mock_artifact_service,
+    mock_memory_service,
+    mock_eval_sets_manager,
+    mock_eval_set_results_manager,
+):
+  """Verify that pointing agents_dir to a single agent folder enables single agent mode."""
+  agent_folder = tmp_path / "my_only_agent"
+  agent_folder.mkdir()
+  (agent_folder / "agent.py").write_text("root_agent = None")
+
+  with (
+      patch.object(signal, "signal", autospec=True, return_value=None),
+      patch.object(
+          fast_api_module,
+          "create_session_service_from_options",
+          autospec=True,
+          return_value=mock_session_service,
+      ),
+      patch.object(
+          fast_api_module,
+          "create_artifact_service_from_options",
+          autospec=True,
+          return_value=mock_artifact_service,
+      ),
+      patch.object(
+          fast_api_module,
+          "create_memory_service_from_options",
+          autospec=True,
+          return_value=mock_memory_service,
+      ),
+      patch.object(
+          fast_api_module,
+          "LocalEvalSetsManager",
+          autospec=True,
+          return_value=mock_eval_sets_manager,
+      ),
+      patch.object(
+          fast_api_module,
+          "LocalEvalSetResultsManager",
+          autospec=True,
+          return_value=mock_eval_set_results_manager,
+      ),
+  ):
+    app = get_fast_api_app(
+        agents_dir=str(agent_folder),
+        web=True,
+        session_service_uri="",
+        artifact_service_uri="",
+        memory_service_uri="",
+        allow_origins=None,
+        a2a=False,
+        host="127.0.0.1",
+        port=8000,
+    )
+    client = TestClient(app)
+
+    response = client.get("/list-apps")
+    assert response.status_code == 200
+    assert response.json() == ["my_only_agent"]
+
+
+def test_single_agent_mode_sets_default_app(
+    tmp_path,
+    mock_session_service,
+    mock_artifact_service,
+    mock_memory_service,
+    mock_eval_sets_manager,
+    mock_eval_set_results_manager,
+    monkeypatch,
+):
+  """Verify that in single agent mode, the agent is used as default app."""
+  # Set environment variable to something else, but single mode should take precedence.
+  monkeypatch.setenv("ADK_DEFAULT_APP_NAME", "some_other_app")
+
+  agent_folder = tmp_path / "my_only_agent"
+  agent_folder.mkdir()
+  (agent_folder / "agent.py").write_text("root_agent = None")
+
+  # Setup session data in the in-memory service
+  async def setup_session():
+    await mock_session_service.create_session(
+        app_name="my_only_agent",
+        user_id="test_user",
+        session_id="test_session",
+        state={},
+    )
+
+  asyncio.run(setup_session())
+
+  with (
+      patch.object(signal, "signal", autospec=True, return_value=None),
+      patch.object(
+          fast_api_module,
+          "create_session_service_from_options",
+          autospec=True,
+          return_value=mock_session_service,
+      ),
+      patch.object(
+          fast_api_module,
+          "create_artifact_service_from_options",
+          autospec=True,
+          return_value=mock_artifact_service,
+      ),
+      patch.object(
+          fast_api_module,
+          "create_memory_service_from_options",
+          autospec=True,
+          return_value=mock_memory_service,
+      ),
+      patch.object(
+          fast_api_module,
+          "LocalEvalSetsManager",
+          autospec=True,
+          return_value=mock_eval_sets_manager,
+      ),
+      patch.object(
+          fast_api_module,
+          "LocalEvalSetResultsManager",
+          autospec=True,
+          return_value=mock_eval_set_results_manager,
+      ),
+  ):
+    app = get_fast_api_app(
+        agents_dir=str(agent_folder),
+        web=True,
+        session_service_uri="",
+        artifact_service_uri="",
+        memory_service_uri="",
+        allow_origins=None,
+        a2a=False,
+        host="127.0.0.1",
+        port=8000,
+    )
+    client = TestClient(app)
+
+    # Accessing /users/{user_id}/sessions/{session_id} should work because of rewrite
+    response = client.get("/users/test_user/sessions/test_session")
+    assert response.status_code == 200
+    assert response.json()["id"] == "test_session"
+
+
+def test_agent_run_disconnect_aborts_run(
+    test_app, create_test_session, monkeypatch
+):
+  """Test that /run endpoint aborts agent execution on client disconnect.
+
+  Verifies that when the client connection is dropped during an active agent
+  run:
+  1. The background agent execution generator task is cancelled.
+  2. The endpoint returns a clean 499 (Client Closed Request) status code.
+  """
+  import starlette.requests
+
+  info = create_test_session
+  trigger_disconnect: dict[str, bool] = {"value": False}
+  was_cancelled: dict[str, bool] = {"value": False}
+
+  async def run_async_mock(
+      self,
+      *,
+      user_id: str,
+      session_id: str,
+      invocation_id: Optional[str] = None,
+      new_message: Optional[types.Content] = None,
+      state_delta: Optional[dict[str, Any]] = None,
+      run_config: Optional[RunConfig] = None,
+  ):
+    del (
+        self,
+        user_id,
+        session_id,
+        invocation_id,
+        new_message,
+        state_delta,
+        run_config,
+    )
+    try:
+      # Yield first pulse event
+      yield _event_1()
+      # Simulate connection drop mid-run
+      trigger_disconnect["value"] = True
+      # Run a long async operation to allow the monitor to trigger cancellation
+      await asyncio.sleep(1.0)
+      yield _event_2()
+    except asyncio.CancelledError:
+      was_cancelled["value"] = True
+      raise
+
+  monkeypatch.setattr(Runner, "run_async", run_async_mock)
+
+  # Monkeypatch starlette.requests.Request.__init__ to inject simulated disconnect
+  original_init = starlette.requests.Request.__init__
+
+  def custom_init(self, *args, **kwargs):
+    original_init(self, *args, **kwargs)
+    original_receive = self._receive
+    call_count = 0
+
+    async def mock_receive():
+      nonlocal call_count
+      call_count += 1
+      if call_count == 1:
+        return await original_receive()
+
+      # Subsequent calls block until simulated connection drop is triggered
+      while not trigger_disconnect["value"]:
+        await asyncio.sleep(0.01)
+      return {"type": "http.disconnect"}
+
+    self._receive = mock_receive
+    self.__dict__["receive"] = mock_receive
+
+  monkeypatch.setattr(starlette.requests.Request, "__init__", custom_init)
+
+  payload = {
+      "app_name": info["app_name"],
+      "user_id": info["user_id"],
+      "session_id": info["session_id"],
+      "new_message": {"role": "user", "parts": [{"text": "Hello agent"}]},
+      "streaming": False,
+  }
+
+  # When standard /run POST request is initiated and mid-run connection drop occurs
+  response = test_app.post("/run", json=payload)
+
+  # Then the response status should be 499 and the running generator was cancelled
+  assert response.status_code == 499
+  assert was_cancelled["value"] is True
 
 
 if __name__ == "__main__":

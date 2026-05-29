@@ -20,6 +20,7 @@ import os
 from typing import Any
 from typing import List
 
+from typing_extensions import deprecated
 import yaml
 
 from ..features import experimental
@@ -31,12 +32,13 @@ from .common_configs import AgentRefConfig
 from .common_configs import CodeConfig
 
 
+@deprecated("from_config is deprecated and will be removed in future versions.")
 @experimental(FeatureName.AGENT_CONFIG)
 def from_config(config_path: str) -> BaseAgent:
   """Build agent from a configfile path.
 
   Args:
-    config: the path to a YAML config file.
+    config_path: the path to a YAML config file.
 
   Returns:
     The created agent instance.
@@ -189,15 +191,7 @@ def resolve_code_reference(code_config: CodeConfig) -> Any:
 
   module_path, obj_name = code_config.name.rsplit(".", 1)
   module = importlib.import_module(module_path)
-  obj = getattr(module, obj_name)
-
-  if code_config.args and callable(obj):
-    kwargs = {arg.name: arg.value for arg in code_config.args if arg.name}
-    positional_args = [arg.value for arg in code_config.args if not arg.name]
-
-    return obj(*positional_args, **kwargs)
-  else:
-    return obj
+  return getattr(module, obj_name)
 
 
 @experimental(FeatureName.AGENT_CONFIG)

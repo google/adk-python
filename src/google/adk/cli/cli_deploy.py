@@ -22,11 +22,15 @@ import subprocess
 import sys
 import traceback
 from typing import Final
+from typing import Literal
 from typing import Optional
 import warnings
 
 import click
 from packaging.version import parse
+
+from ..version import __version__
+from .utils import _onboarding
 
 _IS_WINDOWS = os.name == 'nt'
 _GCLOUD_CMD = 'gcloud.cmd' if _IS_WINDOWS else 'gcloud'
@@ -59,7 +63,8 @@ def _ensure_agent_engine_dependency(requirements_txt_path: str) -> None:
   with open(requirements_txt_path, 'a', encoding='utf-8') as f:
     if requirements and not requirements.endswith('\n'):
       f.write('\n')
-    f.write(_AGENT_ENGINE_REQUIREMENT + '\n')
+    f.write('google-cloud-aiplatform[agent_engines]\n')
+    f.write(f'google-adk=={__version__}\n')
 
 
 _DOCKERFILE_TEMPLATE: Final[str] = """
@@ -98,13 +103,14 @@ COPY --chown=myuser:myuser "agents/{app_name}/" "/app/agents/{app_name}/"
 
 EXPOSE {port}
 
-CMD adk {command} --port={port} {host_option} {service_option} {trace_to_cloud_option} {otel_to_cloud_option} {allow_origins_option} {a2a_option} "/app/agents"
+CMD adk {command} --port={port} {host_option} {service_option} {trace_to_cloud_option} {otel_to_cloud_option} {allow_origins_option} {a2a_option} {trigger_sources_option} "/app/agents"
 """
 
 _AGENT_ENGINE_APP_TEMPLATE: Final[str] = """
 import os
 import vertexai
 from vertexai.agent_engines import AdkApp
+{extra_imports}
 
 if {is_config_agent}:
   from google.adk.agents import config_agent_utils
@@ -122,7 +128,7 @@ else:
   )
 
 adk_app = AdkApp(
-    {adk_app_type}={adk_app_object},
+    {app_instantiation},
     enable_tracing={trace_to_cloud_option},
 )
 """
@@ -595,18 +601,12 @@ def _get_service_option_by_adk_version(
   parsed_version = parse(adk_version)
   options: list[str] = []
 
-  if parsed_version >= parse('1.3.0'):
-    if session_uri:
-      options.append(f'--session_service_uri={session_uri}')
-    if artifact_uri:
-      options.append(f'--artifact_service_uri={artifact_uri}')
-    if memory_uri:
-      options.append(f'--memory_service_uri={memory_uri}')
-  else:
-    if session_uri:
-      options.append(f'--session_db_url={session_uri}')
-    if parsed_version >= parse('1.2.0') and artifact_uri:
-      options.append(f'--artifact_storage_uri={artifact_uri}')
+  if session_uri:
+    options.append(f'--session_service_uri={session_uri}')
+  if artifact_uri:
+    options.append(f'--artifact_service_uri={artifact_uri}')
+  if memory_uri:
+    options.append(f'--memory_service_uri={memory_uri}')
 
   if use_local_storage is not None and parsed_version >= parse(
       _LOCAL_STORAGE_FLAG_MIN_VERSION
@@ -644,6 +644,7 @@ def to_cloud_run(
     memory_service_uri: Optional[str] = None,
     use_local_storage: bool = False,
     a2a: bool = False,
+    trigger_sources: Optional[str] = None,
     extra_gcloud_args: Optional[tuple[str, ...]] = None,
 ):
   """Deploys an agent to Google Cloud Run.
@@ -714,12 +715,15 @@ def to_cloud_run(
         f'--allow_origins={",".join(allow_origins)}' if allow_origins else ''
     )
     a2a_option = '--a2a' if a2a else ''
+    trigger_sources_option = (
+        f'--trigger_sources={trigger_sources}' if trigger_sources else ''
+    )
     dockerfile_content = _DOCKERFILE_TEMPLATE.format(
         gcp_project_id=project,
         gcp_region=region,
         app_name=app_name,
         port=port,
-        command='web' if with_ui else 'api_server',
+        command='api_server --with_ui' if with_ui else 'api_server',
         install_agent_deps=install_agent_deps,
         service_option=_get_service_option_by_adk_version(
             adk_version,
@@ -734,6 +738,7 @@ def to_cloud_run(
         adk_version=adk_version,
         host_option=host_option,
         a2a_option=a2a_option,
+        trigger_sources_option=trigger_sources_option,
     )
     dockerfile_path = os.path.join(temp_folder, 'Dockerfile')
     os.makedirs(temp_folder, exist_ok=True)
@@ -800,6 +805,24 @@ def to_cloud_run(
   finally:
     click.echo(f'Cleaning up the temp folder: {temp_folder}')
     shutil.rmtree(temp_folder)
+
+
+def _print_agent_engine_url(resource_name: str) -> None:
+  """Prints the Google Cloud Console URL for the deployed agent."""
+  parts = resource_name.split('/')
+  if len(parts) >= 6 and parts[0] == 'projects' and parts[2] == 'locations':
+    project_id = parts[1]
+    region = parts[3]
+    engine_id = parts[5]
+
+    url = (
+        'https://console.cloud.google.com/vertex-ai/agents/agent-engines'
+        f'/locations/{region}/agent-engines/{engine_id}/playground'
+        f'?project={project_id}'
+    )
+    click.secho(
+        f'\n🎉 View your deployed agent here:\n{url}\n', fg='cyan', bold=True
+    )
 
 
 def to_agent_engine(
@@ -948,6 +971,13 @@ def to_agent_engine(
 
     click.echo('Resolving files and dependencies...')
     agent_config = {}
+    if agent_engine_config_file and not os.path.exists(
+        agent_engine_config_file
+    ):
+      raise click.ClickException(
+          'Agent engine config file not found: '
+          f'{parent_folder}/{agent_engine_config_file}'
+      )
     if not agent_engine_config_file:
       # Attempt to read the agent engine config from .agent_engine_config.json in the dir (if any).
       agent_engine_config_file = os.path.join(
@@ -990,7 +1020,9 @@ def to_agent_engine(
       if not os.path.exists(requirements_txt_path):
         click.echo(f'Creating {requirements_txt_path}...')
         with open(requirements_txt_path, 'w', encoding='utf-8') as f:
-          f.write(_AGENT_ENGINE_REQUIREMENT + '\n')
+          f.write('google-cloud-aiplatform[agent_engines]\n')
+          f.write(f'google-adk=={__version__}\n')
+          click.echo(f'Using google-adk=={__version__} in requirements')
         click.echo(f'Created {requirements_txt_path}')
     _ensure_agent_engine_dependency(requirements_txt_path)
     agent_config['requirements_file'] = f'{temp_folder}/requirements.txt'
@@ -1061,18 +1093,20 @@ def to_agent_engine(
 
     import vertexai
 
-    if project and region:
-      click.echo('Initializing Vertex AI...')
-      client = vertexai.Client(project=project, location=region)
-    elif api_key:
-      click.echo('Initializing Vertex AI in Express Mode with API key...')
-      client = vertexai.Client(api_key=api_key)
-    else:
-      click.echo(
-          'No project/region or api_key provided. '
-          'Please specify either project/region or api_key.'
-      )
-      return
+    from ..utils._google_client_headers import get_tracking_headers
+
+    if not project or not region:
+      click.echo('No project/region provided. Starting onboarding flow...')
+      auth_info = _onboarding.handle_login_with_google()
+      project = auth_info.project_id
+      region = auth_info.region
+
+    click.echo('Initializing Vertex AI...')
+    client = vertexai.Client(
+        project=project,
+        location=region,
+        http_options={'headers': get_tracking_headers()},
+    )
     click.echo('Vertex AI initialized.')
 
     is_config_agent = False
@@ -1097,18 +1131,26 @@ def to_agent_engine(
           ' or "app".'
       )
       return
-    with open(adk_app_file, 'w', encoding='utf-8') as f:
-      f.write(
-          _AGENT_ENGINE_APP_TEMPLATE.format(
-              app_name=app_name,
-              trace_to_cloud_option=trace_to_cloud,
-              is_config_agent=is_config_agent,
-              agent_folder=f'./{temp_folder}',
-              adk_app_object=adk_app_object,
-              adk_app_type=adk_app_type,
-              express_mode=api_key is not None,
-          )
+    extra_imports = ''
+    app_instantiation = f'{adk_app_type}={adk_app_object}'
+    if adk_app_type == 'agent':
+      extra_imports = 'from google.adk.apps import App'
+      app_instantiation = (
+          f"app=App(name='{app_name}', root_agent={adk_app_object})"
       )
+
+    template_content = _AGENT_ENGINE_APP_TEMPLATE.format(
+        app_name=app_name,
+        trace_to_cloud_option=trace_to_cloud,
+        is_config_agent=is_config_agent,
+        agent_folder=f'./{temp_folder}',
+        adk_app_object=adk_app_object,
+        app_instantiation=app_instantiation,
+        extra_imports=extra_imports,
+        express_mode=api_key is not None,
+    )
+    with open(adk_app_file, 'w', encoding='utf-8') as f:
+      f.write(template_content)
     click.echo(f'Created {adk_app_file}')
     click.echo('Files and dependencies resolved')
     if absolutize_imports:
@@ -1129,11 +1171,13 @@ def to_agent_engine(
           f'✅ Created agent engine: {agent_engine.api_resource.name}',
           fg='green',
       )
+      _print_agent_engine_url(agent_engine.api_resource.name)
     else:
       if project and region and not agent_engine_id.startswith('projects/'):
         agent_engine_id = f'projects/{project}/locations/{region}/reasoningEngines/{agent_engine_id}'
       client.agent_engines.update(name=agent_engine_id, config=agent_config)
       click.secho(f'✅ Updated agent engine: {agent_engine_id}', fg='green')
+      _print_agent_engine_url(agent_engine_id)
   finally:
     click.echo(f'Cleaning up the temp folder: {temp_folder}')
     shutil.rmtree(agent_src_path)
@@ -1162,6 +1206,10 @@ def to_gke(
     memory_service_uri: Optional[str] = None,
     use_local_storage: bool = False,
     a2a: bool = False,
+    trigger_sources: Optional[str] = None,
+    service_type: Literal[
+        'ClusterIP', 'NodePort', 'LoadBalancer'
+    ] = 'ClusterIP',
 ):
   """Deploys an agent to Google Kubernetes Engine(GKE).
 
@@ -1189,6 +1237,7 @@ def to_gke(
     artifact_service_uri: The URI of the artifact service.
     memory_service_uri: The URI of the memory service.
     use_local_storage: Whether to use local .adk storage in the container.
+    service_type: The Kubernetes Service type (default: ClusterIP).
   """
   click.secho(
       '\n🚀 Starting ADK Agent Deployment to GKE...', fg='cyan', bold=True
@@ -1240,7 +1289,7 @@ def to_gke(
         gcp_region=region,
         app_name=app_name,
         port=port,
-        command='web' if with_ui else 'api_server',
+        command='api_server --with_ui' if with_ui else 'api_server',
         install_agent_deps=install_agent_deps,
         service_option=_get_service_option_by_adk_version(
             adk_version,
@@ -1255,6 +1304,9 @@ def to_gke(
         adk_version=adk_version,
         host_option=host_option,
         a2a_option='--a2a' if a2a else '',
+        trigger_sources_option=(
+            f'--trigger_sources={trigger_sources}' if trigger_sources else ''
+        ),
     )
     dockerfile_path = os.path.join(temp_folder, 'Dockerfile')
     os.makedirs(temp_folder, exist_ok=True)
@@ -1326,7 +1378,7 @@ kind: Service
 metadata:
   name: {service_name}
 spec:
-  type: LoadBalancer
+  type: {service_type}
   selector:
     app: {service_name}
   ports:
@@ -1380,3 +1432,11 @@ spec:
   click.secho(
       '\n🎉 Deployment to GKE finished successfully!', fg='cyan', bold=True
   )
+  if service_type == 'ClusterIP':
+    click.echo(
+        '\nThe service is only reachable from within the cluster.'
+        ' To access it locally, run:'
+        f'\n  kubectl port-forward svc/{service_name} {port}:{port}'
+        '\n\nTo expose the service externally, add a Gateway or'
+        ' re-deploy with --service_type=LoadBalancer.'
+    )

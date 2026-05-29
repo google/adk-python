@@ -14,8 +14,10 @@
 
 from .event import Event
 from .event_actions import EventActions
+from .request_input import RequestInput
 
 __all__ = [
     'Event',
     'EventActions',
+    'RequestInput',
 ]

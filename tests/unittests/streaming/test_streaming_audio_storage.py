@@ -46,7 +46,7 @@
 #   ]
 
 #   mock_model = testing_utils.MockModel.create(responses)
-#   mock_model.model = 'gemini-2.0-flash-exp'  # For CFC support
+#   mock_model.model = 'gemini-2.5-flash'  # For CFC support
 
 #   root_agent = Agent(
 #       name='test_agent',
@@ -63,7 +63,7 @@
 
 #     # Import our caching classes
 #     from google.adk.agents.invocation_context import RealtimeCacheEntry
-#     from google.adk.flows.llm_flows.base_llm_flow import BaseLlmFlow
+#     from google.adk.agents.llm.base_llm_flow import BaseLlmFlow
 
 #     # Create a mock flow to test our methods
 #     flow = BaseLlmFlow()
@@ -145,7 +145,7 @@
 #   ]
 
 #   mock_model = testing_utils.MockModel.create(responses)
-#   mock_model.model = 'gemini-2.0-flash-exp'
+#   mock_model.model = 'gemini-2.5-flash'
 
 #   root_agent = Agent(
 #       name='test_agent',
@@ -160,7 +160,7 @@
 #     )
 
 #     from google.adk.events.event import Event
-#     from google.adk.flows.llm_flows.base_llm_flow import BaseLlmFlow
+#     from google.adk.agents.llm.base_llm_flow import BaseLlmFlow
 
 #     flow = BaseLlmFlow()
 

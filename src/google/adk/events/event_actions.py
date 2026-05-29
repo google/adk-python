@@ -16,6 +16,7 @@ from __future__ import annotations
 
 from typing import Any
 from typing import Optional
+from typing import Union
 
 from google.genai.types import Content
 from pydantic import alias_generators
@@ -25,6 +26,7 @@ from pydantic import Field
 
 from ..auth.auth_tool import AuthConfig
 from ..tools.tool_confirmation import ToolConfirmation
+from .ui_widget import UiWidget
 
 
 class EventCompaction(BaseModel):
@@ -63,7 +65,7 @@ class EventActions(BaseModel):
   Only used for function_response event.
   """
 
-  state_delta: dict[str, object] = Field(default_factory=dict)
+  state_delta: dict[str, Any] = Field(default_factory=dict)
   """Indicates that the event is updating the state with the given delta."""
 
   artifact_delta: dict[str, int] = Field(default_factory=dict)
@@ -108,3 +110,12 @@ class EventActions(BaseModel):
 
   rewind_before_invocation_id: Optional[str] = None
   """The invocation id to rewind to. This is only set for rewind event."""
+
+  route: Optional[Union[bool, int, str, list[Union[bool, int, str]]]] = None
+  """Route or list of routes for workflow graph edge matching."""
+
+  render_ui_widgets: Optional[list[UiWidget]] = None
+  """List of UI widgets to be rendered by the UI."""
+
+  set_model_response: Optional[Any] = None
+  """The model response structured output."""

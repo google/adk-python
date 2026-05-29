@@ -27,7 +27,16 @@ from .state import State
 
 
 class GetSessionConfig(BaseModel):
-  """The configuration of getting a session."""
+  """The configuration of getting a session.
+
+  Attributes:
+    num_recent_events: The limit of recent events to get for the session.
+      Optional: if None, the filter is not applied; if greater than 0, returns
+        at most given number of recent events; if 0, no events are returned.
+    after_timestamp: The earliest timestamp of events to get for the session.
+      Optional: if None, the filter is not applied; otherwise, returns events
+        with timestamp >= the given time.
+  """
 
   num_recent_events: Optional[int] = None
   after_timestamp: Optional[float] = None
@@ -115,6 +124,13 @@ class BaseSessionService(abc.ABC):
     session.events.append(event)
     return event
 
+  async def flush(self):
+    """Flushes any buffered events.
+
+    For non-buffering implementations, this can be a no-op.
+    """
+    pass
+
   def _apply_temp_state(self, session: Session, event: Event) -> None:
     """Applies temp-scoped state delta to the in-memory session state.
 
@@ -122,7 +138,7 @@ class BaseSessionService(abc.ABC):
     the duration of the current invocation but is NOT persisted to storage
     (the event delta is trimmed separately by _trim_temp_delta_state).
     """
-    if not event.actions or not event.actions.state_delta:
+    if not event.actions.state_delta:
       return
     for key, value in event.actions.state_delta.items():
       if key.startswith(State.TEMP_PREFIX):
@@ -135,7 +151,7 @@ class BaseSessionService(abc.ABC):
     in-memory session state (updated by _apply_temp_state) retains the
     values for the duration of the current invocation.
     """
-    if not event.actions or not event.actions.state_delta:
+    if not event.actions.state_delta:
       return event
 
     event.actions.state_delta = {
@@ -147,7 +163,7 @@ class BaseSessionService(abc.ABC):
 
   def _update_session_state(self, session: Session, event: Event) -> None:
     """Updates the session state based on the event."""
-    if not event.actions or not event.actions.state_delta:
+    if not event.actions.state_delta:
       return
     for key, value in event.actions.state_delta.items():
       session.state.update({key: value})

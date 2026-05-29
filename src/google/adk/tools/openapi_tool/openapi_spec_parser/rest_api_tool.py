@@ -554,6 +554,12 @@ class RestApiTool(BaseTool):
       self._logger.debug("API Response (non-JSON): %s", response.text)
       return {"text": response.text}  # Return text if not JSON
 
+  def _detect_error_in_response(self, response: Any) -> Optional[str]:
+    """Telemetry hook: returns an error type if the response indicates an error."""
+    if isinstance(response, dict) and response.get("error"):
+      return "HTTP_ERROR"
+    return None
+
   def __str__(self):
     return (
         f'RestApiTool(name="{self.name}", description="{self.description}",'
@@ -571,6 +577,7 @@ class RestApiTool(BaseTool):
 
 async def _request(**request_params) -> httpx.Response:
   async with httpx.AsyncClient(
-      verify=request_params.pop("verify", True)
+      verify=request_params.pop("verify", True),
+      timeout=None,
   ) as client:
     return await client.request(**request_params)

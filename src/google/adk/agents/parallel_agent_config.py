@@ -18,12 +18,16 @@ from __future__ import annotations
 
 from pydantic import ConfigDict
 from pydantic import Field
+from typing_extensions import deprecated
 
 from ..features import experimental
 from ..features import FeatureName
 from .base_agent_config import BaseAgentConfig
 
 
+@deprecated(
+    "ParallelAgentConfig is deprecated and will be removed in future versions."
+)
 @experimental(FeatureName.AGENT_CONFIG)
 class ParallelAgentConfig(BaseAgentConfig):
   """The config for the YAML schema of a ParallelAgent."""
