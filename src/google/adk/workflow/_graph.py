@@ -517,6 +517,26 @@ class Graph(BaseModel):
               f" input schema {to_node.input_schema}."
           )
 
+  def _validate_chat_agent_wiring(self) -> None:
+    """Validates that chat-mode agents do not have incoming edges from non-START nodes."""
+    from ..agents.llm_agent import LlmAgent
+
+    for edge in self.edges:
+      to_node = edge.to_node
+      if (
+          isinstance(to_node, LlmAgent)
+          and getattr(to_node, "mode", None) == "chat"
+      ):
+        if edge.from_node.name != START.name:
+          raise ValueError(
+              f"The agent '{to_node.name}' has been added to the workflow with"
+              f" mode='chat' following node '{edge.from_node.name}'. This is"
+              " not supported because chat-mode agents rely on conversational"
+              " history (session events) and cannot consume direct node inputs"
+              " from preceding nodes. Please change the agent's mode to"
+              " 'single_turn'"
+          )
+
   def _compute_terminal_nodes(self) -> None:
     """Computes terminal nodes (no outgoing edges)."""
     from_names = {edge.from_node.name for edge in self.edges}
@@ -535,4 +555,5 @@ class Graph(BaseModel):
     self._validate_default_routes()
     self._detect_unconditional_cycles(node_names)
     self._validate_static_schemas()
+    self._validate_chat_agent_wiring()
     self._compute_terminal_nodes()
