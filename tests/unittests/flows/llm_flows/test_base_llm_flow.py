@@ -14,6 +14,7 @@
 
 """Unit tests for BaseLlmFlow toolset integration."""
 
+import asyncio
 from unittest import mock
 from unittest.mock import AsyncMock
 
@@ -241,6 +242,130 @@ async def test_preprocess_calls_convert_tool_union_to_tools():
         model,
         True,  # multiple_tools
     )
+
+
+@pytest.mark.asyncio
+async def test_process_agent_tools_resolves_unions_in_parallel():
+  """``_convert_tool_union_to_tools`` is dispatched for every tool_union concurrently.
+
+  Each mocked resolution blocks until ``all_started`` is set; the event
+  is only set once every call has been entered. If
+  ``_process_agent_tools`` were still serial, the first call would
+  block forever waiting for the event the second call hasn't yet
+  entered to set.
+  """
+  num_tools = 5
+  started_count = 0
+  all_started = asyncio.Event()
+  release = asyncio.Event()
+
+  async def blocking_convert(tool_union, *args, **kwargs):
+    del args, kwargs
+    nonlocal started_count
+    started_count += 1
+    if started_count == num_tools:
+      all_started.set()
+    await release.wait()
+    return [_AsyncProcessLlmRequestTool(name=tool_union.__name__)]
+
+  def _make_func(i):
+    def _f():
+      """Test function."""
+      return i
+
+    _f.__name__ = f'fn_{i}'
+    return _f
+
+  funcs = [_make_func(i) for i in range(num_tools)]
+
+  with mock.patch(
+      'google.adk.agents.llm_agent._convert_tool_union_to_tools',
+      side_effect=blocking_convert,
+  ):
+    agent = Agent(name='test_agent', tools=funcs)
+    invocation_context = await testing_utils.create_invocation_context(
+        agent=agent, user_content='test message'
+    )
+    flow = BaseLlmFlowForTesting()
+    llm_request = LlmRequest()
+
+    async def drive():
+      async for _ in flow._preprocess_async(invocation_context, llm_request):
+        pass
+
+    drive_task = asyncio.create_task(drive())
+    try:
+      # If resolution were serial this would hang; release the gate as
+      # soon as every coroutine has entered.
+      await asyncio.wait_for(all_started.wait(), timeout=5.0)
+    finally:
+      release.set()
+    await asyncio.wait_for(drive_task, timeout=5.0)
+
+  assert started_count == num_tools
+
+
+@pytest.mark.asyncio
+async def test_process_agent_tools_preserves_order_when_later_unions_resolve_first():
+  """``process_llm_request`` is called in original ``agent.tools`` order even when later unions resolve first."""
+
+  resolution_started_evt = [asyncio.Event(), asyncio.Event()]
+  process_call_order: list[str] = []
+
+  async def staggered_convert(tool_union, *args, **kwargs):
+    del args, kwargs
+    if tool_union.__name__ == 'fn_slow':
+      # Resolve only after fn_fast's resolution has completed.
+      await resolution_started_evt[1].wait()
+      tool_name = 'slow_tool'
+    else:
+      tool_name = 'fast_tool'
+      resolution_started_evt[1].set()
+    return [
+        _AsyncProcessLlmRequestTool(
+            name=tool_name, on_process=process_call_order.append
+        )
+    ]
+
+  def fn_slow():
+    """Slow-resolving function."""
+    return 0
+
+  def fn_fast():
+    """Fast-resolving function."""
+    return 0
+
+  with mock.patch(
+      'google.adk.agents.llm_agent._convert_tool_union_to_tools',
+      side_effect=staggered_convert,
+  ):
+    # agent.tools order is [slow, fast]; resolution completes [fast, slow].
+    agent = Agent(name='test_agent', tools=[fn_slow, fn_fast])
+    invocation_context = await testing_utils.create_invocation_context(
+        agent=agent, user_content='test message'
+    )
+    flow = BaseLlmFlowForTesting()
+    llm_request = LlmRequest()
+
+    async for _ in flow._preprocess_async(invocation_context, llm_request):
+      pass
+
+  # Even though fast_tool was resolved first, process_llm_request must
+  # be invoked in agent.tools order (slow_tool first).
+  assert process_call_order == ['slow_tool', 'fast_tool']
+
+
+class _AsyncProcessLlmRequestTool:
+  """Minimal stand-in for a BaseTool that records process_llm_request calls."""
+
+  def __init__(self, name: str, on_process=None):
+    self.name = name
+    self._on_process = on_process
+
+  async def process_llm_request(self, *, tool_context, llm_request):
+    del tool_context, llm_request
+    if self._on_process is not None:
+      self._on_process(self.name)
 
 
 # TODO(b/448114567): Remove the following
