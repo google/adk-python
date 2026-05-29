@@ -15,28 +15,31 @@
 from __future__ import annotations
 
 import logging
+from typing import TYPE_CHECKING
 
 from google.adk import version
-from google.adk.events.event import Event
+from google.adk.telemetry import tracing
 from google.genai import types
 from opentelemetry import metrics
 from opentelemetry.semconv._incubating.attributes import gen_ai_attributes
+from opentelemetry.semconv._incubating.metrics import gen_ai_metrics
 from opentelemetry.semconv.attributes import error_attributes
+
+if TYPE_CHECKING:
+  from google.adk.events.event import Event
+  from google.adk.models.llm_request import LlmRequest
+  from google.adk.models.llm_response import LlmResponse
 
 logger = logging.getLogger("google_adk." + __name__)
 
-# TODO(b/477553411): add these attributes to Otel semconv.
 GEN_AI_AGENT_VERSION = "gen_ai.agent.version"
 GEN_AI_TOOL_VERSION = "gen_ai.tool.version"
 
-# Initialize meter
 meter = metrics.get_meter(
     name="gcp.vertex.agent",
     version=version.__version__,
-    # TODO(b/477553411): set schema version after OTel semconv updates.
 )
 
-# Define histograms
 _agent_invocation_duration = meter.create_histogram(
     "gen_ai.agent.invocation.duration",
     unit="ms",
@@ -62,6 +65,10 @@ _agent_workflow_steps = meter.create_histogram(
     unit="1",
     description="Length of agentic workflow (# of events).",
 )
+_client_operation_duration = (
+    gen_ai_metrics.create_gen_ai_client_operation_duration(meter)
+)
+_client_token_usage = gen_ai_metrics.create_gen_ai_client_token_usage(meter)
 
 
 def record_agent_invocation_duration(
@@ -121,6 +128,90 @@ def record_tool_execution_duration(
   _tool_execution_duration.record(elapsed_ms, attributes=attrs)
 
 
+def record_client_operation_duration(
+    agent_name: str,
+    elapsed_ms: float,
+    llm_request: LlmRequest,
+    responses: list[LlmResponse],
+    error: Exception | None = None,
+):
+  """Encapsulates the business logic for tracking gen_ai client operation duration."""
+
+  attrs = {
+      gen_ai_attributes.GEN_AI_AGENT_NAME: agent_name,
+      gen_ai_attributes.GEN_AI_OPERATION_NAME: "generate_content",
+      gen_ai_attributes.GEN_AI_PROVIDER_NAME: _get_provider_name(),
+  }
+  if llm_request.model:
+    attrs[gen_ai_attributes.GEN_AI_REQUEST_MODEL] = llm_request.model
+
+  if responses:
+    response_model = responses[-1].model_version or llm_request.model
+    if response_model:
+      attrs[gen_ai_attributes.GEN_AI_RESPONSE_MODEL] = response_model
+
+  if error is not None:
+    attrs[error_attributes.ERROR_TYPE] = type(error).__name__
+
+  _client_operation_duration.record(elapsed_ms / 1000.0, attributes=attrs)
+
+
+def record_client_token_usage(
+    agent_name: str,
+    llm_request: LlmRequest,
+    responses: list[LlmResponse],
+):
+  """Encapsulates the business logic for tracking gen_ai client token usage."""
+  if not responses:
+    return
+
+  # The assumption is that token usage in streaming responses is cumulative.
+  # The last response chunk contains the total usage for the entire request.
+  # Summing them up across all response chunks would result in overcounting.
+  last_response = responses[-1]
+  if not last_response.usage_metadata:
+    logger.warning(
+        "Skipping missing token usage metadata for agent %s and model %s",
+        agent_name,
+        llm_request.model,
+    )
+    return
+
+  # OTel semconv for `gen_ai.client.token.usage` states that token counts should
+  # be categorized under `gen_ai.token.type` as either "input" or "output".
+  # We aggregate prompt and tool use tokens for "input", and candidates and
+  # thoughts tokens for "output".
+  # `cached_content_token_count` is omitted as it's already included in prompt tokens.
+  # `total_token_count` is omitted as SemConv expects input/output breakdown.
+  usage = last_response.usage_metadata
+  input_token_count = (usage.prompt_token_count or 0) + (
+      usage.tool_use_prompt_token_count or 0
+  )
+  output_token_count = (usage.candidates_token_count or 0) + (
+      usage.thoughts_token_count or 0
+  )
+  response_model = last_response.model_version or llm_request.model
+  base_attrs = {
+      gen_ai_attributes.GEN_AI_AGENT_NAME: agent_name,
+      gen_ai_attributes.GEN_AI_OPERATION_NAME: "generate_content",
+      gen_ai_attributes.GEN_AI_PROVIDER_NAME: _get_provider_name(),
+  }
+  if llm_request.model:
+    base_attrs[gen_ai_attributes.GEN_AI_REQUEST_MODEL] = llm_request.model
+  if response_model:
+    base_attrs[gen_ai_attributes.GEN_AI_RESPONSE_MODEL] = response_model
+
+  if input_token_count > 0:
+    input_attrs = base_attrs.copy()
+    input_attrs[gen_ai_attributes.GEN_AI_TOKEN_TYPE] = "input"
+    _client_token_usage.record(input_token_count, attributes=input_attrs)
+
+  if output_token_count > 0:
+    output_attrs = base_attrs.copy()
+    output_attrs[gen_ai_attributes.GEN_AI_TOKEN_TYPE] = "output"
+    _client_token_usage.record(output_token_count, attributes=output_attrs)
+
+
 def _get_content_size(
     content: types.Content | None,
 ) -> int:
@@ -133,3 +224,7 @@ def _get_content_size(
     if part.inline_data and part.inline_data.data:
       size += len(part.inline_data.data)
   return size
+
+
+def _get_provider_name() -> str:
+  return tracing._guess_gemini_system_name()

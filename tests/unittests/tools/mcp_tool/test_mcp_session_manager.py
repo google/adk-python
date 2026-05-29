@@ -588,6 +588,9 @@ class TestMCPSessionManager:
       self,
   ):
     """Verify that sessions from different loops are cleaned up without calling aclose()."""
+    from google.adk.features import FeatureName
+    from google.adk.features._feature_registry import temporary_feature_override
+
     manager = MCPSessionManager(self.mock_stdio_connection_params)
 
     # 1. Simulate a session created in a "different" loop
@@ -617,8 +620,11 @@ class TestMCPSessionManager:
           mock_wait_for.return_value = new_session
           mock_session_context_class.return_value = AsyncMock()
 
-          # 3. Call create_session
-          session = await manager.create_session()
+          # 3. Call create_session with flag off to hit wait_for branch
+          with temporary_feature_override(
+              FeatureName._MCP_GRACEFUL_ERROR_HANDLING, False
+          ):
+            session = await manager.create_session()
 
           # 4. Verify results
           assert session == new_session
@@ -969,8 +975,8 @@ class TestMCPGracefulErrorHandlingFlagContract:
   loudly so we don't silently break GE's rollout.
   """
 
-  def test_default_state_is_off_so_cl_is_a_noop(self):
-    """The CL must be a no-op until GE explicitly enables it."""
+  def test_default_state_is_on(self):
+    """The fix must be enabled by default."""
     import os
 
     from google.adk.features import FeatureName
@@ -981,34 +987,34 @@ class TestMCPGracefulErrorHandlingFlagContract:
     saved = {k: os.environ.pop(k) for k in (enable, disable) if k in os.environ}
     try:
       assert (
-          is_feature_enabled(FeatureName._MCP_GRACEFUL_ERROR_HANDLING) is False
+          is_feature_enabled(FeatureName._MCP_GRACEFUL_ERROR_HANDLING) is True
       )
     finally:
       os.environ.update(saved)
 
-  def test_env_var_enable_flips_flag_on_at_runtime(self):
-    """The env var GE will set must turn the fix on without a rebuild."""
+  def test_env_var_disable_flips_flag_off_at_runtime(self):
+    """The env var must turn the fix off without a rebuild."""
     import os
 
     from google.adk.features import FeatureName
     from google.adk.features import is_feature_enabled
 
-    enable = "ADK_ENABLE_MCP_GRACEFUL_ERROR_HANDLING"
-    saved = os.environ.pop(enable, None)
+    disable = "ADK_DISABLE_MCP_GRACEFUL_ERROR_HANDLING"
+    saved = os.environ.pop(disable, None)
     try:
-      os.environ[enable] = "1"
-      assert (
-          is_feature_enabled(FeatureName._MCP_GRACEFUL_ERROR_HANDLING) is True
-      )
-      # And once it's removed, we revert. Confirms the value is read
-      # live from os.environ on every call (no caching, no binary push).
-      del os.environ[enable]
+      os.environ[disable] = "1"
       assert (
           is_feature_enabled(FeatureName._MCP_GRACEFUL_ERROR_HANDLING) is False
       )
+      # And once it's removed, we revert. Confirms the value is read
+      # live from os.environ on every call (no caching, no binary push).
+      del os.environ[disable]
+      assert (
+          is_feature_enabled(FeatureName._MCP_GRACEFUL_ERROR_HANDLING) is True
+      )
     finally:
       if saved is not None:
-        os.environ[enable] = saved
+        os.environ[disable] = saved
 
   def test_env_var_disable_acts_as_kill_switch(self):
     """The disable env var lets consumers turn off without a rebuild."""

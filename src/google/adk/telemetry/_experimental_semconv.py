@@ -45,8 +45,9 @@ from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GEN_A
 from opentelemetry.trace import Span
 from opentelemetry.util.types import AttributeValue
 
-from ..models.llm_request import LlmRequest
-from ..models.llm_response import LlmResponse
+if TYPE_CHECKING:
+  from ..models.llm_request import LlmRequest
+  from ..models.llm_response import LlmResponse
 
 try:
   from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GEN_AI_TOOL_DEFINITIONS
@@ -433,8 +434,14 @@ def _to_system_instructions(
 def set_operation_details_common_attributes(
     operation_details_common_attributes: MutableMapping[str, AttributeValue],
     attributes: Mapping[str, AttributeValue],
-):
+    log_only_attributes: Mapping[str, AttributeValue] | None = None,
+) -> None:
   operation_details_common_attributes.update(attributes)
+  if log_only_attributes and get_content_capturing_mode() in (
+      'EVENT_ONLY',
+      'SPAN_AND_EVENT',
+  ):
+    operation_details_common_attributes.update(log_only_attributes)
 
 
 async def set_operation_details_attributes_from_request(
