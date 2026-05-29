@@ -503,6 +503,57 @@ class TestGetAuthResponse:
     result = handler.get_auth_response(state)
     assert result is None
 
+  def test_get_auth_response_temp_prefix_str_token(self, auth_config):
+    """Test retrieving a string token stored under temp prefix in state."""
+    handler = AuthHandler(auth_config)
+    state = MockState()
+    credential_key = auth_config.credential_key
+    state["temp:" + credential_key] = "ya29.mock_token"
+
+    result = handler.get_auth_response(state)
+
+    assert result is not None
+    assert result.auth_type == AuthCredentialTypes.OAUTH2
+    assert result.oauth2.access_token == "ya29.mock_token"
+
+  def test_get_auth_response_no_prefix_credential(
+      self, auth_config, oauth2_credentials_with_auth_uri
+  ):
+    """Test retrieving a credential stored under the key without prefix."""
+    handler = AuthHandler(auth_config)
+    state = MockState()
+    credential_key = auth_config.credential_key
+    state[credential_key] = oauth2_credentials_with_auth_uri
+
+    result = handler.get_auth_response(state)
+
+    assert result == oauth2_credentials_with_auth_uri
+
+  def test_get_auth_response_no_prefix_str_token(self, auth_config):
+    """Test retrieving a string token stored under the key without prefix."""
+    handler = AuthHandler(auth_config)
+    state = MockState()
+    credential_key = auth_config.credential_key
+    state[credential_key] = "ya29.mock_token_no_prefix"
+
+    result = handler.get_auth_response(state)
+
+    assert result is not None
+    assert result.auth_type == AuthCredentialTypes.OAUTH2
+    assert result.oauth2.access_token == "ya29.mock_token_no_prefix"
+
+  def test_get_auth_response_fallback_google_token(self, auth_config):
+    """Test retrieving fallback Google token from state via scanning."""
+    handler = AuthHandler(auth_config)
+    state = MockState()
+    state["some_other_key"] = "ya29.fallback_google_token"
+
+    result = handler.get_auth_response(state)
+
+    assert result is not None
+    assert result.auth_type == AuthCredentialTypes.OAUTH2
+    assert result.oauth2.access_token == "ya29.fallback_google_token"
+
 
 class TestParseAndStoreAuthResponse:
   """Tests for the parse_and_store_auth_response method."""
