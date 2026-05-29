@@ -233,6 +233,9 @@ class GeminiLlmConnection(BaseLlmConnection):
                 interrupted=message.server_content.interrupted,
                 model_version=self._model_version,
                 live_session_id=live_session_id,
+                turn_complete_reason=getattr(
+                    message.server_content, 'turn_complete_reason', None
+                ),
             )
 
           if content and content.parts:
@@ -241,6 +244,9 @@ class GeminiLlmConnection(BaseLlmConnection):
                 interrupted=message.server_content.interrupted,
                 model_version=self._model_version,
                 live_session_id=live_session_id,
+                turn_complete_reason=getattr(
+                    message.server_content, 'turn_complete_reason', None
+                ),
             )
             # grounding_metadata is yielded again at turn_complete,
             # so avoid duplicating it here if turn_complete is true.
@@ -373,6 +379,9 @@ class GeminiLlmConnection(BaseLlmConnection):
                 or g_metadata_to_yield,
                 model_version=self._model_version,
                 live_session_id=live_session_id,
+                turn_complete_reason=getattr(
+                    message.server_content, 'turn_complete_reason', None
+                ),
             )
             break
           # in case of empty content or parts, we still surface it
