@@ -181,7 +181,8 @@ class Context(ReadonlyContext):
     self._state = State(
         value=invocation_context.session.state,
         delta=self._event_actions.state_delta,
-        schema=computed_state_schema or invocation_context._state_schema,
+        schema=computed_state_schema
+        or getattr(invocation_context, '_state_schema', None),
     )
 
     self._event_author = parent_ctx.event_author if parent_ctx else ''

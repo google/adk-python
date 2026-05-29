@@ -43,6 +43,7 @@ from ...models.google_llm import Gemini
 from ...models.google_llm import GoogleLLMVariant
 from ...models.llm_request import LlmRequest
 from ...models.llm_response import LlmResponse
+from ...telemetry import _instrumentation
 from ...telemetry import tracing
 from ...telemetry.tracing import trace_call_llm
 from ...telemetry.tracing import trace_send_data
@@ -376,18 +377,14 @@ async def _run_and_handle_error(
     return None
 
   try:
-    async with Aclosing(response_generator) as agen:
-      async with tracing.use_inference_span(
-          llm_request,
-          invocation_context,
-          model_response_event,
-      ) as gc_span:
+    async with _instrumentation.record_inference_telemetry(
+        llm_request,
+        invocation_context,
+        model_response_event,
+    ) as tel_ctx:
+      async with Aclosing(response_generator) as agen:
         async for llm_response in agen:
-          if gc_span:
-            tracing.trace_inference_result(
-                gc_span,
-                llm_response,
-            )
+          tel_ctx.record_llm_response(llm_response)
           yield llm_response
   except Exception as model_error:
     callback_context = CallbackContext(
@@ -423,6 +420,15 @@ async def _process_agent_tools(
   instances, and calls ``process_llm_request`` on each to register
   tool declarations in the request.
 
+  Tool-union resolution is dispatched concurrently via ``asyncio.gather``
+  to overlap I/O-bound listings (e.g. MCP ``list_tools`` over the
+  network). The subsequent ``process_llm_request`` calls are kept
+  serial in the original ``agent.tools`` order: some tools read/write
+  ``llm_request`` state (e.g. ``GoogleSearchTool`` writes
+  ``llm_request.model``; ``ComputerUseToolset`` performs an idempotency
+  check on ``llm_request.config.tools``) and rely on observing the
+  post-state of earlier tools.
+
   After this function returns, ``llm_request.tools_dict`` maps tool
   names to ``BaseTool`` instances ready for function call dispatch.
 
@@ -432,12 +438,34 @@ async def _process_agent_tools(
     llm_request: The LLM request to populate with tool declarations.
   """
   agent = invocation_context.agent
-  if not hasattr(agent, 'tools') or not agent.tools:
+  if agent is None or not hasattr(agent, 'tools') or not agent.tools:
     return
 
   multiple_tools = len(agent.tools) > 1
   model = agent.canonical_model
-  for tool_union in agent.tools:
+
+  from ...agents.llm_agent import _convert_tool_union_to_tools
+
+  # Resolve tool_unions in parallel. ``asyncio.gather`` preserves
+  # input order in the returned list, so the serial commit phase below
+  # still observes ``agent.tools`` order. If any resolution raises,
+  # gather cancels the siblings and propagates -- same observable
+  # behavior as the previous serial loop, which would propagate the
+  # first exception and abandon the rest.
+  resolved_tools_per_union = await asyncio.gather(*(
+      _convert_tool_union_to_tools(
+          tool_union,
+          ReadonlyContext(invocation_context),
+          model,
+          multiple_tools,
+      )
+      for tool_union in agent.tools
+  ))
+
+  # Serial commit phase, in original ``agent.tools`` order. Mutations
+  # to ``llm_request`` and reads of its state (model, config.tools,
+  # tools_dict) preserve today's ordering semantics exactly.
+  for tool_union, tools in zip(agent.tools, resolved_tools_per_union):
     tool_context = ToolContext(invocation_context)
 
     # If it's a toolset, process it first
@@ -446,15 +474,7 @@ async def _process_agent_tools(
           tool_context=tool_context, llm_request=llm_request
       )
 
-    from ...agents.llm_agent import _convert_tool_union_to_tools
-
     # Then process all tools from this tool union
-    tools = await _convert_tool_union_to_tools(
-        tool_union,
-        ReadonlyContext(invocation_context),
-        model,
-        multiple_tools,
-    )
     for tool in tools:
       await tool.process_llm_request(
           tool_context=tool_context, llm_request=llm_request
