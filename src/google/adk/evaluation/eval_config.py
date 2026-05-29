@@ -23,7 +23,6 @@ from pydantic import alias_generators
 from pydantic import BaseModel
 from pydantic import ConfigDict
 from pydantic import Field
-from pydantic import model_validator
 
 from ..agents.common_configs import CodeConfig
 from ..evaluation.eval_metrics import EvalMetric
@@ -57,15 +56,6 @@ class CustomMetricConfig(BaseModel):
       default="",
       description="Description for the custom metric info.",
   )
-
-  @model_validator(mode="after")
-  def check_code_config_args(self) -> "CustomMetricConfig":
-    """Checks that the code config does not have args."""
-    if self.code_config.args:
-      raise ValueError(
-          "args field in CodeConfig for custom metric is not supported."
-      )
-    return self
 
 
 class EvalConfig(BaseModel):

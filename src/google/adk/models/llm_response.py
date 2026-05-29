@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 from typing import Optional
 
@@ -216,9 +217,15 @@ class LlmResponse(BaseModel):
             model_version=generate_content_response.model_version,
         )
       else:
+        # Some model backends can legitimately complete a turn without
+        # candidates (for example, tool-driven UI turns with no text). Treat
+        # this as an empty successful response rather than an unknown error.
+        logging.warning(
+            'Received empty candidates and no prompt feedback in model '
+            'response. Treating as a successful empty response.'
+        )
         return LlmResponse(
-            error_code='UNKNOWN_ERROR',
-            error_message='Unknown error.',
+            content=types.Content(role='model', parts=[]),
             usage_metadata=usage_metadata,
             model_version=generate_content_response.model_version,
         )
