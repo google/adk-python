@@ -972,6 +972,14 @@ class LlmAgent(BaseAgent):
       previous = ctx.session.state.get(self.output_key, '') or ''
     except Exception:
       previous = ''
+    # If the previously stored value is not a string, we cannot safely
+    # accumulate streamed string fragments by concatenation. In that
+    # case, fall back to final-only behavior for this key: ignore
+    # non-final fragments and only save on final responses.
+    if previous is not None and not isinstance(previous, str):
+      previous_is_structured = True
+    else:
+      previous_is_structured = False
     # If accumulation disabled, ignore non-final fragments and save only
     # the final fragment as legacy behavior.
     if not self.accumulate_output_key:
@@ -993,7 +1001,13 @@ class LlmAgent(BaseAgent):
     # then validate and save. Non-final events append current fragment to
     # previous value so it is available to future finalization.
     if event.is_final_response():
-      combined = (previous or '') + (result or '')
+      # If previous held a structured value (dict/list), do not attempt
+      # to concatenate; treat the final fragment as the authoritative
+      # value (legacy final-only behavior).
+      if previous_is_structured:
+        combined = result
+      else:
+        combined = (previous or '') + (result or '')
       if not combined:
         return
       if self.output_schema:
@@ -1077,7 +1091,7 @@ class LlmAgent(BaseAgent):
             self.tools.append(_SingleTurnAgentTool(sub_agent))
           elif mode == 'task':
             self.tools.append(_TaskAgentTool(sub_agent))
-    
+
   @override
   @classmethod
   @experimental(FeatureName.AGENT_CONFIG)
