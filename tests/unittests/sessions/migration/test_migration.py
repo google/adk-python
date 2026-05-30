@@ -324,6 +324,30 @@ def test_migrate_from_sqlalchemy_pickle_preserves_nested_safe_actions_pickle(
     )
 
 
+def test_restricted_actions_unpickler_allows_datetime_state_delta():
+  """Standard timestamp objects in action deltas should migrate by default."""
+  last_seen = datetime(2026, 1, 1, 12, 30, tzinfo=timezone.utc)
+  actions = EventActions(state_delta={"last_seen": last_seen})
+
+  loaded_actions = mfsp._restricted_pickle_loads(pickle.dumps(actions))
+
+  assert isinstance(loaded_actions, EventActions)
+  assert loaded_actions.state_delta["last_seen"] == last_seen
+
+
+def test_migrate_from_sqlalchemy_pickle_ignores_non_object_json_fields():
+  """Event JSON model fields should only decode object payloads."""
+  event = mfsp._row_to_event({
+      "id": "event-list-content",
+      "invocation_id": "invoke1",
+      "author": "user",
+      "timestamp": datetime(2026, 1, 1, tzinfo=timezone.utc),
+      "content": "[1, 2, 3]",
+  })
+
+  assert event.content is None
+
+
 def test_migrate_from_sqlalchemy_pickle_blocks_unsafe_actions_pickle(
     tmp_path, monkeypatch
 ):

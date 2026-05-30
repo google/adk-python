@@ -24,7 +24,6 @@ import logging
 import pickle
 import sys
 from typing import Any
-from typing import cast
 
 from google.adk.events.event import Event
 from google.adk.events.event_actions import EventActions
@@ -51,6 +50,9 @@ _ALLOWED_PICKLE_GLOBALS: set[tuple[str, str]] = {
     ("builtins", "int"),
     ("builtins", "float"),
     ("builtins", "bool"),
+    ("datetime", "datetime"),
+    ("datetime", "timedelta"),
+    ("datetime", "timezone"),
     # Expected pickled payload for v0 session schema events.
     ("fastapi.openapi.models", "APIKey"),
     ("fastapi.openapi.models", "APIKeyIn"),
@@ -165,7 +167,6 @@ def _row_to_event(
     actions = EventActions()
 
   def _safe_json_load(val: Any) -> dict[str, Any] | None:
-    data = None
     if isinstance(val, str):
       try:
         data = json.loads(val)
@@ -173,8 +174,17 @@ def _row_to_event(
         logger.warning(f"Failed to decode JSON for event {row.get('id')}")
         return None
     elif isinstance(val, dict):
-      data = val  # for postgres JSONB
-    return cast(dict[str, Any] | None, data)
+      return val  # for postgres JSONB
+    else:
+      return None
+
+    if isinstance(data, dict):
+      return data
+    logger.warning(
+        f"Expected JSON object for event {row.get('id')}, got"
+        f" {type(data).__name__}."
+    )
+    return None
 
   content_dict = _safe_json_load(row.get("content"))
   grounding_metadata_dict = _safe_json_load(row.get("grounding_metadata"))
@@ -242,12 +252,16 @@ def _get_state_dict(state_val: Any) -> dict[str, Any]:
     return state_val
   if isinstance(state_val, str):
     try:
-      return cast(dict[str, Any], json.loads(state_val))
+      data = json.loads(state_val)
     except json.JSONDecodeError:
       logger.warning(
           "Failed to parse state JSON string, defaulting to empty dict."
       )
       return {}
+    if isinstance(data, dict):
+      return data
+    logger.warning("State JSON was not an object, defaulting to empty dict.")
+    return {}
   return {}
 
 

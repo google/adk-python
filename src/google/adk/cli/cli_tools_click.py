@@ -2205,7 +2205,8 @@ def migrate():
     default="INFO",
     help="Optional. Set the logging level",
 )
-@click.option(
+@click.option(  # type: ignore[untyped-decorator]
+    "--allow-unsafe-unpickling",
     "--allow_unsafe_unpickling",
     is_flag=True,
     default=False,
