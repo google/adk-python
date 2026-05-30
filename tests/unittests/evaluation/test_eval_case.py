@@ -22,6 +22,7 @@ from google.adk.evaluation.eval_case import get_all_tool_responses
 from google.adk.evaluation.eval_case import IntermediateData
 from google.adk.evaluation.eval_case import InvocationEvent
 from google.adk.evaluation.eval_case import InvocationEvents
+from google.adk.evaluation.eval_case import SessionInput
 from google.genai import types as genai_types
 import pytest
 
@@ -281,3 +282,26 @@ def test_conversation_and_conversation_scenario_mutual_exclusion():
   # these two should not cause exceptions
   EvalCase(eval_id='test_id', conversation=[])
   EvalCase(eval_id='test_id', conversation_scenario=test_conversation_scenario)
+
+
+def test_eval_models_preserve_extra_metadata():
+  session_input = SessionInput(
+      app_name='app',
+      user_id='user',
+      category='search',
+      tier='low',
+  )
+  eval_case = EvalCase(
+      eval_id='case',
+      conversation=[],
+      session_input=session_input,
+      benchmark='smoke',
+  )
+
+  assert session_input.model_extra == {'category': 'search', 'tier': 'low'}
+  assert eval_case.model_extra == {'benchmark': 'smoke'}
+
+  dumped = eval_case.model_dump(by_alias=True)
+  assert dumped['benchmark'] == 'smoke'
+  assert dumped['sessionInput']['category'] == 'search'
+  assert dumped['sessionInput']['tier'] == 'low'
