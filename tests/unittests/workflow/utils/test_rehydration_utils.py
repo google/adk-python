@@ -18,6 +18,7 @@ from google.adk.events.event import Event
 from google.adk.events.event import NodeInfo
 from google.adk.events.request_input import RequestInput
 from google.adk.workflow.utils._rehydration_utils import _ChildScanState
+from google.adk.workflow.utils._rehydration_utils import _process_content_object
 from google.adk.workflow.utils._rehydration_utils import _reconstruct_node_states
 from google.adk.workflow.utils._rehydration_utils import _unwrap_response
 from google.adk.workflow.utils._rehydration_utils import _validate_resume_response
@@ -101,6 +102,48 @@ class TestUnwrapResponse:
     """Dicts are not wrapped, so unwrap is a no-op."""
     d = {"foo": "bar"}
     assert _unwrap_response(_wrap_response(d)) == d
+
+
+# --- _process_content_object ---
+
+
+class TestProcessContentObject:
+
+  def test_extracts_plain_text(self):
+    content = types.Content(parts=[types.Part(text="hello world")])
+    event = Event(content=content, invocation_id="id")
+    assert _process_content_object(event) == "hello world"
+
+  def test_parses_json_text(self):
+    content = types.Content(parts=[types.Part(text='{"foo": "bar"}')])
+    event = Event(content=content, invocation_id="id")
+    assert _process_content_object(event) == {"foo": "bar"}
+
+  def test_joins_multiple_parts(self):
+    content = types.Content(
+        parts=[types.Part(text="hello "), types.Part(text="world")]
+    )
+    event = Event(content=content, invocation_id="id")
+    assert _process_content_object(event) == "hello world"
+
+  def test_filters_thought_parts(self):
+    content = types.Content(
+        parts=[
+            types.Part(text="thinking...", thought=True),
+            types.Part(text='{"answer": 42}'),
+        ]
+    )
+    event = Event(content=content, invocation_id="id")
+    assert _process_content_object(event) == {"answer": 42}
+
+  def test_returns_none_for_no_content(self):
+    event = Event(invocation_id="id")
+    assert _process_content_object(event) is None
+
+  def test_returns_none_for_empty_text(self):
+    content = types.Content(parts=[types.Part(text="  ")])
+    event = Event(content=content, invocation_id="id")
+    assert _process_content_object(event) is None
 
 
 # --- _validate_resume_response ---
@@ -192,7 +235,7 @@ class TestScanNodeEvents:
     )
 
     assert "node_a@1" in results
-    assert results["node_a@1"].output == content
+    assert results["node_a@1"].output == "hello"
 
   def test_scan_descendant_interrupts(self):
     event = Event(

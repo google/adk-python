@@ -96,6 +96,25 @@ def _extract_schema_from_event(event: Event, interrupt_id: str) -> Any | None:
   return None
 
 
+def _process_content_object(event: Event) -> Any:
+  """Extracts output from event.content."""
+  if not event.content or not getattr(event.content, 'parts', None):
+    return None
+
+  text = ''.join(
+    p.text for p in event.content.parts if p.text and not p.thought
+  )
+  text = text.strip()
+  
+  if not text:
+    return None
+
+  try:
+    return json.loads(text)
+  except (json.JSONDecodeError, ValueError):
+    return text
+
+
 def _validate_resume_response(response_data: Any, schema: Any) -> Any:
   """Validates and coerces resume response data against a schema.
 
@@ -275,7 +294,7 @@ def _reconstruct_node_states(
         child.output = event.output
         child.branch = event.branch
       elif use_message_as_output:
-        child.output = event.content
+        child.output = _process_content_object(event)
       if event.actions and event.actions.route is not None:
         child.route = event.actions.route
       if event.actions and event.actions.transfer_to_agent is not None:
