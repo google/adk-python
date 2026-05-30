@@ -227,8 +227,13 @@ class PydocHelper:
 
     # Only consider 2xx responses for return type hinting.
     # Returns the 2xx response with the smallest status code number and with
-    # content defined.
-    sorted_responses = sorted(responses.items(), key=lambda item: int(item[0]))
+    # content defined. Skip non-numeric keys such as 'default' and range
+    # patterns ('2XX', '4XX'), which are valid OpenAPI response keys but cannot
+    # be parsed as an int (they are filtered out by the 2xx check below anyway).
+    sorted_responses = sorted(
+        (item for item in responses.items() if item[0].isdigit()),
+        key=lambda item: int(item[0]),
+    )
     qualified_response = next(
         filter(
             lambda r: r[0].startswith('2') and r[1].content,
