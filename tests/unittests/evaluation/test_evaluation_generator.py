@@ -20,12 +20,12 @@ from google.adk.evaluation.app_details import AgentDetails
 from google.adk.evaluation.app_details import AppDetails
 from google.adk.evaluation.evaluation_generator import EvaluationGenerator
 from google.adk.evaluation.request_intercepter_plugin import _RequestIntercepterPlugin
-from google.adk.plugins.base_plugin import BasePlugin
 from google.adk.evaluation.simulation.user_simulator import NextUserMessage
 from google.adk.evaluation.simulation.user_simulator import Status as UserSimulatorStatus
 from google.adk.evaluation.simulation.user_simulator import UserSimulator
 from google.adk.events.event import Event
 from google.adk.models.llm_request import LlmRequest
+from google.adk.plugins.base_plugin import BasePlugin
 from google.genai import types
 import pytest
 
@@ -543,9 +543,9 @@ class TestGenerateInferencesFromRootAgentWithApp:
     runner_app = kwargs["app"]
     assert isinstance(runner_app, App)
     plugin_names = [p.name for p in runner_app.plugins]
-    assert "user_plugin" in plugin_names, (
-        "User plugin must be preserved in the merged App passed to Runner."
-    )
+    assert (
+        "user_plugin" in plugin_names
+    ), "User plugin must be preserved in the merged App passed to Runner."
     assert "request_intercepter_plugin" in plugin_names
     assert "ensure_retry_options" in plugin_names
 

@@ -66,7 +66,9 @@ def test_get_app_or_root_agent_with_app(monkeypatch):
   """When the module exposes an App, both app and its root_agent are returned."""
   root_agent = BaseAgent(name="root_agent")
   app = App(name="my_app", root_agent=root_agent)
-  _patch_agent_module(monkeypatch, SimpleNamespace(root_agent=root_agent, app=app))
+  _patch_agent_module(
+      monkeypatch, SimpleNamespace(root_agent=root_agent, app=app)
+  )
 
   from google.adk.cli.cli_eval import get_app_or_root_agent
 
@@ -106,7 +108,9 @@ def test_get_root_agent_back_compat(monkeypatch):
   """Existing `get_root_agent` callers keep getting the bare agent back."""
   root_agent = BaseAgent(name="root_agent")
   app = App(name="my_app", root_agent=root_agent)
-  _patch_agent_module(monkeypatch, SimpleNamespace(root_agent=root_agent, app=app))
+  _patch_agent_module(
+      monkeypatch, SimpleNamespace(root_agent=root_agent, app=app)
+  )
 
   from google.adk.cli.cli_eval import get_root_agent
 

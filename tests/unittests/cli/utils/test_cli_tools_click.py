@@ -65,9 +65,7 @@ def mock_get_root_agent():
   `(app, root_agent)`); the eval-set tests don't exercise the App path,
   so we yield `(None, root_agent)`.
   """
-  with mock.patch(
-      "google.adk.cli.cli_eval.get_app_or_root_agent"
-  ) as mock_func:
+  with mock.patch("google.adk.cli.cli_eval.get_app_or_root_agent") as mock_func:
     mock_func.return_value = (None, root_agent)
     yield mock_func
 

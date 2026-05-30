@@ -158,8 +158,9 @@ class EvaluationGenerator:
 
     agent_to_evaluate = root_agent
     if agent_name:
-      agent_to_evaluate = root_agent.find_agent(agent_name)
-      assert agent_to_evaluate, f"Sub-Agent `{agent_name}` not found."
+      found_agent = root_agent.find_agent(agent_name)
+      assert found_agent, f"Sub-Agent `{agent_name}` not found."
+      agent_to_evaluate = found_agent
 
     return await EvaluationGenerator._generate_inferences_from_root_agent(
         agent_to_evaluate,
