@@ -20,6 +20,7 @@ from unittest.mock import patch
 from google.adk.agents.invocation_context import InvocationContext
 from google.adk.code_executors.agent_engine_sandbox_code_executor import AgentEngineSandboxCodeExecutor
 from google.adk.code_executors.code_execution_utils import CodeExecutionInput
+from google.adk.code_executors.code_execution_utils import File as InputFile
 from google.adk.sessions.session import Session
 import pytest
 
@@ -123,6 +124,63 @@ class TestAgentEngineSandboxCodeExecutor:
     mock_api_client.agent_engines.sandboxes.execute_code.assert_called_once_with(
         name="projects/123/locations/us-central1/reasoningEngines/456/sandboxEnvironments/789",
         input_data={"code": 'print("hello world")'},
+    )
+
+  @patch("vertexai.Client")
+  def test_execute_code_input_files_content_key(
+      self,
+      mock_vertexai_client,
+      mock_invocation_context,
+  ):
+    """Tests that input_files are sent with 'content' (singular), not 'contents'.
+
+    Regression test for https://github.com/google/adk-python/issues/5500.
+    The Vertex AI Sandbox API reads file.get("content", b""), so using the
+    key "contents" silently creates empty files.
+    """
+    mock_api_client = MagicMock()
+    mock_vertexai_client.return_value = mock_api_client
+    mock_response = MagicMock()
+    mock_json_output = MagicMock()
+    mock_json_output.mime_type = "application/json"
+    mock_json_output.data = json.dumps(
+        {"msg_out": "ok", "msg_err": ""}
+    ).encode("utf-8")
+    mock_json_output.metadata = None
+    mock_response.outputs = [mock_json_output]
+    mock_api_client.agent_engines.sandboxes.execute_code.return_value = (
+        mock_response
+    )
+
+    executor = AgentEngineSandboxCodeExecutor(
+        sandbox_resource_name="projects/123/locations/us-central1/reasoningEngines/456/sandboxEnvironments/789"
+    )
+    code_input = CodeExecutionInput(
+        code='print("hello world")',
+        input_files=[
+            InputFile(
+                name="test.txt",
+                content=b"hello world",
+                mime_type="text/plain",
+            )
+        ],
+    )
+    executor.execute_code(mock_invocation_context, code_input)
+
+    # Verify the API was called with 'content' key, NOT 'contents'
+    expected_input_data = {
+        "code": 'print("hello world")',
+        "files": [
+            {
+                "name": "test.txt",
+                "content": b"hello world",
+                "mimeType": "text/plain",
+            }
+        ],
+    }
+    mock_api_client.agent_engines.sandboxes.execute_code.assert_called_once_with(
+        name="projects/123/locations/us-central1/reasoningEngines/456/sandboxEnvironments/789",
+        input_data=expected_input_data,
     )
 
   @patch("vertexai.Client")
