@@ -1,0 +1,136 @@
+{
+  "events": [
+    {
+      "author": "user",
+      "content": {
+        "parts": [
+          {
+            "text": "phone broke"
+          }
+        ],
+        "role": "user"
+      },
+      "id": "e-1",
+      "invocationId": "i-1",
+      "nodeInfo": {
+        "path": ""
+      }
+    },
+    {
+      "actions": {
+        "stateDelta": {
+          "complaint": "phone broke",
+          "feedback": ""
+        }
+      },
+      "author": "request_input",
+      "id": "e-2",
+      "invocationId": "i-1",
+      "nodeInfo": {
+        "path": "request_input@1/process_input@1"
+      }
+    },
+    {
+      "actions": {
+        "stateDelta": {
+          "draft": "Subject: Regarding Your Phone Issue – We're Here to Help\n\nDear Customer,\n\nThank you for reaching out. I'm very sorry to hear that your phone has broken. I understand how disruptive and frustrating it can be when your primary device isn't working as it should.\n\nTo help us understand the best way to assist you with a repair or replacement, could you please provide us with a few more details?\n\n1.  **What is the make and model of your phone?** (e.g., iPhone 13, Samsung Galaxy S22)\n2.  **When did you purchase the phone?** (This helps us check warranty status.)\n3.  **Can you briefly describe what happened or how it broke?** (e.g., dropped, water damage, stopped turning on, screen issues)\n4.  **Have you already tried any troubleshooting steps?** (e.g., restarting, charging)\n\nOnce we have this information, we can guide you through the next steps, which may include:\n*   **Warranty Service:** If your phone is still under warranty and the damage is covered.\n*   **Repair Options:** Providing details on how to send your device for repair.\n*   **Replacement Options:** Discussing potential replacement pathways.\n\nIn the meantime, you can also visit our dedicated support page for common issues and troubleshooting at [Link to your support/repair page, e.g., www.yourcompany.com/support/repairs].\n\nPlease reply to this email with the requested details, or if you prefer to speak with someone directly, you can call us at [Your Customer Service Phone Number] during business hours.\n\nWe appreciate your patience and look forward to helping you get this resolved as quickly as possible.\n\nSincerely,\n\nThe [Your Company Name] Support Team"
+        }
+      },
+      "author": "draft_email",
+      "content": {
+        "parts": [
+          {
+            "text": "Subject: Regarding Your Phone Issue – We're Here to Help\n\nDear Customer,\n\nThank you for reaching out. I'm very sorry to hear that your phone has broken. I understand how disruptive and frustrating it can be when your primary device isn't working as it should.\n\nTo help us understand the best way to assist you with a repair or replacement, could you please provide us with a few more details?\n\n1.  **What is the make and model of your phone?** (e.g., iPhone 13, Samsung Galaxy S22)\n2.  **When did you purchase the phone?** (This helps us check warranty status.)\n3.  **Can you briefly describe what happened or how it broke?** (e.g., dropped, water damage, stopped turning on, screen issues)\n4.  **Have you already tried any troubleshooting steps?** (e.g., restarting, charging)\n\nOnce we have this information, we can guide you through the next steps, which may include:\n*   **Warranty Service:** If your phone is still under warranty and the damage is covered.\n*   **Repair Options:** Providing details on how to send your device for repair.\n*   **Replacement Options:** Discussing potential replacement pathways.\n\nIn the meantime, you can also visit our dedicated support page for common issues and troubleshooting at [Link to your support/repair page, e.g., www.yourcompany.com/support/repairs].\n\nPlease reply to this email with the requested details, or if you prefer to speak with someone directly, you can call us at [Your Customer Service Phone Number] during business hours.\n\nWe appreciate your patience and look forward to helping you get this resolved as quickly as possible.\n\nSincerely,\n\nThe [Your Company Name] Support Team"
+          }
+        ],
+        "role": "model"
+      },
+      "finishReason": "STOP",
+      "id": "e-3",
+      "invocationId": "i-1",
+      "nodeInfo": {
+        "messageAsOutput": true,
+        "outputFor": [
+          "request_input@1/draft_email@1"
+        ],
+        "path": "request_input@1/draft_email@1"
+      }
+    },
+    {
+      "author": "request_input",
+      "content": {
+        "parts": [
+          {
+            "functionCall": {
+              "args": {
+                "interruptId": "fc-1",
+                "message": "Please review the following draft email and provide 'approve', 'reject', or feedback to revise.\n\n---\nSubject: Regarding Your Phone Issue – We're Here to Help\n\nDear Customer,\n\nThank you for reaching out. I'm very sorry to hear that your phone has broken. I understand how disruptive and frustrating it can be when your primary device isn't working as it should.\n\nTo help us understand the best way to assist you with a repair or replacement, could you please provide us with a few more details?\n\n1.  **What is the make and model of your phone?** (e.g., iPhone 13, Samsung Galaxy S22)\n2.  **When did you purchase the phone?** (This helps us check warranty status.)\n3.  **Can you briefly describe what happened or how it broke?** (e.g., dropped, water damage, stopped turning on, screen issues)\n4.  **Have you already tried any troubleshooting steps?** (e.g., restarting, charging)\n\nOnce we have this information, we can guide you through the next steps, which may include:\n*   **Warranty Service:** If your phone is still under warranty and the damage is covered.\n*   **Repair Options:** Providing details on how to send your device for repair.\n*   **Replacement Options:** Discussing potential replacement pathways.\n\nIn the meantime, you can also visit our dedicated support page for common issues and troubleshooting at [Link to your support/repair page, e.g., www.yourcompany.com/support/repairs].\n\nPlease reply to this email with the requested details, or if you prefer to speak with someone directly, you can call us at [Your Customer Service Phone Number] during business hours.\n\nWe appreciate your patience and look forward to helping you get this resolved as quickly as possible.\n\nSincerely,\n\nThe [Your Company Name] Support Team\n---",
+                "payload": null,
+                "response_schema": null
+              },
+              "id": "fc-1",
+              "name": "adk_request_input"
+            }
+          }
+        ]
+      },
+      "id": "e-4",
+      "invocationId": "i-1",
+      "longRunningToolIds": [
+        "fc-1"
+      ],
+      "nodeInfo": {
+        "path": "request_input@1/request_human_review@1"
+      }
+    },
+    {
+      "author": "user",
+      "content": {
+        "parts": [
+          {
+            "functionResponse": {
+              "id": "fc-1",
+              "name": "adk_request_input",
+              "response": {
+                "result": "reject"
+              }
+            }
+          }
+        ],
+        "role": "user"
+      },
+      "id": "e-5",
+      "invocationId": "i-1",
+      "nodeInfo": {
+        "path": ""
+      }
+    },
+    {
+      "actions": {
+        "route": "rejected"
+      },
+      "author": "request_input",
+      "id": "e-6",
+      "invocationId": "i-1",
+      "nodeInfo": {
+        "path": "request_input@1/handle_human_review@1"
+      }
+    },
+    {
+      "author": "request_input",
+      "content": {
+        "parts": [
+          {
+            "text": "Draft rejected."
+          }
+        ],
+        "role": "user"
+      },
+      "id": "e-7",
+      "invocationId": "i-1",
+      "nodeInfo": {
+        "path": "request_input@1/reject_email@1"
+      }
+    }
+  ]
+}

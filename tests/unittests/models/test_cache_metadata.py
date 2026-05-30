@@ -317,3 +317,30 @@ class TestCacheMetadata:
     assert metadata.expire_time is None
     assert metadata.invocations_used is None
     assert metadata.created_at is None
+
+  def test_partial_active_state_rejected(self):
+    """cache_name, expire_time, invocations_used must all be set or all None."""
+    # Only cache_name set.
+    with pytest.raises(ValidationError, match="must all be set"):
+      CacheMetadata(
+          cache_name="projects/123/locations/us-central1/cachedContents/x",
+          fingerprint="abc",
+          contents_count=1,
+      )
+
+    # cache_name + expire_time but no invocations_used.
+    with pytest.raises(ValidationError, match="must all be set"):
+      CacheMetadata(
+          cache_name="projects/123/locations/us-central1/cachedContents/x",
+          expire_time=time.time() + 1800,
+          fingerprint="abc",
+          contents_count=1,
+      )
+
+    # invocations_used set without cache_name (e.g. construction bug).
+    with pytest.raises(ValidationError, match="must all be set"):
+      CacheMetadata(
+          fingerprint="abc",
+          invocations_used=3,
+          contents_count=1,
+      )

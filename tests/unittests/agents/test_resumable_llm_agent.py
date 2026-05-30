@@ -12,18 +12,18 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import Union
+"""Tests for resumable LlmAgent scenarios.
 
-from google.adk.agents.base_agent import BaseAgent
-from google.adk.agents.base_agent import BaseAgentState
-from google.adk.agents.invocation_context import InvocationContext
+Verifies that the Mesh-based LlmAgent correctly resumes from various
+states: after transfers, tool calls, tool responses, and with
+sub-agent tool calls.
+"""
+
+import copy
+
 from google.adk.agents.llm_agent import LlmAgent
-from google.adk.agents.run_config import RunConfig
+from google.adk.apps.app import App
 from google.adk.apps.app import ResumabilityConfig
-from google.adk.events.event import Event
-from google.adk.events.event_actions import EventActions
-from google.adk.sessions.in_memory_session_service import InMemorySessionService
-from google.genai.types import Content
 from google.genai.types import Part
 import pytest
 
@@ -40,24 +40,6 @@ TRANSFER_RESPONSE_PART = Part.from_function_response(
     name="transfer_to_agent", response={"result": None}
 )
 
-
-def tool_call_part(tool_name: str) -> Part:
-  part = Part.from_function_call(name=tool_name, args={})
-  part.function_call.id = f"{tool_name}_id"
-  return part
-
-
-def tool_response_part(tool_name: str) -> Part:
-  part = Part.from_function_response(name=tool_name, response={"result": "ok"})
-  part.function_response.id = f"{tool_name}_id"
-  return part
-
-
-def tool_response_part_no_id(tool_name: str) -> Part:
-  part = Part.from_function_response(name=tool_name, response={"result": "ok"})
-  return part
-
-
 END_OF_AGENT = testing_utils.END_OF_AGENT
 
 
@@ -65,351 +47,218 @@ def some_tool():
   return {"result": "ok"}
 
 
-async def _create_resumable_invocation_context(
-    invocation_id: str, agent: BaseAgent, events: list[Event]
-) -> InvocationContext:
-  session_service = InMemorySessionService()
-  session = await session_service.create_session(
-      app_name="test_app", user_id="test_user"
-  )
-  for event in events:
-    await session_service.append_event(session, event)
-  return InvocationContext(
-      invocation_id=invocation_id,
-      agent=agent,
-      session=session,
-      session_service=session_service,
-      resumability_config=ResumabilityConfig(is_resumable=True),
-      run_config=RunConfig(),
-  )
-
-
-async def _resume_and_get_events(
-    agent: BaseAgent, invocation_context: InvocationContext
-) -> list[(str, Union[Part, str])]:
-  events = []
-  async for event in agent.run_async(invocation_context):
-    await invocation_context.session_service.append_event(
-        invocation_context.session, event
-    )
-    events.append(event)
-  return testing_utils.simplify_resumable_app_events(events)
-
-
-class TestResumableLlmAgent:
-  """Test suite for resumable LlmAgent."""
-
-  @pytest.fixture
-  async def resumable_invocation_context(self):
-    """Creates an invocation context for the specified agent."""
-
-    async def factory(agent: BaseAgent, events: list[Event]):
-      return await _create_resumable_invocation_context(
-          invocation_id="test_invocation", agent=agent, events=events
+def _behavioral_events(events):
+  """Extract behavioral events (non-state) from resumable app events."""
+  return [
+      e
+      for e in testing_utils.simplify_resumable_app_events(
+          copy.deepcopy(events)
       )
+      if not isinstance(e[1], dict)
+  ]
 
-    return factory
 
-  @pytest.fixture
-  def mock_model(self):
-    """Provides a mock model for the test."""
+@pytest.mark.asyncio
+async def test_resume_from_transfer():
+  """Tests that the agent resumes from the correct sub-agent after a transfer.
 
-    def factory(responses: list[Part]):
-      return testing_utils.MockModel.create(responses=responses)
+  invocation1: root_agent transfers to sub_agent_1
+  invocation2: sub_agent_1 responds (resuming from the transfer)
+  """
+  sub_agent_1 = LlmAgent(
+      name="sub_agent_1",
+      model=testing_utils.MockModel.create(
+          responses=[
+              "response from sub_agent_1",
+              "second response from sub_agent_1",
+          ]
+      ),
+  )
+  root_agent = LlmAgent(
+      name="root_agent",
+      model=testing_utils.MockModel.create(
+          responses=[transfer_call_part("sub_agent_1")]
+      ),
+      sub_agents=[sub_agent_1],
+  )
+  runner = testing_utils.InMemoryRunner(
+      app=App(
+          name="test_app",
+          root_agent=root_agent,
+          resumability_config=ResumabilityConfig(is_resumable=True),
+      )
+  )
 
-    return factory
+  # Invocation 1: root transfers to sub_agent_1.
+  inv1_events = await runner.run_async("test query")
+  inv1_behavioral = _behavioral_events(inv1_events)
+  assert inv1_behavioral == [
+      ("root_agent", transfer_call_part("sub_agent_1")),
+      ("root_agent", TRANSFER_RESPONSE_PART),
+      ("root_agent", END_OF_AGENT),
+      ("sub_agent_1", "response from sub_agent_1"),
+      ("sub_agent_1", END_OF_AGENT),
+  ]
 
-  @pytest.mark.asyncio
-  async def test_resume_from_transfer_call(
-      self, resumable_invocation_context, mock_model
-  ):
-    """Tests that the agent resumes from the correct sub-agent after a transfer."""
-    sub_agent_1 = LlmAgent(
-        name="sub_agent_1",
-        model=mock_model([
-            "response from sub_agent_1",
-        ]),
-    )
-    root_agent = LlmAgent(
-        name="root_agent",
-        model=mock_model(["response from root"]),
-        sub_agents=[sub_agent_1],
-    )
-    past_events = [
-        Event(
-            author="root_agent",
-            invocation_id="test_invocation",
-            content=Content(
-                parts=[
-                    transfer_call_part("sub_agent_1"),
-                ]
-            ),
-        )
-    ]
-    ctx = await resumable_invocation_context(root_agent, past_events)
-    # Initialize the agent state for the root agent.
-    ctx.agent_states[root_agent.name] = BaseAgentState().model_dump(mode="json")
+  # Invocation 2: sub_agent_1 is now active, should respond directly.
+  inv2_events = await runner.run_async("follow up query")
+  inv2_behavioral = _behavioral_events(inv2_events)
+  assert inv2_behavioral == [
+      ("sub_agent_1", "second response from sub_agent_1"),
+      ("sub_agent_1", END_OF_AGENT),
+  ]
 
-    assert await _resume_and_get_events(root_agent, ctx) == [
-        ("root_agent", TRANSFER_RESPONSE_PART),
-        ("sub_agent_1", "response from sub_agent_1"),
-        ("sub_agent_1", END_OF_AGENT),
-        ("root_agent", END_OF_AGENT),
-    ]
 
-  @pytest.mark.asyncio
-  async def test_resume_from_transfer_response(
-      self, resumable_invocation_context, mock_model
-  ):
-    """Tests that the agent resumes from the correct sub-agent after a transfer."""
-    sub_agent_1 = LlmAgent(
-        name="sub_agent_1",
-        model=mock_model([
-            "response from sub_agent_1",
-        ]),
-    )
-    root_agent = LlmAgent(
-        name="root_agent",
-        model=mock_model(["response from root"]),
-        sub_agents=[sub_agent_1],
-    )
-    past_events = [
-        Event(
-            author="root_agent",
-            invocation_id="test_invocation",
-            content=Content(
-                parts=[
-                    TRANSFER_RESPONSE_PART,
-                ]
-            ),
-            actions=EventActions(transfer_to_agent="sub_agent_1"),
-        )
-    ]
-    ctx: InvocationContext = await resumable_invocation_context(
-        root_agent, past_events
-    )
-    # Initialize the agent state for the root agent.
-    ctx.agent_states[root_agent.name] = BaseAgentState().model_dump(mode="json")
+@pytest.mark.asyncio
+async def test_resume_from_model_response():
+  """Tests that the root agent resumes when there has been no transfer."""
+  root_agent = LlmAgent(
+      name="root_agent",
+      model=testing_utils.MockModel.create(
+          responses=[
+              "first response from root",
+              "second response from root",
+          ]
+      ),
+  )
+  runner = testing_utils.InMemoryRunner(
+      app=App(
+          name="test_app",
+          root_agent=root_agent,
+          resumability_config=ResumabilityConfig(is_resumable=True),
+      )
+  )
 
-    assert await _resume_and_get_events(root_agent, ctx) == [
-        ("sub_agent_1", "response from sub_agent_1"),
-        ("sub_agent_1", END_OF_AGENT),
-        ("root_agent", END_OF_AGENT),
-    ]
+  # Invocation 1: root responds normally.
+  inv1_events = await runner.run_async("test query")
+  inv1_behavioral = _behavioral_events(inv1_events)
+  assert inv1_behavioral == [
+      ("root_agent", "first response from root"),
+      ("root_agent", END_OF_AGENT),
+  ]
 
-  @pytest.mark.asyncio
-  async def test_resume_from_model_response(
-      self, resumable_invocation_context, mock_model
-  ):
-    """Tests that no sub-agent is resumed when there has been no transfer."""
-    root_agent = LlmAgent(
-        name="root_agent",
-        model=mock_model([
-            "second response from root",
-        ]),
-    )
-    past_events = [
-        Event(
-            author="root_agent",
-            invocation_id="test_invocation",
-            content=Content(parts=[Part(text="initial response from root")]),
-        )
-    ]
-    ctx = await resumable_invocation_context(root_agent, past_events)
-    # Initialize the agent state for the root agent.
-    ctx.agent_states[root_agent.name] = BaseAgentState().model_dump(mode="json")
+  # Invocation 2: root should respond again (no transfer happened).
+  inv2_events = await runner.run_async("follow up")
+  inv2_behavioral = _behavioral_events(inv2_events)
+  assert inv2_behavioral == [
+      ("root_agent", "second response from root"),
+      ("root_agent", END_OF_AGENT),
+  ]
 
-    assert await _resume_and_get_events(root_agent, ctx) == [
-        ("root_agent", "second response from root"),
-        ("root_agent", END_OF_AGENT),
-    ]
 
-  @pytest.mark.asyncio
-  async def test_resume_from_tool_call(
-      self, resumable_invocation_context, mock_model
-  ):
-    """Tests that the agent resumes from a tool call successfully."""
-    root_agent = LlmAgent(
-        name="root_agent",
-        model=mock_model(["response after tool call"]),
-        tools=[some_tool],
-    )
-    past_events = [
-        Event(
-            author="root_agent",
-            invocation_id="test_invocation",
-            content=Content(parts=[tool_call_part("some_tool")]),
-        ),
-    ]
-    ctx = await resumable_invocation_context(root_agent, past_events)
-    # Initialize the agent state for the root agent.
-    ctx.agent_states[root_agent.name] = BaseAgentState().model_dump(mode="json")
+@pytest.mark.asyncio
+async def test_resume_from_tool_call():
+  """Tests that the agent resumes from a tool call.
 
-    assert await _resume_and_get_events(root_agent, ctx) == [
-        ("root_agent", tool_response_part_no_id("some_tool")),
-        ("root_agent", "response after tool call"),
-        ("root_agent", END_OF_AGENT),
-    ]
+  invocation1: root_agent calls some_tool, gets response, then responds
+  invocation2: root_agent responds again (tool was non-long-running)
+  """
+  root_agent = LlmAgent(
+      name="root_agent",
+      model=testing_utils.MockModel.create(
+          responses=[
+              Part.from_function_call(name="some_tool", args={}),
+              "response after tool call",
+              "second response",
+          ]
+      ),
+      tools=[some_tool],
+  )
+  runner = testing_utils.InMemoryRunner(
+      app=App(
+          name="test_app",
+          root_agent=root_agent,
+          resumability_config=ResumabilityConfig(is_resumable=True),
+      )
+  )
 
-  @pytest.mark.asyncio
-  async def test_resume_after_tool_response(
-      self, resumable_invocation_context, mock_model
-  ):
-    """Tests that the agent does not resume a sub-agent when the user responds to the current agent."""
-    root_agent = LlmAgent(
-        name="root_agent",
-        model=mock_model([
-            "response after tool call",
-        ]),
-        tools=[some_tool],
-    )
+  # Invocation 1: root calls tool, gets response, responds.
+  inv1_events = await runner.run_async("test query")
+  inv1_behavioral = _behavioral_events(inv1_events)
+  assert inv1_behavioral == [
+      ("root_agent", Part.from_function_call(name="some_tool", args={})),
+      (
+          "root_agent",
+          Part.from_function_response(
+              name="some_tool", response={"result": "ok"}
+          ),
+      ),
+      ("root_agent", "response after tool call"),
+      ("root_agent", END_OF_AGENT),
+  ]
 
-    past_events = [
-        Event(
-            author="root_agent",
-            invocation_id="test_invocation",
-            content=Content(parts=[tool_call_part("some_tool")]),
-        ),
-        Event(
-            author="root_agent",
-            invocation_id="test_invocation",
-            content=Content(parts=[tool_response_part("some_tool")]),
-        ),
-    ]
-    ctx = await resumable_invocation_context(root_agent, past_events)
-    # Initialize the agent state for the root agent.
-    ctx.agent_states[root_agent.name] = BaseAgentState().model_dump(mode="json")
+  # Invocation 2: root resumes normally.
+  inv2_events = await runner.run_async("follow up")
+  inv2_behavioral = _behavioral_events(inv2_events)
+  assert inv2_behavioral == [
+      ("root_agent", "second response"),
+      ("root_agent", END_OF_AGENT),
+  ]
 
-    assert await _resume_and_get_events(root_agent, ctx) == [
-        ("root_agent", "response after tool call"),
-        ("root_agent", END_OF_AGENT),
-    ]
 
-  @pytest.mark.asyncio
-  async def test_resume_root_agent_on_user_provided_function_response(
-      self, resumable_invocation_context, mock_model
-  ):
-    """Tests that the agent resumes the correct sub-agent after a user responds to its tool call."""
+@pytest.mark.asyncio
+async def test_resume_subagent_after_transfer_and_tool_call():
+  """Tests resuming a sub-agent that called a tool after being transferred to.
 
-    def sub_agent_tool():
-      return {"result": "ok"}
+  invocation1: root_agent transfers to sub_agent_1, sub_agent_1 calls tool
+               and responds
+  invocation2: sub_agent_1 is still active, responds directly
+  """
 
-    sub_agent_1 = LlmAgent(
-        name="sub_agent_1",
-        model=mock_model([
-            "response from sub_agent_1 after tool call",
-        ]),
-        tools=[sub_agent_tool],
-    )
-    root_agent = LlmAgent(
-        name="root_agent",
-        model=mock_model(["response from root after tool call"]),
-        sub_agents=[sub_agent_1],
-        tools=[some_tool],
-    )
-    past_events = [
-        Event(
-            author="root_agent",
-            invocation_id="test_invocation",
-            actions=EventActions(transfer_to_agent="sub_agent_1"),
-        ),
-        Event(
-            author="root_agent",
-            invocation_id="test_invocation",
-            content=Content(parts=[transfer_call_part("sub_agent_1")]),
-        ),
-        Event(
-            author="root_agent",
-            invocation_id="test_invocation",
-            content=Content(parts=[TRANSFER_RESPONSE_PART]),
-            actions=EventActions(transfer_to_agent="sub_agent_1"),
-        ),
-        Event(
-            author="root_agent",
-            invocation_id="test_invocation",
-            content=Content(parts=[tool_call_part("some_tool")]),
-        ),
-        Event(
-            author="sub_agent_1",
-            invocation_id="test_invocation",
-            content=Content(parts=[tool_call_part("sub_agent_tool")]),
-        ),
-        Event(
-            author="user",
-            invocation_id="test_invocation",
-            content=Content(parts=[tool_response_part("some_tool")]),
-        ),
-    ]
-    ctx = await resumable_invocation_context(root_agent, past_events)
-    # Initialize the agent state for the root agent and sub_agent_1.
-    ctx.agent_states[root_agent.name] = BaseAgentState().model_dump(mode="json")
-    ctx.agent_states[sub_agent_1.name] = BaseAgentState().model_dump(
-        mode="json"
-    )
+  def sub_agent_tool():
+    return {"result": "ok"}
 
-    assert await _resume_and_get_events(root_agent, ctx) == [
-        ("root_agent", "response from root after tool call"),
-        ("root_agent", END_OF_AGENT),
-    ]
+  sub_agent_1 = LlmAgent(
+      name="sub_agent_1",
+      model=testing_utils.MockModel.create(
+          responses=[
+              Part.from_function_call(name="sub_agent_tool", args={}),
+              "response from sub_agent_1 after tool",
+              "second response from sub_agent_1",
+          ]
+      ),
+      tools=[sub_agent_tool],
+  )
+  root_agent = LlmAgent(
+      name="root_agent",
+      model=testing_utils.MockModel.create(
+          responses=[transfer_call_part("sub_agent_1")]
+      ),
+      sub_agents=[sub_agent_1],
+  )
+  runner = testing_utils.InMemoryRunner(
+      app=App(
+          name="test_app",
+          root_agent=root_agent,
+          resumability_config=ResumabilityConfig(is_resumable=True),
+      )
+  )
 
-  @pytest.mark.asyncio
-  async def test_resume_subagent_on_user_provided_function_response(
-      self, resumable_invocation_context, mock_model
-  ):
-    """Tests that the agent resumes the correct sub-agent after a user responds to its tool call."""
+  # Invocation 1: root transfers, sub_agent calls tool and responds.
+  inv1_events = await runner.run_async("test query")
+  inv1_behavioral = _behavioral_events(inv1_events)
+  assert inv1_behavioral == [
+      ("root_agent", transfer_call_part("sub_agent_1")),
+      ("root_agent", TRANSFER_RESPONSE_PART),
+      ("root_agent", END_OF_AGENT),
+      (
+          "sub_agent_1",
+          Part.from_function_call(name="sub_agent_tool", args={}),
+      ),
+      (
+          "sub_agent_1",
+          Part.from_function_response(
+              name="sub_agent_tool", response={"result": "ok"}
+          ),
+      ),
+      ("sub_agent_1", "response from sub_agent_1 after tool"),
+      ("sub_agent_1", END_OF_AGENT),
+  ]
 
-    def sub_agent_tool():
-      return {"result": "ok"}
-
-    sub_agent_1 = LlmAgent(
-        name="sub_agent_1",
-        model=mock_model([
-            "response from sub_agent_1 after tool call",
-        ]),
-        tools=[sub_agent_tool],
-    )
-    root_agent = LlmAgent(
-        name="root_agent",
-        model=mock_model(["response from root after tool call"]),
-        sub_agents=[sub_agent_1],
-    )
-    past_events = [
-        Event(
-            author="root_agent",
-            invocation_id="test_invocation",
-            actions=EventActions(transfer_to_agent="sub_agent_1"),
-        ),
-        Event(
-            author="root_agent",
-            invocation_id="test_invocation",
-            content=Content(parts=[transfer_call_part("sub_agent_1")]),
-        ),
-        Event(
-            author="root_agent",
-            invocation_id="test_invocation",
-            content=Content(parts=[TRANSFER_RESPONSE_PART]),
-            actions=EventActions(transfer_to_agent="sub_agent_1"),
-        ),
-        Event(
-            author="sub_agent_1",
-            invocation_id="test_invocation",
-            content=Content(parts=[tool_call_part("sub_agent_tool")]),
-        ),
-        Event(
-            author="user",
-            invocation_id="test_invocation",
-            content=Content(parts=[tool_response_part("sub_agent_tool")]),
-        ),
-    ]
-    ctx = await resumable_invocation_context(root_agent, past_events)
-    # Initialize the agent state for the root agent and sub_agent_1.
-    ctx.agent_states[root_agent.name] = BaseAgentState().model_dump(mode="json")
-    ctx.agent_states[sub_agent_1.name] = BaseAgentState().model_dump(
-        mode="json"
-    )
-
-    assert await _resume_and_get_events(root_agent, ctx) == [
-        ("sub_agent_1", "response from sub_agent_1 after tool call"),
-        ("sub_agent_1", END_OF_AGENT),
-        ("root_agent", END_OF_AGENT),
-    ]
+  # Invocation 2: sub_agent_1 is still active, responds directly.
+  inv2_events = await runner.run_async("follow up")
+  inv2_behavioral = _behavioral_events(inv2_events)
+  assert inv2_behavioral == [
+      ("sub_agent_1", "second response from sub_agent_1"),
+      ("sub_agent_1", END_OF_AGENT),
+  ]

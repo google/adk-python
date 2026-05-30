@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 from typing import Optional
 
@@ -76,6 +77,12 @@ class LlmResponse(BaseModel):
 
   turn_complete: Optional[bool] = None
   """Indicates whether the response from the model is complete.
+
+  Only used for streaming mode.
+  """
+
+  turn_complete_reason: Optional[types.TurnCompleteReason] = None
+  """The reason why the turn is complete.
 
   Only used for streaming mode.
   """
@@ -148,6 +155,24 @@ class LlmResponse(BaseModel):
   It can be used to identify and chain interactions for stateful conversations.
   """
 
+  def get_function_calls(self) -> list[types.FunctionCall]:
+    """Returns the function calls in the response."""
+    func_calls = []
+    if self.content and self.content.parts:
+      for part in self.content.parts:
+        if part.function_call:
+          func_calls.append(part.function_call)
+    return func_calls
+
+  def get_function_responses(self) -> list[types.FunctionResponse]:
+    """Returns the function responses in the response."""
+    func_responses = []
+    if self.content and self.content.parts:
+      for part in self.content.parts:
+        if part.function_response:
+          func_responses.append(part.function_response)
+    return func_responses
+
   @staticmethod
   def create(
       generate_content_response: types.GenerateContentResponse,
@@ -198,9 +223,15 @@ class LlmResponse(BaseModel):
             model_version=generate_content_response.model_version,
         )
       else:
+        # Some model backends can legitimately complete a turn without
+        # candidates (for example, tool-driven UI turns with no text). Treat
+        # this as an empty successful response rather than an unknown error.
+        logging.warning(
+            'Received empty candidates and no prompt feedback in model '
+            'response. Treating as a successful empty response.'
+        )
         return LlmResponse(
-            error_code='UNKNOWN_ERROR',
-            error_message='Unknown error.',
+            content=types.Content(role='model', parts=[]),
             usage_metadata=usage_metadata,
             model_version=generate_content_response.model_version,
         )

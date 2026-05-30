@@ -12,72 +12,51 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Interface for skill registry."""
+"""Interface for a Skill Registry in ADK."""
 
 from __future__ import annotations
 
-import abc
-from typing import Any
-from typing import Dict
-from typing import List
+from abc import ABC
+from abc import abstractmethod
 
-from . import models
+from .models import Frontmatter
+from .models import Skill
 
 
-class SkillRegistry(abc.ABC):
+class SkillRegistry(ABC):
   """Interface for a skill registry."""
 
-  @abc.abstractmethod
-  async def get_skill(
-      self, *, name: str, version: str | None = None
-  ) -> models.Skill:
+  @abstractmethod
+  async def get_skill(self, *, name: str) -> Skill:
     """Fetches a skill from the registry.
 
     Args:
         name: The name of the skill.
-        version: Optional version of the skill.
 
     Returns:
         A Skill object.
+
+    Raises:
+        Exception: If the skill with the specified name does not exist.
     """
     pass
 
-  @abc.abstractmethod
-  async def search_skills(
-      self,
-      *,
-      query: str,
-      filters: Dict[str, Any] | None = None,
-      **kwargs,
-  ) -> List[models.Frontmatter]:
+  @abstractmethod
+  async def search_skills(self, *, query: str) -> list[Frontmatter]:
     """Searches for skills in the registry.
 
     Args:
         query: The search query.
-        filters: Optional filters.
-        **kwargs: Additional implementation-specific arguments.
 
     Returns:
         A list of Frontmatter objects for discovery.
     """
     pass
 
-  @abc.abstractmethod
-  def get_filter_schema(self) -> Dict[str, Any] | None:
-    """Returns the JSON schema for the filters supported by this registry.
-
-    Returns:
-        A JSON schema dict or None if filters are not supported
-    """
-    pass
-
-  def get_search_description(self) -> str:
+  def search_tool_description(self) -> str | None:
     """Returns the description for the search_skills tool.
 
-    Registries can override this to provide specialized instructions to the
-    model on how to use their specific search capabilities.
+    Registries can define this to provide specialized instructions to the model
+    on how to use their specific search capabilities.
     """
-    return (
-        "Searches for relevant skills in the registry based on a semantic or"
-        " keyword query."
-    )
+    return None

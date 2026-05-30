@@ -27,7 +27,6 @@ import google.auth
 import google.auth.exceptions
 from google.auth.transport.requests import AuthorizedSession
 from google.auth.transport.requests import Request
-from google.cloud import resourcemanager_v3
 import requests
 
 _VERTEX_AI_ENDPOINT = "https://{location}-aiplatform.googleapis.com/v1beta1"
@@ -139,7 +138,11 @@ def sign_up_express(
       "POST",
       ":signUp",
       location=location,
-      data={"region": location, "tos_accepted": True},
+      data={
+          "region": location,
+          "tos_accepted": True,
+          "get_default_api_key": True,
+      },
   )
   return {
       "project_id": project.get("projectId"),
@@ -157,6 +160,14 @@ def list_gcp_projects(limit: int = 20) -> List[Tuple[str, str]]:
   Returns:
     A list of (project_id, name) tuples.
   """
+  try:
+    from google.cloud import resourcemanager_v3
+  except ImportError as e:
+    raise RuntimeError(
+        "Listing GCP projects requires the 'gcp' optional dependency. "
+        "Please install 'google-adk[gcp]' or 'google-cloud-resource-manager'."
+    ) from e
+
   try:
     client = resourcemanager_v3.ProjectsClient()
     search_results = client.search_projects()

@@ -1020,7 +1020,12 @@ async def test_append_event():
       ),
       cache_metadata=CacheMetadata(
           cache_name='test_cache_name',
+          expire_time=(
+              datetime.datetime.now(datetime.timezone.utc)
+              + datetime.timedelta(minutes=30)
+          ).timestamp(),
           fingerprint='test_fingerprint',
+          invocations_used=1,
           contents_count=1,
       ),
       citation_metadata=genai_types.CitationMetadata(

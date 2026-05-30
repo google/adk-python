@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+import abc
 import asyncio
 import importlib
 import inspect
@@ -61,10 +62,10 @@ from ..utils._schema_utils import validate_schema
 from ..utils.context_utils import Aclosing
 from .base_agent import BaseAgent
 from .base_agent import BaseAgentState
-from .base_agent_config import BaseAgentConfig
+from .base_agent_config import BaseAgentConfig as BaseAgentConfig
 from .callback_context import CallbackContext
 from .invocation_context import InvocationContext
-from .llm_agent_config import LlmAgentConfig
+from .llm_agent_config import LlmAgentConfig as LlmAgentConfig
 from .readonly_context import ReadonlyContext
 
 logger = logging.getLogger('google_adk.' + __name__)
@@ -192,25 +193,37 @@ async def _convert_tool_union_to_tools(
     return []
 
 
-class LlmAgent(BaseAgent):
+# TODO: drop the explicit abc.ABC base once BaseNode surfaces ABCMeta to
+# static type checkers.
+class LlmAgent(BaseAgent, abc.ABC):
   """LLM-based Agent."""
 
-  DEFAULT_MODEL: ClassVar[str] = 'gemini-2.5-flash'
+  DEFAULT_MODEL: ClassVar[str] = 'gemini-3-flash-preview'
   """System default model used when no model is set on an agent."""
+
+  DEFAULT_LIVE_MODEL: ClassVar[str] = 'gemini-live-2.5-flash-native-audio'
+  """System default model used for live mode when no model is set on an agent."""
 
   _default_model: ClassVar[Union[str, BaseLlm]] = DEFAULT_MODEL
   """Current default model used when an agent has no model set."""
+
+  _default_live_model: ClassVar[Union[str, BaseLlm]] = DEFAULT_LIVE_MODEL
+  """Current default model used for live mode when an agent has no model set."""
 
   model: Union[str, BaseLlm] = ''
   """The model to use for the agent.
 
   When not set, the agent will inherit the model from its ancestor. If no
   ancestor provides a model, the agent uses the default model configured via
-  LlmAgent.set_default_model. The built-in default is gemini-2.5-flash.
+  LlmAgent.set_default_model. The built-in default is gemini-3-flash-preview.
   """
 
   config_type: ClassVar[Type[BaseAgentConfig]] = LlmAgentConfig
-  """The config type for this agent."""
+  """The config type for this agent.
+
+  DEPRECATED: This attribute is deprecated and will be removed in a future
+  version, along with the AgentConfig YAML loader.
+  """
 
   instruction: Union[str, InstructionProvider] = ''
   """Dynamic instructions for the LLM model, guiding the agent's behavior.
@@ -302,6 +315,20 @@ class LlmAgent(BaseAgent):
   For example: use this config to adjust model temperature, configure safety
   settings, etc.
   """
+
+  mode: Literal['chat', 'task', 'single_turn'] | None = None
+  """The delegation mode for this agent.
+
+  Options:
+    chat: Standard chat agent reachable via transfer_to_agent.
+    task: Task agent that chats with the user to accomplish a task.
+    single_turn: Agents that complete a task without chatting with the user.
+
+  Default value is chat as a sub-agent, single_turn as a node in a workflow.
+  """
+
+  parallel_worker: bool | None = None
+  """Whether to run the agent in parallel worker mode."""
 
   # LLM-based agent transfer configs - Start
   disallow_transfer_to_parent: bool = False
@@ -515,6 +542,27 @@ class LlmAgent(BaseAgent):
       if ctx.end_invocation:
         return
 
+  @override
+  async def _run_impl(
+      self,
+      *,
+      ctx: Context,
+      node_input: Any,
+  ) -> AsyncGenerator[Any, None]:
+    """Runs the agent as a node in a workflow graph."""
+    from ..utils.context_utils import Aclosing
+    from ..workflow._llm_agent_wrapper import run_llm_agent_as_node
+
+    async with Aclosing(
+        run_llm_agent_as_node(self, ctx=ctx, node_input=node_input)
+    ) as agen:
+      async for event in agen:
+        # Keep the agent's true event author so the outer NodeRunner does
+        # not overwrite it with the parent workflow's event_author.
+        if event.author:
+          ctx.event_author = event.author
+        yield event
+
   @property
   def canonical_model(self) -> BaseLlm:
     """The resolved self.model field as BaseLlm.
@@ -533,6 +581,24 @@ class LlmAgent(BaseAgent):
         ancestor_agent = ancestor_agent.parent_agent
       return self._resolve_default_model()
 
+  @property
+  def canonical_live_model(self) -> BaseLlm:
+    """The resolved self.model field as BaseLlm for live mode.
+
+    This method is only for use by Agent Development Kit.
+    """
+    if isinstance(self.model, BaseLlm):
+      return self.model
+    elif self.model:  # model is non-empty str
+      return LLMRegistry.new_llm(self.model)
+    else:  # find model from ancestors.
+      ancestor_agent = self.parent_agent
+      while ancestor_agent is not None:
+        if isinstance(ancestor_agent, LlmAgent):
+          return ancestor_agent.canonical_live_model
+        ancestor_agent = ancestor_agent.parent_agent
+      return self._resolve_default_live_model()
+
   @classmethod
   def set_default_model(cls, model: Union[str, BaseLlm]) -> None:
     """Overrides the default model used when an agent has no model set."""
@@ -549,6 +615,23 @@ class LlmAgent(BaseAgent):
     if isinstance(default_model, BaseLlm):
       return default_model
     return LLMRegistry.new_llm(default_model)
+
+  @classmethod
+  def set_default_live_model(cls, model: Union[str, BaseLlm]) -> None:
+    """Overrides the default model used for live mode when an agent has no model set."""
+    if not isinstance(model, (str, BaseLlm)):
+      raise TypeError('Default live model must be a model name or BaseLlm.')
+    if isinstance(model, str) and not model:
+      raise ValueError('Default live model must be a non-empty string.')
+    cls._default_live_model = model
+
+  @classmethod
+  def _resolve_default_live_model(cls) -> BaseLlm:
+    """Resolves the current default live model to a BaseLlm instance."""
+    default_live_model = cls._default_live_model
+    if isinstance(default_live_model, BaseLlm):
+      return default_live_model
+    return LLMRegistry.new_llm(default_live_model)
 
   async def canonical_instruction(
       self, ctx: ReadonlyContext
@@ -845,6 +928,17 @@ class LlmAgent(BaseAgent):
     # Handle text responses
     if event.is_final_response() and event.content and event.content.parts:
 
+      # Skip if no text parts at all to avoid overwriting state_delta values
+      # already set (e.g. after_tool_callback with skip_summarization
+      # on function_response-only events).
+      has_text_part = any(
+          part.text is not None and not part.thought
+          for part in event.content.parts
+      )
+
+      if not has_text_part:
+        return
+
       result = ''.join(
           part.text
           for part in event.content.parts
@@ -887,10 +981,14 @@ class LlmAgent(BaseAgent):
     """Provides a warning if multiple thinking configurations are found."""
     super().model_post_init(__context)
 
-    # Note: Using getattr to check both locations for thinking_config
-    if getattr(
-        self.generate_content_config, 'thinking_config', None
-    ) and getattr(self.planner, 'thinking_config', None):
+    from ..planners.built_in_planner import BuiltInPlanner
+
+    if (
+        self.generate_content_config is not None
+        and self.generate_content_config.thinking_config is not None
+        and isinstance(self.planner, BuiltInPlanner)
+        and self.planner.thinking_config is not None
+    ):
       warnings.warn(
           'Both `thinking_config` in `generate_content_config` and a '
           'planner with `thinking_config` are provided. The '
@@ -898,6 +996,30 @@ class LlmAgent(BaseAgent):
           UserWarning,
           stacklevel=3,
       )
+
+    if self.mode == 'task':
+      from .llm.task._finish_task_tool import FinishTaskTool
+
+      self.tools.append(FinishTaskTool(self))
+
+    # Add sub-agents as tools based on their mode
+    from ..tools.agent_tool import _SingleTurnAgentTool
+    from ..tools.agent_tool import _TaskAgentTool
+
+    if self.sub_agents:
+      for sub_agent in self.sub_agents:
+        if isinstance(sub_agent, LlmAgent):
+          mode = getattr(sub_agent, 'mode', None)
+          if mode is None:
+            try:
+              sub_agent.mode = 'chat'
+              mode = 'chat'
+            except (AttributeError, TypeError):
+              continue
+          if mode == 'single_turn':
+            self.tools.append(_SingleTurnAgentTool(sub_agent))
+          elif mode == 'task':
+            self.tools.append(_TaskAgentTool(sub_agent))
 
   @classmethod
   @experimental(FeatureName.AGENT_CONFIG)
