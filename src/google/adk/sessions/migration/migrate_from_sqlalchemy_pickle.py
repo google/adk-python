@@ -30,7 +30,6 @@ from google.adk.events.event_actions import EventActions
 from google.adk.sessions import _session_util
 from google.adk.sessions.migration import _schema_check_utils
 from google.adk.sessions.schemas import v1
-from google.adk.sessions.schemas._safe_unpickle import safe_loads as _safe_pickle_loads
 from google.genai import types
 import sqlalchemy
 from sqlalchemy import create_engine

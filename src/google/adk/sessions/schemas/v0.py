@@ -111,11 +111,11 @@ class DynamicPickleType(TypeDecorator):
         return pickle.dumps(value)
     return value
 
-  def result_processor(self, dialect, coltype):
+  def result_processor(self, dialect: Any, coltype: Any) -> Any:
     if dialect.name in ("mysql", "spanner+spanner"):
       return super().result_processor(dialect, coltype)
 
-    def process(value):
+    def process(value: Any) -> Any:
       if value is None:
         return None
       if isinstance(value, memoryview):
