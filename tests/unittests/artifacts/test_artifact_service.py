@@ -318,6 +318,57 @@ async def test_in_memory_loads_nested_artifact_reference(
         ArtifactServiceType.FILE,
     ],
 )
+async def test_save_load_preserves_inline_data_display_name(
+    service_type, artifact_service_factory
+):
+  artifact_service = artifact_service_factory(service_type)
+  artifact = types.Part(
+      inline_data=types.Blob(
+          data=b"test_data",
+          mime_type="text/plain",
+          display_name="report.txt",
+      )
+  )
+
+  await artifact_service.save_artifact(
+      app_name="app0",
+      user_id="user0",
+      session_id="123",
+      filename="stored.bin",
+      artifact=artifact,
+      custom_metadata={"source": "unit-test"},
+  )
+
+  loaded = await artifact_service.load_artifact(
+      app_name="app0",
+      user_id="user0",
+      session_id="123",
+      filename="stored.bin",
+  )
+
+  assert loaded is not None
+  assert loaded.inline_data is not None
+  assert loaded.inline_data.display_name == "report.txt"
+
+  version = await artifact_service.get_artifact_version(
+      app_name="app0",
+      user_id="user0",
+      session_id="123",
+      filename="stored.bin",
+  )
+  assert version is not None
+  assert version.custom_metadata == {"source": "unit-test"}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "service_type",
+    [
+        ArtifactServiceType.IN_MEMORY,
+        ArtifactServiceType.GCS,
+        ArtifactServiceType.FILE,
+    ],
+)
 async def test_list_keys(service_type, artifact_service_factory):
   """Tests listing keys in the artifact service."""
   artifact_service = artifact_service_factory(service_type)

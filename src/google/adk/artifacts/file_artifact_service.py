@@ -210,6 +210,10 @@ class FileArtifactVersion(ArtifactVersion):
   file_name: str = Field(
       description="Original filename supplied by the caller."
   )
+  display_name: str | None = Field(
+      default=None,
+      description="Original inline_data display name supplied by the caller.",
+  )
 
 
 class FileArtifactService(BaseArtifactService):
@@ -415,6 +419,9 @@ class FileArtifactService(BaseArtifactService):
     _write_metadata(
         version_dir / "metadata.json",
         filename=filename,
+        display_name=(
+            artifact.inline_data.display_name if artifact.inline_data else None
+        ),
         mime_type=mime_type,
         version=next_version,
         canonical_uri=canonical_uri,
@@ -491,7 +498,12 @@ class FileArtifactService(BaseArtifactService):
         )
         return None
       data = content_path.read_bytes()
-      return types.Part(inline_data=types.Blob(mime_type=mime_type, data=data))
+      display_name = metadata.display_name if metadata else None
+      return types.Part(
+          inline_data=types.Blob(
+              mime_type=mime_type, data=data, display_name=display_name
+          )
+      )
 
     if not content_path.exists():
       logger.warning("Text artifact %s missing at %s", filename, content_path)
@@ -715,6 +727,7 @@ def _write_metadata(
     path: Path,
     *,
     filename: str,
+    display_name: str | None,
     mime_type: Optional[str],
     version: int,
     canonical_uri: str,
@@ -723,6 +736,7 @@ def _write_metadata(
   """Persists metadata describing an artifact version."""
   metadata = FileArtifactVersion(
       file_name=filename,
+      display_name=display_name,
       mime_type=mime_type,
       canonical_uri=canonical_uri,
       version=version,

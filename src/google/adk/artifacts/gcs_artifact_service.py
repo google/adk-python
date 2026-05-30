@@ -39,6 +39,15 @@ from .base_artifact_service import ensure_part
 
 logger = logging.getLogger("google_adk." + __name__)
 
+_DISPLAY_NAME_METADATA_KEY = "google_adk_display_name"
+
+
+def _user_metadata(metadata: dict[str, Any] | None) -> dict[str, Any]:
+  """Returns blob metadata without ADK's internal storage keys."""
+  user_metadata = dict(metadata or {})
+  user_metadata.pop(_DISPLAY_NAME_METADATA_KEY, None)
+  return user_metadata
+
 
 class GcsArtifactService(BaseArtifactService):
   """An artifact service implementation using Google Cloud Storage (GCS)."""
@@ -216,8 +225,16 @@ class GcsArtifactService(BaseArtifactService):
         app_name, user_id, filename, version, session_id
     )
     blob = self.bucket.blob(blob_name)
-    if custom_metadata:
-      blob.metadata = {k: str(v) for k, v in custom_metadata.items()}
+    metadata = (
+        {k: str(v) for k, v in custom_metadata.items()}
+        if custom_metadata
+        else {}
+    )
+
+    if artifact.inline_data and artifact.inline_data.display_name:
+      metadata[_DISPLAY_NAME_METADATA_KEY] = artifact.inline_data.display_name
+    if metadata:
+      blob.metadata = metadata
 
     if artifact.inline_data:
       blob.upload_from_string(
@@ -268,8 +285,13 @@ class GcsArtifactService(BaseArtifactService):
       return None
 
     artifact_bytes = blob.download_as_bytes()
-    artifact = types.Part.from_bytes(
-        data=artifact_bytes, mime_type=blob.content_type
+    display_name = (blob.metadata or {}).get(_DISPLAY_NAME_METADATA_KEY)
+    artifact = types.Part(
+        inline_data=types.Blob(
+            data=artifact_bytes,
+            mime_type=blob.content_type,
+            display_name=display_name,
+        )
     )
     return artifact
 
@@ -391,7 +413,7 @@ class GcsArtifactService(BaseArtifactService):
         canonical_uri=canonical_uri,
         create_time=blob.time_created.timestamp(),
         mime_type=blob.content_type,
-        custom_metadata=blob.metadata if blob.metadata else {},
+        custom_metadata=_user_metadata(blob.metadata),
     )
 
   def _list_artifact_versions_sync(
@@ -421,7 +443,7 @@ class GcsArtifactService(BaseArtifactService):
           canonical_uri=canonical_uri,
           create_time=blob.time_created.timestamp(),
           mime_type=blob.content_type,
-          custom_metadata=blob.metadata if blob.metadata else {},
+          custom_metadata=_user_metadata(blob.metadata),
       )
       artifact_versions.append(av)
 
