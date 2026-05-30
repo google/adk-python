@@ -2253,6 +2253,30 @@ def test_message_to_generate_content_response_tool_call():
   assert response.content.parts[0].function_call.id == "test_tool_call_id"
 
 
+def test_message_to_generate_content_response_malformed_tool_args_json():
+  """Malformed JSON in tool_call.function.arguments should not crash."""
+  message = ChatCompletionAssistantMessage(
+      role="assistant",
+      content=None,
+      tool_calls=[
+          ChatCompletionMessageToolCall(
+              type="function",
+              id="malformed_call_id",
+              function=Function(
+                  name="demo_tool",
+                  arguments='{"city":"unterminated',
+              ),
+          )
+      ],
+  )
+
+  response = _message_to_generate_content_response(message)
+  assert response.content.role == "model"
+  assert response.content.parts[0].function_call.name == "demo_tool"
+  assert response.content.parts[0].function_call.args == {}
+  assert response.content.parts[0].function_call.id == "malformed_call_id"
+
+
 def test_message_to_generate_content_response_inline_tool_call_text():
   message = ChatCompletionAssistantMessage(
       role="assistant",
