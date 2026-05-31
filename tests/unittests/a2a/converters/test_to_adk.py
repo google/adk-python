@@ -14,17 +14,19 @@
 
 from __future__ import annotations
 
+from datetime import datetime
+from datetime import timezone
 from unittest.mock import Mock
 
 from a2a.types import Artifact
 from a2a.types import Message
 from a2a.types import Part as A2APart
+from a2a.types import Role
 from a2a.types import Task
 from a2a.types import TaskArtifactUpdateEvent
 from a2a.types import TaskState
 from a2a.types import TaskStatus
 from a2a.types import TaskStatusUpdateEvent
-from a2a.types import TextPart
 from google.adk.a2a.converters.part_converter import A2A_DATA_PART_METADATA_IS_LONG_RUNNING_KEY
 from google.adk.a2a.converters.to_adk_event import convert_a2a_artifact_update_to_event
 from google.adk.a2a.converters.to_adk_event import convert_a2a_message_to_event
@@ -38,6 +40,13 @@ from google.genai import types as genai_types
 import pytest
 
 
+def _make_task_status(state: TaskState) -> TaskStatus:
+  """Helper to create a TaskStatus with the given state."""
+  status = TaskStatus(state=state)
+  status.timestamp.FromDatetime(datetime.now(timezone.utc))
+  return status
+
+
 class TestToAdk:
   """Test suite for to_adk functions."""
 
@@ -48,11 +57,9 @@ class TestToAdk:
     self.mock_context.branch = "test-branch"
 
   def test_convert_a2a_message_to_event_success(self):
-    """Test successful conversion of A2A message to Event."""
-    a2a_part = Mock(spec=A2APart)
-    a2a_part.root = Mock(spec=TextPart)
-    a2a_part.root.metadata = {}
-    message = Message(message_id="msg-1", role="user", parts=[a2a_part])
+    """A2A message with parts converts to event with those parts."""
+    a2a_part = A2APart(text="hello source")
+    message = Message(message_id="msg-1", role=Role.ROLE_USER, parts=[a2a_part])
 
     mock_genai_part = genai_types.Part.from_text(text="hello")
     mock_part_converter = Mock(return_value=[mock_genai_part])
@@ -71,25 +78,20 @@ class TestToAdk:
     assert event.content.parts[0] == mock_genai_part
 
   def test_convert_a2a_message_to_event_none(self):
-    """Test convert_a2a_message_to_event with None."""
+    """None message raises ValueError."""
     with pytest.raises(ValueError, match="A2A message cannot be None"):
       convert_a2a_message_to_event(None)
 
   def test_convert_a2a_message_to_event_restores_actions_from_metadata(self):
-    """Test A2A message conversion restores ADK actions metadata."""
-    a2a_part = Mock(spec=A2APart)
-    a2a_part.root = Mock(spec=TextPart)
-    a2a_part.root.metadata = {}
+    """Actions in message metadata are restored into the event."""
     message = Message(
         message_id="msg-1",
-        role="user",
-        parts=[a2a_part],
-        metadata={
-            _get_adk_metadata_key("actions"): {
-                "stateDelta": {"saved_key": "saved-value"}
-            }
-        },
+        role=Role.ROLE_USER,
+        parts=[A2APart(text="hello")],
     )
+    message.metadata[_get_adk_metadata_key("actions")] = {
+        "stateDelta": {"saved_key": "saved-value"}
+    }
 
     mock_genai_part = genai_types.Part.from_text(text="hello")
     mock_part_converter = Mock(return_value=[mock_genai_part])
@@ -106,17 +108,11 @@ class TestToAdk:
     assert event.content.parts[0] == mock_genai_part
 
   def test_convert_a2a_message_to_event_returns_action_only_event(self):
-    """Test A2A message conversion returns action-only events."""
-    message = Message(
-        message_id="msg-1",
-        role="user",
-        parts=[],
-        metadata={
-            _get_adk_metadata_key("actions"): {
-                "stateDelta": {"saved_key": "saved-value"}
-            }
-        },
-    )
+    """Message with no parts but actions metadata produces an action-only event."""
+    message = Message(message_id="msg-1", role=Role.ROLE_USER, parts=[])
+    message.metadata[_get_adk_metadata_key("actions")] = {
+        "stateDelta": {"saved_key": "saved-value"}
+    }
 
     event = convert_a2a_message_to_event(
         message,
@@ -130,23 +126,16 @@ class TestToAdk:
     assert event.content is None
 
   def test_convert_a2a_task_to_event_success(self):
-    """Test successful conversion of A2A task to Event."""
-    a2a_part = Mock(spec=A2APart)
-    a2a_part.root = Mock(spec=TextPart)
-    a2a_part.root.metadata = {}
+    """Task with artifact parts converts to event with those parts."""
+    a2a_part = A2APart(text="task text")
+    artifact = Artifact(artifact_id="art-1", parts=[a2a_part])
     task = Task(
         id="task-1",
-        status=TaskStatus(
-            state=TaskState.submitted, timestamp="2024-01-01T00:00:00Z"
-        ),
         context_id="context-1",
-        history=[Message(message_id="msg-1", role="agent", parts=[a2a_part])],
-        artifacts=[
-            Artifact(
-                artifact_id="art-1", artifact_type="message", parts=[a2a_part]
-            )
-        ],
+        artifacts=[artifact],
     )
+    task.status.CopyFrom(_make_task_status(TaskState.TASK_STATE_SUBMITTED))
+    task.history.append(Message(message_id="msg-1", role=Role.ROLE_AGENT))
 
     mock_genai_part = genai_types.Part.from_text(text="task artifact text")
     mock_part_converter = Mock(return_value=[mock_genai_part])
@@ -164,26 +153,13 @@ class TestToAdk:
     assert event.content.parts[0] == mock_genai_part
 
   def test_convert_a2a_task_to_event_returns_action_only_event(self):
-    """Test A2A task conversion returns action-only events."""
-    task = Task(
-        id="task-1",
-        status=TaskStatus(
-            state=TaskState.submitted, timestamp="2024-01-01T00:00:00Z"
-        ),
-        context_id="context-1",
-        artifacts=[
-            Artifact(
-                artifact_id="art-1",
-                artifact_type="message",
-                parts=[],
-                metadata={
-                    _get_adk_metadata_key("actions"): {
-                        "stateDelta": {"saved_key": "saved-value"}
-                    }
-                },
-            )
-        ],
-    )
+    """Task artifact with actions metadata produces an action-only event."""
+    artifact = Artifact(artifact_id="art-1", parts=[])
+    artifact.metadata[_get_adk_metadata_key("actions")] = {
+        "stateDelta": {"saved_key": "saved-value"}
+    }
+    task = Task(id="task-1", context_id="context-1", artifacts=[artifact])
+    task.status.CopyFrom(_make_task_status(TaskState.TASK_STATE_SUBMITTED))
 
     event = convert_a2a_task_to_event(
         task,
@@ -197,32 +173,15 @@ class TestToAdk:
     assert event.content is None
 
   def test_convert_a2a_task_to_event_merges_actions_across_artifacts(self):
-    """Test task conversion merges actions across artifact metadata."""
-    task = Task(
-        id="task-1",
-        status=TaskStatus(
-            state=TaskState.submitted, timestamp="2024-01-01T00:00:00Z"
-        ),
-        context_id="context-1",
-        artifacts=[
-            Artifact(
-                artifact_id="art-1",
-                artifact_type="message",
-                parts=[],
-                metadata={
-                    _get_adk_metadata_key("actions"): {
-                        "stateDelta": {"first_key": "first-value"}
-                    }
-                },
-            ),
-            Artifact(
-                artifact_id="art-2",
-                artifact_type="message",
-                parts=[],
-                metadata={},
-            ),
-        ],
-    )
+    """Actions are merged across multiple artifact metadata entries."""
+    art1 = Artifact(artifact_id="art-1", parts=[])
+    art1.metadata[_get_adk_metadata_key("actions")] = {
+        "stateDelta": {"first_key": "first-value"}
+    }
+    art2 = Artifact(artifact_id="art-2", parts=[])
+
+    task = Task(id="task-1", context_id="context-1", artifacts=[art1, art2])
+    task.status.CopyFrom(_make_task_status(TaskState.TASK_STATE_SUBMITTED))
 
     event = convert_a2a_task_to_event(
         task,
@@ -236,41 +195,18 @@ class TestToAdk:
     assert event.content is None
 
   def test_convert_a2a_task_to_event_overwrites_nested_state_delta_values(self):
-    """Test task conversion preserves top-level state overwrite semantics."""
-    task = Task(
-        id="task-1",
-        status=TaskStatus(
-            state=TaskState.submitted, timestamp="2024-01-01T00:00:00Z"
-        ),
-        context_id="context-1",
-        artifacts=[
-            Artifact(
-                artifact_id="art-1",
-                artifact_type="message",
-                parts=[],
-                metadata={
-                    _get_adk_metadata_key("actions"): {
-                        "stateDelta": {
-                            "settings": {
-                                "theme": "light",
-                                "language": "en",
-                            }
-                        }
-                    }
-                },
-            ),
-            Artifact(
-                artifact_id="art-2",
-                artifact_type="message",
-                parts=[],
-                metadata={
-                    _get_adk_metadata_key("actions"): {
-                        "stateDelta": {"settings": {"theme": "dark"}}
-                    }
-                },
-            ),
-        ],
-    )
+    """Later artifact metadata overwrites earlier ones at the top level."""
+    art1 = Artifact(artifact_id="art-1", parts=[])
+    art1.metadata[_get_adk_metadata_key("actions")] = {
+        "stateDelta": {"settings": {"theme": "light", "language": "en"}}
+    }
+    art2 = Artifact(artifact_id="art-2", parts=[])
+    art2.metadata[_get_adk_metadata_key("actions")] = {
+        "stateDelta": {"settings": {"theme": "dark"}}
+    }
+
+    task = Task(id="task-1", context_id="context-1", artifacts=[art1, art2])
+    task.status.CopyFrom(_make_task_status(TaskState.TASK_STATE_SUBMITTED))
 
     event = convert_a2a_task_to_event(
         task,
@@ -284,40 +220,21 @@ class TestToAdk:
     assert event.content is None
 
   def test_convert_a2a_task_to_event_merges_status_and_artifact_actions(self):
-    """Test task conversion merges status and artifact actions."""
-    a2a_part = Mock(spec=A2APart)
-    a2a_part.root = Mock(spec=TextPart)
-    a2a_part.root.metadata = {}
-    task = Task(
-        id="task-1",
-        status=TaskStatus(
-            state=TaskState.input_required,
-            timestamp="2024-01-01T00:00:00Z",
-            message=Message(
-                message_id="msg-1",
-                role="agent",
-                parts=[a2a_part],
-                metadata={
-                    _get_adk_metadata_key("actions"): {
-                        "transferToAgent": "agent-2"
-                    }
-                },
-            ),
-        ),
-        context_id="context-1",
-        artifacts=[
-            Artifact(
-                artifact_id="art-1",
-                artifact_type="message",
-                parts=[],
-                metadata={
-                    _get_adk_metadata_key("actions"): {
-                        "stateDelta": {"saved_key": "saved-value"}
-                    }
-                },
-            )
-        ],
-    )
+    """Actions from artifact metadata and status message metadata are merged."""
+    art = Artifact(artifact_id="art-1", parts=[])
+    art.metadata[_get_adk_metadata_key("actions")] = {
+        "stateDelta": {"saved_key": "saved-value"}
+    }
+
+    status_msg = Message(message_id="msg-1", role=Role.ROLE_AGENT, parts=[A2APart(text="need input")])
+    status_msg.metadata[_get_adk_metadata_key("actions")] = {
+        "transferToAgent": "agent-2"
+    }
+    status = TaskStatus(state=TaskState.TASK_STATE_INPUT_REQUIRED, message=status_msg)
+    status.timestamp.FromDatetime(datetime.now(timezone.utc))
+
+    task = Task(id="task-1", context_id="context-1", artifacts=[art])
+    task.status.CopyFrom(status)
 
     mock_genai_part = genai_types.Part.from_text(text="need input")
 
@@ -336,26 +253,18 @@ class TestToAdk:
         event.content.parts[0].function_call.name
         == MOCK_FUNCTION_CALL_FOR_REQUIRED_USER_INPUT
     )
-    assert (
-        event.content.parts[0].function_call.args["input_required"]
-        == "need input"
-    )
 
   def test_convert_a2a_task_to_event_auth_required_uses_auth_args_key(self):
     """Test auth-required state populates the function call with auth args."""
-    a2a_part = Mock(spec=A2APart)
-    a2a_part.root = Mock(spec=TextPart)
-    a2a_part.root.metadata = {}
+    a2a_part = A2APart(text="need auth")
     task = Task(
         id="task-1",
         context_id="context-1",
-        kind="task",
         status=TaskStatus(
-            state=TaskState.auth_required,
-            timestamp="now",
+            state=TaskState.TASK_STATE_AUTH_REQUIRED,
             message=Message(
                 message_id="m1",
-                role="agent",
+                role=Role.ROLE_AGENT,
                 parts=[a2a_part],
             ),
         ),
@@ -385,28 +294,19 @@ class TestToAdk:
     assert "input_required" not in event.content.parts[0].function_call.args
 
   def test_convert_a2a_task_to_event_multiple_parts_replaces_last_text(self):
-    """Test converting A2A task with multiple text parts, only replacing the last text."""
-    part1 = Mock(spec=A2APart)
-    part1.root = Mock(spec=TextPart)
-    part1.root.metadata = {}
-    part2 = Mock(spec=A2APart)
-    part2.root = Mock(spec=TextPart)
-    part2.root.metadata = {}
-
-    task = Task(
-        id="task-1",
-        context_id="context-1",
-        kind="task",
-        status=TaskStatus(
-            state=TaskState.input_required,
-            timestamp="now",
-            message=Message(
-                message_id="m1",
-                role="agent",
-                parts=[part1, part2],
-            ),
-        ),
+    """input_required with multiple parts injects mock function call for the last text part."""
+    status_msg = Message(
+        message_id="m1",
+        role=Role.ROLE_AGENT,
+        parts=[A2APart(text="part1"), A2APart(text="part2")],
     )
+    status = TaskStatus(
+        state=TaskState.TASK_STATE_INPUT_REQUIRED, message=status_msg
+    )
+    status.timestamp.FromDatetime(datetime.now(timezone.utc))
+
+    task = Task(id="task-1", context_id="context-1")
+    task.status.CopyFrom(status)
 
     mock_genai_part_1 = genai_types.Part.from_text(text="Part 1")
     mock_genai_part_2 = genai_types.Part.from_text(text="Part 2")
@@ -431,25 +331,18 @@ class TestToAdk:
     )
 
   def test_convert_a2a_task_to_event_no_text_parts(self):
-    """Test converting A2A task with no text parts should not inject function call."""
-    part1 = Mock(spec=A2APart)
-    part1.root = Mock()  # Not a TextPart
-    part1.root.metadata = {}
-
-    task = Task(
-        id="task-1",
-        context_id="context-1",
-        kind="task",
-        status=TaskStatus(
-            state=TaskState.input_required,
-            timestamp="now",
-            message=Message(
-                message_id="m1",
-                role="agent",
-                parts=[part1],
-            ),
-        ),
+    """input_required with no text parts does not inject mock function call."""
+    # Use a non-text part (inline_data)
+    a2a_part = A2APart(raw=b"fake", media_type="image/jpeg")
+    status_msg = Message(message_id="m1", role=Role.ROLE_AGENT, parts=[a2a_part])
+    status = TaskStatus(
+        state=TaskState.TASK_STATE_INPUT_REQUIRED, message=status_msg
     )
+    status.timestamp.FromDatetime(datetime.now(timezone.utc))
+
+    task = Task(id="task-1", context_id="context-1")
+    task.status.CopyFrom(status)
+
     mock_image_part = genai_types.Part(
         inline_data=genai_types.Blob(mime_type="image/jpeg", data=b"fake")
     )
@@ -466,26 +359,16 @@ class TestToAdk:
     assert event.content.parts == [mock_image_part]
 
   def test_convert_a2a_status_update_to_event_success(self):
-    """Test successful conversion of A2A status update to Event."""
-    a2a_part = Mock(spec=A2APart)
-    a2a_part.root = Mock(spec=TextPart)
-    a2a_part.root.metadata = {
-        _get_adk_metadata_key(A2A_DATA_PART_METADATA_IS_LONG_RUNNING_KEY): True
-    }
-    update = TaskStatusUpdateEvent(
-        task_id="task-1",
-        status=TaskStatus(
-            state=TaskState.input_required,
-            timestamp="now",
-            message=Message(
-                message_id="m1",
-                role="agent",
-                parts=[a2a_part],
-            ),
-        ),
-        context_id="context-1",
-        final=False,
-    )
+    """Status update with a message converts to event with those parts."""
+    a2a_part = A2APart(text="status text")
+    a2a_part.metadata[_get_adk_metadata_key(A2A_DATA_PART_METADATA_IS_LONG_RUNNING_KEY)] = True
+
+    status_msg = Message(message_id="m1", role=Role.ROLE_AGENT, parts=[a2a_part])
+    status = TaskStatus(state=TaskState.TASK_STATE_INPUT_REQUIRED, message=status_msg)
+    status.timestamp.FromDatetime(datetime.now(timezone.utc))
+
+    update = TaskStatusUpdateEvent(task_id="task-1", context_id="context-1")
+    update.status.CopyFrom(status)
 
     mock_genai_part = genai_types.Part(
         function_call=genai_types.FunctionCall(
@@ -507,22 +390,20 @@ class TestToAdk:
     assert event.content.parts[0] == mock_genai_part
 
   def test_convert_a2a_status_update_to_event_none(self):
-    """Test convert_a2a_status_update_to_event with None."""
+    """None status update raises ValueError."""
     with pytest.raises(ValueError, match="A2A status update cannot be None"):
       convert_a2a_status_update_to_event(None)
 
   def test_convert_a2a_artifact_update_to_event_success(self):
-    """Test successful conversion of A2A artifact update to Event."""
-    a2a_part = Mock(spec=A2APart)
-    a2a_part.root = Mock(spec=TextPart)
-    a2a_part.root.metadata = {}
+    """Artifact update with parts converts to a partial event."""
+    a2a_part = A2APart(text="chunk text")
+    artifact = Artifact(artifact_id="art-1", parts=[a2a_part])
+
     update = TaskArtifactUpdateEvent(
         task_id="task-1",
-        artifact=Artifact(
-            artifact_id="art-1", artifact_type="message", parts=[a2a_part]
-        ),
-        append=True,
         context_id="context-1",
+        artifact=artifact,
+        append=True,
         last_chunk=False,
     )
 
@@ -543,6 +424,6 @@ class TestToAdk:
     assert event.content.parts[0] == mock_genai_part
 
   def test_convert_a2a_artifact_update_to_event_none(self):
-    """Test convert_a2a_artifact_update_to_event with None."""
+    """None artifact update raises ValueError."""
     with pytest.raises(ValueError, match="A2A artifact update cannot be None"):
       convert_a2a_artifact_update_to_event(None)

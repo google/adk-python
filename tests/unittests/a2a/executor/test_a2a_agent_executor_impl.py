@@ -21,17 +21,19 @@ from unittest.mock import patch
 from a2a.server.agent_execution.context import RequestContext
 from a2a.server.events.event_queue import EventQueue
 from a2a.types import Message
+from a2a.types import Part
+from a2a.types import Role
 from a2a.types import Task
 from a2a.types import TaskState
 from a2a.types import TaskStatus
 from a2a.types import TaskStatusUpdateEvent
-from a2a.types import TextPart
 from google.adk.a2a.converters.request_converter import AgentRunRequest
 from google.adk.a2a.converters.utils import _get_adk_metadata_key
 from google.adk.a2a.executor.a2a_agent_executor_impl import _A2aAgentExecutor as A2aAgentExecutor
 from google.adk.a2a.executor.a2a_agent_executor_impl import _NEW_A2A_ADK_INTEGRATION_EXTENSION
 from google.adk.a2a.executor.a2a_agent_executor_impl import A2aAgentExecutorConfig
 from google.adk.a2a.executor.config import ExecuteInterceptor
+from google.adk.a2a.executor.executor_context import ExecutorContext
 from google.adk.events.event import Event
 from google.adk.events.event_actions import EventActions
 from google.adk.runners import RunConfig
@@ -67,8 +69,10 @@ class TestA2aAgentExecutor:
     )
 
     self.mock_context = Mock(spec=RequestContext)
-    self.mock_context.message = Mock(spec=Message)
-    self.mock_context.message.parts = [Mock(spec=TextPart)]
+    # Use real proto Message so it can be appended to Task.history
+    test_msg = Message(message_id="test-msg", role=Role.ROLE_USER)
+    test_msg.parts.append(Part(text="test input"))
+    self.mock_context.message = test_msg
     self.mock_context.current_task = None
     self.mock_context.task_id = "test-task-id"
     self.mock_context.context_id = "test-context-id"
@@ -122,9 +126,8 @@ class TestA2aAgentExecutor:
     # Mock event converter to return a working status update
     working_event = TaskStatusUpdateEvent(
         task_id="test-task-id",
-        status=TaskStatus(state=TaskState.working, timestamp="now"),
+        status=TaskStatus(state=TaskState.TASK_STATE_WORKING),
         context_id="test-context-id",
-        final=False,
     )
     self.mock_event_converter.return_value = [working_event]
 
@@ -155,29 +158,28 @@ class TestA2aAgentExecutor:
         0
     ]
     assert isinstance(submitted_event, Task)
-    assert submitted_event.status.state == TaskState.submitted
-    assert submitted_event.metadata == self.expected_metadata
+    assert submitted_event.status.state == TaskState.TASK_STATE_SUBMITTED
+    assert dict(submitted_event.metadata) == self.expected_metadata
 
     # Verify working event was enqueued
     enqueued_working_event = self.mock_event_queue.enqueue_event.call_args_list[
         1
     ][0][0]
     assert isinstance(enqueued_working_event, TaskStatusUpdateEvent)
-    assert enqueued_working_event.status.state == TaskState.working
-    assert enqueued_working_event.metadata == self.expected_metadata
+    assert enqueued_working_event.status.state == TaskState.TASK_STATE_WORKING
+    assert dict(enqueued_working_event.metadata) == self.expected_metadata
 
     # Verify converted event was enqueued
     converted_event = self.mock_event_queue.enqueue_event.call_args_list[2][0][
         0
     ]
     assert converted_event == working_event
-    assert converted_event.metadata == self.expected_metadata
+    assert dict(converted_event.metadata) == self.expected_metadata
 
     # Verify final event was enqueued
     final_event = self.mock_event_queue.enqueue_event.call_args_list[-1][0][0]
-    assert final_event.final == True
-    assert final_event.status.state == TaskState.completed
-    assert final_event.metadata == self.expected_metadata
+    assert final_event.status.state == TaskState.TASK_STATE_COMPLETED
+    assert dict(final_event.metadata) == self.expected_metadata
 
   @pytest.mark.asyncio
   async def test_execute_no_message_error(self):
@@ -225,9 +227,8 @@ class TestA2aAgentExecutor:
     # Mock event converter
     working_event = TaskStatusUpdateEvent(
         task_id="existing-task-id",
-        status=TaskStatus(state=TaskState.working, timestamp="now"),
+        status=TaskStatus(state=TaskState.TASK_STATE_WORKING),
         context_id="test-context-id",
-        final=False,
     )
     self.mock_event_converter.return_value = [working_event]
 
@@ -238,25 +239,24 @@ class TestA2aAgentExecutor:
     # So we check first event is working state
     first_event = self.mock_event_queue.enqueue_event.call_args_list[0][0][0]
     assert isinstance(first_event, TaskStatusUpdateEvent)
-    assert first_event.status.state == TaskState.working
-    assert first_event.metadata == self.expected_metadata
+    assert first_event.status.state == TaskState.TASK_STATE_WORKING
+    assert dict(first_event.metadata) == self.expected_metadata
 
     # Verify manual working event is FIRST
     assert isinstance(first_event, TaskStatusUpdateEvent)
-    assert first_event.status.state == TaskState.working
+    assert first_event.status.state == TaskState.TASK_STATE_WORKING
 
     # Verify converted event was enqueued
     converted_event = self.mock_event_queue.enqueue_event.call_args_list[1][0][
         0
     ]
     assert converted_event == working_event
-    assert converted_event.metadata == self.expected_metadata
+    assert dict(converted_event.metadata) == self.expected_metadata
 
     # Verify final event
     final_event = self.mock_event_queue.enqueue_event.call_args_list[-1][0][0]
-    assert final_event.final == True
-    assert final_event.status.state == TaskState.completed
-    assert final_event.metadata == self.expected_metadata
+    assert final_event.status.state == TaskState.TASK_STATE_COMPLETED
+    assert dict(final_event.metadata) == self.expected_metadata
 
   def test_constructor_with_callable_runner(self):
     """Test constructor with callable runner."""
@@ -352,15 +352,14 @@ class TestA2aAgentExecutor:
     # Mock event converter to return events
     working_event = TaskStatusUpdateEvent(
         task_id="test-task-id",
-        status=TaskStatus(state=TaskState.working, timestamp="now"),
+        status=TaskStatus(state=TaskState.TASK_STATE_WORKING),
         context_id="test-context-id",
-        final=False,
     )
     self.mock_event_converter.return_value = [working_event]
 
     # Initialize executor context attributes as they would be in execute()
     self.executor._invocation_metadata = {}
-    self.executor._executor_context = Mock()
+    self.executor._executor_context = ExecutorContext(app_name="test-app", user_id="test-user", session_id="test-session", runner=self.mock_runner)
 
     # Execute
     await self.executor._handle_request(
@@ -377,20 +376,14 @@ class TestA2aAgentExecutor:
         call[0][0]
         for call in self.mock_event_queue.enqueue_event.call_args_list
         if hasattr(call[0][0], "status")
-        and call[0][0].status.state == TaskState.working
+        and call[0][0].status.state == TaskState.TASK_STATE_WORKING
     ]
     # Each ADK event generates 1 working event in this mock setup
     assert len(working_events) >= len(mock_events)
 
     # Verify final event is completed
-    final_events = [
-        call[0][0]
-        for call in self.mock_event_queue.enqueue_event.call_args_list
-        if hasattr(call[0][0], "final") and call[0][0].final == True
-    ]
-    assert len(final_events) >= 1
-    final_event = final_events[-1]
-    assert final_event.status.state == TaskState.completed
+    final_event = self.mock_event_queue.enqueue_event.call_args_list[-1][0][0]
+    assert final_event.status.state == TaskState.TASK_STATE_COMPLETED
 
   @pytest.mark.asyncio
   async def test_cancel_with_task_id(self):
@@ -415,9 +408,9 @@ class TestA2aAgentExecutor:
 
     # Check failure event (last)
     failure_event = self.mock_event_queue.enqueue_event.call_args_list[-1][0][0]
-    assert failure_event.status.state == TaskState.failed
-    assert failure_event.final == True
-    assert "Test error" in failure_event.status.message.parts[0].root.text
+    assert failure_event.status.state == TaskState.TASK_STATE_FAILED
+    # final field removed in a2a-sdk 1.x; completeness is via task state
+    assert "Test error" in failure_event.status.message.parts[0].text
 
   @pytest.mark.asyncio
   async def test_handle_request_with_non_working_state(self):
@@ -444,9 +437,8 @@ class TestA2aAgentExecutor:
     # Mock event converter to return a FAILED event
     failed_event = TaskStatusUpdateEvent(
         task_id="test-task-id",
-        status=TaskStatus(state=TaskState.failed, timestamp="now"),
+        status=TaskStatus(state=TaskState.TASK_STATE_FAILED),
         context_id="test-context-id",
-        final=False,
     )
     self.mock_event_converter.return_value = [failed_event]
 
@@ -459,7 +451,7 @@ class TestA2aAgentExecutor:
 
     # Initialize executor context attributes
     self.executor._invocation_metadata = {}
-    self.executor._executor_context = Mock()
+    self.executor._executor_context = ExecutorContext(app_name="test-app", user_id="test-user", session_id="test-session", runner=self.mock_runner)
 
     # Execute
     await self.executor._handle_request(
@@ -474,12 +466,12 @@ class TestA2aAgentExecutor:
     final_events = [
         call[0][0]
         for call in self.mock_event_queue.enqueue_event.call_args_list
-        if hasattr(call[0][0], "final") and call[0][0].final == True
+        if hasattr(call[0][0], "status") and call[0][0].status.state != TaskState.TASK_STATE_COMPLETED
     ]
     assert len(final_events) >= 1
     # The last event should be the synthesized final event
     final_event = final_events[-1]
-    assert final_event.status.state == TaskState.failed
+    assert final_event.status.state == TaskState.TASK_STATE_FAILED
 
   @pytest.mark.asyncio
   async def test_handle_request_with_error_message(self):
@@ -511,10 +503,7 @@ class TestA2aAgentExecutor:
         run_config=Mock(spec=RunConfig),
     )
 
-    executor_context = Mock()
-    executor_context.app_name = "test-app"
-    executor_context.user_id = "test-user"
-    executor_context.session_id = "test-session"
+    executor_context = ExecutorContext(app_name="test-app", user_id="test-user", session_id="test-session", runner=self.mock_runner)
 
     await self.executor._handle_request(
         self.mock_context,
@@ -527,12 +516,12 @@ class TestA2aAgentExecutor:
     final_events = [
         call[0][0]
         for call in self.mock_event_queue.enqueue_event.call_args_list
-        if hasattr(call[0][0], "final") and call[0][0].final == True
+        if hasattr(call[0][0], "status") and call[0][0].status.state != TaskState.TASK_STATE_COMPLETED
     ]
     assert len(final_events) >= 1
     final_event = final_events[-1]
-    assert final_event.status.state == TaskState.failed
-    assert final_event.metadata == self.expected_metadata
+    assert final_event.status.state == TaskState.TASK_STATE_FAILED
+    assert dict(final_event.metadata) == self.expected_metadata
 
   @pytest.mark.asyncio
   async def test_interceptors(self):
@@ -569,9 +558,8 @@ class TestA2aAgentExecutor:
     # Mock event converter
     working_event = TaskStatusUpdateEvent(
         task_id="test-task-id",
-        status=TaskStatus(state=TaskState.working, timestamp="now"),
+        status=TaskStatus(state=TaskState.TASK_STATE_WORKING),
         context_id="test-context-id",
-        final=False,
     )
     self.mock_event_converter.return_value = [working_event]
 
@@ -610,9 +598,8 @@ class TestA2aAgentExecutor:
     # Set up handle_user_input to return an event
     missing_event = TaskStatusUpdateEvent(
         task_id="test-task-id",
-        status=TaskStatus(state=TaskState.input_required, timestamp="now"),
+        status=TaskStatus(state=TaskState.TASK_STATE_INPUT_REQUIRED),
         context_id="test-context-id",
-        final=False,
     )
     mock_handle_user_input.return_value = missing_event
 
@@ -634,7 +621,7 @@ class TestA2aAgentExecutor:
 
     # Verify that metadata was injected
     enqueued_event = self.mock_event_queue.enqueue_event.call_args[0][0]
-    assert enqueued_event.metadata == self.expected_metadata
+    assert dict(enqueued_event.metadata) == self.expected_metadata
 
   @pytest.mark.asyncio
   async def test_resolve_session_creates_new_session(self):
@@ -699,9 +686,8 @@ class TestA2aAgentExecutor:
 
     lrf_event = TaskStatusUpdateEvent(
         task_id="test-task-id",
-        status=TaskStatus(state=TaskState.input_required, timestamp="now"),
+        status=TaskStatus(state=TaskState.TASK_STATE_INPUT_REQUIRED),
         context_id="test-context-id",
-        final=False,
     )
     mock_lrf.create_long_running_function_call_event.return_value = lrf_event
 
@@ -733,7 +719,7 @@ class TestA2aAgentExecutor:
     self.mock_event_converter.return_value = []
 
     self.executor._invocation_metadata = {}
-    self.executor._executor_context = Mock()
+    self.executor._executor_context = ExecutorContext(app_name="test-app", user_id="test-user", session_id="test-session", runner=self.mock_runner)
 
     await self.executor._handle_request(
         self.mock_context,
@@ -789,13 +775,12 @@ class TestA2aAgentExecutor:
     # Event converter returns one event
     working_event = TaskStatusUpdateEvent(
         task_id="test-task-id",
-        status=TaskStatus(state=TaskState.working, timestamp="now"),
+        status=TaskStatus(state=TaskState.TASK_STATE_WORKING),
         context_id="test-context-id",
-        final=False,
     )
     self.mock_event_converter.return_value = [working_event]
 
-    self.executor._executor_context = Mock()
+    self.executor._executor_context = ExecutorContext(app_name="test-app", user_id="test-user", session_id="test-session", runner=self.mock_runner)
     await self.executor._handle_request(
         self.mock_context,
         self.executor._executor_context,
@@ -808,4 +793,4 @@ class TestA2aAgentExecutor:
     # The only event enqueued by _handle_request should be the final event
     assert self.mock_event_queue.enqueue_event.call_count == 1
     final_event = self.mock_event_queue.enqueue_event.call_args_list[0][0][0]
-    assert final_event.status.state == TaskState.completed
+    assert final_event.status.state == TaskState.TASK_STATE_COMPLETED

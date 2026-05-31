@@ -50,8 +50,10 @@ from typing_extensions import override
 try:
   from a2a.types import AgentCapabilities
   from a2a.types import AgentCard
+  from a2a.types import AgentInterface
   from a2a.types import AgentSkill
-  from a2a.types import TransportProtocol as A2ATransport
+  from a2a.utils.constants import PROTOCOL_VERSION_CURRENT as _A2A_PROTOCOL_VERSION
+  from a2a.utils.constants import TransportProtocol as A2ATransport
   from google.adk.agents.remote_a2a_agent import RemoteA2aAgent
 except ImportError as e:
   raise ImportError(
@@ -68,9 +70,9 @@ AGENT_REGISTRY_MTLS_BASE_URL = (
 )
 
 _TRANSPORT_MAPPING = {
-    "HTTP_JSON": A2ATransport.http_json,
-    "JSONRPC": A2ATransport.jsonrpc,
-    "GRPC": A2ATransport.grpc,
+    "HTTP_JSON": A2ATransport.HTTP_JSON,
+    "JSONRPC": A2ATransport.JSONRPC,
+    "GRPC": A2ATransport.GRPC,
 }
 
 
@@ -356,11 +358,11 @@ class AgentRegistry:
       mcp_server_id = None
 
     endpoint_uri, _, _ = self._get_connection_uri(
-        server_details, protocol_binding=A2ATransport.jsonrpc
+        server_details, protocol_binding=A2ATransport.JSONRPC
     )
     if not endpoint_uri:
       endpoint_uri, _, _ = self._get_connection_uri(
-          server_details, protocol_binding=A2ATransport.http_json
+          server_details, protocol_binding=A2ATransport.HTTP_JSON
       )
     if not endpoint_uri:
       raise ValueError(
@@ -494,7 +496,9 @@ class AgentRegistry:
     card = agent_info.get("card", {})
     card_content = card.get("content")
     if card.get("type") == "A2A_AGENT_CARD" and card_content:
-      agent_card = AgentCard(**card_content)
+      from google.protobuf import json_format
+      agent_card = AgentCard()
+      json_format.ParseDict(card_content, agent_card, ignore_unknown_fields=True)
       # Clean the name to be a valid identifier
       name = self._clean_name(agent_card.name)
 
@@ -527,17 +531,24 @@ class AgentRegistry:
           )
       )
 
+    effective_binding = protocol_binding or A2ATransport.HTTP_JSON
+    effective_version = protocol_version or _A2A_PROTOCOL_VERSION
+
     agent_card = AgentCard(
         name=name,
         description=description,
         version=version,
-        preferredTransport=protocol_binding or A2ATransport.http_json,
-        protocolVersion=protocol_version or "0.3.0",
-        url=url,
         skills=skills,
-        capabilities=AgentCapabilities(streaming=False, polling=False),
-        defaultInputModes=["text"],
-        defaultOutputModes=["text"],
+        capabilities=AgentCapabilities(streaming=False),
+        default_input_modes=["text"],
+        default_output_modes=["text"],
+    )
+    agent_card.supported_interfaces.append(
+        AgentInterface(
+            url=url,
+            protocol_binding=effective_binding,
+            protocol_version=effective_version,
+        )
     )
 
     return RemoteA2aAgent(

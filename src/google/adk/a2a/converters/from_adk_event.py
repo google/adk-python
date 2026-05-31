@@ -34,7 +34,6 @@ from a2a.types import TaskArtifactUpdateEvent
 from a2a.types import TaskState
 from a2a.types import TaskStatus
 from a2a.types import TaskStatusUpdateEvent
-from a2a.types import TextPart
 
 from ...events.event import Event
 from ..experimental import a2a_experimental
@@ -133,20 +132,19 @@ def create_error_status_event(
   """
   error_message = getattr(event, "error_message", None) or DEFAULT_ERROR_MESSAGE
 
+  err_msg = Message(
+      message_id=str(uuid.uuid4()),
+      role=Role.ROLE_AGENT,
+      parts=[A2APart(text=error_message)],
+  )
+  status = TaskStatus(state=TaskState.TASK_STATE_FAILED, message=err_msg)
+  status.timestamp.FromDatetime(datetime.now(timezone.utc))
+
   error_event = TaskStatusUpdateEvent(
       task_id=task_id,
       context_id=context_id,
-      status=TaskStatus(
-          state=TaskState.failed,
-          message=Message(
-              message_id=str(uuid.uuid4()),
-              role=Role.agent,
-              parts=[A2APart(root=TextPart(text=error_message))],
-          ),
-          timestamp=datetime.now(timezone.utc).isoformat(),
-      ),
-      final=True,
   )
+  error_event.status.CopyFrom(status)
   return _add_event_metadata(event, [error_event])[0]
 
 
@@ -195,40 +193,36 @@ def convert_event_to_a2a_events(
           del agents_artifacts[agent_name]
       else:
         artifact_id = str(uuid.uuid4())
-        # TODO: Clarify if new artifact id must have append=False
         append = False
         if partial:
           agents_artifacts[agent_name] = artifact_id
 
-      a2a_events.append(
-          TaskArtifactUpdateEvent(
-              task_id=task_id,
-              context_id=context_id,
-              last_chunk=not partial,
-              append=append,
-              artifact=Artifact(
-                  artifact_id=artifact_id,
-                  parts=a2a_parts,
-              ),
-          )
+      taue = TaskArtifactUpdateEvent(
+          task_id=task_id,
+          context_id=context_id,
+          last_chunk=not partial,
+          append=append,
+          artifact=Artifact(
+              artifact_id=artifact_id,
+              parts=a2a_parts,
+          ),
       )
+      a2a_events.append(taue)
     elif _serialize_value(event.actions) is not None:
-      a2a_events.append(
-          TaskStatusUpdateEvent(
-              task_id=task_id,
-              context_id=context_id,
-              status=TaskStatus(
-                  state=TaskState.working,
-                  message=Message(
-                      message_id=str(uuid.uuid4()),
-                      role=Role.agent,
-                      parts=[],
-                  ),
-                  timestamp=datetime.now(timezone.utc).isoformat(),
-              ),
-              final=False,
-          )
+      msg = Message(
+          message_id=str(uuid.uuid4()),
+          role=Role.ROLE_AGENT,
+          parts=[],
       )
+      status = TaskStatus(state=TaskState.TASK_STATE_WORKING, message=msg)
+      status.timestamp.FromDatetime(datetime.now(timezone.utc))
+
+      tsue = TaskStatusUpdateEvent(
+          task_id=task_id,
+          context_id=context_id,
+      )
+      tsue.status.CopyFrom(status)
+      a2a_events.append(tsue)
 
     a2a_events = _add_event_metadata(event, a2a_events)
     return a2a_events
@@ -294,8 +288,8 @@ def _add_event_metadata(
         isinstance(a2a_event, TaskStatusUpdateEvent)
         and a2a_event.status.message
     ):
-      a2a_event.status.message.metadata = metadata.copy()
+      a2a_event.status.message.metadata.update(metadata)
     elif isinstance(a2a_event, TaskArtifactUpdateEvent):
-      a2a_event.artifact.metadata = metadata.copy()
+      a2a_event.artifact.metadata.update(metadata)
 
   return a2a_events

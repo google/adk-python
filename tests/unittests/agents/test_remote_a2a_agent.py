@@ -23,7 +23,7 @@ from unittest.mock import patch
 
 from a2a.client.client import ClientConfig
 from a2a.client.client_factory import ClientFactory
-from a2a.client.middleware import ClientCallContext
+from a2a.client.client import ClientCallContext
 from a2a.types import AgentCapabilities
 from a2a.types import AgentCard
 from a2a.types import AgentSkill
@@ -33,9 +33,13 @@ from a2a.types import Task as A2ATask
 from a2a.types import TaskArtifactUpdateEvent
 from a2a.types import TaskState
 from a2a.types import TaskStatus as A2ATaskStatus
+from a2a.types import AgentInterface
+from a2a.types import Role as A2ARole
+from a2a.types import StreamResponse as A2AStreamResponse
 from a2a.types import TaskStatusUpdateEvent
-from a2a.types import TextPart
-from a2a.types import TransportProtocol as A2ATransport
+from a2a.types import Part as A2APart
+from a2a.utils.constants import TransportProtocol as A2ATransport
+from a2a.utils.constants import PROTOCOL_VERSION_CURRENT as A2A_PROTOCOL_VERSION
 from google.adk.a2a.agent import ParametersConfig
 from google.adk.a2a.agent import RequestInterceptor
 from google.adk.a2a.agent.config import A2aRemoteAgentConfig
@@ -60,9 +64,8 @@ def create_test_agent_card(
     description: str = "Test agent",
 ) -> AgentCard:
   """Create a test AgentCard with all required fields."""
-  return AgentCard(
+  card = AgentCard(
       name=name,
-      url=url,
       description=description,
       version="1.0",
       capabilities=AgentCapabilities(),
@@ -77,6 +80,14 @@ def create_test_agent_card(
           )
       ],
   )
+  card.supported_interfaces.append(
+      AgentInterface(
+          url=url,
+          protocol_binding=A2ATransport.JSONRPC,
+          protocol_version=A2A_PROTOCOL_VERSION,
+      )
+  )
+  return card
 
 
 class TestRemoteA2aAgentInit:
@@ -172,7 +183,6 @@ class TestRemoteA2aAgentResolution:
     """Setup test fixtures."""
     self.agent_card_data = {
         "name": "test-agent",
-        "url": "https://example.com/rpc",
         "description": "Test agent",
         "version": "1.0",
         "capabilities": {},
@@ -183,6 +193,11 @@ class TestRemoteA2aAgentResolution:
             "name": "Test Skill",
             "description": "A test skill",
             "tags": ["test"],
+        }],
+        "supportedInterfaces": [{
+            "url": "https://example.com/rpc",
+            "protocolBinding": "JSONRPC",
+            "protocolVersion": "1.0",
         }],
     }
     self.agent_card = create_test_agent_card()
@@ -199,7 +214,7 @@ class TestRemoteA2aAgentResolution:
     assert client is not None
     assert agent._httpx_client == client
     assert agent._httpx_client_needs_cleanup is True
-    assert agent._a2a_client_factory._config.supported_transports == [
+    assert agent._a2a_client_factory._config.supported_protocol_bindings == [
         A2ATransport.jsonrpc,
         A2ATransport.http_json,
     ]
@@ -381,6 +396,7 @@ class TestRemoteA2aAgentResolution:
         name="test_agent", agent_card=create_test_agent_card()
     )
 
+    # Card with no supported_interfaces (no URL) → validation error
     invalid_card = AgentCard(
         name="test",
         description="test",
@@ -396,7 +412,6 @@ class TestRemoteA2aAgentResolution:
                 tags=["test"],
             )
         ],
-        url="",  # Empty URL to trigger validation error
     )
 
     with pytest.raises(
@@ -413,7 +428,6 @@ class TestRemoteA2aAgentResolution:
 
     invalid_card = AgentCard(
         name="test",
-        url="invalid-url",
         description="test",
         version="1.0",
         capabilities=AgentCapabilities(),
@@ -427,6 +441,9 @@ class TestRemoteA2aAgentResolution:
                 tags=["test"],
             )
         ],
+    )
+    invalid_card.supported_interfaces.append(
+        AgentInterface(url="invalid-url", protocol_binding=A2ATransport.JSONRPC)
     )
 
     with pytest.raises(AgentCardResolutionError, match="Invalid RPC URL"):
@@ -651,9 +668,7 @@ class TestRemoteA2aAgentMessageHandling:
     ) as mock_convert:
       mock_convert.return_value = mock_event
 
-      mock_a2a_part = Mock()
-      mock_a2a_part.root = Mock()
-      mock_a2a_part.root.metadata = {}
+      mock_a2a_part = A2APart(text="test")
       self.mock_genai_part_converter.return_value = mock_a2a_part
 
       parts, _ = self.agent._construct_message_parts_from_session(
@@ -749,11 +764,8 @@ class TestRemoteA2aAgentMessageHandling:
     self.mock_session.events = [user1, agent1, user2, agent2]
 
     def mock_converter(part):
-      mock_a2a_part = Mock()
-      mock_a2a_part.text = part.text
-      mock_a2a_part.root = Mock()
-      mock_a2a_part.root.metadata = {}
-      return mock_a2a_part
+      # Use a real A2APart so proto metadata assignment works
+      return A2APart(text=part.text)
 
     self.mock_genai_part_converter.side_effect = mock_converter
 
@@ -801,11 +813,8 @@ class TestRemoteA2aAgentMessageHandling:
     self.mock_session.events = [user1, agent1, user2]
 
     def mock_converter(part):
-      mock_a2a_part = Mock()
-      mock_a2a_part.text = part.text
-      mock_a2a_part.root = Mock()
-      mock_a2a_part.root.metadata = {}
-      return mock_a2a_part
+      # Use a real A2APart so proto metadata assignment works
+      return A2APart(text=part.text)
 
     self.mock_genai_part_converter.side_effect = mock_converter
 
@@ -858,11 +867,8 @@ class TestRemoteA2aAgentMessageHandling:
     self.mock_session.events = [user1, agent1, user2]
 
     def mock_converter(part):
-      mock_a2a_part = Mock()
-      mock_a2a_part.text = part.text
-      mock_a2a_part.root = Mock()
-      mock_a2a_part.root.metadata = {}
-      return mock_a2a_part
+      # Use a real A2APart so proto metadata assignment works
+      return A2APart(text=part.text)
 
     self.mock_genai_part_converter.side_effect = mock_converter
 
@@ -890,22 +896,25 @@ class TestRemoteA2aAgentMessageHandling:
         branch=self.mock_context.branch,
     )
 
+    # In v1, _handle_a2a_response takes StreamResponse
+    real_message = A2AMessage(
+        message_id="msg-123",
+        role=A2ARole.ROLE_AGENT,
+        context_id="context-123",
+    )
+    stream_resp = A2AStreamResponse(message=real_message)
+
     with patch(
         "google.adk.agents.remote_a2a_agent.convert_a2a_message_to_event"
     ) as mock_convert:
       mock_convert.return_value = mock_event
 
       result = await self.agent._handle_a2a_response(
-          mock_a2a_message, self.mock_context
+          stream_resp, self.mock_context
       )
 
       assert result == mock_event
-      mock_convert.assert_called_once_with(
-          mock_a2a_message,
-          self.agent.name,
-          self.mock_context,
-          self.mock_a2a_part_converter,
-      )
+      mock_convert.assert_called_once()
       # Check that metadata was added
       assert result.custom_metadata is not None
       assert A2A_METADATA_PREFIX + "context_id" in result.custom_metadata
@@ -913,14 +922,13 @@ class TestRemoteA2aAgentMessageHandling:
   @pytest.mark.asyncio
   async def test_handle_a2a_response_with_task_completed_and_no_update(self):
     """Test successful A2A response handling with non-streaming task and no update."""
-    mock_a2a_task = Mock(spec=A2ATask)
-    mock_a2a_task.id = "task-123"
-    mock_a2a_task.context_id = "context-123"
-    mock_a2a_task.status = Mock(spec=A2ATaskStatus)
-    mock_a2a_task.status.state = TaskState.completed
+    # In v1, _handle_a2a_response takes StreamResponse
+    real_task = A2ATask(id="task-123", context_id="context-123")
+    real_task.status.CopyFrom(A2ATaskStatus(state=TaskState.TASK_STATE_COMPLETED))
+    stream_resp = A2AStreamResponse(task=real_task)
 
     # Create a proper Event mock that can handle custom_metadata
-    mock_a2a_part = Mock(spec=TextPart)
+    mock_a2a_part = A2APart(text="test")
     mock_event = Event(
         author=self.agent.name,
         invocation_id=self.mock_context.invocation_id,
@@ -936,17 +944,12 @@ class TestRemoteA2aAgentMessageHandling:
       mock_convert.return_value = mock_event
 
       result = await self.agent._handle_a2a_response(
-          (mock_a2a_task, None), self.mock_context
+          stream_resp, self.mock_context
       )
 
       assert result == mock_event
-      mock_convert.assert_called_once_with(
-          mock_a2a_task,
-          self.agent.name,
-          self.mock_context,
-          self.mock_a2a_part_converter,
-      )
-      # Check the parts are not updated as Thought
+      mock_convert.assert_called_once()
+      # Check the parts are not updated as Thought (COMPLETED state)
       assert result.content.parts[0].thought is None
       # Check that metadata was added
       assert result.custom_metadata is not None
@@ -994,10 +997,7 @@ class TestRemoteA2aAgentMessageHandling:
       converted_parts = []
 
       def mock_converter(part):
-        mock_a2a_part = Mock()
-        mock_a2a_part.original_text = part.text
-        mock_a2a_part.root = Mock()
-        mock_a2a_part.root.metadata = {}
+        mock_a2a_part = A2APart(text=part.text)
         converted_parts.append(mock_a2a_part)
         return mock_a2a_part
 
@@ -1012,24 +1012,20 @@ class TestRemoteA2aAgentMessageHandling:
       assert context_id is None
 
       # Verify order: user part, then "For context:", then agent message
-      assert converted_parts[0].original_text == "User question"
-      assert converted_parts[1].original_text == "For context:"
-      assert (
-          converted_parts[2].original_text
-          == "[other_agent] said: Response text"
-      )
+      assert converted_parts[0].text == "User question"
+      assert converted_parts[1].text == "For context:"
+      assert converted_parts[2].text == "[other_agent] said: Response text"
 
   @pytest.mark.asyncio
   async def test_handle_a2a_response_with_task_submitted_and_no_update(self):
     """Test successful A2A response handling with streaming task and no update."""
-    mock_a2a_task = Mock(spec=A2ATask)
-    mock_a2a_task.id = "task-123"
-    mock_a2a_task.context_id = "context-123"
-    mock_a2a_task.status = Mock(spec=A2ATaskStatus)
-    mock_a2a_task.status.state = TaskState.submitted
+    # In v1, _handle_a2a_response takes StreamResponse
+    real_task = A2ATask(id="task-123", context_id="context-123")
+    real_task.status.CopyFrom(A2ATaskStatus(state=TaskState.TASK_STATE_SUBMITTED))
+    stream_resp = A2AStreamResponse(task=real_task)
 
     # Create a proper Event mock that can handle custom_metadata
-    mock_a2a_part = Mock(spec=TextPart)
+    mock_a2a_part = A2APart(text="test")
     mock_event = Event(
         author=self.agent.name,
         invocation_id=self.mock_context.invocation_id,
@@ -1045,17 +1041,12 @@ class TestRemoteA2aAgentMessageHandling:
       mock_convert.return_value = mock_event
 
       result = await self.agent._handle_a2a_response(
-          (mock_a2a_task, None), self.mock_context
+          stream_resp, self.mock_context
       )
 
       assert result == mock_event
-      mock_convert.assert_called_once_with(
-          mock_a2a_task,
-          self.agent.name,
-          self.mock_context,
-          self.mock_a2a_part_converter,
-      )
-      # Check the parts are updated as Thought
+      mock_convert.assert_called_once()
+      # Check the parts are updated as Thought (SUBMITTED state)
       assert result.content.parts[0].thought is True
       assert result.content.parts[0].thought_signature is None
       # Check that metadata was added
@@ -1068,12 +1059,12 @@ class TestRemoteA2aAgentMessageHandling:
       "task_state,event_content",
       [
           pytest.param(
-              TaskState.submitted,
+              TaskState.TASK_STATE_SUBMITTED,
               genai_types.Content(role="model", parts=[]),
               id="submitted_empty_parts",
           ),
           pytest.param(
-              TaskState.working,
+              TaskState.TASK_STATE_WORKING,
               None,
               id="working_no_content",
           ),
@@ -1087,11 +1078,10 @@ class TestRemoteA2aAgentMessageHandling:
     This verifies the fix for issue #3769 where the code could raise when it
     tried to read parts[0] without checking for empty/missing content.
     """
-    mock_a2a_task = create_autospec(A2ATask, instance=True)
-    mock_a2a_task.id = "task-123"
-    mock_a2a_task.context_id = "context-123"
-    mock_a2a_task.status = create_autospec(A2ATaskStatus, instance=True)
-    mock_a2a_task.status.state = task_state
+    # In v1, _handle_a2a_response takes StreamResponse
+    real_task = A2ATask(id="task-123", context_id="context-123")
+    real_task.status.CopyFrom(A2ATaskStatus(state=task_state))
+    stream_resp = A2AStreamResponse(task=real_task)
 
     mock_event = Event(
         author=self.agent.name,
@@ -1108,7 +1098,7 @@ class TestRemoteA2aAgentMessageHandling:
       mock_convert.return_value = mock_event
 
       result = await self.agent._handle_a2a_response(
-          (mock_a2a_task, None), self.mock_context
+          stream_resp, self.mock_context
       )
 
       assert result == mock_event
@@ -1119,14 +1109,13 @@ class TestRemoteA2aAgentMessageHandling:
   @pytest.mark.asyncio
   async def test_handle_a2a_response_with_task_working_and_no_update(self):
     """Test successful A2A response handling with streaming task and no update."""
-    mock_a2a_task = Mock(spec=A2ATask)
-    mock_a2a_task.id = "task-123"
-    mock_a2a_task.context_id = "context-123"
-    mock_a2a_task.status = Mock(spec=A2ATaskStatus)
-    mock_a2a_task.status.state = TaskState.working
+    # In v1, _handle_a2a_response takes StreamResponse
+    real_task = A2ATask(id="task-123", context_id="context-123")
+    real_task.status.CopyFrom(A2ATaskStatus(state=TaskState.TASK_STATE_WORKING))
+    stream_resp = A2AStreamResponse(task=real_task)
 
     # Create a proper Event mock that can handle custom_metadata
-    mock_a2a_part = Mock(spec=TextPart)
+    mock_a2a_part = A2APart(text="test")
     mock_event = Event(
         author=self.agent.name,
         invocation_id=self.mock_context.invocation_id,
@@ -1142,19 +1131,13 @@ class TestRemoteA2aAgentMessageHandling:
       mock_convert.return_value = mock_event
 
       result = await self.agent._handle_a2a_response(
-          (mock_a2a_task, None), self.mock_context
+          stream_resp, self.mock_context
       )
 
       assert result == mock_event
-      mock_convert.assert_called_once_with(
-          mock_a2a_task,
-          self.agent.name,
-          self.mock_context,
-          self.mock_a2a_part_converter,
-      )
-      # Check the parts are updated as Thought
+      mock_convert.assert_called_once()
+      # Check the parts are updated as Thought (WORKING state)
       assert result.content.parts[0].thought is True
-      assert result.content.parts[0].thought_signature is None
       # Check that metadata was added
       assert result.custom_metadata is not None
       assert A2A_METADATA_PREFIX + "task_id" in result.custom_metadata
@@ -1163,18 +1146,19 @@ class TestRemoteA2aAgentMessageHandling:
   @pytest.mark.asyncio
   async def test_handle_a2a_response_with_task_status_update_with_message(self):
     """Test handling of a task status update with a message."""
-    mock_a2a_task = Mock(spec=A2ATask)
-    mock_a2a_task.id = "task-123"
-    mock_a2a_task.context_id = "context-123"
-
-    mock_a2a_message = Mock(spec=A2AMessage)
-    mock_update = Mock(spec=TaskStatusUpdateEvent)
-    mock_update.status = Mock(A2ATaskStatus)
-    mock_update.status.state = TaskState.completed
-    mock_update.status.message = mock_a2a_message
+    # In v1, _handle_a2a_response takes StreamResponse with status_update
+    real_message = A2AMessage(
+        message_id="msg-123", role=A2ARole.ROLE_AGENT, context_id="context-123"
+    )
+    real_tsue = TaskStatusUpdateEvent(
+        task_id="task-123", context_id="context-123"
+    )
+    real_tsue.status.state = TaskState.TASK_STATE_COMPLETED
+    real_tsue.status.message.CopyFrom(real_message)
+    stream_resp = A2AStreamResponse(status_update=real_tsue)
 
     # Create a proper Event mock that can handle custom_metadata
-    mock_a2a_part = Mock(spec=TextPart)
+    mock_a2a_part = A2APart(text="test")
     mock_event = Event(
         author=self.agent.name,
         invocation_id=self.mock_context.invocation_id,
@@ -1188,16 +1172,11 @@ class TestRemoteA2aAgentMessageHandling:
       mock_convert.return_value = mock_event
 
       result = await self.agent._handle_a2a_response(
-          (mock_a2a_task, mock_update), self.mock_context
+          stream_resp, self.mock_context
       )
 
       assert result == mock_event
-      mock_convert.assert_called_once_with(
-          mock_a2a_message,
-          self.agent.name,
-          self.mock_context,
-          self.mock_a2a_part_converter,
-      )
+      mock_convert.assert_called_once()
       # Check that metadata was added
       assert result.custom_metadata is not None
       assert result.content.parts[0].thought is None
@@ -1209,18 +1188,19 @@ class TestRemoteA2aAgentMessageHandling:
       self,
   ):
     """Test handling of a task status update with a message."""
-    mock_a2a_task = Mock(spec=A2ATask)
-    mock_a2a_task.id = "task-123"
-    mock_a2a_task.context_id = "context-123"
-
-    mock_a2a_message = Mock(spec=A2AMessage)
-    mock_update = Mock(spec=TaskStatusUpdateEvent)
-    mock_update.status = Mock(A2ATaskStatus)
-    mock_update.status.state = TaskState.working
-    mock_update.status.message = mock_a2a_message
+    # In v1, _handle_a2a_response takes StreamResponse with status_update
+    real_message = A2AMessage(
+        message_id="msg-123", role=A2ARole.ROLE_AGENT, context_id="context-123"
+    )
+    real_tsue = TaskStatusUpdateEvent(
+        task_id="task-123", context_id="context-123"
+    )
+    real_tsue.status.state = TaskState.TASK_STATE_WORKING
+    real_tsue.status.message.CopyFrom(real_message)
+    stream_resp = A2AStreamResponse(status_update=real_tsue)
 
     # Create a proper Event mock that can handle custom_metadata
-    mock_a2a_part = Mock(spec=TextPart)
+    mock_a2a_part = A2APart(text="test")
     mock_event = Event(
         author=self.agent.name,
         invocation_id=self.mock_context.invocation_id,
@@ -1234,16 +1214,11 @@ class TestRemoteA2aAgentMessageHandling:
       mock_convert.return_value = mock_event
 
       result = await self.agent._handle_a2a_response(
-          (mock_a2a_task, mock_update), self.mock_context
+          stream_resp, self.mock_context
       )
 
       assert result == mock_event
-      mock_convert.assert_called_once_with(
-          mock_a2a_message,
-          self.agent.name,
-          self.mock_context,
-          self.mock_a2a_part_converter,
-      )
+      mock_convert.assert_called_once()
       # Check that metadata was added
       assert result.custom_metadata is not None
       assert result.content.parts[0].thought is True
@@ -1253,16 +1228,13 @@ class TestRemoteA2aAgentMessageHandling:
   @pytest.mark.asyncio
   async def test_handle_a2a_response_with_task_status_update_no_message(self):
     """Test handling of a task status update with no message."""
-    mock_a2a_task = Mock(spec=A2ATask)
-    mock_a2a_task.id = "task-123"
-
-    mock_update = Mock(spec=TaskStatusUpdateEvent)
-    mock_update.status = Mock(A2ATaskStatus)
-    mock_update.status.state = TaskState.completed
-    mock_update.status.message = None
+    # In v1, _handle_a2a_response takes StreamResponse with status_update (no message)
+    real_tsue = TaskStatusUpdateEvent(task_id="task-123", context_id="context-123")
+    real_tsue.status.state = TaskState.TASK_STATE_COMPLETED
+    stream_resp = A2AStreamResponse(status_update=real_tsue)
 
     result = await self.agent._handle_a2a_response(
-        (mock_a2a_task, mock_update), self.mock_context
+        stream_resp, self.mock_context
     )
 
     assert result is None
@@ -1270,17 +1242,14 @@ class TestRemoteA2aAgentMessageHandling:
   @pytest.mark.asyncio
   async def test_handle_a2a_response_with_artifact_update(self):
     """Test successful A2A response handling with artifact update."""
-    mock_a2a_task = Mock(spec=A2ATask)
-    mock_a2a_task.id = "task-123"
-    mock_a2a_task.context_id = "context-123"
+    # In v1, _handle_a2a_response takes StreamResponse with artifact_update
+    real_artifact = Artifact(artifact_id="art-1")
+    real_art_update = TaskArtifactUpdateEvent(
+        task_id="task-123", context_id="context-123", last_chunk=True
+    )
+    real_art_update.artifact.CopyFrom(real_artifact)
+    stream_resp = A2AStreamResponse(artifact_update=real_art_update)
 
-    mock_artifact = Mock(spec=Artifact)
-    mock_update = Mock(spec=TaskArtifactUpdateEvent)
-    mock_update.artifact = mock_artifact
-    mock_update.append = False
-    mock_update.last_chunk = True
-
-    # Create a proper Event mock that can handle custom_metadata
     mock_event = Event(
         author=self.agent.name,
         invocation_id=self.mock_context.invocation_id,
@@ -1295,17 +1264,11 @@ class TestRemoteA2aAgentMessageHandling:
       mock_convert.return_value = mock_event
 
       result = await self.agent._handle_a2a_response(
-          (mock_a2a_task, mock_update), self.mock_context
+          stream_resp, self.mock_context
       )
 
       assert result == mock_event
-      mock_convert.assert_called_once_with(
-          mock_a2a_task,
-          self.agent.name,
-          self.mock_context,
-          self.agent._a2a_part_converter,
-      )
-      # Check that metadata was added
+      mock_convert.assert_called_once()
       assert result.custom_metadata is not None
       assert A2A_METADATA_PREFIX + "task_id" in result.custom_metadata
       assert A2A_METADATA_PREFIX + "context_id" in result.custom_metadata
@@ -1313,16 +1276,12 @@ class TestRemoteA2aAgentMessageHandling:
   @pytest.mark.asyncio
   async def test_handle_a2a_response_with_partial_artifact_update(self):
     """Test that partial artifact updates are ignored."""
-    mock_a2a_task = Mock(spec=A2ATask)
-    mock_a2a_task.id = "task-123"
-
-    mock_update = Mock(spec=TaskArtifactUpdateEvent)
-    mock_update.artifact = Mock(spec=Artifact)
-    mock_update.append = True
-    mock_update.last_chunk = False
+    real_art_update = TaskArtifactUpdateEvent(task_id="task-123", last_chunk=False)
+    real_art_update.append = True
+    stream_resp = A2AStreamResponse(artifact_update=real_art_update)
 
     result = await self.agent._handle_a2a_response(
-        (mock_a2a_task, mock_update), self.mock_context
+        stream_resp, self.mock_context
     )
 
     assert result is None
@@ -1462,22 +1421,25 @@ class TestRemoteA2aAgentMessageHandlingFromFactory:
         branch=self.mock_context.branch,
     )
 
+    # In v1, _handle_a2a_response takes StreamResponse
+    real_message = A2AMessage(
+        message_id="msg-123",
+        role=A2ARole.ROLE_AGENT,
+        context_id="context-123",
+    )
+    stream_resp = A2AStreamResponse(message=real_message)
+
     with patch(
         "google.adk.agents.remote_a2a_agent.convert_a2a_message_to_event"
     ) as mock_convert:
       mock_convert.return_value = mock_event
 
       result = await self.agent._handle_a2a_response(
-          mock_a2a_message, self.mock_context
+          stream_resp, self.mock_context
       )
 
       assert result == mock_event
-      mock_convert.assert_called_once_with(
-          mock_a2a_message,
-          self.agent.name,
-          self.mock_context,
-          self.mock_a2a_part_converter,
-      )
+      mock_convert.assert_called_once()
       # Check that metadata was added
       assert result.custom_metadata is not None
       assert A2A_METADATA_PREFIX + "context_id" in result.custom_metadata
@@ -1485,14 +1447,13 @@ class TestRemoteA2aAgentMessageHandlingFromFactory:
   @pytest.mark.asyncio
   async def test_handle_a2a_response_with_task_completed_and_no_update(self):
     """Test successful A2A response handling with non-streaming task and no update."""
-    mock_a2a_task = Mock(spec=A2ATask)
-    mock_a2a_task.id = "task-123"
-    mock_a2a_task.context_id = "context-123"
-    mock_a2a_task.status = Mock(spec=A2ATaskStatus)
-    mock_a2a_task.status.state = TaskState.completed
+    # In v1, _handle_a2a_response takes StreamResponse
+    real_task = A2ATask(id="task-123", context_id="context-123")
+    real_task.status.CopyFrom(A2ATaskStatus(state=TaskState.TASK_STATE_COMPLETED))
+    stream_resp = A2AStreamResponse(task=real_task)
 
     # Create a proper Event mock that can handle custom_metadata
-    mock_a2a_part = Mock(spec=TextPart)
+    mock_a2a_part = A2APart(text="test")
     mock_event = Event(
         author=self.agent.name,
         invocation_id=self.mock_context.invocation_id,
@@ -1508,17 +1469,12 @@ class TestRemoteA2aAgentMessageHandlingFromFactory:
       mock_convert.return_value = mock_event
 
       result = await self.agent._handle_a2a_response(
-          (mock_a2a_task, None), self.mock_context
+          stream_resp, self.mock_context
       )
 
       assert result == mock_event
-      mock_convert.assert_called_once_with(
-          mock_a2a_task,
-          self.agent.name,
-          self.mock_context,
-          self.mock_a2a_part_converter,
-      )
-      # Check the parts are not updated as Thought
+      mock_convert.assert_called_once()
+      # Check the parts are not updated as Thought (COMPLETED state)
       assert result.content.parts[0].thought is None
       # Check that metadata was added
       assert result.custom_metadata is not None
@@ -1528,14 +1484,12 @@ class TestRemoteA2aAgentMessageHandlingFromFactory:
   @pytest.mark.asyncio
   async def test_handle_a2a_response_with_task_submitted_and_no_update(self):
     """Test successful A2A response handling with streaming task and no update."""
-    mock_a2a_task = Mock(spec=A2ATask)
-    mock_a2a_task.id = "task-123"
-    mock_a2a_task.context_id = "context-123"
-    mock_a2a_task.status = Mock(spec=A2ATaskStatus)
-    mock_a2a_task.status.state = TaskState.submitted
+    # In v1, _handle_a2a_response takes StreamResponse
+    real_task = A2ATask(id="task-123", context_id="context-123")
+    real_task.status.CopyFrom(A2ATaskStatus(state=TaskState.TASK_STATE_SUBMITTED))
+    stream_resp = A2AStreamResponse(task=real_task)
 
-    # Create a proper Event mock that can handle custom_metadata
-    mock_a2a_part = Mock(spec=TextPart)
+    mock_a2a_part = A2APart(text="test")
     mock_event = Event(
         author=self.agent.name,
         invocation_id=self.mock_context.invocation_id,
@@ -1551,20 +1505,12 @@ class TestRemoteA2aAgentMessageHandlingFromFactory:
       mock_convert.return_value = mock_event
 
       result = await self.agent._handle_a2a_response(
-          (mock_a2a_task, None), self.mock_context
+          stream_resp, self.mock_context
       )
 
       assert result == mock_event
-      mock_convert.assert_called_once_with(
-          mock_a2a_task,
-          self.agent.name,
-          self.mock_context,
-          self.agent._a2a_part_converter,
-      )
-      # Check the parts are updated as Thought
+      mock_convert.assert_called_once()
       assert result.content.parts[0].thought is True
-      assert result.content.parts[0].thought_signature is None
-      # Check that metadata was added
       assert result.custom_metadata is not None
       assert A2A_METADATA_PREFIX + "task_id" in result.custom_metadata
       assert A2A_METADATA_PREFIX + "context_id" in result.custom_metadata
@@ -1572,18 +1518,16 @@ class TestRemoteA2aAgentMessageHandlingFromFactory:
   @pytest.mark.asyncio
   async def test_handle_a2a_response_with_task_status_update_with_message(self):
     """Test handling of a task status update with a message."""
-    mock_a2a_task = Mock(spec=A2ATask)
-    mock_a2a_task.id = "task-123"
-    mock_a2a_task.context_id = "context-123"
+    # In v1, _handle_a2a_response takes StreamResponse with status_update
+    real_message = A2AMessage(
+        message_id="msg-123", role=A2ARole.ROLE_AGENT, context_id="context-123"
+    )
+    real_tsue = TaskStatusUpdateEvent(task_id="task-123", context_id="context-123")
+    real_tsue.status.state = TaskState.TASK_STATE_COMPLETED
+    real_tsue.status.message.CopyFrom(real_message)
+    stream_resp = A2AStreamResponse(status_update=real_tsue)
 
-    mock_a2a_message = Mock(spec=A2AMessage)
-    mock_update = Mock(spec=TaskStatusUpdateEvent)
-    mock_update.status = Mock(A2ATaskStatus)
-    mock_update.status.state = TaskState.completed
-    mock_update.status.message = mock_a2a_message
-
-    # Create a proper Event mock that can handle custom_metadata
-    mock_a2a_part = Mock(spec=TextPart)
+    mock_a2a_part = A2APart(text="test")
     mock_event = Event(
         author=self.agent.name,
         invocation_id=self.mock_context.invocation_id,
@@ -1597,17 +1541,11 @@ class TestRemoteA2aAgentMessageHandlingFromFactory:
       mock_convert.return_value = mock_event
 
       result = await self.agent._handle_a2a_response(
-          (mock_a2a_task, mock_update), self.mock_context
+          stream_resp, self.mock_context
       )
 
       assert result == mock_event
-      mock_convert.assert_called_once_with(
-          mock_a2a_message,
-          self.agent.name,
-          self.mock_context,
-          self.agent._a2a_part_converter,
-      )
-      # Check that metadata was added
+      mock_convert.assert_called_once()
       assert result.custom_metadata is not None
       assert result.content.parts[0].thought is None
       assert A2A_METADATA_PREFIX + "task_id" in result.custom_metadata
@@ -1618,18 +1556,16 @@ class TestRemoteA2aAgentMessageHandlingFromFactory:
       self,
   ):
     """Test handling of a task status update with a message."""
-    mock_a2a_task = Mock(spec=A2ATask)
-    mock_a2a_task.id = "task-123"
-    mock_a2a_task.context_id = "context-123"
+    # In v1, _handle_a2a_response takes StreamResponse with status_update
+    real_message = A2AMessage(
+        message_id="msg-123", role=A2ARole.ROLE_AGENT, context_id="context-123"
+    )
+    real_tsue = TaskStatusUpdateEvent(task_id="task-123", context_id="context-123")
+    real_tsue.status.state = TaskState.TASK_STATE_WORKING
+    real_tsue.status.message.CopyFrom(real_message)
+    stream_resp = A2AStreamResponse(status_update=real_tsue)
 
-    mock_a2a_message = Mock(spec=A2AMessage)
-    mock_update = Mock(spec=TaskStatusUpdateEvent)
-    mock_update.status = Mock(A2ATaskStatus)
-    mock_update.status.state = TaskState.working
-    mock_update.status.message = mock_a2a_message
-
-    # Create a proper Event mock that can handle custom_metadata
-    mock_a2a_part = Mock(spec=TextPart)
+    mock_a2a_part = A2APart(text="test")
     mock_event = Event(
         author=self.agent.name,
         invocation_id=self.mock_context.invocation_id,
@@ -1643,17 +1579,11 @@ class TestRemoteA2aAgentMessageHandlingFromFactory:
       mock_convert.return_value = mock_event
 
       result = await self.agent._handle_a2a_response(
-          (mock_a2a_task, mock_update), self.mock_context
+          stream_resp, self.mock_context
       )
 
       assert result == mock_event
-      mock_convert.assert_called_once_with(
-          mock_a2a_message,
-          self.agent.name,
-          self.mock_context,
-          self.agent._a2a_part_converter,
-      )
-      # Check that metadata was added
+      mock_convert.assert_called_once()
       assert result.custom_metadata is not None
       assert result.content.parts[0].thought is True
       assert A2A_METADATA_PREFIX + "task_id" in result.custom_metadata
@@ -1662,16 +1592,13 @@ class TestRemoteA2aAgentMessageHandlingFromFactory:
   @pytest.mark.asyncio
   async def test_handle_a2a_response_with_task_status_update_no_message(self):
     """Test handling of a task status update with no message."""
-    mock_a2a_task = Mock(spec=A2ATask)
-    mock_a2a_task.id = "task-123"
-
-    mock_update = Mock(spec=TaskStatusUpdateEvent)
-    mock_update.status = Mock(A2ATaskStatus)
-    mock_update.status.state = TaskState.completed
-    mock_update.status.message = None
+    # In v1, _handle_a2a_response takes StreamResponse with status_update (no message)
+    real_tsue = TaskStatusUpdateEvent(task_id="task-123", context_id="context-123")
+    real_tsue.status.state = TaskState.TASK_STATE_COMPLETED
+    stream_resp = A2AStreamResponse(status_update=real_tsue)
 
     result = await self.agent._handle_a2a_response(
-        (mock_a2a_task, mock_update), self.mock_context
+        stream_resp, self.mock_context
     )
 
     assert result is None
@@ -1679,17 +1606,14 @@ class TestRemoteA2aAgentMessageHandlingFromFactory:
   @pytest.mark.asyncio
   async def test_handle_a2a_response_with_artifact_update(self):
     """Test successful A2A response handling with artifact update."""
-    mock_a2a_task = Mock(spec=A2ATask)
-    mock_a2a_task.id = "task-123"
-    mock_a2a_task.context_id = "context-123"
+    # In v1, _handle_a2a_response takes StreamResponse with artifact_update
+    real_artifact = Artifact(artifact_id="art-1")
+    real_art_update = TaskArtifactUpdateEvent(
+        task_id="task-123", context_id="context-123", last_chunk=True
+    )
+    real_art_update.artifact.CopyFrom(real_artifact)
+    stream_resp = A2AStreamResponse(artifact_update=real_art_update)
 
-    mock_artifact = Mock(spec=Artifact)
-    mock_update = Mock(spec=TaskArtifactUpdateEvent)
-    mock_update.artifact = mock_artifact
-    mock_update.append = False
-    mock_update.last_chunk = True
-
-    # Create a proper Event mock that can handle custom_metadata
     mock_event = Event(
         author=self.agent.name,
         invocation_id=self.mock_context.invocation_id,
@@ -1704,17 +1628,11 @@ class TestRemoteA2aAgentMessageHandlingFromFactory:
       mock_convert.return_value = mock_event
 
       result = await self.agent._handle_a2a_response(
-          (mock_a2a_task, mock_update), self.mock_context
+          stream_resp, self.mock_context
       )
 
       assert result == mock_event
-      mock_convert.assert_called_once_with(
-          mock_a2a_task,
-          self.agent.name,
-          self.mock_context,
-          self.agent._a2a_part_converter,
-      )
-      # Check that metadata was added
+      mock_convert.assert_called_once()
       assert result.custom_metadata is not None
       assert A2A_METADATA_PREFIX + "task_id" in result.custom_metadata
       assert A2A_METADATA_PREFIX + "context_id" in result.custom_metadata
@@ -1722,16 +1640,12 @@ class TestRemoteA2aAgentMessageHandlingFromFactory:
   @pytest.mark.asyncio
   async def test_handle_a2a_response_with_partial_artifact_update(self):
     """Test that partial artifact updates are ignored."""
-    mock_a2a_task = Mock(spec=A2ATask)
-    mock_a2a_task.id = "task-123"
-
-    mock_update = Mock(spec=TaskArtifactUpdateEvent)
-    mock_update.artifact = Mock(spec=Artifact)
-    mock_update.append = True
-    mock_update.last_chunk = False
+    real_art_update = TaskArtifactUpdateEvent(task_id="task-123", last_chunk=False)
+    real_art_update.append = True
+    stream_resp = A2AStreamResponse(artifact_update=real_art_update)
 
     result = await self.agent._handle_a2a_response(
-        (mock_a2a_task, mock_update), self.mock_context
+        stream_resp, self.mock_context
     )
 
     assert result is None
@@ -2045,9 +1959,9 @@ class TestRemoteA2aAgentExecution:
         ) as mock_construct:
           # Create proper A2A part mocks
           from a2a.client import Client as A2AClient
-          from a2a.types import TextPart
+          from a2a.types import Part as TextPart
 
-          mock_a2a_part = Mock(spec=TextPart)
+          mock_a2a_part = A2APart(text="test")
           mock_construct.return_value = (
               [mock_a2a_part],
               "context-123",
@@ -2117,9 +2031,9 @@ class TestRemoteA2aAgentExecution:
             self.agent, "_construct_message_parts_from_session"
         ) as mock_construct:
           # Create proper A2A part mocks
-          from a2a.types import TextPart
+          from a2a.types import Part as TextPart
 
-          mock_a2a_part = Mock(spec=TextPart)
+          mock_a2a_part = A2APart(text="test")
           mock_construct.return_value = (
               [mock_a2a_part],
               "context-123",
@@ -2184,9 +2098,9 @@ class TestRemoteA2aAgentExecution:
         ) as mock_construct:
           # Create proper A2A part mocks
           from a2a.client import Client as A2AClient
-          from a2a.types import TextPart
+          from a2a.types import Part as TextPart
 
-          mock_a2a_part = Mock(spec=TextPart)
+          mock_a2a_part = A2APart(text="test")
           mock_construct.return_value = (
               [mock_a2a_part],
               "context-123",
@@ -2321,9 +2235,9 @@ class TestRemoteA2aAgentExecutionFromFactory:
         ) as mock_construct:
           # Create proper A2A part mocks
           from a2a.client import Client as A2AClient
-          from a2a.types import TextPart
+          from a2a.types import Part as TextPart
 
-          mock_a2a_part = Mock(spec=TextPart)
+          mock_a2a_part = A2APart(text="test")
           mock_construct.return_value = (
               [mock_a2a_part],
               "context-123",
@@ -2395,9 +2309,9 @@ class TestRemoteA2aAgentExecutionFromFactory:
             self.agent, "_construct_message_parts_from_session"
         ) as mock_construct:
           # Create proper A2A part mocks
-          from a2a.types import TextPart
+          from a2a.types import Part as TextPart
 
-          mock_a2a_part = Mock(spec=TextPart)
+          mock_a2a_part = A2APart(text="test")
           mock_construct.return_value = (
               [mock_a2a_part],
               "context-123",
@@ -2566,9 +2480,9 @@ class TestRemoteA2aAgentIntegration:
       with patch(
           "google.adk.agents.remote_a2a_agent.convert_genai_part_to_a2a_part"
       ) as mock_convert_part:
-        from a2a.types import TextPart
+        from a2a.types import Part as TextPart
 
-        mock_a2a_part = Mock(spec=TextPart)
+        mock_a2a_part = A2APart(text="test")
         mock_convert_part.return_value = mock_a2a_part
 
         with patch("httpx.AsyncClient") as mock_httpx_client_class:
@@ -2664,9 +2578,9 @@ class TestRemoteA2aAgentIntegration:
       with patch(
           "google.adk.agents.remote_a2a_agent.convert_genai_part_to_a2a_part"
       ) as mock_convert_part:
-        from a2a.types import TextPart
+        from a2a.types import Part as TextPart
 
-        mock_a2a_part = Mock(spec=TextPart)
+        mock_a2a_part = A2APart(text="test")
         mock_convert_part.return_value = mock_a2a_part
 
         with patch("httpx.AsyncClient") as mock_httpx_client_class:

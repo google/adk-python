@@ -27,7 +27,7 @@ class TaskResultAggregator:
   """Aggregates the task status updates and provides the final task state."""
 
   def __init__(self):
-    self._task_state = TaskState.working
+    self._task_state = TaskState.TASK_STATE_WORKING
     self._task_status_message = None
 
   def process_event(self, event: Event):
@@ -39,28 +39,44 @@ class TaskResultAggregator:
     - working
     """
     if isinstance(event, TaskStatusUpdateEvent):
-      if event.status.state == TaskState.failed:
-        self._task_state = TaskState.failed
-        self._task_status_message = event.status.message
+      if event.status.state == TaskState.TASK_STATE_FAILED:
+        self._task_state = TaskState.TASK_STATE_FAILED
+        self._task_status_message = (
+            event.status.message
+            if event.status.HasField('message')
+            else None
+        )
       elif (
-          event.status.state == TaskState.auth_required
-          and self._task_state != TaskState.failed
+          event.status.state == TaskState.TASK_STATE_AUTH_REQUIRED
+          and self._task_state != TaskState.TASK_STATE_FAILED
       ):
-        self._task_state = TaskState.auth_required
-        self._task_status_message = event.status.message
+        self._task_state = TaskState.TASK_STATE_AUTH_REQUIRED
+        self._task_status_message = (
+            event.status.message
+            if event.status.HasField('message')
+            else None
+        )
       elif (
-          event.status.state == TaskState.input_required
+          event.status.state == TaskState.TASK_STATE_INPUT_REQUIRED
           and self._task_state
-          not in (TaskState.failed, TaskState.auth_required)
+          not in (TaskState.TASK_STATE_FAILED, TaskState.TASK_STATE_AUTH_REQUIRED)
       ):
-        self._task_state = TaskState.input_required
-        self._task_status_message = event.status.message
+        self._task_state = TaskState.TASK_STATE_INPUT_REQUIRED
+        self._task_status_message = (
+            event.status.message
+            if event.status.HasField('message')
+            else None
+        )
       # final state is already recorded and make sure the intermediate state is
       # always working because other state may terminate the event aggregation
       # in a2a request handler
-      elif self._task_state == TaskState.working:
-        self._task_status_message = event.status.message
-      event.status.state = TaskState.working
+      elif self._task_state == TaskState.TASK_STATE_WORKING:
+        self._task_status_message = (
+            event.status.message
+            if event.status.HasField('message')
+            else None
+        )
+      event.status.state = TaskState.TASK_STATE_WORKING
 
   @property
   def task_state(self) -> TaskState:

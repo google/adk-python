@@ -20,7 +20,6 @@ from a2a.types import Role
 from a2a.types import TaskState
 from a2a.types import TaskStatus
 from a2a.types import TaskStatusUpdateEvent
-from a2a.types import TextPart
 from google.adk.a2a.executor.task_result_aggregator import TaskResultAggregator
 import pytest
 
@@ -29,8 +28,8 @@ def create_test_message(text: str):
   """Helper function to create a test Message object."""
   return Message(
       message_id="test-msg",
-      role=Role.agent,
-      parts=[Part(root=TextPart(text=text))],
+      role=Role.ROLE_AGENT,
+      parts=[Part(text=text)],
   )
 
 
@@ -43,7 +42,7 @@ class TestTaskResultAggregator:
 
   def test_initial_state(self):
     """Test the initial state of the aggregator."""
-    assert self.aggregator.task_state == TaskState.working
+    assert self.aggregator.task_state == TaskState.TASK_STATE_WORKING
     assert self.aggregator.task_status_message is None
 
   def test_process_failed_event(self):
@@ -52,15 +51,14 @@ class TestTaskResultAggregator:
     event = TaskStatusUpdateEvent(
         task_id="test-task",
         context_id="test-context",
-        status=TaskStatus(state=TaskState.failed, message=status_message),
-        final=True,
+        status=TaskStatus(state=TaskState.TASK_STATE_FAILED, message=status_message),
     )
 
     self.aggregator.process_event(event)
-    assert self.aggregator.task_state == TaskState.failed
+    assert self.aggregator.task_state == TaskState.TASK_STATE_FAILED
     assert self.aggregator.task_status_message == status_message
     # Verify the event state was modified to working
-    assert event.status.state == TaskState.working
+    assert event.status.state == TaskState.TASK_STATE_WORKING
 
   def test_process_auth_required_event(self):
     """Test processing an auth_required event."""
@@ -69,16 +67,15 @@ class TestTaskResultAggregator:
         task_id="test-task",
         context_id="test-context",
         status=TaskStatus(
-            state=TaskState.auth_required, message=status_message
+            state=TaskState.TASK_STATE_AUTH_REQUIRED, message=status_message
         ),
-        final=False,
     )
 
     self.aggregator.process_event(event)
-    assert self.aggregator.task_state == TaskState.auth_required
+    assert self.aggregator.task_state == TaskState.TASK_STATE_AUTH_REQUIRED
     assert self.aggregator.task_status_message == status_message
     # Verify the event state was modified to working
-    assert event.status.state == TaskState.working
+    assert event.status.state == TaskState.TASK_STATE_WORKING
 
   def test_process_input_required_event(self):
     """Test processing an input_required event."""
@@ -87,28 +84,26 @@ class TestTaskResultAggregator:
         task_id="test-task",
         context_id="test-context",
         status=TaskStatus(
-            state=TaskState.input_required, message=status_message
+            state=TaskState.TASK_STATE_INPUT_REQUIRED, message=status_message
         ),
-        final=False,
     )
 
     self.aggregator.process_event(event)
-    assert self.aggregator.task_state == TaskState.input_required
+    assert self.aggregator.task_state == TaskState.TASK_STATE_INPUT_REQUIRED
     assert self.aggregator.task_status_message == status_message
     # Verify the event state was modified to working
-    assert event.status.state == TaskState.working
+    assert event.status.state == TaskState.TASK_STATE_WORKING
 
   def test_status_message_with_none_message(self):
     """Test that status message handles None message properly."""
     event = TaskStatusUpdateEvent(
         task_id="test-task",
         context_id="test-context",
-        status=TaskStatus(state=TaskState.failed, message=None),
-        final=True,
+        status=TaskStatus(state=TaskState.TASK_STATE_FAILED, message=None),
     )
 
     self.aggregator.process_event(event)
-    assert self.aggregator.task_state == TaskState.failed
+    assert self.aggregator.task_state == TaskState.TASK_STATE_FAILED
     assert self.aggregator.task_status_message is None
 
   def test_priority_order_failed_over_auth(self):
@@ -118,11 +113,10 @@ class TestTaskResultAggregator:
     auth_event = TaskStatusUpdateEvent(
         task_id="test-task",
         context_id="test-context",
-        status=TaskStatus(state=TaskState.auth_required, message=auth_message),
-        final=False,
+        status=TaskStatus(state=TaskState.TASK_STATE_AUTH_REQUIRED, message=auth_message),
     )
     self.aggregator.process_event(auth_event)
-    assert self.aggregator.task_state == TaskState.auth_required
+    assert self.aggregator.task_state == TaskState.TASK_STATE_AUTH_REQUIRED
     assert self.aggregator.task_status_message == auth_message
 
     # Then process failed - should override
@@ -130,11 +124,10 @@ class TestTaskResultAggregator:
     failed_event = TaskStatusUpdateEvent(
         task_id="test-task",
         context_id="test-context",
-        status=TaskStatus(state=TaskState.failed, message=failed_message),
-        final=True,
+        status=TaskStatus(state=TaskState.TASK_STATE_FAILED, message=failed_message),
     )
     self.aggregator.process_event(failed_event)
-    assert self.aggregator.task_state == TaskState.failed
+    assert self.aggregator.task_state == TaskState.TASK_STATE_FAILED
     assert self.aggregator.task_status_message == failed_message
 
   def test_priority_order_auth_over_input(self):
@@ -145,12 +138,11 @@ class TestTaskResultAggregator:
         task_id="test-task",
         context_id="test-context",
         status=TaskStatus(
-            state=TaskState.input_required, message=input_message
+            state=TaskState.TASK_STATE_INPUT_REQUIRED, message=input_message
         ),
-        final=False,
     )
     self.aggregator.process_event(input_event)
-    assert self.aggregator.task_state == TaskState.input_required
+    assert self.aggregator.task_state == TaskState.TASK_STATE_INPUT_REQUIRED
     assert self.aggregator.task_status_message == input_message
 
     # Then process auth_required - should override
@@ -158,11 +150,10 @@ class TestTaskResultAggregator:
     auth_event = TaskStatusUpdateEvent(
         task_id="test-task",
         context_id="test-context",
-        status=TaskStatus(state=TaskState.auth_required, message=auth_message),
-        final=False,
+        status=TaskStatus(state=TaskState.TASK_STATE_AUTH_REQUIRED, message=auth_message),
     )
     self.aggregator.process_event(auth_event)
-    assert self.aggregator.task_state == TaskState.auth_required
+    assert self.aggregator.task_state == TaskState.TASK_STATE_AUTH_REQUIRED
     assert self.aggregator.task_status_message == auth_message
 
   def test_ignore_non_status_update_events(self):
@@ -184,11 +175,10 @@ class TestTaskResultAggregator:
     failed_event = TaskStatusUpdateEvent(
         task_id="test-task",
         context_id="test-context",
-        status=TaskStatus(state=TaskState.failed, message=failed_message),
-        final=True,
+        status=TaskStatus(state=TaskState.TASK_STATE_FAILED, message=failed_message),
     )
     self.aggregator.process_event(failed_event)
-    assert self.aggregator.task_state == TaskState.failed
+    assert self.aggregator.task_state == TaskState.TASK_STATE_FAILED
     assert self.aggregator.task_status_message == failed_message
 
     # Then process working - should not override state and should not update message
@@ -196,11 +186,10 @@ class TestTaskResultAggregator:
     working_event = TaskStatusUpdateEvent(
         task_id="test-task",
         context_id="test-context",
-        status=TaskStatus(state=TaskState.working),
-        final=False,
+        status=TaskStatus(state=TaskState.TASK_STATE_WORKING),
     )
     self.aggregator.process_event(working_event)
-    assert self.aggregator.task_state == TaskState.failed
+    assert self.aggregator.task_state == TaskState.TASK_STATE_FAILED
     # Working events don't update the status message when task state is not working
     assert self.aggregator.task_status_message == failed_message
 
@@ -212,9 +201,8 @@ class TestTaskResultAggregator:
         task_id="test-task",
         context_id="test-context",
         status=TaskStatus(
-            state=TaskState.input_required, message=input_message
+            state=TaskState.TASK_STATE_INPUT_REQUIRED, message=input_message
         ),
-        final=False,
     )
     self.aggregator.process_event(input_event)
     assert self.aggregator.task_status_message == input_message
@@ -224,8 +212,7 @@ class TestTaskResultAggregator:
     auth_event = TaskStatusUpdateEvent(
         task_id="test-task",
         context_id="test-context",
-        status=TaskStatus(state=TaskState.auth_required, message=auth_message),
-        final=False,
+        status=TaskStatus(state=TaskState.TASK_STATE_AUTH_REQUIRED, message=auth_message),
     )
     self.aggregator.process_event(auth_event)
     assert self.aggregator.task_status_message == auth_message
@@ -235,8 +222,7 @@ class TestTaskResultAggregator:
     failed_event = TaskStatusUpdateEvent(
         task_id="test-task",
         context_id="test-context",
-        status=TaskStatus(state=TaskState.failed, message=failed_message),
-        final=True,
+        status=TaskStatus(state=TaskState.TASK_STATE_FAILED, message=failed_message),
     )
     self.aggregator.process_event(failed_event)
     assert self.aggregator.task_status_message == failed_message
@@ -246,13 +232,12 @@ class TestTaskResultAggregator:
     working_event = TaskStatusUpdateEvent(
         task_id="test-task",
         context_id="test-context",
-        status=TaskStatus(state=TaskState.working, message=working_message),
-        final=False,
+        status=TaskStatus(state=TaskState.TASK_STATE_WORKING, message=working_message),
     )
     self.aggregator.process_event(working_event)
     # State should still be failed, and message should remain the failed message
     # because working events only update message when task state is working
-    assert self.aggregator.task_state == TaskState.failed
+    assert self.aggregator.task_state == TaskState.TASK_STATE_FAILED
     assert self.aggregator.task_status_message == failed_message
 
   def test_process_working_event_updates_message(self):
@@ -261,27 +246,25 @@ class TestTaskResultAggregator:
     event = TaskStatusUpdateEvent(
         task_id="test-task",
         context_id="test-context",
-        status=TaskStatus(state=TaskState.working, message=working_message),
-        final=False,
+        status=TaskStatus(state=TaskState.TASK_STATE_WORKING, message=working_message),
     )
 
     self.aggregator.process_event(event)
-    assert self.aggregator.task_state == TaskState.working
+    assert self.aggregator.task_state == TaskState.TASK_STATE_WORKING
     assert self.aggregator.task_status_message == working_message
     # Verify the event state was modified to working (should remain working)
-    assert event.status.state == TaskState.working
+    assert event.status.state == TaskState.TASK_STATE_WORKING
 
   def test_working_event_with_none_message(self):
     """Test that working state events handle None message properly."""
     event = TaskStatusUpdateEvent(
         task_id="test-task",
         context_id="test-context",
-        status=TaskStatus(state=TaskState.working, message=None),
-        final=False,
+        status=TaskStatus(state=TaskState.TASK_STATE_WORKING, message=None),
     )
 
     self.aggregator.process_event(event)
-    assert self.aggregator.task_state == TaskState.working
+    assert self.aggregator.task_state == TaskState.TASK_STATE_WORKING
     assert self.aggregator.task_status_message is None
 
   def test_working_event_updates_message_regardless_of_state(self):
@@ -291,11 +274,10 @@ class TestTaskResultAggregator:
     auth_event = TaskStatusUpdateEvent(
         task_id="test-task",
         context_id="test-context",
-        status=TaskStatus(state=TaskState.auth_required, message=auth_message),
-        final=False,
+        status=TaskStatus(state=TaskState.TASK_STATE_AUTH_REQUIRED, message=auth_message),
     )
     self.aggregator.process_event(auth_event)
-    assert self.aggregator.task_state == TaskState.auth_required
+    assert self.aggregator.task_state == TaskState.TASK_STATE_AUTH_REQUIRED
     assert self.aggregator.task_status_message == auth_message
 
     # Then process working - should not update message because task state is not working
@@ -303,12 +285,11 @@ class TestTaskResultAggregator:
     working_event = TaskStatusUpdateEvent(
         task_id="test-task",
         context_id="test-context",
-        status=TaskStatus(state=TaskState.working, message=working_message),
-        final=False,
+        status=TaskStatus(state=TaskState.TASK_STATE_WORKING, message=working_message),
     )
     self.aggregator.process_event(working_event)
     assert (
-        self.aggregator.task_state == TaskState.auth_required
+        self.aggregator.task_state == TaskState.TASK_STATE_AUTH_REQUIRED
     )  # State unchanged
     assert (
         self.aggregator.task_status_message == auth_message

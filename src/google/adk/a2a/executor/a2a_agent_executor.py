@@ -27,12 +27,13 @@ from a2a.server.agent_execution.context import RequestContext
 from a2a.server.events.event_queue import EventQueue
 from a2a.types import Artifact
 from a2a.types import Message
+from a2a.types import Part
 from a2a.types import Role
+from a2a.types import Task
 from a2a.types import TaskArtifactUpdateEvent
 from a2a.types import TaskState
 from a2a.types import TaskStatus
 from a2a.types import TaskStatusUpdateEvent
-from a2a.types import TextPart
 from google.adk.platform import time as platform_time
 from google.adk.platform import uuid as platform_uuid
 from google.adk.runners import Runner
@@ -154,20 +155,26 @@ class A2aAgentExecutor(AgentExecutor):
 
     # for new task, create a task submitted event
     if not context.current_task:
-      await event_queue.enqueue_event(
-          TaskStatusUpdateEvent(
-              task_id=context.task_id,
-              status=TaskStatus(
-                  state=TaskState.submitted,
-                  message=context.message,
-                  timestamp=datetime.fromtimestamp(
-                      platform_time.get_time(), tz=timezone.utc
-                  ).isoformat(),
-              ),
-              context_id=context.context_id,
-              final=False,
-          )
+      submitted_status = TaskStatus(state=TaskState.TASK_STATE_SUBMITTED)
+      submitted_status.timestamp.FromDatetime(
+          datetime.fromtimestamp(platform_time.get_time(), tz=timezone.utc)
       )
+
+      # v1: enqueue a Task first so the SDK event consumer doesn't raise
+      # "Agent should enqueue Task before TaskStatusUpdateEvent"
+      initial_task = Task(
+          id=context.task_id,
+          context_id=context.context_id,
+      )
+      initial_task.status.CopyFrom(submitted_status)
+      await event_queue.enqueue_event(initial_task)
+
+      submitted_tsue = TaskStatusUpdateEvent(
+          task_id=context.task_id,
+          context_id=context.context_id,
+      )
+      submitted_tsue.status.CopyFrom(submitted_status)
+      await event_queue.enqueue_event(submitted_tsue)
 
     # Handle the request and publish updates to the event queue
     try:
@@ -176,24 +183,24 @@ class A2aAgentExecutor(AgentExecutor):
       logger.error('Error handling A2A request: %s', e, exc_info=True)
       # Publish failure event
       try:
-        await event_queue.enqueue_event(
-            TaskStatusUpdateEvent(
-                task_id=context.task_id,
-                status=TaskStatus(
-                    state=TaskState.failed,
-                    timestamp=datetime.fromtimestamp(
-                        platform_time.get_time(), tz=timezone.utc
-                    ).isoformat(),
-                    message=Message(
-                        message_id=platform_uuid.new_uuid(),
-                        role=Role.agent,
-                        parts=[TextPart(text=str(e))],
-                    ),
-                ),
-                context_id=context.context_id,
-                final=True,
-            )
+        fail_msg = Message(
+            message_id=platform_uuid.new_uuid(),
+            role=Role.ROLE_AGENT,
+            parts=[Part(text=str(e))],
         )
+        fail_status = TaskStatus(
+            state=TaskState.TASK_STATE_FAILED,
+            message=fail_msg,
+        )
+        fail_status.timestamp.FromDatetime(
+            datetime.fromtimestamp(platform_time.get_time(), tz=timezone.utc)
+        )
+        fail_tsue = TaskStatusUpdateEvent(
+            task_id=context.task_id,
+            context_id=context.context_id,
+        )
+        fail_tsue.status.CopyFrom(fail_status)
+        await event_queue.enqueue_event(fail_tsue)
       except Exception as enqueue_error:
         logger.error(
             'Failed to publish failure event: %s', enqueue_error, exc_info=True
@@ -231,24 +238,21 @@ class A2aAgentExecutor(AgentExecutor):
     )
 
     # publish the task working event
-    await event_queue.enqueue_event(
-        TaskStatusUpdateEvent(
-            task_id=context.task_id,
-            status=TaskStatus(
-                state=TaskState.working,
-                timestamp=datetime.fromtimestamp(
-                    platform_time.get_time(), tz=timezone.utc
-                ).isoformat(),
-            ),
-            context_id=context.context_id,
-            final=False,
-            metadata={
-                _get_adk_metadata_key('app_name'): runner.app_name,
-                _get_adk_metadata_key('user_id'): run_request.user_id,
-                _get_adk_metadata_key('session_id'): run_request.session_id,
-            },
-        )
+    working_status = TaskStatus(state=TaskState.TASK_STATE_WORKING)
+    working_status.timestamp.FromDatetime(
+        datetime.fromtimestamp(platform_time.get_time(), tz=timezone.utc)
     )
+    working_tsue = TaskStatusUpdateEvent(
+        task_id=context.task_id,
+        context_id=context.context_id,
+    )
+    working_tsue.status.CopyFrom(working_status)
+    working_tsue.metadata.update({
+        _get_adk_metadata_key('app_name'): runner.app_name,
+        _get_adk_metadata_key('user_id'): run_request.user_id,
+        _get_adk_metadata_key('session_id'): run_request.session_id,
+    })
+    await event_queue.enqueue_event(working_tsue)
 
     task_result_aggregator = TaskResultAggregator()
     async with Aclosing(runner.run_async(**vars(run_request))) as agen:
@@ -272,7 +276,7 @@ class A2aAgentExecutor(AgentExecutor):
 
     # publish the task result event - this is final
     if (
-        task_result_aggregator.task_state == TaskState.working
+        task_result_aggregator.task_state == TaskState.TASK_STATE_WORKING
         and task_result_aggregator.task_status_message is not None
         and task_result_aggregator.task_status_message.parts
     ):
@@ -285,35 +289,33 @@ class A2aAgentExecutor(AgentExecutor):
               context_id=context.context_id,
               artifact=Artifact(
                   artifact_id=platform_uuid.new_uuid(),
-                  parts=task_result_aggregator.task_status_message.parts,
+                  parts=list(task_result_aggregator.task_status_message.parts),
               ),
           )
       )
-      # public the final status update event
+      # publish the final status update event
+      completed_status = TaskStatus(state=TaskState.TASK_STATE_COMPLETED)
+      completed_status.timestamp.FromDatetime(
+          datetime.fromtimestamp(platform_time.get_time(), tz=timezone.utc)
+      )
       final_event = TaskStatusUpdateEvent(
           task_id=context.task_id,
-          status=TaskStatus(
-              state=TaskState.completed,
-              timestamp=datetime.fromtimestamp(
-                  platform_time.get_time(), tz=timezone.utc
-              ).isoformat(),
-          ),
           context_id=context.context_id,
-          final=True,
       )
+      final_event.status.CopyFrom(completed_status)
     else:
+      final_status = TaskStatus(
+          state=task_result_aggregator.task_state,
+          message=task_result_aggregator.task_status_message,
+      )
+      final_status.timestamp.FromDatetime(
+          datetime.fromtimestamp(platform_time.get_time(), tz=timezone.utc)
+      )
       final_event = TaskStatusUpdateEvent(
           task_id=context.task_id,
-          status=TaskStatus(
-              state=task_result_aggregator.task_state,
-              timestamp=datetime.fromtimestamp(
-                  platform_time.get_time(), tz=timezone.utc
-              ).isoformat(),
-              message=task_result_aggregator.task_status_message,
-          ),
           context_id=context.context_id,
-          final=True,
       )
+      final_event.status.CopyFrom(final_status)
 
     final_event = await execute_after_agent_interceptors(
         executor_context,

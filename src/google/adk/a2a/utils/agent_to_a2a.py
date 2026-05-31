@@ -19,14 +19,17 @@ import logging
 from typing import AsyncIterator
 from typing import Callable
 
-from a2a.server.apps import A2AStarletteApplication
 from a2a.server.request_handlers import DefaultRequestHandler
+from a2a.server.routes import create_agent_card_routes
+from a2a.server.routes import create_jsonrpc_routes
+from a2a.server.routes import create_rest_routes
 from a2a.server.tasks import InMemoryPushNotificationConfigStore
 from a2a.server.tasks import InMemoryTaskStore
 from a2a.server.tasks import PushNotificationConfigStore
 from a2a.server.tasks import TaskStore
 from a2a.types import AgentCard
 from starlette.applications import Starlette
+from starlette.routing import Route
 
 from ...agents.base_agent import BaseAgent
 from ...artifacts.in_memory_artifact_service import InMemoryArtifactService
@@ -66,7 +69,10 @@ def _load_agent_card(
       path = Path(agent_card)
       with path.open("r", encoding="utf-8") as f:
         agent_card_data = json.load(f)
-        return AgentCard(**agent_card_data)
+        from google.protobuf import json_format
+        card = AgentCard()
+        json_format.ParseDict(agent_card_data, card)
+        return card
     except Exception as e:
       raise ValueError(
           f"Failed to load agent card from {agent_card}: {e}"
@@ -172,22 +178,9 @@ def to_a2a(
   if task_store is None:
     task_store = InMemoryTaskStore()
 
-  agent_executor = (
-      agent_executor_factory(runner or create_runner())
-      if agent_executor_factory is not None
-      else A2aAgentExecutor(runner=runner or create_runner)
-  )
-
   if push_config_store is None:
     push_config_store = InMemoryPushNotificationConfigStore()
 
-  request_handler = DefaultRequestHandler(
-      agent_executor=agent_executor,
-      task_store=task_store,
-      push_config_store=push_config_store,
-  )
-
-  # Use provided agent card or build one from the agent
   rpc_url = f"{protocol}://{host}:{port}/"
   provided_agent_card = _load_agent_card(agent_card)
 
@@ -195,6 +188,8 @@ def to_a2a(
       agent=agent,
       rpc_url=rpc_url,
   )
+
+  resolved_runner = runner or create_runner
 
   # Build the agent card and configure A2A routes
   async def setup_a2a(app: Starlette):
@@ -204,16 +199,29 @@ def to_a2a(
     else:
       final_agent_card = await card_builder.build()
 
-    # Create the A2A Starlette application
-    a2a_app = A2AStarletteApplication(
-        agent_card=final_agent_card,
-        http_handler=request_handler,
+    # Create the agent executor (runner may be a callable factory)
+    agent_executor = (
+        agent_executor_factory(resolved_runner)
+        if agent_executor_factory is not None
+        else A2aAgentExecutor(runner=resolved_runner)
     )
 
-    # Add A2A routes to the main app
-    a2a_app.add_routes_to_app(
-        app,
+    # DefaultRequestHandler now requires agent_card
+    request_handler = DefaultRequestHandler(
+        agent_executor=agent_executor,
+        task_store=task_store,
+        agent_card=final_agent_card,
+        push_config_store=push_config_store,
     )
+
+    # Build routes and add them to the app
+    routes = (
+        create_agent_card_routes(final_agent_card)
+        + create_jsonrpc_routes(request_handler, rpc_url='/')
+        + create_rest_routes(request_handler)
+    )
+    for route in routes:
+      app.routes.append(route)
 
   # Compose a lifespan that runs A2A setup and the user's lifespan
   @asynccontextmanager

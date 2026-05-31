@@ -151,10 +151,11 @@ class TestAgentCardBuilder:
     mock_agent.name = "test_agent"
     mock_agent.description = "Test agent description"
 
-    mock_primary_skill = Mock(spec=AgentSkill)
-    mock_sub_skill = Mock(spec=AgentSkill)
-    mock_build_primary_skills.return_value = [mock_primary_skill]
-    mock_build_sub_skills.return_value = [mock_sub_skill]
+    # Use real AgentSkill proto objects (proto rejects Mock objects)
+    primary_skill = AgentSkill(id="skill1", name="Primary Skill", description="desc")
+    sub_skill = AgentSkill(id="skill2", name="Sub Skill", description="desc")
+    mock_build_primary_skills.return_value = [primary_skill]
+    mock_build_sub_skills.return_value = [sub_skill]
 
     builder = AgentCardBuilder(agent=mock_agent)
 
@@ -165,15 +166,19 @@ class TestAgentCardBuilder:
     assert isinstance(result, AgentCard)
     assert result.name == "test_agent"
     assert result.description == "Test agent description"
-    assert result.documentation_url is None
-    assert result.url == "http://localhost:80/a2a"
+    # documentation_url is '' (empty string) when not set (proto default)
+    assert result.documentation_url == ""
+    # URL is now in supported_interfaces
+    assert len(result.supported_interfaces) == 1
+    assert result.supported_interfaces[0].url == "http://localhost:80/a2a"
     assert result.version == "0.0.1"
-    assert result.skills == [mock_primary_skill, mock_sub_skill]
-    assert result.default_input_modes == ["text/plain"]
-    assert result.default_output_modes == ["text/plain"]
-    assert result.supports_authenticated_extended_card is False
-    assert result.provider is None
-    assert result.security_schemes is None
+    assert len(result.skills) == 2
+    assert result.skills[0] == primary_skill
+    assert result.skills[1] == sub_skill
+    assert list(result.default_input_modes) == ["text/plain"]
+    assert list(result.default_output_modes) == ["text/plain"]
+    # proto: HasField('provider') is False when not set
+    assert not result.HasField("provider")
 
   @patch("google.adk.a2a.utils.agent_card_builder._build_primary_skills")
   @patch("google.adk.a2a.utils.agent_card_builder._build_sub_agent_skills")
@@ -186,21 +191,21 @@ class TestAgentCardBuilder:
     mock_agent.name = "test_agent"
     mock_agent.description = None  # Should use default description
 
-    mock_primary_skill = Mock(spec=AgentSkill)
-    mock_sub_skill = Mock(spec=AgentSkill)
-    mock_build_primary_skills.return_value = [mock_primary_skill]
-    mock_build_sub_skills.return_value = [mock_sub_skill]
+    # Use real AgentSkill proto objects
+    primary_skill = AgentSkill(id="skill1", name="Primary Skill", description="desc")
+    sub_skill = AgentSkill(id="skill2", name="Sub Skill", description="desc")
+    mock_build_primary_skills.return_value = [primary_skill]
+    mock_build_sub_skills.return_value = [sub_skill]
 
-    mock_provider = Mock(spec=AgentProvider)
-    mock_security_schemes = {"test": Mock(spec=SecurityScheme)}
+    from a2a.types import AgentProvider as A2AAgentProvider
+    real_provider = A2AAgentProvider(organization="Test Org", url="https://example.com")
 
     builder = AgentCardBuilder(
         agent=mock_agent,
         rpc_url="https://example.com/a2a/",
         doc_url="https://docs.example.com",
-        provider=mock_provider,
+        provider=real_provider,
         agent_version="2.0.0",
-        security_schemes=mock_security_schemes,
     )
 
     # Act
@@ -209,15 +214,13 @@ class TestAgentCardBuilder:
     # Assert
     assert result.name == "test_agent"
     assert result.description == "An ADK Agent"  # Default description
-    # The source code uses doc_url parameter but AgentCard expects documentation_url
-    # Since the source code doesn't map doc_url to documentation_url, it will be None
-    assert result.documentation_url is None
-    assert (
-        result.url == "https://example.com/a2a"
-    )  # Should strip trailing slash
+    # doc_url is mapped to documentation_url
+    assert result.documentation_url == "https://docs.example.com"
+    # URL is in supported_interfaces, stripped of trailing slash
+    assert len(result.supported_interfaces) == 1
+    assert result.supported_interfaces[0].url == "https://example.com/a2a"
     assert result.version == "2.0.0"
-    assert result.provider == mock_provider
-    assert result.security_schemes == mock_security_schemes
+    assert result.provider == real_provider
 
   @patch("google.adk.a2a.utils.agent_card_builder._build_primary_skills")
   @patch("google.adk.a2a.utils.agent_card_builder._build_sub_agent_skills")

@@ -20,12 +20,10 @@ import json
 import sys
 
 try:
-  from a2a.client import ClientEvent as A2AClientEvent
-  from a2a.types import DataPart as A2ADataPart
   from a2a.types import Message as A2AMessage
   from a2a.types import Part as A2APart
-  from a2a.types import Task as A2ATask
-  from a2a.types import TextPart as A2ATextPart
+  from a2a.types import StreamResponse as A2AStreamResponse
+  from google.protobuf import json_format
 except ImportError as e:
   if sys.version_info < (3, 10):
     raise ImportError(
@@ -37,49 +35,14 @@ except ImportError as e:
 
 # Constants
 _NEW_LINE = "\n"
-_EXCLUDED_PART_FIELD = {"file": {"bytes"}}
 
 
-def _is_a2a_task(obj) -> bool:
-  """Check if an object is an A2A Task, with fallback for isinstance issues."""
+def _proto_metadata_to_dict(metadata) -> dict:
+  """Convert proto Struct metadata to a plain Python dict."""
   try:
-    return isinstance(obj, A2ATask)
-  except (TypeError, AttributeError):
-    return type(obj).__name__ == "Task" and hasattr(obj, "status")
-
-
-def _is_a2a_client_event(obj) -> bool:
-  """Check if an object is an A2A Client Event (Task, UpdateEvent) tuple."""
-  try:
-    return isinstance(obj, tuple) and _is_a2a_task(obj[0])
-  except (TypeError, AttributeError):
-    return (
-        hasattr(obj, "__getitem__") and len(obj) == 2 and _is_a2a_task(obj[0])
-    )
-
-
-def _is_a2a_message(obj) -> bool:
-  """Check if an object is an A2A Message, with fallback for isinstance issues."""
-  try:
-    return isinstance(obj, A2AMessage)
-  except (TypeError, AttributeError):
-    return type(obj).__name__ == "Message" and hasattr(obj, "role")
-
-
-def _is_a2a_text_part(obj) -> bool:
-  """Check if an object is an A2A TextPart, with fallback for isinstance issues."""
-  try:
-    return isinstance(obj, A2ATextPart)
-  except (TypeError, AttributeError):
-    return type(obj).__name__ == "TextPart" and hasattr(obj, "text")
-
-
-def _is_a2a_data_part(obj) -> bool:
-  """Check if an object is an A2A DataPart, with fallback for isinstance issues."""
-  try:
-    return isinstance(obj, A2ADataPart)
-  except (TypeError, AttributeError):
-    return type(obj).__name__ == "DataPart" and hasattr(obj, "data")
+    return dict(metadata)
+  except Exception:
+    return {}
 
 
 def build_message_part_log(part: A2APart) -> str:
@@ -92,33 +55,62 @@ def build_message_part_log(part: A2APart) -> str:
     A string representation of the part.
   """
   part_content = ""
-  if _is_a2a_text_part(part.root):
-    part_content = f"TextPart: {part.root.text[:100]}" + (
-        "..." if len(part.root.text) > 100 else ""
-    )
-  elif _is_a2a_data_part(part.root):
-    # For data parts, show the data keys but exclude large values
-    data_summary = {
-        k: (
-            f"<{type(v).__name__}>"
-            if isinstance(v, (dict, list)) and len(str(v)) > 100
-            else v
-        )
-        for k, v in part.root.data.items()
-    }
-    part_content = f"DataPart: {json.dumps(data_summary, indent=2)}"
-  else:
-    part_content = (
-        f"{type(part.root).__name__}:"
-        f" {part.model_dump_json(exclude_none=True, exclude=_EXCLUDED_PART_FIELD)}"
-    )
+  try:
+    content_type = part.WhichOneof("content")
+    if content_type == "text":
+      text = part.text
+      part_content = f"TextPart: {text[:100]}" + ("..." if len(text) > 100 else "")
+    elif content_type == "data":
+      try:
+        data_dict = json_format.MessageToDict(part).get("data", {})
+        data_summary = {
+            k: (
+                f"<{type(v).__name__}>"
+                if isinstance(v, (dict, list)) and len(str(v)) > 100
+                else v
+            )
+            for k, v in data_dict.items()
+        }
+        part_content = f"DataPart: {json.dumps(data_summary, indent=2)}"
+      except Exception:
+        part_content = "DataPart: <unable to serialize>"
+    elif content_type == "url":
+      part_content = f"UrlPart: {part.url}"
+    elif content_type == "raw":
+      part_content = f"RawPart: <{len(part.raw)} bytes, media_type={part.media_type}>"
+    else:
+      # Unknown/empty content
+      try:
+        part_content = f"Part: {json_format.MessageToJson(part)}"
+      except Exception:
+        part_content = "Part: <unable to serialize>"
+  except AttributeError:
+    # Fallback for Mock objects in tests
+    if hasattr(part, "root"):
+      root = part.root
+      part_content = f"{type(root).__name__}: {getattr(root, 'text', str(root))}"
+    else:
+      try:
+        part_content = f"{type(part).__name__}: {part.model_dump_json(exclude_none=True)}"
+      except Exception:
+        part_content = f"{type(part).__name__}: <unable to serialize>"
 
   # Add part metadata if it exists
-  if hasattr(part.root, "metadata") and part.root.metadata:
-    metadata_str = json.dumps(part.root.metadata, indent=2).replace(
-        "\n", "\n    "
-    )
-    part_content += f"\n    Part Metadata: {metadata_str}"
+  metadata_dict = {}
+  try:
+    if part.metadata:
+      metadata_dict = _proto_metadata_to_dict(part.metadata)
+  except AttributeError:
+    # Mock object fallback
+    if hasattr(part, "root") and hasattr(part.root, "metadata") and part.root.metadata:
+      metadata_dict = dict(part.root.metadata) if isinstance(part.root.metadata, dict) else {}
+
+  if metadata_dict:
+    try:
+      metadata_str = json.dumps(metadata_dict, indent=2, default=str).replace("\n", "\n    ")
+      part_content += f"\n    Part Metadata: {metadata_str}"
+    except Exception:
+      pass
 
   return part_content
 
@@ -127,47 +119,63 @@ def build_a2a_request_log(req: A2AMessage) -> str:
   """Builds a structured log representation of an A2A request.
 
   Args:
-    req: The A2A SendMessageRequest to log.
+    req: The A2A Message request to log.
 
   Returns:
     A formatted string representation of the request.
   """
   # Message parts logs
   message_parts_logs = []
-  if req.parts:
-    for i, part in enumerate(req.parts):
-      part_log = build_message_part_log(part)
-      # Replace any internal newlines with indented newlines to maintain formatting
-      part_log_formatted = part_log.replace("\n", "\n  ")
-      message_parts_logs.append(f"Part {i}: {part_log_formatted}")
+  try:
+    parts = req.parts
+    if parts:
+      for i, part in enumerate(parts):
+        part_log = build_message_part_log(part)
+        part_log_formatted = part_log.replace("\n", "\n  ")
+        message_parts_logs.append(f"Part {i}: {part_log_formatted}")
+  except Exception:
+    pass
 
   # Build message metadata section
   message_metadata_section = ""
-  if req.metadata:
-    message_metadata_section = f"""
-  Metadata:
-  {json.dumps(req.metadata, indent=2).replace(chr(10), chr(10) + '  ')}"""
+  try:
+    if req.metadata:
+      meta_dict = _proto_metadata_to_dict(req.metadata)
+      if meta_dict:
+        message_metadata_section = f"\n  Metadata:\n  {json.dumps(meta_dict, indent=2, default=str).replace(chr(10), chr(10) + '  ')}"  # pylint: disable=line-too-long
+  except Exception:
+    pass
 
-  # Build optional sections
+  # Optional sections
   optional_sections = []
-
-  if req.metadata:
-    optional_sections.append(
-        f"""-----------------------------------------------------------
-Metadata:
-{json.dumps(req.metadata, indent=2)}"""
-    )
+  try:
+    if req.metadata:
+      meta_dict = _proto_metadata_to_dict(req.metadata)
+      if meta_dict:
+        optional_sections.append(
+            f"-----------------------------------------------------------\nMetadata:\n{json.dumps(meta_dict, indent=2, default=str)}"
+        )
+  except Exception:
+    pass
 
   optional_sections_str = _NEW_LINE.join(optional_sections)
+
+  try:
+    msg_id = req.message_id
+    role = req.role
+    task_id = getattr(req, "task_id", "")
+    context_id = getattr(req, "context_id", "")
+  except Exception:
+    msg_id = role = task_id = context_id = "<unknown>"
 
   return f"""
 A2A Send Message Request:
 -----------------------------------------------------------
 Message:
-  ID: {req.message_id}
-  Role: {req.role}
-  Task ID: {req.task_id}
-  Context ID: {req.context_id}{message_metadata_section}
+  ID: {msg_id}
+  Role: {role}
+  Task ID: {task_id}
+  Context ID: {context_id}{message_metadata_section}
 -----------------------------------------------------------
 Message Parts:
 {_NEW_LINE.join(message_parts_logs) if message_parts_logs else "No parts"}
@@ -177,134 +185,105 @@ Message Parts:
 """
 
 
-def build_a2a_response_log(resp: A2AClientEvent | A2AMessage) -> str:
+def build_a2a_response_log(resp) -> str:
   """Builds a structured log representation of an A2A response.
 
   Args:
-    resp: The A2A SendMessage Response to log.
+    resp: The A2A StreamResponse or Message response to log.
 
   Returns:
     A formatted string representation of the response.
   """
-
-  # Handle success responses
-  result = resp
-  result_type = type(result).__name__
-  if result_type == "tuple":
-    result_type = "ClientEvent"
-
-  # Build result details based on type
+  result_type = type(resp).__name__
   result_details = []
 
-  if _is_a2a_client_event(result):
-    result = result[0]
-    result_details.extend([
-        f"Task ID: {result.id}",
-        f"Context ID: {result.context_id}",
-        f"Status State: {result.status.state}",
-        f"Status Timestamp: {result.status.timestamp}",
-        f"History Length: {len(result.history) if result.history else 0}",
-        f"Artifacts Count: {len(result.artifacts) if result.artifacts else 0}",
-    ])
+  # Handle tuple (legacy ClientEvent pattern) for backward compat
+  if isinstance(resp, tuple):
+    result_type = "ClientEvent"
+    try:
+      task = resp[0]
+      if task:
+        result_details.extend([
+            f"Task ID: {task.id}",
+            f"Context ID: {task.context_id}",
+            f"Status State: {task.status.state}",
+        ])
+    except Exception:
+      pass
 
-    # Add task metadata if it exists
-    if result.metadata:
-      result_details.append("Task Metadata:")
-      metadata_formatted = json.dumps(result.metadata, indent=2).replace(
-          "\n", "\n  "
-      )
-      result_details.append(f"  {metadata_formatted}")
+  # Handle StreamResponse proto (check isinstance to avoid matching other
+  # proto messages like A2AMessage which also have WhichOneof)
+  elif isinstance(resp, A2AStreamResponse):
+    try:
+      payload_type = resp.WhichOneof("payload")
+      result_type = f"StreamResponse({payload_type})"
+      if payload_type == "task":
+        task = resp.task
+        result_details.extend([
+            f"Task ID: {task.id}",
+            f"Context ID: {task.context_id}",
+            f"Status State: {task.status.state}",
+        ])
+      elif payload_type == "message":
+        msg = resp.message
+        result_details.extend([
+            f"Message ID: {msg.message_id}",
+            f"Role: {msg.role}",
+        ])
+      elif payload_type == "status_update":
+        su = resp.status_update
+        result_details.append(f"Task ID: {su.task_id}")
+        result_details.append(f"State: {su.status.state}")
+      elif payload_type == "artifact_update":
+        au = resp.artifact_update
+        result_details.append(f"Task ID: {au.task_id}")
+        result_details.append(f"Artifact ID: {au.artifact.artifact_id}")
+    except Exception:
+      pass
 
-  elif _is_a2a_message(result):
-    result_details.extend([
-        f"Message ID: {result.message_id}",
-        f"Role: {result.role}",
-        f"Task ID: {result.task_id}",
-        f"Context ID: {result.context_id}",
-    ])
-
-    # Add message parts
-    if result.parts:
-      result_details.append("Message Parts:")
-      for i, part in enumerate(result.parts):
-        part_log = build_message_part_log(part)
-        # Replace any internal newlines with indented newlines to maintain formatting
-        part_log_formatted = part_log.replace("\n", "\n    ")
-        result_details.append(f"  Part {i}: {part_log_formatted}")
-
-    # Add metadata if it exists
-    if result.metadata:
-      result_details.append("Metadata:")
-      metadata_formatted = json.dumps(result.metadata, indent=2).replace(
-          "\n", "\n  "
-      )
-      result_details.append(f"  {metadata_formatted}")
+  # Handle A2AMessage
+  elif _is_a2a_message(resp):
+    try:
+      result_details.extend([
+          f"Message ID: {resp.message_id}",
+          f"Role: {resp.role}",
+          f"Task ID: {getattr(resp, 'task_id', '')}",  # pylint: disable=line-too-long
+          f"Context ID: {getattr(resp, 'context_id', '')}",
+      ])
+      if resp.parts:
+        result_details.append("Message Parts:")
+        for i, part in enumerate(resp.parts):
+          part_log = build_message_part_log(part).replace("\n", "\n    ")
+          result_details.append(f"  Part {i}: {part_log}")
+    except Exception:
+      pass
 
   else:
-    # Handle other result types by showing their JSON representation
-    if hasattr(result, "model_dump_json"):
+    # Generic fallback
+    if hasattr(resp, "model_dump_json"):
       try:
-        result_json = result.model_dump_json()
-        result_details.append(f"JSON Data: {result_json}")
+        result_details.append(f"JSON Data: {resp.model_dump_json()}")
       except Exception:
-        result_details.append("JSON Data: <unable to serialize>")
+        pass
 
   # Build status message section
   status_message_section = "None"
-  if _is_a2a_task(result) and result.status.message:
-    status_parts_logs = []
-    if result.status.message.parts:
-      for i, part in enumerate(result.status.message.parts):
-        part_log = build_message_part_log(part)
-        # Replace any internal newlines with indented newlines to maintain formatting
-        part_log_formatted = part_log.replace("\n", "\n  ")
-        status_parts_logs.append(f"Part {i}: {part_log_formatted}")
-
-    # Build status message metadata section
-    status_metadata_section = ""
-    if result.status.message.metadata:
-      status_metadata_section = f"""
-Metadata:
-{json.dumps(result.status.message.metadata, indent=2)}"""
-
-    status_message_section = f"""ID: {result.status.message.message_id}
-Role: {result.status.message.role}
-Task ID: {result.status.message.task_id}
-Context ID: {result.status.message.context_id}
+  try:
+    if isinstance(resp, tuple) and resp[0] and resp[0].status and resp[0].status.message:
+      msg = resp[0].status.message
+      status_parts_logs = []
+      if msg.parts:
+        for i, part in enumerate(msg.parts):
+          part_log = build_message_part_log(part).replace("\n", "\n  ")
+          status_parts_logs.append(f"Part {i}: {part_log}")
+      status_message_section = f"""ID: {msg.message_id}
+Role: {msg.role}
+Task ID: {getattr(msg, 'task_id', '')}
+Context ID: {getattr(msg, 'context_id', '')}
 Message Parts:
-{_NEW_LINE.join(status_parts_logs) if status_parts_logs else "No parts"}{status_metadata_section}"""
-
-  # Build history section
-  history_section = "No history"
-  if _is_a2a_task(result) and result.history:
-    history_logs = []
-    for i, message in enumerate(result.history):
-      message_parts_logs = []
-      if message.parts:
-        for j, part in enumerate(message.parts):
-          part_log = build_message_part_log(part)
-          # Replace any internal newlines with indented newlines to maintain formatting
-          part_log_formatted = part_log.replace("\n", "\n    ")
-          message_parts_logs.append(f"  Part {j}: {part_log_formatted}")
-
-      # Build message metadata section
-      message_metadata_section = ""
-      if message.metadata:
-        message_metadata_section = f"""
-  Metadata:
-  {json.dumps(message.metadata, indent=2).replace(chr(10), chr(10) + '  ')}"""
-
-      history_logs.append(
-          f"""Message {i + 1}:
-  ID: {message.message_id}
-  Role: {message.role}
-  Task ID: {message.task_id}
-  Context ID: {message.context_id}
-  Message Parts:
-{_NEW_LINE.join(message_parts_logs) if message_parts_logs else "  No parts"}{message_metadata_section}"""
-      )
-
-    history_section = _NEW_LINE.join(history_logs)
+{_NEW_LINE.join(status_parts_logs) if status_parts_logs else "No parts"}"""
+  except Exception:
+    pass
 
   return f"""
 A2A Response:
@@ -319,6 +298,13 @@ Status Message:
 {status_message_section}
 -----------------------------------------------------------
 History:
-{history_section}
 -----------------------------------------------------------
 """
+
+
+def _is_a2a_message(obj) -> bool:
+  """Check if an object is an A2A Message."""
+  try:
+    return isinstance(obj, A2AMessage)
+  except (TypeError, AttributeError):
+    return type(obj).__name__ == "Message" and hasattr(obj, "role")

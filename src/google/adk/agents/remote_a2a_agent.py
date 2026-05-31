@@ -26,21 +26,26 @@ from typing import Union
 from urllib.parse import urlparse
 
 from a2a.client import Client as A2AClient
-from a2a.client import ClientEvent as A2AClientEvent
 from a2a.client.card_resolver import A2ACardResolver
+from a2a.client.client import ClientCallContext
 from a2a.client.client import ClientConfig as A2AClientConfig
 from a2a.client.client_factory import ClientFactory as A2AClientFactory
-from a2a.client.errors import A2AClientHTTPError
+from a2a.client.errors import A2AClientError
 from a2a.types import AgentCard
 from a2a.types import Message as A2AMessage
 from a2a.types import Part as A2APart
 from a2a.types import Role
+from a2a.types import SendMessageRequest
+from a2a.types import StreamResponse
+from a2a.types import Task as A2ATask
 from a2a.types import TaskArtifactUpdateEvent as A2ATaskArtifactUpdateEvent
 from a2a.types import TaskState
 from a2a.types import TaskStatusUpdateEvent as A2ATaskStatusUpdateEvent
-from a2a.types import TransportProtocol as A2ATransport
+from a2a.utils.constants import PROTOCOL_VERSION_CURRENT
+from a2a.utils.constants import TransportProtocol
 from google.adk.platform import uuid as platform_uuid
 from google.genai import types as genai_types
+from google.protobuf import json_format
 import httpx
 
 try:
@@ -96,13 +101,6 @@ class AgentCardResolutionError(Exception):
   pass
 
 
-@a2a_experimental
-class A2AClientError(Exception):
-  """Raised when A2A client operations fail."""
-
-  pass
-
-
 def _add_mock_function_call(event: Event, state: TaskState) -> None:
   """Generates a mock function call for input-required events if applicable."""
   if event.content is None:
@@ -117,6 +115,14 @@ def _add_mock_function_call(event: Event, state: TaskState) -> None:
   )
   event.content.parts = output_parts
   event.long_running_tool_ids = long_running_tool_ids
+
+
+def _get_agent_card_url(agent_card: AgentCard) -> Optional[str]:
+  """Extract the primary RPC URL from an AgentCard's supported_interfaces."""
+  for iface in agent_card.supported_interfaces:
+    if iface.url:
+      return iface.url
+  return None
 
 
 @a2a_experimental
@@ -238,7 +244,6 @@ class RemoteA2aAgent(BaseAgent):
                 self._a2a_client_factory._config,
                 httpx_client=self._httpx_client,
             ),
-            consumers=self._a2a_client_factory._consumers,
         )
         for label, generator in registry.items():
           self._a2a_client_factory.register(label, generator)
@@ -247,7 +252,10 @@ class RemoteA2aAgent(BaseAgent):
           httpx_client=self._httpx_client,
           streaming=False,
           polling=False,
-          supported_transports=[A2ATransport.jsonrpc, A2ATransport.http_json],
+          supported_protocol_bindings=[
+              TransportProtocol.JSONRPC,
+              TransportProtocol.HTTP_JSON,
+          ],
       )
       self._a2a_client_factory = A2AClientFactory(config=client_config)
     return self._httpx_client
@@ -286,7 +294,9 @@ class RemoteA2aAgent(BaseAgent):
 
       with path.open("r", encoding="utf-8") as f:
         agent_json_data = json.load(f)
-        return AgentCard(**agent_json_data)
+        card = AgentCard()
+        json_format.ParseDict(agent_json_data, card)
+        return card
     except json.JSONDecodeError as e:
       raise AgentCardResolutionError(
           f"Invalid JSON in agent card file {file_path}: {e}"
@@ -307,19 +317,20 @@ class RemoteA2aAgent(BaseAgent):
 
   async def _validate_agent_card(self, agent_card: AgentCard) -> None:
     """Validate resolved agent card."""
-    if not agent_card.url:
+    card_url = _get_agent_card_url(agent_card)
+    if not card_url:
       raise AgentCardResolutionError(
           "Agent card must have a valid URL for RPC communication"
       )
 
     # Additional validation can be added here
     try:
-      parsed_url = urlparse(str(agent_card.url))
+      parsed_url = urlparse(str(card_url))
       if not parsed_url.scheme or not parsed_url.netloc:
         raise ValueError("Invalid RPC URL format")
     except Exception as e:
       raise AgentCardResolutionError(
-          f"Invalid RPC URL in agent card: {agent_card.url}, error: {e}"
+          f"Invalid RPC URL in agent card: {card_url}, error: {e}"
       ) from e
 
   async def _ensure_resolved(self) -> None:
@@ -412,12 +423,14 @@ class RemoteA2aAgent(BaseAgent):
       event = new_event
 
     a2a_message = convert_event_to_a2a_message(
-        event, ctx, Role.user, self._genai_part_converter
+        event, Role.ROLE_USER, self._genai_part_converter
     )
     if function_call_event.custom_metadata:
       metadata = function_call_event.custom_metadata
-      a2a_message.task_id = metadata.get(A2A_METADATA_PREFIX + "task_id")
-      a2a_message.context_id = metadata.get(A2A_METADATA_PREFIX + "context_id")
+      a2a_message.task_id = metadata.get(A2A_METADATA_PREFIX + "task_id") or ''
+      a2a_message.context_id = (
+          metadata.get(A2A_METADATA_PREFIX + "context_id") or ''
+      )
 
     return a2a_message
 
@@ -454,9 +467,6 @@ class RemoteA2aAgent(BaseAgent):
         # Historical note: this behavior originally always applied, regardless
         # of whether the agent was stateful or stateless. However, only stateful
         # agents can be expected to have previous events in the remote session.
-        # For backwards compatibility, we maintain this behavior when
-        # _full_history_when_stateless is false (the default) or if the agent
-        # is stateful (i.e. returned a context ID).
         if not self._full_history_when_stateless or context_id:
           break
       events_to_process.append(event)
@@ -474,9 +484,8 @@ class RemoteA2aAgent(BaseAgent):
           converted_parts = [converted_parts] if converted_parts else []
 
         if event.author == "user":
-          for part in converted_parts:
-            part.root.metadata = part.root.metadata or {}
-            part.root.metadata["is_user_input"] = True
+          for a2a_part in converted_parts:
+            a2a_part.metadata["is_user_input"] = True
 
         if converted_parts:
           message_parts.extend(converted_parts)
@@ -486,12 +495,12 @@ class RemoteA2aAgent(BaseAgent):
     return message_parts, context_id
 
   async def _handle_a2a_response(
-      self, a2a_response: A2AClientEvent | A2AMessage, ctx: InvocationContext
+      self, stream_resp: StreamResponse, ctx: InvocationContext
   ) -> Optional[Event]:
-    """Handle A2A response and convert to Event.
+    """Handle a StreamResponse and convert to Event.
 
     Args:
-      a2a_response: The A2A response object
+      stream_resp: The A2A StreamResponse proto
       ctx: The invocation context
 
     Returns:
@@ -499,92 +508,97 @@ class RemoteA2aAgent(BaseAgent):
       emitted.
     """
     try:
-      if isinstance(a2a_response, tuple):
-        task, update = a2a_response
-        if update is None:
-          # This is the initial response for a streaming task or the complete
-          # response for a non-streaming task, which is the full task state.
-          # We process this to get the initial message.
-          event = convert_a2a_task_to_event(
-              task, self.name, ctx, self._a2a_part_converter
-          )
-          # for streaming task, we update the event with the task status.
-          # We update the event as Thought updates.
-          if (
-              task
-              and task.status
-              and task.status.state
-              in (
-                  TaskState.submitted,
-                  TaskState.working,
-              )
-              and event.content is not None
-              and event.content.parts
+      payload_type = stream_resp.WhichOneof('payload')
+
+      if payload_type == 'task':
+        task = stream_resp.task
+        event = convert_a2a_task_to_event(
+            task, self.name, ctx, self._a2a_part_converter
+        )
+        if event and event.content is not None and event.content.parts:
+          if task.status.state in (
+              TaskState.TASK_STATE_SUBMITTED,
+              TaskState.TASK_STATE_WORKING,
           ):
             for part in event.content.parts:
               part.thought = True
+        if event:
           _add_mock_function_call(event, task.status.state)
-        elif (
-            isinstance(update, A2ATaskStatusUpdateEvent)
-            and update.status
-            and update.status.message
-        ):
-          # This is a streaming task status update with a message.
+          event.custom_metadata = event.custom_metadata or {}
+          event.custom_metadata[A2A_METADATA_PREFIX + "task_id"] = task.id
+          if task.context_id:
+            event.custom_metadata[A2A_METADATA_PREFIX + "context_id"] = (
+                task.context_id
+            )
+        return event
+
+      if payload_type == 'status_update':
+        update = stream_resp.status_update
+        if update.status and update.status.message:
           event = convert_a2a_message_to_event(
               update.status.message, self.name, ctx, self._a2a_part_converter
           )
-          if event.content is not None and update.status.state in (
-              TaskState.submitted,
-              TaskState.working,
+          if event and event.content is not None and update.status.state in (
+              TaskState.TASK_STATE_SUBMITTED,
+              TaskState.TASK_STATE_WORKING,
           ):
             for part in event.content.parts:
               part.thought = True
-          _add_mock_function_call(event, update.status.state)
-        elif isinstance(update, A2ATaskArtifactUpdateEvent) and (
-            not update.append or update.last_chunk
-        ):
-          # This is a streaming task artifact update.
-          # We only handle full artifact updates and ignore partial updates.
-          # Note: Depends on the server implementation, there is no clear
-          # definition of what a partial update is currently. We use the two
-          # signals:
-          # 1. append: True for partial updates, False for full updates.
-          # 2. last_chunk: True for full updates, False for partial updates.
+          if event:
+            _add_mock_function_call(event, update.status.state)
+            event.custom_metadata = event.custom_metadata or {}
+            if update.task_id:
+              event.custom_metadata[A2A_METADATA_PREFIX + "task_id"] = (
+                  update.task_id
+              )
+            if update.context_id:
+              event.custom_metadata[A2A_METADATA_PREFIX + "context_id"] = (
+                  update.context_id
+              )
+          return event
+        return None
+
+      if payload_type == 'artifact_update':
+        update = stream_resp.artifact_update
+        if not update.append or update.last_chunk:
+          # Re-use the last known task state for artifact updates.
+          # Build a minimal Task from the artifact update to reuse converter.
+          from a2a.types import Task as _Task, Artifact as _Artifact
+          tmp_task = _Task(
+              id=update.task_id,
+              context_id=update.context_id,
+          )
+          tmp_task.artifacts.append(update.artifact)
           event = convert_a2a_task_to_event(
-              task, self.name, ctx, self._a2a_part_converter
+              tmp_task, self.name, ctx, self._a2a_part_converter
           )
-        else:
-          # This is a streaming update without a message (e.g. status change)
-          # or a partial artifact update. We don't emit an event for these
-          # for now.
-          return None
+          if event:
+            event.custom_metadata = event.custom_metadata or {}
+            event.custom_metadata[A2A_METADATA_PREFIX + "task_id"] = (
+                update.task_id
+            )
+            if update.context_id:
+              event.custom_metadata[A2A_METADATA_PREFIX + "context_id"] = (
+                  update.context_id
+              )
+          return event
+        return None
 
-        event.custom_metadata = event.custom_metadata or {}
-        event.custom_metadata[A2A_METADATA_PREFIX + "task_id"] = task.id
-        if task.context_id:
-          event.custom_metadata[A2A_METADATA_PREFIX + "context_id"] = (
-              task.context_id
-          )
-
-      # Otherwise, it's a regular A2AMessage for non-streaming responses.
-      elif isinstance(a2a_response, A2AMessage):
+      if payload_type == 'message':
+        a2a_message = stream_resp.message
         event = convert_a2a_message_to_event(
-            a2a_response, self.name, ctx, self._a2a_part_converter
+            a2a_message, self.name, ctx, self._a2a_part_converter
         )
-        event.custom_metadata = event.custom_metadata or {}
+        if event:
+          event.custom_metadata = event.custom_metadata or {}
+          if a2a_message.context_id:
+            event.custom_metadata[A2A_METADATA_PREFIX + "context_id"] = (
+                a2a_message.context_id
+            )
+        return event
 
-        if a2a_response.context_id:
-          event.custom_metadata[A2A_METADATA_PREFIX + "context_id"] = (
-              a2a_response.context_id
-          )
-      else:
-        event = Event(
-            author=self.name,
-            error_message="Unknown A2A response type",
-            invocation_id=ctx.invocation_id,
-            branch=ctx.branch,
-        )
-      return event
+      return None
+
     except A2AClientError as e:
       logger.error("Failed to handle A2A response: %s", e)
       return Event(
@@ -595,12 +609,12 @@ class RemoteA2aAgent(BaseAgent):
       )
 
   async def _handle_a2a_response_v2(
-      self, a2a_response: A2AClientEvent | A2AMessage, ctx: InvocationContext
+      self, stream_resp: StreamResponse, ctx: InvocationContext
   ) -> Optional[Event]:
-    """Handle A2A response and convert to Event.
+    """Handle A2A response using configurable converters.
 
     Args:
-      a2a_response: The A2A response object
+      stream_resp: The A2A StreamResponse proto
       ctx: The invocation context
 
     Returns:
@@ -608,53 +622,68 @@ class RemoteA2aAgent(BaseAgent):
       emitted.
     """
     try:
-      if isinstance(a2a_response, tuple):
-        task, update = a2a_response
-        event = None
-        if update is None:
-          # This is the initial response for a streaming task or the complete
-          # response for a non-streaming task.
-          event = self._config.a2a_task_converter(
-              task, self.name, ctx, self._config.a2a_part_converter
-          )
-        elif isinstance(update, A2ATaskStatusUpdateEvent):
-          # This is a streaming task status update.
-          event = self._config.a2a_status_update_converter(
-              update, self.name, ctx, self._config.a2a_part_converter
-          )
-        elif isinstance(update, A2ATaskArtifactUpdateEvent):
-          # This is a streaming task artifact update.
-          event = self._config.a2a_artifact_update_converter(
-              update, self.name, ctx, self._config.a2a_part_converter
-          )
-        if not event:
-          return None
-        event.custom_metadata = event.custom_metadata or {}
-        event.custom_metadata[A2A_METADATA_PREFIX + "task_id"] = task.id
-        if task.context_id:
-          event.custom_metadata[A2A_METADATA_PREFIX + "context_id"] = (
-              task.context_id
-          )
+      payload_type = stream_resp.WhichOneof('payload')
+      event = None
 
-      # Otherwise, it's a regular A2AMessage.
-      elif isinstance(a2a_response, A2AMessage):
+      if payload_type == 'task':
+        task = stream_resp.task
+        event = self._config.a2a_task_converter(
+            task, self.name, ctx, self._config.a2a_part_converter
+        )
+        if event:
+          event.custom_metadata = event.custom_metadata or {}
+          event.custom_metadata[A2A_METADATA_PREFIX + "task_id"] = task.id
+          if task.context_id:
+            event.custom_metadata[A2A_METADATA_PREFIX + "context_id"] = (
+                task.context_id
+            )
+
+      elif payload_type == 'status_update':
+        update = stream_resp.status_update
+        event = self._config.a2a_status_update_converter(
+            update, self.name, ctx, self._config.a2a_part_converter
+        )
+        if event:
+          event.custom_metadata = event.custom_metadata or {}
+          if update.task_id:
+            event.custom_metadata[A2A_METADATA_PREFIX + "task_id"] = (
+                update.task_id
+            )
+          if update.context_id:
+            event.custom_metadata[A2A_METADATA_PREFIX + "context_id"] = (
+                update.context_id
+            )
+
+      elif payload_type == 'artifact_update':
+        update = stream_resp.artifact_update
+        event = self._config.a2a_artifact_update_converter(
+            update, self.name, ctx, self._config.a2a_part_converter
+        )
+        if event:
+          event.custom_metadata = event.custom_metadata or {}
+          if update.task_id:
+            event.custom_metadata[A2A_METADATA_PREFIX + "task_id"] = (
+                update.task_id
+            )
+          if update.context_id:
+            event.custom_metadata[A2A_METADATA_PREFIX + "context_id"] = (
+                update.context_id
+            )
+
+      elif payload_type == 'message':
+        a2a_message = stream_resp.message
         event = self._config.a2a_message_converter(
-            a2a_response, self.name, ctx, self._config.a2a_part_converter
+            a2a_message, self.name, ctx, self._config.a2a_part_converter
         )
-        event.custom_metadata = event.custom_metadata or {}
+        if event:
+          event.custom_metadata = event.custom_metadata or {}
+          if a2a_message.context_id:
+            event.custom_metadata[A2A_METADATA_PREFIX + "context_id"] = (
+                a2a_message.context_id
+            )
 
-        if a2a_response.context_id:
-          event.custom_metadata[A2A_METADATA_PREFIX + "context_id"] = (
-              a2a_response.context_id
-          )
-      else:
-        event = Event(
-            author=self.name,
-            error_message="Unknown A2A response type",
-            invocation_id=ctx.invocation_id,
-            branch=ctx.branch,
-        )
       return event
+
     except A2AClientError as e:
       logger.error("Failed to handle A2A response: %s", e)
       return Event(
@@ -680,8 +709,8 @@ class RemoteA2aAgent(BaseAgent):
       return
 
     # Create A2A request for function response or regular message
-    a2a_request = self._create_a2a_request_for_user_function_response(ctx)
-    if not a2a_request:
+    a2a_message = self._create_a2a_request_for_user_function_response(ctx)
+    if not a2a_message:
       message_parts, context_id = self._construct_message_parts_from_session(
           ctx
       )
@@ -698,56 +727,62 @@ class RemoteA2aAgent(BaseAgent):
         )
         return
 
-      a2a_request = A2AMessage(
+      a2a_message = A2AMessage(
           message_id=platform_uuid.new_uuid(),
           parts=message_parts,
-          role="user",
-          context_id=context_id,
+          role=Role.ROLE_USER,
+          context_id=context_id or '',
       )
 
-    logger.debug(build_a2a_request_log(a2a_request))
+    logger.debug(build_a2a_request_log(a2a_message))
 
     try:
-      a2a_request, parameters = await execute_before_request_interceptors(
-          self._config.request_interceptors, ctx, a2a_request
+      a2a_message, parameters = await execute_before_request_interceptors(
+          self._config.request_interceptors, ctx, a2a_message
       )
 
-      if isinstance(a2a_request, Event):
-        yield a2a_request
+      if isinstance(a2a_message, Event):
+        yield a2a_message
         return
 
       # Backward compatibility
       if self._a2a_request_meta_provider:
         parameters.request_metadata = self._a2a_request_meta_provider(
-            ctx, a2a_request
+            ctx, a2a_message
         )
 
-      # TODO: Add support for requested_extension and
-      # message_send_configuration once they are supported by the A2A client.
-      async for a2a_response in self._a2a_client.send_message(
-          request=a2a_request,
-          request_metadata=parameters.request_metadata,
+      # Wrap the message in a SendMessageRequest proto
+      send_request = SendMessageRequest()
+      send_request.message.CopyFrom(a2a_message)
+      if parameters.request_metadata:
+        for k, v in parameters.request_metadata.items():
+          send_request.metadata[k] = str(v)
+
+      async for stream_resp in self._a2a_client.send_message(
+          request=send_request,
           context=parameters.client_call_context,
       ):
-        logger.debug(build_a2a_response_log(a2a_response))
+        logger.debug(build_a2a_response_log(stream_resp))
 
+        # Check if the response carries ADK extension metadata
         metadata = None
-        if isinstance(a2a_response, tuple):
-          task = a2a_response[0]
-          if task:
-            metadata = task.metadata
-        else:
-          metadata = a2a_response.metadata
+        payload_type = stream_resp.WhichOneof('payload')
+        if payload_type == 'task':
+          metadata = dict(stream_resp.task.metadata)
+        elif payload_type == 'status_update':
+          metadata = dict(stream_resp.status_update.metadata)
+        elif payload_type == 'artifact_update':
+          metadata = dict(stream_resp.artifact_update.metadata)
 
         if metadata and metadata.get(_NEW_A2A_ADK_INTEGRATION_EXTENSION):
-          event = await self._handle_a2a_response_v2(a2a_response, ctx)
+          event = await self._handle_a2a_response_v2(stream_resp, ctx)
         else:
-          event = await self._handle_a2a_response(a2a_response, ctx)
+          event = await self._handle_a2a_response(stream_resp, ctx)
         if not event:
           continue
 
         event = await execute_after_request_interceptors(
-            self._config.request_interceptors, ctx, a2a_response, event
+            self._config.request_interceptors, ctx, stream_resp, event
         )
         if not event:
           continue
@@ -755,22 +790,15 @@ class RemoteA2aAgent(BaseAgent):
         # Add metadata about the request and response
         event.custom_metadata = event.custom_metadata or {}
         event.custom_metadata[A2A_METADATA_PREFIX + "request"] = (
-            a2a_request.model_dump(exclude_none=True, by_alias=True)
+            json_format.MessageToDict(a2a_message)
         )
-        # If the response is a ClientEvent, record the task state; otherwise,
-        # record the message object.
-        if isinstance(a2a_response, tuple):
-          event.custom_metadata[A2A_METADATA_PREFIX + "response"] = (
-              a2a_response[0].model_dump(exclude_none=True, by_alias=True)
-          )
-        else:
-          event.custom_metadata[A2A_METADATA_PREFIX + "response"] = (
-              a2a_response.model_dump(exclude_none=True, by_alias=True)
-          )
+        event.custom_metadata[A2A_METADATA_PREFIX + "response"] = (
+            json_format.MessageToDict(stream_resp)
+        )
 
         yield event
 
-    except A2AClientHTTPError as e:
+    except A2AClientError as e:
       error_message = f"A2A request failed: {e}"
       logger.error(error_message)
       yield Event(
@@ -780,11 +808,8 @@ class RemoteA2aAgent(BaseAgent):
           branch=ctx.branch,
           custom_metadata={
               A2A_METADATA_PREFIX
-              + "request": a2a_request.model_dump(
-                  exclude_none=True, by_alias=True
-              ),
+              + "request": json_format.MessageToDict(a2a_message),
               A2A_METADATA_PREFIX + "error": error_message,
-              A2A_METADATA_PREFIX + "status_code": str(e.status_code),
           },
       )
 
@@ -799,9 +824,7 @@ class RemoteA2aAgent(BaseAgent):
           branch=ctx.branch,
           custom_metadata={
               A2A_METADATA_PREFIX
-              + "request": a2a_request.model_dump(
-                  exclude_none=True, by_alias=True
-              ),
+              + "request": json_format.MessageToDict(a2a_message),
               A2A_METADATA_PREFIX + "error": error_message,
           },
       )

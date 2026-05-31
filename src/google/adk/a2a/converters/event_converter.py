@@ -24,7 +24,6 @@ from typing import List
 from typing import Optional
 
 from a2a.server.events import Event as A2AEvent
-from a2a.types import DataPart
 from a2a.types import Message
 from a2a.types import Part as A2APart
 from a2a.types import Role
@@ -32,7 +31,6 @@ from a2a.types import Task
 from a2a.types import TaskState
 from a2a.types import TaskStatus
 from a2a.types import TaskStatusUpdateEvent
-from a2a.types import TextPart
 from google.adk.platform import time as platform_time
 from google.adk.platform import uuid as platform_uuid
 from google.genai import types as genai_types
@@ -45,6 +43,7 @@ from .part_converter import A2A_DATA_PART_METADATA_IS_LONG_RUNNING_KEY
 from .part_converter import A2A_DATA_PART_METADATA_TYPE_FUNCTION_CALL
 from .part_converter import A2A_DATA_PART_METADATA_TYPE_KEY
 from .part_converter import A2APartToGenAIPartConverter
+from .part_converter import _part_data_as_dict
 from .part_converter import convert_a2a_part_to_genai_part
 from .part_converter import convert_genai_part_to_a2a_part
 from .part_converter import GenAIPartToA2APartConverter
@@ -185,16 +184,14 @@ def _process_long_running_tool(a2a_part: A2APart, event: Event) -> None:
     event: The ADK event containing long-running tool information.
   """
   if (
-      isinstance(a2a_part.root, DataPart)
+      a2a_part.WhichOneof("content") == "data"
       and event.long_running_tool_ids
-      and a2a_part.root.metadata
-      and a2a_part.root.metadata.get(
-          _get_adk_metadata_key(A2A_DATA_PART_METADATA_TYPE_KEY)
-      )
+      and _get_adk_metadata_key(A2A_DATA_PART_METADATA_TYPE_KEY) in a2a_part.metadata
+      and a2a_part.metadata[_get_adk_metadata_key(A2A_DATA_PART_METADATA_TYPE_KEY)]
       == A2A_DATA_PART_METADATA_TYPE_FUNCTION_CALL
-      and a2a_part.root.data.get("id") in event.long_running_tool_ids
+      and _part_data_as_dict(a2a_part).get("id") in event.long_running_tool_ids
   ):
-    a2a_part.root.metadata[
+    a2a_part.metadata[
         _get_adk_metadata_key(A2A_DATA_PART_METADATA_IS_LONG_RUNNING_KEY)
     ] = True
 
@@ -229,7 +226,7 @@ def convert_a2a_task_to_event(
     message = None
     if a2a_task.artifacts:
       message = Message(
-          message_id="", role=Role.agent, parts=a2a_task.artifacts[-1].parts
+          message_id="", role=Role.ROLE_AGENT, parts=list(a2a_task.artifacts[-1].parts)
       )
     elif (
         a2a_task.status
@@ -321,14 +318,13 @@ def convert_a2a_message_to_event(
           continue
 
         # Check for long-running tools
+        is_long_running_key = _get_adk_metadata_key(
+            A2A_DATA_PART_METADATA_IS_LONG_RUNNING_KEY
+        )
         if (
-            a2a_part.root.metadata
-            and a2a_part.root.metadata.get(
-                _get_adk_metadata_key(
-                    A2A_DATA_PART_METADATA_IS_LONG_RUNNING_KEY
-                )
-            )
-            is True
+            a2a_part.metadata
+            and is_long_running_key in a2a_part.metadata
+            and a2a_part.metadata[is_long_running_key] is True
         ):
           for part in parts:
             if part.function_call:
@@ -371,15 +367,13 @@ def convert_a2a_message_to_event(
 @a2a_experimental
 def convert_event_to_a2a_message(
     event: Event,
-    invocation_context: InvocationContext | None = None,
-    role: Role = Role.agent,
+    role: Role = Role.ROLE_AGENT,
     part_converter: GenAIPartToA2APartConverter = convert_genai_part_to_a2a_part,
 ) -> Optional[Message]:
   """Converts an ADK event to an A2A message.
 
   Args:
     event: The ADK event to convert.
-    invocation_context: The invocation context.
     role: The role of the message.
     part_converter: The function to convert GenAI part to A2A part.
 
@@ -441,28 +435,28 @@ def _create_error_status_event(
   if event.error_code:
     event_metadata[_get_adk_metadata_key("error_code")] = str(event.error_code)
 
-  return TaskStatusUpdateEvent(
+  error_msg = Message(
+      message_id=platform_uuid.new_uuid(),
+      role=Role.ROLE_AGENT,
+      parts=[A2APart(text=error_message)],
+  )
+  if event.error_code:
+    error_msg.metadata[_get_adk_metadata_key("error_code")] = str(
+        event.error_code
+    )
+
+  status = TaskStatus(state=TaskState.TASK_STATE_FAILED, message=error_msg)
+  status.timestamp.FromDatetime(
+      datetime.fromtimestamp(platform_time.get_time(), tz=timezone.utc)
+  )
+
+  tsue = TaskStatusUpdateEvent(
       task_id=task_id,
       context_id=context_id,
-      metadata=event_metadata,
-      status=TaskStatus(
-          state=TaskState.failed,
-          message=Message(
-              message_id=platform_uuid.new_uuid(),
-              role=Role.agent,
-              parts=[TextPart(text=error_message)],
-              metadata={
-                  _get_adk_metadata_key("error_code"): str(event.error_code)
-              }
-              if event.error_code
-              else {},
-          ),
-          timestamp=datetime.fromtimestamp(
-              platform_time.get_time(), tz=timezone.utc
-          ).isoformat(),
-      ),
-      final=True,
   )
+  tsue.status.CopyFrom(status)
+  tsue.metadata.update(event_metadata)
+  return tsue
 
 
 def _create_status_update_event(
@@ -484,49 +478,43 @@ def _create_status_update_event(
   Returns:
     A TaskStatusUpdateEvent with RUNNING state.
   """
-  status = TaskStatus(
-      state=TaskState.working,
-      message=message,
-      timestamp=datetime.fromtimestamp(
-          platform_time.get_time(), tz=timezone.utc
-      ).isoformat(),
-  )
+  state = TaskState.TASK_STATE_WORKING
+
+  type_key = _get_adk_metadata_key(A2A_DATA_PART_METADATA_TYPE_KEY)
+  lr_key = _get_adk_metadata_key(A2A_DATA_PART_METADATA_IS_LONG_RUNNING_KEY)
 
   if any(
-      part.root.metadata.get(
-          _get_adk_metadata_key(A2A_DATA_PART_METADATA_TYPE_KEY)
-      )
-      == A2A_DATA_PART_METADATA_TYPE_FUNCTION_CALL
-      and part.root.metadata.get(
-          _get_adk_metadata_key(A2A_DATA_PART_METADATA_IS_LONG_RUNNING_KEY)
-      )
-      is True
-      and part.root.data.get("name") == REQUEST_EUC_FUNCTION_CALL_NAME
+      type_key in part.metadata
+      and part.metadata[type_key] == A2A_DATA_PART_METADATA_TYPE_FUNCTION_CALL
+      and lr_key in part.metadata
+      and part.metadata[lr_key] is True
+      and _part_data_as_dict(part).get("name") == REQUEST_EUC_FUNCTION_CALL_NAME
       for part in message.parts
-      if part.root.metadata
+      if part.metadata
   ):
-    status.state = TaskState.auth_required
+    state = TaskState.TASK_STATE_AUTH_REQUIRED
   elif any(
-      part.root.metadata.get(
-          _get_adk_metadata_key(A2A_DATA_PART_METADATA_TYPE_KEY)
-      )
-      == A2A_DATA_PART_METADATA_TYPE_FUNCTION_CALL
-      and part.root.metadata.get(
-          _get_adk_metadata_key(A2A_DATA_PART_METADATA_IS_LONG_RUNNING_KEY)
-      )
-      is True
+      type_key in part.metadata
+      and part.metadata[type_key] == A2A_DATA_PART_METADATA_TYPE_FUNCTION_CALL
+      and lr_key in part.metadata
+      and part.metadata[lr_key] is True
       for part in message.parts
-      if part.root.metadata
+      if part.metadata
   ):
-    status.state = TaskState.input_required
+    state = TaskState.TASK_STATE_INPUT_REQUIRED
 
-  return TaskStatusUpdateEvent(
+  status = TaskStatus(state=state, message=message)
+  status.timestamp.FromDatetime(
+      datetime.fromtimestamp(platform_time.get_time(), tz=timezone.utc)
+  )
+
+  tsue = TaskStatusUpdateEvent(
       task_id=task_id,
       context_id=context_id,
-      status=status,
-      metadata=_get_context_metadata(event, invocation_context),
-      final=False,
   )
+  tsue.status.CopyFrom(status)
+  tsue.metadata.update(_get_context_metadata(event, invocation_context))
+  return tsue
 
 
 @a2a_experimental
@@ -571,9 +559,8 @@ def convert_event_to_a2a_events(
     # Handle regular message content
     message = convert_event_to_a2a_message(
         event,
-        invocation_context,
+        role=Role.ROLE_USER if event.author == "user" else Role.ROLE_AGENT,
         part_converter=part_converter,
-        role=Role.user if event.author == "user" else Role.agent,
     )
     if message:
       running_event = _create_status_update_event(

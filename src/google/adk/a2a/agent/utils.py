@@ -19,9 +19,9 @@ from __future__ import annotations
 from typing import Optional
 from typing import Union
 
-from a2a.client import ClientEvent as A2AClientEvent
-from a2a.client.middleware import ClientCallContext
+from a2a.client.client import ClientCallContext
 from a2a.types import Message as A2AMessage
+from a2a.types import StreamResponse as A2AStreamResponse
 
 from ...agents.invocation_context import InvocationContext
 from ...events.event import Event
@@ -57,7 +57,7 @@ async def execute_before_request_interceptors(
 async def execute_after_request_interceptors(
     request_interceptors: Optional[list[RequestInterceptor]],
     ctx: InvocationContext,
-    a2a_response: A2AMessage | A2AClientEvent,
+    a2a_response: A2AMessage | A2AStreamResponse,
     event: Event,
 ) -> Optional[Event]:
   """Executes registered after_request interceptors."""

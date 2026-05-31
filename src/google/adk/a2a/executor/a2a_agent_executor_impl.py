@@ -32,7 +32,6 @@ from a2a.types import Task
 from a2a.types import TaskState
 from a2a.types import TaskStatus
 from a2a.types import TaskStatusUpdateEvent
-from a2a.types import TextPart
 from typing_extensions import override
 
 from ...runners import Runner
@@ -116,41 +115,36 @@ class _A2aAgentExecutor(AgentExecutor):
 
       # for new task, create a task submitted event
       if not context.current_task:
-        await event_queue.enqueue_event(
-            Task(
-                id=context.task_id,
-                status=TaskStatus(
-                    state=TaskState.submitted,
-                    timestamp=datetime.now(timezone.utc).isoformat(),
-                ),
-                context_id=context.context_id,
-                history=[context.message],
-                metadata=self._get_invocation_metadata(executor_context),
-            )
+        task = Task(
+            id=context.task_id,
+            context_id=context.context_id,
         )
+        task.history.append(context.message)
+        task.metadata.update(self._get_invocation_metadata(executor_context))
+        status = TaskStatus(state=TaskState.TASK_STATE_SUBMITTED)
+        status.timestamp.FromDatetime(datetime.now(timezone.utc))
+        task.status.CopyFrom(status)
+        await event_queue.enqueue_event(task)
       else:
         # Check if the user input is responding to the agent's
         # request for input.
         missing_user_input_event = handle_user_input(context)
         if missing_user_input_event:
-          missing_user_input_event.metadata = self._get_invocation_metadata(
-              executor_context
+          missing_user_input_event.metadata.update(
+              self._get_invocation_metadata(executor_context)
           )
           await event_queue.enqueue_event(missing_user_input_event)
           return
 
-      await event_queue.enqueue_event(
-          TaskStatusUpdateEvent(
-              task_id=context.task_id,
-              status=TaskStatus(
-                  state=TaskState.working,
-                  timestamp=datetime.now(timezone.utc).isoformat(),
-              ),
-              context_id=context.context_id,
-              final=False,
-              metadata=self._get_invocation_metadata(executor_context),
-          )
+      working_status = TaskStatus(state=TaskState.TASK_STATE_WORKING)
+      working_status.timestamp.FromDatetime(datetime.now(timezone.utc))
+      working_tsue = TaskStatusUpdateEvent(
+          task_id=context.task_id,
+          context_id=context.context_id,
       )
+      working_tsue.status.CopyFrom(working_status)
+      working_tsue.metadata.update(self._get_invocation_metadata(executor_context))
+      await event_queue.enqueue_event(working_tsue)
 
       # Handle the request and publish updates to the event queue
       await self._handle_request(
@@ -164,22 +158,22 @@ class _A2aAgentExecutor(AgentExecutor):
       logger.error('Error handling A2A request: %s', e, exc_info=True)
       # Publish failure event
       try:
-        await event_queue.enqueue_event(
-            TaskStatusUpdateEvent(
-                task_id=context.task_id,
-                status=TaskStatus(
-                    state=TaskState.failed,
-                    timestamp=datetime.now(timezone.utc).isoformat(),
-                    message=Message(
-                        message_id=str(uuid.uuid4()),
-                        role=Role.agent,
-                        parts=[TextPart(text=str(e))],
-                    ),
-                ),
-                context_id=context.context_id,
-                final=True,
-            )
+        fail_msg = Message(
+            message_id=str(uuid.uuid4()),
+            role=Role.ROLE_AGENT,
+            parts=[Part(text=str(e))],
         )
+        fail_status = TaskStatus(
+            state=TaskState.TASK_STATE_FAILED,
+            message=fail_msg,
+        )
+        fail_status.timestamp.FromDatetime(datetime.now(timezone.utc))
+        fail_tsue = TaskStatusUpdateEvent(
+            task_id=context.task_id,
+            context_id=context.context_id,
+        )
+        fail_tsue.status.CopyFrom(fail_status)
+        await event_queue.enqueue_event(fail_tsue)
       except Exception as enqueue_error:
         logger.error(
             'Failed to publish failure event: %s', enqueue_error, exc_info=True
@@ -218,7 +212,7 @@ class _A2aAgentExecutor(AgentExecutor):
             context.context_id,
             self._config.gen_ai_part_converter,
         ):
-          a2a_event.metadata = self._get_invocation_metadata(executor_context)
+          a2a_event.metadata.update(self._get_invocation_metadata(executor_context))
           a2a_events = await execute_after_event_interceptors(
               a2a_event,
               executor_context,
@@ -237,17 +231,15 @@ class _A2aAgentExecutor(AgentExecutor):
           )
       )
     else:
+      completed_status = TaskStatus(state=TaskState.TASK_STATE_COMPLETED)
+      completed_status.timestamp.FromDatetime(datetime.now(timezone.utc))
       final_event = TaskStatusUpdateEvent(
           task_id=context.task_id,
-          status=TaskStatus(
-              state=TaskState.completed,
-              timestamp=datetime.now(timezone.utc).isoformat(),
-          ),
           context_id=context.context_id,
-          final=True,
       )
+      final_event.status.CopyFrom(completed_status)
 
-    final_event.metadata = self._get_invocation_metadata(executor_context)
+    final_event.metadata.update(self._get_invocation_metadata(executor_context))
     final_event = await execute_after_agent_interceptors(
         executor_context, final_event, self._config.execute_interceptors
     )

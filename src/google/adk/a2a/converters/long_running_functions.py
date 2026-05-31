@@ -21,14 +21,12 @@ from typing import Set
 import uuid
 
 from a2a.server.agent_execution.context import RequestContext
-from a2a.types import DataPart
 from a2a.types import Message
 from a2a.types import Part as A2APart
 from a2a.types import Role
 from a2a.types import TaskState
 from a2a.types import TaskStatus
 from a2a.types import TaskStatusUpdateEvent
-from a2a.types import TextPart
 from google.genai import types as genai_types
 
 from ...events.event import Event
@@ -38,6 +36,7 @@ from .part_converter import A2A_DATA_PART_METADATA_TYPE_FUNCTION_CALL
 from .part_converter import A2A_DATA_PART_METADATA_TYPE_FUNCTION_RESPONSE
 from .part_converter import A2A_DATA_PART_METADATA_TYPE_KEY
 from .part_converter import A2APartToGenAIPartConverter
+from .part_converter import _part_data_as_dict
 from .part_converter import convert_a2a_part_to_genai_part
 from .utils import _get_adk_metadata_key
 
@@ -51,7 +50,7 @@ class LongRunningFunctions:
     self._parts: List[genai_types.Part] = []
     self._long_running_tool_ids: Set[str] = set()
     self._part_converter = part_converter or convert_a2a_part_to_genai_part
-    self._task_state: TaskState = TaskState.input_required
+    self._task_state: TaskState = TaskState.TASK_STATE_INPUT_REQUIRED
 
   def has_long_running_function_calls(self) -> bool:
     """Returns True if there are long running function calls."""
@@ -108,20 +107,20 @@ class LongRunningFunctions:
     if not a2a_parts:
       return None
 
-    return TaskStatusUpdateEvent(
+    msg = Message(
+        message_id=str(uuid.uuid4()),
+        role=Role.ROLE_AGENT,
+        parts=a2a_parts,
+    )
+    status = TaskStatus(state=self._task_state, message=msg)
+    status.timestamp.FromDatetime(datetime.now(timezone.utc))
+
+    tsue = TaskStatusUpdateEvent(
         task_id=task_id,
         context_id=context_id,
-        status=TaskStatus(
-            state=self._task_state,
-            message=Message(
-                message_id=str(uuid.uuid4()),
-                role=Role.agent,
-                parts=a2a_parts,
-            ),
-            timestamp=datetime.now(timezone.utc).isoformat(),
-        ),
-        final=True,
     )
+    tsue.status.CopyFrom(status)
+    return tsue
 
   def _return_long_running_parts(self) -> List[A2APart]:
     """Converts long-running parts to A2A parts."""
@@ -145,25 +144,21 @@ class LongRunningFunctions:
     Args:
       a2a_part: The A2A part to potentially mark as long-running.
     """
-
+    type_key = _get_adk_metadata_key(A2A_DATA_PART_METADATA_TYPE_KEY)
     if (
-        isinstance(a2a_part.root, DataPart)
-        and a2a_part.root.metadata
-        and a2a_part.root.metadata.get(
-            _get_adk_metadata_key(A2A_DATA_PART_METADATA_TYPE_KEY)
-        )
-        == A2A_DATA_PART_METADATA_TYPE_FUNCTION_CALL
+        a2a_part.WhichOneof('content') == 'data'
+        and a2a_part.metadata
+        and type_key in a2a_part.metadata
+        and a2a_part.metadata[type_key] == A2A_DATA_PART_METADATA_TYPE_FUNCTION_CALL
     ):
-      a2a_part.root.metadata[
+      a2a_part.metadata[
           _get_adk_metadata_key(A2A_DATA_PART_METADATA_IS_LONG_RUNNING_KEY)
       ] = True
-      # If the function is a request for EUC, set the task state to
-      # auth_required. Otherwise, set it to input_required. Save the state of
-      # the last function call, as it will be the state of the task.
-      if a2a_part.root.metadata.get("name") == REQUEST_EUC_FUNCTION_CALL_NAME:
-        self._task_state = TaskState.auth_required
+      data = _part_data_as_dict(a2a_part)
+      if data.get("name") == REQUEST_EUC_FUNCTION_CALL_NAME:
+        self._task_state = TaskState.TASK_STATE_AUTH_REQUIRED
       else:
-        self._task_state = TaskState.input_required
+        self._task_state = TaskState.TASK_STATE_INPUT_REQUIRED
 
 
 def handle_user_input(context: RequestContext) -> TaskStatusUpdateEvent | None:
@@ -173,8 +168,8 @@ def handle_user_input(context: RequestContext) -> TaskStatusUpdateEvent | None:
       not context.current_task
       or not context.current_task.status
       or (
-          context.current_task.status.state != TaskState.input_required
-          and context.current_task.status.state != TaskState.auth_required
+          context.current_task.status.state != TaskState.TASK_STATE_INPUT_REQUIRED
+          and context.current_task.status.state != TaskState.TASK_STATE_AUTH_REQUIRED
       )
   ):
     return None
@@ -182,37 +177,37 @@ def handle_user_input(context: RequestContext) -> TaskStatusUpdateEvent | None:
   # If the task is in input_required or auth_required state, we expect the user
   # to provide a response for the function call. Check if the user input
   # contains a function response.
+  type_key = _get_adk_metadata_key(A2A_DATA_PART_METADATA_TYPE_KEY)
   for a2a_part in context.message.parts:
     if (
-        isinstance(a2a_part.root, DataPart)
-        and a2a_part.root.metadata
-        and a2a_part.root.metadata.get(
-            _get_adk_metadata_key(A2A_DATA_PART_METADATA_TYPE_KEY)
-        )
-        == A2A_DATA_PART_METADATA_TYPE_FUNCTION_RESPONSE
+        a2a_part.WhichOneof('content') == 'data'
+        and a2a_part.metadata
+        and type_key in a2a_part.metadata
+        and a2a_part.metadata[type_key] == A2A_DATA_PART_METADATA_TYPE_FUNCTION_RESPONSE
     ):
       return None
 
-  return TaskStatusUpdateEvent(
+  msg = Message(
+      message_id=str(uuid.uuid4()),
+      role=Role.ROLE_AGENT,
+      parts=[
+          A2APart(
+              text=(
+                  "It was not provided a function response for the"
+                  " function call."
+              )
+          )
+      ],
+  )
+  status = TaskStatus(
+      state=context.current_task.status.state,
+      message=msg,
+  )
+  status.timestamp.FromDatetime(datetime.now(timezone.utc))
+
+  tsue = TaskStatusUpdateEvent(
       task_id=context.task_id,
       context_id=context.context_id,
-      status=TaskStatus(
-          state=context.current_task.status.state,
-          timestamp=datetime.now(timezone.utc).isoformat(),
-          message=Message(
-              message_id=str(uuid.uuid4()),
-              role=Role.agent,
-              parts=[
-                  A2APart(
-                      root=TextPart(
-                          text=(
-                              "It was not provided a function response for the"
-                              " function call."
-                          )
-                      )
-                  )
-              ],
-          ),
-      ),
-      final=True,
   )
+  tsue.status.CopyFrom(status)
+  return tsue

@@ -17,19 +17,33 @@
 from unittest.mock import AsyncMock
 from unittest.mock import Mock
 
-from a2a.server.apps.jsonrpc.fastapi_app import A2AFastAPIApplication
-from a2a.server.request_handlers.default_request_handler import DefaultRequestHandler
-from a2a.server.tasks.inmemory_task_store import InMemoryTaskStore
+from a2a.server.request_handlers import DefaultRequestHandler
+from a2a.server.routes import create_agent_card_routes
+from a2a.server.routes import create_jsonrpc_routes
+from a2a.server.routes import create_rest_routes
+from a2a.server.routes.fastapi_routes import add_a2a_routes_to_fastapi
+from a2a.server.tasks import InMemoryTaskStore
 from a2a.types import AgentCapabilities
 from a2a.types import AgentCard
-from a2a.types import AgentSkill
+from a2a.types import AgentInterface
+from a2a.utils.constants import PROTOCOL_VERSION_CURRENT
+from a2a.utils.constants import TransportProtocol
+from fastapi import FastAPI
 from google.adk.a2a.executor.a2a_agent_executor import A2aAgentExecutor
 from google.adk.a2a.executor.config import A2aAgentExecutorConfig
 from google.adk.a2a.executor.interceptors.include_artifacts_in_a2a_event import include_artifacts_in_a2a_event_interceptor
 from google.adk.agents.base_agent import BaseAgent
+from google.adk.artifacts.in_memory_artifact_service import InMemoryArtifactService
 from google.adk.runners import Runner
 from google.adk.sessions.in_memory_session_service import InMemorySessionService
 from google.genai import types
+
+
+class _MockArtifactService(InMemoryArtifactService):
+  """Artifact service that returns mock content for any artifact load."""
+
+  async def load_artifact(self, **kwargs):
+    return types.Part(text="artifact content")
 
 
 class FakeRunner(Runner):
@@ -46,30 +60,30 @@ class FakeRunner(Runner):
         session_service=session_service,
     )
     self.run_async_fn = run_async_fn
-
-    mock_artifact_service = Mock()
-    mock_artifact_service.load_artifact = AsyncMock(
-        return_value=types.Part(text="artifact content")
-    )
-    self.artifact_service = mock_artifact_service
+    # Use a subclassed artifact service so pydantic InvocationContext validation
+    # passes and load_artifact returns mock content for integration tests.
+    self.artifact_service = _MockArtifactService()
 
   async def run_async(self, **kwargs):
     async for event in self.run_async_fn(**kwargs):
       yield event
 
 
+# Build agent card using proto-based API
 agent_card = AgentCard(
     name="remote_agent",
-    url="http://test",
     description="A fun fact generator agent",
-    capabilities=AgentCapabilities(
-        streaming=True,
-        extensions=[{"uri": "https://a2a-adk/a2a-extension/new-integration"}],
-    ),
+    capabilities=AgentCapabilities(streaming=True),
     version="0.0.1",
     default_input_modes=["text/plain"],
     default_output_modes=["text/plain"],
-    skills=[],
+)
+agent_card.supported_interfaces.append(
+    AgentInterface(
+        url="http://test",
+        protocol_binding=TransportProtocol.JSONRPC,
+        protocol_version=PROTOCOL_VERSION_CURRENT,
+    )
 )
 
 
@@ -78,24 +92,27 @@ def create_server_app(
     config: A2aAgentExecutorConfig | None = None,
     task_store=None,
 ):
-  """Creates an A2A FastAPI application with a mocked runner.
-
-  Args:
-    run_async_fn: A generator function that takes **kwargs and yields Event
-      objects.
-    config: Optional executor configuration.
-    task_store: Optional task store instance. Defaults to InMemoryTaskStore.
-
-  Returns:
-    A FastAPI application instance.
-  """
+  """Creates an A2A FastAPI application with a mocked runner."""
   runner = FakeRunner(run_async_fn)
-  executor = A2aAgentExecutor(runner=runner, config=config)
+  # use_legacy=False + force_new_version=True forces the new executor impl
+  # which correctly handles streaming via artifact_update events
+  executor = A2aAgentExecutor(
+      runner=runner, config=config, use_legacy=False, force_new_version=True
+  )
   if task_store is None:
     task_store = InMemoryTaskStore()
+
   handler = DefaultRequestHandler(
-      agent_executor=executor, task_store=task_store
+      agent_executor=executor,
+      task_store=task_store,
+      agent_card=agent_card,
   )
 
-  app = A2AFastAPIApplication(agent_card=agent_card, http_handler=handler)
-  return app.build()
+  app = FastAPI()
+  add_a2a_routes_to_fastapi(
+      app,
+      agent_card_routes=create_agent_card_routes(agent_card),
+      jsonrpc_routes=create_jsonrpc_routes(handler, rpc_url='/'),
+      rest_routes=create_rest_routes(handler),
+  )
+  return app

@@ -29,7 +29,8 @@ from a2a.types import TaskArtifactUpdateEvent
 from a2a.types import TaskState
 from a2a.types import TaskStatusUpdateEvent
 from google.genai import types as genai_types
-from pydantic import ValidationError
+from google.protobuf import json_format
+from google.protobuf.struct_pb2 import Struct as ProtoStruct
 
 from ...agents.invocation_context import InvocationContext
 from ...events.event import Event
@@ -153,13 +154,8 @@ def _convert_a2a_parts_to_adk_parts(
         continue
 
       # Check for long-running functions
-      if (
-          a2a_part.root.metadata
-          and a2a_part.root.metadata.get(
-              _get_adk_metadata_key(A2A_DATA_PART_METADATA_IS_LONG_RUNNING_KEY)
-          )
-          is True
-      ):
+      is_lr_key = _get_adk_metadata_key(A2A_DATA_PART_METADATA_IS_LONG_RUNNING_KEY)
+      if a2a_part.metadata and is_lr_key in a2a_part.metadata and a2a_part.metadata[is_lr_key] is True:
         for part in parts:
           if part.function_call:
             long_running_function_ids.add(part.function_call.id)
@@ -220,6 +216,10 @@ def _create_event(
 
 def _parse_adk_metadata_value(value: Any) -> Any:
   """Parses ADK metadata values serialized through A2A."""
+  # Proto Struct values (nested dicts) come back as ProtoStruct objects
+  if isinstance(value, ProtoStruct):
+    return json_format.MessageToDict(value)
+
   if not isinstance(value, str):
     return value
 
@@ -230,13 +230,18 @@ def _parse_adk_metadata_value(value: Any) -> Any:
 
 
 def _extract_event_actions(
-    metadata: Optional[dict[str, Any]],
+    metadata,
 ) -> EventActions:
-  """Extracts ADK event actions from A2A metadata."""
+  """Extracts ADK event actions from A2A metadata (proto Struct or plain dict)."""
   if not metadata:
     return EventActions()
 
-  raw_actions = metadata.get(_get_adk_metadata_key("actions"))
+  actions_key = _get_adk_metadata_key("actions")
+  # Proto Struct doesn't support .get(); use "in" + subscript
+  try:
+    raw_actions = metadata[actions_key] if actions_key in metadata else None
+  except TypeError:
+    raw_actions = metadata.get(actions_key) if hasattr(metadata, "get") else None
   if raw_actions is None:
     return EventActions()
 
@@ -250,7 +255,7 @@ def _extract_event_actions(
 
   try:
     return EventActions.model_validate(parsed_actions)
-  except ValidationError as error:
+  except Exception as error:
     logger.warning("Ignoring invalid ADK actions metadata: %s", error)
     return EventActions()
 
@@ -299,10 +304,10 @@ def _create_mock_function_call_for_required_user_input(
   if long_running_function_ids:
     return output_parts, long_running_function_ids
 
-  if state == TaskState.input_required:
+  if state == TaskState.TASK_STATE_INPUT_REQUIRED:
     args_key = "input_required"
     function_name = MOCK_FUNCTION_CALL_FOR_REQUIRED_USER_INPUT
-  elif state == TaskState.auth_required:
+  elif state == TaskState.TASK_STATE_AUTH_REQUIRED:
     args_key = "auth_required"
     function_name = MOCK_FUNCTION_CALL_FOR_REQUIRED_USER_AUTH
   else:
@@ -367,8 +372,8 @@ def convert_a2a_task_to_event(
           artifact_parts, part_converter
       )
     if a2a_task.status.message and (
-        a2a_task.status.state == TaskState.input_required
-        or a2a_task.status.state == TaskState.auth_required
+        a2a_task.status.state == TaskState.TASK_STATE_INPUT_REQUIRED
+        or a2a_task.status.state == TaskState.TASK_STATE_AUTH_REQUIRED
     ):
       event_actions = _merge_event_actions(
           event_actions,

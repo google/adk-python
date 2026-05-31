@@ -17,7 +17,7 @@ from __future__ import annotations
 
 from typing import Union
 
-from a2a.client.middleware import ClientCallContext
+from a2a.client.client import ClientCallContext
 from a2a.extensions.common import HTTP_EXTENSION_HEADER
 from a2a.types import Message as A2AMessage
 from google.adk.a2a.agent.config import ParametersConfig

@@ -22,9 +22,12 @@ from typing import Optional
 
 from a2a.types import AgentCapabilities
 from a2a.types import AgentCard
+from a2a.types import AgentInterface
 from a2a.types import AgentProvider
 from a2a.types import AgentSkill
 from a2a.types import SecurityScheme
+from a2a.utils.constants import PROTOCOL_VERSION_CURRENT
+from a2a.utils.constants import TransportProtocol
 
 from ...agents.base_agent import BaseAgent
 from ...agents.llm_agent import LlmAgent
@@ -83,20 +86,32 @@ class AgentCardBuilder:
       sub_agent_skills = await _build_sub_agent_skills(self._agent)
       all_skills = primary_skills + sub_agent_skills
 
-      return AgentCard(
+      card = AgentCard(
           name=self._agent.name,
           description=self._agent.description or 'An ADK Agent',
-          doc_url=self._doc_url,
-          url=f"{self._rpc_url.rstrip('/')}",
+          documentation_url=self._doc_url or '',
           version=self._agent_version,
           capabilities=self._capabilities,
           skills=all_skills,
           default_input_modes=['text/plain'],
           default_output_modes=['text/plain'],
-          supports_authenticated_extended_card=False,
           provider=self._provider,
-          security_schemes=self._security_schemes,
       )
+
+      if self._security_schemes:
+        for name, scheme in self._security_schemes.items():
+          card.security_schemes[name].CopyFrom(scheme)
+
+      # Set the RPC URL via supported_interfaces
+      card.supported_interfaces.append(
+          AgentInterface(
+              url=self._rpc_url.rstrip('/'),
+              protocol_binding=TransportProtocol.JSONRPC,
+              protocol_version=PROTOCOL_VERSION_CURRENT,
+          )
+      )
+
+      return card
     except Exception as e:
       raise RuntimeError(
           f'Failed to build agent card for {self._agent.name}: {e}'
@@ -172,7 +187,7 @@ async def _build_sub_agent_skills(agent: BaseNode) -> List[AgentSkill]:
             examples=skill.examples,
             input_modes=skill.input_modes,
             output_modes=skill.output_modes,
-            tags=[f'sub_agent:{sub_agent.name}'] + (skill.tags or []),
+            tags=[f'sub_agent:{sub_agent.name}'] + list(skill.tags),
         )
         sub_agent_skills.append(aggregated_skill)
     except Exception as e:
