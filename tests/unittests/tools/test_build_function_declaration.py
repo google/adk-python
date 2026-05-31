@@ -198,6 +198,18 @@ class TestBuildFunctionDeclarationLegacy:
     assert function_decl.parameters.properties['input_str'].type == 'STRING'
     assert 'tool_context' not in function_decl.parameters.properties
 
+  def test_empty_properties_required_is_empty_list_not_none(self):
+    """_get_required_fields must return [] not None when properties is empty."""
+    from google.adk.tools._function_parameter_parse_util import _get_required_fields
+    from google.genai import types as genai_types
+
+    # Schema with no properties — previously returned None (bare `return`), causing
+    # TypeError: 'NoneType' object is not iterable on downstream iteration.
+    schema = genai_types.Schema(type='OBJECT', properties={})
+    result = _get_required_fields(schema)
+    assert result == [], f'Expected [], got {result!r}'
+    _ = list(result)  # must not raise TypeError
+
   def test_basemodel(self):
     class SimpleFunction(BaseModel):
       input_str: str
