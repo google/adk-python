@@ -1,0 +1,247 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+from __future__ import annotations
+
+import json
+import logging
+import ssl
+from typing import Any
+from typing import Callable
+from typing import Dict
+from typing import Final
+from typing import List
+from typing import Literal
+from typing import Optional
+from typing import Union
+
+from typing_extensions import override
+import yaml
+
+from ....agents.readonly_context import ReadonlyContext
+from ....auth.auth_credential import AuthCredential
+from ....auth.auth_schemes import AuthScheme
+from ....auth.auth_tool import AuthConfig
+from ...base_toolset import BaseToolset
+from ...base_toolset import ToolPredicate
+from .openapi_spec_parser import OpenApiSpecParser
+from .rest_api_tool import RestApiTool
+
+logger = logging.getLogger("google_adk." + __name__)
+
+
+class OpenAPIToolset(BaseToolset):
+  """Class for parsing OpenAPI spec into a list of RestApiTool.
+
+  Usage::
+
+    # Initialize OpenAPI toolset from a spec string.
+    openapi_toolset = OpenAPIToolset(spec_str=openapi_spec_str,
+      spec_str_type="json")
+    # Or, initialize OpenAPI toolset from a spec dictionary.
+    openapi_toolset = OpenAPIToolset(spec_dict=openapi_spec_dict)
+
+    # Add all tools to an agent.
+    agent = Agent(
+      tools=[*openapi_toolset.get_tools()]
+    )
+    # Or, add a single tool to an agent.
+    agent = Agent(
+      tools=[openapi_toolset.get_tool('tool_name')]
+    )
+  """
+
+  def __init__(
+      self,
+      *,
+      spec_dict: Optional[Dict[str, Any]] = None,
+      spec_str: Optional[str] = None,
+      spec_str_type: Literal["json", "yaml"] = "json",
+      auth_scheme: Optional[AuthScheme] = None,
+      auth_credential: Optional[AuthCredential] = None,
+      credential_key: Optional[str] = None,
+      tool_filter: Optional[Union[ToolPredicate, List[str]]] = None,
+      tool_name_prefix: Optional[str] = None,
+      ssl_verify: Optional[Union[bool, str, ssl.SSLContext]] = None,
+      header_provider: Optional[
+          Callable[[ReadonlyContext], Dict[str, str]]
+      ] = None,
+      preserve_property_names: bool = False,
+  ):
+    """Initializes the OpenAPIToolset.
+
+    Usage::
+
+      # Initialize OpenAPI toolset from a spec string.
+      openapi_toolset = OpenAPIToolset(spec_str=openapi_spec_str,
+        spec_str_type="json")
+      # Or, initialize OpenAPI toolset from a spec dictionary.
+      openapi_toolset = OpenAPIToolset(spec_dict=openapi_spec_dict)
+
+      # Add all tools to an agent.
+      agent = Agent(
+        tools=[*openapi_toolset.get_tools()]
+      )
+      # Or, add a single tool to an agent.
+      agent = Agent(
+        tools=[openapi_toolset.get_tool('tool_name')]
+      )
+
+    Args:
+      spec_dict: The OpenAPI spec dictionary. If provided, it will be used
+        instead of loading the spec from a string.
+      spec_str: The OpenAPI spec string in JSON or YAML format. It will be used
+        when spec_dict is not provided.
+      spec_str_type: The type of the OpenAPI spec string. Can be "json" or
+        "yaml".
+      auth_scheme: The auth scheme to use for all tools. Use AuthScheme or use
+        helpers in ``google.adk.tools.openapi_tool.auth.auth_helpers``
+      auth_credential: The auth credential to use for all tools. Use
+        AuthCredential or use helpers in
+        ``google.adk.tools.openapi_tool.auth.auth_helpers``
+      credential_key: Optional stable key used for interactive auth and
+        credential caching across all tools in this toolset.
+      tool_filter: The filter used to filter the tools in the toolset. It can be
+        either a tool predicate or a list of tool names of the tools to expose.
+      tool_name_prefix: The prefix to prepend to the names of the tools returned
+        by the toolset. Useful when multiple OpenAPI specs have tools with
+        similar names.
+      ssl_verify: SSL certificate verification option for all tools. Can be:
+        - None: Use default verification (True)
+        - True: Verify SSL certificates using system CA
+        - False: Disable SSL verification (insecure, not recommended)
+        - str: Path to a CA bundle file or directory for custom CA
+        - ssl.SSLContext: Custom SSL context for advanced configuration
+        This is useful for enterprise environments where requests go through
+        a TLS-intercepting proxy with a custom CA certificate.
+      header_provider: A callable that returns a dictionary of headers to be
+        included in API requests. The callable receives the ReadonlyContext as
+        an argument, allowing dynamic header generation based on the current
+        context. Useful for adding custom headers like correlation IDs,
+        authentication tokens, or other request metadata.
+      preserve_property_names: If True, preserve the original property names
+        from the OpenAPI spec instead of converting them to snake_case. This
+        is useful when calling APIs that expect camelCase or other
+        non-snake_case parameter names in the request. Defaults to False for
+        backward compatibility.
+    """
+    super().__init__(tool_filter=tool_filter, tool_name_prefix=tool_name_prefix)
+    self._header_provider = header_provider
+    self._auth_scheme = auth_scheme
+    self._auth_credential = auth_credential
+    self._preserve_property_names = preserve_property_names
+    # Store auth config as instance variable so ADK can populate
+    # exchanged_auth_credential in-place before calling get_tools()
+    self._auth_config: Optional[AuthConfig] = (
+        AuthConfig(
+            auth_scheme=auth_scheme,
+            raw_auth_credential=auth_credential,
+            credential_key=credential_key,
+        )
+        if auth_scheme
+        else None
+    )
+    if not spec_dict:
+      spec_dict = self._load_spec(spec_str, spec_str_type)
+    self._ssl_verify = ssl_verify
+    self._tools: Final[List[RestApiTool]] = list(self._parse(spec_dict))
+    if auth_scheme or auth_credential:
+      self._configure_auth_all(auth_scheme, auth_credential)
+    if credential_key:
+      self._configure_credential_key_all(credential_key)
+
+  def _configure_auth_all(
+      self, auth_scheme: AuthScheme, auth_credential: AuthCredential
+  ):
+    """Configure auth scheme and credential for all tools."""
+
+    for tool in self._tools:
+      if auth_scheme:
+        tool.configure_auth_scheme(auth_scheme)
+      if auth_credential:
+        tool.configure_auth_credential(auth_credential)
+
+  def _configure_credential_key_all(self, credential_key: str):
+    """Configure credential key for all tools."""
+    for tool in self._tools:
+      tool.configure_credential_key(credential_key)
+
+  def configure_ssl_verify_all(
+      self, ssl_verify: Optional[Union[bool, str, ssl.SSLContext]] = None
+  ):
+    """Configure SSL certificate verification for all tools.
+
+    This is useful for enterprise environments where requests go through a
+    TLS-intercepting proxy with a custom CA certificate.
+
+    Args:
+        ssl_verify: SSL certificate verification option. Can be:
+          - None: Use default verification (True)
+          - True: Verify SSL certificates using system CA
+          - False: Disable SSL verification (insecure, not recommended)
+          - str: Path to a CA bundle file or directory for custom CA
+          - ssl.SSLContext: Custom SSL context for advanced configuration
+    """
+    self._ssl_verify = ssl_verify
+    for tool in self._tools:
+      tool.configure_ssl_verify(ssl_verify)
+
+  @override
+  async def get_tools(
+      self, readonly_context: Optional[ReadonlyContext] = None
+  ) -> List[RestApiTool]:
+    """Get all tools in the toolset."""
+    return [
+        tool
+        for tool in self._tools
+        if self._is_tool_selected(tool, readonly_context)
+    ]
+
+  def get_tool(self, tool_name: str) -> Optional[RestApiTool]:
+    """Get a tool by name."""
+    matching_tool = filter(lambda t: t.name == tool_name, self._tools)
+    return next(matching_tool, None)
+
+  def _load_spec(
+      self, spec_str: str, spec_type: Literal["json", "yaml"]
+  ) -> Dict[str, Any]:
+    """Loads the OpenAPI spec string into a dictionary."""
+    if spec_type == "json":
+      return json.loads(spec_str)
+    elif spec_type == "yaml":
+      return yaml.safe_load(spec_str)
+    else:
+      raise ValueError(f"Unsupported spec type: {spec_type}")
+
+  def _parse(self, openapi_spec_dict: Dict[str, Any]) -> List[RestApiTool]:
+    """Parse OpenAPI spec into a list of RestApiTool."""
+    parser = OpenApiSpecParser(
+        preserve_property_names=self._preserve_property_names
+    )
+    operations = parser.parse(openapi_spec_dict)
+
+    tools = []
+    for o in operations:
+      tool = RestApiTool.from_parsed_operation(
+          o,
+          ssl_verify=self._ssl_verify,
+          header_provider=self._header_provider,
+      )
+      logger.info("Parsed tool: %s", tool.name)
+      tools.append(tool)
+    return tools
+
+  @override
+  async def close(self):
+    pass

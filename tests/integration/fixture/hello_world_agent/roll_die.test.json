@@ -1,0 +1,143 @@
+{
+  "eval_set_id": "56540925-a5ff-49fe-a4e1-589fe78066f2",
+  "name": "56540925-a5ff-49fe-a4e1-589fe78066f2",
+  "description": null,
+  "eval_cases": [
+    {
+      "eval_id": "tests/integration/fixture/hello_world_agent/roll_die.test.json",
+      "conversation": [
+        {
+          "invocation_id": "b01f67f0-9f23-44d6-bbe4-36ea235cb9fb",
+          "user_content": {
+            "parts": [
+              {
+                "video_metadata": null,
+                "thought": null,
+                "code_execution_result": null,
+                "executable_code": null,
+                "file_data": null,
+                "function_call": null,
+                "function_response": null,
+                "inline_data": null,
+                "text": "Hi who are you?"
+              }
+            ],
+            "role": "user"
+          },
+          "final_response": {
+            "parts": [
+              {
+                "video_metadata": null,
+                "thought": null,
+                "code_execution_result": null,
+                "executable_code": null,
+                "file_data": null,
+                "function_call": null,
+                "function_response": null,
+                "inline_data": null,
+                "text": "I am a data processing agent. I can roll dice and check if the results are prime numbers. What would you like me to do? \n"
+              }
+            ],
+            "role": "model"
+          },
+          "intermediate_data": {
+            "tool_uses": [],
+            "intermediate_responses": []
+          },
+          "creation_timestamp": 1747341775.8937013
+        },
+        {
+          "invocation_id": "13be0093-ac29-4828-98c6-5bbd570c010c",
+          "user_content": {
+            "parts": [
+              {
+                "video_metadata": null,
+                "thought": null,
+                "code_execution_result": null,
+                "executable_code": null,
+                "file_data": null,
+                "function_call": null,
+                "function_response": null,
+                "inline_data": null,
+                "text": "What can you do?"
+              }
+            ],
+            "role": "user"
+          },
+          "final_response": {
+            "parts": [
+              {
+                "video_metadata": null,
+                "thought": null,
+                "code_execution_result": null,
+                "executable_code": null,
+                "file_data": null,
+                "function_call": null,
+                "function_response": null,
+                "inline_data": null,
+                "text": "I can roll dice for you of different sizes, and I can check if the results are prime numbers.  I can also remember previous rolls if you'd like to check those for primes as well.  What would you like me to do? \n"
+              }
+            ],
+            "role": "model"
+          },
+          "intermediate_data": {
+            "tool_uses": [],
+            "intermediate_responses": []
+          },
+          "creation_timestamp": 1747341775.8937378
+        },
+        {
+          "invocation_id": "7deda353-c936-4c21-b242-9fa75e45b6a7",
+          "user_content": {
+            "parts": [
+              {
+                "video_metadata": null,
+                "thought": null,
+                "code_execution_result": null,
+                "executable_code": null,
+                "file_data": null,
+                "function_call": null,
+                "function_response": null,
+                "inline_data": null,
+                "text": "Can you roll a die with 6 sides"
+              }
+            ],
+            "role": "user"
+          },
+          "final_response": {
+            "parts": [
+              {
+                "video_metadata": null,
+                "thought": null,
+                "code_execution_result": null,
+                "executable_code": null,
+                "file_data": null,
+                "function_call": null,
+                "function_response": null,
+                "inline_data": null,
+                "text": null
+              }
+            ],
+            "role": "model"
+          },
+          "intermediate_data": {
+            "tool_uses": [
+              {
+                "id": null,
+                "args": {
+                  "sides": 6
+                },
+                "name": "roll_die"
+              }
+            ],
+            "intermediate_responses": []
+          },
+          "creation_timestamp": 1747341775.8937788
+        }
+      ],
+      "session_input": null,
+      "creation_timestamp": 1747341775.8937826
+    }
+  ],
+  "creation_timestamp": 1747341775.8937957
+}

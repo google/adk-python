@@ -1,0 +1,229 @@
+{
+  "eval_set_id": "a1157c01-851f-48a8-b956-83cf7f463510",
+  "name": "a1157c01-851f-48a8-b956-83cf7f463510",
+  "description": null,
+  "eval_cases": [
+    {
+      "eval_id": "tests/integration/fixture/ecommerce_customer_service_agent/order_query.test.json",
+      "conversation": [
+        {
+          "invocation_id": "38d54523-d789-4873-8cc0-d38826c7feb4",
+          "user_content": {
+            "parts": [
+              {
+                "video_metadata": null,
+                "thought": null,
+                "code_execution_result": null,
+                "executable_code": null,
+                "file_data": null,
+                "function_call": null,
+                "function_response": null,
+                "inline_data": null,
+                "text": "Send an email to user user_a whose email address is alice@example.com"
+              }
+            ],
+            "role": "user"
+          },
+          "final_response": {
+            "parts": [
+              {
+                "video_metadata": null,
+                "thought": null,
+                "code_execution_result": null,
+                "executable_code": null,
+                "file_data": null,
+                "function_call": null,
+                "function_response": null,
+                "inline_data": null,
+                "text": "Email sent to alice@example.com for user id user_a."
+              }
+            ],
+            "role": "model"
+          },
+          "intermediate_data": {
+            "tool_uses": [
+              {
+                "id": null,
+                "args": {
+                  "email": "alice@example.com",
+                  "user_id": "user_a"
+                },
+                "name": "send_email"
+              }
+            ],
+            "intermediate_responses": []
+          },
+          "creation_timestamp": 1747341706.6240807
+        },
+        {
+          "invocation_id": "916393ab-0bce-4cb0-98de-6573d4e8e25c",
+          "user_content": {
+            "parts": [
+              {
+                "video_metadata": null,
+                "thought": null,
+                "code_execution_result": null,
+                "executable_code": null,
+                "file_data": null,
+                "function_call": null,
+                "function_response": null,
+                "inline_data": null,
+                "text": "Can you tell me the status of my order with ID 1?"
+              }
+            ],
+            "role": "user"
+          },
+          "final_response": {
+            "parts": [
+              {
+                "video_metadata": null,
+                "thought": null,
+                "code_execution_result": null,
+                "executable_code": null,
+                "file_data": null,
+                "function_call": null,
+                "function_response": null,
+                "inline_data": null,
+                "text": "Your order with ID 1 is FINISHED."
+              }
+            ],
+            "role": "model"
+          },
+          "intermediate_data": {
+            "tool_uses": [
+              {
+                "id": null,
+                "args": {
+                  "order_id": "1"
+                },
+                "name": "get_order_status"
+              }
+            ],
+            "intermediate_responses": []
+          },
+          "creation_timestamp": 1747341706.6241167
+        },
+        {
+          "invocation_id": "511b23d9-56f9-423b-9c31-7626f3411c32",
+          "user_content": {
+            "parts": [
+              {
+                "video_metadata": null,
+                "thought": null,
+                "code_execution_result": null,
+                "executable_code": null,
+                "file_data": null,
+                "function_call": null,
+                "function_response": null,
+                "inline_data": null,
+                "text": "Cancel all pending order for the user with user id user_a"
+              }
+            ],
+            "role": "user"
+          },
+          "final_response": {
+            "parts": [
+              {
+                "video_metadata": null,
+                "thought": null,
+                "code_execution_result": null,
+                "executable_code": null,
+                "file_data": null,
+                "function_call": null,
+                "function_response": null,
+                "inline_data": null,
+                "text": "I have checked your orders and order 4 was in pending status, so I have cancelled it. Order 1 was already finished and couldn't be cancelled.\n"
+              }
+            ],
+            "role": "model"
+          },
+          "intermediate_data": {
+            "tool_uses": [
+              {
+                "id": null,
+                "args": {
+                  "user_id": "user_a"
+                },
+                "name": "get_order_ids_for_user"
+              },
+              {
+                "id": null,
+                "args": {
+                  "order_id": "1"
+                },
+                "name": "get_order_status"
+              },
+              {
+                "id": null,
+                "args": {
+                  "order_id": "4"
+                },
+                "name": "get_order_status"
+              },
+              {
+                "id": null,
+                "args": {
+                  "order_id": "4"
+                },
+                "name": "cancel_order"
+              }
+            ],
+            "intermediate_responses": []
+          },
+          "creation_timestamp": 1747341706.6241703
+        },
+        {
+          "invocation_id": "dcdf4b6d-96dd-4602-8c14-0563c6f6b5d0",
+          "user_content": {
+            "parts": [
+              {
+                "video_metadata": null,
+                "thought": null,
+                "code_execution_result": null,
+                "executable_code": null,
+                "file_data": null,
+                "function_call": null,
+                "function_response": null,
+                "inline_data": null,
+                "text": "What orders have I placed under the username user_b?"
+              }
+            ],
+            "role": "user"
+          },
+          "final_response": {
+            "parts": [
+              {
+                "video_metadata": null,
+                "thought": null,
+                "code_execution_result": null,
+                "executable_code": null,
+                "file_data": null,
+                "function_call": null,
+                "function_response": null,
+                "inline_data": null,
+                "text": "User user_b has placed one order with order ID 2.\n"
+              }
+            ],
+            "role": "model"
+          },
+          "intermediate_data": {
+            "tool_uses": [
+              {
+                "id": null,
+                "args": {
+                  "user_id": "user_b"
+                },
+                "name": "get_order_ids_for_user"
+              }
+            ],
+            "intermediate_responses": []
+          },
+          "creation_timestamp": 1747341706.624196
+        }
+      ],
+      "session_input": null,
+      "creation_timestamp": 1747341706.6242023
+    }
+  ],
+  "creation_timestamp": 1747341706.6242158
+}

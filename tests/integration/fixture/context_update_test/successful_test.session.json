@@ -1,0 +1,582 @@
+{
+  "id": "ead43200-b575-4241-9248-233b4be4f29a",
+  "context": {
+    "_time": "2024-12-01 09:02:43.531503",
+    "data_one": "RRRR",
+    "data_two": "3.141529",
+    "data_three": [
+      "apple",
+      "banana"
+    ],
+    "data_four": [
+      "1",
+      "hello",
+      "3.14"
+    ]
+  },
+  "events": [
+    {
+      "invocation_id": "6BGrtKJu",
+      "author": "user",
+      "content": {
+        "parts": [
+          {
+            "text": "hi"
+          }
+        ],
+        "role": "user"
+      },
+      "options": {},
+      "id": "ltzQTqR4",
+      "timestamp": 1733043686.8428597
+    },
+    {
+      "invocation_id": "6BGrtKJu",
+      "author": "root_agent",
+      "content": {
+        "parts": [
+          {
+            "text": "Hello! 👋  How can I help you today? \n"
+          }
+        ],
+        "role": "model"
+      },
+      "options": {
+        "partial": false
+      },
+      "id": "ClSROx8b",
+      "timestamp": 1733043688.1030986
+    },
+    {
+      "invocation_id": "M3dUcVa8",
+      "author": "user",
+      "content": {
+        "parts": [
+          {
+            "text": "update data_one to be RRRR, data_two to be 3.141529, data_three to be apple and banana, data_four to be 1, hello, and 3.14"
+          }
+        ],
+        "role": "user"
+      },
+      "options": {},
+      "id": "yxigGwIZ",
+      "timestamp": 1733043745.9900541
+    },
+    {
+      "invocation_id": "M3dUcVa8",
+      "author": "root_agent",
+      "content": {
+        "parts": [
+          {
+            "function_call": {
+              "args": {
+                "data_four": [
+                  "1",
+                  "hello",
+                  "3.14"
+                ],
+                "data_two": "3.141529",
+                "data_three": [
+                  "apple",
+                  "banana"
+                ],
+                "data_one": "RRRR"
+              },
+              "name": "update_fc"
+            }
+          }
+        ],
+        "role": "model"
+      },
+      "options": {
+        "partial": false
+      },
+      "id": "8V6de8th",
+      "timestamp": 1733043747.4545543
+    },
+    {
+      "invocation_id": "M3dUcVa8",
+      "author": "root_agent",
+      "content": {
+        "parts": [
+          {
+            "function_response": {
+              "name": "update_fc",
+              "response": {}
+            }
+          }
+        ],
+        "role": "user"
+      },
+      "options": {
+        "update_context": {
+          "data_one": "RRRR",
+          "data_two": "3.141529",
+          "data_three": [
+            "apple",
+            "banana"
+          ],
+          "data_four": [
+            "1",
+            "hello",
+            "3.14"
+          ]
+        },
+        "function_call_event_id": "8V6de8th"
+      },
+      "id": "dkTj5v8B",
+      "timestamp": 1733043747.457031
+    },
+    {
+      "invocation_id": "M3dUcVa8",
+      "author": "root_agent",
+      "content": {
+        "parts": [
+          {
+            "text": "OK. I've updated the data. Anything else? \n"
+          }
+        ],
+        "role": "model"
+      },
+      "options": {
+        "partial": false
+      },
+      "id": "OZ77XR41",
+      "timestamp": 1733043748.7901294
+    }
+  ],
+  "past_events": [],
+  "pending_events": {},
+  "artifacts": {},
+  "event_logs": [
+    {
+      "invocation_id": "6BGrtKJu",
+      "event_id": "ClSROx8b",
+      "model_request": {
+        "model": "gemini-2.5-flash",
+        "contents": [
+          {
+            "parts": [
+              {
+                "text": "hi"
+              }
+            ],
+            "role": "user"
+          }
+        ],
+        "config": {
+          "system_instruction": "You are an agent. Your name is root_agent.\nCall tools",
+          "tools": [
+            {
+              "function_declarations": [
+                {
+                  "description": "Hello",
+                  "name": "update_fc",
+                  "parameters": {
+                    "type": "OBJECT",
+                    "properties": {
+                      "data_one": {
+                        "type": "STRING"
+                      },
+                      "data_two": {
+                        "type": "STRING"
+                      },
+                      "data_three": {
+                        "type": "ARRAY",
+                        "items": {
+                          "type": "STRING"
+                        }
+                      },
+                      "data_four": {
+                        "type": "ARRAY",
+                        "items": {
+                          "any_of": [
+                            {
+                              "type": "INTEGER"
+                            },
+                            {
+                              "type": "NUMBER"
+                            },
+                            {
+                              "type": "STRING"
+                            }
+                          ],
+                          "type": "STRING"
+                        }
+                      }
+                    }
+                  }
+                }
+              ]
+            }
+          ]
+        }
+      },
+      "model_response": {
+        "candidates": [
+          {
+            "content": {
+              "parts": [
+                {
+                  "text": "Hello! 👋  How can I help you today? \n"
+                }
+              ],
+              "role": "model"
+            },
+            "avg_logprobs": -0.15831730915949896,
+            "finish_reason": "STOP",
+            "safety_ratings": [
+              {
+                "category": "HARM_CATEGORY_HATE_SPEECH",
+                "probability": "NEGLIGIBLE",
+                "probability_score": 0.071777344,
+                "severity": "HARM_SEVERITY_NEGLIGIBLE",
+                "severity_score": 0.07080078
+              },
+              {
+                "category": "HARM_CATEGORY_DANGEROUS_CONTENT",
+                "probability": "NEGLIGIBLE",
+                "probability_score": 0.16308594,
+                "severity": "HARM_SEVERITY_NEGLIGIBLE",
+                "severity_score": 0.14160156
+              },
+              {
+                "category": "HARM_CATEGORY_HARASSMENT",
+                "probability": "NEGLIGIBLE",
+                "probability_score": 0.09423828,
+                "severity": "HARM_SEVERITY_NEGLIGIBLE",
+                "severity_score": 0.037841797
+              },
+              {
+                "category": "HARM_CATEGORY_SEXUALLY_EXPLICIT",
+                "probability": "NEGLIGIBLE",
+                "probability_score": 0.059326172,
+                "severity": "HARM_SEVERITY_NEGLIGIBLE",
+                "severity_score": 0.02368164
+              }
+            ]
+          }
+        ],
+        "model_version": "gemini-2.5-flash",
+        "usage_metadata": {
+          "candidates_token_count": 13,
+          "prompt_token_count": 32,
+          "total_token_count": 45
+        }
+      }
+    },
+    {
+      "invocation_id": "M3dUcVa8",
+      "event_id": "8V6de8th",
+      "model_request": {
+        "model": "gemini-2.5-flash",
+        "contents": [
+          {
+            "parts": [
+              {
+                "text": "hi"
+              }
+            ],
+            "role": "user"
+          },
+          {
+            "parts": [
+              {
+                "text": "Hello! 👋  How can I help you today? \n"
+              }
+            ],
+            "role": "model"
+          },
+          {
+            "parts": [
+              {
+                "text": "update data_one to be RRRR, data_two to be 3.141529, data_three to be apple and banana, data_four to be 1, hello, and 3.14"
+              }
+            ],
+            "role": "user"
+          }
+        ],
+        "config": {
+          "system_instruction": "You are an agent. Your name is root_agent.\nCall tools",
+          "tools": [
+            {
+              "function_declarations": [
+                {
+                  "description": "Hello",
+                  "name": "update_fc",
+                  "parameters": {
+                    "type": "OBJECT",
+                    "properties": {
+                      "data_one": {
+                        "type": "STRING"
+                      },
+                      "data_two": {
+                        "type": "STRING"
+                      },
+                      "data_three": {
+                        "type": "ARRAY",
+                        "items": {
+                          "type": "STRING"
+                        }
+                      },
+                      "data_four": {
+                        "type": "ARRAY",
+                        "items": {
+                          "any_of": [
+                            {
+                              "type": "INTEGER"
+                            },
+                            {
+                              "type": "NUMBER"
+                            },
+                            {
+                              "type": "STRING"
+                            }
+                          ],
+                          "type": "STRING"
+                        }
+                      }
+                    }
+                  }
+                }
+              ]
+            }
+          ]
+        }
+      },
+      "model_response": {
+        "candidates": [
+          {
+            "content": {
+              "parts": [
+                {
+                  "function_call": {
+                    "args": {
+                      "data_four": [
+                        "1",
+                        "hello",
+                        "3.14"
+                      ],
+                      "data_two": "3.141529",
+                      "data_three": [
+                        "apple",
+                        "banana"
+                      ],
+                      "data_one": "RRRR"
+                    },
+                    "name": "update_fc"
+                  }
+                }
+              ],
+              "role": "model"
+            },
+            "avg_logprobs": -2.100960955431219e-6,
+            "finish_reason": "STOP",
+            "safety_ratings": [
+              {
+                "category": "HARM_CATEGORY_HATE_SPEECH",
+                "probability": "NEGLIGIBLE",
+                "probability_score": 0.12158203,
+                "severity": "HARM_SEVERITY_NEGLIGIBLE",
+                "severity_score": 0.13671875
+              },
+              {
+                "category": "HARM_CATEGORY_DANGEROUS_CONTENT",
+                "probability": "NEGLIGIBLE",
+                "probability_score": 0.421875,
+                "severity": "HARM_SEVERITY_LOW",
+                "severity_score": 0.24511719
+              },
+              {
+                "category": "HARM_CATEGORY_HARASSMENT",
+                "probability": "NEGLIGIBLE",
+                "probability_score": 0.15722656,
+                "severity": "HARM_SEVERITY_NEGLIGIBLE",
+                "severity_score": 0.072753906
+              },
+              {
+                "category": "HARM_CATEGORY_SEXUALLY_EXPLICIT",
+                "probability": "NEGLIGIBLE",
+                "probability_score": 0.083984375,
+                "severity": "HARM_SEVERITY_NEGLIGIBLE",
+                "severity_score": 0.03564453
+              }
+            ]
+          }
+        ],
+        "model_version": "gemini-2.5-flash",
+        "usage_metadata": {
+          "candidates_token_count": 32,
+          "prompt_token_count": 94,
+          "total_token_count": 126
+        }
+      }
+    },
+    {
+      "invocation_id": "M3dUcVa8",
+      "event_id": "OZ77XR41",
+      "model_request": {
+        "model": "gemini-2.5-flash",
+        "contents": [
+          {
+            "parts": [
+              {
+                "text": "hi"
+              }
+            ],
+            "role": "user"
+          },
+          {
+            "parts": [
+              {
+                "text": "Hello! 👋  How can I help you today? \n"
+              }
+            ],
+            "role": "model"
+          },
+          {
+            "parts": [
+              {
+                "text": "update data_one to be RRRR, data_two to be 3.141529, data_three to be apple and banana, data_four to be 1, hello, and 3.14"
+              }
+            ],
+            "role": "user"
+          },
+          {
+            "parts": [
+              {
+                "function_call": {
+                  "args": {
+                    "data_four": [
+                      "1",
+                      "hello",
+                      "3.14"
+                    ],
+                    "data_two": "3.141529",
+                    "data_three": [
+                      "apple",
+                      "banana"
+                    ],
+                    "data_one": "RRRR"
+                  },
+                  "name": "update_fc"
+                }
+              }
+            ],
+            "role": "model"
+          },
+          {
+            "parts": [
+              {
+                "function_response": {
+                  "name": "update_fc",
+                  "response": {}
+                }
+              }
+            ],
+            "role": "user"
+          }
+        ],
+        "config": {
+          "system_instruction": "You are an agent. Your name is root_agent.\nCall tools",
+          "tools": [
+            {
+              "function_declarations": [
+                {
+                  "description": "Hello",
+                  "name": "update_fc",
+                  "parameters": {
+                    "type": "OBJECT",
+                    "properties": {
+                      "data_one": {
+                        "type": "STRING"
+                      },
+                      "data_two": {
+                        "type": "STRING"
+                      },
+                      "data_three": {
+                        "type": "ARRAY",
+                        "items": {
+                          "type": "STRING"
+                        }
+                      },
+                      "data_four": {
+                        "type": "ARRAY",
+                        "items": {
+                          "any_of": [
+                            {
+                              "type": "INTEGER"
+                            },
+                            {
+                              "type": "NUMBER"
+                            },
+                            {
+                              "type": "STRING"
+                            }
+                          ],
+                          "type": "STRING"
+                        }
+                      }
+                    }
+                  }
+                }
+              ]
+            }
+          ]
+        }
+      },
+      "model_response": {
+        "candidates": [
+          {
+            "content": {
+              "parts": [
+                {
+                  "text": "OK. I've updated the data. Anything else? \n"
+                }
+              ],
+              "role": "model"
+            },
+            "avg_logprobs": -0.22089435373033797,
+            "finish_reason": "STOP",
+            "safety_ratings": [
+              {
+                "category": "HARM_CATEGORY_HATE_SPEECH",
+                "probability": "NEGLIGIBLE",
+                "probability_score": 0.04663086,
+                "severity": "HARM_SEVERITY_NEGLIGIBLE",
+                "severity_score": 0.09423828
+              },
+              {
+                "category": "HARM_CATEGORY_DANGEROUS_CONTENT",
+                "probability": "NEGLIGIBLE",
+                "probability_score": 0.18554688,
+                "severity": "HARM_SEVERITY_NEGLIGIBLE",
+                "severity_score": 0.111328125
+              },
+              {
+                "category": "HARM_CATEGORY_HARASSMENT",
+                "probability": "NEGLIGIBLE",
+                "probability_score": 0.071777344,
+                "severity": "HARM_SEVERITY_NEGLIGIBLE",
+                "severity_score": 0.03112793
+              },
+              {
+                "category": "HARM_CATEGORY_SEXUALLY_EXPLICIT",
+                "probability": "NEGLIGIBLE",
+                "probability_score": 0.043945313,
+                "severity": "HARM_SEVERITY_NEGLIGIBLE",
+                "severity_score": 0.057373047
+              }
+            ]
+          }
+        ],
+        "model_version": "gemini-2.5-flash",
+        "usage_metadata": {
+          "candidates_token_count": 14,
+          "prompt_token_count": 129,
+          "total_token_count": 143
+        }
+      }
+    }
+  ]
+}

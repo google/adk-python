@@ -1,0 +1,199 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+"""Handles agent transfer for LLM flow."""
+
+from __future__ import annotations
+
+import typing
+from typing import Any
+from typing import AsyncGenerator
+
+from typing_extensions import override
+
+from ...agents.invocation_context import InvocationContext
+from ...events.event import Event
+from ...models.llm_request import LlmRequest
+from ...tools.tool_context import ToolContext
+from ...tools.transfer_to_agent_tool import TransferToAgentTool
+from ._base_llm_processor import BaseLlmRequestProcessor
+
+if typing.TYPE_CHECKING:
+  from ...agents import BaseAgent
+  from ...agents import LlmAgent
+
+
+class _AgentTransferLlmRequestProcessor(BaseLlmRequestProcessor):
+  """Agent transfer request processor."""
+
+  @override
+  async def run_async(
+      self, invocation_context: InvocationContext, llm_request: LlmRequest
+  ) -> AsyncGenerator[Event, None]:
+    if not hasattr(invocation_context.agent, 'disallow_transfer_to_parent'):
+      return
+
+    transfer_targets = _get_transfer_targets(invocation_context.agent)
+    if not transfer_targets:
+      return
+
+    transfer_to_agent_tool = TransferToAgentTool(
+        agent_names=[agent.name for agent in transfer_targets]
+    )
+
+    llm_request.append_instructions([
+        _build_transfer_instructions(
+            transfer_to_agent_tool.name,
+            invocation_context.agent,
+            transfer_targets,
+        )
+    ])
+
+    tool_context = ToolContext(invocation_context)
+    await transfer_to_agent_tool.process_llm_request(
+        tool_context=tool_context, llm_request=llm_request
+    )
+
+    return
+    yield  # AsyncGenerator requires yield statement in function body.
+
+
+request_processor = _AgentTransferLlmRequestProcessor()
+
+
+def _build_target_agents_info(target_agent: Any) -> str:
+  # TODO: Refactor the annotation of the parameters
+  return f"""
+Agent name: {target_agent.name}
+Agent description: {target_agent.description}
+"""
+
+
+line_break = '\n'
+
+
+def _build_transfer_instruction_body(
+    tool_name: str,
+    target_agents: list[Any],
+) -> str:
+  """Build the core transfer instruction text.
+  TODO: Refactor the annotation of the parameters
+
+  This is the agent-tree-agnostic portion of transfer instructions. It
+  works with any objects having ``.name`` and ``.description`` attributes
+
+  Args:
+    tool_name: The name of the transfer tool (e.g. 'transfer_to_agent').
+    target_agents: Objects with ``.name`` and ``.description``.
+
+  Returns:
+    Instruction text for the LLM about agent transfers.
+  """
+  available_agent_names = [t.name for t in target_agents]
+  available_agent_names.sort()
+  formatted_agent_names = ', '.join(
+      f'`{name}`' for name in available_agent_names
+  )
+
+  return f"""
+You have a list of other agents to transfer to:
+
+{line_break.join([
+    _build_target_agents_info(target_agent) for target_agent in target_agents
+])}
+
+If you are the best to answer the question according to your description,
+you can answer it.
+
+If another agent is better for answering the question according to its
+description, call `{tool_name}` function to transfer the question to that
+agent. When transferring, do not generate any text other than the function
+call.
+
+**NOTE**: the only available agents for `{tool_name}` function are
+{formatted_agent_names}.
+"""
+
+
+def _build_transfer_instructions(
+    tool_name: str,
+    agent: 'LlmAgent',
+    target_agents: list['BaseAgent'],
+) -> str:
+  """Build instructions for agent transfer (agent-tree variant).
+
+  Delegates to ``_build_transfer_instruction_body`` for the core text,
+  then appends parent-agent-specific instructions if applicable.
+
+  Args:
+    tool_name: The name of the transfer tool (e.g. 'transfer_to_agent').
+    agent: The current agent that may initiate transfers.
+    target_agents: List of agents that can be transferred to.
+
+  Returns:
+    Instruction text for the LLM about agent transfers.
+  """
+  if agent.mode in ('task', 'single_turn'):
+    return ''
+
+  si = _build_transfer_instruction_body(tool_name, target_agents)
+
+  if agent.parent_agent and not agent.disallow_transfer_to_parent:
+    si += f"""
+If neither you nor the other agents are best for the question, transfer to your parent agent {agent.parent_agent.name}.
+"""
+  return si
+
+
+def _get_transfer_targets(agent: LlmAgent) -> list[BaseAgent]:
+  """Gets the list of agents that the current agent can transfer to.
+
+  The transfer targets include:
+  1.  Sub-agents of the current agent, excluding those in 'single_turn' mode.
+  2.  The parent agent, if it exists and the current agent does not disallow
+      transfer to the parent.
+  3.  Peer agents (other sub-agents of the parent), if the current agent does
+      not disallow transfer to peers.
+
+  Args:
+    agent: The LlmAgent for which to find transfer targets.
+
+  Returns:
+    A list of BaseAgent instances that are valid transfer targets.
+  """
+  result = []
+  result.extend([
+      sub_agent
+      for sub_agent in agent.sub_agents
+      if not hasattr(sub_agent, 'mode')
+      or sub_agent.mode not in ('single_turn', 'task')
+  ])
+
+  if not agent.parent_agent or not hasattr(
+      agent.parent_agent, 'disallow_transfer_to_parent'
+  ):
+    return result
+
+  if not agent.disallow_transfer_to_parent:
+    result.append(agent.parent_agent)
+
+  if not agent.disallow_transfer_to_peers:
+    result.extend([
+        peer_agent
+        for peer_agent in agent.parent_agent.sub_agents
+        if peer_agent.name != agent.name
+        and peer_agent.mode not in ('single_turn', 'task')
+    ])
+
+  return result

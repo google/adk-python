@@ -1,0 +1,64 @@
+{
+  "eval_set_id": "189d6856-9b90-4b9c-bda8-7cec899507ae",
+  "name": "189d6856-9b90-4b9c-bda8-7cec899507ae",
+  "description": null,
+  "eval_cases": [
+    {
+      "eval_id": "tests/integration/fixture/trip_planner_agent/test_files/trip_inquiry_sub_agent.test.json",
+      "conversation": [
+        {
+          "invocation_id": "1c2e8003-d19c-4912-b0ae-17b9d568f8fb",
+          "user_content": {
+            "parts": [
+              {
+                "video_metadata": null,
+                "thought": null,
+                "code_execution_result": null,
+                "executable_code": null,
+                "file_data": null,
+                "function_call": null,
+                "function_response": null,
+                "inline_data": null,
+                "text": "Based on my interests, where should I go, Yosemite national park or Los Angeles?"
+              }
+            ],
+            "role": "user"
+          },
+          "final_response": {
+            "parts": [
+              {
+                "video_metadata": null,
+                "thought": null,
+                "code_execution_result": null,
+                "executable_code": null,
+                "file_data": null,
+                "function_call": null,
+                "function_response": null,
+                "inline_data": null,
+                "text": "Given your interests in food, shopping, and museums, Los Angeles would be a better choice than Yosemite National Park. Yosemite is primarily focused on outdoor activities and natural landscapes, while Los Angeles offers a diverse range of culinary experiences, shopping districts, and world-class museums. I will now gather information to create an in-depth guide for your trip to Los Angeles.\n"
+              }
+            ],
+            "role": "model"
+          },
+          "intermediate_data": {
+            "tool_uses": [],
+            "intermediate_responses": []
+          },
+          "creation_timestamp": 1747339378.484014
+        }
+      ],
+      "session_input": {
+        "app_name": "trip_planner_agent",
+        "user_id": "test_user",
+        "state": {
+          "origin": "San Francisco",
+          "interests": "Food, Shopping, Museums",
+          "range": "1000 miles",
+          "cities": ""
+        }
+      },
+      "creation_timestamp": 1747339378.484044
+    }
+  ],
+  "creation_timestamp": 1747339378.484056
+}

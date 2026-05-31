@@ -1,0 +1,115 @@
+{
+  "eval_set_id": "4412cca6-dfcd-43ab-bbc5-9155380c7137",
+  "name": "4412cca6-dfcd-43ab-bbc5-9155380c7137",
+  "description": null,
+  "eval_cases": [
+    {
+      "eval_id": "tests/integration/fixture/home_automation_agent/test_files/simple_multi_turn_conversation.test.json",
+      "conversation": [
+        {
+          "invocation_id": "9f51a1ac-56a4-4b4a-9878-36ff1ae312ce",
+          "user_content": {
+            "parts": [
+              {
+                "video_metadata": null,
+                "thought": null,
+                "code_execution_result": null,
+                "executable_code": null,
+                "file_data": null,
+                "function_call": null,
+                "function_response": null,
+                "inline_data": null,
+                "text": "Turn off device_2 in the Bedroom."
+              }
+            ],
+            "role": "user"
+          },
+          "final_response": {
+            "parts": [
+              {
+                "video_metadata": null,
+                "thought": null,
+                "code_execution_result": null,
+                "executable_code": null,
+                "file_data": null,
+                "function_call": null,
+                "function_response": null,
+                "inline_data": null,
+                "text": "I have set the device 2 status to off."
+              }
+            ],
+            "role": "model"
+          },
+          "intermediate_data": {
+            "tool_uses": [
+              {
+                "id": null,
+                "args": {
+                  "location": "Bedroom",
+                  "device_id": "device_2",
+                  "status": "OFF"
+                },
+                "name": "set_device_info"
+              }
+            ],
+            "intermediate_responses": []
+          },
+          "creation_timestamp": 1747340791.7353904
+        },
+        {
+          "invocation_id": "c82d54d0-5fa8-4f79-a6dc-692090f0d42b",
+          "user_content": {
+            "parts": [
+              {
+                "video_metadata": null,
+                "thought": null,
+                "code_execution_result": null,
+                "executable_code": null,
+                "file_data": null,
+                "function_call": null,
+                "function_response": null,
+                "inline_data": null,
+                "text": "Turn on device_2 in the Bedroom."
+              }
+            ],
+            "role": "user"
+          },
+          "final_response": {
+            "parts": [
+              {
+                "video_metadata": null,
+                "thought": null,
+                "code_execution_result": null,
+                "executable_code": null,
+                "file_data": null,
+                "function_call": null,
+                "function_response": null,
+                "inline_data": null,
+                "text": "I have set the device 2 status to on."
+              }
+            ],
+            "role": "model"
+          },
+          "intermediate_data": {
+            "tool_uses": [
+              {
+                "id": null,
+                "args": {
+                  "location": "Bedroom",
+                  "status": "ON",
+                  "device_id": "device_2"
+                },
+                "name": "set_device_info"
+              }
+            ],
+            "intermediate_responses": []
+          },
+          "creation_timestamp": 1747340791.7354295
+        }
+      ],
+      "session_input": null,
+      "creation_timestamp": 1747340791.7354348
+    }
+  ],
+  "creation_timestamp": 1747340791.735446
+}

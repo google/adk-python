@@ -1,0 +1,12 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/google/adk-python/refs/heads/main/src/google/adk/agents/config_schemas/AgentConfig.json
+agent_class: LlmAgent
+model: gemini-2.5-flash
+name: prime_agent
+description: Handles checking if numbers are prime.
+instruction: |
+  You are responsible for checking whether numbers are prime.
+  When asked to check primes, you must call the check_prime tool with a list of integers.
+  Never attempt to determine prime numbers manually.
+  Return the prime number results to the root agent.
+tools:
+  - name: multi_agent_llm_config.check_prime

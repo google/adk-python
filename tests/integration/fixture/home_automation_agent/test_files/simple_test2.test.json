@@ -1,0 +1,65 @@
+{
+  "eval_set_id": "e141f90b-9e7e-4f06-94d7-bbe7e8080ead",
+  "name": "e141f90b-9e7e-4f06-94d7-bbe7e8080ead",
+  "description": null,
+  "eval_cases": [
+    {
+      "eval_id": "tests/integration/fixture/home_automation_agent/test_files/simple_test2.test.json",
+      "conversation": [
+        {
+          "invocation_id": "c35582f7-838a-460f-b783-039e278165e0",
+          "user_content": {
+            "parts": [
+              {
+                "video_metadata": null,
+                "thought": null,
+                "code_execution_result": null,
+                "executable_code": null,
+                "file_data": null,
+                "function_call": null,
+                "function_response": null,
+                "inline_data": null,
+                "text": "Turn off device_3 in the Bedroom."
+              }
+            ],
+            "role": "user"
+          },
+          "final_response": {
+            "parts": [
+              {
+                "video_metadata": null,
+                "thought": null,
+                "code_execution_result": null,
+                "executable_code": null,
+                "file_data": null,
+                "function_call": null,
+                "function_response": null,
+                "inline_data": null,
+                "text": "I have set the device_3 status to off."
+              }
+            ],
+            "role": "model"
+          },
+          "intermediate_data": {
+            "tool_uses": [
+              {
+                "id": null,
+                "args": {
+                  "location": "Bedroom",
+                  "device_id": "device_3",
+                  "status": "OFF"
+                },
+                "name": "set_device_info"
+              }
+            ],
+            "intermediate_responses": []
+          },
+          "creation_timestamp": 1747340814.8645504
+        }
+      ],
+      "session_input": null,
+      "creation_timestamp": 1747340814.86456
+    }
+  ],
+  "creation_timestamp": 1747340814.864572
+}
