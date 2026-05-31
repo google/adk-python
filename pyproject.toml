@@ -90,6 +90,7 @@ optional-dependencies.all = [
   "opentelemetry-resourcedetector-gcp>=1.9.0a0,<2",
   "pyarrow>=14",
   "python-dateutil>=2.9.0.post0,<3",
+  "redis>=5,<7",
   "sqlalchemy>=2,<3",
   "sqlalchemy-spanner>=1.14",
 ]
@@ -177,6 +178,7 @@ optional-dependencies.mcp = [
 ]
 
 optional-dependencies.otel-gcp = [ "opentelemetry-instrumentation-google-genai>=0.6b0,<1" ]
+optional-dependencies.redis = [ "redis>=5,<7" ]
 optional-dependencies.slack = [ "slack-bolt>=1.22" ]
 optional-dependencies.test = [
   "a2a-sdk>=0.3,<0.4",

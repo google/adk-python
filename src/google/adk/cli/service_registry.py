@@ -346,9 +346,18 @@ def _register_builtin_services(registry: ServiceRegistry) -> None:
     )
     return VertexAiMemoryBankService(**params)
 
+  def redis_memory_factory(uri: str, **kwargs):
+    from ..memory.redis_memory_service import RedisMemoryService
+
+    kwargs_copy = kwargs.copy()
+    kwargs_copy.pop("agents_dir", None)
+    return RedisMemoryService(redis_url=uri, **kwargs_copy)
+
   registry.register_memory_service("memory", memory_memory_factory)
   registry.register_memory_service("rag", rag_memory_factory)
   registry.register_memory_service("agentengine", agentengine_memory_factory)
+  for scheme in ["redis", "rediss"]:
+    registry.register_memory_service(scheme, redis_memory_factory)
 
   # -- A2A Task Store Services --
   def memory_task_store_factory(uri: str, **kwargs: Any) -> Any:

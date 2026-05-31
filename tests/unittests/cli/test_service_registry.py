@@ -39,6 +39,9 @@ def mock_services():
       patch(
           "google.adk.memory.vertex_ai_memory_bank_service.VertexAiMemoryBankService"
       ) as mock_agentengine_memory,
+      patch(
+          "google.adk.memory.redis_memory_service.RedisMemoryService"
+      ) as mock_redis_memory,
   ):
     yield {
         "vertex_session": mock_vertex_session,
@@ -47,6 +50,7 @@ def mock_services():
         "gcs_artifact": mock_gcs_artifact,
         "rag_memory": mock_rag_memory,
         "agentengine_memory": mock_agentengine_memory,
+        "redis_memory": mock_redis_memory,
     }
 
 
@@ -172,6 +176,22 @@ def test_create_memory_service_memory(registry):
   assert isinstance(memory_service, InMemoryMemoryService)
 
 
+def test_create_memory_service_redis(registry, mock_services):
+  registry.create_memory_service(
+      "redis://localhost:6379/0", agents_dir="/path/to/agents"
+  )
+  mock_services["redis_memory"].assert_called_once_with(
+      redis_url="redis://localhost:6379/0"
+  )
+
+
+def test_create_memory_service_rediss(registry, mock_services):
+  registry.create_memory_service("rediss://localhost:6379/0")
+  mock_services["redis_memory"].assert_called_once_with(
+      redis_url="rediss://localhost:6379/0"
+  )
+
+
 # Task Store Tests
 def test_create_task_store_memory(registry):
   from a2a.server.tasks import InMemoryTaskStore
@@ -209,5 +229,6 @@ def test_unsupported_scheme(registry, mock_services):
       "gcs_artifact",
       "rag_memory",
       "agentengine_memory",
+      "redis_memory",
   ]:
     mock_services[service].assert_not_called()
