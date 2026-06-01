@@ -2271,6 +2271,7 @@ def cli_deploy_agent_engine(
     artifact_service_uri: str | None = None,
     memory_service_uri: str | None = None,
     session_service_uri: str | None = None,
+    use_local_storage: bool = False,
 ):
   """Deploys an agent to Agent Engine.
 
