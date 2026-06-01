@@ -212,6 +212,22 @@ class AgentRegistry:
       raise RuntimeError(
           f"Failed to get default Google Cloud credentials: {e}"
       ) from e
+    # Instantiate and configure AuthorizedSession once during initialization
+    self._session = requests_auth.AuthorizedSession(
+        credentials=self._credentials
+    )
+
+    use_client_cert = _use_client_cert_effective()
+    client_cert_source = None
+    if use_client_cert:
+      client_cert_source = (
+          mtls.default_client_cert_source()
+          if mtls.has_default_client_cert_source()
+          else None
+      )
+      self._session.configure_mtls_channel(client_cert_source)
+
+    self._base_url = _get_agent_registry_base_url(client_cert_source)
 
   def _get_auth_headers(self) -> Dict[str, str]:
     """Refreshes credentials and returns authorization headers."""
@@ -255,15 +271,19 @@ class AgentRegistry:
     base_url = _get_agent_registry_base_url(client_cert_source)
 
     if path.startswith("projects/"):
-      url = f"{base_url}/{path}"
+      url = f"{self._base_url}/{path}"
     else:
-      url = f"{base_url}/{self._base_path}/{path}"
+      url = f"{self._base_url}/{self._base_path}/{path}"
+    headers = {}
+    quota_project_id = (
+        getattr(self._credentials, "quota_project_id", None) or self.project_id
+    )
+    if quota_project_id:
+      headers["x-goog-user-project"] = quota_project_id
 
     try:
       # Using AuthorizedSession for internal API calls to handle mTLS/Auth.
-      response = session.get(
-          url, headers=self._get_auth_headers(), params=params
-      )
+      response = self._session.get(url, headers=headers, params=params)
       response.raise_for_status()
       return response.json()
     except requests.exceptions.HTTPError as e:
