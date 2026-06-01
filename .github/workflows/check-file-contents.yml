@@ -108,13 +108,30 @@ jobs:
           if [ -n "$CHANGED_FILES" ]; then
             echo "Checking for hardcoded endpoints in: $CHANGED_FILES"
 
-            # 1. Identify files containing any googleapis.com URL.
+            # 1. Identify files containing any googleapis.com URL (candidate set).
             set +e
             FILES_WITH_ENDPOINTS=$(grep -lE 'https?://[a-zA-Z0-9.-]+\.googleapis\.com' $CHANGED_FILES)
 
-            # 2. From those, identify files that are MISSING the required mTLS version.
-            if [ -n "$FILES_WITH_ENDPOINTS" ]; then
-              FILES_MISSING_MTLS=$(grep -L '.mtls.googleapis.com' $FILES_WITH_ENDPOINTS)
+            # 2. Filter the candidate set: drop files whose only googleapis.com
+            #    references are OAuth 2.0 scope URLs (e.g.
+            #    https://www.googleapis.com/auth/cloud-platform). Those are
+            #    identity strings, not API endpoints — they don't have mTLS
+            #    counterparts and never will. Without this filter, any source
+            #    file that legitimately declares an OAuth scope (very common
+            #    for ADK plugins integrating Google APIs) trips the gate even
+            #    when no real endpoint is hardcoded.
+            FILES_WITH_REAL_ENDPOINTS=""
+            for f in $FILES_WITH_ENDPOINTS; do
+              if grep -E 'https?://[a-zA-Z0-9.-]+\.googleapis\.com' "$f" \
+                  | grep -vqE 'googleapis\.com/auth/'; then
+                FILES_WITH_REAL_ENDPOINTS="$FILES_WITH_REAL_ENDPOINTS $f"
+              fi
+            done
+
+            # 3. From the filtered set, identify files MISSING the required
+            #    mTLS variant.
+            if [ -n "$FILES_WITH_REAL_ENDPOINTS" ]; then
+              FILES_MISSING_MTLS=$(grep -L '.mtls.googleapis.com' $FILES_WITH_REAL_ENDPOINTS)
             fi
             set -e
 
