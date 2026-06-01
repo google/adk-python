@@ -138,7 +138,7 @@ class BaseSessionService(abc.ABC):
     the duration of the current invocation but is NOT persisted to storage
     (the event delta is trimmed separately by _trim_temp_delta_state).
     """
-    if not event.actions.state_delta:
+    if not event.actions or not event.actions.state_delta:
       return
     for key, value in event.actions.state_delta.items():
       if key.startswith(State.TEMP_PREFIX):
@@ -151,7 +151,7 @@ class BaseSessionService(abc.ABC):
     in-memory session state (updated by _apply_temp_state) retains the
     values for the duration of the current invocation.
     """
-    if not event.actions.state_delta:
+    if not event.actions or not event.actions.state_delta:
       return event
 
     event.actions.state_delta = {
@@ -163,7 +163,7 @@ class BaseSessionService(abc.ABC):
 
   def _update_session_state(self, session: Session, event: Event) -> None:
     """Updates the session state based on the event."""
-    if not event.actions.state_delta:
+    if not event.actions or not event.actions.state_delta:
       return
     for key, value in event.actions.state_delta.items():
       session.state.update({key: value})

@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+import abc
 import asyncio
 import importlib
 import inspect
@@ -192,7 +193,9 @@ async def _convert_tool_union_to_tools(
     return []
 
 
-class LlmAgent(BaseAgent):
+# TODO: drop the explicit abc.ABC base once BaseNode surfaces ABCMeta to
+# static type checkers.
+class LlmAgent(BaseAgent, abc.ABC):
   """LLM-based Agent."""
 
   DEFAULT_MODEL: ClassVar[str] = 'gemini-3-flash-preview'
