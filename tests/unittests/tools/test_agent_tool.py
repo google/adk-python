@@ -1431,3 +1431,134 @@ class TestAgentToolWithCompositeAgents:
       }
     else:
       assert declaration.parameters.properties['request'].type == 'STRING'
+
+
+# ---------------------------------------------------------------------------
+# Tests for input_schema message wrapping (PR #5924)
+# ---------------------------------------------------------------------------
+
+
+async def _run_agent_tool_and_capture_content(
+    args: dict,
+    input_schema=None,
+) -> types.Content:
+  """Drives AgentTool and captures the Content passed to the inner agent.
+
+  This uses a stub Runner (same pattern as test_agent_tool_inherits_parent_app_name)
+  to intercept the new_message without executing the actual agent pipeline.
+  """
+  from google.adk.agents.llm_agent import LlmAgent
+  from google.adk.plugins.plugin_manager import PluginManager
+  from unittest.mock import patch
+  import google.adk.runners as _runners_module
+
+  if input_schema is not None:
+    inner = LlmAgent(
+        name='inner_agent',
+        description='captures input',
+        model=testing_utils.MockModel.create(responses=['done']),
+        input_schema=input_schema,
+    )
+  else:
+    inner = Agent(name='inner_agent', model='test-model')
+
+  new_message_holder: list = []
+
+  async def _empty_async_generator():
+    if False:
+      yield None
+
+  class _StubRunner:
+
+    def __init__(self, *, app_name, agent, artifact_service,
+                 session_service, memory_service, credential_service, plugins):
+      del artifact_service, memory_service, credential_service
+      self.agent = agent
+      self.session_service = session_service
+      self.plugin_manager = PluginManager(plugins=plugins)
+      self.app_name = app_name
+
+    def run_async(self, *, user_id, session_id, invocation_id=None,
+                  new_message=None, state_delta=None, run_config=None):
+      new_message_holder.append(new_message)
+      return _empty_async_generator()
+
+    async def close(self):
+      pass
+
+  with patch.object(_runners_module, 'Runner', _StubRunner):
+    agent_tool = AgentTool(agent=inner)
+    session_service = InMemorySessionService()
+    session = await session_service.create_session(
+        app_name='test_app', user_id='test_user'
+    )
+    invocation_context = InvocationContext(
+        invocation_id='invocation_id',
+        agent=inner,
+        session=session,
+        session_service=session_service,
+    )
+    tool_context = ToolContext(invocation_context=invocation_context)
+    await agent_tool.run_async(args=args, tool_context=tool_context)
+
+  return new_message_holder[0] if new_message_holder else None
+
+
+@mark.asyncio
+async def test_run_async_no_input_schema_passes_request_unchanged():
+  """Without input_schema, the message is args['request'] verbatim."""
+  content = await _run_agent_tool_and_capture_content(
+      args={'request': 'hello world'},
+      input_schema=None,
+  )
+
+  assert content is not None
+  assert len(content.parts) == 1
+  assert content.parts[0].text == 'hello world'
+
+
+@mark.asyncio
+async def test_run_async_with_input_schema_wraps_in_natural_language():
+  """With input_schema, the message starts with a natural-language instruction."""
+
+  class MyInput(BaseModel):
+    custom_input: str
+
+  content = await _run_agent_tool_and_capture_content(
+      args={'custom_input': 'test_value'},
+      input_schema=MyInput,
+  )
+
+  assert content is not None
+  assert len(content.parts) == 1
+  text = content.parts[0].text
+  # Must start with the natural-language prompt, not with raw JSON
+  assert text.startswith('Process the following structured request')
+  # Must contain the JSON payload after "Request:\n"
+  assert 'Request:\n' in text
+  json_part = text.split('Request:\n', 1)[1]
+  import json as _json
+  payload = _json.loads(json_part)
+  assert payload['custom_input'] == 'test_value'
+  # The full text must NOT be just the raw JSON blob
+  assert text != json_part
+
+
+@mark.asyncio
+async def test_run_async_with_input_schema_text_not_raw_json():
+  """The content text must not be a bare JSON string when input_schema is set."""
+
+  class MyInput(BaseModel):
+    value: int
+
+  content = await _run_agent_tool_and_capture_content(
+      args={'value': 42},
+      input_schema=MyInput,
+  )
+
+  assert content is not None
+  text = content.parts[0].text
+  # A bare JSON blob would start with '{'; the wrapped version must not
+  assert not text.startswith('{'), (
+      'Content text is raw JSON instead of a natural-language instruction'
+  )
