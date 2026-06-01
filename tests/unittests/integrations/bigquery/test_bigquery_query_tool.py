@@ -114,8 +114,7 @@ async def test_execute_sql_declaration_read_only(tool_settings):
 
             >>> execute_sql("my_project",
             ... "SELECT island, COUNT(*) AS population "
-            ... "FROM `bigquery-public-data`.`ml_datasets`.`penguins` GROUP BY
-            island")
+            ... "FROM `bigquery-public-data`.`ml_datasets`.`penguins` GROUP BY island")
             {
               "status": "SUCCESS",
               "rows": [
@@ -155,8 +154,7 @@ async def test_execute_sql_declaration_read_only(tool_settings):
                       "tableId": "anon..."
                     },
                     "priority": "INTERACTIVE",
-                    "query": "SELECT island FROM
-                    `bigquery-public-data`.`ml_datasets`.`penguins`",
+                    "query": "SELECT island FROM `bigquery-public-data`.`ml_datasets`.`penguins`",
                     "useLegacySql": False,
                     "writeDisposition": "WRITE_TRUNCATE"
                   }
@@ -215,8 +213,7 @@ async def test_execute_sql_declaration_write(tool_settings):
 
             >>> execute_sql("my_project",
             ... "SELECT island, COUNT(*) AS population "
-            ... "FROM `bigquery-public-data`.`ml_datasets`.`penguins` GROUP BY
-            island")
+            ... "FROM `bigquery-public-data`.`ml_datasets`.`penguins` GROUP BY island")
             {
               "status": "SUCCESS",
               "rows": [
@@ -256,8 +253,7 @@ async def test_execute_sql_declaration_write(tool_settings):
                       "tableId": "anon..."
                     },
                     "priority": "INTERACTIVE",
-                    "query": "SELECT island FROM
-                    `bigquery-public-data`.`ml_datasets`.`penguins`",
+                    "query": "SELECT island FROM `bigquery-public-data`.`ml_datasets`.`penguins`",
                     "useLegacySql": False,
                     "writeDisposition": "WRITE_TRUNCATE"
                   }
@@ -282,8 +278,7 @@ async def test_execute_sql_declaration_write(tool_settings):
         Insert data into an existing table:
 
             >>> execute_sql("my_project",
-            ... "INSERT INTO `my_project`.`my_dataset`.`my_table` (island,
-            population) "
+            ... "INSERT INTO `my_project`.`my_dataset`.`my_table` (island, population) "
             ... "VALUES ('Dream', 124), ('Biscoe', 168)")
             {
               "status": "SUCCESS",
@@ -295,8 +290,7 @@ async def test_execute_sql_declaration_write(tool_settings):
             >>> execute_sql("my_project",
             ... "CREATE TABLE `my_project`.`my_dataset`.`my_table` AS "
             ... "SELECT island, COUNT(*) AS population "
-            ... "FROM `bigquery-public-data`.`ml_datasets`.`penguins` GROUP BY
-            island")
+            ... "FROM `bigquery-public-data`.`ml_datasets`.`penguins` GROUP BY island")
             {
               "status": "SUCCESS",
               "rows": []
@@ -325,8 +319,7 @@ async def test_execute_sql_declaration_write(tool_settings):
         table:
 
             >>> execute_sql("my_project",
-            ... "CREATE SNAPSHOT TABLE
-            `my_project`.`my_dataset`.`my_table_snapshot` "
+            ... "CREATE SNAPSHOT TABLE `my_project`.`my_dataset`.`my_table_snapshot` "
             ... "CLONE `my_project`.`my_dataset`.`my_table`")
             {
               "status": "SUCCESS",
@@ -337,8 +330,7 @@ async def test_execute_sql_declaration_write(tool_settings):
 
             >>> execute_sql("my_project",
             ... "CREATE MODEL `my_dataset`.`my_model` "
-            ... "OPTIONS (model_type='linear_reg',
-            input_label_cols=['body_mass_g']) AS "
+            ... "OPTIONS (model_type='linear_reg', input_label_cols=['body_mass_g']) AS "
             ... "SELECT * FROM `bigquery-public-data`.`ml_datasets`.`penguins` "
             ... "WHERE body_mass_g IS NOT NULL")
             {
@@ -458,8 +450,7 @@ async def test_execute_sql_declaration_protected_write(tool_settings):
 
             >>> execute_sql("my_project",
             ... "SELECT island, COUNT(*) AS population "
-            ... "FROM `bigquery-public-data`.`ml_datasets`.`penguins` GROUP BY
-            island")
+            ... "FROM `bigquery-public-data`.`ml_datasets`.`penguins` GROUP BY island")
             {
               "status": "SUCCESS",
               "rows": [
@@ -499,8 +490,7 @@ async def test_execute_sql_declaration_protected_write(tool_settings):
                       "tableId": "anon..."
                     },
                     "priority": "INTERACTIVE",
-                    "query": "SELECT island FROM
-                    `bigquery-public-data`.`ml_datasets`.`penguins`",
+                    "query": "SELECT island FROM `bigquery-public-data`.`ml_datasets`.`penguins`",
                     "useLegacySql": False,
                     "writeDisposition": "WRITE_TRUNCATE"
                   }
@@ -536,8 +526,7 @@ async def test_execute_sql_declaration_protected_write(tool_settings):
             >>> execute_sql("my_project",
             ... "CREATE TEMP TABLE `my_table` AS "
             ... "SELECT island, COUNT(*) AS population "
-            ... "FROM `bigquery-public-data`.`ml_datasets`.`penguins` GROUP BY
-            island")
+            ... "FROM `bigquery-public-data`.`ml_datasets`.`penguins` GROUP BY island")
             {
               "status": "SUCCESS",
               "rows": []
@@ -564,8 +553,7 @@ async def test_execute_sql_declaration_protected_write(tool_settings):
 
             >>> execute_sql("my_project",
             ... "CREATE TEMP MODEL `my_model` "
-            ... "OPTIONS (model_type='linear_reg',
-            input_label_cols=['body_mass_g']) AS"
+            ... "OPTIONS (model_type='linear_reg', input_label_cols=['body_mass_g']) AS"
             ... "SELECT * FROM `bigquery-public-data`.`ml_datasets`.`penguins` "
             ... "WHERE body_mass_g IS NOT NULL")
             {
@@ -575,8 +563,7 @@ async def test_execute_sql_declaration_protected_write(tool_settings):
 
         Evaluate BigQuery ML model:
 
-            >>> execute_sql("my_project", "SELECT * FROM ML.EVALUATE(MODEL
-            `my_model`)")
+            >>> execute_sql("my_project", "SELECT * FROM ML.EVALUATE(MODEL `my_model`)")
             {
               "status": "SUCCESS",
               "rows": [{'mean_absolute_error': 227.01223667447218,

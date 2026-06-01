@@ -22,14 +22,14 @@ from typing import AsyncGenerator
 from typing import Optional
 from typing import TYPE_CHECKING
 
-from google.adk.flows.llm_flows import _output_schema_processor
-from google.adk.flows.llm_flows import functions
 from google.adk.platform import time as platform_time
 from google.genai import types
 from opentelemetry import trace
 from websockets.exceptions import ConnectionClosed
 from websockets.exceptions import ConnectionClosedOK
 
+from . import _output_schema_processor
+from . import functions
 from ...agents.base_agent import BaseAgent
 from ...agents.callback_context import CallbackContext
 from ...agents.invocation_context import InvocationContext
@@ -44,6 +44,7 @@ from ...models.google_llm import GoogleLLMVariant
 from ...models.llm_request import LlmRequest
 from ...models.llm_response import LlmResponse
 from ...telemetry import _instrumentation
+from ...telemetry import tracing
 from ...telemetry.tracing import trace_call_llm
 from ...telemetry.tracing import trace_send_data
 from ...telemetry.tracing import tracer
@@ -288,7 +289,7 @@ async def _handle_after_model_callback(
   # First run callbacks from the plugins.
   callback_response = (
       await invocation_context.plugin_manager.run_after_model_callback(
-          callback_context=CallbackContext(invocation_context),
+          callback_context=callback_context,
           llm_response=llm_response,
       )
   )
@@ -420,17 +421,20 @@ async def _process_agent_tools(
   tool declarations in the request.
 
   Tool-union resolution is dispatched concurrently via ``asyncio.gather``
-  to overlap I/O-bound listings. The subsequent ``process_llm_request``
-  calls are kept serial in the original ``agent.tools`` order, as some
-  tools read/write ``llm_request`` state and rely on observing the
+  to overlap I/O-bound listings (e.g. MCP ``list_tools`` over the
+  network). The subsequent ``process_llm_request`` calls are kept
+  serial in the original ``agent.tools`` order: some tools read/write
+  ``llm_request`` state (e.g. ``GoogleSearchTool`` writes
+  ``llm_request.model``; ``ComputerUseToolset`` performs an idempotency
+  check on ``llm_request.config.tools``) and rely on observing the
   post-state of earlier tools.
 
   After this function returns, ``llm_request.tools_dict`` maps tool
   names to ``BaseTool`` instances ready for function call dispatch.
 
   Args:
-    invocation_context: The invocation context (``agent`` is read from
-      ``invocation_context.agent``).
+    invocation_context: The invocation context (``agent`` is read
+      from ``invocation_context.agent``).
     llm_request: The LLM request to populate with tool declarations.
   """
   agent = invocation_context.agent
@@ -442,8 +446,12 @@ async def _process_agent_tools(
 
   from ...agents.llm_agent import _convert_tool_union_to_tools
 
-  # Resolve tool_unions in parallel. `asyncio.gather` preserves input order
-  # for the serial commit phase below and propagates exceptions immediately.
+  # Resolve tool_unions in parallel. ``asyncio.gather`` preserves
+  # input order in the returned list, so the serial commit phase below
+  # still observes ``agent.tools`` order. If any resolution raises,
+  # gather cancels the siblings and propagates -- same observable
+  # behavior as the previous serial loop, which would propagate the
+  # first exception and abandon the rest.
   resolved_tools_per_union = await asyncio.gather(*(
       _convert_tool_union_to_tools(
           tool_union,
@@ -454,8 +462,8 @@ async def _process_agent_tools(
       for tool_union in agent.tools
   ))
 
-  # Serial commit phase, in original agent.tools order. Mutations to
-  # ``llm_request`` and reads of its state (model, config.tools,
+  # Serial commit phase, in original ``agent.tools`` order. Mutations
+  # to ``llm_request`` and reads of its state (model, config.tools,
   # tools_dict) preserve today's ordering semantics exactly.
   for tool_union, tools in zip(agent.tools, resolved_tools_per_union):
     tool_context = ToolContext(invocation_context)
@@ -504,6 +512,9 @@ class BaseLlmFlow(ABC):
         yield event
     if invocation_context.end_invocation:
       return
+
+    agent = invocation_context.agent
+    llm_request.model = agent.canonical_live_model.model
 
     llm = self.__get_llm(invocation_context)
     logger.debug(
@@ -878,20 +889,22 @@ class BaseLlmFlow(ABC):
     # Long running tool calls should have been handled before this point.
     # If there are still long running tool calls, it means the agent is paused
     # before, and its branch hasn't been resumed yet.
-    if (
-        invocation_context.is_resumable
-        and events
-        and len(events) > 1
-        # TODO: here we are using the last 2 events to decide whether to pause
-        # the invocation. But this is just being optimistic, we should find a
-        # way to pause when the long running tool call is followed by more than
-        # one text responses.
-        and (
-            invocation_context.should_pause_invocation(events[-1])
-            or invocation_context.should_pause_invocation(events[-2])
-        )
-    ):
-      return
+    if invocation_context.is_resumable and events and len(events) > 1:
+      pause = False
+      if invocation_context.should_pause_invocation(events[-1]):
+        pause = True
+      elif invocation_context.should_pause_invocation(events[-2]):
+        # NOTE: This only checks the last 2 events. If an LRO is followed by
+        # multiple text responses, this check may not trigger correctly.
+        # This is a known limitation of the current 2-event window.
+        # Check if the function call in events[-2] is resolved by events[-1]
+        fc_ids = {fc.id for fc in events[-2].get_function_calls()}
+        fr_ids = {fr.id for fr in events[-1].get_function_responses()}
+        if fc_ids and not fc_ids.issubset(fr_ids):
+          pause = True
+
+      if pause:
+        return
 
     if (
         invocation_context.is_resumable
@@ -1001,6 +1014,7 @@ class BaseLlmFlow(ABC):
         not llm_response.content
         and not llm_response.error_code
         and not llm_response.interrupted
+        and not llm_response.grounding_metadata
     ):
       return
 
@@ -1065,6 +1079,7 @@ class BaseLlmFlow(ABC):
         and not llm_response.output_transcription
         and not llm_response.usage_metadata
         and not llm_response.live_session_resumption_update
+        and not llm_response.grounding_metadata
     ):
       return
 
@@ -1180,6 +1195,15 @@ class BaseLlmFlow(ABC):
             )
         )
         yield final_event
+
+      # NOTE: This recursive nested execution block is preserved as a backward-compatible
+      # fallback for deprecated execution paths (such as legacy `SequentialAgent`) that
+      # do not run under the modern ADK 2.0 `DynamicNodeScheduler`.
+      #
+      # In modern resumable workflow environments, this block is safely bypassed
+      # because the scheduler wrapper (e.g., `_llm_agent_wrapper.py`) intercepts the
+      # `transfer_to_agent` action at the outer execution frame and exits, returning
+      # control to the top-level coordinator.
       transfer_to_agent = function_response_event.actions.transfer_to_agent
       if transfer_to_agent:
         agent_to_run = self._get_agent_to_run(
@@ -1429,6 +1453,9 @@ class BaseLlmFlow(ABC):
       )
       config['_adk_replay_indexes'] = replay_indexes
       return model
+
+    if invocation_context.live_request_queue is not None:
+      return agent.canonical_live_model
 
     if not hasattr(agent, 'canonical_model'):
       raise TypeError(

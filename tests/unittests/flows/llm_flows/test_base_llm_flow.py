@@ -248,10 +248,11 @@ async def test_preprocess_calls_convert_tool_union_to_tools():
 async def test_process_agent_tools_resolves_unions_in_parallel():
   """``_convert_tool_union_to_tools`` is dispatched for every tool_union concurrently.
 
-  Each mocked resolution blocks until ``all_started`` is set; the event is
-  only set once every call has been entered. If ``_process_agent_tools``
-  were still serial, the first call would block forever waiting for the
-  event the second call hasn't yet entered to set.
+  Each mocked resolution blocks until ``all_started`` is set; the event
+  is only set once every call has been entered. If
+  ``_process_agent_tools`` were still serial, the first call would
+  block forever waiting for the event the second call hasn't yet
+  entered to set.
   """
   num_tools = 5
   started_count = 0
@@ -269,6 +270,7 @@ async def test_process_agent_tools_resolves_unions_in_parallel():
 
   def _make_func(i):
     def _f():
+      """Test function."""
       return i
 
     _f.__name__ = f'fn_{i}'
@@ -279,8 +281,6 @@ async def test_process_agent_tools_resolves_unions_in_parallel():
   with mock.patch(
       'google.adk.agents.llm_agent._convert_tool_union_to_tools',
       side_effect=blocking_convert,
-      autospec=True,
-      spec_set=True,
   ):
     agent = Agent(name='test_agent', tools=funcs)
     invocation_context = await testing_utils.create_invocation_context(
@@ -307,11 +307,7 @@ async def test_process_agent_tools_resolves_unions_in_parallel():
 
 @pytest.mark.asyncio
 async def test_process_agent_tools_preserves_order_when_later_unions_resolve_first():
-  """Test that process_agent_tools preserves order when later unions resolve first.
-
-  Even if a tool later in the agent.tools list resolves faster than an earlier
-  tool, process_llm_request must be invoked in the original agent.tools order.
-  """
+  """``process_llm_request`` is called in original ``agent.tools`` order even when later unions resolve first."""
 
   resolution_started_evt = [asyncio.Event(), asyncio.Event()]
   process_call_order: list[str] = []
@@ -332,16 +328,16 @@ async def test_process_agent_tools_preserves_order_when_later_unions_resolve_fir
     ]
 
   def fn_slow():
+    """Slow-resolving function."""
     return 0
 
   def fn_fast():
+    """Fast-resolving function."""
     return 0
 
   with mock.patch(
       'google.adk.agents.llm_agent._convert_tool_union_to_tools',
       side_effect=staggered_convert,
-      autospec=True,
-      spec_set=True,
   ):
     # agent.tools order is [slow, fast]; resolution completes [fast, slow].
     agent = Agent(name='test_agent', tools=[fn_slow, fn_fast])
@@ -1188,6 +1184,66 @@ async def test_run_live_clears_resumption_handle_on_transfer():
   assert (
       invocation_context.run_config.session_resumption.handle == 'test_handle'
   )
+
+
+@pytest.mark.asyncio
+async def test_postprocess_live_yields_grounding_metadata_only():
+  """Test that _postprocess_live yields LlmResponse with only grounding_metadata."""
+  agent = Agent(name='test_agent')
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent
+  )
+  flow = BaseLlmFlowForTesting()
+
+  llm_request = LlmRequest()
+  grounding_metadata = types.GroundingMetadata(
+      web_search_queries=['test query'],
+  )
+  llm_response = LlmResponse(grounding_metadata=grounding_metadata)
+  model_response_event = Event(
+      id=Event.new_id(),
+      invocation_id=invocation_context.invocation_id,
+      author=agent.name,
+  )
+
+  events = []
+  async for event in flow._postprocess_live(
+      invocation_context, llm_request, llm_response, model_response_event
+  ):
+    events.append(event)
+
+  assert len(events) == 1
+  assert events[0].grounding_metadata == grounding_metadata
+
+
+@pytest.mark.asyncio
+async def test_postprocess_async_yields_grounding_metadata_only():
+  """Test that _postprocess_async yields LlmResponse with only grounding_metadata."""
+  agent = Agent(name='test_agent')
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent
+  )
+  flow = BaseLlmFlowForTesting()
+
+  llm_request = LlmRequest()
+  grounding_metadata = types.GroundingMetadata(
+      web_search_queries=['test query'],
+  )
+  llm_response = LlmResponse(grounding_metadata=grounding_metadata)
+  model_response_event = Event(
+      id=Event.new_id(),
+      invocation_id=invocation_context.invocation_id,
+      author=agent.name,
+  )
+
+  events = []
+  async for event in flow._postprocess_async(
+      invocation_context, llm_request, llm_response, model_response_event
+  ):
+    events.append(event)
+
+  assert len(events) == 1
+  assert events[0].grounding_metadata == grounding_metadata
 
 
 @pytest.mark.asyncio

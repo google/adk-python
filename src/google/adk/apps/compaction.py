@@ -79,7 +79,7 @@ def _valid_compactions(
   """Returns compaction events with fully-defined compaction ranges."""
   compactions: list[tuple[int, float, float, Event]] = []
   for i, event in enumerate(events):
-    if not (event.actions and event.actions.compaction):
+    if not event.actions.compaction:
       continue
     compaction = event.actions.compaction
     if (
@@ -135,9 +135,9 @@ def _estimate_prompt_token_count(
   """
   # Deferred import: contents depends on agents.invocation_context which
   # imports from apps, so a top-level import would create a circular dependency.
-  from ..flows.llm_flows import contents
+  from ..flows.llm_flows import contents as _contents
 
-  effective_contents = contents._get_contents(
+  effective_contents = _contents._get_contents(
       current_branch=current_branch,
       events=events,
       agent_name=agent_name,
@@ -252,7 +252,7 @@ def _events_to_compact_for_token_threshold(
   candidate_events = [
       event
       for event in events
-      if not (event.actions and event.actions.compaction)
+      if not event.actions.compaction
       and event.timestamp > last_compacted_end_timestamp
   ]
   if len(candidate_events) <= event_retention_size:
@@ -278,7 +278,6 @@ def _events_to_compact_for_token_threshold(
 
   if (
       latest_compaction_event
-      and latest_compaction_event.actions
       and latest_compaction_event.actions.compaction
       and latest_compaction_event.actions.compaction.start_timestamp is not None
       and latest_compaction_event.actions.compaction.compacted_content
@@ -480,6 +479,8 @@ async def _run_compaction_for_token_threshold(
   If triggered, this compacts older raw events and keeps the last
   `event_retention_size` raw events un-compacted.
   """
+  if app.root_agent is None:
+    return None
   return await _run_compaction_for_token_threshold_config(
       config=app.events_compaction_config,
       session=session,
@@ -602,11 +603,7 @@ async def _run_compaction_for_sliding_window(
   # Find the last compaction event and its range.
   last_compacted_end_timestamp = 0.0
   for event in reversed(events):
-    if (
-        event.actions
-        and event.actions.compaction
-        and event.actions.compaction.end_timestamp
-    ):
+    if event.actions.compaction and event.actions.compaction.end_timestamp:
       last_compacted_end_timestamp = event.actions.compaction.end_timestamp
       break
 
@@ -614,7 +611,7 @@ async def _run_compaction_for_sliding_window(
   invocation_latest_timestamps = {}
   for event in events:
     # Only consider non-compaction events for unique invocation IDs.
-    if event.invocation_id and not (event.actions and event.actions.compaction):
+    if event.invocation_id and not event.actions.compaction:
       invocation_latest_timestamps[event.invocation_id] = max(
           invocation_latest_timestamps.get(event.invocation_id, 0.0),
           event.timestamp,
@@ -665,9 +662,7 @@ async def _run_compaction_for_sliding_window(
       events_to_compact = events[first_event_start_inv_idx : last_event_idx + 1]
       # Filter out any existing compaction events from the list.
       events_to_compact = [
-          e
-          for e in events_to_compact
-          if not (e.actions and e.actions.compaction)
+          e for e in events_to_compact if not e.actions.compaction
       ]
       pending_ids = _pending_function_call_ids(events)
       events_to_compact = _truncate_events_before_pending_function_call(
@@ -680,6 +675,8 @@ async def _run_compaction_for_sliding_window(
   if not events_to_compact:
     return None
 
+  if app.root_agent is None:
+    return None
   _ensure_compaction_summarizer(config=config, agent=app.root_agent)
   if config.summarizer is None:
     return None

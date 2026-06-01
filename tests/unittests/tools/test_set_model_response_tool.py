@@ -20,6 +20,8 @@ from typing import Optional
 from google.adk.agents.invocation_context import InvocationContext
 from google.adk.agents.llm_agent import LlmAgent
 from google.adk.agents.run_config import RunConfig
+from google.adk.features._feature_registry import FeatureName
+from google.adk.features._feature_registry import temporary_feature_override
 from google.adk.sessions.in_memory_session_service import InMemorySessionService
 from google.adk.tools.set_model_response_tool import SetModelResponseTool
 from google.adk.tools.tool_context import ToolContext
@@ -490,9 +492,10 @@ class ConsolidatedOptionalSchema(BaseModel):
 
 def test_get_declaration_optional_fields():
   """Test that tool declaration preserves properties for various optional fields."""
-  tool = SetModelResponseTool(ConsolidatedOptionalSchema)
+  with temporary_feature_override(FeatureName.JSON_SCHEMA_FOR_FUNC_DECL, False):
+    tool = SetModelResponseTool(ConsolidatedOptionalSchema)
 
-  declaration = tool._get_declaration()
+    declaration = tool._get_declaration()
 
   assert declaration is not None
   assert declaration.name == 'set_model_response'

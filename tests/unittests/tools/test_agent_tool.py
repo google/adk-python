@@ -653,7 +653,7 @@ def test_include_plugins_default_true():
   runner = testing_utils.InMemoryRunner(root_agent, plugins=[tracking_plugin])
   runner.run('test1')
 
-  # Plugin should be called for both root_agent and tool_agent
+  # Plugin should be called for both root_agent and tool_agent.
   assert tracking_plugin.before_agent_calls == 2
 
 
@@ -689,7 +689,7 @@ def test_include_plugins_explicit_true():
   runner = testing_utils.InMemoryRunner(root_agent, plugins=[tracking_plugin])
   runner.run('test1')
 
-  # Plugin should be called for both root_agent and tool_agent
+  # Plugin should be called for both root_agent and tool_agent.
   assert tracking_plugin.before_agent_calls == 2
 
 
@@ -725,7 +725,7 @@ def test_include_plugins_false():
   runner = testing_utils.InMemoryRunner(root_agent, plugins=[tracking_plugin])
   runner.run('test1')
 
-  # Plugin should only be called for root_agent, not tool_agent
+  # Plugin should only be called for root_agent, not tool_agent.
   assert tracking_plugin.before_agent_calls == 1
 
 

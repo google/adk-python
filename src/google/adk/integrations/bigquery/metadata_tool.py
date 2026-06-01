@@ -87,8 +87,7 @@ def get_dataset_info(
         "kind": "bigquery#dataset",
         "etag": "fz9BaiXKgbGi53EpI2rJug==",
         "id": "bigquery-public-data:cdc_places",
-        "selfLink":
-        "https://content-bigquery.googleapis.com/bigquery/v2/projects/bigquery-public-data/datasets/cdc_places",
+        "selfLink": "https://content-bigquery.googleapis.com/bigquery/v2/projects/bigquery-public-data/datasets/cdc_places",
         "datasetReference": {
           "datasetId": "cdc_places",
           "projectId": "bigquery-public-data"
@@ -105,8 +104,7 @@ def get_dataset_info(
           },
           {
             "role": "OWNER",
-            "userByEmail":
-            "some-redacted-email@bigquery-public-data.iam.gserviceaccount.com"
+            "userByEmail": "some-redacted-email@bigquery-public-data.iam.gserviceaccount.com"
           },
           {
             "role": "READER",
@@ -199,15 +197,12 @@ def get_table_info(
       dict: Dictionary representing the properties of the table.
 
   Examples:
-      >>> get_table_info("bigquery-public-data", "cdc_places",
-      "local_data_for_better_health_county_data")
+      >>> get_table_info("bigquery-public-data", "cdc_places", "local_data_for_better_health_county_data")
       {
         "kind": "bigquery#table",
         "etag": "wx23aDqmgc39oUSiNuYTAA==",
-        "id":
-        "bigquery-public-data:cdc_places.local_data_for_better_health_county_data",
-        "selfLink":
-        "https://content-bigquery.googleapis.com/bigquery/v2/projects/bigquery-public-data/datasets/cdc_places/tables/local_data_for_better_health_county_data",
+        "id": "bigquery-public-data:cdc_places.local_data_for_better_health_county_data",
+        "selfLink": "https://content-bigquery.googleapis.com/bigquery/v2/projects/bigquery-public-data/datasets/cdc_places/tables/local_data_for_better_health_county_data",
         "tableReference": {
           "projectId": "bigquery-public-data",
           "datasetId": "cdc_places",
@@ -310,10 +305,7 @@ def get_job_info(
     credentials: Credentials,
     settings: BigQueryToolConfig,
 ) -> dict:
-  """Get metadata information about a BigQuery job.
-
-  Including slot usage,
-
+  """Get metadata information about a BigQuery job. Including slot usage,
      job configuration, job statistics, job status, original query etc.
 
   Args:
@@ -340,9 +332,7 @@ def get_job_info(
                 "tableId": "anonfbbe65d6_9782_469b_9f56_1392560314b2"
               },
               "priority": "INTERACTIVE",
-              "query": "SELECT * FROM `projectid.dataset_id.table_id` WHERE
-              TIMESTAMP_TRUNC(_PARTITIONTIME, DAY) = TIMESTAMP(\"2025-10-29\")
-              LIMIT 1000",
+              "query": "SELECT * FROM `projectid.dataset_id.table_id` WHERE TIMESTAMP_TRUNC(_PARTITIONTIME, DAY) = TIMESTAMP(\"2025-10-29\") LIMIT 1000",
               "useLegacySql": false,
               "writeDisposition": "WRITE_TRUNCATE"
             }
@@ -359,8 +349,7 @@ def get_job_info(
           },
           "kind": "bigquery#job",
           "principal_subject": "user:abc@google.com",
-          "selfLink":
-          "https://bigquery.googleapis.com/bigquery/v2/projects/projectid/jobs/job-id?location=US",
+          "selfLink": "https://bigquery.googleapis.com/bigquery/v2/projects/projectid/jobs/job-id?location=US",
           "statistics": {
             "creationTime": 1761760370152,
             "endTime": 1761760371250,
@@ -409,19 +398,9 @@ def get_job_info(
                     {
                       "kind": "READ",
                       "substeps": [
-                        "$2:extendedFields.$is_not_null,
-                        $3:extendedFields.traceId, $4:span.$is_not_null,
-                        $5:span.spanKind, $6:span.endTime, $7:span.startTime,
-                        $8:span.parentSpanId, $9:span.spanId, $10:span.name,
-                        $11:span.childSpanCount.$is_not_null,
-                        $12:span.childSpanCount.value,
-                        $13:span.sameProcessAsParentSpan.$is_not_null,
-                        $14:span.sameProcessAsParentSpan.value,
-                        $15:span.status.$is_not_null, $16:span.status.message,
-                        $17:span.status.code",
+                        "$2:extendedFields.$is_not_null, $3:extendedFields.traceId, $4:span.$is_not_null, $5:span.spanKind, $6:span.endTime, $7:span.startTime, $8:span.parentSpanId, $9:span.spanId, $10:span.name, $11:span.childSpanCount.$is_not_null, $12:span.childSpanCount.value, $13:span.sameProcessAsParentSpan.$is_not_null, $14:span.sameProcessAsParentSpan.value, $15:span.status.$is_not_null, $16:span.status.message, $17:span.status.code",
                         "FROM projectid.dataset_id.table_id",
-                        "WHERE equal(timestamp_trunc($1, 3),
-                        1761696000.000000000)"
+                        "WHERE equal(timestamp_trunc($1, 3), 1761696000.000000000)"
                       ]
                     },
                     {
@@ -433,8 +412,7 @@ def get_job_info(
                     {
                       "kind": "WRITE",
                       "substeps": [
-                        "$2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13,
-                        $14, $15, $16, $17",
+                        "$2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17",
                         "TO __stage00_output"
                       ]
                     }
@@ -477,8 +455,7 @@ def get_job_info(
                     {
                       "kind": "READ",
                       "substeps": [
-                        "$2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13,
-                        $14, $15, $16, $17",
+                        "$2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17",
                         "FROM __stage00_output"
                       ]
                     },
@@ -486,9 +463,7 @@ def get_job_info(
                       "kind": "COMPUTE",
                       "substeps": [
                         "$130 := MAKE_STRUCT($3, $2)",
-                        "$131 := MAKE_STRUCT($10, $9, $8, MAKE_STRUCT($29, $28,
-                        $27), $7, $6, MAKE_STRUCT(...), MAKE_STRUCT(...),
-                        MAKE_STRUCT(...), ...)"
+                        "$131 := MAKE_STRUCT($10, $9, $8, MAKE_STRUCT($29, $28, $27), $7, $6, MAKE_STRUCT(...), MAKE_STRUCT(...), MAKE_STRUCT(...), ...)"
                       ]
                     },
                     {
