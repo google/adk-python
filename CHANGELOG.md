@@ -1,5 +1,14 @@
 # Changelog
 
+## [1.34.1](https://github.com/google/adk-python/compare/v1.34.0...v1.34.1) (2026-05-22)
+
+
+### Bug Fixes
+
+* Fix bug where grounding metadata in Gemini 3.1 live was being silently discarded ([9b6b9e9](https://github.com/google/adk-python/commit/9b6b9e976300ab223c77075554d6cd66ce1179ff))
+* fix input and output transcription finished events for Gemini v3.1 ([13763d7](https://github.com/google/adk-python/commit/13763d71f883b215dae08feb3f042869b9cd5d18))
+* **tools:** Prevent session drop on MCP tool error ([1fd406b](https://github.com/google/adk-python/commit/1fd406b90ae00c59d84093c33bc04530825bc760))
+
 ## [1.34.0](https://github.com/google/adk-python/compare/v1.33.0...v1.34.0) (2026-05-18)
 
 
