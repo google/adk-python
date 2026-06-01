@@ -1883,6 +1883,7 @@ async def _get_completion_inputs(
     Optional[List[Dict]],
     Optional[Dict[str, Any]],
     Optional[Dict],
+    Optional[str],
 ]:
   """Converts an LlmRequest to litellm inputs and extracts generation params.
 
@@ -1891,8 +1892,8 @@ async def _get_completion_inputs(
     model: The model string to use for determining provider-specific behavior.
 
   Returns:
-    The litellm inputs (message list, tool dictionary, response format and
-    generation params).
+    The litellm inputs (message list, tool dictionary, response format,
+    generation params, and tool_choice).
   """
   _ensure_litellm_imported()
 
@@ -1967,7 +1968,21 @@ async def _get_completion_inputs(
     if not generation_params:
       generation_params = None
 
-  return messages, tools, response_format, generation_params
+  # 5. Extract tool_choice from tool_config
+  tool_choice: Optional[str] = None
+  if (
+      llm_request.config
+      and llm_request.config.tool_config
+      and llm_request.config.tool_config.function_calling_config
+  ):
+    mode = llm_request.config.tool_config.function_calling_config.mode
+    if mode == types.FunctionCallingConfigMode.ANY:
+      tool_choice = "required"
+    elif mode == types.FunctionCallingConfigMode.NONE:
+      tool_choice = "none"
+    # AUTO → None (provider default)
+
+  return messages, tools, response_format, generation_params, tool_choice
 
 
 def _build_function_declaration_log(
@@ -2228,7 +2243,7 @@ class LiteLlm(BaseLlm):
       logger.debug(_build_request_log(llm_request))
 
     effective_model = llm_request.model or self.model
-    messages, tools, response_format, generation_params = (
+    messages, tools, response_format, generation_params, tool_choice = (
         await _get_completion_inputs(llm_request, effective_model)
     )
     normalized_messages = _normalize_ollama_chat_messages(
@@ -2259,6 +2274,9 @@ class LiteLlm(BaseLlm):
 
     if generation_params:
       completion_args.update(generation_params)
+
+    if tool_choice is not None:
+      completion_args["tool_choice"] = tool_choice
 
     if stream:
       text = ""

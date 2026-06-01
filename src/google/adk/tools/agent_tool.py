@@ -217,11 +217,17 @@ class AgentTool(BaseTool):
     input_schema = _get_input_schema(self.agent)
     if input_schema:
       input_value = input_schema.model_validate(args)
+      json_payload = input_value.model_dump_json(exclude_none=True)
       content = types.Content(
           role='user',
           parts=[
               types.Part.from_text(
-                  text=input_value.model_dump_json(exclude_none=True)
+                  text=(
+                      'Process the following structured request. Use your'
+                      ' available tools as needed to gather information or'
+                      ' perform actions before producing the final'
+                      ' response.\n\nRequest:\n' + json_payload
+                  )
               )
           ],
       )
