@@ -421,9 +421,7 @@ async def test_request_confirmation_transfer_to_agent_rejected():
   )
   llm_request = LlmRequest()
 
-  agent_event, user_event = _build_transfer_confirmation_events(
-      confirmed=False
-  )
+  agent_event, user_event = _build_transfer_confirmation_events(confirmed=False)
   invocation_context.session.events.append(agent_event)
   invocation_context.session.events.append(user_event)
 

@@ -28,11 +28,10 @@ from ...agents.readonly_context import ReadonlyContext
 from ...events.event import Event
 from ...models.llm_request import LlmRequest
 from ...tools.tool_confirmation import ToolConfirmation
-from ._base_llm_processor import BaseLlmRequestProcessor
-from .functions import REQUEST_CONFIRMATION_FUNCTION_CALL_NAME
-from .agent_transfer import _get_transfer_targets
 from ...tools.transfer_to_agent_tool import TransferToAgentTool
-
+from ._base_llm_processor import BaseLlmRequestProcessor
+from .agent_transfer import _get_transfer_targets
+from .functions import REQUEST_CONFIRMATION_FUNCTION_CALL_NAME
 
 if TYPE_CHECKING:
   from ...agents.llm_agent import LlmAgent
@@ -177,7 +176,7 @@ class _RequestConfirmationLlmRequestProcessor(BaseLlmRequestProcessor):
         )
     }
 
-    if hasattr(agent, 'disallow_transfer_to_parent'):
+    if isinstance(agent, LlmAgent):
       transfer_targets = _get_transfer_targets(agent)
       if transfer_targets:
         transfer_tool = TransferToAgentTool(
