@@ -42,8 +42,14 @@ class TestAgentRegistry:
   def registry(self):
     mock_creds = MagicMock()
     mock_creds.quota_project_id = None
-    with patch("google.auth.default", return_value=(mock_creds, "project-id")):
-      return AgentRegistry(project_id="test-project", location="global")
+    with patch(
+        "google.auth.default", return_value=(mock_creds, "project-id")
+    ), patch(
+        "google.auth.transport.requests.AuthorizedSession"
+    ) as mock_session_class:
+      registry = AgentRegistry(project_id="test-project", location="global")
+      registry._mock_session = mock_session_class.return_value
+      return registry
 
   @pytest.mark.asyncio
   @patch("google.auth.transport.requests.AuthorizedSession")
