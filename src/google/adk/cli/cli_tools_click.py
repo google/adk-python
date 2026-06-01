@@ -2049,6 +2049,16 @@ def cli_api_server(
         " version in the dev environment)"
     ),
 )
+@click.option(  # type: ignore[untyped-decorator]
+    "--python_version",
+    type=str,
+    default="3.11",
+    show_default=True,
+    help=(
+        "Optional. The Python version used in the Docker base image."
+        " (default: 3.11)"
+    ),
+)
 @click.option(
     "--a2a",
     is_flag=True,
@@ -2099,6 +2109,7 @@ def cli_deploy_cloud_run(
     memory_service_uri: Optional[str] = None,
     use_local_storage: bool = False,
     a2a: bool = False,
+    python_version: str = "3.11",
     trigger_sources: Optional[str] = None,
 ):
   """Deploys an agent to Cloud Run.
@@ -2164,6 +2175,7 @@ def cli_deploy_cloud_run(
         log_level=log_level,
         verbosity=log_level,
         adk_version=adk_version,
+        python_version=python_version,
         session_service_uri=session_service_uri,
         artifact_service_uri=artifact_service_uri,
         memory_service_uri=memory_service_uri,
@@ -2569,6 +2581,15 @@ def cli_deploy_agent_engine(
         " version in the dev environment)"
     ),
 )
+@click.option(  # type: ignore[untyped-decorator]
+    "--python_version",
+    type=str,
+    default="3.11",
+    show_default=True,
+    help=(
+        "Optional. The Python version used in the Docker base image."
+        " (default: 3.11)"
+    ),
 # Kept as raw str (not parsed to list) — interpolated directly into Dockerfile CMD.
 @click.option(
     "--trigger_sources",
@@ -2606,6 +2627,7 @@ def cli_deploy_gke(
     artifact_service_uri: Optional[str] = None,
     memory_service_uri: Optional[str] = None,
     use_local_storage: bool = False,
+    python_version: str = "3.11",
     trigger_sources: Optional[str] = None,
 ):
   """Deploys an agent to GKE.
@@ -2635,6 +2657,7 @@ def cli_deploy_gke(
         with_ui=with_ui,
         log_level=log_level,
         adk_version=adk_version,
+        python_version=python_version,
         service_type=service_type,
         session_service_uri=session_service_uri,
         artifact_service_uri=artifact_service_uri,

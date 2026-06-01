@@ -130,6 +130,7 @@ def test_to_cloud_run_happy_path(
       artifact_service_uri="gs://bucket",
       memory_service_uri="rag://",
       adk_version="1.3.0",
+      python_version="3.12",
   )
 
   agent_dest_path = tmp_path / "agents" / "agent"
@@ -145,7 +146,7 @@ def test_to_cloud_run_happy_path(
 
   expected_command = "api_server --with_ui" if with_ui else "api_server"
   assert f"CMD adk {expected_command} --port=8080" in dockerfile_content
-  assert "FROM python:3.11-slim" in dockerfile_content
+  assert "FROM python:3.12-slim" in dockerfile_content
   assert (
       'RUN adduser --disabled-password --gecos "" myuser' in dockerfile_content
   )
@@ -194,6 +195,36 @@ def test_to_cloud_run_happy_path(
   assert gcloud_args == expected_gcloud_command
 
   assert str(rmtree_recorder.get_last_call_args()[0]) == str(tmp_path)
+
+
+def test_to_cloud_run_default_python_version(
+    monkeypatch: pytest.MonkeyPatch,
+    agent_dir: AgentDirFixture,
+    tmp_path: Path,
+) -> None:
+  """Omitting python_version should default to 3.11 in the Dockerfile."""
+  src_dir = agent_dir(include_requirements=False, include_env=False)
+  monkeypatch.setattr(subprocess, "run", _Recorder())
+  monkeypatch.setattr(shutil, "rmtree", _Recorder())
+
+  cli_deploy.to_cloud_run(
+      agent_folder=str(src_dir),
+      project="proj",
+      region="us-central1",
+      service_name="svc",
+      app_name="agent",
+      temp_folder=str(tmp_path),
+      port=8080,
+      trace_to_cloud=False,
+      otel_to_cloud=False,
+      with_ui=False,
+      log_level="info",
+      verbosity="info",
+      adk_version="1.0.0",
+  )
+
+  dockerfile_content = (tmp_path / "Dockerfile").read_text()
+  assert "FROM python:3.11-slim" in dockerfile_content
 
 
 def test_to_cloud_run_cleans_temp_dir(

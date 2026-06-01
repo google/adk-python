@@ -983,6 +983,35 @@ def test_cli_deploy_cloud_run_allows_empty_gcloud_args(
   assert extra_args == ()
 
 
+def test_cli_deploy_cloud_run_python_version(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+  """--python_version should be forwarded to cli_deploy.to_cloud_run."""
+  rec = _Recorder()
+  monkeypatch.setattr(cli_tools_click.cli_deploy, "to_cloud_run", rec)
+
+  agent_dir = tmp_path / "agent_cr_pyver"
+  agent_dir.mkdir()
+  runner = CliRunner()
+  result = runner.invoke(
+      cli_tools_click.main,
+      [
+          "deploy",
+          "cloud_run",
+          "--project",
+          "proj",
+          "--region",
+          "us-central1",
+          "--python_version",
+          "3.12",
+          str(agent_dir),
+      ],
+  )
+  assert result.exit_code == 0
+  assert rec.calls, "cli_deploy.to_cloud_run must be invoked"
+  assert rec.calls[0][1].get("python_version") == "3.12"
+
+
 # cli deploy agent_engine
 def test_cli_deploy_agent_engine_success(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -1076,6 +1105,37 @@ def test_cli_deploy_gke_success(
   assert called_kwargs.get("project") == "test-proj"
   assert called_kwargs.get("region") == "us-central1"
   assert called_kwargs.get("cluster_name") == "my-cluster"
+
+
+def test_cli_deploy_gke_python_version(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+  """--python_version should be forwarded to cli_deploy.to_gke."""
+  rec = _Recorder()
+  monkeypatch.setattr(cli_tools_click.cli_deploy, "to_gke", rec)
+
+  agent_dir = tmp_path / "agent_gke_pyver"
+  agent_dir.mkdir()
+  runner = CliRunner()
+  result = runner.invoke(
+      cli_tools_click.main,
+      [
+          "deploy",
+          "gke",
+          "--project",
+          "test-proj",
+          "--region",
+          "us-central1",
+          "--cluster_name",
+          "my-cluster",
+          "--python_version",
+          "3.13",
+          str(agent_dir),
+      ],
+  )
+  assert result.exit_code == 0
+  assert rec.calls, "cli_deploy.to_gke must be invoked"
+  assert rec.calls[0][1].get("python_version") == "3.13"
 
 
 # cli eval
