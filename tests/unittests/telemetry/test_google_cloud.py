@@ -203,5 +203,5 @@ def test_get_gcp_span_exporter_mtls(
   mock_exporter.assert_called_once_with(
       session=mock_session.return_value,
       endpoint=_DEFAULT_MTLS_TELEMETRY_TRACES_ENPOINT,
-      header=None,
+      headers=None,
   )

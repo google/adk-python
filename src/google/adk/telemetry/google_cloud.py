@@ -43,21 +43,21 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger("google_adk." + __name__)
 
-_GCP_LOG_NAME_ENV_VARIABLE_NAME = 'GOOGLE_CLOUD_DEFAULT_LOG_NAME'
-_DEFAULT_LOG_NAME = 'adk-otel'
+_GCP_LOG_NAME_ENV_VARIABLE_NAME = "GOOGLE_CLOUD_DEFAULT_LOG_NAME"
+_DEFAULT_LOG_NAME = "adk-otel"
 
-_DEFAULT_TELEMETRY_TRACES_ENPOINT = 'https://telemetry.googleapis.com/v1/traces'
+_DEFAULT_TELEMETRY_TRACES_ENPOINT = "https://telemetry.googleapis.com/v1/traces"
 _DEFAULT_MTLS_TELEMETRY_TRACES_ENPOINT = (
-    'https://telemetry.mtls.googleapis.com/v1/traces'
+    "https://telemetry.mtls.googleapis.com/v1/traces"
 )
 
 
 class _MtlsEndpoint(enum.Enum):
   """The mTLS endpoint setting."""
 
-  AUTO = 'auto'
-  ALWAYS = 'always'
-  NEVER = 'never'
+  AUTO = "auto"
+  ALWAYS = "always"
+  NEVER = "never"
 
 
 def get_gcp_exporters(
@@ -88,7 +88,10 @@ def get_gcp_exporters(
       project_id = project.project_id
     except Exception:
       logging.warning(
-          "Failed to convert project number to project ID.", exc_info=True
+          "Failed to convert project number to project ID. Your traces and logs"
+          " may not be associated. To fix this, consider enabling the resource"
+          " manager API and redeploying your agent.",
+          exc_info=True,
       )
   if TYPE_CHECKING:
     credentials = cast(Credentials, credentials)
@@ -151,6 +154,7 @@ def _get_gcp_span_exporter(credentials: Credentials) -> SpanProcessor:
   headers = None
   if os.getenv("GOOGLE_CLOUD_AGENT_ENGINE_ENABLE_TELEMETRY"):
     from google.cloud.aiplatform import version as aip_version
+
     try:
       from opentelemetry.exporter.otlp.proto.http import version as otlp_http_version
     except (ImportError, AttributeError):
@@ -158,7 +162,9 @@ def _get_gcp_span_exporter(credentials: Credentials) -> SpanProcessor:
 
     user_agent = f"Vertex-Agent-Engine/{aip_version.__version__}"
     if otlp_http_version:
-      user_agent += f" OTel-OTLP-Exporter-Python/{otlp_http_version.__version__}"
+      user_agent += (
+          f" OTel-OTLP-Exporter-Python/{otlp_http_version.__version__}"
+      )
     headers = {"User-Agent": user_agent}
 
   return BatchSpanProcessor(
@@ -201,6 +207,20 @@ def _get_gcp_logs_exporter(
   )
 
 
+def _detect_cloud_resource_id(project_id: str) -> Optional[str]:
+  """Detects the cloud resource ID."""
+  location = os.getenv("GOOGLE_CLOUD_AGENT_ENGINE_LOCATION") or os.getenv(
+      "GOOGLE_CLOUD_LOCATION"
+  )
+  agent_engine_id = os.getenv("GOOGLE_CLOUD_AGENT_ENGINE_ID")
+  if project_id and location and agent_engine_id:
+    return (
+        f"//aiplatform.googleapis.com/projects/{project_id}"
+        f"/locations/{location}/reasoningEngines/{agent_engine_id}"
+    )
+  return None
+
+
 def get_gcp_resource(project_id: Optional[str] = None) -> Resource:
   """Returns OTEL with attributes specified in the following order (attributes specified later, overwrite those specified earlier):
   1. Populates gcp.project_id attribute from the project_id argument if present.
@@ -212,23 +232,28 @@ def get_gcp_resource(project_id: Optional[str] = None) -> Resource:
     This may be overwritten by OTELResourceDetector, if `gcp.project_id` is present in `OTEL_RESOURCE_ATTRIBUTES` env var.
   """
   agent_engine_id = os.getenv("GOOGLE_CLOUD_AGENT_ENGINE_ID", "")
+  cloud_resource_id = _detect_cloud_resource_id(project_id=project_id)
+  resource_attributes = {
+      "gcp.project_id": project_id,
+      "cloud.account.id": project_id,
+      "cloud.provider": "gcp",
+      "cloud.platform": "gcp.agent_engine",
+      "service.name": agent_engine_id,
+      "service.version": os.getenv(
+          "GOOGLE_CLOUD_AGENT_ENGINE_RUNTIME_REVISION_ID", ""
+      ),
+      "service.instance.id": f"{uuid.uuid4().hex}-{os.getpid()}",
+      "cloud.region": (
+          os.getenv("GOOGLE_CLOUD_AGENT_ENGINE_LOCATION", "")
+          or os.getenv("GOOGLE_CLOUD_LOCATION", "")
+      ),
+  }
+  if cloud_resource_id is not None:
+    resource_attributes["cloud.resource.id"] = cloud_resource_id
+
   if agent_engine_id:
     resource = Resource.create(
-        attributes={
-            "gcp.project_id": project_id,
-            "cloud.account.id": project_id,
-            "cloud.provider": "gcp",
-            "cloud.platform": "gcp.agent_engine",
-            "service.name": agent_engine_id,
-            "service.version": os.getenv(
-                "GOOGLE_CLOUD_AGENT_ENGINE_RUNTIME_REVISION_ID", ""
-            ),
-            "service.instance.id": f"{uuid.uuid4().hex}-{os.getpid()}",
-            "cloud.region": (
-                os.getenv("GOOGLE_CLOUD_AGENT_ENGINE_LOCATION", "")
-                or os.getenv("GOOGLE_CLOUD_LOCATION", "")
-            ),
-        }
+        attributes=resource_attributes
     ).merge(OTELResourceDetector().detect())
     return resource
 
@@ -265,15 +290,15 @@ def _get_api_endpoint(
       str: The API endpoint to be used.
   """
   use_mtls_endpoint_str = os.getenv(
-      'GOOGLE_API_USE_MTLS_ENDPOINT', _MtlsEndpoint.AUTO.value
+      "GOOGLE_API_USE_MTLS_ENDPOINT", _MtlsEndpoint.AUTO.value
   ).lower()
 
   try:
     use_mtls_endpoint = _MtlsEndpoint(use_mtls_endpoint_str)
   except ValueError:
     logger.warning(
-        'Environment variable `GOOGLE_API_USE_MTLS_ENDPOINT` must be one of '
-        '%s. Defaulting to %s.',
+        "Environment variable `GOOGLE_API_USE_MTLS_ENDPOINT` must be one of "
+        "%s. Defaulting to %s.",
         [e.value for e in _MtlsEndpoint],
         _MtlsEndpoint.AUTO.value,
     )
@@ -301,14 +326,14 @@ def _use_client_cert_effective() -> bool:
     return bool(mtls.should_use_client_cert())
   except (ImportError, AttributeError):
     use_client_cert_str = os.getenv(
-        'GOOGLE_API_USE_CLIENT_CERTIFICATE', 'false'
+        "GOOGLE_API_USE_CLIENT_CERTIFICATE", "false"
     ).lower()
-    if use_client_cert_str not in ('true', 'false'):
+    if use_client_cert_str not in ("true", "false"):
       logger.warning(
-          'Environment variable `GOOGLE_API_USE_CLIENT_CERTIFICATE` must be'
-          ' either `true` or `false`'
+          "Environment variable `GOOGLE_API_USE_CLIENT_CERTIFICATE` must be"
+          " either `true` or `false`"
       )
-    return use_client_cert_str == 'true'
+    return use_client_cert_str == "true"
 
 
 def _get_agent_engine_logs_exporter(

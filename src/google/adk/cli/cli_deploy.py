@@ -831,6 +831,8 @@ def to_agent_engine(
     agent_engine_config_file: Optional[str] = None,
     skip_agent_import_validation: bool = True,
     trigger_sources: Optional[str] = None,
+    memory_service_uri: Optional[str] = None,
+    session_service_uri: Optional[str] = None,
     artifact_service_uri: Optional[str] = None,
     adk_version: Optional[str] = None,
 ):
@@ -887,6 +889,12 @@ def to_agent_engine(
     trigger_sources (str): Optional. Comma-separated list of trigger sources to
       enable (e.g., 'pubsub,eventarc'). Registers /trigger/* endpoints for
       batch and event-driven agent invocations.
+    memory_service_uri (str): Optional. The URI of the memory service. If not
+      specified, the memory service will be deployed to the same parent resource
+      as the runtime.
+    session_service_uri (str): Optional. The URI of the session service. If not
+      specified, the session service will be deployed to the same parent
+      resource as the runtime.
     artifact_service_uri (str): Optional. The URI of the artifact service.
     adk_version (str): Optional. The ADK version to use in Agent Engine
       deployment. If not specified, the version in the dev environment will be
@@ -1127,9 +1135,9 @@ def to_agent_engine(
           install_agent_deps=install_agent_deps,
           service_option=_get_service_option_by_adk_version(
               adk_version,
-              agent_engine_uri,  # session_service_uri
+              session_service_uri or agent_engine_uri,
               artifact_service_uri,
-              agent_engine_uri,  # memory_service_uri
+              memory_service_uri or agent_engine_uri,
               False,  # use_local_storage
           ),
           trace_to_cloud_option='--trace_to_cloud' if trace_to_cloud else '',

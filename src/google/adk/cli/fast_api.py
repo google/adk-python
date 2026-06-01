@@ -51,10 +51,11 @@ from ..auth.credential_service.in_memory_credential_service import InMemoryCrede
 from ..evaluation.local_eval_set_results_manager import LocalEvalSetResultsManager
 from ..evaluation.local_eval_sets_manager import LocalEvalSetsManager
 from ..runners import Runner
-from .adk_web_server import AdkWebServer
-from .service_registry import load_services_module
 from ..telemetry._agent_engine import get_propagated_context
 from ..telemetry._agent_engine import TopSpanProcessor
+from .adk_web_server import AdkWebServer
+from .cli_deploy import _AGENT_ENGINE_CLASS_METHODS
+from .service_registry import load_services_module
 from .utils import envs
 from .utils import evals
 from .utils.agent_change_handler import AgentChangeEventHandler
@@ -64,6 +65,10 @@ from .utils.service_factory import _create_task_store_from_options
 from .utils.service_factory import create_artifact_service_from_options
 from .utils.service_factory import create_memory_service_from_options
 from .utils.service_factory import create_session_service_from_options
+
+_ALLOWED_AGENT_ENGINE_CLASS_METHODS = frozenset(
+    method["name"] for method in _AGENT_ENGINE_CLASS_METHODS
+)
 
 
 class _QueryRequest(BaseModel):
@@ -169,13 +174,18 @@ def get_fast_api_app(
       event-driven agent invocations. None disables all trigger endpoints.
     gemini_enterprise_app_name: The app_name to register with Gemini Enterprise
       via https://docs.cloud.google.com/gemini/enterprise/docs/register-and-manage-an-adk-agent
-    express_mode: Whether or not to intialize the server in express mode.
+    express_mode: Whether or not to initialize the server in express mode.
       This is only supported when gemini_enterprise_app_name is set. Defaults to
       False.
 
   Returns:
     The configured FastAPI application instance.
   """
+
+  if express_mode and not gemini_enterprise_app_name:
+    raise ValueError(
+        "express_mode is only supported when gemini_enterprise_app_name is set."
+    )
 
   # Enable denylist enforcement for config loads if web UI is enabled.
   if web:
@@ -251,6 +261,25 @@ def get_fast_api_app(
 
   # Callbacks & other optional args for when constructing the FastAPI instance
   extra_fast_api_args = {}
+
+  # Synchronize otel_to_cloud and GOOGLE_CLOUD_AGENT_ENGINE_ENABLE_TELEMETRY.
+  # This is to support toggling telemetry in the Agent Platform Console, which
+  # sets the environment variable GOOGLE_CLOUD_AGENT_ENGINE_ENABLE_TELEMETRY.
+  if otel_to_cloud:
+    os.environ["GOOGLE_CLOUD_AGENT_ENGINE_ENABLE_TELEMETRY"] = "true"
+    logger.info(
+        "Setting GOOGLE_CLOUD_AGENT_ENGINE_ENABLE_TELEMETRY to true based on"
+        " otel_to_cloud flag."
+    )
+  elif gemini_enterprise_app_name and os.environ.get(
+      "GOOGLE_CLOUD_AGENT_ENGINE_ENABLE_TELEMETRY"
+  ):
+    logger.info(
+        "Setting otel_to_cloud to True for Gemini Enterprise app %s based on"
+        " GOOGLE_CLOUD_AGENT_ENGINE_ENABLE_TELEMETRY environment variable.",
+        gemini_enterprise_app_name,
+    )
+    otel_to_cloud = True
 
   # TODO - Remove separate trace_to_cloud logic once otel_to_cloud stops being
   # EXPERIMENTAL.
@@ -718,8 +747,9 @@ def get_fast_api_app(
 
     import inspect
     import json
-    import google.auth
+
     from google.adk.agents import Agent
+    import google.auth
     from vertexai import agent_engines
 
     # The tmp agent will be replaced by the adk server's runner and services.
@@ -727,6 +757,10 @@ def get_fast_api_app(
     adk_app = agent_engines.AdkApp(agent=Agent(name="tmp"))
     if express_mode:
       api_key = os.environ.get("GOOGLE_API_KEY", None)
+      if not api_key:
+        raise ValueError(
+            "No GOOGLE_API_KEY found in environment variables for express mode."
+        )
       adk_app._tmpl_attrs["project"] = None
       adk_app._tmpl_attrs["location"] = None
       adk_app._tmpl_attrs["api_key"] = api_key
@@ -736,6 +770,11 @@ def get_fast_api_app(
           "GOOGLE_CLOUD_AGENT_ENGINE_LOCATION",
           os.environ.get("GOOGLE_CLOUD_LOCATION", None),
       )
+      if not project_id or not location:
+        raise ValueError(
+            "No GOOGLE_CLOUD_PROJECT or GOOGLE_CLOUD_LOCATION found in"
+            " environment variables."
+        )
       adk_app._tmpl_attrs["project"] = project_id
       adk_app._tmpl_attrs["location"] = location
       adk_app._tmpl_attrs["api_key"] = None
@@ -813,6 +852,11 @@ def get_fast_api_app(
         raise HTTPException(
             status_code=400, detail="class_method cannot be None"
         )
+      if request.class_method not in _ALLOWED_AGENT_ENGINE_CLASS_METHODS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"class_method {request.class_method} is not allowed",
+        )
       method = getattr(adk_app, request.class_method)
       output = await _invoke_callable_or_raise(method, request.input or {})
 
@@ -842,6 +886,11 @@ def get_fast_api_app(
       if request.class_method is None:
         raise HTTPException(
             status_code=400, detail="class_method cannot be None"
+        )
+      if request.class_method not in _ALLOWED_AGENT_ENGINE_CLASS_METHODS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"class_method {request.class_method} is not allowed",
         )
       method = getattr(adk_app, request.class_method)
       output = await _invoke_callable_or_raise(method, request.input or {})

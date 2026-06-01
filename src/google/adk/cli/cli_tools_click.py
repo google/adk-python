@@ -571,8 +571,11 @@ def adk_services_options(*, default_use_local_storage: bool = True):
         "--memory_service_uri",
         type=str,
         help=textwrap.dedent("""\
-            \b
             Optional. The URI of the memory service.
+            If set, ADK uses this service.
+
+            \b
+            If unset, ADK chooses a default memory service.
             - Use 'rag://<rag_corpus_id>' to connect to Vertex AI Rag Memory Service.
             - Use 'agentengine://<agent_engine>' to connect to Agent Engine
               sessions. <agent_engine> can either be the full qualified resource
@@ -1740,6 +1743,12 @@ def cli_api_server(
 
     adk api_server --session_service_uri=[uri] --port=[port] path/to/agents_dir
   """
+  if express_mode and not gemini_enterprise_app_name:
+    raise click.UsageError(
+        "--express_mode is only supported when --gemini_enterprise_app_name is"
+        " set."
+    )
+
   logs.setup_adk_logger(getattr(logging, log_level.upper()))
 
   config = uvicorn.Config(
@@ -2230,21 +2239,7 @@ def cli_migrate_session(
         " the version in the dev environment)"
     ),
 )
-@click.option(
-    "--artifact_service_uri",
-    type=str,
-    help=textwrap.dedent(
-        """\
-        Optional. The URI of the artifact service. If set, ADK uses this service.
-
-        \b
-        If unset, ADK chooses a default artifact service.
-        - Use 'gs://<bucket_name>' to connect to the GCS artifact service.
-        - Use 'memory://' to force the in-memory artifact service.
-        - Use 'file://<path>' to store artifacts in a custom local directory."""
-    ),
-    default=None,
-)
+@adk_services_options(default_use_local_storage=False)
 @click.argument(
     "agent",
     type=click.Path(
@@ -2274,6 +2269,8 @@ def cli_deploy_agent_engine(
     adk_version: str | None = None,
     trigger_sources: str | None = None,
     artifact_service_uri: str | None = None,
+    memory_service_uri: str | None = None,
+    session_service_uri: str | None = None,
 ):
   """Deploys an agent to Agent Engine.
 
@@ -2315,6 +2312,8 @@ def cli_deploy_agent_engine(
         skip_agent_import_validation=not validate_agent_import,
         trigger_sources=trigger_sources,
         artifact_service_uri=artifact_service_uri,
+        memory_service_uri=memory_service_uri,
+        session_service_uri=session_service_uri,
         adk_version=adk_version,
     )
   except Exception as e:

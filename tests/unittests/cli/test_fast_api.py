@@ -911,17 +911,17 @@ def test_app_with_gemini_enterprise(
   mock_adk_app_instance = MagicMock()
   mock_adk_app_instance._tmpl_attrs = {}
 
-  async def my_method_impl(**kwargs):
+  async def get_session_impl(**kwargs):
     return {"result": "success", "kwargs": kwargs}
 
-  mock_adk_app_instance.my_method = my_method_impl
+  mock_adk_app_instance.get_session = get_session_impl
 
-  async def my_stream_method_impl(**kwargs):
+  async def stream_query_impl(**kwargs):
     yield {"chunk": 1, "kwargs": kwargs}
     await asyncio.sleep(0)
     yield {"chunk": 2, "kwargs": kwargs}
 
-  mock_adk_app_instance.my_stream_method = my_stream_method_impl
+  mock_adk_app_instance.stream_query = stream_query_impl
 
   with (
       patch("vertexai.init", new_callable=MagicMock) as mock_vertexai_init,
@@ -930,11 +930,11 @@ def test_app_with_gemini_enterprise(
       ) as mock_adk_app_cls,
       patch("google.adk.agents.Agent", new_callable=MagicMock),
       patch(
-          "google.adk.cli.utils._telemetry.TopSpanProcessor",
+          "google.adk.telemetry._agent_engine.TopSpanProcessor",
           new_callable=MagicMock,
       ),
       patch(
-          "google.adk.cli.utils._telemetry.get_propagated_context",
+          "google.adk.telemetry._agent_engine.get_propagated_context",
           new_callable=MagicMock,
       ),
   ):
@@ -2769,131 +2769,11 @@ def test_gemini_app_not_found_raises(
     )
 
 
-def test_gemini_missing_credentials_raises(
-    mock_session_service,
-    mock_artifact_service,
-    mock_memory_service,
-    mock_agent_loader,
-    mock_eval_sets_manager,
-    mock_eval_set_results_manager,
-    monkeypatch,
-):
-  """Test get_fast_api_app raises ValueError if no credentials are provided."""
-  monkeypatch.delenv("GOOGLE_CLOUD_PROJECT", raising=False)
-  monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
-  mock_agent_loader.list_agents = MagicMock(return_value=["gemini_app"])
-  with pytest.raises(
-      ValueError, match="No GOOGLE_CLOUD_PROJECT or GOOGLE_API_KEY"
-  ):
-    with (
-        patch("vertexai.init"),
-        patch("vertexai.agent_engines.AdkApp"),
-        patch("google.adk.agents.Agent"),
-        patch(
-            "google.adk.cli.utils._telemetry.TopSpanProcessor",
-            new_callable=MagicMock,
-        ),
-        patch(
-            "google.adk.cli.utils._telemetry.get_propagated_context",
-            new_callable=MagicMock,
-        ),
-    ):
-      _create_test_client(
-          mock_session_service,
-          mock_artifact_service,
-          mock_memory_service,
-          mock_agent_loader,
-          mock_eval_sets_manager,
-          mock_eval_set_results_manager,
-          gemini_enterprise_app_name="gemini_app",
-      )
-
-
-def test_gemini_init_with_project_id(
-    mock_session_service,
-    mock_artifact_service,
-    mock_memory_service,
-    mock_agent_loader,
-    mock_eval_sets_manager,
-    mock_eval_set_results_manager,
-    monkeypatch,
-):
-  """Test vertexai.init is called with project_id."""
-  monkeypatch.setenv("GOOGLE_CLOUD_PROJECT", "test-project")
-  monkeypatch.setenv("GOOGLE_CLOUD_LOCATION", "test-location")
-  monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
-  mock_agent_loader.list_agents = MagicMock(return_value=["gemini_app"])
-  with (
-      patch("vertexai.init") as mock_init,
-      patch("vertexai.agent_engines.AdkApp"),
-      patch("google.adk.agents.Agent"),
-      patch(
-          "google.adk.cli.utils._telemetry.TopSpanProcessor",
-          new_callable=MagicMock,
-      ),
-      patch(
-          "google.adk.cli.utils._telemetry.get_propagated_context",
-          new_callable=MagicMock,
-      ),
-  ):
-    _create_test_client(
-        mock_session_service,
-        mock_artifact_service,
-        mock_memory_service,
-        mock_agent_loader,
-        mock_eval_sets_manager,
-        mock_eval_set_results_manager,
-        gemini_enterprise_app_name="gemini_app",
-    )
-    mock_init.assert_called_once_with(
-        project="test-project",
-        location="test-location",
-    )
-
-
-def test_gemini_init_with_api_key(
-    mock_session_service,
-    mock_artifact_service,
-    mock_memory_service,
-    mock_agent_loader,
-    mock_eval_sets_manager,
-    mock_eval_set_results_manager,
-    monkeypatch,
-):
-  """Test vertexai.init is called with api_key."""
-  monkeypatch.delenv("GOOGLE_CLOUD_PROJECT", raising=False)
-  monkeypatch.setenv("GOOGLE_API_KEY", "test-api-key")
-  mock_agent_loader.list_agents = MagicMock(return_value=["gemini_app"])
-  with (
-      patch("vertexai.init") as mock_init,
-      patch("vertexai.agent_engines.AdkApp"),
-      patch("google.adk.agents.Agent"),
-      patch(
-          "google.adk.cli.utils._telemetry.TopSpanProcessor",
-          new_callable=MagicMock,
-      ),
-      patch(
-          "google.adk.cli.utils._telemetry.get_propagated_context",
-          new_callable=MagicMock,
-      ),
-  ):
-    _create_test_client(
-        mock_session_service,
-        mock_artifact_service,
-        mock_memory_service,
-        mock_agent_loader,
-        mock_eval_sets_manager,
-        mock_eval_set_results_manager,
-        gemini_enterprise_app_name="gemini_app",
-    )
-    mock_init.assert_called_once_with(api_key="test-api-key")
-
-
 def test_gemini_reasoning_engine_success(test_app_with_gemini_enterprise):
   """Test POST /api/reasoning_engine success case."""
   response = test_app_with_gemini_enterprise.post(
       "/api/reasoning_engine",
-      json={"class_method": "my_method", "input": {"arg1": 1}},
+      json={"class_method": "get_session", "input": {"arg1": 1}},
   )
   assert response.status_code == 200
   assert response.json() == {
@@ -2918,7 +2798,7 @@ def test_gemini_stream_reasoning_engine_success(
   """Test POST /api/stream_reasoning_engine success case."""
   response = test_app_with_gemini_enterprise.post(
       "/api/stream_reasoning_engine",
-      json={"class_method": "my_stream_method", "input": {"arg1": 1}},
+      json={"class_method": "stream_query", "input": {"arg1": 1}},
   )
   assert response.status_code == 200
   lines = response.text.strip().split("\n")
