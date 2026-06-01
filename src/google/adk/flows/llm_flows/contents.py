@@ -68,6 +68,7 @@ class _ContentLlmRequestProcessor(BaseLlmRequestProcessor):
     instruction_related_contents = llm_request.contents
 
     is_single_turn = getattr(agent, 'mode', None) == 'single_turn'
+    source_filter = getattr(agent, 'include_sources', None)
     if agent.include_contents == 'default':
       # Include full conversation history
       llm_request.contents = _get_contents(
@@ -78,6 +79,7 @@ class _ContentLlmRequestProcessor(BaseLlmRequestProcessor):
           isolation_scope=invocation_context.isolation_scope,
           is_single_turn=is_single_turn,
           user_content=invocation_context.user_content,
+          source_filter=source_filter,
       )
     else:
       # Include current turn context only (no conversation history)
@@ -89,6 +91,7 @@ class _ContentLlmRequestProcessor(BaseLlmRequestProcessor):
           isolation_scope=invocation_context.isolation_scope,
           is_single_turn=is_single_turn,
           user_content=invocation_context.user_content,
+          source_filter=source_filter,
       )
 
     # Add instruction-related contents to proper position in conversation
@@ -504,6 +507,7 @@ def _get_contents(
     isolation_scope: Optional[str] = None,
     is_single_turn: bool = False,
     user_content: Optional[types.Content] = None,
+    source_filter: Optional[list[str]] = None,
 ) -> list[types.Content]:
   """Get the contents for the LLM request.
 
@@ -610,6 +614,7 @@ def _get_contents(
         accumulated_output_transcription = ''
 
     is_other_reply = _is_other_agent_reply(agent_name, event)
+    other_fc_author = None  # set when is_other_reply via FC attribution
 
     # Check if it's a FunctionResponse for another agent
     if not is_other_reply and event.content:
@@ -623,7 +628,42 @@ def _get_contents(
               and call_author != 'user'
           ):
             is_other_reply = True
+            other_fc_author = call_author
             break
+
+    if source_filter is not None:
+      if is_other_reply:
+        if event.author != 'user':
+          # In live mode the current agent's own events are also classified as
+          # other_reply (see _is_other_agent_reply). Map the actual agent name
+          # to the 'self' reserved name so source_filter=['self'] works.
+          effective_source = (
+              'self' if event.author == agent_name else event.author
+          )
+          if effective_source not in source_filter:
+            continue
+        else:
+          # 'user'-authored FC response to another agent's call.
+          # other_fc_author was resolved above — no second iteration needed.
+          # _present_other_agent_message converts it to text, so no raw
+          # function_response survives — but drop it when its call author is
+          # filtered to avoid "[agent_b] returned X" with no visible preceding
+          # "[agent_b] called tool Y".
+          if other_fc_author and other_fc_author not in source_filter:
+            continue
+      elif event.content:
+        if event.content.role == 'model':
+          if 'self' not in source_filter:
+            continue
+        elif event.content.role == 'user':
+          if _content_contains_function_response(event.content):
+            # FC responses are paired with the current agent's own tool calls
+            # (role='model'). Tie them to 'self' so dropping 'self' drops both
+            # sides of the pair and avoids orphaned function_response parts.
+            if 'self' not in source_filter:
+              continue
+          elif 'user' not in source_filter:
+            continue
 
     if is_other_reply:
       if converted_event := _present_other_agent_message(event):
@@ -677,6 +717,7 @@ def _get_current_turn_contents(
     is_single_turn: bool = False,
     isolation_scope: Optional[str] = None,
     user_content: Optional[types.Content] = None,
+    source_filter: Optional[list[str]] = None,
 ) -> list[types.Content]:
   """Get contents for the current turn only (no conversation history).
 
@@ -712,6 +753,7 @@ def _get_current_turn_contents(
           isolation_scope=isolation_scope,
           is_single_turn=is_single_turn,
           user_content=user_content,
+          source_filter=source_filter,
       )
 
   return []

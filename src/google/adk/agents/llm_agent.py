@@ -352,6 +352,27 @@ class LlmAgent(BaseAgent, abc.ABC):
     instruction and input
   """
 
+  include_sources: Optional[list[str]] = None
+  """Allowlist of content sources to include in model requests.
+
+  Orthogonal to include_contents (temporal window); this controls which
+  sources are kept from within that window.
+
+  Options:
+    None (default): all sources pass through — backward-compatible.
+    list[str]: only content from the listed sources is kept.
+
+  Reserved source names:
+    'user'  — plain human user messages (not tool outputs)
+    'self'  — this agent's own prior model outputs
+    <name>  — any other string is matched against event.author (agent name)
+
+  Example — keep full history but only user + this agent's turns:
+    include_contents='default', include_sources=['user', 'self']
+
+  Raises ValueError if set to [] (use None to disable filtering).
+  """
+
   # Controlled input/output configurations - Start
   input_schema: Optional[type[BaseModel]] = None
   """The input schema when agent is used as a tool."""
@@ -956,6 +977,17 @@ class LlmAgent(BaseAgent, abc.ABC):
   @model_validator(mode='after')
   def __model_validator_after(self) -> LlmAgent:
     return self
+
+  @field_validator('include_sources', mode='after')
+  @classmethod
+  def _validate_include_sources(
+      cls, v: Optional[list[str]]
+  ) -> Optional[list[str]]:
+    if v is not None and len(v) == 0:
+      raise ValueError(
+          "include_sources=[] keeps nothing. Use None to disable filtering."
+      )
+    return v
 
   @field_validator('generate_content_config', mode='after')
   @classmethod
