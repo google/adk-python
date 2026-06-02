@@ -4999,9 +4999,7 @@ async def test_get_completion_inputs_tool_choice_none_without_tool_config():
   """tool_choice must be None when no tool_config is present."""
   llm_request = LlmRequest(
       contents=[
-          types.Content(
-              role="user", parts=[types.Part.from_text(text="Hello")]
-          )
+          types.Content(role="user", parts=[types.Part.from_text(text="Hello")])
       ],
   )
 
@@ -5017,9 +5015,7 @@ async def test_get_completion_inputs_tool_choice_required_for_any_mode():
   """tool_choice must be 'required' when mode=ANY."""
   llm_request = LlmRequest(
       contents=[
-          types.Content(
-              role="user", parts=[types.Part.from_text(text="Hello")]
-          )
+          types.Content(role="user", parts=[types.Part.from_text(text="Hello")])
       ],
       config=types.GenerateContentConfig(
           tool_config=types.ToolConfig(
@@ -5042,9 +5038,7 @@ async def test_get_completion_inputs_tool_choice_none_for_none_mode():
   """tool_choice must be 'none' when mode=NONE."""
   llm_request = LlmRequest(
       contents=[
-          types.Content(
-              role="user", parts=[types.Part.from_text(text="Hello")]
-          )
+          types.Content(role="user", parts=[types.Part.from_text(text="Hello")])
       ],
       config=types.GenerateContentConfig(
           tool_config=types.ToolConfig(
@@ -5067,9 +5061,7 @@ async def test_get_completion_inputs_tool_choice_none_for_auto_mode():
   """tool_choice must be None (provider default) when mode=AUTO."""
   llm_request = LlmRequest(
       contents=[
-          types.Content(
-              role="user", parts=[types.Part.from_text(text="Hello")]
-          )
+          types.Content(role="user", parts=[types.Part.from_text(text="Hello")])
       ],
       config=types.GenerateContentConfig(
           tool_config=types.ToolConfig(
@@ -5159,9 +5151,7 @@ async def test_generate_content_async_omits_tool_choice_for_auto_mode(
 
   llm_request = LlmRequest(
       contents=[
-          types.Content(
-              role="user", parts=[types.Part.from_text(text="Hi")]
-          )
+          types.Content(role="user", parts=[types.Part.from_text(text="Hi")])
       ],
       config=types.GenerateContentConfig(
           tool_config=types.ToolConfig(
@@ -5190,9 +5180,7 @@ async def test_generate_content_async_omits_tool_choice_without_tool_config(
 
   llm_request = LlmRequest(
       contents=[
-          types.Content(
-              role="user", parts=[types.Part.from_text(text="Hi")]
-          )
+          types.Content(role="user", parts=[types.Part.from_text(text="Hi")])
       ],
   )
 

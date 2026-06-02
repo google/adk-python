@@ -218,19 +218,29 @@ class AgentTool(BaseTool):
     if input_schema:
       input_value = input_schema.model_validate(args)
       json_payload = input_value.model_dump_json(exclude_none=True)
-      content = types.Content(
-          role='user',
-          parts=[
-              types.Part.from_text(
-                  text=(
-                      'Process the following structured request. Use your'
-                      ' available tools as needed to gather information or'
-                      ' perform actions before producing the final'
-                      ' response.\n\nRequest:\n' + json_payload
-                  )
-              )
-          ],
-      )
+      output_schema = _get_output_schema(self.agent)
+      if output_schema:
+        # Single-shot structured output mode: pass raw JSON, no ReAct wrapper.
+        content = types.Content(
+            role='user',
+            parts=[types.Part.from_text(text=json_payload)],
+        )
+      else:
+        # Tool-calling mode: wrap with ReAct-style prompt.
+        content = types.Content(
+            role='user',
+            parts=[
+                types.Part.from_text(
+                    text=(
+                        'Process the following structured request. Use your'
+                        ' available tools as needed to gather information or'
+                        ' perform actions before producing the final'
+                        ' response.\n\nRequest:\n'
+                        + json_payload
+                    )
+                )
+            ],
+        )
     else:
       content = types.Content(
           role='user',
