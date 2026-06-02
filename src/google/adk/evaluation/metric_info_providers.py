@@ -242,3 +242,21 @@ class PerTurnUserSimulatorQualityV1MetricInfoProvider(MetricInfoProvider):
             interval=Interval(min_value=0.0, max_value=1.0)
         ),
     )
+
+
+class RubricBasedMultiTurnTrajectoryMetricInfoProvider(MetricInfoProvider):
+  """Metric info provider for RubricBasedMultiTurnTrajectory."""
+
+  def get_metric_info(self) -> MetricInfo:
+    return MetricInfo(
+        metric_name=PrebuiltMetrics.RUBRIC_BASED_MULTI_TURN_TRAJECTORY_QUALITY_V1,
+        description=(
+            "This metric evaluates the agent's multi-turn trajectory against"
+            " a set of user-provided rubrics using an LLM as a judge. Value"
+            " range for this metric is [0,1], with values closer to 1 more"
+            " desirable."
+        ),
+        metric_value_info=MetricValueInfo(
+            interval=Interval(min_value=0.0, max_value=1.0)
+        ),
+    )

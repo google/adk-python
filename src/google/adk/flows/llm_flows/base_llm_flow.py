@@ -51,6 +51,7 @@ from ...telemetry.tracing import tracer
 from ...tools.base_toolset import BaseToolset
 from ...tools.tool_context import ToolContext
 from ...utils.context_utils import Aclosing
+from ...utils import model_name_utils
 from .audio_cache_manager import AudioCacheManager
 from .functions import build_auth_request_event
 
@@ -420,6 +421,15 @@ async def _process_agent_tools(
   instances, and calls ``process_llm_request`` on each to register
   tool declarations in the request.
 
+  Tool-union resolution is dispatched concurrently via ``asyncio.gather``
+  to overlap I/O-bound listings (e.g. MCP ``list_tools`` over the
+  network). The subsequent ``process_llm_request`` calls are kept
+  serial in the original ``agent.tools`` order: some tools read/write
+  ``llm_request`` state (e.g. ``GoogleSearchTool`` writes
+  ``llm_request.model``; ``ComputerUseToolset`` performs an idempotency
+  check on ``llm_request.config.tools``) and rely on observing the
+  post-state of earlier tools.
+
   After this function returns, ``llm_request.tools_dict`` maps tool
   names to ``BaseTool`` instances ready for function call dispatch.
 
@@ -429,12 +439,34 @@ async def _process_agent_tools(
     llm_request: The LLM request to populate with tool declarations.
   """
   agent = invocation_context.agent
-  if not hasattr(agent, 'tools') or not agent.tools:
+  if agent is None or not hasattr(agent, 'tools') or not agent.tools:
     return
 
   multiple_tools = len(agent.tools) > 1
   model = agent.canonical_model
-  for tool_union in agent.tools:
+
+  from ...agents.llm_agent import _convert_tool_union_to_tools
+
+  # Resolve tool_unions in parallel. ``asyncio.gather`` preserves
+  # input order in the returned list, so the serial commit phase below
+  # still observes ``agent.tools`` order. If any resolution raises,
+  # gather cancels the siblings and propagates -- same observable
+  # behavior as the previous serial loop, which would propagate the
+  # first exception and abandon the rest.
+  resolved_tools_per_union = await asyncio.gather(*(
+      _convert_tool_union_to_tools(
+          tool_union,
+          ReadonlyContext(invocation_context),
+          model,
+          multiple_tools,
+      )
+      for tool_union in agent.tools
+  ))
+
+  # Serial commit phase, in original ``agent.tools`` order. Mutations
+  # to ``llm_request`` and reads of its state (model, config.tools,
+  # tools_dict) preserve today's ordering semantics exactly.
+  for tool_union, tools in zip(agent.tools, resolved_tools_per_union):
     tool_context = ToolContext(invocation_context)
 
     # If it's a toolset, process it first
@@ -443,15 +475,7 @@ async def _process_agent_tools(
           tool_context=tool_context, llm_request=llm_request
       )
 
-    from ...agents.llm_agent import _convert_tool_union_to_tools
-
     # Then process all tools from this tool union
-    tools = await _convert_tool_union_to_tools(
-        tool_union,
-        ReadonlyContext(invocation_context),
-        model,
-        multiple_tools,
-    )
     for tool in tools:
       await tool.process_llm_request(
           tool_context=tool_context, llm_request=llm_request
@@ -528,6 +552,20 @@ class BaseLlmFlow(ABC):
             )
             if session_resumption.transparent is None:
               session_resumption.transparent = True
+
+        if (
+            isinstance(llm, Gemini)
+            and llm._api_backend == GoogleLLMVariant.GEMINI_API
+            and model_name_utils.is_gemini_3_1_flash_live(llm_request.model)
+            and llm_request.contents
+            and not invocation_context.live_session_resumption_handle
+        ):
+          if llm_request.live_connect_config is None:
+            llm_request.live_connect_config = types.LiveConnectConfig()
+          if llm_request.live_connect_config.history_config is None:
+            llm_request.live_connect_config.history_config = types.HistoryConfig(
+                initial_history_in_client_content=True
+            )
 
         logger.info(
             'Establishing live connection for agent: %s',
