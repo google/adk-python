@@ -137,3 +137,42 @@ class TestMessageWithOtherKwargs:
     event = Event(message='hello', route='next')
     assert event.content is not None
     assert event.actions.route == 'next'
+
+
+class TestMessageSubclassField:
+  """Tests that a subclass declaring `message` as a real field is honored.
+
+  `_accept_convenience_kwargs` already routes construction kwargs to such a
+  field; the `message` property/setter must defer to it too instead of
+  aliasing `content`.
+  """
+
+  def test_subclass_field_readable_via_property(self):
+    class _Sub(Event):
+      message: str = ''
+
+    event = _Sub(message='hello', author='a')
+    assert event.message == 'hello'
+
+  def test_subclass_field_serializes_and_round_trips(self):
+    class _Sub(Event):
+      message: str = ''
+
+    event = _Sub(message='hello', author='a')
+    data = event.model_dump()
+    assert data['message'] == 'hello'
+    assert _Sub.model_validate(data).message == 'hello'
+
+  def test_subclass_field_setter_updates_field_not_content(self):
+    class _Sub(Event):
+      message: str = ''
+
+    event = _Sub(message='hello', author='a')
+    event.message = 'updated'
+    assert event.message == 'updated'
+    assert event.content is None
+
+  def test_base_event_message_still_aliases_content(self):
+    content = types.Content(parts=[types.Part(text='hi')], role='model')
+    event = Event(content=content)
+    assert event.message is event.content

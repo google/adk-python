@@ -230,13 +230,30 @@ class Event(LlmResponse):
     return data
 
   @property
-  def message(self) -> Optional[types.Content]:
-    """Alias for content. Returns the user-facing message of the event."""
+  def message(self) -> Any:
+    """Alias for content. Returns the user-facing message of the event.
+
+    Subclasses may declare ``message`` as a real field (see
+    ``_accept_convenience_kwargs``, which already routes construction kwargs to
+    such fields). When they do, return that field's value so reads stay
+    consistent with construction and serialization instead of returning the
+    ``content`` alias. The return type is ``Any`` because such a subclass field
+    may be typed differently (e.g. ``str``); for a plain ``Event`` this returns
+    ``Optional[types.Content]``.
+    """
+    if 'message' in type(self).model_fields:
+      return self.__dict__.get('message')
     return self.content
 
   @message.setter
-  def message(self, value: Optional[types.ContentUnion]) -> None:
-    """Sets the content of the event."""
+  def message(self, value: Any) -> None:
+    """Sets the content of the event (or a subclass ``message`` field)."""
+    if 'message' in type(self).model_fields:
+      # Route through Pydantic so a subclass field's validators/type are
+      # enforced. A direct __dict__ write would skip validation, and
+      # object.__setattr__/self.message would recurse through this property.
+      self.__pydantic_validator__.validate_assignment(self, 'message', value)
+      return
     if value is not None:
       from google.genai import _transformers
 
