@@ -328,16 +328,15 @@ class TestAgentRegistry:
       expected_auth,
       use_custom_provider,
   ):
-    mock_response = MagicMock()
-    mock_response.json.return_value = {
+    mock_api_response = MagicMock()
+    mock_api_response.json.return_value = {
         "displayName": "TestPrefix",
         "interfaces": [{
             "url": url,
             "protocolBinding": "JSONRPC",
         }],
     }
-    mock_response.raise_for_status = MagicMock()
-    registry._session.get.return_value = mock_response
+    mock_api_response.raise_for_status = MagicMock()
 
     mock_creds = MagicMock()
     mock_creds.quota_project_id = None
@@ -355,6 +354,7 @@ class TestAgentRegistry:
             header_provider=custom_header_provider,
         )
 
+    registry._session.get.return_value = mock_api_response
     registry._credentials.token = "token"
     registry._credentials.refresh = MagicMock()
 
@@ -729,7 +729,10 @@ class TestAgentRegistryMtls:
   def registry(self):
     with patch(
         "google.auth.default", return_value=(MagicMock(), "test-project")
-    ), patch("google.auth.transport.requests.AuthorizedSession"):
+    ), patch("google.auth.transport.requests.AuthorizedSession"), patch(
+        "google.adk.integrations.agent_registry.agent_registry._use_client_cert_effective",
+        return_value=False,
+    ):
       return AgentRegistry(project_id="test-project", location="global")
 
   @patch(
