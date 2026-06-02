@@ -141,6 +141,10 @@ If the user selects **Local Review**, run the following structured sequence:
    * *What it does*: This script automatically checks the Google CLA signature status again, attempts to update the PR branch on GitHub by rebasing onto `main`, and if rebase-update is blocked, falls back to updating via a merge commit. It handles all outputs and fallbacks gracefully.
 2. **Step 1: Checkout the PR to a Local Branch**:
    * Branch naming convention: `pr-triage-<pr_number>-[short_desc]` (e.g. `pr-triage-5875-parallelize-tool-union`).
+   * Fetch the latest main branch from origin before checking out the PR:
+     ```bash
+     git fetch origin main
+     ```
    * Fetch the pull request ref directly from the remote GitHub endpoint:
      ```bash
      git fetch https://github.com/google/adk-python.git pull/<pr_number>/head:pr-triage-<pr_number>-[short_desc]
@@ -156,9 +160,14 @@ If the user selects **Local Review**, run the following structured sequence:
        ```bash
        git log -1 --pretty=%B
        ```
-     * **Multiple Commits**: Squash them into a single local commit first, keeping the overall PR Title and PR Body as the exact commit message. An elegant way to squash is:
+     * **Multiple Commits**: Squash them into a single local commit first, keeping the overall PR Title and PR Body as the exact commit message, AND preserving the original author. An elegant way to squash is:
        ```bash
-       git reset --soft $(git merge-base HEAD origin/main) && git commit -m "<PR message>"
+       # 1. Capture the original author
+       ORIG_AUTHOR=$(git log -1 --format='%an <%ae>')
+
+       # 2. Reset to base and commit with the original author
+       git reset --soft $(git merge-base HEAD origin/main)
+       git commit --author="$ORIG_AUTHOR" -m "<PR message>"
        ```
    * Append `"Merge <PR link>"` to the very end of the commit message (separated by a blank line). Use this elegant shell command to do it in one-shot:
      ```bash
