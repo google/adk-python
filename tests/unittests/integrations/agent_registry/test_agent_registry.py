@@ -761,19 +761,33 @@ class TestAgentRegistryMtls:
   )
   @patch("google.auth.transport.mtls.default_client_cert_source")
   @patch.dict(os.environ, {"GOOGLE_API_USE_CLIENT_CERTIFICATE": "true"})
-  def test_make_request_configures_mtls(
-      self, mock_cert_source, mock_has_cert, registry
-  ):
+  def test_make_request_configures_mtls(self, mock_cert_source, registry):
     """Verifies that mTLS is configured when supported and enabled."""
-    mock_session = registry._session
     mock_cert_source.return_value = lambda: (b"cert", b"key")
 
-    registry._make_request("test-path")
+    with patch(
+        "google.auth.default", return_value=(MagicMock(), "test-project")
+    ), patch(
+        "google.adk.integrations.agent_registry.agent_registry._use_client_cert_effective",
+        return_value=True,
+    ), patch(
+        "google.auth.transport.requests.AuthorizedSession"
+    ) as mock_session_class:
+      # Instantiate inside the test after enabling mTLS patches
+      registry = AgentRegistry(project_id="test-project", location="global")
+      mock_session = registry._session
 
-    # Verify mTLS configuration and endpoint
-    mock_session.configure_mtls_channel.assert_called_once()
-    args, kwargs = mock_session.get.call_args
-    assert "agentregistry.mtls.googleapis.com" in args[0]
+      # Mock successful response
+      mock_response = MagicMock()
+      mock_response.json.return_value = {"key": "value"}
+      mock_session.get.return_value = mock_response
+
+      registry._make_request("test-path")
+
+      # Verify mTLS configuration and endpoint
+      mock_session.configure_mtls_channel.assert_called_once()
+      args, kwargs = mock_session.get.call_args
+      assert "agentregistry.mtls.googleapis.com" in args[0]
 
   @pytest.mark.parametrize(
       "env_val, has_cert, expected",
