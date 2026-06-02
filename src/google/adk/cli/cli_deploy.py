@@ -29,6 +29,7 @@ import warnings
 import click
 from packaging.version import parse
 
+from ..version import __version__
 from .utils import _onboarding
 
 _IS_WINDOWS = os.name == 'nt'
@@ -62,7 +63,8 @@ def _ensure_agent_engine_dependency(requirements_txt_path: str) -> None:
   with open(requirements_txt_path, 'a', encoding='utf-8') as f:
     if requirements and not requirements.endswith('\n'):
       f.write('\n')
-    f.write(_AGENT_ENGINE_REQUIREMENT + '\n')
+    f.write('google-cloud-aiplatform[agent_engines]\n')
+    f.write(f'google-adk=={__version__}\n')
 
 
 _DOCKERFILE_TEMPLATE: Final[str] = """
@@ -706,7 +708,7 @@ def to_cloud_run(
         gcp_region=region,
         app_name=app_name,
         port=port,
-        command='web' if with_ui else 'api_server',
+        command='api_server --with_ui' if with_ui else 'api_server',
         install_agent_deps=install_agent_deps,
         service_option=_get_service_option_by_adk_version(
             adk_version,
@@ -999,6 +1001,7 @@ def to_agent_engine(
         )
       agent_config['description'] = description
 
+    requirements_txt_path = os.path.join(agent_src_path, 'requirements.txt')
     if requirements_file:
       warnings.warn(
           'WARNING: `--requirements_file` is deprecated and will be removed in'
@@ -1013,6 +1016,14 @@ def to_agent_engine(
           DeprecationWarning,
           stacklevel=2,
       )
+    if not os.path.exists(requirements_txt_path):
+      click.echo(f'Creating {requirements_txt_path}...')
+      with open(requirements_txt_path, 'w', encoding='utf-8') as f:
+        f.write('google-cloud-aiplatform[agent_engines]\n')
+        f.write(f'google-adk=={__version__}\n')
+        click.echo(f'Using google-adk=={__version__} in requirements')
+      click.echo(f'Created {requirements_txt_path}')
+    _ensure_agent_engine_dependency(requirements_txt_path)
     env_vars = {}
     if not env_file:
       # Attempt to read the env variables from .env in the dir (if any).
@@ -1300,7 +1311,7 @@ def to_gke(
         gcp_region=region,
         app_name=app_name,
         port=port,
-        command='web' if with_ui else 'api_server',
+        command='api_server --with_ui' if with_ui else 'api_server',
         install_agent_deps=install_agent_deps,
         service_option=_get_service_option_by_adk_version(
             adk_version,

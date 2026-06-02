@@ -35,6 +35,8 @@ from google.adk.cli import cli_deploy
 from google.adk.cli import cli_tools_click
 import pytest
 
+import src.google.adk.cli.cli_deploy as cli_deploy
+
 
 # Helpers
 class _Recorder:
@@ -378,7 +380,7 @@ def test_to_gke_happy_path(
   dockerfile_path = tmp_path / "Dockerfile"
   assert dockerfile_path.is_file()
   dockerfile_content = dockerfile_path.read_text()
-  assert "CMD adk web --port=9090" in dockerfile_content
+  assert "CMD adk api_server --with_ui --port=9090" in dockerfile_content
   assert "RUN pip install google-adk==1.2.0" in dockerfile_content
 
   assert len(run_recorder.calls) == 3, "Expected 3 subprocess calls"
