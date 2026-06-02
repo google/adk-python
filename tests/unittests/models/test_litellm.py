@@ -1716,7 +1716,7 @@ async def test_generate_content_async_with_usage_metadata(
 
 
 @pytest.mark.asyncio
-async def test_generate_content_async_ollama_chat_flattens_content(
+async def test_generate_content_async_ollama_chat_preserves_multimodal_content(
     mock_acompletion, mock_completion
 ):
   llm_client = MockLLMClient(mock_acompletion, mock_completion)
@@ -1748,12 +1748,26 @@ async def test_generate_content_async_ollama_chat_flattens_content(
   )
   _, kwargs = mock_acompletion.call_args
   message_content = kwargs["messages"][0]["content"]
-  assert isinstance(message_content, str)
-  assert "Describe this image." in message_content
+  # Multimodal content (text + image) should be kept as a list so LiteLLM
+  # can convert it to Ollama's native images field.
+  assert isinstance(message_content, list)
+  text_blocks = [
+      b
+      for b in message_content
+      if isinstance(b, dict) and b.get("type") == "text"
+  ]
+  image_blocks = [
+      b
+      for b in message_content
+      if isinstance(b, dict) and b.get("type") == "image_url"
+  ]
+  assert len(text_blocks) >= 1
+  assert "Describe this image." in text_blocks[0].get("text", "")
+  assert len(image_blocks) >= 1
 
 
 @pytest.mark.asyncio
-async def test_generate_content_async_custom_provider_flattens_content(
+async def test_generate_content_async_custom_provider_preserves_multimodal(
     mock_acompletion, mock_completion
 ):
   llm_client = MockLLMClient(mock_acompletion, mock_completion)
@@ -1784,8 +1798,14 @@ async def test_generate_content_async_custom_provider_flattens_content(
   assert kwargs["custom_llm_provider"] == "ollama_chat"
   assert kwargs["model"] == "qwen2.5:7b"
   message_content = kwargs["messages"][0]["content"]
-  assert isinstance(message_content, str)
-  assert "Describe this image." in message_content
+  # Multimodal content should be preserved as a list.
+  assert isinstance(message_content, list)
+  text_blocks = [
+      b
+      for b in message_content
+      if isinstance(b, dict) and b.get("type") == "text"
+  ]
+  assert any("Describe this image." in b.get("text", "") for b in text_blocks)
 
 
 def test_flatten_ollama_content_accepts_tuple_blocks():
@@ -1811,16 +1831,6 @@ def test_flatten_ollama_content_accepts_tuple_blocks():
             ],
             "first\nsecond",
         ),
-        (
-            [
-                {"type": "text", "text": "Describe this image."},
-                {
-                    "type": "image_url",
-                    "image_url": {"url": "http://example.com"},
-                },
-            ],
-            "Describe this image.",
-        ),
     ],
 )
 def test_flatten_ollama_content_returns_str_or_none(content, expected):
@@ -1831,15 +1841,58 @@ def test_flatten_ollama_content_returns_str_or_none(content, expected):
   assert flattened is None or isinstance(flattened, str)
 
 
-def test_flatten_ollama_content_serializes_non_text_blocks_to_json():
+def test_flatten_ollama_content_preserves_image_url_blocks():
+  """Media blocks should be kept as a list so LiteLLM can convert them."""
   from google.adk.models.lite_llm import _flatten_ollama_content
 
   blocks = [
-      {"type": "image_url", "image_url": {"url": "http://example.com"}},
+      {"type": "image_url", "image_url": {"url": "http://example.com/img.png"}},
   ]
-  flattened = _flatten_ollama_content(blocks)
-  assert isinstance(flattened, str)
-  assert json.loads(flattened) == blocks
+  result = _flatten_ollama_content(blocks)
+  assert isinstance(result, list)
+  assert result == blocks
+
+
+def test_flatten_ollama_content_preserves_mixed_text_and_image():
+  """Text + image_url should return the full list, not just the text."""
+  from google.adk.models.lite_llm import _flatten_ollama_content
+
+  blocks = [
+      {"type": "text", "text": "Describe this image."},
+      {
+          "type": "image_url",
+          "image_url": {"url": "data:image/png;base64,iVBORw0KGgo="},
+      },
+  ]
+  result = _flatten_ollama_content(blocks)
+  assert isinstance(result, list)
+  assert len(result) == 2
+  assert result[0]["type"] == "text"
+  assert result[1]["type"] == "image_url"
+
+
+def test_flatten_ollama_content_preserves_video_url_blocks():
+  from google.adk.models.lite_llm import _flatten_ollama_content
+
+  blocks = [
+      {"type": "text", "text": "What happens in this clip?"},
+      {"type": "video_url", "video_url": {"url": "http://example.com/v.mp4"}},
+  ]
+  result = _flatten_ollama_content(blocks)
+  assert isinstance(result, list)
+  assert len(result) == 2
+
+
+def test_flatten_ollama_content_serializes_non_media_non_text_blocks_to_json():
+  """Blocks with unknown types and no media should still serialize to JSON."""
+  from google.adk.models.lite_llm import _flatten_ollama_content
+
+  blocks = [
+      {"type": "custom_block", "data": "something"},
+  ]
+  result = _flatten_ollama_content(blocks)
+  assert isinstance(result, str)
+  assert json.loads(result) == blocks
 
 
 def test_flatten_ollama_content_serializes_dict_to_json():
