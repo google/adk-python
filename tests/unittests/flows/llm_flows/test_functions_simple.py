@@ -15,8 +15,11 @@
 import asyncio
 from typing import Any
 from typing import Callable
+from unittest import mock
 
+from fastapi.openapi.models import HTTPBearer
 from google.adk.agents.llm_agent import Agent
+from google.adk.auth.auth_tool import AuthConfig
 from google.adk.events.event import Event
 from google.adk.events.event_actions import EventActions
 from google.adk.events.ui_widget import UiWidget
@@ -24,8 +27,10 @@ from google.adk.flows.llm_flows.functions import find_matching_function_call
 from google.adk.flows.llm_flows.functions import handle_function_calls_async
 from google.adk.flows.llm_flows.functions import handle_function_calls_live
 from google.adk.flows.llm_flows.functions import merge_parallel_function_response_events
+from google.adk.tools.base_tool import BaseTool
 from google.adk.tools.computer_use.computer_use_tool import ComputerUseTool
 from google.adk.tools.function_tool import FunctionTool
+from google.adk.tools.tool_confirmation import ToolConfirmation
 from google.adk.tools.tool_context import ToolContext
 from google.genai import types
 import pytest
@@ -1319,3 +1324,263 @@ async def test_handle_function_calls_live_parallel_preserves_live_session_id():
 
   assert result_parallel is not None
   assert result_parallel.live_session_id == 'test-live-session-id-parallel'
+
+
+class _MockControlSignalTool(BaseTool):
+  """A tool that simulates requesting confirmation or OAuth authentication."""
+
+  def __init__(self, name: str, behavior: str):
+    super().__init__(name=name, description='Simulated control tool')
+    self.behavior = behavior
+
+  async def run_async(self, *, args, tool_context):
+    if self.behavior == 'confirm':
+      tool_context.actions.requested_tool_confirmations = {
+          'fc_test_confirm': ToolConfirmation(hint='Authorize execution?')
+      }
+      return {'error': 'This tool requires user approval.'}
+    elif self.behavior == 'auth':
+      tool_context.actions.requested_auth_configs = {
+          'fc_test_auth': AuthConfig(auth_scheme=HTTPBearer())
+      }
+      return {'error': 'Please complete OAuth setup.'}
+
+  def _detect_error_in_response(self, response: Any) -> str | None:
+    if isinstance(response, dict) and 'error' in response:
+      return 'TOOL_ERROR'
+    return None
+
+
+class _ErrorDetectingTool(BaseTool):
+  """A test tool whose _detect_error_in_response raises an exception."""
+
+  async def run_async(self, *, args, tool_context):
+    return {'result': 'result'}
+
+  def _detect_error_in_response(self, response: Any) -> str | None:
+    raise RuntimeError('detection exploded')
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    'handle_function_calls',
+    [
+        (handle_function_calls_async),
+        (handle_function_calls_live),
+    ],
+)
+@pytest.mark.parametrize(
+    'mock_response,expected_error_type',
+    [
+        ({'error': 'Internal component timeout'}, 'TOOL_ERROR'),
+        ({'result': 'Execution succeeded'}, None),
+    ],
+    ids=['dict_error_recorded', 'success_dict_ignored'],
+)
+async def test_e2e_telemetry_error_classification(
+    monkeypatch, handle_function_calls, mock_response, expected_error_type
+):
+  """E2E: asserts that tool outputs successfully translate to targeted OTel span error attributes."""
+  recorded_calls = []
+
+  # Intercept trace_tool_call to capture final telemetry state
+  monkeypatch.setattr(
+      'google.adk.telemetry._instrumentation.tracing.trace_tool_call',
+      lambda **kw: recorded_calls.append(kw),
+  )
+
+  tool = FunctionTool(func=lambda: mock_response)
+  model = testing_utils.MockModel.create(responses=[])
+  agent = Agent(name='test_agent', model=model, tools=[tool])
+
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent, user_content=''
+  )
+
+  function_call = types.FunctionCall(name=tool.name, args={}, id='fc_test')
+  event = Event(
+      invocation_id=invocation_context.invocation_id,
+      author=agent.name,
+      content=types.Content(parts=[types.Part(function_call=function_call)]),
+  )
+
+  await handle_function_calls(invocation_context, event, {tool.name: tool})
+
+  assert len(recorded_calls) == 1
+  assert recorded_calls[0]['error_type'] == expected_error_type
+  assert recorded_calls[0]['error'] is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    'handle_function_calls',
+    [
+        (handle_function_calls_async),
+        (handle_function_calls_live),
+    ],
+)
+async def test_exception_takes_precedence_over_dict_error(
+    monkeypatch, handle_function_calls
+):
+  """End-to-end integration: exception takes strict precedence over manual dict error_type."""
+  recorded_calls = []
+  monkeypatch.setattr(
+      'google.adk.telemetry._instrumentation.tracing.trace_tool_call',
+      lambda **kw: recorded_calls.append(kw),
+  )
+
+  def mock_crashing_func():
+    raise ValueError('Fatal arithmetic error')
+
+  tool = FunctionTool(func=mock_crashing_func)
+  model = testing_utils.MockModel.create(responses=[])
+  agent = Agent(name='test_agent', model=model, tools=[tool])
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent, user_content=''
+  )
+
+  function_call = types.FunctionCall(
+      name=tool.name, args={}, id='fc_test_exception'
+  )
+  event = Event(
+      invocation_id=invocation_context.invocation_id,
+      author=agent.name,
+      content=types.Content(parts=[types.Part(function_call=function_call)]),
+  )
+
+  with pytest.raises(ValueError, match='Fatal arithmetic error'):
+    await handle_function_calls(invocation_context, event, {tool.name: tool})
+
+  assert len(recorded_calls) == 1
+  assert isinstance(recorded_calls[0]['error'], ValueError)
+  assert recorded_calls[0]['error_type'] is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    'handle_function_calls',
+    [
+        (handle_function_calls_async),
+        (handle_function_calls_live),
+    ],
+)
+async def test_detection_skipped_when_confirmation_requested(
+    monkeypatch, handle_function_calls
+):
+  """E2E confirmation verification: control prompt avoids polluting telemetry with TOOL_ERROR."""
+  recorded_calls = []
+  monkeypatch.setattr(
+      'google.adk.telemetry._instrumentation.tracing.trace_tool_call',
+      lambda **kw: recorded_calls.append(kw),
+  )
+
+  tool = _MockControlSignalTool(name='confirm_tool', behavior='confirm')
+  model = testing_utils.MockModel.create(responses=[])
+  agent = Agent(name='test_agent', model=model, tools=[tool])
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent, user_content=''
+  )
+
+  function_call = types.FunctionCall(
+      name=tool.name, args={}, id='fc_test_confirm'
+  )
+  event = Event(
+      invocation_id=invocation_context.invocation_id,
+      author=agent.name,
+      content=types.Content(parts=[types.Part(function_call=function_call)]),
+  )
+
+  await handle_function_calls(invocation_context, event, {tool.name: tool})
+
+  assert len(recorded_calls) == 1
+  assert recorded_calls[0]['error_type'] is None
+  assert recorded_calls[0]['error'] is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    'handle_function_calls',
+    [
+        (handle_function_calls_async),
+        (handle_function_calls_live),
+    ],
+)
+async def test_detection_skipped_when_auth_requested(
+    monkeypatch, handle_function_calls
+):
+  """E2E OAuth verification: authenticate control prompt avoids polluting telemetry with TOOL_ERROR."""
+  recorded_calls = []
+  monkeypatch.setattr(
+      'google.adk.telemetry._instrumentation.tracing.trace_tool_call',
+      lambda **kw: recorded_calls.append(kw),
+  )
+
+  tool = _MockControlSignalTool(name='auth_tool', behavior='auth')
+  model = testing_utils.MockModel.create(responses=[])
+  agent = Agent(name='test_agent', model=model, tools=[tool])
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent, user_content=''
+  )
+
+  function_call = types.FunctionCall(name=tool.name, args={}, id='fc_test_auth')
+  event = Event(
+      invocation_id=invocation_context.invocation_id,
+      author=agent.name,
+      content=types.Content(parts=[types.Part(function_call=function_call)]),
+  )
+
+  await handle_function_calls(invocation_context, event, {tool.name: tool})
+
+  assert len(recorded_calls) == 1
+  assert recorded_calls[0]['error_type'] is None
+  assert recorded_calls[0]['error'] is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    'handle_function_calls',
+    [
+        (handle_function_calls_async),
+        (handle_function_calls_live),
+    ],
+)
+async def test_detection_exception_does_not_break_tool_call(
+    monkeypatch, handle_function_calls
+):
+  """Safety Verification: telemetry errors during error parsing are caught cleanly, not crashing tool calls."""
+  recorded_calls = []
+  monkeypatch.setattr(
+      'google.adk.telemetry._instrumentation.tracing.trace_tool_call',
+      lambda **kw: recorded_calls.append(kw),
+  )
+
+  tool = _ErrorDetectingTool(
+      name='buggy_telemetry_tool', description='raises on tel'
+  )
+  model = testing_utils.MockModel.create(responses=[])
+  agent = Agent(name='test_agent', model=model, tools=[tool])
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent, user_content=''
+  )
+
+  function_call = types.FunctionCall(
+      name=tool.name, args={}, id='fc_test_buggy'
+  )
+  event = Event(
+      invocation_id=invocation_context.invocation_id,
+      author=agent.name,
+      content=types.Content(parts=[types.Part(function_call=function_call)]),
+  )
+
+  result_event = await handle_function_calls(
+      invocation_context, event, {tool.name: tool}
+  )
+
+  assert result_event is not None
+  assert result_event.content.parts[0].function_response.response == {
+      'result': 'result'
+  }
+
+  assert len(recorded_calls) == 1
+  assert recorded_calls[0]['error_type'] is None
+  assert recorded_calls[0]['error'] is None

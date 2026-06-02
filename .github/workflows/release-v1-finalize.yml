@@ -1,12 +1,12 @@
-# Step 4 (v2): Triggers when the changelog PR is merged to release/v2-candidate.
-# Records last-release-sha and renames release/v2-candidate to release/v{version}.
-name: "Release v2: Finalize"
+# Step 4 (v1): Triggers when the changelog PR is merged to release/v1-candidate.
+# Records last-release-sha and renames release/v1-candidate to release/v{version}.
+name: "Release v1: Finalize"
 
 on:
   pull_request:
     types: [closed]
     branches:
-      - release/v2-candidate
+      - release/v1-candidate
 
 permissions:
   contents: write
@@ -32,7 +32,7 @@ jobs:
       - uses: actions/checkout@v6
         if: steps.check.outputs.is_release_pr == 'true'
         with:
-          ref: release/v2-candidate
+          ref: release/v1-candidate
           token: ${{ secrets.RELEASE_PAT }}
           fetch-depth: 0
 
@@ -40,7 +40,7 @@ jobs:
         if: steps.check.outputs.is_release_pr == 'true'
         id: version
         run: |
-          VERSION=$(jq -r '.["."]' .github/.release-please-manifest-v2.json)
+          VERSION=$(jq -r '.["."]' .github/.release-please-manifest-v1.json)
           echo "version=$VERSION" >> $GITHUB_OUTPUT
           echo "Extracted version: $VERSION"
 
@@ -56,21 +56,21 @@ jobs:
       - name: Record last-release-sha for release-please
         if: steps.check.outputs.is_release_pr == 'true'
         run: |
-          git fetch origin v2
-          CUT_SHA=$(git merge-base origin/v2 HEAD)
-          echo "Release was cut from v2 at: $CUT_SHA"
+          git fetch origin v1
+          CUT_SHA=$(git merge-base origin/v1 HEAD)
+          echo "Release was cut from v1 at: $CUT_SHA"
           jq --arg sha "$CUT_SHA" '. + {"last-release-sha": $sha}' \
-            .github/release-please-config-v2.json > tmp.json && mv tmp.json .github/release-please-config-v2.json
-          git add .github/release-please-config-v2.json
-          git commit -m "chore: update last-release-sha for next v2 release"
-          git push origin release/v2-candidate
+            .github/release-please-config-v1.json > tmp.json && mv tmp.json .github/release-please-config-v1.json
+          git add .github/release-please-config-v1.json
+          git commit -m "chore: update last-release-sha for next v1 release"
+          git push origin release/v1-candidate
 
-      - name: Rename release/v2-candidate to release/v{version}
+      - name: Rename release/v1-candidate to release/v{version}
         if: steps.check.outputs.is_release_pr == 'true'
         run: |
           VERSION="v${STEPS_VERSION_OUTPUTS_VERSION}"
-          git push origin "release/v2-candidate:refs/heads/release/$VERSION" ":release/v2-candidate"
-          echo "Renamed release/v2-candidate to release/$VERSION"
+          git push origin "release/v1-candidate:refs/heads/release/$VERSION" ":release/v1-candidate"
+          echo "Renamed release/v1-candidate to release/$VERSION"
         env:
           STEPS_VERSION_OUTPUTS_VERSION: ${{ steps.version.outputs.version }}
 

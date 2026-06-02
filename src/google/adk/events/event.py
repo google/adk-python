@@ -156,47 +156,104 @@ class Event(LlmResponse):
   timestamp: float = Field(default_factory=lambda: platform_time.get_time())
   """The timestamp of the event."""
 
-  def __init__(self, **kwargs: Any):
-    """Initializes the event.
+  @model_validator(mode='before')
+  @classmethod
+  def _accept_convenience_kwargs(cls, data: Any) -> Any:
+    """Routes convenience kwargs to nested fields.
 
-    Supports convenience kwargs routed to actions or node_info:
-      message: ContentUnion -> content (alias, converted via t_content)
-      state: dict -> actions.state_delta
-      route: value -> actions.route
-      node_path: str -> node_info.path
+    Routed kwargs:
+      message: ContentUnion -> content (converted via t_content)
+      state: dict           -> actions.state_delta
+      route: value          -> actions.route
+      node_path: str        -> node_info.path
+
+    Subclasses that declare any of these as real fields (or aliases of
+    real fields) keep normal field validation behavior.
     """
-    message = kwargs.pop('message', None)
-    state = kwargs.pop('state', None)
-    route = kwargs.pop('route', None)
-    node_path = kwargs.pop('node_path', None)
+    if not isinstance(data, dict):
+      return data
 
-    if message is not None and kwargs.get('content') is not None:
-      raise ValueError(
-          "'message' and 'content' are mutually exclusive."
-          ' Use one or the other.'
-      )
+    field_names: set[str] = set(cls.model_fields.keys())
+    for f in cls.model_fields.values():
+      if f.alias:
+        field_names.add(f.alias)
+    message = None if 'message' in field_names else data.pop('message', None)
+    state = None if 'state' in field_names else data.pop('state', None)
+    route = None if 'route' in field_names else data.pop('route', None)
+    node_path = (
+        None if 'node_path' in field_names else data.pop('node_path', None)
+    )
 
     if message is not None:
+      if data.get('content') is not None:
+        raise ValueError(
+            "'message' and 'content' are mutually exclusive."
+            ' Use one or the other.'
+        )
       from google.genai import _transformers
 
-      kwargs['content'] = _transformers.t_content(message)
+      data['content'] = _transformers.t_content(message)
 
-    super().__init__(**kwargs)
-    if state:
-      self.actions.state_delta = state
-    if route is not None:
-      self.actions.route = route
+    if state is not None or route is not None:
+      actions = data.get('actions')
+      actions_dict: Optional[dict[str, Any]] = None
+      if actions is None:
+        actions_dict = {}
+      elif isinstance(actions, EventActions):
+        actions_dict = actions.model_dump()
+      elif isinstance(actions, dict):
+        actions_dict = dict(actions)
+      # If actions is an unexpected type, skip the transformation and let
+      # Pydantic's normal field validation report the error.
+      if actions_dict is not None:
+        if state is not None:
+          actions_dict['state_delta'] = state
+        if route is not None:
+          actions_dict['route'] = route
+        data['actions'] = actions_dict
+
     if node_path is not None:
-      self.node_info.path = node_path
+      node_info = data.get('node_info')
+      node_info_dict: Optional[dict[str, Any]] = None
+      if node_info is None:
+        node_info_dict = {}
+      elif isinstance(node_info, NodeInfo):
+        node_info_dict = node_info.model_dump()
+      elif isinstance(node_info, dict):
+        node_info_dict = dict(node_info)
+      # If node_info is an unexpected type, skip the transformation and let
+      # Pydantic's normal field validation report the error.
+      if node_info_dict is not None:
+        node_info_dict['path'] = node_path
+        data['node_info'] = node_info_dict
+
+    return data
 
   @property
-  def message(self) -> Optional[types.Content]:
-    """Alias for content. Returns the user-facing message of the event."""
+  def message(self) -> Any:
+    """Alias for content. Returns the user-facing message of the event.
+
+    Subclasses may declare ``message`` as a real field (see
+    ``_accept_convenience_kwargs``, which already routes construction kwargs to
+    such fields). When they do, return that field's value so reads stay
+    consistent with construction and serialization instead of returning the
+    ``content`` alias. The return type is ``Any`` because such a subclass field
+    may be typed differently (e.g. ``str``); for a plain ``Event`` this returns
+    ``Optional[types.Content]``.
+    """
+    if 'message' in type(self).model_fields:
+      return self.__dict__.get('message')
     return self.content
 
   @message.setter
-  def message(self, value: Optional[types.ContentUnion]) -> None:
-    """Sets the content of the event."""
+  def message(self, value: Any) -> None:
+    """Sets the content of the event (or a subclass ``message`` field)."""
+    if 'message' in type(self).model_fields:
+      # Route through Pydantic so a subclass field's validators/type are
+      # enforced. A direct __dict__ write would skip validation, and
+      # object.__setattr__/self.message would recurse through this property.
+      self.__pydantic_validator__.validate_assignment(self, 'message', value)
+      return
     if value is not None:
       from google.genai import _transformers
 
@@ -233,24 +290,6 @@ class Event(LlmResponse):
         and not self.partial
         and not self.has_trailing_code_execution_result()
     )
-
-  def get_function_calls(self) -> list[types.FunctionCall]:
-    """Returns the function calls in the event."""
-    func_calls = []
-    if self.content and self.content.parts:
-      for part in self.content.parts:
-        if part.function_call:
-          func_calls.append(part.function_call)
-    return func_calls
-
-  def get_function_responses(self) -> list[types.FunctionResponse]:
-    """Returns the function responses in the event."""
-    func_response = []
-    if self.content and self.content.parts:
-      for part in self.content.parts:
-        if part.function_response:
-          func_response.append(part.function_response)
-    return func_response
 
   def has_trailing_code_execution_result(
       self,
