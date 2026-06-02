@@ -343,13 +343,15 @@ class LlmAgent(BaseAgent, abc.ABC):
   """Disallows LLM-controlled transferring to the peer agents."""
   # LLM-based agent transfer configs - End
 
-  include_contents: Literal['default', 'none'] = 'default'
+  include_contents: Literal['default', 'current', 'none'] = 'default'
   """Controls content inclusion in model requests.
 
   Options:
-    default: Model receives relevant conversation history
-    none: Model receives no prior history, operates solely on current
-    instruction and input
+    default: Model receives full conversation history.
+    current: Model receives all events since the last user message,
+      including outputs from agents that ran earlier in this pipeline.
+    none: Model receives only the most recent agent or user input, with no
+      prior conversation history.
   """
 
   include_sources: Optional[list[str]] = None
@@ -976,6 +978,16 @@ class LlmAgent(BaseAgent, abc.ABC):
 
   @model_validator(mode='after')
   def __model_validator_after(self) -> LlmAgent:
+    if self.include_contents == 'none' and self.include_sources is not None:
+      warnings.warn(
+          "include_contents='none' with include_sources may produce empty"
+          ' context: the turn boundary is the last user OR other-agent event,'
+          ' and if that event is filtered by include_sources the context will'
+          " be empty. Use include_contents='current' to anchor at the last"
+          ' user message instead.',
+          UserWarning,
+          stacklevel=2,
+      )
     return self
 
   @field_validator('include_sources', mode='after')  # type: ignore[misc]

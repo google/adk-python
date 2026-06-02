@@ -82,7 +82,10 @@ class _ContentLlmRequestProcessor(BaseLlmRequestProcessor):
           source_filter=source_filter,
       )
     else:
-      # Include current turn context only (no conversation history)
+      # 'current': anchor at last user message — all sibling agent outputs
+      #            within this invocation are included.
+      # 'none':    anchor at last turn boundary (user OR other-agent event).
+      stop_at_user_only = agent.include_contents == 'current'
       llm_request.contents = _get_current_turn_contents(
           invocation_context.branch,
           invocation_context.session.events,
@@ -92,6 +95,7 @@ class _ContentLlmRequestProcessor(BaseLlmRequestProcessor):
           is_single_turn=is_single_turn,
           user_content=invocation_context.user_content,
           source_filter=source_filter,
+          stop_at_user_only=stop_at_user_only,
       )
 
     # Add instruction-related contents to proper position in conversation
@@ -718,33 +722,41 @@ def _get_current_turn_contents(
     isolation_scope: Optional[str] = None,
     user_content: Optional[types.Content] = None,
     source_filter: Optional[list[str]] = None,
+    stop_at_user_only: bool = False,
 ) -> list[types.Content]:
   """Get contents for the current turn only (no conversation history).
 
-  When include_contents='none', we want to include:
-  - The current user input
-  - Tool calls and responses from the current turn
-  But exclude conversation history from previous turns.
-
-  In multi-agent scenarios, the "current turn" for an agent starts from an
-  actual user or from another agent.
+  Used by include_contents='none' and 'current'. Both exclude prior-session
+  history; they differ in the turn boundary:
+    'none'    (stop_at_user_only=False): last user OR other-agent event.
+    'current' (stop_at_user_only=True):  last user event only.
 
   Args:
     current_branch: The current branch of the agent.
     events: A list of all session events.
     agent_name: The name of the agent.
     preserve_function_call_ids: Whether to preserve function call ids.
+    stop_at_user_only: When True, anchor only at user events ('current' mode).
 
   Returns:
-    A list of contents for the current turn only, preserving context needed
-    for proper tool execution while excluding conversation history.
+    A list of contents from the turn boundary forward. Returns [] if no
+    qualifying boundary event is found.
   """
-  # Find the latest event that starts the current turn and process from there
+  # Find the latest event that starts the current turn and process from there.
+  # stop_at_user_only=True ('current' mode): anchor at last user message,
+  # so all sibling agent outputs within this invocation are included.
+  # stop_at_user_only=False ('none' mode): anchor at last user OR other-agent.
   for i in range(len(events) - 1, -1, -1):
     event = events[i]
-    if _should_include_event_in_context(
-        current_branch, event, isolation_scope=isolation_scope
-    ) and (event.author == 'user' or _is_other_agent_reply(agent_name, event)):
+    is_turn_start = event.author == 'user' or (
+        not stop_at_user_only and _is_other_agent_reply(agent_name, event)
+    )
+    if (
+        _should_include_event_in_context(
+            current_branch, event, isolation_scope=isolation_scope
+        )
+        and is_turn_start
+    ):
       return _get_contents(
           current_branch,
           events[i:],

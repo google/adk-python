@@ -355,3 +355,195 @@ async def test_include_sources_user_self_drops_upstream_across_turns():
       "upstream reply" in str(c).lower() for _, c in agent2_second_contents
   )
   assert not any("For context:" in str(c) for _, c in agent2_second_contents)
+
+
+# ---------------------------------------------------------------------------
+# include_contents='default' + include_sources combinations
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_include_contents_default_with_source_filter_user():
+  """include_contents='default' + include_sources=['user'] keeps only user messages across full history."""
+  agent1_model = testing_utils.MockModel.create(
+      responses=["Agent1 result turn1", "Agent1 result turn2"]
+  )
+  agent1 = LlmAgent(
+      name="agent1", model=agent1_model, instruction="You are agent1"
+  )
+
+  agent2_model = testing_utils.MockModel.create(
+      responses=["Turn1 response", "Turn2 response"]
+  )
+  agent2 = LlmAgent(
+      name="agent2",
+      model=agent2_model,
+      include_sources=["user"],
+      instruction="You are agent2",
+  )
+
+  runner = testing_utils.InMemoryRunner(
+      SequentialAgent(name="pipeline", sub_agents=[agent1, agent2])
+  )
+  runner.run("First user message")
+  runner.run("Second user message")
+
+  # Second invocation: full history, but only user messages kept
+  agent2_second_contents = testing_utils.simplify_contents(
+      agent2_model.requests[1].contents
+  )
+  assert any("First user message" in str(c) for _, c in agent2_second_contents)
+  assert any("Second user message" in str(c) for _, c in agent2_second_contents)
+  assert not any("Agent1 result" in str(c) for _, c in agent2_second_contents)
+  assert not any("For context:" in str(c) for _, c in agent2_second_contents)
+
+
+# ---------------------------------------------------------------------------
+# include_contents='current'
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_include_contents_current_sees_user_and_all_upstream_agents():
+  """include_contents='current' anchors at user message — all sibling agents visible."""
+  agent1_model = testing_utils.MockModel.create(responses=["Agent1 result"])
+  agent1 = LlmAgent(
+      name="agent1", model=agent1_model, instruction="You are agent1"
+  )
+
+  agent2_model = testing_utils.MockModel.create(responses=["Agent2 result"])
+  agent2 = LlmAgent(
+      name="agent2", model=agent2_model, instruction="You are agent2"
+  )
+
+  agent3_model = testing_utils.MockModel.create(responses=["Agent3 done"])
+  agent3 = LlmAgent(
+      name="agent3",
+      model=agent3_model,
+      include_contents="current",
+      instruction="You are agent3",
+  )
+
+  runner = testing_utils.InMemoryRunner(
+      SequentialAgent(name="pipeline", sub_agents=[agent1, agent2, agent3])
+  )
+  runner.run("Original user request")
+
+  agent3_contents = testing_utils.simplify_contents(
+      agent3_model.requests[0].contents
+  )
+
+  # User message must be present
+  assert any("Original user request" in str(c) for _, c in agent3_contents)
+  # Both upstream agents' narrative entries must be present
+  assert any("Agent1 result" in str(c) for _, c in agent3_contents)
+  assert any("Agent2 result" in str(c) for _, c in agent3_contents)
+
+
+@pytest.mark.asyncio
+async def test_include_contents_current_with_source_filter_user_not_empty():
+  """include_contents='current' + include_sources=['user'] → user message, not empty.
+
+  Contrast with include_contents='none' + include_sources=['user'] which
+  produces empty context when the last event is a peer agent's output.
+  """
+  agent1_model = testing_utils.MockModel.create(responses=["Agent1 result"])
+  agent1 = LlmAgent(
+      name="agent1", model=agent1_model, instruction="You are agent1"
+  )
+
+  agent2_model = testing_utils.MockModel.create(responses=["Agent2 done"])
+  agent2 = LlmAgent(
+      name="agent2",
+      model=agent2_model,
+      include_contents="current",
+      include_sources=["user"],
+      instruction="You are agent2",
+  )
+
+  runner = testing_utils.InMemoryRunner(
+      SequentialAgent(name="pipeline", sub_agents=[agent1, agent2])
+  )
+  runner.run("Hello from user")
+
+  agent2_contents = testing_utils.simplify_contents(
+      agent2_model.requests[0].contents
+  )
+
+  # User message must be present and result must not be empty
+  assert len(agent2_contents) > 0
+  assert any("Hello from user" in str(c) for _, c in agent2_contents)
+  # Upstream agent narrative must be filtered out
+  assert not any("Agent1 result" in str(c) for _, c in agent2_contents)
+  assert not any("For context:" in str(c) for _, c in agent2_contents)
+
+
+@pytest.mark.asyncio
+async def test_include_contents_current_with_source_filter_user_and_self():
+  """include_contents='current' + include_sources=['user', 'self'] keeps user + own turns only."""
+  agent1_model = testing_utils.MockModel.create(
+      responses=["Agent1 result turn1", "Agent1 result turn2"]
+  )
+  agent1 = LlmAgent(
+      name="agent1", model=agent1_model, instruction="You are agent1"
+  )
+
+  agent2_model = testing_utils.MockModel.create(
+      responses=["Agent2 first turn", "Agent2 second turn"]
+  )
+  agent2 = LlmAgent(
+      name="agent2",
+      model=agent2_model,
+      include_contents="current",
+      include_sources=["user", "self"],
+      instruction="You are agent2",
+  )
+
+  runner = testing_utils.InMemoryRunner(
+      SequentialAgent(name="pipeline", sub_agents=[agent1, agent2])
+  )
+  runner.run("First user message")
+  runner.run("Second user message")
+
+  # Second invocation: current window starts at 'Second user message'.
+  # Agent2's own prior turn from invocation 1 is outside that window — naturally absent.
+  # What we verify: user present, upstream agent filtered by include_sources.
+  agent2_second_contents = testing_utils.simplify_contents(
+      agent2_model.requests[1].contents
+  )
+  assert any("Second user message" in str(c) for _, c in agent2_second_contents)
+  assert not any("Agent1 result" in str(c) for _, c in agent2_second_contents)
+  assert not any("For context:" in str(c) for _, c in agent2_second_contents)
+
+
+def test_include_contents_none_with_include_sources_warns():
+  """include_contents='none' + include_sources triggers a UserWarning."""
+  import warnings as _warnings
+
+  with _warnings.catch_warnings(record=True) as w:
+    _warnings.simplefilter("always")
+    LlmAgent(
+        name="agent",
+        model="gemini-2.5-flash",
+        include_contents="none",
+        include_sources=["user"],
+    )
+  assert len(w) == 1
+  assert issubclass(w[0].category, UserWarning)
+  assert "include_contents='current'" in str(w[0].message)
+
+
+def test_include_contents_none_with_agent_name_in_sources_still_warns():
+  """Warning fires even with a concrete agent name — still risky at runtime."""
+  import warnings as _warnings
+
+  with _warnings.catch_warnings(record=True) as w:
+    _warnings.simplefilter("always")
+    LlmAgent(
+        name="agent",
+        model="gemini-2.5-flash",
+        include_contents="none",
+        include_sources=["user", "upstream_agent"],
+    )
+  assert len(w) == 1
+  assert issubclass(w[0].category, UserWarning)

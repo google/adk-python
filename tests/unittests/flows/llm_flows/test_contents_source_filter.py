@@ -383,3 +383,86 @@ def test_source_filter_all_sources_is_same_as_none():
       source_filter=['user', 'self', 'agent_b'],
   )
   assert no_filter == all_sources
+
+
+# ---------------------------------------------------------------------------
+# include_contents='current' (stop_at_user_only=True)
+# ---------------------------------------------------------------------------
+
+
+def test_current_includes_user_and_all_sibling_agents():
+  """stop_at_user_only=True anchors at user msg, giving full invocation context."""
+  events = [
+      _user_event('hello'),
+      _model_event('agent_a reply', author='agent_a'),
+      _model_event('agent_b reply', author='agent_b'),
+  ]
+  result = contents._get_current_turn_contents(
+      None, events, agent_name='agent_c', stop_at_user_only=True
+  )
+  texts = [p.text for c in result for p in c.parts if p.text]
+  assert 'hello' in texts
+  assert any('agent_a reply' in t for t in texts)
+  assert any('agent_b reply' in t for t in texts)
+
+
+def test_current_vs_none_differ_when_agent_precedes_current():
+  """'none' (default) anchors at last agent; 'current' anchors at user message."""
+  events = [
+      _user_event('hello'),
+      _model_event('agent_a reply', author='agent_a'),
+      _model_event('agent_b reply', author='agent_b'),
+  ]
+  # 'none' mode: stops at agent_b (last boundary)
+  result_none = contents._get_current_turn_contents(
+      None, events, agent_name='agent_c', stop_at_user_only=False
+  )
+  texts_none = [p.text for c in result_none for p in c.parts if p.text]
+  assert 'hello' not in texts_none
+  assert any('agent_b reply' in t for t in texts_none)
+
+  # 'current' mode: stops at user message, includes everything
+  result_current = contents._get_current_turn_contents(
+      None, events, agent_name='agent_c', stop_at_user_only=True
+  )
+  texts_current = [p.text for c in result_current for p in c.parts if p.text]
+  assert 'hello' in texts_current
+  assert any('agent_a reply' in t for t in texts_current)
+  assert any('agent_b reply' in t for t in texts_current)
+
+
+def test_current_with_source_filter_user_gives_user_message_not_empty():
+  """stop_at_user_only=True + source_filter=['user'] → user message, not empty.
+
+  This is the footgun fixed: include_contents='none' + include_sources=['user']
+  returns empty because the boundary lands on an agent event that then gets
+  filtered. 'current' mode anchors at the user message, so filtering works.
+  """
+  events = [
+      _user_event('original request'),
+      _model_event('agent_a reply', author='agent_a'),
+  ]
+  result = contents._get_current_turn_contents(
+      None,
+      events,
+      agent_name='agent_b',
+      stop_at_user_only=True,
+      source_filter=['user'],
+  )
+  texts = [p.text for c in result for p in c.parts if p.text]
+  assert 'original request' in texts
+  assert not any('agent_a reply' in t for t in texts)
+  # Crucially: result is not empty
+  assert len(result) > 0
+
+
+def test_current_no_user_event_returns_empty():
+  """When no user event exists, 'current' mode returns [] (same as 'none')."""
+  events = [
+      _model_event('agent_a reply', author='agent_a'),
+      _model_event('agent_b reply', author='agent_b'),
+  ]
+  result = contents._get_current_turn_contents(
+      None, events, agent_name='agent_c', stop_at_user_only=True
+  )
+  assert result == []
