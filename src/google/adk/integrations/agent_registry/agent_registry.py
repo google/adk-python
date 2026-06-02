@@ -254,21 +254,6 @@ class AgentRegistry:
       self, path: str, params: Dict[str, Any] | None = None
   ) -> Dict[str, Any]:
     """Helper function to make GET requests to the Agent Registry API."""
-    # Determine if mTLS should be used
-    session = requests_auth.AuthorizedSession(credentials=self._credentials)
-
-    use_client_cert = _use_client_cert_effective()
-    client_cert_source = None
-
-    if use_client_cert:
-      client_cert_source = (
-          mtls.default_client_cert_source()
-          if mtls.has_default_client_cert_source()
-          else None
-      )
-      session.configure_mtls_channel(client_cert_source)
-
-    base_url = _get_agent_registry_base_url(client_cert_source)
 
     if path.startswith("projects/"):
       url = f"{self._base_url}/{path}"
