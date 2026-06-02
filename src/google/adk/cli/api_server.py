@@ -805,6 +805,7 @@ class ApiServer:
       os.makedirs(os.path.dirname(runtime_config_path), exist_ok=True)
       with open(runtime_config_path, "w") as f:
         json.dump(runtime_config, f, indent=2)
+        f.write("\n")
     except IOError as e:
       logger.error(
           "Failed to write runtime config file %s: %s", runtime_config_path, e

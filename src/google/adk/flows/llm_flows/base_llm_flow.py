@@ -51,6 +51,7 @@ from ...telemetry.tracing import tracer
 from ...tools.base_toolset import BaseToolset
 from ...tools.tool_context import ToolContext
 from ...utils.context_utils import Aclosing
+from ...utils import model_name_utils
 from .audio_cache_manager import AudioCacheManager
 from .functions import build_auth_request_event
 
@@ -551,6 +552,20 @@ class BaseLlmFlow(ABC):
             )
             if session_resumption.transparent is None:
               session_resumption.transparent = True
+
+        if (
+            isinstance(llm, Gemini)
+            and llm._api_backend == GoogleLLMVariant.GEMINI_API
+            and model_name_utils.is_gemini_3_1_flash_live(llm_request.model)
+            and llm_request.contents
+            and not invocation_context.live_session_resumption_handle
+        ):
+          if llm_request.live_connect_config is None:
+            llm_request.live_connect_config = types.LiveConnectConfig()
+          if llm_request.live_connect_config.history_config is None:
+            llm_request.live_connect_config.history_config = types.HistoryConfig(
+                initial_history_in_client_content=True
+            )
 
         logger.info(
             'Establishing live connection for agent: %s',
