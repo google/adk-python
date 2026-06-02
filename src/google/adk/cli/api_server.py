@@ -680,6 +680,24 @@ class ApiServer:
         )
       return plugins
 
+    def _wrap_loaded_agent(
+        app_name: str,
+        agent_or_app: Any,
+        plugins: list[BasePlugin],
+    ) -> App:
+      if app_name.startswith("__"):
+        # AgentLoader validates special agents before they reach this point.
+        return App.model_construct(
+            name=app_name,
+            root_agent=agent_or_app,
+            plugins=plugins,
+        )
+      return App(
+          name=app_name,
+          root_agent=agent_or_app,
+          plugins=plugins,
+      )
+
     if isinstance(agent_or_app, App):
       # Combine existing plugins with extra plugins
       plugins = _maybe_add_bq_plugin(
@@ -689,17 +707,11 @@ class ApiServer:
       agentic_app = agent_or_app
     elif isinstance(agent_or_app, BaseAgent):
       plugins = _maybe_add_bq_plugin(extra_plugins_instances)
-      agentic_app = App(
-          name=app_name,
-          root_agent=agent_or_app,
-          plugins=plugins,
-      )
+      agentic_app = _wrap_loaded_agent(app_name, agent_or_app, plugins)
     else:
       # BaseNode (non-agent)
-      agentic_app = App(
-          name=app_name,
-          root_agent=agent_or_app,
-          plugins=extra_plugins_instances,
+      agentic_app = _wrap_loaded_agent(
+          app_name, agent_or_app, extra_plugins_instances
       )
 
     # If the root agent was loaded from YAML, we treat it as being from Visual Builder
