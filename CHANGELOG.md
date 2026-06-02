@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.34.3](https://github.com/google/adk-python/compare/v1.34.2...v1.34.3) (2026-06-02)
+
+
+### Bug Fixes
+
+* add missing Gemini imports in base_llm_flow ([#5943](https://github.com/google/adk-python/issues/5943)) ([6d027b4](https://github.com/google/adk-python/commit/6d027b4ce8bc1c5d288b02e1e3819917117038ec))
+
 ## [1.34.2](https://github.com/google/adk-python/compare/v1.34.1...v1.34.2) (2026-06-01)
 
 
