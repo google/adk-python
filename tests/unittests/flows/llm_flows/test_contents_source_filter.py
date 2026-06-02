@@ -24,21 +24,15 @@ def _user_event(text: str, invocation_id: str = 'inv') -> Event:
   return Event(
       invocation_id=invocation_id,
       author='user',
-      content=types.Content(
-          role='user', parts=[types.Part(text=text)]
-      ),
+      content=types.Content(role='user', parts=[types.Part(text=text)]),
   )
 
 
-def _model_event(
-    text: str, author: str, invocation_id: str = 'inv'
-) -> Event:
+def _model_event(text: str, author: str, invocation_id: str = 'inv') -> Event:
   return Event(
       invocation_id=invocation_id,
       author=author,
-      content=types.Content(
-          role='model', parts=[types.Part(text=text)]
-      ),
+      content=types.Content(role='model', parts=[types.Part(text=text)]),
   )
 
 
@@ -222,7 +216,7 @@ def test_source_filter_self_keeps_fc_call_and_response_together():
   # FC call (role=model) and FC response (role=user) both belong to 'self'
   roles = [c.role for c in result]
   assert 'model' in roles  # function call kept
-  assert 'user' in roles   # function response kept (no orphan)
+  assert 'user' in roles  # function response kept (no orphan)
 
 
 def test_source_filter_without_self_drops_fc_call_and_response_together():
@@ -240,9 +234,7 @@ def test_source_filter_without_self_drops_fc_call_and_response_together():
   # Both FC call and FC response are dropped — no orphaned function_response part
   assert not any(c.role == 'model' for c in result)
   assert not any(
-      p.function_response is not None
-      for c in result
-      for p in (c.parts or [])
+      p.function_response is not None for c in result for p in c.parts or []
   )
 
 

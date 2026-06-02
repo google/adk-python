@@ -250,19 +250,17 @@ async def test_include_contents_none_sequential_agents():
 
 def test_include_sources_empty_list_raises():
   """include_sources=[] must raise ValueError — use None to disable filtering."""
-  with pytest.raises(ValueError, match='include_sources=\\[\\]'):
+  with pytest.raises(ValueError, match="include_sources=\\[\\]"):
     LlmAgent(
-        name='agent',
-        model='gemini-2.5-flash',
+        name="agent",
+        model="gemini-2.5-flash",
         include_sources=[],
     )
 
 
 def test_include_sources_none_is_accepted():
   """include_sources=None (default) must not raise."""
-  agent = LlmAgent(
-      name='agent', model='gemini-2.5-flash', include_sources=None
-  )
+  agent = LlmAgent(name="agent", model="gemini-2.5-flash", include_sources=None)
   assert agent.include_sources is None
 
 
@@ -275,43 +273,37 @@ def test_include_sources_none_is_accepted():
 async def test_include_sources_user_only_drops_upstream_agent_entries():
   """Downstream agent with include_sources=['user'] receives only the human user message."""
   agent1_model = testing_utils.MockModel.create(
-      responses=['Upstream agent reply']
+      responses=["Upstream agent reply"]
   )
   agent1 = LlmAgent(
-      name='upstream',
+      name="upstream",
       model=agent1_model,
-      instruction='You are upstream',
+      instruction="You are upstream",
   )
 
   agent2_model = testing_utils.MockModel.create(
-      responses=['Downstream response']
+      responses=["Downstream response"]
   )
   agent2 = LlmAgent(
-      name='downstream',
+      name="downstream",
       model=agent2_model,
-      include_sources=['user'],
-      instruction='You are downstream',
+      include_sources=["user"],
+      instruction="You are downstream",
   )
 
-  sequential = SequentialAgent(
-      name='pipeline', sub_agents=[agent1, agent2]
-  )
+  sequential = SequentialAgent(name="pipeline", sub_agents=[agent1, agent2])
   runner = testing_utils.InMemoryRunner(sequential)
-  runner.run('Original user request')
+  runner.run("Original user request")
 
   agent2_contents = testing_utils.simplify_contents(
       agent2_model.requests[0].contents
   )
 
   # User message must be present
-  assert any(
-      'Original user request' in str(c) for _, c in agent2_contents
-  )
+  assert any("Original user request" in str(c) for _, c in agent2_contents)
   # Upstream agent's narrative entry must be absent
-  assert not any(
-      'Upstream agent reply' in str(c) for _, c in agent2_contents
-  )
-  assert not any('For context:' in str(c) for _, c in agent2_contents)
+  assert not any("Upstream agent reply" in str(c) for _, c in agent2_contents)
+  assert not any("For context:" in str(c) for _, c in agent2_contents)
 
 
 # ---------------------------------------------------------------------------
@@ -326,30 +318,28 @@ async def test_include_sources_user_self_drops_upstream_across_turns():
   narrative entries from the upstream agent across multiple invocations.
   """
   agent1_model = testing_utils.MockModel.create(
-      responses=['Turn1 upstream reply', 'Turn2 upstream reply']
+      responses=["Turn1 upstream reply", "Turn2 upstream reply"]
   )
   agent1 = LlmAgent(
-      name='upstream',
+      name="upstream",
       model=agent1_model,
-      instruction='You are upstream',
+      instruction="You are upstream",
   )
 
   agent2_model = testing_utils.MockModel.create(
-      responses=['Turn1 downstream', 'Turn2 downstream']
+      responses=["Turn1 downstream", "Turn2 downstream"]
   )
   agent2 = LlmAgent(
-      name='downstream',
+      name="downstream",
       model=agent2_model,
-      include_sources=['user', 'self'],
-      instruction='You are downstream',
+      include_sources=["user", "self"],
+      instruction="You are downstream",
   )
 
-  sequential = SequentialAgent(
-      name='pipeline', sub_agents=[agent1, agent2]
-  )
+  sequential = SequentialAgent(name="pipeline", sub_agents=[agent1, agent2])
   runner = testing_utils.InMemoryRunner(sequential)
-  runner.run('Turn 1 user message')
-  runner.run('Turn 2 user message')
+  runner.run("Turn 1 user message")
+  runner.run("Turn 2 user message")
 
   # Second invocation of downstream agent — should see user messages + own
   # prior turn, but not upstream's narrative entries.
@@ -358,14 +348,10 @@ async def test_include_sources_user_self_drops_upstream_across_turns():
   )
 
   # User messages must be present
-  assert any(
-      'Turn 1 user message' in str(c) for _, c in agent2_second_contents
-  )
-  assert any(
-      'Turn 2 user message' in str(c) for _, c in agent2_second_contents
-  )
+  assert any("Turn 1 user message" in str(c) for _, c in agent2_second_contents)
+  assert any("Turn 2 user message" in str(c) for _, c in agent2_second_contents)
   # Upstream agent's narrative entries must be absent
   assert not any(
-      'upstream reply' in str(c).lower() for _, c in agent2_second_contents
+      "upstream reply" in str(c).lower() for _, c in agent2_second_contents
   )
-  assert not any('For context:' in str(c) for _, c in agent2_second_contents)
+  assert not any("For context:" in str(c) for _, c in agent2_second_contents)

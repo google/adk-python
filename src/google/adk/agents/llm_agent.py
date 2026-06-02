@@ -978,14 +978,14 @@ class LlmAgent(BaseAgent, abc.ABC):
   def __model_validator_after(self) -> LlmAgent:
     return self
 
-  @field_validator('include_sources', mode='after')
+  @field_validator('include_sources', mode='after')  # type: ignore[misc]
   @classmethod
   def _validate_include_sources(
       cls, v: Optional[list[str]]
   ) -> Optional[list[str]]:
     if v is not None and len(v) == 0:
       raise ValueError(
-          "include_sources=[] keeps nothing. Use None to disable filtering."
+          'include_sources=[] keeps nothing. Use None to disable filtering.'
       )
     return v
 
