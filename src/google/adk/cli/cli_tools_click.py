@@ -19,6 +19,7 @@ from contextlib import asynccontextmanager
 from datetime import datetime
 import functools
 import hashlib
+import importlib
 import json
 import logging
 import os
@@ -1844,6 +1845,18 @@ def cli_web(
   server.run()
 
 
+def _load_lifespan_handler(lifespan_path: str) -> Any:
+  """Dynamically import a lifespan handler from a string path."""
+  try:
+    module_name, func_name = lifespan_path.rsplit(".", 1)
+    module = importlib.import_module(module_name)
+    return getattr(module, func_name)
+  except Exception as e:
+    raise click.ClickException(
+        f"Failed to load lifespan handler '{lifespan_path}': {e}"
+    ) from e
+
+
 @main.command("api_server")
 @feature_options()
 # The directory of agents, where each subdirectory is a single agent.
@@ -1864,6 +1877,15 @@ def cli_web(
     default=False,
     help=(
         "Automatically create a session if it doesn't exist when calling /run."
+    ),
+)
+@click.option(
+    "--lifespan",
+    type=str,
+    default=None,
+    help=(
+        "Optional. The import path to a lifespan context manager (e.g.,"
+        " 'path.to.module.lifespan_handler')."
     ),
 )
 def cli_api_server(
@@ -1888,6 +1910,7 @@ def cli_api_server(
     extra_plugins: Optional[list[str]] = None,
     auto_create_session: bool = False,
     trigger_sources: Optional[list[str]] = None,
+    lifespan: Optional[str] = None,
 ):
   """Starts a FastAPI server for agents.
 
@@ -1901,6 +1924,11 @@ def cli_api_server(
   session_service_uri = session_service_uri or session_db_url
   artifact_service_uri = artifact_service_uri or artifact_storage_uri
   logs.setup_adk_logger(getattr(logging, log_level.upper()))
+
+  if agents_dir and agents_dir not in sys.path:
+    sys.path.insert(0, agents_dir)
+
+  lifespan_handler = _load_lifespan_handler(lifespan) if lifespan else None
 
   config = uvicorn.Config(
       get_fast_api_app(
@@ -1922,6 +1950,7 @@ def cli_api_server(
           extra_plugins=extra_plugins,
           auto_create_session=auto_create_session,
           trigger_sources=trigger_sources,
+          lifespan=lifespan_handler,
       ),
       host=host,
       port=port,

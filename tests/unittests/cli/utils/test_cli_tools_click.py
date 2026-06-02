@@ -1161,6 +1161,38 @@ def test_cli_api_server_invokes_uvicorn(
   assert _patch_uvicorn.calls, "uvicorn.Server.run must be called"
 
 
+def test_cli_api_server_passes_lifespan(
+    tmp_path: Path, _patch_uvicorn: _Recorder, monkeypatch: pytest.MonkeyPatch
+) -> None:
+  """`adk api_server` should pass loaded lifespan handler to get_fast_api_app."""
+  agents_dir = tmp_path / "agents_api_lifespan"
+  agents_dir.mkdir()
+  lifespan_file = agents_dir / "dummy_lifespan.py"
+  lifespan_file.write_text("""
+from contextlib import asynccontextmanager
+@asynccontextmanager
+async def dummy_handler(app):
+  yield
+""")
+  mock_get_app = _Recorder()
+  monkeypatch.setattr(cli_tools_click, "get_fast_api_app", mock_get_app)
+  runner = CliRunner()
+  result = runner.invoke(
+      cli_tools_click.main,
+      [
+          "api_server",
+          str(agents_dir),
+          "--lifespan",
+          "dummy_lifespan.dummy_handler",
+      ],
+  )
+  assert result.exit_code == 0, f"Output: {result.output}"
+  assert mock_get_app.calls
+  called_kwargs = mock_get_app.calls[0][1]
+  assert called_kwargs.get("lifespan") is not None
+  assert called_kwargs.get("lifespan").__name__ == "dummy_handler"
+
+
 def test_cli_web_passes_service_uris(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, _patch_uvicorn: _Recorder
 ) -> None:
