@@ -48,17 +48,15 @@ class TestAgentRegistry:
         "google.auth.transport.requests.AuthorizedSession"
     ) as mock_session_class:
       registry = AgentRegistry(project_id="test-project", location="global")
-      registry._mock_session = mock_session_class.return_value
       return registry
 
   @pytest.mark.asyncio
-  @patch("google.auth.transport.requests.AuthorizedSession")
   @patch(
       "google.adk.tools.mcp_tool.mcp_session_manager.MCPSessionManager.create_session",
       new_callable=AsyncMock,
   )
   async def test_get_mcp_toolset_adds_destination_id(
-      self, mock_create_session, mock_session_class, registry
+      self, mock_create_session, registry
   ):
     """Test that tools from get_mcp_toolset have the destination ID."""
     # Arrange
@@ -74,7 +72,7 @@ class TestAgentRegistry:
             "protocolBinding": "JSONRPC",
         }],
     }
-    mock_session_class.return_value.get.return_value = mock_api_response
+    registry._session.get.return_value = mock_api_response
 
     registry._credentials.token = "token"
     registry._credentials.refresh = MagicMock()
@@ -118,13 +116,12 @@ class TestAgentRegistry:
       )
 
   @pytest.mark.asyncio
-  @patch("google.auth.transport.requests.AuthorizedSession")
   @patch(
       "google.adk.tools.mcp_tool.mcp_session_manager.MCPSessionManager.create_session",
       new_callable=AsyncMock,
   )
   async def test_get_mcp_toolset_handles_missing_destination_id(
-      self, mock_create_session, mock_session_class, registry
+      self, mock_create_session, registry
   ):
     """Test get_mcp_toolset when the destination ID is missing."""
     # Arrange
@@ -138,7 +135,7 @@ class TestAgentRegistry:
             "protocolBinding": "JSONRPC",
         }],
     }
-    mock_session_class.return_value.get.return_value = mock_api_response
+    registry._session.get.return_value = mock_api_response
 
     registry._credentials.token = "token"
     registry._credentials.refresh = MagicMock()
@@ -265,12 +262,11 @@ class TestAgentRegistry:
     assert version is None
     assert binding is None
 
-  @patch("google.auth.transport.requests.AuthorizedSession")
-  def test_list_agents(self, mock_session_class, registry):
+  def test_list_agents(self, registry):
     mock_response = MagicMock()
     mock_response.json.return_value = {"agents": []}
     mock_response.raise_for_status = MagicMock()
-    mock_session_class.return_value.get.return_value = mock_response
+    registry._session.get.return_value = mock_response
 
     # Mock auth refresh
     registry._credentials.token = "token"
@@ -279,12 +275,11 @@ class TestAgentRegistry:
     agents = registry.list_agents()
     assert agents == {"agents": []}
 
-  @patch("google.auth.transport.requests.AuthorizedSession")
-  def test_get_mcp_server(self, mock_session_class, registry):
+  def test_get_mcp_server(self, registry):
     mock_response = MagicMock()
     mock_response.json.return_value = {"name": "test-mcp"}
     mock_response.raise_for_status = MagicMock()
-    mock_session_class.return_value.get.return_value = mock_response
+    registry._session.get.return_value = mock_response
 
     registry._credentials.token = "token"
     registry._credentials.refresh = MagicMock()
@@ -292,12 +287,11 @@ class TestAgentRegistry:
     server = registry.get_mcp_server("test-mcp")
     assert server == {"name": "test-mcp"}
 
-  @patch("google.auth.transport.requests.AuthorizedSession")
-  def test_list_endpoints(self, mock_session_class, registry):
+  def test_list_endpoints(self, registry):
     mock_response = MagicMock()
     mock_response.json.return_value = {"endpoints": []}
     mock_response.raise_for_status = MagicMock()
-    mock_session_class.return_value.get.return_value = mock_response
+    registry._session.get.return_value = mock_response
 
     # Mock auth refresh
     registry._credentials.token = "token"
@@ -306,12 +300,11 @@ class TestAgentRegistry:
     endpoints = registry.list_endpoints()
     assert endpoints == {"endpoints": []}
 
-  @patch("google.auth.transport.requests.AuthorizedSession")
-  def test_get_endpoint(self, mock_session_class, registry):
+  def test_get_endpoint(self, registry):
     mock_response = MagicMock()
     mock_response.json.return_value = {"name": "test-endpoint"}
     mock_response.raise_for_status = MagicMock()
-    mock_session_class.return_value.get.return_value = mock_response
+    registry._session.get.return_value = mock_response
 
     registry._credentials.token = "token"
     registry._credentials.refresh = MagicMock()
@@ -328,10 +321,8 @@ class TestAgentRegistry:
           ("https://mcp.googleapis.com/v1", True, True),
       ],
   )
-  @patch("google.auth.transport.requests.AuthorizedSession")
   def test_get_mcp_toolset_auth_headers(
       self,
-      mock_session_class,
       registry,
       url,
       expected_auth,
@@ -346,7 +337,7 @@ class TestAgentRegistry:
         }],
     }
     mock_response.raise_for_status = MagicMock()
-    mock_session_class.return_value.get.return_value = mock_response
+    registry._session.get.return_value = mock_response
 
     mock_creds = MagicMock()
     mock_creds.quota_project_id = None
@@ -357,7 +348,7 @@ class TestAgentRegistry:
       }
       with patch(
           "google.auth.default", return_value=(mock_creds, "project-id")
-      ):
+      ), patch("google.auth.transport.requests.AuthorizedSession"):
         registry = AgentRegistry(
             project_id="test-project",
             location="global",
@@ -380,8 +371,7 @@ class TestAgentRegistry:
     else:
       assert "Authorization" not in headers
 
-  @patch("google.auth.transport.requests.AuthorizedSession")
-  def test_get_mcp_toolset_with_auth(self, mock_session_class, registry):
+  def test_get_mcp_toolset_with_auth(self, registry):
     mock_response = MagicMock()
     mock_response.json.return_value = {
         "displayName": "TestPrefix",
@@ -391,7 +381,7 @@ class TestAgentRegistry:
         }],
     }
     mock_response.raise_for_status = MagicMock()
-    mock_session_class.return_value.get.return_value = mock_response
+    registry._session.get.return_value = mock_response
 
     registry._credentials.token = "token"
     registry._credentials.refresh = MagicMock()
@@ -411,9 +401,8 @@ class TestAgentRegistry:
     assert auth_config.auth_scheme == auth_scheme
     assert auth_config.raw_auth_credential == auth_credential
 
-  @patch("google.auth.transport.requests.AuthorizedSession")
   def test_get_mcp_toolset_with_auth_blocks_gcp_headers(
-      self, mock_session_class, registry
+      self, registry
   ):
     mock_response = MagicMock()
     mock_response.json.return_value = {
@@ -424,7 +413,7 @@ class TestAgentRegistry:
         }],
     }
     mock_response.raise_for_status = MagicMock()
-    mock_session_class.return_value.get.return_value = mock_response
+    registry._session.get.return_value = mock_response
 
     registry._credentials.token = "token"
     registry._credentials.refresh = MagicMock()
@@ -443,8 +432,7 @@ class TestAgentRegistry:
     headers = toolset._header_provider(MagicMock())
     assert "Authorization" not in headers
 
-  @patch("google.auth.transport.requests.AuthorizedSession")
-  def test_get_remote_a2a_agent(self, mock_session_class, registry):
+  def test_get_remote_a2a_agent(self, registry):
     mock_response = MagicMock()
     mock_response.json.return_value = {
         "displayName": "TestAgent",
@@ -461,7 +449,7 @@ class TestAgentRegistry:
         "skills": [{"id": "s1", "name": "Skill 1", "description": "Desc 1"}],
     }
     mock_response.raise_for_status = MagicMock()
-    mock_session_class.return_value.get.return_value = mock_response
+    registry._session.get.return_value = mock_response
 
     registry._credentials.token = "token"
     registry._credentials.refresh = MagicMock()
@@ -477,8 +465,7 @@ class TestAgentRegistry:
     assert agent._agent_card.preferred_transport == A2ATransport.http_json
     assert agent._agent_card.protocol_version == "0.4.0"
 
-  @patch("google.auth.transport.requests.AuthorizedSession")
-  def test_get_remote_a2a_agent_defaults(self, mock_session_class, registry):
+  def test_get_remote_a2a_agent_defaults(self, registry):
     mock_response = MagicMock()
     mock_response.json.return_value = {
         "displayName": "TestAgent",
@@ -492,7 +479,7 @@ class TestAgentRegistry:
         }],
     }
     mock_response.raise_for_status = MagicMock()
-    mock_session_class.return_value.get.return_value = mock_response
+    registry._session.get.return_value = mock_response
 
     registry._credentials.token = "token"
     registry._credentials.refresh = MagicMock()
@@ -502,8 +489,7 @@ class TestAgentRegistry:
     assert agent._agent_card.preferred_transport == A2ATransport.http_json
     assert agent._agent_card.protocol_version == "0.3.0"
 
-  @patch("google.auth.transport.requests.AuthorizedSession")
-  def test_get_remote_a2a_agent_with_card(self, mock_session_class, registry):
+  def test_get_remote_a2a_agent_with_card(self, registry):
     mock_response = MagicMock()
     mock_response.json.return_value = {
         "name": "projects/p/locations/l/agents/a",
@@ -527,7 +513,7 @@ class TestAgentRegistry:
         },
     }
     mock_response.raise_for_status = MagicMock()
-    mock_session_class.return_value.get.return_value = mock_response
+    registry._session.get.return_value = mock_response
 
     registry._credentials.token = "token"
     registry._credentials.refresh = MagicMock()
@@ -542,9 +528,8 @@ class TestAgentRegistry:
     assert len(agent._agent_card.skills) == 1
     assert agent._agent_card.skills[0].name == "S1"
 
-  @patch("google.auth.transport.requests.AuthorizedSession")
   def test_get_remote_a2a_agent_with_httpx_client(
-      self, mock_session_class, registry
+      self, registry
   ):
     mock_response = MagicMock()
     mock_response.json.return_value = {
@@ -559,7 +544,7 @@ class TestAgentRegistry:
         }],
     }
     mock_response.raise_for_status = MagicMock()
-    mock_session_class.return_value.get.return_value = mock_response
+    registry._session.get.return_value = mock_response
 
     custom_client = httpx.AsyncClient()
     agent = registry.get_remote_a2a_agent(
@@ -567,9 +552,8 @@ class TestAgentRegistry:
     )
     assert agent._httpx_client is custom_client
 
-  @patch("google.auth.transport.requests.AuthorizedSession")
   def test_get_remote_a2a_agent_configures_transports(
-      self, mock_session_class, registry
+      self, registry
   ):
     mock_response = MagicMock()
     mock_response.json.return_value = {
@@ -583,7 +567,7 @@ class TestAgentRegistry:
         }],
     }
     mock_response.raise_for_status = MagicMock()
-    mock_session_class.return_value.get.return_value = mock_response
+    registry._session.get.return_value = mock_response
 
     registry._credentials.token = "token"
     registry._credentials.refresh = MagicMock()
@@ -609,9 +593,8 @@ class TestAgentRegistry:
     assert headers["Authorization"] == "Bearer fake-token"
     assert headers["x-goog-user-project"] == "test-project"
 
-  @patch("google.auth.transport.requests.AuthorizedSession")
   def test_make_request_raises_http_status_error(
-      self, mock_session_class, registry
+      self, registry
   ):
     mock_response = MagicMock()
     mock_response.status_code = 404
@@ -619,7 +602,7 @@ class TestAgentRegistry:
     error = requests.exceptions.HTTPError(
         "Error", request=MagicMock(), response=mock_response
     )
-    mock_session_class.return_value.get.side_effect = error
+    registry._session.get.side_effect = error
 
     registry._credentials.token = "token"
     registry._credentials.refresh = MagicMock()
@@ -629,14 +612,13 @@ class TestAgentRegistry:
     ):
       registry._make_request("test-path")
 
-  @patch("google.auth.transport.requests.AuthorizedSession")
   def test_make_request_raises_request_error(
-      self, mock_session_class, registry
+      self, registry
   ):
     error = requests.exceptions.RequestException(
         "Connection failed", request=MagicMock()
     )
-    mock_session_class.return_value.get.side_effect = error
+    registry._session.get.side_effect = error
 
     registry._credentials.token = "token"
     registry._credentials.refresh = MagicMock()
@@ -646,11 +628,10 @@ class TestAgentRegistry:
     ):
       registry._make_request("test-path")
 
-  @patch("google.auth.transport.requests.AuthorizedSession")
   def test_make_request_raises_generic_exception(
-      self, mock_session_class, registry
+      self, registry
   ):
-    mock_session_class.return_value.get.side_effect = Exception("Generic error")
+    registry._session.get.side_effect = Exception("Generic error")
 
     registry._credentials.token = "token"
     registry._credentials.refresh = MagicMock()
@@ -748,34 +729,29 @@ class TestAgentRegistryMtls:
   def registry(self):
     with patch(
         "google.auth.default", return_value=(MagicMock(), "test-project")
-    ):
+    ), patch("google.auth.transport.requests.AuthorizedSession"):
       return AgentRegistry(project_id="test-project", location="global")
 
-  @patch("google.auth.transport.requests.AuthorizedSession")
   @patch(
       "google.auth.transport.mtls.has_default_client_cert_source",
       return_value=False,
   )
   def test_make_request_uses_authorized_session_no_mtls(
-      self, mock_has_cert, mock_session_class, registry
+      self, mock_has_cert, registry
   ):
     """Verifies that AuthorizedSession is used for standard requests."""
-    mock_session = mock_session_class.return_value
+    mock_session = registry._session
     mock_response = MagicMock()
     mock_response.json.return_value = {"key": "value"}
     mock_session.get.return_value = mock_response
 
     result = registry._make_request("test-path")
 
-    # Assert session initialization and usage
-    mock_session_class.assert_called_once_with(
-        credentials=registry._credentials
-    )
+    # Assert session usage
     mock_session.get.assert_called_once()
     assert mock_session.configure_mtls_channel.call_count == 0
     assert result == {"key": "value"}
 
-  @patch("google.auth.transport.requests.AuthorizedSession")
   @patch(
       "google.auth.transport.mtls.has_default_client_cert_source",
       return_value=True,
@@ -783,10 +759,10 @@ class TestAgentRegistryMtls:
   @patch("google.auth.transport.mtls.default_client_cert_source")
   @patch.dict(os.environ, {"GOOGLE_API_USE_CLIENT_CERTIFICATE": "true"})
   def test_make_request_configures_mtls(
-      self, mock_cert_source, mock_has_cert, mock_session_class, registry
+      self, mock_cert_source, mock_has_cert, registry
   ):
     """Verifies that mTLS is configured when supported and enabled."""
-    mock_session = mock_session_class.return_value
+    mock_session = registry._session
     mock_cert_source.return_value = lambda: (b"cert", b"key")
 
     registry._make_request("test-path")
@@ -830,10 +806,9 @@ class TestAgentRegistryMtls:
         lambda: True
     )
 
-  @patch("google.auth.transport.requests.AuthorizedSession")
-  def test_make_request_error_handling(self, mock_session_class, registry):
+  def test_make_request_error_handling(self, registry):
     """Ensures exceptions from AuthorizedSession are handled gracefully."""
-    mock_session = mock_session_class.return_value
+    mock_session = registry._session
     mock_session.get.side_effect = Exception("Connection error")
 
     with pytest.raises(
