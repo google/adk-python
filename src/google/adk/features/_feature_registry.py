@@ -135,7 +135,7 @@ _FEATURE_REGISTRY: dict[FeatureName, FeatureConfig] = {
         FeatureStage.EXPERIMENTAL, default_on=True
     ),
     FeatureName.JSON_SCHEMA_FOR_FUNC_DECL: FeatureConfig(
-        FeatureStage.EXPERIMENTAL, default_on=True
+        FeatureStage.EXPERIMENTAL, default_on=False
     ),
     FeatureName._MCP_GRACEFUL_ERROR_HANDLING: FeatureConfig(
         FeatureStage.EXPERIMENTAL, default_on=True
