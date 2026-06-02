@@ -32,6 +32,9 @@ from ...agents.loop_agent import LoopAgent
 from ...agents.parallel_agent import ParallelAgent
 from ...agents.sequential_agent import SequentialAgent
 from ...tools.example_tool import ExampleTool
+from ...workflow._base_node import BaseNode
+from ...workflow._base_node import START
+from ...workflow._workflow import Workflow
 from ..experimental import a2a_experimental
 
 logger = logging.getLogger('google_adk.' + __name__)
@@ -39,17 +42,17 @@ logger = logging.getLogger('google_adk.' + __name__)
 
 @a2a_experimental
 class AgentCardBuilder:
-  """Builder class for creating agent cards from ADK agents.
+  """Builder class for creating agent cards from ADK agents or workflows.
 
-  This class provides functionality to convert ADK agents into A2A agent cards,
-  including extracting skills, capabilities, and metadata from various agent
-  types.
+  This class provides functionality to convert an ADK BaseAgent (e.g. LlmAgent)
+  or a Workflow into an A2A agent card, including extracting skills,
+  capabilities, and metadata.
   """
 
   def __init__(
       self,
       *,
-      agent: BaseAgent,
+      agent: BaseAgent | Workflow,
       rpc_url: Optional[str] = None,
       capabilities: Optional[AgentCapabilities] = None,
       doc_url: Optional[str] = None,
@@ -59,6 +62,11 @@ class AgentCardBuilder:
   ):
     if not agent:
       raise ValueError('Agent cannot be None or empty.')
+    if not isinstance(agent, (BaseAgent, Workflow)):
+      raise TypeError(
+          'AgentCardBuilder requires a BaseAgent or Workflow, got '
+          f'{type(agent).__name__}.'
+      )
 
     self._agent = agent
     self._rpc_url = rpc_url or 'http://localhost:80/a2a'
@@ -96,8 +104,17 @@ class AgentCardBuilder:
 
 
 # Module-level helper functions
-async def _build_primary_skills(agent: BaseAgent) -> List[AgentSkill]:
-  """Build skills for any agent type."""
+def _iter_child_nodes(agent: BaseNode) -> List[BaseNode]:
+  """Returns the immediate child nodes of an agent or a workflow."""
+  if isinstance(agent, BaseAgent):
+    return list(agent.sub_agents)
+  if isinstance(agent, Workflow) and agent.graph is not None:
+    return [n for n in agent.graph.nodes if n.name != START.name]
+  return []
+
+
+async def _build_primary_skills(agent: BaseNode) -> List[AgentSkill]:
+  """Build skills for any node type."""
   if isinstance(agent, LlmAgent):
     return await _build_llm_agent_skills(agent)
   else:
@@ -140,10 +157,10 @@ async def _build_llm_agent_skills(agent: LlmAgent) -> List[AgentSkill]:
   return skills
 
 
-async def _build_sub_agent_skills(agent: BaseAgent) -> List[AgentSkill]:
-  """Build skills for all sub-agents."""
+async def _build_sub_agent_skills(agent: BaseNode) -> List[AgentSkill]:
+  """Build skills for all child nodes (sub-agents or workflow nodes)."""
   sub_agent_skills = []
-  for sub_agent in agent.sub_agents:
+  for sub_agent in _iter_child_nodes(agent):
     try:
       sub_skills = await _build_primary_skills(sub_agent)
       for skill in sub_skills:
@@ -225,8 +242,8 @@ def _build_code_executor_skill(agent: LlmAgent) -> AgentSkill:
   )
 
 
-async def _build_non_llm_agent_skills(agent: BaseAgent) -> List[AgentSkill]:
-  """Build skills for non-LLM agents."""
+async def _build_non_llm_agent_skills(agent: BaseNode) -> List[AgentSkill]:
+  """Build skills for non-LLM agents and workflow nodes."""
   skills = []
 
   # 1. Agent skill (main agent skill)
@@ -249,8 +266,8 @@ async def _build_non_llm_agent_skills(agent: BaseAgent) -> List[AgentSkill]:
       )
   )
 
-  # 2. Sub-agent orchestration skill (for agents with sub-agents)
-  if agent.sub_agents:
+  # 2. Orchestration skill (for agents/workflows with child nodes)
+  if _iter_child_nodes(agent):
     orchestration_skill = _build_orchestration_skill(agent, agent_type)
     if orchestration_skill:
       skills.append(orchestration_skill)
@@ -259,11 +276,11 @@ async def _build_non_llm_agent_skills(agent: BaseAgent) -> List[AgentSkill]:
 
 
 def _build_orchestration_skill(
-    agent: BaseAgent, agent_type: str
+    agent: BaseNode, agent_type: str
 ) -> Optional[AgentSkill]:
-  """Build orchestration skill for agents with sub-agents."""
+  """Build orchestration skill for agents/workflows with child nodes."""
   sub_agent_descriptions = []
-  for sub_agent in agent.sub_agents:
+  for sub_agent in _iter_child_nodes(agent):
     description = sub_agent.description or 'No description'
     sub_agent_descriptions.append(f'{sub_agent.name}: {description}')
 
@@ -281,7 +298,7 @@ def _build_orchestration_skill(
   )
 
 
-def _get_agent_type(agent: BaseAgent) -> str:
+def _get_agent_type(agent: BaseNode) -> str:
   """Get the agent type for tagging."""
   if isinstance(agent, LlmAgent):
     return 'llm'
@@ -291,21 +308,23 @@ def _get_agent_type(agent: BaseAgent) -> str:
     return 'parallel_workflow'
   elif isinstance(agent, LoopAgent):
     return 'loop_workflow'
+  elif isinstance(agent, Workflow):
+    return 'graph_workflow'
   else:
     return 'custom_agent'
 
 
-def _get_agent_skill_name(agent: BaseAgent) -> str:
+def _get_agent_skill_name(agent: BaseNode) -> str:
   """Get the skill name based on agent type."""
   if isinstance(agent, LlmAgent):
     return 'model'
-  elif isinstance(agent, (SequentialAgent, ParallelAgent, LoopAgent)):
+  elif isinstance(agent, (SequentialAgent, ParallelAgent, LoopAgent, Workflow)):
     return 'workflow'
   else:
     return 'custom'
 
 
-def _build_agent_description(agent: BaseAgent) -> str:
+def _build_agent_description(agent: BaseNode) -> str:
   """Build agent description from agent.description and workflow-specific descriptions."""
   description_parts = []
 
@@ -382,9 +401,9 @@ def _replace_pronouns(text: str) -> str:
   )
 
 
-def _get_workflow_description(agent: BaseAgent) -> Optional[str]:
-  """Get workflow-specific description for non-LLM agents."""
-  if not agent.sub_agents:
+def _get_workflow_description(agent: BaseNode) -> Optional[str]:
+  """Get workflow-specific description for non-LLM agents and workflows."""
+  if not _iter_child_nodes(agent):
     return None
 
   if isinstance(agent, SequentialAgent):
@@ -393,6 +412,8 @@ def _get_workflow_description(agent: BaseAgent) -> Optional[str]:
     return _build_parallel_description(agent)
   elif isinstance(agent, LoopAgent):
     return _build_loop_description(agent)
+  elif isinstance(agent, Workflow):
+    return _build_graph_workflow_description(agent)
 
   return None
 
@@ -448,13 +469,32 @@ def _build_loop_description(agent: LoopAgent) -> str:
   )
 
 
-def _get_default_description(agent: BaseAgent) -> str:
+def _build_graph_workflow_description(workflow: Workflow) -> str:
+  """Build description for a graph-based Workflow."""
+  child_nodes = _iter_child_nodes(workflow)
+  descriptions = []
+  for node in child_nodes:
+    node_description = (
+        node.description.rstrip('.')
+        if node.description
+        else f'execute the {node.name} node'
+    )
+    descriptions.append(f'{node.name}: {node_description}')
+  return (
+      'This workflow orchestrates the following nodes: '
+      + '; '.join(descriptions)
+      + '.'
+  )
+
+
+def _get_default_description(agent: BaseNode) -> str:
   """Get default description based on agent type."""
   agent_type_descriptions = {
       LlmAgent: 'An LLM-based agent',
       SequentialAgent: 'A sequential workflow agent',
       ParallelAgent: 'A parallel workflow agent',
       LoopAgent: 'A loop workflow agent',
+      Workflow: 'A graph-based workflow agent',
   }
 
   for agent_type, description in agent_type_descriptions.items():
@@ -492,7 +532,7 @@ def _extract_inputs_from_examples(examples: Optional[list[dict]]) -> list[str]:
 
 
 async def _extract_examples_from_agent(
-    agent: BaseAgent,
+    agent: BaseNode,
 ) -> Optional[List[Dict]]:
   """Extract examples from example_tool if configured; otherwise, from agent instruction."""
   if not isinstance(agent, LlmAgent):
@@ -558,7 +598,7 @@ def _extract_examples_from_instruction(
   return examples if examples else None
 
 
-def _get_input_modes(agent: BaseAgent) -> Optional[List[str]]:
+def _get_input_modes(agent: BaseNode) -> Optional[List[str]]:
   """Get input modes based on agent model."""
   if not isinstance(agent, LlmAgent):
     return None
@@ -568,7 +608,7 @@ def _get_input_modes(agent: BaseAgent) -> Optional[List[str]]:
   return None
 
 
-def _get_output_modes(agent: BaseAgent) -> Optional[List[str]]:
+def _get_output_modes(agent: BaseNode) -> Optional[List[str]]:
   """Get output modes from Agent.generate_content_config.response_modalities."""
   if not isinstance(agent, LlmAgent):
     return None

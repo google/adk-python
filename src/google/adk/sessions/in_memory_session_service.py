@@ -313,6 +313,12 @@ class InMemorySessionService(BaseSessionService):
     self.sessions[app_name][user_id].pop(session_id)
 
   @override
+  async def get_user_state(
+      self, *, app_name: str, user_id: str
+  ) -> dict[str, Any]:
+    return dict(self.user_state.get(app_name, {}).get(user_id, {}))
+
+  @override
   async def append_event(self, session: Session, event: Event) -> Event:
     if event.partial:
       return event
@@ -346,7 +352,7 @@ class InMemorySessionService(BaseSessionService):
       storage_session.events.append(event)
       storage_session.last_update_time = event.timestamp
 
-    if event.actions.state_delta:
+    if event.actions and event.actions.state_delta:
       state_deltas = _session_util.extract_state_delta(
           event.actions.state_delta
       )

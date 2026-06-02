@@ -80,10 +80,24 @@ class GeminiLlmConnection(BaseLlmConnection):
     ]
 
     if contents:
+      is_gemini_31 = model_name_utils.is_gemini_3_1_flash_live(
+          self._model_version
+      )
+      # Gemini Enterprise Agent Platform does not support history_config in the SDK.
+      # To initialize a live session with prior history without hitting a 1007
+      # protocol error (invalid role mid-session), we consolidate previous multi-turn
+      # interactions into a unified contextual preamble on a single user role turn.
+      if is_gemini_31 and self._api_backend != GoogleLLMVariant.GEMINI_API:
+        collapsed_text = "Previous conversation history:\n"
+        for c in contents:
+          text_parts = "".join(p.text for p in c.parts if p.text)
+          collapsed_text += f'[{c.role}]: {text_parts}\n'
+        contents = [types.Content(role='user', parts=[types.Part.from_text(text=collapsed_text)])]
+
       logger.debug('Sending history to live connection: %s', contents)
       await self._gemini_session.send_client_content(
           turns=contents,
-          turn_complete=contents[-1].role == 'user',
+          turn_complete=True if is_gemini_31 else (contents[-1].role == 'user'),
       )
     else:
       logger.info('no content is sent')
@@ -254,18 +268,20 @@ class GeminiLlmConnection(BaseLlmConnection):
               llm_response.grounding_metadata = (
                   message.server_content.grounding_metadata
               )
-            if content.parts[0].text:
-              current_is_thought = getattr(content.parts[0], 'thought', False)
-              if text and current_is_thought != is_thought:
-                yield self.__build_full_text_response(text, is_thought)
-                text = ''
-                is_thought = False
+            has_inline_data = any(p.inline_data for p in content.parts)
+            for part in content.parts:
+              if part.text:
+                current_is_thought = getattr(part, 'thought', False)
+                if text and current_is_thought != is_thought:
+                  yield self.__build_full_text_response(text, is_thought)
+                  text = ''
+                  is_thought = False
 
-              text += content.parts[0].text
-              is_thought = current_is_thought
-              llm_response.partial = True
+                text += part.text
+                is_thought = current_is_thought
+                llm_response.partial = True
             # don't yield the merged text event when receiving audio data
-            elif text and not content.parts[0].inline_data:
+            if text and not any(p.text for p in content.parts) and not has_inline_data:
               yield self.__build_full_text_response(text, is_thought)
               text = ''
               is_thought = False

@@ -19,6 +19,8 @@ from pathlib import Path
 from google.adk.cli.utils.local_storage import create_local_database_session_service
 from google.adk.cli.utils.local_storage import create_local_session_service
 from google.adk.cli.utils.local_storage import PerAgentDatabaseSessionService
+from google.adk.events.event import Event
+from google.adk.events.event_actions import EventActions
 from google.adk.sessions.sqlite_session_service import SqliteSessionService
 import pytest
 
@@ -90,3 +92,28 @@ def test_create_local_database_session_service_returns_sqlite(
   service = create_local_database_session_service(base_dir=tmp_path)
 
   assert isinstance(service, SqliteSessionService)
+
+
+@pytest.mark.asyncio
+async def test_per_agent_session_service_get_user_state(tmp_path: Path) -> None:
+  agent_a = tmp_path / "agent_a"
+  agent_b = tmp_path / "agent_b"
+  agent_a.mkdir()
+  agent_b.mkdir()
+
+  service = PerAgentDatabaseSessionService(agents_root=tmp_path)
+
+  session_a = await service.create_session(app_name="agent_a", user_id="user_a")
+  await service.append_event(
+      session_a,
+      Event(
+          author="system",
+          actions=EventActions(state_delta={"user:profile": {"name": "Alice"}}),
+      ),
+  )
+
+  state_a = await service.get_user_state(app_name="agent_a", user_id="user_a")
+  state_b = await service.get_user_state(app_name="agent_b", user_id="user_b")
+
+  assert state_a == {"profile": {"name": "Alice"}}
+  assert state_b == {}
