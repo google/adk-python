@@ -459,6 +459,7 @@ class Runner:
       *,
       user_id: str,
       session_id: str,
+      invocation_id: Optional[str] = None,
       new_message: Optional[types.Content] = None,
       state_delta: Optional[dict[str, Any]] = None,
       run_config: Optional[RunConfig] = None,
@@ -481,11 +482,10 @@ class Runner:
       resume_inputs = self._extract_resume_inputs(new_message)
       self._validate_new_message(new_message, resume_inputs)
 
-      invocation_id = (
-          self._resolve_invocation_id_from_fr(session, new_message)
-          if new_message
-          else None
-      )
+      if not invocation_id and new_message:
+        invocation_id = self._resolve_invocation_id_from_fr(
+            session, new_message
+        )
 
       ic = self._new_invocation_context(
           session,
@@ -496,12 +496,16 @@ class Runner:
       ic._event_queue = asyncio.Queue()
 
       # 2. Append user message to session and resolve node_input
-      if resume_inputs:
-        # Resume: find original user message, use as node_input
+      node_input = None
+      if resume_inputs or invocation_id:
+        # Resume: recover the original user content. new_message here is a
+        # function response (or None), so it can't populate user_content.
         node_input = self._find_original_user_content(
             ic.session, ic.invocation_id
         )
-      else:
+        if node_input:
+          ic.user_content = node_input
+      if not node_input:
         # Fresh: use user message as node_input
         node_input = new_message
 
@@ -1019,6 +1023,7 @@ class Runner:
           self._run_node_async(
               user_id=user_id,
               session_id=session_id,
+              invocation_id=invocation_id,
               new_message=new_message,
               state_delta=state_delta,
               run_config=run_config,
@@ -1039,6 +1044,7 @@ class Runner:
           self._run_node_async(
               user_id=user_id,
               session_id=session_id,
+              invocation_id=invocation_id,
               new_message=new_message,
               state_delta=state_delta,
               run_config=run_config,
