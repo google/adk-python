@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 from typing import Any
 from typing import Dict
 from typing import List
@@ -30,6 +31,89 @@ from . import utils
 from .settings import APPROXIMATE_NEAREST_NEIGHBORS
 from .settings import EXACT_NEAREST_NEIGHBORS
 from .settings import SpannerToolSettings
+
+# Pattern for valid SQL identifiers: alphanumeric, underscores, dots (for
+# schema-qualified names), and backtick/double-quote quoting.
+_SAFE_IDENTIFIER_RE = re.compile(
+    r'^(?:[A-Za-z_][A-Za-z0-9_]*'           # unquoted identifier
+    r'(?:\.[A-Za-z_][A-Za-z0-9_]*)*'        # optional schema.table
+    r'|`[^`]+`'                              # backtick-quoted
+    r'|"[^"]+")$'                            # double-quote-quoted
+)
+
+# Patterns that should never appear in an additional_filter value when
+# the filter is populated by the LLM at runtime.
+_FILTER_DENY_PATTERNS = re.compile(
+    r';\s*'                     # statement separator
+    r'|--'                      # single-line comment
+    r'|/\*'                     # block comment start
+    r'|\*/'                     # block comment end
+    r'|\bUNION\b'              # UNION-based injection
+    r'|\bINTO\b\s+\bOUTFILE\b' # INTO OUTFILE
+    , re.IGNORECASE
+)
+
+
+def _validate_identifier(value: str, param_name: str) -> str:
+  """Validate that a value is a safe SQL identifier.
+
+  Args:
+    value: The identifier string to validate.
+    param_name: Name of the parameter (for error messages).
+
+  Returns:
+    The validated identifier string.
+
+  Raises:
+    ValueError: If the identifier contains unsafe characters.
+  """
+  if not value or not _SAFE_IDENTIFIER_RE.match(value.strip()):
+    raise ValueError(
+        f"Invalid SQL identifier for {param_name}: {value!r}. "
+        "Identifiers must contain only alphanumeric characters, underscores, "
+        "and dots, or be quoted with backticks or double quotes."
+    )
+  return value.strip()
+
+
+def _validate_column_list(columns: List[str], param_name: str) -> List[str]:
+  """Validate that each column name in a list is a safe SQL identifier."""
+  validated = []
+  for col in columns:
+    _validate_identifier(col, param_name)
+    validated.append(col)
+  return validated
+
+
+def _validate_additional_filter(
+    filter_value: Optional[str],
+) -> Optional[str]:
+  """Validate that an additional_filter does not contain injection patterns.
+
+  This is a defense-in-depth measure. The additional_filter field is
+  documented as a developer-trusted value, but since it can be populated
+  by the LLM at runtime via tool calls, we reject common injection
+  patterns.
+
+  Args:
+    filter_value: The filter string to validate.
+
+  Returns:
+    The validated filter string, or None.
+
+  Raises:
+    ValueError: If the filter contains dangerous patterns.
+  """
+  if filter_value is None:
+    return None
+  if _FILTER_DENY_PATTERNS.search(filter_value):
+    raise ValueError(
+        f"additional_filter contains a disallowed pattern: {filter_value!r}. "
+        "Semicolons, comments (-- or /* */), and UNION keywords are not "
+        "permitted in filter expressions."
+    )
+  return filter_value
+
 
 # Embedding model settings.
 # Only for Spanner GoogleSQL dialect database, and use Spanner ML.PREDICT
@@ -62,6 +146,10 @@ _POSTGRESQL_PARAMETER_QUERY_EMBEDDING = "1"
 def _generate_googlesql_for_embedding_query(
     spanner_gsql_embedding_model_name: str,
 ) -> str:
+  _validate_identifier(
+      spanner_gsql_embedding_model_name,
+      "spanner_googlesql_embedding_model_name",
+  )
   return f"""
     SELECT embeddings.values
     FROM ML.PREDICT(
@@ -75,6 +163,16 @@ def _generate_postgresql_for_embedding_query(
     vertex_ai_embedding_model_endpoint: str,
     output_dimensionality: Optional[int],
 ) -> str:
+  # Validate endpoint format: projects/.../locations/.../publishers/.../models/...
+  if not re.match(
+      r'^projects/[\w-]+/locations/[\w-]+/publishers/[\w-]+/models/[\w.-]+$',
+      vertex_ai_embedding_model_endpoint,
+  ):
+    raise ValueError(
+        f"Invalid Vertex AI endpoint format: "
+        f"{vertex_ai_embedding_model_endpoint!r}. Expected format: "
+        f"projects/$project/locations/$location/publishers/google/models/$model"
+    )
   instances_json = f"""
       'instances',
       JSONB_BUILD_ARRAY(
@@ -166,6 +264,11 @@ def _generate_sql_for_knn(
     top_k: int,
 ) -> str:
   """Generates a SQL query for kNN search."""
+  _validate_identifier(table_name, "table_name")
+  _validate_identifier(embedding_column_to_search, "embedding_column_to_search")
+  columns = _validate_column_list(columns, "columns")
+  additional_filter = _validate_additional_filter(additional_filter)
+  top_k = int(top_k)
   if dialect == DatabaseDialect.POSTGRESQL:
     distance_function = _get_postgresql_distance_function(distance_type)
     embedding_parameter = f"${_POSTGRESQL_PARAMETER_QUERY_EMBEDDING}"
@@ -205,6 +308,12 @@ def _generate_sql_for_ann(
     num_leaves_to_search: int,
 ):
   """Generates a SQL query for ANN search."""
+  _validate_identifier(table_name, "table_name")
+  _validate_identifier(embedding_column_to_search, "embedding_column_to_search")
+  columns = _validate_column_list(columns, "columns")
+  additional_filter = _validate_additional_filter(additional_filter)
+  top_k = int(top_k)
+  num_leaves_to_search = int(num_leaves_to_search)
   if dialect == DatabaseDialect.POSTGRESQL:
     raise NotImplementedError(
         f"{APPROXIMATE_NEAREST_NEIGHBORS} is not supported for PostgreSQL"
