@@ -24,7 +24,8 @@ from google.adk.agents.run_config import RunConfig
 from google.adk.events.event import Event
 from google.adk.flows.llm_flows.base_llm_flow import _handle_after_model_callback
 from google.adk.flows.llm_flows.base_llm_flow import BaseLlmFlow
-from google.adk.models.google_llm import Gemini, GoogleLLMVariant
+from google.adk.models.google_llm import Gemini
+from google.adk.models.google_llm import GoogleLLMVariant
 from google.adk.models.llm_request import LlmRequest
 from google.adk.models.llm_response import LlmResponse
 from google.adk.plugins.base_plugin import BasePlugin
@@ -1390,7 +1391,7 @@ async def test_run_live_reconnect_sets_transparent_for_vertex():
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    "api_backend,should_have_history_config",
+    'api_backend,should_have_history_config',
     [
         (GoogleLLMVariant.GEMINI_API, True),
         (GoogleLLMVariant.VERTEX_AI, False),
@@ -1424,8 +1425,11 @@ async def test_run_live_history_config_gated_by_backend(
   flow = BaseLlmFlowForTesting()
 
   with mock.patch.object(flow, '_send_to_model', new_callable=AsyncMock):
+
     async def mock_preprocess(ctx, req):
-      req.contents = [types.Content(parts=[types.Part.from_text(text='history')])]
+      req.contents = [
+          types.Content(parts=[types.Part.from_text(text='history')])
+      ]
       yield Event(id=Event.new_id(), author='test')
 
     with mock.patch.object(

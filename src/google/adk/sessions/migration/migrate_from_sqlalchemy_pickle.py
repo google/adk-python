@@ -82,6 +82,7 @@ _ALLOWED_PICKLE_GLOBALS: set[tuple[str, str]] = {
     ("google.adk.auth.auth_tool", "AuthConfig"),
     ("google.adk.events.event_actions", "EventActions"),
     ("google.adk.events.event_actions", "EventCompaction"),
+    ("google.adk.events.ui_widget", "UiWidget"),
     ("google.adk.tools.tool_confirmation", "ToolConfirmation"),
     ("google.genai.types", "Blob"),
     ("google.genai.types", "CodeExecutionResult"),

@@ -24,6 +24,7 @@ from fastapi.openapi.models import HTTPBearer
 from google.adk.auth.auth_tool import AuthConfig
 from google.adk.events.event_actions import EventActions
 from google.adk.events.event_actions import EventCompaction
+from google.adk.events.ui_widget import UiWidget
 from google.adk.sessions.migration import _schema_check_utils
 from google.adk.sessions.migration import migrate_from_sqlalchemy_pickle as mfsp
 from google.adk.sessions.schemas import v0
@@ -333,6 +334,24 @@ def test_restricted_actions_unpickler_allows_datetime_state_delta():
 
   assert isinstance(loaded_actions, EventActions)
   assert loaded_actions.state_delta["last_seen"] == last_seen
+
+
+def test_restricted_actions_unpickler_allows_ui_widgets():
+  """Standard UI widget action metadata should migrate by default."""
+  actions = EventActions(
+      render_ui_widgets=[
+          UiWidget(
+              id="widget-1",
+              provider="mcp",
+              payload={"resource_uri": "ui://widget"},
+          )
+      ]
+  )
+
+  loaded_actions = mfsp._restricted_pickle_loads(pickle.dumps(actions))
+
+  assert isinstance(loaded_actions, EventActions)
+  assert loaded_actions.render_ui_widgets == actions.render_ui_widgets
 
 
 def test_migrate_from_sqlalchemy_pickle_ignores_non_object_json_fields():

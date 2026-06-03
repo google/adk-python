@@ -50,8 +50,8 @@ from ...telemetry.tracing import trace_send_data
 from ...telemetry.tracing import tracer
 from ...tools.base_toolset import BaseToolset
 from ...tools.tool_context import ToolContext
-from ...utils.context_utils import Aclosing
 from ...utils import model_name_utils
+from ...utils.context_utils import Aclosing
 from .audio_cache_manager import AudioCacheManager
 from .functions import build_auth_request_event
 
@@ -563,8 +563,8 @@ class BaseLlmFlow(ABC):
           if llm_request.live_connect_config is None:
             llm_request.live_connect_config = types.LiveConnectConfig()
           if llm_request.live_connect_config.history_config is None:
-            llm_request.live_connect_config.history_config = types.HistoryConfig(
-                initial_history_in_client_content=True
+            llm_request.live_connect_config.history_config = (
+                types.HistoryConfig(initial_history_in_client_content=True)
             )
 
         logger.info(
