@@ -242,6 +242,12 @@ class ToolAuthHandler:
             existing_credential = await refresher.refresh(
                 existing_credential, self.auth_scheme
             )
+            # Persist the refreshed credential so the next invocation
+            # reads the new tokens instead of the stale pre-refresh ones.
+            # Without this, providers that rotate refresh_tokens on each
+            # refresh (e.g. Salesforce, many OIDC providers) will fail
+            # because the old refresh_token has already been invalidated.
+            self._store_credential(existing_credential)
         return existing_credential
     return None
 

@@ -28,6 +28,7 @@ if TYPE_CHECKING:
   from ..sessions.state import State
 
 try:
+  from authlib.common.security import generate_token
   from authlib.integrations.requests_client import OAuth2Session
 
   AUTHLIB_AVAILABLE = True
@@ -158,6 +159,8 @@ class AuthHandler:
 
     auth_scheme = self.auth_config.auth_scheme
     auth_credential = self.auth_config.raw_auth_credential
+    if not auth_credential or not auth_credential.oauth2:
+      raise ValueError("raw_auth_credential or oauth2 is empty")
 
     if isinstance(auth_scheme, OpenIdConnectWithConfig):
       authorization_endpoint = auth_scheme.authorization_endpoint
@@ -190,6 +193,7 @@ class AuthHandler:
         auth_credential.oauth2.client_secret,
         scope=" ".join(scopes),
         redirect_uri=auth_credential.oauth2.redirect_uri,
+        code_challenge_method=auth_credential.oauth2.code_challenge_method,
     )
     params = {
         "access_type": "offline",
@@ -197,12 +201,30 @@ class AuthHandler:
     }
     if auth_credential.oauth2.audience:
       params["audience"] = auth_credential.oauth2.audience
+
+    # If using PKCE with S256, ensure a code_verifier exists.
+    # If not provided in the credential, generate a cryptographically secure
+    # random token of 48 characters (OAuth2 recommends 43-128 characters).
+    code_verifier = auth_credential.oauth2.code_verifier
+    method = auth_credential.oauth2.code_challenge_method
+
+    if method:
+      if method != "S256":
+        raise ValueError(
+            f"Unsupported code_challenge_method: {method}. Only 'S256' is"
+            " supported."
+        )
+      if not code_verifier:
+        code_verifier = generate_token(48)
+
     uri, state = client.create_authorization_url(
-        url=authorization_endpoint, **params
+        url=authorization_endpoint, code_verifier=code_verifier, **params
     )
 
     exchanged_auth_credential = auth_credential.model_copy(deep=True)
     exchanged_auth_credential.oauth2.auth_uri = uri
     exchanged_auth_credential.oauth2.state = state
+    if code_verifier:
+      exchanged_auth_credential.oauth2.code_verifier = code_verifier
 
     return exchanged_auth_credential

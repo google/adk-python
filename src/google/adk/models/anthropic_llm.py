@@ -75,20 +75,29 @@ def _build_anthropic_thinking_param(
 ) -> Union[
     anthropic_types.ThinkingConfigEnabledParam,
     anthropic_types.ThinkingConfigDisabledParam,
+    anthropic_types.ThinkingConfigAdaptiveParam,
     NotGiven,
 ]:
   """Maps genai ThinkingConfig to Anthropic's thinking parameter.
 
   Per ``google.genai.types.ThinkingConfig``, ``thinking_budget`` semantics are:
     * ``None``: not specified; the genai default is model-dependent. Anthropic
-      requires an explicit ``budget_tokens`` whenever thinking is enabled, so
-      we surface this as a ``ValueError`` to keep the developer's intent
+      requires an explicit choice whenever thinking is configured, so we
+      surface this as a ``ValueError`` to keep the developer's intent
       explicit (mirroring the Anthropic API).
-    * ``0``: thinking is DISABLED.
-    * ``-1``: AUTOMATIC; not supported by Anthropic models.
-    * positive int: budget in tokens (Anthropic requires ``>= 1024`` and
+    * ``0``: thinking is DISABLED (``thinking.type: "disabled"``).
+    * negative (e.g. ``-1`` AUTOMATIC): maps to Anthropic's adaptive thinking
+      (``thinking.type: "adaptive"``). The model picks the depth itself
+      (controlled by the separate ``output_config.effort`` parameter when
+      set). REQUIRED for Claude Opus 4.7 and later models that reject
+      ``"enabled"`` with a 400 error; also recommended for Opus 4.6 and
+      Sonnet 4.6 where ``"enabled"`` is deprecated.
+    * positive int: budget in tokens for legacy manual mode
+      (``thinking.type: "enabled"``; Anthropic requires ``>= 1024`` and
       ``< max_tokens``; validation is delegated to the Anthropic API so the
-      caller gets the canonical error message).
+      caller gets the canonical error message). Rejected by Claude Opus 4.7
+      -- callers targeting 4.7+ must use a negative value (adaptive) or
+      ``0`` (disabled).
   """
   if not config or not config.thinking_config:
     return NOT_GIVEN
@@ -98,19 +107,22 @@ def _build_anthropic_thinking_param(
   if thinking_budget is None:
     raise ValueError(
         "thinking_budget must be set explicitly when ThinkingConfig is"
-        " provided for Anthropic models. Use 0 to disable thinking, or a"
-        " positive integer (>= 1024) for the token budget."
+        " provided for Anthropic models. Use 0 to disable thinking, -1 for"
+        " adaptive (model-chosen depth), or a positive integer (>= 1024)"
+        " for manual budgeting."
     )
 
   if thinking_budget == 0:
     return anthropic_types.ThinkingConfigDisabledParam(type="disabled")
 
   if thinking_budget < 0:
-    raise ValueError(
-        f"thinking_budget={thinking_budget} is not supported for Anthropic"
-        " models (AUTOMATIC mode is unavailable). Use a positive integer"
-        " (>= 1024) for the token budget, or 0 to disable thinking."
-    )
+    # genai AUTOMATIC (-1) and any other negative value map to Anthropic
+    # adaptive thinking. Required for Claude Opus 4.7 (which returns a 400
+    # error for ``"enabled"``) and recommended for Opus 4.6 / Sonnet 4.6
+    # where ``"enabled"`` is deprecated. Adaptive does not accept a budget;
+    # depth is controlled by the model itself (or by the separate
+    # ``output_config.effort`` parameter when set).
+    return anthropic_types.ThinkingConfigAdaptiveParam(type="adaptive")
 
   return anthropic_types.ThinkingConfigEnabledParam(
       type="enabled",
@@ -156,8 +168,30 @@ def _is_pdf_part(part: types.Part) -> bool:
   )
 
 
-def part_to_message_block(
+class _ToolUseIdSanitizer:
+  """Maps invalid tool_use IDs to deterministic fallbacks.
+
+  Reuse one instance per conversation so a tool_use and its paired
+  tool_result with the same invalid source ID get matching outputs.
+  """
+
+  def __init__(self) -> None:
+    self._mapping: dict[str, str] = {}
+    self._next_fallback: int = 0
+
+  def sanitize(self, tool_id: str | None) -> str:
+    if tool_id and re.fullmatch(r"[a-zA-Z0-9_-]+", tool_id):
+      return tool_id
+    key = tool_id or ""
+    if key not in self._mapping:
+      self._mapping[key] = f"toolu_fallback_{self._next_fallback}"
+      self._next_fallback += 1
+    return self._mapping[key]
+
+
+def _part_to_message_block(
     part: types.Part,
+    sanitizer: _ToolUseIdSanitizer,
 ) -> Union[
     anthropic_types.TextBlockParam,
     anthropic_types.ThinkingBlockParam,
@@ -188,7 +222,7 @@ def part_to_message_block(
     assert part.function_call.name
 
     return anthropic_types.ToolUseBlockParam(
-        id=part.function_call.id or "",
+        id=sanitizer.sanitize(part.function_call.id),
         name=part.function_call.name,
         input=part.function_call.args,
         type="tool_use",
@@ -197,20 +231,27 @@ def part_to_message_block(
     content = ""
     response_data = part.function_response.response
 
-    # Handle response with content array
-    if "content" in response_data and response_data["content"]:
+    if (
+        "content" in response_data
+        and isinstance(response_data["content"], list)
+        and response_data["content"]
+    ):
       content_items = []
       for item in response_data["content"]:
         if isinstance(item, dict):
-          # Handle text content blocks
           if item.get("type") == "text" and "text" in item:
             content_items.append(item["text"])
           else:
-            # Handle other structured content
             content_items.append(str(item))
         else:
           content_items.append(str(item))
       content = "\n".join(content_items) if content_items else ""
+    elif (
+        "content" in response_data
+        and isinstance(response_data["content"], str)
+        and response_data["content"]
+    ):
+      content = response_data["content"]
     # We serialize to str here
     # SDK ref: anthropic.types.tool_result_block_param
     # https://github.com/anthropics/anthropic-sdk-python/blob/main/src/anthropic/types/tool_result_block_param.py
@@ -228,7 +269,7 @@ def part_to_message_block(
       content = json.dumps(response_data)
 
     return anthropic_types.ToolResultBlockParam(
-        tool_use_id=part.function_response.id or "",
+        tool_use_id=sanitizer.sanitize(part.function_response.id),
         type="tool_result",
         content=content,
         is_error=False,
@@ -265,8 +306,9 @@ def part_to_message_block(
   raise NotImplementedError(f"Not supported yet: {part}")
 
 
-def content_to_message_param(
+def _content_to_message_param(
     content: types.Content,
+    sanitizer: _ToolUseIdSanitizer,
 ) -> anthropic_types.MessageParam:
   message_block = []
   for part in content.parts or []:
@@ -282,12 +324,30 @@ def content_to_message_param(
       logger.warning("PDF data is not supported in Claude for assistant turns.")
       continue
 
-    message_block.append(part_to_message_block(part))
+    message_block.append(_part_to_message_block(part, sanitizer))
 
   return {
       "role": to_claude_role(content.role),
       "content": message_block,
   }
+
+
+def part_to_message_block(
+    part: types.Part,
+) -> Union[
+    anthropic_types.TextBlockParam,
+    anthropic_types.ImageBlockParam,
+    anthropic_types.DocumentBlockParam,
+    anthropic_types.ToolUseBlockParam,
+    anthropic_types.ToolResultBlockParam,
+]:
+  return _part_to_message_block(part, _ToolUseIdSanitizer())
+
+
+def content_to_message_param(
+    content: types.Content,
+) -> anthropic_types.MessageParam:
+  return _content_to_message_param(content, _ToolUseIdSanitizer())
 
 
 def content_block_to_part(
@@ -472,8 +532,9 @@ class AnthropicLlm(BaseLlm):
       self, llm_request: LlmRequest, stream: bool = False
   ) -> AsyncGenerator[LlmResponse, None]:
     model_to_use = self._resolve_model_name(llm_request.model)
+    sanitizer = _ToolUseIdSanitizer()
     messages = [
-        content_to_message_param(content)
+        _content_to_message_param(content, sanitizer)
         for content in llm_request.contents or []
     ]
     tools = NOT_GIVEN

@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+import os
 import socket
 from unittest import mock
 
@@ -31,17 +32,9 @@ def _create_response(html: str) -> requests.Response:
 
 
 def _clear_proxy_env(monkeypatch):
-  for proxy_variable in (
-      'HTTP_PROXY',
-      'HTTPS_PROXY',
-      'http_proxy',
-      'https_proxy',
-      'ALL_PROXY',
-      'all_proxy',
-      'NO_PROXY',
-      'no_proxy',
-  ):
-    monkeypatch.delenv(proxy_variable, raising=False)
+  for env_var in list(os.environ):
+    if env_var.lower().endswith('_proxy'):
+      monkeypatch.delenv(env_var, raising=False)
 
 
 def test_load_web_page_blocks_file_scheme_urls(monkeypatch):

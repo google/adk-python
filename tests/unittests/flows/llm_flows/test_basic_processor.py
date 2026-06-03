@@ -188,3 +188,22 @@ class TestBasicLlmRequestProcessor:
 
     # Should have set the model name
     assert llm_request.model == 'gemini-2.5-flash'
+
+  @pytest.mark.asyncio
+  async def test_skips_output_schema_for_task_mode(self):
+    """Test that processor skips output_schema when agent is in task mode."""
+    agent = LlmAgent(
+        name='test_agent',
+        model='gemini-2.5-flash',
+        mode='task',
+        output_schema=OutputSchema,
+    )
+
+    invocation_context = await _create_invocation_context(agent)
+    llm_request = LlmRequest()
+    processor = _BasicLlmRequestProcessor()
+
+    async for _ in processor.run_async(invocation_context, llm_request):
+      pass
+
+    assert llm_request.config.response_schema is None

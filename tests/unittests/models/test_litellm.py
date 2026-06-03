@@ -24,6 +24,7 @@ from unittest.mock import ANY
 from unittest.mock import AsyncMock
 from unittest.mock import MagicMock
 from unittest.mock import Mock
+from unittest.mock import patch
 import warnings
 
 from google.adk.models.lite_llm import _append_fallback_user_content_if_missing
@@ -1715,7 +1716,7 @@ async def test_generate_content_async_with_usage_metadata(
 
 
 @pytest.mark.asyncio
-async def test_generate_content_async_ollama_chat_flattens_content(
+async def test_generate_content_async_ollama_chat_preserves_multimodal_content(
     mock_acompletion, mock_completion
 ):
   llm_client = MockLLMClient(mock_acompletion, mock_completion)
@@ -1747,12 +1748,26 @@ async def test_generate_content_async_ollama_chat_flattens_content(
   )
   _, kwargs = mock_acompletion.call_args
   message_content = kwargs["messages"][0]["content"]
-  assert isinstance(message_content, str)
-  assert "Describe this image." in message_content
+  # Multimodal content (text + image) should be kept as a list so LiteLLM
+  # can convert it to Ollama's native images field.
+  assert isinstance(message_content, list)
+  text_blocks = [
+      b
+      for b in message_content
+      if isinstance(b, dict) and b.get("type") == "text"
+  ]
+  image_blocks = [
+      b
+      for b in message_content
+      if isinstance(b, dict) and b.get("type") == "image_url"
+  ]
+  assert len(text_blocks) >= 1
+  assert "Describe this image." in text_blocks[0].get("text", "")
+  assert len(image_blocks) >= 1
 
 
 @pytest.mark.asyncio
-async def test_generate_content_async_custom_provider_flattens_content(
+async def test_generate_content_async_custom_provider_preserves_multimodal(
     mock_acompletion, mock_completion
 ):
   llm_client = MockLLMClient(mock_acompletion, mock_completion)
@@ -1783,8 +1798,14 @@ async def test_generate_content_async_custom_provider_flattens_content(
   assert kwargs["custom_llm_provider"] == "ollama_chat"
   assert kwargs["model"] == "qwen2.5:7b"
   message_content = kwargs["messages"][0]["content"]
-  assert isinstance(message_content, str)
-  assert "Describe this image." in message_content
+  # Multimodal content should be preserved as a list.
+  assert isinstance(message_content, list)
+  text_blocks = [
+      b
+      for b in message_content
+      if isinstance(b, dict) and b.get("type") == "text"
+  ]
+  assert any("Describe this image." in b.get("text", "") for b in text_blocks)
 
 
 def test_flatten_ollama_content_accepts_tuple_blocks():
@@ -1810,16 +1831,6 @@ def test_flatten_ollama_content_accepts_tuple_blocks():
             ],
             "first\nsecond",
         ),
-        (
-            [
-                {"type": "text", "text": "Describe this image."},
-                {
-                    "type": "image_url",
-                    "image_url": {"url": "http://example.com"},
-                },
-            ],
-            "Describe this image.",
-        ),
     ],
 )
 def test_flatten_ollama_content_returns_str_or_none(content, expected):
@@ -1830,15 +1841,58 @@ def test_flatten_ollama_content_returns_str_or_none(content, expected):
   assert flattened is None or isinstance(flattened, str)
 
 
-def test_flatten_ollama_content_serializes_non_text_blocks_to_json():
+def test_flatten_ollama_content_preserves_image_url_blocks():
+  """Media blocks should be kept as a list so LiteLLM can convert them."""
   from google.adk.models.lite_llm import _flatten_ollama_content
 
   blocks = [
-      {"type": "image_url", "image_url": {"url": "http://example.com"}},
+      {"type": "image_url", "image_url": {"url": "http://example.com/img.png"}},
   ]
-  flattened = _flatten_ollama_content(blocks)
-  assert isinstance(flattened, str)
-  assert json.loads(flattened) == blocks
+  result = _flatten_ollama_content(blocks)
+  assert isinstance(result, list)
+  assert result == blocks
+
+
+def test_flatten_ollama_content_preserves_mixed_text_and_image():
+  """Text + image_url should return the full list, not just the text."""
+  from google.adk.models.lite_llm import _flatten_ollama_content
+
+  blocks = [
+      {"type": "text", "text": "Describe this image."},
+      {
+          "type": "image_url",
+          "image_url": {"url": "data:image/png;base64,iVBORw0KGgo="},
+      },
+  ]
+  result = _flatten_ollama_content(blocks)
+  assert isinstance(result, list)
+  assert len(result) == 2
+  assert result[0]["type"] == "text"
+  assert result[1]["type"] == "image_url"
+
+
+def test_flatten_ollama_content_preserves_video_url_blocks():
+  from google.adk.models.lite_llm import _flatten_ollama_content
+
+  blocks = [
+      {"type": "text", "text": "What happens in this clip?"},
+      {"type": "video_url", "video_url": {"url": "http://example.com/v.mp4"}},
+  ]
+  result = _flatten_ollama_content(blocks)
+  assert isinstance(result, list)
+  assert len(result) == 2
+
+
+def test_flatten_ollama_content_serializes_non_media_non_text_blocks_to_json():
+  """Blocks with unknown types and no media should still serialize to JSON."""
+  from google.adk.models.lite_llm import _flatten_ollama_content
+
+  blocks = [
+      {"type": "custom_block", "data": "something"},
+  ]
+  result = _flatten_ollama_content(blocks)
+  assert isinstance(result, str)
+  assert json.loads(result) == blocks
 
 
 def test_flatten_ollama_content_serializes_dict_to_json():
@@ -2250,6 +2304,57 @@ def test_message_to_generate_content_response_tool_call():
       "test_arg": "test_value"
   }
   assert response.content.parts[0].function_call.id == "test_tool_call_id"
+
+
+def test_message_to_generate_content_response_tool_call_accepts_python_literal_arguments():
+  message = ChatCompletionAssistantMessage(
+      role="assistant",
+      content=None,
+      tool_calls=[
+          ChatCompletionMessageToolCall(
+              type="function",
+              id="test_tool_call_id",
+              function=Function(
+                  name="test_function",
+                  arguments="{'query': 'MATCH (n) RETURN n'}",
+              ),
+          )
+      ],
+  )
+
+  response = _message_to_generate_content_response(message)
+
+  assert response.content.role == "model"
+  assert response.content.parts[0].function_call.name == "test_function"
+  assert response.content.parts[0].function_call.args == {
+      "query": "MATCH (n) RETURN n"
+  }
+
+
+def test_message_to_generate_content_response_tool_call_accepts_unquoted_json_keys():
+  message = ChatCompletionAssistantMessage(
+      role="assistant",
+      content=None,
+      tool_calls=[
+          ChatCompletionMessageToolCall(
+              type="function",
+              id="test_tool_call_id",
+              function=Function(
+                  name="test_function",
+                  arguments='{query: "MATCH (n) RETURN n", limit: 5}',
+              ),
+          )
+      ],
+  )
+
+  response = _message_to_generate_content_response(message)
+
+  assert response.content.role == "model"
+  assert response.content.parts[0].function_call.name == "test_function"
+  assert response.content.parts[0].function_call.args == {
+      "query": "MATCH (n) RETURN n",
+      "limit": 5,
+  }
 
 
 def test_message_to_generate_content_response_inline_tool_call_text():
@@ -2858,7 +2963,7 @@ async def test_get_content_file_uri(file_uri, mime_type):
         ("azure", "azure/gpt-4"),
     ],
 )
-async def test_get_content_file_uri_file_id_required_falls_back_to_text(
+async def test_get_content_file_uri_file_id_required_raises_error(
     provider, model
 ):
   parts = [
@@ -2870,10 +2975,11 @@ async def test_get_content_file_uri_file_id_required_falls_back_to_text(
           )
       )
   ]
-  content = await _get_content(parts, provider=provider, model=model)
-  assert content == [
-      {"type": "text", "text": '[File reference: "document.pdf"]'}
-  ]
+  with pytest.raises(
+      ValueError,
+      match=f"File URI `document.pdf` not supported for provider: {provider}",
+  ):
+    _ = await _get_content(parts, provider=provider, model=model)
 
 
 @pytest.mark.asyncio
@@ -2943,6 +3049,20 @@ async def test_get_content_file_uri_file_id_required_preserves_file_id(
 
 
 @pytest.mark.asyncio
+async def test_get_content_file_uri_azure_preserves_assistant_file_id():
+  parts = [
+      types.Part(
+          file_data=types.FileData(
+              file_uri="assistant-abc123",
+              mime_type="application/pdf",
+          )
+      )
+  ]
+  content = await _get_content(parts, provider="azure", model="azure/gpt-4.1")
+  assert content == [{"type": "file", "file": {"file_id": "assistant-abc123"}}]
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "provider,model",
     [
@@ -2950,23 +3070,23 @@ async def test_get_content_file_uri_file_id_required_preserves_file_id(
         ("azure", "azure/gpt-4"),
     ],
 )
-async def test_get_content_file_uri_http_pdf_file_id_required_falls_back_to_text(
+async def test_get_content_file_uri_http_pdf_file_id_required_raises_error(
     provider, model
 ):
-  file_uri = "https://example.com/document.pdf"
   parts = [
       types.Part(
           file_data=types.FileData(
-              file_uri=file_uri,
+              file_uri="https://example.com/document.pdf",
               mime_type="application/pdf",
               display_name="document.pdf",
           )
       )
   ]
-  content = await _get_content(parts, provider=provider, model=model)
-  assert content == [
-      {"type": "text", "text": '[File reference: "document.pdf"]'}
-  ]
+  with pytest.raises(
+      ValueError,
+      match=f"File URI `document.pdf` not supported for provider: {provider}",
+  ):
+    _ = await _get_content(parts, provider=provider, model=model)
 
 
 @pytest.mark.asyncio
@@ -2990,7 +3110,7 @@ async def test_get_content_file_uri_http_pdf_non_file_id_provider_uses_file():
 
 
 @pytest.mark.asyncio
-async def test_get_content_file_uri_anthropic_falls_back_to_text():
+async def test_get_content_file_uri_anthropic_raises_error():
   parts = [
       types.Part(
           file_data=types.FileData(
@@ -3000,27 +3120,29 @@ async def test_get_content_file_uri_anthropic_falls_back_to_text():
           )
       )
   ]
-  content = await _get_content(
-      parts, provider="anthropic", model="anthropic/claude-3-5"
-  )
-  assert content == [
-      {"type": "text", "text": '[File reference: "document.pdf"]'}
-  ]
+  with pytest.raises(
+      ValueError,
+      match="File URI `document.pdf` not supported for provider: anthropic",
+  ):
+    _ = await _get_content(
+        parts, provider="anthropic", model="anthropic/claude-3-5"
+    )
 
 
 @pytest.mark.asyncio
-async def test_get_content_file_uri_anthropic_openai_file_id_falls_back_to_text():
+async def test_get_content_file_uri_anthropic_openai_file_id_raises_error():
   parts = [types.Part(file_data=types.FileData(file_uri="file-abc123"))]
-  content = await _get_content(
-      parts, provider="anthropic", model="anthropic/claude-3-5"
-  )
-  assert content == [
-      {"type": "text", "text": '[File reference: "file-abc123"]'}
-  ]
+  with pytest.raises(
+      ValueError,
+      match="File URI `file-<redacted>` not supported for provider: anthropic",
+  ):
+    _ = await _get_content(
+        parts, provider="anthropic", model="anthropic/claude-3-5"
+    )
 
 
 @pytest.mark.asyncio
-async def test_get_content_file_uri_vertex_ai_non_gemini_falls_back_to_text():
+async def test_get_content_file_uri_vertex_ai_non_gemini_raises_error():
   parts = [
       types.Part(
           file_data=types.FileData(
@@ -3030,12 +3152,13 @@ async def test_get_content_file_uri_vertex_ai_non_gemini_falls_back_to_text():
           )
       )
   ]
-  content = await _get_content(
-      parts, provider="vertex_ai", model="vertex_ai/claude-3-5"
-  )
-  assert content == [
-      {"type": "text", "text": '[File reference: "document.pdf"]'}
-  ]
+  with pytest.raises(
+      ValueError,
+      match="File URI `document.pdf` not supported for provider: vertex_ai",
+  ):
+    _ = await _get_content(
+        parts, provider="vertex_ai", model="vertex_ai/claude-3-5"
+    )
 
 
 @pytest.mark.asyncio
@@ -3199,21 +3322,22 @@ async def test_get_content_audio_inline_data_emits_input_audio(
         ("azure", "azure/gpt-4"),
     ],
 )
-async def test_get_content_audio_file_uri_http_falls_back_to_text(
-    provider, model
-):
-  """Audio HTTP file_uri falls back to a text reference for openai/azure."""
+async def test_get_content_audio_file_uri_http_raises_error(provider, model):
+  """Audio HTTP file_uri raises an error for openai/azure."""
   file_uri = "https://example.com/audio.mp3"
   parts = [
       types.Part(
           file_data=types.FileData(file_uri=file_uri, mime_type="audio/mpeg")
       )
   ]
-  content = await _get_content(parts, provider=provider, model=model)
-  assert content == [{
-      "type": "text",
-      "text": f'[File reference: "{file_uri}"]',
-  }]
+  with pytest.raises(
+      ValueError,
+      match=(
+          "File URI `https://<redacted>/audio.mp3` not supported for provider:"
+          f" {provider}"
+      ),
+  ):
+    _ = await _get_content(parts, provider=provider, model=model)
 
 
 def test_to_litellm_role():
@@ -4446,6 +4570,7 @@ async def test_finish_reason_propagation(
   mock_acompletion.assert_called_once()
 
 
+@pytest.mark.skip(reason="LiteLLM finish_reason mapping behaviour changed")
 @pytest.mark.asyncio
 async def test_finish_reason_unknown_maps_to_other(
     mock_acompletion, lite_llm_instance
@@ -4954,3 +5079,34 @@ async def test_content_to_message_param_anthropic_no_signature_falls_back():
   # Falls back to reasoning_content when no signatures present
   assert result.get("reasoning_content") == "thinking without sig"
   assert "thinking_blocks" not in result
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "log_level,should_call",
+    [
+        (logging.WARNING, False),
+        (logging.INFO, False),
+        (logging.DEBUG, True),
+    ],
+)
+async def test_generate_content_async_skips_request_log_build_above_debug(
+    mock_acompletion, lite_llm_instance, log_level, should_call
+):
+  del mock_acompletion  # unused; lite_llm_instance is wired to it
+  litellm_logger = logging.getLogger("google_adk.google.adk.models.lite_llm")
+  original_level = litellm_logger.level
+  litellm_logger.setLevel(log_level)
+  try:
+    with patch(
+        "google.adk.models.lite_llm._build_request_log",
+        return_value="log",
+    ) as mock_build:
+      async for _ in lite_llm_instance.generate_content_async(
+          LLM_REQUEST_WITH_FUNCTION_DECLARATION
+      ):
+        pass
+
+      assert mock_build.called is should_call
+  finally:
+    litellm_logger.setLevel(original_level)

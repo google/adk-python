@@ -19,6 +19,7 @@ from google.adk.agents.context_cache_config import ContextCacheConfig
 from google.adk.apps.app import App
 from google.adk.apps.app import ResumabilityConfig
 from google.adk.plugins.base_plugin import BasePlugin
+from google.adk.workflow._base_node import BaseNode
 import pytest
 
 
@@ -183,14 +184,42 @@ class TestApp:
     with pytest.raises(ValueError):
       App(name="windows\\path", root_agent=mock_agent)
 
-  def test_app_name_must_be_identifier(self):
+  def test_app_name_must_be_valid(self):
     mock_agent = Mock(spec=BaseAgent)
 
+    # Hyphens are allowed
+    App(name="valid-name", root_agent=mock_agent)
+
     with pytest.raises(ValueError):
-      App(name="invalid-name", root_agent=mock_agent)
+      App(name="invalid name", root_agent=mock_agent)
+
+    with pytest.raises(ValueError):
+      App(name="invalid@name", root_agent=mock_agent)
 
   def test_app_name_cannot_be_user(self):
     mock_agent = Mock(spec=BaseAgent)
 
     with pytest.raises(ValueError):
       App(name="user", root_agent=mock_agent)
+
+
+class TestAppRootNode:
+  """Tests for App.root_agent accepting BaseNode."""
+
+  def test_app_with_root_node(self):
+    """Test App creation with a BaseNode as root_agent."""
+    node = BaseNode(name="test_node")
+    app = App(name="test_app", root_agent=node)
+    assert app.root_agent is node
+
+  def test_app_rejects_none_root_agent(self):
+    """Test that not providing root_agent raises."""
+    with pytest.raises(ValueError, match="root_agent must be provided"):
+      App(name="test_app")
+
+  def test_app_rejects_invalid_root_agent(self):
+    """Test that root_agent must be a BaseAgent or BaseNode instance."""
+    with pytest.raises(
+        TypeError, match="root_agent must be a BaseAgent or BaseNode"
+    ):
+      App(name="test_app", root_agent="not_a_node")
