@@ -75,7 +75,7 @@ def _build_skill_system_instruction(prefix: str | None = None) -> str:
       "- **scripts/** (Optional): Executable scripts that can be run via "
       "bash.\n\n"
       "This is very important:\n\n"
-      f"1. If a skill seems relevant to the current user query, you MUST use "
+      "1. If a skill seems relevant to the current user query, you MUST use "
       f'the `{p}load_skill` tool with `skill_name="<SKILL_NAME>"` to read '
       "its full instructions before proceeding.\n"
       "2. Once you have read the instructions, follow them exactly as "
@@ -663,7 +663,10 @@ class _SkillScriptCodeExecutor:
         "    for rel_path, content in _files.items():",
         "      norm_rel = os.path.normpath(rel_path)",
         "      if norm_rel.startswith('..') or os.path.isabs(norm_rel):",
-        "        raise PermissionError('Path traversal blocked in skill file: ' + rel_path)",
+        (
+            "        raise PermissionError('Path traversal blocked in skill"
+            " file: ' + rel_path)"
+        ),
         "      full_path = os.path.join(os.path.abspath(td), norm_rel)",
         "      os.makedirs(os.path.dirname(full_path), exist_ok=True)",
         "      mode = 'wb' if isinstance(content, bytes) else 'w'",

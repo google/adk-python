@@ -168,33 +168,31 @@ class TestBuildWrapperCodePathTraversal:
     script_executor = skill_toolset._SkillScriptCodeExecutor(
         mock_skill_with_traversal_paths, executor
     )
-    code = script_executor._build_wrapper_code("exploit.py")
+    code = script_executor._build_wrapper_code(
+        mock_skill_with_traversal_paths, "exploit.py", None
+    )
 
     # Verify the generated code contains path traversal protection
-    assert "normpath" in code, (
-        "Generated code must normalize paths with os.path.normpath()"
-    )
-    assert "startswith('..')" in code, (
-        "Generated code must check for parent directory traversal"
-    )
-    assert "isabs" in code, (
-        "Generated code must check for absolute paths"
-    )
-    assert "PermissionError" in code, (
-        "Generated code must raise PermissionError on traversal"
-    )
+    assert (
+        "normpath" in code
+    ), "Generated code must normalize paths with os.path.normpath()"
+    assert (
+        "startswith('..')" in code
+    ), "Generated code must check for parent directory traversal"
+    assert "isabs" in code, "Generated code must check for absolute paths"
+    assert (
+        "PermissionError" in code
+    ), "Generated code must raise PermissionError on traversal"
 
   def test_safe_paths_pass_validation(self, safe_skill):
     """Verify that legitimate paths (including subdirectories) still work."""
     executor = _make_mock_executor(stdout="hello\n")
-    toolset = skill_toolset.SkillToolset(
-        [safe_skill], code_executor=executor
-    )
+    toolset = skill_toolset.SkillToolset([safe_skill], code_executor=executor)
 
     script_executor = skill_toolset._SkillScriptCodeExecutor(
         safe_skill, executor
     )
-    code = script_executor._build_wrapper_code("run.py")
+    code = script_executor._build_wrapper_code(safe_skill, "run.py", None)
 
     # The code should contain the safe file paths
     assert "doc.md" in code
@@ -214,9 +212,7 @@ class TestBuildWrapperCodePathTraversal:
       try:
         exec(code, {"__builtins__": __builtins__})
       except PermissionError as e:
-        return CodeExecutionResult(
-            stdout="", stderr=f"PermissionError: {e}"
-        )
+        return CodeExecutionResult(stdout="", stderr=f"PermissionError: {e}")
       return CodeExecutionResult(stdout="success", stderr="")
 
     executor.execute_code.side_effect = execute_side_effect
@@ -246,9 +242,7 @@ class TestBuildWrapperCodePathTraversal:
     executor = _make_mock_executor()
 
     # Override to inject a traversal path
-    safe_skill.resources.list_references.return_value = [
-        "../../etc/shadow"
-    ]
+    safe_skill.resources.list_references.return_value = ["../../etc/shadow"]
     safe_skill.resources.get_reference.side_effect = (
         lambda name: "shadow content"
     )
@@ -256,7 +250,7 @@ class TestBuildWrapperCodePathTraversal:
     script_executor = skill_toolset._SkillScriptCodeExecutor(
         safe_skill, executor
     )
-    code = script_executor._build_wrapper_code("run.py")
+    code = script_executor._build_wrapper_code(safe_skill, "run.py", None)
 
     # The files dict in the generated code should contain the malicious path
     assert "../../etc/shadow" in code
@@ -269,14 +263,12 @@ class TestBuildWrapperCodePathTraversal:
     executor = _make_mock_executor()
 
     safe_skill.resources.list_assets.return_value = ["/etc/passwd"]
-    safe_skill.resources.get_asset.side_effect = (
-        lambda name: "root:x:0:0:root"
-    )
+    safe_skill.resources.get_asset.side_effect = lambda name: "root:x:0:0:root"
 
     script_executor = skill_toolset._SkillScriptCodeExecutor(
         safe_skill, executor
     )
-    code = script_executor._build_wrapper_code("run.py")
+    code = script_executor._build_wrapper_code(safe_skill, "run.py", None)
 
     # The validation should check for absolute paths
     assert "isabs" in code
