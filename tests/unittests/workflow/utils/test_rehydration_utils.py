@@ -17,7 +17,9 @@ from __future__ import annotations
 from google.adk.events.event import Event
 from google.adk.events.event import NodeInfo
 from google.adk.events.request_input import RequestInput
+from google.adk.workflow._base_node import BaseNode
 from google.adk.workflow.utils._rehydration_utils import _ChildScanState
+from google.adk.workflow.utils._rehydration_utils import _process_rehydrated_output
 from google.adk.workflow.utils._rehydration_utils import _reconstruct_node_states
 from google.adk.workflow.utils._rehydration_utils import _unwrap_response
 from google.adk.workflow.utils._rehydration_utils import _validate_resume_response
@@ -101,6 +103,84 @@ class TestUnwrapResponse:
     """Dicts are not wrapped, so unwrap is a no-op."""
     d = {"foo": "bar"}
     assert _unwrap_response(_wrap_response(d)) == d
+
+
+# --- _process_content_object ---
+
+
+class TestProcessRehydratedOutput:
+
+  def test_extracts_plain_text_without_schema(self):
+    node = BaseNode(name="dummy")
+    content = types.Content(parts=[types.Part(text="hello world")])
+    assert _process_rehydrated_output(node, content) == "hello world"
+
+  def test_returns_plain_text_even_if_json_when_no_schema(self):
+    node = BaseNode(name="dummy")
+    content = types.Content(parts=[types.Part(text='{"foo": "bar"}')])
+    assert _process_rehydrated_output(node, content) == '{"foo": "bar"}'
+
+  def test_parses_json_text_with_output_schema(self):
+    class MySchema(BaseModel):
+      foo: str
+
+    node = BaseNode(name="dummy", output_schema=MySchema)
+    content = types.Content(parts=[types.Part(text='{"foo": "bar"}')])
+    assert _process_rehydrated_output(node, content) == {"foo": "bar"}
+
+  def test_joins_multiple_parts(self):
+    node = BaseNode(name="dummy")
+    content = types.Content(
+        parts=[types.Part(text="hello "), types.Part(text="world")]
+    )
+    assert _process_rehydrated_output(node, content) == "hello world"
+
+  def test_filters_thought_parts(self):
+    class MySchema(BaseModel):
+      answer: int
+
+    node = BaseNode(name="dummy", output_schema=MySchema)
+    content = types.Content(
+        parts=[
+            types.Part(text="thinking...", thought=True),
+            types.Part(text='{"answer": 42}'),
+        ]
+    )
+    assert _process_rehydrated_output(node, content) == {"answer": 42}
+
+  def test_returns_none_for_empty_text(self):
+    node = BaseNode(name="dummy")
+    content = types.Content(parts=[types.Part(text="  ")])
+    assert _process_rehydrated_output(node, content) is None
+
+  def test_gracefully_falls_back_on_schema_mismatch(self, caplog):
+    class MySchema(BaseModel):
+      foo: str
+      bar: int  # Required field that is missing in the stored output
+
+    node = BaseNode(name="dummy", output_schema=MySchema)
+    content = types.Content(parts=[types.Part(text='{"foo": "only"}')])
+
+    # Should NOT raise ValueError, but fallback to unvalidated parsed dict
+    res = _process_rehydrated_output(node, content)
+    assert res == {"foo": "only"}
+    assert (
+        "Validation failed for rehydrated output against schema" in caplog.text
+    )
+
+  def test_raises_value_error_if_not_valid_json_on_schema_mismatch(self):
+    class MySchema(BaseModel):
+      foo: str
+
+    node = BaseNode(name="dummy", output_schema=MySchema)
+    content = types.Content(parts=[types.Part(text="invalid json")])
+
+    # Should raise ValueError because it's not valid JSON
+    with pytest.raises(
+        ValueError,
+        match="Validation failed for rehydrated output against schema",
+    ):
+      _process_rehydrated_output(node, content)
 
 
 # --- _validate_resume_response ---

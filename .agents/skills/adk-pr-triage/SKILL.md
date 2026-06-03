@@ -169,10 +169,12 @@ If the user selects **Local Review**, run the following structured sequence:
        git reset --soft $(git merge-base HEAD origin/main)
        git commit --author="$ORIG_AUTHOR" -m "<PR message>"
        ```
-   * Append `"Merge <PR link>"` to the very end of the commit message (separated by a blank line). Use this elegant shell command to do it in one-shot:
+   * Append `"Merge <PR link>"` to the very end of the commit message (separated by a blank line). If the PR metadata contains linked issues in `closingIssuesReferences`, you MUST also append `"closes https://github.com/google/adk-python/issues/<issue_number>"` for each linked issue on new lines. Use this shell command structure to do it in one-shot:
      ```bash
      git commit --amend -m "$(git log -1 --pretty=%B)
-     Merge https://github.com/google/adk-python/pull/<pr_number>"
+
+     Merge https://github.com/google/adk-python/pull/<pr_number>
+     closes https://github.com/google/adk-python/issues/<issue_number>"
      ```
    * *Note*: When you run git commit/amend, the Gerrit `commit-msg` hook will automatically execute and append the `Change-Id:` footprint if not already present.
 4. **Step 3: Rebase on top of Main**:
@@ -185,7 +187,7 @@ If the user selects **Local Review**, run the following structured sequence:
    * Follow its comprehensive guidelines to audit edge cases, style compliance, dependencies, and test validation. Work in partnership with the user to revise the local changes as needed.
 6. **Step 5: Squash User Revisions & Push to Gerrit**:
    * If the user requests to push to Gerrit, squash/amend all local workspace revisions into the single original commit:
-     * **CRITICAL**: You MUST preserve the exact same commit message, including the `Merge <PR link>` footer and the original `Change-Id:` footer. Do NOT change it.
+     * **CRITICAL**: You MUST preserve the exact same commit message, including the `Merge <PR link>` footer, any `closes <Issue link>` footers, and the original `Change-Id:` footer. Do NOT change it.
      * Command to squash all changes into the current commit without opening an editor:
        ```bash
        git commit -a --amend --no-edit
