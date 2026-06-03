@@ -106,7 +106,11 @@ def _sanitize_schema_type(
 def _dereference_schema(schema: dict[str, Any]) -> dict[str, Any]:
   """Resolves $ref pointers in a JSON schema."""
 
-  defs = schema.get("$defs", {})
+  defs = {}
+  if isinstance(schema.get("definitions"), dict):
+    defs.update(schema["definitions"])
+  if isinstance(schema.get("$defs"), dict):
+    defs.update(schema["$defs"])
 
   def _resolve_refs(sub_schema: Any, path_refs: frozenset[str]) -> Any:
     if isinstance(sub_schema, dict):
@@ -151,6 +155,8 @@ def _dereference_schema(schema: dict[str, Any]) -> dict[str, Any]:
   # Remove the definitions block after resolving.
   if "$defs" in dereferenced_schema:
     del dereferenced_schema["$defs"]
+  if "definitions" in dereferenced_schema:
+    del dereferenced_schema["definitions"]
   return dereferenced_schema
 
 

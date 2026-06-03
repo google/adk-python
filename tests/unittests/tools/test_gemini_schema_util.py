@@ -337,6 +337,55 @@ class TestToGeminiSchema:
     ]
     assert gemini_schema.properties["payload"].required == ["adDomain"]
 
+  def test_to_gemini_schema_nested_dict_with_draft07_definitions_and_ref(self):
+    openapi_schema = {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "definitions": {
+            "DeviceEnum": {
+                "enum": ["GLOBAL", "desktop", "mobile"],
+                "type": "string",
+            },
+            "DomainPayload": {
+                "properties": {
+                    "adDomain": {
+                        "items": {"type": "string"},
+                        "type": "array",
+                    },
+                    "device": {
+                        "$ref": "#/definitions/DeviceEnum",
+                        "default": "GLOBAL",
+                    },
+                },
+                "required": ["adDomain"],
+                "type": "object",
+            },
+        },
+        "properties": {"payload": {"$ref": "#/definitions/DomainPayload"}},
+        "required": ["payload"],
+        "type": "object",
+    }
+    gemini_schema = _to_gemini_schema(openapi_schema)
+    assert gemini_schema.type == Type.OBJECT
+    assert gemini_schema.properties["payload"].type == Type.OBJECT
+    assert (
+        gemini_schema.properties["payload"].properties["adDomain"].type
+        == Type.ARRAY
+    )
+    assert (
+        gemini_schema.properties["payload"].properties["adDomain"].items.type
+        == Type.STRING
+    )
+    assert (
+        gemini_schema.properties["payload"].properties["device"].type
+        == Type.STRING
+    )
+    assert gemini_schema.properties["payload"].properties["device"].enum == [
+        "GLOBAL",
+        "desktop",
+        "mobile",
+    ]
+    assert gemini_schema.properties["payload"].required == ["adDomain"]
+
   def test_sanitize_integer_formats(self):
     """Test that int32 and int64 formats are preserved for integer types"""
     openapi_schema = {
