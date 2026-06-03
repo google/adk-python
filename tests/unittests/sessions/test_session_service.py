@@ -30,6 +30,7 @@ from google.adk.sessions.base_session_service import GetSessionConfig
 from google.adk.sessions.database_session_service import DatabaseSessionService
 from google.adk.sessions.in_memory_session_service import InMemorySessionService
 from google.adk.sessions.sqlite_session_service import SqliteSessionService
+from google.adk.sessions.vertex_ai_session_service import VertexAiSessionService
 from google.genai import types
 import pytest
 from sqlalchemy import delete
@@ -1650,3 +1651,122 @@ async def test_append_event_locks_only_scopes_with_deltas(
   finally:
     database_session_service._select_required_state = original_fn
     await service.close()
+
+
+@pytest.mark.asyncio
+async def test_get_user_state_returns_empty_dict_when_no_state_exists(
+    session_service,
+):
+  state = await session_service.get_user_state(app_name='my_app', user_id='u1')
+  assert state == {}
+
+
+@pytest.mark.asyncio
+async def test_get_user_state_returns_state_written_via_append_event(
+    session_service,
+):
+  session = await session_service.create_session(
+      app_name='my_app', user_id='u1'
+  )
+  await session_service.append_event(
+      session,
+      Event(
+          author='system',
+          actions=EventActions(
+              state_delta={'user:profile': {'name': 'Alice'}, 'session_key': 1}
+          ),
+      ),
+  )
+
+  state = await session_service.get_user_state(app_name='my_app', user_id='u1')
+
+  assert state == {'profile': {'name': 'Alice'}}
+  assert 'session_key' not in state
+
+
+@pytest.mark.asyncio
+async def test_get_user_state_is_not_visible_across_users(session_service):
+  session = await session_service.create_session(
+      app_name='my_app', user_id='u1'
+  )
+  await session_service.append_event(
+      session,
+      Event(
+          author='system',
+          actions=EventActions(state_delta={'user:secret': 'only-for-u1'}),
+      ),
+  )
+
+  other_state = await session_service.get_user_state(
+      app_name='my_app', user_id='u2'
+  )
+  assert other_state == {}
+
+
+@pytest.mark.asyncio
+async def test_get_user_state_is_not_visible_across_apps(session_service):
+  session = await session_service.create_session(
+      app_name='my_app', user_id='u1'
+  )
+  await session_service.append_event(
+      session,
+      Event(
+          author='system',
+          actions=EventActions(state_delta={'user:data': 'only-app-a'}),
+      ),
+  )
+
+  other_state = await session_service.get_user_state(
+      app_name='other_app', user_id='u1'
+  )
+  assert other_state == {}
+
+
+@pytest.mark.asyncio
+async def test_get_user_state_available_before_session_is_created(
+    session_service,
+):
+  first_session = await session_service.create_session(
+      app_name='my_app', user_id='u1'
+  )
+  await session_service.append_event(
+      first_session,
+      Event(
+          author='system',
+          actions=EventActions(state_delta={'user:ctx': {'v': 1}}),
+      ),
+  )
+
+  state = await session_service.get_user_state(app_name='my_app', user_id='u1')
+  assert state == {'ctx': {'v': 1}}
+
+
+@pytest.mark.asyncio
+async def test_get_user_state_reflects_latest_write(session_service):
+  session = await session_service.create_session(
+      app_name='my_app', user_id='u1'
+  )
+  await session_service.append_event(
+      session,
+      Event(
+          author='system',
+          actions=EventActions(state_delta={'user:counter': 1}),
+      ),
+  )
+  await session_service.append_event(
+      session,
+      Event(
+          author='system',
+          actions=EventActions(state_delta={'user:counter': 2}),
+      ),
+  )
+
+  state = await session_service.get_user_state(app_name='my_app', user_id='u1')
+  assert state['counter'] == 2
+
+
+@pytest.mark.asyncio
+async def test_vertex_ai_session_service_raises_not_implemented_for_get_user_state():
+  service = VertexAiSessionService(project='proj', location='us-central1')
+  with pytest.raises(NotImplementedError):
+    await service.get_user_state(app_name='my_app', user_id='u1')

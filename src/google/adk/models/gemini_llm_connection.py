@@ -80,10 +80,24 @@ class GeminiLlmConnection(BaseLlmConnection):
     ]
 
     if contents:
+      is_gemini_31 = model_name_utils.is_gemini_3_1_flash_live(
+          self._model_version
+      )
+      # Gemini Enterprise Agent Platform does not support history_config in the SDK.
+      # To initialize a live session with prior history without hitting a 1007
+      # protocol error (invalid role mid-session), we consolidate previous multi-turn
+      # interactions into a unified contextual preamble on a single user role turn.
+      if is_gemini_31 and self._api_backend != GoogleLLMVariant.GEMINI_API:
+        collapsed_text = "Previous conversation history:\n"
+        for c in contents:
+          text_parts = "".join(p.text for p in c.parts if p.text)
+          collapsed_text += f'[{c.role}]: {text_parts}\n'
+        contents = [types.Content(role='user', parts=[types.Part.from_text(text=collapsed_text)])]
+
       logger.debug('Sending history to live connection: %s', contents)
       await self._gemini_session.send_client_content(
           turns=contents,
-          turn_complete=contents[-1].role == 'user',
+          turn_complete=True if is_gemini_31 else (contents[-1].role == 'user'),
       )
     else:
       logger.info('no content is sent')
@@ -159,7 +173,12 @@ class GeminiLlmConnection(BaseLlmConnection):
     else:
       raise ValueError('Unsupported input type: %s' % type(input))
 
-  def __build_full_text_response(self, text: str, is_thought: bool = False):
+  def __build_full_text_response(
+      self,
+      text: str,
+      is_thought: bool = False,
+      grounding_metadata: types.GroundingMetadata | None = None,
+  ):
     """Builds a full text response.
 
     The text should not be partial and the returned LlmResponse is not
@@ -168,6 +187,7 @@ class GeminiLlmConnection(BaseLlmConnection):
     Args:
       text: The text to be included in the response.
       is_thought: Whether the text is a thought.
+      grounding_metadata: The grounding metadata to include.
 
     Returns:
       An LlmResponse containing the full text.
@@ -180,6 +200,7 @@ class GeminiLlmConnection(BaseLlmConnection):
             role='model',
             parts=[part],
         ),
+        grounding_metadata=grounding_metadata,
         partial=False,
         live_session_id=self._gemini_session.session_id,
     )
@@ -194,6 +215,7 @@ class GeminiLlmConnection(BaseLlmConnection):
     text = ''
     is_thought = False
     tool_call_parts = []
+    pending_grounding_metadata = None
     async with Aclosing(self._gemini_session.receive()) as agen:
       # TODO(b/440101573): Reuse StreamingResponseAggregator to accumulate
       # partial content and emit responses as needed.
@@ -209,6 +231,10 @@ class GeminiLlmConnection(BaseLlmConnection):
           )
         if message.server_content:
           content = message.server_content.model_turn
+          if message.server_content.grounding_metadata:
+            pending_grounding_metadata = (
+                message.server_content.grounding_metadata
+            )
 
           # Standalone grounding_metadata event (when content is empty)
           if (
@@ -221,6 +247,9 @@ class GeminiLlmConnection(BaseLlmConnection):
                 interrupted=message.server_content.interrupted,
                 model_version=self._model_version,
                 live_session_id=live_session_id,
+                turn_complete_reason=getattr(
+                    message.server_content, 'turn_complete_reason', None
+                ),
             )
 
           if content and content.parts:
@@ -229,6 +258,9 @@ class GeminiLlmConnection(BaseLlmConnection):
                 interrupted=message.server_content.interrupted,
                 model_version=self._model_version,
                 live_session_id=live_session_id,
+                turn_complete_reason=getattr(
+                    message.server_content, 'turn_complete_reason', None
+                ),
             )
             # grounding_metadata is yielded again at turn_complete,
             # so avoid duplicating it here if turn_complete is true.
@@ -236,18 +268,20 @@ class GeminiLlmConnection(BaseLlmConnection):
               llm_response.grounding_metadata = (
                   message.server_content.grounding_metadata
               )
-            if content.parts[0].text:
-              current_is_thought = getattr(content.parts[0], 'thought', False)
-              if text and current_is_thought != is_thought:
-                yield self.__build_full_text_response(text, is_thought)
-                text = ''
-                is_thought = False
+            has_inline_data = any(p.inline_data for p in content.parts)
+            for part in content.parts:
+              if part.text:
+                current_is_thought = getattr(part, 'thought', False)
+                if text and current_is_thought != is_thought:
+                  yield self.__build_full_text_response(text, is_thought)
+                  text = ''
+                  is_thought = False
 
-              text += content.parts[0].text
-              is_thought = current_is_thought
-              llm_response.partial = True
+                text += part.text
+                is_thought = current_is_thought
+                llm_response.partial = True
             # don't yield the merged text event when receiving audio data
-            elif text and not content.parts[0].inline_data:
+            if text and not any(p.text for p in content.parts) and not has_inline_data:
               yield self.__build_full_text_response(text, is_thought)
               text = ''
               is_thought = False
@@ -338,10 +372,14 @@ class GeminiLlmConnection(BaseLlmConnection):
               )
               self._output_transcription_text = ''
           if message.server_content.turn_complete:
+            g_metadata_to_yield = pending_grounding_metadata
             if text:
-              yield self.__build_full_text_response(text, is_thought)
+              yield self.__build_full_text_response(
+                  text, is_thought, g_metadata_to_yield
+              )
               text = ''
               is_thought = False
+              g_metadata_to_yield = None
             if tool_call_parts:
               logger.debug('Returning aggregated tool_call_parts')
               yield LlmResponse(
@@ -353,9 +391,13 @@ class GeminiLlmConnection(BaseLlmConnection):
             yield LlmResponse(
                 turn_complete=True,
                 interrupted=message.server_content.interrupted,
-                grounding_metadata=message.server_content.grounding_metadata,
+                grounding_metadata=message.server_content.grounding_metadata
+                or g_metadata_to_yield,
                 model_version=self._model_version,
                 live_session_id=live_session_id,
+                turn_complete_reason=getattr(
+                    message.server_content, 'turn_complete_reason', None
+                ),
             )
             break
           # in case of empty content or parts, we still surface it
