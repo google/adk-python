@@ -71,6 +71,11 @@ _DOCKERFILE_TEMPLATE: Final[str] = """
 FROM python:3.11-slim
 WORKDIR /app
 
+RUN apt-get update && \
+    apt-get upgrade -y && \
+    apt-get install -y git && \
+    apt -y autoremove
+
 # Create a non-root user
 RUN adduser --disabled-password --gecos "" myuser
 
@@ -87,7 +92,7 @@ ENV GOOGLE_CLOUD_LOCATION={gcp_region}
 # Set up environment variables - End
 
 # Install ADK - Start
-RUN pip install google-adk=={adk_version}
+# RUN pip install google-adk=={adk_version}
 # Install ADK - End
 
 # Copy agent - Start
@@ -1103,19 +1108,34 @@ def to_agent_engine(
 
     from ..utils._google_client_headers import get_tracking_headers
 
-    if not project or not region:
-      click.echo('No project/region provided. Starting onboarding flow...')
+    if not (api_key or project or region):
+      click.echo(
+          'No api_key/project/region provided. Starting onboarding flow...'
+      )
       auth_info = _onboarding.handle_login_with_google()
       project = auth_info.project_id
       region = auth_info.region
 
     click.echo('Initializing Agent Platform client...')
-    client = vertexai.Client(
-        project=project,
-        location=region,
-        http_options={'headers': get_tracking_headers()},
-    )
-    click.echo('Agent Platform client initialized.')
+    if project and region:
+      client = vertexai.Client(
+          project=project,
+          location=region,
+          http_options={'headers': get_tracking_headers()},
+      )
+      click.echo('Agent Platform client initialized with project and region.')
+    elif api_key:
+      client = vertexai.Client(
+          api_key=api_key,
+          http_options={'headers': get_tracking_headers()},
+      )
+      click.echo('Agent Platform client initialized with ExpressMode API Key.')
+    else:
+      click.echo(
+          'Failed to initialize Agent Platform client. Please provide an API'
+          'key or project and region.'
+      )
+      return
 
     if skip_agent_import_validation:
       warnings.warn(
