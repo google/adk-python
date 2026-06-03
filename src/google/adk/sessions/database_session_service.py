@@ -26,19 +26,23 @@ from typing import TypeAlias
 from typing import TypeVar
 
 from google.adk.platform import time as platform_time
-from sqlalchemy import delete
-from sqlalchemy import event
-from sqlalchemy import MetaData
-from sqlalchemy import select
-from sqlalchemy.engine import Connection
-from sqlalchemy.engine import make_url
-from sqlalchemy.exc import ArgumentError
-from sqlalchemy.exc import IntegrityError
-from sqlalchemy.ext.asyncio import async_sessionmaker
-from sqlalchemy.ext.asyncio import AsyncEngine
-from sqlalchemy.ext.asyncio import AsyncSession as DatabaseSessionFactory
-from sqlalchemy.ext.asyncio import create_async_engine
-from sqlalchemy.pool import StaticPool
+
+try:
+  from sqlalchemy import delete
+  from sqlalchemy import event
+  from sqlalchemy import MetaData
+  from sqlalchemy import select
+  from sqlalchemy.engine import Connection
+  from sqlalchemy.engine import make_url
+  from sqlalchemy.exc import ArgumentError
+  from sqlalchemy.exc import IntegrityError
+  from sqlalchemy.ext.asyncio import async_sessionmaker
+  from sqlalchemy.ext.asyncio import AsyncEngine
+  from sqlalchemy.ext.asyncio import AsyncSession as DatabaseSessionFactory
+  from sqlalchemy.ext.asyncio import create_async_engine
+  from sqlalchemy.pool import StaticPool
+except ImportError:
+  pass
 from typing_extensions import override
 
 from . import _session_util
@@ -194,6 +198,13 @@ class DatabaseSessionService(BaseSessionService):
     # 2. Create all tables based on schema
     # 3. Initialize all properties
     try:
+      import sqlalchemy
+    except ImportError as e:
+      from ..utils._dependency import missing_extra
+
+      raise missing_extra("sqlalchemy", "db") from e
+
+    try:
       engine_kwargs = dict(kwargs)
       url = make_url(db_url)
       if (
@@ -318,7 +329,7 @@ class DatabaseSessionService(BaseSessionService):
         else:
           self._session_lock_ref_count[lock_key] = remaining
 
-  async def _prepare_tables(self):
+  async def _prepare_tables(self) -> None:
     """Ensure database tables are ready for use.
 
     This method is called lazily before each database operation. It checks the
@@ -617,6 +628,22 @@ class DatabaseSessionService(BaseSessionService):
       await sql_session.commit()
 
   @override
+  async def get_user_state(
+      self, *, app_name: str, user_id: str
+  ) -> dict[str, Any]:
+    await self._prepare_tables()
+    schema = self._get_schema_classes()
+    async with self._rollback_on_exception_session(
+        read_only=True
+    ) as sql_session:
+      storage_user_state = await sql_session.get(
+          schema.StorageUserState, (app_name, user_id)
+      )
+      if storage_user_state is None:
+        return {}
+      return dict(storage_user_state.state or {})
+
+  @override
   async def append_event(self, session: Session, event: Event) -> Event:
     await self._prepare_tables()
     if event.partial:
@@ -635,11 +662,7 @@ class DatabaseSessionService(BaseSessionService):
     is_sqlite = self.db_engine.dialect.name == _SQLITE_DIALECT
     use_row_level_locking = self._supports_row_level_locking()
 
-    state_delta = (
-        event.actions.state_delta
-        if event.actions and event.actions.state_delta
-        else {}
-    )
+    state_delta = event.actions.state_delta if event.actions.state_delta else {}
     state_deltas = _session_util.extract_state_delta(state_delta)
     has_app_delta = bool(state_deltas["app"])
     has_user_delta = bool(state_deltas["user"])

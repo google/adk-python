@@ -445,3 +445,38 @@ def test_create_artifact_service_fallbacks_to_in_memory_on_permission_error(
   )
 
   assert isinstance(service, InMemoryArtifactService)
+
+
+def test_create_task_store_uses_registry(monkeypatch):
+  registry = mock.create_autospec(ServiceRegistry, instance=True, spec_set=True)
+  expected = object()
+  registry._create_task_store_service.return_value = expected
+  monkeypatch.setattr(service_factory, "get_service_registry", lambda: registry)
+
+  result = service_factory._create_task_store_from_options(
+      task_store_uri="postgresql+asyncpg://user:pass@host/db",
+  )
+
+  assert result is expected
+  registry._create_task_store_service.assert_called_once_with(
+      "postgresql+asyncpg://user:pass@host/db",
+  )
+
+
+def test_create_task_store_defaults_to_in_memory():
+  from a2a.server.tasks import InMemoryTaskStore
+
+  service = service_factory._create_task_store_from_options()
+
+  assert isinstance(service, InMemoryTaskStore)
+
+
+def test_create_task_store_raises_on_unknown_scheme(monkeypatch):
+  registry = mock.create_autospec(ServiceRegistry, instance=True, spec_set=True)
+  registry._create_task_store_service.side_effect = ValueError("Unsupported")
+  monkeypatch.setattr(service_factory, "get_service_registry", lambda: registry)
+
+  with pytest.raises(ValueError):
+    service_factory._create_task_store_from_options(
+        task_store_uri="unknown://foo",
+    )

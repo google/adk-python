@@ -92,6 +92,13 @@ class VertexAiSessionService(BaseSessionService):
         visit
         https://cloud.google.com/vertex-ai/generative-ai/docs/start/express-mode/overview
     """
+    try:
+      import vertexai
+    except ImportError as e:
+      from ..utils._dependency import missing_extra
+
+      raise missing_extra('google-cloud-aiplatform', 'gcp') from e
+
     self._project = project
     self._location = location
     self._agent_engine_id = agent_engine_id
@@ -268,6 +275,27 @@ class VertexAiSessionService(BaseSessionService):
       except Exception as e:
         logger.error('Error deleting session %s: %s', session_id, e)
         raise
+
+  @override
+  async def get_user_state(
+      self, *, app_name: str, user_id: str
+  ) -> dict[str, Any]:
+    """Not supported by the Vertex AI Agent Engine backend.
+
+    The Vertex AI Agent Engine API does not expose user state independently of
+    a session.  To read user state, enumerate sessions via ``list_sessions``
+    and call ``get_session`` on each result to access the merged state.
+
+    Raises:
+      NotImplementedError: Always, because the Vertex AI Agent Engine API does
+        not provide a way to query user state without a session.
+    """
+    raise NotImplementedError(
+        'VertexAiSessionService does not support get_user_state. '
+        'The Vertex AI Agent Engine API does not expose user state '
+        'independently of a session. To read user state, enumerate sessions '
+        'via list_sessions and call get_session on each result.'
+    )
 
   @override
   async def append_event(self, session: Session, event: Event) -> Event:

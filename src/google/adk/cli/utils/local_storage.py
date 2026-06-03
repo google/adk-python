@@ -18,6 +18,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from pathlib import Path
+from typing import Any
 from typing import Mapping
 from typing import Optional
 
@@ -128,26 +129,24 @@ class PerAgentDatabaseSessionService(BaseSessionService):
   async def _get_service(self, app_name: str) -> BaseSessionService:
     async with self._service_lock:
       if app_name.startswith("__"):
-        service = self._services.get(_BUILT_IN_SESSION_SERVICE_KEY)
-        if service is not None:
-          return service
-        service = create_local_database_session_service(
-            base_dir=self._agents_root,
+        storage_key = _BUILT_IN_SESSION_SERVICE_KEY
+        base_dir = self._agents_root
+      else:
+        storage_key = self._app_name_to_dir.get(app_name, app_name)
+        folder = dot_adk_folder_for_agent(
+            agents_root=self._agents_root, app_name=storage_key
         )
-        self._services[_BUILT_IN_SESSION_SERVICE_KEY] = service
-        return service
+        base_dir = folder.agent_dir
 
-      storage_name = self._app_name_to_dir.get(app_name, app_name)
-      service = self._services.get(storage_name)
+      service = self._services.get(storage_key)
       if service is not None:
         return service
-      folder = dot_adk_folder_for_agent(
-          agents_root=self._agents_root, app_name=storage_name
-      )
+
       service = create_local_database_session_service(
-          base_dir=folder.agent_dir,
+          base_dir=base_dir,
       )
-      self._services[storage_name] = service
+
+      self._services[storage_key] = service
       return service
 
   @override
@@ -206,6 +205,13 @@ class PerAgentDatabaseSessionService(BaseSessionService):
     await service.delete_session(
         app_name=app_name, user_id=user_id, session_id=session_id
     )
+
+  @override
+  async def get_user_state(
+      self, *, app_name: str, user_id: str
+  ) -> dict[str, Any]:
+    service = await self._get_service(app_name)
+    return await service.get_user_state(app_name=app_name, user_id=user_id)
 
   @override
   async def append_event(self, session: Session, event: Event) -> Event:

@@ -74,21 +74,25 @@ agent_card = AgentCard(
 
 
 def create_server_app(
-    run_async_fn=None, config: A2aAgentExecutorConfig | None = None
+    run_async_fn=None,
+    config: A2aAgentExecutorConfig | None = None,
+    task_store=None,
 ):
   """Creates an A2A FastAPI application with a mocked runner.
 
   Args:
     run_async_fn: A generator function that takes **kwargs and yields Event
       objects.
-    include_artifacts: Whether to include artifacts in A2A events.
+    config: Optional executor configuration.
+    task_store: Optional task store instance. Defaults to InMemoryTaskStore.
 
   Returns:
     A FastAPI application instance.
   """
   runner = FakeRunner(run_async_fn)
   executor = A2aAgentExecutor(runner=runner, config=config)
-  task_store = InMemoryTaskStore()
+  if task_store is None:
+    task_store = InMemoryTaskStore()
   handler = DefaultRequestHandler(
       agent_executor=executor, task_store=task_store
   )

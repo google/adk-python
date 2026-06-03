@@ -418,7 +418,7 @@ async def test_run_live_persists_event_callback_modifications():
 @pytest.mark.asyncio
 async def test_runner_allows_nested_agent_directories(tmp_path, monkeypatch):
   project_root = tmp_path / "workspace"
-  agent_dir = project_root / "agents" / "examples" / "001_hello_world"
+  agent_dir = project_root / "agents" / "examples" / "hello_world"
   agent_dir.mkdir(parents=True)
   # Make package structure importable.
   for pkg_dir in [
@@ -458,13 +458,13 @@ async def test_runner_allows_nested_agent_directories(tmp_path, monkeypatch):
 
   monkeypatch.chdir(project_root)
   loader = AgentLoader(agents_dir="agents/examples")
-  loaded_agent = loader.load_agent("001_hello_world")
+  loaded_agent = loader.load_agent("hello_world")
 
   assert isinstance(loaded_agent, BaseAgent)
   session_service = InMemorySessionService()
   artifact_service = InMemoryArtifactService()
   runner = Runner(
-      app_name="001_hello_world",
+      app_name="hello_world",
       agent=loaded_agent,
       session_service=session_service,
       artifact_service=artifact_service,
@@ -472,7 +472,7 @@ async def test_runner_allows_nested_agent_directories(tmp_path, monkeypatch):
   assert runner._app_name_alignment_hint is None
 
   session = await session_service.create_session(
-      app_name="001_hello_world",
+      app_name="hello_world",
       user_id="user",
   )
   agen = runner.run_async(
@@ -678,6 +678,76 @@ async def test_runner_allows_nested_agent_directories(tmp_path, monkeypatch):
     result = self.runner._find_agent_to_run(session, self.root_agent)
     assert result == self.sub_agent2
 
+  def test_find_agent_to_run_skips_function_response_when_not_resumable(self):
+    """Test that function response scenario is skipped when not resumable."""
+    function_call = types.FunctionCall(id="func_456", name="test_func", args={})
+    function_response = types.FunctionResponse(
+        id="func_456", name="test_func", response={}
+    )
+
+    call_event = Event(
+        invocation_id="inv1",
+        author="non_transferable",
+        content=types.Content(
+            role="model", parts=[types.Part(function_call=function_call)]
+        ),
+    )
+
+    response_event = Event(
+        invocation_id="inv2",
+        author="user",
+        content=types.Content(
+            role="user", parts=[types.Part(function_response=function_response)]
+        ),
+    )
+
+    session = Session(
+        id="test_session",
+        user_id="test_user",
+        app_name="test_app",
+        events=[call_event, response_event],
+    )
+
+    self.runner.resumability_config = ResumabilityConfig(is_resumable=False)
+
+    result = self.runner._find_agent_to_run(session, self.root_agent)
+    assert result == self.root_agent
+
+  def test_find_agent_to_run_uses_function_response_when_resumable(self):
+    """Test that function response scenario is used when resumable."""
+    function_call = types.FunctionCall(id="func_456", name="test_func", args={})
+    function_response = types.FunctionResponse(
+        id="func_456", name="test_func", response={}
+    )
+
+    call_event = Event(
+        invocation_id="inv1",
+        author="non_transferable",
+        content=types.Content(
+            role="model", parts=[types.Part(function_call=function_call)]
+        ),
+    )
+
+    response_event = Event(
+        invocation_id="inv2",
+        author="user",
+        content=types.Content(
+            role="user", parts=[types.Part(function_response=function_response)]
+        ),
+    )
+
+    session = Session(
+        id="test_session",
+        user_id="test_user",
+        app_name="test_app",
+        events=[call_event, response_event],
+    )
+
+    self.runner.resumability_config = ResumabilityConfig(is_resumable=True)
+
+    result = self.runner._find_agent_to_run(session, self.root_agent)
+    assert result == self.non_transferable_agent
+
   def test_is_transferable_across_agent_tree_with_llm_agent(self):
     """Test _is_transferable_across_agent_tree with LLM agent."""
     result = self.runner._is_transferable_across_agent_tree(self.sub_agent1)
@@ -866,7 +936,7 @@ class TestRunnerWithPlugins:
     """Test that ValueError is raised when app and agent are provided."""
     with pytest.raises(
         ValueError,
-        match="When app is provided, agent should not be provided.",
+        match="Only one of app, agent, or node may be provided.",
     ):
       Runner(
           app=App(name="test_app", root_agent=self.root_agent),
@@ -895,7 +965,10 @@ class TestRunnerWithPlugins:
     """Test ValueError is raised when app is not provided and app_name is missing."""
     with pytest.raises(
         ValueError,
-        match="Either app or both app_name and agent must be provided.",
+        match=(
+            "app_name is required when agent is provided|One of app, agent, or"
+            " node must be provided"
+        ),
     ):
       Runner(
           agent=self.root_agent,
@@ -907,7 +980,10 @@ class TestRunnerWithPlugins:
     """Test ValueError is raised when app is not provided and agent is missing."""
     with pytest.raises(
         ValueError,
-        match="Either app or both app_name and agent must be provided.",
+        match=(
+            "app_name is required when agent is provided|One of app, agent, or"
+            " node must be provided"
+        ),
     ):
       Runner(
           app_name="test_app",
@@ -1103,6 +1179,118 @@ class TestRunnerCacheConfig:
         "ContextCacheConfig(cache_intervals=30, ttl=14400s, min_tokens=4096)"
     )
     assert str(runner.context_cache_config) == expected_str
+
+
+class TestRunnerResolveApp:
+  """Tests for Runner._resolve_app and node support."""
+
+  def setup_method(self):
+    self.session_service = InMemorySessionService()
+    self.artifact_service = InMemoryArtifactService()
+    self.root_agent = MockLlmAgent("root_agent")
+
+  def test_resolve_app_with_agent_wraps_in_app(self):
+    """Test that a bare agent is wrapped into an App."""
+    runner = Runner(
+        app_name="test_app",
+        agent=self.root_agent,
+        session_service=self.session_service,
+        artifact_service=self.artifact_service,
+    )
+    assert runner.app is not None
+    assert runner.app.root_agent is self.root_agent
+    assert runner.app_name == "test_app"
+    assert runner.agent is self.root_agent
+
+  def test_resolve_app_with_node_wraps_in_app(self):
+    """Test that a bare node is wrapped into an App."""
+    from google.adk.workflow._base_node import BaseNode
+
+    node = BaseNode(name="test_node")
+    runner = Runner(
+        node=node,
+        session_service=self.session_service,
+        artifact_service=self.artifact_service,
+    )
+    assert runner.app is not None
+    assert runner.app.root_agent is node
+    assert runner.app_name == "test_node"
+    assert runner.agent is node
+
+  def test_resolve_app_with_node_and_app_name(self):
+    """Test that app_name overrides node.name."""
+    from google.adk.workflow._base_node import BaseNode
+
+    node = BaseNode(name="node_name")
+    runner = Runner(
+        app_name="custom_name",
+        node=node,
+        session_service=self.session_service,
+        artifact_service=self.artifact_service,
+    )
+    assert runner.app_name == "custom_name"
+
+  def test_resolve_app_rejects_app_and_agent(self):
+    """Test that providing both app and agent raises."""
+    app = App(name="test_app", root_agent=self.root_agent)
+    with pytest.raises(ValueError, match="Only one of app, agent, or node"):
+      Runner(
+          app=app,
+          agent=self.root_agent,
+          session_service=self.session_service,
+      )
+
+  def test_resolve_app_rejects_app_and_node(self):
+    """Test that providing both app and node raises."""
+    from google.adk.workflow._base_node import BaseNode
+
+    app = App(name="test_app", root_agent=self.root_agent)
+    node = BaseNode(name="test_node")
+    with pytest.raises(ValueError, match="Only one of app, agent, or node"):
+      Runner(
+          app=app,
+          node=node,
+          session_service=self.session_service,
+      )
+
+  def test_resolve_app_rejects_agent_and_node(self):
+    """Test that providing both agent and node raises."""
+    from google.adk.workflow._base_node import BaseNode
+
+    node = BaseNode(name="test_node")
+    with pytest.raises(ValueError, match="Only one of app, agent, or node"):
+      Runner(
+          app_name="test_app",
+          agent=self.root_agent,
+          node=node,
+          session_service=self.session_service,
+      )
+
+  def test_resolve_app_rejects_none(self):
+    """Test that providing no app, agent, or node raises."""
+    with pytest.raises(
+        ValueError, match="One of app, agent, or node must be provided"
+    ):
+      Runner(
+          app_name="test_app",
+          session_service=self.session_service,
+      )
+
+  def test_resolve_app_extracts_node_from_app(self):
+    """Test that Runner extracts node from App into agent field."""
+    from google.adk.workflow._base_node import BaseNode
+
+    node = BaseNode(name="test_node")
+    app = App(name="test_app", root_agent=node)
+    runner = Runner(
+        app=app,
+        session_service=self.session_service,
+        artifact_service=self.artifact_service,
+    )
+    assert runner.agent is node
+    assert runner.app_name == "test_app"
+    assert runner.context_cache_config is None
+    assert runner.resumability_config is None
 
 
 class TestRunnerShouldAppendEvent:
@@ -1402,6 +1590,70 @@ async def test_run_async_passes_get_session_config():
   # Agent should still produce output (session was found).
   assert len(events) >= 1
   assert events[0].author == "test_agent"
+
+
+@pytest.mark.asyncio
+async def test_run_async_teardown_on_aclose():
+  """Closing run_async generator using aclose() should abort and cancel the running agent task."""
+  import asyncio
+
+  session_service = InMemorySessionService()
+  artifact_service = InMemoryArtifactService()
+
+  was_cancelled = {"value": False}
+
+  class CancellingAgent(BaseAgent):
+
+    def __init__(self, name: str):
+      super().__init__(name=name, sub_agents=[])
+
+    async def _run_async_impl(
+        self, invocation_context: InvocationContext
+    ) -> AsyncGenerator[Event, None]:
+      try:
+        yield Event(
+            invocation_id=invocation_context.invocation_id,
+            author=self.name,
+            content=types.Content(
+                role="model", parts=[types.Part(text="First response")]
+            ),
+        )
+        # Block simulating slow ongoing task
+        await asyncio.sleep(5.0)
+        yield Event(
+            invocation_id=invocation_context.invocation_id,
+            author=self.name,
+            content=types.Content(
+                role="model", parts=[types.Part(text="Second response")]
+            ),
+        )
+      except (asyncio.CancelledError, GeneratorExit):
+        was_cancelled["value"] = True
+        raise
+
+  runner = Runner(
+      app_name=TEST_APP_ID,
+      agent=CancellingAgent("cancel_agent"),
+      session_service=session_service,
+      artifact_service=artifact_service,
+      auto_create_session=True,
+  )
+
+  # Given a run session
+  agen = runner.run_async(
+      user_id=TEST_USER_ID,
+      session_id=TEST_SESSION_ID,
+      new_message=types.Content(role="user", parts=[types.Part(text="hello")]),
+  )
+
+  # When the client reads the first event and then calls aclose()
+  event = await agen.__anext__()
+  assert event.content.parts[0].text == "First response"
+
+  await agen.aclose()
+
+  # Then the running agent was immediately aborted and cancelled
+  assert was_cancelled["value"] is True
 
 
 @pytest.mark.asyncio
