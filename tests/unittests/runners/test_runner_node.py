@@ -477,6 +477,72 @@ async def test_resume_preserves_original_user_content():
 
 
 @pytest.mark.asyncio
+async def test_resume_populates_invocation_user_content():
+  """On resume via a function response, ic.user_content is the original turn."""
+  seen: list[Any] = []
+
+  class _Node(BaseNode):
+
+    async def _run_impl(
+        self, *, ctx: Context, node_input: Any
+    ) -> AsyncGenerator[Any, None]:
+      if ctx.resume_inputs and 'fc-1' in ctx.resume_inputs:
+        user_content = ctx.get_invocation_context().user_content
+        seen.append(user_content.parts[0].text if user_content else None)
+        yield 'resumed'
+        return
+      yield _make_interrupt_event(fc_name='tool')
+
+  await _run_two_turns(
+      _Node(name='node'),
+      'remember me',
+      _make_resume_message(fc_name='tool', response={'v': 1}),
+  )
+
+  assert seen == ['remember me']
+
+
+@pytest.mark.asyncio
+async def test_resume_by_invocation_id_populates_user_content():
+  """Resuming by invocation_id alone recovers the original user_content."""
+  seen: list[Any] = []
+
+  class _Node(BaseNode):
+
+    async def _run_impl(
+        self, *, ctx: Context, node_input: Any
+    ) -> AsyncGenerator[Any, None]:
+      user_content = ctx.get_invocation_context().user_content
+      seen.append(user_content.parts[0].text if user_content else None)
+      yield _make_interrupt_event(fc_name='tool')
+
+  ss = InMemorySessionService()
+  runner = Runner(app_name='test', node=_Node(name='node'), session_service=ss)
+  session = await ss.create_session(app_name='test', user_id='u')
+
+  async for _ in runner.run_async(
+      user_id='u',
+      session_id=session.id,
+      new_message=types.Content(
+          parts=[types.Part(text='original text')], role='user'
+      ),
+  ):
+    pass
+
+  updated = await ss.get_session(
+      app_name='test', user_id='u', session_id=session.id
+  )
+  invocation_id = updated.events[0].invocation_id
+
+  async for _ in runner.run_async(
+      user_id='u', session_id=session.id, invocation_id=invocation_id
+  ):
+    pass
+
+  assert seen == ['original text', 'original text']
+
+
+@pytest.mark.asyncio
 async def test_plain_text_does_not_trigger_resume():
   """Sending plain text (no FR) starts fresh, does not enter resume path."""
   node = _EchoNode(name='echo')

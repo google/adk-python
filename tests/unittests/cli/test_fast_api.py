@@ -644,6 +644,39 @@ bigquery_agent_analytics:
     assert getattr(runner.app, "_is_visual_builder_app", False) is True
 
 
+def test_get_runner_async_accepts_internal_special_agent_name(
+    tmp_path,
+    mock_session_service,
+    mock_artifact_service,
+    mock_memory_service,
+    mock_agent_loader,
+    mock_eval_sets_manager,
+    mock_eval_set_results_manager,
+):
+  from google.adk.cli.adk_web_server import AdkWebServer
+
+  special_app_name = "__adk_agent_builder_assistant"
+  special_agent = DummyAgent(name="agent_builder_assistant")
+  mock_agent_loader.load_agent = MagicMock(return_value=special_agent)
+
+  adk_web_server = AdkWebServer(
+      agent_loader=mock_agent_loader,
+      session_service=mock_session_service,
+      memory_service=mock_memory_service,
+      artifact_service=mock_artifact_service,
+      credential_service=MagicMock(),
+      eval_sets_manager=mock_eval_sets_manager,
+      eval_set_results_manager=mock_eval_set_results_manager,
+      agents_dir=str(tmp_path),
+  )
+
+  runner = asyncio.run(adk_web_server.get_runner_async(special_app_name))
+
+  assert runner.app.name == special_app_name
+  assert runner.app.root_agent is special_agent
+  mock_agent_loader.load_agent.assert_called_once_with(special_app_name)
+
+
 @pytest.fixture
 def test_app(
     mock_session_service,
