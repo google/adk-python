@@ -71,11 +71,6 @@ _DOCKERFILE_TEMPLATE: Final[str] = """
 FROM python:3.11-slim
 WORKDIR /app
 
-RUN apt-get update && \
-    apt-get upgrade -y && \
-    apt-get install -y git && \
-    apt -y autoremove
-
 # Create a non-root user
 RUN adduser --disabled-password --gecos "" myuser
 
@@ -92,7 +87,7 @@ ENV GOOGLE_CLOUD_LOCATION={gcp_region}
 # Set up environment variables - End
 
 # Install ADK - Start
-# RUN pip install google-adk=={adk_version}
+RUN pip install google-adk=={adk_version}
 # Install ADK - End
 
 # Copy agent - Start
@@ -942,7 +937,6 @@ def to_agent_engine(
   tmp_app_name = app_name + '_tmp' + datetime.now().strftime('%Y%m%d_%H%M%S')
   temp_folder = temp_folder or tmp_app_name
   agent_src_path = os.path.join(parent_folder, temp_folder, 'agents', app_name)
-  click.echo(f'Staging all files in: {agent_src_path}')
   # remove agent_src_path if it exists
   if os.path.exists(agent_src_path):
     click.echo('Removing existing files')
