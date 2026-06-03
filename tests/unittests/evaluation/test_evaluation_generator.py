@@ -597,10 +597,6 @@ class TestGenerateInferencesFromRootAgent:
     called_with_content = mock_generate_inferences.call_args.args[3]
     assert called_with_content.parts[0].text == "message 1"
 
-
-class TestGenerateResponses:
-  """Test cases for EvaluationGenerator.generate_responses method."""
-
   @pytest.mark.asyncio
   async def test_generate_responses_forwards_llm_backed_user_simulator_config(
       self, mocker
