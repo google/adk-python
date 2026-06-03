@@ -598,44 +598,6 @@ class TestGenerateInferencesFromRootAgent:
     assert called_with_content.parts[0].text == "message 1"
 
   @pytest.mark.asyncio
-  async def test_generate_responses_forwards_llm_backed_user_simulator_config(
-      self, mocker
-  ):
-    """Tests that an LlmBackedUserSimulatorConfig is forwarded to the provider verbatim."""
-    mock_provider_cls = mocker.patch(
-        "google.adk.evaluation.evaluation_generator.UserSimulatorProvider"
-    )
-    mocker.patch(
-        "google.adk.evaluation.evaluation_generator.EvaluationGenerator._process_query",
-        new_callable=mocker.AsyncMock,
-        return_value=[],
-    )
-
-    user_simulator_config = LlmBackedUserSimulatorConfig(
-        model="test-model",
-        max_allowed_invocations=5,
-    )
-    eval_set = EvalSet(
-        eval_set_id="test_set",
-        eval_cases=[EvalCase(eval_id="case_0", conversation=[])],
-    )
-
-    await EvaluationGenerator.generate_responses(
-        eval_set=eval_set,
-        agent_module_path="some.agent.module",
-        repeat_num=1,
-        user_simulator_config=user_simulator_config,
-    )
-
-    mock_provider_cls.assert_called_once_with(
-        user_simulator_config=user_simulator_config
-    )
-    assert (
-        mock_provider_cls.call_args.kwargs["user_simulator_config"]
-        is user_simulator_config
-    )
-
-  @pytest.mark.asyncio
   async def test_generates_inferences_with_user_simulator_live(
       self, mocker, mock_runner, mock_session_service
   ):
@@ -723,6 +685,48 @@ class TestGenerateInferencesFromRootAgent:
 
     # Verify that the _LiveSession constructor was called
     mock_live_session_cls.assert_called_once()
+
+
+class TestGenerateResponses:
+  """Test cases for EvaluationGenerator.generate_responses method."""
+
+  @pytest.mark.asyncio
+  async def test_generate_responses_forwards_llm_backed_user_simulator_config(
+      self, mocker
+  ):
+    """Tests that an LlmBackedUserSimulatorConfig is forwarded to the provider verbatim."""
+    mock_provider_cls = mocker.patch(
+        "google.adk.evaluation.evaluation_generator.UserSimulatorProvider"
+    )
+    mocker.patch(
+        "google.adk.evaluation.evaluation_generator.EvaluationGenerator._process_query",
+        new_callable=mocker.AsyncMock,
+        return_value=[],
+    )
+
+    user_simulator_config = LlmBackedUserSimulatorConfig(
+        model="test-model",
+        max_allowed_invocations=5,
+    )
+    eval_set = EvalSet(
+        eval_set_id="test_set",
+        eval_cases=[EvalCase(eval_id="case_0", conversation=[])],
+    )
+
+    await EvaluationGenerator.generate_responses(
+        eval_set=eval_set,
+        agent_module_path="some.agent.module",
+        repeat_num=1,
+        user_simulator_config=user_simulator_config,
+    )
+
+    mock_provider_cls.assert_called_once_with(
+        user_simulator_config=user_simulator_config
+    )
+    assert (
+        mock_provider_cls.call_args.kwargs["user_simulator_config"]
+        is user_simulator_config
+    )
 
 
 class TestLiveSessionCallbacks:
