@@ -1,0 +1,229 @@
+openapi: 3.0.0
+info:
+  title: Hotel Booker API
+  description: A simple API for managing hotel bookings, with a custom client credentials authentication flow.
+  version: 1.0.0
+servers:
+  - url: http://127.0.0.1:8081
+paths:
+  /hotels:
+    get:
+      summary: Get available hotels
+      description: Retrieves a list of available hotels, optionally filtered by location.
+      security:
+        - BearerAuth: []
+      parameters:
+        - in: query
+          name: location
+          schema:
+            type: string
+          description: The city to filter hotels by (e.g., 'New York').
+      responses:
+        '200':
+          description: Successfully retrieved hotels.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: boolean
+                    example: false
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Hotel'
+                  message:
+                    type: string
+                    example: "Successfully retrieved hotels."
+        '401':
+          description: Unauthorized. Invalid or expired token.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /book:
+    post:
+      summary: Book a room
+      description: Books a room in a specified hotel.
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BookingRequest'
+      responses:
+        '200':
+          description: Booking successful.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: boolean
+                    example: false
+                  data:
+                    type: object
+                    properties:
+                      booking_id:
+                        type: string
+                        example: "HB-1"
+                  message:
+                    type: string
+                    example: "Booking successful!"
+        '400':
+          description: Bad request. Missing information or invalid booking details.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Unauthorized. Invalid or expired token.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /booking_details:
+    get:
+      summary: Get booking details
+      description: Retrieves details for a specific booking by ID or guest name.
+      security:
+        - BearerAuth: []
+      parameters:
+        - in: query
+          name: booking_id
+          schema:
+            type: string
+          description: The custom booking ID (e.g., 'HB-1').
+        - in: query
+          name: guest_name
+          schema:
+            type: string
+          description: The name of the guest to search for (partial and case-insensitive).
+      responses:
+        '200':
+          description: Booking details retrieved successfully.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: boolean
+                    example: false
+                  data:
+                    type: object
+                    properties:
+                      custom_booking_id:
+                        type: string
+                        example: "HB-1"
+                      hotel_name:
+                        type: string
+                        example: "Grand Hyatt"
+                      hotel_location:
+                        type: string
+                        example: "New York"
+                      guest_name:
+                        type: string
+                        example: "John Doe"
+                      check_in_date:
+                        type: string
+                        example: "2025-10-01"
+                      check_out_date:
+                        type: string
+                        example: "2025-10-05"
+                      num_rooms:
+                        type: integer
+                        example: 1
+                      total_price:
+                        type: number
+                        format: float
+                        example: 1000.0
+                  message:
+                    type: string
+                    example: "Booking details retrieved successfully."
+        '400':
+          description: Bad request. Missing parameters.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Unauthorized. Invalid or expired token.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Booking not found.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: CustomAuthToken
+  schemas:
+    ErrorResponse:
+      type: object
+      properties:
+        error:
+          type: boolean
+          example: true
+        data:
+          type: object
+          nullable: true
+        message:
+          type: string
+          example: "Invalid access token."
+    Hotel:
+      type: object
+      properties:
+        id:
+          type: integer
+          example: 1
+        name:
+          type: string
+          example: "Grand Hyatt"
+        location:
+          type: string
+          example: "New York"
+        available_rooms:
+          type: integer
+          example: 10
+        price_per_night:
+          type: number
+          format: float
+          example: 250.0
+    BookingRequest:
+      type: object
+      properties:
+        hotel_id:
+          type: integer
+          example: 1
+        guest_name:
+          type: string
+          example: "John Doe"
+        check_in_date:
+          type: string
+          format: date
+          example: "2025-10-01"
+        check_out_date:
+          type: string
+          format: date
+          example: "2025-10-05"
+        num_rooms:
+          type: integer
+          example: 1
+      required:
+        - hotel_id
+        - guest_name
+        - check_in_date
+        - check_out_date
+        - num_rooms

@@ -66,6 +66,7 @@ from typing_extensions import deprecated
 
 from .. import version
 from ..utils.model_name_utils import is_gemini_model
+from ._experimental_semconv import get_content_capturing_mode
 from ._experimental_semconv import is_experimental_semconv
 from ._experimental_semconv import maybe_log_completion_details
 from ._experimental_semconv import set_operation_details_attributes_from_request
@@ -128,7 +129,7 @@ def _safe_json_serialize(obj) -> str:
     return json.dumps(
         obj, ensure_ascii=False, default=lambda o: '<not serializable>'
     )
-  except (TypeError, OverflowError):
+  except (TypeError, ValueError, OverflowError):
     return '<not serializable>'
 
 
@@ -170,6 +171,8 @@ def trace_tool_call(
     args: dict[str, Any],
     function_response_event: Event | None,
     error: Exception | None = None,
+    span: Span | None = None,
+    error_type: str | None = None,
 ):
   """Traces tool call.
 
@@ -178,8 +181,13 @@ def trace_tool_call(
     args: The arguments to the tool call.
     function_response_event: The event with the function response details.
     error: The exception raised during tool execution, if any.
+    span: The span to record attributes on. If None, uses current span.
+    error_type: An error type string detected from the tool's response dict
+      (e.g., "HTTP_ERROR", "MCP_TOOL_ERROR"). Used when the tool returned an
+      error as a dict rather than raising an exception. Ignored if `error` is
+      also set (exception takes precedence).
   """
-  span = trace.get_current_span()
+  span = span or trace.get_current_span()
 
   span.set_attribute(GEN_AI_OPERATION_NAME, 'execute_tool')
 
@@ -194,6 +202,8 @@ def trace_tool_call(
       span.set_attribute(ERROR_TYPE, str(error.error_type))
     else:
       span.set_attribute(ERROR_TYPE, type(error).__name__)
+  elif error_type is not None:
+    span.set_attribute(ERROR_TYPE, error_type)
 
   # Special case for client side association with a remote tool call
   if (
@@ -356,12 +366,12 @@ def trace_call_llm(
     except AttributeError:
       pass
 
-  try:
-    llm_response_json = llm_response.model_dump_json(exclude_none=True)
-  except Exception:  # pylint: disable=broad-exception-caught
-    llm_response_json = '<not serializable>'
-
   if _should_add_request_response_to_spans():
+    try:
+      llm_response_json = llm_response.model_dump_json(exclude_none=True)
+    except Exception:  # pylint: disable=broad-exception-caught
+      llm_response_json = '<not serializable>'
+
     span.set_attribute(
         'gcp.vertex.agent.llm_response',
         llm_response_json,
@@ -443,6 +453,58 @@ def trace_send_data(
     span.set_attribute('gcp.vertex.agent.data', '{}')
 
 
+def _build_compaction_attributes(
+    *,
+    session_id: str,
+    trigger: str,
+    summarizer_type: str,
+    event_count: int,
+    token_threshold: int | None = None,
+    event_retention_size: int | None = None,
+    compaction_interval: int | None = None,
+    overlap_size: int | None = None,
+) -> dict[str, AttributeValue]:
+  """Builds span attributes for event compaction tracing."""
+  attributes: dict[str, AttributeValue] = {
+      GEN_AI_SYSTEM: _guess_gemini_system_name(),
+      GEN_AI_OPERATION_NAME: 'compact_events',
+      GEN_AI_CONVERSATION_ID: session_id,
+      'gen_ai.compaction.trigger': trigger,
+      'gen_ai.compaction.summarizer_type': summarizer_type,
+      'gen_ai.compaction.event_count': event_count,
+  }
+  if token_threshold is not None:
+    attributes['gen_ai.compaction.token_threshold'] = token_threshold
+  if event_retention_size is not None:
+    attributes['gen_ai.compaction.event_retention_size'] = event_retention_size
+  if compaction_interval is not None:
+    attributes['gen_ai.compaction.compaction_interval'] = compaction_interval
+  if overlap_size is not None:
+    attributes['gen_ai.compaction.overlap_size'] = overlap_size
+  return attributes
+
+
+def _build_compaction_result_attributes(
+    compacted_event: Event | None,
+) -> dict[str, AttributeValue]:
+  """Builds span attributes for compaction result."""
+  if (
+      compacted_event is None
+      or compacted_event.actions is None
+      or compacted_event.actions.compaction is None
+  ):
+    return {}
+
+  attributes: dict[str, AttributeValue] = {}
+  compaction = compacted_event.actions.compaction
+  attributes['gen_ai.compaction.result_event_id'] = compacted_event.id
+  if compaction.start_timestamp is not None:
+    attributes['gen_ai.compaction.start_timestamp'] = compaction.start_timestamp
+  if compaction.end_timestamp is not None:
+    attributes['gen_ai.compaction.end_timestamp'] = compaction.end_timestamp
+  return attributes
+
+
 def _build_llm_request_for_trace(llm_request: LlmRequest) -> dict[str, Any]:
   """Builds a dictionary representation of the LLM request for tracing.
 
@@ -502,22 +564,25 @@ def use_generate_content_span(
   common_attributes = {
       GEN_AI_AGENT_NAME: invocation_context.agent.name,
       GEN_AI_CONVERSATION_ID: invocation_context.session.id,
-      USER_ID: invocation_context.session.user_id,
       'gcp.vertex.agent.event_id': model_response_event.id,
       'gcp.vertex.agent.invocation_id': invocation_context.invocation_id,
   }
-  if (
-      _is_gemini_agent(invocation_context.agent)
-      and _instrumented_with_opentelemetry_instrumentation_google_genai()
-  ):
-    with _use_extra_generate_content_attributes(common_attributes):
-      yield
-  else:
+  log_only_common_attributes = {}
+  if invocation_context.session.user_id is not None:
+    log_only_common_attributes[USER_ID] = invocation_context.session.user_id
+  if _should_emit_native_telemetry(invocation_context.agent):
     with _use_native_generate_content_span_stable_semconv(
         llm_request=llm_request,
         common_attributes=common_attributes,
+        log_only_common_attributes=log_only_common_attributes,
     ) as span:
       yield span.span
+  else:
+    with _use_extra_generate_content_attributes(
+        common_attributes,
+        log_only_extra_attributes=log_only_common_attributes,
+    ):
+      yield
 
 
 @asynccontextmanager
@@ -536,24 +601,23 @@ async def use_inference_span(
   common_attributes = {
       GEN_AI_AGENT_NAME: invocation_context.agent.name,
       GEN_AI_CONVERSATION_ID: invocation_context.session.id,
-      USER_ID: invocation_context.session.user_id,
       'gcp.vertex.agent.event_id': model_response_event.id,
       'gcp.vertex.agent.invocation_id': invocation_context.invocation_id,
   }
-  if (
-      _is_gemini_agent(invocation_context.agent)
-      and _instrumented_with_opentelemetry_instrumentation_google_genai()
-  ):
-    with _use_extra_generate_content_attributes(common_attributes):
-      yield
-  else:
+  log_only_common_attributes = {}
+  if invocation_context.session.user_id is not None:
+    log_only_common_attributes[USER_ID] = invocation_context.session.user_id
+  if _should_emit_native_telemetry(invocation_context.agent):
     async with _use_native_generate_content_span(
         llm_request=llm_request,
         common_attributes=common_attributes,
+        log_only_common_attributes=log_only_common_attributes,
     ) as gc_span:
       if is_experimental_semconv():
         set_operation_details_common_attributes(
-            gc_span.operation_details_common_attributes, common_attributes
+            gc_span.operation_details_common_attributes,
+            common_attributes,
+            log_only_attributes=log_only_common_attributes,
         )
       try:
         yield gc_span
@@ -564,6 +628,12 @@ async def use_inference_span(
             gc_span.operation_details_attributes,
             gc_span.operation_details_common_attributes,
         )
+  else:
+    with _use_extra_generate_content_attributes(
+        common_attributes,
+        log_only_extra_attributes=log_only_common_attributes,
+    ):
+      yield
 
 
 def _should_log_prompt_response_content() -> bool:
@@ -607,9 +677,21 @@ def _instrumented_with_opentelemetry_instrumentation_google_genai() -> bool:
   return False
 
 
+def _should_emit_native_telemetry(agent: BaseAgent) -> bool:
+  """If the google-genai instrumentation lib is active AND this is a Gemini agent, then the lib already emits inference metrics."""
+  if (
+      _instrumented_with_opentelemetry_instrumentation_google_genai()
+      and _is_gemini_agent(agent)
+  ):
+    return False
+
+  return True
+
+
 @contextmanager
 def _use_extra_generate_content_attributes(
     extra_attributes: Mapping[str, AttributeValue],
+    log_only_extra_attributes: Mapping[str, AttributeValue] | None = None,
 ):
   try:
     from opentelemetry.instrumentation.google_genai import GENERATE_CONTENT_EXTRA_ATTRIBUTES_CONTEXT_KEY
@@ -621,13 +703,25 @@ def _use_extra_generate_content_attributes(
         + ' Please upgrade to version to 0.6b0 or above.'
     )
     yield
+
     return
 
-  tok = otel_context.attach(
-      otel_context.set_value(
-          GENERATE_CONTENT_EXTRA_ATTRIBUTES_CONTEXT_KEY, extra_attributes
-      )
+  ctx = otel_context.set_value(
+      GENERATE_CONTENT_EXTRA_ATTRIBUTES_CONTEXT_KEY, extra_attributes
   )
+  if log_only_extra_attributes:
+    try:
+      from opentelemetry.instrumentation.google_genai import GENERATE_CONTENT_EVENT_ONLY_EXTRA_ATTRIBUTES_CONTEXT_KEY
+
+      ctx = otel_context.set_value(
+          GENERATE_CONTENT_EVENT_ONLY_EXTRA_ATTRIBUTES_CONTEXT_KEY,
+          log_only_extra_attributes,
+          context=ctx,
+      )
+    except (ImportError, AttributeError):
+      pass
+
+  tok = otel_context.attach(ctx)
   try:
     yield
   finally:
@@ -640,12 +734,9 @@ def _is_gemini_agent(agent: BaseAgent) -> bool:
   if not isinstance(agent, LlmAgent):
     return False
 
-  if isinstance(agent.model, str):
-    return is_gemini_model(agent.model)
-
-  from ..models.google_llm import Gemini
-
-  return isinstance(agent.model, Gemini)
+  model = agent.model if agent.model != '' else agent._default_model
+  model_name = model if isinstance(model, str) else model.model
+  return is_gemini_model(model_name)
 
 
 def _set_common_generate_content_attributes(
@@ -662,6 +753,7 @@ def _set_common_generate_content_attributes(
 def _use_native_generate_content_span_stable_semconv(
     llm_request: LlmRequest,
     common_attributes: Mapping[str, AttributeValue],
+    log_only_common_attributes: Mapping[str, AttributeValue] | None = None,
 ) -> Iterator[GenerateContentSpan]:
   with tracer.start_as_current_span(
       f"generate_content {llm_request.model or ''}"
@@ -683,12 +775,18 @@ def _use_native_generate_content_span_stable_semconv(
             attributes={GEN_AI_SYSTEM: _guess_gemini_system_name()},
         )
     )
+    user_message_attributes = {GEN_AI_SYSTEM: _guess_gemini_system_name()}
+    if _should_log_prompt_response_content() and log_only_common_attributes:
+      user_id = log_only_common_attributes.get(USER_ID)
+      if user_id is not None:
+        user_message_attributes[USER_ID] = user_id
+
     for content in llm_request.contents:
       otel_logger.emit(
           LogRecord(
               event_name='gen_ai.user.message',
               body={'content': _serialize_content_with_elision(content)},
-              attributes={GEN_AI_SYSTEM: _guess_gemini_system_name()},
+              attributes=user_message_attributes,
           )
       )
 
@@ -699,10 +797,13 @@ def _use_native_generate_content_span_stable_semconv(
 async def _use_native_generate_content_span(
     llm_request: LlmRequest,
     common_attributes: Mapping[str, AttributeValue],
+    log_only_common_attributes: Mapping[str, AttributeValue] | None = None,
 ) -> AsyncIterator[GenerateContentSpan]:
   if not is_experimental_semconv():
     with _use_native_generate_content_span_stable_semconv(
-        llm_request, common_attributes
+        llm_request,
+        common_attributes,
+        log_only_common_attributes=log_only_common_attributes,
     ) as gc_span:
       yield gc_span
     return

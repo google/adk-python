@@ -148,7 +148,10 @@ def test_resolve_project_from_gcloud_fails(
             "gs://a",
             "rag://m",
             None,
-            "--session_db_url=sqlite://s --artifact_storage_uri=gs://a",
+            (
+                "--session_service_uri=sqlite://s --artifact_service_uri=gs://a"
+                " --memory_service_uri=rag://m"
+            ),
         ),
         (
             "0.5.0",
@@ -156,7 +159,10 @@ def test_resolve_project_from_gcloud_fails(
             "gs://a",
             "rag://m",
             None,
-            "--session_db_url=sqlite://s",
+            (
+                "--session_service_uri=sqlite://s --artifact_service_uri=gs://a"
+                " --memory_service_uri=rag://m"
+            ),
         ),
         (
             "1.3.0",
@@ -180,7 +186,7 @@ def test_resolve_project_from_gcloud_fails(
             "gs://a",
             None,
             None,
-            "--artifact_storage_uri=gs://a",
+            "--artifact_service_uri=gs://a",
         ),
         (
             "1.21.0",
@@ -236,6 +242,8 @@ def test_agent_engine_app_template_compiles_with_windows_paths() -> None:
       adk_app_type="agent",
       trace_to_cloud_option=False,
       express_mode=False,
+      extra_imports="",
+      app_instantiation="agent=root_agent",
   )
   compile(rendered, "<agent_engine_app.py>", "exec")
 
@@ -315,7 +323,9 @@ def test_to_agent_engine_happy_path(
   assert "enable_tracing=True" in content
   reqs_path = tmp_dir / "requirements.txt"
   assert reqs_path.is_file()
-  assert "google-cloud-aiplatform[adk,agent_engines]" in reqs_path.read_text()
+  reqs_content = reqs_path.read_text()
+  assert "google-cloud-aiplatform[agent_engines]" in reqs_content
+  assert f"google-adk=={cli_deploy.__version__}" in reqs_content
   assert len(create_recorder.calls) == 1
   assert str(rmtree_recorder.get_last_call_args()[0]) == str(tmp_dir)
 
@@ -499,7 +509,7 @@ def test_to_gke_happy_path(
   dockerfile_path = tmp_path / "Dockerfile"
   assert dockerfile_path.is_file()
   dockerfile_content = dockerfile_path.read_text()
-  assert "CMD adk web --port=9090" in dockerfile_content
+  assert "CMD adk api_server --with_ui --port=9090" in dockerfile_content
   assert "RUN pip install google-adk==1.2.0" in dockerfile_content
 
   assert len(run_recorder.calls) == 3, "Expected 3 subprocess calls"
@@ -696,3 +706,59 @@ class TestValidateAgentImport:
     )
 
     assert sys.path == original_path
+
+
+def test_to_agent_engine_triggers_onboarding(
+    monkeypatch: pytest.MonkeyPatch,
+    agent_dir: Callable[[bool, bool], Path],
+) -> None:
+  """It should trigger onboarding when credentials are missing."""
+  mock_handle_login = mock.Mock(
+      return_value=cli_deploy._onboarding.ExpressModeAuth(
+          api_key="fake_api_key",
+          project_id="fake_project",
+          region="fake_region",
+      )
+  )
+  monkeypatch.setattr(
+      cli_deploy._onboarding, "handle_login_with_google", mock_handle_login
+  )
+
+  # Mock subprocess.run to avoid calling gcloud
+  monkeypatch.setattr(
+      subprocess,
+      "run",
+      lambda *a, **k: types.SimpleNamespace(stdout="fake-project\n"),
+  )
+
+  fake_vertexai = types.ModuleType("vertexai")
+  mock_client = mock.Mock()
+  fake_vertexai.Client = mock.Mock(return_value=mock_client)
+
+  mock_agent_engines = mock.Mock()
+  mock_client.agent_engines = mock_agent_engines
+
+  mock_agent_engines.create.return_value = types.SimpleNamespace(
+      api_resource=types.SimpleNamespace(
+          name="projects/p/locations/l/reasoningEngines/e"
+      )
+  )
+
+  monkeypatch.setitem(sys.modules, "vertexai", fake_vertexai)
+
+  src_dir = agent_dir(False, False)
+
+  cli_deploy.to_agent_engine(
+      agent_folder=str(src_dir),
+      adk_app="my_adk_app",
+      trace_to_cloud=True,
+  )
+
+  mock_handle_login.assert_called_once()
+
+  # Verify vertexai.Client was initialized with correct args
+  fake_vertexai.Client.assert_called_once()
+  kwargs = fake_vertexai.Client.call_args.kwargs
+  assert kwargs.get("project") == "fake_project"
+  assert kwargs.get("location") == "fake_region"
+  assert "api_key" not in kwargs or kwargs.get("api_key") is None

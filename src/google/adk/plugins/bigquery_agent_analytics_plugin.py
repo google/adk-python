@@ -634,20 +634,35 @@ _active_invocation_id_ctx: contextvars.ContextVar[Optional[str]] = (
 
 @dataclass
 class _SpanRecord:
-  """A single record on the unified span stack.
+  """A single record on the BQAA plugin's internal span stack.
 
-  Consolidates span, id, ownership, and timing into one object
-  so all stacks stay in sync by construction.
+  Stores the IDs and timing the plugin needs to populate BigQuery
+  ``span_id`` / ``parent_span_id`` / ``trace_id`` / ``latency_ms``
+  columns.  Crucially, no OpenTelemetry ``Span`` object is held.
 
-  Note: The plugin intentionally does NOT attach its spans to the
-  ambient OTel context (no ``context.attach``).  This prevents the
-  plugin from corrupting the framework's span hierarchy when an
-  external OTel exporter (e.g. ``opentelemetry-instrumentation-vertexai``)
-  is active.  See https://github.com/google/adk-python/issues/4561.
+  Background — prior approach and the bug it caused:
+    The previous implementation created real OTel spans via
+    ``tracer.start_span(...)`` purely as ID carriers.  When the host
+    application has an OTel exporter configured (notably Agent Engine
+    with ``GOOGLE_CLOUD_AGENT_ENGINE_ENABLE_TELEMETRY=true``), those
+    plugin-owned spans were exported to Cloud Trace alongside the
+    framework's real spans — producing a duplicate-span view for
+    every BQAA-instrumented operation.  See haiyuan-eng-google/BQAA-SDK#94.
+
+    The plugin already tracked all parent / child relationships on
+    this internal stack, so the OTel span object was incidental to
+    correctness.  We now store ``trace_id`` directly on each record
+    (inherited from the ambient OTel span when present, generated
+    otherwise) and skip span creation entirely.  Cross-system
+    correlation with Cloud Trace still works via ``trace_id``
+    inheritance.
+
+    ``attach_current_span`` (which observes the ambient span without
+    owning one) is unaffected by this change.
   """
 
-  span: trace.Span
   span_id: str
+  trace_id: str
   owns_span: bool
   start_time_ns: int
   first_token_time: Optional[float] = None
@@ -689,17 +704,16 @@ class TraceManager:
 
   @staticmethod
   def get_trace_id(callback_context: CallbackContext) -> Optional[str]:
-    """Gets the trace ID from the current span or invocation_id."""
+    """Gets the trace ID from the current span stack or invocation_id."""
     records = _span_records_ctx.get()
     if records:
-      current_span = records[-1].span
-      if current_span.get_span_context().is_valid:
-        return format(current_span.get_span_context().trace_id, "032x")
+      return records[-1].trace_id
 
-    # Fallback to OTel context
-    current_span = trace.get_current_span()
-    if current_span.get_span_context().is_valid:
-      return format(current_span.get_span_context().trace_id, "032x")
+    # Fallback to ambient OTel context (e.g. callbacks fired before
+    # any plugin span was pushed).
+    ambient_ctx = trace.get_current_span().get_span_context()
+    if ambient_ctx.is_valid:
+      return format(ambient_ctx.trace_id, "032x")
 
     return callback_context.invocation_id
 
@@ -708,47 +722,48 @@ class TraceManager:
       callback_context: CallbackContext,
       span_name: Optional[str] = "adk-span",
   ) -> str:
-    """Starts a new span and pushes it onto the stack.
+    """Pushes a BQAA-internal span record onto the stack.
 
-    The span is created but NOT attached to the ambient OTel context,
-    so it cannot corrupt the framework's own span hierarchy.  The
-    plugin tracks span_id / parent_span_id internally via its own
-    contextvar stack.
+    No OpenTelemetry span is created — see ``_SpanRecord`` for
+    background.  The record carries everything the plugin needs to
+    populate BigQuery columns:
 
-    If OTel is not configured (returning non-recording spans), a UUID
-    fallback is generated to ensure span_id and parent_span_id are
-    populated in BigQuery logs.
+    * ``span_id`` — newly generated 16-hex string.
+    * ``trace_id`` — inherited by precedence:
+        1. Top of the existing internal stack (keeps every push
+           within an invocation under one trace_id).
+        2. Ambient OTel span when valid (e.g. the framework's Runner
+           span, or an Agent Engine root span) — keeps BigQuery rows
+           joinable to Cloud Trace via the shared ``trace_id``.
+        3. A fresh 32-hex value (no ambient context, e.g. unit tests
+           or non-OTel runtimes).
+    * ``start_time_ns`` — for the eventual ``latency_ms`` on pop.
+
+    ``span_name`` is preserved on the signature for API stability but
+    is no longer used (no OTel span name is set).
     """
+    del span_name  # No-op: kept for API stability; no OTel span is created.
     TraceManager.init_trace(callback_context)
 
-    # Create the span without attaching it to the ambient context.
-    # This avoids re-parenting framework spans like ``call_llm``
-    # or ``execute_tool``.  See #4561.
-    #
-    # If the internal stack already has a span, create the new span
-    # as a child so it shares the same trace_id.  Without this, each
-    # ``start_span`` would be an independent root with its own
-    # trace_id — causing trace_id fracture (see #4645).
     records = TraceManager._get_records()
-    parent_ctx = None
-    if records and records[-1].span.get_span_context().is_valid:
-      parent_ctx = trace.set_span_in_context(records[-1].span)
-    span = tracer.start_span(span_name, context=parent_ctx)
-
-    if span.get_span_context().is_valid:
-      span_id_str = format(span.get_span_context().span_id, "016x")
+    if records:
+      trace_id = records[-1].trace_id
     else:
-      span_id_str = uuid.uuid4().hex
+      ambient_ctx = trace.get_current_span().get_span_context()
+      if ambient_ctx.is_valid:
+        trace_id = format(ambient_ctx.trace_id, "032x")
+      else:
+        trace_id = uuid.uuid4().hex  # 32 hex chars
+
+    span_id_str = uuid.uuid4().hex[:16]
 
     record = _SpanRecord(
-        span=span,
         span_id=span_id_str,
+        trace_id=trace_id,
         owns_span=True,
         start_time_ns=time.time_ns(),
     )
-
-    new_records = list(records) + [record]
-    _span_records_ctx.set(new_records)
+    _span_records_ctx.set(list(records) + [record])
 
     return span_id_str
 
@@ -756,30 +771,31 @@ class TraceManager:
   def attach_current_span(
       callback_context: CallbackContext,
   ) -> str:
-    """Records the current OTel span on the stack without owning it.
+    """Records the ambient OTel span's IDs on the stack without owning it.
 
-    The span is NOT re-attached to the ambient context; it is only
-    tracked internally for span_id / parent_span_id resolution.
+    No OTel span is created or attached.  This path captures the
+    ambient span's ``trace_id`` / ``span_id`` so plugin-emitted
+    BigQuery rows correlate with whatever Cloud Trace / external
+    exporter the host is already running.
     """
     TraceManager.init_trace(callback_context)
 
-    span = trace.get_current_span()
-
-    if span.get_span_context().is_valid:
-      span_id_str = format(span.get_span_context().span_id, "016x")
+    ambient_ctx = trace.get_current_span().get_span_context()
+    if ambient_ctx.is_valid:
+      span_id_str = format(ambient_ctx.span_id, "016x")
+      trace_id = format(ambient_ctx.trace_id, "032x")
     else:
-      span_id_str = uuid.uuid4().hex
+      span_id_str = uuid.uuid4().hex[:16]
+      trace_id = uuid.uuid4().hex
 
     record = _SpanRecord(
-        span=span,
         span_id=span_id_str,
+        trace_id=trace_id,
         owns_span=False,
         start_time_ns=time.time_ns(),
     )
-
     records = TraceManager._get_records()
-    new_records = list(records) + [record]
-    _span_records_ctx.set(new_records)
+    _span_records_ctx.set(list(records) + [record])
 
     return span_id_str
 
@@ -828,10 +844,10 @@ class TraceManager:
 
   @staticmethod
   def pop_span() -> tuple[Optional[str], Optional[int]]:
-    """Ends the current span and pops it from the stack.
+    """Pops the top span record from the internal stack.
 
-    No ambient OTel context is detached because we never attached
-    one in the first place (see ``push_span``).
+    Returns ``(span_id, duration_ms)``.  No OTel span is ended
+    because the plugin no longer creates one (see ``_SpanRecord``).
     """
     records = _span_records_ctx.get()
     if not records:
@@ -841,29 +857,13 @@ class TraceManager:
     record = new_records.pop()
     _span_records_ctx.set(new_records)
 
-    # Calculate duration
-    duration_ms = None
-    otel_start = getattr(record.span, "start_time", None)
-    if isinstance(otel_start, (int, float)) and otel_start:
-      duration_ms = int((time.time_ns() - otel_start) / 1_000_000)
-    else:
-      duration_ms = int((time.time_ns() - record.start_time_ns) / 1_000_000)
-
-    if record.owns_span:
-      record.span.end()
-
+    duration_ms = int((time.time_ns() - record.start_time_ns) / 1_000_000)
     return record.span_id, duration_ms
 
   @staticmethod
   def clear_stack() -> None:
     """Clears all span records. Safety net for cross-invocation cleanup."""
-    records = _span_records_ctx.get()
-    if records:
-      # End any owned spans to avoid OTel resource leaks.
-      for record in reversed(records):
-        if record.owns_span:
-          record.span.end()
-      _span_records_ctx.set([])
+    _span_records_ctx.set([])
 
   @staticmethod
   def get_current_span_and_parent() -> tuple[Optional[str], Optional[str]]:
@@ -894,19 +894,11 @@ class TraceManager:
 
   @staticmethod
   def get_start_time(span_id: str) -> Optional[float]:
-    """Gets start time of a span by ID."""
+    """Gets start time of a span by ID (seconds since epoch)."""
     records = _span_records_ctx.get()
     if records:
       for record in reversed(records):
         if record.span_id == span_id:
-          # Try OTel span start_time first
-          otel_start = getattr(record.span, "start_time", None)
-          if (
-              record.span.get_span_context().is_valid
-              and isinstance(otel_start, (int, float))
-              and otel_start
-          ):
-            return otel_start / 1_000_000_000.0
           return record.start_time_ns / 1_000_000_000.0
     return None
 
@@ -982,6 +974,19 @@ class BatchProcessor:
     self._batch_processor_task: Optional[asyncio.Task] = None
     self._shutdown = False
 
+    # Running tally of events/rows dropped without ever being written, keyed by
+    # reason. Logging every drop is the only existing signal that data was lost,
+    # and those logs are easy to miss at volume; these counters let a host poll
+    # get_drop_stats() and export the loss to its own monitoring before it shows
+    # up as missing rows downstream.
+    self._dropped: dict[str, int] = {
+        "queue_full": 0,
+        "arrow_prep_failed": 0,
+        "retry_exhausted": 0,
+        "non_retryable": 0,
+        "unexpected_error": 0,
+    }
+
   async def flush(self) -> None:
     """Flushes the queue by waiting for it to be empty."""
     if self._queue.empty():
@@ -1003,7 +1008,35 @@ class BatchProcessor:
     try:
       self._queue.put_nowait(row)
     except asyncio.QueueFull:
-      logger.warning("BigQuery log queue full, dropping event.")
+      self._dropped["queue_full"] += 1
+      logger.warning(
+          "BigQuery log queue full, dropping event. Total events dropped"
+          " (queue full): %s",
+          self._dropped["queue_full"],
+      )
+
+  def get_drop_stats(self) -> dict[str, int]:
+    """Returns a snapshot of dropped-row counts keyed by reason.
+
+    Dropped rows are logged best-effort and never written, so these counters
+    are the canonical signal that data was lost. Reasons:
+
+      ``queue_full``: the in-memory queue was full when the event arrived.
+      ``arrow_prep_failed``: the batch could not be serialized to Arrow.
+      ``retry_exhausted``: the write failed after exhausting all retries.
+      ``non_retryable``: BigQuery returned a non-retryable error (e.g. a
+        schema mismatch).
+      ``unexpected_error``: an unexpected exception aborted the write.
+
+    Returns:
+        A copy of the per-reason drop counters.
+    """
+    return dict(self._dropped)
+
+  @property
+  def dropped_event_count(self) -> int:
+    """Total rows dropped without being written, across all reasons."""
+    return sum(self._dropped.values())
 
   def _prepare_arrow_batch(self, rows: list[dict[str, Any]]) -> pa.RecordBatch:
     """Prepares a PyArrow RecordBatch from a list of rows.
@@ -1159,8 +1192,13 @@ class BatchProcessor:
       req.arrow_rows.writer_schema.serialized_schema = serialized_schema
       req.arrow_rows.rows.serialized_record_batch = serialized_batch
     except Exception as e:
+      self._dropped["arrow_prep_failed"] += len(rows)
       logger.error(
-          "Failed to prepare Arrow batch (Data Loss): %s", e, exc_info=True
+          "Failed to prepare Arrow batch (Data Loss): %s. Total rows dropped"
+          " (arrow prep failed): %s",
+          e,
+          self._dropped["arrow_prep_failed"],
+          exc_info=True,
       )
       return
 
@@ -1171,7 +1209,21 @@ class BatchProcessor:
           yield req
 
         async def perform_write():
-          responses = await self.write_client.append_rows(requests_iter())
+          # The AppendRows streaming RPC does not auto-populate the
+          # request-routing header, so writes to any region other than
+          # the US multiregion fail with a "session not found" /
+          # stream-not-found error. Set the routing header explicitly
+          # (same as google.cloud.bigquery_storage_v1.writer) so the
+          # request reaches the region that owns the write stream.
+          responses = await self.write_client.append_rows(
+              requests_iter(),
+              metadata=(
+                  (
+                      "x-goog-request-params",
+                      f"write_stream={self.write_stream}",
+                  ),
+              ),
+          )
           async for response in responses:
             error = getattr(response, "error", None)
             error_code = getattr(error, "code", None)
@@ -1202,6 +1254,7 @@ class BatchProcessor:
                   for row_error in row_errors:
                     logger.error("Row error details: %s", row_error)
                 logger.error("Row content causing error: %s", rows)
+              self._dropped["non_retryable"] += len(rows)
               return
           return
 
@@ -1216,10 +1269,13 @@ class BatchProcessor:
       ) as e:
         attempt += 1
         if attempt > self.retry_config.max_retries:
+          self._dropped["retry_exhausted"] += len(rows)
           logger.error(
-              "BigQuery Batch Dropped after %s attempts. Last error: %s",
+              "BigQuery Batch Dropped after %s attempts. Last error: %s."
+              " Total rows dropped (retry exhausted): %s",
               self.retry_config.max_retries + 1,
               e,
+              self._dropped["retry_exhausted"],
           )
           return
 
@@ -1236,9 +1292,12 @@ class BatchProcessor:
         await asyncio.sleep(sleep_time)
         delay *= self.retry_config.multiplier
       except Exception as e:
+        self._dropped["unexpected_error"] += len(rows)
         logger.error(
-            "Unexpected BigQuery Write API error (Dropping batch): %s",
+            "Unexpected BigQuery Write API error (Dropping batch): %s."
+            " Total rows dropped (unexpected error): %s",
             e,
+            self._dropped["unexpected_error"],
             exc_info=True,
         )
         return
@@ -1430,14 +1489,18 @@ class HybridContentParser:
 
       # CASE C: Text
       elif hasattr(part, "text") and part.text:
-        text_len = len(part.text.encode("utf-8"))
-        # If max_length is set and smaller than inline limit, use it as threshold
-        # to prefer offloading over truncation.
-        offload_threshold = self.inline_text_limit
-        if self.max_length != -1 and self.max_length < offload_threshold:
-          offload_threshold = self.max_length
+        char_len = len(part.text)
+        byte_len = len(part.text.encode("utf-8"))
 
-        if self.offloader and text_len > offload_threshold:
+        # Decide whether to offload using each limit in its own
+        # unit.  inline_text_limit is a byte-based storage guard;
+        # max_length is a character-based truncation limit.
+        exceeds_inline_byte_limit = byte_len > self.inline_text_limit
+        exceeds_char_limit = (
+            self.max_length != -1 and char_len > self.max_length
+        )
+
+        if self.offloader and (exceeds_inline_byte_limit or exceeds_char_limit):
           # Text is too big, treat as file
           path = f"{datetime.now().date()}/{self.trace_id}/{self.span_id}_p{idx}.txt"
           try:
@@ -1824,6 +1887,17 @@ _EVENT_VIEW_DEFS: dict[str, list[str]] = {
             "CAST(JSON_VALUE(content, '$.usage.total')"
             " AS INT64) AS usage_total_tokens"
         ),
+        (
+            "CAST(JSON_VALUE(attributes,"
+            " '$.usage_metadata.cached_content_token_count') AS INT64) AS"
+            " usage_cached_tokens"
+        ),
+        (
+            "SAFE_DIVIDE(CAST(JSON_VALUE(attributes,"
+            " '$.usage_metadata.cached_content_token_count') AS"
+            " INT64),CAST(JSON_VALUE(content, '$.usage.prompt') AS INT64)) AS"
+            " context_cache_hit_rate"
+        ),
         "CAST(JSON_VALUE(latency_ms, '$.total_ms') AS INT64) AS total_ms",
         (
             "CAST(JSON_VALUE(latency_ms,"
@@ -1831,6 +1905,7 @@ _EVENT_VIEW_DEFS: dict[str, list[str]] = {
         ),
         "JSON_VALUE(attributes, '$.model_version') AS model_version",
         "JSON_QUERY(attributes, '$.usage_metadata') AS usage_metadata",
+        "JSON_QUERY(attributes, '$.cache_metadata') AS cache_metadata",
     ],
     "LLM_ERROR": [
         "CAST(JSON_VALUE(latency_ms, '$.total_ms') AS INT64) AS total_ms",
@@ -1894,6 +1969,18 @@ _EVENT_VIEW_DEFS: dict[str, list[str]] = {
             " '$.a2a_metadata.\"a2a:response\"') AS a2a_response"
         ),
     ],
+    "AGENT_RESPONSE": [
+        "JSON_VALUE(content, '$.response') AS response_text",
+        "JSON_VALUE(attributes, '$.source_event_id') AS source_event_id",
+        (
+            "JSON_VALUE(attributes,"
+            " '$.source_event_author') AS source_event_author"
+        ),
+        (
+            "JSON_VALUE(attributes,"
+            " '$.source_event_branch') AS source_event_branch"
+        ),
+    ],
 }
 
 _VIEW_SQL_TEMPLATE = """\
@@ -1929,6 +2016,7 @@ class EventData:
   model: Optional[str] = None
   model_version: Optional[str] = None
   usage_metadata: Any = None
+  cache_metadata: Any = None
   status: str = "OK"
   error_message: Optional[str] = None
   extra_attributes: dict[str, Any] = field(default_factory=dict)
@@ -1949,6 +2037,7 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
       table_id: Optional[str] = None,
       config: Optional[BigQueryLoggerConfig] = None,
       location: str = "US",
+      credentials: Optional[google.auth.credentials.Credentials] = None,
       **kwargs,
   ) -> None:
     """Initializes the instance.
@@ -1959,6 +2048,8 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
         table_id: BigQuery table ID (optional, overrides config).
         config: BigQueryLoggerConfig (optional).
         location: BigQuery location (default: "US").
+        credentials: Google Auth credentials (optional). If None, uses
+          Application Default Credentials.
         **kwargs: Additional configuration parameters for BigQueryLoggerConfig.
     """
     super().__init__(name="bigquery_agent_analytics")
@@ -1985,6 +2076,7 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
     self._startup_error: Optional[Exception] = None
     self._is_shutting_down = False
     self._setup_lock = None
+    self._credentials = credentials
     self.client = None
     self._loop_state_by_loop: dict[asyncio.AbstractEventLoop, _LoopState] = {}
     self._write_stream_name = None  # Resolved stream name
@@ -2097,15 +2189,16 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
     # grpc.aio clients are loop-bound, so we create one per event loop.
 
     def get_credentials():
-      creds, project_id = google.auth.default(
+      creds, _ = google.auth.default(
           scopes=["https://www.googleapis.com/auth/cloud-platform"]
       )
-      return creds, project_id
+      return creds
 
-    creds, project_id = await loop.run_in_executor(
-        self._executor, get_credentials
-    )
-    quota_project_id = getattr(creds, "quota_project_id", None)
+    if self._credentials is None:
+      self._credentials = await loop.run_in_executor(
+          self._executor, get_credentials
+      )
+    quota_project_id = getattr(self._credentials, "quota_project_id", None)
     options = (
         client_options.ClientOptions(quota_project_id=quota_project_id)
         if quota_project_id
@@ -2119,7 +2212,7 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
     client_info = gapic_client_info.ClientInfo(user_agent=" ".join(user_agents))
 
     write_client = BigQueryWriteAsyncClient(
-        credentials=creds,
+        credentials=self._credentials,
         client_info=client_info,
         client_options=options,
     )
@@ -2160,6 +2253,24 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
       # No running loop or other issue
       pass
 
+  def get_drop_stats(self) -> dict[str, int]:
+    """Returns dropped-row counts aggregated across all event loops.
+
+    Events are dropped best-effort (queue overflow, write failures), so the
+    loss is otherwise only visible in logs. Export these counters to your
+    monitoring to detect data loss before it surfaces as missing rows. See
+    BatchProcessor.get_drop_stats for the meaning of each reason.
+
+    Returns:
+        Per-reason drop counts summed over every active loop's processor.
+        Empty if no processor has been created yet.
+    """
+    totals: dict[str, int] = {}
+    for state in list(self._loop_state_by_loop.values()):
+      for reason, count in state.batch_processor.get_drop_stats().items():
+        totals[reason] = totals.get(reason, 0) + count
+    return totals
+
   async def _lazy_setup(self, **kwargs) -> None:
     """Performs lazy initialization of BigQuery clients and resources."""
     if self._started:
@@ -2173,7 +2284,8 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
       self.client = await loop.run_in_executor(
           self._executor,
           lambda: bigquery.Client(
-              project=self.project_id, location=self.location
+              project=self.project_id,
+              credentials=self._credentials,
           ),
       )
 
@@ -2193,7 +2305,9 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
             self.project_id,
             self.config.gcs_bucket_name,
             self._executor,
-            storage_client=kwargs.get("storage_client"),
+            storage_client=storage.Client(
+                project=self.project_id, credentials=self._credentials
+            ),
         )
 
       self.parser = HybridContentParser(
@@ -2598,7 +2712,14 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
 
   async def _ensure_started(self, **kwargs) -> None:
     """Ensures that the plugin is started and initialized."""
-    if os.getpid() != self._init_pid:
+    # _init_pid == 0 means the plugin was unpickled and has never been
+    # initialized in this process (the pickle sentinel set by
+    # __getstate__).  Skip the fork reset in that case — no fork
+    # happened, and _started is already False so _lazy_setup will run.
+    # Real forks are caught by os.register_at_fork (line 108) and by
+    # this check when _init_pid is a real (non-zero) PID from a
+    # different process.
+    if self._init_pid != 0 and os.getpid() != self._init_pid:
       self._reset_runtime_state()
     if not self._started:
       # Kept original lock name as it was not explicitly changed.
@@ -2610,6 +2731,10 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
             await self._lazy_setup(**kwargs)
             self._started = True
             self._startup_error = None
+            # Record the current PID so fork detection works for
+            # the rest of this instance's lifetime.
+            if self._init_pid == 0:
+              self._init_pid = os.getpid()
           except Exception as e:
             self._startup_error = e
             logger.error("Failed to initialize BigQuery Plugin: %s", e)
@@ -2729,6 +2854,15 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
         attrs["usage_metadata"] = usage_dict
       else:
         attrs["usage_metadata"] = event_data.usage_metadata
+
+    if event_data.cache_metadata:
+      cache_meta_dict, _ = _recursive_smart_truncate(
+          event_data.cache_metadata, self.config.max_content_length
+      )
+      if isinstance(cache_meta_dict, dict):
+        attrs["cache_metadata"] = cache_meta_dict
+      else:
+        attrs["cache_metadata"] = event_data.cache_metadata
 
     if self.config.log_session_metadata:
       try:
@@ -2902,7 +3036,7 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
       invocation_context: InvocationContext,
       event: "Event",
   ) -> None:
-    """Logs state changes, HITL events, and A2A interactions.
+    """Logs state changes, HITL events, A2A interactions, and agent responses.
 
     - Checks each event for a non-empty state_delta and logs it as a
       STATE_DELTA event.
@@ -2914,6 +3048,9 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
       and logs them as ``A2A_INTERACTION`` events so the remote
       agent's response and cross-reference IDs (``a2a:task_id``,
       ``a2a:context_id``) are visible in BigQuery.
+    - Detects final response events emitted by agents and logs
+      them as ``AGENT_RESPONSE`` so the visible response text
+      (after all callback modifications) is captured in BigQuery.
 
     The HITL detection must happen here (not in tool callbacks) because
     ``adk_request_credential``, ``adk_request_confirmation``, and
@@ -2928,7 +3065,7 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
     callback_ctx = CallbackContext(invocation_context)
 
     # --- State delta logging ---
-    if event.actions and event.actions.state_delta:
+    if event.actions.state_delta:
       await self._log_event(
           "STATE_DELTA",
           callback_ctx,
@@ -3015,6 +3152,50 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
               },
           ),
       )
+
+    # --- Final agent response logging ---
+    # Captures final response events emitted by agents (after all
+    # after_model_callback modifications).  Uses a strict guard to
+    # avoid false positives from skip_summarization function
+    # responses, long-running tool pause events, and thought-only
+    # events (which ADK treats as invisible internal reasoning).
+    is_agent_response = (
+        event.content
+        and event.content.parts
+        and event.is_final_response()
+        and event.partial is not True
+        and not event.get_function_calls()
+        and not event.get_function_responses()
+        and not event.long_running_tool_ids
+    )
+    if is_agent_response:
+      # Filter to visible text parts only.  Exclude thoughts
+      # (internal reasoning, A2A working/submitted updates),
+      # empty parts, and non-text parts (executable_code, etc.)
+      # that would render as "other" in _format_content.
+      visible_parts = [
+          p
+          for p in event.content.parts
+          if p.text and not getattr(p, "thought", None)
+      ]
+      if visible_parts:
+        visible_content = types.Content(
+            role=event.content.role, parts=visible_parts
+        )
+        formatted, truncated = self._format_content_safely(visible_content)
+        await self._log_event(
+            "AGENT_RESPONSE",
+            callback_ctx,
+            raw_content={"response": formatted},
+            is_truncated=truncated,
+            event_data=EventData(
+                extra_attributes={
+                    "source_event_id": event.id,
+                    "source_event_author": event.author,
+                    "source_event_branch": event.branch,
+                },
+            ),
+        )
 
     return None
 
@@ -3289,6 +3470,7 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
             time_to_first_token_ms=tfft,
             model_version=llm_response.model_version,
             usage_metadata=llm_response.usage_metadata,
+            cache_metadata=getattr(llm_response, "cache_metadata", None),
             span_id_override=span_id if is_popped else None,
             parent_span_id_override=(parent_span_id if is_popped else None),
         ),

@@ -22,15 +22,19 @@ from collections.abc import MutableMapping
 import contextvars
 import json
 import os
+import sys
 from typing import Any
 from typing import Literal
+from typing import TYPE_CHECKING
 from typing import TypedDict
 
 from google.genai import types
 from google.genai.models import t as transformers
-from mcp import ClientSession as McpClientSession
-from mcp import Tool as McpTool
 from opentelemetry._logs import Logger
+
+if TYPE_CHECKING:
+  from mcp import ClientSession as McpClientSession
+  from mcp import Tool as McpTool
 from opentelemetry._logs import LogRecord
 from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GEN_AI_INPUT_MESSAGES
 from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GEN_AI_OUTPUT_MESSAGES
@@ -41,13 +45,14 @@ from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GEN_A
 from opentelemetry.trace import Span
 from opentelemetry.util.types import AttributeValue
 
-from ..models.llm_request import LlmRequest
-from ..models.llm_response import LlmResponse
+if TYPE_CHECKING:
+  from ..models.llm_request import LlmRequest
+  from ..models.llm_response import LlmResponse
 
 try:
   from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GEN_AI_TOOL_DEFINITIONS
 except ImportError:
-  GEN_AI_TOOL_DEFINITIONS = 'gen_ai.tool_definitions'
+  GEN_AI_TOOL_DEFINITIONS = 'gen_ai.tool.definitions'
 
 OTEL_SEMCONV_STABILITY_OPT_IN = 'OTEL_SEMCONV_STABILITY_OPT_IN'
 
@@ -135,7 +140,7 @@ def _safe_json_serialize_no_whitespaces(obj) -> str:
         ensure_ascii=False,
         default=lambda o: '<not serializable>',
     )
-  except (TypeError, OverflowError):
+  except (TypeError, ValueError, OverflowError):
     return '<not serializable>'
 
 
@@ -268,12 +273,16 @@ async def _to_tool_definitions(
   if callable(tool):
     return [_tool_definition_from_callable_tool(tool)]
 
-  if isinstance(tool, McpTool):
-    return [_tool_definition_from_mcp_tool(tool)]
+  if 'mcp' in sys.modules:
+    from mcp import ClientSession as McpClientSession
+    from mcp import Tool as McpTool
 
-  if isinstance(tool, McpClientSession):
-    result = await tool.list_tools()
-    return [_model_dump_to_tool_definition(t) for t in result.tools]
+    if isinstance(tool, McpTool):
+      return [_tool_definition_from_mcp_tool(tool)]
+
+    if isinstance(tool, McpClientSession):
+      result = await tool.list_tools()
+      return [_model_dump_to_tool_definition(t) for t in result.tools]
 
   return [
       GenericToolDefinition(
@@ -425,8 +434,14 @@ def _to_system_instructions(
 def set_operation_details_common_attributes(
     operation_details_common_attributes: MutableMapping[str, AttributeValue],
     attributes: Mapping[str, AttributeValue],
-):
+    log_only_attributes: Mapping[str, AttributeValue] | None = None,
+) -> None:
   operation_details_common_attributes.update(attributes)
+  if log_only_attributes and get_content_capturing_mode() in (
+      'EVENT_ONLY',
+      'SPAN_AND_EVENT',
+  ):
+    operation_details_common_attributes.update(log_only_attributes)
 
 
 async def set_operation_details_attributes_from_request(

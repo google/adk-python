@@ -20,6 +20,7 @@ import os
 from typing import Any
 from typing import List
 
+from typing_extensions import deprecated
 import yaml
 
 from ..features import experimental
@@ -31,6 +32,7 @@ from .common_configs import AgentRefConfig
 from .common_configs import CodeConfig
 
 
+@deprecated("from_config is deprecated and will be removed in future versions.")
 @experimental(FeatureName.AGENT_CONFIG)
 def from_config(config_path: str) -> BaseAgent:
   """Build agent from a configfile path.
@@ -80,31 +82,6 @@ def _resolve_agent_class(agent_class: str) -> type[BaseAgent]:
   )
 
 
-_BLOCKED_YAML_KEYS = frozenset({"args"})
-_ENFORCE_DENYLIST = False
-
-
-def _set_enforce_denylist(value: bool) -> None:
-  global _ENFORCE_DENYLIST
-  _ENFORCE_DENYLIST = value
-
-
-def _check_config_for_blocked_keys(node: Any, filename: str) -> None:
-  """Recursively check if the configuration contains any blocked keys."""
-  if isinstance(node, dict):
-    for key, value in node.items():
-      if key in _BLOCKED_YAML_KEYS:
-        raise ValueError(
-            f"Blocked key {key!r} found in {filename!r}. "
-            f"The '{key}' field is not allowed in agent configurations "
-            "because it can execute arbitrary code."
-        )
-      _check_config_for_blocked_keys(value, filename)
-  elif isinstance(node, list):
-    for item in node:
-      _check_config_for_blocked_keys(item, filename)
-
-
 def _load_config_from_path(config_path: str) -> AgentConfig:
   """Load an agent's configuration from a YAML file.
 
@@ -124,9 +101,6 @@ def _load_config_from_path(config_path: str) -> AgentConfig:
 
   with open(config_path, "r", encoding="utf-8") as f:
     config_data = yaml.safe_load(f)
-
-  if _ENFORCE_DENYLIST:
-    _check_config_for_blocked_keys(config_data, config_path)
 
   return AgentConfig.model_validate(config_data)
 
@@ -217,15 +191,7 @@ def resolve_code_reference(code_config: CodeConfig) -> Any:
 
   module_path, obj_name = code_config.name.rsplit(".", 1)
   module = importlib.import_module(module_path)
-  obj = getattr(module, obj_name)
-
-  if code_config.args and callable(obj):
-    kwargs = {arg.name: arg.value for arg in code_config.args if arg.name}
-    positional_args = [arg.value for arg in code_config.args if not arg.name]
-
-    return obj(*positional_args, **kwargs)
-  else:
-    return obj
+  return getattr(module, obj_name)
 
 
 @experimental(FeatureName.AGENT_CONFIG)
