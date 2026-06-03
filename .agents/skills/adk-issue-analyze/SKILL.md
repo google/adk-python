@@ -8,17 +8,18 @@ description: Analyze and triage a GitHub issue for the adk-python repository. Us
 This skill provides a structured workflow for analyzing, verifying, and triaging GitHub issues from the `google/adk-python` repository. When instructed to analyze/triage an issue, follow this read-only workflow.
 
 > [!IMPORTANT]
-> This skill is strictly **read-only**: Do NOT modify any code, create new branches, or write any implementation during this phase.
+> **Strict Read-Only Constraint**:
+> This skill is strictly **read-only**. You MUST NOT modify any code, create new branches, or write any implementation. Your role is only to analyze the issue and output the report. Do NOT use file creation or editing tools (e.g. `write_to_file`, `replace_file_content`, `edit_file`, etc.).
+>
+> **Strict Tooling Constraint**:
+> Do NOT use `curl`, `wget`, or any HTTP requests to fetch issue/PR content. You MUST parse/extract the issue number and use strictly the custom `fetch_github_issue` / `fetch_github_pr` python tools (or the `gh` command).
 
 ## Step 1: Retrieve and Parse the Issue
 1. **Extract the issue number**: Parse the number from the link or prompt (e.g., `https://github.com/google/adk-python/issues/5882` -> `5882`).
-2. **Fetch issue details**: Use the `gh` CLI tool to fetch issue details in JSON format:
+2. **Fetch issue details**: Use the custom python tool `fetch_github_issue(issue_number=<number>)` to get the issue metadata. This is the preferred method as it avoids command execution policy issues.
+   *If the custom python tool is not available, fall back to running the gh command:*
    ```bash
    gh issue view <issue_number> --repo google/adk-python --json number,title,body,state,labels,comments,assignees,createdAt,closedAt
-   ```
-   *If the `gh` CLI is not available or errors out, use `read_url_content` to fetch the public GitHub issue page:*
-   ```
-   https://github.com/google/adk-python/issues/<issue_number>
    ```
 
 ---
@@ -63,7 +64,6 @@ Search for any existing pull requests that attempt to resolve the issue:
   ```
 - **Analyze progress**: Check if the PR is open, merged, or closed, and if it successfully fixes the issue according to the repository's testing patterns.
 - **Present the structured report**: Format and present your findings structured as a premium report following the **Report Template** below.
-- **Offer to create a fix**: If no existing PR is found, you MUST explicitly ask the user: "Would you like me to create and implement a fix for this issue in the workspace? (Note: The changes and tests will be created in a new branch but NOT committed, so you can review and iterate on them.)"
 
 ---
 
@@ -109,6 +109,15 @@ Present your final analysis as a high-quality markdown response using the follow
 ---
 
 ## Tips & Best Practices
+> [!IMPORTANT]
+> **Command Sandbox Policy**:
+> When running commands via `run_command`, you MUST ONLY use `gh` or `git` commands. Commands like `curl`, `wget`, or direct HTTP network requests are strictly forbidden and will be automatically denied.
+> Furthermore, you MUST ONLY use simple commands without special characters (such as `;`, `&`, `|`, `$`, `` ` ``, `<`, `>`, `\n`, `\r`, `(`, `)`, `{`, `}`, `\`). The runner environment runs a security policy that automatically denies any commands containing these characters. Always run clean `gh` or `git` commands directly with arguments, without redirections, command chaining, or shell expansions.
+
+> [!IMPORTANT]
+> **Strict Read-Only Enforcement**:
+> When executing the `adk-issue-analyze` skill, you MUST NOT use any file modification or editing tools (such as `edit_file`, `replace_file_content`, `write_to_file`, `notebook_edit`, etc.). Your output must strictly be a text markdown report following the template provided, without editing any workspace files or writing/fixing code.
+
 > [!TIP]
 > Always use explicit repository qualifiers (`--repo google/adk-python`) when running `gh` commands to avoid failures due to custom internal or local git remotes.
 

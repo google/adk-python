@@ -30,6 +30,9 @@ This skill guides AI assistants in conducting a highly professional, rigorous, a
 >    Wait for instructions before performing any branch creation or Gerrit push.
 ---
 ## Phase 1: Retrieve and Parse the PR & Linked Context (Read-Only)
+> [!IMPORTANT]
+> **Strict Tooling Constraint**: Do NOT use `curl`, `wget`, or any HTTP requests to fetch PR/issue content. You MUST parse/extract the numbers and use strictly the custom `fetch_github_issue` / `fetch_github_pr` python tools, the `gh` command, or the helper scripts provided.
+
 ### Step 1: Extract PR Identifier, Verify CLA Signature & PR Assignment (Mandatory Entry Gate)
 1. **Identify the PR identifier**: Parse the PR number or URL from the prompt (e.g., `https://github.com/google/adk-python/pull/5885` -> `5885`).
 2. **CRITICAL COMPLIANCE & ASSIGNMENT GATES - Run Verification Script**:
@@ -63,10 +66,11 @@ This skill guides AI assistants in conducting a highly professional, rigorous, a
        - **PR IS ALREADY ASSIGNED TO YOU**: Proceed directly with Step 1.3.
 3. **Parse PR Details from Script Output**: The verification script in Step 2 outputs the complete PR details JSON directly to standard output, wrapped in `[PR_METADATA_JSON]` and `[/PR_METADATA_JSON]` tags. Do NOT write to or read from local cache files, and do NOT make separate network commands to fetch PR details. Parse the JSON metadata directly from the command's stdout:
    * **Key JSON Attributes**: `number`, `title`, `body`, `state`, `url`, `author`, `additions`, `deletions`, `changedFiles`, `labels`, `assignees`, `closingIssuesReferences` (used to locate linked issues).
-4. **Locate and Fetch Linked Issue(s)**: Extract linked closing issues directly from the `closingIssuesReferences` array in the parsed JSON metadata from the script's stdout. If any closing issues are linked, fetch their details to understand the original problem statement:
-   ```bash
-   gh issue view <issue_number> --repo google/adk-python --json number,title,body,state
-   ```
+4. **Locate and Fetch Linked Issue(s)**: Extract linked closing issues directly from the `closingIssuesReferences` array in the parsed JSON metadata from the script's stdout. If any closing issues are linked, fetch their details using the custom python tool `fetch_github_issue(issue_number=<number>)`. This is preferred as it avoids command execution policy issues.
+    *If the custom python tool is not available, run the gh command:*
+    ```bash
+    gh issue view <issue_number> --repo google/adk-python --json number,title,body,state
+    ```
 ### Step 2: Retrieve the Complete Diff
 1. **Fetch pull request changes**: Run the `gh pr diff` command to view the actual line-by-line diff of the PR:
    ```bash
@@ -280,6 +284,11 @@ Please let me know if you have any questions on these suggestions, and let's wor
 ````
 ---
 ## Tips & Best Practices
+> [!IMPORTANT]
+> **Command Sandbox Policy**:
+> When running commands via `run_command`, you MUST ONLY use `gh` or `git` commands. Commands like `curl`, `wget`, or direct HTTP network requests are strictly forbidden and will be automatically denied.
+> Furthermore, you MUST ONLY use simple commands without special characters (such as `;`, `&`, `|`, `$`, `` ` ``, `<`, `>`, `\n`, `\r`, `(`, `)`, `{`, `}`, `\`). The runner environment runs a security policy that automatically denies any commands containing these characters. Always run clean `gh` or `git` commands directly with arguments, without redirections, command chaining, or shell expansions.
+
 > [!TIP]
 > Always verify the baseline behavior in your active workspace before claiming something is a bug or invalid. Reading the current source files using `view_file` gives you full context.
 > [!IMPORTANT]
