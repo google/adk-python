@@ -5,6 +5,7 @@ This sample demonstrates how to add persistent, cross-session memory to a Google
 ## What it does
 
 The agent is wired up with two `FunctionTool` instances from `maximem-synap-google-adk`:
+
 - `search_memory` — semantic search over the user's stored memories
 - `store_memory` — persist explicit facts the user mentions
 
