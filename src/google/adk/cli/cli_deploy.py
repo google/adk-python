@@ -41,7 +41,7 @@ _AGENT_ENGINE_REQUIREMENT: Final[str] = (
 
 
 def _ensure_agent_engine_dependency(requirements_txt_path: str) -> None:
-  """Ensures staged requirements include Agent Engine dependencies."""
+  """Ensures staged requirements include Agent Platform dependencies."""
   if not os.path.exists(requirements_txt_path):
     raise FileNotFoundError(
         f'requirements.txt not found at: {requirements_txt_path}'
@@ -71,11 +71,6 @@ _DOCKERFILE_TEMPLATE: Final[str] = """
 FROM python:3.11-slim
 WORKDIR /app
 
-RUN apt-get update && \
-    apt-get upgrade -y && \
-    apt-get install -y git && \
-    apt -y autoremove
-
 # Create a non-root user
 RUN adduser --disabled-password --gecos "" myuser
 
@@ -92,7 +87,7 @@ ENV GOOGLE_CLOUD_LOCATION={gcp_region}
 # Set up environment variables - End
 
 # Install ADK - Start
-# RUN pip install google-adk=={adk_version}
+RUN pip install google-adk=={adk_version}
 # Install ADK - End
 
 # Copy agent - Start
@@ -468,7 +463,7 @@ def _validate_agent_import(
 
   This pre-deployment validation catches common issues like missing
   dependencies or import errors in custom BaseLlm implementations before
-  the agent is deployed to Agent Engine. This provides clearer error
+  the agent is deployed to Agent Platform. This provides clearer error
   messages and prevents deployments that would fail at runtime.
 
   Args:
@@ -838,7 +833,7 @@ def to_agent_engine(
     artifact_service_uri: Optional[str] = None,
     adk_version: Optional[str] = None,
 ):
-  """Deploys an agent to Agent Platform Runtime.
+  """Deploys an agent to Gemini Enterprise Agent Platform.
 
   `agent_folder` should contain the following files:
 
@@ -851,7 +846,7 @@ def to_agent_engine(
   Args:
     agent_folder (str): The folder (absolute path) containing the agent source
       code.
-    temp_folder (str): The temp folder for the generated Agent Engine source
+    temp_folder (str): The temp folder for the generated Agent Platform source
       files. It will be replaced with the generated files if it already exists.
     adk_app (str): Deprecated. This argument is no longer required or used.
     staging_bucket (str): Deprecated. This argument is no longer required or
@@ -865,8 +860,8 @@ def to_agent_engine(
       will be used. It will only be used if GOOGLE_GENAI_USE_VERTEXAI is true.
     adk_app_object (str): Deprecated. This argument is no longer required or
       used.
-    agent_engine_id (str): Optional. The ID of the Agent Engine instance to
-      update. If not specified, a new Agent Engine instance will be created.
+    agent_engine_id (str): Optional. The ID of the Agent Runtime instance to
+      update. If not specified, a new Agent Runtime instance will be created.
     absolutize_imports (bool): Deprecated. This argument is no longer required
       or used.
     project (str): Optional. Google Cloud project id for the deployed agent. If
@@ -875,15 +870,15 @@ def to_agent_engine(
     region (str): Optional. Google Cloud region for the deployed agent. If not
       specified, the region from the `GOOGLE_CLOUD_LOCATION` environment
       variable will be used. It will be ignored if `api_key` is specified.
-    display_name (str): Optional. The display name of the Agent Engine.
-    description (str): Optional. The description of the Agent Engine.
+    display_name (str): Optional. The display name of the Agent Runtime.
+    description (str): Optional. The description of the Agent Runtime.
     requirements_file (str): Deprecated. This argument is no longer required or
       used.
     env_file (str): Optional. The filepath to the `.env` file for environment
       variables. If not specified, the `.env` file in the `agent_folder` will be
       used. The values of `GOOGLE_CLOUD_PROJECT` and `GOOGLE_CLOUD_LOCATION`
       will be overridden by `project` and `region` if they are specified.
-    agent_engine_config_file (str): The filepath to the agent engine config file
+    agent_engine_config_file (str): The filepath to the agent platform config file
       to use. If not specified, the `.agent_engine_config.json` file in the
       `agent_folder` will be used.
     skip_agent_import_validation (bool): Deprecated. This argument is no longer
@@ -898,7 +893,7 @@ def to_agent_engine(
       specified, the session service will be deployed to the same parent
       resource as the runtime.
     artifact_service_uri (str): Optional. The URI of the artifact service.
-    adk_version (str): Optional. The ADK version to use in Agent Engine
+    adk_version (str): Optional. The ADK version to use in Agent Platform
       deployment. If not specified, the version in the dev environment will be
       used.
   """
@@ -934,7 +929,7 @@ def to_agent_engine(
   did_change_cwd = False
   if parent_folder != original_cwd:
     click.echo(
-        'Agent Engine deployment uses relative paths; temporarily switching '
+        'Agent Runtime deployment uses relative paths; temporarily switching '
         f'working directory to: {parent_folder}'
     )
     os.chdir(parent_folder)
@@ -975,29 +970,33 @@ def to_agent_engine(
         agent_engine_config_file
     ):
       raise click.ClickException(
-          'Agent engine config file not found: '
+          'Agent Platform config file not found: '
           f'{parent_folder}/{agent_engine_config_file}'
       )
     if not agent_engine_config_file:
-      # Attempt to read the agent engine config from .agent_engine_config.json in the dir (if any).
+      # Attempt to read the agent platform config from .agent_engine_config.json
+      # in the dir (if any).
       agent_engine_config_file = os.path.join(
           agent_folder, '.agent_engine_config.json'
       )
     if os.path.exists(agent_engine_config_file):
-      click.echo(f'Reading agent engine config from {agent_engine_config_file}')
+      click.echo(
+          f'Reading agent platform config from {agent_engine_config_file}'
+      )
       with open(agent_engine_config_file, 'r') as f:
         agent_config = json.load(f)
     if display_name:
       if 'display_name' in agent_config:
         click.echo(
-            'Overriding display_name in agent engine config with'
+            'Overriding display_name in agent platform config with'
             f' {display_name}'
         )
       agent_config['display_name'] = display_name
     if description:
       if 'description' in agent_config:
         click.echo(
-            f'Overriding description in agent engine config with {description}'
+            'Overriding description in agent platform config with'
+            f' {description}'
         )
       agent_config['description'] = description
 
@@ -1094,7 +1093,7 @@ def to_agent_engine(
     if env_vars:
       if 'env_vars' in agent_config:
         click.echo(
-            f'Overriding env_vars in agent engine config with {env_vars}'
+            f'Overriding env_vars in agent platform config with {env_vars}'
         )
       agent_config['env_vars'] = env_vars
     # Set env_vars in agent_config to None if it is not set.
@@ -1104,32 +1103,18 @@ def to_agent_engine(
 
     from ..utils._google_client_headers import get_tracking_headers
 
-    if not (api_key or project or region):
-      click.echo(
-          'No apikey/project/region provided. Starting onboarding flow...'
-      )
+    if not project or not region:
+      click.echo('No project/region provided. Starting onboarding flow...')
       auth_info = _onboarding.handle_login_with_google()
       project = auth_info.project_id
       region = auth_info.region
 
     click.echo('Initializing Agent Platform client...')
-    if project and region:
-      client = vertexai.Client(
-          project=project,
-          location=region,
-          http_options={'headers': get_tracking_headers()},
-      )
-    elif api_key:
-      client = vertexai.Client(
-          api_key=api_key,
-          http_options={'headers': get_tracking_headers()},
-      )
-    else:
-      click.echo(
-          'Failed to initialize Agent Platform client. Please provide an API'
-          'key or project and region.'
-      )
-      return
+    client = vertexai.Client(
+        project=project,
+        location=region,
+        http_options={'headers': get_tracking_headers()},
+    )
     click.echo('Agent Platform client initialized.')
 
     if skip_agent_import_validation:
@@ -1187,7 +1172,7 @@ def to_agent_engine(
           DeprecationWarning,
           stacklevel=2,
       )
-    click.echo('Deploying to agent engine...')
+    click.echo('Deploying to Agent Platform...')
     agent_config['source_packages'] = [f'agents/{app_name}', 'Dockerfile']
     agent_config['image_spec'] = {}  # Use the Dockerfile
     agent_config['class_methods'] = _AGENT_ENGINE_CLASS_METHODS
@@ -1197,7 +1182,7 @@ def to_agent_engine(
     if not resource_name:
       agent_engine = client.agent_engines.create()
       resource_name = agent_engine.api_resource.name
-      click.secho(f'Created a new agent engine: {resource_name}', fg='green')
+      click.secho(f'Created a new instance: {resource_name}', fg='green')
     elif project and region and not resource_name.startswith('projects/'):
       resource_name = f'projects/{project}/locations/{region}/reasoningEngines/{agent_engine_id}'
     click.echo('Creating Dockerfile...')
@@ -1205,13 +1190,13 @@ def to_agent_engine(
     click.echo(f'Dockerfile created at {os.getcwd()}/Dockerfile.')
     try:
       client.agent_engines.update(name=resource_name, config=agent_config)
-      click.secho(f'Deployed to agent engine: {resource_name}', fg='green')
+      click.secho(f'Deployed to Agent Platform: {resource_name}', fg='green')
     except Exception as e:
-      click.secho(f'Failed to deploy to agent engine: {e}', fg='red')
-      # Only delete the agent engine if it was newly created in this function.
+      click.secho(f'Failed to deploy to Agent Platform: {e}', fg='red')
+      # Only delete the instance if it was newly created in this function.
       if agent_engine_id is None:
         client.agent_engines.delete(name=resource_name)
-        click.secho(f'Cleaned up the agent engine: {resource_name}', fg='green')
+        click.secho(f'Cleaned up the instance: {resource_name}', fg='green')
       raise e
     _print_agent_engine_url(resource_name)
   finally:

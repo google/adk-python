@@ -329,7 +329,7 @@ def test_to_agent_engine_raises_when_explicit_config_file_missing(
         adk_version="1.2.0",
     )
 
-  assert "Agent engine config file not found" in str(exc_info.value)
+  assert "Agent Platform config file not found" in str(exc_info.value)
   assert expected_abs in str(exc_info.value)
 
 

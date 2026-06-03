@@ -252,9 +252,9 @@ def get_gcp_resource(project_id: Optional[str] = None) -> Resource:
     resource_attributes["cloud.resource.id"] = cloud_resource_id
 
   if agent_engine_id:
-    resource = Resource.create(
-        attributes=resource_attributes
-    ).merge(OTELResourceDetector().detect())
+    resource = Resource.create(attributes=resource_attributes).merge(
+        OTELResourceDetector().detect()
+    )
     return resource
 
   resource = Resource(

@@ -54,8 +54,8 @@ from ..runners import Runner
 from ..telemetry._agent_engine import get_propagated_context
 from ..telemetry._agent_engine import TopSpanProcessor
 from .api_server import ApiServer
-from .dev_server import DevServer
 from .cli_deploy import _AGENT_ENGINE_CLASS_METHODS
+from .dev_server import DevServer
 from .service_registry import load_services_module
 from .utils import envs
 from .utils.agent_change_handler import AgentChangeEventHandler
@@ -746,10 +746,10 @@ def get_fast_api_app(
 
     import inspect
     import json
-    from pydantic import ValidationError as _ValidationError
 
     from google.adk.agents import Agent
     import google.auth
+    from pydantic import ValidationError as _ValidationError
     from vertexai import agent_engines
 
     # The tmp agent will be replaced by the adk server's runner and services.
@@ -847,9 +847,7 @@ def get_fast_api_app(
       try:
         body = await request.json()
       except json.JSONDecodeError as exc:
-        raise HTTPException(
-            status_code=400, detail=f"Invalid JSON: {exc}"
-        )
+        raise HTTPException(status_code=400, detail=f"Invalid JSON: {exc}")
       try:
         parsed = _QueryRequest.model_validate(body)
       except _ValidationError as exc:
@@ -892,9 +890,7 @@ def get_fast_api_app(
       try:
         body = await request.json()
       except json.JSONDecodeError as exc:
-        raise HTTPException(
-            status_code=400, detail=f"Invalid JSON: {exc}"
-        )
+        raise HTTPException(status_code=400, detail=f"Invalid JSON: {exc}")
       try:
         parsed = _QueryRequest.model_validate(body)
       except _ValidationError as exc:
