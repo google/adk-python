@@ -763,7 +763,7 @@ def get_fast_api_app(
         )
       adk_app._tmpl_attrs["project"] = None
       adk_app._tmpl_attrs["location"] = None
-      adk_app._tmpl_attrs["api_key"] = api_key
+      adk_app._tmpl_attrs["express_mode_api_key"] = api_key
     else:
       _, project_id = google.auth.default()
       location = os.environ.get(
@@ -777,7 +777,7 @@ def get_fast_api_app(
         )
       adk_app._tmpl_attrs["project"] = project_id
       adk_app._tmpl_attrs["location"] = location
-      adk_app._tmpl_attrs["api_key"] = None
+      adk_app._tmpl_attrs["express_mode_api_key"] = None
     adk_app._tmpl_attrs["runner"] = None
     adk_app._tmpl_attrs["app_name"] = gemini_enterprise_app_name
     adk_app._tmpl_attrs["session_service"] = session_service
