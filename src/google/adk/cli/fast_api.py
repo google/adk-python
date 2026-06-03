@@ -746,6 +746,7 @@ def get_fast_api_app(
 
     import inspect
     import json
+    from pydantic import ValidationError as _ValidationError
 
     from google.adk.agents import Agent
     import google.auth
@@ -842,22 +843,32 @@ def get_fast_api_app(
         response_model_exclude_none=True,
         response_class=JSONResponse,
     )
-    async def query(request: _QueryRequest):
+    async def query(request: Request):
+      try:
+        body = await request.json()
+      except json.JSONDecodeError as exc:
+        raise HTTPException(
+            status_code=400, detail=f"Invalid JSON: {exc}"
+        )
+      try:
+        parsed = _QueryRequest.model_validate(body)
+      except _ValidationError as exc:
+        raise HTTPException(status_code=400, detail=exc.errors())
       if not adk_app._tmpl_attrs.get("runner"):
         adk_app._tmpl_attrs["runner"] = await adk_web_server.get_runner_async(
             app_name=gemini_enterprise_app_name
         )
-      if request.class_method is None:
+      if parsed.class_method is None:
         raise HTTPException(
             status_code=400, detail="class_method cannot be None"
         )
-      if request.class_method not in _ALLOWED_AGENT_ENGINE_CLASS_METHODS:
+      if parsed.class_method not in _ALLOWED_AGENT_ENGINE_CLASS_METHODS:
         raise HTTPException(
             status_code=400,
-            detail=f"class_method {request.class_method} is not allowed",
+            detail=f"class_method {parsed.class_method} is not allowed",
         )
-      method = getattr(adk_app, request.class_method)
-      output = await _invoke_callable_or_raise(method, request.input or {})
+      method = getattr(adk_app, parsed.class_method)
+      output = await _invoke_callable_or_raise(method, parsed.input or {})
 
       try:
         json_serialized_content = jsonable_encoder({"output": output})
@@ -865,7 +876,7 @@ def get_fast_api_app(
         logging.exception(
             "FastAPI could not JSON-encode the response from invocation method"
             " %s. Error: %s. Invocation method's original response: %r",
-            request.class_method,
+            parsed.class_method,
             encoding_error,
             output,
         )
@@ -877,22 +888,32 @@ def get_fast_api_app(
         response_model_exclude_none=True,
         response_class=StreamingResponse,
     )
-    async def stream_query(request: _QueryRequest):
+    async def stream_query(request: Request):
+      try:
+        body = await request.json()
+      except json.JSONDecodeError as exc:
+        raise HTTPException(
+            status_code=400, detail=f"Invalid JSON: {exc}"
+        )
+      try:
+        parsed = _QueryRequest.model_validate(body)
+      except _ValidationError as exc:
+        raise HTTPException(status_code=400, detail=exc.errors())
       if not adk_app._tmpl_attrs.get("runner"):
         adk_app._tmpl_attrs["runner"] = await adk_web_server.get_runner_async(
             app_name=gemini_enterprise_app_name
         )
-      if request.class_method is None:
+      if parsed.class_method is None:
         raise HTTPException(
             status_code=400, detail="class_method cannot be None"
         )
-      if request.class_method not in _ALLOWED_AGENT_ENGINE_CLASS_METHODS:
+      if parsed.class_method not in _ALLOWED_AGENT_ENGINE_CLASS_METHODS:
         raise HTTPException(
             status_code=400,
-            detail=f"class_method {request.class_method} is not allowed",
+            detail=f"class_method {parsed.class_method} is not allowed",
         )
-      method = getattr(adk_app, request.class_method)
-      output = await _invoke_callable_or_raise(method, request.input or {})
+      method = getattr(adk_app, parsed.class_method)
+      output = await _invoke_callable_or_raise(method, parsed.input or {})
 
       if inspect.isgenerator(output):
 
