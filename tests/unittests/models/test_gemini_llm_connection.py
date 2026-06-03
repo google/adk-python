@@ -1540,3 +1540,95 @@ async def test_receive_populates_turn_complete_reason_with_content(
       responses[0].turn_complete_reason
       == types.TurnCompleteReason.RESPONSE_REJECTED
   )
+
+
+@pytest.mark.asyncio
+async def test_receive_multiplexed_parts(gemini_connection, mock_gemini_session):
+  """Test receive with multiplexed inline data and text content."""
+  mock_content = types.Content(
+      role='model',
+      parts=[
+          types.Part(
+              inline_data=types.Blob(data=b'audio_data', mime_type='audio/pcm')
+          ),
+          types.Part.from_text(text='transcription text'),
+      ],
+  )
+  mock_server_content = mock.Mock()
+  mock_server_content.model_turn = mock_content
+  mock_server_content.interrupted = False
+  mock_server_content.input_transcription = None
+  mock_server_content.output_transcription = None
+  mock_server_content.turn_complete = False
+  mock_server_content.grounding_metadata = None
+
+  mock_message = mock.AsyncMock()
+  mock_message.usage_metadata = None
+  mock_message.server_content = mock_server_content
+  mock_message.tool_call = None
+  mock_message.session_resumption_update = None
+  mock_message.go_away = None
+
+  async def mock_receive_generator():
+    yield mock_message
+
+  receive_mock = mock.Mock(return_value=mock_receive_generator())
+  mock_gemini_session.receive = receive_mock
+
+  responses = [resp async for resp in gemini_connection.receive()]
+
+  assert responses
+  content_response = next((r for r in responses if r.content), None)
+  assert content_response is not None
+  assert content_response.content == mock_content
+  assert content_response.partial is True
+
+
+@pytest.mark.asyncio
+async def test_send_history_gemini_31_turn_complete(mock_gemini_session):
+  """Verify Gemini 3.1 Live history seeding explicitly appends turn_complete=True."""
+  from google.adk.models.google_llm import GoogleLLMVariant
+  conn = GeminiLlmConnection(
+      mock_gemini_session,
+      api_backend=GoogleLLMVariant.GEMINI_API,
+      model_version='gemini-3.1-flash-live-preview',
+  )
+  mock_gemini_session.send_client_content = mock.AsyncMock()
+
+  mock_contents = [
+      types.Content(role='user', parts=[types.Part.from_text(text='hi')]),
+      types.Content(role='model', parts=[types.Part.from_text(text='hello')]),
+  ]
+  await conn.send_history(mock_contents)
+
+  mock_gemini_session.send_client_content.assert_called_once_with(
+      turns=mock_contents,
+      turn_complete=True,
+  )
+
+
+@pytest.mark.asyncio
+async def test_send_history_collapse_vertex_ai(mock_gemini_session):
+  """Verify history prompt collapse when seeding Gemini 3.1 Live on Vertex AI backend."""
+  from google.adk.models.google_llm import GoogleLLMVariant
+  conn = GeminiLlmConnection(
+      mock_gemini_session,
+      api_backend=GoogleLLMVariant.VERTEX_AI,
+      model_version='gemini-3.1-flash-live-preview',
+  )
+  mock_gemini_session.send_client_content = mock.AsyncMock()
+
+  mock_contents = [
+      types.Content(role='user', parts=[types.Part.from_text(text='hi')]),
+      types.Content(role='model', parts=[types.Part.from_text(text='hello')]),
+  ]
+  await conn.send_history(mock_contents)
+
+  assert mock_gemini_session.send_client_content.call_count == 1
+  called_turns = mock_gemini_session.send_client_content.call_args.kwargs['turns']
+  assert len(called_turns) == 1
+  assert called_turns[0].role == 'user'
+  assert 'Previous conversation history:' in called_turns[0].parts[0].text
+  assert '[user]: hi' in called_turns[0].parts[0].text
+  assert '[model]: hello' in called_turns[0].parts[0].text
+  assert mock_gemini_session.send_client_content.call_args.kwargs['turn_complete'] is True
