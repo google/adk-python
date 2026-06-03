@@ -57,11 +57,12 @@ jobs:
                 console.log(`\n--- Processing commit ${sha.substring(0, 7)} ---`);
                 console.log(`Committer: ${committer}`);
 
-                // Check if this is a Copybara commit
+                // Check if this is a Copybara commit or has a pull request reference
                 const isCopybara = committer === 'Copybara-Service' ||
                                    commit.author?.email === 'genai-sdk-bot@google.com' ||
                                    message.includes('GitOrigin-RevId:') ||
-                                   message.includes('PiperOrigin-RevId:');
+                                   message.includes('PiperOrigin-RevId:') ||
+                                   /Merge:?\s+https:\/\/github\.com\/google\/adk-python\/pull\/(\d+)/.test(message);
 
                 if (!isCopybara) {
                   console.log('Not a Copybara commit, skipping');
@@ -116,6 +117,14 @@ jobs:
                   repo: context.repo.repo,
                   issue_number: prNumber,
                   body: `Thank you @${author} for your contribution! 🎉\n\nYour changes have been successfully imported and merged via Copybara in commit ${commitSha}.\n\nClosing this PR as the changes are now in the main branch.`
+                });
+
+                // Add 'merged' label to the PR
+                await github.rest.issues.addLabels({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: prNumber,
+                  labels: ['merged']
                 });
 
                 // Close the PR
