@@ -94,6 +94,9 @@ def _build_basic_request(
   llm_request.live_connect_config.session_resumption = (
       invocation_context.run_config.session_resumption
   )
+  llm_request.live_connect_config.history_config = (
+      invocation_context.run_config.history_config
+  )
   llm_request.live_connect_config.context_window_compression = (
       invocation_context.run_config.context_window_compression
   )

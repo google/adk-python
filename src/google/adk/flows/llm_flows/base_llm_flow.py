@@ -553,18 +553,26 @@ class BaseLlmFlow(ABC):
             if session_resumption.transparent is None:
               session_resumption.transparent = True
 
+        # When seeding a fresh connection with prior conversation history, set
+        # initial_history_in_client_content to True. This tells the Live server
+        # that the provided history already includes the model's past responses,
+        # preventing the server from generating duplicate responses for those replayed turns.
         if (
-            isinstance(llm, Gemini)
-            and llm._api_backend == GoogleLLMVariant.GEMINI_API
-            and model_name_utils.is_gemini_3_1_flash_live(llm_request.model)
-            and llm_request.contents
+            llm_request.contents
             and not invocation_context.live_session_resumption_handle
         ):
-          if llm_request.live_connect_config is None:
+          if not llm_request.live_connect_config:
             llm_request.live_connect_config = types.LiveConnectConfig()
-          if llm_request.live_connect_config.history_config is None:
-            llm_request.live_connect_config.history_config = types.HistoryConfig(
-                initial_history_in_client_content=True
+          if not llm_request.live_connect_config.history_config:
+            llm_request.live_connect_config.history_config = (
+                types.HistoryConfig()
+            )
+          if (
+              llm_request.live_connect_config.history_config.initial_history_in_client_content
+              is None
+          ):
+            llm_request.live_connect_config.history_config.initial_history_in_client_content = (
+                True
             )
 
         logger.info(
