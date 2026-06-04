@@ -144,6 +144,75 @@ async def test_load_artifacts_keeps_supported_mime_types():
   assert artifact_part.inline_data.mime_type == 'application/pdf'
 
 
+@mark.asyncio
+async def test_load_artifacts_reads_workflow_text_response():
+  """Workflow context can stringify tool responses from other nodes."""
+  artifact_name = 'invoice.txt'
+  artifact = types.Part.from_text(text='invoice total: 42')
+
+  tool_context = _StubToolContext({artifact_name: artifact})
+  llm_request = LlmRequest(
+      contents=[
+          types.Content(
+              role='user',
+              parts=[
+                  types.Part.from_text(text='For context:'),
+                  types.Part.from_text(
+                      text=(
+                          '[workflow_node] `load_artifacts` tool returned'
+                          " result: {'artifact_names': ['invoice.txt'],"
+                          " 'status': 'ok'}"
+                      )
+                  ),
+              ],
+          )
+      ]
+  )
+
+  await load_artifacts_tool.process_llm_request(
+      tool_context=tool_context, llm_request=llm_request
+  )
+
+  assert llm_request.contents[-1].parts[0].text == (
+      f'Artifact {artifact_name} is:'
+  )
+  assert llm_request.contents[-1].parts[1].text == 'invoice total: 42'
+
+
+@mark.asyncio
+async def test_load_artifacts_checks_all_function_response_parts():
+  """The load_artifacts response may not be the first part in a turn."""
+  artifact_name = 'notes.txt'
+  artifact = types.Part.from_text(text='important notes')
+
+  tool_context = _StubToolContext({artifact_name: artifact})
+  llm_request = LlmRequest(
+      contents=[
+          types.Content(
+              role='user',
+              parts=[
+                  types.Part.from_text(text='Done.'),
+                  types.Part(
+                      function_response=types.FunctionResponse(
+                          name='load_artifacts',
+                          response={'artifact_names': [artifact_name]},
+                      )
+                  ),
+              ],
+          )
+      ]
+  )
+
+  await load_artifacts_tool.process_llm_request(
+      tool_context=tool_context, llm_request=llm_request
+  )
+
+  assert llm_request.contents[-1].parts[0].text == (
+      f'Artifact {artifact_name} is:'
+  )
+  assert llm_request.contents[-1].parts[1].text == 'important notes'
+
+
 def test_maybe_base64_to_bytes_decodes_standard_base64():
   """Standard base64 encoded strings are decoded correctly."""
   original = b'hello world'

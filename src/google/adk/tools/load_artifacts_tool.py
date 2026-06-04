@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+import ast
 import base64
 import binascii
 import json
@@ -46,6 +47,7 @@ if TYPE_CHECKING:
   from .tool_context import ToolContext
 
 logger = logging.getLogger('google_adk.' + __name__)
+_LOAD_ARTIFACTS_TEXT_MARKER = '`load_artifacts` tool returned result:'
 
 
 def _normalize_mime_type(mime_type: str | None) -> str | None:
@@ -119,6 +121,47 @@ def _as_safe_part_for_llm(
           'Content cannot be displayed inline.]'
       )
   )
+
+
+def _artifact_names_from_response(response: Any) -> list[str]:
+  if not isinstance(response, dict):
+    return []
+
+  artifact_names = response.get('artifact_names', [])
+  if isinstance(artifact_names, str):
+    return [artifact_names]
+  if not isinstance(artifact_names, list):
+    return []
+  return [name for name in artifact_names if isinstance(name, str)]
+
+
+def _artifact_names_from_text_response(text: str | None) -> list[str]:
+  if not text or _LOAD_ARTIFACTS_TEXT_MARKER not in text:
+    return []
+
+  payload = text.split(_LOAD_ARTIFACTS_TEXT_MARKER, 1)[1].strip()
+  try:
+    response = ast.literal_eval(payload)
+  except (SyntaxError, ValueError) as exc:
+    logger.debug('Could not parse load_artifacts text response: %s', exc)
+    return []
+
+  return _artifact_names_from_response(response)
+
+
+def _requested_artifact_names(content: types.Content) -> list[str]:
+  artifact_names: list[str] = []
+  for part in content.parts or []:
+    function_response = part.function_response
+    if function_response and function_response.name == 'load_artifacts':
+      artifact_names.extend(
+          _artifact_names_from_response(function_response.response or {})
+      )
+      continue
+
+    artifact_names.extend(_artifact_names_from_text_response(part.text))
+
+  return artifact_names
 
 
 class LoadArtifactsTool(BaseTool):
@@ -210,46 +253,41 @@ web UI)."""),
     # Attach the content of the artifacts if the model requests them.
     # This only adds the content to the model request, instead of the session.
     if llm_request.contents and llm_request.contents[-1].parts:
-      function_response = llm_request.contents[-1].parts[0].function_response
-      if function_response and function_response.name == 'load_artifacts':
-        response = function_response.response or {}
-        artifact_names = response.get('artifact_names', [])
-        for artifact_name in artifact_names:
-          # Try session-scoped first (default behavior)
-          artifact = await tool_context.load_artifact(artifact_name)
+      artifact_names = _requested_artifact_names(llm_request.contents[-1])
+      for artifact_name in artifact_names:
+        # Try session-scoped first (default behavior)
+        artifact = await tool_context.load_artifact(artifact_name)
 
-          # If not found and name doesn't already have user: prefix,
-          # try cross-session artifacts with user: prefix
-          if artifact is None and not artifact_name.startswith('user:'):
-            prefixed_name = f'user:{artifact_name}'
-            artifact = await tool_context.load_artifact(prefixed_name)
+        # If not found and name doesn't already have user: prefix,
+        # try cross-session artifacts with user: prefix
+        if artifact is None and not artifact_name.startswith('user:'):
+          prefixed_name = f'user:{artifact_name}'
+          artifact = await tool_context.load_artifact(prefixed_name)
 
-          if artifact is None:
-            logger.warning('Artifact "%s" not found, skipping', artifact_name)
-            continue
+        if artifact is None:
+          logger.warning('Artifact "%s" not found, skipping', artifact_name)
+          continue
 
-          artifact_part = _as_safe_part_for_llm(artifact, artifact_name)
-          if artifact_part is not artifact:
-            mime_type = (
-                artifact.inline_data.mime_type if artifact.inline_data else None
-            )
-            logger.debug(
-                'Converted artifact "%s" (mime_type=%s) to text Part',
-                artifact_name,
-                mime_type,
-            )
-
-          llm_request.contents.append(
-              types.Content(
-                  role='user',
-                  parts=[
-                      types.Part.from_text(
-                          text=f'Artifact {artifact_name} is:'
-                      ),
-                      artifact_part,
-                  ],
-              )
+        artifact_part = _as_safe_part_for_llm(artifact, artifact_name)
+        if artifact_part is not artifact:
+          mime_type = (
+              artifact.inline_data.mime_type if artifact.inline_data else None
           )
+          logger.debug(
+              'Converted artifact "%s" (mime_type=%s) to text Part',
+              artifact_name,
+              mime_type,
+          )
+
+        llm_request.contents.append(
+            types.Content(
+                role='user',
+                parts=[
+                    types.Part.from_text(text=f'Artifact {artifact_name} is:'),
+                    artifact_part,
+                ],
+            )
+        )
 
 
 load_artifacts_tool = LoadArtifactsTool()
