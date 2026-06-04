@@ -63,7 +63,7 @@ def _ensure_agent_engine_dependency(requirements_txt_path: str) -> None:
   with open(requirements_txt_path, 'a', encoding='utf-8') as f:
     if requirements and not requirements.endswith('\n'):
       f.write('\n')
-    f.write('google-cloud-aiplatform[agent_engines]\n')
+    f.write(f'{_AGENT_ENGINE_REQUIREMENT}\n')
     f.write(f'google-adk=={__version__}\n')
 
 
@@ -1017,7 +1017,7 @@ def to_agent_engine(
     if not os.path.exists(requirements_txt_path):
       click.echo(f'Creating {requirements_txt_path}...')
       with open(requirements_txt_path, 'w', encoding='utf-8') as f:
-        f.write('google-cloud-aiplatform[agent_engines]\n')
+        f.write(f'{_AGENT_ENGINE_REQUIREMENT}\n')
         f.write(f'google-adk=={__version__}\n')
         click.echo(f'Using google-adk=={__version__} in requirements')
       click.echo(f'Created {requirements_txt_path}')
