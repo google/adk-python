@@ -18,15 +18,8 @@ from typing import Optional
 from typing import Union
 
 from google.adk.agents.llm_agent import Agent
-from google.adk.features import FeatureName
-from google.adk.features import override_feature_enabled
 from google.adk.tools.function_tool import FunctionTool
 import pydantic
-
-override_feature_enabled(
-    FeatureName.JSON_SCHEMA_FOR_FUNC_DECL,
-    True,
-)
 
 
 class UserProfile(pydantic.BaseModel):
