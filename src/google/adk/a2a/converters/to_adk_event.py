@@ -46,6 +46,9 @@ logger = logging.getLogger("google_adk." + __name__)
 MOCK_FUNCTION_CALL_FOR_REQUIRED_USER_INPUT = (
     "mock_function_call_for_required_user_input"
 )
+MOCK_FUNCTION_CALL_FOR_REQUIRED_USER_AUTH = (
+    "mock_function_call_for_required_user_auth"
+)
 
 A2AMessageToEventConverter = Callable[
     [
@@ -289,24 +292,36 @@ def _create_mock_function_call_for_required_user_input(
 
   This solution allows to unblock the A2A integration with non-ADK agents from
   ADK side by replacing the last text part with a synthetic function call. All
-  other parts are preserved.
+  other parts are preserved. The args key used on the synthetic function call
+  differs depending on whether the task is in input-required or auth-required
+  state, so downstream consumers can distinguish between the two.
   """
-  if (
-      state == TaskState.input_required or state == TaskState.auth_required
-  ) and (not long_running_function_ids or len(long_running_function_ids) == 0):
-    # Find the last text part from the bottom to replace it with a function call.
-    # In case of input-required events, the LLM should stop the production of other parts.
-    for i in range(len(output_parts) - 1, -1, -1):
-      if output_parts[i].text:
-        function_call = genai_types.FunctionCall(
-            id=str(uuid.uuid4()),
-            name=MOCK_FUNCTION_CALL_FOR_REQUIRED_USER_INPUT,
-            args={"input_required": output_parts[i].text},
-        )
-        long_running_function_ids = set()
-        long_running_function_ids.add(function_call.id)
-        output_parts[i] = genai_types.Part(function_call=function_call)
-        break
+  if long_running_function_ids:
+    return output_parts, long_running_function_ids
+
+  if state == TaskState.input_required:
+    args_key = "input_required"
+    function_name = MOCK_FUNCTION_CALL_FOR_REQUIRED_USER_INPUT
+  elif state == TaskState.auth_required:
+    args_key = "auth_required"
+    function_name = MOCK_FUNCTION_CALL_FOR_REQUIRED_USER_AUTH
+  else:
+    return output_parts, long_running_function_ids
+
+  # Find the last text part from the bottom to replace it with a function call.
+  # In case of input-required / auth-required events, the LLM should stop the
+  # production of other parts.
+  for i in range(len(output_parts) - 1, -1, -1):
+    if output_parts[i].text:
+      function_call = genai_types.FunctionCall(
+          id=str(uuid.uuid4()),
+          name=function_name,
+          args={args_key: output_parts[i].text},
+      )
+      long_running_function_ids = set()
+      long_running_function_ids.add(function_call.id)
+      output_parts[i] = genai_types.Part(function_call=function_call)
+      break
   return output_parts, long_running_function_ids
 
 

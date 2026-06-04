@@ -1,0 +1,64 @@
+name: Release: Update ADk Web
+
+on:
+  workflow_dispatch:
+    inputs:
+      adk_web_repo:
+        description: 'Source adk-web repository'
+        required: true
+        default: 'google/adk-web'  # Default source repo
+      adk_web_tag:
+        description: 'Tag of the release to download (e.g. v1.0.0).'
+        required: false
+        default: ''
+
+jobs:
+  update-frontend:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v5
+
+    - name: Fetch and unzip frontend assets
+      run: |
+        TARGET_DIR="src/google/adk/cli/browser"
+        REPO="${{ github.event.inputs.adk_web_repo }}"
+        TAG="${{ github.event.inputs.adk_web_tag }}"  
+        # Clean target directory
+        rm -rf "$TARGET_DIR"/*
+        mkdir -p "$TARGET_DIR"
+        if [ -z "$TAG" ]; then
+          echo "Fetching latest release metadata for $REPO..."
+          RELEASE_JSON=$(curl -s "https://api.github.com/repos/$REPO/releases/latest")
+        else
+          echo "Fetching release metadata for $REPO tag $TAG..."
+          RELEASE_JSON=$(curl -s "https://api.github.com/repos/$REPO/releases/tags/$TAG")
+        fi
+        # Extract download URL for adk-web-browser.zip
+        DOWNLOAD_URL=$(echo "$RELEASE_JSON" | grep -o -E '"browser_download_url": "[^"]+"' | grep -o -E 'https://[^"]+' | grep 'adk-web-browser.zip' | head -n 1)
+        if [ -z "$DOWNLOAD_URL" ]; then
+          echo "Error: Could not find adk-web-browser.zip asset in the release."
+          exit 1
+        fi
+        echo "Downloading assets from: $DOWNLOAD_URL"
+        curl -L -o frontend.zip "$DOWNLOAD_URL"
+        echo "Extracting assets to $TARGET_DIR..."
+        unzip -o frontend.zip -d "$TARGET_DIR"
+        rm frontend.zip
+        echo "Assets extracted successfully."
+
+    - name: Create Pull Request
+      uses: peter-evans/create-pull-request@v6
+      with:
+        token: ${{ secrets.GITHUB_TOKEN }}
+        commit-message: "Update compiled adk web files from ${{ github.event.inputs.adk_web_repo }}@${{ github.event.inputs.adk_web_tag || 'latest' }}"
+        branch: update-frontend-assets
+        delete-branch: true
+        title: "chore: update compiled adk web assets"
+        body: |
+          This PR automatically updates the compiled adk web files in `src/google/adk/cli/browser/` using the assets from `${{ github.event.inputs.adk_web_repo }}@${{ github.event.inputs.adk_web_tag || 'latest' }}`.
+          Please review the diff before merging.

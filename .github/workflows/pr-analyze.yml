@@ -1,0 +1,128 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+name: ADK Pull Request Triage & Analysis
+
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened]
+  issue_comment:
+    types: [created]
+  status:
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: 'The Pull Request number to analyze'
+        required: true
+        type: string
+
+jobs:
+  pr-analyze:
+    if: >-
+      github.repository == 'google/adk-python' && (
+        github.event_name == 'pull_request_target' ||
+        github.event_name == 'workflow_dispatch' ||
+        (github.event_name == 'status' &&
+         github.event.context == 'cla/google' &&
+         github.event.state == 'success') ||
+        (github.event_name == 'issue_comment' &&
+         github.event.issue.pull_request != null &&
+         startsWith(github.event.comment.body, '/adk-pr-analyze') && (
+            github.event.comment.author_association == 'OWNER' ||
+            github.event.comment.author_association == 'MEMBER' ||
+            github.event.comment.author_association == 'COLLABORATOR'
+         ))
+      )
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
+      issues: write
+      contents: read
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+
+      - name: Check CLA Status
+        id: check-cla
+        env:
+          GITHUB_TOKEN: ${{ secrets.ADK_TRIAGE_AGENT }}
+        run: |
+          if [ "${{ github.event_name }}" = "status" ]; then
+            echo "Resolving PR number for commit ${{ github.event.sha }}"
+            PR_NUM=$(gh api repos/${{ github.repository }}/commits/${{ github.event.sha }}/pulls --jq '.[] | select(.state=="open") | .number' | head -n 1)
+            if [ -z "$PR_NUM" ]; then
+              echo "No open PR found for commit ${{ github.event.sha }}. Skipping."
+              echo "signed=false" >> $GITHUB_OUTPUT
+              exit 0
+            fi
+          else
+            PR_NUM="${{ github.event.pull_request.number || github.event.issue.number || inputs.pr_number }}"
+          fi
+
+          echo "PR_NUM=$PR_NUM" >> $GITHUB_ENV
+          echo "Checking CLA status for PR #$PR_NUM"
+
+          # Run triage_pr.py to check CLA status and pull request data
+          set +e
+          python .agents/skills/adk-pr-analyze/scripts/triage_pr.py "$PR_NUM" --skip-update > pr_info.txt 2>&1
+          exit_code=$?
+          set -e
+
+          cat pr_info.txt
+
+          if [ $exit_code -eq 2 ]; then
+            echo "❌ Google CLA is NOT signed. Skipping analysis."
+            echo "signed=false" >> $GITHUB_OUTPUT
+          elif [ $exit_code -eq 0 ] || [ $exit_code -eq 3 ]; then
+            # exit code 0: CLA signed, assigned to current user
+            # exit code 3: CLA signed, but assignment block (which is expected on automated action runs)
+            echo "✅ Google CLA is signed."
+            echo "signed=true" >> $GITHUB_OUTPUT
+          else
+            echo "❌ Verification script failed with unexpected exit code $exit_code."
+            exit $exit_code
+          fi
+
+      - name: Authenticate to Google Cloud
+        if: steps.check-cla.outputs.signed == 'true'
+        id: auth
+        uses: 'google-github-actions/auth@v3'
+        with:
+          credentials_json: '${{ secrets.ADK_GCP_SA_KEY }}'
+
+      - name: Install Google Antigravity SDK
+        if: steps.check-cla.outputs.signed == 'true'
+        run: pip install google-antigravity
+
+      - name: Run Antigravity Triage & Analysis
+        if: steps.check-cla.outputs.signed == 'true'
+        env:
+          GITHUB_TOKEN: ${{ secrets.ADK_TRIAGE_AGENT }}
+          GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
+        run: |
+          python scripts/run_antigravity.py "/adk-pr-analyze $PR_NUM" > triage_report.md
+          cat triage_report.md
+
+      - name: Post Triage Report as Comment
+        if: steps.check-cla.outputs.signed == 'true'
+        env:
+          GITHUB_TOKEN: ${{ secrets.ADK_TRIAGE_AGENT }}
+        run: |
+          gh issue comment "$PR_NUM" --repo google/adk-python --body-file triage_report.md

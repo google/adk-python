@@ -16,8 +16,10 @@
 
 import argparse
 import asyncio
+import json
 import os
 import shlex
+import subprocess
 import sys
 from typing import Any
 
@@ -82,8 +84,6 @@ def fetch_github_issue(issue_number: int) -> str:
   Args:
     issue_number: The issue number (e.g. 5949).
   """
-  import subprocess
-
   # Use curl to fetch the issue details.
   # This supports running it outside of the gh CLI environment (e.g. without login/remotes setup).
   cmd = [
@@ -93,17 +93,40 @@ def fetch_github_issue(issue_number: int) -> str:
   token = os.environ.get("GITHUB_TOKEN")
   if token:
     cmd.extend(["-H", f"Authorization: token {token}"])
-  cmd.append(
+
+  issue_cmd = cmd + [
       f"https://api.github.com/repos/google/adk-python/issues/{issue_number}"
-  )
+  ]
+  comments_cmd = cmd + [
+      f"https://api.github.com/repos/google/adk-python/issues/{issue_number}/comments"
+  ]
 
   try:
-    res = subprocess.run(cmd, capture_output=True, text=True, check=False)
+    res = subprocess.run(issue_cmd, capture_output=True, text=True, check=False)
     if res.returncode != 0:
       return (
           f"Error: Failed to fetch issue {issue_number}: {res.stderr.strip()}"
       )
-    return res.stdout.strip()
+
+    try:
+      issue_data = json.loads(res.stdout.strip())
+    except json.JSONDecodeError as e:
+      return (
+          f"Error: Failed to parse issue JSON response: {e}. Output:"
+          f" {res.stdout.strip()}"
+      )
+
+    res_comments = subprocess.run(
+        comments_cmd, capture_output=True, text=True, check=False
+    )
+    if res_comments.returncode == 0:
+      try:
+        comments_data = json.loads(res_comments.stdout.strip())
+        issue_data["comments_data"] = comments_data
+      except json.JSONDecodeError:
+        pass
+
+    return json.dumps(issue_data, indent=2)
   except Exception as e:
     return f"Error: Failed to run curl command: {e}"
 
@@ -114,8 +137,6 @@ def fetch_github_pr(pr_number: int) -> str:
   Args:
     pr_number: The PR number (e.g. 5956).
   """
-  import subprocess
-
   # Use curl to fetch the PR details.
   # This supports running it outside of the gh CLI environment (e.g. without login/remotes setup).
   cmd = [
@@ -125,15 +146,53 @@ def fetch_github_pr(pr_number: int) -> str:
   token = os.environ.get("GITHUB_TOKEN")
   if token:
     cmd.extend(["-H", f"Authorization: token {token}"])
-  cmd.append(
+
+  pr_cmd = cmd + [
       f"https://api.github.com/repos/google/adk-python/pulls/{pr_number}"
-  )
+  ]
+  issue_comments_cmd = cmd + [
+      f"https://api.github.com/repos/google/adk-python/issues/{pr_number}/comments"
+  ]
+  review_comments_cmd = cmd + [
+      f"https://api.github.com/repos/google/adk-python/pulls/{pr_number}/comments"
+  ]
 
   try:
-    res = subprocess.run(cmd, capture_output=True, text=True, check=False)
+    res = subprocess.run(pr_cmd, capture_output=True, text=True, check=False)
     if res.returncode != 0:
       return f"Error: Failed to fetch PR {pr_number}: {res.stderr.strip()}"
-    return res.stdout.strip()
+
+    try:
+      pr_data = json.loads(res.stdout.strip())
+    except json.JSONDecodeError as e:
+      return (
+          f"Error: Failed to parse PR JSON response: {e}. Output:"
+          f" {res.stdout.strip()}"
+      )
+
+    # Fetch issue-level comments
+    res_issue_comments = subprocess.run(
+        issue_comments_cmd, capture_output=True, text=True, check=False
+    )
+    if res_issue_comments.returncode == 0:
+      try:
+        pr_data["comments_data"] = json.loads(res_issue_comments.stdout.strip())
+      except json.JSONDecodeError:
+        pass
+
+    # Fetch review/inline comments
+    res_review_comments = subprocess.run(
+        review_comments_cmd, capture_output=True, text=True, check=False
+    )
+    if res_review_comments.returncode == 0:
+      try:
+        pr_data["review_comments_data"] = json.loads(
+            res_review_comments.stdout.strip()
+        )
+      except json.JSONDecodeError:
+        pass
+
+    return json.dumps(pr_data, indent=2)
   except Exception as e:
     return f"Error: Failed to run curl command: {e}"
 
