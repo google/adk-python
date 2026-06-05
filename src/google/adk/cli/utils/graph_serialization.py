@@ -22,6 +22,7 @@ from typing import Any
 logger = logging.getLogger("google_adk." + __name__)
 
 from ...agents.base_agent import BaseAgent
+from ...models.base_llm import BaseLlm
 from ...tools.base_toolset import BaseToolset
 
 # Node type mapping for cleaner lookup
@@ -227,6 +228,8 @@ def serialize_agent(agent: BaseAgent) -> dict[str, Any]:
         # Handle nested agents
         if isinstance(value, BaseAgent):
           agent_dict[field_name] = serialize_agent(value)
+        elif isinstance(value, BaseLlm):
+          agent_dict[field_name] = value.model
         # Handle simple types and collections
         elif isinstance(value, (str, int, float, bool, list, dict)):
           agent_dict[field_name] = value
