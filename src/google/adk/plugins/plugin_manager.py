@@ -52,6 +52,7 @@ PluginCallbackName = Literal[
     "after_model_callback",
     "on_tool_error_callback",
     "on_model_error_callback",
+    "on_pipeline_error_callback",
 ]
 
 logger = logging.getLogger("google_adk." + __name__)
@@ -271,6 +272,27 @@ class PluginManager:
         tool_context=tool_context,
         error=error,
     )
+
+  async def run_on_pipeline_error_callback(
+      self,
+      *,
+      invocation_context: InvocationContext,
+      error: Exception,
+  ) -> Exception:
+    """Runs the `on_pipeline_error_callback` for all plugins sequentially, chaining the error."""
+    for plugin in self.plugins:
+      try:
+        error = await plugin.on_pipeline_error_callback(
+            invocation_context=invocation_context, error=error
+        )
+      except Exception as e:
+        error_message = (
+            f"Error in plugin '{plugin.name}' during "
+            f"'on_pipeline_error_callback' callback: {e}"
+        )
+        logger.error(error_message, exc_info=True)
+        raise RuntimeError(error_message) from e
+    return error
 
   async def _run_callbacks(
       self, callback_name: PluginCallbackName, **kwargs: Any

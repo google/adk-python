@@ -1353,66 +1353,73 @@ class Runner:
 
     plugin_manager = invocation_context.plugin_manager
 
-    # Step 1: Run the before_run callbacks to see if we should early exit.
-    early_exit_result = await plugin_manager.run_before_run_callback(
-        invocation_context=invocation_context
-    )
-    if isinstance(early_exit_result, types.Content):
-      early_exit_event = Event(
-          invocation_id=invocation_context.invocation_id,
-          author='model',
-          content=early_exit_result,
+    try:
+      # Step 1: Run the before_run callbacks to see if we should early exit.
+      early_exit_result = await plugin_manager.run_before_run_callback(
+          invocation_context=invocation_context
       )
-      _apply_run_config_custom_metadata(
-          early_exit_event, invocation_context.run_config
-      )
-      if self._should_append_event(early_exit_event, is_live_call):
-        await self.session_service.append_event(
-            session=invocation_context.session,
-            event=early_exit_event,
+      if isinstance(early_exit_result, types.Content):
+        early_exit_event = Event(
+            invocation_id=invocation_context.invocation_id,
+            author='model',
+            content=early_exit_result,
         )
-      yield early_exit_event
-    else:
-      # Step 2: Otherwise continue with normal execution
-      async with aclosing(execute_fn(invocation_context)) as agen:
-        async for event in agen:
-          _apply_run_config_custom_metadata(
-              event, invocation_context.run_config
+        _apply_run_config_custom_metadata(
+            early_exit_event, invocation_context.run_config
+        )
+        if self._should_append_event(early_exit_event, is_live_call):
+          await self.session_service.append_event(
+              session=invocation_context.session,
+              event=early_exit_event,
           )
-          # Step 3: Run the on_event callbacks before persisting so callback
-          # changes are stored in the session and match the streamed event.
-          modified_event = await plugin_manager.run_on_event_callback(
-              invocation_context=invocation_context, event=event
-          )
-          output_event = self._get_output_event(
-              original_event=event,
-              modified_event=modified_event,
-              run_config=invocation_context.run_config,
-          )
+        yield early_exit_event
+      else:
+        # Step 2: Otherwise continue with normal execution
+        async with aclosing(execute_fn(invocation_context)) as agen:
+          async for event in agen:
+            _apply_run_config_custom_metadata(
+                event, invocation_context.run_config
+            )
+            # Step 3: Run the on_event callbacks before persisting so callback
+            # changes are stored in the session and match the streamed event.
+            modified_event = await plugin_manager.run_on_event_callback(
+                invocation_context=invocation_context, event=event
+            )
+            output_event = self._get_output_event(
+                original_event=event,
+                modified_event=modified_event,
+                run_config=invocation_context.run_config,
+            )
 
-          if is_live_call:
-            # Skip partial transcriptions for Live
-            if event.partial is not True and self._should_append_event(
-                event, is_live_call
-            ):
-              logger.debug('Appending live event: %s', output_event)
-              await self.session_service.append_event(
-                  session=invocation_context.session, event=output_event
-              )
-          else:
-            if event.partial is not True:
-              await self.session_service.append_event(
-                  session=invocation_context.session, event=output_event
-              )
+            if is_live_call:
+              # Skip partial transcriptions for Live
+              if event.partial is not True and self._should_append_event(
+                  event, is_live_call
+              ):
+                logger.debug('Appending live event: %s', output_event)
+                await self.session_service.append_event(
+                    session=invocation_context.session, event=output_event
+                )
+            else:
+              if event.partial is not True:
+                await self.session_service.append_event(
+                    session=invocation_context.session, event=output_event
+                )
 
-          yield output_event
-
-    # Step 4: Run the after_run callbacks to perform global cleanup tasks or
-    # finalizing logs and metrics data.
-    # This does NOT emit any event.
-    await plugin_manager.run_after_run_callback(
-        invocation_context=invocation_context
-    )
+            yield output_event
+    except Exception as e:
+      if plugin_manager:
+        e = await plugin_manager.run_on_pipeline_error_callback(
+            invocation_context=invocation_context, error=e
+        )
+      raise e
+    finally:
+      # Step 4: Run the after_run callbacks to perform global cleanup tasks or
+      # finalizing logs and metrics data.
+      # This does NOT emit any event.
+      await plugin_manager.run_after_run_callback(
+          invocation_context=invocation_context
+      )
 
   async def _append_new_message_to_session(
       self,

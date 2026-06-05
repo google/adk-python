@@ -91,6 +91,12 @@ class TestPlugin(BasePlugin):
   async def on_model_error_callback(self, **kwargs):
     return await self._handle_callback("on_model_error_callback")
 
+  async def on_pipeline_error_callback(self, error: Exception, **kwargs):
+    self.call_log.append("on_pipeline_error_callback")
+    if "on_pipeline_error_callback" in self.exceptions_to_raise:
+      raise self.exceptions_to_raise["on_pipeline_error_callback"]
+    return self.return_values.get("on_pipeline_error_callback", error)
+
 
 @pytest.fixture
 def service() -> PluginManager:
@@ -252,6 +258,10 @@ async def test_all_callbacks_are_supported(
       llm_request=mock_context,
       error=mock_context,
   )
+  await service.run_on_pipeline_error_callback(
+      invocation_context=mock_context,
+      error=ValueError("err"),
+  )
 
   # Verify all callbacks were logged
   expected_callbacks = [
@@ -267,6 +277,7 @@ async def test_all_callbacks_are_supported(
       "before_model_callback",
       "after_model_callback",
       "on_model_error_callback",
+      "on_pipeline_error_callback",
   ]
   assert set(plugin1.call_log) == set(expected_callbacks)
 
@@ -363,3 +374,43 @@ async def test_set_skip_closing_plugins_false_reverts_to_closing(
   await service.close()
 
   plugin1.close.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_pipeline_error_callback_chaining(
+    service: PluginManager, plugin1: TestPlugin, plugin2: TestPlugin
+):
+  """Tests that on_pipeline_error_callback is called and errors are chained."""
+  error1 = ValueError("Original error")
+  error2 = RuntimeError("Chained error")
+  plugin1.return_values["on_pipeline_error_callback"] = error2
+
+  service.register_plugin(plugin1)
+  service.register_plugin(plugin2)
+
+  result_err = await service.run_on_pipeline_error_callback(
+      invocation_context=Mock(), error=error1
+  )
+
+  assert result_err is error2
+  assert "on_pipeline_error_callback" in plugin1.call_log
+  assert "on_pipeline_error_callback" in plugin2.call_log
+
+
+@pytest.mark.asyncio
+async def test_pipeline_error_callback_exception_wrap(
+    service: PluginManager, plugin1: TestPlugin
+):
+  """Tests that if on_pipeline_error_callback raises, it wraps in RuntimeError."""
+  plugin1.exceptions_to_raise["on_pipeline_error_callback"] = ValueError(
+      "Callback crashed"
+  )
+  service.register_plugin(plugin1)
+
+  with pytest.raises(RuntimeError) as excinfo:
+    await service.run_on_pipeline_error_callback(
+        invocation_context=Mock(), error=ValueError("Original")
+    )
+
+  assert "Error in plugin 'plugin1'" in str(excinfo.value)
+  assert "on_pipeline_error_callback" in str(excinfo.value)

@@ -370,3 +370,22 @@ class BasePlugin(ABC):
       allows the original error to be raised.
     """
     pass
+
+  async def on_pipeline_error_callback(
+      self,
+      *,
+      invocation_context: InvocationContext,
+      error: Exception,
+  ) -> Exception:
+    """Callback executed when the runner pipeline encounters an error.
+
+    This callback provides an opportunity to handle pipeline errors globally.
+
+    Args:
+      invocation_context: The context for the entire invocation.
+      error: The exception that was raised during runner execution.
+
+    Returns:
+      An Exception to be raised (either the original error or a new/modified one).
+    """
+    return error
