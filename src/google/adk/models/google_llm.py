@@ -110,6 +110,19 @@ class Gemini(BaseLlm):
 
     Use ``@property`` instead of ``@cached_property`` if you hit asyncio
     lock contention in multithreaded code.
+
+  Customizing the Live API Client:
+    The Live API path uses its own client. To set Live API-only options,
+    subclass ``Gemini`` and override the ``live_api_client`` property::
+
+        from functools import cached_property
+        from google.adk.models import Gemini
+        from google.genai import Client
+
+        class RegionalLiveGemini(Gemini):
+          @cached_property
+          def live_api_client(self) -> Client:
+            return Client(vertexai=True, location="europe-central2")
   """
 
   model: str = 'gemini-2.5-flash'
@@ -376,8 +389,7 @@ class Gemini(BaseLlm):
       # use v1alpha for using API KEY from Google AI Studio
       return 'v1alpha'
 
-  @cached_property
-  def _live_api_client(self) -> Client:
+  def _build_live_api_client(self) -> Client:
     from google.genai import Client
 
     base_url, _ = self._base_url_and_api_version
@@ -393,6 +405,27 @@ class Gemini(BaseLlm):
       kwargs['vertexai'] = True
 
     return Client(**kwargs)
+
+  def _uses_legacy_live_api_client_override(self) -> bool:
+    for cls in type(self).__mro__:
+      if '_live_api_client' in cls.__dict__:
+        return cls is not Gemini
+    return False
+
+  @cached_property
+  def live_api_client(self) -> Client:
+    """Provides the Live API client.
+
+    Subclasses can override this property to customize the ``Client`` used by
+    Live API connections.
+    """
+    if self._uses_legacy_live_api_client_override():
+      return self._live_api_client
+    return self._build_live_api_client()
+
+  @cached_property
+  def _live_api_client(self) -> Client:
+    return self.live_api_client
 
   @contextlib.asynccontextmanager
   async def connect(self, llm_request: LlmRequest) -> BaseLlmConnection:
@@ -455,7 +488,7 @@ class Gemini(BaseLlm):
     llm_request.live_connect_config.tools = llm_request.config.tools
     logger.debug('Connecting to live with llm_request:%s', llm_request)
     logger.debug('Live connect config: %s', llm_request.live_connect_config)
-    async with self._live_api_client.aio.live.connect(
+    async with self.live_api_client.aio.live.connect(
         model=llm_request.model, config=llm_request.live_connect_config
     ) as live_session:
       yield GeminiLlmConnection(
