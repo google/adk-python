@@ -184,25 +184,105 @@ class TestStreamingResponseAggregator:
     assert closed_response.error_message == "Recitation error"
 
   @pytest.mark.asyncio
-  async def test_process_response_with_none_content(self):
-    """Test that StreamingResponseAggregator handles content=None."""
-    aggregator = streaming_utils.StreamingResponseAggregator()
-    response = types.GenerateContentResponse(
-        candidates=[
-            types.Candidate(
-                content=types.Content(parts=[]),
-                finish_reason=types.FinishReason.STOP,
-            )
-        ]
-    )
-    results = []
-    async for r in aggregator.process_response(response):
-      results.append(r)
-    assert len(results) == 1
-    assert results[0].content is not None
+  @pytest.mark.parametrize("use_progressive_sse", [True, False])
+  async def test_empty_content_produces_empty_final_frame(
+      self, use_progressive_sse
+  ):
+    """A candidate with an empty parts list produces an empty final frame."""
+    with temporary_feature_override(
+        FeatureName.PROGRESSIVE_SSE_STREAMING, use_progressive_sse
+    ):
+      aggregator = streaming_utils.StreamingResponseAggregator()
+      response = types.GenerateContentResponse(
+          candidates=[
+              types.Candidate(
+                  content=types.Content(parts=[]),
+                  finish_reason=types.FinishReason.STOP,
+              )
+          ]
+      )
+      results = []
+      async for r in aggregator.process_response(response):
+        results.append(r)
+      closed_response = aggregator.close()
 
-    closed_response = aggregator.close()
-    assert closed_response is None
+      assert len(results) == 1
+      assert results[0].content is not None
+      assert closed_response is not None
+      assert closed_response.partial is False
+      assert closed_response.content is None
+      assert closed_response.finish_reason == types.FinishReason.STOP
+
+  @pytest.mark.asyncio
+  @pytest.mark.parametrize("use_progressive_sse", [True, False])
+  async def test_prompt_feedback_block_returns_error_frame(
+      self, use_progressive_sse
+  ):
+    """A prompt-level safety block produces a final frame with the error code."""
+    with temporary_feature_override(
+        FeatureName.PROGRESSIVE_SSE_STREAMING, use_progressive_sse
+    ):
+      aggregator = streaming_utils.StreamingResponseAggregator()
+      response = types.GenerateContentResponse(
+          prompt_feedback=types.GenerateContentResponsePromptFeedback(
+              block_reason=types.BlockedReason.SAFETY,
+              block_reason_message="Blocked by safety",
+          )
+      )
+      results = []
+      async for r in aggregator.process_response(response):
+        results.append(r)
+      closed_response = aggregator.close()
+
+      assert len(results) == 1
+      assert closed_response is not None
+      assert closed_response.partial is False
+      assert closed_response.error_code == types.BlockedReason.SAFETY
+      assert closed_response.error_message == "Blocked by safety"
+      assert closed_response.content is None
+
+  @pytest.mark.asyncio
+  @pytest.mark.parametrize("use_progressive_sse", [True, False])
+  async def test_pure_function_call_behavior_differs_by_mode(
+      self, use_progressive_sse
+  ):
+    """A pure function call yields the part in progressive mode and an empty frame otherwise."""
+    with temporary_feature_override(
+        FeatureName.PROGRESSIVE_SSE_STREAMING, use_progressive_sse
+    ):
+      aggregator = streaming_utils.StreamingResponseAggregator()
+      response = types.GenerateContentResponse(
+          candidates=[
+              types.Candidate(
+                  content=types.Content(
+                      parts=[
+                          types.Part(
+                              function_call=types.FunctionCall(
+                                  name="my_tool",
+                                  args={"x": 1},
+                              )
+                          )
+                      ]
+                  ),
+                  finish_reason=types.FinishReason.STOP,
+              )
+          ]
+      )
+
+      results = []
+      async for r in aggregator.process_response(response):
+        results.append(r)
+      closed_response = aggregator.close()
+
+      assert closed_response is not None
+      assert closed_response.partial is False
+
+      if use_progressive_sse:
+        assert closed_response.content is not None
+        assert len(closed_response.content.parts) == 1
+        assert closed_response.content.parts[0].function_call.name == "my_tool"
+      else:
+        assert closed_response.content is None
 
   @pytest.mark.asyncio
   @pytest.mark.parametrize(

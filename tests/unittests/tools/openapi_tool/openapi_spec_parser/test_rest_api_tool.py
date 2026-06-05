@@ -1339,6 +1339,113 @@ class TestRestApiTool:
 
       assert result == {"result": "success"}
 
+  def test_init_httpx_client_factory_none_by_default(
+      self,
+      sample_endpoint,
+      sample_operation,
+  ):
+    """httpx_client_factory is None by default."""
+    tool = RestApiTool(
+        name="test_tool",
+        description="Test Tool",
+        endpoint=sample_endpoint,
+        operation=sample_operation,
+    )
+    assert tool._httpx_client_factory is None
+
+  def test_init_with_httpx_client_factory(
+      self,
+      sample_endpoint,
+      sample_operation,
+  ):
+    """A user-supplied httpx_client_factory is stored on the tool."""
+    custom_factory = MagicMock()
+    tool = RestApiTool(
+        name="test_tool",
+        description="Test Tool",
+        endpoint=sample_endpoint,
+        operation=sample_operation,
+        httpx_client_factory=custom_factory,
+    )
+    assert tool._httpx_client_factory is custom_factory
+
+  @pytest.mark.asyncio
+  async def test_call_uses_custom_httpx_client_factory(
+      self,
+      mock_tool_context,
+      sample_endpoint,
+      sample_operation,
+      sample_auth_scheme,
+      sample_auth_credential,
+  ):
+    """When a factory is provided, its client is used to issue the request."""
+    mock_response = mock.create_autospec(requests.Response, instance=True)
+    mock_response.json.return_value = {"result": "success"}
+    mock_response.configure_mock(status_code=200)
+
+    mock_client = mock.create_autospec(
+        httpx.AsyncClient, instance=True, spec_set=True
+    )
+    mock_client.request = AsyncMock(return_value=mock_response)
+    # Make the mock client work as an async context manager.
+    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+    mock_client.__aexit__ = AsyncMock(return_value=None)
+
+    custom_factory = MagicMock(return_value=mock_client)
+
+    tool = RestApiTool(
+        name="test_tool",
+        description="Test Tool",
+        endpoint=sample_endpoint,
+        operation=sample_operation,
+        auth_scheme=sample_auth_scheme,
+        auth_credential=sample_auth_credential,
+        httpx_client_factory=custom_factory,
+    )
+
+    with patch.object(httpx, "AsyncClient", autospec=True) as mock_default:
+      result = await tool.call(args={}, tool_context=mock_tool_context)
+
+    # Factory must be invoked once and the default client must not be built.
+    custom_factory.assert_called_once_with()
+    mock_default.assert_not_called()
+    mock_client.request.assert_awaited_once()
+    assert result == {"result": "success"}
+
+  @pytest.mark.asyncio
+  async def test_call_without_httpx_client_factory_uses_default_client(
+      self,
+      mock_tool_context,
+      sample_endpoint,
+      sample_operation,
+      sample_auth_scheme,
+      sample_auth_credential,
+  ):
+    """When no factory is provided, the default httpx.AsyncClient is used."""
+    mock_response = mock.create_autospec(requests.Response, instance=True)
+    mock_response.json.return_value = {"result": "success"}
+    mock_response.configure_mock(status_code=200)
+
+    mock_client = mock.create_autospec(
+        httpx.AsyncClient, instance=True, spec_set=True
+    )
+    mock_client.request = AsyncMock(return_value=mock_response)
+
+    tool = RestApiTool(
+        name="test_tool",
+        description="Test Tool",
+        endpoint=sample_endpoint,
+        operation=sample_operation,
+        auth_scheme=sample_auth_scheme,
+        auth_credential=sample_auth_credential,
+    )
+
+    with patch.object(
+        httpx, "AsyncClient", return_value=mock_client, autospec=True
+    ) as mock_async_client:
+      await tool.call(args={}, tool_context=mock_tool_context)
+      assert mock_async_client.called
+
   def test_prepare_request_params_extracts_embedded_query_params(
       self, sample_auth_credential, sample_auth_scheme
   ):
