@@ -153,6 +153,29 @@ def test_openapi_toolset_verify_on_init(
   assert all(tool._ssl_verify == verify_value for tool in toolset._tools)
 
 
+def test_openapi_toolset_httpx_client_factory_on_init(
+    openapi_spec: Dict[str, Any],
+):
+  """The httpx_client_factory is forwarded to every generated tool."""
+  custom_factory = lambda: None  # noqa: E731 - placeholder, never invoked here
+  toolset = OpenAPIToolset(
+      spec_dict=openapi_spec, httpx_client_factory=custom_factory
+  )
+  assert toolset._httpx_client_factory is custom_factory
+  assert all(
+      tool._httpx_client_factory is custom_factory for tool in toolset._tools
+  )
+
+
+def test_openapi_toolset_httpx_client_factory_none_by_default(
+    openapi_spec: Dict[str, Any],
+):
+  """httpx_client_factory is None on the toolset and each tool by default."""
+  toolset = OpenAPIToolset(spec_dict=openapi_spec)
+  assert toolset._httpx_client_factory is None
+  assert all(tool._httpx_client_factory is None for tool in toolset._tools)
+
+
 def test_openapi_toolset_configure_verify_all(openapi_spec: Dict[str, Any]):
   """Test configure_verify_all method."""
   toolset = OpenAPIToolset(spec_dict=openapi_spec)
