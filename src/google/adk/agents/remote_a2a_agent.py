@@ -751,6 +751,11 @@ class RemoteA2aAgent(BaseAgent):
         if not event:
           continue
 
+        # Skip events with no content to avoid UI crash (combineA2uiDataParts
+        # expects iterable parts but receives None when content is missing).
+        if not event.content or not event.content.parts:
+          continue
+
         event = await execute_after_request_interceptors(
             self._config.request_interceptors, ctx, a2a_response, event
         )
