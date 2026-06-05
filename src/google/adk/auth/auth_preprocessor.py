@@ -134,7 +134,7 @@ class _AuthLlmRequestProcessor(BaseLlmRequestProcessor):
     agent = invocation_context.agent
     if not hasattr(agent, 'canonical_tools'):
       return
-    events = invocation_context.session.events
+    events = invocation_context._get_events(current_branch=True)
     if not events:
       return
 
