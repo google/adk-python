@@ -23,8 +23,6 @@ load_dotenv(dotenv_path=ENV_PATH, override=True)
 
 GITHUB_BASE_URL = "https://api.github.com"
 GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
-if not GITHUB_TOKEN:
-  raise ValueError("GITHUB_TOKEN environment variable not set")
 
 OWNER = os.getenv("OWNER", "google")
 REPO = os.getenv("REPO", "adk-python")

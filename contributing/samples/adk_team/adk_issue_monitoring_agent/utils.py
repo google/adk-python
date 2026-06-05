@@ -48,24 +48,35 @@ retry_strategy = Retry(
     allowed_methods=["GET", "DELETE"],
 )
 adapter = HTTPAdapter(max_retries=retry_strategy)
-_session = requests.Session()
-_session.mount("https://", adapter)
-_session.headers.update({
-    "Authorization": f"token {GITHUB_TOKEN}",
-    "Accept": "application/vnd.github.v3+json",
-})
+_session = None
+
+
+def _get_session() -> requests.Session:
+  global _session
+  if _session is not None:
+    return _session
+  if not GITHUB_TOKEN:
+    raise ValueError("GITHUB_TOKEN environment variable not set")
+  session = requests.Session()
+  session.mount("https://", adapter)
+  session.headers.update({
+      "Authorization": f"token {GITHUB_TOKEN}",
+      "Accept": "application/vnd.github.v3+json",
+  })
+  _session = session
+  return _session
 
 
 def get_request(url: str, params: dict[str, Any] | None = None) -> Any:
   _increment_api_call_count()
-  response = _session.get(url, params=params or {}, timeout=60)
+  response = _get_session().get(url, params=params or {}, timeout=60)
   response.raise_for_status()
   return response.json()
 
 
 def post_request(url: str, payload: Any) -> Any:
   _increment_api_call_count()
-  response = _session.post(url, json=payload, timeout=60)
+  response = _get_session().post(url, json=payload, timeout=60)
   response.raise_for_status()
   return response.json()
 
