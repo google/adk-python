@@ -212,13 +212,18 @@ class MetricPoint:
 
 
 def _extract_metrics(
-    metrics_list: Sequence[Metric], name: str
+    metrics_list: Sequence[Metric], name: str, agent_name: str | None = None
 ) -> list[MetricPoint]:
   m = next((m for m in metrics_list if m.name == name), None)
   if not m:
     return []
   points = []
   for dp in m.data.data_points:
+    if (
+        agent_name is not None
+        and dp.attributes.get("gen_ai.agent.name") != agent_name
+    ):
+      continue
     value = None
     if hasattr(dp, "sum"):
       value = dp.sum
@@ -300,7 +305,7 @@ async def test_metrics(monkeypatch):
   assert len(scope_metrics) > 0
   metrics_list = scope_metrics[0].metrics
   got_invocation = _extract_metrics(
-      metrics_list, "gen_ai.agent.invocation.duration"
+      metrics_list, "gen_ai.agent.invocation.duration", "complex_agent"
   )
   assert len(got_invocation) == 1
   for p in got_invocation:
@@ -315,7 +320,7 @@ async def test_metrics(monkeypatch):
   ]
   assert got_invocation == want_invocation
   got_tool_exec = _extract_metrics(
-      metrics_list, "gen_ai.tool.execution.duration"
+      metrics_list, "gen_ai.tool.execution.duration", "complex_agent"
   )
   assert len(got_tool_exec) == 2
   for p in got_tool_exec:
@@ -339,7 +344,9 @@ async def test_metrics(monkeypatch):
   got_tool_exec.sort(key=lambda p: p.attributes.get("gen_ai.tool.name", ""))
   want_tool_exec.sort(key=lambda p: p.attributes.get("gen_ai.tool.name", ""))
   assert got_tool_exec == want_tool_exec
-  got_steps = _extract_metrics(metrics_list, "gen_ai.agent.workflow.steps")
+  got_steps = _extract_metrics(
+      metrics_list, "gen_ai.agent.workflow.steps", "complex_agent"
+  )
   assert len(got_steps) == 1
   want_steps = [
       # (tool call + result) x 2 + text response = 5 steps
@@ -348,7 +355,7 @@ async def test_metrics(monkeypatch):
   assert got_steps == want_steps
 
   got_client_duration = _extract_metrics(
-      metrics_list, "gen_ai.client.operation.duration"
+      metrics_list, "gen_ai.client.operation.duration", "complex_agent"
   )
   assert len(got_client_duration) == 1
   for p in got_client_duration:
@@ -368,7 +375,7 @@ async def test_metrics(monkeypatch):
   assert got_client_duration == want_client_duration
 
   got_client_tokens = _extract_metrics(
-      metrics_list, "gen_ai.client.token.usage"
+      metrics_list, "gen_ai.client.token.usage", "complex_agent"
   )
   assert len(got_client_tokens) == 2
   want_client_tokens = [
@@ -435,7 +442,9 @@ async def test_metrics_tool_error(monkeypatch):
   metrics_list = metrics_data.resource_metrics[0].scope_metrics[0].metrics
 
   # Verify Tool Execution Duration
-  got = _extract_metrics(metrics_list, "gen_ai.tool.execution.duration")
+  got = _extract_metrics(
+      metrics_list, "gen_ai.tool.execution.duration", "error_agent"
+  )
   assert len(got) == 2
   for p in got:
     p.value = None

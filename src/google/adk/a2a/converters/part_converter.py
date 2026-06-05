@@ -22,6 +22,7 @@ import base64
 from collections.abc import Callable
 import json
 import logging
+from typing import Any
 from typing import List
 from typing import Optional
 from typing import Union
@@ -64,7 +65,9 @@ def convert_a2a_part_to_genai_part(
     thought = None
     if part.metadata:
       thought = part.metadata.get(_get_adk_metadata_key('thought'))
-    return genai_types.Part(text=part.text, thought=thought)
+    return genai_types.Part(
+        text=part.text, thought=thought, part_metadata=part.metadata
+    )
 
   if isinstance(part, a2a_types.FilePart):
     if isinstance(part.file, a2a_types.FileWithUri):
@@ -73,7 +76,8 @@ def convert_a2a_part_to_genai_part(
               file_uri=part.file.uri,
               mime_type=part.file.mime_type,
               display_name=part.file.name,
-          )
+          ),
+          part_metadata=part.metadata,
       )
 
     elif isinstance(part.file, a2a_types.FileWithBytes):
@@ -82,7 +86,8 @@ def convert_a2a_part_to_genai_part(
               data=base64.b64decode(part.file.bytes),
               mime_type=part.file.mime_type,
               display_name=part.file.name,
-          )
+          ),
+          part_metadata=part.metadata,
       )
     else:
       logger.warning(
@@ -126,6 +131,7 @@ def convert_a2a_part_to_genai_part(
                 part.data, by_alias=True
             ),
             thought_signature=thought_signature,
+            part_metadata=part.metadata,
         )
       if (
           part.metadata[_get_adk_metadata_key(A2A_DATA_PART_METADATA_TYPE_KEY)]
@@ -134,7 +140,8 @@ def convert_a2a_part_to_genai_part(
         return genai_types.Part(
             function_response=genai_types.FunctionResponse.model_validate(
                 part.data, by_alias=True
-            )
+            ),
+            part_metadata=part.metadata,
         )
       if (
           part.metadata[_get_adk_metadata_key(A2A_DATA_PART_METADATA_TYPE_KEY)]
@@ -143,7 +150,8 @@ def convert_a2a_part_to_genai_part(
         return genai_types.Part(
             code_execution_result=genai_types.CodeExecutionResult.model_validate(
                 part.data, by_alias=True
-            )
+            ),
+            part_metadata=part.metadata,
         )
       if (
           part.metadata[_get_adk_metadata_key(A2A_DATA_PART_METADATA_TYPE_KEY)]
@@ -152,7 +160,8 @@ def convert_a2a_part_to_genai_part(
         return genai_types.Part(
             executable_code=genai_types.ExecutableCode.model_validate(
                 part.data, by_alias=True
-            )
+            ),
+            part_metadata=part.metadata,
         )
     return genai_types.Part(
         inline_data=genai_types.Blob(
@@ -162,7 +171,8 @@ def convert_a2a_part_to_genai_part(
             )
             + A2A_DATA_PART_END_TAG,
             mime_type=A2A_DATA_PART_TEXT_MIME_TYPE,
-        )
+        ),
+        part_metadata=part.metadata,
     )
 
   logger.warning(
@@ -179,22 +189,34 @@ def convert_genai_part_to_a2a_part(
 ) -> Optional[a2a_types.Part]:
   """Convert a Google GenAI Part to an A2A Part."""
 
+  def add_metadata_to_a2a_part(
+      a2a_part: a2a_types.Part,
+      metadata: dict[str, Any],
+  ) -> None:
+    """Adds metadata to an A2A part."""
+    if a2a_part.metadata is None:
+      a2a_part.metadata = {}
+    a2a_part.metadata.update(metadata)
+
   if part.text is not None:
     a2a_part = a2a_types.TextPart(text=part.text)
     if part.thought is not None:
       a2a_part.metadata = {_get_adk_metadata_key('thought'): part.thought}
+    if part.part_metadata:
+      add_metadata_to_a2a_part(a2a_part, part.part_metadata)
     return a2a_types.Part(root=a2a_part)
 
   if part.file_data:
-    return a2a_types.Part(
-        root=a2a_types.FilePart(
-            file=a2a_types.FileWithUri(
-                uri=part.file_data.file_uri,
-                mime_type=part.file_data.mime_type,
-                name=part.file_data.display_name,
-            )
+    a2a_part = a2a_types.FilePart(
+        file=a2a_types.FileWithUri(
+            uri=part.file_data.file_uri,
+            mime_type=part.file_data.mime_type,
+            name=part.file_data.display_name,
         )
     )
+    if part.part_metadata:
+      add_metadata_to_a2a_part(a2a_part, part.part_metadata)
+    return a2a_types.Part(root=a2a_part)
 
   if part.inline_data:
     if (
@@ -203,13 +225,14 @@ def convert_genai_part_to_a2a_part(
         and part.inline_data.data.startswith(A2A_DATA_PART_START_TAG)
         and part.inline_data.data.endswith(A2A_DATA_PART_END_TAG)
     ):
-      return a2a_types.Part(
-          root=a2a_types.DataPart.model_validate_json(
-              part.inline_data.data[
-                  len(A2A_DATA_PART_START_TAG) : -len(A2A_DATA_PART_END_TAG)
-              ]
-          )
+      a2a_part = a2a_types.DataPart.model_validate_json(
+          part.inline_data.data[
+              len(A2A_DATA_PART_START_TAG) : -len(A2A_DATA_PART_END_TAG)
+          ]
       )
+      if part.part_metadata:
+        add_metadata_to_a2a_part(a2a_part, part.part_metadata)
+      return a2a_types.Part(root=a2a_part)
     # The default case for inline_data is to convert it to FileWithBytes.
     a2a_part = a2a_types.FilePart(
         file=a2a_types.FileWithBytes(
@@ -225,6 +248,9 @@ def convert_genai_part_to_a2a_part(
               'video_metadata'
           ): part.video_metadata.model_dump(by_alias=True, exclude_none=True)
       }
+
+    if part.part_metadata:
+      add_metadata_to_a2a_part(a2a_part, part.part_metadata)
 
     return a2a_types.Part(root=a2a_part)
 
@@ -244,6 +270,8 @@ def convert_genai_part_to_a2a_part(
       fc_metadata[_get_adk_metadata_key('thought_signature')] = (
           base64.b64encode(part.thought_signature).decode('utf-8')
       )
+    if part.part_metadata:
+      fc_metadata.update(part.part_metadata)
     return a2a_types.Part(
         root=a2a_types.DataPart(
             data=part.function_call.model_dump(
@@ -254,44 +282,53 @@ def convert_genai_part_to_a2a_part(
     )
 
   if part.function_response:
+    fr_metadata = {
+        _get_adk_metadata_key(
+            A2A_DATA_PART_METADATA_TYPE_KEY
+        ): A2A_DATA_PART_METADATA_TYPE_FUNCTION_RESPONSE
+    }
+    if part.part_metadata:
+      fr_metadata.update(part.part_metadata)
     return a2a_types.Part(
         root=a2a_types.DataPart(
             data=part.function_response.model_dump(
                 by_alias=True, exclude_none=True
             ),
-            metadata={
-                _get_adk_metadata_key(
-                    A2A_DATA_PART_METADATA_TYPE_KEY
-                ): A2A_DATA_PART_METADATA_TYPE_FUNCTION_RESPONSE
-            },
+            metadata=fr_metadata,
         )
     )
 
   if part.code_execution_result:
+    cer_metadata = {
+        _get_adk_metadata_key(
+            A2A_DATA_PART_METADATA_TYPE_KEY
+        ): A2A_DATA_PART_METADATA_TYPE_CODE_EXECUTION_RESULT
+    }
+    if part.part_metadata:
+      cer_metadata.update(part.part_metadata)
     return a2a_types.Part(
         root=a2a_types.DataPart(
             data=part.code_execution_result.model_dump(
                 by_alias=True, exclude_none=True
             ),
-            metadata={
-                _get_adk_metadata_key(
-                    A2A_DATA_PART_METADATA_TYPE_KEY
-                ): A2A_DATA_PART_METADATA_TYPE_CODE_EXECUTION_RESULT
-            },
+            metadata=cer_metadata,
         )
     )
 
   if part.executable_code:
+    ec_metadata = {
+        _get_adk_metadata_key(
+            A2A_DATA_PART_METADATA_TYPE_KEY
+        ): A2A_DATA_PART_METADATA_TYPE_EXECUTABLE_CODE
+    }
+    if part.part_metadata:
+      ec_metadata.update(part.part_metadata)
     return a2a_types.Part(
         root=a2a_types.DataPart(
             data=part.executable_code.model_dump(
                 by_alias=True, exclude_none=True
             ),
-            metadata={
-                _get_adk_metadata_key(
-                    A2A_DATA_PART_METADATA_TYPE_KEY
-                ): A2A_DATA_PART_METADATA_TYPE_EXECUTABLE_CODE
-            },
+            metadata=ec_metadata,
         )
     )
 

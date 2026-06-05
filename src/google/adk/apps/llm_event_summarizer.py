@@ -47,12 +47,18 @@ class LlmEventSummarizer(BaseEventsSummarizer):
   """
 
   _DEFAULT_PROMPT_TEMPLATE = (
-      'The following is a conversation history between a user and an AI'
-      ' agent. Please summarize the conversation, focusing on key'
-      ' information and decisions made, as well as any unresolved'
+      'The following is a conversation history between a user and an AI agent.'
+      ' It may or may not start from a compacted history. Please identify and'
+      ' reiterate the user request, summarize the context so far, focusing on'
+      ' key decisions made and information obtained, as well as any unresolved'
       ' questions or tasks. The summary should be concise and capture the'
-      ' essence of the interaction.\\n\\n{conversation_history}'
+      ' essence of the interaction.\n\n{conversation_history}'
   )
+
+  # Tool call args and responses can be large (e.g. search results). Cap how
+  # much of each is rendered so compaction does not inflate the very context
+  # it exists to shrink.
+  _MAX_TOOL_CONTENT_CHARS = 2000
 
   def __init__(
       self,
@@ -71,14 +77,42 @@ class LlmEventSummarizer(BaseEventsSummarizer):
     self._prompt_template = prompt_template or self._DEFAULT_PROMPT_TEMPLATE
 
   def _format_events_for_prompt(self, events: list[Event]) -> str:
-    """Formats a list of events into a string for the LLM prompt."""
+    """Formats events into prompt text, including thoughts and tool calls.
+
+    Thoughts carry the agent's analysis of tool responses, and tool calls and
+    responses carry the evidence retrieved so far, so all three are included.
+    Thoughts emitted by a compaction event are skipped so a prior summary's
+    reasoning does not leak into the next summary.
+    """
     formatted_history = []
     for event in events:
-      if event.content and event.content.parts:
-        for part in event.content.parts:
-          if part.text:
-            formatted_history.append(f'{event.author}: {part.text}')
-    return '\\n'.join(formatted_history)
+      if not (event.content and event.content.parts):
+        continue
+      is_compaction = bool(event.actions and event.actions.compaction)
+      for part in event.content.parts:
+        if part.thought and part.text:
+          if not is_compaction:
+            formatted_history.append(f'{event.author} (thought): {part.text}')
+        elif part.text:
+          formatted_history.append(f'{event.author}: {part.text}')
+        if part.function_call:
+          args = self._truncate(str(part.function_call.args))
+          formatted_history.append(
+              f'{event.author} called tool: {part.function_call.name}({args})'
+          )
+        if part.function_response:
+          response = self._truncate(str(part.function_response.response))
+          formatted_history.append(
+              f'Tool response from {part.function_response.name}: {response}'
+          )
+    return '\n'.join(formatted_history)
+
+  def _truncate(self, text: str) -> str:
+    """Caps `text` at the tool-content limit, marking dropped characters."""
+    limit = self._MAX_TOOL_CONTENT_CHARS
+    if len(text) <= limit:
+      return text
+    return f'{text[:limit]}... [truncated {len(text) - limit} chars]'
 
   async def maybe_summarize_events(
       self, *, events: list[Event]

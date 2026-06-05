@@ -34,6 +34,7 @@ from ...auth.credential_service.in_memory_credential_service import InMemoryCred
 from ...memory.in_memory_memory_service import InMemoryMemoryService
 from ...runners import Runner
 from ...sessions.in_memory_session_service import InMemorySessionService
+from ...workflow._workflow import Workflow
 from ..executor.a2a_agent_executor import A2aAgentExecutor
 from ..executor.config import A2aAgentExecutorConfig
 from ..experimental import a2a_experimental
@@ -77,7 +78,7 @@ def _load_agent_card(
 
 @a2a_experimental
 def to_a2a(
-    agent: BaseAgent,
+    agent: BaseAgent | Workflow,
     *,
     host: str = "localhost",
     port: int = 8000,
@@ -89,10 +90,11 @@ def to_a2a(
     lifespan: Callable[[Starlette], AsyncIterator[None]] | None = None,
     agent_executor_factory: Callable[[Runner], A2aAgentExecutor] | None = None,
 ) -> Starlette:
-  """Convert an ADK agent to a A2A Starlette application.
+  """Convert an ADK BaseAgent or Workflow to an A2A Starlette application.
 
   Args:
-      agent: The ADK agent to convert
+      agent: The ADK BaseAgent (e.g. LlmAgent) or Workflow to
+        convert.
       host: The host for the A2A RPC URL (default: "localhost")
       port: The port for the A2A RPC URL (default: 8000)
       protocol: The protocol for the A2A RPC URL (default: "http")
@@ -152,16 +154,20 @@ def to_a2a(
   adk_logger.setLevel(logging.INFO)
 
   def create_runner() -> Runner:
-    """Create a runner for the agent."""
-    return Runner(
-        app_name=agent.name or "adk_agent",
-        agent=agent,
+    """Create a runner for the agent or workflow."""
+    runner_kwargs = {
+        "app_name": agent.name or "adk_agent",
         # Use minimal services - in a real implementation these could be configured
-        artifact_service=InMemoryArtifactService(),
-        session_service=InMemorySessionService(),
-        memory_service=InMemoryMemoryService(),
-        credential_service=InMemoryCredentialService(),
-    )
+        "artifact_service": InMemoryArtifactService(),
+        "session_service": InMemorySessionService(),
+        "memory_service": InMemoryMemoryService(),
+        "credential_service": InMemoryCredentialService(),
+    }
+    if isinstance(agent, Workflow):
+      runner_kwargs["node"] = agent
+    else:
+      runner_kwargs["agent"] = agent
+    return Runner(**runner_kwargs)
 
   # Create A2A components
   if task_store is None:
