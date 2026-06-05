@@ -69,7 +69,8 @@ class _ContentLlmRequestProcessor(BaseLlmRequestProcessor):
 
     is_single_turn = getattr(agent, 'mode', None) == 'single_turn'
     source_filter = getattr(agent, 'include_sources', None)
-    if agent.include_contents == 'default':
+    include_contents = getattr(agent, 'include_contents', 'default')
+    if include_contents == 'default':
       # Include full conversation history
       llm_request.contents = _get_contents(
           invocation_context.branch,
@@ -85,7 +86,7 @@ class _ContentLlmRequestProcessor(BaseLlmRequestProcessor):
       # 'current': anchor at last user message — all sibling agent outputs
       #            within this invocation are included.
       # 'none':    anchor at last turn boundary (user OR other-agent event).
-      stop_at_user_only = agent.include_contents == 'current'
+      stop_at_user_only = include_contents == 'current'
       llm_request.contents = _get_current_turn_contents(
           invocation_context.branch,
           invocation_context.session.events,
