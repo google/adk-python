@@ -21,14 +21,15 @@ import os
 from pathlib import Path
 from unittest import mock
 
-from google.adk.artifacts.file_artifact_service import FileArtifactService
 from google.adk.artifacts.in_memory_artifact_service import InMemoryArtifactService
 from google.adk.cli.service_registry import ServiceRegistry
 from google.adk.cli.utils.local_storage import PerAgentDatabaseSessionService
+from google.adk.cli.utils.local_storage import PerAgentFileArtifactService
 import google.adk.cli.utils.service_factory as service_factory
 from google.adk.memory.in_memory_memory_service import InMemoryMemoryService
 from google.adk.sessions.database_session_service import DatabaseSessionService
 from google.adk.sessions.in_memory_session_service import InMemorySessionService
+from google.genai import types
 import pytest
 
 
@@ -302,6 +303,83 @@ def test_create_artifact_service_defaults_to_in_memory_when_disabled(
   assert not (tmp_path / ".adk").exists()
 
 
+@pytest.mark.asyncio
+async def test_create_artifact_service_defaults_to_per_agent(
+    tmp_path: Path,
+) -> None:
+  agent_dir = tmp_path / "agent_a"
+  agent_dir.mkdir()
+  service = service_factory.create_artifact_service_from_options(
+      base_dir=tmp_path,
+      use_local_storage=True,
+  )
+
+  assert isinstance(service, PerAgentFileArtifactService)
+  await service.save_artifact(
+      app_name="agent_a",
+      user_id="user",
+      session_id="session",
+      filename="file.txt",
+      artifact=types.Part.from_bytes(data=b"data", mime_type="text/plain"),
+  )
+  assert (agent_dir / ".adk" / "artifacts").exists()
+  assert not (tmp_path / ".adk").exists()
+
+
+@pytest.mark.asyncio
+async def test_create_artifact_service_respects_app_name_mapping(
+    tmp_path: Path,
+) -> None:
+  agent_dir = tmp_path / "agent_folder"
+  logical_name = "custom_app"
+  agent_dir.mkdir()
+
+  service = service_factory.create_artifact_service_from_options(
+      base_dir=tmp_path,
+      app_name_to_dir={logical_name: "agent_folder"},
+      use_local_storage=True,
+  )
+
+  assert isinstance(service, PerAgentFileArtifactService)
+  await service.save_artifact(
+      app_name=logical_name,
+      user_id="user",
+      session_id="session",
+      filename="file.txt",
+      artifact=types.Part.from_bytes(data=b"data", mime_type="text/plain"),
+  )
+  assert (agent_dir / ".adk" / "artifacts").exists()
+
+
+def test_create_artifact_service_warns_on_legacy_shared_root(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+  (tmp_path / ".adk" / "artifacts").mkdir(parents=True)
+
+  caplog.set_level(logging.WARNING, logger=service_factory.logger.name)
+  service = service_factory.create_artifact_service_from_options(
+      base_dir=tmp_path,
+      use_local_storage=True,
+  )
+
+  assert isinstance(service, PerAgentFileArtifactService)
+  assert "legacy shared artifacts" in caplog.text
+
+
+def test_create_artifact_service_no_warning_without_legacy_root(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+  caplog.set_level(logging.WARNING, logger=service_factory.logger.name)
+  service_factory.create_artifact_service_from_options(
+      base_dir=tmp_path,
+      use_local_storage=True,
+  )
+
+  assert "legacy shared artifacts" not in caplog.text
+
+
 def test_create_session_service_fallbacks_to_in_memory_on_permission_error(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -425,7 +503,15 @@ async def test_adk_force_local_storage_env_overrides_flag(
       base_dir=tmp_path,
       use_local_storage=False,
   )
-  assert isinstance(artifact_service, FileArtifactService)
+  assert isinstance(artifact_service, PerAgentFileArtifactService)
+  await artifact_service.save_artifact(
+      app_name="agent_a",
+      user_id="user",
+      session_id="session",
+      filename="file.txt",
+      artifact=types.Part.from_bytes(data=b"data", mime_type="text/plain"),
+  )
+  assert (agent_dir / ".adk" / "artifacts").exists()
 
 
 def test_create_artifact_service_fallbacks_to_in_memory_on_permission_error(

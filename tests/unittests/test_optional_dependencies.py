@@ -20,6 +20,7 @@ integration tests using a clean venv (skipped by default, run via env var).
 
 from __future__ import annotations
 
+import importlib.util
 import os
 from pathlib import Path
 import subprocess
@@ -165,6 +166,25 @@ def test_vertex_ai_session_service_fails_on_creation():
     with pytest.raises(ImportError) as exc_info:
       VertexAiSessionService(agent_engine_id="123")
     assert "google-cloud-aiplatform" in str(exc_info.value)
+
+
+def test_vertexai_dependency_shim_raises_clear_importerror():
+  """Verify that the Vertex AI dependency shim points users to the gcp extra."""
+  with mock.patch.dict("sys.modules", {"vertexai": None}):
+    module_path = _REPO_ROOT / "src/google/adk/dependencies/vertexai.py"
+    spec = importlib.util.spec_from_file_location(
+        "_test_google_adk_dependencies_vertexai", module_path
+    )
+    assert spec is not None
+    assert spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+
+    with pytest.raises(ImportError) as exc_info:
+      spec.loader.exec_module(module)
+
+    message = str(exc_info.value)
+    assert "google-adk[gcp]" in message
+    assert "google-adk[all]" in message
 
 
 # =============================================================================

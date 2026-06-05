@@ -329,7 +329,7 @@ class DatabaseSessionService(BaseSessionService):
         else:
           self._session_lock_ref_count[lock_key] = remaining
 
-  async def _prepare_tables(self):
+  async def _prepare_tables(self) -> None:
     """Ensure database tables are ready for use.
 
     This method is called lazily before each database operation. It checks the
@@ -626,6 +626,22 @@ class DatabaseSessionService(BaseSessionService):
       )
       await sql_session.execute(stmt)
       await sql_session.commit()
+
+  @override
+  async def get_user_state(
+      self, *, app_name: str, user_id: str
+  ) -> dict[str, Any]:
+    await self._prepare_tables()
+    schema = self._get_schema_classes()
+    async with self._rollback_on_exception_session(
+        read_only=True
+    ) as sql_session:
+      storage_user_state = await sql_session.get(
+          schema.StorageUserState, (app_name, user_id)
+      )
+      if storage_user_state is None:
+        return {}
+      return dict(storage_user_state.state or {})
 
   @override
   async def append_event(self, session: Session, event: Event) -> Event:

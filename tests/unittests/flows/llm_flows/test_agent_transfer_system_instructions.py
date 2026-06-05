@@ -19,9 +19,13 @@ the request processor and checking the resulting system instructions not just
 implementation.
 """
 
+from typing import AsyncGenerator
+
+from google.adk.agents.base_agent import BaseAgent
 from google.adk.agents.invocation_context import InvocationContext
 from google.adk.agents.llm_agent import Agent
 from google.adk.artifacts.in_memory_artifact_service import InMemoryArtifactService
+from google.adk.events.event import Event
 from google.adk.flows.llm_flows import agent_transfer
 from google.adk.memory.in_memory_memory_service import InMemoryMemoryService
 from google.adk.models.llm_request import LlmRequest
@@ -32,6 +36,15 @@ from google.genai import types
 import pytest
 
 from ... import testing_utils
+
+
+class _NonLlmAgent(BaseAgent):
+  """A minimal BaseAgent subclass that, like any non-LlmAgent, has no `mode`."""
+
+  async def _run_async_impl(
+      self, ctx: InvocationContext
+  ) -> AsyncGenerator[Event, None]:
+    yield Event(author=self.name, invocation_id=ctx.invocation_id)
 
 
 async def create_test_invocation_context(agent: Agent) -> InvocationContext:
@@ -296,3 +309,36 @@ async def test_agent_transfer_no_instructions_when_no_transfer_targets():
   instructions = llm_request.config.system_instruction or ''
   assert '**NOTE**:' not in instructions
   assert 'transfer_to_agent' not in instructions
+
+
+@pytest.mark.asyncio
+async def test_agent_transfer_with_non_llm_peer_agent():
+  """Peer agents that are not LlmAgents (no `mode`) must not break transfer."""
+  mockModel = testing_utils.MockModel.create(responses=[])
+
+  non_llm_peer = _NonLlmAgent(
+      name='non_llm_peer', description='A non-LlmAgent peer'
+  )
+  parent_agent = Agent(
+      name='parent_agent',
+      model=mockModel,
+      sub_agents=[non_llm_peer],
+      description='Parent agent',
+  )
+  main_agent = Agent(
+      name='main_agent',
+      model=mockModel,
+      parent_agent=parent_agent,
+      description='Main agent',
+  )
+
+  invocation_context = await create_test_invocation_context(main_agent)
+  llm_request = LlmRequest()
+
+  async for _ in agent_transfer.request_processor.run_async(
+      invocation_context, llm_request
+  ):
+    pass
+
+  instructions = llm_request.config.system_instruction
+  assert 'non_llm_peer' in instructions
