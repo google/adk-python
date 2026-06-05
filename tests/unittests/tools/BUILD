@@ -44,3 +44,12 @@ pytest_test(
         "//third_party/py/pytest_asyncio",
     ],
 )
+
+pytest_test(
+    name = "test_function_tool_declarations",
+    srcs = ["test_function_tool_declarations.py"],
+    deps = [
+        "//third_party/py/absl/testing:parameterized",
+        "//third_party/py/google/adk",
+    ],
+)
