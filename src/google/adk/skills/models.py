@@ -50,7 +50,11 @@ class Frontmatter(BaseModel):
         https://agentskills.io/specification#allowed-tools-field.
       metadata: Key-value pairs for client-specific properties (defaults to
         empty dict). For example, to include additional tools, use the
-        ``adk_additional_tools`` key with a list of tools.
+        ``adk_additional_tools`` key with a list of tools. To enable session
+        state injection (e.g. ``{var_name}`` or ``{artifact.file_name}``) into
+        the skill instructions when the skill is loaded, set the
+        ``adk_inject_session_state`` key to ``True`` (defaults to disabled so
+        that literal braces in skill content are preserved).
   """
 
   model_config = ConfigDict(
@@ -76,6 +80,9 @@ class Frontmatter(BaseModel):
       tools = v["adk_additional_tools"]
       if not isinstance(tools, list):
         raise ValueError("adk_additional_tools must be a list of strings")
+    if "adk_inject_session_state" in v:
+      if not isinstance(v["adk_inject_session_state"], bool):
+        raise ValueError("adk_inject_session_state must be a boolean")
     return v
 
   @field_validator("name")

@@ -38,6 +38,7 @@ def _mock_skill1_frontmatter():
   frontmatter.name = "skill1"
   frontmatter.description = "Skill 1 description"
   frontmatter.allowed_tools = ["test_tool"]
+  frontmatter.metadata = {}
   frontmatter.model_dump.return_value = {
       "name": "skill1",
       "description": "Skill 1 description",
@@ -107,6 +108,7 @@ def _mock_skill2_frontmatter():
   frontmatter.name = "skill2"
   frontmatter.description = "Skill 2 description"
   frontmatter.allowed_tools = []
+  frontmatter.metadata = {}
   frontmatter.model_dump.return_value = {
       "name": "skill2",
       "description": "Skill 2 description",
@@ -274,6 +276,82 @@ async def test_load_skill_run_async_state_none(
   tool_context_instance.state.__setitem__.assert_called_with(
       state_key, ["skill1"]
   )
+
+
+@pytest.mark.asyncio
+async def test_load_skill_no_injection_by_default(
+    mock_skill1, tool_context_instance
+):
+  """Without the opt-in flag, braces in instructions are preserved verbatim."""
+  mock_skill1.instructions = "Greet {user_name} warmly."
+  tool_context_instance._invocation_context.session.state = {
+      "user_name": "Alice"
+  }
+  toolset = skill_toolset.SkillToolset([mock_skill1])
+  tool = skill_toolset.LoadSkillTool(toolset)
+
+  result = await tool.run_async(
+      args={"skill_name": "skill1"}, tool_context=tool_context_instance
+  )
+
+  assert result["instructions"] == "Greet {user_name} warmly."
+
+
+@pytest.mark.asyncio
+async def test_load_skill_injects_session_state_when_enabled(
+    mock_skill1, tool_context_instance
+):
+  """With the opt-in flag set, state variables are substituted."""
+  mock_skill1.instructions = "Greet {user_name} warmly."
+  mock_skill1.frontmatter.metadata = {"adk_inject_session_state": True}
+  tool_context_instance._invocation_context.session.state = {
+      "user_name": "Alice"
+  }
+  toolset = skill_toolset.SkillToolset([mock_skill1])
+  tool = skill_toolset.LoadSkillTool(toolset)
+
+  result = await tool.run_async(
+      args={"skill_name": "skill1"}, tool_context=tool_context_instance
+  )
+
+  assert result["instructions"] == "Greet Alice warmly."
+
+
+@pytest.mark.asyncio
+async def test_load_skill_injection_optional_var_empty(
+    mock_skill1, tool_context_instance
+):
+  """An optional ({var?}) missing variable is replaced with empty string."""
+  mock_skill1.instructions = "Hello{nickname?}."
+  mock_skill1.frontmatter.metadata = {"adk_inject_session_state": True}
+  tool_context_instance._invocation_context.session.state = {}
+  toolset = skill_toolset.SkillToolset([mock_skill1])
+  tool = skill_toolset.LoadSkillTool(toolset)
+
+  result = await tool.run_async(
+      args={"skill_name": "skill1"}, tool_context=tool_context_instance
+  )
+
+  assert result["instructions"] == "Hello."
+
+
+@pytest.mark.asyncio
+async def test_load_skill_injection_missing_required_var_returns_error(
+    mock_skill1, tool_context_instance
+):
+  """A missing required variable returns a STATE_INJECTION_ERROR, not a crash."""
+  mock_skill1.instructions = "Greet {user_name} warmly."
+  mock_skill1.frontmatter.metadata = {"adk_inject_session_state": True}
+  tool_context_instance._invocation_context.session.state = {}
+  toolset = skill_toolset.SkillToolset([mock_skill1])
+  tool = skill_toolset.LoadSkillTool(toolset)
+
+  result = await tool.run_async(
+      args={"skill_name": "skill1"}, tool_context=tool_context_instance
+  )
+
+  assert result["error_code"] == "STATE_INJECTION_ERROR"
+  assert "skill1" in result["error"]
 
 
 @pytest.mark.asyncio

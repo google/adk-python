@@ -36,6 +36,7 @@ from ..code_executors.code_execution_utils import CodeExecutionInput
 from ..skills import models
 from ..skills import prompt
 from ..skills import SkillRegistry
+from ..utils.instructions_utils import inject_session_state
 from .base_tool import BaseTool
 from .base_toolset import BaseToolset
 from .base_toolset import ToolPredicate
@@ -248,9 +249,25 @@ class LoadSkillTool(BaseTool):
       activated_skills.append(skill_name)
       tool_context.state[state_key] = activated_skills
 
+    # Optionally inject session state (e.g. {var_name}, {artifact.file_name})
+    # into the instructions. Disabled by default so that literal braces in
+    # skill content are preserved unless the skill opts in via frontmatter.
+    instructions = skill.instructions
+    if skill.frontmatter.metadata.get("adk_inject_session_state"):
+      try:
+        instructions = await inject_session_state(instructions, tool_context)
+      except (KeyError, ValueError) as e:
+        return {
+            "error": (
+                f"Failed to inject session state into skill '{skill_name}'"
+                f" instructions: {e}"
+            ),
+            "error_code": "STATE_INJECTION_ERROR",
+        }
+
     return {
         "skill_name": skill_name,
-        "instructions": skill.instructions,
+        "instructions": instructions,
         "frontmatter": skill.frontmatter.model_dump(),
     }
 
