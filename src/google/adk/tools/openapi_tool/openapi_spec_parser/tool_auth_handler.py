@@ -80,7 +80,7 @@ class ToolContextCredentialStore:
         if auth_credential
         else ""
     )
-    return f"{scheme_name}_{credential_name}_existing_exchanged_credential"
+    return f"user:{scheme_name}_{credential_name}_existing_exchanged_credential"
 
   def get_credential_key(
       self,
@@ -114,7 +114,7 @@ class ToolContextCredentialStore:
     # persisted. temp: namespace will be cleared after current run. but tool
     # want access token to be there stored across runs
 
-    return f"{scheme_name}_{credential_name}_existing_exchanged_credential"
+    return f"user:{scheme_name}_{credential_name}_existing_exchanged_credential"
 
   def get_credential(
       self,

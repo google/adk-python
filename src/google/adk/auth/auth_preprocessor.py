@@ -34,7 +34,7 @@ from .auth_tool import AuthToolArguments
 # Prefix used by toolset auth credential IDs.
 # Auth requests with this prefix are for toolset authentication (before tool
 # listing) and don't require resuming a function call.
-TOOLSET_AUTH_CREDENTIAL_ID_PREFIX = '_adk_toolset_auth_'
+TOOLSET_AUTH_CREDENTIAL_ID_PREFIX = "_adk_toolset_auth_"
 
 
 async def _store_auth_and_collect_resume_targets(
@@ -80,18 +80,57 @@ async def _store_auth_and_collect_resume_targets(
     except TypeError:
       continue
 
-  # Step 2: Store credentials. Merge credential_key from the original
-  # request into the client's auth response before storing.
+  authorized_keys: set[str] = set()
   for fc_id in auth_fc_ids:
     if fc_id not in auth_responses:
       continue
     auth_config = AuthConfig.model_validate(auth_responses[fc_id])
     requested_auth_config = requested_auth_config_by_id.get(fc_id)
-    if (
-        requested_auth_config
-        and requested_auth_config.credential_key is not None
-    ):
-      auth_config.credential_key = requested_auth_config.credential_key
+    if requested_auth_config:
+      credential_key = getattr(requested_auth_config, "credential_key", None)
+      if credential_key is not None:
+        auth_config.credential_key = credential_key
+      raw_auth_credential = getattr(
+          requested_auth_config, "raw_auth_credential", None
+      )
+      if raw_auth_credential:
+        if auth_config.raw_auth_credential is None:
+          auth_config.raw_auth_credential = raw_auth_credential
+        elif auth_config.raw_auth_credential.oauth2 and getattr(
+            raw_auth_credential, "oauth2", None
+        ):
+          target = auth_config.raw_auth_credential.oauth2
+          source = raw_auth_credential.oauth2
+          for field in [
+              "client_id",
+              "client_secret",
+              "redirect_uri",
+              "token_endpoint_auth_method",
+          ]:
+            if getattr(target, field) is None:
+              setattr(target, field, getattr(source, field))
+      exchanged_auth_credential = getattr(
+          requested_auth_config, "exchanged_auth_credential", None
+      )
+      if exchanged_auth_credential:
+        if auth_config.exchanged_auth_credential is None:
+          auth_config.exchanged_auth_credential = exchanged_auth_credential
+        elif auth_config.exchanged_auth_credential.oauth2 and getattr(
+            exchanged_auth_credential, "oauth2", None
+        ):
+          target = auth_config.exchanged_auth_credential.oauth2
+          source = exchanged_auth_credential.oauth2
+          for field in [
+              "client_id",
+              "client_secret",
+              "redirect_uri",
+              "token_endpoint_auth_method",
+          ]:
+            if getattr(target, field) is None:
+              setattr(target, field, getattr(source, field))
+    if auth_config.credential_key:
+      authorized_keys.add(auth_config.credential_key)
+
     await AuthHandler(auth_config=auth_config).parse_and_store_auth_response(
         state=state
     )
@@ -121,6 +160,16 @@ async def _store_auth_and_collect_resume_targets(
             continue
           tools_to_resume.add(args.function_call_id)
 
+  for event in events:
+    actions = getattr(event, "actions", None)
+    if actions and actions.requested_auth_configs:
+      for (
+          original_fc_id,
+          config,
+      ) in actions.requested_auth_configs.items():
+        if config.credential_key in authorized_keys:
+          tools_to_resume.add(original_fc_id)
+
   return tools_to_resume
 
 
@@ -132,7 +181,7 @@ class _AuthLlmRequestProcessor(BaseLlmRequestProcessor):
       self, invocation_context: InvocationContext, llm_request: LlmRequest
   ) -> AsyncGenerator[Event, None]:
     agent = invocation_context.agent
-    if not hasattr(agent, 'canonical_tools'):
+    if not hasattr(agent, "canonical_tools"):
       return
     events = invocation_context.session.events
     if not events:
@@ -147,7 +196,7 @@ class _AuthLlmRequestProcessor(BaseLlmRequestProcessor):
         last_event_with_content = event
         break
 
-    if not last_event_with_content or last_event_with_content.author != 'user':
+    if not last_event_with_content or last_event_with_content.author != "user":
       return
 
     responses = last_event_with_content.get_function_responses()
