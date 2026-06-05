@@ -12,8 +12,17 @@ permissions:
 jobs:
   agent-answer-questions:
     if: >-
-      (github.event_name == 'discussion' && github.event.discussion.category.name == 'Q&A') ||
-      (github.event_name == 'discussion_comment' && contains(github.event.comment.body, '@adk-bot') && github.event.sender.login != 'adk-bot')
+      (
+        github.event_name == 'discussion' &&
+        github.event.discussion.category.name == 'Q&A' &&
+        contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.discussion.author_association)
+      ) ||
+      (
+        github.event_name == 'discussion_comment' &&
+        contains(github.event.comment.body, '@adk-bot') &&
+        github.event.sender.login != 'adk-bot' &&
+        contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association)
+      )
     runs-on: ubuntu-latest
 
     steps:
@@ -39,7 +48,6 @@ jobs:
       - name: Run Answering Script
         env:
           GITHUB_TOKEN: ${{ secrets.ADK_TRIAGE_AGENT }}
-          ADK_GCP_SA_KEY: ${{ secrets.ADK_GCP_SA_KEY }}
           GOOGLE_CLOUD_PROJECT: ${{ secrets.GOOGLE_CLOUD_PROJECT }}
           GOOGLE_CLOUD_LOCATION: ${{ secrets.GOOGLE_CLOUD_LOCATION }}
           VERTEXAI_DATASTORE_ID: ${{ secrets.VERTEXAI_DATASTORE_ID }}

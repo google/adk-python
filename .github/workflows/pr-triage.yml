@@ -15,7 +15,8 @@ jobs:
     if: >-
       github.event_name == 'workflow_dispatch' || (
         github.event.pull_request.head.repo.full_name == github.repository &&
-        !contains(github.event.pull_request.labels.*.name, 'google-contributor')
+        !contains(github.event.pull_request.labels.*.name, 'google-contributor') &&
+        contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.pull_request.author_association)
       )
     runs-on: ubuntu-latest
     permissions:

@@ -17,7 +17,10 @@ jobs:
     if: >-
       github.repository == 'google/adk-python' && (
         github.event_name == 'schedule' ||
-        github.event.action == 'opened'
+        (
+          github.event.action == 'opened' &&
+          contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.issue.author_association)
+        )
       )
     permissions:
       issues: write
