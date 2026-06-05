@@ -455,7 +455,7 @@ def test_context_param_detection_with_context_type():
 
   tool = FunctionTool(my_tool)
   assert tool._context_param_name == "ctx"
-  assert tool._ignore_params == ["ctx", "input_stream"]
+  assert tool._ignore_params == ["ctx", "input_stream", "progress_callback"]
 
 
 def test_context_param_detection_with_tool_context_type():
@@ -466,7 +466,11 @@ def test_context_param_detection_with_tool_context_type():
 
   tool = FunctionTool(my_tool)
   assert tool._context_param_name == "tool_context"
-  assert tool._ignore_params == ["tool_context", "input_stream"]
+  assert tool._ignore_params == [
+      "tool_context",
+      "input_stream",
+      "progress_callback",
+  ]
 
 
 def test_context_param_detection_with_custom_name():
@@ -477,7 +481,11 @@ def test_context_param_detection_with_custom_name():
 
   tool = FunctionTool(my_tool)
   assert tool._context_param_name == "my_custom_context"
-  assert tool._ignore_params == ["my_custom_context", "input_stream"]
+  assert tool._ignore_params == [
+      "my_custom_context",
+      "input_stream",
+      "progress_callback",
+  ]
 
 
 def test_context_param_detection_fallback_to_name():
@@ -488,7 +496,11 @@ def test_context_param_detection_fallback_to_name():
 
   tool = FunctionTool(my_tool)
   assert tool._context_param_name == "tool_context"
-  assert tool._ignore_params == ["tool_context", "input_stream"]
+  assert tool._ignore_params == [
+      "tool_context",
+      "input_stream",
+      "progress_callback",
+  ]
 
 
 def test_context_param_detection_no_context():
@@ -499,7 +511,11 @@ def test_context_param_detection_no_context():
 
   tool = FunctionTool(my_tool)
   assert tool._context_param_name == "tool_context"
-  assert tool._ignore_params == ["tool_context", "input_stream"]
+  assert tool._ignore_params == [
+      "tool_context",
+      "input_stream",
+      "progress_callback",
+  ]
 
 
 @pytest.mark.asyncio
@@ -516,6 +532,96 @@ async def test_run_async_with_custom_context_param_name(mock_tool_context):
   )
 
   assert result == {"query": "test", "has_context": True}
+
+
+@pytest.mark.asyncio
+async def test_run_async_injects_progress_callback(mock_tool_context):
+  """Test that run_async injects a UI-only progress callback when declared."""
+  progress_events = []
+
+  async def progress_handler(tool_name, function_call_id, data):
+    progress_events.append((tool_name, function_call_id, data))
+
+  async def my_tool(query: str, progress_callback) -> dict:
+    await progress_callback({"step": 1, "message": "working"})
+    return {"query": query}
+
+  mock_tool_context.function_call_id = "call-123"
+  mock_tool_context._invocation_context.tool_progress_handler = progress_handler
+
+  tool = FunctionTool(my_tool)
+  result = await tool.run_async(
+      args={"query": "test"},
+      tool_context=mock_tool_context,
+  )
+
+  assert result == {"query": "test"}
+  assert progress_events == [
+      ("my_tool", "call-123", {"step": 1, "message": "working"})
+  ]
+
+
+@pytest.mark.asyncio
+async def test_run_async_progress_callback_no_handler_is_noop(
+    mock_tool_context,
+):
+  """Test that an injected progress callback is a no-op without a handler."""
+
+  async def my_tool(progress_callback) -> dict:
+    await progress_callback({"step": 1})
+    return {"ok": True}
+
+  mock_tool_context._invocation_context.tool_progress_handler = None
+
+  tool = FunctionTool(my_tool)
+  result = await tool.run_async(args={}, tool_context=mock_tool_context)
+
+  assert result == {"ok": True}
+
+
+def test_progress_callback_is_hidden_from_declaration():
+  """Test that progress_callback is not exposed in the model-facing schema."""
+
+  def my_tool(query: str, progress_callback) -> str:
+    """Search with UI-only progress."""
+    return query
+
+  declaration = FunctionTool(my_tool)._get_declaration()
+
+  assert declaration.parameters_json_schema is not None
+  properties = declaration.parameters_json_schema["properties"]
+  assert "query" in properties
+  assert "progress_callback" not in properties
+
+
+@pytest.mark.asyncio
+async def test_call_live_injects_progress_callback(mock_tool_context):
+  """Test that live streaming tools receive the progress callback."""
+  progress_events = []
+
+  def progress_handler(tool_name, function_call_id, data):
+    progress_events.append((tool_name, function_call_id, data))
+
+  async def my_tool(progress_callback):
+    await progress_callback({"step": "start"})
+    yield {"status": "done"}
+
+  mock_tool_context.function_call_id = "live-call-123"
+  mock_tool_context._invocation_context.tool_progress_handler = progress_handler
+  mock_tool_context._invocation_context.active_streaming_tools = {}
+
+  tool = FunctionTool(my_tool)
+  results = [
+      item
+      async for item in tool._call_live(
+          args={},
+          tool_context=mock_tool_context,
+          invocation_context=mock_tool_context._invocation_context,
+      )
+  ]
+
+  assert results == [{"status": "done"}]
+  assert progress_events == [("my_tool", "live-call-123", {"step": "start"})]
 
 
 @pytest.mark.asyncio

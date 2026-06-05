@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import asyncio
 from typing import Any
+from typing import Callable
 from typing import cast
 from typing import Optional
 
@@ -49,6 +50,16 @@ from .transcription_entry import TranscriptionEntry
 
 class LlmCallsLimitExceededError(Exception):
   """Error thrown when the number of LLM calls exceed the limit."""
+
+
+ToolProgressHandler = Callable[[str, str | None, Any], Any]
+"""Callback for UI-only tool progress updates.
+
+Args:
+  tool_name: The name of the tool reporting progress.
+  function_call_id: The function call id if available.
+  data: The tool-defined progress payload.
+"""
 
 
 class RealtimeCacheEntry(BaseModel):
@@ -206,6 +217,11 @@ class InvocationContext(BaseModel):
 
   live_request_queue: Optional[LiveRequestQueue] = None
   """The queue to receive live requests."""
+
+  tool_progress_handler: Optional[ToolProgressHandler] = Field(
+      default=None, exclude=True
+  )
+  """Runtime callback for tool progress updates that should not reach the LLM."""
 
   active_streaming_tools: Optional[dict[str, ActiveStreamingTool]] = None
   """The running streaming tools of this invocation."""

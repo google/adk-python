@@ -243,6 +243,9 @@ class Runner:
     self.session_service = session_service
     self.memory_service = memory_service
     self.credential_service = credential_service
+    self.on_tool_progress: Optional[Callable[[str, str | None, Any], Any]] = (
+        None
+    )
     self.plugin_manager = PluginManager(
         plugins=app.plugins, close_timeout=plugin_close_timeout
     )
@@ -2068,6 +2071,7 @@ class Runner:
         session=session,
         user_content=new_message,
         live_request_queue=live_request_queue,
+        tool_progress_handler=self.on_tool_progress,
         run_config=run_config,
         resumability_config=self.resumability_config,
     )

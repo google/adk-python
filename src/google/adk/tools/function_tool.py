@@ -86,7 +86,11 @@ class FunctionTool(BaseTool):
     self.func = func
     # Detect context parameter by type annotation, fallback to 'tool_context' name
     self._context_param_name = find_context_parameter(func) or 'tool_context'
-    self._ignore_params = [self._context_param_name, 'input_stream']
+    self._ignore_params = [
+        self._context_param_name,
+        'input_stream',
+        'progress_callback',
+    ]
     self._require_confirmation = require_confirmation
 
   @override
@@ -221,6 +225,10 @@ class FunctionTool(BaseTool):
     valid_params = {param for param in signature.parameters}
     if self._context_param_name in valid_params:
       args_to_call[self._context_param_name] = tool_context
+    if 'progress_callback' in valid_params:
+      args_to_call['progress_callback'] = self._make_progress_callback(
+          tool_context
+      )
 
     # Filter args_to_call to only include valid parameters for the function
     args_to_call = {k: v for k, v in args_to_call.items() if k in valid_params}
@@ -297,6 +305,19 @@ You could retry calling this tool, but it is IMPORTANT for you to provide all th
     else:
       return target(**args_to_call)
 
+  def _make_progress_callback(self, tool_context: ToolContext) -> Callable:
+    """Returns a tool-bound progress callback for UI-only status updates."""
+
+    async def progress_callback(data: Any) -> None:
+      handler = tool_context._invocation_context.tool_progress_handler
+      if handler is None:
+        return
+      result = handler(self.name, tool_context.function_call_id, data)
+      if inspect.isawaitable(result):
+        await result
+
+    return progress_callback
+
   # TODO(hangfei): fix call live for function stream.
   async def _call_live(
       self,
@@ -319,6 +340,10 @@ You could retry calling this tool, but it is IMPORTANT for you to provide all th
       ].stream
     if self._context_param_name in signature.parameters:
       args_to_call[self._context_param_name] = tool_context
+    if 'progress_callback' in signature.parameters:
+      args_to_call['progress_callback'] = self._make_progress_callback(
+          tool_context
+      )
 
     # TODO: support tool confirmation for live mode.
     async with Aclosing(self.func(**args_to_call)) as agen:
