@@ -316,6 +316,20 @@ class LlmAgent(BaseAgent, abc.ABC):
   settings, etc.
   """
 
+  tool_choice: Literal['auto', 'required', 'none'] | None = None
+  """Controls when the agent may call tools.
+
+  - ``'auto'`` (default): The model decides whether to call tools.
+  - ``'required'``: The model MUST call at least one tool before responding.
+    Use this to prevent hallucinated responses when tools are available.
+  - ``'none'``: The model MUST NOT call any tools. Use this to force
+    the model to answer without invoking external functionality.
+
+  Maps to provider-specific tool configuration:
+  - Google GenAI: ``types.ToolConfig(function_calling_config=...)``
+  - LiteLLM (OpenAI/Anthropic): ``tool_choice`` parameter
+  """
+
   mode: Literal['chat', 'task', 'single_turn'] | None = None
   """The delegation mode for this agent.
 

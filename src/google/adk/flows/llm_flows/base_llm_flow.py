@@ -1272,6 +1272,27 @@ class BaseLlmFlow(ABC):
               invocation_context.agent.name
           )
 
+        # Apply tool_choice from the agent to the LLM request config.
+        # This maps the provider-agnostic tool_choice (auto/required/none)
+        # to Google GenAI's ToolConfig/FunctionCallingConfig.
+        agent_tool_choice = getattr(
+            invocation_context.agent, "tool_choice", None
+        )
+        if agent_tool_choice:
+          if agent_tool_choice == "required":
+            llm_request.config.tool_config = types.ToolConfig(
+                function_calling_config=types.FunctionCallingConfig(
+                    mode=types.FunctionCallingConfigMode.ANY,
+                )
+            )
+          elif agent_tool_choice == "none":
+            llm_request.config.tool_config = types.ToolConfig(
+                function_calling_config=types.FunctionCallingConfig(
+                    mode=types.FunctionCallingConfigMode.NONE,
+                )
+            )
+          # "auto" is the default — no explicit ToolConfig needed
+
         # Calls the LLM.
         llm = self.__get_llm(invocation_context)
 
