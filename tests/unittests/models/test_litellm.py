@@ -5135,17 +5135,24 @@ async def test_get_completion_inputs_tool_choice_none_without_tool_config():
 
 @pytest.mark.asyncio
 async def test_get_completion_inputs_tool_choice_required_for_any_mode():
-  """tool_choice must be 'required' when mode=ANY."""
+  """tool_choice must be 'required' when mode=ANY and tools are present."""
   llm_request = LlmRequest(
       contents=[
           types.Content(role="user", parts=[types.Part.from_text(text="Hello")])
       ],
       config=types.GenerateContentConfig(
+          tools=[
+              types.Tool(
+                  function_declarations=[
+                      types.FunctionDeclaration(name="my_func", description="A func")
+                  ]
+              )
+          ],
           tool_config=types.ToolConfig(
               function_calling_config=types.FunctionCallingConfig(
                   mode=types.FunctionCallingConfigMode.ANY
               )
-          )
+          ),
       ),
   )
 
@@ -5158,17 +5165,24 @@ async def test_get_completion_inputs_tool_choice_required_for_any_mode():
 
 @pytest.mark.asyncio
 async def test_get_completion_inputs_tool_choice_none_for_none_mode():
-  """tool_choice must be 'none' when mode=NONE."""
+  """tool_choice must be 'none' when mode=NONE and tools are present."""
   llm_request = LlmRequest(
       contents=[
           types.Content(role="user", parts=[types.Part.from_text(text="Hello")])
       ],
       config=types.GenerateContentConfig(
+          tools=[
+              types.Tool(
+                  function_declarations=[
+                      types.FunctionDeclaration(name="my_func", description="A func")
+                  ]
+              )
+          ],
           tool_config=types.ToolConfig(
               function_calling_config=types.FunctionCallingConfig(
                   mode=types.FunctionCallingConfigMode.NONE
               )
-          )
+          ),
       ),
   )
 
@@ -5206,7 +5220,7 @@ async def test_get_completion_inputs_tool_choice_none_for_auto_mode():
 async def test_generate_content_async_propagates_tool_choice_required(
     mock_acompletion, mock_completion
 ):
-  """generate_content_async must pass tool_choice='required' to acompletion."""
+  """generate_content_async must pass tool_choice='required' to acompletion when tools are present."""
   llm_client = MockLLMClient(mock_acompletion, mock_completion)
   lite_llm_instance = LiteLlm(model="openai/gpt-4o", llm_client=llm_client)
 
@@ -5217,11 +5231,18 @@ async def test_generate_content_async_propagates_tool_choice_required(
           )
       ],
       config=types.GenerateContentConfig(
+          tools=[
+              types.Tool(
+                  function_declarations=[
+                      types.FunctionDeclaration(name="my_func", description="A func")
+                  ]
+              )
+          ],
           tool_config=types.ToolConfig(
               function_calling_config=types.FunctionCallingConfig(
                   mode=types.FunctionCallingConfigMode.ANY
               )
-          )
+          ),
       ),
   )
 
@@ -5237,7 +5258,7 @@ async def test_generate_content_async_propagates_tool_choice_required(
 async def test_generate_content_async_propagates_tool_choice_none_mode(
     mock_acompletion, mock_completion
 ):
-  """generate_content_async must pass tool_choice='none' to acompletion for NONE mode."""
+  """generate_content_async must pass tool_choice='none' to acompletion for NONE mode when tools are present."""
   llm_client = MockLLMClient(mock_acompletion, mock_completion)
   lite_llm_instance = LiteLlm(model="openai/gpt-4o", llm_client=llm_client)
 
@@ -5248,11 +5269,18 @@ async def test_generate_content_async_propagates_tool_choice_none_mode(
           )
       ],
       config=types.GenerateContentConfig(
+          tools=[
+              types.Tool(
+                  function_declarations=[
+                      types.FunctionDeclaration(name="my_func", description="A func")
+                  ]
+              )
+          ],
           tool_config=types.ToolConfig(
               function_calling_config=types.FunctionCallingConfig(
                   mode=types.FunctionCallingConfigMode.NONE
               )
-          )
+          ),
       ),
   )
 
@@ -5312,4 +5340,64 @@ async def test_generate_content_async_omits_tool_choice_without_tool_config(
 
   mock_acompletion.assert_called_once()
   _, kwargs = mock_acompletion.call_args
+  assert "tool_choice" not in kwargs
+
+
+@pytest.mark.asyncio
+async def test_get_completion_inputs_tool_choice_coerced_to_none_when_no_tools():
+  """tool_choice must be coerced to None when mode=ANY but no function_declarations exist."""
+  llm_request = LlmRequest(
+      contents=[
+          types.Content(role="user", parts=[types.Part.from_text(text="Hello")])
+      ],
+      config=types.GenerateContentConfig(
+          tool_config=types.ToolConfig(
+              function_calling_config=types.FunctionCallingConfig(
+                  mode=types.FunctionCallingConfigMode.ANY
+              )
+          )
+      ),
+  )
+
+  _, tools, _, _, tool_choice = await _get_completion_inputs(
+      llm_request, model="openai/gpt-4o"
+  )
+
+  assert not tools
+  assert tool_choice is None
+
+
+@pytest.mark.asyncio
+async def test_generate_content_async_omits_tool_choice_when_functions_override(
+    mock_acompletion, mock_completion
+):
+  """When `functions` is passed as an additional kwarg, tools is nulled and tool_choice must also be dropped."""
+  llm_client = MockLLMClient(mock_acompletion, mock_completion)
+  lite_llm_instance = LiteLlm(
+      model="openai/gpt-4o",
+      llm_client=llm_client,
+      functions=[{"name": "noop", "parameters": {"type": "object"}}],
+  )
+
+  llm_request = LlmRequest(
+      contents=[
+          types.Content(
+              role="user", parts=[types.Part.from_text(text="Call something")]
+          )
+      ],
+      config=types.GenerateContentConfig(
+          tool_config=types.ToolConfig(
+              function_calling_config=types.FunctionCallingConfig(
+                  mode=types.FunctionCallingConfigMode.ANY
+              )
+          )
+      ),
+  )
+
+  async for _ in lite_llm_instance.generate_content_async(llm_request):
+    pass
+
+  mock_acompletion.assert_called_once()
+  _, kwargs = mock_acompletion.call_args
+  assert kwargs.get("tools") is None
   assert "tool_choice" not in kwargs

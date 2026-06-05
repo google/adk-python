@@ -2081,6 +2081,11 @@ async def _get_completion_inputs(
       tool_choice = "none"
     # AUTO → None (provider default)
 
+  # Coerce tool_choice to None when there are no tools to choose from.
+  # LiteLLM rejects tool_choice="required" (or "none") when tools is falsy.
+  if not tools:
+    tool_choice = None
+
   return messages, tools, response_format, generation_params, tool_choice
 
 
@@ -2354,6 +2359,8 @@ class LiteLlm(BaseLlm):
     if "functions" in self._additional_args:
       # LiteLLM does not support both tools and functions together.
       tools = None
+      # Without tools, tool_choice ("required"/"none") would be rejected by LiteLLM.
+      tool_choice = None
 
     completion_args = {
         "model": effective_model,
