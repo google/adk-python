@@ -1,6 +1,6 @@
 ---
 name: adk-issue-analyze
-description: Analyze and triage a GitHub issue for the adk-python repository. Use this skill to retrieve issue details, inspect the codebase, evaluate legitimacy, check for existing PRs, and produce a structured analysis report. Triggers on "/adk-issue-analyze" commands. This skill is strictly read-only and must be used whenever the "/adk-issue-analyze" command is explicitly called.
+description: Analyze and triage a GitHub issue for the adk-python repository. Use this skill to retrieve issue details, inspect the codebase, evaluate justification, check for existing PRs, and produce a structured analysis report. Triggers on "/adk-issue-analyze" commands. This skill is strictly read-only and must be used whenever the "/adk-issue-analyze" command is explicitly called.
 ---
 
 # ADK Issue Triage & Analysis (Read-Only)

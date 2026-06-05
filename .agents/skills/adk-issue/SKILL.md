@@ -8,7 +8,7 @@ description: Orchestrate analyzing, triaging, and resolving GitHub issues for th
 This skill orchestrates the analysis, triage, and resolution of GitHub issues for the `google/adk-python` repository. When a user provides a GitHub issue number or link, follow this two-phase workflow by delegating/calling the specific sub-skills:
 
 ## Phase 1: Triage and Analysis (Read-Only)
-1. **Delegate to `adk-issue-analyze`**: Follow the instructions in the `adk-issue-analyze` skill (located at `.agents/skills/adk-issue-analyze/SKILL.md`) to fetch the issue, inspect the codebase, evaluate legitimacy, search for existing PRs, and present a structured analysis report.
+1. **Delegate to `adk-issue-analyze`**: Follow the instructions in the `adk-issue-analyze` skill (located at `.agents/skills/adk-issue-analyze/SKILL.md`) to fetch the issue, inspect the codebase, evaluate justification, search for existing PRs, and present a structured analysis report.
 2. **CRITICAL**: Do NOT modify any code, create new branches, or write any implementation yet.
 3. **Ask for Approval**: Present the report and explicitly ask the user:
    > "Would you like me to create and implement a fix for this issue in the workspace? (Note: The changes and tests will be created in a new branch but NOT committed, so you can review and iterate on them.)"

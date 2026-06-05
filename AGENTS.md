@@ -22,7 +22,9 @@ For all matters regarding ADK development, please use the appropriate skill:
   - Read `.agents/skills/adk-issue-analyze/SKILL.md` for full instructions.
 - **`adk-issue-fix`**: Use this skill to implement the code changes, unit tests, and documentation updates for an approved GitHub issue fix. Use this skill when the "/adk-issue-fix" command is explicitly called.
   - Read `.agents/skills/adk-issue-fix/SKILL.md` for full instructions.
-- **`adk-pr-triage`**: Use this skill when triaging and analyzing GitHub pull requests (PRs) to evaluate their objectives, legitimacy, value, and alignment with ADK's architectural, styling, and testing principles.
+- **`adk-pr-analyze`**: Use this skill to fetch, inspect, and analyze a GitHub pull request in a strictly read-only manner. Use this skill when the "/adk-pr-analyze" command is explicitly called.
+  - Read `.agents/skills/adk-pr-analyze/SKILL.md` for full instructions.
+- **`adk-pr-triage`**: Use this skill to orchestrate triaging and reviewing GitHub pull requests (PRs) (orchestrating both analysis and user review/checkout). Do NOT use this skill if the "/adk-pr-analyze" command is explicitly requested.
   - Read `.agents/skills/adk-pr-triage/SKILL.md` for full instructions.
 
 
