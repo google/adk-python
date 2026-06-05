@@ -26,7 +26,6 @@ import logging
 import os
 import re
 import sys
-import time
 import traceback
 import typing
 from typing import Any
@@ -38,6 +37,7 @@ from typing import Optional
 from fastapi import FastAPI
 from fastapi import HTTPException
 from fastapi import Query
+from fastapi import Request
 from fastapi import Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse
@@ -384,6 +384,7 @@ class RunAgentRequest(common.BaseModel):
   function_call_event_id: Optional[str] = None
   # for resume long-running functions
   invocation_id: Optional[str] = None
+  custom_metadata: Optional[dict[str, Any]] = None
 
 
 class CreateSessionRequest(common.BaseModel):
@@ -546,6 +547,26 @@ def _setup_instrumentation_lib_if_installed():
         "Unable to import GoogleGenAiSdkInstrumentor - some"
         " telemetry will be disabled. Make sure to install google-adk[otel-gcp]"
     )
+  if os.getenv("GOOGLE_CLOUD_AGENT_ENGINE_ID"):
+    # Set up HTTPX and gRPC instrumentation for A2A multi-agent observability.
+    try:
+      from opentelemetry.instrumentation.httpx import HTTPXClientInstrumentor
+
+      HTTPXClientInstrumentor().instrument()
+    except (ImportError, AttributeError):
+      logger.warning(
+          "telemetry enabled but proceeding without HTTPX instrumentation,"
+          " because google-adk[otel-gcp] has not been installed"
+      )
+    try:
+      from opentelemetry.instrumentation.grpc import GrpcInstrumentorClient
+
+      GrpcInstrumentorClient().instrument()
+    except (ImportError, AttributeError):
+      logger.warning(
+          "telemetry enabled but proceeding without gRPC instrumentation,"
+          " because google-adk[otel-gcp] has not been installed"
+      )
 
 
 class ApiServer:
@@ -678,6 +699,24 @@ class ApiServer:
         )
       return plugins
 
+    def _wrap_loaded_agent(
+        app_name: str,
+        agent_or_app: Any,
+        plugins: list[BasePlugin],
+    ) -> App:
+      if app_name.startswith("__"):
+        # AgentLoader validates special agents before they reach this point.
+        return App.model_construct(
+            name=app_name,
+            root_agent=agent_or_app,
+            plugins=plugins,
+        )
+      return App(
+          name=app_name,
+          root_agent=agent_or_app,
+          plugins=plugins,
+      )
+
     if isinstance(agent_or_app, App):
       # Combine existing plugins with extra plugins
       plugins = _maybe_add_bq_plugin(
@@ -687,17 +726,11 @@ class ApiServer:
       agentic_app = agent_or_app
     elif isinstance(agent_or_app, BaseAgent):
       plugins = _maybe_add_bq_plugin(extra_plugins_instances)
-      agentic_app = App(
-          name=app_name,
-          root_agent=agent_or_app,
-          plugins=plugins,
-      )
+      agentic_app = _wrap_loaded_agent(app_name, agent_or_app, plugins)
     else:
       # BaseNode (non-agent)
-      agentic_app = App(
-          name=app_name,
-          root_agent=agent_or_app,
-          plugins=extra_plugins_instances,
+      agentic_app = _wrap_loaded_agent(
+          app_name, agent_or_app, extra_plugins_instances
       )
 
     # If the root agent was loaded from YAML, we treat it as being from Visual Builder
@@ -803,6 +836,7 @@ class ApiServer:
       os.makedirs(os.path.dirname(runtime_config_path), exist_ok=True)
       with open(runtime_config_path, "w") as f:
         json.dump(runtime_config, f, indent=2)
+        f.write("\n")
     except IOError as e:
       logger.error(
           "Failed to write runtime config file %s: %s", runtime_config_path, e
@@ -1043,7 +1077,7 @@ class ApiServer:
             root_agent_name=root_agent.name,
             description=root_agent.description,
             language="python",
-            agents=get_agents_dict(root_agent),
+            agents=await get_agents_dict(root_agent),
         )
       else:
         raise HTTPException(
@@ -1404,7 +1438,7 @@ class ApiServer:
         _is_visual_builder.set(False)
 
     @app.post("/run", response_model_exclude_none=True)
-    async def run_agent(req: RunAgentRequest) -> list[Event]:
+    async def run_agent(req: RunAgentRequest, request: Request) -> list[Event]:
       app_name = req.app_name or self.default_app_name
       if not app_name:
         raise HTTPException(
@@ -1415,22 +1449,59 @@ class ApiServer:
       self.current_app_name_ref.value = req.app_name
       runner = await self.get_runner_async(req.app_name)
       _set_telemetry_context_if_needed(runner)
+      run_config = (
+          RunConfig(custom_metadata=req.custom_metadata)
+          if req.custom_metadata
+          else None
+      )
+
+      async def worker():
+        try:
+          async with Aclosing(
+              runner.run_async(
+                  user_id=req.user_id,
+                  session_id=req.session_id,
+                  new_message=req.new_message,
+                  state_delta=req.state_delta,
+                  invocation_id=req.invocation_id,
+                  run_config=run_config,
+              )
+          ) as agen:
+            return [event async for event in agen]
+        except SessionNotFoundError as e:
+          raise HTTPException(status_code=404, detail=str(e)) from e
+
+      worker_task = asyncio.create_task(worker())
+
+      async def monitor():
+        try:
+          while True:
+            message = await request.receive()
+            if message.get("type") == "http.disconnect":
+              logger.warning(
+                  "Client disconnected. Aborting agent run for session %s.",
+                  req.session_id,
+              )
+              worker_task.cancel()
+              break
+        except asyncio.CancelledError:
+          pass
+        except Exception as e:  # pylint: disable=broad-exception-caught
+          logger.error("Exception in disconnect monitor: %s", e, exc_info=True)
+
+      monitor_task = asyncio.create_task(monitor())
+
       try:
-        async with Aclosing(
-            runner.run_async(
-                user_id=req.user_id,
-                session_id=req.session_id,
-                new_message=req.new_message,
-                state_delta=req.state_delta,
-                invocation_id=req.invocation_id,
-            )
-        ) as agen:
-          events = [event async for event in agen]
-      except SessionNotFoundError as e:
-        raise HTTPException(status_code=404, detail=str(e)) from e
-      logger.info("Generated %s events in agent run", len(events))
-      logger.debug("Events generated: %s", events)
-      return events
+        events = await worker_task
+        logger.info("Generated %s events in agent run", len(events))
+        logger.debug("Events generated: %s", events)
+        return events
+      except asyncio.CancelledError:
+        if await request.is_disconnected():
+          return Response(status_code=499)
+        raise
+      finally:
+        monitor_task.cancel()
 
     @app.post("/run_sse")
     async def run_agent_sse(req: RunAgentRequest) -> StreamingResponse:
@@ -1472,7 +1543,10 @@ class ApiServer:
                 session_id=req.session_id,
                 new_message=req.new_message,
                 state_delta=req.state_delta,
-                run_config=RunConfig(streaming_mode=stream_mode),
+                run_config=RunConfig(
+                    streaming_mode=stream_mode,
+                    custom_metadata=req.custom_metadata,
+                ),
                 invocation_id=req.invocation_id,
             )
         ) as agen:

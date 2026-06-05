@@ -27,6 +27,9 @@ Use snake_case for the folder name (e.g., `dynamic_nodes`, `fan_out_fan_in`).
 
 The `agent.py` should focus on demonstrating a specific feature or agent pattern. Use absolute imports for testing convenience.
 
+> [!IMPORTANT]
+> **Model Selection**: Do not set the `model` parameter explicitly (e.g., `model="gemini-2.5-flash"`) on `Agent` instances in sample agents. Instead, let them default to the system-configured model, unless a specific model is explicitly requested by the user.
+
 Choose one of the following patterns:
 
 #### Pattern A: Workflows (for complex graphs)
@@ -74,7 +77,6 @@ from google.adk.tools import google_search  # example
 ```python
 root_agent = Agent(
     name="standalone_assistant",
-    model="gemini-2.5-flash",
     instruction="You are a helpful assistant.",
     description="An assistant that can help with queries.",
     tools=[google_search],

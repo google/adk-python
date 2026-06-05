@@ -15,7 +15,8 @@
 from __future__ import annotations
 
 import os
-from typing import Any, TYPE_CHECKING
+from typing import Any
+from typing import TYPE_CHECKING
 
 from pydantic import alias_generators
 from pydantic import BaseModel
@@ -77,9 +78,9 @@ def create_gcs_eval_managers_from_uri(
       from ...evaluation.gcs_eval_sets_manager import GcsEvalSetsManager
     except ImportError as e:
       raise RuntimeError(
-          'GCS evaluation managers require Google Cloud optional dependencies.\n'
-          'Please install them using: pip install google-adk[gcp]\n'
-          'Or: pip install google-cloud-storage>=2.18'
+          'GCS evaluation managers require Google Cloud optional'
+          ' dependencies.\nPlease install them using: pip install'
+          ' google-adk[gcp]\nOr: pip install google-cloud-storage>=2.18'
       ) from e
 
     gcs_bucket = eval_storage_uri.split('://')[1]
