@@ -121,7 +121,7 @@ def _get_agent_card_url(agent_card: AgentCard) -> Optional[str]:
   """Extract the primary RPC URL from an AgentCard's supported_interfaces."""
   for iface in agent_card.supported_interfaces:
     if iface.url:
-      return iface.url
+      return str(iface.url)
   return None
 
 
@@ -427,15 +427,15 @@ class RemoteA2aAgent(BaseAgent):
     )
     if function_call_event.custom_metadata:
       metadata = function_call_event.custom_metadata
-      a2a_message.task_id = metadata.get(A2A_METADATA_PREFIX + "task_id") or ''
+      a2a_message.task_id = metadata.get(A2A_METADATA_PREFIX + "task_id") or ""
       a2a_message.context_id = (
-          metadata.get(A2A_METADATA_PREFIX + "context_id") or ''
+          metadata.get(A2A_METADATA_PREFIX + "context_id") or ""
       )
 
     return a2a_message
 
   def _is_remote_response(self, event: Event) -> bool:
-    return (
+    return bool(
         event.author == self.name
         and event.custom_metadata
         and event.custom_metadata.get(A2A_METADATA_PREFIX + "response", False)
@@ -508,9 +508,9 @@ class RemoteA2aAgent(BaseAgent):
       emitted.
     """
     try:
-      payload_type = stream_resp.WhichOneof('payload')
+      payload_type = stream_resp.WhichOneof("payload")
 
-      if payload_type == 'task':
+      if payload_type == "task":
         task = stream_resp.task
         event = convert_a2a_task_to_event(
             task, self.name, ctx, self._a2a_part_converter
@@ -532,15 +532,20 @@ class RemoteA2aAgent(BaseAgent):
             )
         return event
 
-      if payload_type == 'status_update':
+      if payload_type == "status_update":
         update = stream_resp.status_update
-        if update.status and update.status.message:
+        if update.status and update.status.HasField("message"):
           event = convert_a2a_message_to_event(
               update.status.message, self.name, ctx, self._a2a_part_converter
           )
-          if event and event.content is not None and update.status.state in (
-              TaskState.TASK_STATE_SUBMITTED,
-              TaskState.TASK_STATE_WORKING,
+          if (
+              event
+              and event.content is not None
+              and update.status.state
+              in (
+                  TaskState.TASK_STATE_SUBMITTED,
+                  TaskState.TASK_STATE_WORKING,
+              )
           ):
             for part in event.content.parts:
               part.thought = True
@@ -558,12 +563,14 @@ class RemoteA2aAgent(BaseAgent):
           return event
         return None
 
-      if payload_type == 'artifact_update':
+      if payload_type == "artifact_update":
         update = stream_resp.artifact_update
         if not update.append or update.last_chunk:
           # Re-use the last known task state for artifact updates.
           # Build a minimal Task from the artifact update to reuse converter.
-          from a2a.types import Task as _Task, Artifact as _Artifact
+          from a2a.types import Artifact as _Artifact
+          from a2a.types import Task as _Task
+
           tmp_task = _Task(
               id=update.task_id,
               context_id=update.context_id,
@@ -584,7 +591,7 @@ class RemoteA2aAgent(BaseAgent):
           return event
         return None
 
-      if payload_type == 'message':
+      if payload_type == "message":
         a2a_message = stream_resp.message
         event = convert_a2a_message_to_event(
             a2a_message, self.name, ctx, self._a2a_part_converter
@@ -622,10 +629,10 @@ class RemoteA2aAgent(BaseAgent):
       emitted.
     """
     try:
-      payload_type = stream_resp.WhichOneof('payload')
+      payload_type = stream_resp.WhichOneof("payload")
       event = None
 
-      if payload_type == 'task':
+      if payload_type == "task":
         task = stream_resp.task
         event = self._config.a2a_task_converter(
             task, self.name, ctx, self._config.a2a_part_converter
@@ -638,7 +645,7 @@ class RemoteA2aAgent(BaseAgent):
                 task.context_id
             )
 
-      elif payload_type == 'status_update':
+      elif payload_type == "status_update":
         update = stream_resp.status_update
         event = self._config.a2a_status_update_converter(
             update, self.name, ctx, self._config.a2a_part_converter
@@ -654,7 +661,7 @@ class RemoteA2aAgent(BaseAgent):
                 update.context_id
             )
 
-      elif payload_type == 'artifact_update':
+      elif payload_type == "artifact_update":
         update = stream_resp.artifact_update
         event = self._config.a2a_artifact_update_converter(
             update, self.name, ctx, self._config.a2a_part_converter
@@ -670,7 +677,7 @@ class RemoteA2aAgent(BaseAgent):
                 update.context_id
             )
 
-      elif payload_type == 'message':
+      elif payload_type == "message":
         a2a_message = stream_resp.message
         event = self._config.a2a_message_converter(
             a2a_message, self.name, ctx, self._config.a2a_part_converter
@@ -731,7 +738,7 @@ class RemoteA2aAgent(BaseAgent):
           message_id=platform_uuid.new_uuid(),
           parts=message_parts,
           role=Role.ROLE_USER,
-          context_id=context_id or '',
+          context_id=context_id or "",
       )
 
     logger.debug(build_a2a_request_log(a2a_message))
@@ -766,12 +773,12 @@ class RemoteA2aAgent(BaseAgent):
 
         # Check if the response carries ADK extension metadata
         metadata = None
-        payload_type = stream_resp.WhichOneof('payload')
-        if payload_type == 'task':
+        payload_type = stream_resp.WhichOneof("payload")
+        if payload_type == "task":
           metadata = dict(stream_resp.task.metadata)
-        elif payload_type == 'status_update':
+        elif payload_type == "status_update":
           metadata = dict(stream_resp.status_update.metadata)
-        elif payload_type == 'artifact_update':
+        elif payload_type == "artifact_update":
           metadata = dict(stream_resp.artifact_update.metadata)
 
         if metadata and metadata.get(_NEW_A2A_ADK_INTEGRATION_EXTENSION):

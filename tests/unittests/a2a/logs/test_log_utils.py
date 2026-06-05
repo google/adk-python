@@ -66,7 +66,7 @@ class TestBuildMessagePartLog:
   def test_data_part_simple_data(self):
     """Data Part with simple data shows its keys and values."""
     part = A2APart()
-    json_format.ParseDict({'data': {"key1": "value1", "key2": 42}}, part)
+    json_format.ParseDict({"data": {"key1": "value1", "key2": 42}}, part)
 
     result = build_message_part_log(part)
 

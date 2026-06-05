@@ -37,7 +37,7 @@ except ImportError as e:
 _NEW_LINE = "\n"
 
 
-def _proto_metadata_to_dict(metadata) -> dict:
+def _proto_metadata_to_dict(metadata: Any) -> dict[str, Any]:
   """Convert proto Struct metadata to a plain Python dict."""
   try:
     return dict(metadata)
@@ -59,7 +59,9 @@ def build_message_part_log(part: A2APart) -> str:
     content_type = part.WhichOneof("content")
     if content_type == "text":
       text = part.text
-      part_content = f"TextPart: {text[:100]}" + ("..." if len(text) > 100 else "")
+      part_content = f"TextPart: {text[:100]}" + (
+          "..." if len(text) > 100 else ""
+      )
     elif content_type == "data":
       try:
         data_dict = json_format.MessageToDict(part).get("data", {})
@@ -77,7 +79,9 @@ def build_message_part_log(part: A2APart) -> str:
     elif content_type == "url":
       part_content = f"UrlPart: {part.url}"
     elif content_type == "raw":
-      part_content = f"RawPart: <{len(part.raw)} bytes, media_type={part.media_type}>"
+      part_content = (
+          f"RawPart: <{len(part.raw)} bytes, media_type={part.media_type}>"
+      )
     else:
       # Unknown/empty content
       try:
@@ -88,10 +92,14 @@ def build_message_part_log(part: A2APart) -> str:
     # Fallback for Mock objects in tests
     if hasattr(part, "root"):
       root = part.root
-      part_content = f"{type(root).__name__}: {getattr(root, 'text', str(root))}"
+      part_content = (
+          f"{type(root).__name__}: {getattr(root, 'text', str(root))}"
+      )
     else:
       try:
-        part_content = f"{type(part).__name__}: {part.model_dump_json(exclude_none=True)}"
+        part_content = (
+            f"{type(part).__name__}: {part.model_dump_json(exclude_none=True)}"
+        )
       except Exception:
         part_content = f"{type(part).__name__}: <unable to serialize>"
 
@@ -102,12 +110,22 @@ def build_message_part_log(part: A2APart) -> str:
       metadata_dict = _proto_metadata_to_dict(part.metadata)
   except AttributeError:
     # Mock object fallback
-    if hasattr(part, "root") and hasattr(part.root, "metadata") and part.root.metadata:
-      metadata_dict = dict(part.root.metadata) if isinstance(part.root.metadata, dict) else {}
+    if (
+        hasattr(part, "root")
+        and hasattr(part.root, "metadata")
+        and part.root.metadata
+    ):
+      metadata_dict = (
+          dict(part.root.metadata)
+          if isinstance(part.root.metadata, dict)
+          else {}
+      )
 
   if metadata_dict:
     try:
-      metadata_str = json.dumps(metadata_dict, indent=2, default=str).replace("\n", "\n    ")
+      metadata_str = json.dumps(metadata_dict, indent=2, default=str).replace(
+          "\n", "\n    "
+      )
       part_content += f"\n    Part Metadata: {metadata_str}"
     except Exception:
       pass
@@ -269,7 +287,12 @@ def build_a2a_response_log(resp) -> str:
   # Build status message section
   status_message_section = "None"
   try:
-    if isinstance(resp, tuple) and resp[0] and resp[0].status and resp[0].status.message:
+    if (
+        isinstance(resp, tuple)
+        and resp[0]
+        and resp[0].status
+        and resp[0].status.message
+    ):
       msg = resp[0].status.message
       status_parts_logs = []
       if msg.parts:

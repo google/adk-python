@@ -33,8 +33,8 @@ from google.adk.a2a.converters.event_converter import convert_event_to_a2a_event
 from google.adk.a2a.converters.event_converter import convert_event_to_a2a_message
 from google.adk.a2a.converters.event_converter import DEFAULT_ERROR_MESSAGE
 from google.adk.a2a.converters.part_converter import convert_genai_part_to_a2a_part
-from google.adk.a2a.converters.utils import ADK_METADATA_KEY_PREFIX
 from google.adk.a2a.converters.utils import _get_adk_metadata_key
+from google.adk.a2a.converters.utils import ADK_METADATA_KEY_PREFIX
 from google.adk.agents.invocation_context import InvocationContext
 from google.adk.events.event import Event
 from google.adk.events.event_actions import EventActions
@@ -104,14 +104,18 @@ class TestEventConverter:
     result = _serialize_metadata_value(mock_value)
 
     assert result == {"key": "value"}
-    mock_value.model_dump.assert_called_once_with(exclude_none=True, by_alias=True)
+    mock_value.model_dump.assert_called_once_with(
+        exclude_none=True, by_alias=True
+    )
 
   def test_serialize_metadata_value_with_model_dump_exception(self):
     """When model_dump raises, falls back to str() with a warning."""
     mock_value = Mock()
     mock_value.model_dump.side_effect = Exception("Serialization failed")
 
-    with patch("google.adk.a2a.converters.event_converter.logger") as mock_logger:
+    with patch(
+        "google.adk.a2a.converters.event_converter.logger"
+    ) as mock_logger:
       result = _serialize_metadata_value(mock_value)
 
     assert result == str(mock_value)
@@ -123,7 +127,9 @@ class TestEventConverter:
 
   def test_get_context_metadata_success(self):
     """Context metadata contains all required ADK keys."""
-    result = _get_context_metadata(self.mock_event, self.mock_invocation_context)
+    result = _get_context_metadata(
+        self.mock_event, self.mock_invocation_context
+    )
 
     for key in [
         f"{ADK_METADATA_KEY_PREFIX}app_name",
@@ -145,13 +151,17 @@ class TestEventConverter:
     self.mock_event.actions = Mock()
     self.mock_event.actions.model_dump.return_value = {"test_actions": "value"}
 
-    result = _get_context_metadata(self.mock_event, self.mock_invocation_context)
+    result = _get_context_metadata(
+        self.mock_event, self.mock_invocation_context
+    )
 
     assert f"{ADK_METADATA_KEY_PREFIX}branch" in result
     assert f"{ADK_METADATA_KEY_PREFIX}grounding_metadata" in result
     assert f"{ADK_METADATA_KEY_PREFIX}actions" in result
     assert result[f"{ADK_METADATA_KEY_PREFIX}branch"] == "test-branch"
-    assert result[f"{ADK_METADATA_KEY_PREFIX}actions"] == {"test_actions": "value"}
+    assert result[f"{ADK_METADATA_KEY_PREFIX}actions"] == {
+        "test_actions": "value"
+    }
 
   def test_get_context_metadata_none_event(self):
     """None event raises ValueError."""
@@ -165,13 +175,19 @@ class TestEventConverter:
 
   def test_create_artifact_id(self):
     """Artifact ID is formed by joining components with the separator."""
-    result = _create_artifact_id("test-app", "user123", "session456", "test.txt", 1)
+    result = _create_artifact_id(
+        "test-app", "user123", "session456", "test.txt", 1
+    )
     expected = f"test-app{ARTIFACT_ID_SEPARATOR}user123{ARTIFACT_ID_SEPARATOR}session456{ARTIFACT_ID_SEPARATOR}test.txt{ARTIFACT_ID_SEPARATOR}1"
     assert result == expected
 
-  @patch("google.adk.a2a.converters.event_converter.convert_event_to_a2a_message")
+  @patch(
+      "google.adk.a2a.converters.event_converter.convert_event_to_a2a_message"
+  )
   @patch("google.adk.a2a.converters.event_converter._create_error_status_event")
-  @patch("google.adk.a2a.converters.event_converter._create_status_update_event")
+  @patch(
+      "google.adk.a2a.converters.event_converter._create_status_update_event"
+  )
   def test_convert_event_to_a2a_events_full_scenario(
       self, mock_create_running, mock_create_error, mock_convert_message
   ):
@@ -216,7 +232,9 @@ class TestEventConverter:
     with pytest.raises(ValueError, match="Invocation context cannot be None"):
       convert_event_to_a2a_events(self.mock_event, None)
 
-  @patch("google.adk.a2a.converters.event_converter.convert_event_to_a2a_message")
+  @patch(
+      "google.adk.a2a.converters.event_converter.convert_event_to_a2a_message"
+  )
   def test_convert_event_to_a2a_events_message_only(self, mock_convert_message):
     """Event with message only produces one running event."""
     mock_message = Mock(spec=Message)
@@ -235,10 +253,16 @@ class TestEventConverter:
       assert len(result) == 1
       assert result[0] == mock_running_event
       mock_create_running.assert_called_once_with(
-          mock_message, self.mock_invocation_context, self.mock_event, None, None
+          mock_message,
+          self.mock_invocation_context,
+          self.mock_event,
+          None,
+          None,
       )
 
-  @patch("google.adk.a2a.converters.event_converter.convert_event_to_a2a_message")
+  @patch(
+      "google.adk.a2a.converters.event_converter.convert_event_to_a2a_message"
+  )
   def test_convert_event_to_a2a_events_with_task_id_and_context_id(
       self, mock_convert_message
   ):
@@ -257,7 +281,11 @@ class TestEventConverter:
       )
 
       mock_create_running.assert_called_once_with(
-          mock_message, self.mock_invocation_context, self.mock_event, "task-1", "ctx-1"
+          mock_message,
+          self.mock_invocation_context,
+          self.mock_event,
+          "task-1",
+          "ctx-1",
       )
 
   def test_convert_event_to_a2a_events_user_role(self):
@@ -288,17 +316,30 @@ class TestEventConverter:
 
   def test_create_status_update_event_yields_auth_required_state(self):
     """Message with auth-required pattern sets TASK_STATE_AUTH_REQUIRED."""
-    from google.adk.a2a.converters.part_converter import A2A_DATA_PART_METADATA_TYPE_FUNCTION_CALL
     from google.adk.a2a.converters.part_converter import A2A_DATA_PART_METADATA_IS_LONG_RUNNING_KEY
+    from google.adk.a2a.converters.part_converter import A2A_DATA_PART_METADATA_TYPE_FUNCTION_CALL
     from google.adk.a2a.converters.part_converter import A2A_DATA_PART_METADATA_TYPE_KEY
     from google.adk.flows.llm_flows.functions import REQUEST_EUC_FUNCTION_CALL_NAME
     from google.protobuf import json_format
 
     # Build a proto Part that is a long-running function call to request_euc
     part = Part()
-    json_format.ParseDict({'data': {'name': REQUEST_EUC_FUNCTION_CALL_NAME, 'id': 'fc-1', 'args': {}}}, part)
-    part.metadata[_get_adk_metadata_key(A2A_DATA_PART_METADATA_TYPE_KEY)] = A2A_DATA_PART_METADATA_TYPE_FUNCTION_CALL
-    part.metadata[_get_adk_metadata_key(A2A_DATA_PART_METADATA_IS_LONG_RUNNING_KEY)] = True
+    json_format.ParseDict(
+        {
+            "data": {
+                "name": REQUEST_EUC_FUNCTION_CALL_NAME,
+                "id": "fc-1",
+                "args": {},
+            }
+        },
+        part,
+    )
+    part.metadata[_get_adk_metadata_key(A2A_DATA_PART_METADATA_TYPE_KEY)] = (
+        A2A_DATA_PART_METADATA_TYPE_FUNCTION_CALL
+    )
+    part.metadata[
+        _get_adk_metadata_key(A2A_DATA_PART_METADATA_IS_LONG_RUNNING_KEY)
+    ] = True
 
     msg = Message(message_id="m1", role=Role.ROLE_AGENT, parts=[part])
 
@@ -311,15 +352,21 @@ class TestEventConverter:
 
   def test_create_status_update_event_yields_input_required_state(self):
     """Message with non-auth long-running call sets TASK_STATE_INPUT_REQUIRED."""
-    from google.adk.a2a.converters.part_converter import A2A_DATA_PART_METADATA_TYPE_FUNCTION_CALL
     from google.adk.a2a.converters.part_converter import A2A_DATA_PART_METADATA_IS_LONG_RUNNING_KEY
+    from google.adk.a2a.converters.part_converter import A2A_DATA_PART_METADATA_TYPE_FUNCTION_CALL
     from google.adk.a2a.converters.part_converter import A2A_DATA_PART_METADATA_TYPE_KEY
     from google.protobuf import json_format
 
     part = Part()
-    json_format.ParseDict({'data': {'name': 'some_other_tool', 'id': 'fc-2', 'args': {}}}, part)
-    part.metadata[_get_adk_metadata_key(A2A_DATA_PART_METADATA_TYPE_KEY)] = A2A_DATA_PART_METADATA_TYPE_FUNCTION_CALL
-    part.metadata[_get_adk_metadata_key(A2A_DATA_PART_METADATA_IS_LONG_RUNNING_KEY)] = True
+    json_format.ParseDict(
+        {"data": {"name": "some_other_tool", "id": "fc-2", "args": {}}}, part
+    )
+    part.metadata[_get_adk_metadata_key(A2A_DATA_PART_METADATA_TYPE_KEY)] = (
+        A2A_DATA_PART_METADATA_TYPE_FUNCTION_CALL
+    )
+    part.metadata[
+        _get_adk_metadata_key(A2A_DATA_PART_METADATA_IS_LONG_RUNNING_KEY)
+    ] = True
 
     msg = Message(message_id="m1", role=Role.ROLE_AGENT, parts=[part])
 
@@ -396,7 +443,10 @@ class TestA2AToEventConverters:
     mock_message = Mock(spec=Message, parts=[a2a_part])
 
     result = convert_a2a_message_to_event(
-        mock_message, "test-author", self.mock_invocation_context, mock_convert_part
+        mock_message,
+        "test-author",
+        self.mock_invocation_context,
+        mock_convert_part,
     )
 
     assert result.author == "test-author"
@@ -431,7 +481,10 @@ class TestA2AToEventConverters:
     mock_message = Mock(spec=Message, parts=[a2a_part])
 
     result = convert_a2a_message_to_event(
-        mock_message, "test-author", self.mock_invocation_context, mock_convert_part
+        mock_message,
+        "test-author",
+        self.mock_invocation_context,
+        mock_convert_part,
     )
 
     assert result.author == "test-author"
@@ -448,7 +501,10 @@ class TestA2AToEventConverters:
     mock_message = Mock(spec=Message, parts=[a2a_part1, a2a_part2])
 
     result = convert_a2a_message_to_event(
-        mock_message, "test-author", self.mock_invocation_context, mock_convert_part
+        mock_message,
+        "test-author",
+        self.mock_invocation_context,
+        mock_convert_part,
     )
 
     assert len(result.content.parts) == 1
@@ -489,5 +545,5 @@ class TestA2AToEventConverters:
 
     assert result is not None
     assert len(result.parts) == 1
-    assert result.parts[0].WhichOneof('content') == 'text'
+    assert result.parts[0].WhichOneof("content") == "text"
     assert result.parts[0].text == "hello"

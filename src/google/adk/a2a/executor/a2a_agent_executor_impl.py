@@ -143,7 +143,9 @@ class _A2aAgentExecutor(AgentExecutor):
           context_id=context.context_id,
       )
       working_tsue.status.CopyFrom(working_status)
-      working_tsue.metadata.update(self._get_invocation_metadata(executor_context))
+      working_tsue.metadata.update(
+          self._get_invocation_metadata(executor_context)
+      )
       await event_queue.enqueue_event(working_tsue)
 
       # Handle the request and publish updates to the event queue
@@ -212,7 +214,9 @@ class _A2aAgentExecutor(AgentExecutor):
             context.context_id,
             self._config.gen_ai_part_converter,
         ):
-          a2a_event.metadata.update(self._get_invocation_metadata(executor_context))
+          a2a_event.metadata.update(
+              self._get_invocation_metadata(executor_context)
+          )
           a2a_events = await execute_after_event_interceptors(
               a2a_event,
               executor_context,

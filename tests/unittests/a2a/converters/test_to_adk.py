@@ -226,11 +226,17 @@ class TestToAdk:
         "stateDelta": {"saved_key": "saved-value"}
     }
 
-    status_msg = Message(message_id="msg-1", role=Role.ROLE_AGENT, parts=[A2APart(text="need input")])
+    status_msg = Message(
+        message_id="msg-1",
+        role=Role.ROLE_AGENT,
+        parts=[A2APart(text="need input")],
+    )
     status_msg.metadata[_get_adk_metadata_key("actions")] = {
         "transferToAgent": "agent-2"
     }
-    status = TaskStatus(state=TaskState.TASK_STATE_INPUT_REQUIRED, message=status_msg)
+    status = TaskStatus(
+        state=TaskState.TASK_STATE_INPUT_REQUIRED, message=status_msg
+    )
     status.timestamp.FromDatetime(datetime.now(timezone.utc))
 
     task = Task(id="task-1", context_id="context-1", artifacts=[art])
@@ -334,7 +340,9 @@ class TestToAdk:
     """input_required with no text parts does not inject mock function call."""
     # Use a non-text part (inline_data)
     a2a_part = A2APart(raw=b"fake", media_type="image/jpeg")
-    status_msg = Message(message_id="m1", role=Role.ROLE_AGENT, parts=[a2a_part])
+    status_msg = Message(
+        message_id="m1", role=Role.ROLE_AGENT, parts=[a2a_part]
+    )
     status = TaskStatus(
         state=TaskState.TASK_STATE_INPUT_REQUIRED, message=status_msg
     )
@@ -361,10 +369,16 @@ class TestToAdk:
   def test_convert_a2a_status_update_to_event_success(self):
     """Status update with a message converts to event with those parts."""
     a2a_part = A2APart(text="status text")
-    a2a_part.metadata[_get_adk_metadata_key(A2A_DATA_PART_METADATA_IS_LONG_RUNNING_KEY)] = True
+    a2a_part.metadata[
+        _get_adk_metadata_key(A2A_DATA_PART_METADATA_IS_LONG_RUNNING_KEY)
+    ] = True
 
-    status_msg = Message(message_id="m1", role=Role.ROLE_AGENT, parts=[a2a_part])
-    status = TaskStatus(state=TaskState.TASK_STATE_INPUT_REQUIRED, message=status_msg)
+    status_msg = Message(
+        message_id="m1", role=Role.ROLE_AGENT, parts=[a2a_part]
+    )
+    status = TaskStatus(
+        state=TaskState.TASK_STATE_INPUT_REQUIRED, message=status_msg
+    )
     status.timestamp.FromDatetime(datetime.now(timezone.utc))
 
     update = TaskStatusUpdateEvent(task_id="task-1", context_id="context-1")

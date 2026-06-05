@@ -42,9 +42,7 @@ class TaskResultAggregator:
       if event.status.state == TaskState.TASK_STATE_FAILED:
         self._task_state = TaskState.TASK_STATE_FAILED
         self._task_status_message = (
-            event.status.message
-            if event.status.HasField('message')
-            else None
+            event.status.message if event.status.HasField('message') else None
         )
       elif (
           event.status.state == TaskState.TASK_STATE_AUTH_REQUIRED
@@ -52,29 +50,26 @@ class TaskResultAggregator:
       ):
         self._task_state = TaskState.TASK_STATE_AUTH_REQUIRED
         self._task_status_message = (
-            event.status.message
-            if event.status.HasField('message')
-            else None
+            event.status.message if event.status.HasField('message') else None
         )
       elif (
           event.status.state == TaskState.TASK_STATE_INPUT_REQUIRED
           and self._task_state
-          not in (TaskState.TASK_STATE_FAILED, TaskState.TASK_STATE_AUTH_REQUIRED)
+          not in (
+              TaskState.TASK_STATE_FAILED,
+              TaskState.TASK_STATE_AUTH_REQUIRED,
+          )
       ):
         self._task_state = TaskState.TASK_STATE_INPUT_REQUIRED
         self._task_status_message = (
-            event.status.message
-            if event.status.HasField('message')
-            else None
+            event.status.message if event.status.HasField('message') else None
         )
       # final state is already recorded and make sure the intermediate state is
       # always working because other state may terminate the event aggregation
       # in a2a request handler
       elif self._task_state == TaskState.TASK_STATE_WORKING:
         self._task_status_message = (
-            event.status.message
-            if event.status.HasField('message')
-            else None
+            event.status.message if event.status.HasField('message') else None
         )
       event.status.state = TaskState.TASK_STATE_WORKING
 

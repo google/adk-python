@@ -16,6 +16,7 @@ import base64
 from unittest.mock import patch
 
 from a2a import types as a2a_types
+from google.adk.a2a.converters.part_converter import _part_data_as_dict
 from google.adk.a2a.converters.part_converter import A2A_DATA_PART_END_TAG
 from google.adk.a2a.converters.part_converter import A2A_DATA_PART_METADATA_TYPE_CODE_EXECUTION_RESULT
 from google.adk.a2a.converters.part_converter import A2A_DATA_PART_METADATA_TYPE_EXECUTABLE_CODE
@@ -24,7 +25,6 @@ from google.adk.a2a.converters.part_converter import A2A_DATA_PART_METADATA_TYPE
 from google.adk.a2a.converters.part_converter import A2A_DATA_PART_METADATA_TYPE_KEY
 from google.adk.a2a.converters.part_converter import A2A_DATA_PART_START_TAG
 from google.adk.a2a.converters.part_converter import A2A_DATA_PART_TEXT_MIME_TYPE
-from google.adk.a2a.converters.part_converter import _part_data_as_dict
 from google.adk.a2a.converters.part_converter import convert_a2a_part_to_genai_part
 from google.adk.a2a.converters.part_converter import convert_genai_part_to_a2a_part
 from google.adk.a2a.converters.utils import _get_adk_metadata_key
@@ -36,7 +36,7 @@ import pytest
 def _make_data_part(data: dict, metadata: dict | None = None) -> a2a_types.Part:
   """Helper to create a proto Part with the data oneof field."""
   part = a2a_types.Part()
-  json_format.ParseDict({'data': data}, part)
+  json_format.ParseDict({"data": data}, part)
   if metadata:
     for k, v in metadata.items():
       part.metadata[k] = v
@@ -99,7 +99,11 @@ class TestConvertA2aPartToGenaiPart:
     }
     a2a_part = _make_data_part(
         function_call_data,
-        {_get_adk_metadata_key(A2A_DATA_PART_METADATA_TYPE_KEY): A2A_DATA_PART_METADATA_TYPE_FUNCTION_CALL},
+        {
+            _get_adk_metadata_key(
+                A2A_DATA_PART_METADATA_TYPE_KEY
+            ): A2A_DATA_PART_METADATA_TYPE_FUNCTION_CALL
+        },
     )
 
     result = convert_a2a_part_to_genai_part(a2a_part)
@@ -117,7 +121,11 @@ class TestConvertA2aPartToGenaiPart:
     }
     a2a_part = _make_data_part(
         function_response_data,
-        {_get_adk_metadata_key(A2A_DATA_PART_METADATA_TYPE_KEY): A2A_DATA_PART_METADATA_TYPE_FUNCTION_RESPONSE},
+        {
+            _get_adk_metadata_key(
+                A2A_DATA_PART_METADATA_TYPE_KEY
+            ): A2A_DATA_PART_METADATA_TYPE_FUNCTION_RESPONSE
+        },
     )
 
     result = convert_a2a_part_to_genai_part(a2a_part)
@@ -143,7 +151,9 @@ class TestConvertA2aPartToGenaiPart:
     """An empty Part (no content oneof set) returns None with a warning."""
     a2a_part = a2a_types.Part()  # no content field set
 
-    with patch("google.adk.a2a.converters.part_converter.logger") as mock_logger:
+    with patch(
+        "google.adk.a2a.converters.part_converter.logger"
+    ) as mock_logger:
       result = convert_a2a_part_to_genai_part(a2a_part)
 
     assert result is None
@@ -161,7 +171,7 @@ class TestConvertGenaiPartToA2aPart:
 
     assert result is not None
     assert isinstance(result, a2a_types.Part)
-    assert result.WhichOneof('content') == 'text'
+    assert result.WhichOneof("content") == "text"
     assert result.text == "Hello, world!"
 
   def test_convert_text_part_with_thought(self):
@@ -171,7 +181,7 @@ class TestConvertGenaiPartToA2aPart:
     result = convert_genai_part_to_a2a_part(genai_part)
 
     assert result is not None
-    assert result.WhichOneof('content') == 'text'
+    assert result.WhichOneof("content") == "text"
     assert result.text == "Hello, world!"
     thought_key = _get_adk_metadata_key("thought")
     assert thought_key in result.metadata and result.metadata[thought_key]
@@ -183,7 +193,7 @@ class TestConvertGenaiPartToA2aPart:
     result = convert_genai_part_to_a2a_part(genai_part)
 
     assert result is not None
-    assert result.WhichOneof('content') == 'text'
+    assert result.WhichOneof("content") == "text"
     assert result.text == ""
 
   def test_convert_file_data_part(self):
@@ -199,7 +209,7 @@ class TestConvertGenaiPartToA2aPart:
     result = convert_genai_part_to_a2a_part(genai_part)
 
     assert result is not None
-    assert result.WhichOneof('content') == 'url'
+    assert result.WhichOneof("content") == "url"
     assert result.url == "gs://bucket/file.txt"
     assert result.media_type == "text/plain"
     assert result.filename == "my_file.txt"
@@ -218,7 +228,7 @@ class TestConvertGenaiPartToA2aPart:
     result = convert_genai_part_to_a2a_part(genai_part)
 
     assert result is not None
-    assert result.WhichOneof('content') == 'raw'
+    assert result.WhichOneof("content") == "raw"
     assert result.raw == test_bytes
     assert result.media_type == "text/plain"
     assert result.filename == "my_bytes.txt"
@@ -235,7 +245,7 @@ class TestConvertGenaiPartToA2aPart:
     result = convert_genai_part_to_a2a_part(genai_part)
 
     assert result is not None
-    assert result.WhichOneof('content') == 'raw'
+    assert result.WhichOneof("content") == "raw"
     assert _get_adk_metadata_key("video_metadata") in result.metadata
 
   def test_convert_inline_data_part_to_data_part(self):
@@ -245,7 +255,9 @@ class TestConvertGenaiPartToA2aPart:
     original_json = json_format.MessageToJson(original).encode("utf-8")
     genai_part = genai_types.Part(
         inline_data=genai_types.Blob(
-            data=A2A_DATA_PART_START_TAG + original_json + A2A_DATA_PART_END_TAG,
+            data=A2A_DATA_PART_START_TAG
+            + original_json
+            + A2A_DATA_PART_END_TAG,
             mime_type=A2A_DATA_PART_TEXT_MIME_TYPE,
         )
     )
@@ -253,7 +265,7 @@ class TestConvertGenaiPartToA2aPart:
     result = convert_genai_part_to_a2a_part(genai_part)
 
     assert result is not None
-    assert result.WhichOneof('content') == 'data'
+    assert result.WhichOneof("content") == "data"
     assert _part_data_as_dict(result) == data
 
   def test_convert_function_call_part(self):
@@ -266,7 +278,7 @@ class TestConvertGenaiPartToA2aPart:
     result = convert_genai_part_to_a2a_part(genai_part)
 
     assert result is not None
-    assert result.WhichOneof('content') == 'data'
+    assert result.WhichOneof("content") == "data"
     assert (
         result.metadata[_get_adk_metadata_key(A2A_DATA_PART_METADATA_TYPE_KEY)]
         == A2A_DATA_PART_METADATA_TYPE_FUNCTION_CALL
@@ -284,7 +296,7 @@ class TestConvertGenaiPartToA2aPart:
     result = convert_genai_part_to_a2a_part(genai_part)
 
     assert result is not None
-    assert result.WhichOneof('content') == 'data'
+    assert result.WhichOneof("content") == "data"
     assert (
         result.metadata[_get_adk_metadata_key(A2A_DATA_PART_METADATA_TYPE_KEY)]
         == A2A_DATA_PART_METADATA_TYPE_FUNCTION_RESPONSE
@@ -300,7 +312,7 @@ class TestConvertGenaiPartToA2aPart:
     result = convert_genai_part_to_a2a_part(genai_part)
 
     assert result is not None
-    assert result.WhichOneof('content') == 'data'
+    assert result.WhichOneof("content") == "data"
     assert (
         result.metadata[_get_adk_metadata_key(A2A_DATA_PART_METADATA_TYPE_KEY)]
         == A2A_DATA_PART_METADATA_TYPE_CODE_EXECUTION_RESULT
@@ -316,7 +328,7 @@ class TestConvertGenaiPartToA2aPart:
     result = convert_genai_part_to_a2a_part(genai_part)
 
     assert result is not None
-    assert result.WhichOneof('content') == 'data'
+    assert result.WhichOneof("content") == "data"
     assert (
         result.metadata[_get_adk_metadata_key(A2A_DATA_PART_METADATA_TYPE_KEY)]
         == A2A_DATA_PART_METADATA_TYPE_EXECUTABLE_CODE
@@ -326,7 +338,9 @@ class TestConvertGenaiPartToA2aPart:
     """An empty genai Part returns None with a warning."""
     genai_part = genai_types.Part()
 
-    with patch("google.adk.a2a.converters.part_converter.logger") as mock_logger:
+    with patch(
+        "google.adk.a2a.converters.part_converter.logger"
+    ) as mock_logger:
       result = convert_genai_part_to_a2a_part(genai_part)
 
     assert result is None
@@ -345,7 +359,7 @@ class TestRoundTripConversions:
     result = convert_genai_part_to_a2a_part(genai_part)
 
     assert result is not None
-    assert result.WhichOneof('content') == 'text'
+    assert result.WhichOneof("content") == "text"
     assert result.text == original_text
 
   def test_text_part_with_thought_round_trip(self):
@@ -370,7 +384,7 @@ class TestRoundTripConversions:
     result = convert_genai_part_to_a2a_part(genai_part)
 
     assert result is not None
-    assert result.WhichOneof('content') == 'url'
+    assert result.WhichOneof("content") == "url"
     assert result.url == "gs://bucket/file.txt"
     assert result.media_type == "text/plain"
 
@@ -378,7 +392,9 @@ class TestRoundTripConversions:
     """Bytes part survives GenAI → A2A → GenAI round trip."""
     original_bytes = b"test file content for round trip"
     genai_part = genai_types.Part(
-        inline_data=genai_types.Blob(data=original_bytes, mime_type="application/octet-stream")
+        inline_data=genai_types.Blob(
+            data=original_bytes, mime_type="application/octet-stream"
+        )
     )
 
     a2a_part = convert_genai_part_to_a2a_part(genai_part)
@@ -456,7 +472,7 @@ class TestRoundTripConversions:
     result = convert_genai_part_to_a2a_part(genai_part)
 
     assert result is not None
-    assert result.WhichOneof('content') == 'data'
+    assert result.WhichOneof("content") == "data"
     assert _part_data_as_dict(result) == data
 
   def test_text_part_metadata_round_trip(self):
@@ -529,28 +545,41 @@ class TestNewConstants:
 
   def test_new_constants_exist(self):
     """Code execution result and executable code constants are defined."""
-    assert A2A_DATA_PART_METADATA_TYPE_CODE_EXECUTION_RESULT == "code_execution_result"
+    assert (
+        A2A_DATA_PART_METADATA_TYPE_CODE_EXECUTION_RESULT
+        == "code_execution_result"
+    )
     assert A2A_DATA_PART_METADATA_TYPE_EXECUTABLE_CODE == "executable_code"
 
   def test_convert_a2a_data_part_with_code_execution_result_metadata(self):
     """Data Part with code_execution_result metadata yields a CodeExecutionResult part."""
     a2a_part = _make_data_part(
         {"outcome": "OUTCOME_OK", "output": "Hello, World!"},
-        {_get_adk_metadata_key(A2A_DATA_PART_METADATA_TYPE_KEY): A2A_DATA_PART_METADATA_TYPE_CODE_EXECUTION_RESULT},
+        {
+            _get_adk_metadata_key(
+                A2A_DATA_PART_METADATA_TYPE_KEY
+            ): A2A_DATA_PART_METADATA_TYPE_CODE_EXECUTION_RESULT
+        },
     )
 
     result = convert_a2a_part_to_genai_part(a2a_part)
 
     assert result is not None
     assert result.code_execution_result is not None
-    assert result.code_execution_result.outcome == genai_types.Outcome.OUTCOME_OK
+    assert (
+        result.code_execution_result.outcome == genai_types.Outcome.OUTCOME_OK
+    )
     assert result.code_execution_result.output == "Hello, World!"
 
   def test_convert_a2a_data_part_with_executable_code_metadata(self):
     """Data Part with executable_code metadata yields an ExecutableCode part."""
     a2a_part = _make_data_part(
         {"language": "PYTHON", "code": "print('Hello')"},
-        {_get_adk_metadata_key(A2A_DATA_PART_METADATA_TYPE_KEY): A2A_DATA_PART_METADATA_TYPE_EXECUTABLE_CODE},
+        {
+            _get_adk_metadata_key(
+                A2A_DATA_PART_METADATA_TYPE_KEY
+            ): A2A_DATA_PART_METADATA_TYPE_EXECUTABLE_CODE
+        },
     )
 
     result = convert_a2a_part_to_genai_part(a2a_part)
@@ -576,7 +605,7 @@ class TestThoughtSignaturePreservation:
     result = convert_genai_part_to_a2a_part(genai_part)
 
     assert result is not None
-    assert result.WhichOneof('content') == 'data'
+    assert result.WhichOneof("content") == "data"
     thought_sig_key = _get_adk_metadata_key("thought_signature")
     assert thought_sig_key in result.metadata
     assert (
@@ -602,7 +631,9 @@ class TestThoughtSignaturePreservation:
     a2a_part = _make_data_part(
         {"id": "fc_gemini3", "name": "my_tool", "args": {}},
         {
-            _get_adk_metadata_key(A2A_DATA_PART_METADATA_TYPE_KEY): A2A_DATA_PART_METADATA_TYPE_FUNCTION_CALL,
+            _get_adk_metadata_key(
+                A2A_DATA_PART_METADATA_TYPE_KEY
+            ): A2A_DATA_PART_METADATA_TYPE_FUNCTION_CALL,
             _get_adk_metadata_key("thought_signature"): sig_b64,
         },
     )
@@ -617,7 +648,9 @@ class TestThoughtSignaturePreservation:
     """thought_signature is preserved in GenAI → A2A → GenAI round trip."""
     original_signature = b"round_trip_signature_test"
     genai_part = genai_types.Part(
-        function_call=genai_types.FunctionCall(id="fc", name="tool", args={"key": "val"}),
+        function_call=genai_types.FunctionCall(
+            id="fc", name="tool", args={"key": "val"}
+        ),
         thought_signature=original_signature,
     )
 

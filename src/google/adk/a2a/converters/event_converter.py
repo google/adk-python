@@ -39,11 +39,11 @@ from ...agents.invocation_context import InvocationContext
 from ...events.event import Event
 from ...flows.llm_flows.functions import REQUEST_EUC_FUNCTION_CALL_NAME
 from ..experimental import a2a_experimental
+from .part_converter import _part_data_as_dict
 from .part_converter import A2A_DATA_PART_METADATA_IS_LONG_RUNNING_KEY
 from .part_converter import A2A_DATA_PART_METADATA_TYPE_FUNCTION_CALL
 from .part_converter import A2A_DATA_PART_METADATA_TYPE_KEY
 from .part_converter import A2APartToGenAIPartConverter
-from .part_converter import _part_data_as_dict
 from .part_converter import convert_a2a_part_to_genai_part
 from .part_converter import convert_genai_part_to_a2a_part
 from .part_converter import GenAIPartToA2APartConverter
@@ -186,8 +186,11 @@ def _process_long_running_tool(a2a_part: A2APart, event: Event) -> None:
   if (
       a2a_part.WhichOneof("content") == "data"
       and event.long_running_tool_ids
-      and _get_adk_metadata_key(A2A_DATA_PART_METADATA_TYPE_KEY) in a2a_part.metadata
-      and a2a_part.metadata[_get_adk_metadata_key(A2A_DATA_PART_METADATA_TYPE_KEY)]
+      and _get_adk_metadata_key(A2A_DATA_PART_METADATA_TYPE_KEY)
+      in a2a_part.metadata
+      and a2a_part.metadata[
+          _get_adk_metadata_key(A2A_DATA_PART_METADATA_TYPE_KEY)
+      ]
       == A2A_DATA_PART_METADATA_TYPE_FUNCTION_CALL
       and _part_data_as_dict(a2a_part).get("id") in event.long_running_tool_ids
   ):
@@ -226,7 +229,9 @@ def convert_a2a_task_to_event(
     message = None
     if a2a_task.artifacts:
       message = Message(
-          message_id="", role=Role.ROLE_AGENT, parts=list(a2a_task.artifacts[-1].parts)
+          message_id="",
+          role=Role.ROLE_AGENT,
+          parts=list(a2a_task.artifacts[-1].parts),
       )
     elif (
         a2a_task.status

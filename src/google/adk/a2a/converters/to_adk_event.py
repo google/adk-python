@@ -154,8 +154,14 @@ def _convert_a2a_parts_to_adk_parts(
         continue
 
       # Check for long-running functions
-      is_lr_key = _get_adk_metadata_key(A2A_DATA_PART_METADATA_IS_LONG_RUNNING_KEY)
-      if a2a_part.metadata and is_lr_key in a2a_part.metadata and a2a_part.metadata[is_lr_key] is True:
+      is_lr_key = _get_adk_metadata_key(
+          A2A_DATA_PART_METADATA_IS_LONG_RUNNING_KEY
+      )
+      if (
+          a2a_part.metadata
+          and is_lr_key in a2a_part.metadata
+          and a2a_part.metadata[is_lr_key] is True
+      ):
         for part in parts:
           if part.function_call:
             long_running_function_ids.add(part.function_call.id)
@@ -230,7 +236,7 @@ def _parse_adk_metadata_value(value: Any) -> Any:
 
 
 def _extract_event_actions(
-    metadata,
+    metadata: Any,
 ) -> EventActions:
   """Extracts ADK event actions from A2A metadata (proto Struct or plain dict)."""
   if not metadata:
@@ -241,7 +247,9 @@ def _extract_event_actions(
   try:
     raw_actions = metadata[actions_key] if actions_key in metadata else None
   except TypeError:
-    raw_actions = metadata.get(actions_key) if hasattr(metadata, "get") else None
+    raw_actions = (
+        metadata.get(actions_key) if hasattr(metadata, "get") else None
+    )
   if raw_actions is None:
     return EventActions()
 
@@ -472,7 +480,7 @@ def convert_a2a_status_update_to_event(
     output_parts = []
     long_running_function_ids = set()
     event_actions = EventActions()
-    if a2a_status_update.status.message:
+    if a2a_status_update.status.HasField("message"):
       event_actions = _extract_event_actions(
           a2a_status_update.status.message.metadata
       )

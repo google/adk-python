@@ -54,16 +54,19 @@ GenAIPartToA2APartConverter = Callable[
 ]
 
 
-def _part_metadata_get(part: a2a_types.Part, key: str, default=None):
+def _part_metadata_get(
+    part: a2a_types.Part, key: str, default: Any = None
+) -> Any:
   """Get a value from a proto Part's metadata Struct."""
   if key in part.metadata:
     return part.metadata[key]
   return default
 
 
-def _part_data_as_dict(part: a2a_types.Part) -> dict:
+def _part_data_as_dict(part: a2a_types.Part) -> dict[Any, Any]:
   """Return the data field of a proto Part as a Python dict."""
-  return json_format.MessageToDict(part).get('data', {})
+  result = json_format.MessageToDict(part).get('data', {})
+  return result if isinstance(result, dict) else {}
 
 
 @a2a_experimental
@@ -236,9 +239,9 @@ def convert_genai_part_to_a2a_part(
     fc_data = part.function_call.model_dump(by_alias=True, exclude_none=True)
     a2a_part = a2a_types.Part()
     json_format.ParseDict({'data': fc_data}, a2a_part)
-    a2a_part.metadata[_get_adk_metadata_key(A2A_DATA_PART_METADATA_TYPE_KEY)] = (
-        A2A_DATA_PART_METADATA_TYPE_FUNCTION_CALL
-    )
+    a2a_part.metadata[
+        _get_adk_metadata_key(A2A_DATA_PART_METADATA_TYPE_KEY)
+    ] = A2A_DATA_PART_METADATA_TYPE_FUNCTION_CALL
     if part.thought_signature is not None:
       a2a_part.metadata[_get_adk_metadata_key('thought_signature')] = (
           base64.b64encode(part.thought_signature).decode('utf-8')
@@ -248,12 +251,14 @@ def convert_genai_part_to_a2a_part(
     return a2a_part
 
   if part.function_response:
-    fr_data = part.function_response.model_dump(by_alias=True, exclude_none=True)
+    fr_data = part.function_response.model_dump(
+        by_alias=True, exclude_none=True
+    )
     a2a_part = a2a_types.Part()
     json_format.ParseDict({'data': fr_data}, a2a_part)
-    a2a_part.metadata[_get_adk_metadata_key(A2A_DATA_PART_METADATA_TYPE_KEY)] = (
-        A2A_DATA_PART_METADATA_TYPE_FUNCTION_RESPONSE
-    )
+    a2a_part.metadata[
+        _get_adk_metadata_key(A2A_DATA_PART_METADATA_TYPE_KEY)
+    ] = A2A_DATA_PART_METADATA_TYPE_FUNCTION_RESPONSE
     if part.part_metadata:
       add_metadata_to_a2a_part(a2a_part, part.part_metadata)
     return a2a_part
@@ -264,9 +269,9 @@ def convert_genai_part_to_a2a_part(
     )
     a2a_part = a2a_types.Part()
     json_format.ParseDict({'data': cer_data}, a2a_part)
-    a2a_part.metadata[_get_adk_metadata_key(A2A_DATA_PART_METADATA_TYPE_KEY)] = (
-        A2A_DATA_PART_METADATA_TYPE_CODE_EXECUTION_RESULT
-    )
+    a2a_part.metadata[
+        _get_adk_metadata_key(A2A_DATA_PART_METADATA_TYPE_KEY)
+    ] = A2A_DATA_PART_METADATA_TYPE_CODE_EXECUTION_RESULT
     if part.part_metadata:
       add_metadata_to_a2a_part(a2a_part, part.part_metadata)
     return a2a_part
@@ -275,9 +280,9 @@ def convert_genai_part_to_a2a_part(
     ec_data = part.executable_code.model_dump(by_alias=True, exclude_none=True)
     a2a_part = a2a_types.Part()
     json_format.ParseDict({'data': ec_data}, a2a_part)
-    a2a_part.metadata[_get_adk_metadata_key(A2A_DATA_PART_METADATA_TYPE_KEY)] = (
-        A2A_DATA_PART_METADATA_TYPE_EXECUTABLE_CODE
-    )
+    a2a_part.metadata[
+        _get_adk_metadata_key(A2A_DATA_PART_METADATA_TYPE_KEY)
+    ] = A2A_DATA_PART_METADATA_TYPE_EXECUTABLE_CODE
     if part.part_metadata:
       add_metadata_to_a2a_part(a2a_part, part.part_metadata)
     return a2a_part

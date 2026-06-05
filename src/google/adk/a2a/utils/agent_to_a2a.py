@@ -70,6 +70,7 @@ def _load_agent_card(
       with path.open("r", encoding="utf-8") as f:
         agent_card_data = json.load(f)
         from google.protobuf import json_format
+
         card = AgentCard()
         json_format.ParseDict(agent_card_data, card)
         return card
@@ -189,7 +190,7 @@ def to_a2a(
       rpc_url=rpc_url,
   )
 
-  resolved_runner = runner or create_runner
+  resolved_runner: Runner = runner if runner is not None else create_runner()
 
   # Build the agent card and configure A2A routes
   async def setup_a2a(app: Starlette):
@@ -217,7 +218,7 @@ def to_a2a(
     # Build routes and add them to the app
     routes = (
         create_agent_card_routes(final_agent_card)
-        + create_jsonrpc_routes(request_handler, rpc_url='/')
+        + create_jsonrpc_routes(request_handler, rpc_url="/")
         + create_rest_routes(request_handler)
     )
     for route in routes:

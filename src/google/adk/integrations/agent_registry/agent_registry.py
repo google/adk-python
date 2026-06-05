@@ -497,8 +497,11 @@ class AgentRegistry:
     card_content = card.get("content")
     if card.get("type") == "A2A_AGENT_CARD" and card_content:
       from google.protobuf import json_format
+
       agent_card = AgentCard()
-      json_format.ParseDict(card_content, agent_card, ignore_unknown_fields=True)
+      json_format.ParseDict(
+          card_content, agent_card, ignore_unknown_fields=True
+      )
       # Clean the name to be a valid identifier
       name = self._clean_name(agent_card.name)
 

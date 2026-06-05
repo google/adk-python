@@ -25,6 +25,7 @@ from google.adk.auth.auth_credential import AuthCredential
 from google.adk.auth.auth_credential import OAuth2Auth
 from google.adk.integrations.agent_registry import AgentRegistry
 from google.adk.integrations.agent_registry.agent_registry import _ProtocolType
+from google.adk.integrations.agent_registry.agent_registry import AGENT_REGISTRY_MTLS_BASE_URL
 from google.adk.telemetry.tracing import GCP_MCP_SERVER_DESTINATION_ID
 from google.adk.tools.mcp_tool.mcp_toolset import McpToolset
 from google.auth.transport import requests as requests_auth
@@ -454,11 +455,16 @@ class TestAgentRegistry:
     assert agent.name == "TestAgent"
     assert agent.description == "Test Desc"
     assert len(agent._agent_card.supported_interfaces) >= 1
-    assert agent._agent_card.supported_interfaces[0].url == "https://my-agent.com"
+    assert (
+        agent._agent_card.supported_interfaces[0].url == "https://my-agent.com"
+    )
     assert agent._agent_card.version == "1.0"
     assert len(agent._agent_card.skills) == 1
     assert agent._agent_card.skills[0].name == "Skill 1"
-    assert agent._agent_card.supported_interfaces[0].protocol_binding == A2ATransport.HTTP_JSON
+    assert (
+        agent._agent_card.supported_interfaces[0].protocol_binding
+        == A2ATransport.HTTP_JSON
+    )
 
   def test_get_remote_a2a_agent_defaults(self, registry):
     mock_response = MagicMock()
@@ -482,8 +488,13 @@ class TestAgentRegistry:
     agent = registry.get_remote_a2a_agent("test-agent")
     assert isinstance(agent, RemoteA2aAgent)
     assert len(agent._agent_card.supported_interfaces) >= 1
-    assert agent._agent_card.supported_interfaces[0].url == "https://my-agent.com"
-    assert agent._agent_card.supported_interfaces[0].protocol_binding == A2ATransport.HTTP_JSON
+    assert (
+        agent._agent_card.supported_interfaces[0].url == "https://my-agent.com"
+    )
+    assert (
+        agent._agent_card.supported_interfaces[0].protocol_binding
+        == A2ATransport.HTTP_JSON
+    )
 
   def test_get_remote_a2a_agent_with_card(self, registry):
     mock_response = MagicMock()
@@ -524,7 +535,9 @@ class TestAgentRegistry:
     assert agent.description == "CardDesc"
     assert agent._agent_card.version == "2.0"
     assert len(agent._agent_card.supported_interfaces) >= 1
-    assert agent._agent_card.supported_interfaces[0].url == "https://card-url.com"
+    assert (
+        agent._agent_card.supported_interfaces[0].url == "https://card-url.com"
+    )
     assert agent._agent_card.capabilities.streaming is True
     assert len(agent._agent_card.skills) == 1
     assert agent._agent_card.skills[0].name == "S1"
@@ -571,7 +584,10 @@ class TestAgentRegistry:
 
     agent = registry.get_remote_a2a_agent("test-agent")
     assert len(agent._agent_card.supported_interfaces) >= 1
-    assert agent._agent_card.supported_interfaces[0].protocol_binding == A2ATransport.JSONRPC
+    assert (
+        agent._agent_card.supported_interfaces[0].protocol_binding
+        == A2ATransport.JSONRPC
+    )
 
   def test_get_auth_headers(self, registry):
     registry._credentials.token = "fake-token"
