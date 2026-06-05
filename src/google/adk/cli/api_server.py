@@ -1218,6 +1218,61 @@ class ApiServer:
 
       return session
 
+    @app.post(
+        "/apps/{app_name}/users/{user_id}/sessions/{session_id}:cancel",
+        response_model_exclude_none=True,
+    )
+    async def cancel_session(
+        app_name: str,
+        user_id: str,
+        session_id: str,
+    ) -> dict[str, str]:
+      """Cancel an in-progress agent session.
+
+      Sets a ``temp:cancelled`` flag in the session state. The agent
+      checks this flag at key execution points (before LLM calls, before
+      tool execution) and will gracefully halt when it detects cancellation.
+
+      Returns:
+          Dict with status and session_id.
+
+      Raises:
+          HTTPException: If the session is not found.
+      """
+      session = await self.session_service.get_session(
+          app_name=app_name,
+          user_id=user_id,
+          session_id=session_id,
+      )
+      if not session:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Session not found: {session_id}",
+        )
+
+      import uuid
+
+      from ..events.event import Event
+      from ..events.event import EventActions
+
+      cancel_event = Event(
+          invocation_id="c-" + str(uuid.uuid4()),
+          author="user",
+          actions=EventActions(state_delta={"temp:cancelled": True}),
+      )
+
+      await self.session_service.append_event(
+          session=session, event=cancel_event
+      )
+
+      logger.info(
+          "Session cancelled: app=%s user=%s session=%s",
+          app_name,
+          user_id,
+          session_id,
+      )
+      return {"status": "cancelled", "session_id": session_id}
+
     @app.get(
         "/apps/{app_name}/users/{user_id}/sessions/{session_id}/artifacts/{artifact_name}",
         response_model_exclude_none=True,

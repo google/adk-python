@@ -418,6 +418,13 @@ async def handle_function_call_list_async(
 
   agent = invocation_context.agent
 
+  # Check if session has been cancelled before executing tools.
+  session = getattr(invocation_context, "session", None)
+  if session is not None and hasattr(session, "state"):
+    if session.state.get("temp:cancelled", False):
+      logger.info("Session cancelled, skipping tool execution.")
+      return None
+
   # Filter function calls
   filtered_calls = [
       fc for fc in function_calls if not filters or fc.id in filters
