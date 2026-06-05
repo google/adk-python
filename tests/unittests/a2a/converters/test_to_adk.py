@@ -30,6 +30,7 @@ from google.adk.a2a.converters.to_adk_event import convert_a2a_artifact_update_t
 from google.adk.a2a.converters.to_adk_event import convert_a2a_message_to_event
 from google.adk.a2a.converters.to_adk_event import convert_a2a_status_update_to_event
 from google.adk.a2a.converters.to_adk_event import convert_a2a_task_to_event
+from google.adk.a2a.converters.to_adk_event import MOCK_FUNCTION_CALL_FOR_REQUIRED_USER_AUTH
 from google.adk.a2a.converters.to_adk_event import MOCK_FUNCTION_CALL_FOR_REQUIRED_USER_INPUT
 from google.adk.a2a.converters.utils import _get_adk_metadata_key
 from google.adk.agents.invocation_context import InvocationContext
@@ -339,6 +340,49 @@ class TestToAdk:
         event.content.parts[0].function_call.args["input_required"]
         == "need input"
     )
+
+  def test_convert_a2a_task_to_event_auth_required_uses_auth_args_key(self):
+    """Test auth-required state populates the function call with auth args."""
+    a2a_part = Mock(spec=A2APart)
+    a2a_part.root = Mock(spec=TextPart)
+    a2a_part.root.metadata = {}
+    task = Task(
+        id="task-1",
+        context_id="context-1",
+        kind="task",
+        status=TaskStatus(
+            state=TaskState.auth_required,
+            timestamp="now",
+            message=Message(
+                message_id="m1",
+                role="agent",
+                parts=[a2a_part],
+            ),
+        ),
+    )
+
+    mock_genai_part = genai_types.Part.from_text(text="need auth")
+
+    event = convert_a2a_task_to_event(
+        task,
+        author="test-author",
+        invocation_context=self.mock_context,
+        part_converter=Mock(return_value=[mock_genai_part]),
+    )
+
+    assert event is not None
+    assert event.content is not None
+    assert (
+        event.content.parts[0].function_call.name
+        == MOCK_FUNCTION_CALL_FOR_REQUIRED_USER_AUTH
+    )
+    # auth_required state should populate the auth_required arg key, not
+    # input_required.
+    assert (
+        event.content.parts[0].function_call.args["auth_required"]
+        == "need auth"
+    )
+    assert "input_required" not in event.content.parts[0].function_call.args
 
   def test_convert_a2a_task_to_event_multiple_parts_replaces_last_text(self):
     """Test converting A2A task with multiple text parts, only replacing the last text."""

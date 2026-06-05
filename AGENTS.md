@@ -16,13 +16,15 @@ For all matters regarding ADK development, please use the appropriate skill:
   - Read `.agents/skills/adk-sample-creator/SKILL.md` for full instructions.
 - **`adk-review`**: Use this skill to review local changes for errors, style compliance, unintended outcomes, and to check if associated design docs, guides, samples, or tests need updates.
   - Read `.agents/skills/adk-review/SKILL.md` for full instructions.
-- **`adk-issue`**: Use this skill when analyzing, triaging, and resolving GitHub issues for the adk-python repository. It orchestrates the process by delegating to `adk-issue-analyze` and `adk-issue-fix`.
+- **`adk-issue`**: Use this skill when analyzing, triaging, and resolving GitHub issues for the adk-python repository (orchestrating both triage and fix implementation). Do NOT use this skill if the "/adk-issue-analyze" command is explicitly requested.
   - Read `.agents/skills/adk-issue/SKILL.md` for full instructions.
-- **`adk-issue-analyze`**: Use this skill to fetch, inspect, and analyze a GitHub issue to verify legitimacy, existing PRs, and recommend a fix in a structured report.
+- **`adk-issue-analyze`**: Use this skill to fetch, inspect, and analyze a GitHub issue in a strictly read-only manner. Use this skill when the "/adk-issue-analyze" command is explicitly called.
   - Read `.agents/skills/adk-issue-analyze/SKILL.md` for full instructions.
-- **`adk-issue-fix`**: Use this skill to implement the code changes, unit tests, and documentation updates for an approved GitHub issue fix.
+- **`adk-issue-fix`**: Use this skill to implement the code changes, unit tests, and documentation updates for an approved GitHub issue fix. Use this skill when the "/adk-issue-fix" command is explicitly called.
   - Read `.agents/skills/adk-issue-fix/SKILL.md` for full instructions.
-- **`adk-pr-triage`**: Use this skill when triaging and analyzing GitHub pull requests (PRs) to evaluate their objectives, legitimacy, value, and alignment with ADK's architectural, styling, and testing principles.
+- **`adk-pr-analyze`**: Use this skill to fetch, inspect, and analyze a GitHub pull request in a strictly read-only manner. Use this skill when the "/adk-pr-analyze" command is explicitly called.
+  - Read `.agents/skills/adk-pr-analyze/SKILL.md` for full instructions.
+- **`adk-pr-triage`**: Use this skill to orchestrate triaging and reviewing GitHub pull requests (PRs) (orchestrating both analysis and user review/checkout). Do NOT use this skill if the "/adk-pr-analyze" command is explicitly requested.
   - Read `.agents/skills/adk-pr-triage/SKILL.md` for full instructions.
 
 

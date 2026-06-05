@@ -739,6 +739,52 @@ class TestRoundTripConversions:
     # The 'mime_type' key in the metadata should be preserved as is
     assert result_a2a_part.root.metadata == metadata
 
+  def test_text_part_metadata_round_trip(self):
+    """Test round-trip conversion for text parts with metadata."""
+    # Arrange
+    metadata = {"key1": "value1", "key2": "value2"}
+    a2a_part = a2a_types.Part(
+        root=a2a_types.TextPart(text="some text", metadata=metadata)
+    )
+
+    # Act
+    genai_part = convert_a2a_part_to_genai_part(a2a_part)
+    result_a2a_part = convert_genai_part_to_a2a_part(genai_part)
+
+    # Assert
+    assert result_a2a_part is not None
+    assert isinstance(result_a2a_part, a2a_types.Part)
+    assert isinstance(result_a2a_part.root, a2a_types.TextPart)
+    assert result_a2a_part.root.text == "some text"
+    assert result_a2a_part.root.metadata == metadata
+
+  def test_file_part_metadata_round_trip(self):
+    """Test round-trip conversion for file parts with metadata."""
+    # Arrange
+    metadata = {"key1": "value1"}
+    a2a_part = a2a_types.Part(
+        root=a2a_types.FilePart(
+            file=a2a_types.FileWithUri(
+                uri="gs://bucket/file.txt",
+                mime_type="text/plain",
+                name="my_file.txt",
+            ),
+            metadata=metadata,
+        )
+    )
+
+    # Act
+    genai_part = convert_a2a_part_to_genai_part(a2a_part)
+    result_a2a_part = convert_genai_part_to_a2a_part(genai_part)
+
+    # Assert
+    assert result_a2a_part is not None
+    assert isinstance(result_a2a_part, a2a_types.Part)
+    assert isinstance(result_a2a_part.root, a2a_types.FilePart)
+    assert isinstance(result_a2a_part.root.file, a2a_types.FileWithUri)
+    assert result_a2a_part.root.file.uri == "gs://bucket/file.txt"
+    assert result_a2a_part.root.metadata == metadata
+
 
 class TestEdgeCases:
   """Test cases for edge cases and error conditions."""
