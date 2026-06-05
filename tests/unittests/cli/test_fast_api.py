@@ -970,6 +970,10 @@ def test_app_with_gemini_enterprise(
           "google.adk.telemetry._agent_engine.get_propagated_context",
           new_callable=MagicMock,
       ),
+      patch(
+          "google.auth.default",
+          return_value=(MagicMock(), "test-project"),
+      ),
   ):
     client = _create_test_client(
         mock_session_service,

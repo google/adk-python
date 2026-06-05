@@ -14,6 +14,8 @@
 
 """Unit tests for _get_transfer_targets in agent_transfer module."""
 
+from __future__ import annotations
+
 from google.adk.agents.llm_agent import Agent
 from google.adk.agents.loop_agent import LoopAgent
 from google.adk.flows.llm_flows.agent_transfer import _get_transfer_targets
