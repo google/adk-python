@@ -349,61 +349,60 @@ class StreamingResponseAggregator:
     Returns:
       The aggregated LlmResponse.
     """
+    if not self._response:
+      return None
+
+    candidate = (
+        self._response.candidates[0] if self._response.candidates else None
+    )
+
+    finish_reason = self._finish_reason
+    if not finish_reason and candidate:
+      finish_reason = candidate.finish_reason
+
+    error_code = None
+    error_message = None
+    if finish_reason and finish_reason != types.FinishReason.STOP:
+      error_code = finish_reason
+      error_message = candidate.finish_message if candidate else None
+    elif not candidate and self._response.prompt_feedback:
+      error_code = self._response.prompt_feedback.block_reason
+      error_message = self._response.prompt_feedback.block_reason_message
+
     # ========== Progressive SSE Streaming (new feature) ==========
     if is_feature_enabled(FeatureName.PROGRESSIVE_SSE_STREAMING):
-      # Always generate final aggregated response in progressive mode
-      if self._response and self._response.candidates:
-        # Flush any remaining buffers to complete the sequence
-        self._flush_text_buffer_to_sequence()
-        self._flush_function_call_to_sequence()
+      self._flush_text_buffer_to_sequence()
+      self._flush_function_call_to_sequence()
 
-        # Use the parts sequence which preserves original ordering
-        final_parts = self._parts_sequence
+      final_parts = self._parts_sequence
+      content = types.ModelContent(parts=final_parts) if final_parts else None
 
-        if final_parts:
-          candidate = self._response.candidates[0]
-          finish_reason = self._finish_reason or candidate.finish_reason
-
-          return LlmResponse(
-              content=types.ModelContent(parts=final_parts),
-              grounding_metadata=self._grounding_metadata,
-              citation_metadata=self._citation_metadata,
-              error_code=None
-              if finish_reason == types.FinishReason.STOP
-              else finish_reason,
-              error_message=None
-              if finish_reason == types.FinishReason.STOP
-              else candidate.finish_message,
-              usage_metadata=self._usage_metadata,
-              finish_reason=finish_reason,
-              partial=False,
-          )
-
-        return None
-
-    # ========== Non-Progressive SSE Streaming (old behavior) ==========
-    if (
-        (self._text or self._thought_text)
-        and self._response
-        and self._response.candidates
-    ):
-      parts = []
-      if self._thought_text:
-        parts.append(types.Part(text=self._thought_text, thought=True))
-      if self._text:
-        parts.append(types.Part.from_text(text=self._text))
-      candidate = self._response.candidates[0]
       return LlmResponse(
-          content=types.ModelContent(parts=parts),
+          content=content,
           grounding_metadata=self._grounding_metadata,
           citation_metadata=self._citation_metadata,
-          error_code=None
-          if candidate.finish_reason == types.FinishReason.STOP
-          else candidate.finish_reason,
-          error_message=None
-          if candidate.finish_reason == types.FinishReason.STOP
-          else candidate.finish_message,
+          error_code=error_code,
+          error_message=error_message,
           usage_metadata=self._usage_metadata,
+          finish_reason=finish_reason,
+          partial=False,
       )
 
-    return None
+    # ========== Non-Progressive SSE Streaming (old behavior) ==========
+    parts = []
+    if self._thought_text:
+      parts.append(types.Part(text=self._thought_text, thought=True))
+    if self._text:
+      parts.append(types.Part.from_text(text=self._text))
+    content = types.ModelContent(parts=parts) if parts else None
+
+    return LlmResponse(
+        content=content,
+        grounding_metadata=self._grounding_metadata,
+        citation_metadata=self._citation_metadata,
+        error_code=error_code,
+        error_message=error_message,
+        usage_metadata=self._usage_metadata,
+        finish_reason=finish_reason,
+        partial=False,
+    )

@@ -11,9 +11,18 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+"""Lazy import shim for Vertex AI optional dependencies."""
 
 from __future__ import annotations
 
-import vertexai
-from vertexai.preview import example_stores
-from vertexai.preview import rag
+try:
+  import vertexai
+  from vertexai.preview import example_stores
+  from vertexai.preview import rag
+except ImportError as e:
+  raise ImportError(
+      "Vertex AI features require google-adk[gcp] or google-adk[all]. "
+      "Install one of those extras to use google.adk.dependencies.vertexai."
+  ) from e
+
+__all__ = ["example_stores", "rag", "vertexai"]
