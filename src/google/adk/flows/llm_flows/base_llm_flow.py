@@ -552,6 +552,28 @@ class BaseLlmFlow(ABC):
             if session_resumption.transparent is None:
               session_resumption.transparent = True
 
+        # When seeding a fresh connection with prior conversation history, set
+        # initial_history_in_client_content to True. This tells the Live server
+        # that the provided history already includes the model's past responses,
+        # preventing the server from generating duplicate responses for those replayed turns.
+        if (
+            llm_request.contents
+            and not invocation_context.live_session_resumption_handle
+        ):
+          if not llm_request.live_connect_config:
+            llm_request.live_connect_config = types.LiveConnectConfig()
+          if not llm_request.live_connect_config.history_config:
+            llm_request.live_connect_config.history_config = (
+                types.HistoryConfig()
+            )
+          if (
+              llm_request.live_connect_config.history_config.initial_history_in_client_content
+              is None
+          ):
+            llm_request.live_connect_config.history_config.initial_history_in_client_content = (
+                True
+            )
+
         logger.info(
             'Establishing live connection for agent: %s',
             invocation_context.agent.name,
