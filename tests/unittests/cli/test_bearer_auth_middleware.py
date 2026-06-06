@@ -170,9 +170,7 @@ async def test_token_set_public_paths_are_always_open(public_path: str):
   send = _ResponseCapture()
   middleware = _BearerAuthMiddleware(downstream, token="secret-token")
 
-  await middleware(
-      _scope(path=public_path, method="GET"), _noop_receive, send
-  )
+  await middleware(_scope(path=public_path, method="GET"), _noop_receive, send)
 
   assert downstream.called is True
   assert send.status == 200
