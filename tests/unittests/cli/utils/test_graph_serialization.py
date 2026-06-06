@@ -13,6 +13,7 @@
 # limitations under the License.
 
 """Tests for graph_serialization edge handling with routing maps."""
+
 import json
 
 from google.adk.agents import LlmAgent
@@ -129,6 +130,7 @@ def test_serialize_agent_with_toolset() -> None:
   assert len(result['tools']) == 1
   assert result['tools'][0]['name'] == 'MockToolset'
   assert result['tools'][0]['type'] == 'tool'
+
 
 def test_serialize_agent_with_litellm_model_is_json_safe() -> None:
   agent = LlmAgent(
