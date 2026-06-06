@@ -77,6 +77,23 @@ class TestConvertEventsToEvalInvocation:
     assert invocation.final_response.parts[0].text == "Hi there!"
     assert len(invocation.intermediate_data.invocation_events) == 0
 
+  def test_skips_invocation_without_user_event(
+      self,
+  ):
+    """Tests that agent-only invocations are not converted to eval turns."""
+    events = [
+        _build_event("agent", [types.Part(text="Internal response")], "inv1"),
+        _build_event("user", [types.Part(text="Hello")], "inv2"),
+        _build_event("agent", [types.Part(text="Hi there!")], "inv2"),
+    ]
+
+    invocations = EvaluationGenerator.convert_events_to_eval_invocations(events)
+
+    assert len(invocations) == 1
+    assert invocations[0].invocation_id == "inv2"
+    assert invocations[0].user_content.parts[0].text == "Hello"
+    assert invocations[0].final_response.parts[0].text == "Hi there!"
+
   def test_convert_single_turn_tool_call(
       self,
   ):
