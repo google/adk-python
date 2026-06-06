@@ -36,6 +36,10 @@ logger = logging.getLogger("google_adk." + __name__)
 # Test helpers
 # ---------------------------------------------------------------------------
 
+# Shared mutable flag so the mocked runner can signal that cancellation
+# was actually detected (CancelledError caught).
+_cancellation_signal: list[bool] = []
+
 
 def _make_text_event(text: str) -> Event:
   return Event(
@@ -56,17 +60,25 @@ async def _cancellable_run_async(
     run_config: Optional[RunConfig] = None,
     invocation_id: Optional[str] = None,
 ):
-  """A runner that yields one event, then blocks until cancelled.
+  """Yields one event, then blocks until cancelled via task.cancel().
 
-  asyncio.sleep with a long timeout will be interrupted by task.cancel()
-  from the /cancel endpoint, raising CancelledError.
+  Sets ``_cancellation_signal[0] = True`` when CancelledError is caught,
+  so the test can verify the cancellation propagated to the runner.
   """
+  _cancellation_signal.clear()
   yield _make_text_event("starting run...")
   try:
-    await asyncio.sleep(3600)  # effectively forever — cancelled by the test
+    await asyncio.sleep(3600)  # cancelled by the /cancel endpoint
   except asyncio.CancelledError:
+    _cancellation_signal.append(True)
     yield _make_text_event("run was cancelled")
     raise
+
+
+@pytest.fixture(autouse=True)
+def _clear_cancellation_signal():
+  """Reset the shared cancellation signal before each test."""
+  _cancellation_signal.clear()
 
 
 @pytest.fixture
@@ -116,12 +128,14 @@ def client(monkeypatch, mock_agent_loader):
 class TestCancelSessionEndpoint:
   """Integration tests for POST /apps/.../sessions/...:cancel."""
 
-  def test_cancel_active_run_returns_200(self, client, test_session_info):
-    """POST /run, then POST :cancel — should return 200 and cancel the run."""
+  def test_cancel_active_run_interrupts_runner(
+      self, client, test_session_info
+  ):
+    """Start a blocking run, cancel it, and verify the runner was interrupted."""
     app_name = test_session_info["app_name"]
     user_id = test_session_info["user_id"]
 
-    # 1. Create a session first
+    # 1. Create a session
     create_resp = client.post(
         f"/apps/{app_name}/users/{user_id}/sessions",
         json={"app_name": app_name, "user_id": user_id},
@@ -129,8 +143,7 @@ class TestCancelSessionEndpoint:
     assert create_resp.status_code == 200
     session_id = create_resp.json()["session_id"]
 
-    # 2. Start a run in a background thread. The run will block on
-    #    asyncio.sleep until cancelled.
+    # 2. Start a blocking run in a background thread
     import threading
 
     run_result = {"status": None, "error": None}
@@ -140,7 +153,8 @@ class TestCancelSessionEndpoint:
         import requests
         s = requests.Session()
         resp = s.post(
-            f"http://testserver/apps/{app_name}/users/{user_id}/sessions/{session_id}/run",
+            f"http://testserver/apps/{app_name}/users/{user_id}"
+            f"/sessions/{session_id}/run",
             json={
                 "app_name": app_name,
                 "user_id": user_id,
@@ -160,11 +174,11 @@ class TestCancelSessionEndpoint:
     run_thread = threading.Thread(target=do_run, daemon=True)
     run_thread.start()
 
-    # 3. Give the server a moment to start processing
+    # 3. Wait for the runner to start processing
     import time
     time.sleep(1.0)
 
-    # 4. Cancel the run
+    # 4. Cancel the run via the new endpoint
     cancel_resp = client.post(
         f"/apps/{app_name}/users/{user_id}/sessions/{session_id}:cancel",
     )
@@ -173,38 +187,44 @@ class TestCancelSessionEndpoint:
     assert data["status"] == "cancelled"
     assert data["session_id"] == session_id
 
-    # 5. Wait for the run thread to complete
+    # 5. Wait for the background run to finish (should happen quickly
+    #    after cancellation)
     run_thread.join(timeout=5.0)
-    logger.info("Run result: %s", run_result)
+    assert not run_thread.is_alive(), (
+        "Background run thread should have completed after cancellation"
+    )
+
+    # 6. Verify the runner actually detected cancellation.
+    #    The _cancellable_run_async sets this flag when CancelledError
+    #    is caught inside the runner coroutine.
+    assert len(_cancellation_signal) > 0, (
+        "CancelledError was NOT raised inside the runner — "
+        "the task.cancel() did not propagate to the agent coroutine"
+    )
+    logger.info("Run result after cancellation: %s", run_result)
 
   def test_cancel_nonexistent_session_returns_404(self, client):
-    """Cancelling a session with no active run should return 404."""
+    """Cancelling a session with no active run returns 404."""
     resp = client.post(
         "/apps/test_app/users/test_user/sessions/nonexistent:cancel",
     )
     assert resp.status_code == 404
     assert "no active run" in resp.json()["detail"].lower()
 
-  def test_cancel_endpoint_idempotent(self, client):
-    """Double-cancelling should return 404 on the second call."""
-    resp1 = client.post(
-        "/apps/test_app/users/test_user/sessions/nonexistent2:cancel",
-    )
-    assert resp1.status_code == 404
-
-    resp2 = client.post(
-        "/apps/test_app/users/test_user/sessions/nonexistent2:cancel",
-    )
-    assert resp2.status_code == 404
+  def test_cancel_idempotent_returns_404_on_second_call(self, client):
+    """Double-cancelling the same session returns 404 on the second call."""
+    url = "/apps/test_app/users/test_user/sessions/nonexistent:cancel"
+    assert client.post(url).status_code == 404
+    assert client.post(url).status_code == 404
 
 
 class TestTaskRegistry:
-  """Unit tests for the active_tasks registry lifecycle."""
+  """Tests for the active_tasks registry lifecycle."""
 
   def test_registry_cleanup_after_run_completion(
       self, client, test_session_info, monkeypatch
   ):
-    """After a run completes, cancelling should 404 (task was cleaned up)."""
+    """After a run completes normally, /cancel returns 404 (task cleaned up)."""
     async def fast_run(self, **kwargs):
       yield _make_text_event("done")
 
@@ -220,7 +240,7 @@ class TestTaskRegistry:
     assert create_resp.status_code == 200
     session_id = create_resp.json()["session_id"]
 
-    # Run synchronously
+    # Run to completion
     run_resp = client.post(
         f"/apps/{app_name}/users/{user_id}/sessions/{session_id}/run",
         json={
@@ -235,7 +255,7 @@ class TestTaskRegistry:
     )
     assert run_resp.status_code == 200
 
-    # After run completes, cancelling should 404
+    # Task should already be popped from registry
     cancel_resp = client.post(
         f"/apps/{app_name}/users/{user_id}/sessions/{session_id}:cancel",
     )

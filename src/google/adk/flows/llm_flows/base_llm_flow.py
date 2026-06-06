@@ -1245,40 +1245,12 @@ class BaseLlmFlow(ABC):
       raise ValueError(f'Agent {agent_name} not found in the agent tree.')
     return agent_to_run
 
-  @classmethod
-  def _is_session_cancelled(cls, invocation_context: InvocationContext) -> bool:
-    """Check if the current session has been cancelled via the cancel API."""
-    session = getattr(invocation_context, "session", None)
-    if session is not None and hasattr(session, "state"):
-      return bool(session.state.get("temp:cancelled", False))
-    return False
-
   async def _call_llm_async(
       self,
       invocation_context: InvocationContext,
       llm_request: LlmRequest,
       model_response_event: Event,
   ) -> AsyncGenerator[LlmResponse, None]:
-    # Check for cancellation before making any LLM call.
-    if self._is_session_cancelled(invocation_context):
-      from .. import events as flow_events
-
-      yield LlmResponse(
-          event=flow_events.Event.new_id(),
-          llm_response=model_response_event,
-          model_response=types.GenerateContentResponse(
-              candidates=[{
-                  "content": {
-                      "role": "model",
-                      "parts": [{"text": "Task cancelled by user."}],
-                  },
-                  "finish_reason": "STOP",
-              }],
-          ),
-          turn_complete=True,
-      )
-      return
-
     async def _call_llm_with_tracing() -> AsyncGenerator[LlmResponse, None]:
       with tracer.start_as_current_span('call_llm') as span:
         # Runs before_model_callback inside the call_llm span so

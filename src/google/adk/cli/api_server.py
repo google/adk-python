@@ -1221,60 +1221,6 @@ class ApiServer:
 
       return session
 
-    @app.post(
-        "/apps/{app_name}/users/{user_id}/sessions/{session_id}:cancel",
-        response_model_exclude_none=True,
-    )
-    async def cancel_session(
-        app_name: str,
-        user_id: str,
-        session_id: str,
-    ) -> dict[str, str]:
-      """Cancel an in-progress agent session.
-
-      Sets a ``temp:cancelled`` flag in the session state. The agent
-      checks this flag at key execution points (before LLM calls, before
-      tool execution) and will gracefully halt when it detects cancellation.
-
-      Returns:
-          Dict with status and session_id.
-
-      Raises:
-          HTTPException: If the session is not found.
-      """
-      session = await self.session_service.get_session(
-          app_name=app_name,
-          user_id=user_id,
-          session_id=session_id,
-      )
-      if not session:
-        raise HTTPException(
-            status_code=404,
-            detail=f"Session not found: {session_id}",
-        )
-
-      import uuid
-
-      from ..events.event import Event
-      from ..events.event import EventActions
-
-      cancel_event = Event(
-          invocation_id="c-" + str(uuid.uuid4()),
-          author="user",
-          actions=EventActions(state_delta={"temp:cancelled": True}),
-      )
-
-      await self.session_service.append_event(
-          session=session, event=cancel_event
-      )
-
-      logger.info(
-          "Session cancelled: app=%s user=%s session=%s",
-          app_name,
-          user_id,
-          session_id,
-      )
-      return {"status": "cancelled", "session_id": session_id}
 
     @app.get(
         "/apps/{app_name}/users/{user_id}/sessions/{session_id}/artifacts/{artifact_name}",
@@ -1563,106 +1509,106 @@ class ApiServer:
         monitor_task.cancel()
         self.active_tasks.pop(req.session_id, None)
 
-      @app.post("/run_sse")
-      async def run_agent_sse(req: RunAgentRequest) -> StreamingResponse:
-        app_name = req.app_name or self.default_app_name
-        if not app_name:
-          raise HTTPException(
-              status_code=400,
-              detail="app_name is required when ADK_DEFAULT_APP_NAME is not set",
-          )
-        req.app_name = app_name
-        self.current_app_name_ref.value = req.app_name
-        stream_mode = StreamingMode.SSE if req.streaming else StreamingMode.NONE
-        runner = await self.get_runner_async(req.app_name)
-        _set_telemetry_context_if_needed(runner)
-
-        # Validate session existence before starting the stream.
-        if not runner.auto_create_session:
-          session = await self.session_service.get_session(
-              app_name=req.app_name,
-              user_id=req.user_id,
-              session_id=req.session_id,
-          )
-          if not session:
-            raise HTTPException(
-                status_code=404,
-                detail=f"Session not found: {req.session_id}",
-            )
-
-        # Use a queue to bridge the producer task (runs the agent) and
-        # the StreamingResponse consumer (formats SSE).  This lets the
-        # /cancel endpoint cancel the producer task via the active_tasks
-        # registry.
-        event_queue: asyncio.Queue[Event | Exception | None] = asyncio.Queue()
-
-        async def produce_events() -> None:
-          try:
-            async with Aclosing(
-                runner.run_async(
-                    user_id=req.user_id,
-                    session_id=req.session_id,
-                    new_message=req.new_message,
-                    state_delta=req.state_delta,
-                    run_config=RunConfig(
-                        streaming_mode=stream_mode,
-                        custom_metadata=req.custom_metadata,
-                    ),
-                    invocation_id=req.invocation_id,
-                )
-            ) as agen:
-              async for event in agen:
-                await event_queue.put(event)
-          except asyncio.CancelledError:
-            pass
-          except Exception as e:  # pylint: disable=broad-exception-caught
-            await event_queue.put(e)
-          finally:
-            await event_queue.put(None)  # sentinel
-
-        producer_task = asyncio.create_task(produce_events())
-        self.active_tasks[req.session_id] = producer_task
-
-        async def event_generator():
-          try:
-            while True:
-              item = await event_queue.get()
-              if item is None:
-                break
-              if isinstance(item, Exception):
-                logger.exception("Error in event_generator: %s", item)
-                yield f"data: {json.dumps({'error': str(item)})}\n\n"
-                break
-
-              events_to_stream = [item]
-              if (
-                  not req.function_call_event_id
-                  and item.actions.artifact_delta
-                  and item.content
-                  and item.content.parts
-              ):
-                content_event = item.model_copy(deep=True)
-                content_event.actions.artifact_delta = {}
-                artifact_event = item.model_copy(deep=True)
-                artifact_event.content = None
-                events_to_stream = [content_event, artifact_event]
-
-              for event_to_stream in events_to_stream:
-                sse_event = event_to_stream.model_dump_json(
-                    exclude_none=True,
-                    by_alias=True,
-                )
-                logger.debug(
-                    "Generated event in agent run streaming: %s", sse_event
-                )
-                yield f"data: {sse_event}\n\n"
-          finally:
-            self.active_tasks.pop(req.session_id, None)
-
-        return StreamingResponse(
-            event_generator(),
-            media_type="text/event-stream",
+    @app.post("/run_sse")
+    async def run_agent_sse(req: RunAgentRequest) -> StreamingResponse:
+      app_name = req.app_name or self.default_app_name
+      if not app_name:
+        raise HTTPException(
+            status_code=400,
+            detail="app_name is required when ADK_DEFAULT_APP_NAME is not set",
         )
+      req.app_name = app_name
+      self.current_app_name_ref.value = req.app_name
+      stream_mode = StreamingMode.SSE if req.streaming else StreamingMode.NONE
+      runner = await self.get_runner_async(req.app_name)
+      _set_telemetry_context_if_needed(runner)
+
+      # Validate session existence before starting the stream.
+      if not runner.auto_create_session:
+        session = await self.session_service.get_session(
+            app_name=req.app_name,
+            user_id=req.user_id,
+            session_id=req.session_id,
+        )
+        if not session:
+          raise HTTPException(
+              status_code=404,
+              detail=f"Session not found: {req.session_id}",
+          )
+
+      # Use a queue to bridge the producer task (runs the agent) and
+      # the StreamingResponse consumer (formats SSE).  This lets the
+      # /cancel endpoint cancel the producer task via the active_tasks
+      # registry.
+      event_queue: asyncio.Queue[Event | Exception | None] = asyncio.Queue()
+
+      async def produce_events() -> None:
+        try:
+          async with Aclosing(
+              runner.run_async(
+                  user_id=req.user_id,
+                  session_id=req.session_id,
+                  new_message=req.new_message,
+                  state_delta=req.state_delta,
+                  run_config=RunConfig(
+                      streaming_mode=stream_mode,
+                      custom_metadata=req.custom_metadata,
+                  ),
+                  invocation_id=req.invocation_id,
+              )
+          ) as agen:
+            async for event in agen:
+              await event_queue.put(event)
+        except asyncio.CancelledError:
+          pass
+        except Exception as e:  # pylint: disable=broad-exception-caught
+          await event_queue.put(e)
+        finally:
+          await event_queue.put(None)  # sentinel
+
+      producer_task = asyncio.create_task(produce_events())
+      self.active_tasks[req.session_id] = producer_task
+
+      async def event_generator():
+        try:
+          while True:
+            item = await event_queue.get()
+            if item is None:
+              break
+            if isinstance(item, Exception):
+              logger.exception("Error in event_generator: %s", item)
+              yield f"data: {json.dumps({'error': str(item)})}\n\n"
+              break
+
+            events_to_stream = [item]
+            if (
+                not req.function_call_event_id
+                and item.actions.artifact_delta
+                and item.content
+                and item.content.parts
+            ):
+              content_event = item.model_copy(deep=True)
+              content_event.actions.artifact_delta = {}
+              artifact_event = item.model_copy(deep=True)
+              artifact_event.content = None
+              events_to_stream = [content_event, artifact_event]
+
+            for event_to_stream in events_to_stream:
+              sse_event = event_to_stream.model_dump_json(
+                  exclude_none=True,
+                  by_alias=True,
+              )
+              logger.debug(
+                  "Generated event in agent run streaming: %s", sse_event
+              )
+              yield f"data: {sse_event}\n\n"
+        finally:
+          self.active_tasks.pop(req.session_id, None)
+
+      return StreamingResponse(
+          event_generator(),
+          media_type="text/event-stream",
+      )
     @app.websocket("/run_live")
     async def run_agent_live(
         websocket: WebSocket,
