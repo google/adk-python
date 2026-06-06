@@ -395,6 +395,29 @@ class TestLocalEvalSetsManager:
     with pytest.raises(ValueError, match="Invalid Eval Set ID"):
       local_eval_sets_manager.create_eval_set(app_name, eval_set_id)
 
+  @pytest.mark.parametrize("app_name", ["", ".", "..", "foo/bar", "foo\\bar"])
+  def test_local_eval_sets_manager_create_eval_set_rejects_invalid_app_name(
+      self, local_eval_sets_manager, app_name
+  ):
+    with pytest.raises(ValueError):
+      local_eval_sets_manager.create_eval_set(app_name, "test_eval_set")
+
+  @pytest.mark.parametrize("app_name", ["", ".", "..", "foo/bar", "foo\\bar"])
+  def test_local_eval_sets_manager_list_eval_sets_rejects_invalid_app_name(
+      self, local_eval_sets_manager, app_name
+  ):
+    with pytest.raises(ValueError):
+      local_eval_sets_manager.list_eval_sets(app_name)
+
+  @pytest.mark.parametrize(
+      "eval_set_id", ["", ".", "..", "foo/bar", "foo\\bar"]
+  )
+  def test_local_eval_sets_manager_get_eval_set_rejects_invalid_eval_set_id(
+      self, local_eval_sets_manager, eval_set_id
+  ):
+    with pytest.raises(ValueError):
+      local_eval_sets_manager.get_eval_set("test_app", eval_set_id)
+
   def test_local_eval_sets_manager_create_eval_set_already_exists(
       self, local_eval_sets_manager, mocker
   ):

@@ -92,6 +92,22 @@ class TestLocalEvalSetResultsManager:
     expected_eval_set_result_data = self.eval_set_result.model_dump(mode="json")
     assert expected_eval_set_result_data == actual_eval_set_result_data
 
+  @pytest.mark.parametrize("app_name", ["", ".", "..", "foo/bar", "foo\\bar"])
+  def test_save_eval_set_result_rejects_invalid_app_name(self, app_name):
+    with pytest.raises(ValueError):
+      self.manager.save_eval_set_result(
+          app_name, self.eval_set_id, self.eval_case_results
+      )
+
+  @pytest.mark.parametrize(
+      "eval_set_id", ["", ".", "..", "foo/bar", "foo\\bar"]
+  )
+  def test_save_eval_set_result_rejects_invalid_eval_set_id(self, eval_set_id):
+    with pytest.raises(ValueError):
+      self.manager.save_eval_set_result(
+          self.app_name, eval_set_id, self.eval_case_results
+      )
+
   def test_get_eval_set_result(self, mocker):
     mock_time = mocker.patch("time.time")
     mock_time.return_value = self.timestamp
@@ -102,6 +118,20 @@ class TestLocalEvalSetResultsManager:
         self.app_name, self.eval_set_result_name
     )
     assert retrieved_result == self.eval_set_result
+
+  @pytest.mark.parametrize("app_name", ["", ".", "..", "foo/bar", "foo\\bar"])
+  def test_get_eval_set_result_rejects_invalid_app_name(self, app_name):
+    with pytest.raises(ValueError):
+      self.manager.get_eval_set_result(app_name, self.eval_set_result_name)
+
+  @pytest.mark.parametrize(
+      "eval_set_result_id", ["", ".", "..", "foo/bar", "foo\\bar"]
+  )
+  def test_get_eval_set_result_rejects_invalid_eval_set_result_id(
+      self, eval_set_result_id
+  ):
+    with pytest.raises(ValueError):
+      self.manager.get_eval_set_result(self.app_name, eval_set_result_id)
 
   def test_get_eval_set_result_double_encoded_legacy(self):
     eval_history_dir = os.path.join(
