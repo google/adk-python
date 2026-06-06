@@ -455,6 +455,10 @@ class Gemini(BaseLlm):
             ' backend. Please use Vertex AI backend.'
         )
     llm_request.live_connect_config.tools = llm_request.config.tools
+    if llm_request.config.thinking_config is not None:
+      llm_request.live_connect_config.thinking_config = (
+          llm_request.config.thinking_config
+      )
     logger.debug('Connecting to live with llm_request:%s', llm_request)
     logger.debug('Live connect config: %s', llm_request.live_connect_config)
     async with self._live_api_client.aio.live.connect(
