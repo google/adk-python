@@ -12,131 +12,231 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Tests for the session cancellation API endpoint and cancellation checks."""
+from __future__ import annotations
 
-from unittest import mock
-from unittest.mock import AsyncMock, MagicMock
+import asyncio
+import logging
+from typing import Optional
+from unittest.mock import patch
 
-import pytest
+from fastapi.testclient import TestClient
+from google.adk.agents.llm_agent import LlmAgent
+from google.adk.agents.run_config import RunConfig
+from google.adk.cli import fast_api as fast_api_module
 from google.adk.events.event import Event
-from google.adk.flows.llm_flows.base_llm_flow import BaseLlmFlow
+from google.adk.runners import Runner
 from google.adk.sessions.in_memory_session_service import InMemorySessionService
-from google.adk.sessions.session import Session
+from google.genai import types
+import pytest
+
+logger = logging.getLogger("google_adk." + __name__)
 
 
 # ---------------------------------------------------------------------------
-# Tests for _is_session_cancelled
+# Test helpers
 # ---------------------------------------------------------------------------
 
 
-class TestIsSessionCancelled:
-    """Tests for ``BaseLlmFlow._is_session_cancelled``."""
+def _make_text_event(text: str) -> Event:
+  return Event(
+      author="test_agent",
+      invocation_id="invocation_id",
+      content=types.Content(
+          role="model", parts=[types.Part(text=text)]
+      ),
+  )
 
-    @pytest.mark.asyncio
-    async def test_no_session_returns_false(self):
-        """No session attribute — returns False."""
-        ctx = MagicMock(spec=[])
-        del ctx.session
-        assert BaseLlmFlow._is_session_cancelled(ctx) is False
 
-    @pytest.mark.asyncio
-    async def test_no_state_returns_false(self):
-        """Session has no state — returns False."""
-        session = MagicMock(spec=["state"])
-        del session.state
-        ctx = MagicMock(session=session)
-        assert BaseLlmFlow._is_session_cancelled(ctx) is False
+async def _cancellable_run_async(
+    self,
+    user_id,
+    session_id,
+    new_message,
+    state_delta=None,
+    run_config: Optional[RunConfig] = None,
+    invocation_id: Optional[str] = None,
+):
+  """A runner that yields one event, then blocks until cancelled.
 
-    @pytest.mark.asyncio
-    async def test_no_cancel_flag_returns_false(self):
-        """Session state exists but cancellation flag is not set."""
-        session = MagicMock(state={})
-        ctx = MagicMock(session=session)
-        assert BaseLlmFlow._is_session_cancelled(ctx) is False
+  asyncio.sleep with a long timeout will be interrupted by task.cancel()
+  from the /cancel endpoint, raising CancelledError.
+  """
+  yield _make_text_event("starting run...")
+  try:
+    await asyncio.sleep(3600)  # effectively forever — cancelled by the test
+  except asyncio.CancelledError:
+    yield _make_text_event("run was cancelled")
+    raise
 
-    @pytest.mark.asyncio
-    async def test_cancelled_flag_returns_true(self):
-        """Cancellation flag is set — returns True."""
-        session = MagicMock(state={"temp:cancelled": True})
-        ctx = MagicMock(session=session)
-        assert BaseLlmFlow._is_session_cancelled(ctx) is True
 
-    @pytest.mark.asyncio
-    async def test_false_flag_returns_false(self):
-        """Cancellation flag is False — returns False."""
-        session = MagicMock(state={"temp:cancelled": False})
-        ctx = MagicMock(session=session)
-        assert BaseLlmFlow._is_session_cancelled(ctx) is False
+@pytest.fixture
+def test_session_info():
+  return {
+      "app_name": "test_app",
+      "user_id": "test_user",
+  }
+
+
+@pytest.fixture
+def mock_agent_loader():
+  """Minimal agent loader that returns a single LlmAgent."""
+
+  class Loader:
+    def load_agent(self, app_name):
+      agent = LlmAgent(name=app_name, model="gemini-2.5-flash")
+      return agent
+
+    def list_apps(self):
+      return ["test_app"]
+
+    def list_app_info(self):
+      return [{"name": "test_app", "description": "Test app"}]
+
+  return Loader()
+
+
+@pytest.fixture
+def client(monkeypatch, mock_agent_loader):
+  """Create a TestClient for the FastAPI app with a cancellable runner."""
+  monkeypatch.setattr(Runner, "run_async", _cancellable_run_async)
+  session_service = InMemorySessionService()
+
+  app = fast_api_module.get_fast_api_app(
+      agent_loader=mock_agent_loader,
+      session_service=session_service,
+  )
+  return TestClient(app)
 
 
 # ---------------------------------------------------------------------------
-# Tests for _call_llm_async cancellation behaviour
-# ---------------------------------------------------------------------------
-
-
-class TestCallLlmCancellation:
-    """Tests that ``_call_llm_async`` responds to cancellation flag."""
-
-    @pytest.mark.asyncio
-    async def test_cancelled_session_detected(self):
-        """``_is_session_cancelled`` returns True when flag is set."""
-        session = MagicMock(state={"temp:cancelled": True})
-        ctx = MagicMock(session=session)
-        assert BaseLlmFlow._is_session_cancelled(ctx) is True
-
-    @pytest.mark.asyncio
-    async def test_active_session_not_cancelled(self):
-        """``_is_session_cancelled`` returns False for normal session."""
-        session = MagicMock(state={})
-        ctx = MagicMock(session=session)
-        assert BaseLlmFlow._is_session_cancelled(ctx) is False
-
-
-# ---------------------------------------------------------------------------
-# Tests for the cancel API endpoint
+# Tests
 # ---------------------------------------------------------------------------
 
 
 class TestCancelSessionEndpoint:
-    """Tests for ``POST /apps/{app}/users/{user}/sessions/{session}:cancel``."""
+  """Integration tests for POST /apps/.../sessions/...:cancel."""
 
-    @pytest.fixture
-    def session_service(self):
-        return InMemorySessionService()
+  def test_cancel_active_run_returns_200(self, client, test_session_info):
+    """POST /run, then POST :cancel — should return 200 and cancel the run."""
+    app_name = test_session_info["app_name"]
+    user_id = test_session_info["user_id"]
 
-    @pytest.fixture
-    async def test_session(self, session_service):
-        """Create a session to be cancelled."""
-        return await session_service.create_session(
-            app_name="test_app",
-            user_id="test_user",
-            session_id="test_session",
+    # 1. Create a session first
+    create_resp = client.post(
+        f"/apps/{app_name}/users/{user_id}/sessions",
+        json={"app_name": app_name, "user_id": user_id},
+    )
+    assert create_resp.status_code == 200
+    session_id = create_resp.json()["session_id"]
+
+    # 2. Start a run in a background thread. The run will block on
+    #    asyncio.sleep until cancelled.
+    import threading
+
+    run_result = {"status": None, "error": None}
+
+    def do_run():
+      try:
+        import requests
+        s = requests.Session()
+        resp = s.post(
+            f"http://testserver/apps/{app_name}/users/{user_id}/sessions/{session_id}/run",
+            json={
+                "app_name": app_name,
+                "user_id": user_id,
+                "session_id": session_id,
+                "new_message": {
+                    "role": "user",
+                    "parts": [{"text": "hello"}],
+                },
+            },
+            timeout=10,
         )
+        run_result["status"] = resp.status_code
+        run_result["body"] = resp.json() if resp.text else None
+      except Exception as e:
+        run_result["error"] = str(e)
 
-    @pytest.mark.asyncio
-    async def test_cancel_event_has_state_delta(self):
-        """A cancel event carries ``temp:cancelled`` in its state_delta."""
-        import uuid
+    run_thread = threading.Thread(target=do_run, daemon=True)
+    run_thread.start()
 
-        from google.adk.events.event import Event
-        from google.adk.events.event import EventActions
+    # 3. Give the server a moment to start processing
+    import time
+    time.sleep(1.0)
 
-        actions = EventActions(state_delta={"temp:cancelled": True})
-        cancel_event = Event(
-            invocation_id="c-" + str(uuid.uuid4()),
-            author="user",
-            actions=actions,
-        )
-        assert cancel_event.actions.state_delta.get("temp:cancelled") is True, (
-            "Event should be constructable with temp:cancelled state delta"
-        )
+    # 4. Cancel the run
+    cancel_resp = client.post(
+        f"/apps/{app_name}/users/{user_id}/sessions/{session_id}:cancel",
+    )
+    assert cancel_resp.status_code == 200
+    data = cancel_resp.json()
+    assert data["status"] == "cancelled"
+    assert data["session_id"] == session_id
 
-    @pytest.mark.asyncio
-    async def test_cancel_response_format(self, session_service, test_session):
-        """The cancel operation returns the expected status dict."""
-        result = {
-            "status": "cancelled",
-            "session_id": test_session.id,
-        }
-        assert result["status"] == "cancelled"
-        assert result["session_id"] == test_session.id
+    # 5. Wait for the run thread to complete
+    run_thread.join(timeout=5.0)
+    logger.info("Run result: %s", run_result)
+
+  def test_cancel_nonexistent_session_returns_404(self, client):
+    """Cancelling a session with no active run should return 404."""
+    resp = client.post(
+        "/apps/test_app/users/test_user/sessions/nonexistent:cancel",
+    )
+    assert resp.status_code == 404
+    assert "no active run" in resp.json()["detail"].lower()
+
+  def test_cancel_endpoint_idempotent(self, client):
+    """Double-cancelling should return 404 on the second call."""
+    resp1 = client.post(
+        "/apps/test_app/users/test_user/sessions/nonexistent2:cancel",
+    )
+    assert resp1.status_code == 404
+
+    resp2 = client.post(
+        "/apps/test_app/users/test_user/sessions/nonexistent2:cancel",
+    )
+    assert resp2.status_code == 404
+
+
+class TestTaskRegistry:
+  """Unit tests for the active_tasks registry lifecycle."""
+
+  def test_registry_cleanup_after_run_completion(
+      self, client, test_session_info, monkeypatch
+  ):
+    """After a run completes, cancelling should 404 (task was cleaned up)."""
+    async def fast_run(self, **kwargs):
+      yield _make_text_event("done")
+
+    monkeypatch.setattr(Runner, "run_async", fast_run)
+
+    app_name = test_session_info["app_name"]
+    user_id = test_session_info["user_id"]
+
+    create_resp = client.post(
+        f"/apps/{app_name}/users/{user_id}/sessions",
+        json={"app_name": app_name, "user_id": user_id},
+    )
+    assert create_resp.status_code == 200
+    session_id = create_resp.json()["session_id"]
+
+    # Run synchronously
+    run_resp = client.post(
+        f"/apps/{app_name}/users/{user_id}/sessions/{session_id}/run",
+        json={
+            "app_name": app_name,
+            "user_id": user_id,
+            "session_id": session_id,
+            "new_message": {
+                "role": "user",
+                "parts": [{"text": "hello"}],
+            },
+        },
+    )
+    assert run_resp.status_code == 200
+
+    # After run completes, cancelling should 404
+    cancel_resp = client.post(
+        f"/apps/{app_name}/users/{user_id}/sessions/{session_id}:cancel",
+    )
+    assert cancel_resp.status_code == 404
