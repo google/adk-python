@@ -199,9 +199,9 @@ async def test_trace_call_llm(monkeypatch, mock_span_fixture):
       mock.call('gen_ai.request.max_tokens', 1024),
       mock.call('gcp.vertex.agent.llm_response', mock.ANY),
       mock.call('gen_ai.usage.input_tokens', 50),
-      mock.call('gen_ai.usage.output_tokens', 50),
+      mock.call('gen_ai.usage.output_tokens', 60),
       mock.call('gen_ai.usage.experimental.reasoning_tokens_limit', 10),
-      mock.call('gen_ai.usage.experimental.reasoning_tokens', 10),
+      mock.call('gen_ai.usage.reasoning.output_tokens', 10),
       mock.call('gen_ai.response.finish_reasons', ['stop']),
   ]
   if hasattr(llm_response.usage_metadata, 'system_instruction_tokens'):
