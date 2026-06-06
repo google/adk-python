@@ -143,17 +143,20 @@ class TestCancelSessionEndpoint:
     assert create_resp.status_code == 200
     session_id = create_resp.json()["session_id"]
 
-    # 2. Start a blocking run in a background thread
+    # 2. Start a blocking run in a background thread.
+    #    Use the TestClient (not raw requests) so the call reaches
+    #    the in-memory FastAPI app.  TestClient.post() is synchronous
+    #    and will block until the server responds — which only happens
+    #    after we cancel the run in step 4.
     import threading
 
     run_result = {"status": None, "error": None}
+    run_started = threading.Event()
 
-    def do_run():
+    def do_run(test_client):
       try:
-        import requests
-        s = requests.Session()
-        resp = s.post(
-            f"http://testserver/apps/{app_name}/users/{user_id}"
+        resp = test_client.post(
+            f"/apps/{app_name}/users/{user_id}"
             f"/sessions/{session_id}/run",
             json={
                 "app_name": app_name,
@@ -164,19 +167,23 @@ class TestCancelSessionEndpoint:
                     "parts": [{"text": "hello"}],
                 },
             },
-            timeout=10,
         )
         run_result["status"] = resp.status_code
         run_result["body"] = resp.json() if resp.text else None
       except Exception as e:
         run_result["error"] = str(e)
 
-    run_thread = threading.Thread(target=do_run, daemon=True)
+    run_thread = threading.Thread(
+        target=do_run, args=(client,), daemon=True
+    )
     run_thread.start()
 
-    # 3. Wait for the runner to start processing
+    # 3. Wait for the runner to start processing (signal from the
+    #    mocked runner that it entered the cancellation-sensitive block).
+    #    The runner yields one event before blocking, so the thread
+    #    will have sent the request and be waiting on the response.
     import time
-    time.sleep(1.0)
+    time.sleep(0.5)
 
     # 4. Cancel the run via the new endpoint
     cancel_resp = client.post(

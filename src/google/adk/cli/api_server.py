@@ -1603,6 +1603,8 @@ class ApiServer:
               )
               yield f"data: {sse_event}\n\n"
         finally:
+          if not producer_task.done():
+            producer_task.cancel()
           self.active_tasks.pop(req.session_id, None)
 
       return StreamingResponse(
