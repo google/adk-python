@@ -487,8 +487,8 @@ def set_operation_details_attributes_from_response(
     tool_tokens = usage_metadata.tool_use_prompt_token_count
     if prompt_tokens is not None or tool_tokens is not None:
       operation_details_common_attributes[GEN_AI_USAGE_INPUT_TOKENS] = (
-          (prompt_tokens or 0) + (tool_tokens or 0)
-      )
+          prompt_tokens or 0
+      ) + (tool_tokens or 0)
     if (
         usage_metadata.candidates_token_count is not None
         or usage_metadata.thoughts_token_count is not None

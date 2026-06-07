@@ -32,8 +32,10 @@ from unittest import mock
 import click
 from click.testing import CliRunner
 import pytest
+
 import src.google.adk.cli.cli_deploy as cli_deploy
 import src.google.adk.cli.cli_tools_click as cli_tools_click
+
 
 # Helpers
 class _Recorder:

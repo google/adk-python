@@ -1667,4 +1667,3 @@ async def test_receive_grounding_metadata_default_non_gemini_3_1(
 
   assert responses[2].turn_complete is True
   assert responses[2].grounding_metadata is None
-

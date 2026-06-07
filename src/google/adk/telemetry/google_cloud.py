@@ -41,23 +41,23 @@ from .setup import OTelHooks
 if TYPE_CHECKING:
   from google.auth.credentials import Credentials
 
-logger = logging.getLogger('google_adk.' + __name__)
+logger = logging.getLogger("google_adk." + __name__)
 
-_GCP_LOG_NAME_ENV_VARIABLE_NAME = 'GOOGLE_CLOUD_DEFAULT_LOG_NAME'
-_DEFAULT_LOG_NAME = 'adk-otel'
+_GCP_LOG_NAME_ENV_VARIABLE_NAME = "GOOGLE_CLOUD_DEFAULT_LOG_NAME"
+_DEFAULT_LOG_NAME = "adk-otel"
 
-_DEFAULT_TELEMETRY_TRACES_ENPOINT = 'https://telemetry.googleapis.com/v1/traces'
+_DEFAULT_TELEMETRY_TRACES_ENPOINT = "https://telemetry.googleapis.com/v1/traces"
 _DEFAULT_MTLS_TELEMETRY_TRACES_ENPOINT = (
-    'https://telemetry.mtls.googleapis.com/v1/traces'
+    "https://telemetry.mtls.googleapis.com/v1/traces"
 )
 
 
 class _MtlsEndpoint(enum.Enum):
   """The mTLS endpoint setting."""
 
-  AUTO = 'auto'
-  ALWAYS = 'always'
-  NEVER = 'never'
+  AUTO = "auto"
+  ALWAYS = "always"
+  NEVER = "never"
 
 
 def get_gcp_exporters(
@@ -271,8 +271,8 @@ def get_gcp_resource(project_id: Optional[str] = None) -> Resource:
     )
   except ImportError:
     logger.warning(
-        'Cloud not import opentelemetry.resourcedetector.gcp_resource_detector'
-        ' GCE, GKE or CloudRun related resource attributes may be missing'
+        "Cloud not import opentelemetry.resourcedetector.gcp_resource_detector"
+        " GCE, GKE or CloudRun related resource attributes may be missing"
     )
   return resource
 
@@ -290,15 +290,15 @@ def _get_api_endpoint(
       str: The API endpoint to be used.
   """
   use_mtls_endpoint_str = os.getenv(
-      'GOOGLE_API_USE_MTLS_ENDPOINT', _MtlsEndpoint.AUTO.value
+      "GOOGLE_API_USE_MTLS_ENDPOINT", _MtlsEndpoint.AUTO.value
   ).lower()
 
   try:
     use_mtls_endpoint = _MtlsEndpoint(use_mtls_endpoint_str)
   except ValueError:
     logger.warning(
-        'Environment variable `GOOGLE_API_USE_MTLS_ENDPOINT` must be one of '
-        '%s. Defaulting to %s.',
+        "Environment variable `GOOGLE_API_USE_MTLS_ENDPOINT` must be one of "
+        "%s. Defaulting to %s.",
         [e.value for e in _MtlsEndpoint],
         _MtlsEndpoint.AUTO.value,
     )
@@ -326,14 +326,14 @@ def _use_client_cert_effective() -> bool:
     return bool(mtls.should_use_client_cert())
   except (ImportError, AttributeError):
     use_client_cert_str = os.getenv(
-        'GOOGLE_API_USE_CLIENT_CERTIFICATE', 'false'
+        "GOOGLE_API_USE_CLIENT_CERTIFICATE", "false"
     ).lower()
-    if use_client_cert_str not in ('true', 'false'):
+    if use_client_cert_str not in ("true", "false"):
       logger.warning(
-          'Environment variable `GOOGLE_API_USE_CLIENT_CERTIFICATE` must be'
-          ' either `true` or `false`'
+          "Environment variable `GOOGLE_API_USE_CLIENT_CERTIFICATE` must be"
+          " either `true` or `false`"
       )
-    return use_client_cert_str == 'true'
+    return use_client_cert_str == "true"
 
 
 def _get_agent_engine_logs_exporter(
