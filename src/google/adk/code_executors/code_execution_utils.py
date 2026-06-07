@@ -144,6 +144,8 @@ class CodeExecutionUtils:
 
     first_text_part = copy.deepcopy(text_parts[0])
     response_text = '\n'.join([p.text for p in text_parts])
+    if not any(d[0] in response_text for d in code_block_delimiters):
+      return
 
     # Find the first code block.
     leading_delimiter_pattern = '|'.join(d[0] for d in code_block_delimiters)
