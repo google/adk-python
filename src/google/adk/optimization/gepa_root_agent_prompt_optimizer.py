@@ -147,7 +147,7 @@ def _create_agent_gepa_adapter_class():
       trajectories = []
 
       for example_id in batch:
-        score = result.scores[example_id]
+        score = result.scores.get(example_id, 0.0)
         scores.append(score)
 
         eval_data = result.data.get(example_id, {}) if result.data else {}
