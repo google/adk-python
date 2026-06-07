@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+import ast
 import base64
 import binascii
 import copy
@@ -98,6 +99,7 @@ _NEW_LINE = "\n"
 _EXCLUDED_PART_FIELD = {"inline_data": {"data"}}
 _LITELLM_STRUCTURED_TYPES = {"json_object", "json_schema"}
 _JSON_DECODER = json.JSONDecoder()
+_UNQUOTED_KEY_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 
 # Mapping of major MIME type prefixes to LiteLLM content types for URL blocks.
 # Audio is handled separately as `input_audio` content blocks because LiteLLM
@@ -121,6 +123,100 @@ _FINISH_REASON_MAPPING = {
     "function_call": types.FinishReason.STOP,  # Legacy function call variant
     "content_filter": types.FinishReason.SAFETY,
 }
+
+
+def _quote_unquoted_json_object_keys(value: str) -> str:
+  """Quotes simple unquoted object keys without touching string contents."""
+  result = []
+  i = 0
+  in_string = False
+  string_quote = ""
+  escaped = False
+
+  while i < len(value):
+    char = value[i]
+    if in_string:
+      result.append(char)
+      if escaped:
+        escaped = False
+      elif char == "\\":
+        escaped = True
+      elif char == string_quote:
+        in_string = False
+        string_quote = ""
+      i += 1
+      continue
+
+    if char in {'"', "'"}:
+      in_string = True
+      string_quote = char
+      result.append(char)
+      i += 1
+      continue
+
+    if char in "{,":
+      result.append(char)
+      i += 1
+      whitespace_start = i
+      while i < len(value) and value[i].isspace():
+        i += 1
+      result.append(value[whitespace_start:i])
+
+      key_match = _UNQUOTED_KEY_RE.match(value, i)
+      if key_match:
+        key_end = key_match.end()
+        colon_index = key_end
+        while colon_index < len(value) and value[colon_index].isspace():
+          colon_index += 1
+        if colon_index < len(value) and value[colon_index] == ":":
+          result.append(f'"{key_match.group(0)}"')
+          result.append(value[key_end:colon_index])
+          i = colon_index
+          continue
+      continue
+
+    result.append(char)
+    i += 1
+
+  return "".join(result)
+
+
+def _parse_tool_call_arguments(arguments: Any) -> Any:
+  """Parses LiteLLM tool call arguments.
+
+  LiteLLM normally returns OpenAI-compatible tool call arguments as JSON
+  strings, but some providers can stream a complete tool call whose finalized
+  argument payload is a Python dict literal or has unquoted object keys. Keep
+  strict JSON as the primary path, then repair only those complete
+  object-literal shapes so ADK can still surface the intended function call.
+  """
+  if not arguments:
+    return {}
+  if not isinstance(arguments, str):
+    return arguments
+
+  try:
+    return json.loads(arguments)
+  except json.JSONDecodeError as exc:
+    json_error = exc
+
+  try:
+    return ast.literal_eval(arguments)
+  except (SyntaxError, ValueError):
+    pass
+
+  repaired_arguments = _quote_unquoted_json_object_keys(arguments)
+  if repaired_arguments != arguments:
+    try:
+      return json.loads(repaired_arguments)
+    except json.JSONDecodeError:
+      try:
+        return ast.literal_eval(repaired_arguments)
+      except (SyntaxError, ValueError):
+        pass
+
+  raise json_error
+
 
 # File MIME types supported for upload as file content (not decoded as text).
 # Note: text/* types are handled separately and decoded as text content.
@@ -1727,7 +1823,7 @@ def _message_to_generate_content_response(
         thought_signature = _extract_thought_signature_from_tool_call(tool_call)
         part = types.Part.from_function_call(
             name=tool_call.function.name,
-            args=json.loads(tool_call.function.arguments or "{}"),
+            args=_parse_tool_call_arguments(tool_call.function.arguments),
         )
         part.function_call.id = tool_call.id
         if thought_signature:
@@ -2281,7 +2377,7 @@ class LiteLlm(BaseLlm):
           if func_data["id"]:
             if finish_reason == "length":
               try:
-                json.loads(func_data["args"] or "{}")
+                _parse_tool_call_arguments(func_data["args"])
               except json.JSONDecodeError:
                 has_incomplete_tool_call_args = True
                 continue
