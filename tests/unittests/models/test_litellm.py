@@ -2910,7 +2910,7 @@ async def test_get_content_file_uri(file_uri, mime_type):
         ("azure", "azure/gpt-4"),
     ],
 )
-async def test_get_content_file_uri_file_id_required_falls_back_to_text(
+async def test_get_content_file_uri_file_id_required_raises_error(
     provider, model
 ):
   parts = [
@@ -2922,10 +2922,11 @@ async def test_get_content_file_uri_file_id_required_falls_back_to_text(
           )
       )
   ]
-  content = await _get_content(parts, provider=provider, model=model)
-  assert content == [
-      {"type": "text", "text": '[File reference: "document.pdf"]'}
-  ]
+  with pytest.raises(
+      ValueError,
+      match=f"File URI `document.pdf` not supported for provider: {provider}",
+  ):
+    _ = await _get_content(parts, provider=provider, model=model)
 
 
 @pytest.mark.asyncio
@@ -3016,23 +3017,23 @@ async def test_get_content_file_uri_azure_preserves_assistant_file_id():
         ("azure", "azure/gpt-4"),
     ],
 )
-async def test_get_content_file_uri_http_pdf_file_id_required_falls_back_to_text(
+async def test_get_content_file_uri_http_pdf_file_id_required_raises_error(
     provider, model
 ):
-  file_uri = "https://example.com/document.pdf"
   parts = [
       types.Part(
           file_data=types.FileData(
-              file_uri=file_uri,
+              file_uri="https://example.com/document.pdf",
               mime_type="application/pdf",
               display_name="document.pdf",
           )
       )
   ]
-  content = await _get_content(parts, provider=provider, model=model)
-  assert content == [
-      {"type": "text", "text": '[File reference: "document.pdf"]'}
-  ]
+  with pytest.raises(
+      ValueError,
+      match=f"File URI `document.pdf` not supported for provider: {provider}",
+  ):
+    _ = await _get_content(parts, provider=provider, model=model)
 
 
 @pytest.mark.asyncio
@@ -3056,7 +3057,7 @@ async def test_get_content_file_uri_http_pdf_non_file_id_provider_uses_file():
 
 
 @pytest.mark.asyncio
-async def test_get_content_file_uri_anthropic_falls_back_to_text():
+async def test_get_content_file_uri_anthropic_raises_error():
   parts = [
       types.Part(
           file_data=types.FileData(
@@ -3066,27 +3067,29 @@ async def test_get_content_file_uri_anthropic_falls_back_to_text():
           )
       )
   ]
-  content = await _get_content(
-      parts, provider="anthropic", model="anthropic/claude-3-5"
-  )
-  assert content == [
-      {"type": "text", "text": '[File reference: "document.pdf"]'}
-  ]
+  with pytest.raises(
+      ValueError,
+      match="File URI `document.pdf` not supported for provider: anthropic",
+  ):
+    _ = await _get_content(
+        parts, provider="anthropic", model="anthropic/claude-3-5"
+    )
 
 
 @pytest.mark.asyncio
-async def test_get_content_file_uri_anthropic_openai_file_id_falls_back_to_text():
+async def test_get_content_file_uri_anthropic_openai_file_id_raises_error():
   parts = [types.Part(file_data=types.FileData(file_uri="file-abc123"))]
-  content = await _get_content(
-      parts, provider="anthropic", model="anthropic/claude-3-5"
-  )
-  assert content == [
-      {"type": "text", "text": '[File reference: "file-abc123"]'}
-  ]
+  with pytest.raises(
+      ValueError,
+      match="File URI `file-<redacted>` not supported for provider: anthropic",
+  ):
+    _ = await _get_content(
+        parts, provider="anthropic", model="anthropic/claude-3-5"
+    )
 
 
 @pytest.mark.asyncio
-async def test_get_content_file_uri_vertex_ai_non_gemini_falls_back_to_text():
+async def test_get_content_file_uri_vertex_ai_non_gemini_raises_error():
   parts = [
       types.Part(
           file_data=types.FileData(
@@ -3096,12 +3099,13 @@ async def test_get_content_file_uri_vertex_ai_non_gemini_falls_back_to_text():
           )
       )
   ]
-  content = await _get_content(
-      parts, provider="vertex_ai", model="vertex_ai/claude-3-5"
-  )
-  assert content == [
-      {"type": "text", "text": '[File reference: "document.pdf"]'}
-  ]
+  with pytest.raises(
+      ValueError,
+      match="File URI `document.pdf` not supported for provider: vertex_ai",
+  ):
+    _ = await _get_content(
+        parts, provider="vertex_ai", model="vertex_ai/claude-3-5"
+    )
 
 
 @pytest.mark.asyncio
@@ -3265,21 +3269,22 @@ async def test_get_content_audio_inline_data_emits_input_audio(
         ("azure", "azure/gpt-4"),
     ],
 )
-async def test_get_content_audio_file_uri_http_falls_back_to_text(
-    provider, model
-):
-  """Audio HTTP file_uri falls back to a text reference for openai/azure."""
+async def test_get_content_audio_file_uri_http_raises_error(provider, model):
+  """Audio HTTP file_uri raises an error for openai/azure."""
   file_uri = "https://example.com/audio.mp3"
   parts = [
       types.Part(
           file_data=types.FileData(file_uri=file_uri, mime_type="audio/mpeg")
       )
   ]
-  content = await _get_content(parts, provider=provider, model=model)
-  assert content == [{
-      "type": "text",
-      "text": f'[File reference: "{file_uri}"]',
-  }]
+  with pytest.raises(
+      ValueError,
+      match=(
+          "File URI `https://<redacted>/audio.mp3` not supported for provider:"
+          f" {provider}"
+      ),
+  ):
+    _ = await _get_content(parts, provider=provider, model=model)
 
 
 def test_to_litellm_role():
