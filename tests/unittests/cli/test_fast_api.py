@@ -22,6 +22,7 @@ import tempfile
 from typing import Any
 from typing import Optional
 from unittest.mock import AsyncMock
+from unittest.mock import call
 from unittest.mock import MagicMock
 from unittest.mock import patch
 
@@ -921,6 +922,67 @@ def test_app_with_a2a(
     )
 
     client = TestClient(app)
+    yield client
+
+
+@pytest.fixture
+def test_app_with_gemini_enterprise(
+    mock_session_service,
+    mock_artifact_service,
+    mock_memory_service,
+    mock_agent_loader,
+    mock_eval_sets_manager,
+    mock_eval_set_results_manager,
+    monkeypatch,
+):
+  """Create a TestClient with gemini_enterprise_app_name set."""
+  monkeypatch.setenv("GOOGLE_CLOUD_PROJECT", "test-project")
+  mock_agent_loader.list_agents = MagicMock(
+      return_value=["test_app", "gemini_app"]
+  )
+
+  mock_adk_app_instance = MagicMock()
+  mock_adk_app_instance._tmpl_attrs = {}
+
+  async def get_session_impl(**kwargs):
+    return {"result": "success", "kwargs": kwargs}
+
+  mock_adk_app_instance.get_session = get_session_impl
+
+  async def stream_query_impl(**kwargs):
+    yield {"chunk": 1, "kwargs": kwargs}
+    await asyncio.sleep(0)
+    yield {"chunk": 2, "kwargs": kwargs}
+
+  mock_adk_app_instance.stream_query = stream_query_impl
+
+  with (
+      patch("vertexai.init", new_callable=MagicMock) as mock_vertexai_init,
+      patch(
+          "vertexai.agent_engines.AdkApp", return_value=mock_adk_app_instance
+      ) as mock_adk_app_cls,
+      patch("google.adk.agents.Agent", new_callable=MagicMock),
+      patch(
+          "google.adk.telemetry._agent_engine.TopSpanProcessor",
+          new_callable=MagicMock,
+      ),
+      patch(
+          "google.adk.telemetry._agent_engine.get_propagated_context",
+          new_callable=MagicMock,
+      ),
+  ):
+    client = _create_test_client(
+        mock_session_service,
+        mock_artifact_service,
+        mock_memory_service,
+        mock_agent_loader,
+        mock_eval_sets_manager,
+        mock_eval_set_results_manager,
+        gemini_enterprise_app_name="gemini_app",
+    )
+    client.mock_vertexai_init = mock_vertexai_init
+    client.mock_adk_app_cls = mock_adk_app_cls
+    client.mock_adk_app_instance = mock_adk_app_instance
     yield client
 
 
@@ -3095,6 +3157,84 @@ def test_agent_run_disconnect_aborts_run(
   # Then the response status should be 499 and the running generator was cancelled
   assert response.status_code == 499
   assert was_cancelled["value"] is True
+
+
+#################################################
+# Gemini Enterprise Tests
+#################################################
+
+
+def test_gemini_app_not_found_raises(
+    mock_session_service,
+    mock_artifact_service,
+    mock_memory_service,
+    mock_agent_loader,
+    mock_eval_sets_manager,
+    mock_eval_set_results_manager,
+    monkeypatch,
+):
+  """Test get_fast_api_app raises ValueError if gemini_enterprise_app_name not found."""
+  monkeypatch.setenv("GOOGLE_CLOUD_PROJECT", "test-project")
+  mock_agent_loader.list_agents = MagicMock(return_value=["test_app"])
+  with pytest.raises(ValueError, match="not found in dir"):
+    _create_test_client(
+        mock_session_service,
+        mock_artifact_service,
+        mock_memory_service,
+        mock_agent_loader,
+        mock_eval_sets_manager,
+        mock_eval_set_results_manager,
+        gemini_enterprise_app_name="nonexistent_app",
+    )
+
+
+def test_gemini_reasoning_engine_success(test_app_with_gemini_enterprise):
+  """Test POST /api/reasoning_engine success case."""
+  response = test_app_with_gemini_enterprise.post(
+      "/api/reasoning_engine",
+      json={"class_method": "get_session", "input": {"arg1": 1}},
+  )
+  assert response.status_code == 200
+  assert response.json() == {
+      "output": {"result": "success", "kwargs": {"arg1": 1}}
+  }
+
+
+def test_gemini_reasoning_engine_missing_class_method(
+    test_app_with_gemini_enterprise,
+):
+  """Test POST /api/reasoning_engine with missing class_method."""
+  response = test_app_with_gemini_enterprise.post(
+      "/api/reasoning_engine",
+      json={"input": {"arg1": 1}},
+  )
+  assert response.status_code == 400
+
+
+def test_gemini_stream_reasoning_engine_success(
+    test_app_with_gemini_enterprise,
+):
+  """Test POST /api/stream_reasoning_engine success case."""
+  response = test_app_with_gemini_enterprise.post(
+      "/api/stream_reasoning_engine",
+      json={"class_method": "stream_query", "input": {"arg1": 1}},
+  )
+  assert response.status_code == 200
+  lines = response.text.strip().split("\n")
+  assert len(lines) == 2
+  assert json.loads(lines[0]) == {"chunk": 1, "kwargs": {"arg1": 1}}
+  assert json.loads(lines[1]) == {"chunk": 2, "kwargs": {"arg1": 1}}
+
+
+def test_gemini_stream_reasoning_engine_missing_class_method(
+    test_app_with_gemini_enterprise,
+):
+  """Test POST /api/stream_reasoning_engine with missing class_method."""
+  response = test_app_with_gemini_enterprise.post(
+      "/api/stream_reasoning_engine",
+      json={"input": {"arg1": 1}},
+  )
+  assert response.status_code == 400
 
 
 if __name__ == "__main__":
