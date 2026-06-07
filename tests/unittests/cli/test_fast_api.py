@@ -1957,6 +1957,85 @@ def test_a2a_agent_discovery(test_app_with_a2a):
   logger.info("A2A agent discovery test passed")
 
 
+def test_a2a_agent_json_registers_routes(
+    mock_session_service,
+    mock_artifact_service,
+    mock_memory_service,
+    mock_agent_loader,
+    mock_eval_sets_manager,
+    mock_eval_set_results_manager,
+    temp_agents_dir_with_a2a,
+    monkeypatch,
+):
+  """A2A setup should load agent.json before later optional integrations."""
+  with (
+      patch("signal.signal", return_value=None),
+      patch(
+          "google.adk.cli.fast_api.create_session_service_from_options",
+          return_value=mock_session_service,
+      ),
+      patch(
+          "google.adk.cli.fast_api.create_artifact_service_from_options",
+          return_value=mock_artifact_service,
+      ),
+      patch(
+          "google.adk.cli.fast_api.create_memory_service_from_options",
+          return_value=mock_memory_service,
+      ),
+      patch(
+          "google.adk.cli.fast_api.AgentLoader",
+          return_value=mock_agent_loader,
+      ),
+      patch(
+          "google.adk.cli.fast_api.LocalEvalSetsManager",
+          return_value=mock_eval_sets_manager,
+      ),
+      patch(
+          "google.adk.cli.fast_api.LocalEvalSetResultsManager",
+          return_value=mock_eval_set_results_manager,
+      ),
+      patch(
+          "google.adk.cli.fast_api._create_task_store_from_options",
+          return_value=MagicMock(),
+      ),
+      patch(
+          "google.adk.a2a.executor.a2a_agent_executor.A2aAgentExecutor"
+      ) as mock_executor,
+      patch(
+          "a2a.server.request_handlers.DefaultRequestHandler"
+      ) as mock_handler,
+      patch("a2a.types.AgentCard") as mock_agent_card,
+      patch("a2a.server.apps.A2AStarletteApplication") as mock_a2a_app,
+  ):
+    mock_executor.return_value = MagicMock()
+    mock_handler.return_value = MagicMock()
+    mock_agent_card.return_value = MagicMock()
+    mock_a2a_app_instance = MagicMock()
+    mock_a2a_app_instance.routes.return_value = []
+    mock_a2a_app.return_value = mock_a2a_app_instance
+
+    with monkeypatch.context() as m:
+      m.chdir(temp_agents_dir_with_a2a)
+      get_fast_api_app(
+          agents_dir=".",
+          web=True,
+          session_service_uri="",
+          artifact_service_uri="",
+          memory_service_uri="",
+          allow_origins=["*"],
+          a2a=True,
+          host="127.0.0.1",
+          port=8000,
+      )
+
+    mock_agent_card.assert_called_once()
+    mock_a2a_app.assert_called_once()
+    mock_a2a_app_instance.routes.assert_called_once_with(
+        rpc_url="/a2a/test_a2a_agent",
+        agent_card_url="/a2a/test_a2a_agent/.well-known/agent-card.json",
+    )
+
+
 def test_a2a_request_handler_uses_push_config_store(
     mock_session_service,
     mock_artifact_service,
