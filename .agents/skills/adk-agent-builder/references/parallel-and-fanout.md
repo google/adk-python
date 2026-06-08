@@ -3,22 +3,15 @@
 Execute multiple nodes concurrently and collect their results.
 
 ## 📋 Agent Verification Checklist (Parallel & Fan-Out)
-
 Use this checklist when implementing parallel patterns:
-
--   [ ] **JoinNode Serialization**: If LLM agents feed into a `JoinNode`, did
-    you set `output_schema` on them to prevent JSON serialization errors?
--   [ ] **ParallelWorker Usage**: Did you avoid using `parallel_worker=True` on
-    fan-out nodes? (It expects a list input)
--   [ ] **Multi-Trigger vs Join**: Do you understand that Multi-Trigger fires
-    downstream once per branch, while JoinNode waits and fires once with merged
-    dict?
+- [ ] **JoinNode Serialization**: If LLM agents feed into a `JoinNode`, did you set `output_schema` on them to prevent JSON serialization errors?
+- [ ] **ParallelWorker Usage**: Did you avoid using `parallel_worker=True` on fan-out nodes? (It expects a list input)
+- [ ] **Multi-Trigger vs Join**: Do you understand that Multi-Trigger fires downstream once per branch, while JoinNode waits and fires once with merged dict?
 
 ## 💡 Quick Reference
-
--   **Fan-Out (Tuple)**: `('START', (node_a, node_b))`
--   **Fan-In (JoinNode)**: `((node_a, node_b), join_node)`
--   **List Worker**: `@node(parallel_worker=True)` (Takes list, outputs list)
+- **Fan-Out (Tuple)**: `('START', (node_a, node_b))`
+- **Fan-In (JoinNode)**: `((node_a, node_b), join_node)`
+- **List Worker**: `@node(parallel_worker=True)` (Takes list, outputs list)
 
 ## Imports
 
@@ -91,17 +84,12 @@ def final_processor(node_input: dict) -> str:
 
 ### JoinNode Behavior
 
--   Waits for **all** predecessor nodes to complete
--   Emits intermediate events while still waiting (downstream not triggered
-    until all inputs received)
--   Only triggers downstream when all inputs are received
--   Stores partial inputs in workflow state
+- Waits for **all** predecessor nodes to complete
+- Emits intermediate events while still waiting (downstream not triggered until all inputs received)
+- Only triggers downstream when all inputs are received
+- Stores partial inputs in workflow state
 
-**Serialization warning:** JoinNode stores partial inputs in session state while
-waiting. If predecessors are LLM agents without `output_schema`, the stored
-values are `types.Content` objects which are **not JSON-serializable**. This
-causes `TypeError` with SQLite/database session services. Fix: use
-`output_schema` on LLM agents feeding into a JoinNode.
+**Serialization warning:** JoinNode stores partial inputs in session state while waiting. If predecessors are LLM agents without `output_schema`, the stored values are `types.Content` objects which are **not JSON-serializable**. This causes `TypeError` with SQLite/database session services. Fix: use `output_schema` on LLM agents feeding into a JoinNode.
 
 ## ParallelWorker: Process Lists in Parallel
 
@@ -128,12 +116,12 @@ agent = Workflow(
 
 ### ParallelWorker Details
 
--   Input: a **list** (or single item, which gets wrapped in a list)
--   Output: a **list** of results in the same order as inputs
--   Empty list input produces empty list output
--   Each item is processed by a dynamically created worker node
--   Workers are named `{parent_name}__{index}` (e.g., `process_item__0`)
--   Default `rerun_on_resume=True`
+- Input: a **list** (or single item, which gets wrapped in a list)
+- Output: a **list** of results in the same order as inputs
+- Empty list input produces empty list output
+- Each item is processed by a dynamically created worker node
+- Workers are named `{parent_name}__{index}` (e.g., `process_item__0`)
+- Default `rerun_on_resume=True`
 
 ### ParallelWorker with @node Decorator
 
@@ -173,15 +161,11 @@ Or wrap manually:
 parallel_analyzer = ParallelWorker(analyzer)
 ```
 
-**Do NOT use `parallel_worker=True` on fan-out nodes.** Fan-out edges `(a, (b,
-c, d))` already run nodes in parallel. Adding `parallel_worker=True` makes the
-node expect a list input and iterate over it — if it receives a single value or
-None, it produces no output and the JoinNode gets nothing.
+**Do NOT use `parallel_worker=True` on fan-out nodes.** Fan-out edges `(a, (b, c, d))` already run nodes in parallel. Adding `parallel_worker=True` makes the node expect a list input and iterate over it — if it receives a single value or None, it produces no output and the JoinNode gets nothing.
 
 ## Multi-Trigger (Fan-Out to Shared Downstream)
 
-Fan-out branches that all feed a single downstream node. The downstream node is
-triggered once per branch:
+Fan-out branches that all feed a single downstream node. The downstream node is triggered once per branch:
 
 ```python
 async def send_message(node_input: Any):
@@ -198,8 +182,7 @@ agent = Workflow(
 )
 ```
 
-This differs from JoinNode: here `send_message` fires 3 times (once per branch),
-while JoinNode waits for all branches and fires once with a merged dict.
+This differs from JoinNode: here `send_message` fires 3 times (once per branch), while JoinNode waits for all branches and fires once with a merged dict.
 
 ## Diamond Pattern
 

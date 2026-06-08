@@ -1,26 +1,17 @@
 # Advanced Workflow Patterns Reference
 
-Nested workflows, dynamic nodes, retry configuration, custom node types, and
-graph construction.
+Nested workflows, dynamic nodes, retry configuration, custom node types, and graph construction.
 
 ## 📋 Agent Verification Checklist (Advanced Patterns)
-
 Use this checklist when implementing complex workflows:
-
--   [ ] **Validation**: Does your graph follow all 7 validation rules? (e.g., no
-    unconditional cycles)
--   [ ] **Custom Nodes**: If creating a custom node, did you override
-    `get_name()` and `run()`?
--   [ ] **Dynamic Execution**: If using `run_node`, did you follow the rules in
-    the dedicated dynamic-nodes reference?
--   [ ] **Waiting State**: Did you use `wait_for_output=True` if the node should
-    stay in WAITING state until output is yielded?
+- [ ] **Validation**: Does your graph follow all 7 validation rules? (e.g., no unconditional cycles)
+- [ ] **Custom Nodes**: If creating a custom node, did you override `get_name()` and `run()`?
+- [ ] **Dynamic Execution**: If using `run_node`, did you follow the rules in the dedicated dynamic-nodes reference?
+- [ ] **Waiting State**: Did you use `wait_for_output=True` if the node should stay in WAITING state until output is yielded?
 
 ## 💡 Quick Reference
-
--   **Retry**: `RetryConfig(max_attempts=5, initial_delay=1.0)`
--   **Custom Node Fields**: `rerun_on_resume`, `wait_for_output`,
-    `retry_config`, `timeout`
+- **Retry**: `RetryConfig(max_attempts=5, initial_delay=1.0)`
+- **Custom Node Fields**: `rerun_on_resume`, `wait_for_output`, `retry_config`, `timeout`
 
 ## Nested Workflows
 
@@ -49,16 +40,13 @@ outer = Workflow(
 )
 ```
 
-The inner workflow receives the predecessor's output as its START input and its
-terminal output flows to the next node in the outer workflow.
+The inner workflow receives the predecessor's output as its START input and its terminal output flows to the next node in the outer workflow.
 
 ## Dynamic Node Scheduling
 
 Schedule nodes at runtime using `ctx.run_node()`.
 
-See the dedicated
-[Dynamic Node Scheduling Reference](file:///Users/deanchen/Desktop/adk-workflow/.agents/skills/adk-workflow/references/dynamic-nodes.md)
-for detailed rules, examples, and best practices.
+See the dedicated [Dynamic Node Scheduling Reference](file:///Users/deanchen/Desktop/adk-workflow/.agents/skills/adk-workflow/references/dynamic-nodes.md) for detailed rules, examples, and best practices.
 
 ## Retry Configuration
 
@@ -147,25 +135,18 @@ class BatchProcessorNode(BaseNode):
 
 ### BaseNode Fields
 
-| Field             | Default | Description                                 |
-| ----------------- | ------- | ------------------------------------------- |
-| `rerun_on_resume` | `False` | Whether to rerun after HITL interrupt       |
-| `wait_for_output` | `False` | Node stays in WAITING state until it yields |
-:                   :         : output (see below)                          :
-| `retry_config`    | `None`  | Retry configuration on failure              |
-| `timeout`         | `None`  | Max seconds for node to complete            |
+| Field | Default | Description |
+|-------|---------|-------------|
+| `rerun_on_resume` | `False` | Whether to rerun after HITL interrupt |
+| `wait_for_output` | `False` | Node stays in WAITING state until it yields output (see below) |
+| `retry_config` | `None` | Retry configuration on failure |
+| `timeout` | `None` | Max seconds for node to complete |
 
 ### wait_for_output
 
-When `wait_for_output=True`, a node that finishes without yielding an `Event`
-with output moves to **WAITING** state instead of COMPLETED. Downstream nodes
-are **not** triggered. The node can then be re-triggered by upstream
-predecessors.
+When `wait_for_output=True`, a node that finishes without yielding an `Event` with output moves to **WAITING** state instead of COMPLETED. Downstream nodes are **not** triggered. The node can then be re-triggered by upstream predecessors.
 
-This is how `JoinNode` works internally — it runs once per predecessor, storing
-partial inputs, and only yields output (triggering downstream) when all
-predecessors have completed. `LlmAgentWrapper` in `task` mode also sets
-`wait_for_output=True` automatically.
+This is how `JoinNode` works internally — it runs once per predecessor, storing partial inputs, and only yields output (triggering downstream) when all predecessors have completed. `LlmAgentWrapper` in `task` mode also sets `wait_for_output=True` automatically.
 
 ```python
 from google.adk.workflow import BaseNode
@@ -186,17 +167,16 @@ class CollectorNode(BaseNode):
 ```
 
 Nodes with `wait_for_output=True` default:
-
--   `JoinNode`: `True` (waits for all predecessors)
--   `LlmAgentWrapper` (task mode): `True` (set in `model_post_init`)
--   All other nodes: `False`
+- `JoinNode`: `True` (waits for all predecessors)
+- `LlmAgentWrapper` (task mode): `True` (set in `model_post_init`)
+- All other nodes: `False`
 
 ### Required Methods
 
-Method                                      | Description
-------------------------------------------- | ------------------------------
-`get_name() -> str`                         | Return the node name
-`run(*, ctx, node_input) -> AsyncGenerator` | Execute the node, yield events
+| Method | Description |
+|--------|-------------|
+| `get_name() -> str` | Return the node name |
+| `run(*, ctx, node_input) -> AsyncGenerator` | Execute the node, yield events |
 
 ## ToolNode
 
@@ -254,13 +234,13 @@ agent = Workflow(
 
 The workflow graph is validated on construction. These rules are enforced:
 
-1.  START node must exist
-2.  START node must not have incoming edges
-3.  All non-START nodes must be reachable (appear as `to_node` in some edge)
-4.  No duplicate node names
-5.  No duplicate edges
-6.  At most one `__DEFAULT__` route per node
-7.  No unconditional cycles (cycles must have at least one routed edge)
+1. START node must exist
+2. START node must not have incoming edges
+3. All non-START nodes must be reachable (appear as `to_node` in some edge)
+4. No duplicate node names
+5. No duplicate edges
+6. At most one `__DEFAULT__` route per node
+7. No unconditional cycles (cycles must have at least one routed edge)
 
 ## Edge Construction Patterns
 
@@ -305,19 +285,19 @@ agent = Workflow(name="my_workflow", graph=graph)
 
 ## Source File Locations
 
-Component           | File
-------------------- | -----------------------------------------------
-Workflow            | `src/google/adk/workflow/_workflow.py`
-WorkflowGraph, Edge | `src/google/adk/workflow/_workflow_graph.py`
-Context             | `src/google/adk/agents/context.py`
-FunctionNode        | `src/google/adk/workflow/_function_node.py`
-_LlmAgentWrapper    | `src/google/adk/workflow/_llm_agent_wrapper.py`
-AgentNode           | `src/google/adk/workflow/_agent_node.py`
-_ToolNode           | `src/google/adk/workflow/_tool_node.py`
-JoinNode            | `src/google/adk/workflow/_join_node.py`
-ParallelWorker      | `src/google/adk/workflow/_parallel_worker.py`
-BaseNode, START     | `src/google/adk/workflow/_base_node.py`
-@node decorator     | `src/google/adk/workflow/_node.py`
-RetryConfig         | `src/google/adk/workflow/_retry_config.py`
-Event               | `src/google/adk/events/event.py`
-RequestInput        | `src/google/adk/events/request_input.py`
+| Component | File |
+|-----------|------|
+| Workflow | `src/google/adk/workflow/_workflow.py` |
+| WorkflowGraph, Edge | `src/google/adk/workflow/_workflow_graph.py` |
+| Context | `src/google/adk/agents/context.py` |
+| FunctionNode | `src/google/adk/workflow/_function_node.py` |
+| _LlmAgentWrapper | `src/google/adk/workflow/_llm_agent_wrapper.py` |
+| AgentNode | `src/google/adk/workflow/_agent_node.py` |
+| _ToolNode | `src/google/adk/workflow/_tool_node.py` |
+| JoinNode | `src/google/adk/workflow/_join_node.py` |
+| ParallelWorker | `src/google/adk/workflow/_parallel_worker.py` |
+| BaseNode, START | `src/google/adk/workflow/_base_node.py` |
+| @node decorator | `src/google/adk/workflow/_node.py` |
+| RetryConfig | `src/google/adk/workflow/_retry_config.py` |
+| Event | `src/google/adk/events/event.py` |
+| RequestInput | `src/google/adk/events/request_input.py` |

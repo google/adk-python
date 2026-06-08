@@ -10,81 +10,75 @@ Set up the local development environment for ADK Python.
 
 Check the following before proceeding:
 
-1.  **Python 3.11+**
+1. **Python 3.11+**
 
-    ```bash
-    python3 --version
-    ```
+   ```bash
+   python3 --version
+   ```
 
-2.  **uv package manager** (required — do not use pip/venv directly)
-
-    ```bash
-    uv --version
-    ```
-
-    If not installed:
-
-    ```bash
-    curl -LsSf https://astral.sh/uv/install.sh | sh
-    ```
+2. **uv package manager** (required — do not use pip/venv directly)
+   ```bash
+   uv --version
+   ```
+   If not installed:
+   ```bash
+   curl -LsSf https://astral.sh/uv/install.sh | sh
+   ```
 
 ## Setup Steps
 
 Run these commands from the project root:
 
-1.  **Create and activate a virtual environment:**
+3. **Create and activate a virtual environment:**
 
-    ```bash
-    uv venv --python "python3.11" ".venv"
-    source .venv/bin/activate
-    ```
+   ```bash
+   uv venv --python "python3.11" ".venv"
+   source .venv/bin/activate
+   ```
 
-2.  **Install all dependencies for development:**
+4. **Install all dependencies for development:**
 
-    ```bash
-    uv sync --all-extras
-    ```
+   ```bash
+   uv sync --all-extras
+   ```
 
-3.  **Install development tools:**
+5. **Install development tools:**
 
-    ```bash
-    uv tool install pre-commit
-    uv tool install tox --with tox-uv
-    ```
+   ```bash
+   uv tool install pre-commit
+   uv tool install tox --with tox-uv
+   ```
 
-4.  **Install addlicense (requires Go):**
+6. **Install addlicense (requires Go):**
 
-    ```bash
-    go version && go install github.com/google/addlicense@latest
-    ```
+   ```bash
+   go version && go install github.com/google/addlicense@latest
+   ```
 
-    > [!NOTE] If Go is not installed, tell the user: "Go is required for the
-    > addlicense tool. Please install Go from https://go.dev/dl/ and then re-run
-    > the `adk-setup` skill to complete the setup."
+   > [!NOTE]
+   > If Go is not installed, tell the user:
+   > "Go is required for the addlicense tool. Please install Go from https://go.dev/dl/ and then re-run the `adk-setup` skill to complete the setup."
 
-5.  **Set up pre-commit hooks:**
+7. **Set up pre-commit hooks:**
 
-    ```bash
-    pre-commit install
-    ```
+   ```bash
+   pre-commit install
+   ```
 
-6.  **Verify everything works by running tests locally:**
-
-    ```bash
-    pytest tests/unittests -n auto
-    ```
+8. **Verify everything works by running tests locally:**
+   ```bash
+   pytest tests/unittests -n auto
+   ```
 
 ## Key Commands Reference
 
-| Task                        | Command                                   |
-| :-------------------------- | :---------------------------------------- |
-| Run unit tests (Fast)       | `pytest tests/unittests`                  |
-| Run tests across all Python | `tox`                                     |
-: versions                    :                                           :
-| Format codebase             | `pre-commit run --all-files`              |
-| Run tests in parallel       | `pytest tests/unittests -n auto`          |
-| Run specific test file      | `pytest                                   |
-:                             : tests/unittests/agents/test_llm_agent.py` :
-| Launch web UI               | `adk web path/to/agents_dir`              |
-| Run agent via CLI           | `adk run path/to/my_agent`                |
-| Build wheel                 | `uv build`                                |
+| Task                                 | Command                                           |
+| :----------------------------------- | :------------------------------------------------ |
+| Run unit tests (Fast)                | `pytest tests/unittests`                          |
+| Run tests across all Python versions | `tox`                                             |
+| Format codebase                      | `pre-commit run --all-files`                      |
+| Run tests in parallel                | `pytest tests/unittests -n auto`                  |
+| Run specific test file               | `pytest tests/unittests/agents/test_llm_agent.py` |
+| Launch web UI                        | `adk web path/to/agents_dir`                      |
+| Run agent via CLI                    | `adk run path/to/my_agent`                        |
+| Build wheel                          | `uv build`                                        |

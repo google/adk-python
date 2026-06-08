@@ -1,22 +1,16 @@
 # ADK Tool Catalog
 
 ## 📋 Agent Verification Checklist (Tools)
-
 Use this checklist when creating or binding tools:
-
--   [ ] **Python Functions**: Do they have both **type hints** and a
-    **docstring**? (Required for schema generation)
--   [ ] **Context Injection**: Is the special parameter named `tool_context` or
-    `ctx` used for accessing state?
--   [ ] **MCP Tools**: Did you verify that `pip install mcp` is run if using MCP
-    tools?
--   [ ] **Class Names**: Are you using `McpToolset` (the non-deprecated name)?
+- [ ] **Python Functions**: Do they have both **type hints** and a **docstring**? (Required for schema generation)
+- [ ] **Context Injection**: Is the special parameter named `tool_context` or `ctx` used for accessing state?
+- [ ] **MCP Tools**: Did you verify that `pip install mcp` is run if using MCP tools?
+- [ ] **Class Names**: Are you using `McpToolset` (the non-deprecated name)?
 
 ## 💡 Quick Reference (Built-in Tools)
-
--   **Google Search**: `from google.adk.tools import google_search`
--   **Load Artifacts**: `from google.adk.tools import load_artifacts`
--   **Agent Transfer**: `from google.adk.tools import transfer_to_agent`
+- **Google Search**: `from google.adk.tools import google_search`
+- **Load Artifacts**: `from google.adk.tools import load_artifacts`
+- **Agent Transfer**: `from google.adk.tools import transfer_to_agent`
 
 ## Python Function Tools (Most Common)
 
@@ -39,17 +33,14 @@ root_agent = Agent(tools=[get_weather], ...)
 ```
 
 **Rules:**
-
--   Type hints required (they generate the JSON schema)
--   Docstring required (becomes the tool description)
--   Both sync and async functions supported
--   Special parameter `tool_context: ToolContext` is auto-injected (not in
-    schema)
+- Type hints required (they generate the JSON schema)
+- Docstring required (becomes the tool description)
+- Both sync and async functions supported
+- Special parameter `tool_context: ToolContext` is auto-injected (not in schema)
 
 ## ToolContext
 
-`ToolContext` is a backward-compatible alias for `Context`. Both work
-identically.
+`ToolContext` is a backward-compatible alias for `Context`. Both work identically.
 
 ```python
 from google.adk.tools.tool_context import ToolContext
@@ -100,8 +91,7 @@ toolset = OpenAPIToolset(spec_str=open('openapi.yaml').read(), spec_str_type='ya
 root_agent = Agent(tools=[toolset], ...)
 ```
 
-Also: `from google.adk.tools.openapi_tool import RestApiTool` for individual
-endpoints.
+Also: `from google.adk.tools.openapi_tool import RestApiTool` for individual endpoints.
 
 ## Google API Tools
 
@@ -115,15 +105,15 @@ root_agent = Agent(tools=[bigquery], ...)
 
 ## Built-in Tools
 
-Tool                | Import
-------------------- | ------------------------------------------------
-`google_search`     | `from google.adk.tools import google_search`
-`load_artifacts`    | `from google.adk.tools import load_artifacts`
-`load_memory`       | `from google.adk.tools import load_memory`
-`exit_loop`         | `from google.adk.tools import exit_loop`
-`transfer_to_agent` | `from google.adk.tools import transfer_to_agent`
-`get_user_choice`   | `from google.adk.tools import get_user_choice`
-`url_context`       | `from google.adk.tools import url_context`
+| Tool | Import |
+|------|--------|
+| `google_search` | `from google.adk.tools import google_search` |
+| `load_artifacts` | `from google.adk.tools import load_artifacts` |
+| `load_memory` | `from google.adk.tools import load_memory` |
+| `exit_loop` | `from google.adk.tools import exit_loop` |
+| `transfer_to_agent` | `from google.adk.tools import transfer_to_agent` |
+| `get_user_choice` | `from google.adk.tools import get_user_choice` |
+| `url_context` | `from google.adk.tools import url_context` |
 
 ## LongRunningFunctionTool
 

@@ -3,28 +3,20 @@
 Pause workflow execution to request user input and resume with their response.
 
 ## 📋 Agent Verification Checklist (HITL)
-
 Use this checklist when implementing human-in-the-loop logic:
-
--   [ ] **Unique ID**: Is the `interrupt_id` unique per iteration in loops?
-    (Critical to prevent infinite loops)
--   [ ] **Resumability**: For multi-step HITL, did you export an `App` with
-    `is_resumable=True`?
--   [ ] **Resume Inputs**: If `rerun_on_resume=True` (default for LLM nodes),
-    does the node handle `ctx.resume_inputs`?
+- [ ] **Unique ID**: Is the `interrupt_id` unique per iteration in loops? (Critical to prevent infinite loops)
+- [ ] **Resumability**: For multi-step HITL, did you export an `App` with `is_resumable=True`?
+- [ ] **Resume Inputs**: If `rerun_on_resume=True` (default for LLM nodes), does the node handle `ctx.resume_inputs`?
 
 ## 💡 Quick Reference
-
--   **Request Input**: `yield RequestInput(message="Question",
-    response_schema=Schema)`
--   **Resumable Config**: `ResumabilityConfig(is_resumable=True)`
+- **Request Input**: `yield RequestInput(message="Question", response_schema=Schema)`
+- **Resumable Config**: `ResumabilityConfig(is_resumable=True)`
 
 HITL works in two modes:
 
 ### Resumable mode (recommended for multi-step HITL)
 
-Export an `App` with resumability. The workflow checkpoints state and resumes at
-the interrupted node:
+Export an `App` with resumability. The workflow checkpoints state and resumes at the interrupted node:
 
 ```python
 from google.adk.apps.app import App, ResumabilityConfig
@@ -36,15 +28,11 @@ app = App(
 )
 ```
 
-The agent loader checks for `app` before `root_agent`, so export both from
-`agent.py`.
+The agent loader checks for `app` before `root_agent`, so export both from `agent.py`.
 
 ### Non-resumable mode (simpler, no App needed)
 
-The workflow replays from START on each user response, reconstructing state from
-session events. No `App` or `ResumabilityConfig` needed — just define
-`root_agent`. This works for simple single-interrupt HITL but replays all nodes
-up to the interrupt point on each resume.
+The workflow replays from START on each user response, reconstructing state from session events. No `App` or `ResumabilityConfig` needed — just define `root_agent`. This works for simple single-interrupt HITL but replays all nodes up to the interrupt point on each resume.
 
 ## Imports
 
@@ -79,8 +67,7 @@ def evaluate_request(request: TimeOffRequest):
   )
 ```
 
-The workflow pauses and emits a function call event to the user. When the user
-responds, the workflow resumes.
+The workflow pauses and emits a function call event to the user. When the user responds, the workflow resumes.
 
 ## RequestInput Fields
 
@@ -99,20 +86,16 @@ RequestInput(
 )
 ```
 
-| Field             | Type           | Description                           |
-| ----------------- | -------------- | ------------------------------------- |
-| `interrupt_id`    | `str`          | Unique ID for this interrupt          |
-:                   :                : (auto-generated UUID)                 :
-| `message`         | `str`          | Message shown to the user             |
-| `payload`         | `Any`          | Custom payload sent with the request  |
-| `response_schema` | `type \| dict` | Expected response format (Pydantic    |
-:                   :                : BaseModel class, Python type, or JSON :
-:                   :                : schema dict)                          :
+| Field | Type | Description |
+|-------|------|-------------|
+| `interrupt_id` | `str` | Unique ID for this interrupt (auto-generated UUID) |
+| `message` | `str` | Message shown to the user |
+| `payload` | `Any` | Custom payload sent with the request |
+| `response_schema` | `type \| dict` | Expected response format (Pydantic BaseModel class, Python type, or JSON schema dict) |
 
 ## Resume Behavior: rerun_on_resume
 
-When a node is interrupted and the user responds, the `rerun_on_resume` flag
-controls what happens:
+When a node is interrupted and the user responds, the `rerun_on_resume` flag controls what happens:
 
 ### rerun_on_resume=False (default for FunctionNode)
 
@@ -130,8 +113,7 @@ approval_node = FunctionNode(ask_approval, rerun_on_resume=False)
 
 ### rerun_on_resume=True (default for LlmAgentWrapper)
 
-The node is re-executed with the user's response available in
-`ctx.resume_inputs`:
+The node is re-executed with the user's response available in `ctx.resume_inputs`:
 
 ```python
 async def interactive_node(ctx: Context, node_input: str):
@@ -202,10 +184,7 @@ async def multi_step_form(ctx: Context, node_input: str):
 
 ## HITL in Loops (Unique interrupt_id)
 
-When a HITL node can fire multiple times in a loop (e.g. reject → revise →
-re-approve), you **must use a unique `interrupt_id` per iteration**. Reusing the
-same ID causes event-based state reconstruction to confuse earlier responses
-with the current interrupt, resulting in an infinite restart loop.
+When a HITL node can fire multiple times in a loop (e.g. reject → revise → re-approve), you **must use a unique `interrupt_id` per iteration**. Reusing the same ID causes event-based state reconstruction to confuse earlier responses with the current interrupt, resulting in an infinite restart loop.
 
 ```python
 async def review(ctx: Context, node_input: Any):
@@ -231,11 +210,10 @@ async def review(ctx: Context, node_input: Any):
 ```
 
 Key points:
-
--   Store a counter in `ctx.state` and increment on each response
--   Use the counter in the `interrupt_id` (e.g. `review_0`, `review_1`, ...)
--   Look up `ctx.resume_inputs` with the same counter-based ID
--   This applies to both resumable and non-resumable modes
+- Store a counter in `ctx.state` and increment on each response
+- Use the counter in the `interrupt_id` (e.g. `review_0`, `review_1`, ...)
+- Look up `ctx.resume_inputs` with the same counter-based ID
+- This applies to both resumable and non-resumable modes
 
 ## Resumability Configuration
 
@@ -255,24 +233,18 @@ app = App(
 ```
 
 When `is_resumable=True`:
-
--   Workflow state is checkpointed in session's `agent_states` map
--   On resume, the workflow loads checkpointed state and resumes at the
-    interrupted node
--   Required for multi-step HITL, `LongRunningFunctionTool`, and complex
-    workflows
+- Workflow state is checkpointed in session's `agent_states` map
+- On resume, the workflow loads checkpointed state and resumes at the interrupted node
+- Required for multi-step HITL, `LongRunningFunctionTool`, and complex workflows
 
 ### Non-resumable mode (simpler)
 
 When `is_resumable=False` (default) or no `App` is exported:
-
--   No state checkpointing — the workflow replays from START on each user
-    response
--   State is reconstructed from session events during replay
--   Completed nodes are skipped; execution resumes at the interrupted node
--   Works for simple single-interrupt HITL without needing `App` or
-    `ResumabilityConfig`
--   For multi-step HITL or complex workflows, use resumable mode instead
+- No state checkpointing — the workflow replays from START on each user response
+- State is reconstructed from session events during replay
+- Completed nodes are skipped; execution resumes at the interrupted node
+- Works for simple single-interrupt HITL without needing `App` or `ResumabilityConfig`
+- For multi-step HITL or complex workflows, use resumable mode instead
 
 ## Responding to HITL Requests
 

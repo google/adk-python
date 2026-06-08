@@ -2,12 +2,9 @@
 
 ## Core Principles
 
--   **Test through the public interface** — call what users call, assert what
-    users see.
--   **Test behavior, not implementation** — verify outcomes (outputs, side
-    effects, errors), not internal mechanics.
--   **Refactor-proof** — if an internal refactor preserves the same behavior,
-    all tests should still pass.
+- **Test through the public interface** — call what users call, assert what users see.
+- **Test behavior, not implementation** — verify outcomes (outputs, side effects, errors), not internal mechanics.
+- **Refactor-proof** — if an internal refactor preserves the same behavior, all tests should still pass.
 
 ## Rules
 
@@ -27,9 +24,9 @@ def test_dict_getitem_raises():
 
 ### 2. Docstring: one-line summary, then setup/act/assert
 
-The first line describes the expected behavior from the caller's perspective.
-For complex tests (multi-step, multi-invocation), follow with a structured
-breakdown of Setup, Act, and Assert.
+The first line describes the expected behavior from the caller's
+perspective. For complex tests (multi-step, multi-invocation),
+follow with a structured breakdown of Setup, Act, and Assert.
 
 ```python
 # Good — simple test, one-liner is enough
@@ -56,8 +53,8 @@ Assert:
 
 ### 3. Each test covers one behavior
 
-If a test checks multiple unrelated behaviors, split it. If you can't describe
-the test in one sentence, it's testing too much.
+If a test checks multiple unrelated behaviors, split it. If you can't
+describe the test in one sentence, it's testing too much.
 
 ```python
 # Bad — tests capacity AND eviction AND default in one test
@@ -91,12 +88,12 @@ assert router.route('/api') == handler
 
 ### 5. Use real components, mock only boundaries
 
-ADK tests should use real implementations as much as possible instead of
-mocking.
+ADK tests should use real implementations as much as possible
+instead of mocking.
 
--   Mock external dependencies: LLM APIs, cloud services, session stores
--   Use real ADK components: BaseNode subclasses, Event, Context
--   Mock InvocationContext when testing NodeRunner (it's a boundary)
+- Mock external dependencies: LLM APIs, cloud services, session stores
+- Use real ADK components: BaseNode subclasses, Event, Context
+- Mock InvocationContext when testing NodeRunner (it's a boundary)
 
 ### 6. Test fixtures should be minimal
 
@@ -117,10 +114,10 @@ def make_full_test_env():
 
 ### 7. Keep arrange logic close to the test
 
-When a helper class or fixture is used by only one test, define it inline inside
-the test function. This keeps the setup visible at the point of use and avoids
-scrolling to distant module-level definitions. Extract to module level only when
-3+ tests share the same helper.
+When a helper class or fixture is used by only one test, define it
+inline inside the test function. This keeps the setup visible at the
+point of use and avoids scrolling to distant module-level definitions.
+Extract to module level only when 3+ tests share the same helper.
 
 ```python
 # Good — helper defined inline, right next to the test
@@ -170,16 +167,17 @@ assert len(response.headers) > 0
 
 Every test has three distinct steps:
 
--   **Arrange** — set up the external state specific to the scenario. General
-    setup shared by many tests belongs in fixtures.
--   **Act** — call the system under test. Usually a single call.
--   **Assert** — verify return values or visible state changes. No further calls
-    to the system under test here.
+- **Arrange** — set up the external state specific to the scenario.
+  General setup shared by many tests belongs in fixtures.
+- **Act** — call the system under test. Usually a single call.
+- **Assert** — verify return values or visible state changes. No
+  further calls to the system under test here.
 
-Keep steps distinct. Separate with blank lines. In simple tests where each step
-is a single statement, blank lines can be omitted. In complex tests, use
-descriptive comments like "Given [situation]", "When [action]", "Then
-[expectation]" — avoid bare labels that add no information.
+Keep steps distinct. Separate with blank lines. In simple tests where
+each step is a single statement, blank lines can be omitted. In
+complex tests, use descriptive comments like "Given [situation]",
+"When [action]", "Then [expectation]" — avoid bare labels that add
+no information.
 
 ```python
 # Good — clear visual separation

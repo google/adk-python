@@ -5,15 +5,11 @@ description: Author new samples for the ADK Python repository. Use this skill wh
 
 # ADK Sample Creator
 
-This skill helps you create new samples for the ADK Python repository. You
-should search for subdirectories under `contributing` (such as
-`new_workflow_samples`, `workflow_samples`, etc.) and confirm with the user
-which folder they want to use before creating the sample.
+This skill helps you create new samples for the ADK Python repository. You should search for subdirectories under `contributing` (such as `new_workflow_samples`, `workflow_samples`, etc.) and confirm with the user which folder they want to use before creating the sample.
 
 > [!TIP]
 
-> Before creating samples, you can use the `adk-style` skill to learn about ADK
-> 2.0 architecture knowledge and best practices.
+> Before creating samples, you can use the `adk-style` skill to learn about ADK 2.0 architecture knowledge and best practices.
 
 A sample consists of:
 
@@ -29,13 +25,10 @@ Use snake_case for the folder name (e.g., `dynamic_nodes`, `fan_out_fan_in`).
 
 ### 2. `agent.py` Content
 
-The `agent.py` should focus on demonstrating a specific feature or agent
-pattern. Use absolute imports for testing convenience.
+The `agent.py` should focus on demonstrating a specific feature or agent pattern. Use absolute imports for testing convenience.
 
-> [!IMPORTANT] **Model Selection**: Do not set the `model` parameter explicitly
-> (e.g., `model="gemini-2.5-flash"`) on `Agent` instances in sample agents.
-> Instead, let them default to the system-configured model, unless a specific
-> model is explicitly requested by the user.
+> [!IMPORTANT]
+> **Model Selection**: Do not set the `model` parameter explicitly (e.g., `model="gemini-2.5-flash"`) on `Agent` instances in sample agents. Instead, let them default to the system-configured model, unless a specific model is explicitly requested by the user.
 
 Choose one of the following patterns:
 
@@ -94,14 +87,10 @@ root_agent = Agent(
 
 Each sample should have a `README.md` with the following structure:
 
--   **Overview**: What the sample does.
--   **Sample Inputs**: Examples of inputs to test with. Each prompt must be
-    wrapped in backticks. If a prompt has an explanation, always add a blank
-    line between the prompt and the explanation, and indent the explanation by
-    two spaces.
--   **Graph**: Visualization of the graph flow (Mermaid recommended for
-    workflows).
--   **How To**: Explanation of key techniques used (e.g., `ctx.run_node`).
+- **Overview**: What the sample does.
+- **Sample Inputs**: Examples of inputs to test with. Each prompt must be wrapped in backticks. If a prompt has an explanation, always add a blank line between the prompt and the explanation, and indent the explanation by two spaces.
+- **Graph**: Visualization of the graph flow (Mermaid recommended for workflows).
+- **How To**: Explanation of key techniques used (e.g., `ctx.run_node`).
 
 #### README Example Template:
 

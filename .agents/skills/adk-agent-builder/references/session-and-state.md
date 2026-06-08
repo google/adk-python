@@ -1,27 +1,21 @@
 # Session, Memory, and Artifact Patterns
 
 ## 📋 Agent Verification Checklist (Session & State)
-
 Use this checklist when managing state and artifacts:
-
--   [ ] **State Mutation**: Did you use `ctx.state['key'] = value` instead of
-    reassigning `state = {...}`?
--   [ ] **Instruction Placeholders**: Did you use `{var?}` for variables that
-    might not be in state yet?
--   [ ] **Key Collisions**: In parallel workflows, do state keys have unique
-    names or appropriate prefixes (e.g., `app:`) to prevent overwrites?
+- [ ] **State Mutation**: Did you use `ctx.state['key'] = value` instead of reassigning `state = {...}`?
+- [ ] **Instruction Placeholders**: Did you use `{var?}` for variables that might not be in state yet?
+- [ ] **Key Collisions**: In parallel workflows, do state keys have unique names or appropriate prefixes (e.g., `app:`) to prevent overwrites?
 
 ## 💡 Quick Reference (State Keys)
-
--   **Required**: `{key}` in instructions (raises error if missing).
--   **Optional**: `{key?}` in instructions (empty string if missing).
--   **App Scope**: `app:key` (Shared across agents).
--   **Agent Scope**: `key` (Default, scoped to current agent).
+- **Required**: `{key}` in instructions (raises error if missing).
+- **Optional**: `{key?}` in instructions (empty string if missing).
+- **App Scope**: `app:key` (Shared across agents).
+- **Agent Scope**: `key` (Default, scoped to current agent).
 
 ## Session State
 
-Session state is a dict that persists across turns within a session. Access via
-`tool_context.state` or instruction placeholders:
+Session state is a dict that persists across turns within a session.
+Access via `tool_context.state` or instruction placeholders:
 
 ```python
 # In instruction (template variable substitution)
@@ -37,20 +31,19 @@ def before_agent(callback_context):
 ```
 
 **State key conventions:**
-
--   `app:key` -- app-level state (shared across agents)
--   `key` -- agent-level state (scoped to current agent)
--   `_key` -- convention for internal/framework state
--   `{key?}` in instruction -- optional placeholder (empty if missing)
--   `{key}` in instruction -- required placeholder (error if missing)
+- `app:key` -- app-level state (shared across agents)
+- `key` -- agent-level state (scoped to current agent)
+- `_key` -- convention for internal/framework state
+- `{key?}` in instruction -- optional placeholder (empty if missing)
+- `{key}` in instruction -- required placeholder (error if missing)
 
 ## Session Services
 
-Service                  | Use Case
------------------------- | -------------------------------
-`InMemorySessionService` | Local dev, testing (default)
-`DatabaseSessionService` | Production (SQLite, PostgreSQL)
-`VertexAiSessionService` | Vertex AI Agent Engine
+| Service | Use Case |
+|---------|----------|
+| `InMemorySessionService` | Local dev, testing (default) |
+| `DatabaseSessionService` | Production (SQLite, PostgreSQL) |
+| `VertexAiSessionService` | Vertex AI Agent Engine |
 
 ```python
 from google.adk import Runner
@@ -96,12 +89,13 @@ runner = Runner(
 )
 ```
 
-Use `load_memory` and `preload_memory` tools to access memory from within
-agents.
+Use `load_memory` and `preload_memory` tools to access memory from
+within agents.
 
 ## Common Pitfalls
 
--   **State not persisting:** Assigning to `state` instead of mutating. Use
-    `tool_context.state['key'] = value` (not `state = {'key': value}`).
--   **State overwritten by parallel tools:** Multiple tools modifying same key
-    concurrently. Use unique keys per tool, or `app:` prefix for shared state.
+- **State not persisting:** Assigning to `state` instead of mutating.
+  Use `tool_context.state['key'] = value` (not `state = {'key': value}`).
+- **State overwritten by parallel tools:** Multiple tools modifying same
+  key concurrently. Use unique keys per tool, or `app:` prefix for shared
+  state.

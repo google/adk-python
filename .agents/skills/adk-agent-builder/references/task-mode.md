@@ -3,37 +3,25 @@
 Delegate structured tasks to sub-agents with typed input/output schemas.
 
 ## 📋 Agent Verification Checklist (Task Mode)
-
 Use this checklist to verify your Task Mode configuration:
-
--   [ ] **Mode Setting**: Did you explicitly set `mode='task'` or
-    `mode='single_turn'` on the sub-agent?
--   [ ] **Description**: Does the sub-agent have a clear `description`? (Crucial
-    for the auto-generated tool's description)
--   [ ] **Schemas**: Are `input_schema` and `output_schema` defined as Pydantic
-    models? (If not, defaults are used)
--   [ ] **Completion**: Does the sub-agent know it must call `finish_task` to
-    return results to the coordinator?
+- [ ] **Mode Setting**: Did you explicitly set `mode='task'` or `mode='single_turn'` on the sub-agent?
+- [ ] **Description**: Does the sub-agent have a clear `description`? (Crucial for the auto-generated tool's description)
+- [ ] **Schemas**: Are `input_schema` and `output_schema` defined as Pydantic models? (If not, defaults are used)
+- [ ] **Completion**: Does the sub-agent know it must call `finish_task` to return results to the coordinator?
 
 ## 💡 Quick Reference (Generated Tools)
-
--   **`request_task_{agent_name}`**: Generated on the **coordinator** to
-    delegate tasks.
--   **`finish_task`**: Generated on the **sub-agent** to return results and
-    complete the task.
+- **`request_task_{agent_name}`**: Generated on the **coordinator** to delegate tasks.
+- **`finish_task`**: Generated on the **sub-agent** to return results and complete the task.
 
 ## Overview
 
 ADK agents support three delegation modes via the `mode` parameter on `Agent`:
 
-| Mode          | Tool Generated        | User Interaction | Completion      |
-| ------------- | --------------------- | ---------------- | --------------- |
-| `chat`        | `transfer_to_agent`   | Full             | Agent transfers |
-: (default)     :                       : conversational   : back            :
-| `task`        | `request_task_{name}` | Multi-turn (can  | Calls           |
-:               :                       : chat with user)  : `finish_task`   :
-| `single_turn` | `request_task_{name}` | None             | Calls           |
-:               :                       : (autonomous)     : `finish_task`   :
+| Mode | Tool Generated | User Interaction | Completion |
+|------|---------------|------------------|------------|
+| `chat` (default) | `transfer_to_agent` | Full conversational | Agent transfers back |
+| `task` | `request_task_{name}` | Multi-turn (can chat with user) | Calls `finish_task` |
+| `single_turn` | `request_task_{name}` | None (autonomous) | Calls `finish_task` |
 
 ## Imports
 
@@ -42,24 +30,19 @@ from google.adk import Agent
 from pydantic import BaseModel
 ```
 
-**Note**: Task mode uses `Agent` (aliased from `LlmAgent`) from `google.adk`.
-Both task sub-agents and coordinators use the same `Agent` class — set
-`mode='task'` or `mode='single_turn'` on sub-agents.
+**Note**: Task mode uses `Agent` (aliased from `LlmAgent`) from `google.adk`. Both task sub-agents and coordinators use the same `Agent` class — set `mode='task'` or `mode='single_turn'` on sub-agents.
 
 ## Task Mode (`mode='task'`)
 
-A task agent receives structured input via `request_task_{name}`, can interact
-with the user for clarification, and returns structured output via
-`finish_task`.
+A task agent receives structured input via `request_task_{name}`, can interact with the user for clarification, and returns structured output via `finish_task`.
 
 ### Delegation Lifecycle
 
-1.  User asks the coordinator to do something
-2.  Coordinator calls `request_task_{agent_name}(...)` with structured input
-3.  Task agent receives the input, works on it (may use tools, may chat with
-    user)
-4.  Task agent calls `finish_task(...)` with structured output
-5.  Coordinator receives the result and responds to the user
+1. User asks the coordinator to do something
+2. Coordinator calls `request_task_{agent_name}(...)` with structured input
+3. Task agent receives the input, works on it (may use tools, may chat with user)
+4. Task agent calls `finish_task(...)` with structured output
+5. Coordinator receives the result and responds to the user
 
 ### Example
 
@@ -114,8 +97,7 @@ root_agent = Agent(
 
 ## Single-Turn Mode (`mode='single_turn'`)
 
-A single-turn agent completes autonomously with no user interaction. It receives
-input, does its work, and returns a result.
+A single-turn agent completes autonomously with no user interaction. It receives input, does its work, and returns a result.
 
 ### Example
 
@@ -182,7 +164,6 @@ agent = Agent(
 When no custom schema is provided:
 
 **Default input** (used by `request_task_{name}`):
-
 ```python
 class _DefaultTaskInput(BaseModel):
   goal: str | None = None
@@ -190,7 +171,6 @@ class _DefaultTaskInput(BaseModel):
 ```
 
 **Default output** (used by `finish_task`):
-
 ```python
 class _DefaultTaskOutput(BaseModel):
   result: str
@@ -200,21 +180,19 @@ class _DefaultTaskOutput(BaseModel):
 
 ### `request_task_{agent_name}`
 
-Auto-generated on the **coordinator** for each `mode='task'` or
-`mode='single_turn'` sub-agent. The tool name is `request_task_{agent.name}`.
+Auto-generated on the **coordinator** for each `mode='task'` or `mode='single_turn'` sub-agent. The tool name is `request_task_{agent.name}`.
 
--   Parameters come from `input_schema` (or default: `goal`, `background`)
--   Description includes the agent's `description` field
--   Validates input against the schema before delegating
+- Parameters come from `input_schema` (or default: `goal`, `background`)
+- Description includes the agent's `description` field
+- Validates input against the schema before delegating
 
 ### `finish_task`
 
-Auto-generated on the **task agent** itself. Called by the task agent when work
-is complete.
+Auto-generated on the **task agent** itself. Called by the task agent when work is complete.
 
--   Parameters come from `output_schema` (or default: `result`)
--   Validates output against the schema before signaling completion
--   Sets `tool_context.actions.finish_task` with a `TaskResult`
+- Parameters come from `output_schema` (or default: `result`)
+- Validates output against the schema before signaling completion
+- Sets `tool_context.actions.finish_task` with a `TaskResult`
 
 ## Mixed-Mode Patterns
 
@@ -267,41 +245,31 @@ root_agent = Agent(
 
 ## Key Rules
 
--   Both task sub-agents and coordinators use `Agent` from `google.adk`
--   Each sub-agent needs a `description` (used in the auto-generated tool
-    description)
--   `input_schema` and `output_schema` are optional; defaults are provided
--   Sub-agents inherit model from the coordinator if not set
--   `finish_task` instructions are auto-injected into the task agent's LLM
-    context
--   Single-turn agents receive an extra instruction telling them no user replies
-    will come
+- Both task sub-agents and coordinators use `Agent` from `google.adk`
+- Each sub-agent needs a `description` (used in the auto-generated tool description)
+- `input_schema` and `output_schema` are optional; defaults are provided
+- Sub-agents inherit model from the coordinator if not set
+- `finish_task` instructions are auto-injected into the task agent's LLM context
+- Single-turn agents receive an extra instruction telling them no user replies will come
 
 ## Task Mode vs Chat Mode
 
-| Feature             | Chat                   | Task (`request_task`)         |
-:                     : (`transfer_to_agent`)  :                               :
-| ------------------- | ---------------------- | ----------------------------- |
-| Input               | Free-form conversation | Structured (schema-validated) |
-| Output              | Free-form conversation | Structured (schema-validated) |
-| Control flow        | Agent decides when to  | Agent calls `finish_task`     |
-:                     : transfer back          :                               :
-| User interaction    | Full chat              | `task`: multi-turn;           |
-:                     :                        : `single_turn`\: none          :
-| Tool name           | `transfer_to_agent`    | `request_task_{name}`         |
-| Parallel delegation | Not supported          | Supported (multiple           |
-:                     :                        : `request_task` calls)         :
+| Feature | Chat (`transfer_to_agent`) | Task (`request_task`) |
+|---------|---------------------------|----------------------|
+| Input | Free-form conversation | Structured (schema-validated) |
+| Output | Free-form conversation | Structured (schema-validated) |
+| Control flow | Agent decides when to transfer back | Agent calls `finish_task` |
+| User interaction | Full chat | `task`: multi-turn; `single_turn`: none |
+| Tool name | `transfer_to_agent` | `request_task_{name}` |
+| Parallel delegation | Not supported | Supported (multiple `request_task` calls) |
 
 ## Source File Locations
 
-| Component         | File                                                   |
-| ----------------- | ------------------------------------------------------ |
-| Agent/LlmAgent    | `src/google/adk/agents/llm_agent.py`                   |
-: (mode, schemas)   :                                                        :
-| BaseLlmFlow (base | `src/google/adk/flows/llm_flows/base_llm_flow.py`      |
-: flow class)       :                                                        :
-| RequestTaskTool   | `src/google/adk/agents/llm/task/_request_task_tool.py` |
-| FinishTaskTool    | `src/google/adk/agents/llm/task/_finish_task_tool.py`  |
-| TaskRequest,      | `src/google/adk/agents/llm/task/_task_models.py`       |
-: TaskResult        :                                                        :
-| Task samples      | `contributing/task_samples/`                           |
+| Component | File |
+|-----------|------|
+| Agent/LlmAgent (mode, schemas) | `src/google/adk/agents/llm_agent.py` |
+| BaseLlmFlow (base flow class) | `src/google/adk/flows/llm_flows/base_llm_flow.py` |
+| RequestTaskTool | `src/google/adk/agents/llm/task/_request_task_tool.py` |
+| FinishTaskTool | `src/google/adk/agents/llm/task/_finish_task_tool.py` |
+| TaskRequest, TaskResult | `src/google/adk/agents/llm/task/_task_models.py` |
+| Task samples | `contributing/task_samples/` |

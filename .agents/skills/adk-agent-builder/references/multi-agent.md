@@ -1,21 +1,15 @@
 # Multi-Agent Patterns
 
 ## 📋 Agent Verification Checklist (Multi-Agent)
-
 Use this checklist when setting up multi-agent systems:
-
--   [ ] **Description**: Does every sub-agent have a clear `description`? (Used
-    by LLM for routing or tool generation)
--   [ ] **Model Inheritance**: Did you let sub-agents inherit the model from the
-    coordinator to avoid duplication?
--   [ ] **Loop Termination**: If using `LoopAgent`, is there a clear way to call
-    `exit_loop` to prevent infinite loops?
+- [ ] **Description**: Does every sub-agent have a clear `description`? (Used by LLM for routing or tool generation)
+- [ ] **Model Inheritance**: Did you let sub-agents inherit the model from the coordinator to avoid duplication?
+- [ ] **Loop Termination**: If using `LoopAgent`, is there a clear way to call `exit_loop` to prevent infinite loops?
 
 ## 💡 Quick Reference
-
--   **Sequential**: `SequentialAgent(sub_agents=[a, b, c])`
--   **Parallel**: `ParallelAgent(sub_agents=[a, b, c])`
--   **Loop**: `LoopAgent(sub_agents=[a, b], max_iterations=5)`
+- **Sequential**: `SequentialAgent(sub_agents=[a, b, c])`
+- **Parallel**: `ParallelAgent(sub_agents=[a, b, c])`
+- **Loop**: `LoopAgent(sub_agents=[a, b], max_iterations=5)`
 
 ## LLM-Based Multi-Agent (Chat Transfer)
 
@@ -47,17 +41,15 @@ root_agent = Agent(
 ```
 
 **Key rules:**
-
--   Only the root agent needs `model=`. Sub-agents inherit it.
--   Each sub-agent needs a `description` (used for routing).
--   Transfer between agents is automatic via LLM reasoning.
--   `disallow_transfer_to_parent=True` prevents back-transfer.
--   `disallow_transfer_to_peers=True` prevents peer-transfer.
+- Only the root agent needs `model=`. Sub-agents inherit it.
+- Each sub-agent needs a `description` (used for routing).
+- Transfer between agents is automatic via LLM reasoning.
+- `disallow_transfer_to_parent=True` prevents back-transfer.
+- `disallow_transfer_to_peers=True` prevents peer-transfer.
 
 ## Task-Based Multi-Agent (Structured Delegation)
 
-For structured input/output, use task mode instead of chat transfer. See
-**`task-mode.md`** for full details.
+For structured input/output, use task mode instead of chat transfer. See **`task-mode.md`** for full details.
 
 ```python
 from google.adk import Agent
@@ -130,22 +122,21 @@ root_agent = LoopAgent(
 
 ## Model Configuration
 
--   Default model: `gemini-2.5-flash`
--   Override globally: `Agent.set_default_model('gemini-2.5-pro')`
--   Model inheritance: sub-agents inherit parent's model if not set
--   Non-Gemini models via LiteLlm:
-
-    ```python
-    from google.adk.models.lite_llm import LiteLlm
-    root_agent = Agent(model=LiteLlm(model='anthropic/claude-sonnet-4-20250514'), ...)
-    ```
+- Default model: `gemini-2.5-flash`
+- Override globally: `Agent.set_default_model('gemini-2.5-pro')`
+- Model inheritance: sub-agents inherit parent's model if not set
+- Non-Gemini models via LiteLlm:
+  ```python
+  from google.adk.models.lite_llm import LiteLlm
+  root_agent = Agent(model=LiteLlm(model='anthropic/claude-sonnet-4-20250514'), ...)
+  ```
 
 ## Common Pitfalls
 
--   **Agent stuck in sub-agent:** Sub-agent has no path back to parent. Set
-    `disallow_transfer_to_parent=False` (default) or add explicit transfer
-    instructions.
--   **Wrong agent handles request:** Ambiguous `description` fields. Make each
-    agent's description clearly differentiate its scope.
--   **Circular imports:** Define all agents in a single `agent.py` file, or use
-    a shared module for sub-agents.
+- **Agent stuck in sub-agent:** Sub-agent has no path back to parent.
+  Set `disallow_transfer_to_parent=False` (default) or add explicit
+  transfer instructions.
+- **Wrong agent handles request:** Ambiguous `description` fields. Make
+  each agent's description clearly differentiate its scope.
+- **Circular imports:** Define all agents in a single `agent.py` file,
+  or use a shared module for sub-agents.

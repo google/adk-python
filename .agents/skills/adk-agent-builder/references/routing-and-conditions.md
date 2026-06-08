@@ -3,27 +3,19 @@
 Route workflow execution along different paths based on node outputs.
 
 ## 📋 Agent Verification Checklist (Routing)
-
 Use this checklist when implementing routing logic:
-
--   [ ] **Syntax**: Is the preferred dict syntax used for mapping routes to
-    targets? (Avoid verbose individual edges)
--   [ ] **Loops**: Are cycles (loops) routed? (Unconditional cycles are rejected
-    during validation)
--   [ ] **Triggering**: If a node has conditional routing, do ALL outgoing edges
-    have routes? (To avoid unintended triggering by unconditional edges)
+- [ ] **Syntax**: Is the preferred dict syntax used for mapping routes to targets? (Avoid verbose individual edges)
+- [ ] **Loops**: Are cycles (loops) routed? (Unconditional cycles are rejected during validation)
+- [ ] **Triggering**: If a node has conditional routing, do ALL outgoing edges have routes? (To avoid unintended triggering by unconditional edges)
 
 ## 💡 Quick Reference
-
--   **Dict Routing**: `(source_node, {"route_a": target_a, "route_b":
-    target_b})`
--   **Sequence**: `("START", step_a, step_b, step_c)`
--   **Default**: `"__DEFAULT__"` (Fallback route)
+- **Dict Routing**: `(source_node, {"route_a": target_a, "route_b": target_b})`
+- **Sequence**: `("START", step_a, step_b, step_c)`
+- **Default**: `"__DEFAULT__"` (Fallback route)
 
 ## Basic Routing
 
-A node emits an `Event` with a `route` value. Use **dict syntax** to map routes
-to target nodes:
+A node emits an `Event` with a `route` value. Use **dict syntax** to map routes to target nodes:
 
 ```python
 from google.adk import Event, Workflow
@@ -50,8 +42,7 @@ agent = Workflow(
 
 ## Routing Map (Dict Syntax) — Preferred
 
-The dict syntax is the idiomatic way to express routing. It maps route values to
-target nodes in a single edge tuple:
+The dict syntax is the idiomatic way to express routing. It maps route values to target nodes in a single edge tuple:
 
 ```python
 edges = [
@@ -65,7 +56,6 @@ edges = [
 ```
 
 This replaces verbose individual routed edges:
-
 ```python
 # ❌ Verbose — avoid
 (classifier, answer_question, "question"),
@@ -87,7 +77,6 @@ edges = [("START", step_a, step_b, step_c)]
 ```
 
 Combine with dict routing:
-
 ```python
 edges = [
     ("START", process_input, classify, route_on_result),
@@ -127,10 +116,7 @@ edges = [
 
 Only one default route per node is allowed.
 
-**No duplicate edges:** Two edges from the same source to the same target are
-rejected, even with different routes. If you need both a named route and
-`__DEFAULT__` to reach the same destination, use a thin wrapper function for the
-default path.
+**No duplicate edges:** Two edges from the same source to the same target are rejected, even with different routes. If you need both a named route and `__DEFAULT__` to reach the same destination, use a thin wrapper function for the default path.
 
 ## Dynamic Routing with Functions
 
@@ -163,8 +149,7 @@ agent = Workflow(
 
 ## Multi-Route (Fan-Out via Route)
 
-A node can output multiple routes to trigger multiple downstream paths
-simultaneously:
+A node can output multiple routes to trigger multiple downstream paths simultaneously:
 
 ```python
 def fan_out_router(node_input: str):
@@ -181,8 +166,7 @@ agent = Workflow(
 
 ## List of Routes on a Single Edge
 
-An edge can match multiple routes by passing a list as the route value. The edge
-fires if the node output matches **any** route in the list:
+An edge can match multiple routes by passing a list as the route value. The edge fires if the node output matches **any** route in the list:
 
 ```python
 edges = [
@@ -193,9 +177,7 @@ edges = [
 ]
 ```
 
-This is useful when multiple route values should lead to the same downstream
-node without duplicating edges. Note: list-of-routes on a single edge uses the
-3-tuple syntax since dict syntax maps one route to one target.
+This is useful when multiple route values should lead to the same downstream node without duplicating edges. Note: list-of-routes on a single edge uses the 3-tuple syntax since dict syntax maps one route to one target.
 
 ## Self-Loop
 
@@ -221,8 +203,7 @@ agent = Workflow(
 
 ## Revision Loop
 
-A common pattern: route back to an earlier node for revision, or forward for
-approval:
+A common pattern: route back to an earlier node for revision, or forward for approval:
 
 ```python
 edges = [
@@ -235,8 +216,7 @@ edges = [
 ]
 ```
 
-**Important**: Cycles must have at least one routed edge (unconditional cycles
-are rejected during graph validation).
+**Important**: Cycles must have at least one routed edge (unconditional cycles are rejected during graph validation).
 
 ## Unconditional Edges
 
@@ -249,6 +229,4 @@ edges = [
 ]
 ```
 
-**Important**: Unrouted edges always fire, regardless of whether the output
-event has a route. If a node has conditional routing, ALL outgoing edges should
-have routes to avoid unintended triggering.
+**Important**: Unrouted edges always fire, regardless of whether the output event has a route. If a node has conditional routing, ALL outgoing edges should have routes to avoid unintended triggering.

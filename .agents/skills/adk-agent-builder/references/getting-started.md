@@ -1,24 +1,18 @@
 # Getting Started: Creating ADK Agents
 
-Step-by-step guide covering environment setup, basic LLM agents, and workflow
-agents.
+Step-by-step guide covering environment setup, basic LLM agents, and workflow agents.
 
 ## 📋 New Agent Checklist
-
 Use this checklist when creating a new agent to ensure it follows convention:
-
--   [ ] **Directory**: Is there a directory for the agent?
--   [ ] ****init**.py**: Does it contain `from . import agent`?
--   [ ] **agent.py**: Does it define `root_agent` or `app`?
--   [ ] **.env**: Is there a `.env` file with the appropriate API keys? (Do not
-    commit to git)
+- [ ] **Directory**: Is there a directory for the agent?
+- [ ] **__init__.py**: Does it contain `from . import agent`?
+- [ ] **agent.py**: Does it define `root_agent` or `app`?
+- [ ] **.env**: Is there a `.env` file with the appropriate API keys? (Do not commit to git)
 
 ## 💡 Quick Reference (CLI Commands)
-
--   **Create**: `adk create <agent_name>` (Scaffolds a new agent project)
--   **Web UI**: `adk web <path_to_agent_dir>` (Starts dev server at
-    localhost:8000)
--   **Run CLI**: `adk run <path_to_agent_dir>` (Interactive or query mode)
+- **Create**: `adk create <agent_name>` (Scaffolds a new agent project)
+- **Web UI**: `adk web <path_to_agent_dir>` (Starts dev server at localhost:8000)
+- **Run CLI**: `adk run <path_to_agent_dir>` (Interactive or query mode)
 
 ## 1. Set Up the Environment
 
@@ -45,8 +39,7 @@ uv pip install google-adk
 
 ### Google AI Studio (recommended for getting started)
 
-Obtain an API key from
-[Google AI Studio](https://aistudio.google.com/app/apikey).
+Obtain an API key from [Google AI Studio](https://aistudio.google.com/app/apikey).
 
 Create a `.env` file in the agent directory:
 
@@ -78,8 +71,7 @@ GOOGLE_API_KEY=YOUR_EXPRESS_MODE_KEY
 
 ## 3. Agent Directory Structure
 
-The ADK CLI discovers agents by directory convention. Each agent directory must
-have:
+The ADK CLI discovers agents by directory convention. Each agent directory must have:
 
 ```
 my_agent/
@@ -88,7 +80,7 @@ my_agent/
 └── .env           # API keys (not committed to git)
 ```
 
-### **init**.py
+### __init__.py
 
 ```python
 from . import agent
@@ -102,8 +94,7 @@ adk create my_agent
 
 ## 4. Basic LLM Agent with Tools
 
-Before building workflow agents, understand the basic LLM agent pattern. An
-`LlmAgent` (also aliased as `Agent`) connects an LLM to tools and instructions:
+Before building workflow agents, understand the basic LLM agent pattern. An `LlmAgent` (also aliased as `Agent`) connects an LLM to tools and instructions:
 
 ### agent.py
 
@@ -143,20 +134,17 @@ Always be friendly and concise.""",
 
 ### Key concepts
 
--   **`model`**: The LLM to use (e.g., `"gemini-2.5-flash"`, `"gemini-2.5-pro"`)
--   **`instruction`**: System prompt guiding the agent's behavior
--   **`tools`**: Python functions the LLM can call. The function name,
-    docstring, and type hints are sent to the LLM as the tool schema
--   **`description`**: Used when this agent is a sub-agent (for transfer
-    routing)
--   **`output_key`**: Store the agent's final text output in session state under
-    this key
+- **`model`**: The LLM to use (e.g., `"gemini-2.5-flash"`, `"gemini-2.5-pro"`)
+- **`instruction`**: System prompt guiding the agent's behavior
+- **`tools`**: Python functions the LLM can call. The function name, docstring, and type hints are sent to the LLM as the tool schema
+- **`description`**: Used when this agent is a sub-agent (for transfer routing)
+- **`output_key`**: Store the agent's final text output in session state under this key
 
 ### Tool function conventions
 
--   Use clear function names and docstrings — the LLM sees these
--   Type-hint all parameters — they define the tool's input schema
--   Return a `dict` or `str` — the return value becomes the tool response
+- Use clear function names and docstrings — the LLM sees these
+- Type-hint all parameters — they define the tool's input schema
+- Return a `dict` or `str` — the return value becomes the tool response
 
 ## 5. Run the Agent
 
@@ -166,8 +154,7 @@ Always be friendly and concise.""",
 adk web my_agent/
 ```
 
-Open `http://localhost:8000`. Select the agent from the dropdown, type a
-message, and see events in the Events tab.
+Open `http://localhost:8000`. Select the agent from the dropdown, type a message, and see events in the Events tab.
 
 **Note**: `adk web` is for development only, not production.
 
@@ -220,8 +207,7 @@ asyncio.run(main())
 
 ## 6. From LLM Agent to Workflow Agent
 
-A `Workflow` extends the basic agent pattern with graph-based execution. Instead
-of a single LLM deciding what to do, define explicit nodes and edges:
+A `Workflow` extends the basic agent pattern with graph-based execution. Instead of a single LLM deciding what to do, define explicit nodes and edges:
 
 ### agent.py — Minimal Workflow
 
@@ -245,7 +231,7 @@ A code write-review-refactor pipeline using `SequentialAgent`:
 
 ### agent.py
 
-````python
+```python
 from google.adk.agents.llm_agent import LlmAgent
 from google.adk.agents.sequential_agent import SequentialAgent
 
@@ -268,37 +254,48 @@ Review the following code:
 
 ```python
 {generated_code}
-````
+```
 
-Provide feedback as a concise, bulleted list. If the code is excellent, state:
-"No major issues found." """, description="Reviews code and provides feedback.",
-output_key="review_comments", )
+Provide feedback as a concise, bulleted list.
+If the code is excellent, state: "No major issues found."
+""",
+    description="Reviews code and provides feedback.",
+    output_key="review_comments",
+)
 
-code_refactorer_agent = LlmAgent( name="CodeRefactorerAgent",
-model="gemini-2.5-flash", instruction="""You are a Python Code Refactoring AI.
+code_refactorer_agent = LlmAgent(
+    name="CodeRefactorerAgent",
+    model="gemini-2.5-flash",
+    instruction="""You are a Python Code Refactoring AI.
 Improve the code based on the review comments.
 
-**Original Code:** `python {generated_code}`
+**Original Code:**
+```python
+{generated_code}
+```
 
-**Review Comments:** {review_comments}
+**Review Comments:**
+{review_comments}
 
-If no issues found, return the original code unchanged. Output *only* the final
-Python code block. """, description="Refactors code based on review comments.",
-output_key="refactored_code", )
+If no issues found, return the original code unchanged.
+Output *only* the final Python code block.
+""",
+    description="Refactors code based on review comments.",
+    output_key="refactored_code",
+)
 
-root_agent = SequentialAgent( name="CodePipelineAgent",
-sub_agents=[code_writer_agent, code_reviewer_agent, code_refactorer_agent],
-description="Executes a sequence of code writing, reviewing, and refactoring.",
-) ```
+root_agent = SequentialAgent(
+    name="CodePipelineAgent",
+    sub_agents=[code_writer_agent, code_reviewer_agent, code_refactorer_agent],
+    description="Executes a sequence of code writing, reviewing, and refactoring.",
+)
+```
 
 ### Key patterns in this sample
 
--   **`output_key`**: Each agent stores its output in session state, making it
-    available to later agents
--   **`{generated_code}`**: Instruction placeholders are resolved from session
-    state at runtime
--   **`SequentialAgent`**: Convenience wrapper that auto-generates `START ->
-    agent1 -> agent2 -> agent3` edges
+- **`output_key`**: Each agent stores its output in session state, making it available to later agents
+- **`{generated_code}`**: Instruction placeholders are resolved from session state at runtime
+- **`SequentialAgent`**: Convenience wrapper that auto-generates `START -> agent1 -> agent2 -> agent3` edges
 
 ## 6. Sample: Graph Workflow with Functions and Routing
 
@@ -423,21 +420,13 @@ root_agent = Workflow(
 ## Troubleshooting
 
 ### "No module named 'google.adk'"
-
 Ensure the virtual environment is activated and `google-adk` is installed.
 
 ### Agent not showing in `adk web`
-
-Check that `__init__.py` contains `from . import agent` and `agent.py` defines
-`root_agent`.
+Check that `__init__.py` contains `from . import agent` and `agent.py` defines `root_agent`.
 
 ### API key errors
-
-Verify `.env` is in the agent directory (not the parent) and contains a valid
-`GOOGLE_API_KEY`.
+Verify `.env` is in the agent directory (not the parent) and contains a valid `GOOGLE_API_KEY`.
 
 ### Model not found
-
-Check the model name. Common models: `gemini-2.5-flash`, `gemini-2.5-pro`. The
-ADK also supports non-Google models (Anthropic, LiteLLM) with extra
-dependencies.
+Check the model name. Common models: `gemini-2.5-flash`, `gemini-2.5-pro`. The ADK also supports non-Google models (Anthropic, LiteLLM) with extra dependencies.

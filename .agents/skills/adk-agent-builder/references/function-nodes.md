@@ -1,26 +1,18 @@
 # Function Nodes Reference
 
-Function nodes are the most common node type. Any Python function becomes a
-workflow node.
+Function nodes are the most common node type. Any Python function becomes a workflow node.
 
 ## 📋 Agent Verification Checklist (Function Nodes)
-
 Use this checklist to verify your Function Node configuration:
-
--   [ ] **Input Type**: If following an LLM agent without schema, is
-    `node_input` typed as `Any` or `types.Content`? (Not `str`)
--   [ ] **UI Output**: Do you yield `Event(message=...)` for results that should
-    appear in the Web UI?
--   [ ] **Outputs**: Does the function yield or return at most **one**
-    `event.output`?
--   [ ] **Union Types**: If using Union types for `node_input`, did you add
-    `isinstance` checks in the body for actual validation?
+- [ ] **Input Type**: If following an LLM agent without schema, is `node_input` typed as `Any` or `types.Content`? (Not `str`)
+- [ ] **UI Output**: Do you yield `Event(message=...)` for results that should appear in the Web UI?
+- [ ] **Outputs**: Does the function yield or return at most **one** `event.output`?
+- [ ] **Union Types**: If using Union types for `node_input`, did you add `isinstance` checks in the body for actual validation?
 
 ## 💡 Quick Reference (Param Resolution)
-
--   **`ctx`**: Workflow `Context` object.
--   **`node_input`**: Output from the predecessor node.
--   **Any other name**: Auto-resolved from `ctx.state[param_name]`.
+- **`ctx`**: Workflow `Context` object.
+- **`node_input`**: Output from the predecessor node.
+- **Any other name**: Auto-resolved from `ctx.state[param_name]`.
 
 ## Imports
 
@@ -49,11 +41,11 @@ async def fetch_data(node_input: str) -> dict:
 
 FunctionNode inspects the function signature to resolve parameters:
 
-Parameter Name | Source
--------------- | --------------------------------------
-`ctx`          | Workflow `Context` object
-`node_input`   | Output from predecessor node
-Any other name | Looked up from `ctx.state[param_name]`
+| Parameter Name | Source |
+|---------------|--------|
+| `ctx` | Workflow `Context` object |
+| `node_input` | Output from predecessor node |
+| Any other name | Looked up from `ctx.state[param_name]` |
 
 ```python
 # Receives both context and input
@@ -91,10 +83,7 @@ def sync_multi(node_input: str):
   yield Event(output="step 2")
 ```
 
-**At most one event should have `output`.** Multiple output events get silently
-merged into a list, changing the downstream type. Similarly, at most one event
-can have `route` (multiple raise `ValueError`). Use separate events for
-messages, state updates, and the single output.
+**At most one event should have `output`.** Multiple output events get silently merged into a list, changing the downstream type. Similarly, at most one event can have `route` (multiple raise `ValueError`). Use separate events for messages, state updates, and the single output.
 
 ## Yielding Raw Values
 
@@ -107,8 +96,7 @@ async def raw_yield(node_input: str):
 
 ## Returning None
 
-If a function returns `None`, no event is emitted and no downstream node is
-triggered:
+If a function returns `None`, no event is emitted and no downstream node is triggered:
 
 ```python
 def maybe_output(node_input: str) -> str | None:
@@ -119,8 +107,7 @@ def maybe_output(node_input: str) -> str | None:
 
 ## Auto Type Conversion
 
-FunctionNode automatically converts `dict` inputs to Pydantic models based on
-type hints:
+FunctionNode automatically converts `dict` inputs to Pydantic models based on type hints:
 
 ```python
 from pydantic import BaseModel
@@ -139,9 +126,7 @@ This works recursively for `list[Model]` and `dict[str, Model]` too.
 
 ### Pydantic Schemas with LLM Agents (Recommended Pattern)
 
-Use `output_schema` on LLM agents to get structured, JSON-serializable output.
-This avoids `types.Content` serialization issues and enables auto-conversion in
-downstream function nodes:
+Use `output_schema` on LLM agents to get structured, JSON-serializable output. This avoids `types.Content` serialization issues and enables auto-conversion in downstream function nodes:
 
 ```python
 from pydantic import BaseModel
@@ -167,12 +152,10 @@ def process_review(node_input: ReviewResult) -> str:
 ```
 
 **Why use `output_schema`:**
-
--   LLM agent output becomes a `dict` (JSON-serializable) instead of
-    `types.Content`
--   Fixes `TypeError` when SQLite session service serializes JoinNode state
--   Enables auto type conversion in downstream function nodes
--   Provides structured data for programmatic access
+- LLM agent output becomes a `dict` (JSON-serializable) instead of `types.Content`
+- Fixes `TypeError` when SQLite session service serializes JoinNode state
+- Enables auto type conversion in downstream function nodes
+- Provides structured data for programmatic access
 
 ## Explicit FunctionNode
 
@@ -217,8 +200,7 @@ parallel = node(some_func, parallel_worker=True)
 
 ## Prefer Typed Schemas Over Raw Dicts
 
-Use Pydantic models for node inputs, outputs, and state instead of raw `dict`.
-This gives you validation, IDE autocomplete, and self-documenting code:
+Use Pydantic models for node inputs, outputs, and state instead of raw `dict`. This gives you validation, IDE autocomplete, and self-documenting code:
 
 ```python
 # ❌ Avoid: raw dicts are error-prone and opaque
@@ -239,25 +221,16 @@ def process(node_input: TaskInput) -> TaskResult:
 ```
 
 This applies to:
+- **Function node inputs/outputs**: Use Pydantic models as `node_input` type hints and return types
+- **LLM agent `output_schema`**: Always set `output_schema=MyModel` to get structured dict output instead of `types.Content`
+- **`RequestInput.response_schema`**: Pass a Pydantic `BaseModel` class directly (e.g., `response_schema=MyModel`)
+- **State values**: Store Pydantic model dicts (via `.model_dump()`) rather than hand-built dicts
 
--   **Function node inputs/outputs**: Use Pydantic models as `node_input` type
-    hints and return types
--   **LLM agent `output_schema`**: Always set `output_schema=MyModel` to get
-    structured dict output instead of `types.Content`
--   **`RequestInput.response_schema`**: Pass a Pydantic `BaseModel` class
-    directly (e.g., `response_schema=MyModel`)
--   **State values**: Store Pydantic model dicts (via `.model_dump()`) rather
-    than hand-built dicts
-
-FunctionNode auto-converts `dict` inputs to Pydantic models based on type hints
-(see [Auto Type Conversion](#auto-type-conversion) above), so typed schemas work
-seamlessly across the graph.
+FunctionNode auto-converts `dict` inputs to Pydantic models based on type hints (see [Auto Type Conversion](#auto-type-conversion) above), so typed schemas work seamlessly across the graph.
 
 ## Emitting Content Events for Web UI Display
 
-In the ADK web UI, only `event.content` is rendered to the user — `event.output`
-is internal and not displayed. When a function node produces user-facing output,
-yield a content event in addition to the output event:
+In the ADK web UI, only `event.content` is rendered to the user — `event.output` is internal and not displayed. When a function node produces user-facing output, yield a content event in addition to the output event:
 
 ```python
 from google.genai import types
@@ -273,9 +246,7 @@ async def summarize(ctx: Context, node_input: str):
   yield Event(output=result)
 ```
 
-LLM agents emit content events automatically. For function nodes that are
-terminal (no downstream edges) or produce user-visible intermediate results, add
-the content event so users see output in the web UI.
+LLM agents emit content events automatically. For function nodes that are terminal (no downstream edges) or produce user-visible intermediate results, add the content event so users see output in the web UI.
 
 ## Events with Routes
 
@@ -310,18 +281,11 @@ def update_via_context(ctx: Context, node_input: str) -> str:
 
 ## Type Validation (Important)
 
-FunctionNode strictly type-checks `node_input` against the type hint. A
-`TypeError` is raised if the actual type doesn't match.
+FunctionNode strictly type-checks `node_input` against the type hint. A `TypeError` is raised if the actual type doesn't match.
 
-**Union types:** `node_input: list | dict` silently skips validation
-(FunctionNode detects Union via `get_origin()` and sets `is_instance = True`).
-This means Union hints won't crash, but they also won't catch wrong types — any
-value passes. Use `isinstance` checks inside the function body for actual
-validation.
+**Union types:** `node_input: list | dict` silently skips validation (FunctionNode detects Union via `get_origin()` and sets `is_instance = True`). This means Union hints won't crash, but they also won't catch wrong types — any value passes. Use `isinstance` checks inside the function body for actual validation.
 
-**Common pitfall: LLM agent -> function node.** LlmAgentWrapper outputs
-`types.Content` (not `str`). If your function node follows an LLM agent and
-declares `node_input: str`, it will fail with:
+**Common pitfall: LLM agent -> function node.** LlmAgentWrapper outputs `types.Content` (not `str`). If your function node follows an LLM agent and declares `node_input: str`, it will fail with:
 
 ```
 TypeError: Parameter "node_input" expects type <class 'str'>
@@ -343,17 +307,14 @@ def process(node_input: Any) -> str:
 
 **Output type summary by predecessor:**
 
-| Predecessor Node Type                | `node_input` Type                |
-| ------------------------------------ | -------------------------------- |
-| Function returning `str`             | `str`                            |
-| Function returning `dict`            | `dict`                           |
-| Function returning `Event(output=X)` | type of `X`                      |
-| `LlmAgentWrapper` (no                | `types.Content`                  |
-: `output_schema`)                     :                                  :
-| `LlmAgentWrapper` (with              | `dict`                           |
-: `output_schema`)                     :                                  :
-| `JoinNode`                           | `dict[str, Any]` (keyed by       |
-:                                      : predecessor names)               :
-| `ParallelWorker`                     | `list`                           |
-| `START` (no `input_schema`)          | `types.Content` (user's message) |
-| `START` (with `input_schema`)        | parsed schema type               |
+| Predecessor Node Type | `node_input` Type |
+|----------------------|-------------------|
+| Function returning `str` | `str` |
+| Function returning `dict` | `dict` |
+| Function returning `Event(output=X)` | type of `X` |
+| `LlmAgentWrapper` (no `output_schema`) | `types.Content` |
+| `LlmAgentWrapper` (with `output_schema`) | `dict` |
+| `JoinNode` | `dict[str, Any]` (keyed by predecessor names) |
+| `ParallelWorker` | `list` |
+| `START` (no `input_schema`) | `types.Content` (user's message) |
+| `START` (with `input_schema`) | parsed schema type |

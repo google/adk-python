@@ -3,21 +3,16 @@
 Write unit tests for workflow agents using pytest with async support.
 
 ## 📋 Agent Verification Checklist (Testing)
-
 Use this checklist to verify your tests follow project conventions:
-
--   [ ] **Asyncio**: Are async tests marked with `@pytest.mark.asyncio`?
--   [ ] **Isolation**: Does each test create a new `InMemoryRunner`?
--   [ ] **Naming**: Are unique app names used (e.g., via `request.node.name`) to
-    avoid interference?
--   [ ] **Mocking**: Are LLM calls mocked using `MockModel` rather than making
-    real network calls?
+- [ ] **Asyncio**: Are async tests marked with `@pytest.mark.asyncio`?
+- [ ] **Isolation**: Does each test create a new `InMemoryRunner`?
+- [ ] **Naming**: Are unique app names used (e.g., via `request.node.name`) to avoid interference?
+- [ ] **Mocking**: Are LLM calls mocked using `MockModel` rather than making real network calls?
 
 ## 💡 Quick Reference (Commands)
-
--   **Run all workflow tests**: `pytest tests/unittests/workflow/ -xvs`
--   **Run specific test**: `pytest tests/unittests/workflow/test_file.py -xvs`
--   **Install test deps**: `uv sync --extra test`
+- **Run all workflow tests**: `pytest tests/unittests/workflow/ -xvs`
+- **Run specific test**: `pytest tests/unittests/workflow/test_file.py -xvs`
+- **Install test deps**: `uv sync --extra test`
 
 ## Setup
 
@@ -341,9 +336,9 @@ src/google/adk/workflow/my_module.py
 
 ## Testing Tips
 
--   Use `request.node.name` for unique app names to avoid test interference
--   Each test should create its own `InMemoryRunner` for isolation
--   Use `simplify_events_with_node` to focus on data flow
--   Use `simplify_events_with_node_and_agent_state` to verify state changes
--   AsyncIO mode is auto (`asyncio_mode = "auto"` in pyproject.toml)
--   Mock only external dependencies (LLM APIs); use real ADK components
+- Use `request.node.name` for unique app names to avoid test interference
+- Each test should create its own `InMemoryRunner` for isolation
+- Use `simplify_events_with_node` to focus on data flow
+- Use `simplify_events_with_node_and_agent_state` to verify state changes
+- AsyncIO mode is auto (`asyncio_mode = "auto"` in pyproject.toml)
+- Mock only external dependencies (LLM APIs); use real ADK components

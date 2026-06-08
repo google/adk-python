@@ -3,26 +3,17 @@
 Embed LLM-powered agents as nodes in workflow graphs.
 
 ## 📋 Agent Verification Checklist (LLM Nodes)
-
 Use this checklist to verify your LLM agent configuration:
-
--   [ ] **Output Type**: If no `output_schema` is set, downstream now receives
-    `str` (auto-extracted from `types.Content`). You can safely type-hint
-    `node_input: str`.
--   [ ] **State Serialization**: If this agent feeds into a `JoinNode`, did you
-    set `output_schema` to avoid non-serializable `types.Content` errors?
--   [ ] **Instructions**: Are `{var}` templates used in instructions resolving
-    ONLY from `ctx.state`? (Not `node_input`)
--   [ ] **Config**: Are instructions, tools, and response schema set on the
-    `LlmAgent` directly, and NOT in `generate_content_config`?
+- [ ] **Output Type**: If no `output_schema` is set, downstream now receives `str` (auto-extracted from `types.Content`). You can safely type-hint `node_input: str`.
+- [ ] **State Serialization**: If this agent feeds into a `JoinNode`, did you set `output_schema` to avoid non-serializable `types.Content` errors?
+- [ ] **Instructions**: Are `{var}` templates used in instructions resolving ONLY from `ctx.state`? (Not `node_input`)
+- [ ] **Config**: Are instructions, tools, and response schema set on the `LlmAgent` directly, and NOT in `generate_content_config`?
 
 ## 💡 Quick Reference
-
--   **Chat Mode**: Default. Multi-turn, keeps session history.
--   **Single-Turn Mode**: Isolated. Set `mode="single_turn"` or rely on
-    auto-wrapping defaults.
--   **Task Mode**: Multi-turn within a task. Set `mode="task"`.
--   **Stateless**: Set `include_contents="none"` to ignore session history.
+- **Chat Mode**: Default. Multi-turn, keeps session history.
+- **Single-Turn Mode**: Isolated. Set `mode="single_turn"` or rely on auto-wrapping defaults.
+- **Task Mode**: Multi-turn within a task. Set `mode="task"`.
+- **Stateless**: Set `include_contents="none"` to ignore session history.
 
 ## Imports
 
@@ -34,10 +25,7 @@ from google.adk.workflow import Workflow
 
 ## Choosing the Right LLM Agent
 
-**Use `google.adk.agents.llm_agent.LlmAgent`** in workflow edges. It is
-auto-wrapped as `LlmAgentWrapper`, which emits `Event(output=...)` for
-downstream data passing. This is required for any LLM agent that needs to pass
-output to downstream function nodes via `node_input`.
+**Use `google.adk.agents.llm_agent.LlmAgent`** in workflow edges. It is auto-wrapped as `LlmAgentWrapper`, which emits `Event(output=...)` for downstream data passing. This is required for any LLM agent that needs to pass output to downstream function nodes via `node_input`.
 
 ```python
 from google.adk.agents.llm_agent import LlmAgent
@@ -84,15 +72,11 @@ agent = Workflow(
 
 ## LLM Agent Output Types (Critical)
 
-**LlmAgentWrapper auto-extracts text and outputs `str` when no `output_schema`
-is set.** Previously, it outputted `types.Content` causing type errors. Now, if
-you type-hint `node_input: str`, it will work correctly for standard text
-output.
+**LlmAgentWrapper auto-extracts text and outputs `str` when no `output_schema` is set.** Previously, it outputted `types.Content` causing type errors. Now, if you type-hint `node_input: str`, it will work correctly for standard text output.
 
 **Solutions (pick one):**
 
-1.  **Use `Any` and extract text** (recommended for function nodes after LLM
-    agents):
+1. **Use `Any` and extract text** (recommended for function nodes after LLM agents):
 
 ```python
 from typing import Any
@@ -104,7 +88,7 @@ def process_llm_output(node_input: Any) -> str:
   return str(node_input) if node_input is not None else ''
 ```
 
-1.  **Use `output_schema`** on the LLM agent to get a parsed `dict` instead:
+2. **Use `output_schema`** on the LLM agent to get a parsed `dict` instead:
 
 ```python
 from pydantic import BaseModel
@@ -127,26 +111,19 @@ def process_code(node_input: dict) -> str:
 
 **Summary of LLM agent node output types:**
 
-LLM Agent Config     | `node_input` Type for Next Node
--------------------- | -----------------------------------
-No `output_schema`   | `types.Content`
-With `output_schema` | `dict` (parsed from Pydantic model)
+| LLM Agent Config | `node_input` Type for Next Node |
+|-----------------|-------------------------------|
+| No `output_schema` | `types.Content` |
+| With `output_schema` | `dict` (parsed from Pydantic model) |
 
-**State serialization warning:** When LLM agents feed into a `JoinNode`, the
-JoinNode stores intermediate results in session state. Without `output_schema`,
-this stores `types.Content` objects which are **not JSON-serializable** and will
-cause `TypeError` with SQLite/database session services. Always use
-`output_schema` on LLM agents that feed into a JoinNode.
+**State serialization warning:** When LLM agents feed into a `JoinNode`, the JoinNode stores intermediate results in session state. Without `output_schema`, this stores `types.Content` objects which are **not JSON-serializable** and will cause `TypeError` with SQLite/database session services. Always use `output_schema` on LLM agents that feed into a JoinNode.
 
 ## Auto-Wrapping Behavior
 
-When you place an `LlmAgent` in workflow edges, it is auto-wrapped as
-`_LlmAgentWrapper`. The wrapper:
-
--   Defaults to `single_turn` mode (agent sees only current input, not session
-    history)
--   Sets `rerun_on_resume=True` (reruns after HITL interrupts)
--   Creates a content branch for isolation between parallel LLM agents
+When you place an `LlmAgent` in workflow edges, it is auto-wrapped as `_LlmAgentWrapper`. The wrapper:
+- Defaults to `single_turn` mode (agent sees only current input, not session history)
+- Sets `rerun_on_resume=True` (reruns after HITL interrupts)
+- Creates a content branch for isolation between parallel LLM agents
 
 The mode is set on the `LlmAgent` itself, not the wrapper:
 
@@ -174,10 +151,7 @@ task_agent = LlmAgent(
 
 ### Instructions
 
-Dynamic instructions with placeholders resolved from session state. **`{var}`
-templates only resolve from `ctx.state` — `node_input` is NOT available in
-templates.** To use predecessor data in instructions, store it in state first
-(via `Event(state={...})` or `output_key`):
+Dynamic instructions with placeholders resolved from session state. **`{var}` templates only resolve from `ctx.state` — `node_input` is NOT available in templates.** To use predecessor data in instructions, store it in state first (via `Event(state={...})` or `output_key`):
 
 ```python
 agent = LlmAgent(
@@ -194,11 +168,11 @@ Respond in {language}.""",
 
 **Template variable behavior:**
 
-Syntax                 | Missing Key Behavior
----------------------- | --------------------------------------------
-`{var}`                | Raises `KeyError` at LLM call time
-`{var?}`               | Substitutes empty string, logs debug message
-`{not.an" identifier}` | Left as-is (not substituted)
+| Syntax | Missing Key Behavior |
+|--------|---------------------|
+| `{var}` | Raises `KeyError` at LLM call time |
+| `{var?}` | Substitutes empty string, logs debug message |
+| `{not.an" identifier}` | Left as-is (not substituted) |
 
 Instruction provider function for fully dynamic instructions:
 
@@ -236,8 +210,7 @@ reviewer = LlmAgent(
 )
 ```
 
-When used as a workflow node, the output becomes a `dict` (via `model_dump()`)
-as `node_input` for the next node.
+When used as a workflow node, the output becomes a `dict` (via `model_dump()`) as `node_input` for the next node.
 
 ### Output Key
 
@@ -287,17 +260,15 @@ agent = LlmAgent(
 ```
 
 Tools can be:
-
--   Python functions (auto-wrapped as `FunctionTool`)
--   `BaseTool` instances
--   `BaseToolset` instances (e.g., MCP toolsets)
+- Python functions (auto-wrapped as `FunctionTool`)
+- `BaseTool` instances
+- `BaseToolset` instances (e.g., MCP toolsets)
 
 ## Callbacks
 
 ### Before Model Callback
 
-Intercept or modify LLM requests. Return an `LlmResponse` to skip the LLM call;
-return `None` to proceed:
+Intercept or modify LLM requests. Return an `LlmResponse` to skip the LLM call; return `None` to proceed:
 
 ```python
 from google.adk.agents.callback_context import CallbackContext
@@ -326,8 +297,7 @@ agent = LlmAgent(
 
 ### After Model Callback
 
-Transform LLM responses. Return an `LlmResponse` to replace; return `None` to
-keep original:
+Transform LLM responses. Return an `LlmResponse` to replace; return `None` to keep original:
 
 ```python
 def log_response(
@@ -346,8 +316,7 @@ agent = LlmAgent(
 
 ### Before/After Tool Callbacks
 
-Intercept tool calls. Return a `dict` to use as tool response (skipping actual
-execution); return `None` to proceed:
+Intercept tool calls. Return a `dict` to use as tool response (skipping actual execution); return `None` to proceed:
 
 ```python
 from google.adk.tools.base_tool import BaseTool
@@ -424,25 +393,14 @@ agent = LlmAgent(
 
 ## All Callback Types
 
-| Callback                  | Signature              | Return to Override      |
-| ------------------------- | ---------------------- | ----------------------- |
-| `before_model_callback`   | `(CallbackContext,     | Return `LlmResponse` to |
-:                           : LlmRequest) ->         : skip LLM                :
-:                           : LlmResponse?`          :                         :
-| `after_model_callback`    | `(CallbackContext,     | Return `LlmResponse` to |
-:                           : LlmResponse) ->        : replace                 :
-:                           : LlmResponse?`          :                         :
-| `on_model_error_callback` | `(CallbackContext,     | Return `LlmResponse` to |
-:                           : LlmRequest, Exception) : suppress error          :
-:                           : -> LlmResponse?`       :                         :
-| `before_tool_callback`    | `(BaseTool, dict,      | Return `dict` to skip   |
-:                           : ToolContext) -> dict?` : tool                    :
-| `after_tool_callback`     | `(BaseTool, dict,      | Return `dict` to        |
-:                           : ToolContext, dict) ->  : replace result          :
-:                           : dict?`                 :                         :
-| `on_tool_error_callback`  | `(BaseTool, dict,      | Return `dict` to        |
-:                           : ToolContext,           : suppress error          :
-:                           : Exception) -> dict?`   :                         :
+| Callback | Signature | Return to Override |
+|----------|-----------|-------------------|
+| `before_model_callback` | `(CallbackContext, LlmRequest) -> LlmResponse?` | Return `LlmResponse` to skip LLM |
+| `after_model_callback` | `(CallbackContext, LlmResponse) -> LlmResponse?` | Return `LlmResponse` to replace |
+| `on_model_error_callback` | `(CallbackContext, LlmRequest, Exception) -> LlmResponse?` | Return `LlmResponse` to suppress error |
+| `before_tool_callback` | `(BaseTool, dict, ToolContext) -> dict?` | Return `dict` to skip tool |
+| `after_tool_callback` | `(BaseTool, dict, ToolContext, dict) -> dict?` | Return `dict` to replace result |
+| `on_tool_error_callback` | `(BaseTool, dict, ToolContext, Exception) -> dict?` | Return `dict` to suppress error |
 
 All callbacks can be sync or async. All accept a single callback or a list.
 

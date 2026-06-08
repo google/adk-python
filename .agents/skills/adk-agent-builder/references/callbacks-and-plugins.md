@@ -1,20 +1,14 @@
 # Callbacks and Plugins
 
 ## 📋 Agent Verification Checklist (Callbacks)
-
 Use this checklist when implementing callbacks or plugins:
-
--   [ ] **Override Behavior**: Remember that returning a non-`None` value in a
-    callback *overrides* the default behavior (e.g., skips model call or tool
-    execution). Is that intentional?
--   [ ] **Context Type**: Remember that `CallbackContext` is an alias for
-    `Context`.
+- [ ] **Override Behavior**: Remember that returning a non-`None` value in a callback *overrides* the default behavior (e.g., skips model call or tool execution). Is that intentional?
+- [ ] **Context Type**: Remember that `CallbackContext` is an alias for `Context`.
 
 ## 💡 Quick Reference (Callback Returns)
-
--   **Continue Normal Flow**: Return `None`.
--   **Override Model**: Return `LlmResponse` in `before_model`.
--   **Override Tool**: Return `dict` in `before_tool`.
+- **Continue Normal Flow**: Return `None`.
+- **Override Model**: Return `LlmResponse` in `before_model`.
+- **Override Tool**: Return `dict` in `before_tool`.
 
 ## Agent Callbacks
 
@@ -32,8 +26,7 @@ root_agent = Agent(
 )
 ```
 
-**Note:** `CallbackContext` is a backward-compatible alias for `Context`. Both
-work identically.
+**Note:** `CallbackContext` is a backward-compatible alias for `Context`. Both work identically.
 
 ## Callback Signatures
 
@@ -64,8 +57,8 @@ def callback(tool, args, tool_context, tool_response):
   # OR return dict to override
 ```
 
-**Multiple callbacks:** Pass a list. They execute in order until one returns
-non-None.
+**Multiple callbacks:** Pass a list. They execute in order until one
+returns non-None.
 
 ## Plugins (App-Level Callbacks)
 
@@ -85,11 +78,11 @@ class MyPlugin(BasePlugin):
 
 ## Built-in Plugins
 
-Plugin                       | Import                                                                                     | Purpose
----------------------------- | ------------------------------------------------------------------------------------------ | -------
-`ContextFilterPlugin`        | `from google.adk.plugins.context_filter_plugin import ContextFilterPlugin`                 | Limit history in context
-`SaveFilesAsArtifactsPlugin` | `from google.adk.plugins.save_files_as_artifacts_plugin import SaveFilesAsArtifactsPlugin` | Auto-save file outputs
-`GlobalInstructionPlugin`    | `from google.adk.plugins.global_instruction_plugin import GlobalInstructionPlugin`         | Inject global instructions
+| Plugin | Import | Purpose |
+|--------|--------|---------|
+| `ContextFilterPlugin` | `from google.adk.plugins.context_filter_plugin import ContextFilterPlugin` | Limit history in context |
+| `SaveFilesAsArtifactsPlugin` | `from google.adk.plugins.save_files_as_artifacts_plugin import SaveFilesAsArtifactsPlugin` | Auto-save file outputs |
+| `GlobalInstructionPlugin` | `from google.adk.plugins.global_instruction_plugin import GlobalInstructionPlugin` | Inject global instructions |
 
 Usage with App:
 
