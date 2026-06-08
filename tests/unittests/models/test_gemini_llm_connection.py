@@ -866,6 +866,59 @@ async def test_send_history_filters_various_audio_mime_types(
 
 
 @pytest.mark.asyncio
+async def test_send_history_gemini_31_turn_complete(mock_gemini_session):
+  """Verify Gemini 3.1 Live history seeding explicitly appends turn_complete=True."""
+  conn = GeminiLlmConnection(
+      mock_gemini_session,
+      api_backend=GoogleLLMVariant.GEMINI_API,
+      model_version='gemini-3.1-flash-live-preview',
+  )
+  mock_gemini_session.send_client_content = mock.AsyncMock()
+
+  mock_contents = [
+      types.Content(role='user', parts=[types.Part.from_text(text='hi')]),
+      types.Content(role='model', parts=[types.Part.from_text(text='hello')]),
+  ]
+  await conn.send_history(mock_contents)
+
+  mock_gemini_session.send_client_content.assert_called_once_with(
+      turns=mock_contents,
+      turn_complete=True,
+  )
+
+
+@pytest.mark.asyncio
+async def test_send_history_collapse_vertex_ai(mock_gemini_session):
+  """Verify history prompt collapse when seeding Gemini 3.1 Live on Vertex AI backend."""
+  conn = GeminiLlmConnection(
+      mock_gemini_session,
+      api_backend=GoogleLLMVariant.VERTEX_AI,
+      model_version='gemini-3.1-flash-live-preview',
+  )
+  mock_gemini_session.send_client_content = mock.AsyncMock()
+
+  mock_contents = [
+      types.Content(role='user', parts=[types.Part.from_text(text='hi')]),
+      types.Content(role='model', parts=[types.Part.from_text(text='hello')]),
+  ]
+  await conn.send_history(mock_contents)
+
+  assert mock_gemini_session.send_client_content.call_count == 1
+  called_turns = mock_gemini_session.send_client_content.call_args.kwargs[
+      'turns'
+  ]
+  assert len(called_turns) == 1
+  assert called_turns[0].role == 'user'
+  assert 'Previous conversation history:' in called_turns[0].parts[0].text
+  assert '[user]: hi' in called_turns[0].parts[0].text
+  assert '[model]: hello' in called_turns[0].parts[0].text
+  assert (
+      mock_gemini_session.send_client_content.call_args.kwargs['turn_complete']
+      is True
+  )
+
+
+@pytest.mark.asyncio
 async def test_receive_grounding_metadata_standalone(
     gemini_connection, mock_gemini_session
 ):
