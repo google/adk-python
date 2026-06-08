@@ -26,7 +26,6 @@ from pathlib import Path
 import sys
 import tempfile
 import textwrap
-from typing import Optional
 
 import click
 from click.core import ParameterSource
@@ -519,7 +518,6 @@ def adk_services_options(*, default_use_local_storage: bool = True):
   """Decorator to add ADK services options to click commands."""
 
   def decorator(func):
-
     @click.option(
         "--session_service_uri",
         help=textwrap.dedent("""\
@@ -904,7 +902,7 @@ def cli_eval(
     eval_set_file_path_or_id: list[str],
     config_file_path: str,
     print_detailed_results: bool,
-    eval_storage_uri: Optional[str] = None,
+    eval_storage_uri: str | None = None,
     log_level: str = "INFO",
 ):
   """Evaluates an agent given the eval sets.
@@ -1296,7 +1294,7 @@ def eval_set():
 def cli_create_eval_set(
     agent_module_file_path: str,
     eval_set_id: str,
-    eval_storage_uri: Optional[str] = None,
+    eval_storage_uri: str | None = None,
     log_level: str = "INFO",
 ):
   """Creates an empty EvalSet given the agent_module_file_path and eval_set_id."""
@@ -1345,8 +1343,8 @@ def cli_add_eval_case(
     agent_module_file_path: str,
     eval_set_id: str,
     scenarios_file: str,
-    eval_storage_uri: Optional[str] = None,
-    session_input_file: Optional[str] = None,
+    eval_storage_uri: str | None = None,
+    session_input_file: str | None = None,
     log_level: str = "INFO",
 ):
   """Adds eval cases to the given eval set.
@@ -1435,7 +1433,7 @@ def cli_generate_eval_cases(
     agent_module_file_path: str,
     eval_set_id: str,
     user_simulation_config_file: str,
-    eval_storage_uri: Optional[str] = None,
+    eval_storage_uri: str | None = None,
     log_level: str = "INFO",
 ):
   """Generates eval cases dynamically and adds them to the given eval set.
@@ -1771,23 +1769,23 @@ def cli_web(
     default_llm_model: Optional[str] = None,
     eval_storage_uri: Optional[str] = None,
     log_level: str = "INFO",
-    allow_origins: Optional[list[str]] = None,
+    allow_origins: list[str] | None = None,
     host: str = "127.0.0.1",
     port: int = 8000,
-    url_prefix: Optional[str] = None,
+    url_prefix: str | None = None,
     trace_to_cloud: bool = False,
     otel_to_cloud: bool = False,
     reload: bool = True,
-    session_service_uri: Optional[str] = None,
-    artifact_service_uri: Optional[str] = None,
-    memory_service_uri: Optional[str] = None,
+    session_service_uri: str | None = None,
+    artifact_service_uri: str | None = None,
+    memory_service_uri: str | None = None,
     use_local_storage: bool = True,
     a2a: bool = False,
     reload_agents: bool = False,
-    extra_plugins: Optional[list[str]] = None,
-    logo_text: Optional[str] = None,
-    logo_image_url: Optional[str] = None,
-    trigger_sources: Optional[list[str]] = None,
+    extra_plugins: list[str] | None = None,
+    logo_text: str | None = None,
+    logo_image_url: str | None = None,
+    trigger_sources: list[str] | None = None,
 ):
   """Starts a FastAPI server with Web UI for agents.
 
@@ -1941,6 +1939,12 @@ def cli_api_server(
     adk api_server --session_service_uri=[uri] --port=[port] path/to/agents_dir
   """
   reload = _check_windows_reload(reload)
+  if express_mode and not gemini_enterprise_app_name:
+    raise click.UsageError(
+        "--express_mode is only supported when --gemini_enterprise_app_name is"
+        " set."
+    )
+
   logs.setup_adk_logger(getattr(logging, log_level.upper()))
 
   from .fast_api import get_fast_api_app
@@ -1965,6 +1969,8 @@ def cli_api_server(
           extra_plugins=extra_plugins,
           auto_create_session=auto_create_session,
           trigger_sources=trigger_sources,
+          gemini_enterprise_app_name=gemini_enterprise_app_name,
+          express_mode=express_mode,
       ),
       host=host,
       port=port,
@@ -2430,6 +2436,7 @@ def cli_migrate_session(
     help=" NOTE: This flag is deprecated and will be removed in the future.",
     callback=_deprecate_parameter,
 )
+# Kept as raw str (not parsed to list) — interpolated directly into Dockerfile CMD.
 @click.option(
     "--trigger_sources",
     type=str,

@@ -41,7 +41,7 @@ _AGENT_ENGINE_REQUIREMENT: Final[str] = (
 
 
 def _ensure_agent_engine_dependency(requirements_txt_path: str) -> None:
-  """Ensures staged requirements include Agent Engine dependencies."""
+  """Ensures staged requirements include Agent Platform dependencies."""
   if not os.path.exists(requirements_txt_path):
     raise FileNotFoundError(
         f'requirements.txt not found at: {requirements_txt_path}'
