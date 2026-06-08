@@ -23,6 +23,7 @@ from google.adk.agents.llm_agent import Agent
 from google.adk.code_executors.base_code_executor import BaseCodeExecutor
 from google.adk.code_executors.built_in_code_executor import BuiltInCodeExecutor
 from google.adk.code_executors.code_execution_utils import CodeExecutionResult
+from google.adk.code_executors.code_execution_utils import CodeExecutionUtils
 from google.adk.flows.llm_flows._code_execution import _DATA_FILE_HELPER_LIB
 from google.adk.flows.llm_flows._code_execution import response_processor
 from google.adk.models.llm_response import LlmResponse
@@ -166,3 +167,16 @@ def test_data_file_helper_lib_defines_crop():
 
   # Regression for #4011: explore_df raised NameError when crop was undefined.
   namespace['explore_df'](pd.DataFrame({'a': [1, 2], 'b': ['x', 'y']}))
+
+
+def test_extract_code_skips_regex_when_no_code_delimiter():
+  content = types.Content(parts=[types.Part(text='{"plot": "' + 'x' * 1000)])
+
+  with patch('google.adk.code_executors.code_execution_utils.re.compile') as re_compile:
+    result = CodeExecutionUtils.extract_code_and_truncate_content(
+        content, [('```python\n', '\n```')]
+    )
+
+  assert result is None
+  re_compile.assert_not_called()
+  assert len(content.parts) == 1
