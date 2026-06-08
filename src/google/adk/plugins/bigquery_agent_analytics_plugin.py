@@ -73,6 +73,7 @@ from .base_plugin import BasePlugin
 
 if TYPE_CHECKING:
   from ..agents.invocation_context import InvocationContext
+  from ..events.event import Event
 
 logger: logging.Logger = logging.getLogger("google_adk." + __name__)
 tracer = trace.get_tracer(
@@ -84,11 +85,56 @@ tracer = trace.get_tracer(
 _SCHEMA_VERSION = "1"
 _SCHEMA_VERSION_LABEL_KEY = "adk_schema_version"
 
+# ADK 2.0 envelope version. Stamped onto every ADK-enriched row as
+# ``attributes.adk.schema_version``. Independent of the BigQuery row
+# schema version above — this names the producer's ADK 2.0 attribute
+# contract so downstream consumers can gate on it.
+_ADK_ENVELOPE_SCHEMA_VERSION = "1"
+
 _HITL_EVENT_MAP = MappingProxyType({
     "adk_request_credential": "HITL_CREDENTIAL_REQUEST",
     "adk_request_confirmation": "HITL_CONFIRMATION_REQUEST",
     "adk_request_input": "HITL_INPUT_REQUEST",
 })
+
+# Reverse of _HITL_EVENT_MAP for the C7 pause_kind discriminator. The
+# id→name lookup in #199/#293 v5 routes ``adk_request_credential`` →
+# ``hitl_credential`` etc.; everything else is ``tool``.
+_HITL_PAUSE_KIND_MAP = MappingProxyType({
+    "adk_request_credential": "hitl_credential",
+    "adk_request_confirmation": "hitl_confirmation",
+    "adk_request_input": "hitl_input",
+})
+
+
+def _derive_scope(
+    isolation_scope: Optional[str],
+) -> Optional[dict[str, str]]:
+  """Derives ``attributes.adk.scope`` per the #198 / #293 v5 rule.
+
+  Order is fixed: (1) None → null; (2) node-shape (``name@run_id`` or
+  ``parent/name@run_id``) → ``node_run``; (3) any other non-empty
+  string → ``function_call`` (model-provided FC IDs like ``call_*`` and
+  ``toolu_*`` legitimately match here); (4) empty/non-string → ``unknown``
+  with a warning. Steps 2 and 3 are intentionally ordered: a bare
+  ``name@run_id`` must classify as ``node_run`` first, not as
+  ``function_call`` by fall-through.
+  """
+  if isolation_scope is None:
+    return None
+  if not isinstance(isolation_scope, str) or not isolation_scope:
+    logger.warning(
+        "Unexpected isolation_scope shape: %r; classifying as 'unknown'",
+        isolation_scope,
+    )
+    return {"id": str(isolation_scope), "kind": "unknown"}
+  # Node-shape: last segment contains '@'. The full string may also be
+  # path-prefixed (e.g. ``wf/A@1/B@2``).
+  last_segment = isolation_scope.rsplit("/", 1)[-1]
+  if "@" in last_segment:
+    return {"id": isolation_scope, "kind": "node_run"}
+  return {"id": isolation_scope, "kind": "function_call"}
+
 
 # Track all living plugin instances so the fork handler can reset
 # them proactively in the child, before _ensure_started runs.
@@ -2021,6 +2067,12 @@ class EventData:
   error_message: Optional[str] = None
   extra_attributes: dict[str, Any] = field(default_factory=dict)
   trace_id_override: Optional[str] = None
+  # ADK 2.0 envelope: callbacks that hold the source Event pass it here
+  # so ``_log_event`` can stamp ``attributes.adk.{source_event_id, node,
+  # branch, scope, ...}``. Leave None for rows that don't originate from
+  # an Event — the envelope helper writes those attributes as null
+  # rather than synthesizing fake identity (per #293 v5 A3 contract).
+  source_event: Optional["Event"] = None
 
 
 class BigQueryAgentAnalyticsPlugin(BasePlugin):
@@ -2825,6 +2877,108 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
       latency_json["time_to_first_token_ms"] = event_data.time_to_first_token_ms
     return latency_json or None
 
+  def _build_adk_envelope(
+      self,
+      callback_context: CallbackContext,
+      source_event: Optional["Event"],
+  ) -> dict[str, Any]:
+    """Builds the ``attributes.adk`` envelope per #293 v5.
+
+    A1 / A2 (``schema_version``, ``app_name``) stamp on every ADK-enriched
+    row regardless of origin. A3 / C1 / C2 / C3 (``source_event_id``,
+    ``node``, ``branch``, ``scope``) and C8 (``route``,
+    ``render_ui_widgets``, ``rewind_before_invocation_id``) only stamp
+    when a source Event is provided — callback-only rows leave them
+    JSON null rather than synthesizing fake identity.
+    """
+    adk: dict[str, Any] = {
+        "schema_version": _ADK_ENVELOPE_SCHEMA_VERSION,
+    }
+    try:
+      adk["app_name"] = callback_context._invocation_context.session.app_name
+    except Exception:
+      adk["app_name"] = None
+
+    if source_event is None:
+      return adk
+
+    # Every getattr below is defensive: source_event is "anything the
+    # caller hands us", which in test suites can be a Mock. Best-effort
+    # enrichment means "leave null on missing attrs", never crash the
+    # row.
+    try:
+      source_event_id = getattr(source_event, "id", None)
+      if source_event_id:
+        adk["source_event_id"] = source_event_id  # A3
+    except Exception:
+      pass
+
+    # C1: node = {path, run_id, parent_path}. NodeInfo.path defaults to
+    # the empty string in current ADK (events/event.py:45); preserve it
+    # verbatim and emit parent_path = null rather than synthesizing a
+    # fake workflow node from an empty path.
+    try:
+      node_info = getattr(source_event, "node_info", None)
+      if node_info is not None and hasattr(node_info, "path"):
+        path = getattr(node_info, "path", "") or ""
+        run_id = getattr(node_info, "run_id", None)
+        parent_path = None
+        if path and "/" in path:
+          parent_path = path.rsplit("/", 1)[0]
+        adk["node"] = {
+            "path": path,
+            "run_id": run_id,
+            "parent_path": parent_path,
+        }
+    except Exception:
+      pass
+
+    # C2: branch — absent stays JSON null (no sentinel string).
+    try:
+      if hasattr(source_event, "branch"):
+        adk["branch"] = source_event.branch
+    except Exception:
+      pass
+
+    # C3: scope shape derivation (per #190 v5 / #198). Order matters:
+    # node-shape patterns must be checked before falling through to
+    # function_call so bare ``name@run_id`` doesn't misclassify.
+    try:
+      if hasattr(source_event, "isolation_scope"):
+        adk["scope"] = _derive_scope(source_event.isolation_scope)
+    except Exception:
+      pass
+
+    # C8: raw EventActions mirror (flat under attributes.adk per #203).
+    # Stamp only when actually set so JSON doesn't bloat with nulls.
+    try:
+      actions = getattr(source_event, "actions", None)
+    except Exception:
+      actions = None
+    if actions is not None:
+      try:
+        route = getattr(actions, "route", None)
+        if route is not None:
+          adk["route"] = route
+      except Exception:
+        pass
+      try:
+        widgets = getattr(actions, "render_ui_widgets", None)
+        if widgets is not None:
+          adk["render_ui_widgets"] = [
+              w.model_dump() if hasattr(w, "model_dump") else w for w in widgets
+          ]
+      except Exception:
+        pass
+      try:
+        rewind = getattr(actions, "rewind_before_invocation_id", None)
+        if rewind is not None:
+          adk["rewind_before_invocation_id"] = rewind
+      except Exception:
+        pass
+
+    return adk
+
   def _enrich_attributes(
       self,
       event_data: EventData,
@@ -2834,12 +2988,15 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
 
     Reads ``model``, ``model_version``, and ``usage_metadata`` from
     *event_data*, copies ``extra_attributes``, then adds session metadata
-    and custom tags.
+    and custom tags. Also stamps the ``adk`` envelope (#293 v5).
 
     Returns:
         A new dict ready for JSON serialization into the attributes column.
     """
     attrs: dict[str, Any] = dict(event_data.extra_attributes)
+    attrs["adk"] = self._build_adk_envelope(
+        callback_context, event_data.source_event
+    )
 
     attrs["root_agent_name"] = TraceManager.get_root_agent_name()
     if event_data.model:
@@ -2992,9 +3149,14 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
   ) -> None:
     """Parity with V1: Logs USER_MESSAGE_RECEIVED event.
 
-    Also detects HITL completion responses (user-sent
-    ``FunctionResponse`` parts with ``adk_request_*`` names) and emits
-    dedicated ``HITL_*_COMPLETED`` events.
+    Also detects:
+    * HITL completion responses (user-sent ``FunctionResponse`` parts
+      with ``adk_request_*`` names) → ``HITL_*_COMPLETED``.
+    * Non-HITL ``FunctionResponse`` parts from a user message → these
+      are the long-running tool completions for tools that paused via
+      ``TOOL_PAUSED``. Emitted as ``TOOL_COMPLETED`` with
+      ``pause_kind = 'tool'`` and ``function_call_id`` so the customer
+      can join the pair from BigQuery (#293 v5 C7 pair-key subset).
 
     Args:
         invocation_context: The context of the current invocation.
@@ -3008,26 +3170,49 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
         raw_content=user_message,
     )
 
-    # Detect HITL completion responses in the user message.
+    # Detect completion responses in the user message.
     if user_message and user_message.parts:
       for part in user_message.parts:
-        if part.function_response:
-          hitl_event = _HITL_EVENT_MAP.get(part.function_response.name)
-          if hitl_event:
-            resp_truncated, is_truncated = _recursive_smart_truncate(
-                part.function_response.response or {},
-                self.config.max_content_length,
-            )
-            content_dict = {
-                "tool": part.function_response.name,
-                "result": resp_truncated,
-            }
-            await self._log_event(
-                hitl_event + "_COMPLETED",
-                callback_ctx,
-                raw_content=content_dict,
-                is_truncated=is_truncated,
-            )
+        if not part.function_response:
+          continue
+        hitl_event = _HITL_EVENT_MAP.get(part.function_response.name)
+        resp_truncated, is_truncated = _recursive_smart_truncate(
+            part.function_response.response or {},
+            self.config.max_content_length,
+        )
+        content_dict = {
+            "tool": part.function_response.name,
+            "result": resp_truncated,
+        }
+        if hitl_event:
+          # HITL completions stay on the HITL_*_COMPLETED stream — they
+          # MUST NOT also emit TOOL_COMPLETED (per #293 v5 C7).
+          await self._log_event(
+              hitl_event + "_COMPLETED",
+              callback_ctx,
+              raw_content=content_dict,
+              is_truncated=is_truncated,
+          )
+        else:
+          # Non-HITL function_response arriving via a user message is
+          # by construction a long-running tool completion: regular
+          # tool calls complete inside the agent run via
+          # after_tool_callback, so a function_response inside a user
+          # message is the resume side of a previously-paused tool.
+          # Stamp the pair keys; pause_orphan / registry semantics are
+          # deferred to #206.
+          await self._log_event(
+              "TOOL_COMPLETED",
+              callback_ctx,
+              raw_content=content_dict,
+              is_truncated=is_truncated,
+              event_data=EventData(
+                  extra_attributes={
+                      "pause_kind": "tool",
+                      "function_call_id": part.function_response.id,
+                  },
+              ),
+          )
 
   @_safe_callback
   async def on_event_callback(
@@ -3070,11 +3255,84 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
           "STATE_DELTA",
           callback_ctx,
           event_data=EventData(
-              extra_attributes={"state_delta": dict(event.actions.state_delta)}
+              source_event=event,
+              extra_attributes={"state_delta": dict(event.actions.state_delta)},
           ),
       )
 
-    # --- HITL event logging ---
+    # --- AGENT_TRANSFER (C4 / #200) ---
+    # actions.transfer_to_agent stores the *target* agent only
+    # (events/event_actions.py:75); from_agent is pinned to event.author
+    # per #293 v5 C4. Never fabricate authors on non-Event paths.
+    if event.actions.transfer_to_agent:
+      await self._log_event(
+          "AGENT_TRANSFER",
+          callback_ctx,
+          raw_content={
+              "from_agent": event.author,
+              "to_agent": event.actions.transfer_to_agent,
+          },
+          event_data=EventData(source_event=event),
+      )
+
+    # --- EVENT_COMPACTION (C5 / #201) ---
+    # EventCompaction.start_timestamp / end_timestamp are float epoch
+    # seconds. Preserve fractional precision here; consumer view
+    # conversion is deferred.
+    compaction = event.actions.compaction
+    if compaction is not None:
+      compacted_content, compaction_truncated = self._format_content_safely(
+          compaction.compacted_content
+      )
+      await self._log_event(
+          "EVENT_COMPACTION",
+          callback_ctx,
+          raw_content={
+              "start_timestamp": compaction.start_timestamp,
+              "end_timestamp": compaction.end_timestamp,
+              "compacted_content": compacted_content,
+          },
+          is_truncated=compaction_truncated,
+          event_data=EventData(source_event=event),
+      )
+
+    # --- AGENT_STATE_CHECKPOINT (C6 / #202) ---
+    # Fires when *either* agent_state is set or end_of_agent is True;
+    # supports {agent_state: None, end_of_agent: True} payloads.
+    # Inline payload only — oversized-state GCS offload deferred.
+    if (
+        event.actions.agent_state is not None
+        or event.actions.end_of_agent is True
+    ):
+      agent_state_dict, agent_state_truncated = (
+          _recursive_smart_truncate(
+              event.actions.agent_state,
+              self.config.max_content_length,
+          )
+          if event.actions.agent_state is not None
+          else (None, False)
+      )
+      await self._log_event(
+          "AGENT_STATE_CHECKPOINT",
+          callback_ctx,
+          raw_content={
+              "agent_state": agent_state_dict,
+              "end_of_agent": bool(event.actions.end_of_agent),
+          },
+          is_truncated=agent_state_truncated,
+          event_data=EventData(source_event=event),
+      )
+
+    # --- HITL + TOOL_PAUSED (C7 / #199 — pair-key subset) + per-part
+    #     iteration over event.content.parts ---
+    # TOOL_PAUSED fires per long_running_tool_id; pause_kind is derived
+    # via the id→name lookup against _HITL_PAUSE_KIND_MAP, so a HITL
+    # long-running call carries pause_kind = 'hitl_*' and a regular
+    # long-running tool carries pause_kind = 'tool'. function_call_id
+    # joins to the downstream TOOL_COMPLETED via the user message path.
+    # Use getattr so the existing Mock-based HITL test fixtures still
+    # work — they construct events without setting long_running_tool_ids.
+    long_running_ids = set(getattr(event, "long_running_tool_ids", None) or ())
     if event.content and event.content.parts:
       for part in event.content.parts:
         # Detect HITL function calls (request events).
@@ -3094,8 +3352,38 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
                 callback_ctx,
                 raw_content=content_dict,
                 is_truncated=is_truncated,
+                event_data=EventData(source_event=event),
             )
-        # Detect HITL function responses (completion events).
+          # C7: per-id TOOL_PAUSED emit. pause_kind derives from the
+          # function_call NAME (#199 / #293 v5) — looking it up against
+          # the id value would misclassify every HITL pause as 'tool'.
+          if part.function_call.id in long_running_ids:
+            pause_kind = _HITL_PAUSE_KIND_MAP.get(
+                part.function_call.name, "tool"
+            )
+            args_truncated, is_truncated = _recursive_smart_truncate(
+                part.function_call.args or {},
+                self.config.max_content_length,
+            )
+            await self._log_event(
+                "TOOL_PAUSED",
+                callback_ctx,
+                raw_content={
+                    "tool": part.function_call.name,
+                    "args": args_truncated,
+                },
+                is_truncated=is_truncated,
+                event_data=EventData(
+                    source_event=event,
+                    extra_attributes={
+                        "pause_kind": pause_kind,
+                        "function_call_id": part.function_call.id,
+                    },
+                ),
+            )
+        # Detect HITL function responses (completion events). HITL
+        # function responses route ONLY here, never to TOOL_COMPLETED
+        # (per #293 v5 C7 / verified at this file's HITL test suite).
         if part.function_response:
           hitl_event = _HITL_EVENT_MAP.get(part.function_response.name)
           if hitl_event:
@@ -3112,6 +3400,7 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
                 callback_ctx,
                 raw_content=content_dict,
                 is_truncated=is_truncated,
+                event_data=EventData(source_event=event),
             )
 
     # --- A2A interaction logging ---
@@ -3147,6 +3436,7 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
           raw_content=content_dict,
           is_truncated=is_truncated or content_truncated,
           event_data=EventData(
+              source_event=event,
               extra_attributes={
                   "a2a_metadata": a2a_truncated,
               },
@@ -3183,12 +3473,17 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
             role=event.content.role, parts=visible_parts
         )
         formatted, truncated = self._format_content_safely(visible_content)
+        # source_event=event carries the ADK envelope (A3 / node /
+        # branch / scope). The flat ``source_event_*`` extras are
+        # retained for backward compat with existing AGENT_RESPONSE
+        # consumers; the canonical keys are under ``attributes.adk.*``.
         await self._log_event(
             "AGENT_RESPONSE",
             callback_ctx,
             raw_content={"response": formatted},
             is_truncated=truncated,
             event_data=EventData(
+                source_event=event,
                 extra_attributes={
                     "source_event_id": event.id,
                     "source_event_author": event.author,
@@ -3198,24 +3493,6 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
         )
 
     return None
-
-  async def on_state_change_callback(
-      self,
-      *,
-      callback_context: CallbackContext,
-      state_delta: dict[str, Any],
-  ) -> None:
-    """Deprecated: use on_event_callback instead.
-
-    This method is retained for API compatibility but is never invoked
-    by the framework (not in BasePlugin, PluginManager, or Runner).
-    State deltas are now captured via on_event_callback.
-    """
-    logger.warning(
-        "on_state_change_callback is deprecated and never called by"
-        " the framework. State deltas are captured via"
-        " on_event_callback."
-    )
 
   @_safe_callback
   async def before_run_callback(
