@@ -206,9 +206,7 @@ def test_function_request_euc_args_are_json_serializable():
       request_euc_function_call.name == functions.REQUEST_EUC_FUNCTION_CALL_NAME
   )
 
-  # The in-memory event args must be JSON-serializable. A python-mode dump
-  # leaves auth_scheme.type as a live SecuritySchemeType enum, which breaks any
-  # consumer that json.dumps the event before it round-trips the session DB.
+  # python-mode dump leaves auth_scheme.type a live enum, breaking json.dumps
   json.dumps(request_euc_function_call.args)
   assert (
       request_euc_function_call.args['authConfig']['authScheme']['type']
