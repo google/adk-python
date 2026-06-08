@@ -72,6 +72,7 @@ from ._experimental_semconv import maybe_log_completion_details
 from ._experimental_semconv import set_operation_details_attributes_from_request
 from ._experimental_semconv import set_operation_details_attributes_from_response
 from ._experimental_semconv import set_operation_details_common_attributes
+from ._token_usage import TokenUsage
 
 # By default some ADK spans include attributes with potential PII data.
 # This env, when set to false, allows to disable populating those attributes.
@@ -304,6 +305,16 @@ def trace_merged_tool_calls(
   )
 
 
+def _set_usage_metadata_attributes(
+    span: Span,
+    usage_metadata: types.GenerateContentResponseUsageMetadata | None,
+) -> None:
+  """Records usage metadata attributes on the given span."""
+  if usage_metadata is None:
+    return
+  span.set_attributes(TokenUsage(usage_metadata).to_attributes())
+
+
 def trace_call_llm(
     invocation_context: InvocationContext,
     event_id: str,
@@ -379,33 +390,7 @@ def trace_call_llm(
   else:
     span.set_attribute('gcp.vertex.agent.llm_response', '{}')
 
-  if llm_response.usage_metadata is not None:
-    if llm_response.usage_metadata.prompt_token_count is not None:
-      span.set_attribute(
-          'gen_ai.usage.input_tokens',
-          llm_response.usage_metadata.prompt_token_count,
-      )
-    if llm_response.usage_metadata.candidates_token_count is not None:
-      span.set_attribute(
-          'gen_ai.usage.output_tokens',
-          llm_response.usage_metadata.candidates_token_count,
-      )
-    try:
-      if llm_response.usage_metadata.thoughts_token_count is not None:
-        span.set_attribute(
-            'gen_ai.usage.experimental.reasoning_tokens',
-            llm_response.usage_metadata.thoughts_token_count,
-        )
-    except AttributeError:
-      pass
-    try:
-      if llm_response.usage_metadata.system_instruction_tokens is not None:
-        span.set_attribute(
-            'gen_ai.usage.experimental.system_instruction_tokens',
-            llm_response.usage_metadata.system_instruction_tokens,
-        )
-    except AttributeError:
-      pass
+  _set_usage_metadata_attributes(span, llm_response.usage_metadata)
   if llm_response.finish_reason:
     try:
       finish_reason_str = llm_response.finish_reason.value.lower()
@@ -849,15 +834,7 @@ def trace_generate_content_result(span: Span | None, llm_response: LlmResponse):
 
   if finish_reason := llm_response.finish_reason:
     span.set_attribute(GEN_AI_RESPONSE_FINISH_REASONS, [finish_reason.lower()])
-  if usage_metadata := llm_response.usage_metadata:
-    if usage_metadata.prompt_token_count is not None:
-      span.set_attribute(
-          GEN_AI_USAGE_INPUT_TOKENS, usage_metadata.prompt_token_count
-      )
-    if usage_metadata.candidates_token_count is not None:
-      span.set_attribute(
-          GEN_AI_USAGE_OUTPUT_TOKENS, usage_metadata.candidates_token_count
-      )
+  _set_usage_metadata_attributes(span, llm_response.usage_metadata)
 
   otel_logger.emit(
       LogRecord(
@@ -892,15 +869,7 @@ def trace_inference_result(
 
   if finish_reason := llm_response.finish_reason:
     span.set_attribute(GEN_AI_RESPONSE_FINISH_REASONS, [finish_reason.lower()])
-  if usage_metadata := llm_response.usage_metadata:
-    if usage_metadata.prompt_token_count is not None:
-      span.set_attribute(
-          GEN_AI_USAGE_INPUT_TOKENS, usage_metadata.prompt_token_count
-      )
-    if usage_metadata.candidates_token_count is not None:
-      span.set_attribute(
-          GEN_AI_USAGE_OUTPUT_TOKENS, usage_metadata.candidates_token_count
-      )
+  _set_usage_metadata_attributes(span, llm_response.usage_metadata)
 
   if is_experimental_semconv() and isinstance(gc_span, GenerateContentSpan):
     set_operation_details_attributes_from_response(
