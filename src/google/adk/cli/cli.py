@@ -321,9 +321,8 @@ def _setup_runner_context(
   )
 
   artifact_service = create_artifact_service_from_options(
-      base_dir=agent_parent_path,
+      base_dir=agent_root,
       artifact_service_uri=artifact_service_uri,
-      app_name_to_dir=app_name_to_dir,
       use_local_storage=use_local_storage,
   )
   memory_service = create_memory_service_from_options(

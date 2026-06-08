@@ -26,6 +26,7 @@ from pathlib import Path
 import sys
 import tempfile
 import textwrap
+from typing import Optional
 
 import click
 from click.core import ParameterSource
@@ -337,8 +338,8 @@ def cli_conformance_test(
     paths: tuple[str, ...],
     mode: str,
     generate_report: bool,
-    report_dir: str | None = None,
-    streaming_mode: StreamingMode | None = None,
+    report_dir: Optional[str] = None,
+    streaming_mode: Optional[StreamingMode] = None,
 ):
   """Run conformance tests to verify agent behavior consistency.
 
@@ -471,11 +472,11 @@ def cli_conformance_test(
 @click.argument("app_name", type=str, required=True)
 def cli_create_cmd(
     app_name: str,
-    model: str | None,
-    api_key: str | None,
-    project: str | None,
-    region: str | None,
-    type: str | None,
+    model: Optional[str],
+    api_key: Optional[str],
+    project: Optional[str],
+    region: Optional[str],
+    type: Optional[str],
 ):
   """Creates a new app in the current folder with prepopulated agent template.
 
@@ -570,11 +571,8 @@ def adk_services_options(*, default_use_local_storage: bool = True):
         "--memory_service_uri",
         type=str,
         help=textwrap.dedent("""\
-            Optional. The URI of the memory service.
-            If set, ADK uses this service.
-
             \b
-            If unset, ADK chooses a default memory service.
+            Optional. The URI of the memory service.
             - Use 'rag://<rag_corpus_id>' to connect to Vertex AI Rag Memory Service.
             - Use 'agentengine://<agent_engine>' to connect to Agent Engine
               sessions. <agent_engine> can either be the full qualified resource
@@ -902,7 +900,7 @@ def cli_eval(
     eval_set_file_path_or_id: list[str],
     config_file_path: str,
     print_detailed_results: bool,
-    eval_storage_uri: str | None = None,
+    eval_storage_uri: Optional[str] = None,
     log_level: str = "INFO",
 ):
   """Evaluates an agent given the eval sets.
@@ -1294,7 +1292,7 @@ def eval_set():
 def cli_create_eval_set(
     agent_module_file_path: str,
     eval_set_id: str,
-    eval_storage_uri: str | None = None,
+    eval_storage_uri: Optional[str] = None,
     log_level: str = "INFO",
 ):
   """Creates an empty EvalSet given the agent_module_file_path and eval_set_id."""
@@ -1343,8 +1341,8 @@ def cli_add_eval_case(
     agent_module_file_path: str,
     eval_set_id: str,
     scenarios_file: str,
-    eval_storage_uri: str | None = None,
-    session_input_file: str | None = None,
+    eval_storage_uri: Optional[str] = None,
+    session_input_file: Optional[str] = None,
     log_level: str = "INFO",
 ):
   """Adds eval cases to the given eval set.
@@ -1433,7 +1431,7 @@ def cli_generate_eval_cases(
     agent_module_file_path: str,
     eval_set_id: str,
     user_simulation_config_file: str,
-    eval_storage_uri: str | None = None,
+    eval_storage_uri: Optional[str] = None,
     log_level: str = "INFO",
 ):
   """Generates eval cases dynamically and adds them to the given eval set.
@@ -1558,25 +1556,12 @@ def web_options():
   return decorator
 
 
-def _deprecate_parameter(ctx, param, value):
+def _deprecate_staging_bucket(ctx, param, value):
   if value:
     click.echo(
         click.style(
             f"WARNING: --{param} is deprecated and will be removed. Please"
             " leave it unspecified.",
-            fg="yellow",
-        ),
-        err=True,
-    )
-  return value
-
-
-def _deprecate_trace_to_cloud(ctx, param, value):
-  if value:
-    click.echo(
-        click.style(
-            f"WARNING: --{param} is deprecated and will be removed. Please"
-            " use --otel_to_cloud instead.",
             fg="yellow",
         ),
         err=True,
@@ -1769,23 +1754,23 @@ def cli_web(
     default_llm_model: Optional[str] = None,
     eval_storage_uri: Optional[str] = None,
     log_level: str = "INFO",
-    allow_origins: list[str] | None = None,
+    allow_origins: Optional[list[str]] = None,
     host: str = "127.0.0.1",
     port: int = 8000,
-    url_prefix: str | None = None,
+    url_prefix: Optional[str] = None,
     trace_to_cloud: bool = False,
     otel_to_cloud: bool = False,
     reload: bool = True,
-    session_service_uri: str | None = None,
-    artifact_service_uri: str | None = None,
-    memory_service_uri: str | None = None,
+    session_service_uri: Optional[str] = None,
+    artifact_service_uri: Optional[str] = None,
+    memory_service_uri: Optional[str] = None,
     use_local_storage: bool = True,
     a2a: bool = False,
     reload_agents: bool = False,
-    extra_plugins: list[str] | None = None,
-    logo_text: str | None = None,
-    logo_image_url: str | None = None,
-    trigger_sources: list[str] | None = None,
+    extra_plugins: Optional[list[str]] = None,
+    logo_text: Optional[str] = None,
+    logo_image_url: Optional[str] = None,
+    trigger_sources: Optional[list[str]] = None,
 ):
   """Starts a FastAPI server with Web UI for agents.
 
@@ -1885,48 +1870,27 @@ def cli_web(
     default=False,
     help="Serve ADK Web UI if set.",
 )
-@click.option(
-    "--gemini_enterprise_app_name",
-    type=str,
-    default=None,
-    help=(
-        "The app_name to register with Gemini Enterprise via"
-        " https://docs.cloud.google.com/gemini/enterprise/docs/register-and-manage-an-adk-agent"
-    ),
-)
-@click.option(
-    "--express_mode",
-    is_flag=True,
-    default=False,
-    help=(
-        "Whether or not to initialize the server in express mode. This is only"
-        " supported when gemini_enterprise_app_name is set. Defaults to"
-        " False."
-    ),
-)
 def cli_api_server(
     agents_dir: str,
-    eval_storage_uri: str | None = None,
+    eval_storage_uri: Optional[str] = None,
     log_level: str = "INFO",
-    allow_origins: list[str] | None = None,
+    allow_origins: Optional[list[str]] = None,
     host: str = "127.0.0.1",
     port: int = 8000,
-    url_prefix: str | None = None,
+    url_prefix: Optional[str] = None,
     trace_to_cloud: bool = False,
     otel_to_cloud: bool = False,
     reload: bool = True,
-    session_service_uri: str | None = None,
-    artifact_service_uri: str | None = None,
-    memory_service_uri: str | None = None,
+    session_service_uri: Optional[str] = None,
+    artifact_service_uri: Optional[str] = None,
+    memory_service_uri: Optional[str] = None,
     use_local_storage: bool = True,
     a2a: bool = False,
     reload_agents: bool = False,
-    extra_plugins: list[str] | None = None,
+    extra_plugins: Optional[list[str]] = None,
     auto_create_session: bool = False,
-    trigger_sources: list[str] | None = None,
+    trigger_sources: Optional[list[str]] = None,
     with_ui: bool = False,
-    gemini_enterprise_app_name: str | None = None,
-    express_mode: bool = False,
 ):
   """Starts a FastAPI server for agents.
 
@@ -1939,12 +1903,6 @@ def cli_api_server(
     adk api_server --session_service_uri=[uri] --port=[port] path/to/agents_dir
   """
   reload = _check_windows_reload(reload)
-  if express_mode and not gemini_enterprise_app_name:
-    raise click.UsageError(
-        "--express_mode is only supported when --gemini_enterprise_app_name is"
-        " set."
-    )
-
   logs.setup_adk_logger(getattr(logging, log_level.upper()))
 
   from .fast_api import get_fast_api_app
@@ -1969,8 +1927,6 @@ def cli_api_server(
           extra_plugins=extra_plugins,
           auto_create_session=auto_create_session,
           trigger_sources=trigger_sources,
-          gemini_enterprise_app_name=gemini_enterprise_app_name,
-          express_mode=express_mode,
       ),
       host=host,
       port=port,
@@ -2126,8 +2082,8 @@ def cli_api_server(
 def cli_deploy_cloud_run(
     ctx,
     agent: str,
-    project: str | None,
-    region: str | None,
+    project: Optional[str],
+    region: Optional[str],
     service_name: str,
     app_name: str,
     temp_folder: str,
@@ -2143,7 +2099,7 @@ def cli_deploy_cloud_run(
     memory_service_uri: Optional[str] = None,
     use_local_storage: bool = False,
     a2a: bool = False,
-    trigger_sources: str | None = None,
+    trigger_sources: Optional[str] = None,
 ):
   """Deploys an agent to Cloud Run.
 
@@ -2319,7 +2275,7 @@ def cli_migrate_session(
     type=str,
     default=None,
     help="Deprecated. This argument is no longer required or used.",
-    callback=_deprecate_parameter,
+    callback=_deprecate_staging_bucket,
 )
 @click.option(
     "--agent_engine_id",
@@ -2341,8 +2297,7 @@ def cli_migrate_session(
     is_flag=True,
     show_default=True,
     default=None,
-    help=" NOTE: This flag is deprecated and will be removed in the future.",
-    callback=_deprecate_trace_to_cloud,
+    help="Optional. Whether to enable Cloud Trace for Agent Engine.",
 )
 @click.option(
     "--otel_to_cloud",
@@ -2369,9 +2324,11 @@ def cli_migrate_session(
 @click.option(
     "--adk_app",
     type=str,
-    default=None,
-    help=" NOTE: This flag is deprecated and will be removed in the future.",
-    callback=_deprecate_parameter,
+    default="agent_engine_app",
+    help=(
+        "Optional. Python file for defining the ADK application"
+        " (default: a file named agent_engine_app.py)"
+    ),
 )
 @click.option(
     "--temp_folder",
@@ -2387,29 +2344,35 @@ def cli_migrate_session(
     "--adk_app_object",
     type=str,
     default=None,
-    help=" NOTE: This flag is deprecated and will be removed in the future.",
-    callback=_deprecate_parameter,
+    help=(
+        "Optional. Python object corresponding to the root ADK agent or app."
+        " It can only be `root_agent` or `app`. (default: `root_agent`)"
+    ),
 )
 @click.option(
     "--env_file",
     type=str,
     default="",
-    help=" NOTE: This flag is deprecated and will be removed in the future.",
-    callback=_deprecate_parameter,
+    help=(
+        "Optional. The filepath to the `.env` file for environment variables."
+        " (default: the `.env` file in the `agent` directory, if any.)"
+    ),
 )
 @click.option(
     "--requirements_file",
     type=str,
     default="",
-    help=" NOTE: This flag is deprecated and will be removed in the future.",
-    callback=_deprecate_parameter,
+    help=(
+        "Optional. The filepath to the `requirements.txt` file to use."
+        " (default: the `requirements.txt` file in the `agent` directory, if"
+        " any.)"
+    ),
 )
 @click.option(
     "--absolutize_imports",
     type=bool,
     default=False,
     help=" NOTE: This flag is deprecated and will be removed in the future.",
-    callback=_deprecate_parameter,
 )
 @click.option(
     "--agent_engine_config_file",
@@ -2425,39 +2388,22 @@ def cli_migrate_session(
 @click.option(
     "--validate-agent-import/--no-validate-agent-import",
     default=False,
-    help=" NOTE: This flag is deprecated and will be removed in the future.",
-    callback=_deprecate_parameter,
+    help=(
+        "Optional. Validate that the agent module can be imported before"
+        " deployment. This requires your local environment to have the same"
+        " dependencies as the deployment environment. (default: disabled)"
+    ),
 )
 @click.option(
     "--skip-agent-import-validation",
     "skip_agent_import_validation_alias",
     is_flag=True,
     default=False,
-    help=" NOTE: This flag is deprecated and will be removed in the future.",
-    callback=_deprecate_parameter,
-)
-# Kept as raw str (not parsed to list) — interpolated directly into Dockerfile CMD.
-@click.option(
-    "--trigger_sources",
-    type=str,
     help=(
-        "Optional. Comma-separated list of trigger sources to enable"
-        " (e.g., 'pubsub,eventarc'). Registers /trigger/* endpoints"
-        " for batch and event-driven agent invocations."
-    ),
-    default=None,
-)
-@click.option(
-    "--adk_version",
-    type=str,
-    default=version.__version__,
-    show_default=True,
-    help=(
-        "Optional. The ADK version used in Agent Engine deployment. (default: "
-        " the version in the dev environment)"
+        "Optional. Skip pre-deployment import validation of `agent.py`. This is"
+        " the default; use --validate-agent-import to enable validation."
     ),
 )
-@adk_services_options(default_use_local_storage=False)
 @click.argument(
     "agent",
     type=click.Path(
@@ -2466,30 +2412,24 @@ def cli_migrate_session(
 )
 def cli_deploy_agent_engine(
     agent: str,
-    project: str | None,
-    region: str | None,
-    staging_bucket: str | None,
-    agent_engine_id: str | None,
-    trace_to_cloud: bool | None,
-    otel_to_cloud: bool | None,
-    api_key: str | None,
+    project: Optional[str],
+    region: Optional[str],
+    staging_bucket: Optional[str],
+    agent_engine_id: Optional[str],
+    trace_to_cloud: Optional[bool],
+    otel_to_cloud: Optional[bool],
+    api_key: Optional[str],
     display_name: str,
     description: str,
-    adk_app: str | None,
-    adk_app_object: str | None,
-    temp_folder: str | None,
+    adk_app: str,
+    adk_app_object: Optional[str],
+    temp_folder: Optional[str],
     env_file: str,
     requirements_file: str,
     absolutize_imports: bool,
     agent_engine_config_file: str,
     validate_agent_import: bool = False,
     skip_agent_import_validation_alias: bool = False,
-    adk_version: str | None = None,
-    trigger_sources: str | None = None,
-    artifact_service_uri: str | None = None,
-    memory_service_uri: str | None = None,
-    session_service_uri: str | None = None,
-    use_local_storage: bool = False,
 ):
   """Deploys an agent to Agent Engine.
 
@@ -2531,11 +2471,6 @@ def cli_deploy_agent_engine(
         absolutize_imports=absolutize_imports,
         agent_engine_config_file=agent_engine_config_file,
         skip_agent_import_validation=not validate_agent_import,
-        trigger_sources=trigger_sources,
-        artifact_service_uri=artifact_service_uri,
-        memory_service_uri=memory_service_uri,
-        session_service_uri=session_service_uri,
-        adk_version=adk_version,
     )
   except Exception as e:
     click.secho(f"Deploy failed: {e}", fg="red", err=True)
@@ -2672,8 +2607,8 @@ def cli_deploy_agent_engine(
 )
 def cli_deploy_gke(
     agent: str,
-    project: str | None,
-    region: str | None,
+    project: Optional[str],
+    region: Optional[str],
     cluster_name: str,
     service_name: str,
     app_name: str,
@@ -2684,12 +2619,12 @@ def cli_deploy_gke(
     with_ui: bool,
     adk_version: str,
     service_type: str,
-    log_level: str | None = None,
-    session_service_uri: str | None = None,
-    artifact_service_uri: str | None = None,
-    memory_service_uri: str | None = None,
+    log_level: Optional[str] = None,
+    session_service_uri: Optional[str] = None,
+    artifact_service_uri: Optional[str] = None,
+    memory_service_uri: Optional[str] = None,
     use_local_storage: bool = False,
-    trigger_sources: str | None = None,
+    trigger_sources: Optional[str] = None,
 ):
   """Deploys an agent to GKE.
 
