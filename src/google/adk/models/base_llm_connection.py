@@ -39,15 +39,18 @@ class BaseLlmConnection:
     pass
 
   @abstractmethod
-  async def send_content(self, content: types.Content):
+  async def send_content(
+      self, content: types.Content, turn_complete: bool = True
+  ):
     """Sends a user content to the model.
 
-    The model will respond immediately upon receiving the content.
+    By default, the model will respond upon receiving the content.
     If you send function responses, all parts in the content should be function
     responses.
 
     Args:
       content: The content to send to the model.
+      turn_complete: Whether this content completes the model turn.
     """
     pass
 

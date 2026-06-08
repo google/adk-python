@@ -117,15 +117,18 @@ class GeminiLlmConnection(BaseLlmConnection):
     else:
       logger.info('no content is sent')
 
-  async def send_content(self, content: types.Content):
+  async def send_content(
+      self, content: types.Content, turn_complete: bool = True
+  ):
     """Sends a user content to the gemini model.
 
-    The model will respond immediately upon receiving the content.
+    By default, the model will respond upon receiving the content.
     If you send function responses, all parts in the content should be function
     responses.
 
     Args:
       content: The content to send to the model.
+      turn_complete: Whether this content completes the model turn.
     """
     assert content.parts
     if content.parts[0].function_response:
@@ -138,7 +141,8 @@ class GeminiLlmConnection(BaseLlmConnection):
     else:
       logger.debug('Sending LLM new content %s', content)
       if (
-          self._is_gemini_3_1_flash_live
+          turn_complete
+          and self._is_gemini_3_1_flash_live
           and len(content.parts) == 1
           and content.parts[0].text
       ):
@@ -150,7 +154,7 @@ class GeminiLlmConnection(BaseLlmConnection):
         await self._gemini_session.send(
             input=types.LiveClientContent(
                 turns=[content],
-                turn_complete=True,
+                turn_complete=turn_complete,
             )
         )
 

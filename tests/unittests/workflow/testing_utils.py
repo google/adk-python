@@ -484,7 +484,9 @@ class MockLlmConnection(BaseLlmConnection):
   async def send_history(self, history: list[types.Content]):
     pass
 
-  async def send_content(self, content: types.Content):
+  async def send_content(
+      self, content: types.Content, turn_complete: bool = True
+  ):
     self.mock_model.live_contents.append(content)
     self._input_event.set()
 
