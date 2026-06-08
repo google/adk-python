@@ -88,11 +88,15 @@ class GeminiLlmConnection(BaseLlmConnection):
       # protocol error (invalid role mid-session), we consolidate previous multi-turn
       # interactions into a unified contextual preamble on a single user role turn.
       if is_gemini_31 and self._api_backend != GoogleLLMVariant.GEMINI_API:
-        collapsed_text = "Previous conversation history:\n"
+        collapsed_text = 'Previous conversation history:\n'
         for c in contents:
-          text_parts = "".join(p.text for p in c.parts if p.text)
+          text_parts = ''.join(p.text for p in c.parts if p.text)
           collapsed_text += f'[{c.role}]: {text_parts}\n'
-        contents = [types.Content(role='user', parts=[types.Part.from_text(text=collapsed_text)])]
+        contents = [
+            types.Content(
+                role='user', parts=[types.Part.from_text(text=collapsed_text)]
+            )
+        ]
 
       logger.debug('Sending history to live connection: %s', contents)
       await self._gemini_session.send_client_content(
@@ -281,7 +285,11 @@ class GeminiLlmConnection(BaseLlmConnection):
                 is_thought = current_is_thought
                 llm_response.partial = True
             # don't yield the merged text event when receiving audio data
-            if text and not any(p.text for p in content.parts) and not has_inline_data:
+            if (
+                text
+                and not any(p.text for p in content.parts)
+                and not has_inline_data
+            ):
               yield self.__build_full_text_response(text, is_thought)
               text = ''
               is_thought = False

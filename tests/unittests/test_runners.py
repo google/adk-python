@@ -220,6 +220,369 @@ class TestRunnerFindAgentToRun:
         artifact_service=self.artifact_service,
     )
 
+  def test_find_agent_to_run_with_function_response_scenario(self):
+    """Test finding agent when last event is function response."""
+    # Create a function call from sub_agent1
+    function_call = types.FunctionCall(id="func_123", name="test_func", args={})
+    function_response = types.FunctionResponse(
+        id="func_123", name="test_func", response={}
+    )
+
+    call_event = Event(
+        invocation_id="inv1",
+        author="sub_agent1",
+        content=types.Content(
+            role="model", parts=[types.Part(function_call=function_call)]
+        ),
+    )
+
+    response_event = Event(
+        invocation_id="inv2",
+        author="user",
+        content=types.Content(
+            role="user", parts=[types.Part(function_response=function_response)]
+        ),
+    )
+
+    session = Session(
+        id="test_session",
+        user_id="test_user",
+        app_name="test_app",
+        events=[call_event, response_event],
+    )
+
+    result = self.runner._find_agent_to_run(session, self.root_agent)
+    assert result == self.sub_agent1
+
+  def test_find_agent_to_run_returns_root_agent_when_no_events(self):
+    """Test that root agent is returned when session has no non-user events."""
+    session = Session(
+        id="test_session",
+        user_id="test_user",
+        app_name="test_app",
+        events=[
+            Event(
+                invocation_id="inv1",
+                author="user",
+                content=types.Content(
+                    role="user", parts=[types.Part(text="Hello")]
+                ),
+            )
+        ],
+    )
+
+    result = self.runner._find_agent_to_run(session, self.root_agent)
+    assert result == self.root_agent
+
+  def test_find_agent_to_run_returns_root_agent_when_found_in_events(self):
+    """Test that root agent is returned when it's found in session events."""
+    session = Session(
+        id="test_session",
+        user_id="test_user",
+        app_name="test_app",
+        events=[
+            Event(
+                invocation_id="inv1",
+                author="root_agent",
+                content=types.Content(
+                    role="model", parts=[types.Part(text="Root response")]
+                ),
+            )
+        ],
+    )
+
+    result = self.runner._find_agent_to_run(session, self.root_agent)
+    assert result == self.root_agent
+
+  def test_find_agent_to_run_returns_transferable_sub_agent(self):
+    """Test that transferable sub agent is returned when found."""
+    session = Session(
+        id="test_session",
+        user_id="test_user",
+        app_name="test_app",
+        events=[
+            Event(
+                invocation_id="inv1",
+                author="sub_agent1",
+                content=types.Content(
+                    role="model", parts=[types.Part(text="Sub agent response")]
+                ),
+            )
+        ],
+    )
+
+    result = self.runner._find_agent_to_run(session, self.root_agent)
+    assert result == self.sub_agent1
+
+  def test_find_agent_to_run_skips_non_transferable_agent(self):
+    """Test that non-transferable agent is skipped and root agent is returned."""
+    session = Session(
+        id="test_session",
+        user_id="test_user",
+        app_name="test_app",
+        events=[
+            Event(
+                invocation_id="inv1",
+                author="non_transferable",
+                content=types.Content(
+                    role="model",
+                    parts=[types.Part(text="Non-transferable response")],
+                ),
+            )
+        ],
+    )
+
+    result = self.runner._find_agent_to_run(session, self.root_agent)
+    assert result == self.root_agent
+
+  def test_find_agent_to_run_skips_unknown_agent(self):
+    """Test that unknown agent is skipped and root agent is returned."""
+    session = Session(
+        id="test_session",
+        user_id="test_user",
+        app_name="test_app",
+        events=[
+            Event(
+                invocation_id="inv1",
+                author="unknown_agent",
+                content=types.Content(
+                    role="model",
+                    parts=[types.Part(text="Unknown agent response")],
+                ),
+            ),
+            Event(
+                invocation_id="inv2",
+                author="root_agent",
+                content=types.Content(
+                    role="model", parts=[types.Part(text="Root response")]
+                ),
+            ),
+        ],
+    )
+
+    result = self.runner._find_agent_to_run(session, self.root_agent)
+    assert result == self.root_agent
+
+  def test_find_agent_to_run_function_response_takes_precedence(self):
+    """Test that function response scenario takes precedence over other logic."""
+    # Create a function call from sub_agent2
+    function_call = types.FunctionCall(id="func_456", name="test_func", args={})
+    function_response = types.FunctionResponse(
+        id="func_456", name="test_func", response={}
+    )
+
+    call_event = Event(
+        invocation_id="inv1",
+        author="sub_agent2",
+        content=types.Content(
+            role="model", parts=[types.Part(function_call=function_call)]
+        ),
+    )
+
+    # Add another event from root_agent
+    root_event = Event(
+        invocation_id="inv2",
+        author="root_agent",
+        content=types.Content(
+            role="model", parts=[types.Part(text="Root response")]
+        ),
+    )
+
+    response_event = Event(
+        invocation_id="inv3",
+        author="user",
+        content=types.Content(
+            role="user", parts=[types.Part(function_response=function_response)]
+        ),
+    )
+
+    session = Session(
+        id="test_session",
+        user_id="test_user",
+        app_name="test_app",
+        events=[call_event, root_event, response_event],
+    )
+
+    # Function-response routing only applies when resumability is enabled.
+    self.runner.resumability_config = ResumabilityConfig(is_resumable=True)
+
+    # Should return sub_agent2 due to function response, not root_agent
+    result = self.runner._find_agent_to_run(session, self.root_agent)
+    assert result == self.sub_agent2
+
+  def test_find_agent_to_run_skips_function_response_when_not_resumable(self):
+    """Test that function response scenario is skipped when not resumable."""
+    function_call = types.FunctionCall(id="func_456", name="test_func", args={})
+    function_response = types.FunctionResponse(
+        id="func_456", name="test_func", response={}
+    )
+
+    call_event = Event(
+        invocation_id="inv1",
+        author="non_transferable",
+        content=types.Content(
+            role="model", parts=[types.Part(function_call=function_call)]
+        ),
+    )
+
+    response_event = Event(
+        invocation_id="inv2",
+        author="user",
+        content=types.Content(
+            role="user", parts=[types.Part(function_response=function_response)]
+        ),
+    )
+
+    session = Session(
+        id="test_session",
+        user_id="test_user",
+        app_name="test_app",
+        events=[call_event, response_event],
+    )
+
+    self.runner.resumability_config = ResumabilityConfig(is_resumable=False)
+
+    result = self.runner._find_agent_to_run(session, self.root_agent)
+    assert result == self.root_agent
+
+  def test_find_agent_to_run_uses_function_response_when_resumable(self):
+    """Test that function response scenario is used when resumable."""
+    function_call = types.FunctionCall(id="func_456", name="test_func", args={})
+    function_response = types.FunctionResponse(
+        id="func_456", name="test_func", response={}
+    )
+
+    call_event = Event(
+        invocation_id="inv1",
+        author="non_transferable",
+        content=types.Content(
+            role="model", parts=[types.Part(function_call=function_call)]
+        ),
+    )
+
+    response_event = Event(
+        invocation_id="inv2",
+        author="user",
+        content=types.Content(
+            role="user", parts=[types.Part(function_response=function_response)]
+        ),
+    )
+
+    session = Session(
+        id="test_session",
+        user_id="test_user",
+        app_name="test_app",
+        events=[call_event, response_event],
+    )
+
+    self.runner.resumability_config = ResumabilityConfig(is_resumable=True)
+
+    result = self.runner._find_agent_to_run(session, self.root_agent)
+    assert result == self.non_transferable_agent
+
+  def test_find_agent_to_run_resumable_unknown_function_call_author_falls_back(
+      self,
+  ):
+    """Resumable routing must not return None for an unknown call author.
+
+    When the matching function-call event is authored by something that is not
+    an agent in the current hierarchy (e.g. "user", or a stale/foreign agent
+    name carried over from a previous turn/session), `find_agent` returns None.
+    Previously this None propagated to `build_node`, raising a confusing
+    "Invalid node type: <class 'NoneType'>" error. We now fall through to the
+    root agent instead.
+    """
+    function_call = types.FunctionCall(id="func_456", name="test_func", args={})
+    function_response = types.FunctionResponse(
+        id="func_456", name="test_func", response={}
+    )
+
+    # The function call is authored by "user", which is not an agent name.
+    call_event = Event(
+        invocation_id="inv1",
+        author="user",
+        content=types.Content(
+            role="model", parts=[types.Part(function_call=function_call)]
+        ),
+    )
+
+    response_event = Event(
+        invocation_id="inv2",
+        author="user",
+        content=types.Content(
+            role="user", parts=[types.Part(function_response=function_response)]
+        ),
+    )
+
+    session = Session(
+        id="test_session",
+        user_id="test_user",
+        app_name="test_app",
+        events=[call_event, response_event],
+    )
+
+    self.runner.resumability_config = ResumabilityConfig(is_resumable=True)
+
+    result = self.runner._find_agent_to_run(session, self.root_agent)
+    assert result == self.root_agent
+
+  def test_find_agent_to_run_resumable_stale_function_call_author_falls_back(
+      self,
+  ):
+    """Resumable routing falls back to root for a stale/foreign call author."""
+    function_call = types.FunctionCall(id="func_789", name="test_func", args={})
+    function_response = types.FunctionResponse(
+        id="func_789", name="test_func", response={}
+    )
+
+    # The function call is authored by an agent that is not in the hierarchy.
+    call_event = Event(
+        invocation_id="inv1",
+        author="agent_from_a_previous_session",
+        content=types.Content(
+            role="model", parts=[types.Part(function_call=function_call)]
+        ),
+    )
+
+    response_event = Event(
+        invocation_id="inv2",
+        author="user",
+        content=types.Content(
+            role="user", parts=[types.Part(function_response=function_response)]
+        ),
+    )
+
+    session = Session(
+        id="test_session",
+        user_id="test_user",
+        app_name="test_app",
+        events=[call_event, response_event],
+    )
+
+    self.runner.resumability_config = ResumabilityConfig(is_resumable=True)
+
+    result = self.runner._find_agent_to_run(session, self.root_agent)
+    assert result == self.root_agent
+
+  def test_is_transferable_across_agent_tree_with_llm_agent(self):
+    """Test _is_transferable_across_agent_tree with LLM agent."""
+    result = self.runner._is_transferable_across_agent_tree(self.sub_agent1)
+    assert result is True
+
+  def test_is_transferable_across_agent_tree_with_non_transferable_agent(self):
+    """Test _is_transferable_across_agent_tree with non-transferable agent."""
+    result = self.runner._is_transferable_across_agent_tree(
+        self.non_transferable_agent
+    )
+    assert result is False
+
+  def test_is_transferable_across_agent_tree_with_non_llm_agent(self):
+    """Test _is_transferable_across_agent_tree with non-LLM agent."""
+    non_llm_agent = MockAgent("non_llm_agent")
+    # MockAgent inherits from BaseAgent, not LlmAgent, so it should return False
+    result = self.runner._is_transferable_across_agent_tree(non_llm_agent)
+    assert result is False
+
 
 @pytest.mark.asyncio
 async def test_session_not_found_message_includes_alignment_hint():
@@ -490,282 +853,6 @@ async def test_runner_allows_nested_agent_directories(tmp_path, monkeypatch):
   assert event.content
   assert event.content.parts
   assert event.content.parts[0].text == "hello from nested"
-
-  def test_find_agent_to_run_with_function_response_scenario(self):
-    """Test finding agent when last event is function response."""
-    # Create a function call from sub_agent1
-    function_call = types.FunctionCall(id="func_123", name="test_func", args={})
-    function_response = types.FunctionResponse(
-        id="func_123", name="test_func", response={}
-    )
-
-    call_event = Event(
-        invocation_id="inv1",
-        author="sub_agent1",
-        content=types.Content(
-            role="model", parts=[types.Part(function_call=function_call)]
-        ),
-    )
-
-    response_event = Event(
-        invocation_id="inv2",
-        author="user",
-        content=types.Content(
-            role="user", parts=[types.Part(function_response=function_response)]
-        ),
-    )
-
-    session = Session(
-        id="test_session",
-        user_id="test_user",
-        app_name="test_app",
-        events=[call_event, response_event],
-    )
-
-    result = self.runner._find_agent_to_run(session, self.root_agent)
-    assert result == self.sub_agent1
-
-  def test_find_agent_to_run_returns_root_agent_when_no_events(self):
-    """Test that root agent is returned when session has no non-user events."""
-    session = Session(
-        id="test_session",
-        user_id="test_user",
-        app_name="test_app",
-        events=[
-            Event(
-                invocation_id="inv1",
-                author="user",
-                content=types.Content(
-                    role="user", parts=[types.Part(text="Hello")]
-                ),
-            )
-        ],
-    )
-
-    result = self.runner._find_agent_to_run(session, self.root_agent)
-    assert result == self.root_agent
-
-  def test_find_agent_to_run_returns_root_agent_when_found_in_events(self):
-    """Test that root agent is returned when it's found in session events."""
-    session = Session(
-        id="test_session",
-        user_id="test_user",
-        app_name="test_app",
-        events=[
-            Event(
-                invocation_id="inv1",
-                author="root_agent",
-                content=types.Content(
-                    role="model", parts=[types.Part(text="Root response")]
-                ),
-            )
-        ],
-    )
-
-    result = self.runner._find_agent_to_run(session, self.root_agent)
-    assert result == self.root_agent
-
-  def test_find_agent_to_run_returns_transferable_sub_agent(self):
-    """Test that transferable sub agent is returned when found."""
-    session = Session(
-        id="test_session",
-        user_id="test_user",
-        app_name="test_app",
-        events=[
-            Event(
-                invocation_id="inv1",
-                author="sub_agent1",
-                content=types.Content(
-                    role="model", parts=[types.Part(text="Sub agent response")]
-                ),
-            )
-        ],
-    )
-
-    result = self.runner._find_agent_to_run(session, self.root_agent)
-    assert result == self.sub_agent1
-
-  def test_find_agent_to_run_skips_non_transferable_agent(self):
-    """Test that non-transferable agent is skipped and root agent is returned."""
-    session = Session(
-        id="test_session",
-        user_id="test_user",
-        app_name="test_app",
-        events=[
-            Event(
-                invocation_id="inv1",
-                author="non_transferable",
-                content=types.Content(
-                    role="model",
-                    parts=[types.Part(text="Non-transferable response")],
-                ),
-            )
-        ],
-    )
-
-    result = self.runner._find_agent_to_run(session, self.root_agent)
-    assert result == self.root_agent
-
-  def test_find_agent_to_run_skips_unknown_agent(self):
-    """Test that unknown agent is skipped and root agent is returned."""
-    session = Session(
-        id="test_session",
-        user_id="test_user",
-        app_name="test_app",
-        events=[
-            Event(
-                invocation_id="inv1",
-                author="unknown_agent",
-                content=types.Content(
-                    role="model",
-                    parts=[types.Part(text="Unknown agent response")],
-                ),
-            ),
-            Event(
-                invocation_id="inv2",
-                author="root_agent",
-                content=types.Content(
-                    role="model", parts=[types.Part(text="Root response")]
-                ),
-            ),
-        ],
-    )
-
-    result = self.runner._find_agent_to_run(session, self.root_agent)
-    assert result == self.root_agent
-
-  def test_find_agent_to_run_function_response_takes_precedence(self):
-    """Test that function response scenario takes precedence over other logic."""
-    # Create a function call from sub_agent2
-    function_call = types.FunctionCall(id="func_456", name="test_func", args={})
-    function_response = types.FunctionResponse(
-        id="func_456", name="test_func", response={}
-    )
-
-    call_event = Event(
-        invocation_id="inv1",
-        author="sub_agent2",
-        content=types.Content(
-            role="model", parts=[types.Part(function_call=function_call)]
-        ),
-    )
-
-    # Add another event from root_agent
-    root_event = Event(
-        invocation_id="inv2",
-        author="root_agent",
-        content=types.Content(
-            role="model", parts=[types.Part(text="Root response")]
-        ),
-    )
-
-    response_event = Event(
-        invocation_id="inv3",
-        author="user",
-        content=types.Content(
-            role="user", parts=[types.Part(function_response=function_response)]
-        ),
-    )
-
-    session = Session(
-        id="test_session",
-        user_id="test_user",
-        app_name="test_app",
-        events=[call_event, root_event, response_event],
-    )
-
-    # Should return sub_agent2 due to function response, not root_agent
-    result = self.runner._find_agent_to_run(session, self.root_agent)
-    assert result == self.sub_agent2
-
-  def test_find_agent_to_run_skips_function_response_when_not_resumable(self):
-    """Test that function response scenario is skipped when not resumable."""
-    function_call = types.FunctionCall(id="func_456", name="test_func", args={})
-    function_response = types.FunctionResponse(
-        id="func_456", name="test_func", response={}
-    )
-
-    call_event = Event(
-        invocation_id="inv1",
-        author="non_transferable",
-        content=types.Content(
-            role="model", parts=[types.Part(function_call=function_call)]
-        ),
-    )
-
-    response_event = Event(
-        invocation_id="inv2",
-        author="user",
-        content=types.Content(
-            role="user", parts=[types.Part(function_response=function_response)]
-        ),
-    )
-
-    session = Session(
-        id="test_session",
-        user_id="test_user",
-        app_name="test_app",
-        events=[call_event, response_event],
-    )
-
-    self.runner.resumability_config = ResumabilityConfig(is_resumable=False)
-
-    result = self.runner._find_agent_to_run(session, self.root_agent)
-    assert result == self.root_agent
-
-  def test_find_agent_to_run_uses_function_response_when_resumable(self):
-    """Test that function response scenario is used when resumable."""
-    function_call = types.FunctionCall(id="func_456", name="test_func", args={})
-    function_response = types.FunctionResponse(
-        id="func_456", name="test_func", response={}
-    )
-
-    call_event = Event(
-        invocation_id="inv1",
-        author="non_transferable",
-        content=types.Content(
-            role="model", parts=[types.Part(function_call=function_call)]
-        ),
-    )
-
-    response_event = Event(
-        invocation_id="inv2",
-        author="user",
-        content=types.Content(
-            role="user", parts=[types.Part(function_response=function_response)]
-        ),
-    )
-
-    session = Session(
-        id="test_session",
-        user_id="test_user",
-        app_name="test_app",
-        events=[call_event, response_event],
-    )
-
-    self.runner.resumability_config = ResumabilityConfig(is_resumable=True)
-
-    result = self.runner._find_agent_to_run(session, self.root_agent)
-    assert result == self.non_transferable_agent
-
-  def test_is_transferable_across_agent_tree_with_llm_agent(self):
-    """Test _is_transferable_across_agent_tree with LLM agent."""
-    result = self.runner._is_transferable_across_agent_tree(self.sub_agent1)
-    assert result is True
-
-  def test_is_transferable_across_agent_tree_with_non_transferable_agent(self):
-    """Test _is_transferable_across_agent_tree with non-transferable agent."""
-    result = self.runner._is_transferable_across_agent_tree(
-        self.non_transferable_agent
-    )
-    assert result is False
-
-  def test_is_transferable_across_agent_tree_with_non_llm_agent(self):
-    """Test _is_transferable_across_agent_tree with non-LLM agent."""
-    non_llm_agent = MockAgent("non_llm_agent")
-    # MockAgent inherits from BaseAgent, not LlmAgent, so it should return False
-    result = self.runner._is_transferable_across_agent_tree(non_llm_agent)
-    assert result is False
 
 
 @pytest.mark.asyncio
@@ -1153,7 +1240,9 @@ class TestRunnerCacheConfig:
     """Test realistic scenario with production-like cache config."""
     # Production cache config
     production_cache_config = ContextCacheConfig(
-        cache_intervals=30, ttl_seconds=14400, min_tokens=4096  # 4 hours
+        cache_intervals=30,
+        ttl_seconds=14400,
+        min_tokens=4096,  # 4 hours
     )
 
     app = App(
