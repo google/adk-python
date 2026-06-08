@@ -79,6 +79,67 @@ def test_format_auto_rater_prompt_with_basic_invocation(
   assert "<response>\nNo intermediate steps were taken.\n</response>" in prompt
 
 
+def test_format_auto_rater_prompt_with_invocation_rubrics_only():
+  """Tests prompt formatting when rubrics are defined on the invocation."""
+  judge_model_options = JudgeModelOptions(
+      judge_model_config=None,
+      num_samples=3,
+  )
+  criterion = RubricsBasedCriterion(
+      threshold=0.5, judge_model_options=judge_model_options
+  )
+  metric = EvalMetric(
+      metric_name=PrebuiltMetrics.RUBRIC_BASED_TOOL_USE_QUALITY_V1.value,
+      threshold=0.5,
+      criterion=criterion,
+  )
+  evaluator = RubricBasedToolUseV1Evaluator(metric)
+  invocation = Invocation(
+      user_content=genai_types.Content(
+          parts=[genai_types.Part(text="User input here.")]
+      ),
+      rubrics=[
+          Rubric(
+              rubric_id="invocation-rubric",
+              rubric_content=RubricContent(
+                  text_property="Did the agent use the lookup tool?"
+              ),
+              type=RubricBasedToolUseV1Evaluator.RUBRIC_TYPE,
+          )
+      ],
+  )
+
+  prompt = evaluator.format_auto_rater_prompt(invocation, None)
+
+  assert "User input here." in prompt
+  assert "Did the agent use the lookup tool?" in prompt
+
+
+def test_format_auto_rater_prompt_without_effective_rubrics_raises_error():
+  """Tests prompt formatting fails when no criterion or invocation rubrics exist."""
+  judge_model_options = JudgeModelOptions(
+      judge_model_config=None,
+      num_samples=3,
+  )
+  criterion = RubricsBasedCriterion(
+      threshold=0.5, judge_model_options=judge_model_options
+  )
+  metric = EvalMetric(
+      metric_name=PrebuiltMetrics.RUBRIC_BASED_TOOL_USE_QUALITY_V1.value,
+      threshold=0.5,
+      criterion=criterion,
+  )
+  evaluator = RubricBasedToolUseV1Evaluator(metric)
+  invocation = Invocation(
+      user_content=genai_types.Content(
+          parts=[genai_types.Part(text="User input here.")]
+      ),
+  )
+
+  with pytest.raises(ValueError, match="Rubrics are required."):
+    evaluator.format_auto_rater_prompt(invocation, None)
+
+
 def test_format_auto_rater_prompt_with_app_details(
     evaluator: RubricBasedToolUseV1Evaluator,
 ):

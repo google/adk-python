@@ -214,7 +214,7 @@ def pretty_print_eval_result(eval_result: EvalCaseResult):
       click.echo("Rubric Scores:")
       rubrics_by_id = {
           r["rubric_id"]: r["rubric_content"]["text_property"]
-          for r in metric_result.criterion.rubrics
+          for r in getattr(metric_result.criterion, "rubrics", None) or []
       }
       for rubric_score in metric_result.details.rubric_scores:
         rubric_text = rubrics_by_id.get(rubric_score.rubric_id)
@@ -257,7 +257,7 @@ def pretty_print_eval_result(eval_result: EvalCaseResult):
       if metric_result.details and metric_result.details.rubric_scores:
         rubrics_by_id = {
             r["rubric_id"]: r["rubric_content"]["text_property"]
-            for r in metric_result.criterion.rubrics
+            for r in getattr(metric_result.criterion, "rubrics", None) or []
         }
         for rubric_score in metric_result.details.rubric_scores:
           rubric = rubrics_by_id.get(rubric_score.rubric_id)
