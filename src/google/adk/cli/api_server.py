@@ -26,7 +26,6 @@ import logging
 import os
 import re
 import sys
-import time
 import traceback
 import typing
 from typing import Any
@@ -548,6 +547,26 @@ def _setup_instrumentation_lib_if_installed():
         "Unable to import GoogleGenAiSdkInstrumentor - some"
         " telemetry will be disabled. Make sure to install google-adk[otel-gcp]"
     )
+  if os.getenv("GOOGLE_CLOUD_AGENT_ENGINE_ID"):
+    # Set up HTTPX and gRPC instrumentation for A2A multi-agent observability.
+    try:
+      from opentelemetry.instrumentation.httpx import HTTPXClientInstrumentor
+
+      HTTPXClientInstrumentor().instrument()
+    except (ImportError, AttributeError):
+      logger.warning(
+          "telemetry enabled but proceeding without HTTPX instrumentation,"
+          " because google-adk[otel-gcp] has not been installed"
+      )
+    try:
+      from opentelemetry.instrumentation.grpc import GrpcInstrumentorClient
+
+      GrpcInstrumentorClient().instrument()
+    except (ImportError, AttributeError):
+      logger.warning(
+          "telemetry enabled but proceeding without gRPC instrumentation,"
+          " because google-adk[otel-gcp] has not been installed"
+      )
 
 
 class ApiServer:
@@ -680,6 +699,24 @@ class ApiServer:
         )
       return plugins
 
+    def _wrap_loaded_agent(
+        app_name: str,
+        agent_or_app: Any,
+        plugins: list[BasePlugin],
+    ) -> App:
+      if app_name.startswith("__"):
+        # AgentLoader validates special agents before they reach this point.
+        return App.model_construct(
+            name=app_name,
+            root_agent=agent_or_app,
+            plugins=plugins,
+        )
+      return App(
+          name=app_name,
+          root_agent=agent_or_app,
+          plugins=plugins,
+      )
+
     if isinstance(agent_or_app, App):
       # Combine existing plugins with extra plugins
       plugins = _maybe_add_bq_plugin(
@@ -689,17 +726,11 @@ class ApiServer:
       agentic_app = agent_or_app
     elif isinstance(agent_or_app, BaseAgent):
       plugins = _maybe_add_bq_plugin(extra_plugins_instances)
-      agentic_app = App(
-          name=app_name,
-          root_agent=agent_or_app,
-          plugins=plugins,
-      )
+      agentic_app = _wrap_loaded_agent(app_name, agent_or_app, plugins)
     else:
       # BaseNode (non-agent)
-      agentic_app = App(
-          name=app_name,
-          root_agent=agent_or_app,
-          plugins=extra_plugins_instances,
+      agentic_app = _wrap_loaded_agent(
+          app_name, agent_or_app, extra_plugins_instances
       )
 
     # If the root agent was loaded from YAML, we treat it as being from Visual Builder
