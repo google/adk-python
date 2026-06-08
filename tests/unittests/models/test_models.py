@@ -133,6 +133,22 @@ def test_new_llm_with_prefix(mocker):
   mock_class.assert_called_once_with(model='gpt-4')
 
 
+@pytest.mark.parametrize(
+    'model_name',
+    ['gemini-flash-latest', 'gemini:gemini-flash-latest'],
+)
+def test_new_llm_warns_for_deprecated_model_alias(caplog, model_name):
+  """Test that deprecated Gemini aliases surface a useful warning."""
+  caplog.set_level('WARNING', logger='google_adk.google.adk.models.registry')
+
+  llm = models.LLMRegistry.new_llm(model_name)
+
+  assert isinstance(llm, Gemini)
+  assert llm.model == 'gemini-flash-latest'
+  assert "Model alias 'gemini-flash-latest' is deprecated" in caplog.text
+  assert "'gemini-2.5-flash'" in caplog.text
+
+
 def test_new_llm_with_non_matching_prefix(mocker):
   """Test that new_llm keeps prefix if it does not match class."""
   mock_class = mocker.MagicMock()

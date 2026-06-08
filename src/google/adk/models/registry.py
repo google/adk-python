@@ -31,6 +31,9 @@ logger = logging.getLogger('google_adk.' + __name__)
 
 _LazyEntry = tuple[str, str]
 _llm_registry_dict: dict[str, Union[type['BaseLlm'], _LazyEntry]] = {}
+_deprecated_model_aliases = {
+    'gemini-flash-latest': 'gemini-2.5-flash',
+}
 
 
 class LLMRegistry:
@@ -48,6 +51,7 @@ class LLMRegistry:
     """
 
     prefix, actual_model = LLMRegistry._parse_model(model)
+    LLMRegistry._warn_if_deprecated_alias(actual_model)
     cls = LLMRegistry.resolve(model)
 
     if prefix and LLMRegistry._match_prefix(prefix, cls.__name__):
@@ -66,6 +70,21 @@ class LLMRegistry:
       prefix, actual_model = model.split(':', 1)
       return prefix, actual_model
     return None, model
+
+  @staticmethod
+  def _warn_if_deprecated_alias(model: str) -> None:
+    replacement = _deprecated_model_aliases.get(model)
+    if replacement is None:
+      return
+
+    logger.warning(
+        (
+            'Model alias %r is deprecated and may resolve to an unavailable'
+            ' Gemini model. Use %r or another versioned model id instead.'
+        ),
+        model,
+        replacement,
+    )
 
   @staticmethod
   def _match_prefix(prefix: str, class_name: str) -> bool:
