@@ -28,6 +28,7 @@ from typing import Literal
 from typing import TYPE_CHECKING
 from typing import TypedDict
 
+from google.adk.telemetry._token_usage import TokenUsage
 from google.genai import types
 from google.genai.models import t as transformers
 from opentelemetry._logs import Logger
@@ -36,12 +37,6 @@ if TYPE_CHECKING:
   from mcp import ClientSession as McpClientSession
   from mcp import Tool as McpTool
 from opentelemetry._logs import LogRecord
-from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GEN_AI_INPUT_MESSAGES
-from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GEN_AI_OUTPUT_MESSAGES
-from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GEN_AI_RESPONSE_FINISH_REASONS
-from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GEN_AI_SYSTEM_INSTRUCTIONS
-from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GEN_AI_USAGE_INPUT_TOKENS
-from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GEN_AI_USAGE_OUTPUT_TOKENS
 from opentelemetry.trace import Span
 from opentelemetry.util.types import AttributeValue
 
@@ -49,15 +44,19 @@ if TYPE_CHECKING:
   from ..models.llm_request import LlmRequest
   from ..models.llm_response import LlmResponse
 
+from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GEN_AI_RESPONSE_FINISH_REASONS
+
+# Use the import symbol once the minimum OpenTelemetry SDK version is updated to 1.37.0
+# from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GEN_AI_INPUT_MESSAGES
+# from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GEN_AI_OUTPUT_MESSAGES
+# from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GEN_AI_SYSTEM_INSTRUCTIONS
+GEN_AI_INPUT_MESSAGES = 'gen_ai.input.messages'
+GEN_AI_OUTPUT_MESSAGES = 'gen_ai.output.messages'
+GEN_AI_SYSTEM_INSTRUCTIONS = 'gen_ai.system_instructions'
+
 # Use the import symbol once the minimum OpenTelemetry SDK version is updated to 1.39.0
 # from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GEN_AI_TOOL_DEFINITIONS
 GEN_AI_TOOL_DEFINITIONS = 'gen_ai.tool.definitions'
-
-# Use the import symbol once the minimum OpenTelemetry SDK version is updated to 1.40.0
-# from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GEN_AI_USAGE_CACHE_READ_INPUT_TOKENS
-GEN_AI_USAGE_CACHE_READ_INPUT_TOKENS = 'gen_ai.usage.cache_read.input_tokens'
-
-GEN_AI_USAGE_REASONING_OUTPUT_TOKENS = 'gen_ai.usage.reasoning.output_tokens'
 
 OTEL_SEMCONV_STABILITY_OPT_IN = 'OTEL_SEMCONV_STABILITY_OPT_IN'
 
@@ -478,38 +477,15 @@ def set_operation_details_attributes_from_response(
     operation_details_attributes: MutableMapping[str, AttributeValue],
     operation_details_common_attributes: MutableMapping[str, AttributeValue],
 ):
-  if finish_reason := llm_response.finish_reason:
+  """Populates operation details attributes from the LLM response."""
+  if llm_response.finish_reason:
     operation_details_common_attributes[GEN_AI_RESPONSE_FINISH_REASONS] = [
-        _to_finish_reason(finish_reason)
+        _to_finish_reason(llm_response.finish_reason)
     ]
-  if usage_metadata := llm_response.usage_metadata:
-    prompt_tokens = usage_metadata.prompt_token_count
-    tool_tokens = usage_metadata.tool_use_prompt_token_count
-    if prompt_tokens is not None or tool_tokens is not None:
-      operation_details_common_attributes[GEN_AI_USAGE_INPUT_TOKENS] = (
-          prompt_tokens or 0
-      ) + (tool_tokens or 0)
-    if (
-        usage_metadata.candidates_token_count is not None
-        or usage_metadata.thoughts_token_count is not None
-    ):
-      # According to OpenTelemetry Semantic Conventions:
-      # https://github.com/open-telemetry/semantic-conventions/blob/v1.41.0/docs/registry/attributes/gen-ai.md
-      # gen_ai.usage.reasoning.output_tokens (thoughts_token_count) SHOULD be included in gen_ai.usage.output_tokens.
-      total_output_tokens = (usage_metadata.candidates_token_count or 0) + (
-          usage_metadata.thoughts_token_count or 0
-      )
-      operation_details_common_attributes[GEN_AI_USAGE_OUTPUT_TOKENS] = (
-          total_output_tokens
-      )
-    if usage_metadata.cached_content_token_count is not None:
-      operation_details_common_attributes[
-          GEN_AI_USAGE_CACHE_READ_INPUT_TOKENS
-      ] = usage_metadata.cached_content_token_count
-    if usage_metadata.thoughts_token_count is not None:
-      operation_details_common_attributes[
-          GEN_AI_USAGE_REASONING_OUTPUT_TOKENS
-      ] = usage_metadata.thoughts_token_count
+  if llm_response.usage_metadata:
+    operation_details_common_attributes.update(
+        TokenUsage(llm_response.usage_metadata).to_attributes()
+    )
 
   output_message = _to_output_message(llm_response)
   if output_message is not None:

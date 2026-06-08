@@ -64,12 +64,6 @@ from opentelemetry.util.types import AttributeValue
 from pydantic import BaseModel
 from typing_extensions import deprecated
 
-# Use the import symbol once the minimum OpenTelemetry SDK version is updated to 1.40.0
-# from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GEN_AI_USAGE_CACHE_READ_INPUT_TOKENS
-GEN_AI_USAGE_CACHE_READ_INPUT_TOKENS = 'gen_ai.usage.cache_read.input_tokens'
-
-GEN_AI_USAGE_REASONING_OUTPUT_TOKENS = 'gen_ai.usage.reasoning.output_tokens'
-
 from .. import version
 from ..utils.model_name_utils import is_gemini_model
 from ._experimental_semconv import get_content_capturing_mode
@@ -78,6 +72,7 @@ from ._experimental_semconv import maybe_log_completion_details
 from ._experimental_semconv import set_operation_details_attributes_from_request
 from ._experimental_semconv import set_operation_details_attributes_from_response
 from ._experimental_semconv import set_operation_details_common_attributes
+from ._token_usage import TokenUsage
 
 # By default some ADK spans include attributes with potential PII data.
 # This env, when set to false, allows to disable populating those attributes.
@@ -317,42 +312,7 @@ def _set_usage_metadata_attributes(
   """Records usage metadata attributes on the given span."""
   if usage_metadata is None:
     return
-
-  prompt_tokens = usage_metadata.prompt_token_count
-  tool_tokens = usage_metadata.tool_use_prompt_token_count
-  if prompt_tokens is not None or tool_tokens is not None:
-    span.set_attribute(
-        GEN_AI_USAGE_INPUT_TOKENS, (prompt_tokens or 0) + (tool_tokens or 0)
-    )
-  if (
-      usage_metadata.candidates_token_count is not None
-      or usage_metadata.thoughts_token_count is not None
-  ):
-    # According to OpenTelemetry Semantic Conventions:
-    # https://github.com/open-telemetry/semantic-conventions/blob/v1.41.0/docs/registry/attributes/gen-ai.md
-    # gen_ai.usage.reasoning.output_tokens (thoughts_token_count) SHOULD be included in gen_ai.usage.output_tokens.
-    total_output_tokens = (usage_metadata.candidates_token_count or 0) + (
-        usage_metadata.thoughts_token_count or 0
-    )
-    span.set_attribute(GEN_AI_USAGE_OUTPUT_TOKENS, total_output_tokens)
-  if usage_metadata.cached_content_token_count is not None:
-    span.set_attribute(
-        GEN_AI_USAGE_CACHE_READ_INPUT_TOKENS,
-        usage_metadata.cached_content_token_count,
-    )
-  if usage_metadata.thoughts_token_count is not None:
-    span.set_attribute(
-        GEN_AI_USAGE_REASONING_OUTPUT_TOKENS,
-        usage_metadata.thoughts_token_count,
-    )
-  try:
-    if usage_metadata.system_instruction_tokens is not None:
-      span.set_attribute(
-          'gen_ai.usage.experimental.system_instruction_tokens',
-          usage_metadata.system_instruction_tokens,
-      )
-  except AttributeError:
-    pass
+  span.set_attributes(TokenUsage(usage_metadata).to_attributes())
 
 
 def trace_call_llm(
