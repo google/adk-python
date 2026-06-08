@@ -28,6 +28,7 @@ from typing import Literal
 from typing import TYPE_CHECKING
 from typing import TypedDict
 
+from google.adk.telemetry._token_usage import TokenUsage
 from google.genai import types
 from google.genai.models import t as transformers
 from opentelemetry._logs import Logger
@@ -36,12 +37,6 @@ if TYPE_CHECKING:
   from mcp import ClientSession as McpClientSession
   from mcp import Tool as McpTool
 from opentelemetry._logs import LogRecord
-from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GEN_AI_INPUT_MESSAGES
-from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GEN_AI_OUTPUT_MESSAGES
-from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GEN_AI_RESPONSE_FINISH_REASONS
-from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GEN_AI_SYSTEM_INSTRUCTIONS
-from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GEN_AI_USAGE_INPUT_TOKENS
-from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GEN_AI_USAGE_OUTPUT_TOKENS
 from opentelemetry.trace import Span
 from opentelemetry.util.types import AttributeValue
 
@@ -49,10 +44,19 @@ if TYPE_CHECKING:
   from ..models.llm_request import LlmRequest
   from ..models.llm_response import LlmResponse
 
-try:
-  from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GEN_AI_TOOL_DEFINITIONS
-except ImportError:
-  GEN_AI_TOOL_DEFINITIONS = 'gen_ai.tool.definitions'
+from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GEN_AI_RESPONSE_FINISH_REASONS
+
+# Use the import symbol once the minimum OpenTelemetry SDK version is updated to 1.37.0
+# from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GEN_AI_INPUT_MESSAGES
+# from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GEN_AI_OUTPUT_MESSAGES
+# from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GEN_AI_SYSTEM_INSTRUCTIONS
+GEN_AI_INPUT_MESSAGES = 'gen_ai.input.messages'
+GEN_AI_OUTPUT_MESSAGES = 'gen_ai.output.messages'
+GEN_AI_SYSTEM_INSTRUCTIONS = 'gen_ai.system_instructions'
+
+# Use the import symbol once the minimum OpenTelemetry SDK version is updated to 1.39.0
+# from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GEN_AI_TOOL_DEFINITIONS
+GEN_AI_TOOL_DEFINITIONS = 'gen_ai.tool.definitions'
 
 OTEL_SEMCONV_STABILITY_OPT_IN = 'OTEL_SEMCONV_STABILITY_OPT_IN'
 
@@ -473,19 +477,15 @@ def set_operation_details_attributes_from_response(
     operation_details_attributes: MutableMapping[str, AttributeValue],
     operation_details_common_attributes: MutableMapping[str, AttributeValue],
 ):
-  if finish_reason := llm_response.finish_reason:
+  """Populates operation details attributes from the LLM response."""
+  if llm_response.finish_reason:
     operation_details_common_attributes[GEN_AI_RESPONSE_FINISH_REASONS] = [
-        _to_finish_reason(finish_reason)
+        _to_finish_reason(llm_response.finish_reason)
     ]
-  if usage_metadata := llm_response.usage_metadata:
-    if usage_metadata.prompt_token_count is not None:
-      operation_details_common_attributes[GEN_AI_USAGE_INPUT_TOKENS] = (
-          usage_metadata.prompt_token_count
-      )
-    if usage_metadata.candidates_token_count is not None:
-      operation_details_common_attributes[GEN_AI_USAGE_OUTPUT_TOKENS] = (
-          usage_metadata.candidates_token_count
-      )
+  if llm_response.usage_metadata:
+    operation_details_common_attributes.update(
+        TokenUsage(llm_response.usage_metadata).to_attributes()
+    )
 
   output_message = _to_output_message(llm_response)
   if output_message is not None:

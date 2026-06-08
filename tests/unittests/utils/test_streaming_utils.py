@@ -284,7 +284,6 @@ class TestStreamingResponseAggregator:
       else:
         assert closed_response.content is None
 
-
   @pytest.mark.asyncio
   @pytest.mark.parametrize(
       "test_id, use_progressive_sse, metadata_type",

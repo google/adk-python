@@ -38,8 +38,8 @@ from sqlalchemy.orm import sessionmaker
 
 logger = logging.getLogger("google_adk." + __name__)
 
-_ALLOWED_PICKLE_GLOBALS = {
-    # Basic types/containers
+_ALLOWED_PICKLE_GLOBALS: set[tuple[str, str]] = {
+    # Builtin containers/primitives.
     ("builtins", "dict"),
     ("builtins", "list"),
     ("builtins", "set"),

@@ -995,128 +995,6 @@ class TestCompaction(unittest.IsolatedAsyncioTestCase):
     actual_texts = [c.parts[0].text for c in result_contents]
     self.assertEqual(actual_texts, expected_texts)
 
-
-@pytest.mark.asyncio
-async def test_run_compaction_for_token_threshold_adds_summary_trace(
-    span_exporter: InMemorySpanExporter,
-):
-  session = Session(
-      app_name='app',
-      user_id='user',
-      id='session-id',
-      events=[
-          _create_trace_test_event(
-              timestamp=1.0, invocation_id='inv1', text='e1'
-          ),
-          _create_trace_test_event(
-              timestamp=2.0, invocation_id='inv2', text='e2'
-          ),
-          _create_trace_test_event(
-              timestamp=3.0,
-              invocation_id='inv3',
-              text='e3',
-              prompt_token_count=100,
-          ),
-      ],
-  )
-  session_service = AsyncMock(spec=BaseSessionService)
-  compacted_event = _create_trace_compacted_event(
-      start_ts=1.0, end_ts=2.0, summary_text='summary'
-  )
-  summarizer = _StubSummarizer(compacted_event)
-  config = EventsCompactionConfig(
-      summarizer=summarizer,
-      compaction_interval=999,
-      overlap_size=0,
-      token_threshold=50,
-      event_retention_size=1,
-  )
-
-  compacted = (
-      await (
-          compaction_module._run_compaction_for_token_threshold_config(
-              config=config,
-              session=session,
-              session_service=session_service,
-              agent=Mock(spec=BaseAgent),
-          )
-      )
-  )
-
-  assert compacted is True
-  spans = span_exporter.get_finished_spans()
-  summary_span = next(
-      span for span in spans if span.name == 'compact_events token_threshold'
-  )
-  assert summary_span.attributes['gen_ai.conversation.id'] == 'session-id'
-  assert (
-      summary_span.attributes['gen_ai.compaction.trigger'] == 'token_threshold'
-  )
-  assert summary_span.attributes['gen_ai.compaction.event_count'] == 2
-  assert summary_span.attributes['gen_ai.compaction.token_threshold'] == 50
-  assert summary_span.attributes['gen_ai.compaction.event_retention_size'] == 1
-  assert (
-      summary_span.attributes['gen_ai.compaction.result_event_id']
-      == 'compacted-event-id'
-  )
-
-
-@pytest.mark.asyncio
-async def test_run_compaction_for_sliding_window_adds_summary_trace(
-    span_exporter: InMemorySpanExporter,
-):
-  compacted_event = _create_trace_compacted_event(
-      start_ts=1.0, end_ts=4.0, summary_text='summary'
-  )
-  summarizer = _StubSummarizer(compacted_event)
-  app = App(
-      name='test',
-      root_agent=Mock(spec=BaseAgent),
-      events_compaction_config=EventsCompactionConfig(
-          summarizer=summarizer,
-          compaction_interval=2,
-          overlap_size=1,
-      ),
-  )
-  session = Session(
-      app_name='test',
-      user_id='u1',
-      id='session-id',
-      events=[
-          _create_trace_test_event(
-              timestamp=1.0, invocation_id='inv1', text='e1'
-          ),
-          _create_trace_test_event(
-              timestamp=2.0, invocation_id='inv2', text='e2'
-          ),
-          _create_trace_test_event(
-              timestamp=3.0, invocation_id='inv3', text='e3'
-          ),
-          _create_trace_test_event(
-              timestamp=4.0, invocation_id='inv4', text='e4'
-          ),
-      ],
-  )
-  session_service = AsyncMock(spec=BaseSessionService)
-
-  await _run_compaction_for_sliding_window(app, session, session_service)
-
-  spans = span_exporter.get_finished_spans()
-  summary_span = next(
-      span for span in spans if span.name == 'compact_events sliding_window'
-  )
-  assert summary_span.attributes['gen_ai.conversation.id'] == 'session-id'
-  assert (
-      summary_span.attributes['gen_ai.compaction.trigger'] == 'sliding_window'
-  )
-  assert summary_span.attributes['gen_ai.compaction.event_count'] == 4
-  assert summary_span.attributes['gen_ai.compaction.compaction_interval'] == 2
-  assert summary_span.attributes['gen_ai.compaction.overlap_size'] == 1
-  assert (
-      summary_span.attributes['gen_ai.compaction.result_event_id']
-      == 'compacted-event-id'
-  )
-
   async def test_sliding_window_excludes_pending_function_call_events(self):
     """Sliding-window compaction stops before pending function calls."""
     app = App(
@@ -1774,3 +1652,125 @@ async def test_run_compaction_for_sliding_window_adds_summary_trace(
     ]['events']
     compacted_inv_ids = [e.invocation_id for e in compacted_events_arg]
     self.assertEqual(compacted_inv_ids, ['inv1', 'inv2', 'inv3'])
+
+
+@pytest.mark.asyncio
+async def test_run_compaction_for_token_threshold_adds_summary_trace(
+    span_exporter: InMemorySpanExporter,
+):
+  session = Session(
+      app_name='app',
+      user_id='user',
+      id='session-id',
+      events=[
+          _create_trace_test_event(
+              timestamp=1.0, invocation_id='inv1', text='e1'
+          ),
+          _create_trace_test_event(
+              timestamp=2.0, invocation_id='inv2', text='e2'
+          ),
+          _create_trace_test_event(
+              timestamp=3.0,
+              invocation_id='inv3',
+              text='e3',
+              prompt_token_count=100,
+          ),
+      ],
+  )
+  session_service = AsyncMock(spec=BaseSessionService)
+  compacted_event = _create_trace_compacted_event(
+      start_ts=1.0, end_ts=2.0, summary_text='summary'
+  )
+  summarizer = _StubSummarizer(compacted_event)
+  config = EventsCompactionConfig(
+      summarizer=summarizer,
+      compaction_interval=999,
+      overlap_size=0,
+      token_threshold=50,
+      event_retention_size=1,
+  )
+
+  compacted = (
+      await (
+          compaction_module._run_compaction_for_token_threshold_config(
+              config=config,
+              session=session,
+              session_service=session_service,
+              agent=Mock(spec=BaseAgent),
+          )
+      )
+  )
+
+  assert compacted is True
+  spans = span_exporter.get_finished_spans()
+  summary_span = next(
+      span for span in spans if span.name == 'compact_events token_threshold'
+  )
+  assert summary_span.attributes['gen_ai.conversation.id'] == 'session-id'
+  assert (
+      summary_span.attributes['gen_ai.compaction.trigger'] == 'token_threshold'
+  )
+  assert summary_span.attributes['gen_ai.compaction.event_count'] == 2
+  assert summary_span.attributes['gen_ai.compaction.token_threshold'] == 50
+  assert summary_span.attributes['gen_ai.compaction.event_retention_size'] == 1
+  assert (
+      summary_span.attributes['gen_ai.compaction.result_event_id']
+      == 'compacted-event-id'
+  )
+
+
+@pytest.mark.asyncio
+async def test_run_compaction_for_sliding_window_adds_summary_trace(
+    span_exporter: InMemorySpanExporter,
+):
+  compacted_event = _create_trace_compacted_event(
+      start_ts=1.0, end_ts=4.0, summary_text='summary'
+  )
+  summarizer = _StubSummarizer(compacted_event)
+  app = App(
+      name='test',
+      root_agent=Mock(spec=BaseAgent),
+      events_compaction_config=EventsCompactionConfig(
+          summarizer=summarizer,
+          compaction_interval=2,
+          overlap_size=1,
+      ),
+  )
+  session = Session(
+      app_name='test',
+      user_id='u1',
+      id='session-id',
+      events=[
+          _create_trace_test_event(
+              timestamp=1.0, invocation_id='inv1', text='e1'
+          ),
+          _create_trace_test_event(
+              timestamp=2.0, invocation_id='inv2', text='e2'
+          ),
+          _create_trace_test_event(
+              timestamp=3.0, invocation_id='inv3', text='e3'
+          ),
+          _create_trace_test_event(
+              timestamp=4.0, invocation_id='inv4', text='e4'
+          ),
+      ],
+  )
+  session_service = AsyncMock(spec=BaseSessionService)
+
+  await _run_compaction_for_sliding_window(app, session, session_service)
+
+  spans = span_exporter.get_finished_spans()
+  summary_span = next(
+      span for span in spans if span.name == 'compact_events sliding_window'
+  )
+  assert summary_span.attributes['gen_ai.conversation.id'] == 'session-id'
+  assert (
+      summary_span.attributes['gen_ai.compaction.trigger'] == 'sliding_window'
+  )
+  assert summary_span.attributes['gen_ai.compaction.event_count'] == 4
+  assert summary_span.attributes['gen_ai.compaction.compaction_interval'] == 2
+  assert summary_span.attributes['gen_ai.compaction.overlap_size'] == 1
+  assert (
+      summary_span.attributes['gen_ai.compaction.result_event_id']
+      == 'compacted-event-id'
+  )
