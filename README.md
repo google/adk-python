@@ -1,6 +1,10 @@
 # Agent Development Kit (ADK) 2.0
 
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
+[![PyPI version](https://img.shields.io/pypi/v/google-adk.svg)](https://pypi.org/project/google-adk/)
+[![Python versions](https://img.shields.io/pypi/pyversions/google-adk.svg)](https://pypi.org/project/google-adk/)
+[![PyPI downloads](https://img.shields.io/pypi/dm/google-adk.svg)](https://pypi.org/project/google-adk/)
+[![Docs](https://img.shields.io/badge/docs-latest-blue.svg)](https://google.github.io/adk-docs/)
 
 <h2 align="center">
   <img src="https://raw.githubusercontent.com/google/adk-python/main/assets/agent-development-kit.png" width="256"/>
