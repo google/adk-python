@@ -75,7 +75,7 @@ def _build_skill_system_instruction(prefix: str | None = None) -> str:
       "- **scripts/** (Optional): Executable scripts that can be run via "
       "bash.\n\n"
       "This is very important:\n\n"
-      f"1. If a skill seems relevant to the current user query, you MUST use "
+      "1. If a skill seems relevant to the current user query, you MUST use "
       f'the `{p}load_skill` tool with `skill_name="<SKILL_NAME>"` to read '
       "its full instructions before proceeding.\n"
       "2. Once you have read the instructions, follow them exactly as "
