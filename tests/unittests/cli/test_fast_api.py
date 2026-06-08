@@ -22,6 +22,7 @@ import tempfile
 from typing import Any
 from typing import Optional
 from unittest.mock import AsyncMock
+from unittest.mock import call
 from unittest.mock import MagicMock
 from unittest.mock import patch
 
@@ -644,6 +645,39 @@ bigquery_agent_analytics:
     assert getattr(runner.app, "_is_visual_builder_app", False) is True
 
 
+def test_get_runner_async_accepts_internal_special_agent_name(
+    tmp_path,
+    mock_session_service,
+    mock_artifact_service,
+    mock_memory_service,
+    mock_agent_loader,
+    mock_eval_sets_manager,
+    mock_eval_set_results_manager,
+):
+  from google.adk.cli.adk_web_server import AdkWebServer
+
+  special_app_name = "__adk_agent_builder_assistant"
+  special_agent = DummyAgent(name="agent_builder_assistant")
+  mock_agent_loader.load_agent = MagicMock(return_value=special_agent)
+
+  adk_web_server = AdkWebServer(
+      agent_loader=mock_agent_loader,
+      session_service=mock_session_service,
+      memory_service=mock_memory_service,
+      artifact_service=mock_artifact_service,
+      credential_service=MagicMock(),
+      eval_sets_manager=mock_eval_sets_manager,
+      eval_set_results_manager=mock_eval_set_results_manager,
+      agents_dir=str(tmp_path),
+  )
+
+  runner = asyncio.run(adk_web_server.get_runner_async(special_app_name))
+
+  assert runner.app.name == special_app_name
+  assert runner.app.root_agent is special_agent
+  mock_agent_loader.load_agent.assert_called_once_with(special_app_name)
+
+
 @pytest.fixture
 def test_app(
     mock_session_service,
@@ -888,6 +922,67 @@ def test_app_with_a2a(
     )
 
     client = TestClient(app)
+    yield client
+
+
+@pytest.fixture
+def test_app_with_gemini_enterprise(
+    mock_session_service,
+    mock_artifact_service,
+    mock_memory_service,
+    mock_agent_loader,
+    mock_eval_sets_manager,
+    mock_eval_set_results_manager,
+    monkeypatch,
+):
+  """Create a TestClient with gemini_enterprise_app_name set."""
+  monkeypatch.setenv("GOOGLE_CLOUD_PROJECT", "test-project")
+  mock_agent_loader.list_agents = MagicMock(
+      return_value=["test_app", "gemini_app"]
+  )
+
+  mock_adk_app_instance = MagicMock()
+  mock_adk_app_instance._tmpl_attrs = {}
+
+  async def get_session_impl(**kwargs):
+    return {"result": "success", "kwargs": kwargs}
+
+  mock_adk_app_instance.get_session = get_session_impl
+
+  async def stream_query_impl(**kwargs):
+    yield {"chunk": 1, "kwargs": kwargs}
+    await asyncio.sleep(0)
+    yield {"chunk": 2, "kwargs": kwargs}
+
+  mock_adk_app_instance.stream_query = stream_query_impl
+
+  with (
+      patch("vertexai.init", new_callable=MagicMock) as mock_vertexai_init,
+      patch(
+          "vertexai.agent_engines.AdkApp", return_value=mock_adk_app_instance
+      ) as mock_adk_app_cls,
+      patch("google.adk.agents.Agent", new_callable=MagicMock),
+      patch(
+          "google.adk.telemetry._agent_engine.TopSpanProcessor",
+          new_callable=MagicMock,
+      ),
+      patch(
+          "google.adk.telemetry._agent_engine.get_propagated_context",
+          new_callable=MagicMock,
+      ),
+  ):
+    client = _create_test_client(
+        mock_session_service,
+        mock_artifact_service,
+        mock_memory_service,
+        mock_agent_loader,
+        mock_eval_sets_manager,
+        mock_eval_set_results_manager,
+        gemini_enterprise_app_name="gemini_app",
+    )
+    client.mock_vertexai_init = mock_vertexai_init
+    client.mock_adk_app_cls = mock_adk_app_cls
+    client.mock_adk_app_instance = mock_adk_app_instance
     yield client
 
 
@@ -1379,6 +1474,45 @@ def test_agent_run_passes_invocation_id(
 
   assert response.status_code == 200
   assert captured_invocation_id["invocation_id"] == payload["invocation_id"]
+
+
+def test_agent_run_passes_custom_metadata(
+    test_app, create_test_session, monkeypatch
+):
+  """Test /run forwards custom_metadata via the run config."""
+  info = create_test_session
+  captured: dict[str, Optional[RunConfig]] = {"run_config": None}
+
+  async def run_async_capture(
+      self,
+      *,
+      user_id: str,
+      session_id: str,
+      invocation_id: Optional[str] = None,
+      new_message: Optional[types.Content] = None,
+      state_delta: Optional[dict[str, Any]] = None,
+      run_config: Optional[RunConfig] = None,
+  ):
+    del self, user_id, session_id, invocation_id, new_message, state_delta
+    captured["run_config"] = run_config
+    yield _event_1()
+
+  monkeypatch.setattr(Runner, "run_async", run_async_capture)
+
+  payload = {
+      "app_name": info["app_name"],
+      "user_id": info["user_id"],
+      "session_id": info["session_id"],
+      "new_message": {"role": "user", "parts": [{"text": "Hello"}]},
+      "streaming": False,
+      "custom_metadata": {"tenant": "acme", "trace": "abc123"},
+  }
+
+  response = test_app.post("/run", json=payload)
+
+  assert response.status_code == 200
+  assert captured["run_config"] is not None
+  assert captured["run_config"].custom_metadata == payload["custom_metadata"]
 
 
 def test_agent_run_sse_splits_artifact_delta(
@@ -2751,6 +2885,356 @@ def test_run_live_websocket_missing_app_name_raises_error(
     with test_app.websocket_connect(url) as ws:
       ws.receive_json()
   assert exc_info.value.code == 1008
+
+
+def test_is_single_agent_directory(tmp_path):
+  """Verify that is_single_agent_directory only identifies directories with agent.py or root_agent.yaml."""
+  from google.adk.cli.utils.agent_loader import is_single_agent_directory
+
+  # Directory with agent.py (should be identified as agent)
+  agent_py_dir = tmp_path / "agent_py_dir"
+  agent_py_dir.mkdir()
+  (agent_py_dir / "agent.py").write_text("root_agent = 'dummy'")
+  assert is_single_agent_directory(str(agent_py_dir)) is True
+
+  # Directory with root_agent.yaml (should be identified as agent)
+  yaml_dir = tmp_path / "yaml_dir"
+  yaml_dir.mkdir()
+  (yaml_dir / "root_agent.yaml").write_text("root_agent: dummy")
+  assert is_single_agent_directory(str(yaml_dir)) is True
+
+  # Normal directory or standard package with __init__.py only (should NOT be identified as agent)
+  normal_pkg = tmp_path / "normal_pkg"
+  normal_pkg.mkdir()
+  (normal_pkg / "__init__.py").write_text(
+      "from .app import App\nimport something"
+  )
+  assert is_single_agent_directory(str(normal_pkg)) is False
+
+
+def test_agent_loader_single_agent_mode(tmp_path):
+  """Verify that AgentLoader automatically detects and configures single agent mode."""
+  agent_folder = tmp_path / "my_test_agent"
+  agent_folder.mkdir()
+  (agent_folder / "agent.py").write_text("root_agent = 'dummy'")
+
+  loader = fast_api_module.AgentLoader(str(agent_folder))
+
+  assert loader._is_single_agent is True
+  assert loader._single_agent_name == "my_test_agent"
+  assert loader.agents_dir == str(tmp_path)
+  assert loader.list_agents() == ["my_test_agent"]
+
+
+def test_single_agent_mode_detection(
+    tmp_path,
+    mock_session_service,
+    mock_artifact_service,
+    mock_memory_service,
+    mock_eval_sets_manager,
+    mock_eval_set_results_manager,
+):
+  """Verify that pointing agents_dir to a single agent folder enables single agent mode."""
+  agent_folder = tmp_path / "my_only_agent"
+  agent_folder.mkdir()
+  (agent_folder / "agent.py").write_text("root_agent = None")
+
+  with (
+      patch.object(signal, "signal", autospec=True, return_value=None),
+      patch.object(
+          fast_api_module,
+          "create_session_service_from_options",
+          autospec=True,
+          return_value=mock_session_service,
+      ),
+      patch.object(
+          fast_api_module,
+          "create_artifact_service_from_options",
+          autospec=True,
+          return_value=mock_artifact_service,
+      ),
+      patch.object(
+          fast_api_module,
+          "create_memory_service_from_options",
+          autospec=True,
+          return_value=mock_memory_service,
+      ),
+      patch.object(
+          fast_api_module,
+          "LocalEvalSetsManager",
+          autospec=True,
+          return_value=mock_eval_sets_manager,
+      ),
+      patch.object(
+          fast_api_module,
+          "LocalEvalSetResultsManager",
+          autospec=True,
+          return_value=mock_eval_set_results_manager,
+      ),
+  ):
+    app = get_fast_api_app(
+        agents_dir=str(agent_folder),
+        web=True,
+        session_service_uri="",
+        artifact_service_uri="",
+        memory_service_uri="",
+        allow_origins=None,
+        a2a=False,
+        host="127.0.0.1",
+        port=8000,
+    )
+    client = TestClient(app)
+
+    response = client.get("/list-apps")
+    assert response.status_code == 200
+    assert response.json() == ["my_only_agent"]
+
+
+def test_single_agent_mode_sets_default_app(
+    tmp_path,
+    mock_session_service,
+    mock_artifact_service,
+    mock_memory_service,
+    mock_eval_sets_manager,
+    mock_eval_set_results_manager,
+    monkeypatch,
+):
+  """Verify that in single agent mode, the agent is used as default app."""
+  # Set environment variable to something else, but single mode should take precedence.
+  monkeypatch.setenv("ADK_DEFAULT_APP_NAME", "some_other_app")
+
+  agent_folder = tmp_path / "my_only_agent"
+  agent_folder.mkdir()
+  (agent_folder / "agent.py").write_text("root_agent = None")
+
+  # Setup session data in the in-memory service
+  async def setup_session():
+    await mock_session_service.create_session(
+        app_name="my_only_agent",
+        user_id="test_user",
+        session_id="test_session",
+        state={},
+    )
+
+  asyncio.run(setup_session())
+
+  with (
+      patch.object(signal, "signal", autospec=True, return_value=None),
+      patch.object(
+          fast_api_module,
+          "create_session_service_from_options",
+          autospec=True,
+          return_value=mock_session_service,
+      ),
+      patch.object(
+          fast_api_module,
+          "create_artifact_service_from_options",
+          autospec=True,
+          return_value=mock_artifact_service,
+      ),
+      patch.object(
+          fast_api_module,
+          "create_memory_service_from_options",
+          autospec=True,
+          return_value=mock_memory_service,
+      ),
+      patch.object(
+          fast_api_module,
+          "LocalEvalSetsManager",
+          autospec=True,
+          return_value=mock_eval_sets_manager,
+      ),
+      patch.object(
+          fast_api_module,
+          "LocalEvalSetResultsManager",
+          autospec=True,
+          return_value=mock_eval_set_results_manager,
+      ),
+  ):
+    app = get_fast_api_app(
+        agents_dir=str(agent_folder),
+        web=True,
+        session_service_uri="",
+        artifact_service_uri="",
+        memory_service_uri="",
+        allow_origins=None,
+        a2a=False,
+        host="127.0.0.1",
+        port=8000,
+    )
+    client = TestClient(app)
+
+    # Accessing /users/{user_id}/sessions/{session_id} should work because of rewrite
+    response = client.get("/users/test_user/sessions/test_session")
+    assert response.status_code == 200
+    assert response.json()["id"] == "test_session"
+
+
+def test_agent_run_disconnect_aborts_run(
+    test_app, create_test_session, monkeypatch
+):
+  """Test that /run endpoint aborts agent execution on client disconnect.
+
+  Verifies that when the client connection is dropped during an active agent
+  run:
+  1. The background agent execution generator task is cancelled.
+  2. The endpoint returns a clean 499 (Client Closed Request) status code.
+  """
+  import starlette.requests
+
+  info = create_test_session
+  trigger_disconnect: dict[str, bool] = {"value": False}
+  was_cancelled: dict[str, bool] = {"value": False}
+
+  async def run_async_mock(
+      self,
+      *,
+      user_id: str,
+      session_id: str,
+      invocation_id: Optional[str] = None,
+      new_message: Optional[types.Content] = None,
+      state_delta: Optional[dict[str, Any]] = None,
+      run_config: Optional[RunConfig] = None,
+  ):
+    del (
+        self,
+        user_id,
+        session_id,
+        invocation_id,
+        new_message,
+        state_delta,
+        run_config,
+    )
+    try:
+      # Yield first pulse event
+      yield _event_1()
+      # Simulate connection drop mid-run
+      trigger_disconnect["value"] = True
+      # Run a long async operation to allow the monitor to trigger cancellation
+      await asyncio.sleep(1.0)
+      yield _event_2()
+    except asyncio.CancelledError:
+      was_cancelled["value"] = True
+      raise
+
+  monkeypatch.setattr(Runner, "run_async", run_async_mock)
+
+  # Monkeypatch starlette.requests.Request.__init__ to inject simulated disconnect
+  original_init = starlette.requests.Request.__init__
+
+  def custom_init(self, *args, **kwargs):
+    original_init(self, *args, **kwargs)
+    original_receive = self._receive
+    call_count = 0
+
+    async def mock_receive():
+      nonlocal call_count
+      call_count += 1
+      if call_count == 1:
+        return await original_receive()
+
+      # Subsequent calls block until simulated connection drop is triggered
+      while not trigger_disconnect["value"]:
+        await asyncio.sleep(0.01)
+      return {"type": "http.disconnect"}
+
+    self._receive = mock_receive
+    self.__dict__["receive"] = mock_receive
+
+  monkeypatch.setattr(starlette.requests.Request, "__init__", custom_init)
+
+  payload = {
+      "app_name": info["app_name"],
+      "user_id": info["user_id"],
+      "session_id": info["session_id"],
+      "new_message": {"role": "user", "parts": [{"text": "Hello agent"}]},
+      "streaming": False,
+  }
+
+  # When standard /run POST request is initiated and mid-run connection drop occurs
+  response = test_app.post("/run", json=payload)
+
+  # Then the response status should be 499 and the running generator was cancelled
+  assert response.status_code == 499
+  assert was_cancelled["value"] is True
+
+
+#################################################
+# Gemini Enterprise Tests
+#################################################
+
+
+def test_gemini_app_not_found_raises(
+    mock_session_service,
+    mock_artifact_service,
+    mock_memory_service,
+    mock_agent_loader,
+    mock_eval_sets_manager,
+    mock_eval_set_results_manager,
+    monkeypatch,
+):
+  """Test get_fast_api_app raises ValueError if gemini_enterprise_app_name not found."""
+  monkeypatch.setenv("GOOGLE_CLOUD_PROJECT", "test-project")
+  mock_agent_loader.list_agents = MagicMock(return_value=["test_app"])
+  with pytest.raises(ValueError, match="not found in dir"):
+    _create_test_client(
+        mock_session_service,
+        mock_artifact_service,
+        mock_memory_service,
+        mock_agent_loader,
+        mock_eval_sets_manager,
+        mock_eval_set_results_manager,
+        gemini_enterprise_app_name="nonexistent_app",
+    )
+
+
+def test_gemini_reasoning_engine_success(test_app_with_gemini_enterprise):
+  """Test POST /api/reasoning_engine success case."""
+  response = test_app_with_gemini_enterprise.post(
+      "/api/reasoning_engine",
+      json={"class_method": "get_session", "input": {"arg1": 1}},
+  )
+  assert response.status_code == 200
+  assert response.json() == {
+      "output": {"result": "success", "kwargs": {"arg1": 1}}
+  }
+
+
+def test_gemini_reasoning_engine_missing_class_method(
+    test_app_with_gemini_enterprise,
+):
+  """Test POST /api/reasoning_engine with missing class_method."""
+  response = test_app_with_gemini_enterprise.post(
+      "/api/reasoning_engine",
+      json={"input": {"arg1": 1}},
+  )
+  assert response.status_code == 400
+
+
+def test_gemini_stream_reasoning_engine_success(
+    test_app_with_gemini_enterprise,
+):
+  """Test POST /api/stream_reasoning_engine success case."""
+  response = test_app_with_gemini_enterprise.post(
+      "/api/stream_reasoning_engine",
+      json={"class_method": "stream_query", "input": {"arg1": 1}},
+  )
+  assert response.status_code == 200
+  lines = response.text.strip().split("\n")
+  assert len(lines) == 2
+  assert json.loads(lines[0]) == {"chunk": 1, "kwargs": {"arg1": 1}}
+  assert json.loads(lines[1]) == {"chunk": 2, "kwargs": {"arg1": 1}}
+
+
+def test_gemini_stream_reasoning_engine_missing_class_method(
+    test_app_with_gemini_enterprise,
+):
+  """Test POST /api/stream_reasoning_engine with missing class_method."""
+  response = test_app_with_gemini_enterprise.post(
+      "/api/stream_reasoning_engine",
+      json={"input": {"arg1": 1}},
+  )
+  assert response.status_code == 400
 
 
 if __name__ == "__main__":

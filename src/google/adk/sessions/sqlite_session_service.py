@@ -360,6 +360,13 @@ class SqliteSessionService(BaseSessionService):
       await db.commit()
 
   @override
+  async def get_user_state(
+      self, *, app_name: str, user_id: str
+  ) -> dict[str, Any]:
+    async with self._get_db_connection() as db:
+      return await self._get_user_state(db, app_name, user_id)
+
+  @override
   async def append_event(self, session: Session, event: Event) -> Event:
     if event.partial:
       return event

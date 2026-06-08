@@ -25,11 +25,11 @@ import pytest
 
 @mock.patch.dict(os.environ, {'GOOGLE_CLOUD_PROJECT': 'test-project'})
 @mock.patch(
-    'google.adk.cli.utils.evals.GcsEvalSetResultsManager',
+    'google.adk.evaluation.gcs_eval_set_results_manager.GcsEvalSetResultsManager',
     autospec=True,
 )
 @mock.patch(
-    'google.adk.cli.utils.evals.GcsEvalSetsManager',
+    'google.adk.evaluation.gcs_eval_sets_manager.GcsEvalSetsManager',
     autospec=True,
 )
 def test_create_gcs_eval_managers_from_uri_success(

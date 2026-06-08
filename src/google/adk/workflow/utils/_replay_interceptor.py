@@ -27,6 +27,7 @@ from .._base_node import BaseNode
 from .._node_state import NodeState
 from .._node_status import NodeStatus
 from ._rehydration_utils import _ChildScanState
+from ._rehydration_utils import _process_rehydrated_output
 
 if TYPE_CHECKING:
   from .._dynamic_node_scheduler import DynamicNodeRun
@@ -112,7 +113,7 @@ def check_interception(
   ):
     # Case 3: Cross-turn successfully completed in a prior turn (fast-forward).
     # Bypass execution completely and return the cached output and route.
-    output = recovered.output
+    output = _process_rehydrated_output(node, recovered.output)
     route = recovered.route
 
   elif recovered.interrupt_ids:

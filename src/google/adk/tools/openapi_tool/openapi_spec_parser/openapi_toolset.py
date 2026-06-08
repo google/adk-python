@@ -36,6 +36,7 @@ from ....auth.auth_tool import AuthConfig
 from ...base_toolset import BaseToolset
 from ...base_toolset import ToolPredicate
 from .openapi_spec_parser import OpenApiSpecParser
+from .rest_api_tool import HttpxClientFactory
 from .rest_api_tool import RestApiTool
 
 logger = logging.getLogger("google_adk." + __name__)
@@ -77,6 +78,7 @@ class OpenAPIToolset(BaseToolset):
       header_provider: Optional[
           Callable[[ReadonlyContext], Dict[str, str]]
       ] = None,
+      httpx_client_factory: Optional[HttpxClientFactory] = None,
       preserve_property_names: bool = False,
   ):
     """Initializes the OpenAPIToolset.
@@ -130,6 +132,17 @@ class OpenAPIToolset(BaseToolset):
         an argument, allowing dynamic header generation based on the current
         context. Useful for adding custom headers like correlation IDs,
         authentication tokens, or other request metadata.
+      httpx_client_factory: Optional zero-argument callable returning an
+        ``httpx.AsyncClient`` to use for every generated tool's API calls. When
+        provided, it takes precedence over the per-tool default client
+        construction and unlocks ``httpx.AsyncClient`` options that
+        ``ssl_verify`` can't reach (proxies, HTTP/2, custom transports such as
+        request signing). The returned client is used as an async context
+        manager and closed after each request, so the factory must return a
+        fresh client on every call. Defaults to ``None``, in which case each
+        generated tool constructs its own ``httpx.AsyncClient`` per request.
+        Mirrors the pattern exposed for MCP by
+        ``StreamableHTTPConnectionParams.httpx_client_factory``.
       preserve_property_names: If True, preserve the original property names
         from the OpenAPI spec instead of converting them to snake_case. This
         is useful when calling APIs that expect camelCase or other
@@ -155,6 +168,7 @@ class OpenAPIToolset(BaseToolset):
     if not spec_dict:
       spec_dict = self._load_spec(spec_str, spec_str_type)
     self._ssl_verify = ssl_verify
+    self._httpx_client_factory = httpx_client_factory
     self._tools: Final[List[RestApiTool]] = list(self._parse(spec_dict))
     if auth_scheme or auth_credential:
       self._configure_auth_all(auth_scheme, auth_credential)
@@ -237,6 +251,7 @@ class OpenAPIToolset(BaseToolset):
           o,
           ssl_verify=self._ssl_verify,
           header_provider=self._header_provider,
+          httpx_client_factory=self._httpx_client_factory,
       )
       logger.info("Parsed tool: %s", tool.name)
       tools.append(tool)
