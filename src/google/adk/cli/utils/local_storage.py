@@ -18,6 +18,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from pathlib import Path
+from typing import Any
 from typing import Mapping
 from typing import Optional
 
@@ -204,6 +205,13 @@ class PerAgentDatabaseSessionService(BaseSessionService):
     await service.delete_session(
         app_name=app_name, user_id=user_id, session_id=session_id
     )
+
+  @override
+  async def get_user_state(
+      self, *, app_name: str, user_id: str
+  ) -> dict[str, Any]:
+    service = await self._get_service(app_name)
+    return await service.get_user_state(app_name=app_name, user_id=user_id)
 
   @override
   async def append_event(self, session: Session, event: Event) -> Event:

@@ -111,6 +111,46 @@ class BaseSessionService(abc.ABC):
   ) -> None:
     """Deletes a session."""
 
+  async def get_user_state(
+      self, *, app_name: str, user_id: str
+  ) -> dict[str, Any]:
+    """Returns the user-scoped state for the given app and user.
+
+    User state is keyed by ``(app_name, user_id)`` and shared across all
+    sessions of the same user within the same app.  The returned dictionary
+    uses raw keys **without** the ``user:`` prefix (e.g. ``"my_key"`` rather
+    than ``"user:my_key"``).
+
+    This method exists so that callers can read user state without holding an
+    active ``session_id``.  A common use case is bootstrapping context at the
+    start of a new session before calling ``create_session``, which would
+    otherwise require an expensive ``list_sessions`` call just to access
+    user-scoped data.
+
+    Returns an empty dict when no user state has been stored for this
+    ``(app_name, user_id)`` combination.
+
+    Args:
+      app_name: The name of the app.
+      user_id: The ID of the user.
+
+    Returns:
+      A dictionary of raw (un-prefixed) user-scoped key/value pairs, or an
+      empty dict when no user state exists.
+
+    Raises:
+      NotImplementedError: When the concrete ``BaseSessionService``
+        implementation does not support reading user state independently of a
+        session.  Callers should catch this, then enumerate sessions via
+        ``list_sessions`` and call ``get_session`` on each result to access
+        the merged state, or accept that user state is unavailable.
+    """
+    raise NotImplementedError(
+        f'{type(self).__name__} does not support get_user_state. '
+        'To read user state, enumerate sessions via list_sessions and '
+        'call get_session on each result to access the merged state.'
+    )
+
   async def append_event(self, session: Session, event: Event) -> Event:
     """Appends an event to a session object."""
     if event.partial:
