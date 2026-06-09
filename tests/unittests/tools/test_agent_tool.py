@@ -374,7 +374,7 @@ async def test_update_artifacts():
     'env_variables',
     [
         'GOOGLE_AI',
-        # TODO(wanyif): re-enable after fix.
+        # TODO: re-enable after fix.
         # 'VERTEX',
     ],
     indirect=True,
