@@ -551,6 +551,7 @@ class FirestoreSessionService(BaseSessionService):  # type: ignore[misc]
             for k, v in session.state.items()
             if not k.startswith(State.APP_PREFIX)
             and not k.startswith(State.USER_PREFIX)
+            and not k.startswith(State.TEMP_PREFIX)
         }
         transaction.update(
             session_ref,

@@ -25,6 +25,7 @@ from typing_extensions import override
 from ...agents.invocation_context import InvocationContext
 from ...events.event import Event
 from ...models.llm_request import LlmRequest
+from ...utils import model_name_utils
 from ...utils.output_schema_utils import can_use_output_schema_with_tools
 from ._base_llm_processor import BaseLlmRequestProcessor
 
@@ -54,7 +55,11 @@ def _build_basic_request(
   # support output_schema and tools together. we have a workaround to support
   # both output_schema and tools at the same time. see
   # _output_schema_processor.py for details
-  if agent.output_schema:
+  #
+  # task-mode agents skip output_schema configuration in
+  # the basic flow. Structured output for tasks is collected via the
+  # finish_task tool schema instead.
+  if getattr(agent, 'mode', None) != 'task' and agent.output_schema:
     if not agent.tools or can_use_output_schema_with_tools(model):
       llm_request.set_output_schema(agent.output_schema)
 
@@ -78,14 +83,24 @@ def _build_basic_request(
   llm_request.live_connect_config.realtime_input_config = (
       invocation_context.run_config.realtime_input_config
   )
+  active_model_name = (
+      getattr(getattr(agent, 'canonical_live_model', None), 'model', None)
+      or llm_request.model
+  )
+  is_gemini_31 = model_name_utils.is_gemini_3_1_flash_live(active_model_name)
   llm_request.live_connect_config.enable_affective_dialog = (
-      invocation_context.run_config.enable_affective_dialog
+      None
+      if is_gemini_31
+      else invocation_context.run_config.enable_affective_dialog
   )
   llm_request.live_connect_config.proactivity = (
-      invocation_context.run_config.proactivity
+      None if is_gemini_31 else invocation_context.run_config.proactivity
   )
   llm_request.live_connect_config.session_resumption = (
       invocation_context.run_config.session_resumption
+  )
+  llm_request.live_connect_config.history_config = (
+      invocation_context.run_config.history_config
   )
   llm_request.live_connect_config.context_window_compression = (
       invocation_context.run_config.context_window_compression

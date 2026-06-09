@@ -14,30 +14,13 @@
 
 from __future__ import annotations
 
-from ...features import FeatureName
-from .._google_credentials import BaseGoogleCredentialsConfig
+import warnings
 
-BIGQUERY_TOKEN_CACHE_KEY = "bigquery_token_cache"
-BIGQUERY_SCOPES = [
-    "https://www.googleapis.com/auth/bigquery",
-    "https://www.googleapis.com/auth/dataplex.read-write",
-]
-BIGQUERY_DEFAULT_SCOPE = ["https://www.googleapis.com/auth/bigquery"]
+from google.adk.integrations.bigquery.bigquery_credentials import *
 
-
-class BigQueryCredentialsConfig(BaseGoogleCredentialsConfig):
-  """BigQuery Credentials Configuration for Google API tools.
-
-  Please do not use this in production, as it may be deprecated later.
-  """
-
-  def __post_init__(self) -> BigQueryCredentialsConfig:
-    """Populate default scope if scopes is None."""
-    super().__post_init__()
-
-    if not self.scopes:
-      self.scopes = BIGQUERY_SCOPES
-    # Set the token cache key
-    self._token_cache_key = BIGQUERY_TOKEN_CACHE_KEY
-
-    return self
+warnings.warn(
+    "google.adk.tools.bigquery.bigquery_credentials is moved to"
+    " google.adk.integrations.bigquery.bigquery_credentials",
+    DeprecationWarning,
+    stacklevel=2,
+)

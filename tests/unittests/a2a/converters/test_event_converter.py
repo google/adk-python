@@ -33,6 +33,7 @@ from google.adk.a2a.converters.event_converter import convert_a2a_task_to_event
 from google.adk.a2a.converters.event_converter import convert_event_to_a2a_events
 from google.adk.a2a.converters.event_converter import convert_event_to_a2a_message
 from google.adk.a2a.converters.event_converter import DEFAULT_ERROR_MESSAGE
+from google.adk.a2a.converters.part_converter import convert_genai_part_to_a2a_part
 from google.adk.a2a.converters.utils import ADK_METADATA_KEY_PREFIX
 from google.adk.agents.invocation_context import InvocationContext
 from google.adk.events.event import Event
@@ -436,6 +437,42 @@ class TestEventConverter:
             self.mock_event,
             task_id,
             context_id,
+        )
+
+  def test_convert_event_to_a2a_events_user_role(self):
+    """Test event to A2A events conversion with events from a user."""
+    # Setup message
+    mock_message = Mock(spec=Message)
+    mock_message.parts = []
+
+    with patch(
+        "google.adk.a2a.converters.event_converter.convert_event_to_a2a_message"
+    ) as mock_convert_message:
+      mock_convert_message.return_value = mock_message
+
+      with patch(
+          "google.adk.a2a.converters.event_converter._create_status_update_event"
+      ) as mock_create_running:
+        mock_running_event = Mock()
+        mock_create_running.return_value = mock_running_event
+        self.mock_event.author = "user"
+
+        task_id = "custom-task-id"
+        context_id = "custom-context-id"
+
+        result = convert_event_to_a2a_events(
+            self.mock_event, self.mock_invocation_context, task_id, context_id
+        )
+
+        assert len(result) == 1
+        assert result[0] == mock_running_event
+
+        # Verify the function is called with the specific task_id and context_id
+        mock_convert_message.assert_called_once_with(
+            self.mock_event,
+            self.mock_invocation_context,
+            part_converter=convert_genai_part_to_a2a_part,
+            role=Role.user,
         )
 
   def test_create_status_update_event_with_auth_required_state(self):

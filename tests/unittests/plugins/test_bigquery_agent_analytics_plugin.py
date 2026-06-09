@@ -104,11 +104,18 @@ def tool_context(invocation_context):
   return tool_context_lib.ToolContext(invocation_context=invocation_context)
 
 
+class FakeCredentials(google.auth.credentials.Credentials):
+
+  def __init__(self):
+    pass
+
+  def refresh(self, request):
+    pass
+
+
 @pytest.fixture
 def mock_auth_default():
-  mock_creds = mock.create_autospec(
-      google.auth.credentials.Credentials, instance=True, spec_set=True
-  )
+  mock_creds = FakeCredentials()
   with mock.patch.object(
       google.auth,
       "default",
@@ -627,6 +634,55 @@ class TestBigQueryAgentAnalyticsPlugin:
       await plugin.before_run_callback(invocation_context=invocation_context)
       await asyncio.sleep(0.01)
       mock_write_client.append_rows.assert_called_once()
+
+  @pytest.mark.asyncio
+  async def test_append_rows_sets_regional_routing_header(
+      self,
+      mock_write_client,
+      callback_context,
+      mock_auth_default,
+      mock_bq_client,
+      mock_to_arrow_schema,
+      dummy_arrow_schema,
+      mock_asyncio_to_thread,
+  ):
+    """Regression test for cross-region writes (issue #262).
+
+    The Storage Write API streaming AppendRows RPC does not
+    auto-populate the request-routing header, so writes to a dataset
+    outside the US multiregion (e.g. northamerica-northeast1) fail with
+    a "session not found" / stream-not-found error unless the header is
+    set explicitly. Assert the header is passed to append_rows so the
+    request reaches the region that owns the write stream.
+    """
+    _ = mock_auth_default
+    _ = mock_bq_client
+    config = bigquery_agent_analytics_plugin.BigQueryLoggerConfig()
+    async with managed_plugin(
+        PROJECT_ID,
+        DATASET_ID,
+        table_id=TABLE_ID,
+        config=config,
+        location="northamerica-northeast1",
+    ) as plugin:
+      await plugin._ensure_started()
+      mock_write_client.append_rows.reset_mock()
+      llm_request = llm_request_lib.LlmRequest(
+          model="gemini-pro",
+          contents=[types.Content(parts=[types.Part(text="Prompt")])],
+      )
+      bigquery_agent_analytics_plugin.TraceManager.push_span(callback_context)
+      await plugin.before_model_callback(
+          callback_context=callback_context, llm_request=llm_request
+      )
+      await asyncio.sleep(0.01)  # Allow background task to run
+      mock_write_client.append_rows.assert_called_once()
+      metadata = mock_write_client.append_rows.call_args.kwargs.get("metadata")
+      assert metadata is not None, "append_rows must receive routing metadata"
+      assert (
+          "x-goog-request-params",
+          f"write_stream={DEFAULT_STREAM_NAME}",
+      ) in tuple(metadata)
 
   @pytest.mark.asyncio
   async def test_content_formatter(
@@ -2001,6 +2057,62 @@ class TestBigQueryAgentAnalyticsPlugin:
           assert kwargs["client_options"] is None
 
   @pytest.mark.asyncio
+  async def test_custom_credentials_used(
+      self,
+      mock_to_arrow_schema,
+      mock_asyncio_to_thread,
+  ):
+    """Verify custom credentials are used and default auth is not called."""
+    mock_custom_creds = mock.create_autospec(
+        google.auth.credentials.Credentials, instance=True, spec_set=True
+    )
+    mock_custom_creds.quota_project_id = "custom-quota-project"
+
+    config = bigquery_agent_analytics_plugin.BigQueryLoggerConfig(
+        gcs_bucket_name="test-bucket",
+        create_views=False,
+    )
+
+    with mock.patch.object(
+        google.auth,
+        "default",
+        autospec=True,
+    ) as mock_auth_default:
+      with mock.patch.object(
+          bigquery_agent_analytics_plugin,
+          "BigQueryWriteAsyncClient",
+          autospec=True,
+      ) as mock_bq_write_cls:
+        with mock.patch(
+            "google.cloud.bigquery.Client", autospec=True
+        ) as mock_bq_cls:
+          with mock.patch(
+              "google.cloud.storage.Client", autospec=True
+          ) as mock_storage_cls:
+            async with managed_plugin(
+                project_id=PROJECT_ID,
+                dataset_id=DATASET_ID,
+                table_id=TABLE_ID,
+                credentials=mock_custom_creds,
+                config=config,
+            ) as plugin:
+              await plugin._ensure_started()
+
+              mock_auth_default.assert_not_called()
+
+              mock_bq_write_cls.assert_called_once()
+              _, kwargs = mock_bq_write_cls.call_args
+              assert kwargs["credentials"] == mock_custom_creds
+
+              mock_bq_cls.assert_called_once()
+              _, kwargs = mock_bq_cls.call_args
+              assert kwargs["credentials"] == mock_custom_creds
+
+              mock_storage_cls.assert_called_once()
+              _, kwargs = mock_storage_cls.call_args
+              assert kwargs["credentials"] == mock_custom_creds
+
+  @pytest.mark.asyncio
   async def test_pickle_safety(self, mock_auth_default, mock_bq_client):
     """Test that the plugin can be pickled safely."""
     import pickle
@@ -2162,53 +2274,56 @@ class TestBigQueryAgentAnalyticsPlugin:
       assert content_json["result"]["kpi_missed"][0]["kpi"] == "latency"
 
   @pytest.mark.asyncio
-  async def test_otel_integration(
+  async def test_push_pop_does_not_call_tracer_start_span(
       self,
       callback_context,
   ):
-    """Verifies OpenTelemetry integration in TraceManager."""
-    # Mock the tracer and span
+    """Regression guard for the duplicate-Cloud-Trace bug (issue #94).
+
+    The plugin must NOT call ``tracer.start_span(...)`` from
+    ``push_span`` / ``pop_span``.  Any owned OTel span goes through
+    the globally configured exporter (e.g. Cloud Trace via Agent
+    Engine telemetry) and surfaces as a duplicate span next to the
+    framework's real one.  The plugin's internal stack is sufficient
+    for ``span_id`` / ``parent_span_id`` / ``trace_id`` resolution
+    without creating an exportable span.
+    """
     mock_tracer = mock.Mock()
-    mock_span = mock.Mock()
-    mock_context = mock.Mock()
-    # Setup mock IDs (128-bit trace_id, 64-bit span_id)
-    trace_id_int = 0x12345678123456781234567812345678
-    span_id_int = 0x1234567812345678
-    mock_context.trace_id = trace_id_int
-    mock_context.span_id = span_id_int
-    mock_context.is_valid = True
-    mock_span.get_span_context.return_value = mock_context
-    mock_span.start_time = 1234567890000000000  # Mock start time in ns
-    mock_tracer.start_span.return_value = mock_span
-    # Patch the global tracer in the plugin module
     with mock.patch(
-        "google.adk.plugins.bigquery_agent_analytics_plugin.tracer", mock_tracer
+        "google.adk.plugins.bigquery_agent_analytics_plugin.tracer",
+        mock_tracer,
     ):
-      # Test push_span
       span_id = bigquery_agent_analytics_plugin.TraceManager.push_span(
           callback_context, "test_span"
       )
-      mock_tracer.start_span.assert_called_with("test_span", context=None)
-      assert span_id == format(span_id_int, "016x")
-      # Test get_trace_id
-      # We need to mock trace.get_current_span() to return our mock span
-      # because push_span calls trace.attach(), which affects the global context
-      with mock.patch(
-          "opentelemetry.trace.get_current_span", return_value=mock_span
-      ):
-        trace_id = bigquery_agent_analytics_plugin.TraceManager.get_trace_id(
-            callback_context
-        )
-        assert trace_id == format(trace_id_int, "032x")
-      # Test pop_span
-      # pop_span calls span.end()
-      bigquery_agent_analytics_plugin.TraceManager.pop_span()
-      mock_span.end.assert_called_once()
+      assert isinstance(span_id, str) and len(span_id) == 16
+
+      trace_id = bigquery_agent_analytics_plugin.TraceManager.get_trace_id(
+          callback_context
+      )
+      assert isinstance(trace_id, str) and len(trace_id) == 32
+
+      popped_span_id, _duration_ms = (
+          bigquery_agent_analytics_plugin.TraceManager.pop_span()
+      )
+      assert popped_span_id == span_id
+
+    mock_tracer.start_span.assert_not_called()
 
   @pytest.mark.asyncio
-  async def test_otel_integration_real_provider(self, callback_context):
-    """Verifies TraceManager with a real OpenTelemetry TracerProvider."""
-    # Setup OTEL with in-memory exporter
+  async def test_push_pop_does_not_export_spans_through_real_provider(
+      self, callback_context
+  ):
+    """End-to-end regression guard against #94 with a real OTel
+
+    provider + in-memory exporter.
+
+    Wires an ``InMemorySpanExporter`` to a real ``TracerProvider``,
+    drives a push/pop cycle through ``TraceManager``, and asserts
+    that **zero** spans were exported.  Pre-fix behavior was to
+    export one span per push/pop pair — visible to Cloud Trace as
+    duplicate spans alongside the framework's real ones.
+    """
     # pylint: disable=g-import-not-at-top
     from opentelemetry.sdk import trace as trace_sdk
     from opentelemetry.sdk.trace import export as trace_export
@@ -2217,36 +2332,188 @@ class TestBigQueryAgentAnalyticsPlugin:
     # pylint: enable=g-import-not-at-top
     provider = trace_sdk.TracerProvider()
     exporter = in_memory_span_exporter.InMemorySpanExporter()
-    processor = trace_export.SimpleSpanProcessor(exporter)
-    provider.add_span_processor(processor)
-    tracer = provider.get_tracer("test_tracer")
-    # Patch the global tracer in the plugin module
+    provider.add_span_processor(trace_export.SimpleSpanProcessor(exporter))
+    real_tracer = provider.get_tracer("test_tracer")
+
     with mock.patch(
-        "google.adk.plugins.bigquery_agent_analytics_plugin.tracer", tracer
+        "google.adk.plugins.bigquery_agent_analytics_plugin.tracer",
+        real_tracer,
     ):
-      # 1. Start a span
       span_id = bigquery_agent_analytics_plugin.TraceManager.push_span(
           callback_context, "test_span"
       )
-      # Verify a span was started but not ended
-      current_spans = exporter.get_finished_spans()
-      assert not current_spans
-      # Verify we can retrieve the trace ID
+      assert exporter.get_finished_spans() == ()
+
       trace_id = bigquery_agent_analytics_plugin.TraceManager.get_trace_id(
           callback_context
       )
-      assert trace_id is not None
-      # 2. End the span
+      assert trace_id is not None and len(trace_id) == 32
+
       popped_span_id, _ = (
           bigquery_agent_analytics_plugin.TraceManager.pop_span()
       )
       assert popped_span_id == span_id
-      # Verify span is now finished and exported
-      finished_spans = exporter.get_finished_spans()
-      assert len(finished_spans) == 1
-      assert finished_spans[0].name == "test_span"
-      assert format(finished_spans[0].context.span_id, "016x") == span_id
-      assert format(finished_spans[0].context.trace_id, "032x") == trace_id
+
+      assert exporter.get_finished_spans() == (), (
+          "Plugin must not export OTel spans; any owned span would"
+          " surface as a duplicate in Cloud Trace alongside the"
+          " framework's real spans (issue #94)."
+      )
+
+    provider.shutdown()
+
+  @pytest.mark.asyncio
+  async def test_push_span_inherits_ambient_trace_id(self, callback_context):
+    """When the host has an ambient OTel span (e.g.
+
+    Agent Engine's Runner span), the plugin's ``trace_id`` MUST inherit from it
+    so BigQuery rows correlate with the host's Cloud Trace entries via a shared
+    ``trace_id``.
+    """
+    # pylint: disable=g-import-not-at-top
+    from opentelemetry import trace as otel_trace
+    from opentelemetry.sdk import trace as trace_sdk
+
+    # pylint: enable=g-import-not-at-top
+    provider = trace_sdk.TracerProvider()
+    host_tracer = provider.get_tracer("host_tracer")
+
+    # Clear any state on the plugin's contextvar stack.
+    bigquery_agent_analytics_plugin._span_records_ctx.set(None)
+
+    with host_tracer.start_as_current_span("ambient-host-span") as host_span:
+      expected_trace_id = format(host_span.get_span_context().trace_id, "032x")
+
+      # Plugin pushes its first internal span inside the ambient span.
+      bigquery_agent_analytics_plugin.TraceManager.push_span(
+          callback_context, "bqaa-span"
+      )
+
+      plugin_trace_id = (
+          bigquery_agent_analytics_plugin.TraceManager.get_trace_id(
+              callback_context
+          )
+      )
+      assert plugin_trace_id == expected_trace_id, (
+          "Plugin must inherit ambient trace_id so BigQuery rows join"
+          " to Cloud Trace via the same trace_id"
+      )
+
+      # Nested plugin push also stays under the ambient trace_id.
+      bigquery_agent_analytics_plugin.TraceManager.push_span(
+          callback_context, "bqaa-nested"
+      )
+      assert (
+          bigquery_agent_analytics_plugin.TraceManager.get_trace_id(
+              callback_context
+          )
+          == expected_trace_id
+      )
+
+    bigquery_agent_analytics_plugin.TraceManager.clear_stack()
+    provider.shutdown()
+    del otel_trace  # unused; imported for symmetry with provider setup
+
+  @pytest.mark.asyncio
+  async def test_llm_request_response_share_span_id_contract(
+      self, callback_context
+  ):
+    """Lifecycle contract: ``LLM_REQUEST`` and ``LLM_RESPONSE`` for the
+
+    same model call share one ``span_id`` and one ``trace_id``.
+
+    Models the structural pattern the real callbacks use:
+      * ``before_model_callback`` calls ``push_span(...)`` and writes
+        ``LLM_REQUEST`` with the returned ``span_id``.
+      * ``after_model_callback`` calls ``get_current_span_id()`` /
+        ``pop_span()`` and writes ``LLM_RESPONSE`` with the same
+        ``span_id``.
+
+    A future change must not split this pair onto two different
+    ``span_id``s — that would break the documented BigQuery query
+    shape and the BQAA join contract.
+    """
+    bigquery_agent_analytics_plugin._span_records_ctx.set(None)
+    TM = bigquery_agent_analytics_plugin.TraceManager
+
+    # before_model_callback path.
+    pushed_span_id = TM.push_span(callback_context, "llm_request")
+    request_trace_id = TM.get_trace_id(callback_context)
+
+    # after_model_callback (final chunk) path.
+    response_top_of_stack = TM.get_current_span_id()
+    popped_span_id, _duration_ms = TM.pop_span()
+    response_trace_id = TM.get_trace_id(callback_context)
+
+    assert response_top_of_stack == pushed_span_id
+    assert popped_span_id == pushed_span_id
+    # trace_id resolved on the response side may have to fall back
+    # past the now-empty stack — but if it does resolve, it must
+    # match what the request observed.  An empty-stack fallback to
+    # invocation_id is acceptable here; what we are guarding against
+    # is the *pair* drifting onto two structurally different ids.
+    if response_trace_id is not None and len(response_trace_id) == 32:
+      assert response_trace_id == request_trace_id
+
+  @pytest.mark.asyncio
+  async def test_tool_starting_completed_share_span_id_contract(
+      self, callback_context
+  ):
+    """Lifecycle contract: ``TOOL_STARTING`` and ``TOOL_COMPLETED`` for
+
+    the same tool call share one ``span_id``.
+
+    Same shape as the LLM pair above — push on before, pop on after,
+    same id on both sides.
+    """
+    bigquery_agent_analytics_plugin._span_records_ctx.set(None)
+    TM = bigquery_agent_analytics_plugin.TraceManager
+
+    # before_tool_callback path.
+    pushed_span_id = TM.push_span(callback_context, "tool")
+    starting_trace_id = TM.get_trace_id(callback_context)
+
+    # after_tool_callback path.
+    popped_span_id, _duration_ms = TM.pop_span()
+
+    assert popped_span_id == pushed_span_id
+    assert isinstance(starting_trace_id, str) and len(starting_trace_id) == 32
+
+  @pytest.mark.asyncio
+  async def test_streaming_llm_response_shares_span_id_until_final_contract(
+      self, callback_context
+  ):
+    """Streaming-response contract.
+
+    On a streaming LLM call, ``after_model_callback`` is fired once
+    per partial chunk *plus* once for the final chunk.  Partial fires
+    do NOT pop the span (see ``after_model_callback:3354-3363``) —
+    they only read ``get_current_span_id()`` and record first-token
+    timing.  Only the final fire calls ``pop_span()``.
+
+    All resulting ``LLM_RESPONSE`` rows therefore share one
+    ``span_id`` (the same as the paired ``LLM_REQUEST``).  A future
+    change must not "dedupe" the partial rows by switching to a fresh
+    span id per chunk — those rows are real and intentional.
+    """
+    bigquery_agent_analytics_plugin._span_records_ctx.set(None)
+    TM = bigquery_agent_analytics_plugin.TraceManager
+
+    pushed_span_id = TM.push_span(callback_context, "llm_request")
+
+    # Simulate three partial chunks: each callback observes the same
+    # span_id at top of stack and does NOT pop.
+    for _ in range(3):
+      assert TM.get_current_span_id() == pushed_span_id
+
+    # Final chunk: pop_span returns the same id and a populated
+    # latency.
+    popped_span_id, duration_ms = TM.pop_span()
+    assert popped_span_id == pushed_span_id
+    assert duration_ms is not None and duration_ms >= 0
+
+    # Stack must be empty after the final chunk.
+    assert TM.get_current_span_id() is None
 
   @pytest.mark.asyncio
   async def test_keyword_identifiers_emission_default(
@@ -5139,72 +5406,75 @@ class TestHITLTracingEndToEnd:
     agent = LlmAgent(name="hitl_agent", model=mock_model, tools=[tool])
     runner = testing_utils.InMemoryRunner(root_agent=agent, plugins=[bq_plugin])
 
-    # -- Turn 1: user query → LLM calls tool → HITL pause --
-    events_turn1 = await runner.run_async(
-        testing_utils.UserContent("run my_action")
-    )
-
-    # Find the adk_request_confirmation function call
-    confirmation_fc_id = None
-    for ev in events_turn1:
-      if ev.content and ev.content.parts:
-        for part in ev.content.parts:
-          if (
-              hasattr(part, "function_call")
-              and part.function_call
-              and part.function_call.name
-              == REQUEST_CONFIRMATION_FUNCTION_CALL_NAME
-          ):
-            confirmation_fc_id = part.function_call.id
-            break
-      if confirmation_fc_id:
-        break
-
-    assert (
-        confirmation_fc_id is not None
-    ), "Expected adk_request_confirmation function call in turn 1"
-
-    # -- Turn 2: user sends confirmation → tool re-executes --
-    user_confirmation = testing_utils.UserContent(
-        Part(
-            function_response=FunctionResponse(
-                id=confirmation_fc_id,
-                name=REQUEST_CONFIRMATION_FUNCTION_CALL_NAME,
-                response={"confirmed": True},
-            )
-        )
-    )
-    events_turn2 = await runner.run_async(user_confirmation)
-
-    # -- Give the async BQ writer a moment to flush --
-    await asyncio.sleep(0.2)
-
-    # -- Collect all BQ rows --
-    rows = await _get_captured_rows_async(mock_write_client, dummy_arrow_schema)
-    event_types = [r["event_type"] for r in rows]
-
-    # -- Verify standard events are present --
-    assert "TOOL_STARTING" in event_types
-    assert "TOOL_COMPLETED" in event_types
-
-    # -- Verify HITL-specific events are present --
-    assert (
-        "HITL_CONFIRMATION_REQUEST" in event_types
-    ), f"Expected HITL_CONFIRMATION_REQUEST in {event_types}"
-    assert (
-        "HITL_CONFIRMATION_REQUEST_COMPLETED" in event_types
-    ), f"Expected HITL_CONFIRMATION_REQUEST_COMPLETED in {event_types}"
-
-    # -- Verify HITL events have correct tool name in content --
-    hitl_rows = [r for r in rows if r["event_type"].startswith("HITL_")]
-    for row in hitl_rows:
-      content = json.loads(row["content"]) if row["content"] else {}
-      assert content.get("tool") == "adk_request_confirmation", (
-          "HITL event should reference 'adk_request_confirmation',"
-          f" got {content.get('tool')}"
+    try:
+      # -- Turn 1: user query → LLM calls tool → HITL pause --
+      events_turn1 = await runner.run_async(
+          testing_utils.UserContent("run my_action")
       )
 
-    await bq_plugin.shutdown()
+      # Find the adk_request_confirmation function call
+      confirmation_fc_id = None
+      for ev in events_turn1:
+        if ev.content and ev.content.parts:
+          for part in ev.content.parts:
+            if (
+                hasattr(part, "function_call")
+                and part.function_call
+                and part.function_call.name
+                == REQUEST_CONFIRMATION_FUNCTION_CALL_NAME
+            ):
+              confirmation_fc_id = part.function_call.id
+              break
+        if confirmation_fc_id:
+          break
+
+      assert (
+          confirmation_fc_id is not None
+      ), "Expected adk_request_confirmation function call in turn 1"
+
+      # -- Turn 2: user sends confirmation → tool re-executes --
+      user_confirmation = testing_utils.UserContent(
+          Part(
+              function_response=FunctionResponse(
+                  id=confirmation_fc_id,
+                  name=REQUEST_CONFIRMATION_FUNCTION_CALL_NAME,
+                  response={"confirmed": True},
+              )
+          )
+      )
+      events_turn2 = await runner.run_async(user_confirmation)
+
+      # -- Deterministically wait for the async BQ writer to drain --
+      await bq_plugin.flush()
+
+      # -- Collect all BQ rows --
+      rows = await _get_captured_rows_async(
+          mock_write_client, dummy_arrow_schema
+      )
+      event_types = [r["event_type"] for r in rows]
+
+      # -- Verify standard events are present --
+      assert "TOOL_STARTING" in event_types
+      assert "TOOL_COMPLETED" in event_types
+
+      # -- Verify HITL-specific events are present --
+      assert (
+          "HITL_CONFIRMATION_REQUEST" in event_types
+      ), f"Expected HITL_CONFIRMATION_REQUEST in {event_types}"
+      assert (
+          "HITL_CONFIRMATION_REQUEST_COMPLETED" in event_types
+      ), f"Expected HITL_CONFIRMATION_REQUEST_COMPLETED in {event_types}"
+
+      # -- Verify HITL events have correct tool name in content --
+      hitl_rows = [r for r in rows if r["event_type"].startswith("HITL_")]
+      for row in hitl_rows:
+        content = json.loads(row["content"]) if row["content"] else {}
+        assert content.get("tool") == "adk_request_confirmation", (
+            "HITL event should reference 'adk_request_confirmation',"
+            f" got {content.get('tool')}"
+        )
+    finally:
+      await bq_plugin.shutdown()
 
   @pytest.mark.asyncio
   async def test_regular_tool_does_not_emit_hitl_events(
@@ -5253,23 +5523,26 @@ class TestHITLTracingEndToEnd:
     agent = LlmAgent(name="regular_agent", model=mock_model, tools=[tool])
     runner = testing_utils.InMemoryRunner(root_agent=agent, plugins=[bq_plugin])
 
-    await runner.run_async(testing_utils.UserContent("run regular_tool"))
-    await asyncio.sleep(0.2)
+    try:
+      await runner.run_async(testing_utils.UserContent("run regular_tool"))
+      await bq_plugin.flush()
 
-    rows = await _get_captured_rows_async(mock_write_client, dummy_arrow_schema)
-    event_types = [r["event_type"] for r in rows]
+      rows = await _get_captured_rows_async(
+          mock_write_client, dummy_arrow_schema
+      )
+      event_types = [r["event_type"] for r in rows]
 
-    # Standard tool events should be present
-    assert "TOOL_STARTING" in event_types
-    assert "TOOL_COMPLETED" in event_types
+      # Standard tool events should be present
+      assert "TOOL_STARTING" in event_types
+      assert "TOOL_COMPLETED" in event_types
 
-    # No HITL events
-    hitl_events = [et for et in event_types if et.startswith("HITL_")]
-    assert (
-        hitl_events == []
-    ), f"Expected no HITL events for regular tool, got {hitl_events}"
-
-    await bq_plugin.shutdown()
+      # No HITL events
+      hitl_events = [et for et in event_types if et.startswith("HITL_")]
+      assert (
+          hitl_events == []
+      ), f"Expected no HITL events for regular tool, got {hitl_events}"
+    finally:
+      await bq_plugin.shutdown()
 
 
 # ==============================================================================
@@ -5784,8 +6057,10 @@ class TestTraceIdContinuity:
 
     TM = bigquery_agent_analytics_plugin.TraceManager
 
-    # Create a real TracerProvider and patch the plugin's module-level
-    # tracer so push_span creates valid spans with proper trace_ids.
+    # Wire a real TracerProvider with an in-memory exporter so we can
+    # also assert the plugin path does NOT export anything through it.
+    # (push_span no longer creates OTel spans — see _SpanRecord; the
+    # exporter is here as a regression guard, not a span source.)
     exporter = InMemorySpanExporter()
     provider = SdkProvider()
     provider.add_span_processor(SimpleSpanProcessor(exporter))
@@ -6107,8 +6382,11 @@ class TestSpanIdConsistency:
       assert len(agent_starting) == 1
       assert len(agent_completed) == 1
 
-      # Both events must share the same span_id (the ambient
-      # invoke_agent span) — no plugin-synthetic override.
+      # Both events must share the same span_id (the plugin-internal
+      # agent span pushed by before_agent_callback and popped by
+      # after_agent_callback). The lifecycle-pair invariant holds
+      # regardless of whether the id comes from a plugin-minted hex
+      # string or an ambient OTel span.
       assert agent_starting[0]["span_id"] == agent_completed[0]["span_id"]
       assert (
           agent_starting[0]["parent_span_id"]
@@ -6293,8 +6571,17 @@ class TestStackLeakSafety:
 
     provider.shutdown()
 
-  def test_clear_stack_ends_owned_spans(self, callback_context):
-    """clear_stack() ends all owned spans."""
+  def test_clear_stack_does_not_export_spans(self, callback_context):
+    """``clear_stack()`` clears the internal records but does NOT
+
+    export any OTel spans (issue #94 regression guard).
+
+    Pre-fix, ``clear_stack()`` called ``record.span.end()`` for every
+    owned record, which delivered the now-finished span to whatever
+    exporter the host had wired — duplicating it next to the
+    framework's real span in Cloud Trace.  Post-fix the plugin owns
+    no OTel span at all; ``clear_stack()`` only resets the contextvar.
+    """
     from opentelemetry.sdk.trace import TracerProvider as SdkProvider
     from opentelemetry.sdk.trace.export import SimpleSpanProcessor
     from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
@@ -6315,6 +6602,8 @@ class TestStackLeakSafety:
 
       records = list(bigquery_agent_analytics_plugin._span_records_ctx.get())
       assert all(r.owns_span for r in records)
+      # No exported spans yet (the plugin never creates any).
+      assert exporter.get_finished_spans() == ()
 
       TM.clear_stack()
 
@@ -6322,9 +6611,12 @@ class TestStackLeakSafety:
       result = bigquery_agent_analytics_plugin._span_records_ctx.get()
       assert result == []
 
-      # Both owned spans should have been ended (exported).
-      exported = exporter.get_finished_spans()
-      assert len(exported) == 2
+      # Still no exported spans — the regression guard for #94.
+      assert exporter.get_finished_spans() == (), (
+          "clear_stack() must not export OTel spans; any owned span"
+          " would surface as a duplicate in Cloud Trace alongside the"
+          " framework's real spans (issue #94)."
+      )
 
     provider.shutdown()
 
@@ -6999,6 +7291,70 @@ class TestMultiLoopShutdownDrainsOtherLoops:
       assert call_args[0][1] is other_loop
 
 
+class TestCacheMetadataLogging:
+  """Tests for logging cache_metadata from LlmResponse."""
+
+  @pytest.mark.asyncio
+  async def test_cache_metadata_logged_when_present(
+      self,
+      bq_plugin_inst,
+      mock_write_client,
+      callback_context,
+      dummy_arrow_schema,
+  ):
+    """Verifies cache_metadata is logged into BigQuery attributes when present."""
+    llm_response = llm_response_lib.LlmResponse(
+        content=types.Content(parts=[types.Part(text="Cache test")]),
+        cache_metadata={"fingerprint": "abc-123", "contents_count": 2},
+    )
+    bigquery_agent_analytics_plugin.TraceManager.push_span(callback_context)
+    await bq_plugin_inst.after_model_callback(
+        callback_context=callback_context,
+        llm_response=llm_response,
+    )
+    await asyncio.sleep(0.05)
+    rows = await _get_captured_rows_async(mock_write_client, dummy_arrow_schema)
+    log_entry = next(r for r in rows if r["event_type"] == "LLM_RESPONSE")
+
+    attributes = json.loads(log_entry["attributes"])
+    assert "cache_metadata" in attributes
+    assert attributes["cache_metadata"]["fingerprint"] == "abc-123"
+    assert attributes["cache_metadata"]["contents_count"] == 2
+
+  @pytest.mark.asyncio
+  async def test_missing_cache_metadata_does_not_crash(
+      self,
+      bq_plugin_inst,
+      mock_write_client,
+      callback_context,
+      dummy_arrow_schema,
+  ):
+    """Verifies missing cache_metadata gracefully defaults using getattr."""
+
+    class LegacyLlmResponse:
+
+      def __init__(self):
+        self.content = types.Content(parts=[types.Part(text="Mock text")])
+        self.usage_metadata = None
+        self.model_version = "v1"
+        self.partial = False
+        # Deliberately omitting cache_metadata
+
+    mock_response = LegacyLlmResponse()
+
+    bigquery_agent_analytics_plugin.TraceManager.push_span(callback_context)
+    await bq_plugin_inst.after_model_callback(
+        callback_context=callback_context,
+        llm_response=mock_response,
+    )
+    await asyncio.sleep(0.05)
+    rows = await _get_captured_rows_async(mock_write_client, dummy_arrow_schema)
+    log_entry = next(r for r in rows if r["event_type"] == "LLM_RESPONSE")
+
+    attributes = json.loads(log_entry["attributes"])
+    assert "cache_metadata" not in attributes
+
+
 # ==============================================================
 # TEST CLASS: A2A_INTERACTION event logging via on_event_callback
 # ==============================================================
@@ -7133,3 +7489,639 @@ class TestA2AInteractionLogging:
 
     await asyncio.sleep(0.05)
     assert mock_write_client.append_rows.call_count == 0
+
+
+# ================================================================
+# TEST CLASS: Dataset location handling (Issue #5476)
+# ================================================================
+class TestDatasetLocationHandling:
+  """Tests that BQ client is created without a default location.
+
+  When location is omitted from bigquery.Client(), client.query()
+  sends no location field in the API request, letting BigQuery
+  infer location from the referenced dataset.  This prevents
+  silent view-creation failures for non-US datasets.
+  """
+
+  @pytest.mark.asyncio
+  async def test_client_created_without_location(
+      self,
+      mock_auth_default,
+      mock_to_arrow_schema,
+      mock_asyncio_to_thread,
+  ):
+    """bigquery.Client is created without a location parameter."""
+    with mock.patch.object(bigquery, "Client", autospec=True) as mock_bq_cls:
+      mock_bq_cls.return_value.get_table.side_effect = (
+          cloud_exceptions.NotFound("table")
+      )
+      mock_bq_cls.return_value.create_table.return_value = None
+
+      async with managed_plugin(
+          project_id=PROJECT_ID,
+          dataset_id=DATASET_ID,
+          table_id=TABLE_ID,
+          location="europe-west1",
+          config=bigquery_agent_analytics_plugin.BigQueryLoggerConfig(
+              create_views=False,
+          ),
+      ) as plugin:
+        await plugin._ensure_started()
+
+        mock_bq_cls.assert_called_once()
+        _, kwargs = mock_bq_cls.call_args
+        assert "location" not in kwargs
+
+  @pytest.mark.asyncio
+  async def test_view_query_omits_location(
+      self,
+      mock_auth_default,
+      mock_to_arrow_schema,
+      mock_asyncio_to_thread,
+  ):
+    """View creation DDL queries do not pass an explicit location."""
+    with mock.patch.object(bigquery, "Client", autospec=True) as mock_bq_cls:
+      mock_client = mock_bq_cls.return_value
+      mock_client.get_table.return_value = mock.MagicMock()
+      mock_client.query.return_value.result.return_value = None
+
+      async with managed_plugin(
+          project_id=PROJECT_ID,
+          dataset_id=DATASET_ID,
+          table_id=TABLE_ID,
+          config=bigquery_agent_analytics_plugin.BigQueryLoggerConfig(
+              create_views=True,
+          ),
+      ) as plugin:
+        await plugin._ensure_started()
+
+        assert mock_client.query.call_count > 0
+        for call in mock_client.query.call_args_list:
+          _, kwargs = call
+          # No explicit location — BQ infers from dataset
+          assert "location" not in kwargs
+
+  @pytest.mark.asyncio
+  async def test_view_error_still_logged(
+      self,
+      mock_auth_default,
+      mock_to_arrow_schema,
+      mock_asyncio_to_thread,
+  ):
+    """View creation errors are logged but not raised."""
+    with mock.patch.object(bigquery, "Client", autospec=True) as mock_bq_cls:
+      mock_client = mock_bq_cls.return_value
+      mock_client.get_table.return_value = mock.MagicMock()
+      mock_client.query.return_value.result.side_effect = Exception(
+          "view error"
+      )
+
+      # Should not raise
+      async with managed_plugin(
+          project_id=PROJECT_ID,
+          dataset_id=DATASET_ID,
+          table_id=TABLE_ID,
+          config=bigquery_agent_analytics_plugin.BigQueryLoggerConfig(
+              create_views=True,
+          ),
+      ) as plugin:
+        await plugin._ensure_started()
+        assert plugin._started
+
+
+# ================================================================
+# TEST CLASS: Fork detection after pickle (Issue #86 / PR #5528)
+# ================================================================
+class TestForkDetectionAfterPickle:
+  """Tests that unpickled plugins do not false-positive fork detection."""
+
+  @pytest.mark.asyncio
+  async def test_no_reset_after_unpickle(
+      self,
+      mock_auth_default,
+      mock_bq_client,
+      mock_write_client,
+      mock_to_arrow_schema,
+      mock_asyncio_to_thread,
+  ):
+    """Unpickled plugin does not trigger _reset_runtime_state and
+
+    records os.getpid() after startup.
+    """
+    import pickle
+
+    config = bigquery_agent_analytics_plugin.BigQueryLoggerConfig(
+        create_views=False,
+    )
+    plugin = bigquery_agent_analytics_plugin.BigQueryAgentAnalyticsPlugin(
+        PROJECT_ID, DATASET_ID, table_id=TABLE_ID, config=config
+    )
+    pickled = pickle.dumps(plugin)
+    unpickled = pickle.loads(pickled)
+
+    assert unpickled._init_pid == 0
+
+    with mock.patch.object(unpickled, "_reset_runtime_state") as mock_reset:
+      await unpickled._ensure_started()
+      mock_reset.assert_not_called()
+
+    assert unpickled._started
+    assert unpickled._init_pid == os.getpid()
+    await unpickled.shutdown()
+
+  @pytest.mark.asyncio
+  async def test_reset_on_real_fork(
+      self,
+      mock_auth_default,
+      mock_bq_client,
+      mock_write_client,
+      mock_to_arrow_schema,
+      mock_asyncio_to_thread,
+  ):
+    """Plugin detects real fork when _init_pid is a real non-zero PID."""
+    config = bigquery_agent_analytics_plugin.BigQueryLoggerConfig(
+        create_views=False,
+    )
+    async with managed_plugin(
+        project_id=PROJECT_ID,
+        dataset_id=DATASET_ID,
+        table_id=TABLE_ID,
+        config=config,
+    ) as plugin:
+      await plugin._ensure_started()
+      plugin._init_pid = max(os.getpid() - 1, 1)
+      plugin._started = True
+
+      with mock.patch.object(
+          plugin, "_reset_runtime_state", wraps=plugin._reset_runtime_state
+      ) as mock_reset:
+        await plugin._ensure_started()
+        mock_reset.assert_called_once()
+
+
+# ================================================================
+# TEST CLASS: GCS offload unit mismatch fix (Issue #5561)
+# ================================================================
+class TestOffloadUnitSeparation:
+  """Tests that byte-based inline limit and character-based truncation
+
+  limit are evaluated independently for the GCS offload decision.
+  """
+
+  @pytest.mark.asyncio
+  async def test_multibyte_text_offloaded_by_byte_limit(self):
+    """Multi-byte text exceeding inline_text_limit bytes is offloaded."""
+    mock_offloader = mock.AsyncMock()
+    mock_offloader.upload_content.return_value = "gs://bucket/offloaded.txt"
+
+    parser = bigquery_agent_analytics_plugin.HybridContentParser(
+        offloader=mock_offloader,
+        trace_id="t",
+        span_id="s",
+        max_length=-1,
+    )
+    text = "\U0001f600" * 10000
+    assert len(text) == 10000
+    assert len(text.encode("utf-8")) > 32 * 1024
+
+    content = types.Content(parts=[types.Part(text=text)])
+    _, parts, _ = await parser._parse_content_object(content)
+
+    mock_offloader.upload_content.assert_called_once()
+    assert parts[0]["storage_mode"] == "GCS_REFERENCE"
+
+  @pytest.mark.asyncio
+  async def test_ascii_under_both_limits_stays_inline(self):
+    """ASCII text under both byte and character limits stays inline."""
+    mock_offloader = mock.AsyncMock()
+
+    parser = bigquery_agent_analytics_plugin.HybridContentParser(
+        offloader=mock_offloader,
+        trace_id="t",
+        span_id="s",
+        max_length=50000,
+    )
+    text = "A" * 1000
+    content = types.Content(parts=[types.Part(text=text)])
+    _, parts, _ = await parser._parse_content_object(content)
+
+    mock_offloader.upload_content.assert_not_called()
+    assert parts[0]["storage_mode"] == "INLINE"
+    assert parts[0]["text"] == text
+
+  @pytest.mark.asyncio
+  async def test_text_exceeding_char_limit_offloaded(self):
+    """ASCII text exceeding max_length characters is offloaded."""
+    mock_offloader = mock.AsyncMock()
+    mock_offloader.upload_content.return_value = "gs://bucket/big.txt"
+
+    parser = bigquery_agent_analytics_plugin.HybridContentParser(
+        offloader=mock_offloader,
+        trace_id="t",
+        span_id="s",
+        max_length=100,
+    )
+    text = "X" * 200
+    assert len(text.encode("utf-8")) < 32 * 1024
+    assert len(text) > 100
+
+    content = types.Content(parts=[types.Part(text=text)])
+    _, parts, _ = await parser._parse_content_object(content)
+
+    mock_offloader.upload_content.assert_called_once()
+    assert parts[0]["storage_mode"] == "GCS_REFERENCE"
+
+  @pytest.mark.asyncio
+  async def test_multibyte_under_char_and_byte_limits_stays_inline(self):
+    """Regression test: 3K emoji (12K bytes) with max_length=10000
+
+    should stay inline — under both real limits.
+    """
+    mock_offloader = mock.AsyncMock()
+    parser = bigquery_agent_analytics_plugin.HybridContentParser(
+        offloader=mock_offloader,
+        trace_id="t",
+        span_id="s",
+        max_length=10000,
+    )
+
+    text = "\U0001f600" * 3000
+    assert len(text) < 10000
+    assert len(text.encode("utf-8")) > 10000
+    assert len(text.encode("utf-8")) < 32 * 1024
+
+    content = types.Content(parts=[types.Part(text=text)])
+    _, parts, _ = await parser._parse_content_object(content)
+
+    mock_offloader.upload_content.assert_not_called()
+    assert parts[0]["storage_mode"] == "INLINE"
+
+  @pytest.mark.asyncio
+  async def test_no_offloader_falls_back_to_truncate(self):
+    """Without offloader, text exceeding char limit is truncated inline."""
+    parser = bigquery_agent_analytics_plugin.HybridContentParser(
+        offloader=None,
+        trace_id="t",
+        span_id="s",
+        max_length=50,
+    )
+    text = "Z" * 200
+    content = types.Content(parts=[types.Part(text=text)])
+    _, parts, is_truncated = await parser._parse_content_object(content)
+
+    assert is_truncated
+    assert parts[0]["storage_mode"] == "INLINE"
+    assert "TRUNCATED" in parts[0]["text"]
+
+
+# ================================================================
+# TEST CLASS: AGENT_RESPONSE logging (Issue #87)
+# ================================================================
+class TestAgentResponseLogging:
+  """Tests that final agent response events are captured correctly."""
+
+  @pytest.mark.asyncio
+  async def test_logs_final_text_response(
+      self,
+      bq_plugin_inst,
+      mock_write_client,
+      invocation_context,
+      dummy_arrow_schema,
+  ):
+    """Final text response is logged as AGENT_RESPONSE with
+
+    source_event_author from event.author.
+    """
+    event = event_lib.Event(
+        author="sub_agent",
+        content=types.Content(parts=[types.Part(text="Here is your answer.")]),
+    )
+
+    bigquery_agent_analytics_plugin.TraceManager.push_span(invocation_context)
+    await bq_plugin_inst.on_event_callback(
+        invocation_context=invocation_context, event=event
+    )
+    await asyncio.sleep(0.05)
+    rows = await _get_captured_rows_async(mock_write_client, dummy_arrow_schema)
+    agent_resp_rows = [r for r in rows if r["event_type"] == "AGENT_RESPONSE"]
+    assert len(agent_resp_rows) == 1
+    row = agent_resp_rows[0]
+    content = json.loads(row["content"])
+    assert "Here is your answer" in content["response"]
+    attributes = json.loads(row["attributes"])
+    # source_event_author must come from event.author
+    assert attributes["source_event_author"] == "sub_agent"
+
+  @pytest.mark.asyncio
+  async def test_skips_function_call_events(
+      self,
+      bq_plugin_inst,
+      mock_write_client,
+      invocation_context,
+  ):
+    """Events with function calls are not logged as AGENT_RESPONSE."""
+    fc = types.FunctionCall(name="my_tool", args={"x": 1})
+    event = event_lib.Event(
+        author="agent",
+        content=types.Content(parts=[types.Part(function_call=fc)]),
+    )
+
+    await bq_plugin_inst.on_event_callback(
+        invocation_context=invocation_context, event=event
+    )
+    await asyncio.sleep(0.05)
+    assert mock_write_client.append_rows.call_count == 0
+
+  @pytest.mark.asyncio
+  async def test_skips_function_response_events(
+      self,
+      bq_plugin_inst,
+      mock_write_client,
+      invocation_context,
+  ):
+    """Events with function responses are not logged as AGENT_RESPONSE."""
+    fr = types.FunctionResponse(name="my_tool", response={"result": "ok"})
+    event = event_lib.Event(
+        author="agent",
+        content=types.Content(parts=[types.Part(function_response=fr)]),
+        actions=event_actions_lib.EventActions(skip_summarization=True),
+    )
+
+    await bq_plugin_inst.on_event_callback(
+        invocation_context=invocation_context, event=event
+    )
+    await asyncio.sleep(0.05)
+    assert mock_write_client.append_rows.call_count == 0
+
+  @pytest.mark.asyncio
+  async def test_skips_partial_events(
+      self,
+      bq_plugin_inst,
+      mock_write_client,
+      invocation_context,
+  ):
+    """Partial streaming events are not logged as AGENT_RESPONSE."""
+    event = event_lib.Event(
+        author="agent",
+        content=types.Content(parts=[types.Part(text="partial chunk")]),
+        partial=True,
+    )
+
+    await bq_plugin_inst.on_event_callback(
+        invocation_context=invocation_context, event=event
+    )
+    await asyncio.sleep(0.05)
+    assert mock_write_client.append_rows.call_count == 0
+
+  @pytest.mark.asyncio
+  async def test_skips_long_running_tool_events(
+      self,
+      bq_plugin_inst,
+      mock_write_client,
+      invocation_context,
+  ):
+    """Long-running tool events are not logged as AGENT_RESPONSE."""
+    fc = types.FunctionCall(name="long_tool", args={})
+    event = event_lib.Event(
+        author="agent",
+        content=types.Content(parts=[types.Part(function_call=fc)]),
+        long_running_tool_ids={"call-1"},
+    )
+
+    await bq_plugin_inst.on_event_callback(
+        invocation_context=invocation_context, event=event
+    )
+    await asyncio.sleep(0.05)
+    assert mock_write_client.append_rows.call_count == 0
+
+  @pytest.mark.asyncio
+  async def test_skips_thought_only_events(
+      self,
+      bq_plugin_inst,
+      mock_write_client,
+      invocation_context,
+  ):
+    """Thought-only final events are not logged as AGENT_RESPONSE."""
+    event = event_lib.Event(
+        author="agent",
+        content=types.Content(
+            parts=[types.Part(text="internal reasoning...", thought=True)]
+        ),
+    )
+
+    await bq_plugin_inst.on_event_callback(
+        invocation_context=invocation_context, event=event
+    )
+    await asyncio.sleep(0.05)
+    assert mock_write_client.append_rows.call_count == 0
+
+  @pytest.mark.asyncio
+  async def test_mixed_thought_and_visible_logs_only_visible(
+      self,
+      bq_plugin_inst,
+      mock_write_client,
+      invocation_context,
+      dummy_arrow_schema,
+  ):
+    """Mixed thought + visible text logs only the visible portion."""
+    event = event_lib.Event(
+        author="agent",
+        content=types.Content(
+            parts=[
+                types.Part(text="thinking step 1...", thought=True),
+                types.Part(text="Here is the answer."),
+            ]
+        ),
+    )
+
+    bigquery_agent_analytics_plugin.TraceManager.push_span(invocation_context)
+    await bq_plugin_inst.on_event_callback(
+        invocation_context=invocation_context, event=event
+    )
+    await asyncio.sleep(0.05)
+    rows = await _get_captured_rows_async(mock_write_client, dummy_arrow_schema)
+    agent_resp_rows = [r for r in rows if r["event_type"] == "AGENT_RESPONSE"]
+    assert len(agent_resp_rows) == 1
+    content = json.loads(agent_resp_rows[0]["content"])
+    assert "Here is the answer" in content["response"]
+    assert "thinking step" not in content["response"]
+
+  @pytest.mark.asyncio
+  async def test_skips_empty_part_events(
+      self,
+      bq_plugin_inst,
+      mock_write_client,
+      invocation_context,
+  ):
+    """Events with only empty Part() do not log AGENT_RESPONSE."""
+    event = event_lib.Event(
+        author="agent",
+        content=types.Content(parts=[types.Part()]),
+    )
+
+    await bq_plugin_inst.on_event_callback(
+        invocation_context=invocation_context, event=event
+    )
+    await asyncio.sleep(0.05)
+    assert mock_write_client.append_rows.call_count == 0
+
+  @pytest.mark.asyncio
+  async def test_skips_empty_text_events(
+      self,
+      bq_plugin_inst,
+      mock_write_client,
+      invocation_context,
+  ):
+    """Events with Part(text='') do not log AGENT_RESPONSE."""
+    event = event_lib.Event(
+        author="agent",
+        content=types.Content(parts=[types.Part(text="")]),
+    )
+
+    await bq_plugin_inst.on_event_callback(
+        invocation_context=invocation_context, event=event
+    )
+    await asyncio.sleep(0.05)
+    assert mock_write_client.append_rows.call_count == 0
+
+  @pytest.mark.asyncio
+  async def test_skips_executable_code_only_events(
+      self,
+      bq_plugin_inst,
+      mock_write_client,
+      invocation_context,
+  ):
+    """Events with only executable_code parts do not log AGENT_RESPONSE."""
+    event = event_lib.Event(
+        author="agent",
+        content=types.Content(
+            parts=[
+                types.Part(
+                    executable_code=types.ExecutableCode(
+                        code="print('hi')", language="PYTHON"
+                    )
+                )
+            ]
+        ),
+    )
+
+    await bq_plugin_inst.on_event_callback(
+        invocation_context=invocation_context, event=event
+    )
+    await asyncio.sleep(0.05)
+    assert mock_write_client.append_rows.call_count == 0
+
+
+class TestDropStats:
+  """Tests that dropped events are counted and exposed via get_drop_stats."""
+
+  def _make_processor(
+      self, arrow_schema, *, queue_max_size=10, retry_config=None
+  ):
+    """Builds a BatchProcessor with a mock write client (writer not started)."""
+    return bigquery_agent_analytics_plugin.BatchProcessor(
+        write_client=mock.MagicMock(),
+        arrow_schema=arrow_schema,
+        write_stream=DEFAULT_STREAM_NAME,
+        batch_size=1,
+        flush_interval=1.0,
+        retry_config=(
+            retry_config or bigquery_agent_analytics_plugin.RetryConfig()
+        ),
+        queue_max_size=queue_max_size,
+        shutdown_timeout=10.0,
+    )
+
+  def _stub_arrow_prep(self, bp):
+    """Stubs Arrow serialization so write tests need no real row schema."""
+    fake_batch = mock.MagicMock()
+    fake_batch.serialize.return_value.to_pybytes.return_value = b"batch"
+    bp._prepare_arrow_batch = mock.MagicMock(return_value=fake_batch)
+
+  @pytest.mark.asyncio
+  async def test_queue_full_drops_are_counted(self, dummy_arrow_schema):
+    # Writer is not started, so a size-1 queue fills after one append and the
+    # next two appends overflow and are dropped.
+    bp = self._make_processor(dummy_arrow_schema, queue_max_size=1)
+    await bp.append({"event": 0})
+    await bp.append({"event": 1})
+    await bp.append({"event": 2})
+    assert bp.get_drop_stats()["queue_full"] == 2
+    assert bp.dropped_event_count == 2
+
+  @pytest.mark.asyncio
+  async def test_retry_exhaustion_drops_are_counted(self, dummy_arrow_schema):
+    # max_retries=0 with zero delay drops on the first failure without sleeping.
+    retry_config = bigquery_agent_analytics_plugin.RetryConfig(
+        max_retries=0, initial_delay=0.0, multiplier=1.0, max_delay=0.0
+    )
+    bp = self._make_processor(dummy_arrow_schema, retry_config=retry_config)
+    self._stub_arrow_prep(bp)
+
+    async def fake_append_rows(requests, **kwargs):
+      del requests, kwargs
+      resp = mock.MagicMock()
+      resp.row_errors = []
+      resp.error = mock.MagicMock()
+      resp.error.code = bigquery_agent_analytics_plugin._GRPC_UNAVAILABLE
+      resp.error.message = "unavailable"
+      return _async_gen(resp)
+
+    bp.write_client.append_rows.side_effect = fake_append_rows
+
+    await bp._write_rows_with_retry([{"a": 1}, {"a": 2}])
+
+    assert bp.get_drop_stats()["retry_exhausted"] == 2
+    assert bp.dropped_event_count == 2
+
+  @pytest.mark.asyncio
+  async def test_non_retryable_drops_are_counted(self, dummy_arrow_schema):
+    bp = self._make_processor(dummy_arrow_schema)
+    self._stub_arrow_prep(bp)
+
+    async def fake_append_rows(requests, **kwargs):
+      del requests, kwargs
+      resp = mock.MagicMock()
+      resp.row_errors = []
+      resp.error = mock.MagicMock()
+      resp.error.code = 3  # INVALID_ARGUMENT, non-retryable.
+      resp.error.message = "bad request"
+      return _async_gen(resp)
+
+    bp.write_client.append_rows.side_effect = fake_append_rows
+
+    await bp._write_rows_with_retry([{"a": 1}])
+
+    assert bp.get_drop_stats()["non_retryable"] == 1
+    assert bp.dropped_event_count == 1
+
+  def test_plugin_get_drop_stats_aggregates_across_loops(
+      self, dummy_arrow_schema
+  ):
+    plugin = bigquery_agent_analytics_plugin.BigQueryAgentAnalyticsPlugin(
+        project_id=PROJECT_ID, dataset_id=DATASET_ID, table_id=TABLE_ID
+    )
+    bp1 = self._make_processor(dummy_arrow_schema)
+    bp2 = self._make_processor(dummy_arrow_schema)
+    bp1._dropped["queue_full"] = 3
+    bp1._dropped["retry_exhausted"] = 1
+    bp2._dropped["queue_full"] = 4
+    loop1 = mock.MagicMock(spec=asyncio.AbstractEventLoop)
+    loop2 = mock.MagicMock(spec=asyncio.AbstractEventLoop)
+    plugin._loop_state_by_loop[loop1] = (
+        bigquery_agent_analytics_plugin._LoopState(mock.MagicMock(), bp1)
+    )
+    plugin._loop_state_by_loop[loop2] = (
+        bigquery_agent_analytics_plugin._LoopState(mock.MagicMock(), bp2)
+    )
+
+    stats = plugin.get_drop_stats()
+
+    assert stats["queue_full"] == 7
+    assert stats["retry_exhausted"] == 1
+
+  def test_plugin_get_drop_stats_empty_without_processor(self):
+    plugin = bigquery_agent_analytics_plugin.BigQueryAgentAnalyticsPlugin(
+        project_id=PROJECT_ID, dataset_id=DATASET_ID, table_id=TABLE_ID
+    )
+    assert plugin.get_drop_stats() == {}

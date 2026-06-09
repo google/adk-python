@@ -41,5 +41,5 @@ jobs:
           REPO: 'adk-python'
           PULL_REQUEST_NUMBER: ${{ github.event.pull_request.number || github.event.inputs.pr_number }}
           INTERACTIVE: ${{ vars.PR_TRIAGE_INTERACTIVE }}
-          PYTHONPATH: contributing/samples
+          PYTHONPATH: contributing/samples/adk_team
         run: python -m adk_pr_triaging_agent.main

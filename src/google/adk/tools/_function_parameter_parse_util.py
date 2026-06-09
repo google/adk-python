@@ -247,7 +247,7 @@ def _parse_schema_from_parameter(
     _raise_if_schema_unsupported(variant, schema)
     return schema
   if (
-      get_origin(param.annotation) is Union
+      get_origin(param.annotation) in (Union, typing_types.UnionType)
       # only parse simple UnionType, example int | str | float | bool
       # complex types.UnionType will be invoked in raise branch
       and all(
@@ -276,8 +276,10 @@ def _parse_schema_from_parameter(
         schema.any_of.append(schema_in_any_of)
         unique_types.add(schema_in_any_of.model_dump_json(exclude_none=True))
     if len(schema.any_of) == 1:  # param: list | None -> Array
-      schema.type = schema.any_of[0].type
-      schema.any_of = None
+      collapsed = schema.any_of[0]
+      if schema.nullable:
+        collapsed.nullable = True
+      schema = collapsed
     if (
         param.default is not inspect.Parameter.empty
         and param.default is not None
@@ -287,8 +289,10 @@ def _parse_schema_from_parameter(
       schema.default = param.default
     _raise_if_schema_unsupported(variant, schema)
     return schema
-  if isinstance(param.annotation, _GenericAlias) or isinstance(
-      param.annotation, typing_types.GenericAlias
+  if (
+      isinstance(param.annotation, _GenericAlias)
+      or isinstance(param.annotation, typing_types.GenericAlias)
+      or isinstance(param.annotation, typing_types.UnionType)
   ):
     origin = get_origin(param.annotation)
     args = get_args(param.annotation)
@@ -330,7 +334,7 @@ def _parse_schema_from_parameter(
         schema.default = param.default
       _raise_if_schema_unsupported(variant, schema)
       return schema
-    if origin is Union:
+    if origin in (Union, typing_types.UnionType):
       schema.any_of = []
       schema.type = types.Type.OBJECT
       unique_types = set()
@@ -365,8 +369,10 @@ def _parse_schema_from_parameter(
           schema.any_of.append(schema_in_any_of)
           unique_types.add(schema_in_any_of.model_dump_json(exclude_none=True))
       if len(schema.any_of) == 1:  # param: Union[List, None] -> Array
-        schema.type = schema.any_of[0].type
-        schema.any_of = None
+        collapsed = schema.any_of[0]
+        if schema.nullable:
+          collapsed.nullable = True
+        schema = collapsed
       if (
           param.default is not None
           and param.default is not inspect.Parameter.empty

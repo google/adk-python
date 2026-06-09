@@ -22,8 +22,8 @@ from fastapi.openapi.models import OAuth2
 from google.adk.agents.remote_a2a_agent import RemoteA2aAgent
 from google.adk.auth.auth_credential import AuthCredential
 from google.adk.auth.auth_credential import OAuth2Auth
-from google.adk.integrations.agent_registry import _ProtocolType
 from google.adk.integrations.agent_registry import AgentRegistry
+from google.adk.integrations.agent_registry.agent_registry import _ProtocolType
 from google.adk.telemetry.tracing import GCP_MCP_SERVER_DESTINATION_ID
 from google.adk.tools.mcp_tool.mcp_toolset import McpToolset
 import httpx
@@ -606,6 +606,15 @@ class TestAgentRegistry:
     headers = registry._get_auth_headers()
     assert headers["Authorization"] == "Bearer fake-token"
     assert headers["x-goog-user-project"] == "quota-project"
+
+  def test_get_auth_headers_fallback_to_project_id(self, registry):
+    registry._credentials.token = "fake-token"
+    registry._credentials.refresh = MagicMock()
+    registry._credentials.quota_project_id = None
+
+    headers = registry._get_auth_headers()
+    assert headers["Authorization"] == "Bearer fake-token"
+    assert headers["x-goog-user-project"] == "test-project"
 
   @patch("httpx.Client")
   def test_make_request_raises_http_status_error(self, mock_httpx, registry):

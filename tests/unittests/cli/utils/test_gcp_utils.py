@@ -126,15 +126,21 @@ class TestGcpUtils(unittest.TestCase):
     result = gcp_utils.sign_up_express()
     self.assertEqual(result["project_id"], "new-project")
     self.assertEqual(result["api_key"], "new-api-key")
-    args, _ = mock_session.post.call_args
+    args, kwargs = mock_session.post.call_args
     self.assertEqual(
         args[0],
         "https://us-central1-aiplatform.googleapis.com/v1beta1/vertexExpress:signUp",
     )
+    self.assertEqual(
+        kwargs["json"],
+        {
+            "region": "us-central1",
+            "tos_accepted": True,
+            "get_default_api_key": True,
+        },
+    )
 
-  @mock.patch(
-      "google.adk.cli.utils.gcp_utils.resourcemanager_v3.ProjectsClient"
-  )
+  @mock.patch("google.cloud.resourcemanager_v3.ProjectsClient")
   def test_list_gcp_projects(self, mock_client_cls):
     mock_client = mock.Mock()
     mock_client_cls.return_value = mock_client
@@ -153,6 +159,14 @@ class TestGcpUtils(unittest.TestCase):
     self.assertEqual(len(projects), 2)
     self.assertEqual(projects[0], ("p1", "Project 1"))
     self.assertEqual(projects[1], ("p2", "p2"))
+
+  @mock.patch.dict("sys.modules", {"google.cloud": None})
+  def test_list_gcp_projects_import_error(self):
+    with self.assertRaisesRegex(
+        RuntimeError,
+        "Listing GCP projects requires the 'gcp' optional dependency",
+    ):
+      gcp_utils.list_gcp_projects()
 
 
 if __name__ == "__main__":

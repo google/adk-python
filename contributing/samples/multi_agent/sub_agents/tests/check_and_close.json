@@ -1,0 +1,315 @@
+{
+  "events": [
+    {
+      "author": "user",
+      "content": {
+        "parts": [
+          {
+            "text": "Check if account ACC-123 is active, and if so, close it."
+          }
+        ],
+        "role": "user"
+      },
+      "id": "e-1",
+      "invocationId": "i-1",
+      "nodeInfo": {
+        "path": ""
+      }
+    },
+    {
+      "author": "sub_agents",
+      "content": {
+        "parts": [
+          {
+            "functionCall": {
+              "args": {
+                "agent_name": "info_agent"
+              },
+              "id": "fc-1",
+              "name": "transfer_to_agent"
+            }
+          }
+        ],
+        "role": "model"
+      },
+      "finishReason": "STOP",
+      "id": "e-2",
+      "invocationId": "i-1",
+      "longRunningToolIds": [],
+      "nodeInfo": {
+        "path": "sub_agents@1"
+      }
+    },
+    {
+      "actions": {
+        "transferToAgent": "info_agent"
+      },
+      "author": "sub_agents",
+      "content": {
+        "parts": [
+          {
+            "functionResponse": {
+              "id": "fc-1",
+              "name": "transfer_to_agent",
+              "response": {
+                "result": null
+              }
+            }
+          }
+        ],
+        "role": "user"
+      },
+      "id": "e-3",
+      "invocationId": "i-1",
+      "nodeInfo": {
+        "path": "sub_agents@1"
+      }
+    },
+    {
+      "author": "info_agent",
+      "content": {
+        "parts": [
+          {
+            "functionCall": {
+              "args": {
+                "account_id": "ACC-123"
+              },
+              "id": "fc-2",
+              "name": "get_account_status"
+            }
+          }
+        ],
+        "role": "model"
+      },
+      "finishReason": "STOP",
+      "id": "e-4",
+      "invocationId": "i-1",
+      "longRunningToolIds": [],
+      "nodeInfo": {
+        "path": "sub_agents@1/info_agent@1"
+      }
+    },
+    {
+      "author": "info_agent",
+      "content": {
+        "parts": [
+          {
+            "functionResponse": {
+              "id": "fc-2",
+              "name": "get_account_status",
+              "response": {
+                "result": "Account ACC-123 is active."
+              }
+            }
+          }
+        ],
+        "role": "user"
+      },
+      "id": "e-5",
+      "invocationId": "i-1",
+      "nodeInfo": {
+        "path": "sub_agents@1/info_agent@1"
+      }
+    },
+    {
+      "author": "info_agent",
+      "content": {
+        "parts": [
+          {
+            "functionCall": {
+              "args": {
+                "agent_name": "close_agent"
+              },
+              "id": "fc-3",
+              "name": "transfer_to_agent"
+            }
+          }
+        ],
+        "role": "model"
+      },
+      "finishReason": "STOP",
+      "id": "e-6",
+      "invocationId": "i-1",
+      "longRunningToolIds": [],
+      "nodeInfo": {
+        "path": "sub_agents@1/info_agent@1"
+      }
+    },
+    {
+      "actions": {
+        "transferToAgent": "close_agent"
+      },
+      "author": "info_agent",
+      "content": {
+        "parts": [
+          {
+            "functionResponse": {
+              "id": "fc-3",
+              "name": "transfer_to_agent",
+              "response": {
+                "result": null
+              }
+            }
+          }
+        ],
+        "role": "user"
+      },
+      "id": "e-7",
+      "invocationId": "i-1",
+      "nodeInfo": {
+        "path": "sub_agents@1/info_agent@1"
+      }
+    },
+    {
+      "author": "close_agent",
+      "content": {
+        "parts": [
+          {
+            "functionCall": {
+              "args": {
+                "account_id": "ACC-123"
+              },
+              "id": "fc-4",
+              "name": "close_account"
+            }
+          }
+        ],
+        "role": "model"
+      },
+      "finishReason": "STOP",
+      "id": "e-8",
+      "invocationId": "i-1",
+      "longRunningToolIds": [],
+      "nodeInfo": {
+        "path": "sub_agents@1/close_agent@1"
+      }
+    },
+    {
+      "author": "close_agent",
+      "content": {
+        "parts": [
+          {
+            "functionCall": {
+              "args": {
+                "originalFunctionCall": {
+                  "args": {
+                    "account_id": "ACC-123"
+                  },
+                  "id": "fc-4",
+                  "name": "close_account"
+                },
+                "toolConfirmation": {
+                  "confirmed": false,
+                  "hint": "Please approve or reject the tool call close_account() by responding with a FunctionResponse with an expected ToolConfirmation payload."
+                }
+              },
+              "id": "fc-5",
+              "name": "adk_request_confirmation"
+            }
+          }
+        ],
+        "role": "user"
+      },
+      "id": "e-9",
+      "invocationId": "i-1",
+      "longRunningToolIds": [
+        "fc-5"
+      ],
+      "nodeInfo": {
+        "path": "sub_agents@1/close_agent@1"
+      }
+    },
+    {
+      "actions": {
+        "requestedToolConfirmations": {
+          "fc-4": {
+            "confirmed": false,
+            "hint": "Please approve or reject the tool call close_account() by responding with a FunctionResponse with an expected ToolConfirmation payload."
+          }
+        },
+        "skipSummarization": true
+      },
+      "author": "close_agent",
+      "content": {
+        "parts": [
+          {
+            "functionResponse": {
+              "id": "fc-4",
+              "name": "close_account",
+              "response": {
+                "error": "This tool call requires confirmation, please approve or reject."
+              }
+            }
+          }
+        ],
+        "role": "user"
+      },
+      "id": "e-10",
+      "invocationId": "i-1",
+      "nodeInfo": {
+        "path": "sub_agents@1/close_agent@1"
+      }
+    },
+    {
+      "author": "user",
+      "content": {
+        "parts": [
+          {
+            "functionResponse": {
+              "id": "fc-5",
+              "name": "adk_request_confirmation",
+              "response": {
+                "confirmed": true
+              }
+            }
+          }
+        ],
+        "role": "user"
+      },
+      "id": "e-11",
+      "invocationId": "i-1",
+      "nodeInfo": {
+        "path": ""
+      }
+    },
+    {
+      "author": "close_agent",
+      "content": {
+        "parts": [
+          {
+            "functionResponse": {
+              "id": "fc-4",
+              "name": "close_account",
+              "response": {
+                "result": "Account ACC-123 has been closed."
+              }
+            }
+          }
+        ],
+        "role": "user"
+      },
+      "id": "e-12",
+      "invocationId": "i-1",
+      "nodeInfo": {
+        "path": "sub_agents@1/close_agent@1"
+      }
+    },
+    {
+      "author": "close_agent",
+      "content": {
+        "parts": [
+          {
+            "text": "Account ACC-123 has been closed."
+          }
+        ],
+        "role": "model"
+      },
+      "finishReason": "STOP",
+      "id": "e-13",
+      "invocationId": "i-1",
+      "nodeInfo": {
+        "path": "sub_agents@1/close_agent@1"
+      }
+    }
+  ]
+}

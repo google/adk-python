@@ -32,7 +32,7 @@ class TranscriptionEntry(BaseModel):
   """The pydantic model config."""
 
   role: Optional[str] = None
-  """The role that created this data, typically "user" or "model". For function 
+  """The role that created this data, typically "user" or "model". For function
   call, this is None."""
 
   data: Union[types.Blob, types.Content]

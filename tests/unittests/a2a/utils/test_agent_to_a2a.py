@@ -26,11 +26,15 @@ from google.adk.a2a.executor.a2a_agent_executor import A2aAgentExecutor
 from google.adk.a2a.utils.agent_card_builder import AgentCardBuilder
 from google.adk.a2a.utils.agent_to_a2a import to_a2a
 from google.adk.agents.base_agent import BaseAgent
+from google.adk.agents.llm_agent import LlmAgent
 from google.adk.artifacts.in_memory_artifact_service import InMemoryArtifactService
 from google.adk.auth.credential_service.in_memory_credential_service import InMemoryCredentialService
 from google.adk.memory.in_memory_memory_service import InMemoryMemoryService
 from google.adk.runners import Runner
 from google.adk.sessions.in_memory_session_service import InMemorySessionService
+from google.adk.workflow import FunctionNode
+from google.adk.workflow import START
+from google.adk.workflow import Workflow
 import pytest
 from starlette.applications import Starlette
 
@@ -173,6 +177,80 @@ class TestToA2A:
   @patch("google.adk.a2a.utils.agent_to_a2a.InMemoryTaskStore")
   @patch("google.adk.a2a.utils.agent_to_a2a.AgentCardBuilder")
   @patch("google.adk.a2a.utils.agent_to_a2a.Starlette")
+  def test_to_a2a_with_custom_task_store(
+      self,
+      mock_starlette_class,
+      mock_card_builder_class,
+      mock_task_store_class,
+      mock_request_handler_class,
+      mock_agent_executor_class,
+  ):
+    """Test to_a2a with a custom task store."""
+    # Arrange
+    mock_app = Mock(spec=Starlette)
+    mock_starlette_class.return_value = mock_app
+    mock_agent_executor = Mock(spec=A2aAgentExecutor)
+    mock_agent_executor_class.return_value = mock_agent_executor
+    mock_request_handler = Mock(spec=DefaultRequestHandler)
+    mock_request_handler_class.return_value = mock_request_handler
+    mock_card_builder = Mock(spec=AgentCardBuilder)
+    mock_card_builder_class.return_value = mock_card_builder
+    custom_task_store = Mock()
+
+    # Act
+    result = to_a2a(self.mock_agent, task_store=custom_task_store)
+
+    # Assert
+    assert result == mock_app
+    mock_task_store_class.assert_not_called()
+    mock_request_handler_class.assert_called_once_with(
+        agent_executor=mock_agent_executor,
+        push_config_store=ANY,
+        task_store=custom_task_store,
+    )
+
+  @patch("google.adk.a2a.utils.agent_to_a2a.A2aAgentExecutor")
+  @patch("google.adk.a2a.utils.agent_to_a2a.DefaultRequestHandler")
+  @patch("google.adk.a2a.utils.agent_to_a2a.InMemoryTaskStore")
+  @patch("google.adk.a2a.utils.agent_to_a2a.AgentCardBuilder")
+  @patch("google.adk.a2a.utils.agent_to_a2a.Starlette")
+  def test_to_a2a_default_task_store_when_none(
+      self,
+      mock_starlette_class,
+      mock_card_builder_class,
+      mock_task_store_class,
+      mock_request_handler_class,
+      mock_agent_executor_class,
+  ):
+    """Test to_a2a defaults to InMemoryTaskStore when task_store is None."""
+    # Arrange
+    mock_app = Mock(spec=Starlette)
+    mock_starlette_class.return_value = mock_app
+    mock_task_store = Mock(spec=InMemoryTaskStore)
+    mock_task_store_class.return_value = mock_task_store
+    mock_agent_executor = Mock(spec=A2aAgentExecutor)
+    mock_agent_executor_class.return_value = mock_agent_executor
+    mock_request_handler = Mock(spec=DefaultRequestHandler)
+    mock_request_handler_class.return_value = mock_request_handler
+    mock_card_builder = Mock(spec=AgentCardBuilder)
+    mock_card_builder_class.return_value = mock_card_builder
+
+    # Act
+    result = to_a2a(self.mock_agent, task_store=None)
+
+    # Assert
+    mock_task_store_class.assert_called_once()
+    mock_request_handler_class.assert_called_once_with(
+        agent_executor=mock_agent_executor,
+        push_config_store=ANY,
+        task_store=mock_task_store,
+    )
+
+  @patch("google.adk.a2a.utils.agent_to_a2a.A2aAgentExecutor")
+  @patch("google.adk.a2a.utils.agent_to_a2a.DefaultRequestHandler")
+  @patch("google.adk.a2a.utils.agent_to_a2a.InMemoryTaskStore")
+  @patch("google.adk.a2a.utils.agent_to_a2a.AgentCardBuilder")
+  @patch("google.adk.a2a.utils.agent_to_a2a.Starlette")
   def test_to_a2a_custom_host_port(
       self,
       mock_starlette_class,
@@ -283,7 +361,7 @@ class TestToA2A:
   @patch("google.adk.a2a.utils.agent_to_a2a.AgentCardBuilder")
   @patch("google.adk.a2a.utils.agent_to_a2a.Starlette")
   @patch("google.adk.a2a.utils.agent_to_a2a.Runner")
-  async def test_create_runner_function_creates_runner_correctly(
+  def test_create_runner_function_creates_runner_correctly(
       self,
       mock_runner_class,
       mock_starlette_class,
@@ -317,7 +395,7 @@ class TestToA2A:
     runner_func = call_args[1]["runner"]
 
     # Call the runner function to verify it creates Runner correctly
-    runner_result = await runner_func()
+    runner_result = runner_func()
 
     # Verify Runner was created with correct parameters
     mock_runner_class.assert_called_once_with(
@@ -346,7 +424,7 @@ class TestToA2A:
   @patch("google.adk.a2a.utils.agent_to_a2a.AgentCardBuilder")
   @patch("google.adk.a2a.utils.agent_to_a2a.Starlette")
   @patch("google.adk.a2a.utils.agent_to_a2a.Runner")
-  async def test_create_runner_function_with_agent_without_name(
+  def test_create_runner_function_with_agent_without_name(
       self,
       mock_runner_class,
       mock_starlette_class,
@@ -381,7 +459,7 @@ class TestToA2A:
     runner_func = call_args[1]["runner"]
 
     # Call the runner function to verify it creates Runner correctly
-    await runner_func()
+    runner_func()
 
     # Verify Runner was created with default app_name when agent has no name
     mock_runner_class.assert_called_once_with(
@@ -514,19 +592,18 @@ class TestToA2A:
     with pytest.raises(ValueError, match="Agent cannot be None or empty."):
       to_a2a(None)
 
-  async def test_to_a2a_with_invalid_agent_type(self):
-    """Test that to_a2a raises error when agent is not a BaseAgent."""
-    # Arrange
-    invalid_agent = "not an agent"
+  def test_to_a2a_rejects_non_agent_non_workflow(self):
+    """to_a2a raises TypeError immediately for unsupported types.
 
-    # Act & Assert
-    # The error occurs during lifespan startup when building the agent card
-    app = to_a2a(invalid_agent)
+    Only BaseAgent (e.g. LlmAgent) and Workflow are valid
+    A2A roots. Other BaseNode subclasses (e.g. FunctionNode) and
+    arbitrary objects must be rejected at call time, not silently served
+    as a degenerate "custom agent" card.
+    """
     with pytest.raises(
-        AttributeError, match="'str' object has no attribute 'name'"
+        TypeError, match="requires a BaseAgent or Workflow, got str"
     ):
-      async with app.router.lifespan_context(app):
-        pass
+      to_a2a("not an agent")
 
   @patch("google.adk.a2a.utils.agent_to_a2a.A2aAgentExecutor")
   @patch("google.adk.a2a.utils.agent_to_a2a.DefaultRequestHandler")
@@ -1051,3 +1128,36 @@ class TestToA2A:
         "user_startup",
         "user_shutdown",
     ]
+
+  async def test_to_a2a_succeeds_for_workflow(self):
+    """to_a2a accepts a Workflow and the Starlette lifespan completes."""
+    writer = LlmAgent(
+        name="writer",
+        model="gemini-2.5-flash",
+        instruction="Write a short reply.",
+    )
+    workflow = Workflow(name="pipe", edges=[(START, writer)])
+
+    app = to_a2a(workflow, port=8001)
+
+    async with app.router.lifespan_context(app):
+      pass
+
+  def test_to_a2a_rejects_function_node(self):
+    """to_a2a raises TypeError for a bare FunctionNode.
+
+    FunctionNode is a BaseNode but is intended for use inside a
+    Workflow, not as a standalone A2A root. Passing one directly used
+    to silently produce a degenerate "custom agent" card; it now fails
+    fast at to_a2a() call time.
+    """
+
+    async def my_fn(node_input):
+      return f"echo: {node_input}"
+
+    fn_node = FunctionNode(func=my_fn, name="echo_fn")
+
+    with pytest.raises(
+        TypeError, match="requires a BaseAgent or Workflow, got FunctionNode"
+    ):
+      to_a2a(fn_node)

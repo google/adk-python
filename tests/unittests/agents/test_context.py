@@ -619,3 +619,31 @@ class TestContextAddUiWidget:
 
     assert len(context.actions.render_ui_widgets) == 1
     assert context.actions.render_ui_widgets[0] is w1
+
+
+class TestDeriveScheduler:
+  """Tests for _derive_scheduler helper."""
+
+  def test_derive_scheduler_no_parent(self):
+    from google.adk.agents.context import _derive_scheduler
+
+    assert _derive_scheduler(None) is None
+
+  def test_derive_scheduler_with_parent_having_scheduler(self):
+    from google.adk.agents.context import _derive_scheduler
+
+    mock_parent = MagicMock()
+    mock_scheduler = MagicMock()
+    mock_parent._workflow_scheduler = mock_scheduler
+
+    assert _derive_scheduler(mock_parent) is mock_scheduler
+
+  def test_derive_scheduler_with_parent_no_scheduler(self):
+    from google.adk.agents.context import _derive_scheduler
+    from google.adk.workflow._dynamic_node_scheduler import DynamicNodeScheduler
+
+    mock_parent = MagicMock()
+    mock_parent._workflow_scheduler = None
+
+    scheduler = _derive_scheduler(mock_parent)
+    assert isinstance(scheduler, DynamicNodeScheduler)

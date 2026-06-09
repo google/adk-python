@@ -1,0 +1,276 @@
+{
+  "events": [
+    {
+      "author": "user",
+      "content": {
+        "parts": [
+          {
+            "text": "Transfer $500 to Charlie and close account ACC123"
+          }
+        ],
+        "role": "user"
+      },
+      "id": "e-1",
+      "invocationId": "i-1",
+      "nodeInfo": {
+        "path": ""
+      }
+    },
+    {
+      "author": "money_transfer_assistant",
+      "content": {
+        "parts": [
+          {
+            "functionCall": {
+              "args": {
+                "amount": 500,
+                "recipient": "Charlie"
+              },
+              "id": "fc-1",
+              "name": "transfer_funds"
+            }
+          },
+          {
+            "functionCall": {
+              "args": {
+                "account_id": "ACC123"
+              },
+              "id": "fc-2",
+              "name": "close_account"
+            }
+          }
+        ],
+        "role": "model"
+      },
+      "finishReason": "STOP",
+      "id": "e-2",
+      "invocationId": "i-1",
+      "longRunningToolIds": [],
+      "nodeInfo": {
+        "path": "money_transfer_assistant@1"
+      }
+    },
+    {
+      "author": "money_transfer_assistant",
+      "content": {
+        "parts": [
+          {
+            "functionCall": {
+              "args": {
+                "originalFunctionCall": {
+                  "args": {
+                    "amount": 500,
+                    "recipient": "Charlie"
+                  },
+                  "id": "fc-1",
+                  "name": "transfer_funds"
+                },
+                "toolConfirmation": {
+                  "confirmed": false,
+                  "hint": "Confirm transfer of $500 to Charlie."
+                }
+              },
+              "id": "fc-3",
+              "name": "adk_request_confirmation"
+            }
+          },
+          {
+            "functionCall": {
+              "args": {
+                "originalFunctionCall": {
+                  "args": {
+                    "account_id": "ACC123"
+                  },
+                  "id": "fc-2",
+                  "name": "close_account"
+                },
+                "toolConfirmation": {
+                  "confirmed": false,
+                  "hint": "Please approve or reject the tool call close_account() by responding with a FunctionResponse with an expected ToolConfirmation payload."
+                }
+              },
+              "id": "fc-4",
+              "name": "adk_request_confirmation"
+            }
+          }
+        ],
+        "role": "user"
+      },
+      "id": "e-3",
+      "invocationId": "i-1",
+      "longRunningToolIds": [
+        "fc-4",
+        "fc-3"
+      ],
+      "nodeInfo": {
+        "path": "money_transfer_assistant@1"
+      }
+    },
+    {
+      "actions": {
+        "requestedToolConfirmations": {
+          "fc-1": {
+            "confirmed": false,
+            "hint": "Confirm transfer of $500 to Charlie."
+          },
+          "fc-2": {
+            "confirmed": false,
+            "hint": "Please approve or reject the tool call close_account() by responding with a FunctionResponse with an expected ToolConfirmation payload."
+          }
+        },
+        "skipSummarization": true
+      },
+      "author": "money_transfer_assistant",
+      "content": {
+        "parts": [
+          {
+            "functionResponse": {
+              "id": "fc-1",
+              "name": "transfer_funds",
+              "response": {
+                "error": "This tool call requires confirmation, please approve or reject."
+              }
+            }
+          },
+          {
+            "functionResponse": {
+              "id": "fc-2",
+              "name": "close_account",
+              "response": {
+                "error": "This tool call requires confirmation, please approve or reject."
+              }
+            }
+          }
+        ],
+        "role": "user"
+      },
+      "id": "e-4",
+      "invocationId": "i-1",
+      "nodeInfo": {
+        "path": "money_transfer_assistant@1"
+      }
+    },
+    {
+      "author": "user",
+      "content": {
+        "parts": [
+          {
+            "functionResponse": {
+              "id": "fc-3",
+              "name": "adk_request_confirmation",
+              "response": {
+                "confirmed": true
+              }
+            }
+          }
+        ],
+        "role": "user"
+      },
+      "id": "e-5",
+      "invocationId": "i-1",
+      "nodeInfo": {
+        "path": ""
+      }
+    },
+    {
+      "author": "money_transfer_assistant",
+      "content": {
+        "parts": [
+          {
+            "functionResponse": {
+              "id": "fc-1",
+              "name": "transfer_funds",
+              "response": {
+                "result": "Successfully transferred $500 to Charlie."
+              }
+            }
+          }
+        ],
+        "role": "user"
+      },
+      "id": "e-6",
+      "invocationId": "i-1",
+      "nodeInfo": {
+        "path": "money_transfer_assistant@1"
+      }
+    },
+    {
+      "author": "money_transfer_assistant",
+      "content": {
+        "parts": [
+          {
+            "text": "I transferred $500 to Charlie. I can close account ACC123, but it is a destructive action that requires confirmation. Do you want me to go ahead and close it?"
+          }
+        ],
+        "role": "model"
+      },
+      "finishReason": "STOP",
+      "id": "e-7",
+      "invocationId": "i-1",
+      "nodeInfo": {
+        "path": "money_transfer_assistant@1"
+      }
+    },
+    {
+      "author": "user",
+      "content": {
+        "parts": [
+          {
+            "functionResponse": {
+              "id": "fc-4",
+              "name": "adk_request_confirmation",
+              "response": {
+                "confirmed": true
+              }
+            }
+          }
+        ],
+        "role": "user"
+      },
+      "id": "e-8",
+      "invocationId": "i-1",
+      "nodeInfo": {
+        "path": ""
+      }
+    },
+    {
+      "author": "money_transfer_assistant",
+      "content": {
+        "parts": [
+          {
+            "functionResponse": {
+              "id": "fc-2",
+              "name": "close_account",
+              "response": {
+                "result": "Account ACC123 closed successfully."
+              }
+            }
+          }
+        ],
+        "role": "user"
+      },
+      "id": "e-9",
+      "invocationId": "i-1",
+      "nodeInfo": {
+        "path": "money_transfer_assistant@1"
+      }
+    },
+    {
+      "author": "money_transfer_assistant",
+      "content": {
+        "parts": [
+          {
+            "text": "I have transferred $500 to Charlie and closed account ACC123.\n"
+          }
+        ],
+        "role": "model"
+      },
+      "finishReason": "STOP",
+      "id": "e-10",
+      "invocationId": "i-1",
+      "nodeInfo": {
+        "path": "money_transfer_assistant@1"
+      }
+    }
+  ]
+}

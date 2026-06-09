@@ -1,0 +1,120 @@
+{
+  "appName": "auth_api_key",
+  "events": [
+    {
+      "author": "user",
+      "content": {
+        "parts": [
+          {
+            "text": "go"
+          }
+        ],
+        "role": "user"
+      },
+      "id": "e-1",
+      "invocationId": "i-1",
+      "nodeInfo": {
+        "path": ""
+      }
+    },
+    {
+      "author": "auth_api_key",
+      "content": {
+        "parts": [
+          {
+            "functionCall": {
+              "args": {
+                "authConfig": {
+                  "authScheme": {
+                    "in": "header",
+                    "name": "X-Api-Key",
+                    "type": "apiKey"
+                  },
+                  "credentialKey": "weather_api_key",
+                  "rawAuthCredential": {
+                    "apiKey": "placeholder",
+                    "authType": "apiKey"
+                  }
+                },
+                "functionCallId": "fc-1",
+                "message": "Please provide your API key for X-Api-Key."
+              },
+              "id": "fc-1",
+              "name": "adk_request_credential"
+            }
+          }
+        ]
+      },
+      "id": "e-2",
+      "invocationId": "i-1",
+      "longRunningToolIds": [
+        "fc-1"
+      ],
+      "nodeInfo": {
+        "path": "auth_api_key@1/fetch_weather@1"
+      }
+    },
+    {
+      "author": "user",
+      "content": {
+        "parts": [
+          {
+            "functionResponse": {
+              "id": "fc-1",
+              "name": "adk_request_credential",
+              "response": {
+                "result": "12345678"
+              }
+            }
+          }
+        ],
+        "role": "user"
+      },
+      "id": "e-3",
+      "invocationId": "i-1",
+      "nodeInfo": {
+        "path": ""
+      }
+    },
+    {
+      "author": "auth_api_key",
+      "id": "e-4",
+      "invocationId": "i-1",
+      "nodeInfo": {
+        "outputFor": [
+          "auth_api_key@1/fetch_weather@1"
+        ],
+        "path": "auth_api_key@1/fetch_weather@1"
+      },
+      "output": {
+        "api_key_used": "1234****",
+        "city": "San Francisco",
+        "condition": "Sunny",
+        "temperature": "18C"
+      }
+    },
+    {
+      "author": "auth_api_key",
+      "content": {
+        "parts": [
+          {
+            "text": "Weather for San Francisco: 18C, Sunny. (Authenticated with key: 1234****)"
+          }
+        ],
+        "role": "user"
+      },
+      "id": "e-5",
+      "invocationId": "i-1",
+      "nodeInfo": {
+        "path": "auth_api_key@1/summarize@1"
+      }
+    }
+  ],
+  "id": "3bb54ead-8f56-468e-b64f-f0d534a66c69",
+  "state": {
+    "__session_metadata__": {
+      "displayName": "go"
+    }
+  },
+  "userId": "user"
+}

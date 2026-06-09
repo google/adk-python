@@ -1,0 +1,171 @@
+{
+  "events": [
+    {
+      "author": "user",
+      "content": {
+        "parts": [
+          {
+            "text": "Close account ACC123\n"
+          }
+        ],
+        "role": "user"
+      },
+      "id": "e-1",
+      "invocationId": "i-1",
+      "nodeInfo": {
+        "path": ""
+      }
+    },
+    {
+      "author": "money_transfer_assistant",
+      "content": {
+        "parts": [
+          {
+            "functionCall": {
+              "args": {
+                "account_id": "ACC123"
+              },
+              "id": "fc-1",
+              "name": "close_account"
+            }
+          }
+        ],
+        "role": "model"
+      },
+      "finishReason": "STOP",
+      "id": "e-2",
+      "invocationId": "i-1",
+      "longRunningToolIds": [],
+      "nodeInfo": {
+        "path": "money_transfer_assistant@1"
+      }
+    },
+    {
+      "author": "money_transfer_assistant",
+      "content": {
+        "parts": [
+          {
+            "functionCall": {
+              "args": {
+                "originalFunctionCall": {
+                  "args": {
+                    "account_id": "ACC123"
+                  },
+                  "id": "fc-1",
+                  "name": "close_account"
+                },
+                "toolConfirmation": {
+                  "confirmed": false,
+                  "hint": "Please approve or reject the tool call close_account() by responding with a FunctionResponse with an expected ToolConfirmation payload."
+                }
+              },
+              "id": "fc-2",
+              "name": "adk_request_confirmation"
+            }
+          }
+        ],
+        "role": "user"
+      },
+      "id": "e-3",
+      "invocationId": "i-1",
+      "longRunningToolIds": [
+        "fc-2"
+      ],
+      "nodeInfo": {
+        "path": "money_transfer_assistant@1"
+      }
+    },
+    {
+      "actions": {
+        "requestedToolConfirmations": {
+          "fc-1": {
+            "confirmed": false,
+            "hint": "Please approve or reject the tool call close_account() by responding with a FunctionResponse with an expected ToolConfirmation payload."
+          }
+        },
+        "skipSummarization": true
+      },
+      "author": "money_transfer_assistant",
+      "content": {
+        "parts": [
+          {
+            "functionResponse": {
+              "id": "fc-1",
+              "name": "close_account",
+              "response": {
+                "error": "This tool call requires confirmation, please approve or reject."
+              }
+            }
+          }
+        ],
+        "role": "user"
+      },
+      "id": "e-4",
+      "invocationId": "i-1",
+      "nodeInfo": {
+        "path": "money_transfer_assistant@1"
+      }
+    },
+    {
+      "author": "user",
+      "content": {
+        "parts": [
+          {
+            "functionResponse": {
+              "id": "fc-2",
+              "name": "adk_request_confirmation",
+              "response": {
+                "confirmed": true
+              }
+            }
+          }
+        ],
+        "role": "user"
+      },
+      "id": "e-5",
+      "invocationId": "i-1",
+      "nodeInfo": {
+        "path": ""
+      }
+    },
+    {
+      "author": "money_transfer_assistant",
+      "content": {
+        "parts": [
+          {
+            "functionResponse": {
+              "id": "fc-1",
+              "name": "close_account",
+              "response": {
+                "result": "Account ACC123 closed successfully."
+              }
+            }
+          }
+        ],
+        "role": "user"
+      },
+      "id": "e-6",
+      "invocationId": "i-1",
+      "nodeInfo": {
+        "path": "money_transfer_assistant@1"
+      }
+    },
+    {
+      "author": "money_transfer_assistant",
+      "content": {
+        "parts": [
+          {
+            "text": "I have closed the account ACC123."
+          }
+        ],
+        "role": "model"
+      },
+      "finishReason": "STOP",
+      "id": "e-7",
+      "invocationId": "i-1",
+      "nodeInfo": {
+        "path": "money_transfer_assistant@1"
+      }
+    }
+  ]
+}

@@ -411,7 +411,8 @@ class TriggerRouter:
       async def trigger_pubsub(
           app_name: str, req: PubSubTriggerRequest, request: Request
       ) -> TriggerResponse:
-        user_id = req.subscription or "pubsub-caller"
+        subscription = req.subscription or "pubsub-caller"
+        user_id = subscription.replace("/", "--")
 
         decoded_data = None
         data_payload = None
@@ -477,9 +478,10 @@ class TriggerRouter:
           app_name: str, req: EventarcTriggerRequest, request: Request
       ) -> TriggerResponse:
 
-        user_id = (
+        source = (
             req.source or request.headers.get("ce-source") or "eventarc-caller"
         )
+        user_id = source.strip("/").replace("/", "--")
 
         logger.info(
             "Eventarc trigger: source=%s, type=%s, id=%s",

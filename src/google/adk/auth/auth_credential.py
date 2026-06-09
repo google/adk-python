@@ -19,7 +19,6 @@ from typing import Any
 from typing import Dict
 from typing import List
 from typing import Literal
-from typing import Optional
 
 from pydantic import alias_generators
 from pydantic import BaseModel
@@ -40,9 +39,9 @@ class BaseModelWithConfig(BaseModel):
 class HttpCredentials(BaseModelWithConfig):
   """Represents the secret token value for HTTP authentication, like user name, password, oauth token, etc."""
 
-  username: Optional[str] = None
-  password: Optional[str] = None
-  token: Optional[str] = None
+  username: str | None = None
+  password: str | None = None
+  token: str | None = None
 
   @classmethod
   def model_validate(cls, data: Dict[str, Any]) -> "HttpCredentials":
@@ -62,40 +61,43 @@ class HttpAuth(BaseModelWithConfig):
   # Examples: 'basic', 'bearer'
   scheme: str
   credentials: HttpCredentials
-  additional_headers: Optional[Dict[str, str]] = None
+  additional_headers: Dict[str, str] | None = None
 
 
 class OAuth2Auth(BaseModelWithConfig):
   """Represents credential value and its metadata for a OAuth2 credential."""
 
-  client_id: Optional[str] = None
-  client_secret: Optional[str] = None
+  client_id: str | None = None
+  client_secret: str | None = None
   # tool or adk can generate the auth_uri with the state info thus client
   # can verify the state
-  auth_uri: Optional[str] = None
+  auth_uri: str | None = None
   # A unique value generated at the start of the OAuth flow to bind the user's
   # session to the authorization request. This value is typically stored with
   # user session and passed to backend for validation.
-  nonce: Optional[str] = None
-  state: Optional[str] = None
+  nonce: str | None = None
+  state: str | None = None
   # tool or adk can decide the redirect_uri if they don't want client to decide
-  redirect_uri: Optional[str] = None
-  auth_response_uri: Optional[str] = None
-  auth_code: Optional[str] = None
-  access_token: Optional[str] = None
-  refresh_token: Optional[str] = None
-  id_token: Optional[str] = None
-  expires_at: Optional[int] = None
-  expires_in: Optional[int] = None
-  audience: Optional[str] = None
-  token_endpoint_auth_method: Optional[
+  redirect_uri: str | None = None
+  auth_response_uri: str | None = None
+  auth_code: str | None = None
+  access_token: str | None = None
+  refresh_token: str | None = None
+  id_token: str | None = None
+  expires_at: int | None = None
+  expires_in: int | None = None
+  audience: str | None = None
+  code_verifier: str | None = None
+  code_challenge_method: str | None = None
+  token_endpoint_auth_method: (
       Literal[
           "client_secret_basic",
           "client_secret_post",
           "client_secret_jwt",
           "private_key_jwt",
       ]
-  ] = "client_secret_basic"
+      | None
+  ) = "client_secret_basic"
 
 
 class ServiceAccountCredential(BaseModelWithConfig):
@@ -166,11 +168,11 @@ class ServiceAccount(BaseModelWithConfig):
         when ``use_id_token`` is True.
   """
 
-  service_account_credential: Optional[ServiceAccountCredential] = None
-  scopes: Optional[List[str]] = None
-  use_default_credential: Optional[bool] = False
-  use_id_token: Optional[bool] = False
-  audience: Optional[str] = None
+  service_account_credential: ServiceAccountCredential | None = None
+  scopes: List[str] | None = None
+  use_default_credential: bool | None = False
+  use_id_token: bool | None = False
+  audience: str | None = None
 
   @model_validator(mode="after")
   def _validate_config(self) -> ServiceAccount:
@@ -275,9 +277,9 @@ class AuthCredential(BaseModelWithConfig):
   auth_type: AuthCredentialTypes
   # Resource reference for the credential.
   # This will be supported in the future.
-  resource_ref: Optional[str] = None
+  resource_ref: str | None = None
 
-  api_key: Optional[str] = None
-  http: Optional[HttpAuth] = None
-  service_account: Optional[ServiceAccount] = None
-  oauth2: Optional[OAuth2Auth] = None
+  api_key: str | None = None
+  http: HttpAuth | None = None
+  service_account: ServiceAccount | None = None
+  oauth2: OAuth2Auth | None = None

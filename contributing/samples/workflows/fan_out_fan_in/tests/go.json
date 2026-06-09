@@ -1,0 +1,99 @@
+{
+  "appName": "fan_out_fan_in",
+  "events": [
+    {
+      "author": "user",
+      "content": {
+        "parts": [
+          {
+            "text": "go"
+          }
+        ],
+        "role": "user"
+      },
+      "id": "e-1",
+      "invocationId": "i-1",
+      "nodeInfo": {
+        "path": ""
+      }
+    },
+    {
+      "author": "root_agent",
+      "branch": "make_uppercase@1",
+      "id": "e-2",
+      "invocationId": "i-1",
+      "nodeInfo": {
+        "outputFor": [
+          "root_agent@1/make_uppercase@1"
+        ],
+        "path": "root_agent@1/make_uppercase@1"
+      },
+      "output": "GO"
+    },
+    {
+      "author": "root_agent",
+      "branch": "count_characters@1",
+      "id": "e-3",
+      "invocationId": "i-1",
+      "nodeInfo": {
+        "outputFor": [
+          "root_agent@1/count_characters@1"
+        ],
+        "path": "root_agent@1/count_characters@1"
+      },
+      "output": 2
+    },
+    {
+      "author": "root_agent",
+      "branch": "reverse_string@1",
+      "id": "e-4",
+      "invocationId": "i-1",
+      "nodeInfo": {
+        "outputFor": [
+          "root_agent@1/reverse_string@1"
+        ],
+        "path": "root_agent@1/reverse_string@1"
+      },
+      "output": "og"
+    },
+    {
+      "author": "root_agent",
+      "id": "e-5",
+      "invocationId": "i-1",
+      "nodeInfo": {
+        "outputFor": [
+          "root_agent@1/join_for_results@1"
+        ],
+        "path": "root_agent@1/join_for_results@1"
+      },
+      "output": {
+        "count_characters": 2,
+        "make_uppercase": "GO",
+        "reverse_string": "og"
+      }
+    },
+    {
+      "author": "root_agent",
+      "content": {
+        "parts": [
+          {
+            "text": "Uppercase: GO\n\nCharacter Count: 2\n\nReversed: og\n\n"
+          }
+        ],
+        "role": "user"
+      },
+      "id": "e-6",
+      "invocationId": "i-1",
+      "nodeInfo": {
+        "path": "root_agent@1/aggregate@1"
+      }
+    }
+  ],
+  "id": "de416178-357c-4f4c-bf32-ff19e39f33db",
+  "state": {
+    "__session_metadata__": {
+      "displayName": "go"
+    }
+  },
+  "userId": "user"
+}

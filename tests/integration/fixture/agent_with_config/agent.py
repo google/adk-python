@@ -21,7 +21,7 @@ new_message = types.Content(
 )
 
 google_agent_1 = Agent(
-    model="gemini-1.5-flash",
+    model="gemini-2.5-flash",
     name="agent_1",
     description="The first agent in the team.",
     instruction="Just say 1",
@@ -31,7 +31,7 @@ google_agent_1 = Agent(
 )
 
 google_agent_2 = Agent(
-    model="gemini-1.5-flash",
+    model="gemini-2.5-flash",
     name="agent_2",
     description="The second agent in the team.",
     instruction="Just say 2",
@@ -45,7 +45,7 @@ google_agent_2 = Agent(
 )
 
 google_agent_3 = Agent(
-    model="gemini-1.5-flash",
+    model="gemini-2.5-flash",
     name="agent_3",
     description="The third agent in the team.",
     instruction="Just say 3",
@@ -59,7 +59,7 @@ google_agent_3 = Agent(
 )
 
 google_agent_with_instruction_in_config = Agent(
-    model="gemini-1.5-flash",
+    model="gemini-2.5-flash",
     name="agent",
     generate_content_config=types.GenerateContentConfig(
         temperature=0.5, system_instruction="Count 1"
@@ -72,7 +72,7 @@ def function():
 
 
 google_agent_with_tools_in_config = Agent(
-    model="gemini-1.5-flash",
+    model="gemini-2.5-flash",
     name="agent",
     generate_content_config=types.GenerateContentConfig(
         temperature=0.5, tools=[function]
@@ -80,7 +80,7 @@ google_agent_with_tools_in_config = Agent(
 )
 
 google_agent_with_response_schema_in_config = Agent(
-    model="gemini-1.5-flash",
+    model="gemini-2.5-flash",
     name="agent",
     generate_content_config=types.GenerateContentConfig(
         temperature=0.5, response_schema={"key": "value"}
