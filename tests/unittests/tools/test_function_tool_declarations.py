@@ -21,6 +21,7 @@ JSON schemas for various function signatures, including edge cases.
 from __future__ import annotations
 
 from collections.abc import Sequence
+import dataclasses
 from enum import Enum
 from typing import Any
 from typing import AsyncGenerator
@@ -74,6 +75,13 @@ class Window:
 
   width: int
   height: int
+
+
+@dataclasses.dataclass
+class StandardReturnDataclass:
+  """A standard library dataclass for testing."""
+
+  status: str
 
 
 class TestBasicTypes(parameterized.TestCase):
@@ -617,6 +625,18 @@ class TestNestedObjects(parameterized.TestCase):
             "type": "integer",
         },
     )
+
+  def test_returns_standard_dataclass(self):
+    """Test function that returns a standard library dataclass."""
+
+    def get_status() -> StandardReturnDataclass:
+      return StandardReturnDataclass(status="ok")
+
+    decl = build_function_declaration_with_json_schema(get_status)
+
+    self.assertIsNotNone(decl.response_json_schema)
+    self.assertEqual(decl.response_json_schema["type"], "object")
+    self.assertIn("status", decl.response_json_schema["properties"])
 
 
 class TestSpecialCases(parameterized.TestCase):
