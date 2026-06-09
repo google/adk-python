@@ -336,6 +336,10 @@ class StreamingResponseAggregator:
       yield LlmResponse(
           content=types.ModelContent(parts=parts),
           usage_metadata=llm_response.usage_metadata,
+          grounding_metadata=llm_response.grounding_metadata,
+          citation_metadata=llm_response.citation_metadata,
+          finish_reason=llm_response.finish_reason,
+          model_version=llm_response.model_version,
       )
       self._thought_text = ''
       self._text = ''
@@ -386,6 +390,7 @@ class StreamingResponseAggregator:
           usage_metadata=self._usage_metadata,
           finish_reason=finish_reason,
           partial=False,
+          model_version=self._response.model_version,
       )
 
     # ========== Non-Progressive SSE Streaming (old behavior) ==========
@@ -405,4 +410,5 @@ class StreamingResponseAggregator:
         usage_metadata=self._usage_metadata,
         finish_reason=finish_reason,
         partial=False,
+        model_version=self._response.model_version,
     )

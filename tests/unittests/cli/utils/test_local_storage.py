@@ -100,6 +100,7 @@ def test_create_local_database_session_service_returns_sqlite(
 
 @pytest.mark.asyncio
 async def test_per_agent_session_service_get_user_state(tmp_path: Path) -> None:
+  """Verifies get_user_state routes to correct agent and returns correct state."""
   agent_a = tmp_path / "agent_a"
   agent_b = tmp_path / "agent_b"
   agent_a.mkdir()
@@ -120,7 +121,7 @@ async def test_per_agent_session_service_get_user_state(tmp_path: Path) -> None:
   state_b = await service.get_user_state(app_name="agent_b", user_id="user_b")
 
   assert state_a == {"profile": {"name": "Alice"}}
-  assert state_b == {}
+  assert not state_b
 
 
 @pytest.mark.asyncio

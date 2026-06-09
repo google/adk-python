@@ -81,13 +81,13 @@ def get_gcp_exporters(
   if os.environ.get("GOOGLE_CLOUD_AGENT_ENGINE_ID"):
     # Try to convert project number to project ID to associate logs with traces.
     try:
-      from google.cloud import resourcemanager
+      from google.cloud import resourcemanager_v3 as resourcemanager
 
       projects_client = resourcemanager.ProjectsClient(credentials=credentials)
       project = projects_client.get_project(name=f"projects/{project_id}")
       project_id = project.project_id
     except Exception:
-      logging.warning(
+      logger.warning(
           "Failed to convert project number to project ID. Your traces and logs"
           " may not be associated. To fix this, consider enabling the resource"
           " manager API and redeploying your agent.",
@@ -352,12 +352,12 @@ def _get_agent_engine_logs_exporter(
     from google.cloud.logging_v2.services.logging_service_v2.transports import grpc
     from opentelemetry.exporter import cloud_logging
   except (ImportError, AttributeError):
-    logging.warning(
+    logger.warning(
         "%s is not installed. Please call 'pip install %s'.",
         "opentelemetry-exporter-gcp-logging",
         "opentelemetry-exporter-gcp-logging",
     )
-    logging.warning(
+    logger.warning(
         "proceeding with logging disabled because not all packages for"
         " logging have been installed"
     )
