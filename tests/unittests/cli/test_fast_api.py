@@ -957,6 +957,7 @@ def test_app_with_gemini_enterprise(
   mock_adk_app_instance.stream_query = stream_query_impl
 
   with (
+      patch("google.auth.default", return_value=(MagicMock(), "test-project")),
       patch("vertexai.init", new_callable=MagicMock) as mock_vertexai_init,
       patch(
           "vertexai.agent_engines.AdkApp", return_value=mock_adk_app_instance

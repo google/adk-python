@@ -19,6 +19,7 @@ from typing import TYPE_CHECKING
 
 from google.adk import version
 from google.adk.telemetry import tracing
+from google.adk.telemetry._token_usage import TokenUsage
 from google.genai import types
 from opentelemetry import metrics
 from opentelemetry.semconv._incubating.attributes import gen_ai_attributes
@@ -183,13 +184,9 @@ def record_client_token_usage(
   # thoughts tokens for "output".
   # `cached_content_token_count` is omitted as it's already included in prompt tokens.
   # `total_token_count` is omitted as SemConv expects input/output breakdown.
-  usage = last_response.usage_metadata
-  input_token_count = (usage.prompt_token_count or 0) + (
-      usage.tool_use_prompt_token_count or 0
-  )
-  output_token_count = (usage.candidates_token_count or 0) + (
-      usage.thoughts_token_count or 0
-  )
+  token_usage = TokenUsage(last_response.usage_metadata)
+  input_token_count = token_usage.input_token_count or 0
+  output_token_count = token_usage.output_token_count or 0
   response_model = last_response.model_version or llm_request.model
   base_attrs = {
       gen_ai_attributes.GEN_AI_AGENT_NAME: agent_name,
