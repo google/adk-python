@@ -22,6 +22,7 @@ from unittest import mock
 from google.adk.agents.context import Context
 from google.adk.apps.app import App
 from google.adk.events.event import Event
+from google.adk.plugins.base_plugin import BasePlugin
 # Added for the moved test
 from google.adk.runners import Runner
 from google.adk.sessions.in_memory_session_service import InMemorySessionService
@@ -1068,3 +1069,55 @@ async def test_workflow_returns_normally_on_node_failure():
       and e.node_info.path == 'test_error_workflow@1'
   ]
   assert len(workflow_error_events) == 0
+
+
+@pytest.mark.asyncio
+async def test_workflow_halts_when_before_run_callback_returns_content():
+  """Regression for #6013: a plugin before_run_callback returning Content must
+  halt the workflow run with that content and skip node execution."""
+
+  ran = {'node': False}
+
+  class _RecordingNode(BaseNode):
+
+    @override
+    async def run(
+        self, *, ctx: Context, node_input: Any
+    ) -> AsyncGenerator[Any, None]:
+      ran['node'] = True
+      yield Event(output='should not run')
+
+  class _HaltPlugin(BasePlugin):
+
+    def __init__(self):
+      super().__init__(name='halt_plugin')
+
+    async def before_run_callback(self, *, invocation_context):
+      return types.Content(
+          role='model', parts=[types.Part(text='halted by plugin')]
+      )
+
+  graph = Graph(edges=[Edge(from_node=START, to_node=_RecordingNode(name='A'))])
+  wf = Workflow(name='halt_wf', graph=graph)
+
+  ss = InMemorySessionService()
+  runner = Runner(
+      app_name='test', node=wf, session_service=ss, plugins=[_HaltPlugin()]
+  )
+  session = await ss.create_session(app_name='test', user_id='u')
+  msg = types.Content(parts=[types.Part(text='start')], role='user')
+  events = [
+      event
+      async for event in runner.run_async(
+          user_id='u', session_id=session.id, new_message=msg
+      )
+  ]
+
+  # The run halts with the plugin's content and the node never executes.
+  assert ran['node'] is False
+  assert any(
+      e.content
+      and e.content.parts
+      and e.content.parts[0].text == 'halted by plugin'
+      for e in events
+  )

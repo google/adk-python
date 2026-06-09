@@ -528,8 +528,25 @@ class Runner:
         if yield_user_message and user_event:
           yield user_event
 
-      # Run before_run callbacks
-      await ic.plugin_manager.run_before_run_callback(invocation_context=ic)
+      # Run before_run callbacks. A returned Content halts execution and ends
+      # the run with that content (same contract as the non-workflow path).
+      early_exit_result = await ic.plugin_manager.run_before_run_callback(
+          invocation_context=ic
+      )
+      if isinstance(early_exit_result, types.Content):
+        early_exit_event = Event(
+            invocation_id=ic.invocation_id,
+            author='model',
+            content=early_exit_result,
+        )
+        _apply_run_config_custom_metadata(early_exit_event, ic.run_config)
+        if self._should_append_event(early_exit_event, is_live_call=False):
+          await self.session_service.append_event(
+              session=ic.session,
+              event=early_exit_event,
+          )
+        yield early_exit_event
+        return
 
       # 3. Start root node in background
       from .agents.base_agent import BaseAgent
