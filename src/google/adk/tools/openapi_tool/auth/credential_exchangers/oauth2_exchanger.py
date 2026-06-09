@@ -103,7 +103,7 @@ class OAuth2CredentialExchanger(BaseAuthCredentialExchanger):
     Raises:
         ValueError: If the auth scheme or auth credential is invalid.
     """
-    # TODO(cheliu): Implement token refresh flow
+    # TODO: Implement token refresh flow
 
     self._check_scheme_credential_type(auth_scheme, auth_credential)
 
