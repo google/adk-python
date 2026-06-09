@@ -12,8 +12,4 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from __future__ import annotations
-
-import vertexai
-from vertexai.preview import example_stores
-from vertexai.preview import rag
+"""Agent Development Kit - Integrations."""

@@ -463,7 +463,7 @@ def _validate_agent_import(
 
   This pre-deployment validation catches common issues like missing
   dependencies or import errors in custom BaseLlm implementations before
-  the agent is deployed to Agent Platform. This provides clearer error
+  the agent is deployed to Agent Engine. This provides clearer error
   messages and prevents deployments that would fail at runtime.
 
   Args:
@@ -853,11 +853,11 @@ def to_agent_engine(
       used.
     trace_to_cloud (bool): Deprecated. This argument is no longer required or
       used.
-    otel_to_cloud (bool): Whether to enable exporting OpenTelemetry signals
-      to Google Cloud.
-    api_key (str): Optional. The API key to use for Express Mode.
-      If not provided, the API key from the GOOGLE_API_KEY environment variable
-      will be used. It will only be used if GOOGLE_GENAI_USE_VERTEXAI is true.
+    otel_to_cloud (bool): Whether to enable exporting OpenTelemetry signals to
+      Google Cloud.
+    api_key (str): Optional. The API key to use for Express Mode. If not
+      provided, the API key from the GOOGLE_API_KEY environment variable will be
+      used. It will only be used if GOOGLE_GENAI_USE_VERTEXAI is true.
     adk_app_object (str): Deprecated. This argument is no longer required or
       used.
     agent_engine_id (str): Optional. The ID of the Agent Runtime instance to
@@ -878,14 +878,14 @@ def to_agent_engine(
       variables. If not specified, the `.env` file in the `agent_folder` will be
       used. The values of `GOOGLE_CLOUD_PROJECT` and `GOOGLE_CLOUD_LOCATION`
       will be overridden by `project` and `region` if they are specified.
-    agent_engine_config_file (str): The filepath to the agent platform config file
-      to use. If not specified, the `.agent_engine_config.json` file in the
+    agent_engine_config_file (str): The filepath to the agent platform config
+      file to use. If not specified, the `.agent_engine_config.json` file in the
       `agent_folder` will be used.
     skip_agent_import_validation (bool): Deprecated. This argument is no longer
       required or used.
     trigger_sources (str): Optional. Comma-separated list of trigger sources to
-      enable (e.g., 'pubsub,eventarc'). Registers /trigger/* endpoints for
-      batch and event-driven agent invocations.
+      enable (e.g., 'pubsub,eventarc'). Registers /trigger/* endpoints for batch
+      and event-driven agent invocations.
     memory_service_uri (str): Optional. The URI of the memory service. If not
       specified, the memory service will be deployed to the same parent resource
       as the runtime.
@@ -937,13 +937,12 @@ def to_agent_engine(
   tmp_app_name = app_name + '_tmp' + datetime.now().strftime('%Y%m%d_%H%M%S')
   temp_folder = temp_folder or tmp_app_name
   agent_src_path = os.path.join(parent_folder, temp_folder, 'agents', app_name)
-  # remove agent_src_path if it exists
-  if os.path.exists(agent_src_path):
+  temp_folder_path = os.path.join(parent_folder, temp_folder)
+  if os.path.exists(temp_folder_path):
     click.echo('Removing existing files')
-    shutil.rmtree(agent_src_path)
+    shutil.rmtree(temp_folder_path)
 
   try:
-    click.echo(f'Staging all files in: {agent_src_path}')
     ignore_patterns = None
     ae_ignore_path = os.path.join(agent_folder, '.ae_ignore')
     if os.path.exists(ae_ignore_path):
@@ -958,7 +957,7 @@ def to_agent_engine(
         ignore=ignore_patterns,
         dirs_exist_ok=True,
     )
-    os.chdir(os.path.join(parent_folder, temp_folder))
+    os.chdir(temp_folder_path)
     click.echo('Copying agent source code complete.')
 
     project = _resolve_project(project)
@@ -1022,6 +1021,7 @@ def to_agent_engine(
         click.echo(f'Using google-adk=={__version__} in requirements')
       click.echo(f'Created {requirements_txt_path}')
     _ensure_agent_engine_dependency(requirements_txt_path)
+
     env_vars = {}
     if not env_file:
       # Attempt to read the env variables from .env in the dir (if any).
