@@ -42,7 +42,7 @@ from .integration_connector_tool import IntegrationConnectorTool
 logger = logging.getLogger("google_adk." + __name__)
 
 
-# TODO(cheliu): Apply a common toolset interface
+# TODO: Apply a common toolset interface
 class ApplicationIntegrationToolset(BaseToolset):
   """ApplicationIntegrationToolset generates tools from a given Application
   Integration or Integration Connector resource.
