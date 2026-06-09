@@ -13,6 +13,8 @@
 # limitations under the License.
 
 from google.adk.agents.llm_agent import Agent
+from google.adk.models import Gemini
+from google.genai import types
 
 
 def get_weather(city: str) -> dict:
@@ -80,6 +82,10 @@ def get_current_time(city: str) -> dict:
 
 root_agent = Agent(
     name="weather_time_agent",
+    model=Gemini(
+        model="gemini-2.5-flash",
+        retry_options=types.HttpRetryOptions(initial_delay=1, attempts=3),
+    ),
     description=(
         "Agent to answer questions about the time and weather in a city."
     ),

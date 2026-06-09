@@ -58,10 +58,15 @@ The release cadence is roughly bi-weekly.
 
 ```python
 from google.adk import Agent
+from google.adk.models import Gemini
+from google.genai import types
 
 root_agent = Agent(
     name="greeting_agent",
-    model="gemini-2.5-flash",
+    model=Gemini(
+        model="gemini-2.5-flash",
+        retry_options=types.HttpRetryOptions(initial_delay=1, attempts=3),
+    ),
     instruction="You are a helpful assistant. Greet the user warmly.",
 )
 ```
