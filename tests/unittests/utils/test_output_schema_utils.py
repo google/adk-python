@@ -69,9 +69,9 @@ def test_can_use_output_schema_with_tools(
 ) -> None:
   """Test can_use_output_schema_with_tools."""
   if env_value is not None:
-    monkeypatch.setenv("GOOGLE_GENAI_USE_VERTEXAI", env_value)
+    monkeypatch.setenv("GOOGLE_GENAI_USE_ENTERPRISE", env_value)
   else:
-    monkeypatch.delenv("GOOGLE_GENAI_USE_VERTEXAI", raising=False)
+    monkeypatch.delenv("GOOGLE_GENAI_USE_ENTERPRISE", raising=False)
   assert can_use_output_schema_with_tools(model) == expected
 
 
@@ -90,9 +90,9 @@ def test_can_use_output_schema_with_tools_claude(
   """Test can_use_output_schema_with_tools with Claude models."""
   claude_model = _make_claude(model)
   if env_value is not None:
-    monkeypatch.setenv("GOOGLE_GENAI_USE_VERTEXAI", env_value)
+    monkeypatch.setenv("GOOGLE_GENAI_USE_ENTERPRISE", env_value)
   else:
-    monkeypatch.delenv("GOOGLE_GENAI_USE_VERTEXAI", raising=False)
+    monkeypatch.delenv("GOOGLE_GENAI_USE_ENTERPRISE", raising=False)
   assert can_use_output_schema_with_tools(claude_model) == expected
 
 
@@ -113,7 +113,7 @@ def test_can_use_output_schema_with_tools_litellm(
   """Test can_use_output_schema_with_tools with LiteLLM models."""
   litellm_model = _make_litellm(model)
   if env_value is not None:
-    monkeypatch.setenv("GOOGLE_GENAI_USE_VERTEXAI", env_value)
+    monkeypatch.setenv("GOOGLE_GENAI_USE_ENTERPRISE", env_value)
   else:
-    monkeypatch.delenv("GOOGLE_GENAI_USE_VERTEXAI", raising=False)
+    monkeypatch.delenv("GOOGLE_GENAI_USE_ENTERPRISE", raising=False)
   assert can_use_output_schema_with_tools(litellm_model) == expected
