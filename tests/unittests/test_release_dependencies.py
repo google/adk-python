@@ -41,19 +41,23 @@ import pytest
 def _find_pyproject() -> Path:
   """Locates pyproject.toml by walking up from this file's directory.
 
-  Works in both layouts:
-  * Open-source: pyproject.toml lives at the repo root.
-  * google3: pyproject.toml lives under open_source_workspace/ and tests/ is
-    a symlink into the package root, so .resolve() lands in the wrong place.
+  Handles layouts where pyproject.toml is at an ancestor directory as well as
+  layouts where it lives in a sibling build directory next to the package. The
+  test tree may be symlinked, so the walk avoids ``.resolve()``.
   """
   start = Path(__file__).parent
   for candidate in [start, *start.parents]:
     direct = candidate / 'pyproject.toml'
     if direct.is_file():
       return direct
-    sibling = candidate / 'open_source_workspace' / 'pyproject.toml'
-    if sibling.is_file():
-      return sibling
+    try:
+      children = sorted(p for p in candidate.iterdir() if p.is_dir())
+    except OSError:
+      continue
+    for child in children:
+      sibling = child / 'pyproject.toml'
+      if sibling.is_file():
+        return sibling
   raise FileNotFoundError(
       f'Could not find pyproject.toml walking up from {start}.'
   )
@@ -105,8 +109,8 @@ def test_environment_simulation_config_imports_validation_error_from_pydantic() 
   pydantic-core is undeclared; importing from it directly is fragile. pydantic
   re-exports ValidationError, so use that.
   """
-  # Use importlib to locate the source file so the test works in both the
-  # open-source layout (src/google/adk/...) and inside google3 (flat layout).
+  # Use importlib to locate the source file so the test is independent of the
+  # on-disk package layout.
   spec = importlib.util.find_spec(
       'google.adk.tools.environment_simulation.environment_simulation_config'
   )
