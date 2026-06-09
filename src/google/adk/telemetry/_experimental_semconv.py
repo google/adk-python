@@ -455,6 +455,8 @@ async def set_operation_details_attributes_from_request(
 
   input_messages = _to_input_messages(
       transformers.t_contents(llm_request.contents)
+      if llm_request.contents
+      else []
   )
 
   system_instructions = _to_system_instructions(llm_request.config)
