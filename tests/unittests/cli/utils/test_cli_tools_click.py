@@ -1138,7 +1138,7 @@ def test_cli_web_invokes_uvicorn(
   agents_dir = tmp_path / "agents"
   agents_dir.mkdir()
   monkeypatch.setattr(
-      cli_tools_click, "get_fast_api_app", lambda **_k: object()
+      "google.adk.cli.fast_api.get_fast_api_app", lambda **_k: object()
   )
   runner = CliRunner()
   result = runner.invoke(cli_tools_click.main, ["web", str(agents_dir)])
@@ -1153,7 +1153,7 @@ def test_cli_api_server_invokes_uvicorn(
   agents_dir = tmp_path / "agents_api"
   agents_dir.mkdir()
   monkeypatch.setattr(
-      cli_tools_click, "get_fast_api_app", lambda **_k: object()
+      "google.adk.cli.fast_api.get_fast_api_app", lambda **_k: object()
   )
   runner = CliRunner()
   result = runner.invoke(cli_tools_click.main, ["api_server", str(agents_dir)])
@@ -1175,7 +1175,7 @@ async def dummy_handler(app):
   yield
 """)
   mock_get_app = _Recorder()
-  monkeypatch.setattr(cli_tools_click, "get_fast_api_app", mock_get_app)
+  monkeypatch.setattr("google.adk.cli.fast_api.get_fast_api_app", mock_get_app)
   runner = CliRunner()
   result = runner.invoke(
       cli_tools_click.main,
@@ -1201,7 +1201,7 @@ def test_cli_web_passes_service_uris(
   agents_dir.mkdir()
 
   mock_get_app = _Recorder()
-  monkeypatch.setattr(cli_tools_click, "get_fast_api_app", mock_get_app)
+  monkeypatch.setattr("google.adk.cli.fast_api.get_fast_api_app", mock_get_app)
 
   runner = CliRunner()
   result = runner.invoke(
@@ -1236,7 +1236,7 @@ def test_cli_web_warns_and_maps_deprecated_uris(
   agents_dir.mkdir()
 
   mock_get_app = _Recorder()
-  monkeypatch.setattr(cli_tools_click, "get_fast_api_app", mock_get_app)
+  monkeypatch.setattr("google.adk.cli.fast_api.get_fast_api_app", mock_get_app)
 
   runner = CliRunner()
   result = runner.invoke(

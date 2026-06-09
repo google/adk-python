@@ -37,13 +37,13 @@ import uvicorn
 
 from . import cli_create
 from . import cli_deploy
+from . import fast_api
 from .. import version
 from ..agents.run_config import StreamingMode
 from ..evaluation.constants import MISSING_EVAL_DEPENDENCIES_MESSAGE
 from ..features import FeatureName
 from ..features import override_feature_enabled
 from .cli import run_cli
-from .fast_api import get_fast_api_app
 from .utils import envs
 from .utils import evals
 from .utils import logs
@@ -1813,7 +1813,7 @@ def cli_web(
         fg="green",
     )
 
-  app = get_fast_api_app(
+  app = fast_api.get_fast_api_app(
       agents_dir=agents_dir,
       session_service_uri=session_service_uri,
       artifact_service_uri=artifact_service_uri,
@@ -1911,7 +1911,7 @@ def cli_api_server(
     extra_plugins: Optional[list[str]] = None,
     auto_create_session: bool = False,
     trigger_sources: Optional[list[str]] = None,
-    lifespan: Optional[str] = None,
+    lifespan: str | None = None,
 ):
   """Starts a FastAPI server for agents.
 
@@ -1932,7 +1932,7 @@ def cli_api_server(
   lifespan_handler = _load_lifespan_handler(lifespan) if lifespan else None
 
   config = uvicorn.Config(
-      get_fast_api_app(
+      fast_api.get_fast_api_app(
           agents_dir=agents_dir,
           session_service_uri=session_service_uri,
           artifact_service_uri=artifact_service_uri,
