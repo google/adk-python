@@ -1,0 +1,37 @@
+{
+  "events": [
+    {
+      "author": "user",
+      "content": {
+        "parts": [
+          {
+            "text": "Hello, who are you?"
+          }
+        ],
+        "role": "user"
+      },
+      "id": "e-1",
+      "invocationId": "i-1",
+      "nodeInfo": {
+        "path": ""
+      }
+    },
+    {
+      "author": "greeter_agent",
+      "content": {
+        "parts": [
+          {
+            "text": "Hello there! I'm a friendly and helpful concierge assistant, ready to answer your questions. My internal name is `greeter_agent`. How can I assist you today?"
+          }
+        ],
+        "role": "model"
+      },
+      "finishReason": "STOP",
+      "id": "e-2",
+      "invocationId": "i-1",
+      "nodeInfo": {
+        "path": "greeter_agent@1"
+      }
+    }
+  ]
+}

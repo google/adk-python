@@ -13,8 +13,6 @@
 # limitations under the License.
 
 import dataclasses
-import gc
-import sys
 from typing import Any
 from typing import Sequence
 
@@ -24,6 +22,7 @@ from google.adk.telemetry import _metrics
 from google.adk.telemetry import tracing
 from google.adk.tools import FunctionTool
 from google.adk.utils.context_utils import Aclosing
+from google.genai import types
 from google.genai.types import Part
 from opentelemetry.instrumentation.google_genai import GoogleGenAiSdkInstrumentor
 from opentelemetry.sdk.metrics import MeterProvider
@@ -37,6 +36,7 @@ import pytest
 from ..testing_utils import InMemoryRunner
 from ..testing_utils import MockModel
 from ..testing_utils import TestInMemoryRunner
+from .utils import set_aclosing_wrapping_assertions
 
 
 @pytest.fixture
@@ -99,30 +99,7 @@ async def test_tracer_start_as_current_span(
   This is necessary because instrumentation utilizes contextvars, which ran into "ContextVar was created in a different Context" errors,
   when a given coroutine gets indeterminately suspended.
   """
-  firstiter, finalizer = sys.get_asyncgen_hooks()
-
-  def wrapped_firstiter(coro):
-    nonlocal firstiter
-    # Skip check for specific async context managers in tracing.py,
-    # as their internal generators are not expected to be Aclosing-wrapped.
-    if (
-        coro.__name__ == "use_inference_span"
-        or coro.__name__ == "_use_native_generate_content_span"
-        or coro.__name__ == "record_agent_invocation"
-        or coro.__name__ == "record_tool_execution"
-    ):
-      firstiter(coro)
-      return
-    assert any(
-        isinstance(referrer, Aclosing)
-        or isinstance(indirect_referrer, Aclosing)
-        for referrer in gc.get_referrers(coro)
-        # Some coroutines have a layer of indirection in Python 3.10
-        for indirect_referrer in gc.get_referrers(referrer)
-    ), f"Coro `{coro.__name__}` is not wrapped with Aclosing"
-    firstiter(coro)
-
-  sys.set_asyncgen_hooks(wrapped_firstiter, finalizer)
+  set_aclosing_wrapping_assertions()
 
   # Act
   async with Aclosing(test_runner.run_async_with_new_session_agen("")) as agen:
@@ -172,6 +149,7 @@ async def test_exception_preserves_attributes(
 
   # Assert
   spans = span_exporter.get_finished_spans()
+
   assert len(spans) > 1
   assert all(
       span.attributes is not None and len(span.attributes) > 0
@@ -234,13 +212,18 @@ class MetricPoint:
 
 
 def _extract_metrics(
-    metrics_list: Sequence[Metric], name: str
+    metrics_list: Sequence[Metric], name: str, agent_name: str | None = None
 ) -> list[MetricPoint]:
   m = next((m for m in metrics_list if m.name == name), None)
   if not m:
     return []
   points = []
   for dp in m.data.data_points:
+    if (
+        agent_name is not None
+        and dp.attributes.get("gen_ai.agent.name") != agent_name
+    ):
+      continue
     value = None
     if hasattr(dp, "sum"):
       value = dp.sum
@@ -261,6 +244,10 @@ def _setup_test_metrics(monkeypatch):
   request_size_hist = meter.create_histogram("gen_ai.agent.request.size")
   response_size_hist = meter.create_histogram("gen_ai.agent.response.size")
   workflow_steps_hist = meter.create_histogram("gen_ai.agent.workflow.steps")
+  client_duration_hist = meter.create_histogram(
+      "gen_ai.client.operation.duration"
+  )
+  client_token_usage_hist = meter.create_histogram("gen_ai.client.token.usage")
 
   monkeypatch.setattr(
       _metrics, "_agent_invocation_duration", agent_duration_hist
@@ -269,6 +256,10 @@ def _setup_test_metrics(monkeypatch):
   monkeypatch.setattr(_metrics, "_agent_request_size", request_size_hist)
   monkeypatch.setattr(_metrics, "_agent_response_size", response_size_hist)
   monkeypatch.setattr(_metrics, "_agent_workflow_steps", workflow_steps_hist)
+  monkeypatch.setattr(
+      _metrics, "_client_operation_duration", client_duration_hist
+  )
+  monkeypatch.setattr(_metrics, "_client_token_usage", client_token_usage_hist)
   return reader
 
 
@@ -287,7 +278,14 @@ async def test_metrics(monkeypatch):
           Part.from_function_call(name="get_current_time", args={}),
           Part.from_function_call(name="generate_random_number", args={}),
           Part.from_text(text="Both tools executed."),
-      ]
+      ],
+      usage_metadata=types.GenerateContentResponseUsageMetadata(
+          prompt_token_count=10,
+          candidates_token_count=20,
+          tool_use_prompt_token_count=5,
+          thoughts_token_count=10,
+          total_token_count=45,
+      ),
   )
   test_agent = Agent(
       name="complex_agent",
@@ -307,7 +305,7 @@ async def test_metrics(monkeypatch):
   assert len(scope_metrics) > 0
   metrics_list = scope_metrics[0].metrics
   got_invocation = _extract_metrics(
-      metrics_list, "gen_ai.agent.invocation.duration"
+      metrics_list, "gen_ai.agent.invocation.duration", "complex_agent"
   )
   assert len(got_invocation) == 1
   for p in got_invocation:
@@ -322,7 +320,7 @@ async def test_metrics(monkeypatch):
   ]
   assert got_invocation == want_invocation
   got_tool_exec = _extract_metrics(
-      metrics_list, "gen_ai.tool.execution.duration"
+      metrics_list, "gen_ai.tool.execution.duration", "complex_agent"
   )
   assert len(got_tool_exec) == 2
   for p in got_tool_exec:
@@ -346,13 +344,71 @@ async def test_metrics(monkeypatch):
   got_tool_exec.sort(key=lambda p: p.attributes.get("gen_ai.tool.name", ""))
   want_tool_exec.sort(key=lambda p: p.attributes.get("gen_ai.tool.name", ""))
   assert got_tool_exec == want_tool_exec
-  got_steps = _extract_metrics(metrics_list, "gen_ai.agent.workflow.steps")
+  got_steps = _extract_metrics(
+      metrics_list, "gen_ai.agent.workflow.steps", "complex_agent"
+  )
   assert len(got_steps) == 1
   want_steps = [
       # (tool call + result) x 2 + text response = 5 steps
       MetricPoint(attributes={"gen_ai.agent.name": "complex_agent"}, value=5)
   ]
   assert got_steps == want_steps
+
+  got_client_duration = _extract_metrics(
+      metrics_list, "gen_ai.client.operation.duration", "complex_agent"
+  )
+  assert len(got_client_duration) == 1
+  for p in got_client_duration:
+    p.value = None
+  want_client_duration = [
+      MetricPoint(
+          attributes={
+              "gen_ai.agent.name": "complex_agent",
+              "gen_ai.operation.name": "generate_content",
+              "gen_ai.provider.name": "gemini",
+              "gen_ai.request.model": "mock",
+              "gen_ai.response.model": "mock",
+          },
+          value=None,
+      )
+  ]
+  assert got_client_duration == want_client_duration
+
+  got_client_tokens = _extract_metrics(
+      metrics_list, "gen_ai.client.token.usage", "complex_agent"
+  )
+  assert len(got_client_tokens) == 2
+  want_client_tokens = [
+      MetricPoint(
+          attributes={
+              "gen_ai.agent.name": "complex_agent",
+              "gen_ai.operation.name": "generate_content",
+              "gen_ai.provider.name": "gemini",
+              "gen_ai.request.model": "mock",
+              "gen_ai.response.model": "mock",
+              "gen_ai.token.type": "input",
+          },
+          value=45,  # 15 tokens * 3 turns
+      ),
+      MetricPoint(
+          attributes={
+              "gen_ai.agent.name": "complex_agent",
+              "gen_ai.operation.name": "generate_content",
+              "gen_ai.provider.name": "gemini",
+              "gen_ai.request.model": "mock",
+              "gen_ai.response.model": "mock",
+              "gen_ai.token.type": "output",
+          },
+          value=90,  # 30 tokens * 3 turns
+      ),
+  ]
+  got_client_tokens.sort(
+      key=lambda p: p.attributes.get("gen_ai.token.type", "")
+  )
+  want_client_tokens.sort(
+      key=lambda p: p.attributes.get("gen_ai.token.type", "")
+  )
+  assert got_client_tokens == want_client_tokens
 
 
 @pytest.mark.asyncio
@@ -386,7 +442,9 @@ async def test_metrics_tool_error(monkeypatch):
   metrics_list = metrics_data.resource_metrics[0].scope_metrics[0].metrics
 
   # Verify Tool Execution Duration
-  got = _extract_metrics(metrics_list, "gen_ai.tool.execution.duration")
+  got = _extract_metrics(
+      metrics_list, "gen_ai.tool.execution.duration", "error_agent"
+  )
   assert len(got) == 2
   for p in got:
     p.value = None

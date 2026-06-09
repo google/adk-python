@@ -1,10 +1,8 @@
 {
   "$schema": "https://raw.githubusercontent.com/googleapis/release-please/main/schemas/config.json",
-  "last-release-sha": "5e49cfa6567a09e06409b0f380434f12f85a17c9",
   "packages": {
     ".": {
       "release-type": "python",
-      "versioning": "always-bump-minor",
       "package-name": "google-adk",
       "include-component-in-tag": false,
       "skip-github-release": true,
@@ -57,5 +55,6 @@
         }
       ]
     }
-  }
+  },
+  "last-release-sha": "cd81f7bde91df78d6cece539a6f98dda2aa8c9c0"
 }

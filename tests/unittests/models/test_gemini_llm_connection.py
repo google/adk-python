@@ -285,11 +285,17 @@ async def test_receive_populates_live_session_id(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    'conn_fixture',
+    ['gemini_api_connection', 'gemini_connection'],
+)
 async def test_receive_transcript_finished_on_interrupt(
-    gemini_api_connection,
+    conn_fixture,
     mock_gemini_session,
+    request,
 ):
   """Test receive finishes transcription on interrupt signal."""
+  connection = request.getfixturevalue(conn_fixture)
 
   message1 = mock.Mock()
   message1.usage_metadata = None
@@ -345,7 +351,7 @@ async def test_receive_transcript_finished_on_interrupt(
   receive_mock = mock.Mock(return_value=mock_receive_generator())
   mock_gemini_session.receive = receive_mock
 
-  responses = [resp async for resp in gemini_api_connection.receive()]
+  responses = [resp async for resp in connection.receive()]
 
   assert len(responses) == 5
   assert responses[4].interrupted is True
@@ -365,11 +371,17 @@ async def test_receive_transcript_finished_on_interrupt(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    'conn_fixture',
+    ['gemini_api_connection', 'gemini_connection'],
+)
 async def test_receive_transcript_finished_on_generation_complete(
-    gemini_api_connection,
+    conn_fixture,
     mock_gemini_session,
+    request,
 ):
   """Test receive finishes transcription on generation_complete signal."""
+  connection = request.getfixturevalue(conn_fixture)
 
   message1 = mock.Mock()
   message1.usage_metadata = None
@@ -425,7 +437,7 @@ async def test_receive_transcript_finished_on_generation_complete(
   receive_mock = mock.Mock(return_value=mock_receive_generator())
   mock_gemini_session.receive = receive_mock
 
-  responses = [resp async for resp in gemini_api_connection.receive()]
+  responses = [resp async for resp in connection.receive()]
 
   assert len(responses) == 4
 
@@ -444,11 +456,17 @@ async def test_receive_transcript_finished_on_generation_complete(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    'conn_fixture',
+    ['gemini_api_connection', 'gemini_connection'],
+)
 async def test_receive_transcript_finished_on_turn_complete(
-    gemini_api_connection,
+    conn_fixture,
     mock_gemini_session,
+    request,
 ):
   """Test receive finishes transcription on interrupt or complete signals."""
+  connection = request.getfixturevalue(conn_fixture)
 
   message1 = mock.Mock()
   message1.usage_metadata = None
@@ -504,7 +522,7 @@ async def test_receive_transcript_finished_on_turn_complete(
   receive_mock = mock.Mock(return_value=mock_receive_generator())
   mock_gemini_session.receive = receive_mock
 
-  responses = [resp async for resp in gemini_api_connection.receive()]
+  responses = [resp async for resp in connection.receive()]
 
   assert len(responses) == 5
   assert responses[4].turn_complete is True
@@ -848,6 +866,59 @@ async def test_send_history_filters_various_audio_mime_types(
 
 
 @pytest.mark.asyncio
+async def test_send_history_gemini_31_turn_complete(mock_gemini_session):
+  """Verify Gemini 3.1 Live history seeding explicitly appends turn_complete=True."""
+  conn = GeminiLlmConnection(
+      mock_gemini_session,
+      api_backend=GoogleLLMVariant.GEMINI_API,
+      model_version='gemini-3.1-flash-live-preview',
+  )
+  mock_gemini_session.send_client_content = mock.AsyncMock()
+
+  mock_contents = [
+      types.Content(role='user', parts=[types.Part.from_text(text='hi')]),
+      types.Content(role='model', parts=[types.Part.from_text(text='hello')]),
+  ]
+  await conn.send_history(mock_contents)
+
+  mock_gemini_session.send_client_content.assert_called_once_with(
+      turns=mock_contents,
+      turn_complete=True,
+  )
+
+
+@pytest.mark.asyncio
+async def test_send_history_collapse_vertex_ai(mock_gemini_session):
+  """Verify history prompt collapse when seeding Gemini 3.1 Live on Vertex AI backend."""
+  conn = GeminiLlmConnection(
+      mock_gemini_session,
+      api_backend=GoogleLLMVariant.VERTEX_AI,
+      model_version='gemini-3.1-flash-live-preview',
+  )
+  mock_gemini_session.send_client_content = mock.AsyncMock()
+
+  mock_contents = [
+      types.Content(role='user', parts=[types.Part.from_text(text='hi')]),
+      types.Content(role='model', parts=[types.Part.from_text(text='hello')]),
+  ]
+  await conn.send_history(mock_contents)
+
+  assert mock_gemini_session.send_client_content.call_count == 1
+  called_turns = mock_gemini_session.send_client_content.call_args.kwargs[
+      'turns'
+  ]
+  assert len(called_turns) == 1
+  assert called_turns[0].role == 'user'
+  assert 'Previous conversation history:' in called_turns[0].parts[0].text
+  assert '[user]: hi' in called_turns[0].parts[0].text
+  assert '[model]: hello' in called_turns[0].parts[0].text
+  assert (
+      mock_gemini_session.send_client_content.call_args.kwargs['turn_complete']
+      is True
+  )
+
+
+@pytest.mark.asyncio
 async def test_receive_grounding_metadata_standalone(
     gemini_connection, mock_gemini_session
 ):
@@ -867,6 +938,7 @@ async def test_receive_grounding_metadata_standalone(
   mock_server_content.interrupted = False
   mock_server_content.input_transcription = None
   mock_server_content.output_transcription = None
+  mock_server_content.generation_complete = False
 
   mock_message = mock.create_autospec(types.LiveServerMessage, instance=True)
   mock_message.usage_metadata = None
@@ -911,6 +983,7 @@ async def test_receive_grounding_metadata_with_content(
   mock_server_content.interrupted = False
   mock_server_content.input_transcription = None
   mock_server_content.output_transcription = None
+  mock_server_content.generation_complete = False
 
   mock_message = mock.create_autospec(types.LiveServerMessage, instance=True)
   mock_message.usage_metadata = None
@@ -981,6 +1054,7 @@ async def test_receive_tool_call_and_grounding_metadata_with_native_audio(
   mock_server_content.interrupted = False
   mock_server_content.input_transcription = None
   mock_server_content.output_transcription = None
+  mock_server_content.generation_complete = False
 
   mock_metadata_msg = mock.create_autospec(
       types.LiveServerMessage, instance=True
@@ -1001,6 +1075,7 @@ async def test_receive_tool_call_and_grounding_metadata_with_native_audio(
   mock_turn_complete_content.interrupted = False
   mock_turn_complete_content.input_transcription = None
   mock_turn_complete_content.output_transcription = None
+  mock_turn_complete_content.generation_complete = False
 
   mock_turn_complete_msg = mock.create_autospec(
       types.LiveServerMessage, instance=True
@@ -1203,6 +1278,87 @@ async def test_receive_go_away(gemini_connection, mock_gemini_session):
 
 
 @pytest.mark.asyncio
+async def test_receive_aggregates_thoughts_separately(
+    gemini_connection, mock_gemini_session
+):
+  """Test receive aggregates thoughts and regular text separately."""
+
+  part1 = types.Part.from_text(text='thought 1')
+  part1.thought = True
+  message1 = types.LiveServerMessage(
+      server_content=types.LiveServerContent(
+          model_turn=types.Content(role='model', parts=[part1]),
+      )
+  )
+
+  part2 = types.Part.from_text(text=' thought 2')
+  part2.thought = True
+  message2 = types.LiveServerMessage(
+      server_content=types.LiveServerContent(
+          model_turn=types.Content(role='model', parts=[part2]),
+      )
+  )
+
+  part3 = types.Part.from_text(text='answer')
+  part3.thought = False
+  message3 = types.LiveServerMessage(
+      server_content=types.LiveServerContent(
+          model_turn=types.Content(role='model', parts=[part3]),
+      )
+  )
+
+  message4 = types.LiveServerMessage(
+      server_content=types.LiveServerContent(
+          turn_complete=True,
+      )
+  )
+
+  async def mock_receive_generator():
+    yield message1
+    yield message2
+    yield message3
+    yield message4
+
+  receive_mock = mock.Mock(return_value=mock_receive_generator())
+  mock_gemini_session.receive = receive_mock
+
+  responses = [resp async for resp in gemini_connection.receive()]
+
+  # Expected responses:
+  # 1. Message 1 (partial thought)
+  # 2. Message 2 (partial thought)
+  # 3. Aggregated thought (full)
+  # 4. Message 3 (partial answer)
+  # 5. Aggregated answer (full)
+  # 6. Turn complete message
+
+  assert len(responses) == 6
+
+  # Check partials
+  assert responses[0].content.parts[0].text == 'thought 1'
+  assert responses[0].partial is True
+  assert responses[1].content.parts[0].text == ' thought 2'
+  assert responses[1].partial is True
+
+  # Check aggregated thought
+  assert responses[2].content.parts[0].text == 'thought 1 thought 2'
+  assert responses[2].content.parts[0].thought is True
+  assert responses[2].partial is False
+
+  # Check partial answer
+  assert responses[3].content.parts[0].text == 'answer'
+  assert responses[3].partial is True
+
+  # Check aggregated answer
+  assert responses[4].content.parts[0].text == 'answer'
+  assert not getattr(responses[4].content.parts[0], 'thought', False)
+  assert responses[4].partial is False
+
+  # Check turn complete
+  assert responses[5].turn_complete is True
+
+
+@pytest.mark.asyncio
 async def test_receive_video_content(gemini_connection, mock_gemini_session):
   """Test receive with video content."""
   mock_content = types.Content(
@@ -1240,3 +1396,327 @@ async def test_receive_video_content(gemini_connection, mock_gemini_session):
   content_response = next((r for r in responses if r.content), None)
   assert content_response is not None
   assert content_response.content == mock_content
+
+
+@pytest.mark.asyncio
+async def test_receive_grounding_metadata_pending(
+    gemini_connection, mock_gemini_session
+):
+  """Test that grounding metadata in partial chunks is pending and yielded on full text."""
+  grounding_metadata = types.GroundingMetadata(
+      web_search_queries=['stock price of google'],
+  )
+
+  def make_msg(text=None, g_meta=None, tc=False):
+    msg = mock.Mock(
+        usage_metadata=None,
+        tool_call=None,
+        session_resumption_update=None,
+        go_away=None,
+    )
+    msg.server_content = mock.Mock(
+        interrupted=False,
+        input_transcription=None,
+        output_transcription=None,
+        generation_complete=False,
+        turn_complete=tc,
+        grounding_metadata=g_meta,
+        model_turn=types.Content(
+            role='model', parts=[types.Part.from_text(text=text)]
+        )
+        if text
+        else None,
+    )
+    return msg
+
+  msg1 = make_msg(text='hello', g_meta=grounding_metadata)
+  msg2 = make_msg(text=' world')
+  msg3 = make_msg(tc=True)
+
+  async def gen():
+    yield msg1
+    yield msg2
+    yield msg3
+
+  mock_gemini_session.receive = mock.Mock(return_value=gen())
+
+  responses = [resp async for resp in gemini_connection.receive()]
+
+  # Expected responses:
+  # 1. Msg 1 partial (hello) with grounding_metadata
+  # 2. Msg 2 partial ( world) without grounding_metadata
+  # 3. Full text response (hello world) with PENDING grounding_metadata
+  # 4. Turn complete response without grounding_metadata (already cleared)
+  assert len(responses) == 4
+
+  assert responses[0].content.parts[0].text == 'hello'
+  assert responses[0].partial is True
+  assert responses[0].grounding_metadata == grounding_metadata
+
+  assert responses[1].content.parts[0].text == ' world'
+  assert responses[1].partial is True
+  assert responses[1].grounding_metadata is None
+
+  assert responses[2].content.parts[0].text == 'hello world'
+  assert responses[2].partial is False
+  assert responses[2].grounding_metadata == grounding_metadata
+
+  assert responses[3].turn_complete is True
+  assert responses[3].grounding_metadata is None
+
+
+@pytest.mark.asyncio
+async def test_receive_populates_turn_complete_reason(
+    gemini_connection, mock_gemini_session
+):
+  """Test that receive populates turn_complete_reason in LlmResponse."""
+  mock_server_content = mock.create_autospec(
+      types.LiveServerContent, instance=True
+  )
+  mock_server_content.model_turn = None
+  mock_server_content.grounding_metadata = None
+  mock_server_content.turn_complete = True
+  mock_server_content.interrupted = False
+  mock_server_content.input_transcription = None
+  mock_server_content.output_transcription = None
+  mock_server_content.generation_complete = False
+  mock_server_content.turn_complete_reason = (
+      types.TurnCompleteReason.RESPONSE_REJECTED
+  )
+
+  mock_message = mock.create_autospec(types.LiveServerMessage, instance=True)
+  mock_message.usage_metadata = None
+  mock_message.server_content = mock_server_content
+  mock_message.tool_call = None
+  mock_message.session_resumption_update = None
+  mock_message.go_away = None
+
+  async def mock_receive_generator():
+    yield mock_message
+
+  mock_gemini_session.receive = mock.Mock(return_value=mock_receive_generator())
+
+  responses = [resp async for resp in gemini_connection.receive()]
+
+  assert len(responses) == 1
+  assert responses[0].turn_complete is True
+  assert (
+      responses[0].turn_complete_reason
+      == types.TurnCompleteReason.RESPONSE_REJECTED
+  )
+
+
+@pytest.mark.asyncio
+async def test_receive_populates_turn_complete_reason_standalone_grounding(
+    gemini_connection, mock_gemini_session
+):
+  """Test that receive populates turn_complete_reason in LlmResponse for standalone grounding metadata."""
+  mock_server_content = mock.create_autospec(
+      types.LiveServerContent, instance=True
+  )
+  mock_server_content.model_turn = None
+  mock_server_content.grounding_metadata = mock.create_autospec(
+      types.GroundingMetadata, instance=True
+  )
+  mock_server_content.turn_complete = False
+  mock_server_content.interrupted = False
+  mock_server_content.input_transcription = None
+  mock_server_content.output_transcription = None
+  mock_server_content.generation_complete = False
+  mock_server_content.turn_complete_reason = (
+      types.TurnCompleteReason.RESPONSE_REJECTED
+  )
+
+  mock_message = mock.create_autospec(types.LiveServerMessage, instance=True)
+  mock_message.usage_metadata = None
+  mock_message.server_content = mock_server_content
+  mock_message.tool_call = None
+  mock_message.session_resumption_update = None
+  mock_message.go_away = None
+
+  async def mock_receive_generator():
+    yield mock_message
+
+  mock_gemini_session.receive = mock.Mock(return_value=mock_receive_generator())
+
+  responses = [resp async for resp in gemini_connection.receive()]
+
+  assert len(responses) == 1
+  assert responses[0].grounding_metadata is not None
+  assert responses[0].turn_complete is None
+  assert (
+      responses[0].turn_complete_reason
+      == types.TurnCompleteReason.RESPONSE_REJECTED
+  )
+
+
+@pytest.mark.asyncio
+async def test_receive_populates_turn_complete_reason_with_content(
+    gemini_connection, mock_gemini_session
+):
+  """Test that receive populates turn_complete_reason in LlmResponse when model turn has content parts."""
+  mock_content = types.Content(
+      role='model',
+      parts=[types.Part.from_text(text='hello')],
+  )
+  mock_server_content = mock.create_autospec(
+      types.LiveServerContent, instance=True
+  )
+  mock_server_content.model_turn = mock_content
+  mock_server_content.grounding_metadata = None
+  mock_server_content.turn_complete = False
+  mock_server_content.interrupted = False
+  mock_server_content.input_transcription = None
+  mock_server_content.output_transcription = None
+  mock_server_content.generation_complete = False
+  mock_server_content.turn_complete_reason = (
+      types.TurnCompleteReason.RESPONSE_REJECTED
+  )
+
+  mock_message = mock.create_autospec(types.LiveServerMessage, instance=True)
+  mock_message.usage_metadata = None
+  mock_message.server_content = mock_server_content
+  mock_message.tool_call = None
+  mock_message.session_resumption_update = None
+  mock_message.go_away = None
+
+  async def mock_receive_generator():
+    yield mock_message
+
+  mock_gemini_session.receive = mock.Mock(return_value=mock_receive_generator())
+
+  responses = [resp async for resp in gemini_connection.receive()]
+
+  assert len(responses) == 1
+  assert responses[0].content == mock_content
+  assert (
+      responses[0].turn_complete_reason
+      == types.TurnCompleteReason.RESPONSE_REJECTED
+  )
+
+
+@pytest.mark.asyncio
+async def test_receive_grounding_metadata_default_gemini_3_1(
+    mock_gemini_session,
+):
+  """Verify grounding_metadata defaults to empty GroundingMetadata for Gemini 3.1."""
+  conn = GeminiLlmConnection(
+      mock_gemini_session,
+      model_version='gemini-3.1-flash-live-preview',
+  )
+
+  def make_msg(text=None, tc=False, tool_call=None):
+    msg = mock.create_autospec(types.LiveServerMessage, instance=True)
+    msg.usage_metadata = None
+    msg.tool_call = tool_call
+    msg.session_resumption_update = None
+    msg.go_away = None
+    msg.server_content = mock.Mock()
+    msg.server_content.interrupted = False
+    msg.server_content.input_transcription = None
+    msg.server_content.output_transcription = None
+    msg.server_content.generation_complete = False
+    msg.server_content.turn_complete = tc
+    msg.server_content.grounding_metadata = None
+    msg.server_content.model_turn = (
+        types.Content(role='model', parts=[types.Part.from_text(text=text)])
+        if text
+        else None
+    )
+    return msg
+
+  # 1. Content event
+  msg1 = make_msg(text='hello')
+  # 2. Tool call event (yields immediately for Gemini 3.1)
+  function_call = types.FunctionCall(name='foo', args={})
+  tool_call = mock.create_autospec(types.LiveServerToolCall, instance=True)
+  tool_call.function_calls = [function_call]
+  msg2 = make_msg(tool_call=tool_call)
+  # 3. Turn complete event
+  msg3 = make_msg(tc=True)
+
+  async def mock_receive_generator():
+    yield msg1
+    yield msg2
+    yield msg3
+
+  mock_gemini_session.receive = mock.Mock(return_value=mock_receive_generator())
+
+  responses = [resp async for resp in conn.receive()]
+
+  # Expected:
+  # responses[0] -> partial content response for msg1 (has grounding_metadata)
+  # responses[1] -> full text response for msg1 (has grounding_metadata)
+  # responses[2] -> tool call response for msg2 (has grounding_metadata)
+  # responses[3] -> turn_complete response for msg3 (has grounding_metadata)
+  assert len(responses) == 4
+
+  assert responses[0].content.parts[0].text == 'hello'
+  assert isinstance(responses[0].grounding_metadata, types.GroundingMetadata)
+  assert responses[0].grounding_metadata.web_search_queries is None
+  assert responses[0].partial is True
+
+  assert responses[1].content.parts[0].text == 'hello'
+  assert isinstance(responses[1].grounding_metadata, types.GroundingMetadata)
+  assert responses[1].partial is False
+
+  assert responses[2].content.parts[0].function_call.name == 'foo'
+  assert isinstance(responses[2].grounding_metadata, types.GroundingMetadata)
+
+  assert responses[3].turn_complete is True
+  assert isinstance(responses[3].grounding_metadata, types.GroundingMetadata)
+
+
+@pytest.mark.asyncio
+async def test_receive_grounding_metadata_default_non_gemini_3_1(
+    mock_gemini_session,
+):
+  """Verify grounding_metadata stays None for non-Gemini 3.1 models."""
+  conn = GeminiLlmConnection(
+      mock_gemini_session,
+      model_version='gemini-2.5-flash-live',
+  )
+
+  def make_msg(text=None, tc=False):
+    msg = mock.create_autospec(types.LiveServerMessage, instance=True)
+    msg.usage_metadata = None
+    msg.tool_call = None
+    msg.session_resumption_update = None
+    msg.go_away = None
+    msg.server_content = mock.Mock()
+    msg.server_content.interrupted = False
+    msg.server_content.input_transcription = None
+    msg.server_content.output_transcription = None
+    msg.server_content.generation_complete = False
+    msg.server_content.turn_complete = tc
+    msg.server_content.grounding_metadata = None
+    msg.server_content.model_turn = (
+        types.Content(role='model', parts=[types.Part.from_text(text=text)])
+        if text
+        else None
+    )
+    return msg
+
+  msg1 = make_msg(text='hello')
+  msg2 = make_msg(tc=True)
+
+  async def mock_receive_generator():
+    yield msg1
+    yield msg2
+
+  mock_gemini_session.receive = mock.Mock(return_value=mock_receive_generator())
+
+  responses = [resp async for resp in conn.receive()]
+
+  assert len(responses) == 3
+
+  assert responses[0].content.parts[0].text == 'hello'
+  assert responses[0].grounding_metadata is None
+  assert responses[0].partial is True
+
+  assert responses[1].content.parts[0].text == 'hello'
+  assert responses[1].grounding_metadata is None
+  assert responses[1].partial is False
+
+  assert responses[2].turn_complete is True
+  assert responses[2].grounding_metadata is None

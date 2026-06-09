@@ -19,6 +19,7 @@ from google.adk.flows.llm_flows import contents
 from google.adk.flows.llm_flows.contents import request_processor
 from google.adk.flows.llm_flows.functions import REQUEST_CONFIRMATION_FUNCTION_CALL_NAME
 from google.adk.flows.llm_flows.functions import REQUEST_EUC_FUNCTION_CALL_NAME
+from google.adk.models.anthropic_llm import AnthropicLlm
 from google.adk.models.google_llm import Gemini
 from google.adk.models.llm_request import LlmRequest
 from google.genai import types
@@ -1169,3 +1170,139 @@ def test_is_other_agent_reply_non_live_session():
 
   event = Event(author="another_agent")
   assert contents._is_other_agent_reply("", event) is False
+
+
+@pytest.mark.asyncio
+async def test_anthropic_model_preserves_function_call_ids():
+  """AnthropicLlm should preserve function call IDs during session replay."""
+  anthropic_model = AnthropicLlm(model="claude-sonnet-4-20250514")
+  agent = Agent(
+      model=anthropic_model,
+      name="test_agent",
+      include_contents="default",
+  )
+  llm_request = LlmRequest(model="claude-sonnet-4-20250514")
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent
+  )
+
+  function_call_id = "toolu_test123"
+  events = [
+      Event(
+          invocation_id="inv1",
+          author="user",
+          content=types.Content(
+              role="user",
+              parts=[types.Part.from_text(text="Use the tool")],
+          ),
+      ),
+      Event(
+          invocation_id="inv2",
+          author="test_agent",
+          content=types.Content(
+              role="model",
+              parts=[
+                  types.Part(
+                      function_call=types.FunctionCall(
+                          id=function_call_id,
+                          name="my_tool",
+                          args={"arg": "value"},
+                      )
+                  )
+              ],
+          ),
+      ),
+      Event(
+          invocation_id="inv3",
+          author="user",
+          content=types.Content(
+              role="user",
+              parts=[
+                  types.Part(
+                      function_response=types.FunctionResponse(
+                          id=function_call_id,
+                          name="my_tool",
+                          response={"result": "done"},
+                      )
+                  )
+              ],
+          ),
+      ),
+  ]
+  invocation_context.session.events = events
+
+  async for _ in contents.request_processor.run_async(
+      invocation_context, llm_request
+  ):
+    pass
+
+  model_fc_part = llm_request.contents[1].parts[0]
+  assert model_fc_part.function_call is not None
+  assert model_fc_part.function_call.id == function_call_id
+
+  user_fr_part = llm_request.contents[2].parts[0]
+  assert user_fr_part.function_response is not None
+  assert user_fr_part.function_response.id == function_call_id
+
+
+def test_get_contents_live_history_rebuild():
+  """Test that _get_contents successfully reconstructs history with Live session IDs."""
+  call_id = "b00a1bcc-42b5-4dc4-9ba2-11c15816b8b1"
+  live_session_id = "live-session-1"
+  agent_name = "root_agent"
+
+  # 1. Model Function Call event (has live_session_id)
+  call_event = Event(
+      invocation_id="inv1",
+      author=agent_name,
+      live_session_id=live_session_id,
+      content=types.Content(
+          role="model",
+          parts=[
+              types.Part(
+                  function_call=types.FunctionCall(
+                      id=call_id,
+                      name="my_tool",
+                      args={"arg": "val"},
+                  )
+              )
+          ],
+      ),
+  )
+
+  # 2. User Function Response event (has live_session_id, preserved by ADK)
+  response_event = Event(
+      invocation_id="inv1",
+      author=agent_name,
+      live_session_id=live_session_id,
+      content=types.Content(
+          role="user",
+          parts=[
+              types.Part(
+                  function_response=types.FunctionResponse(
+                      id=call_id,
+                      name="my_tool",
+                      response={"result": "ok"},
+                  )
+              )
+          ],
+      ),
+  )
+
+  events = [call_event, response_event]
+
+  # Rebuild history using _get_contents
+  result = contents._get_contents(
+      current_branch=None,
+      events=events,
+      agent_name=agent_name,
+      preserve_function_call_ids=True,
+  )
+
+  assert len(result) == 2
+
+  assert result[0].role == "user"
+  assert "called tool" in result[0].parts[1].text
+
+  assert result[1].role == "user"
+  assert "returned result" in result[1].parts[1].text

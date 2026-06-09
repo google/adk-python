@@ -319,7 +319,7 @@ class TestAuthLlmRequestProcessor:
   @pytest.mark.asyncio
   @patch('google.adk.auth.auth_preprocessor.AuthHandler')
   @patch('google.adk.auth.auth_tool.AuthConfig.model_validate')
-  @patch('google.adk.flows.llm_flows.functions.handle_function_calls_async')
+  @patch('google.adk.auth.auth_preprocessor.handle_function_calls_async')
   async def test_processes_multiple_auth_responses_and_resumes_tools(
       self,
       mock_handle_function_calls,

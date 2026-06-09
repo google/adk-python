@@ -43,6 +43,13 @@ from .utils import _get_adk_metadata_key
 # Logger
 logger = logging.getLogger("google_adk." + __name__)
 
+MOCK_FUNCTION_CALL_FOR_REQUIRED_USER_INPUT = (
+    "mock_function_call_for_required_user_input"
+)
+MOCK_FUNCTION_CALL_FOR_REQUIRED_USER_AUTH = (
+    "mock_function_call_for_required_user_auth"
+)
+
 A2AMessageToEventConverter = Callable[
     [
         Message,
@@ -276,6 +283,48 @@ def _merge_event_actions(
   return EventActions.model_validate(merged_actions_data)
 
 
+def _create_mock_function_call_for_required_user_input(
+    state: TaskState,
+    output_parts: list[genai_types.Part],
+    long_running_function_ids: set[str],
+) -> tuple[list[genai_types.Part], set[str]]:
+  """Creates a mock function call for input/auth-required if applicable.
+
+  This solution allows to unblock the A2A integration with non-ADK agents from
+  ADK side by replacing the last text part with a synthetic function call. All
+  other parts are preserved. The args key used on the synthetic function call
+  differs depending on whether the task is in input-required or auth-required
+  state, so downstream consumers can distinguish between the two.
+  """
+  if long_running_function_ids:
+    return output_parts, long_running_function_ids
+
+  if state == TaskState.input_required:
+    args_key = "input_required"
+    function_name = MOCK_FUNCTION_CALL_FOR_REQUIRED_USER_INPUT
+  elif state == TaskState.auth_required:
+    args_key = "auth_required"
+    function_name = MOCK_FUNCTION_CALL_FOR_REQUIRED_USER_AUTH
+  else:
+    return output_parts, long_running_function_ids
+
+  # Find the last text part from the bottom to replace it with a function call.
+  # In case of input-required / auth-required events, the LLM should stop the
+  # production of other parts.
+  for i in range(len(output_parts) - 1, -1, -1):
+    if output_parts[i].text:
+      function_call = genai_types.FunctionCall(
+          id=str(uuid.uuid4()),
+          name=function_name,
+          args={args_key: output_parts[i].text},
+      )
+      long_running_function_ids = set()
+      long_running_function_ids.add(function_call.id)
+      output_parts[i] = genai_types.Part(function_call=function_call)
+      break
+  return output_parts, long_running_function_ids
+
+
 @a2a_experimental
 def convert_a2a_task_to_event(
     a2a_task: Task,
@@ -317,9 +366,9 @@ def convert_a2a_task_to_event(
       output_parts, _ = _convert_a2a_parts_to_adk_parts(
           artifact_parts, part_converter
       )
-    if (
-        a2a_task.status.message
-        and a2a_task.status.state == TaskState.input_required
+    if a2a_task.status.message and (
+        a2a_task.status.state == TaskState.input_required
+        or a2a_task.status.state == TaskState.auth_required
     ):
       event_actions = _merge_event_actions(
           event_actions,
@@ -330,6 +379,12 @@ def convert_a2a_task_to_event(
       )
       output_parts.extend(parts)
       long_running_function_ids.update(ids)
+
+    output_parts, long_running_function_ids = (
+        _create_mock_function_call_for_required_user_input(
+            a2a_task.status.state, output_parts, long_running_function_ids
+        )
+    )
 
     return _create_event(
         output_parts,
@@ -421,6 +476,14 @@ def convert_a2a_status_update_to_event(
       )
       output_parts.extend(parts)
       long_running_function_ids.update(ids)
+
+    output_parts, long_running_function_ids = (
+        _create_mock_function_call_for_required_user_input(
+            a2a_status_update.status.state,
+            output_parts,
+            long_running_function_ids,
+        )
+    )
 
     return _create_event(
         output_parts,

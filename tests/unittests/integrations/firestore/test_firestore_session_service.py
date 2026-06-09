@@ -386,6 +386,15 @@ async def test_append_event_with_temp_state(mock_firestore_client):
   assert "temp:k1" not in event_data["actions"]["state_delta"]
   assert event_data["actions"]["state_delta"]["session_key"] == "session_val"
 
+  # 3. Verify temp keys are NOT written to session state in Firestore
+  transaction.update.assert_called_once()
+  update_args, _ = transaction.update.call_args
+  persisted_state = update_args[1]["state"]
+  assert (
+      "temp:k1" not in persisted_state
+  ), "temp: keys must not be persisted to Firestore session state"
+  assert "session_key" in persisted_state
+
 
 @pytest.mark.asyncio
 async def test_list_sessions_with_user_id(mock_firestore_client):
