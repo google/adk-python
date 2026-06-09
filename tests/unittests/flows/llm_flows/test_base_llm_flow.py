@@ -30,6 +30,7 @@ from google.adk.models.llm_response import LlmResponse
 from google.adk.plugins.base_plugin import BasePlugin
 from google.adk.tools.base_toolset import BaseToolset
 from google.adk.tools.google_search_tool import GoogleSearchTool
+from google.adk.utils.variant_utils import GoogleLLMVariant
 from google.genai import types
 import pytest
 from websockets.exceptions import ConnectionClosed
@@ -1386,3 +1387,141 @@ async def test_run_live_reconnect_sets_transparent_for_vertex():
         second_call_req = mock_connect.call_args_list[1][0][0]
         session_resump = second_call_req.live_connect_config.session_resumption
         assert session_resump.transparent
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    'api_backend',
+    [
+        GoogleLLMVariant.GEMINI_API,
+        GoogleLLMVariant.VERTEX_AI,
+    ],
+)
+async def test_run_live_history_config_set_for_all_backends(api_backend):
+  """Test that run_live sets history_config for all backends."""
+
+  real_model = Gemini(model='gemini-3.1-flash-live-preview')
+  mock_connection = mock.AsyncMock()
+
+  agent = Agent(name='test_agent', model=real_model)
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent
+  )
+  invocation_context.live_request_queue = LiveRequestQueue()
+  invocation_context.run_config = RunConfig()
+
+  flow = BaseLlmFlowForTesting()
+
+  async def mock_preprocess(ctx, req):
+    req.contents = [types.Content(parts=[types.Part.from_text(text='history')])]
+    from google.adk.flows.llm_flows.basic import _build_basic_request
+
+    _build_basic_request(ctx, req)
+    yield Event(id=Event.new_id(), author='test')
+
+  with mock.patch.object(
+      flow, '_preprocess_async', side_effect=mock_preprocess
+  ):
+    with mock.patch.object(flow, '_send_to_model', new_callable=AsyncMock):
+
+      class StopTestError(Exception):
+        pass
+
+      async def mock_receive():
+        yield LlmResponse(
+            content=types.Content(parts=[types.Part.from_text(text='hi')])
+        )
+        raise StopTestError('stop')
+
+      mock_connection.receive = mock.Mock(side_effect=mock_receive)
+
+      with mock.patch(
+          'google.adk.models.google_llm.Gemini.connect'
+      ) as mock_connect:
+        mock_connect.return_value.__aenter__.return_value = mock_connection
+
+        # Mock the api_backend property
+        with mock.patch.object(
+            Gemini,
+            '_api_backend',
+            new_callable=mock.PropertyMock,
+            return_value=api_backend,
+        ):
+          try:
+            async for _ in flow.run_live(invocation_context):
+              pass
+          except StopTestError:
+            pass
+
+          assert mock_connect.call_count == 1
+          called_req = mock_connect.call_args[0][0]
+          assert called_req.live_connect_config is not None
+          assert called_req.live_connect_config.history_config is not None
+          assert (
+              called_req.live_connect_config.history_config.initial_history_in_client_content
+              is True
+          )
+
+
+@pytest.mark.asyncio
+async def test_run_live_respects_explicit_initial_history_in_client_content_false():
+  """Test that run_live respects explicit initial_history_in_client_content=False in RunConfig."""
+
+  real_model = Gemini()
+  mock_connection = mock.AsyncMock()
+
+  agent = Agent(name='test_agent', model=real_model)
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent
+  )
+  invocation_context.live_request_queue = LiveRequestQueue()
+  run_config = RunConfig(
+      history_config=types.HistoryConfig(
+          initial_history_in_client_content=False
+      )
+  )
+  invocation_context.run_config = run_config
+
+  flow = BaseLlmFlowForTesting()
+
+  async def mock_preprocess(ctx, req):
+    req.contents = [types.Content(parts=[types.Part.from_text(text='history')])]
+    from google.adk.flows.llm_flows.basic import _build_basic_request
+
+    _build_basic_request(ctx, req)
+    yield Event(id=Event.new_id(), author='test')
+
+  with mock.patch.object(
+      flow, '_preprocess_async', side_effect=mock_preprocess
+  ):
+    with mock.patch.object(flow, '_send_to_model', new_callable=AsyncMock):
+
+      class StopTestError(Exception):
+        pass
+
+      async def mock_receive():
+        yield LlmResponse(
+            content=types.Content(parts=[types.Part.from_text(text='hi')])
+        )
+        raise StopTestError('stop')
+
+      mock_connection.receive = mock.Mock(side_effect=mock_receive)
+
+      with mock.patch(
+          'google.adk.models.google_llm.Gemini.connect'
+      ) as mock_connect:
+        mock_connect.return_value.__aenter__.return_value = mock_connection
+
+        try:
+          async for _ in flow.run_live(invocation_context):
+            pass
+        except StopTestError:
+          pass
+
+        assert mock_connect.call_count == 1
+        call_req = mock_connect.call_args[0][0]
+        assert call_req.live_connect_config.history_config is not None
+        assert (
+            call_req.live_connect_config.history_config.initial_history_in_client_content
+            is False
+        )

@@ -198,21 +198,25 @@ async def test_trace_call_llm(monkeypatch, mock_span_fixture):
       mock.call('gen_ai.request.top_p', 0.95),
       mock.call('gen_ai.request.max_tokens', 1024),
       mock.call('gcp.vertex.agent.llm_response', mock.ANY),
-      mock.call('gen_ai.usage.input_tokens', 50),
-      mock.call('gen_ai.usage.output_tokens', 50),
       mock.call('gen_ai.usage.experimental.reasoning_tokens_limit', 10),
-      mock.call('gen_ai.usage.experimental.reasoning_tokens', 10),
       mock.call('gen_ai.response.finish_reasons', ['stop']),
   ]
+
+  expected_usage_attrs = {
+      'gen_ai.usage.input_tokens': 50,
+      'gen_ai.usage.output_tokens': 60,
+      'gen_ai.usage.reasoning.output_tokens': 10,
+  }
   if hasattr(llm_response.usage_metadata, 'system_instruction_tokens'):
-    expected_calls.append(
-        mock.call('gen_ai.usage.experimental.system_instruction_tokens', 5)
-    )
+    expected_usage_attrs[
+        'gen_ai.usage.experimental.system_instruction_tokens'
+    ] = 5
 
   assert mock_span_fixture.set_attribute.call_count == len(expected_calls) + 5
   mock_span_fixture.set_attribute.assert_has_calls(
       expected_calls, any_order=True
   )
+  mock_span_fixture.set_attributes.assert_called_once_with(expected_usage_attrs)
 
 
 @pytest.mark.asyncio
@@ -886,10 +890,12 @@ async def test_generate_content_span(
   mock_span.set_attribute.assert_any_call(
       GEN_AI_RESPONSE_FINISH_REASONS, ['stop']
   )
-  mock_span.set_attribute.assert_any_call(GEN_AI_USAGE_INPUT_TOKENS, 10)
-  mock_span.set_attribute.assert_any_call(GEN_AI_USAGE_OUTPUT_TOKENS, 20)
 
-  mock_span.set_attributes.assert_called_once_with({
+  mock_span.set_attributes.assert_any_call({
+      GEN_AI_USAGE_INPUT_TOKENS: 10,
+      GEN_AI_USAGE_OUTPUT_TOKENS: 20,
+  })
+  mock_span.set_attributes.assert_any_call({
       GEN_AI_AGENT_NAME: invocation_context.agent.name,
       GEN_AI_CONVERSATION_ID: invocation_context.session.id,
       'gcp.vertex.agent.event_id': 'event-123',
@@ -1262,10 +1268,12 @@ async def test_generate_content_span_with_experimental_semconv(
   mock_span.set_attribute.assert_any_call(
       GEN_AI_RESPONSE_FINISH_REASONS, ['stop']
   )
-  mock_span.set_attribute.assert_any_call(GEN_AI_USAGE_INPUT_TOKENS, 10)
-  mock_span.set_attribute.assert_any_call(GEN_AI_USAGE_OUTPUT_TOKENS, 20)
 
-  mock_span.set_attributes.assert_called_once_with({
+  mock_span.set_attributes.assert_any_call({
+      GEN_AI_USAGE_INPUT_TOKENS: 10,
+      GEN_AI_USAGE_OUTPUT_TOKENS: 20,
+  })
+  mock_span.set_attributes.assert_any_call({
       GEN_AI_AGENT_NAME: invocation_context.agent.name,
       GEN_AI_CONVERSATION_ID: invocation_context.session.id,
       'gcp.vertex.agent.event_id': 'event-123',
