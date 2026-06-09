@@ -34,7 +34,7 @@ from ...auth.credential_service.in_memory_credential_service import InMemoryCred
 from ...memory.in_memory_memory_service import InMemoryMemoryService
 from ...runners import Runner
 from ...sessions.in_memory_session_service import InMemorySessionService
-from ...workflow._workflow import Workflow
+from ...workflow import Workflow
 from ..executor.a2a_agent_executor import A2aAgentExecutor
 from ..executor.config import A2aAgentExecutorConfig
 from ..experimental import a2a_experimental
