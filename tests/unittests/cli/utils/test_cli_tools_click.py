@@ -1164,7 +1164,7 @@ def test_cli_api_server_invokes_uvicorn(
 def test_cli_api_server_passes_lifespan(
     tmp_path: Path, _patch_uvicorn: _Recorder, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-  """`adk api_server` should pass loaded lifespan handler to get_fast_api_app."""
+  """api_server should pass lifespan handler to get_fast_api_app."""
   agents_dir = tmp_path / "agents_api_lifespan"
   agents_dir.mkdir()
   lifespan_file = agents_dir / "dummy_lifespan.py"
