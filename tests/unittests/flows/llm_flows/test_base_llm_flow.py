@@ -25,12 +25,12 @@ from google.adk.events.event import Event
 from google.adk.flows.llm_flows.base_llm_flow import _handle_after_model_callback
 from google.adk.flows.llm_flows.base_llm_flow import BaseLlmFlow
 from google.adk.models.google_llm import Gemini
-from google.adk.models.google_llm import GoogleLLMVariant
 from google.adk.models.llm_request import LlmRequest
 from google.adk.models.llm_response import LlmResponse
 from google.adk.plugins.base_plugin import BasePlugin
 from google.adk.tools.base_toolset import BaseToolset
 from google.adk.tools.google_search_tool import GoogleSearchTool
+from google.adk.utils.variant_utils import GoogleLLMVariant
 from google.genai import types
 import pytest
 from websockets.exceptions import ConnectionClosed
@@ -1403,45 +1403,50 @@ async def test_run_live_history_config_set_for_all_backends(api_backend):
   real_model = Gemini(model='gemini-3.1-flash-live-preview')
   mock_connection = mock.AsyncMock()
 
-  class StopTestError(Exception):
-    pass
-
-  async def mock_receive():
-    yield LlmResponse(
-        content=types.Content(parts=[types.Part.from_text(text='hi')])
-    )
-    raise StopTestError('stop')
-
-  mock_connection.receive = mock.Mock(side_effect=mock_receive)
-
   agent = Agent(name='test_agent', model=real_model)
   invocation_context = await testing_utils.create_invocation_context(
       agent=agent
   )
   invocation_context.live_request_queue = LiveRequestQueue()
+  invocation_context.run_config = RunConfig()
 
   flow = BaseLlmFlowForTesting()
 
-  with mock.patch.object(flow, '_send_to_model', new_callable=AsyncMock):
+  async def mock_preprocess(ctx, req):
+    req.contents = [types.Content(parts=[types.Part.from_text(text='history')])]
+    from google.adk.flows.llm_flows.basic import _build_basic_request
 
-    async def mock_preprocess(ctx, req):
-      req.contents = [
-          types.Content(parts=[types.Part.from_text(text='history')])
-      ]
-      yield Event(id=Event.new_id(), author='test')
+    _build_basic_request(ctx, req)
+    yield Event(id=Event.new_id(), author='test')
 
-    with mock.patch.object(
-        flow, '_preprocess_async', side_effect=mock_preprocess
-    ):
-      with mock.patch.object(
-          Gemini, '_api_backend', new_callable=mock.PropertyMock
-      ) as mock_backend:
-        mock_backend.return_value = api_backend
-        with mock.patch(
-            'google.adk.models.google_llm.Gemini.connect'
-        ) as mock_connect:
-          mock_connect.return_value.__aenter__.return_value = mock_connection
+  with mock.patch.object(
+      flow, '_preprocess_async', side_effect=mock_preprocess
+  ):
+    with mock.patch.object(flow, '_send_to_model', new_callable=AsyncMock):
 
+      class StopTestError(Exception):
+        pass
+
+      async def mock_receive():
+        yield LlmResponse(
+            content=types.Content(parts=[types.Part.from_text(text='hi')])
+        )
+        raise StopTestError('stop')
+
+      mock_connection.receive = mock.Mock(side_effect=mock_receive)
+
+      with mock.patch(
+          'google.adk.models.google_llm.Gemini.connect'
+      ) as mock_connect:
+        mock_connect.return_value.__aenter__.return_value = mock_connection
+
+        # Mock the api_backend property
+        with mock.patch.object(
+            Gemini,
+            '_api_backend',
+            new_callable=mock.PropertyMock,
+            return_value=api_backend,
+        ):
           try:
             async for _ in flow.run_live(invocation_context):
               pass
