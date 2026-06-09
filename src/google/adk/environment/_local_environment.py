@@ -59,6 +59,7 @@ class LocalEnvironment(BaseEnvironment):
     self._working_dir = working_dir
     self._env_vars = env_vars
     self._auto_created = False
+    self._is_initialized = False
 
   @property
   @override
@@ -75,6 +76,7 @@ class LocalEnvironment(BaseEnvironment):
       logger.debug('Created temporary folder: %s', self._working_dir)
     else:
       os.makedirs(self._working_dir, exist_ok=True)
+    self._is_initialized = True
 
   @override
   async def close(self) -> None:
@@ -82,6 +84,7 @@ class LocalEnvironment(BaseEnvironment):
       shutil.rmtree(self._working_dir, ignore_errors=True)
       logger.debug('Removed temporary workspace: %s', self._working_dir)
       self._working_dir = None
+    self._is_initialized = False
 
   @override
   async def execute(
@@ -138,21 +141,21 @@ class LocalEnvironment(BaseEnvironment):
     resolved = self._resolve_path(path)
     return await asyncio.to_thread(self._sync_write, resolved, content)
 
-  def _resolve_path(self, path: str | Path) -> str:
+  def _resolve_path(self, path: str | Path) -> Path:
     """Resolve a relative path against the working directory."""
-    path = str(path)
-    if os.path.isabs(path):
-      return path
-    return os.path.join(self._working_dir, path)
+    path_obj = Path(path)
+    if path_obj.is_absolute():
+      return path_obj
+    return self.working_dir / path_obj
 
   @staticmethod
-  def _sync_read(path: str) -> bytes:
+  def _sync_read(path: Path) -> bytes:
     with open(path, 'rb') as f:
       return f.read()
 
   @staticmethod
-  def _sync_write(path: str, content: str | bytes) -> None:
-    os.makedirs(os.path.dirname(path), exist_ok=True)
+  def _sync_write(path: Path, content: str | bytes) -> None:
+    os.makedirs(path.parent, exist_ok=True)
     mode = 'w' if isinstance(content, str) else 'wb'
     kwargs = {'encoding': 'utf-8'} if isinstance(content, str) else {}
     with open(path, mode, **kwargs) as f:

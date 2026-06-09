@@ -32,9 +32,9 @@ from ...agents.loop_agent import LoopAgent
 from ...agents.parallel_agent import ParallelAgent
 from ...agents.sequential_agent import SequentialAgent
 from ...tools.example_tool import ExampleTool
-from ...workflow._base_node import BaseNode
-from ...workflow._base_node import START
-from ...workflow._workflow import Workflow
+from ...workflow import BaseNode
+from ...workflow import START
+from ...workflow import Workflow
 from ..experimental import a2a_experimental
 
 logger = logging.getLogger('google_adk.' + __name__)
@@ -42,11 +42,11 @@ logger = logging.getLogger('google_adk.' + __name__)
 
 @a2a_experimental
 class AgentCardBuilder:
-  """Builder class for creating agent cards from ADK agents or workflows.
+  """Builder class for creating agent cards from ADK agents.
 
-  This class provides functionality to convert an ADK BaseAgent (e.g. LlmAgent)
-  or a Workflow into an A2A agent card, including extracting skills,
-  capabilities, and metadata.
+  This class provides functionality to convert ADK agents into A2A agent cards,
+  including extracting skills, capabilities, and metadata from various agent
+  types.
   """
 
   def __init__(
