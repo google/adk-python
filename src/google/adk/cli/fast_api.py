@@ -738,6 +738,7 @@ def get_fast_api_app(
         except Exception as e:
           logger.error("Failed to setup A2A agent %s: %s", app_name, e)
           # Continue with other agents even if one fails
+
   if gemini_enterprise_app_name:
     if gemini_enterprise_app_name not in agent_loader.list_agents():
       raise ValueError(

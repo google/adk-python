@@ -31,11 +31,10 @@ from unittest import mock
 
 import click
 from click.testing import CliRunner
-from google.adk.cli import cli_deploy
-from google.adk.cli import cli_tools_click
 import pytest
 
 import src.google.adk.cli.cli_deploy as cli_deploy
+import src.google.adk.cli.cli_tools_click as cli_tools_click
 
 
 # Helpers
@@ -319,7 +318,6 @@ def test_to_agent_engine_raises_when_explicit_config_file_missing(
     cli_deploy.to_agent_engine(
         agent_folder=str(src_dir),
         temp_folder="tmp",
-        adk_app="my_adk_app",
         trace_to_cloud=True,
         project="my-gcp-project",
         region="us-central1",
@@ -625,7 +623,6 @@ def test_to_agent_engine_triggers_onboarding(
 
   cli_deploy.to_agent_engine(
       agent_folder=str(src_dir),
-      adk_app="my_adk_app",
       trace_to_cloud=True,
   )
 
@@ -645,7 +642,7 @@ def test_cli_deploy_agent_engine_trigger_sources(tmp_path: Path):
   agent_dir.mkdir()
   runner = CliRunner()
   with mock.patch(
-      "google.adk.cli.cli_deploy.to_agent_engine"
+      "src.google.adk.cli.cli_deploy.to_agent_engine"
   ) as mock_to_agent_engine:
     result = runner.invoke(
         cli_tools_click.main,
@@ -669,7 +666,7 @@ def test_cli_deploy_agent_engine_artifact_service_uri(tmp_path: Path):
   agent_dir.mkdir()
   runner = CliRunner()
   with mock.patch(
-      "google.adk.cli.cli_deploy.to_agent_engine"
+      "src.google.adk.cli.cli_deploy.to_agent_engine"
   ) as mock_to_agent_engine:
     result = runner.invoke(
         cli_tools_click.main,

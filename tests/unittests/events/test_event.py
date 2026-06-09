@@ -14,7 +14,7 @@
 
 from __future__ import annotations
 
-"""Unit tests for the Event class."""
+"""Unit tests for the helper methods on the Event class."""
 
 from google.adk.events.event import Event
 from google.adk.events.event import NodeInfo
