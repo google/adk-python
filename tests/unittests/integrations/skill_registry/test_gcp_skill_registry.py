@@ -39,7 +39,9 @@ def mock_env():
 @pytest.fixture
 def mock_vertex_client():
   """Fixture to mock vertexai.Client."""
-  with mock.patch("vertexai.Client") as mock_client_class:
+  with mock.patch(
+      "google.adk.dependencies.vertexai.vertexai.Client"
+  ) as mock_client_class:
     mock_client = mock_client_class.return_value
     yield mock_client
 
