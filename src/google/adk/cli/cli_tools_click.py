@@ -1490,7 +1490,7 @@ def cli_generate_eval_cases(
     click.echo("Generating scenarios utilizing Vertex AI Eval SDK...")
     scenarios = generator.generate_scenarios(root_agent, config)
 
-    # TODO(pthodoroff): Expose initial session state when simulation library
+    # TODO: Expose initial session state when simulation library
     # supports it.
     initial_session_state = create_empty_state(root_agent)
 
