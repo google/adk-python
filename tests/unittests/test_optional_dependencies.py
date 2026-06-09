@@ -169,9 +169,9 @@ def test_vertex_ai_session_service_fails_on_creation():
 
 
 def test_vertexai_dependency_shim_raises_clear_importerror():
-  """Verify that the Vertex AI dependency shim points users to the gcp extra."""
-  with mock.patch.dict("sys.modules", {"vertexai": None}):
-    module_path = _REPO_ROOT / "src/google/adk/dependencies/vertexai.py"
+  """Verify that the Vertex AI dependency shim points users to the dependency."""
+  with mock.patch.dict("sys.modules", {"google.cloud.aiplatform": None}):
+    module_path = _REPO_ROOT / "dependencies_internal/vertexai.py"
     spec = importlib.util.spec_from_file_location(
         "_test_google_adk_dependencies_vertexai", module_path
     )
@@ -183,8 +183,7 @@ def test_vertexai_dependency_shim_raises_clear_importerror():
       spec.loader.exec_module(module)
 
     message = str(exc_info.value)
-    assert "google-adk[gcp]" in message
-    assert "google-adk[all]" in message
+    assert "//third_party/py/google/cloud/aiplatform" in message
 
 
 # =============================================================================
