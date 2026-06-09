@@ -79,9 +79,9 @@ HttpxClientFactory = Callable[[], httpx.AsyncClient]
 """Type alias for a zero-argument factory returning an ``httpx.AsyncClient``.
 
 When supplied to ``RestApiTool`` or ``OpenAPIToolset``, the factory is invoked
-once per API call and its returned client is used as an async context manager
-to issue the request, in place of the default
-``httpx.AsyncClient(verify=..., timeout=None)``. Because the client is closed
+once per API call and its returned client is used as an async context
+manager to issue the request, in place of the default
+```httpx.AsyncClient(verify=..., timeout=None)```. Because the client is closed
 when the request completes, the factory must return a fresh client on every
 call. This unlocks knobs that the narrower ``ssl_verify`` parameter can't
 reach: proxies, HTTP/2, custom transports (e.g. request-signing), and so on.
@@ -144,12 +144,11 @@ class RestApiTool(BaseTool):
           (https://github.com/OAI/OpenAPI-Specification/blob/main/versions/3.1.0.md#security-scheme-object)
         auth_credential: The authentication credential of the tool.
         should_parse_operation: Whether to parse the operation.
-        ssl_verify: SSL certificate verification option. Can be:
-          - None: Use default verification
-          - True: Verify SSL certificates using system CA
-          - False: Disable SSL verification (insecure, not recommended)
-          - str: Path to a CA bundle file or directory for custom CA
-          - ssl.SSLContext: Custom SSL context for advanced configuration
+        ssl_verify: SSL certificate verification option. Can be: - None: Use
+          default verification - True: Verify SSL certificates using system CA -
+          False: Disable SSL verification (insecure, not recommended) - str:
+            Path to a CA bundle file or directory for custom CA -
+            ssl.SSLContext: Custom SSL context for advanced configuration
         header_provider: A callable that returns a dictionary of headers to be
           included in API requests. The callable receives the ReadonlyContext as
           an argument, allowing dynamic header generation based on the current
@@ -160,8 +159,8 @@ class RestApiTool(BaseTool):
           an async context manager to issue the request and is closed once the
           request completes, so the factory must return a fresh client on each
           call. This lets callers configure proxies, HTTP/2, custom transports
-          (e.g. request signing), or any other ``httpx.AsyncClient`` option
-          that ``ssl_verify`` can't reach. When ``None`` (default), a fresh
+          (e.g. request signing), or any other ``httpx.AsyncClient`` option that
+          ``ssl_verify`` can't reach. When ``None`` (default), a fresh
           ``httpx.AsyncClient(verify=..., timeout=None)`` is created per
           request. Mirrors the pattern exposed for MCP by
           ``StreamableHTTPConnectionParams.httpx_client_factory``.
