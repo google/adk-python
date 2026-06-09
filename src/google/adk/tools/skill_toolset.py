@@ -838,6 +838,7 @@ class RunSkillScriptTool(BaseTool):
       }
 
     errors = []
+
     if script_args is not None and not isinstance(script_args, (dict, list)):
       errors.append(
           "'args' must be a JSON object (dict) or a list of strings,"

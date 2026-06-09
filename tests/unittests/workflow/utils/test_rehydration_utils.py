@@ -105,7 +105,7 @@ class TestUnwrapResponse:
     assert _unwrap_response(_wrap_response(d)) == d
 
 
-# --- _process_content_object ---
+# --- _process_rehydrated_output ---
 
 
 class TestProcessRehydratedOutput:

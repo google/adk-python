@@ -1,3 +1,4 @@
+exclude: ^(src/google/adk/cli/browser/|src/google/adk/v1/|v1_tests/)
 repos:
   - repo: https://github.com/pre-commit/pre-commit-hooks
     rev: v4.6.0

@@ -23,7 +23,7 @@ from __future__ import annotations
 import os
 from typing import Optional
 
-from ..utils.env_utils import is_env_enabled
+from .env_utils import is_enterprise_mode_enabled
 
 
 def get_express_mode_api_key(
@@ -37,7 +37,7 @@ def get_express_mode_api_key(
         'Cannot specify project or location and express_mode_api_key. '
         'Either use project and location, or just the express_mode_api_key.'
     )
-  if is_env_enabled('GOOGLE_GENAI_USE_VERTEXAI'):
+  if is_enterprise_mode_enabled():
     return express_mode_api_key or os.environ.get('GOOGLE_API_KEY', None)
   else:
     return None
