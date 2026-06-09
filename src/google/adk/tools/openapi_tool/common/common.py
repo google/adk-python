@@ -244,7 +244,7 @@ class PydocHelper:
     content = response_details.content or {}
 
     # Generate return type hint and properties for the first response type.
-    # TODO(cheliu): Handle multiple content types.
+    # TODO: Handle multiple content types.
     for _, schema_details in content.items():
       schema = schema_details.schema_ or {}
 
