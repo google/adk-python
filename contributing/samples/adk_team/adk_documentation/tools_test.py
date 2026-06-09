@@ -69,8 +69,9 @@ class PathConfinementTest(unittest.TestCase):
   def test_create_pr_rejects_path_traversal_in_changes(self):
     # Reach the file-writing step with the git/network calls stubbed out, then
     # assert a traversing change key is rejected before any write.
-    with mock.patch.object(tools, "_run_git_command"), mock.patch.object(
-        tools, "post_request"
+    with (
+        mock.patch.object(tools, "_run_git_command"),
+        mock.patch.object(tools, "post_request"),
     ):
       res = tools.create_pull_request_from_changes(
           repo_owner="google",

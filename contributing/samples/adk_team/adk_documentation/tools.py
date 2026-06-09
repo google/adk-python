@@ -398,9 +398,12 @@ def create_pull_request_from_changes(
       full_path = os.path.realpath(os.path.join(local_path, relative_path))
       # Confine writes to the repository: a crafted relative_path such as
       # "../../etc/x" would otherwise escape `local_path`.
-      if not (full_path == repo_root or full_path.startswith(repo_root + os.sep)):
+      if not (
+          full_path == repo_root or full_path.startswith(repo_root + os.sep)
+      ):
         return error_response(
-            f"Access denied: change path escapes the repository: {relative_path}"
+            "Access denied: change path escapes the repository:"
+            f" {relative_path}"
         )
       os.makedirs(os.path.dirname(full_path), exist_ok=True)
       with open(full_path, "w", encoding="utf-8") as f:
