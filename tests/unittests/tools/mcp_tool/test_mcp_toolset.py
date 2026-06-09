@@ -14,7 +14,7 @@
 
 import asyncio
 import base64
-from io import StringIO
+import os
 import pickle
 import sys
 from unittest.mock import AsyncMock
@@ -22,6 +22,7 @@ from unittest.mock import MagicMock
 from unittest.mock import Mock
 
 from fastapi.openapi.models import OAuth2
+from google.auth import _agent_identity_utils
 from google.adk.agents.readonly_context import ReadonlyContext
 from google.adk.auth.auth_credential import AuthCredential
 from google.adk.auth.auth_credential import AuthCredentialTypes
@@ -88,6 +89,26 @@ class TestMcpToolset:
     assert toolset._auth_scheme is None
     assert toolset._auth_credential is None
     assert toolset._use_mcp_resources is False
+
+  def test_init_preserves_agent_identity_bound_token_opt_in(
+      self, monkeypatch
+  ):
+    """McpToolset construction should not disable process-wide bound tokens."""
+    env_name = "GOOGLE_API_PREVENT_AGENT_TOKEN_SHARING_FOR_GCP_SERVICES"
+    fake_cert = object()
+    monkeypatch.setenv(env_name, "true")
+    monkeypatch.setattr(
+        _agent_identity_utils,
+        "_is_agent_identity_certificate",
+        lambda cert: True,
+    )
+
+    assert _agent_identity_utils.should_request_bound_token(fake_cert)
+
+    McpToolset(connection_params=self.mock_stdio_params)
+
+    assert os.environ[env_name] == "true"
+    assert _agent_identity_utils.should_request_bound_token(fake_cert)
 
   def test_init_with_use_mcp_resources(self):
     """Test initialization with use_mcp_resources."""

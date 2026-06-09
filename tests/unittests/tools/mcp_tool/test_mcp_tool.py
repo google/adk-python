@@ -12,12 +12,13 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import inspect
+import os
 from unittest.mock import AsyncMock
 from unittest.mock import create_autospec
 from unittest.mock import Mock
 from unittest.mock import patch
 
+from google.auth import _agent_identity_utils
 from google.adk.agents.context import Context
 from google.adk.auth.auth_credential import AuthCredential
 from google.adk.auth.auth_credential import AuthCredentialTypes
@@ -32,7 +33,6 @@ from google.adk.tools.mcp_tool.mcp_session_manager import MCPSessionManager
 from google.adk.tools.mcp_tool.mcp_tool import MCPTool
 from google.adk.tools.tool_context import ToolContext
 from google.genai.types import FunctionDeclaration
-from google.genai.types import Type
 from mcp.types import CallToolResult
 from mcp.types import TextContent
 import pytest
@@ -203,6 +203,29 @@ class TestMCPTool:
     assert tool.description == "Test tool description"
     assert tool._mcp_tool == self.mock_mcp_tool
     assert tool._mcp_session_manager == self.mock_session_manager
+
+  def test_init_preserves_agent_identity_bound_token_opt_in(
+      self, monkeypatch
+  ):
+    """MCPTool construction should not disable process-wide bound tokens."""
+    env_name = "GOOGLE_API_PREVENT_AGENT_TOKEN_SHARING_FOR_GCP_SERVICES"
+    fake_cert = object()
+    monkeypatch.setenv(env_name, "true")
+    monkeypatch.setattr(
+        _agent_identity_utils,
+        "_is_agent_identity_certificate",
+        lambda cert: True,
+    )
+
+    assert _agent_identity_utils.should_request_bound_token(fake_cert)
+
+    MCPTool(
+        mcp_tool=self.mock_mcp_tool,
+        mcp_session_manager=self.mock_session_manager,
+    )
+
+    assert os.environ[env_name] == "true"
+    assert _agent_identity_utils.should_request_bound_token(fake_cert)
 
   def test_init_with_auth(self):
     """Test initialization with authentication."""
