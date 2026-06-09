@@ -54,7 +54,7 @@ class TestLlmEventSummarizer(unittest.IsolatedAsyncioTestCase):
         self._create_event(1.0, 'Hello', 'user'),
         self._create_event(2.0, 'Hi there!', 'model'),
     ]
-    expected_conversation_history = 'user: Hello\\nmodel: Hi there!'
+    expected_conversation_history = 'user: Hello\nmodel: Hi there!'
     expected_prompt = self.compactor._DEFAULT_PROMPT_TEMPLATE.format(
         conversation_history=expected_conversation_history
     )
@@ -162,7 +162,7 @@ class TestLlmEventSummarizer(unittest.IsolatedAsyncioTestCase):
                 parts=[
                     Part(
                         function_call=FunctionCall(
-                            id='call_1', name='tool', args={}
+                            id='call_1', name='tool', args={'q': 'x'}
                         )
                     )
                 ]
@@ -186,8 +186,80 @@ class TestLlmEventSummarizer(unittest.IsolatedAsyncioTestCase):
         ),
     ]
     expected_formatted_history = (
-        'user: User says...\\nmodel: Model replies...\\nuser: Another user'
-        ' input\\nmodel: More model text'
+        'user: User says...\nmodel: Model replies...\nuser: Another user'
+        ' input\nmodel: More model text\nmodel called tool:'
+        " tool({'q': 'x'})\nTool response from tool: {'result': 'done'}"
     )
     formatted_history = self.compactor._format_events_for_prompt(events)
     self.assertEqual(formatted_history, expected_formatted_history)
+
+  def test_format_events_for_prompt_includes_thoughts(self):
+    events = [
+        self._create_event(1.0, 'What is the weather?', 'user'),
+        Event(
+            timestamp=2.0,
+            author='model',
+            content=Content(
+                parts=[
+                    Part(text='Let me check the tool output.', thought=True),
+                    Part(text='It is sunny.'),
+                ]
+            ),
+        ),
+    ]
+    expected_formatted_history = (
+        'user: What is the weather?\nmodel (thought): Let me check the tool'
+        ' output.\nmodel: It is sunny.'
+    )
+    formatted_history = self.compactor._format_events_for_prompt(events)
+    self.assertEqual(formatted_history, expected_formatted_history)
+
+  def test_format_events_for_prompt_skips_compaction_event_thought(self):
+    events = [
+        Event(
+            timestamp=1.0,
+            author='model',
+            content=Content(
+                parts=[
+                    Part(text='Stale summarizer reasoning.', thought=True),
+                    Part(text='Prior summary.'),
+                ]
+            ),
+            actions=EventActions(
+                compaction=EventCompaction(
+                    start_timestamp=0.0,
+                    end_timestamp=1.0,
+                    compacted_content=Content(parts=[Part(text='Prior')]),
+                )
+            ),
+        ),
+        self._create_event(2.0, 'New user input', 'user'),
+    ]
+    expected_formatted_history = 'model: Prior summary.\nuser: New user input'
+    formatted_history = self.compactor._format_events_for_prompt(events)
+    self.assertEqual(formatted_history, expected_formatted_history)
+
+  def test_format_events_for_prompt_truncates_large_tool_response(self):
+    limit = self.compactor._MAX_TOOL_CONTENT_CHARS
+    large_value = 'x' * (limit + 500)
+    events = [
+        Event(
+            timestamp=1.0,
+            author='model',
+            content=Content(
+                parts=[
+                    Part(
+                        function_response=FunctionResponse(
+                            id='call_1',
+                            name='search',
+                            response={'data': large_value},
+                        )
+                    )
+                ]
+            ),
+        ),
+    ]
+    formatted_history = self.compactor._format_events_for_prompt(events)
+    self.assertIn('Tool response from search:', formatted_history)
+    self.assertIn('... [truncated', formatted_history)
+    self.assertLess(len(formatted_history), len(large_value))
