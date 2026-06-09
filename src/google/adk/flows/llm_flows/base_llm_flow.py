@@ -557,9 +557,21 @@ class BaseLlmFlow(ABC):
         # initial_history_in_client_content to True. This tells the Live server
         # that the provided history already includes the model's past responses,
         # preventing the server from generating duplicate responses for those replayed turns.
+        #
+        # ``history_config`` is only supported by the Gemini Developer API
+        # backend. The Vertex AI / Gemini Enterprise Agent Platform backend has
+        # no ``history``/``history_config`` field on its live setup message and
+        # rejects it with:
+        #   ValueError: history_config parameter is only supported in Gemini
+        #   Developer API mode, not in Gemini Enterprise Agent Platform mode.
+        # On Vertex, history is instead seeded by ``send_history`` below
+        # (``send_client_content`` with prior turns), which is the sanctioned
+        # mechanism, so we skip ``history_config`` for that backend.
         if (
             llm_request.contents
             and not invocation_context.live_session_resumption_handle
+            and isinstance(llm, Gemini)
+            and llm._api_backend == GoogleLLMVariant.GEMINI_API  # pylint: disable=protected-access
         ):
           if not llm_request.live_connect_config:
             llm_request.live_connect_config = types.LiveConnectConfig()
