@@ -30,7 +30,6 @@ import textwrap
 from typing import Any
 from typing import Optional
 
-
 import click
 from click.core import ParameterSource
 from fastapi import FastAPI
@@ -2374,7 +2373,6 @@ def cli_migrate_session(
         " It can only be `root_agent` or `app`. (default: `root_agent`)"
     ),
 )
-
 @click.option(
     "--env_file",
     type=str,
@@ -2450,7 +2448,6 @@ def cli_deploy_agent_engine(
     adk_app: str,
     adk_app_object: Optional[str],
     temp_folder: Optional[str],
-
     env_file: str,
     requirements_file: str,
     absolutize_imports: bool,
@@ -2491,7 +2488,6 @@ def cli_deploy_agent_engine(
         description=description,
         adk_app=adk_app,
         temp_folder=temp_folder,
-
         env_file=env_file,
         requirements_file=requirements_file,
         absolutize_imports=absolutize_imports,
