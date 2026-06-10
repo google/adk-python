@@ -591,8 +591,10 @@ class Runner:
           async for event in agen:
             yield event
       finally:
-        await self._cleanup_root_task(task, self.agent.name)
-        await ic.plugin_manager.run_after_run_callback(invocation_context=ic)
+        try:
+          await self._cleanup_root_task(task, self.agent.name)
+        finally:
+          await ic.plugin_manager.run_after_run_callback(invocation_context=ic)
         if self.app and self.app.events_compaction_config:
           logger.debug('Running event compactor.')
           from google.adk.apps.compaction import _run_compaction_for_sliding_window

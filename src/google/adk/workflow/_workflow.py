@@ -26,10 +26,12 @@ from dataclasses import dataclass
 from dataclasses import field
 import logging
 from typing import Any
+from typing import ClassVar
 from typing import TYPE_CHECKING
 
 from pydantic import Field
 
+from ..agents.base_agent_config import BaseAgentConfig
 from ._base_node import BaseNode
 from ._base_node import START
 from ._dynamic_node_scheduler import DynamicNodeScheduler
@@ -153,6 +155,51 @@ class Workflow(BaseNode):
   - LOOP: schedule ready nodes via NodeRunner, handle completions
   - FINALIZE: collect terminal outputs
   """
+
+  config_type: ClassVar[type[BaseAgentConfig]] = BaseAgentConfig
+
+  @classmethod
+  def from_config(
+      cls,
+      config: Any,
+      config_abs_path: str,
+  ) -> Workflow:
+    """Creates a Workflow from a config."""
+    import os
+
+    from ..agents.config_agent_utils import from_config as load_agent_config
+
+    kwargs = {
+        'name': config.name,
+        'description': config.description,
+    }
+
+    if config.model_extra:
+      config_dir = os.path.dirname(config_abs_path)
+
+      def resolve_node_refs(val: Any) -> Any:
+        if isinstance(val, str):
+          if val == 'START':
+            return 'START'
+          if val.endswith('.yaml') or val.endswith('.yml'):
+            return load_agent_config(os.path.join(config_dir, val))
+          return val
+        if isinstance(val, list):
+          # Convert inner edge chains/tuples to tuples as required by EdgeItem
+          return tuple(resolve_node_refs(x) for x in val)
+        if isinstance(val, dict):
+          return {k: resolve_node_refs(v) for k, v in val.items()}
+        if isinstance(val, tuple):
+          return tuple(resolve_node_refs(x) for x in val)
+        return val
+
+      for key, value in config.model_extra.items():
+        if key == 'edges' and isinstance(value, list):
+          kwargs['edges'] = [resolve_node_refs(item) for item in value]
+        elif key in cls.model_fields and key not in kwargs:
+          kwargs[key] = value
+
+    return cls(**kwargs)
 
   rerun_on_resume: bool = Field(default=True)
 

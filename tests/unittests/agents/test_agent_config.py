@@ -465,3 +465,112 @@ def test_resolve_agent_reference_uses_windows_dirname():
   )
   assert result == "sentinel"
   assert recorded["path"] == expected_path
+
+
+def test_workflow_config_resolution(tmp_path: Path):
+  """Ensure Workflow with relative edges/sub-agent configs resolves and loads correctly."""
+  sub_agent_dir = tmp_path / "sub_agents"
+  sub_agent_dir.mkdir()
+
+  coder_yaml = """\
+  name: coder_agent
+  model: gemini-2.5-flash
+  description: writes code
+  instruction: write code
+  """
+  reviewer_yaml = """\
+  name: reviewer_agent
+  model: gemini-2.5-flash
+  description: reviews code
+  instruction: review code
+  """
+  (sub_agent_dir / "coder_agent.yaml").write_text(dedent(coder_yaml))
+  (sub_agent_dir / "reviewer_agent.yaml").write_text(dedent(reviewer_yaml))
+
+  workflow_yaml = """\
+  agent_class: Workflow
+  name: test_workflow
+  description: sequential workflow
+  edges:
+    - - START
+      - sub_agents/coder_agent.yaml
+      - sub_agents/reviewer_agent.yaml
+  """
+  config_file = tmp_path / "workflow.yaml"
+  config_file.write_text(dedent(workflow_yaml))
+
+  from google.adk.workflow._workflow import Workflow
+
+  agent = config_agent_utils.from_config(str(config_file))
+
+  assert isinstance(agent, Workflow)
+  assert agent.name == "test_workflow"
+  assert len(agent.edges) == 1
+  chain = agent.edges[0]
+  assert isinstance(chain, tuple)
+  assert len(chain) == 3
+  assert chain[0] == "START"
+  assert chain[1].name == "coder_agent"
+  assert chain[2].name == "reviewer_agent"
+
+
+def fake_fn(input_str: str) -> str:
+  return input_str.upper()
+
+
+def fake_tool_func(query: str) -> str:
+  return f"result for {query}"
+
+
+def test_load_join_node_yaml(tmp_path: Path):
+  yaml_content = """\
+  agent_class: JoinNode
+  name: join_barrier
+  """
+  config_file = tmp_path / "join_barrier.yaml"
+  config_file.write_text(dedent(yaml_content))
+
+  from google.adk.workflow._join_node import JoinNode
+
+  node = config_agent_utils.from_config(str(config_file))
+
+  assert isinstance(node, JoinNode)
+  assert node.name == "join_barrier"
+
+
+def test_load_function_node_yaml(tmp_path: Path):
+  yaml_content = """\
+  agent_class: FunctionNode
+  name: upper_fn_node
+  func_code: tests.unittests.agents.test_agent_config.fake_fn
+  """
+  config_file = tmp_path / "upper_fn_node.yaml"
+  config_file.write_text(dedent(yaml_content))
+
+  from google.adk.workflow._function_node import FunctionNode
+
+  node = config_agent_utils.from_config(str(config_file))
+
+  assert isinstance(node, FunctionNode)
+  assert node.name == "upper_fn_node"
+  assert node._func == fake_fn
+
+
+def test_load_tool_node_yaml(tmp_path: Path):
+  yaml_content = """\
+  agent_class: ToolNode
+  name: search_tool_node
+  tool_code: tests.unittests.agents.test_agent_config.fake_tool_func
+  """
+  config_file = tmp_path / "search_tool_node.yaml"
+  config_file.write_text(dedent(yaml_content))
+
+  from google.adk.tools.function_tool import FunctionTool
+  from google.adk.workflow._tool_node import _ToolNode
+
+  node = config_agent_utils.from_config(str(config_file))
+
+  assert isinstance(node, _ToolNode)
+  assert node.name == "search_tool_node"
+  assert isinstance(node.tool, FunctionTool)
+  assert node.tool.func == fake_tool_func
