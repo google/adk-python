@@ -290,7 +290,12 @@ class PluginManager:
             f"Error in plugin '{plugin.name}' during "
             f"'on_pipeline_error_callback' callback: {e}"
         )
-        logger.error(error_message, exc_info=True)
+        logger.error(
+            "Error in plugin '%s' during 'on_pipeline_error_callback' callback: %s",
+            plugin.name,
+            e,
+            exc_info=True,
+        )
         raise RuntimeError(error_message) from e
     return error
 
@@ -338,7 +343,13 @@ class PluginManager:
             f"Error in plugin '{plugin.name}' during '{callback_name}'"
             f" callback: {e}"
         )
-        logger.error(error_message, exc_info=True)
+        logger.error(
+            "Error in plugin '%s' during '%s' callback: %s",
+            plugin.name,
+            callback_name,
+            e,
+            exc_info=True,
+        )
         raise RuntimeError(error_message) from e
 
     return None
