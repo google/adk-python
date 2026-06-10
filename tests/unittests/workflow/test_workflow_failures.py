@@ -20,6 +20,7 @@ from typing import AsyncGenerator
 from unittest import mock
 
 from google.adk.agents.context import Context
+from google.adk.agents.invocation_context import InvocationContext
 from google.adk.apps.app import App
 from google.adk.events.event import Event
 from google.adk.plugins.base_plugin import BasePlugin
@@ -1092,7 +1093,9 @@ async def test_workflow_halts_when_before_run_callback_returns_content():
     def __init__(self):
       super().__init__(name='halt_plugin')
 
-    async def before_run_callback(self, *, invocation_context):
+    async def before_run_callback(
+        self, *, invocation_context: InvocationContext
+    ) -> types.Content:
       return types.Content(
           role='model', parts=[types.Part(text='halted by plugin')]
       )
