@@ -70,6 +70,14 @@ When an `LlmAgent` runs as a workflow node, `process_llm_agent_output`
 A downstream function node typed `node_input: str` therefore works in the
 default case, and `node_input: dict` works when `output_schema` is set.
 
+**Observability caveat:** the value above is set on the event internally
+and forwarded to the next node, but `event.output` is **`None`** when you
+observe it from `runner.run_async(...)` for the LLM agent's own event —
+the framework clears it before the event reaches user code. Don't write
+tests that assert on `event.output` for an LLM agent's event; assert on
+the downstream node's output, on `session.state[output_key]`, or on
+`event.content.parts[*].text` instead.
+
 ```python
 from pydantic import BaseModel
 
