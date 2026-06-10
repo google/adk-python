@@ -605,6 +605,15 @@ Functions:
 """
 
 
+def _safe_response_text(resp: types.GenerateContentResponse) -> str:
+  """Extracts text from a response without triggering UserWarning on tool-call responses."""
+  try:
+    parts = resp.candidates[0].content.parts
+  except (AttributeError, IndexError, TypeError):
+    return ''
+  return ''.join(part.text for part in parts if part.text is not None)
+
+
 def _build_response_log(resp: types.GenerateContentResponse) -> str:
   function_calls_text = []
   if function_calls := resp.function_calls:
@@ -616,7 +625,7 @@ def _build_response_log(resp: types.GenerateContentResponse) -> str:
 LLM Response:
 -----------------------------------------------------------
 Text:
-{resp.text}
+{_safe_response_text(resp)}
 -----------------------------------------------------------
 Function calls:
 {_NEW_LINE.join(function_calls_text)}
