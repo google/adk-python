@@ -727,6 +727,53 @@ async def test_get_and_delete_session():
 
 @pytest.mark.asyncio
 @pytest.mark.usefixtures('mock_get_api_client')
+@pytest.mark.parametrize(
+    'resource_name',
+    [
+        (
+            'projects/my-project/locations/global/collections/'
+            'default_collection/engines/my-app/sessions/1'
+        ),
+        'projects/my-project/locations/us-central1/reasoningEngines/123/sessions/1',
+    ],
+)
+async def test_get_session_accepts_fully_qualified_resource_name(
+    resource_name: str,
+):
+  session_service = mock_vertex_ai_session_service()
+
+  session = await session_service.get_session(
+      app_name='123',
+      user_id='user',
+      session_id=resource_name,
+  )
+
+  assert session == MOCK_SESSION
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures('mock_get_api_client')
+async def test_delete_session_accepts_fully_qualified_resource_name():
+  session_service = mock_vertex_ai_session_service()
+
+  await session_service.delete_session(
+      app_name='123',
+      user_id='user',
+      session_id=(
+          'projects/my-project/locations/global/collections/default_collection/'
+          'engines/my-app/sessions/1'
+      ),
+  )
+
+  with pytest.raises(api_core_exceptions.NotFound) as excinfo:
+    await session_service.get_session(
+        app_name='123', user_id='user', session_id='1'
+    )
+  assert str(excinfo.value) == '404 Session not found: 1'
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures('mock_get_api_client')
 async def test_delete_session_rejects_other_users_session():
   """delete_session must not delete a session owned by a different user."""
   session_service = mock_vertex_ai_session_service()
@@ -753,7 +800,15 @@ async def test_session_id_path_traversal_rejected():
   """Session IDs containing path-traversal characters must be rejected."""
   session_service = mock_vertex_ai_session_service()
 
-  for bad_id in ['..', '../foo', '..?force=true', 'a/b', '']:
+  for bad_id in [
+      '..',
+      '../foo',
+      '..?force=true',
+      'a/b',
+      '',
+      'projects/my-project/locations/global/sessions/../foo',
+      'reasoningEngines/123/sessions/1',
+  ]:
     with pytest.raises(ValueError):
       await session_service.delete_session(
           app_name='123', user_id='user', session_id=bad_id

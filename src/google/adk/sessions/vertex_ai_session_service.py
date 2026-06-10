@@ -48,6 +48,11 @@ _COMPACTION_CUSTOM_METADATA_KEY = '_compaction'
 _USAGE_METADATA_CUSTOM_METADATA_KEY = '_usage_metadata'
 
 _SESSION_ID_PATTERN = re.compile(r'^[A-Za-z0-9_-]+$')
+_SESSION_RESOURCE_NAME_PATTERN = re.compile(
+    r'^projects/[^/]+/locations/[^/]+/'
+    r'(?:collections/[^/]+/engines/[^/]+|reasoningEngines/[^/]+)/'
+    r'sessions/([^/]+)$'
+)
 
 
 def _validate_session_id(session_id: str) -> None:
@@ -59,6 +64,19 @@ def _validate_session_id(session_id: str) -> None:
         f'Invalid session_id {session_id!r}: must match'
         f' {_SESSION_ID_PATTERN.pattern}.'
     )
+
+
+def _normalize_session_id(session_id: str) -> str:
+  """Returns the plain session ID from a session ID or Vertex resource name."""
+  match = (
+      _SESSION_RESOURCE_NAME_PATTERN.fullmatch(session_id)
+      if isinstance(session_id, str)
+      else None
+  )
+  if match:
+    session_id = match.group(1)
+  _validate_session_id(session_id)
+  return session_id
 
 
 def _quote_filter_literal(value: str) -> str:
@@ -178,7 +196,7 @@ class VertexAiSessionService(BaseSessionService):
       session_id: str,
       config: Optional[GetSessionConfig] = None,
   ) -> Optional[Session]:
-    _validate_session_id(session_id)
+    session_id = _normalize_session_id(session_id)
     reasoning_engine_id = self._get_reasoning_engine_id(app_name)
     session_resource_name = (
         f'reasoningEngines/{reasoning_engine_id}/sessions/{session_id}'
@@ -278,7 +296,7 @@ class VertexAiSessionService(BaseSessionService):
   async def delete_session(
       self, *, app_name: str, user_id: str, session_id: str
   ) -> None:
-    _validate_session_id(session_id)
+    session_id = _normalize_session_id(session_id)
     reasoning_engine_id = self._get_reasoning_engine_id(app_name)
     session_resource_name = (
         f'reasoningEngines/{reasoning_engine_id}/sessions/{session_id}'
