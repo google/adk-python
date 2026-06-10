@@ -303,32 +303,46 @@ class GeminiLlmConnection(BaseLlmConnection):
           # generation_complete, causing transcription to appear after
           # tool_call in the session log.
           if message.server_content.input_transcription:
-            if message.server_content.input_transcription.text:
-              self._input_transcription_text += (
-                  message.server_content.input_transcription.text
-              )
-              yield LlmResponse(
-                  input_transcription=types.Transcription(
-                      text=message.server_content.input_transcription.text,
-                      finished=False,
-                  ),
-                  partial=True,
-                  model_version=self._model_version,
-                  live_session_id=live_session_id,
-              )
-            # finished=True and partial transcription may happen in the same
-            # message.
-            if message.server_content.input_transcription.finished:
-              yield LlmResponse(
-                  input_transcription=types.Transcription(
-                      text=self._input_transcription_text,
-                      finished=True,
-                  ),
-                  partial=False,
-                  model_version=self._model_version,
-                  live_session_id=live_session_id,
-              )
-              self._input_transcription_text = ''
+            # Gemini 3.1 Flash Live only sends a single final input
+            # transcription
+            if self._is_gemini_3_1_flash_live:
+              if message.server_content.input_transcription.text:
+                yield LlmResponse(
+                    input_transcription=types.Transcription(
+                        text=message.server_content.input_transcription.text,
+                        finished=True,
+                    ),
+                    partial=False,
+                    model_version=self._model_version,
+                    live_session_id=live_session_id,
+                )
+            else:
+              if message.server_content.input_transcription.text:
+                self._input_transcription_text += (
+                    message.server_content.input_transcription.text
+                )
+                yield LlmResponse(
+                    input_transcription=types.Transcription(
+                        text=message.server_content.input_transcription.text,
+                        finished=False,
+                    ),
+                    partial=True,
+                    model_version=self._model_version,
+                    live_session_id=live_session_id,
+                )
+              # finished=True and partial transcription may happen in the same
+              # message.
+              if message.server_content.input_transcription.finished:
+                yield LlmResponse(
+                    input_transcription=types.Transcription(
+                        text=self._input_transcription_text,
+                        finished=True,
+                    ),
+                    partial=False,
+                    model_version=self._model_version,
+                    live_session_id=live_session_id,
+                )
+                self._input_transcription_text = ''
           if message.server_content.output_transcription:
             if message.server_content.output_transcription.text:
               self._output_transcription_text += (
