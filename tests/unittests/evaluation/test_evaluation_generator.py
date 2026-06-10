@@ -229,6 +229,63 @@ class TestConvertEventsToEvalInvocation:
     assert intermediate_events[0].author == "agent1"
     assert intermediate_events[0].content.parts[0].text == "First response"
 
+  def test_skip_invocation_without_user_event(
+      self,
+  ):
+    """Tests that invocations without any user-authored event are skipped."""
+    events = [
+        _build_event("agent", [types.Part(text="System message")], "inv1"),
+        _build_event(
+            "agent",
+            [
+                types.Part(
+                    function_call=types.FunctionCall(
+                        name="internal_tool", args={}
+                    )
+                )
+            ],
+            "inv1",
+        ),
+    ]
+
+    invocations = EvaluationGenerator.convert_events_to_eval_invocations(events)
+
+    assert len(invocations) == 0
+
+  def test_mixed_invocations_skips_those_without_user_events(
+      self,
+  ):
+    """Tests that only invocations with user events are included."""
+    events = [
+        # inv1: has a user event -> should be included
+        _build_event("user", [types.Part(text="Hello")], "inv1"),
+        _build_event("agent", [types.Part(text="Hi there!")], "inv1"),
+        # inv2: no user event -> should be skipped
+        _build_event("agent", [types.Part(text="Internal processing")], "inv2"),
+        _build_event(
+            "agent",
+            [
+                types.Part(
+                    function_call=types.FunctionCall(
+                        name="system_tool", args={}
+                    )
+                )
+            ],
+            "inv2",
+        ),
+        # inv3: has a user event -> should be included
+        _build_event("user", [types.Part(text="Goodbye")], "inv3"),
+        _build_event("agent", [types.Part(text="Bye!")], "inv3"),
+    ]
+
+    invocations = EvaluationGenerator.convert_events_to_eval_invocations(events)
+
+    assert len(invocations) == 2
+    assert invocations[0].user_content.parts[0].text == "Hello"
+    assert invocations[0].final_response.parts[0].text == "Hi there!"
+    assert invocations[1].user_content.parts[0].text == "Goodbye"
+    assert invocations[1].final_response.parts[0].text == "Bye!"
+
 
 class TestGetAppDetailsByInvocationId:
   """Test cases for EvaluationGenerator._get_app_details_by_invocation_id method."""
