@@ -746,6 +746,7 @@ def get_fast_api_app(
       )
 
     import inspect
+
     from google.adk.agents import Agent
     import google.auth
     from pydantic import ValidationError as _ValidationError
