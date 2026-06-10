@@ -598,7 +598,7 @@ class TestToA2A:
     Only BaseAgent (e.g. LlmAgent) and Workflow are valid
     A2A roots. Other BaseNode subclasses (e.g. FunctionNode) and
     arbitrary objects must be rejected at call time, not silently served
-    as a degenerate "custom agent".
+    as a degenerate "custom agent" card.
     """
     with pytest.raises(
         TypeError, match="requires a BaseAgent or Workflow, got str"

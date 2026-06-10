@@ -66,6 +66,7 @@ from ..a2a.converters.part_converter import convert_a2a_part_to_genai_part
 from ..a2a.converters.part_converter import convert_genai_part_to_a2a_part
 from ..a2a.converters.part_converter import GenAIPartToA2APartConverter
 from ..a2a.converters.to_adk_event import _create_mock_function_call_for_required_user_input
+from ..a2a.converters.to_adk_event import MOCK_FUNCTION_CALL_FOR_REQUIRED_USER_AUTH
 from ..a2a.converters.to_adk_event import MOCK_FUNCTION_CALL_FOR_REQUIRED_USER_INPUT
 from ..a2a.converters.utils import _get_adk_metadata_key
 from ..a2a.experimental import a2a_experimental
@@ -380,23 +381,28 @@ class RemoteA2aAgent(BaseAgent):
 
     event = ctx.session.events[-1]
     # If the user function_response replies to a function_call for non-ADK
-    # input-required events (fc.name = MOCK_FUNCTION_CALL_FOR_REQUIRED_USER_INPUT),
-    # the function_response part is replaced with text extracted from the
-    # function response.
-    # The implementation is based on the assumption that the user function_response
-    # event will contain a function_response with the name
-    # MOCK_FUNCTION_CALL_FOR_REQUIRED_USER_INPUT and the response will
-    # contain a "result" field with the user input as a string text.
+    # input-required / auth-required events (fc.name in
+    # {MOCK_FUNCTION_CALL_FOR_REQUIRED_USER_INPUT,
+    # MOCK_FUNCTION_CALL_FOR_REQUIRED_USER_AUTH}), the function_response part
+    # is replaced with text extracted from the function response.
+    # The implementation is based on the assumption that the user
+    # function_response event will contain a function_response with one of
+    # those names and the response will contain a "result" field with the user
+    # input as a string text.
+    mock_function_call_names = {
+        MOCK_FUNCTION_CALL_FOR_REQUIRED_USER_INPUT,
+        MOCK_FUNCTION_CALL_FOR_REQUIRED_USER_AUTH,
+    }
     mock_function_call = [
         fc
         for fc in function_call_event.get_function_calls()
-        if fc.name == MOCK_FUNCTION_CALL_FOR_REQUIRED_USER_INPUT
+        if fc.name in mock_function_call_names
     ]
     if mock_function_call:
       new_parts = []
       for function_response in event.get_function_responses():
         if (
-            function_response.name == MOCK_FUNCTION_CALL_FOR_REQUIRED_USER_INPUT
+            function_response.name in mock_function_call_names
             and function_response.response
             and "result" in function_response.response
         ):

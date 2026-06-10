@@ -232,6 +232,11 @@ def main() -> None:
       action="store_true",
       help="Skip updating the remote PR branch on GitHub.",
   )
+  parser.add_argument(
+      "--check-assignment",
+      action="store_true",
+      help="Verify if the PR is assigned to the current GitHub user.",
+  )
   args = parser.parse_args()
 
   # Step 0: Fetch PR data in one-shot
@@ -248,9 +253,10 @@ def main() -> None:
   print(json.dumps(pr_data, indent=2))
   print("[/PR_METADATA_JSON]")
 
-  # Step 3: Verify PR Assignment using cached PR data
-  if not verify_pr_assignment(pr_data, args.pr_number):
-    sys.exit(3)  # Exit code 3 indicates assignment block
+  # Step 3: Verify PR Assignment using cached PR data if requested
+  if args.check_assignment:
+    if not verify_pr_assignment(pr_data, args.pr_number):
+      sys.exit(3)  # Exit code 3 indicates assignment block
 
   # Step 4: Update branch
   if not args.skip_update:

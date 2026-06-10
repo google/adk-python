@@ -247,6 +247,9 @@ class RunConfig(BaseModel):
   session_resumption: Optional[types.SessionResumptionConfig] = None
   """Configures session resumption mechanism. Only support transparent session resumption mode now."""
 
+  history_config: Optional[types.HistoryConfig] = None
+  """Configures the exchange of history between the client and the server."""
+
   context_window_compression: Optional[types.ContextWindowCompressionConfig] = (
       None
   )

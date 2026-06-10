@@ -42,7 +42,11 @@ MIGRATIONS = {
 LATEST_VERSION = _schema_check_utils.LATEST_SCHEMA_VERSION
 
 
-def upgrade(source_db_url: str, dest_db_url: str):
+def upgrade(
+    source_db_url: str,
+    dest_db_url: str,
+    allow_unsafe_unpickling: bool = False,
+) -> None:
   """Migrates a database from its current version to the latest version.
 
   If the source database schema is older than the latest version, this
@@ -61,6 +65,9 @@ def upgrade(source_db_url: str, dest_db_url: str):
     source_db_url: The SQLAlchemy URL of the database to migrate from.
     dest_db_url: The SQLAlchemy URL of the database to migrate to. This must be
       different from source_db_url.
+    allow_unsafe_unpickling: If true, use Python's unsafe pickle loader for the
+      legacy pickle migration step. Only use this with a trusted source
+      database.
 
   Raises:
     RuntimeError: If source_db_url and dest_db_url are the same, or if no
@@ -113,7 +120,14 @@ def upgrade(source_db_url: str, dest_db_url: str):
       logger.info(
           f"Migrating from {in_url} to {out_url} (schema v{end_version})..."
       )
-      migrate_func(in_url, out_url)
+      if migrate_func is migrate_from_sqlalchemy_pickle.migrate:
+        migrate_func(
+            in_url,
+            out_url,
+            allow_unsafe_unpickling=allow_unsafe_unpickling,
+        )
+      else:
+        migrate_func(in_url, out_url)
       logger.info("Finished migration step to schema %s.", end_version)
       # The output of this step becomes the input for the next step.
       in_url = out_url

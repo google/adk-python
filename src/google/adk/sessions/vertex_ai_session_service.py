@@ -47,6 +47,19 @@ logger = logging.getLogger('google_adk.' + __name__)
 _COMPACTION_CUSTOM_METADATA_KEY = '_compaction'
 _USAGE_METADATA_CUSTOM_METADATA_KEY = '_usage_metadata'
 
+_SESSION_ID_PATTERN = re.compile(r'^[A-Za-z0-9_-]+$')
+
+
+def _validate_session_id(session_id: str) -> None:
+  """Rejects session IDs that could escape the URL path segment."""
+  if not isinstance(session_id, str) or not _SESSION_ID_PATTERN.fullmatch(
+      session_id
+  ):
+    raise ValueError(
+        f'Invalid session_id {session_id!r}: must match'
+        f' {_SESSION_ID_PATTERN.pattern}.'
+    )
+
 
 def _quote_filter_literal(value: str) -> str:
   """Quotes filter values so embedded metacharacters stay inside the literal."""
@@ -134,6 +147,7 @@ class VertexAiSessionService(BaseSessionService):
 
     config = {'session_state': state} if state else {}
     if session_id:
+      _validate_session_id(session_id)
       config['session_id'] = session_id
     config.update(kwargs)
     async with self._get_api_client() as api_client:
@@ -164,6 +178,7 @@ class VertexAiSessionService(BaseSessionService):
       session_id: str,
       config: Optional[GetSessionConfig] = None,
   ) -> Optional[Session]:
+    _validate_session_id(session_id)
     reasoning_engine_id = self._get_reasoning_engine_id(app_name)
     session_resource_name = (
         f'reasoningEngines/{reasoning_engine_id}/sessions/{session_id}'
@@ -263,14 +278,30 @@ class VertexAiSessionService(BaseSessionService):
   async def delete_session(
       self, *, app_name: str, user_id: str, session_id: str
   ) -> None:
+    _validate_session_id(session_id)
     reasoning_engine_id = self._get_reasoning_engine_id(app_name)
+    session_resource_name = (
+        f'reasoningEngines/{reasoning_engine_id}/sessions/{session_id}'
+    )
 
     async with self._get_api_client() as api_client:
+      # Enforce ownership: delete_session otherwise ignores user_id entirely.
+      try:
+        existing = await api_client.agent_engines.sessions.get(
+            name=session_resource_name
+        )
+      except ClientError as e:
+        if e.code == 404:
+          return
+        raise
+      if existing.user_id != user_id:
+        raise ValueError(
+            f'Session {session_id} does not belong to user {user_id}.'
+        )
+
       try:
         await api_client.agent_engines.sessions.delete(
-            name=(
-                f'reasoningEngines/{reasoning_engine_id}/sessions/{session_id}'
-            ),
+            name=session_resource_name,
         )
       except Exception as e:
         logger.error('Error deleting session %s: %s', session_id, e)
@@ -302,6 +333,7 @@ class VertexAiSessionService(BaseSessionService):
     # Update the in-memory session.
     await super().append_event(session=session, event=event)
 
+    _validate_session_id(session.id)
     reasoning_engine_id = self._get_reasoning_engine_id(session.app_name)
 
     # Build config (Monolithic approach)

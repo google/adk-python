@@ -83,16 +83,24 @@ def _build_basic_request(
   llm_request.live_connect_config.realtime_input_config = (
       invocation_context.run_config.realtime_input_config
   )
-  active_model_name = getattr(getattr(agent, 'canonical_live_model', None), 'model', None) or llm_request.model
+  active_model_name = (
+      getattr(getattr(agent, 'canonical_live_model', None), 'model', None)
+      or llm_request.model
+  )
   is_gemini_31 = model_name_utils.is_gemini_3_1_flash_live(active_model_name)
   llm_request.live_connect_config.enable_affective_dialog = (
-      None if is_gemini_31 else invocation_context.run_config.enable_affective_dialog
+      None
+      if is_gemini_31
+      else invocation_context.run_config.enable_affective_dialog
   )
   llm_request.live_connect_config.proactivity = (
       None if is_gemini_31 else invocation_context.run_config.proactivity
   )
   llm_request.live_connect_config.session_resumption = (
       invocation_context.run_config.session_resumption
+  )
+  llm_request.live_connect_config.history_config = (
+      invocation_context.run_config.history_config
   )
   llm_request.live_connect_config.context_window_compression = (
       invocation_context.run_config.context_window_compression

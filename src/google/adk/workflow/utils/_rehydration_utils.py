@@ -20,14 +20,22 @@ import asyncio
 from dataclasses import dataclass
 from dataclasses import field
 import json
+import logging
 from typing import Any
+from typing import TYPE_CHECKING
 
+from google.genai import types
 from pydantic import TypeAdapter
 from pydantic import ValidationError
 
 from ...events._node_path_builder import _NodePathBuilder
 from ...events.event import Event
 from ._workflow_hitl_utils import REQUEST_INPUT_FUNCTION_CALL_NAME
+
+if TYPE_CHECKING:
+  from .._base_node import BaseNode
+
+logger = logging.getLogger('google_adk.' + __name__)
 
 _RESULT_KEY = 'result'
 
@@ -94,6 +102,49 @@ def _extract_schema_from_event(event: Event, interrupt_id: str) -> Any | None:
       return fc.args.get('response_schema')
 
   return None
+
+
+def _process_rehydrated_output(node: BaseNode, output: Any) -> Any:
+  """Process rehydrated output from event.content using the node's output schema.
+
+  Protects type consistency between fresh runs and rehydrated runs by
+  properly respecting output schemas, handling model reasoning thought
+  blocks, and ensuring raw strings are returned when no output schema is
+  configured.
+  """
+  if not isinstance(output, types.Content):
+    return output
+
+  from google.adk.utils.content_utils import extract_text_from_content
+
+  text = extract_text_from_content(output).strip()
+
+  if not text:
+    return None
+
+  if node.output_schema:
+    if node.output_schema is str:
+      return text
+    try:
+      validated = TypeAdapter(node.output_schema).validate_json(text)
+      return node._to_serializable(validated)
+    except ValidationError as e:
+      # Fallback to unvalidated JSON parsing on validation failure
+      # to prevent blocking resumption on schema drift.
+      try:
+        parsed = json.loads(text)
+        logger.warning(
+            'Validation failed for rehydrated output against schema: %s. '
+            'Falling back to unvalidated JSON output to allow resumption.',
+            e,
+        )
+        return parsed
+      except ValueError:
+        raise ValueError(
+            f'Validation failed for rehydrated output against schema: {e}'
+        ) from e
+  else:
+    return text
 
 
 def _validate_resume_response(response_data: Any, schema: Any) -> Any:

@@ -887,6 +887,7 @@ class Runner:
       user_id: str,
       session_id: str,
       new_message: types.Content,
+      state_delta: Optional[dict[str, Any]] = None,
       run_config: Optional[RunConfig] = None,
   ) -> Generator[Event, None, None]:
     """Runs the agent.
@@ -904,6 +905,7 @@ class Runner:
       user_id: The user ID of the session.
       session_id: The session ID of the session.
       new_message: A new message to append to the session.
+      state_delta: Optional state changes to apply to the session.
       run_config: The run config for the agent.
 
     Yields:
@@ -919,6 +921,7 @@ class Runner:
                 user_id=user_id,
                 session_id=session_id,
                 new_message=new_message,
+                state_delta=state_delta,
                 run_config=run_config,
             )
         ) as agen:
@@ -1728,7 +1731,15 @@ class Runner:
     # shouldn't trap the next turn on that same agent if it's not transferable.
     # Falling through allows it to return to root.
     if event and event.author and is_resumable:
-      return root_agent.find_agent(event.author)
+      # `find_agent` returns None when the author does not correspond to any
+      # agent in the current hierarchy (e.g. the author is "user" or a stale or
+      # foreign agent name carried over from a previous turn/session). Returning
+      # None here would propagate to `build_node`, raising a confusing
+      # "Invalid node type: <class 'NoneType'>" error. Fall through to the
+      # event-scan logic below (which ultimately falls back to the root agent)
+      # whenever the author cannot be resolved.
+      if (resumed_agent := root_agent.find_agent(event.author)) is not None:
+        return resumed_agent
 
     def _event_filter(event: Event) -> bool:
       """Filters out user-authored events and agent state change events."""
