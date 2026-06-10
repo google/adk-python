@@ -69,6 +69,7 @@ optional-dependencies.agent-identity = [
 ]
 optional-dependencies.all = [
   "anyio>=4.9,<5",
+  "e2b>=2,<3",
   "google-api-python-client>=2.157,<3",
   "google-cloud-aiplatform[agent-engines]>=1.148.1,<2",
   "google-cloud-bigquery>=2.2",
@@ -122,6 +123,9 @@ optional-dependencies.docs = [
   "sphinx-rtd-theme",
 ]
 
+optional-dependencies.e2b = [
+  "e2b>=2,<3", # For E2BEnvironment remote sandbox.
+]
 optional-dependencies.eval = [
   "gepa>=0.1",
   "google-cloud-aiplatform[evaluation]>=1.148",
@@ -187,6 +191,7 @@ optional-dependencies.test = [
   "anthropic>=0.78",                                                 # For anthropic model tests; 0.78 introduced ThinkingConfigAdaptiveParam (required for Claude Opus 4.7).
   "anyio>=4.9,<5",
   "crewai[tools]; python_version>='3.11' and python_version<'3.12'", # For CrewaiTool tests; chromadb/pypika fail on 3.12+
+  "e2b>=2,<3",
   "gepa>=0.1",
   "google-api-python-client>=2.157,<3",
   "google-cloud-aiplatform[agent-engines,evaluation]>=1.148.1,<2",

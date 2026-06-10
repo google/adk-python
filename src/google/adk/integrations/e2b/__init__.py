@@ -12,20 +12,27 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from .context import ContentCapturingMode
-from .context import TelemetryConfig
-from .tracing import trace_call_llm
-from .tracing import trace_merged_tool_calls
-from .tracing import trace_send_data
-from .tracing import trace_tool_call
-from .tracing import tracer
+"""E2B sandbox integration.
+
+This module provides a BaseEnvironment implementation backed by an E2B
+remote sandbox, offering a persistent remote workspace for file CRUD,
+shell execution, and on-demand software installs.
+
+Requires the ``e2b`` extra: ``pip install google-adk[e2b]``.
+
+Example:
+  ```python
+  from google.adk.integrations.e2b import E2BEnvironment
+
+  env = E2BEnvironment(image="base", timeout=300)
+  await env.initialize()
+  result = await env.execute("pip install requests")
+  await env.close()
+  ```
+"""
+
+from ._e2b_environment import E2BEnvironment
 
 __all__ = [
-    'ContentCapturingMode',
-    'TelemetryConfig',
-    'trace_call_llm',
-    'trace_merged_tool_calls',
-    'trace_send_data',
-    'trace_tool_call',
-    'tracer',
+    'E2BEnvironment',
 ]
