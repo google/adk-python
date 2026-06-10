@@ -381,9 +381,7 @@ def generate_request_confirmation_event(
       invocation_id=invocation_context.invocation_id,
       author=invocation_context.agent.name,
       branch=invocation_context.branch,
-      content=types.Content(
-          parts=parts, role=function_response_event.content.role
-      ),
+      content=types.Content(parts=parts, role='model'),
       long_running_tool_ids=long_running_tool_ids,
   )
 
