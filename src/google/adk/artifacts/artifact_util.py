@@ -33,10 +33,10 @@ class ParsedArtifactUri(NamedTuple):
 
 
 _SESSION_SCOPED_ARTIFACT_URI_RE = re.compile(
-    r"artifact://apps/([^/]+)/users/([^/]+)/sessions/([^/]+)/artifacts/([^/]+)/versions/(\d+)"
+    r"artifact://apps/([^/]+)/users/([^/]+)/sessions/([^/]+)/artifacts/(.+)/versions/(\d+)"
 )
 _USER_SCOPED_ARTIFACT_URI_RE = re.compile(
-    r"artifact://apps/([^/]+)/users/([^/]+)/artifacts/([^/]+)/versions/(\d+)"
+    r"artifact://apps/([^/]+)/users/([^/]+)/artifacts/(.+)/versions/(\d+)"
 )
 
 
@@ -52,7 +52,7 @@ def parse_artifact_uri(uri: str) -> Optional[ParsedArtifactUri]:
   if not uri or not uri.startswith("artifact://"):
     return None
 
-  match = _SESSION_SCOPED_ARTIFACT_URI_RE.match(uri)
+  match = _SESSION_SCOPED_ARTIFACT_URI_RE.fullmatch(uri)
   if match:
     return ParsedArtifactUri(
         app_name=match.group(1),
@@ -62,7 +62,7 @@ def parse_artifact_uri(uri: str) -> Optional[ParsedArtifactUri]:
         version=int(match.group(5)),
     )
 
-  match = _USER_SCOPED_ARTIFACT_URI_RE.match(uri)
+  match = _USER_SCOPED_ARTIFACT_URI_RE.fullmatch(uri)
   if match:
     return ParsedArtifactUri(
         app_name=match.group(1),
