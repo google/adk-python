@@ -66,6 +66,10 @@ async def get_tool(
   return tools[0]
 
 
+def _query_parameters_to_api_repr(query_parameters):
+  return [parameter.to_api_repr() for parameter in query_parameters]
+
+
 @pytest.mark.parametrize(
     ("tool_settings",),
     [
@@ -1231,35 +1235,73 @@ def test_forecast_with_table_id(mock_execute_sql):
   expected_query = """
   SELECT * FROM AI.FORECAST(
     TABLE `test-dataset.test-table`,
-    data_col => 'data_col',
-    timestamp_col => 'ts_col',
-    model => 'TimesFM 2.0',
-    id_cols => ['id1', 'id2'],
-    horizon => 20,
-    confidence_level => 0.95
+    data_col => @data_col,
+    timestamp_col => @timestamp_col,
+    model => @model,
+    id_cols => @id_cols,
+    horizon => @horizon,
+    confidence_level => @confidence_level
   )
   """
-  mock_execute_sql.assert_called_once_with(
-      project_id="test-project",
-      query=expected_query,
-      credentials=mock_credentials,
-      settings=mock_settings,
-      tool_context=mock_tool_context,
-      caller_id="forecast",
-  )
+  mock_execute_sql.assert_called_once()
+  assert mock_execute_sql.call_args.kwargs["project_id"] == "test-project"
+  assert mock_execute_sql.call_args.kwargs["query"] == expected_query
+  assert mock_execute_sql.call_args.kwargs["credentials"] == mock_credentials
+  assert mock_execute_sql.call_args.kwargs["settings"] == mock_settings
+  assert mock_execute_sql.call_args.kwargs["tool_context"] == mock_tool_context
+  assert mock_execute_sql.call_args.kwargs["caller_id"] == "forecast"
+  assert _query_parameters_to_api_repr(
+      mock_execute_sql.call_args.kwargs["query_parameters"]
+  ) == [
+      {
+          "parameterType": {"type": "STRING"},
+          "parameterValue": {"value": "data_col"},
+          "name": "data_col",
+      },
+      {
+          "parameterType": {"type": "STRING"},
+          "parameterValue": {"value": "ts_col"},
+          "name": "timestamp_col",
+      },
+      {
+          "parameterType": {"type": "STRING"},
+          "parameterValue": {"value": "TimesFM 2.0"},
+          "name": "model",
+      },
+      {
+          "parameterType": {"type": "INT64"},
+          "parameterValue": {"value": "20"},
+          "name": "horizon",
+      },
+      {
+          "parameterType": {"type": "FLOAT64"},
+          "parameterValue": {"value": 0.95},
+          "name": "confidence_level",
+      },
+      {
+          "parameterType": {
+              "type": "ARRAY",
+              "arrayType": {"type": "STRING"},
+          },
+          "parameterValue": {
+              "arrayValues": [{"value": "id1"}, {"value": "id2"}]
+          },
+          "name": "id_cols",
+      },
+  ]
 
 
 # AI.Forecast calls _execute_sql with a specific query statement. We need to
 # test that the query is properly constructed and call _execute_sql with the
 # correct parameters exactly once.
 @mock.patch.object(query_tool, "_execute_sql", autospec=True)
-def test_forecast_with_query_statement(mock_execute_sql):
+def test_forecast_rejects_query_statement_history_data(mock_execute_sql):
   mock_credentials = mock.MagicMock(spec=Credentials)
   mock_settings = BigQueryToolConfig()
   mock_tool_context = mock.create_autospec(ToolContext, instance=True)
 
   history_data_query = "SELECT * FROM `test-dataset.test-table`"
-  query_tool.forecast(
+  result = query_tool.forecast(
       project_id="test-project",
       history_data=history_data_query,
       timestamp_col="ts_col",
@@ -1269,24 +1311,14 @@ def test_forecast_with_query_statement(mock_execute_sql):
       tool_context=mock_tool_context,
   )
 
-  expected_query = f"""
-  SELECT * FROM AI.FORECAST(
-    ({history_data_query}),
-    data_col => 'data_col',
-    timestamp_col => 'ts_col',
-    model => 'TimesFM 2.0',
-    horizon => 10,
-    confidence_level => 0.95
-  )
-  """
-  mock_execute_sql.assert_called_once_with(
-      project_id="test-project",
-      query=expected_query,
-      credentials=mock_credentials,
-      settings=mock_settings,
-      tool_context=mock_tool_context,
-      caller_id="forecast",
-  )
+  assert result == {
+      "status": "ERROR",
+      "error_details": (
+          "history_data must be a BigQuery table ID. SQL query statements are"
+          " not supported by this tool."
+      ),
+  }
+  mock_execute_sql.assert_not_called()
 
 
 def test_forecast_with_invalid_id_cols():
@@ -1334,7 +1366,7 @@ def test_analyze_contribution_with_table_id(mock_uuid, mock_execute_sql):
 
   expected_create_model_query = """
   CREATE TEMP MODEL contribution_analysis_model_test_uuid
-    OPTIONS (MODEL_TYPE = 'CONTRIBUTION_ANALYSIS', CONTRIBUTION_METRIC = 'SUM(metric)', IS_TEST_COL = 'is_test', DIMENSION_ID_COLS = ['dim1', 'dim2'], TOP_K_INSIGHTS_BY_APRIORI_SUPPORT = 30, PRUNING_METHOD = 'PRUNE_REDUNDANT_INSIGHTS')
+    OPTIONS (MODEL_TYPE = 'CONTRIBUTION_ANALYSIS', CONTRIBUTION_METRIC = @contribution_metric, IS_TEST_COL = @is_test_col, DIMENSION_ID_COLS = @dimension_id_cols, TOP_K_INSIGHTS_BY_APRIORI_SUPPORT = @top_k_insights, PRUNING_METHOD = @pruning_method)
   AS SELECT * FROM `test-dataset.test-table`
   """
 
@@ -1343,22 +1375,53 @@ def test_analyze_contribution_with_table_id(mock_uuid, mock_execute_sql):
   """
 
   assert mock_execute_sql.call_count == 2
-  mock_execute_sql.assert_any_call(
-      project_id="test-project",
-      query=expected_create_model_query,
-      credentials=mock_credentials,
-      settings=mock_settings,
-      tool_context=mock_tool_context,
-      caller_id="analyze_contribution",
-  )
-  mock_execute_sql.assert_any_call(
-      project_id="test-project",
-      query=expected_get_insights_query,
-      credentials=mock_credentials,
-      settings=mock_settings,
-      tool_context=mock_tool_context,
-      caller_id="analyze_contribution",
-  )
+  create_call = mock_execute_sql.call_args_list[0].kwargs
+  assert create_call["project_id"] == "test-project"
+  assert create_call["query"] == expected_create_model_query
+  assert create_call["credentials"] == mock_credentials
+  assert create_call["settings"] == mock_settings
+  assert create_call["tool_context"] == mock_tool_context
+  assert create_call["caller_id"] == "analyze_contribution"
+  assert _query_parameters_to_api_repr(create_call["query_parameters"]) == [
+      {
+          "parameterType": {"type": "STRING"},
+          "parameterValue": {"value": "SUM(metric)"},
+          "name": "contribution_metric",
+      },
+      {
+          "parameterType": {"type": "STRING"},
+          "parameterValue": {"value": "is_test"},
+          "name": "is_test_col",
+      },
+      {
+          "parameterType": {
+              "type": "ARRAY",
+              "arrayType": {"type": "STRING"},
+          },
+          "parameterValue": {
+              "arrayValues": [{"value": "dim1"}, {"value": "dim2"}]
+          },
+          "name": "dimension_id_cols",
+      },
+      {
+          "parameterType": {"type": "INT64"},
+          "parameterValue": {"value": "30"},
+          "name": "top_k_insights",
+      },
+      {
+          "parameterType": {"type": "STRING"},
+          "parameterValue": {"value": "PRUNE_REDUNDANT_INSIGHTS"},
+          "name": "pruning_method",
+      },
+  ]
+  insights_call = mock_execute_sql.call_args_list[1].kwargs
+  assert insights_call["project_id"] == "test-project"
+  assert insights_call["query"] == expected_get_insights_query
+  assert insights_call["credentials"] == mock_credentials
+  assert insights_call["settings"] == mock_settings
+  assert insights_call["tool_context"] == mock_tool_context
+  assert insights_call["caller_id"] == "analyze_contribution"
+  assert "query_parameters" not in insights_call
 
 
 # analyze_contribution calls _execute_sql twice. We need to test that the
@@ -1366,15 +1429,17 @@ def test_analyze_contribution_with_table_id(mock_uuid, mock_execute_sql):
 # parameters exactly twice.
 @mock.patch.object(query_tool, "_execute_sql", autospec=True)
 @mock.patch.object(uuid, "uuid4", autospec=True)
-def test_analyze_contribution_with_query_statement(mock_uuid, mock_execute_sql):
-  """Test analyze_contribution tool invocation with a query statement."""
+def test_analyze_contribution_rejects_query_statement(
+    mock_uuid, mock_execute_sql
+):
+  """Test analyze_contribution rejects query statements as input_data."""
   mock_credentials = mock.MagicMock(spec=Credentials)
   mock_settings = BigQueryToolConfig(write_mode=WriteMode.PROTECTED)
   mock_tool_context = mock.create_autospec(ToolContext, instance=True)
   mock_uuid.return_value = "test_uuid"
   mock_execute_sql.return_value = {"status": "SUCCESS"}
   input_data_query = "SELECT * FROM `test-dataset.test-table`"
-  query_tool.analyze_contribution(
+  result = query_tool.analyze_contribution(
       project_id="test-project",
       input_data=input_data_query,
       dimension_id_cols=["dim1", "dim2"],
@@ -1385,33 +1450,14 @@ def test_analyze_contribution_with_query_statement(mock_uuid, mock_execute_sql):
       tool_context=mock_tool_context,
   )
 
-  expected_create_model_query = f"""
-  CREATE TEMP MODEL contribution_analysis_model_test_uuid
-    OPTIONS (MODEL_TYPE = 'CONTRIBUTION_ANALYSIS', CONTRIBUTION_METRIC = 'SUM(metric)', IS_TEST_COL = 'is_test', DIMENSION_ID_COLS = ['dim1', 'dim2'], TOP_K_INSIGHTS_BY_APRIORI_SUPPORT = 30, PRUNING_METHOD = 'PRUNE_REDUNDANT_INSIGHTS')
-  AS ({input_data_query})
-  """
-
-  expected_get_insights_query = """
-  SELECT * FROM ML.GET_INSIGHTS(MODEL contribution_analysis_model_test_uuid)
-  """
-
-  assert mock_execute_sql.call_count == 2
-  mock_execute_sql.assert_any_call(
-      project_id="test-project",
-      query=expected_create_model_query,
-      credentials=mock_credentials,
-      settings=mock_settings,
-      tool_context=mock_tool_context,
-      caller_id="analyze_contribution",
-  )
-  mock_execute_sql.assert_any_call(
-      project_id="test-project",
-      query=expected_get_insights_query,
-      credentials=mock_credentials,
-      settings=mock_settings,
-      tool_context=mock_tool_context,
-      caller_id="analyze_contribution",
-  )
+  assert result == {
+      "status": "ERROR",
+      "error_details": (
+          "input_data must be a BigQuery table ID. SQL query statements are"
+          " not supported by this tool."
+      ),
+  }
+  mock_execute_sql.assert_not_called()
 
 
 def test_analyze_contribution_with_invalid_dimension_id_cols():
@@ -1450,10 +1496,9 @@ def test_detect_anomalies_with_table_id(mock_uuid, mock_execute_sql):
   mock_tool_context = mock.create_autospec(ToolContext, instance=True)
   mock_uuid.return_value = "test_uuid"
   mock_execute_sql.return_value = {"status": "SUCCESS"}
-  history_data_query = "SELECT * FROM `test-dataset.test-table`"
   query_tool.detect_anomalies(
       project_id="test-project",
-      history_data=history_data_query,
+      history_data="test-dataset.test-table",
       times_series_timestamp_col="ts_timestamp",
       times_series_data_col="ts_data",
       credentials=mock_credentials,
@@ -1463,31 +1508,51 @@ def test_detect_anomalies_with_table_id(mock_uuid, mock_execute_sql):
 
   expected_create_model_query = """
   CREATE TEMP MODEL detect_anomalies_model_test_uuid
-    OPTIONS (MODEL_TYPE = 'ARIMA_PLUS', TIME_SERIES_TIMESTAMP_COL = 'ts_timestamp', TIME_SERIES_DATA_COL = 'ts_data', HORIZON = 1000)
-  AS (SELECT * FROM `test-dataset.test-table`)
+    OPTIONS (MODEL_TYPE = 'ARIMA_PLUS', TIME_SERIES_TIMESTAMP_COL = @times_series_timestamp_col, TIME_SERIES_DATA_COL = @times_series_data_col, HORIZON = @horizon)
+  AS SELECT * FROM `test-dataset.test-table`
   """
 
   expected_anomaly_detection_query = """
-  SELECT * FROM ML.DETECT_ANOMALIES(MODEL detect_anomalies_model_test_uuid, STRUCT(0.95 AS anomaly_prob_threshold)) ORDER BY ts_timestamp
+  SELECT * FROM ML.DETECT_ANOMALIES(MODEL detect_anomalies_model_test_uuid, STRUCT(@anomaly_prob_threshold AS anomaly_prob_threshold)) ORDER BY `ts_timestamp`
   """
 
   assert mock_execute_sql.call_count == 2
-  mock_execute_sql.assert_any_call(
-      project_id="test-project",
-      query=expected_create_model_query,
-      credentials=mock_credentials,
-      settings=mock_settings,
-      tool_context=mock_tool_context,
-      caller_id="detect_anomalies",
-  )
-  mock_execute_sql.assert_any_call(
-      project_id="test-project",
-      query=expected_anomaly_detection_query,
-      credentials=mock_credentials,
-      settings=mock_settings,
-      tool_context=mock_tool_context,
-      caller_id="detect_anomalies",
-  )
+  create_call = mock_execute_sql.call_args_list[0].kwargs
+  assert create_call["project_id"] == "test-project"
+  assert create_call["query"] == expected_create_model_query
+  assert create_call["credentials"] == mock_credentials
+  assert create_call["settings"] == mock_settings
+  assert create_call["tool_context"] == mock_tool_context
+  assert create_call["caller_id"] == "detect_anomalies"
+  assert _query_parameters_to_api_repr(create_call["query_parameters"]) == [
+      {
+          "parameterType": {"type": "STRING"},
+          "parameterValue": {"value": "ts_timestamp"},
+          "name": "times_series_timestamp_col",
+      },
+      {
+          "parameterType": {"type": "STRING"},
+          "parameterValue": {"value": "ts_data"},
+          "name": "times_series_data_col",
+      },
+      {
+          "parameterType": {"type": "INT64"},
+          "parameterValue": {"value": "1000"},
+          "name": "horizon",
+      },
+  ]
+  detect_call = mock_execute_sql.call_args_list[1].kwargs
+  assert detect_call["project_id"] == "test-project"
+  assert detect_call["query"] == expected_anomaly_detection_query
+  assert detect_call["credentials"] == mock_credentials
+  assert detect_call["settings"] == mock_settings
+  assert detect_call["tool_context"] == mock_tool_context
+  assert detect_call["caller_id"] == "detect_anomalies"
+  assert _query_parameters_to_api_repr(detect_call["query_parameters"]) == [{
+      "parameterType": {"type": "FLOAT64"},
+      "parameterValue": {"value": 0.95},
+      "name": "anomaly_prob_threshold",
+  }]
 
 
 # detect_anomalies calls _execute_sql twice. We need to test that
@@ -1502,10 +1567,9 @@ def test_detect_anomalies_with_custom_params(mock_uuid, mock_execute_sql):
   mock_tool_context = mock.create_autospec(ToolContext, instance=True)
   mock_uuid.return_value = "test_uuid"
   mock_execute_sql.return_value = {"status": "SUCCESS"}
-  history_data_query = "SELECT * FROM `test-dataset.test-table`"
   query_tool.detect_anomalies(
       project_id="test-project",
-      history_data=history_data_query,
+      history_data="test-dataset.test-table",
       times_series_timestamp_col="ts_timestamp",
       times_series_data_col="ts_data",
       times_series_id_cols=["dim1", "dim2"],
@@ -1518,31 +1582,61 @@ def test_detect_anomalies_with_custom_params(mock_uuid, mock_execute_sql):
 
   expected_create_model_query = """
   CREATE TEMP MODEL detect_anomalies_model_test_uuid
-    OPTIONS (MODEL_TYPE = 'ARIMA_PLUS', TIME_SERIES_TIMESTAMP_COL = 'ts_timestamp', TIME_SERIES_DATA_COL = 'ts_data', HORIZON = 20, TIME_SERIES_ID_COL = ['dim1', 'dim2'])
-  AS (SELECT * FROM `test-dataset.test-table`)
+    OPTIONS (MODEL_TYPE = 'ARIMA_PLUS', TIME_SERIES_TIMESTAMP_COL = @times_series_timestamp_col, TIME_SERIES_DATA_COL = @times_series_data_col, HORIZON = @horizon, TIME_SERIES_ID_COL = @times_series_id_cols)
+  AS SELECT * FROM `test-dataset.test-table`
   """
 
   expected_anomaly_detection_query = """
-  SELECT * FROM ML.DETECT_ANOMALIES(MODEL detect_anomalies_model_test_uuid, STRUCT(0.8 AS anomaly_prob_threshold)) ORDER BY dim1, dim2, ts_timestamp
+  SELECT * FROM ML.DETECT_ANOMALIES(MODEL detect_anomalies_model_test_uuid, STRUCT(@anomaly_prob_threshold AS anomaly_prob_threshold)) ORDER BY `dim1`, `dim2`, `ts_timestamp`
   """
 
   assert mock_execute_sql.call_count == 2
-  mock_execute_sql.assert_any_call(
-      project_id="test-project",
-      query=expected_create_model_query,
-      credentials=mock_credentials,
-      settings=mock_settings,
-      tool_context=mock_tool_context,
-      caller_id="detect_anomalies",
-  )
-  mock_execute_sql.assert_any_call(
-      project_id="test-project",
-      query=expected_anomaly_detection_query,
-      credentials=mock_credentials,
-      settings=mock_settings,
-      tool_context=mock_tool_context,
-      caller_id="detect_anomalies",
-  )
+  create_call = mock_execute_sql.call_args_list[0].kwargs
+  assert create_call["project_id"] == "test-project"
+  assert create_call["query"] == expected_create_model_query
+  assert create_call["credentials"] == mock_credentials
+  assert create_call["settings"] == mock_settings
+  assert create_call["tool_context"] == mock_tool_context
+  assert create_call["caller_id"] == "detect_anomalies"
+  assert _query_parameters_to_api_repr(create_call["query_parameters"]) == [
+      {
+          "parameterType": {"type": "STRING"},
+          "parameterValue": {"value": "ts_timestamp"},
+          "name": "times_series_timestamp_col",
+      },
+      {
+          "parameterType": {"type": "STRING"},
+          "parameterValue": {"value": "ts_data"},
+          "name": "times_series_data_col",
+      },
+      {
+          "parameterType": {"type": "INT64"},
+          "parameterValue": {"value": "20"},
+          "name": "horizon",
+      },
+      {
+          "parameterType": {
+              "type": "ARRAY",
+              "arrayType": {"type": "STRING"},
+          },
+          "parameterValue": {
+              "arrayValues": [{"value": "dim1"}, {"value": "dim2"}]
+          },
+          "name": "times_series_id_cols",
+      },
+  ]
+  detect_call = mock_execute_sql.call_args_list[1].kwargs
+  assert detect_call["project_id"] == "test-project"
+  assert detect_call["query"] == expected_anomaly_detection_query
+  assert detect_call["credentials"] == mock_credentials
+  assert detect_call["settings"] == mock_settings
+  assert detect_call["tool_context"] == mock_tool_context
+  assert detect_call["caller_id"] == "detect_anomalies"
+  assert _query_parameters_to_api_repr(detect_call["query_parameters"]) == [{
+      "parameterType": {"type": "FLOAT64"},
+      "parameterValue": {"value": 0.8},
+      "name": "anomaly_prob_threshold",
+  }]
 
 
 # detect_anomalies calls _execute_sql twice. We need to test that
@@ -1557,16 +1651,14 @@ def test_detect_anomalies_on_target_table(mock_uuid, mock_execute_sql):
   mock_tool_context = mock.create_autospec(ToolContext, instance=True)
   mock_uuid.return_value = "test_uuid"
   mock_execute_sql.return_value = {"status": "SUCCESS"}
-  history_data_query = "SELECT * FROM `test-dataset.history-table`"
-  target_data_query = "SELECT * FROM `test-dataset.target-table`"
   query_tool.detect_anomalies(
       project_id="test-project",
-      history_data=history_data_query,
+      history_data="test-dataset.history-table",
       times_series_timestamp_col="ts_timestamp",
       times_series_data_col="ts_data",
       times_series_id_cols=["dim1", "dim2"],
       horizon=20,
-      target_data=target_data_query,
+      target_data="test-dataset.target-table",
       anomaly_prob_threshold=0.8,
       credentials=mock_credentials,
       settings=mock_settings,
@@ -1575,31 +1667,51 @@ def test_detect_anomalies_on_target_table(mock_uuid, mock_execute_sql):
 
   expected_create_model_query = """
   CREATE TEMP MODEL detect_anomalies_model_test_uuid
-    OPTIONS (MODEL_TYPE = 'ARIMA_PLUS', TIME_SERIES_TIMESTAMP_COL = 'ts_timestamp', TIME_SERIES_DATA_COL = 'ts_data', HORIZON = 20, TIME_SERIES_ID_COL = ['dim1', 'dim2'])
-  AS (SELECT * FROM `test-dataset.history-table`)
+    OPTIONS (MODEL_TYPE = 'ARIMA_PLUS', TIME_SERIES_TIMESTAMP_COL = @times_series_timestamp_col, TIME_SERIES_DATA_COL = @times_series_data_col, HORIZON = @horizon, TIME_SERIES_ID_COL = @times_series_id_cols)
+  AS SELECT * FROM `test-dataset.history-table`
   """
 
   expected_anomaly_detection_query = """
-    SELECT * FROM ML.DETECT_ANOMALIES(MODEL detect_anomalies_model_test_uuid, STRUCT(0.8 AS anomaly_prob_threshold), (SELECT * FROM `test-dataset.target-table`)) ORDER BY dim1, dim2, ts_timestamp
+    SELECT * FROM ML.DETECT_ANOMALIES(MODEL detect_anomalies_model_test_uuid, STRUCT(@anomaly_prob_threshold AS anomaly_prob_threshold), (SELECT * FROM `test-dataset.target-table`)) ORDER BY `dim1`, `dim2`, `ts_timestamp`
     """
 
   assert mock_execute_sql.call_count == 2
-  mock_execute_sql.assert_any_call(
-      project_id="test-project",
-      query=expected_create_model_query,
-      credentials=mock_credentials,
-      settings=mock_settings,
-      tool_context=mock_tool_context,
-      caller_id="detect_anomalies",
-  )
-  mock_execute_sql.assert_any_call(
-      project_id="test-project",
-      query=expected_anomaly_detection_query,
-      credentials=mock_credentials,
-      settings=mock_settings,
-      tool_context=mock_tool_context,
-      caller_id="detect_anomalies",
-  )
+  create_call = mock_execute_sql.call_args_list[0].kwargs
+  assert create_call["query"] == expected_create_model_query
+  assert _query_parameters_to_api_repr(create_call["query_parameters"]) == [
+      {
+          "parameterType": {"type": "STRING"},
+          "parameterValue": {"value": "ts_timestamp"},
+          "name": "times_series_timestamp_col",
+      },
+      {
+          "parameterType": {"type": "STRING"},
+          "parameterValue": {"value": "ts_data"},
+          "name": "times_series_data_col",
+      },
+      {
+          "parameterType": {"type": "INT64"},
+          "parameterValue": {"value": "20"},
+          "name": "horizon",
+      },
+      {
+          "parameterType": {
+              "type": "ARRAY",
+              "arrayType": {"type": "STRING"},
+          },
+          "parameterValue": {
+              "arrayValues": [{"value": "dim1"}, {"value": "dim2"}]
+          },
+          "name": "times_series_id_cols",
+      },
+  ]
+  detect_call = mock_execute_sql.call_args_list[1].kwargs
+  assert detect_call["query"] == expected_anomaly_detection_query
+  assert _query_parameters_to_api_repr(detect_call["query_parameters"]) == [{
+      "parameterType": {"type": "FLOAT64"},
+      "parameterValue": {"value": 0.8},
+      "name": "anomaly_prob_threshold",
+  }]
 
 
 # detect_anomalies calls execute_sql twice. We need to test that
@@ -1614,10 +1726,9 @@ def test_detect_anomalies_with_str_table_id(mock_uuid, mock_execute_sql):
   mock_tool_context = mock.create_autospec(ToolContext, instance=True)
   mock_uuid.return_value = "test_uuid"
   mock_execute_sql.return_value = {"status": "SUCCESS"}
-  history_data_query = "SELECT * FROM `test-dataset.test-table`"
   query_tool.detect_anomalies(
       project_id="test-project",
-      history_data=history_data_query,
+      history_data="test-dataset.test-table",
       times_series_timestamp_col="ts_timestamp",
       times_series_data_col="ts_data",
       target_data="test-dataset.target-table",
@@ -1628,31 +1739,96 @@ def test_detect_anomalies_with_str_table_id(mock_uuid, mock_execute_sql):
 
   expected_create_model_query = """
   CREATE TEMP MODEL detect_anomalies_model_test_uuid
-    OPTIONS (MODEL_TYPE = 'ARIMA_PLUS', TIME_SERIES_TIMESTAMP_COL = 'ts_timestamp', TIME_SERIES_DATA_COL = 'ts_data', HORIZON = 1000)
-  AS (SELECT * FROM `test-dataset.test-table`)
+    OPTIONS (MODEL_TYPE = 'ARIMA_PLUS', TIME_SERIES_TIMESTAMP_COL = @times_series_timestamp_col, TIME_SERIES_DATA_COL = @times_series_data_col, HORIZON = @horizon)
+  AS SELECT * FROM `test-dataset.test-table`
   """
 
   expected_anomaly_detection_query = """
-    SELECT * FROM ML.DETECT_ANOMALIES(MODEL detect_anomalies_model_test_uuid, STRUCT(0.95 AS anomaly_prob_threshold), (SELECT * FROM `test-dataset.target-table`)) ORDER BY ts_timestamp
+    SELECT * FROM ML.DETECT_ANOMALIES(MODEL detect_anomalies_model_test_uuid, STRUCT(@anomaly_prob_threshold AS anomaly_prob_threshold), (SELECT * FROM `test-dataset.target-table`)) ORDER BY `ts_timestamp`
     """
 
   assert mock_execute_sql.call_count == 2
-  mock_execute_sql.assert_any_call(
+  create_call = mock_execute_sql.call_args_list[0].kwargs
+  assert create_call["query"] == expected_create_model_query
+  assert _query_parameters_to_api_repr(create_call["query_parameters"]) == [
+      {
+          "parameterType": {"type": "STRING"},
+          "parameterValue": {"value": "ts_timestamp"},
+          "name": "times_series_timestamp_col",
+      },
+      {
+          "parameterType": {"type": "STRING"},
+          "parameterValue": {"value": "ts_data"},
+          "name": "times_series_data_col",
+      },
+      {
+          "parameterType": {"type": "INT64"},
+          "parameterValue": {"value": "1000"},
+          "name": "horizon",
+      },
+  ]
+  detect_call = mock_execute_sql.call_args_list[1].kwargs
+  assert detect_call["query"] == expected_anomaly_detection_query
+  assert _query_parameters_to_api_repr(detect_call["query_parameters"]) == [{
+      "parameterType": {"type": "FLOAT64"},
+      "parameterValue": {"value": 0.95},
+      "name": "anomaly_prob_threshold",
+  }]
+
+
+@mock.patch.object(query_tool, "_execute_sql", autospec=True)
+def test_detect_anomalies_rejects_query_statement_history_data(
+    mock_execute_sql,
+):
+  mock_credentials = mock.MagicMock(spec=Credentials)
+  mock_settings = BigQueryToolConfig(write_mode=WriteMode.PROTECTED)
+  mock_tool_context = mock.create_autospec(ToolContext, instance=True)
+
+  result = query_tool.detect_anomalies(
       project_id="test-project",
-      query=expected_create_model_query,
+      history_data="SELECT * FROM `test-dataset.test-table`",
+      times_series_timestamp_col="ts_timestamp",
+      times_series_data_col="ts_data",
       credentials=mock_credentials,
       settings=mock_settings,
       tool_context=mock_tool_context,
-      caller_id="detect_anomalies",
   )
-  mock_execute_sql.assert_any_call(
+
+  assert result == {
+      "status": "ERROR",
+      "error_details": (
+          "history_data must be a BigQuery table ID. SQL query statements are"
+          " not supported by this tool."
+      ),
+  }
+  mock_execute_sql.assert_not_called()
+
+
+@mock.patch.object(query_tool, "_execute_sql", autospec=True)
+def test_detect_anomalies_rejects_query_statement_target_data(mock_execute_sql):
+  mock_credentials = mock.MagicMock(spec=Credentials)
+  mock_settings = BigQueryToolConfig(write_mode=WriteMode.PROTECTED)
+  mock_tool_context = mock.create_autospec(ToolContext, instance=True)
+
+  result = query_tool.detect_anomalies(
       project_id="test-project",
-      query=expected_anomaly_detection_query,
+      history_data="test-dataset.history-table",
+      times_series_timestamp_col="ts_timestamp",
+      times_series_data_col="ts_data",
+      target_data="SELECT * FROM `test-dataset.target-table`",
       credentials=mock_credentials,
       settings=mock_settings,
       tool_context=mock_tool_context,
-      caller_id="detect_anomalies",
   )
+
+  assert result == {
+      "status": "ERROR",
+      "error_details": (
+          "target_data must be a BigQuery table ID. SQL query statements are"
+          " not supported by this tool."
+      ),
+  }
+  mock_execute_sql.assert_not_called()
 
 
 def test_detect_anomalies_with_invalid_id_cols():
@@ -1677,6 +1853,32 @@ def test_detect_anomalies_with_invalid_id_cols():
       "All elements in times_series_id_cols must be strings."
       in result["error_details"]
   )
+
+
+def test_detect_anomalies_with_invalid_id_field_path():
+  """Test detect_anomalies rejects unsafe ORDER BY identifiers."""
+  mock_credentials = mock.MagicMock(spec=Credentials)
+  mock_settings = BigQueryToolConfig()
+  mock_tool_context = mock.create_autospec(ToolContext, instance=True)
+
+  result = query_tool.detect_anomalies(
+      project_id="test-project",
+      history_data="test-dataset.test-table",
+      times_series_timestamp_col="ts_timestamp",
+      times_series_data_col="ts_data",
+      times_series_id_cols=["(SELECT password FROM admin_users LIMIT 1)"],
+      credentials=mock_credentials,
+      settings=mock_settings,
+      tool_context=mock_tool_context,
+  )
+
+  assert result == {
+      "status": "ERROR",
+      "error_details": (
+          "All elements in times_series_id_cols must be valid BigQuery column"
+          " names or field paths."
+      ),
+  }
 
 
 @pytest.mark.parametrize(
@@ -1801,7 +2003,7 @@ def test_execute_sql_user_job_labels_augment_internal_labels(
         pytest.param(
             lambda tool_context: query_tool.forecast(
                 project_id="test-project",
-                history_data="SELECT * FROM `test-dataset.test-table`",
+                history_data="test-dataset.test-table",
                 timestamp_col="ts_col",
                 data_col="data_col",
                 credentials=mock.create_autospec(Credentials, instance=True),
@@ -1828,7 +2030,7 @@ def test_execute_sql_user_job_labels_augment_internal_labels(
         pytest.param(
             lambda tool_context: query_tool.detect_anomalies(
                 project_id="test-project",
-                history_data="SELECT * FROM `test-dataset.test-table`",
+                history_data="test-dataset.test-table",
                 times_series_timestamp_col="ts_timestamp",
                 times_series_data_col="ts_data",
                 credentials=mock.create_autospec(Credentials, instance=True),
@@ -1867,7 +2069,7 @@ def test_ml_tool_job_labels(tool_call, expected_tool_label):
         pytest.param(
             lambda tool_context: query_tool.forecast(
                 project_id="test-project",
-                history_data="SELECT * FROM `test-dataset.test-table`",
+                history_data="test-dataset.test-table",
                 timestamp_col="ts_col",
                 data_col="data_col",
                 credentials=mock.create_autospec(Credentials, instance=True),
@@ -1898,7 +2100,7 @@ def test_ml_tool_job_labels(tool_call, expected_tool_label):
         pytest.param(
             lambda tool_context: query_tool.detect_anomalies(
                 project_id="test-project",
-                history_data="SELECT * FROM `test-dataset.test-table`",
+                history_data="test-dataset.test-table",
                 times_series_timestamp_col="ts_timestamp",
                 times_series_data_col="ts_data",
                 credentials=mock.create_autospec(Credentials, instance=True),
@@ -1942,7 +2144,7 @@ def test_ml_tool_job_labels_w_application_name(tool_call, expected_tool_label):
         pytest.param(
             lambda tool_context: query_tool.forecast(
                 project_id="test-project",
-                history_data="SELECT * FROM `test-dataset.test-table`",
+                history_data="test-dataset.test-table",
                 timestamp_col="ts_col",
                 data_col="data_col",
                 credentials=mock.create_autospec(Credentials, instance=True),
@@ -1983,7 +2185,7 @@ def test_ml_tool_job_labels_w_application_name(tool_call, expected_tool_label):
         pytest.param(
             lambda tool_context: query_tool.detect_anomalies(
                 project_id="test-project",
-                history_data="SELECT * FROM `test-dataset.test-table`",
+                history_data="test-dataset.test-table",
                 times_series_timestamp_col="ts_timestamp",
                 times_series_data_col="ts_data",
                 credentials=mock.create_autospec(Credentials, instance=True),
@@ -2122,7 +2324,7 @@ def test_execute_sql_maximum_bytes_billed_config():
         pytest.param(
             lambda settings, tool_context: query_tool.forecast(
                 project_id="test-project",
-                history_data="SELECT * FROM `test-dataset.test-table`",
+                history_data="test-dataset.test-table",
                 timestamp_col="ts_col",
                 data_col="data_col",
                 credentials=mock.create_autospec(Credentials, instance=True),
@@ -2147,7 +2349,7 @@ def test_execute_sql_maximum_bytes_billed_config():
         pytest.param(
             lambda settings, tool_context: query_tool.detect_anomalies(
                 project_id="test-project",
-                history_data="SELECT * FROM `test-dataset.test-table`",
+                history_data="test-dataset.test-table",
                 times_series_timestamp_col="ts_timestamp",
                 times_series_data_col="ts_data",
                 credentials=mock.create_autospec(Credentials, instance=True),
@@ -2206,7 +2408,7 @@ def test_tool_call_doesnt_change_global_settings(tool_call):
         pytest.param(
             lambda settings, tool_context: query_tool.forecast(
                 project_id="test-project",
-                history_data="SELECT * FROM `test-dataset.test-table`",
+                history_data="test-dataset.test-table",
                 timestamp_col="ts_col",
                 data_col="data_col",
                 credentials=mock.create_autospec(Credentials, instance=True),
@@ -2231,7 +2433,7 @@ def test_tool_call_doesnt_change_global_settings(tool_call):
         pytest.param(
             lambda settings, tool_context: query_tool.detect_anomalies(
                 project_id="test-project",
-                history_data="SELECT * FROM `test-dataset.test-table`",
+                history_data="test-dataset.test-table",
                 times_series_timestamp_col="ts_timestamp",
                 times_series_data_col="ts_data",
                 credentials=mock.create_autospec(Credentials, instance=True),
