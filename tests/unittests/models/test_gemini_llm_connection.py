@@ -1720,3 +1720,69 @@ async def test_receive_grounding_metadata_default_non_gemini_3_1(
 
   assert responses[2].turn_complete is True
   assert responses[2].grounding_metadata is None
+
+
+@pytest.mark.asyncio
+async def test_receive_input_transcription_gemini_3_1(
+    mock_gemini_session,
+):
+  """Verify input_transcription yields finished=True immediately for Gemini 3.1."""
+  conn = GeminiLlmConnection(
+      mock_gemini_session,
+      model_version='gemini-3.1-flash-live-preview',
+  )
+
+  def make_msg(
+      input_text=None, output_text=None, output_finished=False, tc=False
+  ):
+    msg = mock.create_autospec(types.LiveServerMessage, instance=True)
+    msg.usage_metadata = None
+    msg.tool_call = None
+    msg.session_resumption_update = None
+    msg.go_away = None
+    msg.server_content = mock.Mock()
+    msg.server_content.interrupted = False
+    msg.server_content.input_transcription = (
+        types.Transcription(text=input_text, finished=False)
+        if input_text
+        else None
+    )
+    msg.server_content.output_transcription = (
+        types.Transcription(text=output_text, finished=output_finished)
+        if output_text
+        else None
+    )
+    msg.server_content.generation_complete = False
+    msg.server_content.turn_complete = tc
+    msg.server_content.grounding_metadata = None
+    msg.server_content.model_turn = None
+    return msg
+
+  msg1 = make_msg(input_text='Hello')
+  msg2 = make_msg(output_text='Hi there!', output_finished=True)
+  msg3 = make_msg(tc=True)
+
+  async def mock_receive_generator():
+    yield msg1
+    yield msg2
+    yield msg3
+
+  mock_gemini_session.receive = mock.Mock(return_value=mock_receive_generator())
+
+  responses = [resp async for resp in conn.receive()]
+
+  assert len(responses) == 4
+
+  assert responses[0].input_transcription.text == 'Hello'
+  assert responses[0].input_transcription.finished is True
+  assert responses[0].partial is False
+
+  assert responses[1].output_transcription.text == 'Hi there!'
+  assert responses[1].output_transcription.finished is False
+  assert responses[1].partial is True
+
+  assert responses[2].output_transcription.text == 'Hi there!'
+  assert responses[2].output_transcription.finished is True
+  assert responses[2].partial is False
+
+  assert responses[3].turn_complete is True
