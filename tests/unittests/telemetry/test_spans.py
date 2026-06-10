@@ -20,6 +20,7 @@ from unittest import mock
 
 from google.adk.agents.invocation_context import InvocationContext
 from google.adk.agents.llm_agent import LlmAgent
+from google.adk.agents.run_config import RunConfig
 from google.adk.errors.tool_execution_error import ToolErrorType
 from google.adk.errors.tool_execution_error import ToolExecutionError
 from google.adk.models.llm_request import LlmRequest
@@ -121,6 +122,7 @@ async def _create_invocation_context(
       agent=agent,
       session=session,
       session_service=session_service,
+      run_config=RunConfig(),
   )
   return invocation_context
 
@@ -814,13 +816,26 @@ async def test_trace_send_data_disabling_request_response_content(
     'google.adk.telemetry.tracing._guess_gemini_system_name',
     return_value='test_system',
 )
-@pytest.mark.parametrize('capture_content', [True, False])
+# (env_value, captured) pairs: pin both the documented OTel four-state
+# values that enable LogRecord content ('EVENT_ONLY' and 'SPAN_AND_EVENT')
+# and the cases that disable it (empty string and 'SPAN_ONLY' -- the latter
+# puts content on the span only).
+@pytest.mark.parametrize(
+    'env_capture_value,capture_content',
+    [
+        ('EVENT_ONLY', True),
+        ('SPAN_AND_EVENT', True),
+        ('', False),
+        ('SPAN_ONLY', False),
+    ],
+)
 @pytest.mark.parametrize('user_id', ['some-user-id', None])
 async def test_generate_content_span(
     mock_guess_system_name,
     mock_tracer,
     mock_otel_logger,
     monkeypatch,
+    env_capture_value,
     capture_content,
     user_id,
 ):
@@ -828,7 +843,7 @@ async def test_generate_content_span(
   # Arrange
   monkeypatch.setenv(
       'OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT',
-      str(capture_content).lower(),
+      env_capture_value,
   )
   monkeypatch.setattr(
       'google.adk.telemetry.tracing._instrumented_with_opentelemetry_instrumentation_google_genai',
@@ -875,7 +890,7 @@ async def test_generate_content_span(
   ) as gc_span:
     assert gc_span.span is mock_span
 
-    trace_inference_result(gc_span, llm_response)
+    trace_inference_result(invocation_context, gc_span, llm_response)
 
   # Assert Span
   mock_tracer.start_as_current_span.assert_called_once_with(
@@ -1140,7 +1155,7 @@ async def test_generate_content_span_with_experimental_semconv(
   ) as gc_span:
     assert gc_span.span is mock_span
 
-    trace_inference_result(gc_span, llm_response)
+    trace_inference_result(invocation_context, gc_span, llm_response)
 
   # Expected attributes
   expected_system_instructions = [
