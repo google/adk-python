@@ -26,9 +26,9 @@ from typing import TYPE_CHECKING
 from opentelemetry import trace
 import opentelemetry.context as context_api
 
-from ..events import event as event_lib
 from . import _metrics
 from . import tracing
+from ..events import event as event_lib
 
 if TYPE_CHECKING:
   from ..agents.base_agent import BaseAgent
