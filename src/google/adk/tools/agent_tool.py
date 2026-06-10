@@ -41,7 +41,7 @@ from .tool_context import ToolContext
 
 if TYPE_CHECKING:
   from ..agents.base_agent import BaseAgent
-  from ..sessions.in_memory_session_service import InMemorySessionService
+  from ..sessions.base_session_service import BaseSessionService
   from ..sessions.session import Session
 
 
@@ -108,7 +108,7 @@ def _get_output_schema(agent: BaseAgent) -> Optional[SchemaType]:
 
 async def _inject_conversation_history(
     tool_context: ToolContext,
-    session_service: InMemorySessionService,
+    session_service: BaseSessionService,
     session: Session,
 ) -> None:
   """Injects parent conversation events into the child session.
