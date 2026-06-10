@@ -21,9 +21,13 @@ from unittest import mock
 import zipfile
 
 from google.adk.skills import list_skills_in_dir
+from google.adk.skills import list_skills_in_dir_async as _list_skills_in_dir_async
 from google.adk.skills import list_skills_in_gcs_dir as _list_skills_in_gcs_dir
+from google.adk.skills import list_skills_in_gcs_dir_async as _list_skills_in_gcs_dir_async
 from google.adk.skills import load_skill_from_dir as _load_skill_from_dir
+from google.adk.skills import load_skill_from_dir_async as _load_skill_from_dir_async
 from google.adk.skills import load_skill_from_gcs_dir as _load_skill_from_gcs_dir
+from google.adk.skills import load_skill_from_gcs_dir_async as _load_skill_from_gcs_dir_async
 from google.adk.skills._utils import _load_skill_from_zip_bytes
 from google.adk.skills._utils import _read_skill_properties
 from google.adk.skills._utils import _validate_skill_dir
@@ -393,3 +397,117 @@ def test__load_skill_from_gcs_dir_import_error():
   with mock.patch("builtins.__import__", mock_import):
     with pytest.raises(ImportError, match="google-cloud-storage is required"):
       _load_skill_from_gcs_dir("my-bucket", "skills/my-skill/")
+
+
+@pytest.mark.asyncio
+async def test_load_skill_from_dir_async(tmp_path):
+  """Tests loading a skill from a directory asynchronously."""
+  skill_dir = tmp_path / "test-skill"
+  skill_dir.mkdir()
+
+  skill_md_content = """---
+name: test-skill
+description: Test description
+---
+Test instructions
+"""
+  (skill_dir / "SKILL.md").write_text(skill_md_content)
+
+  # Create references
+  ref_dir = skill_dir / "references"
+  ref_dir.mkdir()
+  (ref_dir / "ref1.md").write_text("ref1 content")
+
+  skill = await _load_skill_from_dir_async(skill_dir)
+
+  assert skill.name == "test-skill"
+  assert skill.description == "Test description"
+  assert skill.instructions == "Test instructions"
+  assert skill.resources.get_reference("ref1.md") == "ref1 content"
+
+
+@pytest.mark.asyncio
+async def test_list_skills_in_dir_async(tmp_path):
+  """Tests listing skills in a directory asynchronously."""
+  skills_dir = tmp_path / "skills"
+  skills_dir.mkdir()
+
+  # Valid skill 1
+  skill1_dir = skills_dir / "skill1"
+  skill1_dir.mkdir()
+  (skill1_dir / "SKILL.md").write_text(
+      "---\nname: skill1\ndescription: desc1\n---\nbody"
+  )
+
+  skills = await _list_skills_in_dir_async(skills_dir)
+
+  assert len(skills) == 1
+  assert "skill1" in skills
+  assert skills["skill1"].name == "skill1"
+
+
+@pytest.mark.asyncio
+@mock.patch("google.cloud.storage.Client")
+async def test_load_skill_from_gcs_dir_async(mock_client_class):
+  """Tests loading a skill from GCS asynchronously."""
+  mock_client = mock.MagicMock()
+  mock_client_class.return_value = mock_client
+  mock_bucket = mock.MagicMock()
+  mock_client.bucket.return_value = mock_bucket
+
+  def mock_blob_side_effect(path):
+    m = mock.MagicMock()
+    if path.endswith("SKILL.md"):
+      m.exists.return_value = True
+      m.download_as_text.return_value = (
+          "---\nname: my-skill\ndescription: Test description\n---\nTest"
+          " instructions"
+      )
+    else:
+      m.exists.return_value = False
+    return m
+
+  mock_bucket.blob.side_effect = mock_blob_side_effect
+
+  # For resources
+  def list_blobs_side_effect(prefix=None):
+    if prefix.endswith("references/"):
+      m = mock.MagicMock()
+      m.name = prefix + "ref1.md"
+      m.download_as_text.return_value = "ref1 content"
+      return [m]
+    return []
+
+  mock_bucket.list_blobs.side_effect = list_blobs_side_effect
+
+  skill = await _load_skill_from_gcs_dir_async("my-bucket", "skills/my-skill/")
+
+  assert skill.name == "my-skill"
+  assert skill.description == "Test description"
+  assert skill.instructions == "Test instructions"
+  assert skill.resources.get_reference("ref1.md") == "ref1 content"
+
+
+@pytest.mark.asyncio
+@mock.patch("google.cloud.storage.Client")
+async def test_list_skills_in_gcs_dir_async(mock_client_class):
+  """Tests listing skills in GCS asynchronously."""
+  mock_client = mock.MagicMock()
+  mock_client_class.return_value = mock_client
+  mock_bucket = mock.MagicMock()
+  mock_client.bucket.return_value = mock_bucket
+
+  mock_iterator = mock.MagicMock()
+  mock_iterator.prefixes = ["skills/my-skill/"]
+  mock_bucket.list_blobs.return_value = mock_iterator
+
+  mock_blob = mock.MagicMock()
+  mock_blob.exists.return_value = True
+  mock_blob.download_as_text.return_value = (
+      "---\nname: my-skill\ndescription: A skill\n---\nBody"
+  )
+  mock_bucket.blob.return_value = mock_blob
+
+  skills = await _list_skills_in_gcs_dir_async("my-bucket", "skills/")
+  assert "my-skill" in skills
+  assert skills["my-skill"].name == "my-skill"

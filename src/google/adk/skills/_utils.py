@@ -16,6 +16,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import io
 import logging
 import pathlib
@@ -549,4 +550,87 @@ def _load_skill_from_gcs_dir(
       frontmatter=frontmatter,
       instructions=body,
       resources=resources,
+  )
+
+
+async def _load_skill_from_dir_async(
+    skill_dir: Union[str, pathlib.Path],
+) -> models.Skill:
+  """Load a complete skill from a directory asynchronously.
+
+  Args:
+    skill_dir: Path to the skill directory.
+
+  Returns:
+    Skill object with all components loaded.
+  """
+  return await asyncio.to_thread(_load_skill_from_dir, skill_dir)
+
+
+async def _load_skill_from_gcs_dir_async(
+    bucket_name: str,
+    skill_id: str,
+    skills_base_path: str = "",
+    project_id: str | None = None,
+    credentials: auth.Credentials | None = None,
+) -> models.Skill:
+  """Load a complete skill from a GCS directory asynchronously.
+
+  Args:
+    bucket_name: Name of the GCS bucket.
+    skill_id: The ID of the skill (directory name).
+    skills_base_path: Base directory within the bucket (e.g., 'path/to/skills').
+    project_id: Project ID to use for GCS client.
+    credentials: Credentials to use for GCS client.
+
+  Returns:
+    Skill object with all components loaded.
+  """
+  return await asyncio.to_thread(
+      _load_skill_from_gcs_dir,
+      bucket_name,
+      skill_id,
+      skills_base_path,
+      project_id,
+      credentials,
+  )
+
+
+async def _list_skills_in_dir_async(
+    skills_base_path: Union[str, pathlib.Path],
+) -> dict[str, models.Frontmatter]:
+  """List skills in a local directory asynchronously.
+
+  Args:
+    skills_base_path: Path to the base directory containing skills.
+
+  Returns:
+    Dictionary mapping skill IDs to their frontmatter.
+  """
+  return await asyncio.to_thread(_list_skills_in_dir, skills_base_path)
+
+
+async def _list_skills_in_gcs_dir_async(
+    bucket_name: str,
+    skills_base_path: str = "",
+    project_id: str | None = None,
+    credentials: auth.Credentials | None = None,
+) -> dict[str, models.Frontmatter]:
+  """List skills in a GCS directory asynchronously.
+
+  Args:
+    bucket_name: Name of the GCS bucket.
+    skills_base_path: Base directory within the bucket (e.g., 'path/to/skills').
+    project_id: Project ID to use for GCS client.
+    credentials: Credentials to use for GCS client.
+
+  Returns:
+    Dictionary mapping skill IDs to their frontmatter.
+  """
+  return await asyncio.to_thread(
+      _list_skills_in_gcs_dir,
+      bucket_name,
+      skills_base_path,
+      project_id,
+      credentials,
   )
