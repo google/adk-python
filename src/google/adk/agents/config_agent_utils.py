@@ -63,7 +63,7 @@ def from_config(config_path: str) -> BaseNode:
     cache = None
 
   if cache is None:
-    cache_dict = {}
+    cache_dict: dict[str, BaseNode] = {}
     token = _loaded_nodes_cache.set(cache_dict)
     try:
       return _from_config(abs_path)
@@ -158,11 +158,23 @@ def _from_config(abs_path: str) -> BaseNode:
     agent_config = agent_class.config_type.model_validate(
         agent_config.model_dump()
     )
-    return agent_class.from_config(agent_config, abs_path)
+    from_config_fn = getattr(agent_class, "from_config", None)
+    if not from_config_fn:
+      raise ValueError(
+          f"Agent class {agent_class.__name__} does not implement 'from_config'"
+      )
+    node: BaseNode = from_config_fn(agent_config, abs_path)
+    return node
   else:
     # For built-in agent classes, no need to re-validate.
     agent_class = _resolve_node_class(agent_config.agent_class)
-    return agent_class.from_config(agent_config, abs_path)
+    from_config_fn = getattr(agent_class, "from_config", None)
+    if not from_config_fn:
+      raise ValueError(
+          f"Agent class {agent_class.__name__} does not implement 'from_config'"
+      )
+    built_in_node: BaseNode = from_config_fn(agent_config, abs_path)
+    return built_in_node
 
 
 def _resolve_node_class(agent_class: str) -> type[BaseNode]:
@@ -210,7 +222,8 @@ def _load_config_from_path(config_path: str) -> AgentConfig:
   with open(config_path, "r", encoding="utf-8") as f:
     config_data = yaml.safe_load(f)
 
-  return AgentConfig.model_validate(config_data)
+  config: AgentConfig = AgentConfig.model_validate(config_data)
+  return config
 
 
 @experimental(FeatureName.AGENT_CONFIG)
@@ -239,21 +252,23 @@ def resolve_agent_reference(
   """
   if ref_config.config_path:
     if os.path.isabs(ref_config.config_path):
-      return from_config(ref_config.config_path)
+      node: BaseNode = from_config(ref_config.config_path)
+      return node
     else:
-      return from_config(
+      rel_node: BaseNode = from_config(
           os.path.join(
               os.path.dirname(referencing_agent_config_abs_path),
               ref_config.config_path,
           )
       )
+      return rel_node
   elif ref_config.code:
     return _resolve_agent_code_reference(ref_config.code)
   else:
     raise ValueError("AgentRefConfig must have either 'code' or 'config_path'")
 
 
-def _resolve_agent_code_reference(code: str) -> Any:
+def _resolve_agent_code_reference(code: str) -> BaseNode:
   """Resolve a code reference to an actual agent instance.
 
   Args:
