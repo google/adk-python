@@ -35,7 +35,7 @@ The inner workflow receives the predecessor's output as its START input and its 
 
 Schedule nodes at runtime using `ctx.run_node()`.
 
-See the dedicated [Dynamic Node Scheduling Reference](file:///Users/deanchen/Desktop/adk-workflow/.agents/skills/adk-workflow/references/dynamic-nodes.md) for detailed rules, examples, and best practices.
+See the dedicated [Dynamic Node Scheduling Reference](dynamic-nodes.md) for detailed rules, examples, and best practices.
 
 ## Retry Configuration
 
@@ -69,12 +69,13 @@ delay = min(delay, max_delay)
 delay = delay * (1 + random(0, jitter))
 ```
 
-### Accessing retry count
+### Accessing the attempt count
 
 ```python
 def my_node(ctx: Context, node_input: str) -> str:
-  if ctx.retry_count > 0:
-    print(f"Retry attempt {ctx.retry_count}")
+  # attempt_count is 1 on the first try, ≥2 on retries
+  if ctx.attempt_count > 1:
+    print(f"Retry attempt {ctx.attempt_count}")
   return "result"
 ```
 

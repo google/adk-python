@@ -36,7 +36,7 @@ from google.adk.workflow import node, RetryConfig, Edge, JoinNode
 | `AgentNode` | `from google.adk.workflow._agent_node import AgentNode` |
 | `_ToolNode` (private) | `from google.adk.workflow._tool_node import _ToolNode` |
 | `JoinNode` | `from google.adk.workflow import JoinNode` |
-| `ParallelWorker` | `from google.adk.workflow._parallel_worker import ParallelWorker` |
+| Parallel-worker behavior (no public class) | Set `parallel_worker=True` on `@node` or `LlmAgent`; the framework wraps with an internal `_ParallelWorker` |
 | `BaseNode`, `START` | `from google.adk.workflow import BaseNode, START` |
 | `@node` decorator | `from google.adk.workflow import node` |
 

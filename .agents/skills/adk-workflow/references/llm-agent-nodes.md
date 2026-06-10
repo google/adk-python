@@ -57,25 +57,18 @@ agent = Workflow(
 )
 ```
 
-## LLM Agent Output Types (Critical)
+## LLM Agent Output Types
 
-**LlmAgentWrapper outputs `types.Content`, NOT `str`.** When a function node follows an LLM agent node, the `node_input` is a `google.genai.types.Content` object. If you type-hint `node_input: str`, the workflow will raise a `TypeError`.
+When an `LlmAgent` runs as a workflow node, `process_llm_agent_output`
+(in `_llm_agent_wrapper.py`) sets `event.output` to:
 
-**Solutions (pick one):**
+- The **concatenated text** of the model's response (a `str`) — when
+  `output_schema` is not set.
+- The **validated dict** (`model_dump()` of the Pydantic model) — when
+  `output_schema=MyModel` is set.
 
-1. **Use `Any` and extract text** (recommended for function nodes after LLM agents):
-
-```python
-from typing import Any
-from google.genai import types
-
-def process_llm_output(node_input: Any) -> str:
-  if isinstance(node_input, types.Content):
-    return ''.join(p.text for p in (node_input.parts or []) if p.text)
-  return str(node_input) if node_input is not None else ''
-```
-
-2. **Use `output_schema`** on the LLM agent to get a parsed `dict` instead:
+A downstream function node typed `node_input: str` therefore works in the
+default case, and `node_input: dict` works when `output_schema` is set.
 
 ```python
 from pydantic import BaseModel
@@ -91,7 +84,7 @@ writer = LlmAgent(
     output_schema=CodeOutput,
 )
 
-# Downstream node receives dict: {"code": "...", "language": "python"}
+# Downstream node receives a dict: {"code": "...", "language": "python"}
 def process_code(node_input: dict) -> str:
   return node_input["code"]
 ```
@@ -100,10 +93,14 @@ def process_code(node_input: dict) -> str:
 
 | LLM Agent Config | `node_input` Type for Next Node |
 |-----------------|-------------------------------|
-| No `output_schema` | `types.Content` |
+| No `output_schema` | `str` (concatenated model text) |
 | With `output_schema` | `dict` (parsed from Pydantic model) |
 
-**State serialization warning:** When LLM agents feed into a `JoinNode`, the JoinNode stores intermediate results in session state. Without `output_schema`, this stores `types.Content` objects which are **not JSON-serializable** and will cause `TypeError` with SQLite/database session services. Always use `output_schema` on LLM agents that feed into a JoinNode.
+**Prefer `output_schema` when downstream nodes need structured access.**
+Strings are fine for pass-through text, but a typed dict is easier to consume
+and is required when the predecessor feeds a `JoinNode` whose results land in
+a persistent session service (raw text is fine; objects that aren't
+JSON-serializable break `DatabaseSessionService`).
 
 ## Auto-Wrapping Behavior
 

@@ -21,9 +21,9 @@ def my_node(ctx: Context, node_input: str) -> str:
   invocation_id = ctx.invocation_id
 
   # Get node metadata
-  node_path = ctx.node_path        # e.g., "MyWorkflow/my_node"
-  triggered_by = ctx.triggered_by  # Name of predecessor node
-  retry_count = ctx.retry_count    # 0 on first attempt
+  node_path = ctx.node_path          # e.g., "MyWorkflow/my_node"
+  run_id = ctx.run_id                # this node-run's identifier
+  attempt = ctx.attempt_count        # 1 on first attempt, ≥1 thereafter
 
   return f"Processed: {value}"
 ```
@@ -48,18 +48,15 @@ def my_node(ctx: Context, node_input: str) -> str:
 | Property | Type | Description |
 |----------|------|-------------|
 | `node_path` | `str` | Full path of current node (e.g., "WorkflowA/node1") |
-| `execution_id` | `str` | Unique ID for this execution |
-| `triggered_by` | `str` | Name of node that triggered current node |
-| `in_nodes` | `frozenset[str]` | Names of all predecessor nodes |
+| `run_id` | `str` | Identifier for this node-run (e.g., `"1"`, `"2"`) |
+| `attempt_count` | `int` | Retry attempt number (1 on first try) |
 | `resume_inputs` | `dict[str, Any]` | Inputs for resuming (keyed by interrupt_id) |
-| `retry_count` | `int` | Number of times this node has been retried |
 
 ### Workflow-Only Methods
 
 | Method | Returns | Description |
 |--------|---------|-------------|
 | `run_node(node, node_input, *, name)` | `Any` | Execute a node dynamically (requires `rerun_on_resume=True`) |
-| `get_next_child_execution_id(name)` | `str` | Generate a deterministic child execution ID |
 
 ## State Management
 
