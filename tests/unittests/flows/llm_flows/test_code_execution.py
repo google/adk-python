@@ -172,7 +172,9 @@ def test_data_file_helper_lib_defines_crop():
 def test_extract_code_skips_regex_when_no_code_delimiter():
   content = types.Content(parts=[types.Part(text='{"plot": "' + 'x' * 1000)])
 
-  with patch('google.adk.code_executors.code_execution_utils.re.compile') as re_compile:
+  with patch(
+      'google.adk.code_executors.code_execution_utils.re.compile'
+  ) as re_compile:
     result = CodeExecutionUtils.extract_code_and_truncate_content(
         content, [('```python\n', '\n```')]
     )

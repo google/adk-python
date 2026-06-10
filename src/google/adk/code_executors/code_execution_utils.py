@@ -146,7 +146,7 @@ class CodeExecutionUtils:
     response_text = '\n'.join([p.text for p in text_parts])
 
     if not any(d[0] in response_text for d in code_block_delimiters):
-      return
+      return None
 
     # Find the first code block.
     leading_delimiter_pattern = '|'.join(d[0] for d in code_block_delimiters)
