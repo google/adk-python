@@ -726,12 +726,14 @@ async def test_append_event_complete(session_service):
   )
   await session_service.append_event(session=session, event=event)
 
-  assert (
-      await session_service.get_session(
-          app_name=app_name, user_id=user_id, session_id=session.id
-      )
-      == session
+  restored_session = await session_service.get_session(
+      app_name=app_name, user_id=user_id, session_id=session.id
   )
+  assert restored_session is not None
+  assert restored_session == session
+  assert restored_session.events[0].custom_metadata == {
+      'custom_key': 'custom_value'
+  }
 
 
 @pytest.mark.asyncio

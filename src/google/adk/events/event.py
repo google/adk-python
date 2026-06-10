@@ -20,13 +20,11 @@ from typing import Optional
 
 from google.adk.platform import time as platform_time
 from google.adk.platform import uuid as platform_uuid
-from google.genai import types
 from pydantic import alias_generators
 from pydantic import BaseModel
 from pydantic import ConfigDict
 from pydantic import Field
 from pydantic import model_validator
-from pydantic import PrivateAttr
 
 from ..models.llm_response import LlmResponse
 from .event_actions import EventActions
@@ -148,6 +146,8 @@ class Event(LlmResponse):
   may change without notice.  External code should not read, write, or
   rely on its semantics.
   """
+  custom_metadata: dict[str, Any] | None = None
+  """Application metadata that should stay attached to this event."""
 
   # The following are computed fields.
   # Do not assign the ID. It will be assigned by the session.
