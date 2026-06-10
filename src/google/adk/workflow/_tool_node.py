@@ -66,9 +66,10 @@ class _ToolNode(BaseNode):
         function_call_id=str(uuid.uuid4()),
     )
 
+    import json
+
     from google.genai import types
     from ..utils.content_utils import extract_text_from_content
-    import json
 
     args = node_input
     if isinstance(args, types.Content):
