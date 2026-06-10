@@ -41,6 +41,8 @@ def _append_confirmation_request_events(
     invocation_context,
     original_function_call: types.FunctionCall,
     tool_confirmation: ToolConfirmation,
+    *,
+    branch: str | None = None,
 ) -> None:
   tool_confirmation_args = {
       "originalFunctionCall": original_function_call.model_dump(
@@ -54,6 +56,7 @@ def _append_confirmation_request_events(
   invocation_context.session.events.append(
       Event(
           author="agent",
+          branch=branch,
           content=types.Content(
               parts=[types.Part(function_call=original_function_call)]
           ),
@@ -62,6 +65,7 @@ def _append_confirmation_request_events(
   invocation_context.session.events.append(
       Event(
           author="agent",
+          branch=branch,
           content=types.Content(
               parts=[
                   types.Part(
@@ -79,6 +83,7 @@ def _append_confirmation_request_events(
   invocation_context.session.events.append(
       Event(
           author="agent",
+          branch=branch,
           content=types.Content(
               parts=[
                   types.Part(
@@ -413,32 +418,11 @@ async def test_request_confirmation_processor_finds_user_confirmation_in_default
   )
 
   tool_confirmation = ToolConfirmation(confirmed=False, hint="test hint")
-  tool_confirmation_args = {
-      "originalFunctionCall": original_function_call.model_dump(
-          exclude_none=True, by_alias=True
-      ),
-      "toolConfirmation": tool_confirmation.model_dump(
-          by_alias=True, exclude_none=True
-      ),
-  }
-
-  # Event with the request for confirmation (in child branch)
-  invocation_context.session.events.append(
-      Event(
-          author="agent",
-          branch="child_branch",
-          content=types.Content(
-              parts=[
-                  types.Part(
-                      function_call=types.FunctionCall(
-                          name=functions.REQUEST_CONFIRMATION_FUNCTION_CALL_NAME,
-                          args=tool_confirmation_args,
-                          id=MOCK_CONFIRMATION_FUNCTION_CALL_ID,
-                      )
-                  )
-              ]
-          ),
-      )
+  _append_confirmation_request_events(
+      invocation_context,
+      original_function_call,
+      tool_confirmation,
+      branch="child_branch",
   )
 
   # Event with the user's confirmation (in default branch, branch=None)
