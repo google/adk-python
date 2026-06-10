@@ -54,11 +54,11 @@ async def _create_invocation_context(
 @pytest.mark.asyncio
 async def test_build_system_instruction():
   request = LlmRequest(
-      model="gemini-1.5-flash",
+      model="gemini-2.5-flash",
       config=types.GenerateContentConfig(system_instruction=""),
   )
   agent = Agent(
-      model="gemini-1.5-flash",
+      model="gemini-2.5-flash",
       name="agent",
       instruction=("""Use the echo_info tool to echo { customerId }, \
 {{customer_int  }, {  non-identifier-float}}, \
@@ -97,11 +97,11 @@ async def test_function_system_instruction():
     )
 
   request = LlmRequest(
-      model="gemini-1.5-flash",
+      model="gemini-2.5-flash",
       config=types.GenerateContentConfig(system_instruction=""),
   )
   agent = Agent(
-      model="gemini-1.5-flash",
+      model="gemini-2.5-flash",
       name="agent",
       instruction=build_function_instruction,
   )
@@ -142,11 +142,11 @@ async def test_async_function_system_instruction():
     )
 
   request = LlmRequest(
-      model="gemini-1.5-flash",
+      model="gemini-2.5-flash",
       config=types.GenerateContentConfig(system_instruction=""),
   )
   agent = Agent(
-      model="gemini-1.5-flash",
+      model="gemini-2.5-flash",
       name="agent",
       instruction=build_function_instruction,
   )
@@ -177,18 +177,18 @@ async def test_async_function_system_instruction():
 @pytest.mark.asyncio
 async def test_global_system_instruction():
   sub_agent = Agent(
-      model="gemini-1.5-flash",
+      model="gemini-2.5-flash",
       name="sub_agent",
       instruction="This is the sub agent instruction.",
   )
   root_agent = Agent(
-      model="gemini-1.5-flash",
+      model="gemini-2.5-flash",
       name="root_agent",
       global_instruction="This is the global instruction.",
       sub_agents=[sub_agent],
   )
   request = LlmRequest(
-      model="gemini-1.5-flash",
+      model="gemini-2.5-flash",
       config=types.GenerateContentConfig(system_instruction=""),
   )
   invocation_context = await testing_utils.create_invocation_context(
@@ -221,18 +221,18 @@ async def test_function_global_system_instruction():
     return "This is the global instruction."
 
   sub_agent = Agent(
-      model="gemini-1.5-flash",
+      model="gemini-2.5-flash",
       name="sub_agent",
       instruction=sub_agent_si,
   )
   root_agent = Agent(
-      model="gemini-1.5-flash",
+      model="gemini-2.5-flash",
       name="root_agent",
       global_instruction=root_agent_gi,
       sub_agents=[sub_agent],
   )
   request = LlmRequest(
-      model="gemini-1.5-flash",
+      model="gemini-2.5-flash",
       config=types.GenerateContentConfig(system_instruction=""),
   )
   invocation_context = await testing_utils.create_invocation_context(
@@ -265,18 +265,18 @@ async def test_async_function_global_system_instruction():
     return "This is the global instruction."
 
   sub_agent = Agent(
-      model="gemini-1.5-flash",
+      model="gemini-2.5-flash",
       name="sub_agent",
       instruction=sub_agent_si,
   )
   root_agent = Agent(
-      model="gemini-1.5-flash",
+      model="gemini-2.5-flash",
       name="root_agent",
       global_instruction=root_agent_gi,
       sub_agents=[sub_agent],
   )
   request = LlmRequest(
-      model="gemini-1.5-flash",
+      model="gemini-2.5-flash",
       config=types.GenerateContentConfig(system_instruction=""),
   )
   invocation_context = await testing_utils.create_invocation_context(
@@ -303,11 +303,11 @@ async def test_async_function_global_system_instruction():
 @pytest.mark.asyncio
 async def test_build_system_instruction_with_namespace():
   request = LlmRequest(
-      model="gemini-1.5-flash",
+      model="gemini-2.5-flash",
       config=types.GenerateContentConfig(system_instruction=""),
   )
   agent = Agent(
-      model="gemini-1.5-flash",
+      model="gemini-2.5-flash",
       name="agent",
       instruction=(
           """Use the echo_info tool to echo { customerId }, {app:key}, {user:key}, {a:key}."""
@@ -348,13 +348,13 @@ async def test_instruction_processor_respects_bypass_state_injection():
     return f'instruction with state: {ctx.state["test_var"]}'
 
   agent = Agent(
-      model="gemini-1.5-flash",
+      model="gemini-2.5-flash",
       name="test_agent",
       instruction=_instruction_provider,
   )
 
   request = LlmRequest(
-      model="gemini-1.5-flash",
+      model="gemini-2.5-flash",
       config=types.GenerateContentConfig(system_instruction=""),
   )
 
@@ -393,13 +393,13 @@ async def test_string_instruction_respects_bypass_state_injection():
   """Test that string instructions get state injection (bypass_state_injection=False)."""
 
   agent = Agent(
-      model="gemini-1.5-flash",
+      model="gemini-2.5-flash",
       name="test_agent",
       instruction="Base instruction with {test_var}",  # String instruction
   )
 
   request = LlmRequest(
-      model="gemini-1.5-flash",
+      model="gemini-2.5-flash",
       config=types.GenerateContentConfig(system_instruction=""),
   )
 
@@ -440,19 +440,19 @@ async def test_global_instruction_processor_respects_bypass_state_injection():
     return f'global instruction with state: {ctx.state["test_var"]}'
 
   sub_agent = Agent(
-      model="gemini-1.5-flash",
+      model="gemini-2.5-flash",
       name="sub_agent",
       instruction="Sub agent instruction",
   )
   root_agent = Agent(
-      model="gemini-1.5-flash",
+      model="gemini-2.5-flash",
       name="root_agent",
       global_instruction=_global_instruction_provider,
       sub_agents=[sub_agent],
   )
 
   request = LlmRequest(
-      model="gemini-1.5-flash",
+      model="gemini-2.5-flash",
       config=types.GenerateContentConfig(system_instruction=""),
   )
 
@@ -492,19 +492,19 @@ async def test_string_global_instruction_respects_bypass_state_injection():
   """Test that string global instructions get state injection (bypass_state_injection=False)."""
 
   sub_agent = Agent(
-      model="gemini-1.5-flash",
+      model="gemini-2.5-flash",
       name="sub_agent",
       instruction="Sub agent instruction",
   )
   root_agent = Agent(
-      model="gemini-1.5-flash",
+      model="gemini-2.5-flash",
       name="root_agent",
       global_instruction="Global instruction with {test_var}",  # String instruction
       sub_agents=[sub_agent],
   )
 
   request = LlmRequest(
-      model="gemini-1.5-flash",
+      model="gemini-2.5-flash",
       config=types.GenerateContentConfig(system_instruction=""),
   )
 

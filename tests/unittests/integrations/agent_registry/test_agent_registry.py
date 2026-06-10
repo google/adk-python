@@ -22,8 +22,8 @@ from fastapi.openapi.models import OAuth2
 from google.adk.agents.remote_a2a_agent import RemoteA2aAgent
 from google.adk.auth.auth_credential import AuthCredential
 from google.adk.auth.auth_credential import OAuth2Auth
-from google.adk.integrations.agent_registry import _ProtocolType
 from google.adk.integrations.agent_registry import AgentRegistry
+from google.adk.integrations.agent_registry.agent_registry import _ProtocolType
 from google.adk.telemetry.tracing import GCP_MCP_SERVER_DESTINATION_ID
 from google.adk.tools.mcp_tool.mcp_toolset import McpToolset
 import httpx
@@ -321,16 +321,17 @@ class TestAgentRegistry:
     assert server == {"name": "test-endpoint"}
 
   @pytest.mark.parametrize(
-      "url, expected_auth",
+      "url, expected_auth, use_custom_provider",
       [
-          ("https://mcp.com", False),
-          ("https://mcp.googleapis.com/v1", True),
-          ("https://example.com/googleapis/v1", False),
+          ("https://mcp.com", False, False),
+          ("https://mcp.googleapis.com/v1", True, False),
+          ("https://example.com/googleapis/v1", False, False),
+          ("https://mcp.googleapis.com/v1", True, True),
       ],
   )
   @patch("httpx.Client")
   def test_get_mcp_toolset_auth_headers(
-      self, mock_httpx, registry, url, expected_auth
+      self, mock_httpx, registry, url, expected_auth, use_custom_provider
   ):
     mock_response = MagicMock()
     mock_response.json.return_value = {
@@ -345,19 +346,34 @@ class TestAgentRegistry:
         mock_response
     )
 
+    if use_custom_provider:
+      custom_header_provider = lambda context: {
+          "Authorization": "Bearer custom_token"
+      }
+      with patch(
+          "google.auth.default", return_value=(MagicMock(), "project-id")
+      ):
+        registry = AgentRegistry(
+            project_id="test-project",
+            location="global",
+            header_provider=custom_header_provider,
+        )
+
     registry._credentials.token = "token"
     registry._credentials.refresh = MagicMock()
 
     toolset = registry.get_mcp_toolset("test-mcp")
     assert isinstance(toolset, McpToolset)
     assert toolset.tool_name_prefix == "TestPrefix"
-    if expected_auth:
-      assert toolset._connection_params.headers is not None
-      assert (
-          toolset._connection_params.headers["Authorization"] == "Bearer token"
-      )
+    assert toolset._connection_params.headers is None
+    headers = toolset._header_provider(MagicMock())
+
+    if use_custom_provider:
+      assert headers.get("Authorization") == "Bearer custom_token"
+    elif expected_auth:
+      assert headers.get("Authorization") == "Bearer token"
     else:
-      assert toolset._connection_params.headers is None
+      assert "Authorization" not in headers
 
   @patch("httpx.Client")
   def test_get_mcp_toolset_with_auth(self, mock_httpx, registry):
@@ -391,6 +407,40 @@ class TestAgentRegistry:
     assert auth_config is not None
     assert auth_config.auth_scheme == auth_scheme
     assert auth_config.raw_auth_credential == auth_credential
+
+  @patch("httpx.Client")
+  def test_get_mcp_toolset_with_auth_blocks_gcp_headers(
+      self, mock_httpx, registry
+  ):
+    mock_response = MagicMock()
+    mock_response.json.return_value = {
+        "displayName": "TestPrefix",
+        "interfaces": [{
+            "url": "https://mcp.googleapis.com/v1",
+            "protocolBinding": "JSONRPC",
+        }],
+    }
+    mock_response.raise_for_status = MagicMock()
+    mock_httpx.return_value.__enter__.return_value.get.return_value = (
+        mock_response
+    )
+
+    registry._credentials.token = "token"
+    registry._credentials.refresh = MagicMock()
+
+    auth_scheme = OAuth2(flows={})
+    auth_credential = AuthCredential(
+        auth_type="oauth2",
+        oauth2=OAuth2Auth(client_id="test_id", client_secret="test_secret"),
+    )
+
+    toolset = registry.get_mcp_toolset(
+        "test-mcp", auth_scheme=auth_scheme, auth_credential=auth_credential
+    )
+    assert isinstance(toolset, McpToolset)
+
+    headers = toolset._header_provider(MagicMock())
+    assert "Authorization" not in headers
 
   @patch("httpx.Client")
   def test_get_remote_a2a_agent(self, mock_httpx, registry):
@@ -557,6 +607,15 @@ class TestAgentRegistry:
     assert headers["Authorization"] == "Bearer fake-token"
     assert headers["x-goog-user-project"] == "quota-project"
 
+  def test_get_auth_headers_fallback_to_project_id(self, registry):
+    registry._credentials.token = "fake-token"
+    registry._credentials.refresh = MagicMock()
+    registry._credentials.quota_project_id = None
+
+    headers = registry._get_auth_headers()
+    assert headers["Authorization"] == "Bearer fake-token"
+    assert headers["x-goog-user-project"] == "test-project"
+
   @patch("httpx.Client")
   def test_make_request_raises_http_status_error(self, mock_httpx, registry):
     mock_response = MagicMock()
@@ -637,3 +696,48 @@ class TestAgentRegistry:
     mock_get_endpoint.return_value = {}
     with pytest.raises(ValueError, match="Connection URI not found"):
       registry.get_model_name("test-endpoint")
+
+  @patch.object(AgentRegistry, "_make_request")
+  def test_get_mcp_toolset_with_binding(self, mock_make_request, registry):
+    def side_effect(*args, **kwargs):
+      if args[0] == "test-mcp":
+        return {
+            "displayName": "TestPrefix",
+            "mcpServerId": "server-456",
+            "interfaces": [{
+                "url": "https://mcp.com",
+                "protocolBinding": "JSONRPC",
+            }],
+        }
+      if args[0] == "bindings":
+        return {
+            "bindings": [{
+                "target": {
+                    "identifier": (
+                        "urn:mcp:projects-123:projects:123:locations:l:mcpServers:server-456"
+                    )
+                },
+                "authProviderBinding": {
+                    "authProvider": (
+                        "projects/123/locations/l/authProviders/ap-789"
+                    )
+                },
+            }]
+        }
+      return {}
+
+    mock_make_request.side_effect = side_effect
+
+    registry._credentials.token = "token"
+    registry._credentials.refresh = MagicMock()
+
+    toolset = registry.get_mcp_toolset(
+        "test-mcp", continue_uri="https://override.com/continue"
+    )
+    assert isinstance(toolset, McpToolset)
+    assert toolset._auth_scheme is not None
+    assert (
+        toolset._auth_scheme.name
+        == "projects/123/locations/l/authProviders/ap-789"
+    )
+    assert toolset._auth_scheme.continue_uri == "https://override.com/continue"

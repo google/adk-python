@@ -58,7 +58,7 @@ async def _create_readonly_context(
     ('default_model', 'expected_model_name', 'expected_model_type'),
     [
         (LlmAgent.DEFAULT_MODEL, LlmAgent.DEFAULT_MODEL, Gemini),
-        ('gemini-2.0-flash', 'gemini-2.0-flash', Gemini),
+        ('gemini-2.5-flash', 'gemini-2.5-flash', Gemini),
     ],
 )
 def test_canonical_model_default_fallback(
@@ -94,6 +94,35 @@ def test_canonical_model_inherit():
   )
 
   assert sub_agent.canonical_model == parent_agent.canonical_model
+
+
+def test_canonical_live_model_default_fallback():
+  original_default = LlmAgent._default_live_model
+  LlmAgent.set_default_live_model('gemini-2.0-flash')
+  try:
+    agent = LlmAgent(name='test_agent')
+    assert agent.canonical_live_model.model == 'gemini-2.0-flash'
+  finally:
+    LlmAgent.set_default_live_model(original_default)
+
+
+def test_canonical_live_model_str():
+  agent = LlmAgent(name='test_agent', model='gemini-pro')
+  assert agent.canonical_live_model.model == 'gemini-pro'
+
+
+def test_canonical_live_model_llm():
+  llm = LLMRegistry.new_llm('gemini-pro')
+  agent = LlmAgent(name='test_agent', model=llm)
+  assert agent.canonical_live_model == llm
+
+
+def test_canonical_live_model_inherit():
+  sub_agent = LlmAgent(name='sub_agent')
+  parent_agent = LlmAgent(
+      name='parent_agent', model='gemini-pro', sub_agents=[sub_agent]
+  )
+  assert sub_agent.canonical_live_model == parent_agent.canonical_live_model
 
 
 async def test_canonical_instruction_str():
@@ -511,8 +540,8 @@ class TestCanonicalTools:
 @pytest.mark.parametrize(
     'model_name',
     [
-        'gemini-1.5-flash',
-        'gemini-2.0-flash-exp',
+        'gemini-2.5-flash',
+        'gemini-2.5-pro',
     ],
 )
 def test_agent_with_gemini_string_model(model_name):

@@ -1,0 +1,146 @@
+{
+  "appName": "message",
+  "events": [
+    {
+      "author": "user",
+      "content": {
+        "parts": [
+          {
+            "text": "go"
+          }
+        ],
+        "role": "user"
+      },
+      "id": "e-1",
+      "invocationId": "i-1",
+      "nodeInfo": {
+        "path": ""
+      }
+    },
+    {
+      "author": "message",
+      "content": {
+        "parts": [
+          {
+            "text": "#1 This is a simple string message."
+          }
+        ],
+        "role": "user"
+      },
+      "id": "e-2",
+      "invocationId": "i-1",
+      "nodeInfo": {
+        "path": "message@1/send_string@1"
+      }
+    },
+    {
+      "author": "message",
+      "content": {
+        "parts": [
+          {
+            "text": "#2 Here is a multi-modal message with an inline image (red circle):"
+          },
+          {
+            "inlineData": {
+              "data": "iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAYAAAAf8_9hAAAAXElEQVR4nO2TSQ7AIAwD7fz_z-ZQtapwmrJc8QklmjBIgZJgIZMiAIl9KYbhjx4fgwosbNxgMrF0-4uhgHnYDM6AzQHJeg5HYtyHFfgy2AztN_5tZWfrBtVzkl4DzfQkEPd-cEkAAAAASUVORK5CYII=",
+              "mimeType": "image/png"
+            }
+          }
+        ],
+        "role": "user"
+      },
+      "id": "e-3",
+      "invocationId": "i-1",
+      "nodeInfo": {
+        "path": "message@1/send_multimodal@1"
+      }
+    },
+    {
+      "author": "message",
+      "content": {
+        "parts": [
+          {
+            "text": "#3 Multiple messages"
+          }
+        ],
+        "role": "user"
+      },
+      "id": "e-4",
+      "invocationId": "i-1",
+      "nodeInfo": {
+        "path": "message@1/multiple_messages@1"
+      }
+    },
+    {
+      "author": "message",
+      "content": {
+        "parts": [
+          {
+            "text": "Processing step 1..."
+          }
+        ],
+        "role": "user"
+      },
+      "id": "e-5",
+      "invocationId": "i-1",
+      "nodeInfo": {
+        "path": "message@1/multiple_messages@1"
+      }
+    },
+    {
+      "author": "message",
+      "content": {
+        "parts": [
+          {
+            "text": "Processing step 2..."
+          }
+        ],
+        "role": "user"
+      },
+      "id": "e-6",
+      "invocationId": "i-1",
+      "nodeInfo": {
+        "path": "message@1/multiple_messages@1"
+      }
+    },
+    {
+      "author": "message",
+      "content": {
+        "parts": [
+          {
+            "text": "Done processing."
+          }
+        ],
+        "role": "user"
+      },
+      "id": "e-7",
+      "invocationId": "i-1",
+      "nodeInfo": {
+        "path": "message@1/multiple_messages@1"
+      }
+    },
+    {
+      "author": "message",
+      "content": {
+        "parts": [
+          {
+            "text": "#4 Starting to stream..."
+          }
+        ],
+        "role": "user"
+      },
+      "id": "e-8",
+      "invocationId": "i-1",
+      "nodeInfo": {
+        "path": "message@1/stream_sentence@1"
+      }
+    }
+  ],
+  "id": "9cfc0ef6-11d6-4260-84cf-be22731ab69e",
+  "state": {
+    "__session_metadata__": {
+      "displayName": "go"
+    }
+  },
+  "userId": "user"
+}

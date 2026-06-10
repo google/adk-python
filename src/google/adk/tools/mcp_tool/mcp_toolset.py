@@ -17,6 +17,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import logging
+import os
 import sys
 from typing import Any
 from typing import Awaitable
@@ -82,7 +83,6 @@ class McpToolset(BaseToolset):
 
     # Use in an agent
     agent = LlmAgent(
-        model='gemini-2.0-flash',
         name='enterprise_assistant',
         instruction='Help user accessing their file systems',
         tools=[toolset],
@@ -117,6 +117,7 @@ class McpToolset(BaseToolset):
       use_mcp_resources: Optional[bool] = False,
       sampling_callback: Optional[SamplingFnT] = None,
       sampling_capabilities: Optional[SamplingCapability] = None,
+      credential_key: str | None = None,
   ):
     """Initializes the McpToolset.
 
@@ -156,7 +157,18 @@ class McpToolset(BaseToolset):
       sampling_callback: Optional callback to handle sampling requests from the
         MCP server.
       sampling_capabilities: Optional capabilities for sampling.
+      credential_key: A user specified key used to load and save this credential
+        in a credential service. Used with auth_scheme.
     """
+
+    # --- BEGIN BOUND TOKEN PATCH ---
+    # Set GOOGLE_API_PREVENT_AGENT_TOKEN_SHARING_FOR_GCP_SERVICES to false
+    # to disable bound token sharing. Tracking on
+    # https://github.com/google/adk-python/issues/5361
+    os.environ["GOOGLE_API_PREVENT_AGENT_TOKEN_SHARING_FOR_GCP_SERVICES"] = (
+        "false"
+    )
+    # --- END BOUND TOKEN  PATCH ---
 
     super().__init__(tool_filter=tool_filter, tool_name_prefix=tool_name_prefix)
 
@@ -187,22 +199,38 @@ class McpToolset(BaseToolset):
         AuthConfig(
             auth_scheme=auth_scheme,
             raw_auth_credential=auth_credential,
+            credential_key=credential_key,
         )
         if auth_scheme
         else None
     )
     self._use_mcp_resources = use_mcp_resources
 
-  def _get_auth_headers(self) -> Optional[Dict[str, str]]:
+  def _get_auth_headers(
+      self, readonly_context: Optional[ReadonlyContext] = None
+  ) -> Optional[Dict[str, str]]:
     """Build authentication headers from exchanged credential.
+
+    Args:
+      readonly_context: Readonly context to get credentials from.
 
     Returns:
         Dictionary of auth headers, or None if no auth configured.
     """
-    if not self._auth_config or not self._auth_config.exchanged_auth_credential:
+    if not self._auth_config:
       return None
 
-    credential = self._auth_config.exchanged_auth_credential
+    credential = None
+    if readonly_context:
+      credential = readonly_context.get_credential(
+          self._auth_config.credential_key
+      )
+
+    if not credential:
+      credential = self._auth_config.exchanged_auth_credential
+
+    if not credential:
+      return None
     headers: Optional[Dict[str, str]] = None
 
     if credential.oauth2:
@@ -279,7 +307,7 @@ class McpToolset(BaseToolset):
         headers.update(provider_headers)
 
     # Add auth headers from exchanged credential if available
-    auth_headers = self._get_auth_headers()
+    auth_headers = self._get_auth_headers(readonly_context)
     if auth_headers:
       headers.update(auth_headers)
 
@@ -407,7 +435,7 @@ class McpToolset(BaseToolset):
       await self._mcp_session_manager.close()
     except Exception as e:
       # Log the error but don't re-raise to avoid blocking shutdown
-      print(f"Warning: Error during McpToolset cleanup: {e}", file=self._errlog)
+      logger.warning("Error during McpToolset cleanup: %s", e)
 
   @override
   def get_auth_config(self) -> Optional[AuthConfig]:
@@ -444,6 +472,7 @@ class McpToolset(BaseToolset):
         tool_name_prefix=mcp_toolset_config.tool_name_prefix,
         auth_scheme=mcp_toolset_config.auth_scheme,
         auth_credential=mcp_toolset_config.auth_credential,
+        credential_key=mcp_toolset_config.credential_key,
         use_mcp_resources=mcp_toolset_config.use_mcp_resources,
     )
 
@@ -494,6 +523,8 @@ class McpToolsetConfig(BaseToolConfig):
   auth_scheme: Optional[AuthScheme] = None
 
   auth_credential: Optional[AuthCredential] = None
+
+  credential_key: str | None = None
 
   use_mcp_resources: bool = False
 

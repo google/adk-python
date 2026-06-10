@@ -58,6 +58,6 @@ jobs:
           REPO: ${{ github.event.repository.name }}
           CONCURRENCY_LIMIT: 3
           INITIAL_FULL_SCAN: ${{ github.event.inputs.full_scan == 'true' }}
-          LLM_MODEL_NAME: "gemini-2.5-flash"
-          PYTHONPATH: contributing/samples
+          LLM_MODEL_NAME: "gemini-3.5-flash"
+          PYTHONPATH: contributing/samples/adk_team
         run: python -m adk_issue_monitoring_agent.main

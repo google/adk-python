@@ -28,14 +28,10 @@ from typing import Mapping
 from typing import TypedDict
 from urllib.parse import urlparse
 
-from a2a.types import AgentCapabilities
-from a2a.types import AgentCard
-from a2a.types import AgentSkill
-from a2a.types import TransportProtocol as A2ATransport
 from google.adk.agents.readonly_context import ReadonlyContext
-from google.adk.agents.remote_a2a_agent import RemoteA2aAgent
 from google.adk.auth.auth_credential import AuthCredential
 from google.adk.auth.auth_schemes import AuthScheme
+from google.adk.integrations.agent_identity.gcp_auth_provider_scheme import GcpAuthProviderScheme
 from google.adk.telemetry.tracing import GCP_MCP_SERVER_DESTINATION_ID
 from google.adk.tools.base_tool import BaseTool
 from google.adk.tools.mcp_tool.mcp_session_manager import SseConnectionParams
@@ -47,6 +43,20 @@ import google.auth.transport.requests
 import httpx
 from mcp import StdioServerParameters
 from typing_extensions import override
+
+# pylint: disable=g-import-not-at-top
+try:
+  from a2a.types import AgentCapabilities
+  from a2a.types import AgentCard
+  from a2a.types import AgentSkill
+  from a2a.types import TransportProtocol as A2ATransport
+  from google.adk.agents.remote_a2a_agent import RemoteA2aAgent
+except ImportError as e:
+  raise ImportError(
+      "AgentRegistry requires the 'a2a-sdk' package. "
+      "Please install it using 'pip install google-adk[a2a]'."
+  ) from e
+# pylint: enable=g-import-not-at-top
 
 logger = logging.getLogger("google_adk." + __name__)
 
@@ -198,7 +208,10 @@ class AgentRegistry:
           "Authorization": f"Bearer {self._credentials.token}",
           "Content-Type": "application/json",
       }
-      quota_project_id = getattr(self._credentials, "quota_project_id", None)
+      quota_project_id = (
+          getattr(self._credentials, "quota_project_id", None)
+          or self.project_id
+      )
       if quota_project_id:
         headers["x-goog-user-project"] = quota_project_id
       return headers
@@ -292,8 +305,24 @@ class AgentRegistry:
       mcp_server_name: str,
       auth_scheme: AuthScheme | None = None,
       auth_credential: AuthCredential | None = None,
+      *,
+      continue_uri: str | None = None,
   ) -> McpToolset:
-    """Constructs an McpToolset instance from a registered MCP Server."""
+    """Constructs an McpToolset from a registered MCP Server.
+
+    If `auth_scheme` is omitted, it is automatically resolved from the server's
+    IAM bindings via `GcpAuthProviderScheme`.
+
+    Args:
+      mcp_server_name: Resource name of the MCP Server.
+      auth_scheme: Optional auth scheme. Resolved via bindings if omitted.
+      auth_credential: Optional auth credential.
+      continue_uri: Optional continue URI to override what is in the auth
+        provider.
+
+    Returns:
+      An McpToolset for the MCP server.
+    """
     server_details = self.get_mcp_server(mcp_server_name)
     name = self._clean_name(server_details.get("displayName", mcp_server_name))
     mcp_server_id = server_details.get("mcpServerId")
@@ -312,16 +341,44 @@ class AgentRegistry:
           f"MCP Server endpoint URI not found for: {mcp_server_name}"
       )
 
-    headers = self._get_auth_headers() if _is_google_api(endpoint_uri) else None
+    if mcp_server_id and not auth_scheme:
+      try:
+        bindings_data = self._make_request("bindings")
+        for b in bindings_data.get("bindings", []):
+          target_id = b.get("target", {}).get("identifier", "")
+          if target_id.endswith(mcp_server_id):
+            auth_provider = b.get("authProviderBinding", {}).get("authProvider")
+            if auth_provider:
+              auth_scheme = GcpAuthProviderScheme(
+                  name=auth_provider, continue_uri=continue_uri
+              )
+              break
+      except Exception as e:
+        logger.warning(
+            f"Failed to fetch bindings for MCP Server {mcp_server_name}: {e}"
+        )
+
     connection_params = StreamableHTTPConnectionParams(
         url=endpoint_uri,
-        headers=headers,
     )
+
+    def combined_header_provider(context: ReadonlyContext) -> Dict[str, str]:
+      headers = {}
+      if (
+          not auth_scheme
+          and not auth_credential
+          and _is_google_api(endpoint_uri)
+      ):
+        headers.update(self._get_auth_headers())
+      if self._header_provider:
+        headers.update(self._header_provider(context))
+      return headers
+
     return AgentRegistrySingleMcpToolset(
         destination_resource_id=mcp_server_id,
         connection_params=connection_params,
         tool_name_prefix=name,
-        header_provider=self._header_provider,
+        header_provider=combined_header_provider,
         auth_scheme=auth_scheme,
         auth_credential=auth_credential,
     )

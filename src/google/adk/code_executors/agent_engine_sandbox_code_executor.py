@@ -131,6 +131,7 @@ class AgentEngineSandboxCodeExecutor(BaseCodeExecutor):
     sandbox_name = self.sandbox_resource_name
     if self.sandbox_resource_name is None:
       from google.api_core import exceptions
+      from google.genai import errors as genai_errors
       from vertexai import types
 
       # use sandbox name stored in session if available.
@@ -148,6 +149,11 @@ class AgentEngineSandboxCodeExecutor(BaseCodeExecutor):
             create_new_sandbox = True
         except exceptions.NotFound:
           create_new_sandbox = True
+        except genai_errors.ClientError as exc:
+          if exc.code == 404:
+            create_new_sandbox = True
+          else:
+            raise
 
       if create_new_sandbox:
         # Create a new sandbox and assign it to sandbox_name.

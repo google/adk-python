@@ -44,7 +44,7 @@ _LOCATION = os.environ.get("GOOGLE_CLOUD_LOCATION", "global")
 _COLLECTION = "default_collection"
 _DATA_STORE_ID = f"adk-grounding-test-{uuid.uuid4().hex[:8]}"
 _DATA_STORE_DISPLAY_NAME = "ADK Grounding Integration Test"
-_MODEL = "gemini-2.0-flash"
+_MODEL = "gemini-2.5-flash"
 
 _TEST_DOCUMENTS = (
     {

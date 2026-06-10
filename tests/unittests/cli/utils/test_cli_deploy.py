@@ -30,9 +30,11 @@ from typing import Tuple
 from unittest import mock
 
 import click
+from click.testing import CliRunner
 import pytest
 
 import src.google.adk.cli.cli_deploy as cli_deploy
+import src.google.adk.cli.cli_tools_click as cli_tools_click
 
 
 # Helpers
@@ -148,7 +150,10 @@ def test_resolve_project_from_gcloud_fails(
             "gs://a",
             "rag://m",
             None,
-            "--session_db_url=sqlite://s --artifact_storage_uri=gs://a",
+            (
+                "--session_service_uri=sqlite://s --artifact_service_uri=gs://a"
+                " --memory_service_uri=rag://m"
+            ),
         ),
         (
             "0.5.0",
@@ -156,7 +161,10 @@ def test_resolve_project_from_gcloud_fails(
             "gs://a",
             "rag://m",
             None,
-            "--session_db_url=sqlite://s",
+            (
+                "--session_service_uri=sqlite://s --artifact_service_uri=gs://a"
+                " --memory_service_uri=rag://m"
+            ),
         ),
         (
             "1.3.0",
@@ -180,7 +188,7 @@ def test_resolve_project_from_gcloud_fails(
             "gs://a",
             None,
             None,
-            "--artifact_storage_uri=gs://a",
+            "--artifact_service_uri=gs://a",
         ),
         (
             "1.21.0",
@@ -227,17 +235,18 @@ def test_get_service_option_by_adk_version(
   assert actual.rstrip() == expected.rstrip()
 
 
-def test_agent_engine_app_template_compiles_with_windows_paths() -> None:
-  """It should not emit invalid Python when paths contain `\\u` segments."""
-  rendered = cli_deploy._AGENT_ENGINE_APP_TEMPLATE.format(
-      is_config_agent=True,
-      agent_folder=r".\user_agent_tmp20260101_000000",
-      adk_app_object="root_agent",
-      adk_app_type="agent",
-      trace_to_cloud_option=False,
-      express_mode=False,
-  )
-  compile(rendered, "<agent_engine_app.py>", "exec")
+def test_print_agent_engine_url() -> None:
+  """It should print the correct URL for a fully-qualified resource name."""
+  with mock.patch("click.secho") as mocked_secho:
+    cli_deploy._print_agent_engine_url(
+        "projects/my-project/locations/us-central1/reasoningEngines/123456"
+    )
+    mocked_secho.assert_called_once()
+    call_args = mocked_secho.call_args[0][0]
+    assert "my-project" in call_args
+    assert "us-central1" in call_args
+    assert "123456" in call_args
+    assert "playground" in call_args
 
 
 @pytest.mark.parametrize("include_requirements", [True, False])
@@ -255,8 +264,8 @@ def test_to_agent_engine_happy_path(
 
   class _FakeAgentEngines:
 
-    def create(self, *, config: Dict[str, Any]) -> Any:
-      create_recorder(config=config)
+    def create(self, **kwargs: Any) -> Any:
+      create_recorder(**kwargs)
       return types.SimpleNamespace(
           api_resource=types.SimpleNamespace(
               name="projects/p/locations/l/reasoningEngines/e"
@@ -281,27 +290,15 @@ def test_to_agent_engine_happy_path(
   cli_deploy.to_agent_engine(
       agent_folder=str(src_dir),
       temp_folder="tmp",
-      adk_app="my_adk_app",
       trace_to_cloud=True,
       project="my-gcp-project",
       region="us-central1",
       display_name="My Test Agent",
       description="A test agent.",
+      adk_version="1.2.0",
   )
-  agent_file = tmp_dir / "agent.py"
+  agent_file = tmp_dir / "Dockerfile"
   assert agent_file.is_file()
-  init_file = tmp_dir / "__init__.py"
-  assert init_file.is_file()
-  adk_app_file = tmp_dir / "my_adk_app.py"
-  assert adk_app_file.is_file()
-  content = adk_app_file.read_text()
-  assert "from .agent import root_agent" in content
-  assert "adk_app = AdkApp(" in content
-  assert "agent=root_agent" in content
-  assert "enable_tracing=True" in content
-  reqs_path = tmp_dir / "requirements.txt"
-  assert reqs_path.is_file()
-  assert "google-cloud-aiplatform[adk,agent_engines]" in reqs_path.read_text()
   assert len(create_recorder.calls) == 1
   assert str(rmtree_recorder.get_last_call_args()[0]) == str(tmp_dir)
 
@@ -321,121 +318,17 @@ def test_to_agent_engine_raises_when_explicit_config_file_missing(
     cli_deploy.to_agent_engine(
         agent_folder=str(src_dir),
         temp_folder="tmp",
-        adk_app="my_adk_app",
         trace_to_cloud=True,
         project="my-gcp-project",
         region="us-central1",
         display_name="My Test Agent",
         description="A test agent.",
         agent_engine_config_file=str(missing_config),
+        adk_version="1.2.0",
     )
 
-  assert "Agent engine config file not found" in str(exc_info.value)
+  assert "Agent Platform config file not found" in str(exc_info.value)
   assert expected_abs in str(exc_info.value)
-
-
-def test_to_agent_engine_skips_agent_import_validation_by_default(
-    monkeypatch: pytest.MonkeyPatch,
-    agent_dir: Callable[[bool, bool], Path],
-) -> None:
-  """It should skip agent.py import validation by default."""
-  validate_recorder = _Recorder()
-
-  def _validate_agent_import(*args: Any, **kwargs: Any) -> None:
-    validate_recorder(*args, **kwargs)
-    raise AssertionError("_validate_agent_import should not be called")
-
-  monkeypatch.setattr(
-      cli_deploy, "_validate_agent_import", _validate_agent_import
-  )
-
-  fake_vertexai = types.ModuleType("vertexai")
-
-  class _FakeAgentEngines:
-
-    def create(self, *, config: Dict[str, Any]) -> Any:
-      del config
-      return types.SimpleNamespace(
-          api_resource=types.SimpleNamespace(
-              name="projects/p/locations/l/reasoningEngines/e"
-          )
-      )
-
-  class _FakeVertexClient:
-
-    def __init__(self, *args: Any, **kwargs: Any) -> None:
-      del args
-      del kwargs
-      self.agent_engines = _FakeAgentEngines()
-
-  fake_vertexai.Client = _FakeVertexClient
-  monkeypatch.setitem(sys.modules, "vertexai", fake_vertexai)
-
-  src_dir = agent_dir(False, False)
-  cli_deploy.to_agent_engine(
-      agent_folder=str(src_dir),
-      temp_folder="tmp",
-      adk_app="my_adk_app",
-      trace_to_cloud=True,
-      project="my-gcp-project",
-      region="us-central1",
-      display_name="My Test Agent",
-      description="A test agent.",
-  )
-
-  assert validate_recorder.calls == []
-
-
-def test_to_agent_engine_validates_agent_import_when_enabled(
-    monkeypatch: pytest.MonkeyPatch,
-    agent_dir: Callable[[bool, bool], Path],
-) -> None:
-  """It should run agent.py import validation when enabled."""
-  validate_recorder = _Recorder()
-
-  def _validate_agent_import(*args: Any, **kwargs: Any) -> None:
-    validate_recorder(*args, **kwargs)
-
-  monkeypatch.setattr(
-      cli_deploy, "_validate_agent_import", _validate_agent_import
-  )
-
-  fake_vertexai = types.ModuleType("vertexai")
-
-  class _FakeAgentEngines:
-
-    def create(self, *, config: Dict[str, Any]) -> Any:
-      del config
-      return types.SimpleNamespace(
-          api_resource=types.SimpleNamespace(
-              name="projects/p/locations/l/reasoningEngines/e"
-          )
-      )
-
-  class _FakeVertexClient:
-
-    def __init__(self, *args: Any, **kwargs: Any) -> None:
-      del args
-      del kwargs
-      self.agent_engines = _FakeAgentEngines()
-
-  fake_vertexai.Client = _FakeVertexClient
-  monkeypatch.setitem(sys.modules, "vertexai", fake_vertexai)
-
-  src_dir = agent_dir(False, False)
-  cli_deploy.to_agent_engine(
-      agent_folder=str(src_dir),
-      temp_folder="tmp",
-      adk_app="my_adk_app",
-      trace_to_cloud=True,
-      project="my-gcp-project",
-      region="us-central1",
-      display_name="My Test Agent",
-      description="A test agent.",
-      skip_agent_import_validation=False,
-  )
-
-  assert len(validate_recorder.calls) == 1
 
 
 @pytest.mark.parametrize("include_requirements", [True, False])
@@ -485,7 +378,7 @@ def test_to_gke_happy_path(
   dockerfile_path = tmp_path / "Dockerfile"
   assert dockerfile_path.is_file()
   dockerfile_content = dockerfile_path.read_text()
-  assert "CMD adk web --port=9090" in dockerfile_content
+  assert "CMD adk api_server --with_ui --port=9090" in dockerfile_content
   assert "RUN pip install google-adk==1.2.0" in dockerfile_content
 
   assert len(run_recorder.calls) == 3, "Expected 3 subprocess calls"
@@ -682,3 +575,110 @@ class TestValidateAgentImport:
     )
 
     assert sys.path == original_path
+
+
+def test_to_agent_engine_triggers_onboarding(
+    monkeypatch: pytest.MonkeyPatch,
+    agent_dir: Callable[[bool, bool], Path],
+) -> None:
+  """It should trigger onboarding when credentials are missing."""
+  mock_handle_login = mock.Mock(
+      return_value=cli_deploy._onboarding.ExpressModeAuth(
+          api_key="fake_api_key",
+          project_id="fake_project",
+          region="fake_region",
+      )
+  )
+  monkeypatch.setattr(
+      cli_deploy._onboarding, "handle_login_with_google", mock_handle_login
+  )
+
+  # Mock subprocess.run so `gcloud config get-value project` returns no
+  # default project; otherwise `_resolve_project` would populate `project`
+  # and suppress the onboarding flow this test is exercising.
+  monkeypatch.setattr(
+      subprocess,
+      "run",
+      lambda *a, **k: types.SimpleNamespace(stdout="\n"),
+  )
+
+  fake_vertexai = types.ModuleType("vertexai")
+  mock_client = mock.Mock()
+  fake_vertexai.Client = mock.Mock(return_value=mock_client)
+
+  mock_agent_engines = mock.Mock()
+  mock_client.agent_engines = mock_agent_engines
+
+  mock_agent_engines.create.return_value = types.SimpleNamespace(
+      api_resource=types.SimpleNamespace(
+          name="projects/p/locations/l/reasoningEngines/e"
+      )
+  )
+  mock_agent_engines.delete.return_value = None
+  mock_agent_engines.update.return_value = None
+
+  monkeypatch.setitem(sys.modules, "vertexai", fake_vertexai)
+
+  src_dir = agent_dir(False, False)
+
+  cli_deploy.to_agent_engine(
+      agent_folder=str(src_dir),
+      trace_to_cloud=True,
+  )
+
+  mock_handle_login.assert_called_once()
+
+  # Verify vertexai.Client was initialized with correct args
+  fake_vertexai.Client.assert_called_once()
+  kwargs = fake_vertexai.Client.call_args.kwargs
+  assert kwargs.get("project") == "fake_project"
+  assert kwargs.get("location") == "fake_region"
+  assert "api_key" not in kwargs or kwargs.get("api_key") is None
+
+
+def test_cli_deploy_agent_engine_trigger_sources(tmp_path: Path):
+  """Tests that --trigger_sources is passed to to_agent_engine."""
+  agent_dir = tmp_path / "my_agent"
+  agent_dir.mkdir()
+  runner = CliRunner()
+  with mock.patch(
+      "src.google.adk.cli.cli_deploy.to_agent_engine"
+  ) as mock_to_agent_engine:
+    result = runner.invoke(
+        cli_tools_click.main,
+        [
+            "deploy",
+            "agent_engine",
+            "--trigger_sources=pubsub,eventarc",
+            str(agent_dir),
+        ],
+        catch_exceptions=False,
+    )
+    assert result.exit_code == 0
+    mock_to_agent_engine.assert_called_once()
+    _, kwargs = mock_to_agent_engine.call_args
+    assert kwargs["trigger_sources"] == "pubsub,eventarc"
+
+
+def test_cli_deploy_agent_engine_artifact_service_uri(tmp_path: Path):
+  """Tests that --artifact_service_uri is passed to to_agent_engine."""
+  agent_dir = tmp_path / "my_agent"
+  agent_dir.mkdir()
+  runner = CliRunner()
+  with mock.patch(
+      "src.google.adk.cli.cli_deploy.to_agent_engine"
+  ) as mock_to_agent_engine:
+    result = runner.invoke(
+        cli_tools_click.main,
+        [
+            "deploy",
+            "agent_engine",
+            "--artifact_service_uri=gs://my-bucket",
+            str(agent_dir),
+        ],
+        catch_exceptions=False,
+    )
+    assert result.exit_code == 0
+    mock_to_agent_engine.assert_called_once()
+    _, kwargs = mock_to_agent_engine.call_args
+    assert kwargs["artifact_service_uri"] == "gs://my-bucket"

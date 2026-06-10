@@ -21,6 +21,7 @@ Please do not rely on the implementation details.
 from __future__ import annotations
 
 from contextlib import aclosing
+import functools
 import inspect
 import typing
 from typing import Any
@@ -62,6 +63,7 @@ def _is_context_type(annotation: Any) -> bool:
   return annotation is Context
 
 
+@functools.lru_cache(maxsize=1024)
 def find_context_parameter(func: Callable[..., Any]) -> str | None:
   """Find the parameter name that has a Context type annotation.
 

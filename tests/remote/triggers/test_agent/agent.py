@@ -79,7 +79,7 @@ def before_model_callback(
 
 
 root_agent = Agent(
-    model="gemini-2.0-flash-001",
+    model="gemini-2.5-flash",
     name="trigger_echo_agent",
     instruction="Echo agent for trigger testing.",
     before_model_callback=before_model_callback,

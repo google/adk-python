@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+from typing import Any
 from typing import cast
 from typing import Optional
 
@@ -21,11 +22,72 @@ from google.adk.platform import time as platform_time
 from google.adk.platform import uuid as platform_uuid
 from google.genai import types
 from pydantic import alias_generators
+from pydantic import BaseModel
 from pydantic import ConfigDict
 from pydantic import Field
+from pydantic import model_validator
+from pydantic import PrivateAttr
 
 from ..models.llm_response import LlmResponse
 from .event_actions import EventActions
+
+
+class NodeInfo(BaseModel):
+  """Workflow node metadata attached to an Event."""
+
+  model_config = ConfigDict(
+      ser_json_bytes='base64',
+      val_json_bytes='base64',
+      alias_generator=alias_generators.to_camel,
+      populate_by_name=True,
+  )
+
+  path: str = ''
+  """The path of the node in the workflow.
+  In a workflow A, if node B is directly under A, and B emits an event, the
+  path will be "A/B". Agent state event will have path as "A".
+  """
+
+  output_for: list[str] | None = None
+  """Node paths whose output this event represents.
+
+  Set on events that carry an output value. When set, the output field
+  of this event is also considered the output for each listed node path
+  in the same invocation. For example, ``["wf/A@1/B@1", "wf/A@1"]`` means
+  this event's output counts as the output for both.
+  """
+
+  message_as_output: bool | None = None
+  """When True, this event's content is the node's output.
+
+  No separate output event is needed — the content event already
+  carries the output value.
+  """
+
+  @property
+  def run_id(self) -> str:
+    """The run ID of the node that generated the event."""
+    from ._node_path_builder import _NodePathBuilder
+
+    return _NodePathBuilder.from_string(self.path).run_id or ''
+
+  @property
+  def parent_run_id(self) -> str | None:
+    """The run ID of the parent node that dynamically scheduled
+    this node. Used to reconstruct dynamic node state from session events."""
+    from ._node_path_builder import _NodePathBuilder
+
+    builder = _NodePathBuilder.from_string(self.path)
+    if builder.parent:
+      return builder.parent.run_id
+    return None
+
+  @property
+  def name(self) -> str:
+    """The clean name of the node (without @run_id)."""
+    from ._node_path_builder import _NodePathBuilder
+
+    return _NodePathBuilder.from_string(self.path).node_name
 
 
 class Event(LlmResponse):
@@ -46,18 +108,24 @@ class Event(LlmResponse):
 
   invocation_id: str = ''
   """The invocation ID of the event. Should be non-empty before appending to a session."""
-  author: str
+  author: str = ''
   """'user' or the name of the agent, indicating who appended the event to the
   session."""
   actions: EventActions = Field(default_factory=EventActions)
   """The actions taken by the agent."""
 
-  long_running_tool_ids: Optional[set[str]] = None
+  output: Any | None = None
+  """Generic data output from a workflow node."""
+
+  node_info: NodeInfo = Field(default_factory=NodeInfo)
+  """Workflow node metadata (path, run_id, etc.)."""
+
+  long_running_tool_ids: set[str] | None = None
   """Set of ids of the long running function calls.
   Agent client will know from this field about which function call is long running.
   only valid for function call event
   """
-  branch: Optional[str] = None
+  branch: str | None = None
   """The branch of the event.
 
   The format is like agent_1.agent_2.agent_3, where agent_1 is the parent of
@@ -66,6 +134,20 @@ class Event(LlmResponse):
   Branch is used when multiple sub-agent shouldn't see their peer agents'
   conversation history.
   """
+  isolation_scope: str | None = None
+  """Scope tag indicating which logical context this event belongs to.
+
+  When set, the LLM content-builder restricts session events visible to
+  an agent to those whose ``isolation_scope`` matches the agent's own
+  scope.  One usage today is the Task API: a delegated task agent is
+  scoped under the originating function-call id (``<fc_id>``) so it
+  sees only its own task's events, isolated from the chat
+  coordinator's broader conversation.
+
+  ⚠️ DO NOT USE THIS FIELD DIRECTLY.  It is an internal mechanism that
+  may change without notice.  External code should not read, write, or
+  rely on its semantics.
+  """
 
   # The following are computed fields.
   # Do not assign the ID. It will be assigned by the session.
@@ -73,6 +155,118 @@ class Event(LlmResponse):
   """The unique identifier of the event."""
   timestamp: float = Field(default_factory=lambda: platform_time.get_time())
   """The timestamp of the event."""
+
+  @model_validator(mode='before')
+  @classmethod
+  def _accept_convenience_kwargs(cls, data: Any) -> Any:
+    """Routes convenience kwargs to nested fields.
+
+    Routed kwargs:
+      message: ContentUnion -> content (converted via t_content)
+      state: dict           -> actions.state_delta
+      route: value          -> actions.route
+      node_path: str        -> node_info.path
+
+    Subclasses that declare any of these as real fields (or aliases of
+    real fields) keep normal field validation behavior.
+    """
+    if not isinstance(data, dict):
+      return data
+
+    field_names: set[str] = set(cls.model_fields.keys())
+    for f in cls.model_fields.values():
+      if f.alias:
+        field_names.add(f.alias)
+    message = None if 'message' in field_names else data.pop('message', None)
+    state = None if 'state' in field_names else data.pop('state', None)
+    route = None if 'route' in field_names else data.pop('route', None)
+    node_path = (
+        None if 'node_path' in field_names else data.pop('node_path', None)
+    )
+
+    if message is not None:
+      if data.get('content') is not None:
+        raise ValueError(
+            "'message' and 'content' are mutually exclusive."
+            ' Use one or the other.'
+        )
+      from google.genai import _transformers
+
+      data['content'] = _transformers.t_content(message)
+
+    if state is not None or route is not None:
+      actions = data.get('actions')
+      actions_dict: Optional[dict[str, Any]] = None
+      if actions is None:
+        actions_dict = {}
+      elif isinstance(actions, EventActions):
+        actions_dict = actions.model_dump()
+      elif isinstance(actions, dict):
+        actions_dict = dict(actions)
+      # If actions is an unexpected type, skip the transformation and let
+      # Pydantic's normal field validation report the error.
+      if actions_dict is not None:
+        if state is not None:
+          actions_dict['state_delta'] = state
+        if route is not None:
+          actions_dict['route'] = route
+        data['actions'] = actions_dict
+
+    if node_path is not None:
+      node_info = data.get('node_info')
+      node_info_dict: Optional[dict[str, Any]] = None
+      if node_info is None:
+        node_info_dict = {}
+      elif isinstance(node_info, NodeInfo):
+        node_info_dict = node_info.model_dump()
+      elif isinstance(node_info, dict):
+        node_info_dict = dict(node_info)
+      # If node_info is an unexpected type, skip the transformation and let
+      # Pydantic's normal field validation report the error.
+      if node_info_dict is not None:
+        node_info_dict['path'] = node_path
+        data['node_info'] = node_info_dict
+
+    return data
+
+  @property
+  def message(self) -> Any:
+    """Alias for content. Returns the user-facing message of the event.
+
+    Subclasses may declare ``message`` as a real field (see
+    ``_accept_convenience_kwargs``, which already routes construction kwargs to
+    such fields). When they do, return that field's value so reads stay
+    consistent with construction and serialization instead of returning the
+    ``content`` alias. The return type is ``Any`` because such a subclass field
+    may be typed differently (e.g. ``str``); for a plain ``Event`` this returns
+    ``Optional[types.Content]``.
+    """
+    if 'message' in type(self).model_fields:
+      return self.__dict__.get('message')
+    return self.content
+
+  @message.setter
+  def message(self, value: Any) -> None:
+    """Sets the content of the event (or a subclass ``message`` field)."""
+    if 'message' in type(self).model_fields:
+      # Route through Pydantic so a subclass field's validators/type are
+      # enforced. A direct __dict__ write would skip validation, and
+      # object.__setattr__/self.message would recurse through this property.
+      self.__pydantic_validator__.validate_assignment(self, 'message', value)
+      return
+    if value is not None:
+      from google.genai import _transformers
+
+      self.content = _transformers.t_content(value)
+    else:
+      self.content = None
+
+  @property
+  def node_name(self) -> str:
+    """The name of the node that generated the event."""
+    if self.actions.agent_state or self.actions.end_of_agent:
+      return ''
+    return self.node_info.name
 
   def model_post_init(self, __context):
     """Post initialization logic for the event."""
@@ -96,24 +290,6 @@ class Event(LlmResponse):
         and not self.partial
         and not self.has_trailing_code_execution_result()
     )
-
-  def get_function_calls(self) -> list[types.FunctionCall]:
-    """Returns the function calls in the event."""
-    func_calls = []
-    if self.content and self.content.parts:
-      for part in self.content.parts:
-        if part.function_call:
-          func_calls.append(part.function_call)
-    return func_calls
-
-  def get_function_responses(self) -> list[types.FunctionResponse]:
-    """Returns the function responses in the event."""
-    func_response = []
-    if self.content and self.content.parts:
-      for part in self.content.parts:
-        if part.function_response:
-          func_response.append(part.function_response)
-    return func_response
 
   def has_trailing_code_execution_result(
       self,

@@ -18,11 +18,16 @@ import json
 from typing import cast
 from typing import Optional
 
+from google.api_core.gapic_v1 import client_info
 import google.auth
 from google.auth import default as default_service_credential
 import google.auth.transport.requests
 from google.cloud import parametermanager_v1
 from google.oauth2 import service_account
+
+from ... import version
+
+USER_AGENT = f"google-adk/{version.__version__}"
 
 
 class ParameterManagerClient:
@@ -112,7 +117,9 @@ class ParameterManagerClient:
       }
 
     self._client = parametermanager_v1.ParameterManagerClient(
-        credentials=self._credentials, client_options=client_options
+        credentials=self._credentials,
+        client_options=client_options,
+        client_info=client_info.ClientInfo(user_agent=USER_AGENT),
     )
 
   def get_parameter(self, resource_name: str) -> str:

@@ -29,6 +29,7 @@ from pydantic import field_validator
 from pydantic import model_validator
 
 from ..sessions.base_session_service import GetSessionConfig
+from ..telemetry.context import TelemetryConfig
 
 logger = logging.getLogger('google_adk.' + __name__)
 
@@ -198,6 +199,9 @@ class RunConfig(BaseModel):
   response_modalities: Optional[list[str]] = None
   """The output modalities. If not set, it's default to AUDIO."""
 
+  avatar_config: Optional[types.AvatarConfig] = None
+  """Avatar configuration for the live agent."""
+
   save_input_blobs_as_artifacts: bool = Field(
       default=False,
       deprecated=True,
@@ -243,6 +247,9 @@ class RunConfig(BaseModel):
 
   session_resumption: Optional[types.SessionResumptionConfig] = None
   """Configures session resumption mechanism. Only support transparent session resumption mode now."""
+
+  history_config: Optional[types.HistoryConfig] = None
+  """Configures the exchange of history between the client and the server."""
 
   context_window_compression: Optional[types.ContextWindowCompressionConfig] = (
       None
@@ -320,6 +327,19 @@ class RunConfig(BaseModel):
 
   custom_metadata: Optional[dict[str, Any]] = None
   """Custom metadata for the current invocation."""
+
+  telemetry: TelemetryConfig | None = None
+  """Per-request OpenTelemetry configuration.
+
+  Overrides the process-global telemetry env vars for the duration of this
+  invocation. Each ``None`` field on the
+  :class:`~google.adk.telemetry.TelemetryConfig` falls back to its
+  corresponding env var. Lets multi-tenant hosts toggle telemetry knobs per
+  request without leaking configuration across concurrent invocations.
+
+  .. warning::
+      Experimental; API may change.
+  """
 
   get_session_config: Optional[GetSessionConfig] = None
   """Configuration for controlling which events are fetched when loading

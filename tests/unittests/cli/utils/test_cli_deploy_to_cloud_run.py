@@ -143,7 +143,7 @@ def test_to_cloud_run_happy_path(
   assert dockerfile_path.is_file()
   dockerfile_content = dockerfile_path.read_text()
 
-  expected_command = "web" if with_ui else "api_server"
+  expected_command = "api_server --with_ui" if with_ui else "api_server"
   assert f"CMD adk {expected_command} --port=8080" in dockerfile_content
   assert "FROM python:3.11-slim" in dockerfile_content
   assert (

@@ -1,0 +1,71 @@
+{
+  "appName": "sequence",
+  "events": [
+    {
+      "author": "user",
+      "content": {
+        "parts": [
+          {
+            "text": "go"
+          }
+        ],
+        "role": "user"
+      },
+      "id": "e-1",
+      "invocationId": "i-1",
+      "nodeInfo": {
+        "path": ""
+      }
+    },
+    {
+      "author": "generate_fruit_agent",
+      "content": {
+        "parts": [
+          {
+            "text": "Apple"
+          }
+        ],
+        "role": "model"
+      },
+      "finishReason": "STOP",
+      "id": "e-2",
+      "invocationId": "i-1",
+      "nodeInfo": {
+        "messageAsOutput": true,
+        "outputFor": [
+          "root_agent@1/generate_fruit_agent@1"
+        ],
+        "path": "root_agent@1/generate_fruit_agent@1"
+      }
+    },
+    {
+      "author": "generate_benefit_agent",
+      "content": {
+        "parts": [
+          {
+            "text": "Apples are a good source of **dietary fiber**, particularly soluble fiber like pectin. This can help with digestion, promote a feeling of fullness (aiding in weight management), and may contribute to lowering cholesterol levels."
+          }
+        ],
+        "role": "model"
+      },
+      "finishReason": "STOP",
+      "id": "e-3",
+      "invocationId": "i-1",
+      "nodeInfo": {
+        "messageAsOutput": true,
+        "outputFor": [
+          "root_agent@1/generate_benefit_agent@1",
+          "root_agent@1"
+        ],
+        "path": "root_agent@1/generate_benefit_agent@1"
+      }
+    }
+  ],
+  "id": "0e5ab646-61d6-49cd-b058-24fde0afebae",
+  "state": {
+    "__session_metadata__": {
+      "displayName": "go"
+    }
+  },
+  "userId": "user"
+}

@@ -27,7 +27,7 @@ def test_process_llm_request_gemini_2_model_config_none(
     built_in_executor: BuiltInCodeExecutor,
 ):
   """Tests processing when llm_request.config is None for Gemini 2."""
-  llm_request = LlmRequest(model="gemini-2.0-flash")
+  llm_request = LlmRequest(model="gemini-2.5-flash")
   built_in_executor.process_llm_request(llm_request)
   assert llm_request.config is not None
   assert llm_request.config.tools == [
@@ -40,7 +40,7 @@ def test_process_llm_request_gemini_2_model_tools_none(
 ):
   """Tests processing when llm_request.config.tools is None for Gemini 2."""
   llm_request = LlmRequest(
-      model="gemini-2.0-pro", config=types.GenerateContentConfig()
+      model="gemini-2.5-pro", config=types.GenerateContentConfig()
   )
   built_in_executor.process_llm_request(llm_request)
   assert llm_request.config.tools == [
@@ -53,7 +53,7 @@ def test_process_llm_request_gemini_2_model_tools_empty(
 ):
   """Tests processing when llm_request.config.tools is empty for Gemini 2."""
   llm_request = LlmRequest(
-      model="gemini-2.0-ultra",
+      model="gemini-2.5-pro",
       config=types.GenerateContentConfig(tools=[]),
   )
   built_in_executor.process_llm_request(llm_request)
@@ -72,7 +72,7 @@ def test_process_llm_request_gemini_2_model_with_existing_tools(
       ]
   )
   llm_request = LlmRequest(
-      model="gemini-2.0-flash-001",
+      model="gemini-2.5-flash",
       config=types.GenerateContentConfig(tools=[existing_tool]),
   )
   built_in_executor.process_llm_request(llm_request)
