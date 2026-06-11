@@ -32,11 +32,11 @@ _ENV_VARS = {
 
 ENV_SETUPS = {
     'GOOGLE_AI': {
-        'GOOGLE_GENAI_USE_VERTEXAI': '0',
+        'GOOGLE_GENAI_USE_ENTERPRISE': '0',
         **_ENV_VARS,
     },
     'VERTEX': {
-        'GOOGLE_GENAI_USE_VERTEXAI': '1',
+        'GOOGLE_GENAI_USE_ENTERPRISE': '1',
         **_ENV_VARS,
     },
 }
