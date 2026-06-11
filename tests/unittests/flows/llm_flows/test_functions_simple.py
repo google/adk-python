@@ -685,26 +685,17 @@ def test_shallow_vs_deep_copy_demonstration():
 @pytest.mark.asyncio
 async def test_parallel_function_execution_timing():
   """Test that multiple function calls are executed in parallel, not sequentially."""
-  import time
-
   execution_order = []
-  execution_times = {}
 
   async def slow_function_1(delay: float = 0.1) -> dict:
-    start_time = time.time()
     execution_order.append('start_1')
     await asyncio.sleep(delay)
-    end_time = time.time()
-    execution_times['func_1'] = (start_time, end_time)
     execution_order.append('end_1')
     return {'result': 'function_1_result'}
 
   async def slow_function_2(delay: float = 0.1) -> dict:
-    start_time = time.time()
     execution_order.append('start_2')
     await asyncio.sleep(delay)
-    end_time = time.time()
-    execution_times['func_2'] = (start_time, end_time)
     execution_order.append('end_2')
     return {'result': 'function_2_result'}
 
@@ -740,35 +731,19 @@ async def test_parallel_function_execution_timing():
   )
   runner = testing_utils.TestInMemoryRunner(agent)
 
-  # Measure total execution time
-  start_time = time.time()
   events = await runner.run_async_with_new_session('test')
-  total_time = time.time() - start_time
 
-  # Verify parallel execution by checking execution order
-  # In parallel execution, both functions should start before either finishes
-  assert 'start_1' in execution_order
-  assert 'start_2' in execution_order
-  assert 'end_1' in execution_order
-  assert 'end_2' in execution_order
-
-  # Verify both functions started within a reasonable time window
-  func_1_start, func_1_end = execution_times['func_1']
-  func_2_start, func_2_end = execution_times['func_2']
-
-  # Functions should start at approximately the same time (within 10ms)
-  start_time_diff = abs(func_1_start - func_2_start)
-  assert (
-      start_time_diff < 0.01
-  ), f'Functions started too far apart: {start_time_diff}s'
-
-  # Total execution time should be less than the sum of all parallel function delays (0.2s)
-  # This proves parallel execution rather than sequential execution
-  sequential_time = 0.2  # 0.1s + 0.1s if functions ran sequentially
-  assert total_time < sequential_time, (
-      f'Execution took too long: {total_time}s, expected < {sequential_time}s'
-      ' (sequential time)'
+  # Parallel execution means both functions start before either one finishes.
+  assert set(execution_order) == {'start_1', 'start_2', 'end_1', 'end_2'}
+  last_start = max(
+      execution_order.index('start_1'), execution_order.index('start_2')
   )
+  first_end = min(
+      execution_order.index('end_1'), execution_order.index('end_2')
+  )
+  assert (
+      last_start < first_end
+  ), f'Functions did not overlap; execution was sequential: {execution_order}'
 
   # Verify the results are correct
   assert testing_utils.simplify_events(events) == [
