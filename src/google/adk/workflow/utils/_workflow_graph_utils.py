@@ -92,7 +92,13 @@ def build_node(
       agent.parent_agent = node_like.parent_agent
 
       if agent.mode is None:
-        agent.mode = 'single_turn'
+        # Sub-agents dynamically attached to a parent agent default to 'chat'
+        # mode to enable agent transfer.
+        # Standalone agents in a workflow graph default to 'single_turn'.
+        if agent.parent_agent is not None:
+          agent.mode = 'chat'
+        else:
+          agent.mode = 'single_turn'
 
       if agent.mode in ('task', 'chat'):
         agent.wait_for_output = True

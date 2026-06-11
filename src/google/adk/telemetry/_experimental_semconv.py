@@ -19,9 +19,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from collections.abc import MutableMapping
-import contextvars
 import json
-import os
 import sys
 from typing import Any
 from typing import Literal
@@ -54,15 +52,17 @@ GEN_AI_INPUT_MESSAGES = 'gen_ai.input.messages'
 GEN_AI_OUTPUT_MESSAGES = 'gen_ai.output.messages'
 GEN_AI_SYSTEM_INSTRUCTIONS = 'gen_ai.system_instructions'
 
+from .context import TelemetryConfig
+
 # Use the import symbol once the minimum OpenTelemetry SDK version is updated to 1.39.0
 # from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GEN_AI_TOOL_DEFINITIONS
 GEN_AI_TOOL_DEFINITIONS = 'gen_ai.tool.definitions'
 
-OTEL_SEMCONV_STABILITY_OPT_IN = 'OTEL_SEMCONV_STABILITY_OPT_IN'
+# Use the import symbol once the minimum OpenTelemetry SDK version is updated to 1.40.0
+# from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GEN_AI_USAGE_CACHE_READ_INPUT_TOKENS
+GEN_AI_USAGE_CACHE_READ_INPUT_TOKENS = 'gen_ai.usage.cache_read.input_tokens'
 
-OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT = (
-    'OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT'
-)
+GEN_AI_USAGE_REASONING_OUTPUT_TOKENS = 'gen_ai.usage.reasoning.output_tokens'
 
 FUNCTION_TOOL_DEFINITION_TYPE = 'function'
 
@@ -133,7 +133,8 @@ def _safe_json_serialize_no_whitespaces(obj) -> str:
     obj: The object to serialize.
 
   Returns:
-    The JSON-serialized object string or <non-serializable> if the object cannot be serialized.
+    The JSON-serialized object string or <non-serializable> if the object cannot
+    be serialized.
   """
 
   try:
@@ -148,18 +149,43 @@ def _safe_json_serialize_no_whitespaces(obj) -> str:
     return '<not serializable>'
 
 
-def is_experimental_semconv() -> bool:
-  opt_ins = os.getenv(OTEL_SEMCONV_STABILITY_OPT_IN)
-  if not opt_ins:
-    return False
-  opt_ins_list = [s.strip() for s in opt_ins.split(',')]
-  return 'gen_ai_latest_experimental' in opt_ins_list
+def is_experimental_semconv(
+    telemetry_config: TelemetryConfig | None = None,
+) -> bool:
+  """Returns whether to emit experimental Generative AI semconv attributes.
+
+  Thin wrapper over
+  :attr:`TelemetryConfig.should_use_experimental_genai_semconv`, which owns the
+  precedence ladder (admin lock > per-request field > env var > default).
+
+  Args:
+    telemetry_config: The per-request config, or ``None`` for the env-only path
+      (modeled as an empty :class:`TelemetryConfig`).
+
+  Returns:
+    Whether the experimental GenAI semconv attributes should be emitted.
+  """
+  cfg = telemetry_config if telemetry_config is not None else TelemetryConfig()
+  return cfg.should_use_experimental_genai_semconv
 
 
-def get_content_capturing_mode() -> str:
-  return os.getenv(
-      OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT, ''
-  ).upper()
+def get_content_capturing_mode(
+    telemetry_config: TelemetryConfig | None = None,
+) -> str:
+  """Returns the experimental GenAI semconv content-capturing mode string.
+
+  Thin wrapper over :attr:`TelemetryConfig.content_capturing_mode_value`, which
+  owns the precedence ladder and the legacy env-string coercion.
+
+  Args:
+    telemetry_config: The per-request config, or ``None`` for the env-only path
+      (modeled as an empty :class:`TelemetryConfig`).
+
+  Returns:
+    One of ``''`` / ``'EVENT_ONLY'`` / ``'SPAN_ONLY'`` / ``'SPAN_AND_EVENT'``.
+  """
+  cfg = telemetry_config if telemetry_config is not None else TelemetryConfig()
+  return cfg.content_capturing_mode_value
 
 
 def _model_dump_to_tool_definition(tool: Any) -> dict[str, Any]:
@@ -439,12 +465,11 @@ def set_operation_details_common_attributes(
     operation_details_common_attributes: MutableMapping[str, AttributeValue],
     attributes: Mapping[str, AttributeValue],
     log_only_attributes: Mapping[str, AttributeValue] | None = None,
+    telemetry_config: TelemetryConfig | None = None,
 ) -> None:
   operation_details_common_attributes.update(attributes)
-  if log_only_attributes and get_content_capturing_mode() in (
-      'EVENT_ONLY',
-      'SPAN_AND_EVENT',
-  ):
+  cfg = telemetry_config if telemetry_config is not None else TelemetryConfig()
+  if log_only_attributes and cfg.should_add_content_to_logs:
     operation_details_common_attributes.update(log_only_attributes)
 
 
@@ -499,18 +524,19 @@ def maybe_log_completion_details(
     otel_logger: Logger,
     operation_details_attributes: Mapping[str, AttributeValue],
     operation_details_common_attributes: Mapping[str, AttributeValue],
+    telemetry_config: TelemetryConfig | None = None,
 ):
-  """Logs completion details based on the experimental semantic convention capturing mode."""
+  """Logs completion details based on the experimental semconv capturing mode."""
   if span is None:
     return
 
-  if not is_experimental_semconv():
+  cfg = telemetry_config if telemetry_config is not None else TelemetryConfig()
+  if not cfg.should_use_experimental_genai_semconv:
     return
 
-  capturing_mode = get_content_capturing_mode()
   final_attributes = operation_details_common_attributes
 
-  if capturing_mode in ['EVENT_ONLY', 'SPAN_AND_EVENT']:
+  if cfg.should_add_content_to_logs:
     final_attributes = final_attributes | operation_details_attributes
   else:
     final_attributes = (
@@ -525,7 +551,7 @@ def maybe_log_completion_details(
       )
   )
 
-  if capturing_mode in ['SPAN_ONLY', 'SPAN_AND_EVENT']:
+  if cfg.should_add_content_to_experimental_spans:
     for key, value in operation_details_attributes.items():
       span.set_attribute(key, _safe_json_serialize_no_whitespaces(value))
   else:

@@ -724,6 +724,45 @@ async def test_run_live_auto_create_session():
   assert session is not None
 
 
+def test_run_passes_state_delta():
+  """run should forward state_delta down to run_async."""
+  import asyncio
+
+  session_service = InMemorySessionService()
+  runner = Runner(
+      app_name=TEST_APP_ID,
+      agent=MockAgent("test_agent"),
+      session_service=session_service,
+      artifact_service=InMemoryArtifactService(),
+      auto_create_session=True,
+  )
+
+  state_delta = {"test_key": "test_value"}
+
+  events = list(
+      runner.run(
+          user_id=TEST_USER_ID,
+          session_id=TEST_SESSION_ID,
+          new_message=types.Content(
+              role="user", parts=[types.Part(text="hello")]
+          ),
+          state_delta=state_delta,
+      )
+  )
+
+  assert len(events) >= 1
+
+  session = asyncio.run(
+      session_service.get_session(
+          app_name=TEST_APP_ID, user_id=TEST_USER_ID, session_id=TEST_SESSION_ID
+      )
+  )
+  session_events = session.events
+
+  user_event = next(e for e in session_events if e.author == "user")
+  assert user_event.actions.state_delta == state_delta
+
+
 @pytest.mark.asyncio
 async def test_run_live_persists_event_callback_modifications():
   """run_live should persist the same event it streams after callback changes."""

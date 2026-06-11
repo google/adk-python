@@ -55,6 +55,7 @@ def create_request_input_event(request_input: RequestInput) -> Event:
   )
   return Event(
       content=types.Content(
+          role='model',
           parts=[
               types.Part(
                   function_call=types.FunctionCall(
@@ -63,7 +64,7 @@ def create_request_input_event(request_input: RequestInput) -> Event:
                       id=request_input.interrupt_id,
                   )
               )
-          ]
+          ],
       ),
       long_running_tool_ids=[request_input.interrupt_id],
   )
@@ -179,6 +180,7 @@ def create_auth_request_event(
 
   return Event(
       content=types.Content(
+          role='model',
           parts=[
               types.Part(
                   function_call=types.FunctionCall(
@@ -187,7 +189,7 @@ def create_auth_request_event(
                       args=args,
                   )
               )
-          ]
+          ],
       ),
       long_running_tool_ids=[interrupt_id],
   )

@@ -152,7 +152,7 @@ def test_to_cloud_run_happy_path(
   assert "USER myuser" in dockerfile_content
   assert "ENV GOOGLE_CLOUD_PROJECT=proj" in dockerfile_content
   assert "ENV GOOGLE_CLOUD_LOCATION=asia-northeast1" in dockerfile_content
-  assert "RUN pip install google-adk==1.3.0" in dockerfile_content
+  assert 'RUN pip install "google-adk[a2a]==1.3.0"' in dockerfile_content
   assert "--trace_to_cloud" in dockerfile_content
   assert "--otel_to_cloud" in dockerfile_content
 
