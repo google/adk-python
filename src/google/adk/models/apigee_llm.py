@@ -35,7 +35,7 @@ import httpx
 import tenacity
 from typing_extensions import override
 
-from ..utils.env_utils import is_env_enabled
+from ..utils.env_utils import is_enterprise_mode_enabled
 from .google_llm import Gemini
 from .llm_response import LlmResponse
 
@@ -49,7 +49,6 @@ if TYPE_CHECKING:
 logger = logging.getLogger('google_adk.' + __name__)
 
 _APIGEE_PROXY_URL_ENV_VARIABLE_NAME = 'APIGEE_PROXY_URL'
-_GOOGLE_GENAI_USE_VERTEXAI_ENV_VARIABLE_NAME = 'GOOGLE_GENAI_USE_VERTEXAI'
 _PROJECT_ENV_VARIABLE_NAME = 'GOOGLE_CLOUD_PROJECT'
 _LOCATION_ENV_VARIABLE_NAME = 'GOOGLE_CLOUD_LOCATION'
 
@@ -104,9 +103,9 @@ class ApigeeLlm(Gemini):
 
         Components
           `provider` (optional): `vertex_ai` or `gemini`. If omitted, behavior
-            depends on the `GOOGLE_GENAI_USE_VERTEXAI` environment variable. If
+            depends on the `GOOGLE_GENAI_USE_ENTERPRISE` environment variable. If
             that is not set to TRUE or 1, it defaults to `gemini`. `provider`
-            takes precedence over `GOOGLE_GENAI_USE_VERTEXAI`.
+            takes precedence over `GOOGLE_GENAI_USE_ENTERPRISE`.
           `version` (optional): The API version (e.g., `v1`, `v1beta`). If
             omitted, the default version for the provider is used.
           `model_id` (required): The model identifier (e.g.,
@@ -243,7 +242,7 @@ class ApigeeLlm(Gemini):
     )
 
     kwargs_for_client = {}
-    kwargs_for_client['vertexai'] = self._isvertexai
+    kwargs_for_client['enterprise'] = self._isvertexai
     if self._isvertexai:
       kwargs_for_client['project'] = self._project
       kwargs_for_client['location'] = self._location
@@ -265,8 +264,8 @@ def _identify_vertexai(model: str, api_type: ApigeeLlm.ApiType) -> bool:
   """Returns if a model is Vertex AI.
 
   1. The api_type is GENAI or UNKNOWN.
-  2. The model is provider is Vertex AI model or the
-    GOOGLE_GENAI_USE_VERTEXAI environment variable is set to TRUE or 1.
+  2. The model provider is a Vertex AI model or the
+    enterprise mode is enabled.
 
   Args:
     model: The model string.
@@ -278,9 +277,7 @@ def _identify_vertexai(model: str, api_type: ApigeeLlm.ApiType) -> bool:
     return False
   if model.startswith('apigee/openai/'):
     return False
-  return model.startswith('apigee/vertex_ai/') or is_env_enabled(
-      _GOOGLE_GENAI_USE_VERTEXAI_ENV_VARIABLE_NAME
-  )
+  return model.startswith('apigee/vertex_ai/') or is_enterprise_mode_enabled()
 
 
 def _identify_api_version(model: str) -> str:

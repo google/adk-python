@@ -47,7 +47,6 @@ LABEL_TO_OWNER = {
 
 
 LABEL_TO_GTECH = [
-    "klateefa",
     "llalitkumarrr",
     "surajksharma07",
     "sanketpatil06",

@@ -12,7 +12,11 @@ on:
 
 jobs:
   agent-triage-pull-request:
-    if: github.event_name == 'workflow_dispatch' || !contains(github.event.pull_request.labels.*.name, 'google-contributor')
+    if: >-
+      github.event_name == 'workflow_dispatch' || (
+        github.event.pull_request.head.repo.full_name == github.repository &&
+        !contains(github.event.pull_request.labels.*.name, 'google-contributor')
+      )
     runs-on: ubuntu-latest
     permissions:
       pull-requests: write
