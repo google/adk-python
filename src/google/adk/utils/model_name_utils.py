@@ -174,3 +174,18 @@ def is_gemini_3_1_flash_live(model_string: Optional[str]) -> bool:
     return False
   model_name = extract_model_name(model_string)
   return model_name.startswith('gemini-3.1-flash-live')
+
+
+def is_gemini_3_5_live_translate(model_string: Optional[str]) -> bool:
+  """Check if the model is a Gemini 3.5 Live Translate model.
+
+  Args:
+    model_string: The model name
+
+  Returns:
+    True if it's a Gemini 3.5 Live Translate model, False otherwise
+  """
+  if not model_string:
+    return False
+  model_name = extract_model_name(model_string)
+  return model_name.startswith('gemini-3.5-live-translate')

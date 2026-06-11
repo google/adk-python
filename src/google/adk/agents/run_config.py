@@ -239,6 +239,13 @@ class RunConfig(BaseModel):
   realtime_input_config: Optional[types.RealtimeInputConfig] = None
   """Realtime input config for live agents with audio input from user."""
 
+  translation_config: Optional[types.TranslationConfig] = None
+  """Configures real-time speech-to-speech translation.
+
+  Only supported by translation models such as
+  `gemini-3.5-live-translate-preview`.
+  """
+
   enable_affective_dialog: Optional[bool] = None
   """If enabled, the model will detect emotions and adapt its responses accordingly."""
 
