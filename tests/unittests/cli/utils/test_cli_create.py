@@ -68,7 +68,7 @@ def test_generate_files_with_api_key(agent_folder: Path) -> None:
 
   env_content = (agent_folder / ".env").read_text()
   assert "GOOGLE_API_KEY=dummy-key" in env_content
-  assert "GOOGLE_GENAI_USE_VERTEXAI=0" in env_content
+  assert "GOOGLE_GENAI_USE_ENTERPRISE=0" in env_content
   assert (agent_folder / "agent.py").exists()
   assert (agent_folder / "__init__.py").exists()
 
@@ -86,7 +86,7 @@ def test_generate_files_with_gcp(agent_folder: Path) -> None:
   env_content = (agent_folder / ".env").read_text()
   assert "GOOGLE_CLOUD_PROJECT=proj" in env_content
   assert "GOOGLE_CLOUD_LOCATION=us-central1" in env_content
-  assert "GOOGLE_GENAI_USE_VERTEXAI=1" in env_content
+  assert "GOOGLE_GENAI_USE_ENTERPRISE=1" in env_content
 
 
 def test_generate_files_with_express_mode(agent_folder: Path) -> None:
@@ -101,7 +101,7 @@ def test_generate_files_with_express_mode(agent_folder: Path) -> None:
   )
 
   env_content = (agent_folder / ".env").read_text()
-  assert "GOOGLE_GENAI_USE_VERTEXAI=1" in env_content
+  assert "GOOGLE_GENAI_USE_ENTERPRISE=1" in env_content
   assert "GOOGLE_API_KEY=express-api-key" in env_content
   assert "GOOGLE_CLOUD_PROJECT=express-project-id" in env_content
 
@@ -145,7 +145,7 @@ def test_generate_files_no_params(agent_folder: Path) -> None:
       "GOOGLE_API_KEY",
       "GOOGLE_CLOUD_PROJECT",
       "GOOGLE_CLOUD_LOCATION",
-      "GOOGLE_GENAI_USE_VERTEXAI",
+      "GOOGLE_GENAI_USE_ENTERPRISE",
   ):
     assert key not in env_content
 

@@ -531,7 +531,7 @@ class DatabaseSessionService(BaseSessionService):
 
       stmt = stmt.order_by(schema.StorageEvent.timestamp.desc())
 
-      if config and config.num_recent_events:
+      if config and config.num_recent_events is not None:
         stmt = stmt.limit(config.num_recent_events)
 
       result = await sql_session.execute(stmt)

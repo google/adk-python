@@ -337,6 +337,66 @@ class TestToGeminiSchema:
     ]
     assert gemini_schema.properties["payload"].required == ["adDomain"]
 
+  def test_to_gemini_schema_draft_07_definitions_and_ref(self):
+    """Draft-07 schemas use `definitions`/`#/definitions/...` instead of `$defs`.
+
+    The MCP spec allows tool `inputSchema`s to use JSON Schema draft-07, so a
+    server sending `definitions` + `$ref: "#/definitions/..."` must dereference
+    correctly instead of raising `KeyError: 'definitions'`.
+    """
+    openapi_schema = {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "definitions": {
+            "DeviceEnum": {
+                "enum": ["GLOBAL", "desktop", "mobile"],
+                "title": "DeviceEnum",
+                "type": "string",
+            },
+            "DomainPayload": {
+                "properties": {
+                    "adDomain": {
+                        "description": "List of one or many domains.",
+                        "items": {"type": "string"},
+                        "title": "Addomain",
+                        "type": "array",
+                    },
+                    "device": {
+                        "$ref": "#/definitions/DeviceEnum",
+                        "default": "GLOBAL",
+                    },
+                },
+                "required": ["adDomain"],
+                "title": "DomainPayload",
+                "type": "object",
+            },
+        },
+        "properties": {"payload": {"$ref": "#/definitions/DomainPayload"}},
+        "required": ["payload"],
+        "title": "query_domainsArguments",
+        "type": "object",
+    }
+    gemini_schema = _to_gemini_schema(openapi_schema)
+    assert gemini_schema.type == Type.OBJECT
+    assert gemini_schema.properties["payload"].type == Type.OBJECT
+    assert (
+        gemini_schema.properties["payload"].properties["adDomain"].type
+        == Type.ARRAY
+    )
+    assert (
+        gemini_schema.properties["payload"].properties["adDomain"].items.type
+        == Type.STRING
+    )
+    assert (
+        gemini_schema.properties["payload"].properties["device"].type
+        == Type.STRING
+    )
+    assert gemini_schema.properties["payload"].properties["device"].enum == [
+        "GLOBAL",
+        "desktop",
+        "mobile",
+    ]
+    assert gemini_schema.properties["payload"].required == ["adDomain"]
+
   def test_sanitize_integer_formats(self):
     """Test that int32 and int64 formats are preserved for integer types"""
     openapi_schema = {

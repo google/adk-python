@@ -40,6 +40,7 @@ class TestCreateRequestInputEvent:
 
     assert event.long_running_tool_ids == {"test-id"}
     assert event.content is not None
+    assert event.content.role == "model"
     fc = event.content.parts[0].function_call
     assert fc.name == "adk_request_input"
     assert fc.id == "test-id"
