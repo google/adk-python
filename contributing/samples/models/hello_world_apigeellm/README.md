@@ -49,7 +49,7 @@ The supported format is:
 - **`provider`** (optional): Can be `vertex_ai` or `gemini`.
 
   - If specified, it forces the use of that provider.
-  - If omitted, the provider is determined by the `GOOGLE_GENAI_USE_VERTEXAI` environment variable. If this variable is set to `true` or `1`, Vertex AI is used; otherwise, `gemini` is used by default.
+  - If omitted, the provider is determined by the `GOOGLE_GENAI_USE_ENTERPRISE` environment variable. If this variable is set to `true` or `1`, Vertex AI is used; otherwise, `gemini` is used by default.
 
 - **`version`** (optional): The API version to use (e.g., `v1`, `v1beta`).
 
@@ -66,7 +66,7 @@ Here are some examples of how to configure the model string in `agent.py` to ach
    - `model="apigee/gemini-2.5-flash"`
 
      - Uses the default API version.
-     - Provider is Vertex AI if `GOOGLE_GENAI_USE_VERTEXAI` is true; otherwise, Gemini.
+     - Provider is Vertex AI if `GOOGLE_GENAI_USE_ENTERPRISE` is true; otherwise, Gemini.
 
    - `model="apigee/v1/gemini-2.5-flash"`
 

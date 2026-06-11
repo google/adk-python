@@ -40,6 +40,13 @@ if TYPE_CHECKING:
 logger = logging.getLogger("google_adk." + __name__)
 
 
+def _has_non_output_content(event: Event) -> bool:
+  if event.actions:
+    if event.actions.state_delta or event.actions.artifact_delta:
+      return True
+  return False
+
+
 class NodeRunner:
   """Per-node executor. Drives BaseNode.run(), enriches events.
 
@@ -207,6 +214,8 @@ class NodeRunner:
       ic = ic.model_copy(update={"branch": branch})
     elif self._override_branch is not None:
       ic = ic.model_copy(update={"branch": self._override_branch})
+    else:
+      ic = ic.model_copy()
 
     ctx = Context(
         ic,
@@ -312,12 +321,14 @@ class NodeRunner:
   async def _enqueue_event(self, event: Event, ctx: Context) -> None:
     """Enrich and enqueue event to the session.
 
-    Skips enqueueing if output is delegated via use_as_output —
-    the child already emitted it. Pending deltas stay in ctx for
-    _flush_output_and_deltas.
+    Suppresses output if output is delegated via use_as_output (since the child
+    already emitted it), but preserves other event details. Pending deltas stay
+    in ctx for _flush_output_and_deltas.
     """
     if event.output is not None and ctx._output_delegated:
-      return
+      if not _has_non_output_content(event):
+        return
+      event = event.model_copy(update={"output": None})
 
     self._enrich_event(event, ctx)
     if not event.partial:
