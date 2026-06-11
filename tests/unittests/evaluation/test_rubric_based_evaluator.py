@@ -27,10 +27,10 @@ from google.adk.evaluation.eval_rubrics import RubricScore
 from google.adk.evaluation.evaluator import EvalStatus
 from google.adk.evaluation.evaluator import PerInvocationResult
 from google.adk.evaluation.llm_as_judge_utils import get_average_rubric_score
+from google.adk.evaluation.rubric_based_evaluator import _normalize_text
 from google.adk.evaluation.rubric_based_evaluator import DefaultAutoRaterResponseParser
 from google.adk.evaluation.rubric_based_evaluator import MajorityVotePerInvocationResultsAggregator
 from google.adk.evaluation.rubric_based_evaluator import MeanInvocationResultsSummarizer
-from google.adk.evaluation.rubric_based_evaluator import _normalize_text
 from google.adk.evaluation.rubric_based_evaluator import RubricBasedEvaluator
 from google.adk.models.llm_response import LlmResponse
 from google.genai import types as genai_types

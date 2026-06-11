@@ -17,8 +17,9 @@ from __future__ import annotations
 import abc
 import logging
 import re
-import unicodedata
 from typing import Optional
+
+import unicodedata
 
 from typing_extensions import override
 
