@@ -231,10 +231,12 @@ async def test_receive_usage_metadata_and_server_content(
   content_response = next((r for r in responses if r.content), None)
   assert content_response is not None
 
+  # The live API's `response_token_count`/`response_tokens_details` are remapped
+  # to `candidates_token_count`/`candidates_tokens_details`.
   expected_usage = types.GenerateContentResponseUsageMetadata(
       prompt_token_count=10,
       cached_content_token_count=5,
-      candidates_token_count=None,
+      candidates_token_count=20,
       total_token_count=35,
       thoughts_token_count=2,
       prompt_tokens_details=[
@@ -243,10 +245,72 @@ async def test_receive_usage_metadata_and_server_content(
       cache_tokens_details=[
           types.ModalityTokenCount(modality='text', token_count=5)
       ],
-      candidates_tokens_details=None,
+      candidates_tokens_details=[
+          types.ModalityTokenCount(modality='text', token_count=20)
+      ],
   )
   assert usage_response.usage_metadata == expected_usage
   assert content_response.content == mock_content
+
+
+async def test_receive_usage_metadata_remaps_output_tokens(
+    gemini_connection, mock_gemini_session
+):
+  """Test that live API output tokens are remapped to candidates_token_count."""
+  usage_metadata = types.UsageMetadata(
+      prompt_token_count=10,
+      cached_content_token_count=5,
+      response_token_count=20,
+      total_token_count=35,
+      thoughts_token_count=2,
+      tool_use_prompt_token_count=3,
+      prompt_tokens_details=[
+          types.ModalityTokenCount(modality='text', token_count=10)
+      ],
+      cache_tokens_details=[
+          types.ModalityTokenCount(modality='text', token_count=5)
+      ],
+      response_tokens_details=[
+          types.ModalityTokenCount(modality='text', token_count=20)
+      ],
+  )
+
+  mock_message = mock.AsyncMock()
+  mock_message.usage_metadata = usage_metadata
+  mock_message.server_content = None
+  mock_message.tool_call = None
+  mock_message.session_resumption_update = None
+  mock_message.go_away = None
+
+  async def mock_receive_generator():
+    yield mock_message
+
+  receive_mock = mock.Mock(return_value=mock_receive_generator())
+  mock_gemini_session.receive = receive_mock
+
+  responses = [resp async for resp in gemini_connection.receive()]
+
+  usage_response = next((r for r in responses if r.usage_metadata), None)
+  assert usage_response is not None
+  result = usage_response.usage_metadata
+  assert isinstance(result, types.GenerateContentResponseUsageMetadata)
+  # Output tokens are remapped from response_* to candidates_*.
+  assert result.candidates_token_count == 20
+  assert result.candidates_tokens_details == [
+      types.ModalityTokenCount(modality='text', token_count=20)
+  ]
+  # Shared fields are carried over unchanged.
+  assert result.prompt_token_count == 10
+  assert result.cached_content_token_count == 5
+  assert result.total_token_count == 35
+  assert result.thoughts_token_count == 2
+  assert result.tool_use_prompt_token_count == 3
+  assert result.prompt_tokens_details == [
+      types.ModalityTokenCount(modality='text', token_count=10)
+  ]
+  assert result.cache_tokens_details == [
+      types.ModalityTokenCount(modality='text', token_count=5)
+  ]
 
 
 async def test_receive_populates_live_session_id(
