@@ -28,6 +28,8 @@ from opentelemetry import trace
 from websockets.exceptions import ConnectionClosed
 from websockets.exceptions import ConnectionClosedOK
 
+from . import _output_schema_processor
+from . import functions
 from ...agents.base_agent import BaseAgent
 from ...agents.callback_context import CallbackContext
 from ...agents.invocation_context import InvocationContext
@@ -50,8 +52,6 @@ from ...tools.base_toolset import BaseToolset
 from ...tools.tool_context import ToolContext
 from ...utils import model_name_utils
 from ...utils.context_utils import Aclosing
-from . import _output_schema_processor
-from . import functions
 from .audio_cache_manager import AudioCacheManager
 from .functions import build_auth_request_event
 

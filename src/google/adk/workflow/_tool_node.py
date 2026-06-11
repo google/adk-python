@@ -69,6 +69,7 @@ class _ToolNode(BaseNode):
     import json
 
     from google.genai import types
+
     from ..utils.content_utils import extract_text_from_content
 
     args = node_input
