@@ -5,7 +5,7 @@
 1. Set environment variables in your terminal:
 
   ```shell
-  export GOOGLE_GENAI_USE_VERTEXAI=FALSE
+  export GOOGLE_GENAI_USE_ENTERPRISE=FALSE
   export GOOGLE_API_KEY=<your_api_key>
   export GOOGLE_CLOUD_PROJECT=<your_bigquery_project>
   ```
@@ -34,7 +34,7 @@
 1. Set environment variables in your terminal:
 
   ```shell
-  export GOOGLE_GENAI_USE_VERTEXAI=FALSE
+  export GOOGLE_GENAI_USE_ENTERPRISE=FALSE
   export GOOGLE_API_KEY=<your_api_key>
   export GOOGLE_CLOUD_PROJECT=<your_bigquery_project>
   ```

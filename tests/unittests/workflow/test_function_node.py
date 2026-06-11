@@ -1736,3 +1736,49 @@ class TestParameterBindingNodeInput:
     obj = MyCallable()
     hints4 = _get_type_hints_cached(obj)
     assert hints4 == {'z': float, 'return': type(None)}
+
+
+@pytest.mark.asyncio
+async def test_function_node_wrapped_partial(request: pytest.FixtureRequest):
+  """Tests that FunctionNode correctly unwraps functools.partial for async/sync generators and coroutines."""
+  import functools
+
+  async def async_gen_fn(
+      prefix: str, ctx: Context
+  ) -> AsyncGenerator[Any, None]:
+    yield Event(output=f'{prefix} from AsyncGen')
+
+  def sync_gen_fn(prefix: str, ctx: Context) -> Generator[Any, None, None]:
+    yield Event(output=f'{prefix} from SyncGen')
+
+  async def async_fn(prefix: str, ctx: Context) -> str:
+    return f'{prefix} from AsyncCoro'
+
+  p_async_gen = functools.partial(async_gen_fn, 'Hello')
+  p_sync_gen = functools.partial(sync_gen_fn, 'Hello')
+  p_async = functools.partial(async_fn, 'Hello')
+
+  agent = Workflow(
+      name='test_workflow_partial_unwrapping',
+      edges=[
+          (START, p_async_gen),
+          (p_async_gen, p_sync_gen),
+          (p_sync_gen, p_async),
+      ],
+  )
+  events, _, _ = await run_workflow(agent)
+
+  assert simplify_events_with_node(events) == [
+      (
+          'test_workflow_partial_unwrapping@1/async_gen_fn@1',
+          {'output': 'Hello from AsyncGen'},
+      ),
+      (
+          'test_workflow_partial_unwrapping@1/sync_gen_fn@1',
+          {'output': 'Hello from SyncGen'},
+      ),
+      (
+          'test_workflow_partial_unwrapping@1/async_fn@1',
+          {'output': 'Hello from AsyncCoro'},
+      ),
+  ]

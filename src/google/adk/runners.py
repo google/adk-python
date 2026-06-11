@@ -889,6 +889,7 @@ class Runner:
       user_id: str,
       session_id: str,
       new_message: types.Content,
+      state_delta: Optional[dict[str, Any]] = None,
       run_config: Optional[RunConfig] = None,
   ) -> Generator[Event, None, None]:
     """Runs the agent.
@@ -906,6 +907,7 @@ class Runner:
       user_id: The user ID of the session.
       session_id: The session ID of the session.
       new_message: A new message to append to the session.
+      state_delta: Optional state changes to apply to the session.
       run_config: The run config for the agent.
 
     Yields:
@@ -921,6 +923,7 @@ class Runner:
                 user_id=user_id,
                 session_id=session_id,
                 new_message=new_message,
+                state_delta=state_delta,
                 run_config=run_config,
             )
         ) as agen:
