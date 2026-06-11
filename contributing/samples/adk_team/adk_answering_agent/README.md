@@ -110,7 +110,7 @@ pip install google-cloud-storage google-cloud-discoveryengine
 The following environment variables are required for the agent to connect to the necessary services.
 
 - `GITHUB_TOKEN=YOUR_GITHUB_TOKEN`: **(Required)** A GitHub Personal Access Token with `issues:write` permissions. Needed for both interactive and workflow modes.
-- `GOOGLE_GENAI_USE_VERTEXAI=TRUE`: **(Required)** Use Google Vertex AI for the authentication.
+- `GOOGLE_GENAI_USE_ENTERPRISE=TRUE`: **(Required)** Use Google Vertex AI for the authentication.
 - `GOOGLE_CLOUD_PROJECT=YOUR_PROJECT_ID`: **(Required)** The Google Cloud project ID.
 - `GOOGLE_CLOUD_LOCATION=LOCATION`: **(Required)** The Google Cloud region.
 - `VERTEXAI_DATASTORE_ID=YOUR_DATASTORE_ID`: **(Required)** The full Vertex AI datastore ID for the document store (i.e. knowledge base), with the format of `projects/{project_number}/locations/{location}/collections/{collection}/dataStores/{datastore_id}`.
