@@ -23,7 +23,7 @@ from typing import TYPE_CHECKING
 from google.genai import types
 from typing_extensions import override
 
-from ...utils.model_name_utils import is_gemini_2_or_above
+from ...utils.model_name_utils import is_gemini_eap_or_2_or_above
 from ...utils.model_name_utils import is_gemini_model_id_check_disabled
 from ..tool_context import ToolContext
 from .base_retrieval_tool import BaseRetrievalTool
@@ -65,7 +65,7 @@ class VertexAiRagRetrieval(BaseRetrievalTool):
   ) -> None:
     # Use Gemini built-in Vertex AI RAG tool for Gemini 2 models.
     model_check_disabled = is_gemini_model_id_check_disabled()
-    if is_gemini_2_or_above(llm_request.model) or model_check_disabled:
+    if is_gemini_eap_or_2_or_above(llm_request.model) or model_check_disabled:
       llm_request.config = (
           types.GenerateContentConfig()
           if not llm_request.config

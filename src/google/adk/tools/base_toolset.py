@@ -192,7 +192,7 @@ class BaseToolset(ABC):
     raise ValueError(f"from_config() not implemented for toolset: {cls}")
 
   def _is_tool_selected(
-      self, tool: BaseTool, readonly_context: ReadonlyContext
+      self, tool: BaseTool, readonly_context: Optional[ReadonlyContext]
   ) -> bool:
     if not self.tool_filter:
       return True

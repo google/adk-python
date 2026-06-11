@@ -108,6 +108,29 @@ class ComputerUseTool(FunctionTool):
   ) -> Any:
     """Run the computer control function with normalized coordinates."""
 
+    # Check for safety confirmation if required by the model
+    if not tool_context.tool_confirmation:
+      safety_decision = args.get("safety_decision")
+      if safety_decision:
+        decision = safety_decision.get("decision")
+        explanation = safety_decision.get("explanation")
+
+        if decision == "require_confirmation":
+          hint = (
+              explanation
+              or "This computer use action requires safety confirmation."
+          )
+          tool_context.request_confirmation(hint=hint)
+          tool_context.actions.skip_summarization = True
+          return {
+              "error": (
+                  "This tool call requires confirmation, please approve or"
+                  " reject."
+              )
+          }
+    elif not tool_context.tool_confirmation.confirmed:
+      return {"error": "This tool call is rejected."}
+
     try:
       # Normalize coordinates if present
       if "x" in args:
@@ -143,8 +166,9 @@ class ComputerUseTool(FunctionTool):
       result = await super().run_async(args=args, tool_context=tool_context)
 
       # Process the result if it's an EnvironmentState
+      response = result
       if isinstance(result, ComputerState):
-        return {
+        response = {
             "image": {
                 "mimetype": "image/png",
                 "data": base64.b64encode(result.screenshot).decode("utf-8"),
@@ -152,7 +176,15 @@ class ComputerUseTool(FunctionTool):
             "url": result.url,
         }
 
-      return result
+      if (
+          tool_context.tool_confirmation
+          and tool_context.tool_confirmation.confirmed
+      ):
+        if not isinstance(response, dict):
+          response = {"result": response}
+        response["safety_acknowledgement"] = "true"
+
+      return response
 
     except Exception as e:
       logger.error("Error in ComputerUseTool.run_async: %s", e)

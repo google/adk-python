@@ -14,17 +14,30 @@
 
 from __future__ import annotations
 
-# Keep CallbackContext for backward compatibility
+import importlib
+from typing import TYPE_CHECKING
+
 from ..agents.callback_context import CallbackContext
 from ..agents.context import Context
-# Keep AuthCredential for backward compatibility
-from ..auth.auth_credential import AuthCredential
-# Keep AuthHandler for backward compatibility
-from ..auth.auth_handler import AuthHandler
-# Keep AuthConfig for backward compatibility
-from ..auth.auth_tool import AuthConfig
-# Keep ToolConfirmation for backward compatibility
 from .tool_confirmation import ToolConfirmation
 
-# ToolContext is unified into Context
+if TYPE_CHECKING:
+  from ..auth.auth_credential import AuthCredential
+  from ..auth.auth_handler import AuthHandler
+  from ..auth.auth_tool import AuthConfig
+
 ToolContext = Context
+
+_LAZY_REEXPORTS: dict[str, tuple[str, str]] = {
+    'AuthCredential': ('google.adk.auth.auth_credential', 'AuthCredential'),
+    'AuthHandler': ('google.adk.auth.auth_handler', 'AuthHandler'),
+    'AuthConfig': ('google.adk.auth.auth_tool', 'AuthConfig'),
+}
+
+
+def __getattr__(name: str):
+  if name in _LAZY_REEXPORTS:
+    module_path, attr = _LAZY_REEXPORTS[name]
+    module = importlib.import_module(module_path)
+    return getattr(module, attr)
+  raise AttributeError(f'module {__name__!r} has no attribute {name!r}')

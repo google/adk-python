@@ -375,6 +375,7 @@ class MockAsyncClient:
     self.agent_engines.sessions.events.list.side_effect = self._list_events
     self.agent_engines.sessions.events.append.side_effect = self._append_event
     self.last_create_session_config: dict[str, Any] = {}
+    self.last_list_sessions_config: dict[str, Any] = {}
 
   async def __aenter__(self):
     """Enters the asynchronous context."""
@@ -391,8 +392,9 @@ class MockAsyncClient:
     raise api_core_exceptions.NotFound(f'Session not found: {session_id}')
 
   async def _list_sessions(self, name: str, config: dict[str, Any]):
+    self.last_list_sessions_config = config
     filter_val = config.get('filter', '')
-    user_id_match = re.search(r'user_id="([^"]+)"', filter_val)
+    user_id_match = re.search(r'user_id="((?:\\.|[^"])*)"', filter_val)
     if user_id_match:
       user_id = user_id_match.group(1)
       if user_id == 'user_with_pages':
@@ -725,6 +727,45 @@ async def test_get_and_delete_session():
 
 @pytest.mark.asyncio
 @pytest.mark.usefixtures('mock_get_api_client')
+async def test_delete_session_rejects_other_users_session():
+  """delete_session must not delete a session owned by a different user."""
+  session_service = mock_vertex_ai_session_service()
+
+  # session '1' belongs to 'user'; 'user2' must not be allowed to delete it.
+  with pytest.raises(ValueError) as excinfo:
+    await session_service.delete_session(
+        app_name='123', user_id='user2', session_id='1'
+    )
+  assert 'does not belong to user user2' in str(excinfo.value)
+
+  # Session must still exist.
+  assert (
+      await session_service.get_session(
+          app_name='123', user_id='user', session_id='1'
+      )
+      == MOCK_SESSION
+  )
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures('mock_get_api_client')
+async def test_session_id_path_traversal_rejected():
+  """Session IDs containing path-traversal characters must be rejected."""
+  session_service = mock_vertex_ai_session_service()
+
+  for bad_id in ['..', '../foo', '..?force=true', 'a/b', '']:
+    with pytest.raises(ValueError):
+      await session_service.delete_session(
+          app_name='123', user_id='user', session_id=bad_id
+      )
+    with pytest.raises(ValueError):
+      await session_service.get_session(
+          app_name='123', user_id='user', session_id=bad_id
+      )
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures('mock_get_api_client')
 async def test_get_session_with_page_token():
   session_service = mock_vertex_ai_session_service()
 
@@ -879,6 +920,34 @@ async def test_list_sessions_all_users():
 
 @pytest.mark.asyncio
 @pytest.mark.usefixtures('mock_get_api_client')
+@pytest.mark.parametrize(
+    ('payload', 'expected_filter'),
+    [
+        (
+            'attacker" OR user_id!=""',
+            'user_id="attacker\\" OR user_id!=\\"\\""',
+        ),
+        ('\\', 'user_id="\\\\"'),
+        ('', 'user_id=""'),
+    ],
+)
+async def test_list_sessions_quotes_user_id_filter(
+    mock_api_client_instance, payload, expected_filter
+):
+  session_service = mock_vertex_ai_session_service()
+
+  sessions = await session_service.list_sessions(
+      app_name='123', user_id=payload
+  )
+
+  assert sessions.sessions == []
+  assert mock_api_client_instance.last_list_sessions_config == {
+      'filter': expected_filter
+  }
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures('mock_get_api_client')
 async def test_create_session():
   session_service = mock_vertex_ai_session_service()
 
@@ -990,7 +1059,12 @@ async def test_append_event():
       ),
       cache_metadata=CacheMetadata(
           cache_name='test_cache_name',
+          expire_time=(
+              datetime.datetime.now(datetime.timezone.utc)
+              + datetime.timedelta(minutes=30)
+          ).timestamp(),
           fingerprint='test_fingerprint',
+          invocations_used=1,
           contents_count=1,
       ),
       citation_metadata=genai_types.CitationMetadata(

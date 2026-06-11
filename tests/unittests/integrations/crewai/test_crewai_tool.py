@@ -32,6 +32,7 @@ from google.adk.tools.tool_context import ToolContext
 def mock_tool_context() -> ToolContext:
   """Fixture that provides a mock ToolContext for testing."""
   mock_invocation_context = MagicMock(spec=InvocationContext)
+  mock_invocation_context._state_schema = None
   mock_invocation_context.session = MagicMock(spec=Session)
   mock_invocation_context.session.state = MagicMock()
   return ToolContext(invocation_context=mock_invocation_context)

@@ -634,10 +634,10 @@ def test_aggregate_conversation_percentage_below_threshold_produces_failure():
 async def test_evaluate_invocations_all_pass():
   evaluator = _create_test_evaluator()
 
-  async def sample_llm_valid(*args, **kwargs):
+  async def sample_llm_valid(*args, **kwargs):  # pylint: disable=unused-argument
     return AutoRaterScore(score=1.0)
 
-  evaluator._sample_llm = sample_llm_valid
+  evaluator._sample_llm = sample_llm_valid  # pylint: disable=protected-access
   starting_prompt = "first user prompt."
   conversation_scenario = _create_test_conversation_scenario(
       starting_prompt=starting_prompt
@@ -656,3 +656,43 @@ async def test_evaluate_invocations_all_pass():
   assert len(result.per_invocation_results) == 2
   assert result.per_invocation_results[0].score == 1.0
   assert result.per_invocation_results[1].score == 1.0
+
+
+@pytest.mark.asyncio
+async def test_evaluate_invocations_none_judge_model_config():
+  """Tests evaluation when judge_model_config is None."""
+  evaluator = PerTurnUserSimulatorQualityV1(
+      EvalMetric(
+          metric_name="test_per_turn_user_simulator_quality_v1",
+          threshold=1.0,
+          criterion=LlmBackedUserSimulatorCriterion(
+              threshold=1.0,
+              stop_signal="test stop signal",
+              judge_model_options=JudgeModelOptions(
+                  judge_model="gemini-2.5-flash",
+                  judge_model_config=None,
+                  num_samples=1,
+              ),
+          ),
+      ),
+  )
+
+  async def sample_llm_valid(*args, **kwargs):  # pylint: disable=unused-argument
+    return AutoRaterScore(score=1.0)
+
+  evaluator._sample_llm = sample_llm_valid  # pylint: disable=protected-access
+  starting_prompt = "first user prompt."
+  conversation_scenario = _create_test_conversation_scenario(
+      starting_prompt=starting_prompt
+  )
+  invocations = _create_test_invocations(
+      [starting_prompt, "model 1.", "user 2.", "model 2."]
+  )
+  result = await evaluator.evaluate_invocations(
+      actual_invocations=invocations,
+      expected_invocations=None,
+      conversation_scenario=conversation_scenario,
+  )
+
+  assert result.overall_score == 1.0
+  assert result.overall_eval_status == EvalStatus.PASSED

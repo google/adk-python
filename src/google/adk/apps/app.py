@@ -13,7 +13,10 @@
 # limitations under the License.
 from __future__ import annotations
 
+import re
+from typing import Any
 from typing import Optional
+from typing import Union
 
 from pydantic import BaseModel
 from pydantic import ConfigDict
@@ -22,99 +25,40 @@ from pydantic import model_validator
 
 from ..agents.base_agent import BaseAgent
 from ..agents.context_cache_config import ContextCacheConfig
-from ..apps.base_events_summarizer import BaseEventsSummarizer
 from ..plugins.base_plugin import BasePlugin
-from ..utils.feature_decorator import experimental
+from ._configs import EventsCompactionConfig
+from ._configs import ResumabilityConfig
+
+__all__ = [
+    "App",
+    "EventsCompactionConfig",
+    "ResumabilityConfig",
+    "validate_app_name",
+]
+
+_VALID_APP_NAME_RE = re.compile(r"^[a-zA-Z][a-zA-Z0-9_-]*$")
 
 
 def validate_app_name(name: str) -> None:
   """Ensures the provided application name is safe and intuitive."""
-  if not name.isidentifier():
+  if not _VALID_APP_NAME_RE.match(name):
     raise ValueError(
-        f"Invalid app name '{name}': must be a valid identifier consisting of"
-        " letters, digits, and underscores."
+        f"Invalid app name '{name}': must start with a letter and can only"
+        " consist of letters, digits, underscores, and hyphens."
     )
   if name == "user":
     raise ValueError("App name cannot be 'user'; reserved for end-user input.")
-
-
-@experimental
-class ResumabilityConfig(BaseModel):
-  """The config of the resumability for an application.
-
-  The "resumability" in ADK refers to the ability to:
-  1. pause an invocation upon a long-running function call.
-  2. resume an invocation from the last event, if it's paused or failed midway
-  through.
-
-  Note: ADK resumes the invocation in a best-effort manner:
-  1. Tool call to resume needs to be idempotent because we only guarantee
-  an at-least-once behavior once resumed.
-  2. Any temporary / in-memory state will be lost upon resumption.
-  """
-
-  is_resumable: bool = False
-  """Whether the app supports agent resumption.
-  If enabled, the feature will be enabled for all agents in the app.
-  """
-
-
-@experimental
-class EventsCompactionConfig(BaseModel):
-  """The config of event compaction for an application."""
-
-  model_config = ConfigDict(
-      arbitrary_types_allowed=True,
-      extra="forbid",
-  )
-
-  summarizer: Optional[BaseEventsSummarizer] = None
-  """The event summarizer to use for compaction."""
-
-  compaction_interval: int
-  """The number of *new* user-initiated invocations that, once
-  fully represented in the session's events, will trigger a compaction."""
-
-  overlap_size: int
-  """The number of preceding invocations to include from the
-  end of the last compacted range. This creates an overlap between consecutive
-  compacted summaries, maintaining context."""
-
-  token_threshold: Optional[int] = Field(
-      default=None,
-      gt=0,
-  )
-  """Post-invocation token threshold trigger.
-
-  If set, ADK will attempt a post-invocation compaction when the most recently
-  observed prompt token count meets or exceeds this threshold.
-  """
-
-  event_retention_size: Optional[int] = Field(default=None, ge=0)
-  """Post-invocation raw event retention size.
-
-  If token-based post-invocation compaction is triggered, this keeps the last N
-  raw events un-compacted.
-  """
-
-  @model_validator(mode="after")
-  def _validate_token_params(self) -> EventsCompactionConfig:
-    token_threshold_set = self.token_threshold is not None
-    retention_size_set = self.event_retention_size is not None
-    if token_threshold_set != retention_size_set:
-      raise ValueError(
-          "token_threshold and event_retention_size must be set together."
-      )
-    return self
 
 
 class App(BaseModel):
   """Represents an LLM-backed agentic application.
 
   An `App` is the top-level container for an agentic system powered by LLMs.
-  It manages a root agent (`root_agent`), which serves as the root of an agent
-  tree, enabling coordination and communication across all agents in the
-  hierarchy.
+  It manages either a root agent (`root_agent`) or a root node (`root_node`),
+  which serves as the entry point for execution.
+
+  Exactly one of `root_agent` or `root_node` must be provided.
+
   The `plugins` are application-wide components that provide shared capabilities
   and services to the entire system.
   """
@@ -127,8 +71,12 @@ class App(BaseModel):
   name: str
   """The name of the application."""
 
-  root_agent: BaseAgent
-  """The root agent in the application. One app can only have one root agent."""
+  # Change to Union[BaseAgent, BaseNode, None] after dependency is fixed.
+  root_agent: Union[BaseAgent, Any, None] = None
+  """The root agent or node in the application.
+
+  Accepts either a BaseAgent or a BaseNode instance.
+  """
 
   plugins: list[BasePlugin] = Field(default_factory=list)
   """The plugins in the application."""
@@ -146,6 +94,16 @@ class App(BaseModel):
   """
 
   @model_validator(mode="after")
-  def _validate_name(self) -> App:
+  def _validate(self) -> App:
     validate_app_name(self.name)
+    if self.root_agent is None:
+      raise ValueError("root_agent must be provided.")
+
+    from ..workflow._base_node import BaseNode
+
+    if not isinstance(self.root_agent, (BaseAgent, BaseNode)):
+      raise TypeError(
+          "root_agent must be a BaseAgent or BaseNode instance, got"
+          f" {type(self.root_agent).__name__}"
+      )
     return self

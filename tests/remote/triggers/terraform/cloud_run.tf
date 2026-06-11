@@ -14,7 +14,7 @@
 
 # ---------------------------------------------------------------------------
 # ADK Agent for trigger testing.
-# 
+#
 # This configuration references a Cloud Run service that has been deployed
 # manually (e.g. via `gcloud run deploy`) before running Terraform.
 # ---------------------------------------------------------------------------
@@ -23,7 +23,7 @@ locals {
   service_name = var.service_name != null ? var.service_name : "${local.name_prefix}-${local.suffix}"
 }
 
-# Read the service back as a data source so other resources can reference 
+# Read the service back as a data source so other resources can reference
 # its URL and attributes.
 data "google_cloud_run_v2_service" "trigger_agent" {
   name     = local.service_name
@@ -31,5 +31,5 @@ data "google_cloud_run_v2_service" "trigger_agent" {
   project  = var.project_id
 }
 
-# No longer using resource "google_cloud_run_v2_service" to avoid 
+# No longer using resource "google_cloud_run_v2_service" to avoid
 # deployment conflicts with local tools.

@@ -48,7 +48,7 @@ import pytest
 from .. import testing_utils
 
 
-class DummyAuthScheme(SecurityBase):
+class DummyAuthScheme(CustomAuthScheme):
   """A custom auth scheme for testing pluggable auth providers."""
 
   type_: str = "dummy_auth_scheme"
@@ -1121,4 +1121,30 @@ class TestRehydrateCustomScheme:
     ):
       _rehydrate_custom_scheme(
           scheme=custom_scheme, supported_schemes=[DummyAuthScheme]
+      )
+
+  @pytest.mark.asyncio
+  async def test_get_auth_credential_raises_error_when_no_provider_registered(
+      self, mocker
+  ):
+    """Test that a ValueError is raised when no provider is registered for a CustomAuthScheme."""
+
+    class DummyCustomScheme(CustomAuthScheme):
+      type_: str = "dummy_custom_auth_scheme"
+
+    auth_config = mocker.Mock(spec=AuthConfig, instance=True)
+    auth_config.auth_scheme = DummyCustomScheme()
+
+    manager = CredentialManager(auth_config)
+
+    with pytest.raises(
+        ValueError,
+        match=(
+            r"No auth provider registered for custom auth scheme "
+            r"'dummy_custom_auth_scheme'\. "
+            r"Register it using `CredentialManager\.register_auth_provider\("
+        ),
+    ):
+      await manager.get_auth_credential(
+          mocker.Mock(spec=CallbackContext, instance=True)
       )

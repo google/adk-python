@@ -29,10 +29,17 @@ from google.adk.auth.auth_tool import AuthConfig
 from google.adk.auth.base_auth_provider import BaseAuthProvider
 from google.adk.flows.llm_flows.functions import REQUEST_EUC_FUNCTION_CALL_NAME
 from google.api_core.client_options import ClientOptions
-from google.cloud.iamconnectorcredentials_v1alpha import IAMConnectorCredentialsServiceClient as Client
-from google.cloud.iamconnectorcredentials_v1alpha import RetrieveCredentialsMetadata
-from google.cloud.iamconnectorcredentials_v1alpha import RetrieveCredentialsRequest
-from google.cloud.iamconnectorcredentials_v1alpha import RetrieveCredentialsResponse
+
+try:
+  from google.cloud.iamconnectorcredentials_v1alpha import IAMConnectorCredentialsServiceClient as Client
+  from google.cloud.iamconnectorcredentials_v1alpha import RetrieveCredentialsMetadata
+  from google.cloud.iamconnectorcredentials_v1alpha import RetrieveCredentialsRequest
+  from google.cloud.iamconnectorcredentials_v1alpha import RetrieveCredentialsResponse
+except ImportError as e:
+  raise ImportError(
+      "Missing required dependencies for Agent Identity Auth Manager. "
+      'Please install with: pip install "google-adk[agent-identity]"'
+  ) from e
 from google.longrunning.operations_pb2 import Operation
 from typing_extensions import override
 
@@ -75,7 +82,7 @@ def _construct_auth_credential(
     return AuthCredential(
         auth_type=AuthCredentialTypes.HTTP,
         http=HttpAuth(
-            scheme="bearer",
+            scheme="Bearer",
             credentials=HttpCredentials(token=response.token),
         ),
     )
@@ -193,10 +200,7 @@ class GcpAuthProvider(BaseAuthProvider):
     for call_id, _ in euc_responses.items():
       if call_id in euc_calls:
         call = euc_calls[call_id]
-        if (
-            call.args
-            and call.args.get("function_call_id") == target_tool_call_id
-        ):
+        if call.args and call.args.get("functionCallId") == target_tool_call_id:
           return True
     return False
 

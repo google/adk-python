@@ -36,19 +36,21 @@ from ...agents.invocation_context import InvocationContext
 from ...agents.live_request_queue import LiveRequestQueue
 from ...agents.readonly_context import ReadonlyContext
 from ...agents.run_config import StreamingMode
-from ...auth.auth_handler import AuthHandler
 from ...auth.auth_tool import AuthConfig
-from ...auth.credential_manager import CredentialManager
 from ...events.event import Event
 from ...models.base_llm_connection import BaseLlmConnection
+from ...models.google_llm import Gemini
+from ...models.google_llm import GoogleLLMVariant
 from ...models.llm_request import LlmRequest
 from ...models.llm_response import LlmResponse
+from ...telemetry import _instrumentation
 from ...telemetry import tracing
 from ...telemetry.tracing import trace_call_llm
 from ...telemetry.tracing import trace_send_data
 from ...telemetry.tracing import tracer
 from ...tools.base_toolset import BaseToolset
 from ...tools.tool_context import ToolContext
+from ...utils import model_name_utils
 from ...utils.context_utils import Aclosing
 from .audio_cache_manager import AudioCacheManager
 from .functions import build_auth_request_event
@@ -143,10 +145,13 @@ async def _resolve_toolset_auth(
     if not auth_config:
       continue
 
+    auth_config_copy = auth_config.model_copy(deep=True)
+    from ...auth.credential_manager import CredentialManager
+
     try:
-      credential = await CredentialManager(auth_config).get_auth_credential(
-          callback_context
-      )
+      credential = await CredentialManager(
+          auth_config_copy
+      ).get_auth_credential(callback_context)
     except ValueError as e:
       # Validation errors from CredentialManager should be logged but not
       # block the flow - the toolset may still work without auth
@@ -158,19 +163,22 @@ async def _resolve_toolset_auth(
       credential = None
 
     if credential:
-      # Populate in-place for toolset to use in get_tools()
-      auth_config.exchanged_auth_credential = credential
+      # Store in invocation context to avoid data leakage and race conditions
+      invocation_context.credential_by_key[auth_config.credential_key] = (
+          credential
+      )
     else:
       # Need auth - will interrupt
       toolset_id = (
           f'{TOOLSET_AUTH_CREDENTIAL_ID_PREFIX}{type(tool_union).__name__}'
       )
-      pending_auth_requests[toolset_id] = auth_config
+      pending_auth_requests[toolset_id] = auth_config_copy
 
   if not pending_auth_requests:
     return
 
-  # Build auth requests dict with generated auth requests
+  from ...auth.auth_handler import AuthHandler
+
   auth_requests = {
       credential_id: AuthHandler(auth_config).generate_auth_request()
       for credential_id, auth_config in pending_auth_requests.items()
@@ -282,7 +290,7 @@ async def _handle_after_model_callback(
   # First run callbacks from the plugins.
   callback_response = (
       await invocation_context.plugin_manager.run_after_model_callback(
-          callback_context=CallbackContext(invocation_context),
+          callback_context=callback_context,
           llm_response=llm_response,
       )
   )
@@ -370,18 +378,14 @@ async def _run_and_handle_error(
     return None
 
   try:
-    async with Aclosing(response_generator) as agen:
-      async with tracing.use_inference_span(
-          llm_request,
-          invocation_context,
-          model_response_event,
-      ) as gc_span:
+    async with _instrumentation.record_inference_telemetry(
+        llm_request,
+        invocation_context,
+        model_response_event,
+    ) as tel_ctx:
+      async with Aclosing(response_generator) as agen:
         async for llm_response in agen:
-          if gc_span:
-            tracing.trace_inference_result(
-                gc_span,
-                llm_response,
-            )
+          tel_ctx.record_llm_response(invocation_context, llm_response)
           yield llm_response
   except Exception as model_error:
     callback_context = CallbackContext(
@@ -417,21 +421,52 @@ async def _process_agent_tools(
   instances, and calls ``process_llm_request`` on each to register
   tool declarations in the request.
 
+  Tool-union resolution is dispatched concurrently via ``asyncio.gather``
+  to overlap I/O-bound listings (e.g. MCP ``list_tools`` over the
+  network). The subsequent ``process_llm_request`` calls are kept
+  serial in the original ``agent.tools`` order: some tools read/write
+  ``llm_request`` state (e.g. ``GoogleSearchTool`` writes
+  ``llm_request.model``; ``ComputerUseToolset`` performs an idempotency
+  check on ``llm_request.config.tools``) and rely on observing the
+  post-state of earlier tools.
+
   After this function returns, ``llm_request.tools_dict`` maps tool
   names to ``BaseTool`` instances ready for function call dispatch.
 
   Args:
-    invocation_context: The invocation context (``agent`` is read
-      from ``invocation_context.agent``).
+    invocation_context: The invocation context (``agent`` is read from
+      ``invocation_context.agent``).
     llm_request: The LLM request to populate with tool declarations.
   """
   agent = invocation_context.agent
-  if not hasattr(agent, 'tools') or not agent.tools:
+  if agent is None or not hasattr(agent, 'tools') or not agent.tools:
     return
 
   multiple_tools = len(agent.tools) > 1
   model = agent.canonical_model
-  for tool_union in agent.tools:
+
+  from ...agents.llm_agent import _convert_tool_union_to_tools
+
+  # Resolve tool_unions in parallel. ``asyncio.gather`` preserves
+  # input order in the returned list, so the serial commit phase below
+  # still observes ``agent.tools`` order. If any resolution raises,
+  # gather cancels the siblings and propagates -- same observable
+  # behavior as the previous serial loop, which would propagate the
+  # first exception and abandon the rest.
+  resolved_tools_per_union = await asyncio.gather(*(
+      _convert_tool_union_to_tools(
+          tool_union,
+          ReadonlyContext(invocation_context),
+          model,
+          multiple_tools,
+      )
+      for tool_union in agent.tools
+  ))
+
+  # Serial commit phase, in original ``agent.tools`` order. Mutations
+  # to ``llm_request`` and reads of its state (model, config.tools,
+  # tools_dict) preserve today's ordering semantics exactly.
+  for tool_union, tools in zip(agent.tools, resolved_tools_per_union):
     tool_context = ToolContext(invocation_context)
 
     # If it's a toolset, process it first
@@ -440,15 +475,7 @@ async def _process_agent_tools(
           tool_context=tool_context, llm_request=llm_request
       )
 
-    from ...agents.llm_agent import _convert_tool_union_to_tools
-
     # Then process all tools from this tool union
-    tools = await _convert_tool_union_to_tools(
-        tool_union,
-        ReadonlyContext(invocation_context),
-        model,
-        multiple_tools,
-    )
     for tool in tools:
       await tool.process_llm_request(
           tool_context=tool_context, llm_request=llm_request
@@ -487,6 +514,9 @@ class BaseLlmFlow(ABC):
     if invocation_context.end_invocation:
       return
 
+    agent = invocation_context.agent
+    llm_request.model = agent.canonical_live_model.model
+
     llm = self.__get_llm(invocation_context)
     logger.debug(
         'Establishing live connection for agent: %s with llm request: %s',
@@ -510,13 +540,49 @@ class BaseLlmFlow(ABC):
           llm_request.live_connect_config.session_resumption.handle = (
               invocation_context.live_session_resumption_handle
           )
-          llm_request.live_connect_config.session_resumption.transparent = True
+
+          # Only set transparent=True for Vertex AI backend, as the Gemini API
+          # backend explicitly rejects it.
+          if (
+              isinstance(llm, Gemini)
+              and llm._api_backend == GoogleLLMVariant.VERTEX_AI  # pylint: disable=protected-access
+          ):
+            session_resumption = (
+                llm_request.live_connect_config.session_resumption
+            )
+            if session_resumption.transparent is None:
+              session_resumption.transparent = True
+
+        # When seeding a fresh connection with prior conversation history, set
+        # initial_history_in_client_content to True. This tells the Live server
+        # that the provided history already includes the model's past responses,
+        # preventing the server from generating duplicate responses for those replayed turns.
+        if (
+            llm_request.contents
+            and not invocation_context.live_session_resumption_handle
+        ):
+          if not llm_request.live_connect_config:
+            llm_request.live_connect_config = types.LiveConnectConfig()
+          if not llm_request.live_connect_config.history_config:
+            llm_request.live_connect_config.history_config = (
+                types.HistoryConfig()
+            )
+          if (
+              llm_request.live_connect_config.history_config.initial_history_in_client_content
+              is None
+          ):
+            llm_request.live_connect_config.history_config.initial_history_in_client_content = (
+                True
+            )
 
         logger.info(
             'Establishing live connection for agent: %s',
             invocation_context.agent.name,
         )
         async with llm.connect(llm_request) as llm_connection:
+          # Reset retry count to allow the maximum reconnect attempts for
+          # subsequent connection drops.
+          attempt = 1
           # Skip sending history if we are resuming a session. The server
           # already has the state associated with the resumption handle.
           if (
@@ -546,8 +612,6 @@ class BaseLlmFlow(ABC):
                 )
             ) as agen:
               async for event in agen:
-                # Reset attempt counter on successful communication.
-                attempt = 1
                 # Empty event means the queue is closed.
                 if not event:
                   break
@@ -591,8 +655,20 @@ class BaseLlmFlow(ABC):
                     agent_to_run = self._get_agent_to_run(
                         invocation_context, transfer_to_agent
                     )
+                    child_ctx = invocation_context.model_copy()
+                    # Child Live agent should start a new Live session.
+                    # Do not reuse the parent session's resumption handle.
+                    child_ctx.live_session_resumption_handle = None
+
+                    if child_ctx.run_config:
+                      child_ctx.run_config = child_ctx.run_config.model_copy(
+                          deep=True
+                      )
+                      if child_ctx.run_config.session_resumption:
+                        child_ctx.run_config.session_resumption.handle = None
+
                     async with Aclosing(
-                        agent_to_run.run_live(invocation_context)
+                        agent_to_run.run_live(child_ctx)
                     ) as agen:
                       async for item in agen:
                         yield item
@@ -837,20 +913,22 @@ class BaseLlmFlow(ABC):
     # Long running tool calls should have been handled before this point.
     # If there are still long running tool calls, it means the agent is paused
     # before, and its branch hasn't been resumed yet.
-    if (
-        invocation_context.is_resumable
-        and events
-        and len(events) > 1
-        # TODO: here we are using the last 2 events to decide whether to pause
-        # the invocation. But this is just being optimistic, we should find a
-        # way to pause when the long running tool call is followed by more than
-        # one text responses.
-        and (
-            invocation_context.should_pause_invocation(events[-1])
-            or invocation_context.should_pause_invocation(events[-2])
-        )
-    ):
-      return
+    if invocation_context.is_resumable and events and len(events) > 1:
+      pause = False
+      if invocation_context.should_pause_invocation(events[-1]):
+        pause = True
+      elif invocation_context.should_pause_invocation(events[-2]):
+        # NOTE: This only checks the last 2 events. If an LRO is followed by
+        # multiple text responses, this check may not trigger correctly.
+        # This is a known limitation of the current 2-event window.
+        # Check if the function call in events[-2] is resolved by events[-1]
+        fc_ids = {fc.id for fc in events[-2].get_function_calls()}
+        fr_ids = {fr.id for fr in events[-1].get_function_responses()}
+        if fc_ids and not fc_ids.issubset(fr_ids):
+          pause = True
+
+      if pause:
+        return
 
     if (
         invocation_context.is_resumable
@@ -960,6 +1038,7 @@ class BaseLlmFlow(ABC):
         not llm_response.content
         and not llm_response.error_code
         and not llm_response.interrupted
+        and not llm_response.grounding_metadata
     ):
       return
 
@@ -1024,6 +1103,7 @@ class BaseLlmFlow(ABC):
         and not llm_response.output_transcription
         and not llm_response.usage_metadata
         and not llm_response.live_session_resumption_update
+        and not llm_response.grounding_metadata
     ):
       return
 
@@ -1139,6 +1219,15 @@ class BaseLlmFlow(ABC):
             )
         )
         yield final_event
+
+      # NOTE: This recursive nested execution block is preserved as a backward-compatible
+      # fallback for deprecated execution paths (such as legacy `SequentialAgent`) that
+      # do not run under the modern ADK 2.0 `DynamicNodeScheduler`.
+      #
+      # In modern resumable workflow environments, this block is safely bypassed
+      # because the scheduler wrapper (e.g., `_llm_agent_wrapper.py`) intercepts the
+      # `transfer_to_agent` action at the outer execution frame and exits, returning
+      # control to the top-level coordinator.
       transfer_to_agent = function_response_event.actions.transfer_to_agent
       if transfer_to_agent:
         agent_to_run = self._get_agent_to_run(
@@ -1388,6 +1477,9 @@ class BaseLlmFlow(ABC):
       )
       config['_adk_replay_indexes'] = replay_indexes
       return model
+
+    if invocation_context.live_request_queue is not None:
+      return agent.canonical_live_model
 
     if not hasattr(agent, 'canonical_model'):
       raise TypeError(

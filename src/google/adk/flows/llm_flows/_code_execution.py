@@ -77,6 +77,14 @@ _DATA_FILE_UTIL_MAP = {
 _DATA_FILE_HELPER_LIB = '''
 import pandas as pd
 
+def crop(s: str, max_chars: int = 64) -> str:
+  """Crops a string to max_chars characters."""
+  if len(s) <= max_chars:
+    return s
+  if max_chars >= 3:
+    return s[:max_chars - 3] + '...'
+  return s[:max_chars]
+
 def explore_df(df: pd.DataFrame) -> None:
   """Prints some information about a pandas DataFrame."""
 

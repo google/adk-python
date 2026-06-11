@@ -30,6 +30,7 @@ from google.adk.sessions.base_session_service import GetSessionConfig
 from google.adk.sessions.database_session_service import DatabaseSessionService
 from google.adk.sessions.in_memory_session_service import InMemorySessionService
 from google.adk.sessions.sqlite_session_service import SqliteSessionService
+from google.adk.sessions.vertex_ai_session_service import VertexAiSessionService
 from google.genai import types
 import pytest
 from sqlalchemy import delete
@@ -1014,6 +1015,30 @@ async def test_append_event_allows_markerless_current_session():
 
 
 @pytest.mark.asyncio
+async def test_append_event_when_session_is_same_ref_as_storage_session():
+  """Tests that appending an event to a session only appends it once if the user-passed session and the underlying storage session are the same object."""
+  service = InMemorySessionService()
+  app_name = 'my_app'
+  user_id = 'test_user'
+
+  # Create a session
+  session = await service.create_session(app_name=app_name, user_id=user_id)
+
+  # Get the actual storage event object from the underlying storage
+  storage_session = service.sessions[app_name][user_id][session.id]
+
+  # Append the event to the storage session directly
+  event = Event(invocation_id='inv1', author='user')
+  await service.append_event(session=storage_session, event=event)
+
+  # Verify that the storage session has only one event
+  final_session = await service.get_session(
+      app_name=app_name, user_id=user_id, session_id=session.id
+  )
+  assert len(final_session.events) == 1
+
+
+@pytest.mark.asyncio
 async def test_get_session_with_config(session_service):
   app_name = 'my_app'
   user_id = 'user'
@@ -1032,6 +1057,13 @@ async def test_get_session_with_config(session_service):
   )
   events = session.events
   assert len(events) == num_test_events
+
+  # Explicitly requesting zero recent events should return no event history.
+  config = GetSessionConfig(num_recent_events=0)
+  session = await session_service.get_session(
+      app_name=app_name, user_id=user_id, session_id=session.id, config=config
+  )
+  assert not session.events
 
   # Only expect the most recent 3 events.
   num_recent_events = 3
@@ -1728,6 +1760,38 @@ async def test_session_data_transformer():
     await service.close()
 
 
+@pytest.mark.asyncio
+async def test_transformer_does_not_leak_mutation():
+  service = DatabaseSessionService(
+      'sqlite+aiosqlite:///:memory:', transformer=MockPIIMaskerTransformer()
+  )
+  try:
+    input_state = {'app:secret': 'foo', 'user:pii': 'bar'}
+    session = await service.create_session(
+        app_name='app',
+        user_id='user',
+        session_id='s1',
+        state=input_state,
+    )
+    # Check that input_state was not modified
+    assert input_state == {'app:secret': 'foo', 'user:pii': 'bar'}
+    assert session.state == {'app:secret': 'foo', 'user:pii': 'bar'}
+
+    event = Event(
+        invocation_id='inv1',
+        author='user',
+        actions=EventActions(state_delta={'sk1': 'pass'}),
+    )
+    returned_event = await service.append_event(session, event)
+
+    # Check that event in memory was not modified
+    assert event.invocation_id == 'inv1'
+    assert returned_event.invocation_id == 'inv1'
+    assert session.events[0].invocation_id == 'inv1'
+  finally:
+    await service.close()
+
+
 class ErrorMaskerTransformer:
 
   def before_persist_state(self, state):
@@ -1758,3 +1822,129 @@ async def test_session_data_transformer_handles_exception():
       )
   finally:
     await service.close()
+
+
+@pytest.mark.asyncio
+async def test_get_user_state_returns_empty_dict_when_no_state_exists(
+    session_service,
+):
+  """Verifies get_user_state returns empty dict when no state exists."""
+  state = await session_service.get_user_state(app_name='my_app', user_id='u1')
+  assert not state
+
+
+@pytest.mark.asyncio
+async def test_get_user_state_returns_state_written_via_append_event(
+    session_service,
+):
+  """Verifies get_user_state returns state written via append_event."""
+  session = await session_service.create_session(
+      app_name='my_app', user_id='u1'
+  )
+  await session_service.append_event(
+      session,
+      Event(
+          author='system',
+          actions=EventActions(
+              state_delta={'user:profile': {'name': 'Alice'}, 'session_key': 1}
+          ),
+      ),
+  )
+
+  state = await session_service.get_user_state(app_name='my_app', user_id='u1')
+
+  assert state == {'profile': {'name': 'Alice'}}
+  assert 'session_key' not in state
+
+
+@pytest.mark.asyncio
+async def test_get_user_state_is_not_visible_across_users(session_service):
+  """Verifies user state is isolated between users."""
+  session = await session_service.create_session(
+      app_name='my_app', user_id='u1'
+  )
+  await session_service.append_event(
+      session,
+      Event(
+          author='system',
+          actions=EventActions(state_delta={'user:secret': 'only-for-u1'}),
+      ),
+  )
+
+  other_state = await session_service.get_user_state(
+      app_name='my_app', user_id='u2'
+  )
+  assert not other_state
+
+
+@pytest.mark.asyncio
+async def test_get_user_state_is_not_visible_across_apps(session_service):
+  """Verifies user state is isolated between apps."""
+  session = await session_service.create_session(
+      app_name='my_app', user_id='u1'
+  )
+  await session_service.append_event(
+      session,
+      Event(
+          author='system',
+          actions=EventActions(state_delta={'user:data': 'only-app-a'}),
+      ),
+  )
+
+  other_state = await session_service.get_user_state(
+      app_name='other_app', user_id='u1'
+  )
+  assert not other_state
+
+
+@pytest.mark.asyncio
+async def test_get_user_state_available_before_session_is_created(
+    session_service,
+):
+  """Verifies user state can be retrieved before a session is created."""
+  first_session = await session_service.create_session(
+      app_name='my_app', user_id='u1'
+  )
+  await session_service.append_event(
+      first_session,
+      Event(
+          author='system',
+          actions=EventActions(state_delta={'user:ctx': {'v': 1}}),
+      ),
+  )
+
+  state = await session_service.get_user_state(app_name='my_app', user_id='u1')
+  assert state == {'ctx': {'v': 1}}
+
+
+@pytest.mark.asyncio
+async def test_get_user_state_reflects_latest_write(session_service):
+  """Verifies get_user_state returns the latest state."""
+  session = await session_service.create_session(
+      app_name='my_app', user_id='u1'
+  )
+  await session_service.append_event(
+      session,
+      Event(
+          author='system',
+          actions=EventActions(state_delta={'user:counter': 1}),
+      ),
+  )
+  await session_service.append_event(
+      session,
+      Event(
+          author='system',
+          actions=EventActions(state_delta={'user:counter': 2}),
+      ),
+  )
+
+  state = await session_service.get_user_state(app_name='my_app', user_id='u1')
+  assert state['counter'] == 2
+
+
+@pytest.mark.asyncio
+async def test_vertex_ai_session_service_raises_not_implemented_for_get_user_state():
+  """Verifies VertexAiSessionService raises NotImplementedError."""
+  service = VertexAiSessionService(project='proj', location='us-central1')
+  with pytest.raises(NotImplementedError):
+    await service.get_user_state(app_name='my_app', user_id='u1')

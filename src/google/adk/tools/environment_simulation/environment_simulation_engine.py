@@ -18,7 +18,6 @@ import asyncio
 import concurrent.futures
 import logging
 import random
-import time
 from typing import Any
 from typing import Dict
 from typing import Optional
@@ -107,7 +106,7 @@ class EnvironmentSimulationEngine:
           self._random_generator.random()
           < injection_config.injection_probability
       ):
-        time.sleep(injection_config.injected_latency_seconds)
+        await asyncio.sleep(injection_config.injected_latency_seconds)
         if injection_config.injected_error:
           return {
               "error_code": (

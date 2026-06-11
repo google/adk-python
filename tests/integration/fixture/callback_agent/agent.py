@@ -84,21 +84,21 @@ def after_model_call(
 
 
 before_agent_callback_agent = Agent(
-    model='gemini-1.5-flash',
+    model='gemini-2.5-flash',
     name='before_agent_callback_agent',
     instruction='echo 1',
     before_agent_callback=before_agent_call_end_invocation,
 )
 
 before_model_callback_agent = Agent(
-    model='gemini-1.5-flash',
+    model='gemini-2.5-flash',
     name='before_model_callback_agent',
     instruction='echo 2',
     before_model_callback=before_model_call_end_invocation,
 )
 
 after_model_callback_agent = Agent(
-    model='gemini-1.5-flash',
+    model='gemini-2.5-flash',
     name='after_model_callback_agent',
     instruction='Say hello',
     after_model_callback=after_model_call,

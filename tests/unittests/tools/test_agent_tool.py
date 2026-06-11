@@ -12,15 +12,18 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import asyncio
 from typing import Any
 from typing import Optional
 
+from google.adk.agents.base_agent import BaseAgent
 from google.adk.agents.callback_context import CallbackContext
 from google.adk.agents.invocation_context import InvocationContext
 from google.adk.agents.llm_agent import Agent
 from google.adk.agents.run_config import RunConfig
 from google.adk.agents.sequential_agent import SequentialAgent
 from google.adk.artifacts.in_memory_artifact_service import InMemoryArtifactService
+from google.adk.events.event import Event
 from google.adk.features import FeatureName
 from google.adk.features._feature_registry import temporary_feature_override
 from google.adk.memory.in_memory_memory_service import InMemoryMemoryService
@@ -28,6 +31,7 @@ from google.adk.models.llm_request import LlmRequest
 from google.adk.models.llm_response import LlmResponse
 from google.adk.plugins.base_plugin import BasePlugin
 from google.adk.plugins.plugin_manager import PluginManager
+from google.adk.runners import Runner
 from google.adk.sessions.in_memory_session_service import InMemorySessionService
 from google.adk.tools.agent_tool import AgentTool
 from google.adk.tools.tool_context import ToolContext
@@ -370,7 +374,7 @@ async def test_update_artifacts():
     'env_variables',
     [
         'GOOGLE_AI',
-        # TODO(wanyif): re-enable after fix.
+        # TODO: re-enable after fix.
         # 'VERTEX',
     ],
     indirect=True,
@@ -441,11 +445,21 @@ def test_agent_tool_response_schema_no_output_schema_vertex_ai(
   declaration = agent_tool._get_declaration()
 
   assert declaration.name == 'tool_agent'
-  assert declaration.parameters.type == 'OBJECT'
-  assert declaration.parameters.properties['request'].type == 'STRING'
-  # Should have string response schema for VERTEX_AI
-  assert declaration.response is not None
-  assert declaration.response.type == types.Type.STRING
+
+  from google.adk.features import is_feature_enabled
+
+  if is_feature_enabled(FeatureName.JSON_SCHEMA_FOR_FUNC_DECL):
+    assert declaration.parameters_json_schema == {
+        'type': 'object',
+        'properties': {'request': {'type': 'string'}},
+        'required': ['request'],
+    }
+    assert declaration.response_json_schema == {'type': 'string'}
+  else:
+    assert declaration.parameters.type == 'OBJECT'
+    assert declaration.parameters.properties['request'].type == 'STRING'
+    assert declaration.response is not None
+    assert declaration.response.type == types.Type.STRING
 
 
 @mark.parametrize(
@@ -474,8 +488,13 @@ def test_agent_tool_response_schema_with_output_schema_vertex_ai(
 
   assert declaration.name == 'tool_agent'
   # Should have object response schema for VERTEX_AI when output_schema exists
-  assert declaration.response is not None
-  assert declaration.response.type == types.Type.OBJECT
+  from google.adk.features import is_feature_enabled
+
+  if is_feature_enabled(FeatureName.JSON_SCHEMA_FOR_FUNC_DECL):
+    assert declaration.response_json_schema == {'type': 'object'}
+  else:
+    assert declaration.response is not None
+    assert declaration.response.type == types.Type.OBJECT
 
 
 @mark.parametrize(
@@ -536,11 +555,24 @@ def test_agent_tool_response_schema_with_input_schema_vertex_ai(
   declaration = agent_tool._get_declaration()
 
   assert declaration.name == 'tool_agent'
-  assert declaration.parameters.type == 'OBJECT'
-  assert declaration.parameters.properties['custom_input'].type == 'STRING'
-  # Should have object response schema for VERTEX_AI when output_schema exists
-  assert declaration.response is not None
-  assert declaration.response.type == types.Type.OBJECT
+  from google.adk.features import is_feature_enabled
+
+  if is_feature_enabled(FeatureName.JSON_SCHEMA_FOR_FUNC_DECL):
+    assert declaration.parameters_json_schema == {
+        'title': 'CustomInput',
+        'type': 'object',
+        'properties': {
+            'custom_input': {'title': 'Custom Input', 'type': 'string'}
+        },
+        'required': ['custom_input'],
+    }
+    assert declaration.response_json_schema == {'type': 'object'}
+  else:
+    assert declaration.parameters.type == 'OBJECT'
+    assert declaration.parameters.properties['custom_input'].type == 'STRING'
+    # Should have object response schema for VERTEX_AI when output_schema exists
+    assert declaration.response is not None
+    assert declaration.response.type == types.Type.OBJECT
 
 
 @mark.parametrize(
@@ -568,11 +600,24 @@ def test_agent_tool_response_schema_with_input_schema_no_output_vertex_ai(
   declaration = agent_tool._get_declaration()
 
   assert declaration.name == 'tool_agent'
-  assert declaration.parameters.type == 'OBJECT'
-  assert declaration.parameters.properties['custom_input'].type == 'STRING'
-  # Should have string response schema for VERTEX_AI when no output_schema
-  assert declaration.response is not None
-  assert declaration.response.type == types.Type.STRING
+  from google.adk.features import is_feature_enabled
+
+  if is_feature_enabled(FeatureName.JSON_SCHEMA_FOR_FUNC_DECL):
+    assert declaration.parameters_json_schema == {
+        'title': 'CustomInput',
+        'type': 'object',
+        'properties': {
+            'custom_input': {'title': 'Custom Input', 'type': 'string'}
+        },
+        'required': ['custom_input'],
+    }
+    assert declaration.response_json_schema == {'type': 'string'}
+  else:
+    assert declaration.parameters.type == 'OBJECT'
+    assert declaration.parameters.properties['custom_input'].type == 'STRING'
+    # Should have string response schema for VERTEX_AI when no output_schema
+    assert declaration.response is not None
+    assert declaration.response.type == types.Type.STRING
 
 
 def test_include_plugins_default_true():
@@ -608,7 +653,7 @@ def test_include_plugins_default_true():
   runner = testing_utils.InMemoryRunner(root_agent, plugins=[tracking_plugin])
   runner.run('test1')
 
-  # Plugin should be called for both root_agent and tool_agent
+  # Plugin should be called for both root_agent and tool_agent.
   assert tracking_plugin.before_agent_calls == 2
 
 
@@ -644,7 +689,7 @@ def test_include_plugins_explicit_true():
   runner = testing_utils.InMemoryRunner(root_agent, plugins=[tracking_plugin])
   runner.run('test1')
 
-  # Plugin should be called for both root_agent and tool_agent
+  # Plugin should be called for both root_agent and tool_agent.
   assert tracking_plugin.before_agent_calls == 2
 
 
@@ -680,8 +725,63 @@ def test_include_plugins_false():
   runner = testing_utils.InMemoryRunner(root_agent, plugins=[tracking_plugin])
   runner.run('test1')
 
-  # Plugin should only be called for root_agent, not tool_agent
+  # Plugin should only be called for root_agent, not tool_agent.
   assert tracking_plugin.before_agent_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_include_plugins_true_sub_runner_does_not_close_parent_plugins():
+  """Sub-Runner must not close plugins owned by the parent runner."""
+
+  class SlowClosePlugin(BasePlugin):
+
+    def __init__(self, name: str):
+      super().__init__(name)
+      self.close_calls = 0
+
+    async def close(self):
+      self.close_calls += 1
+      # Would otherwise blow past the sub-Runner's plugin_close_timeout.
+      await asyncio.sleep(10)
+
+  parent_plugin = SlowClosePlugin(name='parent_plugin')
+
+  mock_model = testing_utils.MockModel.create(
+      responses=[function_call_no_schema, 'response1', 'response2']
+  )
+
+  tool_agent = Agent(name='tool_agent', model=mock_model)
+  root_agent = Agent(
+      name='root_agent',
+      model=mock_model,
+      tools=[AgentTool(agent=tool_agent, include_plugins=True)],
+  )
+
+  runner = Runner(
+      app_name='test_app',
+      agent=root_agent,
+      artifact_service=InMemoryArtifactService(),
+      session_service=InMemorySessionService(),
+      memory_service=InMemoryMemoryService(),
+      plugins=[parent_plugin],
+      # Tight timeout amplifies the bug if it regresses; with the fix, the
+      # sub-Runner's close skips the parent's plugins entirely.
+      plugin_close_timeout=0.01,
+  )
+  session = await runner.session_service.create_session(
+      app_name='test_app', user_id='test_user'
+  )
+  # Must not raise RuntimeError("Failed to close plugins: ...") from the
+  # sub-Runner closing the parent's slow-to-close plugin.
+  async for _ in runner.run_async(
+      user_id=session.user_id,
+      session_id=session.id,
+      new_message=testing_utils.get_user_content('test1'),
+  ):
+    pass
+
+  # The sub-Runner must not have closed the parent's plugin.
+  assert parent_plugin.close_calls == 0
 
 
 def test_agent_tool_description_with_input_schema():
@@ -944,6 +1044,109 @@ async def test_run_async_handles_none_parts_in_response():
   assert tool_result == ''
 
 
+async def _run_agent_tool_with_parts(parts: list[types.Part]) -> Any:
+  """Drives AgentTool with an inner agent whose final event content is `parts`."""
+
+  class _StaticAgent(BaseAgent):
+
+    async def _run_async_impl(self, ctx):
+      yield Event(
+          invocation_id=ctx.invocation_id,
+          author=self.name,
+          content=types.Content(role='model', parts=parts),
+      )
+
+  inner = _StaticAgent(name='inner_agent', description='static')
+  agent_tool = AgentTool(agent=inner)
+
+  session_service = InMemorySessionService()
+  session = await session_service.create_session(
+      app_name='test_app', user_id='test_user'
+  )
+  invocation_context = InvocationContext(
+      invocation_id='invocation_id',
+      agent=inner,
+      session=session,
+      session_service=session_service,
+  )
+  tool_context = ToolContext(invocation_context=invocation_context)
+
+  return await agent_tool.run_async(
+      args={'request': 'test request'}, tool_context=tool_context
+  )
+
+
+@mark.asyncio
+async def test_run_async_extracts_text_only():
+  """Plain text parts pass through unchanged."""
+  result = await _run_agent_tool_with_parts([types.Part(text='hello world')])
+  assert result == 'hello world'
+
+
+@mark.asyncio
+async def test_run_async_extracts_code_execution_result_only():
+  """code_execution_result.output and executable_code.code are returned."""
+  result = await _run_agent_tool_with_parts([
+      types.Part(
+          executable_code=types.ExecutableCode(
+              language=types.Language.PYTHON, code='print(2 ** 10)'
+          )
+      ),
+      types.Part(
+          code_execution_result=types.CodeExecutionResult(
+              outcome=types.Outcome.OUTCOME_OK, output='1024\n'
+          )
+      ),
+  ])
+  assert result == 'print(2 ** 10)\n1024'
+
+
+@mark.asyncio
+async def test_run_async_extracts_text_and_code_execution_result():
+  """Mixed text + code parts are concatenated in order."""
+  result = await _run_agent_tool_with_parts([
+      types.Part(text='Here is the answer:'),
+      types.Part(
+          executable_code=types.ExecutableCode(
+              language=types.Language.PYTHON, code='print(2 ** 10)'
+          )
+      ),
+      types.Part(
+          code_execution_result=types.CodeExecutionResult(
+              outcome=types.Outcome.OUTCOME_OK, output='1024\n'
+          )
+      ),
+  ])
+  assert result == 'Here is the answer:\nprint(2 ** 10)\n1024'
+
+
+@mark.asyncio
+async def test_run_async_extracts_executable_code_only():
+  """executable_code.code alone is returned when no result part follows."""
+  result = await _run_agent_tool_with_parts([
+      types.Part(
+          executable_code=types.ExecutableCode(
+              language=types.Language.PYTHON, code='print("hi")'
+          )
+      ),
+  ])
+  assert result == 'print("hi")'
+
+
+@mark.asyncio
+async def test_run_async_skips_thought_parts():
+  """Parts marked thought=True are dropped regardless of kind."""
+  result = await _run_agent_tool_with_parts([
+      types.Part(text='thinking out loud', thought=True),
+      types.Part(
+          code_execution_result=types.CodeExecutionResult(
+              outcome=types.Outcome.OUTCOME_OK, output='42\n'
+          )
+      ),
+  ])
+  assert result == '42'
+
+
 class TestAgentToolWithCompositeAgents:
   """Tests for AgentTool wrapping composite agents (SequentialAgent, etc.)."""
 
@@ -977,9 +1180,23 @@ class TestAgentToolWithCompositeAgents:
     # Should expose CustomInput schema, not fallback to 'request'
     assert declaration.name == 'sequence'
     assert declaration.description == 'Process the query through multiple steps'
-    assert declaration.parameters.properties['query'].type == 'STRING'
-    assert declaration.parameters.properties['language'].type == 'STRING'
-    assert 'request' not in declaration.parameters.properties
+
+    from google.adk.features import is_feature_enabled
+
+    if is_feature_enabled(FeatureName.JSON_SCHEMA_FOR_FUNC_DECL):
+      assert declaration.parameters_json_schema == {
+          'title': 'CustomInput',
+          'type': 'object',
+          'properties': {
+              'query': {'title': 'Query', 'type': 'string'},
+              'language': {'title': 'Language', 'type': 'string'},
+          },
+          'required': ['query', 'language'],
+      }
+    else:
+      assert declaration.parameters.properties['query'].type == 'STRING'
+      assert declaration.parameters.properties['language'].type == 'STRING'
+      assert 'request' not in declaration.parameters.properties
 
   def test_sequential_agent_without_input_schema_falls_back_to_request(self):
     """Test that AgentTool falls back to 'request' when no sub-agent has input_schema."""
@@ -1005,8 +1222,18 @@ class TestAgentToolWithCompositeAgents:
 
     # Should fall back to 'request' parameter
     assert declaration.name == 'sequence'
-    assert declaration.parameters.properties['request'].type == 'STRING'
-    assert 'query' not in declaration.parameters.properties
+
+    from google.adk.features import is_feature_enabled
+
+    if is_feature_enabled(FeatureName.JSON_SCHEMA_FOR_FUNC_DECL):
+      assert declaration.parameters_json_schema == {
+          'type': 'object',
+          'properties': {'request': {'type': 'string'}},
+          'required': ['request'],
+      }
+    else:
+      assert declaration.parameters.properties['request'].type == 'STRING'
+      assert 'query' not in declaration.parameters.properties
 
   @mark.parametrize(
       'env_variables',
@@ -1044,8 +1271,13 @@ class TestAgentToolWithCompositeAgents:
     declaration = agent_tool._get_declaration()
 
     # Should have object response schema from last sub-agent
-    assert declaration.response is not None
-    assert declaration.response.type == types.Type.OBJECT
+    from google.adk.features import is_feature_enabled
+
+    if is_feature_enabled(FeatureName.JSON_SCHEMA_FOR_FUNC_DECL):
+      assert declaration.response_json_schema == {'type': 'object'}
+    else:
+      assert declaration.response is not None
+      assert declaration.response.type == types.Type.OBJECT
 
   def test_nested_sequential_agent_input_schema(self):
     """Test that AgentTool recursively finds input_schema in nested composite agents."""
@@ -1075,9 +1307,22 @@ class TestAgentToolWithCompositeAgents:
 
     # Should recursively find CustomInput from inner_agent
     assert declaration.name == 'outer_sequence'
-    assert 'deep_query' in declaration.parameters.properties
-    assert declaration.parameters.properties['deep_query'].type == 'STRING'
-    assert 'request' not in declaration.parameters.properties
+
+    from google.adk.features import is_feature_enabled
+
+    if is_feature_enabled(FeatureName.JSON_SCHEMA_FOR_FUNC_DECL):
+      assert declaration.parameters_json_schema == {
+          'title': 'CustomInput',
+          'type': 'object',
+          'properties': {
+              'deep_query': {'title': 'Deep Query', 'type': 'string'}
+          },
+          'required': ['deep_query'],
+      }
+    else:
+      assert 'deep_query' in declaration.parameters.properties
+      assert declaration.parameters.properties['deep_query'].type == 'STRING'
+      assert 'request' not in declaration.parameters.properties
 
   @mark.parametrize(
       'env_variables',
@@ -1145,10 +1390,23 @@ class TestAgentToolWithCompositeAgents:
 
     sequence_tool = tool_declarations[0].function_declarations[0]
     assert sequence_tool.name == 'sequence'
-    # Should have 'custom_input' parameter from first sub-agent's input_schema
-    assert 'custom_input' in sequence_tool.parameters.properties
-    # Should NOT have the fallback 'request' parameter
-    assert 'request' not in sequence_tool.parameters.properties
+
+    from google.adk.features import is_feature_enabled
+
+    if is_feature_enabled(FeatureName.JSON_SCHEMA_FOR_FUNC_DECL):
+      assert sequence_tool.parameters_json_schema == {
+          'title': 'CustomInput',
+          'type': 'object',
+          'properties': {
+              'custom_input': {'title': 'Custom Input', 'type': 'string'}
+          },
+          'required': ['custom_input'],
+      }
+    else:
+      # Should have 'custom_input' parameter from first sub-agent's input_schema
+      assert 'custom_input' in sequence_tool.parameters.properties
+      # Should NOT have the fallback 'request' parameter
+      assert 'request' not in sequence_tool.parameters.properties
 
   def test_empty_sequential_agent_falls_back_to_request(self):
     """Test that AgentTool with empty SequentialAgent falls back to 'request'."""
@@ -1163,4 +1421,13 @@ class TestAgentToolWithCompositeAgents:
     declaration = agent_tool._get_declaration()
 
     # Should fall back to 'request' parameter
-    assert declaration.parameters.properties['request'].type == 'STRING'
+    from google.adk.features import is_feature_enabled
+
+    if is_feature_enabled(FeatureName.JSON_SCHEMA_FOR_FUNC_DECL):
+      assert declaration.parameters_json_schema == {
+          'type': 'object',
+          'properties': {'request': {'type': 'string'}},
+          'required': ['request'],
+      }
+    else:
+      assert declaration.parameters.properties['request'].type == 'STRING'

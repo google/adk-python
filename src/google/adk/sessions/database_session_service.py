@@ -26,19 +26,23 @@ from typing import TypeAlias
 from typing import TypeVar
 
 from google.adk.platform import time as platform_time
-from sqlalchemy import delete
-from sqlalchemy import event
-from sqlalchemy import MetaData
-from sqlalchemy import select
-from sqlalchemy.engine import Connection
-from sqlalchemy.engine import make_url
-from sqlalchemy.exc import ArgumentError
-from sqlalchemy.exc import IntegrityError
-from sqlalchemy.ext.asyncio import async_sessionmaker
-from sqlalchemy.ext.asyncio import AsyncEngine
-from sqlalchemy.ext.asyncio import AsyncSession as DatabaseSessionFactory
-from sqlalchemy.ext.asyncio import create_async_engine
-from sqlalchemy.pool import StaticPool
+
+try:
+  from sqlalchemy import delete
+  from sqlalchemy import event
+  from sqlalchemy import MetaData
+  from sqlalchemy import select
+  from sqlalchemy.engine import Connection
+  from sqlalchemy.engine import make_url
+  from sqlalchemy.exc import ArgumentError
+  from sqlalchemy.exc import IntegrityError
+  from sqlalchemy.ext.asyncio import async_sessionmaker
+  from sqlalchemy.ext.asyncio import AsyncEngine
+  from sqlalchemy.ext.asyncio import AsyncSession as DatabaseSessionFactory
+  from sqlalchemy.ext.asyncio import create_async_engine
+  from sqlalchemy.pool import StaticPool
+except ImportError:
+  pass
 from typing_extensions import override
 
 from . import _session_util
@@ -201,6 +205,13 @@ class DatabaseSessionService(BaseSessionService):
     # 2. Create all tables based on schema
     # 3. Initialize all properties
     try:
+      import sqlalchemy
+    except ImportError as e:
+      from ..utils._dependency import missing_extra
+
+      raise missing_extra("sqlalchemy", "db") from e
+
+    try:
       engine_kwargs = dict(kwargs)
       url = make_url(db_url)
       if (
@@ -326,7 +337,7 @@ class DatabaseSessionService(BaseSessionService):
         else:
           self._session_lock_ref_count[lock_key] = remaining
 
-  async def _prepare_tables(self):
+  async def _prepare_tables(self) -> None:
     """Ensure database tables are ready for use.
 
     This method is called lazily before each database operation. It checks the
@@ -454,11 +465,14 @@ class DatabaseSessionService(BaseSessionService):
       )
 
       # Extract state deltas
-      transformed_state = (
-          self.transformer.before_persist_state(state)
-          if self.transformer and state is not None
-          else state
-      )
+      if self.transformer and state is not None:
+        import copy
+
+        transformed_state = self.transformer.before_persist_state(
+            copy.deepcopy(state)
+        )
+      else:
+        transformed_state = state
       state_deltas = _session_util.extract_state_delta(transformed_state)
       app_state_delta = state_deltas["app"]
       user_state_delta = state_deltas["user"]
@@ -530,12 +544,14 @@ class DatabaseSessionService(BaseSessionService):
       )
 
       if config and config.after_timestamp:
-        after_dt = datetime.fromtimestamp(config.after_timestamp)
+        after_dt = datetime.fromtimestamp(
+            config.after_timestamp, timezone.utc
+        ).replace(tzinfo=None)
         stmt = stmt.filter(schema.StorageEvent.timestamp >= after_dt)
 
       stmt = stmt.order_by(schema.StorageEvent.timestamp.desc())
 
-      if config and config.num_recent_events:
+      if config and config.num_recent_events is not None:
         stmt = stmt.limit(config.num_recent_events)
 
       result = await sql_session.execute(stmt)
@@ -641,6 +657,22 @@ class DatabaseSessionService(BaseSessionService):
       await sql_session.commit()
 
   @override
+  async def get_user_state(
+      self, *, app_name: str, user_id: str
+  ) -> dict[str, Any]:
+    await self._prepare_tables()
+    schema = self._get_schema_classes()
+    async with self._rollback_on_exception_session(
+        read_only=True
+    ) as sql_session:
+      storage_user_state = await sql_session.get(
+          schema.StorageUserState, (app_name, user_id)
+      )
+      if storage_user_state is None:
+        return {}
+      return dict(storage_user_state.state or {})
+
+  @override
   async def append_event(self, session: Session, event: Event) -> Event:
     await self._prepare_tables()
     if event.partial:
@@ -665,7 +697,11 @@ class DatabaseSessionService(BaseSessionService):
         else {}
     )
     if self.transformer:
-      state_delta = self.transformer.before_persist_state(state_delta)
+      import copy
+
+      state_delta = self.transformer.before_persist_state(
+          copy.deepcopy(state_delta)
+      )
     state_deltas = _session_util.extract_state_delta(state_delta)
     has_app_delta = bool(state_deltas["app"])
     has_user_delta = bool(state_deltas["user"])
@@ -754,19 +790,22 @@ class DatabaseSessionService(BaseSessionService):
               storage_session.state | state_deltas["session"]
           )
 
-        if is_sqlite:
-          update_time = datetime.fromtimestamp(
-              event.timestamp, timezone.utc
-          ).replace(tzinfo=None)
-        else:
-          update_time = datetime.fromtimestamp(event.timestamp)
+        update_time = datetime.fromtimestamp(
+            event.timestamp, timezone.utc
+        ).replace(tzinfo=None)
         storage_session.update_time = update_time
 
-        transformed_event = (
-            self.transformer.before_persist_event(event)
-            if self.transformer
-            else event
-        )
+        if self.transformer:
+          import copy
+
+          event_copy = (
+              event.model_copy(deep=True)
+              if hasattr(event, "model_copy")
+              else copy.deepcopy(event)
+          )
+          transformed_event = self.transformer.before_persist_event(event_copy)
+        else:
+          transformed_event = event
         sql_session.add(
             schema.StorageEvent.from_event(session, transformed_event)
         )

@@ -99,36 +99,46 @@ def integration_tool_with_auth(mock_rest_api_tool):
   )
 
 
-def test_get_declaration(integration_tool):
-  """Tests the generation of the function declaration."""
-  declaration = integration_tool._get_declaration()
+class TestIntegrationConnectorToolLegacy:
 
-  assert isinstance(declaration, FunctionDeclaration)
-  assert declaration.name == "test_integration_tool"
-  assert declaration.description == "Test integration tool description."
+  @pytest.fixture(autouse=True)
+  def disable_feature_flag(self):
+    """Disable the JSON_SCHEMA_FOR_FUNC_DECL feature flag for legacy tests."""
+    with temporary_feature_override(
+        FeatureName.JSON_SCHEMA_FOR_FUNC_DECL, False
+    ):
+      yield
 
-  # Check parameters schema
-  params = declaration.parameters
-  assert isinstance(params, Schema)
-  print(f"params: {params}")
-  assert params.type == Type.OBJECT
+  def test_get_declaration(self, integration_tool):
+    """Tests the generation of the function declaration."""
+    declaration = integration_tool._get_declaration()
 
-  # Check properties (excluded fields should not be present)
-  assert "user_id" in params.properties
-  assert "connection_name" not in params.properties
-  assert "host" not in params.properties
-  assert "service_name" not in params.properties
-  assert "entity" not in params.properties
-  assert "operation" not in params.properties
-  assert "action" not in params.properties
-  assert "page_size" in params.properties
-  assert "filter" in params.properties
+    assert isinstance(declaration, FunctionDeclaration)
+    assert declaration.name == "test_integration_tool"
+    assert declaration.description == "Test integration tool description."
 
-  # Check required fields (optional and excluded fields should not be required)
-  assert "user_id" in params.required
-  assert "page_size" not in params.required
-  assert "filter" not in params.required
-  assert "connection_name" not in params.required
+    # Check parameters schema
+    params = declaration.parameters
+    assert isinstance(params, Schema)
+    print(f"params: {params}")
+    assert params.type == Type.OBJECT
+
+    # Check properties (excluded fields should not be present)
+    assert "user_id" in params.properties
+    assert "connection_name" not in params.properties
+    assert "host" not in params.properties
+    assert "service_name" not in params.properties
+    assert "entity" not in params.properties
+    assert "operation" not in params.properties
+    assert "action" not in params.properties
+    assert "page_size" in params.properties
+    assert "filter" in params.properties
+
+    # Check required fields (optional and excluded fields should not be required)
+    assert "user_id" in params.required
+    assert "page_size" not in params.required
+    assert "filter" not in params.required
+    assert "connection_name" not in params.required
 
 
 @pytest.mark.asyncio
@@ -258,21 +268,27 @@ async def test_run_with_auth_async(
     assert result == {"status": "success", "data": "mock_data"}
 
 
-def test_get_declaration_with_json_schema_feature_enabled(integration_tool):
-  """Tests the generation of the function declaration with JSON schema feature enabled."""
-  with temporary_feature_override(FeatureName.JSON_SCHEMA_FOR_FUNC_DECL, True):
-    declaration = integration_tool._get_declaration()
+class TestIntegrationConnectorToolWithJsonSchema:
 
-  assert isinstance(declaration, FunctionDeclaration)
-  assert declaration.name == "test_integration_tool"
-  assert declaration.description == "Test integration tool description."
-  assert declaration.parameters is None
-  assert declaration.parameters_json_schema == {
-      "type": "object",
-      "properties": {
-          "user_id": {"type": "string", "description": "User ID"},
-          "page_size": {"type": "integer"},
-          "filter": {"type": "string"},
-      },
-      "required": ["user_id"],
-  }
+  def test_get_declaration_with_json_schema_feature_enabled(
+      self, integration_tool
+  ):
+    """Tests the generation of the function declaration with JSON schema feature enabled."""
+    with temporary_feature_override(
+        FeatureName.JSON_SCHEMA_FOR_FUNC_DECL, True
+    ):
+      declaration = integration_tool._get_declaration()
+
+    assert isinstance(declaration, FunctionDeclaration)
+    assert declaration.name == "test_integration_tool"
+    assert declaration.description == "Test integration tool description."
+    assert declaration.parameters is None
+    assert declaration.parameters_json_schema == {
+        "type": "object",
+        "properties": {
+            "user_id": {"type": "string", "description": "User ID"},
+            "page_size": {"type": "integer"},
+            "filter": {"type": "string"},
+        },
+        "required": ["user_id"],
+    }
