@@ -17,6 +17,7 @@ from __future__ import annotations
 import abc
 import logging
 import re
+import unicodedata
 from typing import Optional
 
 from typing_extensions import override
@@ -277,10 +278,30 @@ class MeanInvocationResultsSummarizer(InvocationResultsSummarizer):
     )
 
 
+_SMART_CHARS = {
+    0x2018: "'",
+    0x2019: "'",
+    0x201C: '"',
+    0x201D: '"',
+    0x2013: "-",
+    0x2014: "-",
+    0x2026: "...",
+}
+
+
 def _normalize_text(text: str) -> str:
-  """Returns a normalized version of the passed in text."""
+  """Returns a normalized version of the passed in text.
+
+  Handles common judge-model garbling: markdown bullets, smart quotes,
+  bold/italic markers, en/em dashes, and extra whitespace.
+  """
   if not isinstance(text, str):
     return ""
+  text = unicodedata.normalize("NFKC", text)
+  text = text.translate(_SMART_CHARS)
+  text = re.sub(r'^[\s*•\-"\']+', "", text)
+  text = re.sub(r'[\s*•\-"\']+$', "", text)
+  text = re.sub(r"\s+", " ", text)
   return text.lower().strip()
 
 
@@ -408,6 +429,16 @@ class RubricBasedEvaluator(LlmAsJudge):
     for rubric_response in rubric_responses:
       normalized_rubric_text = _normalize_text(rubric_response.property_text)
       rubric = normalized_rubric_to_rubric_map.get(normalized_rubric_text, None)
+
+      if not rubric:
+        candidates = [
+            r
+            for ct, r in normalized_rubric_to_rubric_map.items()
+            if ct in normalized_rubric_text or normalized_rubric_text in ct
+        ]
+        if len(candidates) == 1:
+          rubric = candidates[0]
+
       if rubric:
         rubric_scores.append(
             RubricScore(

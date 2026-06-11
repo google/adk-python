@@ -30,6 +30,7 @@ from google.adk.evaluation.llm_as_judge_utils import get_average_rubric_score
 from google.adk.evaluation.rubric_based_evaluator import DefaultAutoRaterResponseParser
 from google.adk.evaluation.rubric_based_evaluator import MajorityVotePerInvocationResultsAggregator
 from google.adk.evaluation.rubric_based_evaluator import MeanInvocationResultsSummarizer
+from google.adk.evaluation.rubric_based_evaluator import _normalize_text
 from google.adk.evaluation.rubric_based_evaluator import RubricBasedEvaluator
 from google.adk.models.llm_response import LlmResponse
 from google.genai import types as genai_types
@@ -695,3 +696,115 @@ class TestRubricBasedEvaluator:
         "2",
         "test_type_rubric",
     }
+
+
+class TestNormalizeText:
+  """Validate _normalize_text handles common judge-model garbling patterns."""
+
+  RUBRIC = "the response correctly uses tools"
+
+  @pytest.mark.parametrize(
+      "label,input_text",
+      [
+          ("exact", "The response correctly uses tools"),
+          ("markdown_bullet", "- The response correctly uses tools"),
+          ("bullet_bold", "* **The response correctly uses tools**"),
+          (
+              "smart_double_quotes",
+              "“The response correctly uses tools”",
+          ),
+          ("double_spaces", "The  response  correctly  uses  tools"),
+          (
+              "em_dash_prefix",
+              "— The response correctly uses tools",
+          ),
+          (
+              "en_dash_prefix",
+              "– The response correctly uses tools",
+          ),
+          (
+              "unicode_bullet",
+              "• The response correctly uses tools",
+          ),
+          (
+              "leading_whitespace",
+              "   The response correctly uses tools",
+          ),
+      ],
+  )
+  def test_garbled_text_matches_rubric(self, label, input_text):
+    assert _normalize_text(input_text) == self.RUBRIC
+
+  def test_ellipsis_normalized(self):
+    assert (
+        _normalize_text("The response… uses tools")
+        == "the response... uses tools"
+    )
+
+  def test_accented_chars_preserved(self):
+    assert _normalize_text("réponse") == "réponse"
+
+  def test_non_string_returns_empty(self):
+    assert _normalize_text(None) == ""
+    assert _normalize_text(42) == ""
+
+  def test_empty_string(self):
+    assert _normalize_text("") == ""
+
+
+class TestSubstringFallbackUniquenessGuard:
+  """Verify substring fallback only matches when exactly one candidate exists.
+
+  The convert_auto_rater_response_to_score method falls back to substring
+  matching when exact normalized match fails. When multiple rubrics share
+  a common substring, the fallback must reject the ambiguous match.
+  """
+
+  def _build_evaluator_and_score(self, rubric_texts, judge_property_text):
+    """Helper: build a FakeRubricBasedEvaluator and score a judge response."""
+    rubrics = []
+    for i, text in enumerate(rubric_texts):
+      rubrics.append(
+          Rubric(
+              rubric_id=f"rubric_{i}",
+              rubric_content=RubricContent(text_property=text),
+          )
+      )
+
+    metric = EvalMetric(
+        metric_name="test_metric",
+        threshold=0.5,
+        criterion=RubricsBasedCriterion(rubrics=rubrics, threshold=0.5),
+    )
+    evaluator = FakeRubricBasedEvaluator(eval_metric=metric)
+    evaluator.create_effective_rubrics_list([])
+
+    response_text = (
+        f"Property: {judge_property_text}\n"
+        "Rationale: test rationale\n"
+        "Verdict: yes"
+    )
+    response = LlmResponse(
+        content=genai_types.Content(
+            parts=[genai_types.Part(text=response_text)]
+        )
+    )
+    return evaluator.convert_auto_rater_response_to_score(response)
+
+  def test_unique_substring_match_accepted(self):
+    result = self._build_evaluator_and_score(
+        rubric_texts=["Uses tools correctly"],
+        judge_property_text="Uses tools correctly",
+    )
+    assert len(result.rubric_scores) == 1
+    assert result.rubric_scores[0].rubric_id == "rubric_0"
+
+  def test_ambiguous_substring_match_rejected(self):
+    result = self._build_evaluator_and_score(
+        rubric_texts=[
+            "Uses tools correctly",
+            "Uses tools efficiently",
+        ],
+        judge_property_text="Uses tools",
+    )
+    assert len(result.rubric_scores) == 0
