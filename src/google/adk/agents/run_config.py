@@ -239,6 +239,9 @@ class RunConfig(BaseModel):
   realtime_input_config: Optional[types.RealtimeInputConfig] = None
   """Realtime input config for live agents with audio input from user."""
 
+  translation_config: Optional[types.StreamTranslationConfig] = None
+  """Configures real-time speech-to-speech translation for live agents."""
+
   enable_affective_dialog: Optional[bool] = None
   """If enabled, the model will detect emotions and adapt its responses accordingly."""
 
