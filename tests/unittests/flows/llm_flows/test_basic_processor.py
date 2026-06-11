@@ -264,7 +264,7 @@ class TestBasicLlmRequestProcessor:
     )
     invocation_context = await _create_invocation_context(agent)
     invocation_context.run_config = RunConfig(
-        translation_config=types.StreamTranslationConfig(
+        translation_config=types.TranslationConfig(
             target_language_code='pl',
             echo_target_language=True,
         ),
@@ -275,11 +275,9 @@ class TestBasicLlmRequestProcessor:
     async for _ in processor.run_async(invocation_context, llm_request):
       pass
 
-    stream_translation_config = (
-        llm_request.live_connect_config.stream_translation_config
-    )
-    assert stream_translation_config.target_language_code == 'pl'
-    assert stream_translation_config.echo_target_language is True
+    translation_config = llm_request.live_connect_config.translation_config
+    assert translation_config.target_language_code == 'pl'
+    assert translation_config.echo_target_language is True
 
   @pytest.mark.asyncio
   async def test_translation_config_defaults_to_none(self):
@@ -295,4 +293,4 @@ class TestBasicLlmRequestProcessor:
     async for _ in processor.run_async(invocation_context, llm_request):
       pass
 
-    assert llm_request.live_connect_config.stream_translation_config is None
+    assert llm_request.live_connect_config.translation_config is None

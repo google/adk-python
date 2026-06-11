@@ -83,7 +83,7 @@ def _build_basic_request(
   llm_request.live_connect_config.realtime_input_config = (
       invocation_context.run_config.realtime_input_config
   )
-  llm_request.live_connect_config.stream_translation_config = (
+  llm_request.live_connect_config.translation_config = (
       invocation_context.run_config.translation_config
   )
   active_model_name = (
