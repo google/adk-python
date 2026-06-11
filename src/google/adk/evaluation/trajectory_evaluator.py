@@ -180,7 +180,7 @@ class TrajectoryEvaluator(Evaluator):
     if ignore_args:
       return True
 
-    return expected.args == actual.args
+    return bool(expected.args == actual.args)
 
   def _are_tool_calls_in_order_match(
       self,
