@@ -1189,6 +1189,10 @@ def __build_response_event(
       parts=function_response_parts,
   )
   part_function_response.function_response.id = tool_context.function_call_id
+  if tool.response_scheduling is not None:
+    part_function_response.function_response.scheduling = (
+        tool.response_scheduling
+    )
 
   content = types.Content(
       role='user',
