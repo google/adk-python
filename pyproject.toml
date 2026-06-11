@@ -1,6 +1,5 @@
 [build-system]
 build-backend = "flit_core.buildapi"
-
 # Build system specify which backend is used to build/install the project (flit,
 # poetry, setuptools,...). All backends are supported by `pip install`
 requires = [ "flit-core>=3.8,<4" ]
@@ -8,7 +7,6 @@ requires = [ "flit-core>=3.8,<4" ]
 [project]
 # Project metadata. Available keys are documented at:
 # https://packaging.python.org/en/latest/specifications/declaring-project-metadata
-
 name = "google-adk"
 description = "Agent Development Kit"
 readme = "README.md"
@@ -26,12 +24,12 @@ classifiers = [
   "Programming Language :: Python :: 3.11",
   "Programming Language :: Python :: 3.12",
   "Programming Language :: Python :: 3.13",
+  "Programming Language :: Python :: 3.14",
   "Topic :: Software Development :: Libraries :: Python Modules",
   # List of https://pypi.org/classifiers/
   "Typing :: Typed",
 ]
 dynamic = [ "version" ]
-
 dependencies = [
   "aiosqlite>=0.21",
   "authlib>=1.6.6,<2",
@@ -58,7 +56,6 @@ dependencies = [
   "watchdog>=6,<7",
   "websockets>=15.0.1,<16",
 ]
-
 optional-dependencies.a2a = [
   "a2a-sdk>=0.3.4,<0.4",
 ]
@@ -94,21 +91,17 @@ optional-dependencies.all = [
   "sqlalchemy>=2,<3",
   "sqlalchemy-spanner>=1.14",
 ]
-
 optional-dependencies.antigravity = [
   "google-antigravity>=0.1,<0.2",
   "protobuf>=6",
 ]
-
 optional-dependencies.community = [
   "google-adk-community",
 ]
-
 optional-dependencies.db = [
   "sqlalchemy>=2,<3",
   "sqlalchemy-spanner>=1.14",
 ]
-
 optional-dependencies.dev = [
   "flit>=3.10",
   "mypy>=1.15",
@@ -118,7 +111,6 @@ optional-dependencies.dev = [
   "tox>=4.23.2",
   "tox-uv>=1.33.2",
 ]
-
 optional-dependencies.docs = [
   "autodoc-pydantic",
   "furo",
@@ -128,7 +120,6 @@ optional-dependencies.docs = [
   "sphinx-click",
   "sphinx-rtd-theme",
 ]
-
 optional-dependencies.e2b = [
   "e2b>=2,<3", # For E2BEnvironment remote sandbox.
 ]
@@ -140,7 +131,6 @@ optional-dependencies.eval = [
   "rouge-score>=0.1.2",
   "tabulate>=0.9",
 ]
-
 optional-dependencies.extensions = [
   "anthropic>=0.78",                                                 # For anthropic model support; 0.78 introduced ThinkingConfigAdaptiveParam (required for Claude Opus 4.7).
   "beautifulsoup4>=3.2.2",                                           # For load_web_page tool.
@@ -157,7 +147,6 @@ optional-dependencies.extensions = [
   "pypika>=0.50",
   "toolbox-adk>=1,<2",
 ]
-
 optional-dependencies.gcp = [
   "google-cloud-aiplatform[agent-engines]>=1.148.1,<2",
   "google-cloud-bigquery>=2.2",
@@ -180,12 +169,10 @@ optional-dependencies.gcp = [
   "pyarrow>=14",
   "python-dateutil>=2.9.0.post0,<3",
 ]
-
 optional-dependencies.mcp = [
   "anyio>=4.9,<5",
   "mcp>=1.24,<2",
 ]
-
 optional-dependencies.otel-gcp = [
   "opentelemetry-instrumentation-google-genai>=0.6b0,<1",
   "opentelemetry-instrumentation-grpc>=0.43b0,<1",
@@ -248,45 +235,40 @@ optional-dependencies.test = [
   "tabulate>=0.9",
   "tomli>=2,<3; python_version<'3.11'",
 ]
-
 optional-dependencies.toolbox = [ "toolbox-adk>=1,<2" ]
-
 optional-dependencies.tools = [
   "google-api-python-client>=2.157,<3",
 ]
-
 urls.changelog = "https://github.com/google/adk-python/blob/main/CHANGELOG.md"
 urls.documentation = "https://google.github.io/adk-docs/"
 urls.homepage = "https://google.github.io/adk-docs/"
 urls.repository = "https://github.com/google/adk-python"
 scripts.adk = "google.adk.cli:main"
 
-[tool.flit.sdist]
-include = [ 'src/**/*', 'README.md', 'pyproject.toml', 'LICENSE' ]
-exclude = [ 'src/**/*.sh', 'src/**/README.md' ]
-
-[tool.flit.module]
-name = "google.adk"
-include = [ "py.typed" ]
+[tool.flit]
+module.name = "google.adk"
+module.include = [ "py.typed" ]
+sdist.include = [ "src/**/*", "README.md", "pyproject.toml", "LICENSE" ]
+sdist.exclude = [ "src/**/*.sh", "src/**/README.md" ]
 
 [tool.isort]
 profile = "google"
-single_line_exclusions = [  ]
 line_length = 200
-known_third_party = [ "google.adk", "a2a" ]
-
-[tool.pytest.ini_options]
-testpaths = [ "tests" ]
-asyncio_default_fixture_loop_scope = "function"
-asyncio_mode = "auto"
+single_line_exclusions = []
+known_third_party = [ "a2a", "google.adk" ]
 
 [tool.mypy]
-python_version = "3.11"
-exclude = [ "tests/", "contributing/samples/" ]
-plugins = [ "pydantic.mypy" ]
-strict = true
-disable_error_code = [ "import-not-found", "import-untyped", "unused-ignore" ]
+exclude = [ "contributing/samples/", "tests/" ]
 follow_imports = "skip"
+python_version = "3.11"
+disable_error_code = [ "import-not-found", "import-untyped", "unused-ignore" ]
+strict = true
+plugins = [ "pydantic.mypy" ]
+
+[tool.pytest]
+ini_options.testpaths = [ "tests" ]
+ini_options.asyncio_default_fixture_loop_scope = "function"
+ini_options.asyncio_mode = "auto"
 
 [tool.pyink]
 line-length = 80
