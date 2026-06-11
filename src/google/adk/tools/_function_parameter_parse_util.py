@@ -203,6 +203,22 @@ def _is_default_value_compatible(
           for item in default_value
       )
 
+    if origin is tuple:
+      if not isinstance(default_value, tuple):
+        return False
+      args = get_args(annotation)
+      if len(args) == 2 and args[1] is Ellipsis:
+        return all(
+            _is_default_value_compatible(item, args[0])
+            for item in default_value
+        )
+      if len(args) != len(default_value):
+        return False
+      return all(
+          _is_default_value_compatible(item, arg)
+          for item, arg in zip(default_value, args)
+      )
+
     if origin is Literal:
       return default_value in get_args(annotation)
 
@@ -325,6 +341,31 @@ def _parse_schema_from_parameter(
               'item',
               inspect.Parameter.POSITIONAL_OR_KEYWORD,
               annotation=args[0],
+          ),
+          func_name,
+      )
+      if param.default is not inspect.Parameter.empty:
+        if not _is_default_value_compatible(param.default, param.annotation):
+          raise ValueError(default_value_error_msg)
+        schema.default = param.default
+      _raise_if_schema_unsupported(variant, schema)
+      return schema
+    if origin is tuple:
+      if len(args) == 2 and args[1] is Ellipsis:
+        item_annotation = args[0]
+      elif args and all(arg == args[0] for arg in args):
+        item_annotation = args[0]
+      else:
+        raise ValueError(
+            f'Tuple type {param.annotation} must use one repeated item type.'
+        )
+      schema.type = types.Type.ARRAY
+      schema.items = _parse_schema_from_parameter(
+          variant,
+          inspect.Parameter(
+              'item',
+              inspect.Parameter.POSITIONAL_OR_KEYWORD,
+              annotation=item_annotation,
           ),
           func_name,
       )

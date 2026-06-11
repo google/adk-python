@@ -228,6 +228,31 @@ def test_from_function_with_collections_type_parameter():
   assert declaration.response.type == types.Type.STRING
 
 
+def test_from_function_with_tuple_type_parameter():
+  """Test from_function_with_options with tuple type parameter."""
+
+  def test_function(
+      coordinate: tuple[float, float],
+  ) -> str:
+    """Formats a coordinate pair."""
+    return f'{coordinate[0]}, {coordinate[1]}'
+
+  declaration = _automatic_function_calling_util.from_function_with_options(
+      test_function, GoogleLLMVariant.VERTEX_AI
+  )
+
+  assert declaration.name == 'test_function'
+  assert declaration.parameters.type == types.Type.OBJECT
+  assert declaration.parameters.properties['coordinate'].type == (
+      types.Type.ARRAY
+  )
+  assert (
+      declaration.parameters.properties['coordinate'].items.type
+      == types.Type.NUMBER
+  )
+  assert declaration.response.type == types.Type.STRING
+
+
 def test_from_function_with_collections_return_type():
   """Test from_function_with_options with collections return type."""
 
@@ -321,14 +346,8 @@ def test_from_function_with_async_generator_complex_yield_type_vertex():
   assert declaration.response.type == types.Type.OBJECT
 
 
-def test_required_fields_set_in_json_schema_fallback():
-  """Test that required fields are populated when the json_schema fallback path is used.
-
-  When a parameter has a complex type (e.g. tuple[str, ...] | None) that
-  _parse_schema_from_parameter can't handle, from_function_with_options falls
-  back to the parameters_json_schema branch. This test verifies that the
-  required fields are correctly populated in that fallback branch.
-  """
+def test_required_fields_set_with_optional_tuple_parameter():
+  """Test that required fields are populated with optional tuple parameters."""
 
   def complex_tool(
       query: str,
@@ -350,14 +369,9 @@ def test_required_fields_set_in_json_schema_fallback():
           'query': types.Schema(type=types.Type.STRING),
           'mode': types.Schema(type=types.Type.STRING, default='default'),
           'tags': types.Schema(
-              any_of=[
-                  types.Schema(
-                      items=types.Schema(type=types.Type.STRING),
-                      type=types.Type.ARRAY,
-                  ),
-                  types.Schema(type=types.Type.NULL),
-              ],
+              items=types.Schema(type=types.Type.STRING),
               nullable=True,
+              type=types.Type.ARRAY,
           ),
       },
   )
