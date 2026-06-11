@@ -1395,7 +1395,7 @@ through either Google AI Studio or Vertex AI.
 
 ```shell
 export GOOGLE_API_KEY="YOUR_GOOGLE_API_KEY"
-export GOOGLE_GENAI_USE_VERTEXAI=FALSE
+export GOOGLE_GENAI_USE_ENTERPRISE=FALSE
 ```
 
 * **Models:** Find all available models on the
@@ -1425,7 +1425,7 @@ export GOOGLE_GENAI_USE_VERTEXAI=FALSE
          Explicitly tell the library to use Vertex AI:
 
          ```shell
-         export GOOGLE_GENAI_USE_VERTEXAI=TRUE
+         export GOOGLE_GENAI_USE_ENTERPRISE=TRUE
          ```
 
 * **Models:** Find available model IDs in the
@@ -1830,7 +1830,7 @@ Ensure your environment is configured for Vertex AI:
    targets Vertex AI:
 
     ```shell
-    export GOOGLE_GENAI_USE_VERTEXAI=TRUE
+    export GOOGLE_GENAI_USE_ENTERPRISE=TRUE
     ```
 
 ### Model Garden Deployments
@@ -1906,7 +1906,7 @@ Vertex AI.
     **Setup:**
 
     1. **Vertex AI Environment:** Ensure the consolidated Vertex AI setup (ADC, Env
-       Vars, `GOOGLE_GENAI_USE_VERTEXAI=TRUE`) is complete.
+       Vars, `GOOGLE_GENAI_USE_ENTERPRISE=TRUE`) is complete.
 
     2. **Install Provider Library:** Install the necessary client library configured
        for Vertex AI.
@@ -5921,7 +5921,7 @@ Set your environment variables as described in the [Setup and Installation](../g
 ```bash
 export GOOGLE_CLOUD_PROJECT=your-project-id
 export GOOGLE_CLOUD_LOCATION=us-central1 # Or your preferred location
-export GOOGLE_GENAI_USE_VERTEXAI=True
+export GOOGLE_GENAI_USE_ENTERPRISE=True
 ```
 
 *(Replace `your-project-id` with your actual GCP project ID)*
@@ -6124,7 +6124,7 @@ export GOOGLE_GENAI_USE_VERTEXAI=True
     --region $GOOGLE_CLOUD_LOCATION \
     --project $GOOGLE_CLOUD_PROJECT \
     --allow-unauthenticated \
-    --set-env-vars="GOOGLE_CLOUD_PROJECT=$GOOGLE_CLOUD_PROJECT,GOOGLE_CLOUD_LOCATION=$GOOGLE_CLOUD_LOCATION,GOOGLE_GENAI_USE_VERTEXAI=$GOOGLE_GENAI_USE_VERTEXAI"
+    --set-env-vars="GOOGLE_CLOUD_PROJECT=$GOOGLE_CLOUD_PROJECT,GOOGLE_CLOUD_LOCATION=$GOOGLE_CLOUD_LOCATION,GOOGLE_GENAI_USE_ENTERPRISE=$GOOGLE_GENAI_USE_ENTERPRISE"
     # Add any other necessary environment variables your agent might need
     ```
 
@@ -6241,7 +6241,7 @@ export GOOGLE_GENAI_USE_VERTEXAI=True
     --region $GOOGLE_CLOUD_LOCATION \
     --project $GOOGLE_CLOUD_PROJECT \
     --allow-unauthenticated \
-    --set-env-vars="GOOGLE_CLOUD_PROJECT=$GOOGLE_CLOUD_PROJECT,GOOGLE_CLOUD_LOCATION=$GOOGLE_CLOUD_LOCATION,GOOGLE_GENAI_USE_VERTEXAI=$GOOGLE_GENAI_USE_VERTEXAI"
+    --set-env-vars="GOOGLE_CLOUD_PROJECT=$GOOGLE_CLOUD_PROJECT,GOOGLE_CLOUD_LOCATION=$GOOGLE_CLOUD_LOCATION,GOOGLE_GENAI_USE_ENTERPRISE=$GOOGLE_GENAI_USE_ENTERPRISE"
     # Add any other necessary environment variables your agent might need
     ```
 
@@ -6386,7 +6386,7 @@ Set your environment variables as described in the [Setup and Installation](../g
 ```bash
 export GOOGLE_CLOUD_PROJECT=your-project-id # Your GCP project ID
 export GOOGLE_CLOUD_LOCATION=us-central1 # Or your preferred location
-export GOOGLE_GENAI_USE_VERTEXAI=true # Set to true if using Vertex AI
+export GOOGLE_GENAI_USE_ENTERPRISE=true # Set to true if using Vertex AI
 export GOOGLE_CLOUD_PROJECT_NUMBER=$(gcloud projects describe --format json $GOOGLE_CLOUD_PROJECT | jq -r ".projectNumber")
 ```
 
@@ -6617,9 +6617,9 @@ spec:
             value: GOOGLE_CLOUD_PROJECT
           - name: GOOGLE_CLOUD_LOCATION
             value: GOOGLE_CLOUD_LOCATION
-          - name: GOOGLE_GENAI_USE_VERTEXAI
-            value: GOOGLE_GENAI_USE_VERTEXAI
-          # If using AI Studio, set GOOGLE_GENAI_USE_VERTEXAI to false and set the following:
+          - name: GOOGLE_GENAI_USE_ENTERPRISE
+            value: GOOGLE_GENAI_USE_ENTERPRISE
+          # If using AI Studio, set GOOGLE_GENAI_USE_ENTERPRISE to false and set the following:
           # - name: GOOGLE_API_KEY
           #   value: GOOGLE_API_KEY
           # Add any other necessary environment variables your agent might need
@@ -8276,14 +8276,14 @@ agent will be unable to function.
     and copy-paste the following code.
 
         ```env title="multi_tool_agent/.env"
-        GOOGLE_GENAI_USE_VERTEXAI=FALSE
+        GOOGLE_GENAI_USE_ENTERPRISE=FALSE
         GOOGLE_API_KEY=PASTE_YOUR_ACTUAL_API_KEY_HERE
         ```
 
         When using Java, define environment variables:
 
         ```console title="terminal"
-        export GOOGLE_GENAI_USE_VERTEXAI=FALSE
+        export GOOGLE_GENAI_USE_ENTERPRISE=FALSE
         export GOOGLE_API_KEY=PASTE_YOUR_ACTUAL_API_KEY_HERE
         ```
 
@@ -8304,7 +8304,7 @@ agent will be unable to function.
     the following code and update the project ID and location.
 
         ```env title="multi_tool_agent/.env"
-        GOOGLE_GENAI_USE_VERTEXAI=TRUE
+        GOOGLE_GENAI_USE_ENTERPRISE=TRUE
         GOOGLE_CLOUD_PROJECT=YOUR_PROJECT_ID
         GOOGLE_CLOUD_LOCATION=LOCATION
         ```
@@ -8312,7 +8312,7 @@ agent will be unable to function.
         When using Java, define environment variables:
 
         ```console title="terminal"
-        export GOOGLE_GENAI_USE_VERTEXAI=TRUE
+        export GOOGLE_GENAI_USE_ENTERPRISE=TRUE
         export GOOGLE_CLOUD_PROJECT=YOUR_PROJECT_ID
         export GOOGLE_CLOUD_LOCATION=LOCATION
         ```
@@ -8647,7 +8647,7 @@ To run the server, you’ll need to export two environment variables:
 * a variable to specify we’re not using Vertex AI this time.
 
 ```shell
-export GOOGLE_GENAI_USE_VERTEXAI=FALSE
+export GOOGLE_GENAI_USE_ENTERPRISE=FALSE
 export GOOGLE_API_KEY=YOUR_API_KEY
 ```
 
@@ -8934,7 +8934,7 @@ To run the agent, choose a platform from either Google AI Studio or Google Cloud
     2. Open the **`.env`** file located inside (`app/`) and copy-paste the following code.
 
         ```env title=".env"
-        GOOGLE_GENAI_USE_VERTEXAI=FALSE
+        GOOGLE_GENAI_USE_ENTERPRISE=FALSE
         GOOGLE_API_KEY=PASTE_YOUR_ACTUAL_API_KEY_HERE
         ```
 
@@ -8955,7 +8955,7 @@ To run the agent, choose a platform from either Google AI Studio or Google Cloud
        the following code and update the project ID and location.
 
         ```env title=".env"
-        GOOGLE_GENAI_USE_VERTEXAI=TRUE
+        GOOGLE_GENAI_USE_ENTERPRISE=TRUE
         GOOGLE_CLOUD_PROJECT=PASTE_YOUR_ACTUAL_PROJECT_ID
         GOOGLE_CLOUD_LOCATION=us-central1
         ```
@@ -11301,7 +11301,7 @@ To run the sample app, choose a platform from either Google AI Studio or Google 
     2. Open the **`.env`** file located inside (`app/`) and copy-paste the following code.
 
         ```env title=".env"
-        GOOGLE_GENAI_USE_VERTEXAI=FALSE
+        GOOGLE_GENAI_USE_ENTERPRISE=FALSE
         GOOGLE_API_KEY=PASTE_YOUR_ACTUAL_API_KEY_HERE
         ```
 
@@ -11322,7 +11322,7 @@ To run the sample app, choose a platform from either Google AI Studio or Google 
        the following code and update the project ID and location.
 
         ```env title=".env"
-        GOOGLE_GENAI_USE_VERTEXAI=TRUE
+        GOOGLE_GENAI_USE_ENTERPRISE=TRUE
         GOOGLE_CLOUD_PROJECT=PASTE_YOUR_ACTUAL_PROJECT_ID
         GOOGLE_CLOUD_LOCATION=us-central1
         ```
@@ -12014,7 +12014,7 @@ To run the sample app, choose a platform from either Google AI Studio or Google 
     2. Open the **`.env`** file located inside (`app/`) and copy-paste the following code.
 
         ```env title=".env"
-        GOOGLE_GENAI_USE_VERTEXAI=FALSE
+        GOOGLE_GENAI_USE_ENTERPRISE=FALSE
         GOOGLE_API_KEY=PASTE_YOUR_ACTUAL_API_KEY_HERE
         ```
 
@@ -12035,7 +12035,7 @@ To run the sample app, choose a platform from either Google AI Studio or Google 
        the following code and update the project ID and location.
 
         ```env title=".env"
-        GOOGLE_GENAI_USE_VERTEXAI=TRUE
+        GOOGLE_GENAI_USE_ENTERPRISE=TRUE
         GOOGLE_CLOUD_PROJECT=PASTE_YOUR_ACTUAL_PROJECT_ID
         GOOGLE_CLOUD_LOCATION=us-central1
         ```
@@ -12814,7 +12814,7 @@ Choose your preferred platform for running agents:
     2. Create a `.env` file in your project root:
 
     ```env
-    GOOGLE_GENAI_USE_VERTEXAI=FALSE
+    GOOGLE_GENAI_USE_ENTERPRISE=FALSE
     GOOGLE_API_KEY=your_actual_api_key_here
     ```
 
@@ -12827,7 +12827,7 @@ Choose your preferred platform for running agents:
     5. Create a `.env` file in your project root:
 
     ```env
-    GOOGLE_GENAI_USE_VERTEXAI=TRUE
+    GOOGLE_GENAI_USE_ENTERPRISE=TRUE
     GOOGLE_CLOUD_PROJECT=your_actual_project_id
     GOOGLE_CLOUD_LOCATION=us-central1
     ```
@@ -12911,7 +12911,7 @@ def validate_environment():
 
     # Validate environment variables
     env_checks = [
-        ('GOOGLE_GENAI_USE_VERTEXAI', 'Platform configuration'),
+        ('GOOGLE_GENAI_USE_ENTERPRISE', 'Platform configuration'),
         ('GOOGLE_API_KEY', 'API authentication'),
     ]
 
@@ -17799,7 +17799,7 @@ print(f"OpenAI API Key set: {'Yes' if os.environ.get('OPENAI_API_KEY') and os.en
 print(f"Anthropic API Key set: {'Yes' if os.environ.get('ANTHROPIC_API_KEY') and os.environ['ANTHROPIC_API_KEY'] != 'YOUR_ANTHROPIC_API_KEY' else 'No (REPLACE PLACEHOLDER!)'}")
 
 # Configure ADK to use API keys directly (not Vertex AI for this multi-model setup)
-os.environ["GOOGLE_GENAI_USE_VERTEXAI"] = "False"
+os.environ["GOOGLE_GENAI_USE_ENTERPRISE"] = "False"
 
 
 # @markdown **Security Note:** It's best practice to manage API keys securely (e.g., using Colab Secrets or environment variables) rather than hardcoding them directly in the notebook. Replace the placeholder strings above.
