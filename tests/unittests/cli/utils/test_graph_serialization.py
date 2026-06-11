@@ -142,3 +142,22 @@ def test_serialize_agent_with_litellm_model_is_json_safe() -> None:
 
   assert result['model'] == 'ollama_chat/llama3'
   json.dumps(result)
+
+
+def test_serialize_agent_skips_excluded_fields() -> None:
+  """Fields marked Field(exclude=True) are omitted from serialization."""
+  from typing import Any
+
+  from google.adk.agents.base_agent import BaseAgent
+  from pydantic import ConfigDict
+  from pydantic import Field
+
+  class _Agent(BaseAgent):
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+    secret: Any = Field(default=None, exclude=True)
+
+  agent = _Agent(name='a', secret=lambda: None)
+  result = serialize_agent(agent)
+
+  assert 'secret' not in result
+  assert result['name'] == 'a'

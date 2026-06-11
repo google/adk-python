@@ -65,6 +65,7 @@ from pydantic import BaseModel
 from typing_extensions import deprecated
 
 from .. import version
+from ..utils.env_utils import is_enterprise_mode_enabled
 from ..utils.model_name_utils import is_gemini_model
 from ._experimental_semconv import is_experimental_semconv
 from ._experimental_semconv import maybe_log_completion_details
@@ -986,6 +987,6 @@ def trace_inference_result(
 def _guess_gemini_system_name() -> str:
   return (
       GenAiSystemValues.VERTEX_AI.name.lower()
-      if os.getenv('GOOGLE_GENAI_USE_VERTEXAI', '').lower() in ('true', '1')
+      if is_enterprise_mode_enabled()
       else GenAiSystemValues.GEMINI.name.lower()
   )

@@ -86,7 +86,7 @@ python contributing/samples/oauth2_client_credentials/oauth2_test_server.py
 
 ```bash
 # Choose Model Backend: 0 -> ML Dev, 1 -> Vertex
-GOOGLE_GENAI_USE_VERTEXAI=1
+GOOGLE_GENAI_USE_ENTERPRISE=1
 
 # ML Dev backend config
 GOOGLE_API_KEY=your_google_api_key_here
