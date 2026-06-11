@@ -385,7 +385,7 @@ async def _run_and_handle_error(
     ) as tel_ctx:
       async with Aclosing(response_generator) as agen:
         async for llm_response in agen:
-          tel_ctx.record_llm_response(llm_response)
+          tel_ctx.record_llm_response(invocation_context, llm_response)
           yield llm_response
   except Exception as model_error:
     callback_context = CallbackContext(
@@ -434,8 +434,8 @@ async def _process_agent_tools(
   names to ``BaseTool`` instances ready for function call dispatch.
 
   Args:
-    invocation_context: The invocation context (``agent`` is read
-      from ``invocation_context.agent``).
+    invocation_context: The invocation context (``agent`` is read from
+      ``invocation_context.agent``).
     llm_request: The LLM request to populate with tool declarations.
   """
   agent = invocation_context.agent
@@ -580,6 +580,9 @@ class BaseLlmFlow(ABC):
             invocation_context.agent.name,
         )
         async with llm.connect(llm_request) as llm_connection:
+          # Reset retry count to allow the maximum reconnect attempts for
+          # subsequent connection drops.
+          attempt = 1
           # Skip sending history if we are resuming a session. The server
           # already has the state associated with the resumption handle.
           if (
@@ -609,8 +612,6 @@ class BaseLlmFlow(ABC):
                 )
             ) as agen:
               async for event in agen:
-                # Reset attempt counter on successful communication.
-                attempt = 1
                 # Empty event means the queue is closed.
                 if not event:
                   break
