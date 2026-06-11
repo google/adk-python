@@ -1645,23 +1645,22 @@ async def test_receive_grounding_metadata_default_gemini_3_1(
   responses = [resp async for resp in conn.receive()]
 
   # Expected:
-  # responses[0] -> partial content response for msg1 (has grounding_metadata)
-  # responses[1] -> full text response for msg1 (has grounding_metadata)
-  # responses[2] -> tool call response for msg2 (has grounding_metadata)
+  # responses[0] -> partial content response for msg1 (has no grounding_metadata)
+  # responses[1] -> full text response for msg1 (has no grounding_metadata)
+  # responses[2] -> tool call response for msg2 (has no grounding_metadata)
   # responses[3] -> turn_complete response for msg3 (has grounding_metadata)
   assert len(responses) == 4
 
   assert responses[0].content.parts[0].text == 'hello'
-  assert isinstance(responses[0].grounding_metadata, types.GroundingMetadata)
-  assert responses[0].grounding_metadata.web_search_queries is None
+  assert responses[0].grounding_metadata is None
   assert responses[0].partial is True
 
   assert responses[1].content.parts[0].text == 'hello'
-  assert isinstance(responses[1].grounding_metadata, types.GroundingMetadata)
+  assert responses[1].grounding_metadata is None
   assert responses[1].partial is False
 
   assert responses[2].content.parts[0].function_call.name == 'foo'
-  assert isinstance(responses[2].grounding_metadata, types.GroundingMetadata)
+  assert responses[2].grounding_metadata is None
 
   assert responses[3].turn_complete is True
   assert isinstance(responses[3].grounding_metadata, types.GroundingMetadata)

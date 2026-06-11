@@ -205,8 +205,7 @@ class GeminiLlmConnection(BaseLlmConnection):
     part = types.Part.from_text(text=text)
     if is_thought:
       part.thought = True
-    if grounding_metadata is None and self._is_gemini_3_1_flash_live:
-      grounding_metadata = types.GroundingMetadata()
+
     return LlmResponse(
         content=types.Content(
             role='model',
@@ -281,8 +280,6 @@ class GeminiLlmConnection(BaseLlmConnection):
                 llm_response.grounding_metadata = (
                     message.server_content.grounding_metadata
                 )
-              elif self._is_gemini_3_1_flash_live:
-                llm_response.grounding_metadata = types.GroundingMetadata()
             if content.parts[0].text:
               current_is_thought = getattr(content.parts[0], 'thought', False)
               if text and current_is_thought != is_thought:
@@ -471,7 +468,6 @@ class GeminiLlmConnection(BaseLlmConnection):
                 content=types.Content(role='model', parts=tool_call_parts),
                 model_version=self._model_version,
                 live_session_id=live_session_id,
-                grounding_metadata=types.GroundingMetadata(),
             )
             tool_call_parts = []
         if message.session_resumption_update:
