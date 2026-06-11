@@ -94,3 +94,15 @@ async def test_barrier_wait_non_existent_key():
 
   # No blocks, successfully completes!
   assert True
+
+
+@pytest.mark.asyncio
+async def test_barrier_wait_timeout_on_divergence():
+  """Verifies that waiting on a blocked key raises RuntimeError due to timeout."""
+  # We use a short sequence where NodeB is never unblocked
+  sequence = ['NodeA@1', 'NodeB@1']
+  # Use a fast timeout to keep the test rapid without mocking standard library functions
+  barrier = ReplaySequenceBarrier(sequence, timeout_sec=0.01)
+
+  with pytest.raises(RuntimeError, match='Replay divergence detected'):
+    await barrier.wait('NodeB@1')
