@@ -207,6 +207,8 @@ class NodeRunner:
       ic = ic.model_copy(update={"branch": branch})
     elif self._override_branch is not None:
       ic = ic.model_copy(update={"branch": self._override_branch})
+    else:
+      ic = ic.model_copy()
 
     ctx = Context(
         ic,
