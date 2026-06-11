@@ -462,3 +462,72 @@ def test_evaluate_invocations_no_invocations(evaluator: TrajectoryEvaluator):
   assert result.overall_score is None
   assert result.overall_eval_status == EvalStatus.NOT_EVALUATED
   assert not result.per_invocation_results
+
+
+def test_exact_match_ignore_args():
+  """Tests EXACT match when args differ but names are the same."""
+  evaluator = TrajectoryEvaluator()
+
+  actual = [genai_types.FunctionCall(name="search", args={"query": "cats"})]
+  expected = [genai_types.FunctionCall(name="search", args={"query": "dogs"})]
+
+  assert evaluator._are_tool_calls_exact_match(
+      actual, expected, ignore_args=True
+  )
+
+
+def test_in_order_match_ignore_args():
+  """Tests IN_ORDER match when args differ."""
+  evaluator = TrajectoryEvaluator()
+
+  actual = [
+      genai_types.FunctionCall(name="search", args={"query": "cats"}),
+      genai_types.FunctionCall(name="lookup", args={"id": "123"}),
+  ]
+
+  expected = [
+      genai_types.FunctionCall(name="search", args={"query": "dogs"}),
+      genai_types.FunctionCall(name="lookup", args={"id": "999"}),
+  ]
+
+  assert evaluator._are_tool_calls_in_order_match(
+      actual, expected, ignore_args=True
+  )
+
+
+def test_any_order_match_ignore_args():
+  """Tests ANY_ORDER match when args differ and order differs."""
+  evaluator = TrajectoryEvaluator()
+
+  actual = [
+      genai_types.FunctionCall(name="lookup", args={"id": "123"}),
+      genai_types.FunctionCall(name="search", args={"query": "cats"}),
+  ]
+
+  expected = [
+      genai_types.FunctionCall(name="search", args={"query": "dogs"}),
+      genai_types.FunctionCall(name="lookup", args={"id": "999"}),
+  ]
+
+  assert evaluator._are_tool_calls_any_order_match(
+      actual, expected, ignore_args=True
+  )
+
+
+def test_trajectory_evaluator_loads_ignore_args_from_criterion():
+  """Tests ignore_args configuration is propagated from criterion."""
+  criterion = ToolTrajectoryCriterion(
+      threshold=0.5,
+      match_type=ToolTrajectoryCriterion.MatchType.EXACT,
+      ignore_args=True,
+  )
+
+  metric = EvalMetric(
+      metric_name=PrebuiltMetrics.TOOL_TRAJECTORY_AVG_SCORE.value,
+      threshold=0.5,
+      criterion=criterion,
+  )
+
+  evaluator = TrajectoryEvaluator(eval_metric=metric)
+
+  assert evaluator._ignore_args is True

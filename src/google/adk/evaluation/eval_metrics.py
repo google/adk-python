@@ -249,6 +249,16 @@ class ToolTrajectoryCriterion(BaseCriterion):
       ),
   )
 
+  ignore_args: bool = Field(
+      default=False,
+      description=(
+          "When True, tool call matching checks only the tool name and "
+          "ignores argument values. Useful for non-deterministic "
+          "arguments such as timestamps, generated queries, or "
+          "other dynamic content."
+      ),
+  )
+
   @field_validator("match_type", mode="before")
   @classmethod
   def _coerce_match_type(cls, value: object) -> object:

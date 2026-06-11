@@ -82,6 +82,7 @@ class TrajectoryEvaluator(Evaluator):
         )
         self._threshold = criterion.threshold
         self._match_type = criterion.match_type
+        self._ignore_args = criterion.ignore_args
       except ValidationError as e:
         expected_criterion_type_error = ValueError(
             f"`{eval_metric.metric_name}` metric expects a criterion of type"
@@ -91,9 +92,11 @@ class TrajectoryEvaluator(Evaluator):
     elif eval_metric:
       self._threshold = eval_metric.threshold
       self._match_type = ToolTrajectoryCriterion.MatchType.EXACT
+      self._ignore_args = False
     else:
       self._threshold = threshold
       self._match_type = ToolTrajectoryCriterion.MatchType.EXACT
+      self._ignore_args = False
 
   @override
   def evaluate_invocations(
@@ -148,25 +151,42 @@ class TrajectoryEvaluator(Evaluator):
     tool_use_match_status = False
     if self._match_type == ToolTrajectoryCriterion.MatchType.EXACT:
       tool_use_match_status = self._are_tool_calls_exact_match(
-          actual_tool_uses, expected_tool_uses
+          actual_tool_uses, expected_tool_uses, self._ignore_args
       )
     elif self._match_type == ToolTrajectoryCriterion.MatchType.IN_ORDER:
       tool_use_match_status = self._are_tool_calls_in_order_match(
-          actual_tool_uses, expected_tool_uses
+          actual_tool_uses, expected_tool_uses, self._ignore_args
       )
     elif self._match_type == ToolTrajectoryCriterion.MatchType.ANY_ORDER:
       tool_use_match_status = self._are_tool_calls_any_order_match(
-          actual_tool_uses, expected_tool_uses
+          actual_tool_uses, expected_tool_uses, self._ignore_args
       )
     else:
       raise ValueError(f"Unsupported match type {self._match_type}")
 
     return 1.0 if tool_use_match_status else 0.0
 
+  def _calls_match(
+      self,
+      expected: genai_types.FunctionCall,
+      actual: genai_types.FunctionCall,
+      ignore_args: bool,
+  ) -> bool:
+    """Returns True if two tool calls are considered a match."""
+
+    if expected.name != actual.name:
+      return False
+
+    if ignore_args:
+      return True
+
+    return expected.args == actual.args
+
   def _are_tool_calls_in_order_match(
       self,
       actual_tool_calls: list[genai_types.FunctionCall],
       expected_tool_calls: list[genai_types.FunctionCall],
+      ignore_args: bool = False,
   ) -> bool:
     """Checks if expected tool calls appear in actual tool calls in order.
 
@@ -191,10 +211,7 @@ class TrajectoryEvaluator(Evaluator):
     try:
       current_expected = next(expected_it)
       for actual in actual_tool_calls:
-        if (
-            actual.name == current_expected.name
-            and actual.args == current_expected.args
-        ):
+        if self._calls_match(current_expected, actual, ignore_args):
           current_expected = next(expected_it)
     except StopIteration:
       return True
@@ -205,6 +222,7 @@ class TrajectoryEvaluator(Evaluator):
       self,
       actual_tool_calls: list[genai_types.FunctionCall],
       expected_tool_calls: list[genai_types.FunctionCall],
+      ignore_args: bool = False,
   ) -> bool:
     """Checks if expected tool calls appear in actual tool calls in any order.
 
@@ -229,7 +247,7 @@ class TrajectoryEvaluator(Evaluator):
     for expected in expected_tool_calls:
       found = False
       for i, actual in enumerate(actual_tool_calls_copy):
-        if actual.name == expected.name and actual.args == expected.args:
+        if self._calls_match(expected, actual, ignore_args):
           actual_tool_calls_copy.pop(i)
           found = True
           break
@@ -241,6 +259,7 @@ class TrajectoryEvaluator(Evaluator):
       self,
       actual_tool_calls: list[genai_types.FunctionCall],
       expected_tool_calls: list[genai_types.FunctionCall],
+      ignore_args: bool = False,
   ) -> bool:
     """Checks if actual tool calls exactly match expected tool calls.
 
@@ -260,7 +279,7 @@ class TrajectoryEvaluator(Evaluator):
       return False
 
     for actual, expected in zip(actual_tool_calls, expected_tool_calls):
-      if actual.name != expected.name or actual.args != expected.args:
+      if not self._calls_match(expected, actual, ignore_args):
         return False
 
     return True
