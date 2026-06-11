@@ -212,7 +212,11 @@ class FunctionNode(BaseNode):
           ' The node must rerun after credentials are provided.'
       )
 
-    inferred_name = name or getattr(func, '__name__', None)
+    inferred_name = (
+        name
+        or getattr(func, '__name__', None)
+        or getattr(_unwrap_callable(func), '__name__', None)
+    )
     if not inferred_name:
       raise ValueError(
           'FunctionNode must have a name. If the wrapped callable does not'
@@ -497,9 +501,10 @@ class FunctionNode(BaseNode):
 
     kwargs = self._bind_parameters(ctx, node_input)
 
-    if inspect.isasyncgenfunction(self._func):
+    unwrapped_func = _unwrap_callable(self._func)
+    if inspect.isasyncgenfunction(unwrapped_func):
       items = self._func(**kwargs)
-    elif inspect.isgeneratorfunction(self._func):
+    elif inspect.isgeneratorfunction(unwrapped_func):
       items = _sync_to_async_gen(self._func(**kwargs))
     else:
       items = None
@@ -510,7 +515,7 @@ class FunctionNode(BaseNode):
         if event is not None:
           yield event
     else:
-      if inspect.iscoroutinefunction(self._func):
+      if inspect.iscoroutinefunction(unwrapped_func):
         result = await self._func(**kwargs)
       else:  # Sync function
         result = self._func(**kwargs)

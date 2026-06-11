@@ -37,7 +37,7 @@ export GOOGLE_API_KEY="your-api-key"
 **Vertex AI:**
 
 ```bash
-export GOOGLE_GENAI_USE_VERTEXAI=1
+export GOOGLE_GENAI_USE_ENTERPRISE=1
 export GOOGLE_CLOUD_PROJECT="your-project-id"
 export GOOGLE_CLOUD_LOCATION="us-central1"
 ```
