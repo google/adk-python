@@ -48,7 +48,6 @@ dependencies = [
   "pydantic>=2.12,<3",
   "python-dotenv>=1,<2",
   "python-multipart>=0.0.9,<1",
-  # go/keep-sorted start
   "pyyaml>=6.0.2,<7",
   "requests>=2.32.4,<3",
   "starlette>=1.0.1,<2",
@@ -58,7 +57,6 @@ dependencies = [
   "uvicorn>=0.34,<1",
   "watchdog>=6,<7",
   "websockets>=15.0.1,<16",
-  # go/keep-sorted end
 ]
 
 optional-dependencies.a2a = [
@@ -97,9 +95,15 @@ optional-dependencies.all = [
   "sqlalchemy-spanner>=1.14",
 ]
 
+optional-dependencies.antigravity = [
+  "google-antigravity>=0.1,<0.2",
+  "protobuf>=6",
+]
+
 optional-dependencies.community = [
   "google-adk-community",
 ]
+
 optional-dependencies.db = [
   "sqlalchemy>=2,<3",
   "sqlalchemy-spanner>=1.14",
@@ -195,6 +199,7 @@ optional-dependencies.test = [
   "crewai[tools]; python_version>='3.11' and python_version<'3.12'", # For CrewaiTool tests; chromadb/pypika fail on 3.12+
   "e2b>=2,<3",
   "gepa>=0.1",
+  "google-antigravity>=0.1,<0.2",
   "google-api-python-client>=2.157,<3",
   "google-cloud-agentidentitycredentials>=0.1,<0.2",
   "google-cloud-aiplatform[agent-engines,evaluation]>=1.148.1,<2",
@@ -227,6 +232,7 @@ optional-dependencies.test = [
   "opentelemetry-instrumentation-google-genai>=0.3b0,<1",
   "opentelemetry-resourcedetector-gcp>=1.9.0a0,<2",
   "pandas>=2.2.3",
+  "protobuf>=6",
   "pyarrow>=14",
   "pypika>=0.50",
   "pytest>=9,<10",
