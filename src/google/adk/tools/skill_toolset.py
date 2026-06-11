@@ -1120,6 +1120,26 @@ class SkillToolset(BaseToolset):
     """Lists all available skills."""
     return list(self._skills.values())
 
+  @property
+  def skills(self) -> list[models.Skill]:
+    """Returns the list of available skills."""
+    return self._list_skills()
+
+  def clone_with_updated_skills(
+      self, skills: list[models.Skill]
+  ) -> SkillToolset:
+    """Creates a new SkillToolset with identical configuration but modified skills."""
+    additional_tools = (
+        list(self._provided_tools_by_name.values()) + self._provided_toolsets
+    )
+    return SkillToolset(
+        skills=skills,
+        registry=self._registry,
+        code_executor=self._code_executor,
+        script_timeout=self._script_timeout,
+        additional_tools=additional_tools,
+    )
+
   async def process_llm_request(
       self, *, tool_context: ToolContext, llm_request: LlmRequest
   ) -> None:

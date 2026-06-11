@@ -194,7 +194,7 @@ class VertexAiMemoryBankService(BaseMemoryService):
         ``agent_engine.api_resource.name.split('/')[-1]``
       express_mode_api_key: The API key to use for Express Mode. If not
         provided, the API key from the GOOGLE_API_KEY environment variable will
-        be used. It will only be used if GOOGLE_GENAI_USE_VERTEXAI is true. Do
+        be used. It will only be used if GOOGLE_GENAI_USE_ENTERPRISE is true. Do
         not use Google AI Studio API key for this field. For more details, visit
         https://cloud.google.com/vertex-ai/generative-ai/docs/start/express-mode/overview
     """
