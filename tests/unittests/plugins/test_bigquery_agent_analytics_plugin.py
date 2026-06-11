@@ -1802,6 +1802,91 @@ class TestBigQueryAgentAnalyticsPlugin:
     attributes = json.loads(log_entry["attributes"])
     assert attributes["custom_tags"] == custom_tags
 
+  def test_resolve_agent_label_prefers_running_agent(self, callback_context):
+    """agent present → agent.name, regardless of any source event."""
+    event = event_lib.Event(author="WorkflowNodeA")
+    label = bigquery_agent_analytics_plugin.BigQueryAgentAnalyticsPlugin._resolve_agent_label(
+        callback_context, event
+    )
+    assert label == "MyTestAgent"
+
+  def test_resolve_agent_label_falls_back_to_event_author(
+      self, callback_context
+  ):
+    """No agent + source Event → Event.author (the emitting node)."""
+    callback_context._invocation_context.agent = None
+    event = event_lib.Event(author="WorkflowNodeA")
+    label = bigquery_agent_analytics_plugin.BigQueryAgentAnalyticsPlugin._resolve_agent_label(
+        callback_context, event
+    )
+    assert label == "WorkflowNodeA"
+
+  def test_resolve_agent_label_null_for_callback_only_row(
+      self, callback_context
+  ):
+    """No agent and no source Event → None (SQL NULL)."""
+    callback_context._invocation_context.agent = None
+    label = bigquery_agent_analytics_plugin.BigQueryAgentAnalyticsPlugin._resolve_agent_label(
+        callback_context, None
+    )
+    assert label is None
+
+  @pytest.mark.asyncio
+  async def test_log_event_survives_none_agent_with_event_author(
+      self,
+      bq_plugin_inst,
+      mock_write_client,
+      callback_context,
+      dummy_arrow_schema,
+  ):
+    """Regression for #6063: None agent falls back to source event author."""
+    # Workflow-driven invocations leave ``InvocationContext.agent`` as None.
+    # Reading ``callback_context.agent_name`` then raised ``AttributeError``,
+    # which ``@_safe_callback`` swallowed, silently dropping the BigQuery row.
+    # The row must now be written with the source Event's author as the label.
+    callback_context._invocation_context.agent = None
+    event = event_lib.Event(author="WorkflowNodeA")
+
+    await bq_plugin_inst._log_event(
+        "TEST_EVENT",
+        callback_context,
+        raw_content="test content",
+        event_data=bigquery_agent_analytics_plugin.EventData(
+            source_event=event
+        ),
+    )
+    await asyncio.sleep(0.01)
+    log_entry = await _get_captured_event_dict_async(
+        mock_write_client, dummy_arrow_schema
+    )
+
+    assert log_entry["event_type"] == "TEST_EVENT"
+    assert log_entry["agent"] == "WorkflowNodeA"
+
+  @pytest.mark.asyncio
+  async def test_log_event_survives_none_agent_without_source_event(
+      self,
+      bq_plugin_inst,
+      mock_write_client,
+      callback_context,
+      dummy_arrow_schema,
+  ):
+    """Regression for #6063: callback-only row with no agent writes null."""
+    callback_context._invocation_context.agent = None
+
+    await bq_plugin_inst._log_event(
+        "TEST_EVENT",
+        callback_context,
+        raw_content="test content",
+    )
+    await asyncio.sleep(0.01)
+    log_entry = await _get_captured_event_dict_async(
+        mock_write_client, dummy_arrow_schema
+    )
+
+    assert log_entry["event_type"] == "TEST_EVENT"
+    assert log_entry["agent"] is None
+
   @pytest.mark.asyncio
   async def test_on_model_error_callback_logs_correctly(
       self,

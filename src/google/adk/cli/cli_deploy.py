@@ -35,9 +35,6 @@ from .utils import _onboarding
 _IS_WINDOWS = os.name == 'nt'
 _GCLOUD_CMD = 'gcloud.cmd' if _IS_WINDOWS else 'gcloud'
 _LOCAL_STORAGE_FLAG_MIN_VERSION: Final[str] = '1.21.0'
-_AGENT_ENGINE_REQUIREMENT: Final[str] = (
-    'google-cloud-aiplatform[adk,agent_engines]'
-)
 
 
 def _ensure_agent_engine_dependency(requirements_txt_path: str) -> None:
@@ -64,7 +61,7 @@ def _ensure_agent_engine_dependency(requirements_txt_path: str) -> None:
     if requirements and not requirements.endswith('\n'):
       f.write('\n')
     f.write('google-cloud-aiplatform[agent_engines]\n')
-    f.write(f'google-adk=={__version__}\n')
+    f.write(f'google-adk[a2a]=={__version__}\n')
 
 
 _DOCKERFILE_TEMPLATE: Final[str] = """
@@ -80,14 +77,14 @@ USER myuser
 # Set up environment variables - Start
 ENV PATH="/home/myuser/.local/bin:$PATH"
 
-ENV GOOGLE_GENAI_USE_VERTEXAI=1
+ENV GOOGLE_GENAI_USE_ENTERPRISE=1
 ENV GOOGLE_CLOUD_PROJECT={gcp_project_id}
 ENV GOOGLE_CLOUD_LOCATION={gcp_region}
 
 # Set up environment variables - End
 
 # Install ADK - Start
-RUN pip install google-adk=={adk_version}
+RUN pip install "google-adk[a2a]=={adk_version}"
 # Install ADK - End
 
 # Copy agent - Start
@@ -857,7 +854,7 @@ def to_agent_engine(
       Google Cloud.
     api_key (str): Optional. The API key to use for Express Mode. If not
       provided, the API key from the GOOGLE_API_KEY environment variable will be
-      used. It will only be used if GOOGLE_GENAI_USE_VERTEXAI is true.
+      used. It will only be used if GOOGLE_GENAI_USE_ENTERPRISE is true.
     adk_app_object (str): Deprecated. This argument is no longer required or
       used.
     agent_engine_id (str): Optional. The ID of the Agent Runtime instance to
@@ -1017,8 +1014,8 @@ def to_agent_engine(
       click.echo(f'Creating {requirements_txt_path}...')
       with open(requirements_txt_path, 'w', encoding='utf-8') as f:
         f.write('google-cloud-aiplatform[agent_engines]\n')
-        f.write(f'google-adk=={__version__}\n')
-        click.echo(f'Using google-adk=={__version__} in requirements')
+        f.write(f'google-adk[a2a]=={__version__}\n')
+        click.echo(f'Using google-adk[a2a]=={__version__} in requirements')
       click.echo(f'Created {requirements_txt_path}')
     _ensure_agent_engine_dependency(requirements_txt_path)
 
@@ -1063,7 +1060,7 @@ def to_agent_engine(
             fg='yellow',
         )
       else:
-        env_vars['GOOGLE_GENAI_USE_VERTEXAI'] = '1'
+        env_vars['GOOGLE_GENAI_USE_ENTERPRISE'] = '1'
         env_vars['GOOGLE_API_KEY'] = api_key
     elif not project:
       if 'GOOGLE_API_KEY' in env_vars:

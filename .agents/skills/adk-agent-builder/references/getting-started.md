@@ -4,12 +4,14 @@ Step-by-step guide covering environment setup, basic LLM agents, and workflow ag
 
 ## 📋 New Agent Checklist
 Use this checklist when creating a new agent to ensure it follows convention:
+
 - [ ] **Directory**: Is there a directory for the agent?
 - [ ] **__init__.py**: Does it contain `from . import agent`?
 - [ ] **agent.py**: Does it define `root_agent` or `app`?
 - [ ] **.env**: Is there a `.env` file with the appropriate API keys? (Do not commit to git)
 
 ## 💡 Quick Reference (CLI Commands)
+
 - **Create**: `adk create <agent_name>` (Scaffolds a new agent project)
 - **Web UI**: `adk web <path_to_agent_dir>` (Starts dev server at localhost:8000)
 - **Run CLI**: `adk run <path_to_agent_dir>` (Interactive or query mode)
@@ -44,7 +46,7 @@ Obtain an API key from [Google AI Studio](https://aistudio.google.com/app/apikey
 Create a `.env` file in the agent directory:
 
 ```
-GOOGLE_GENAI_USE_VERTEXAI=FALSE
+GOOGLE_GENAI_USE_ENTERPRISE=FALSE
 GOOGLE_API_KEY=YOUR_API_KEY
 ```
 
@@ -53,7 +55,7 @@ GOOGLE_API_KEY=YOUR_API_KEY
 For production use with Google Cloud:
 
 ```
-GOOGLE_GENAI_USE_VERTEXAI=TRUE
+GOOGLE_GENAI_USE_ENTERPRISE=TRUE
 GOOGLE_CLOUD_PROJECT=your-project-id
 GOOGLE_CLOUD_LOCATION=us-central1
 ```
@@ -65,7 +67,7 @@ Run `gcloud auth application-default login` to authenticate.
 Combines Vertex AI with API key authentication:
 
 ```
-GOOGLE_GENAI_USE_VERTEXAI=TRUE
+GOOGLE_GENAI_USE_ENTERPRISE=TRUE
 GOOGLE_API_KEY=YOUR_EXPRESS_MODE_KEY
 ```
 

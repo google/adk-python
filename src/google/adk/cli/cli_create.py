@@ -92,9 +92,9 @@ def _generate_files(
   with open(dotenv_file_path, "w", encoding="utf-8") as f:
     lines = []
     if google_cloud_project and google_cloud_region:
-      lines.append("GOOGLE_GENAI_USE_VERTEXAI=1")
+      lines.append("GOOGLE_GENAI_USE_ENTERPRISE=1")
     elif google_api_key:
-      lines.append("GOOGLE_GENAI_USE_VERTEXAI=0")
+      lines.append("GOOGLE_GENAI_USE_ENTERPRISE=0")
     if google_api_key:
       lines.append(f"GOOGLE_API_KEY={google_api_key}")
     if google_cloud_project:

@@ -2937,6 +2937,33 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
       latency_json["time_to_first_token_ms"] = event_data.time_to_first_token_ms
     return latency_json or None
 
+  @staticmethod
+  def _resolve_agent_label(
+      callback_context: CallbackContext,
+      source_event: Optional["Event"],
+  ) -> Optional[str]:
+    """Resolves the ``agent`` column without raising when no agent is set.
+
+    ``CallbackContext.agent_name`` dereferences
+    ``InvocationContext.agent.name`` with no None guard, but ``agent`` is
+    legitimately ``None`` for workflow-driven invocations with deterministic
+    nodes. Reading it at row-build time then raised ``AttributeError``, which
+    ``@_safe_callback`` swallowed, silently dropping the row (issue #6063).
+
+    Resolution order:
+
+    * running agent present → ``agent.name``;
+    * no agent but a source Event → ``Event.author`` (the emitting node), a
+      more meaningful workflow label than a sentinel;
+    * callback-only row with neither → ``None`` (SQL NULL).
+    """
+    agent = getattr(callback_context._invocation_context, "agent", None)
+    if agent is not None:
+      return getattr(agent, "name", None)
+    if source_event is not None:
+      return getattr(source_event, "author", None)
+    return None
+
   def _build_adk_envelope(
       self,
       callback_context: CallbackContext,
@@ -3189,7 +3216,9 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
     row = {
         "timestamp": timestamp,
         "event_type": event_type,
-        "agent": callback_context.agent_name,
+        "agent": self._resolve_agent_label(
+            callback_context, event_data.source_event
+        ),
         "user_id": callback_context.user_id,
         "session_id": callback_context.session.id,
         "invocation_id": callback_context.invocation_id,
