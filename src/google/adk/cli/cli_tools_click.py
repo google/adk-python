@@ -1490,7 +1490,7 @@ def cli_generate_eval_cases(
     click.echo("Generating scenarios utilizing Vertex AI Eval SDK...")
     scenarios = generator.generate_scenarios(root_agent, config)
 
-    # TODO(pthodoroff): Expose initial session state when simulation library
+    # TODO: Expose initial session state when simulation library
     # supports it.
     initial_session_state = create_empty_state(root_agent)
 
@@ -2289,7 +2289,7 @@ def cli_migrate_session(
     help=(
         "Optional. The API key to use for Express Mode. If not"
         " provided, the API key from the GOOGLE_API_KEY environment variable"
-        " will be used. It will only be used if GOOGLE_GENAI_USE_VERTEXAI is"
+        " will be used. It will only be used if GOOGLE_GENAI_USE_ENTERPRISE is"
         " true. (It will override GOOGLE_API_KEY in the .env file if it"
         " exists.)"
     ),

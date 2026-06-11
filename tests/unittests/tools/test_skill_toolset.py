@@ -178,6 +178,40 @@ def test_list_skills(mock_skill1, mock_skill2):
   assert mock_skill2 in skills
 
 
+def test_clone_with_updated_skills(mock_skill1, mock_skill2):
+  """Tests that the skills are updated but other properties are retained."""
+  mock_skill3 = mock.create_autospec(models.Skill, instance=True)
+  mock_skill3.name = "skill3"
+
+  mock_tool = mock.create_autospec(skill_toolset.BaseTool, instance=True)
+  mock_tool.name = "my_tool"
+
+  registry = mock.create_autospec(skill_toolset.SkillRegistry, instance=True)
+
+  executor = _make_mock_executor()
+
+  toolset = skill_toolset.SkillToolset(
+      [mock_skill1, mock_skill2],
+      registry=registry,
+      code_executor=executor,
+      script_timeout=42,
+      additional_tools=[mock_tool],
+  )
+
+  new_toolset = toolset.clone_with_updated_skills([mock_skill3])
+
+  # Verify new skill is present and old ones are gone
+  skills = new_toolset._list_skills()
+  assert len(skills) == 1
+  assert skills[0] == mock_skill3
+
+  # Verify properties are retained
+  assert new_toolset._registry is registry
+  assert new_toolset._code_executor is executor
+  assert new_toolset._script_timeout == 42
+  assert "my_tool" in new_toolset._provided_tools_by_name
+
+
 @pytest.mark.asyncio
 async def test_get_tools(mock_skill1, mock_skill2):
   toolset = skill_toolset.SkillToolset([mock_skill1, mock_skill2])

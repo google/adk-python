@@ -589,6 +589,28 @@ async def test_sequential_branch_propagation():
 
 
 @pytest.mark.asyncio
+async def test_child_event_branch_does_not_mutate_parent_ic():
+  """A child node altering its branch does not mutate the parent's shared InvocationContext branch."""
+
+  class _Node(BaseNode):
+
+    async def _run_impl(self, *, ctx, node_input):
+      yield Event(output='result', branch='new_child_branch')
+
+  parent_ctx, events = _make_ctx()
+  parent_ctx._invocation_context.branch = 'parent_branch'
+  await NodeRunner(
+      node=_Node(name='n'),
+      parent_ctx=parent_ctx,
+      use_sub_branch=False,
+  ).run()
+
+  assert events[0].branch == 'new_child_branch'
+  # The parent's branch must remain unchanged.
+  assert parent_ctx._invocation_context.branch == 'parent_branch'
+
+
+@pytest.mark.asyncio
 async def test_override_isolation_scope_used_in_node_runner():
   """NodeRunner sets isolation_scope on child context and enriches emitted events."""
 

@@ -381,9 +381,7 @@ def generate_request_confirmation_event(
       invocation_id=invocation_context.invocation_id,
       author=invocation_context.agent.name,
       branch=invocation_context.branch,
-      content=types.Content(
-          parts=parts, role=function_response_event.content.role
-      ),
+      content=types.Content(parts=parts, role='model'),
       long_running_tool_ids=long_running_tool_ids,
   )
 
@@ -472,6 +470,7 @@ async def handle_function_call_list_async(
       trace_merged_tool_calls(
           response_event_id=merged_event.id,
           function_response_event=merged_event,
+          invocation_context=invocation_context,
       )
   return merged_event
 
@@ -644,7 +643,7 @@ async def _execute_single_function_call_async(
     return function_response_event
 
   async with _instrumentation.record_tool_execution(
-      tool, agent, function_args
+      tool, agent, function_args, invocation_context=invocation_context
   ) as tel_ctx:
     tel_ctx.function_response_event = await _run_with_trace()
     tel_ctx.error_type = detected_error_type
@@ -714,6 +713,7 @@ async def handle_function_calls_live(
       trace_merged_tool_calls(
           response_event_id=merged_event.id,
           function_response_event=merged_event,
+          invocation_context=invocation_context,
       )
   return merged_event
 
@@ -891,7 +891,7 @@ async def _execute_single_function_call_live(
     return function_response_event
 
   async with _instrumentation.record_tool_execution(
-      tool, agent, function_args
+      tool, agent, function_args, invocation_context=invocation_context
   ) as tel_ctx:
     tel_ctx.function_response_event = await _run_with_trace()
     tel_ctx.error_type = detected_error_type

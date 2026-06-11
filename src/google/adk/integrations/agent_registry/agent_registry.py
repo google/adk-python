@@ -19,6 +19,7 @@ from __future__ import annotations
 from collections.abc import Generator
 from enum import Enum
 import logging
+import os
 import re
 from typing import Any
 from typing import Callable
@@ -39,9 +40,11 @@ from google.adk.tools.mcp_tool.mcp_session_manager import StdioConnectionParams
 from google.adk.tools.mcp_tool.mcp_session_manager import StreamableHTTPConnectionParams
 from google.adk.tools.mcp_tool.mcp_toolset import McpToolset
 import google.auth
-import google.auth.transport.requests
+from google.auth.transport import mtls
+from google.auth.transport import requests as requests_auth
 import httpx
 from mcp import StdioServerParameters
+import requests
 from typing_extensions import override
 
 # pylint: disable=g-import-not-at-top
@@ -61,6 +64,9 @@ except ImportError as e:
 logger = logging.getLogger("google_adk." + __name__)
 
 AGENT_REGISTRY_BASE_URL = "https://agentregistry.googleapis.com/v1alpha"
+AGENT_REGISTRY_MTLS_BASE_URL = (
+    "https://agentregistry.mtls.googleapis.com/v1alpha"
+)
 
 _TRANSPORT_MAPPING = {
     "HTTP_JSON": A2ATransport.http_json,
@@ -118,6 +124,14 @@ class AgentRegistrySingleMcpToolset(McpToolset):
           self.destination_resource_id
       )
     return tools
+
+
+class _MtlsEndpoint(Enum):
+  """The mTLS endpoint setting."""
+
+  AUTO = "auto"
+  ALWAYS = "always"
+  NEVER = "never"
 
 
 class _ProtocolType(str, Enum):
@@ -199,6 +213,21 @@ class AgentRegistry:
           f"Failed to get default Google Cloud credentials: {e}"
       ) from e
 
+    # Instantiate and configure AuthorizedSession once during initialization.
+    self._session = requests_auth.AuthorizedSession(
+        credentials=self._credentials
+    )
+    use_client_cert = _use_client_cert_effective()
+    client_cert_source = None
+    if use_client_cert:
+      client_cert_source = (
+          mtls.default_client_cert_source()
+          if mtls.has_default_client_cert_source()
+          else None
+      )
+      self._session.configure_mtls_channel(client_cert_source)
+    self._base_url = _get_agent_registry_base_url(client_cert_source)
+
   def _get_auth_headers(self) -> Dict[str, str]:
     """Refreshes credentials and returns authorization headers."""
     try:
@@ -208,12 +237,6 @@ class AgentRegistry:
           "Authorization": f"Bearer {self._credentials.token}",
           "Content-Type": "application/json",
       }
-      quota_project_id = (
-          getattr(self._credentials, "quota_project_id", None)
-          or self.project_id
-      )
-      if quota_project_id:
-        headers["x-goog-user-project"] = quota_project_id
       return headers
     except google.auth.exceptions.RefreshError as e:
       raise RuntimeError(
@@ -225,22 +248,26 @@ class AgentRegistry:
   ) -> Dict[str, Any]:
     """Helper function to make GET requests to the Agent Registry API."""
     if path.startswith("projects/"):
-      url = f"{AGENT_REGISTRY_BASE_URL}/{path}"
+      url = f"{self._base_url}/{path}"
     else:
-      url = f"{AGENT_REGISTRY_BASE_URL}/{self._base_path}/{path}"
-
+      url = f"{self._base_url}/{self._base_path}/{path}"
+    quota_project_id = (
+        getattr(self._credentials, "quota_project_id", None) or self.project_id
+    )
+    headers = (
+        {"x-goog-user-project": quota_project_id} if quota_project_id else {}
+    )
     try:
-      headers = self._get_auth_headers()
-      with httpx.Client() as client:
-        response = client.get(url, headers=headers, params=params)
-        response.raise_for_status()
-        return response.json()
-    except httpx.HTTPStatusError as e:
+      # Using AuthorizedSession for internal API calls to handle mTLS/Auth.
+      response = self._session.get(url, headers=headers, params=params)
+      response.raise_for_status()
+      return response.json()
+    except requests.exceptions.HTTPError as e:
       raise RuntimeError(
           f"API request failed with status {e.response.status_code}:"
           f" {e.response.text}"
       ) from e
-    except httpx.RequestError as e:
+    except requests.exceptions.RequestException as e:
       raise RuntimeError(f"API request failed (network error): {e}") from e
     except Exception as e:
       raise RuntimeError(f"API request failed: {e}") from e
@@ -520,3 +547,32 @@ class AgentRegistry:
         description=description,
         httpx_client=httpx_client,
     )
+
+
+def _use_client_cert_effective() -> bool:
+  """Returns whether client certificate should be used for mTLS."""
+  try:
+    # If the google.auth.transport.mtls.should_use_client_cert function is
+    # available, use it to determine whether client certificate should be used.
+    return bool(mtls.should_use_client_cert())
+  except (ImportError, AttributeError):
+    use_client_cert_str = os.getenv(
+        "GOOGLE_API_USE_CLIENT_CERTIFICATE", "false"
+    ).lower()
+    return use_client_cert_str == "true"
+
+
+def _get_agent_registry_base_url(client_cert_source: Any | None = None) -> str:
+  """Returns the base URL based on mTLS configuration and cert availability."""
+  use_mtls_endpoint_str = os.getenv(
+      "GOOGLE_API_USE_MTLS_ENDPOINT", _MtlsEndpoint.AUTO.value
+  ).lower()
+  try:
+    use_mtls_endpoint = _MtlsEndpoint(use_mtls_endpoint_str)
+  except ValueError:
+    use_mtls_endpoint = _MtlsEndpoint.AUTO
+  if (use_mtls_endpoint is _MtlsEndpoint.ALWAYS) or (
+      use_mtls_endpoint is _MtlsEndpoint.AUTO and client_cert_source is not None
+  ):
+    return AGENT_REGISTRY_MTLS_BASE_URL
+  return AGENT_REGISTRY_BASE_URL

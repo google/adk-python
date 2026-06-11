@@ -73,7 +73,8 @@
               "name": "adk_request_input"
             }
           }
-        ]
+        ],
+        "role": "model"
       },
       "id": "e-4",
       "invocationId": "i-1",
@@ -162,7 +163,8 @@
               "name": "adk_request_input"
             }
           }
-        ]
+        ],
+        "role": "model"
       },
       "id": "e-8",
       "invocationId": "i-1",
