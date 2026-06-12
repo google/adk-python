@@ -177,7 +177,7 @@ def _is_default_value_compatible(
       or isinstance(annotation, typing_types.GenericAlias)
       or isinstance(annotation, typing_types.UnionType)
   ):
-    origin = get_origin(annotation)
+    origin: Any = get_origin(annotation)
     if origin in (Union, typing_types.UnionType):
       return any(
           _is_default_value_compatible(default_value, arg)
@@ -207,7 +207,7 @@ def _is_default_value_compatible(
       if not isinstance(default_value, tuple):
         return False
       args = get_args(annotation)
-      if len(args) == 2 and args[1] is Ellipsis:
+      if len(args) == 2 and args[-1] is Ellipsis:
         return all(
             _is_default_value_compatible(item, args[0])
             for item in default_value
@@ -310,7 +310,7 @@ def _parse_schema_from_parameter(
       or isinstance(param.annotation, typing_types.GenericAlias)
       or isinstance(param.annotation, typing_types.UnionType)
   ):
-    origin = get_origin(param.annotation)
+    origin: Any = get_origin(param.annotation)
     args = get_args(param.annotation)
     if origin is dict:
       schema.type = types.Type.OBJECT
@@ -351,7 +351,7 @@ def _parse_schema_from_parameter(
       _raise_if_schema_unsupported(variant, schema)
       return schema
     if origin is tuple:
-      if len(args) == 2 and args[1] is Ellipsis:
+      if len(args) == 2 and args[-1] is Ellipsis:
         item_annotation = args[0]
       elif args and all(arg == args[0] for arg in args):
         item_annotation = args[0]
