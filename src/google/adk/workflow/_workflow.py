@@ -653,7 +653,11 @@ class Workflow(BaseNode):
       loop_state.interrupt_ids.update(child_ctx.interrupt_ids)
       return
 
-    if node.wait_for_output and child_ctx.output is None:
+    if (
+        node.wait_for_output
+        and child_ctx.output is None
+        and child_ctx.route is None
+    ):
       node_state.status = NodeStatus.WAITING
       return
 
