@@ -327,3 +327,32 @@ async def test_search_memory_is_scoped_by_user():
   assert (
       result_other_user.memories[0].content.parts[0].text == 'This is a secret.'
   )
+
+
+@pytest.mark.asyncio
+async def test_search_memory_matches_non_latin_text():
+  """Tests that search matches non-Latin (e.g. Cyrillic) text."""
+  memory_service = InMemoryMemoryService()
+  session = Session(
+      app_name=MOCK_APP_NAME,
+      user_id=MOCK_USER_ID,
+      id='session-non-latin',
+      last_update_time=5000,
+      events=[
+          Event(
+              id='event-non-latin',
+              invocation_id='inv-non-latin',
+              author='user',
+              timestamp=70000,
+              content=types.Content(parts=[types.Part(text='Привет мир')]),
+          ),
+      ],
+  )
+  await memory_service.add_session_to_memory(session)
+
+  result = await memory_service.search_memory(
+      app_name=MOCK_APP_NAME, user_id=MOCK_USER_ID, query='привет'
+  )
+
+  assert len(result.memories) == 1
+  assert result.memories[0].content.parts[0].text == 'Привет мир'

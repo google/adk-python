@@ -57,7 +57,7 @@ async def monitor_video_stream(
   print("start monitor_video_stream!")
   from google.genai import Client
 
-  client = Client(vertexai=False)
+  client = Client(enterprise=False)
   prompt_text = (
       "Count the number of people in this image. Just respond with a numeric"
       " number."
