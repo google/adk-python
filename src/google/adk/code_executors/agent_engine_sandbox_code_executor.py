@@ -181,7 +181,7 @@ class AgentEngineSandboxCodeExecutor(BaseCodeExecutor):
           {
               'name': f.name,
               'content': f.content,
-              'mimeType': f.mime_type,
+              'mime_type': f.mime_type,
           }
           for f in code_execution_input.input_files
       ]

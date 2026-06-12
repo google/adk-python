@@ -127,12 +127,12 @@ class TestAgentEngineSandboxCodeExecutor:
     )
 
   @patch("vertexai.Client")
-  def test_execute_code_sends_input_files_with_content_key(
+  def test_execute_code_sends_input_files_with_sandbox_api_fields(
       self,
       mock_vertexai_client,
       mock_invocation_context,
   ):
-    """Input files must be sent under the 'content' key the SDK expects."""
+    """Input files must use the field names the sandbox API expects."""
     mock_api_client = MagicMock()
     mock_vertexai_client.return_value = mock_api_client
     mock_response = MagicMock()
@@ -157,7 +157,7 @@ class TestAgentEngineSandboxCodeExecutor:
     )
     sent_files = call_kwargs["input_data"]["files"]
     assert sent_files == [
-        {"name": "data.csv", "content": "a,b,c", "mimeType": "text/csv"}
+        {"name": "data.csv", "content": "a,b,c", "mime_type": "text/csv"}
     ]
 
   @patch("vertexai.Client")
