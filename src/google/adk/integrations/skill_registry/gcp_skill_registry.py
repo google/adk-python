@@ -20,10 +20,10 @@ import asyncio
 import base64
 import os
 
+from google.adk.dependencies.vertexai import vertexai
 from google.adk.skills import _utils
 from google.adk.skills import models
 from google.adk.skills.skill_registry import SkillRegistry
-import vertexai
 
 
 class GCPSkillRegistry(SkillRegistry):
@@ -40,13 +40,19 @@ class GCPSkillRegistry(SkillRegistry):
     """
     self.project_id = project_id or os.environ.get("GOOGLE_CLOUD_PROJECT")
     self.location = location or os.environ.get("GOOGLE_CLOUD_LOCATION")
-    self._client = vertexai.Client(
-        project=self.project_id,
-        location=self.location,
-        http_options={
-            "api_version": "v1beta1",
-        },
-    ).aio
+    self._lazy_client: vertexai.AsyncClient | None = None
+
+  @property
+  def _client(self) -> vertexai.AsyncClient:
+    if self._lazy_client is None:
+      self._lazy_client = vertexai.Client(
+          project=self.project_id,
+          location=self.location,
+          http_options={
+              "api_version": "v1beta1",
+          },
+      ).aio
+    return self._lazy_client
 
   async def get_skill(self, *, name: str) -> models.Skill:
     """Fetches a skill from the registry.

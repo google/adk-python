@@ -28,15 +28,16 @@ _ENV_VARS = {
     'GOOGLE_CLOUD_PROJECT': 'fake_google_cloud_project',
     'GOOGLE_CLOUD_LOCATION': 'fake_google_cloud_location',
     'ADK_ALLOW_WIP_FEATURES': 'true',
+    'ADK_SUPPRESS_EXPERIMENTAL_FEATURE_WARNINGS': 'true',
 }
 
 ENV_SETUPS = {
     'GOOGLE_AI': {
-        'GOOGLE_GENAI_USE_VERTEXAI': '0',
+        'GOOGLE_GENAI_USE_ENTERPRISE': '0',
         **_ENV_VARS,
     },
     'VERTEX': {
-        'GOOGLE_GENAI_USE_VERTEXAI': '1',
+        'GOOGLE_GENAI_USE_ENTERPRISE': '1',
         **_ENV_VARS,
     },
 }

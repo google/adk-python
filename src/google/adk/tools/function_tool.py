@@ -297,7 +297,7 @@ You could retry calling this tool, but it is IMPORTANT for you to provide all th
     else:
       return target(**args_to_call)
 
-  # TODO(hangfei): fix call live for function stream.
+  # TODO: fix call live for function stream.
   async def _call_live(
       self,
       *,

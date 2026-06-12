@@ -84,9 +84,11 @@ class TelemetryContext:
   def llm_responses(self) -> list[LlmResponse]:
     return self._llm_responses
 
-  def record_llm_response(self, response: LlmResponse) -> None:
+  def record_llm_response(
+      self, invocation_context: InvocationContext, response: LlmResponse
+  ) -> None:
     self._llm_responses.append(response)
-    tracing.trace_inference_result(self.span, response)
+    tracing.trace_inference_result(invocation_context, self.span, response)
 
 
 def _record_agent_metrics(
@@ -143,6 +145,7 @@ async def record_tool_execution(
     tool: BaseTool,
     agent: BaseAgent,
     function_args: dict[str, Any],
+    invocation_context: InvocationContext | None = None,
 ) -> AsyncIterator[TelemetryContext]:
   """Unified context manager for consolidated tool execution telemetry."""
   start_time = time.monotonic()
@@ -167,6 +170,7 @@ async def record_tool_execution(
             args=function_args,
             function_response_event=response_event,
             error=caught_error,
+            invocation_context=invocation_context,
             error_type=tel_ctx.error_type,
         )
   finally:

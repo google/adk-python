@@ -22,6 +22,7 @@ from typing import AsyncGenerator
 from typing import Optional
 from unittest import mock
 
+from google.adk.agents.base_agent import BaseAgent
 from google.adk.apps.app import App
 from google.adk.artifacts.in_memory_artifact_service import InMemoryArtifactService
 from google.adk.cli.utils.agent_loader import AgentLoader
@@ -249,6 +250,33 @@ def _make_nodes_sequential(obj, visited=None):
       _make_nodes_sequential(obj._node, visited)
 
 
+def _get_all_agent_names(obj, visited=None):
+  if visited is None:
+    visited = set()
+
+  if id(obj) in visited:
+    return set()
+  visited.add(id(obj))
+
+  from google.adk.workflow._parallel_worker import _ParallelWorker
+  from google.adk.workflow._workflow import Workflow
+
+  names = set()
+  if isinstance(obj, BaseAgent) and hasattr(obj, "name"):
+    names.add(obj.name)
+    if hasattr(obj, "sub_agents") and obj.sub_agents:
+      for sub in obj.sub_agents:
+        names.update(_get_all_agent_names(sub, visited))
+  elif isinstance(obj, Workflow):
+    if obj.graph and obj.graph.nodes:
+      for node in obj.graph.nodes:
+        names.update(_get_all_agent_names(node, visited))
+  elif isinstance(obj, _ParallelWorker):
+    if hasattr(obj, "_node"):
+      names.update(_get_all_agent_names(obj._node, visited))
+  return names
+
+
 def _extract_user_content(event: dict) -> Optional[types.Content]:
   """Extracts user content from an event dict and returns a types.Content object.
 
@@ -444,6 +472,26 @@ def test_agent_replay(agent_dir, test_file, monkeypatch):
         else agent_or_app
     )
     _make_nodes_sequential(root_agent)
+    agent_names = _get_all_agent_names(root_agent)
+
+    import inspect
+
+    # Dynamically locate the loaded agent module from sys.modules
+    mod = sys.modules.get(f"{agent_dir.name}.agent") or sys.modules.get(
+        agent_dir.name
+    )
+    if not mod:
+      # Fallback for namespace packages or nested imports
+      for k, v in sys.modules.items():
+        if k.endswith(f"{agent_dir.name}.agent") or k.endswith(agent_dir.name):
+          mod = v
+          break
+
+    # Reflectively find all Agent instances defined in the module (e.g. dynamic agents)
+    if mod:
+      for _, obj in inspect.getmembers(mod):
+        if isinstance(obj, BaseAgent) and hasattr(obj, "name"):
+          agent_names.add(obj.name)
 
     with open(test_file, "r") as f:
       session_data = json.load(f)
@@ -486,6 +534,23 @@ def test_agent_replay(agent_dir, test_file, monkeypatch):
         elif role == "model":
           if last_was_set_model_response:
             last_was_set_model_response = False
+            continue
+
+          if ev.get("author", "") not in agent_names:
+            continue
+
+          parts = content_dict.get("parts", [])
+          is_sys_hitl = False
+          for part in parts:
+            if "functionCall" in part:
+              fc_name = part["functionCall"].get("name")
+              if fc_name in (
+                  "adk_request_confirmation",
+                  "adk_request_credential",
+              ):
+                is_sys_hitl = True
+                break
+          if is_sys_hitl:
             continue
 
           try:
