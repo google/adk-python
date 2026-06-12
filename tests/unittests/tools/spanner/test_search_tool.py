@@ -263,9 +263,7 @@ async def test_similarity_search_postgresql_knn_success(
       embedding_column_to_search="embedding_col",
       columns=["col1"],
       embedding_options={
-          "spanner_postgresql_vertex_ai_embedding_model_endpoint": (
-              "test_endpoint"
-          )
+          "spanner_postgresql_vertex_ai_embedding_model_endpoint": "projects/test-project/locations/us-central1/publishers/google/models/text-embedding-005"
       },
       credentials=mock_credentials,
   )
@@ -301,9 +299,7 @@ async def test_similarity_search_postgresql_ann_unsupported(
       embedding_column_to_search="embedding_col",
       columns=["col1"],
       embedding_options={
-          "spanner_postgresql_vertex_ai_embedding_model_endpoint": (
-              "test_endpoint"
-          )
+          "spanner_postgresql_vertex_ai_embedding_model_endpoint": "projects/test-project/locations/us-central1/publishers/google/models/text-embedding-005"
       },
       credentials=mock_credentials,
       search_options={

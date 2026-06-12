@@ -19,14 +19,13 @@ before being interpolated into SQL queries (defense against SQL injection
 via LLM-populated tool parameters).
 """
 
-import pytest
-from google.cloud.spanner_admin_database_v1.types import DatabaseDialect
-
-from google.adk.tools.spanner.search_tool import _generate_sql_for_knn
 from google.adk.tools.spanner.search_tool import _generate_sql_for_ann
+from google.adk.tools.spanner.search_tool import _generate_sql_for_knn
 from google.adk.tools.spanner.search_tool import _validate_additional_filter
 from google.adk.tools.spanner.search_tool import _validate_column_list
 from google.adk.tools.spanner.search_tool import _validate_identifier
+from google.cloud.spanner_admin_database_v1.types import DatabaseDialect
+import pytest
 
 
 class TestValidateIdentifier:
@@ -36,7 +35,10 @@ class TestValidateIdentifier:
     assert _validate_identifier("documents", "test") == "documents"
 
   def test_schema_qualified_identifier(self):
-    assert _validate_identifier("my_schema.my_table", "test") == "my_schema.my_table"
+    assert (
+        _validate_identifier("my_schema.my_table", "test")
+        == "my_schema.my_table"
+    )
 
   def test_identifier_with_underscores(self):
     assert _validate_identifier("embedding_col_1", "test") == "embedding_col_1"
@@ -56,7 +58,8 @@ class TestValidateIdentifier:
   def test_rejects_subquery_in_column(self):
     with pytest.raises(ValueError, match="Invalid SQL identifier"):
       _validate_identifier(
-          "(SELECT STRING_AGG(table_name, ',') FROM INFORMATION_SCHEMA.TABLES) AS schema_dump",
+          "(SELECT STRING_AGG(table_name, ',') FROM INFORMATION_SCHEMA.TABLES)"
+          " AS schema_dump",
           "columns",
       )
 
@@ -84,7 +87,10 @@ class TestValidateColumnList:
     with pytest.raises(ValueError, match="Invalid SQL identifier"):
       _validate_column_list(
           [
-              "(SELECT STRING_AGG(table_name, ',') FROM INFORMATION_SCHEMA.TABLES) AS dump",
+              (
+                  "(SELECT STRING_AGG(table_name, ',') FROM"
+                  " INFORMATION_SCHEMA.TABLES) AS dump"
+              ),
               "content",
           ],
           "columns",
@@ -98,7 +104,10 @@ class TestValidateAdditionalFilter:
     assert _validate_additional_filter(None) is None
 
   def test_simple_filter(self):
-    assert _validate_additional_filter("price_in_cents < 100000") == "price_in_cents < 100000"
+    assert (
+        _validate_additional_filter("price_in_cents < 100000")
+        == "price_in_cents < 100000"
+    )
 
   def test_rejects_union(self):
     with pytest.raises(ValueError, match="UNION"):
@@ -142,7 +151,9 @@ class TestGenerateSqlForKnn:
           table_name="documents",
           embedding_column_to_search="embedding",
           columns=["content"],
-          additional_filter="1=1 UNION ALL SELECT password, 0.0 FROM admin_credentials",
+          additional_filter=(
+              "1=1 UNION ALL SELECT password, 0.0 FROM admin_credentials"
+          ),
           distance_type="COSINE",
           top_k=10,
       )
@@ -166,7 +177,10 @@ class TestGenerateSqlForKnn:
           table_name="documents",
           embedding_column_to_search="embedding",
           columns=[
-              "(SELECT STRING_AGG(table_name, ',') FROM INFORMATION_SCHEMA.TABLES) AS schema_dump",
+              (
+                  "(SELECT STRING_AGG(table_name, ',') FROM"
+                  " INFORMATION_SCHEMA.TABLES) AS schema_dump"
+              ),
           ],
           additional_filter=None,
           distance_type="COSINE",

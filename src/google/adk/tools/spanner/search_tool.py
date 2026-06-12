@@ -32,25 +32,25 @@ from .settings import APPROXIMATE_NEAREST_NEIGHBORS
 from .settings import EXACT_NEAREST_NEIGHBORS
 from .settings import SpannerToolSettings
 
-# Pattern for valid SQL identifiers: alphanumeric, underscores, dots (for
-# schema-qualified names), and backtick/double-quote quoting.
+# Pattern for valid SQL identifiers: alphanumeric, underscores, hyphens,
+# dots (for schema-qualified names), and backtick/double-quote quoting.
 _SAFE_IDENTIFIER_RE = re.compile(
-    r'^(?:[A-Za-z_][A-Za-z0-9_]*'           # unquoted identifier
-    r'(?:\.[A-Za-z_][A-Za-z0-9_]*)*'        # optional schema.table
-    r'|`[^`]+`'                              # backtick-quoted
-    r'|"[^"]+")$'                            # double-quote-quoted
+    r"^(?:[A-Za-z_][A-Za-z0-9_-]*"  # unquoted identifier
+    r"(?:\.[A-Za-z_][A-Za-z0-9_-]*)*"  # optional schema.table
+    r"|`[^`]+`"  # backtick-quoted
+    r'|"[^"]+")$'  # double-quote-quoted
 )
 
 # Patterns that should never appear in an additional_filter value when
 # the filter is populated by the LLM at runtime.
 _FILTER_DENY_PATTERNS = re.compile(
-    r';\s*'                     # statement separator
-    r'|--'                      # single-line comment
-    r'|/\*'                     # block comment start
-    r'|\*/'                     # block comment end
-    r'|\bUNION\b'              # UNION-based injection
-    r'|\bINTO\b\s+\bOUTFILE\b' # INTO OUTFILE
-    , re.IGNORECASE
+    r";\s*"  # statement separator
+    r"|--"  # single-line comment
+    r"|/\*"  # block comment start
+    r"|\*/"  # block comment end
+    r"|\bUNION\b"  # UNION-based injection
+    r"|\bINTO\b\s+\bOUTFILE\b",  # INTO OUTFILE
+    re.IGNORECASE,
 )
 
 
@@ -71,7 +71,7 @@ def _validate_identifier(value: str, param_name: str) -> str:
     raise ValueError(
         f"Invalid SQL identifier for {param_name}: {value!r}. "
         "Identifiers must contain only alphanumeric characters, underscores, "
-        "and dots, or be quoted with backticks or double quotes."
+        "hyphens, and dots, or be quoted with backticks or double quotes."
     )
   return value.strip()
 
@@ -165,13 +165,13 @@ def _generate_postgresql_for_embedding_query(
 ) -> str:
   # Validate endpoint format: projects/.../locations/.../publishers/.../models/...
   if not re.match(
-      r'^projects/[\w-]+/locations/[\w-]+/publishers/[\w-]+/models/[\w.-]+$',
+      r"^projects/[\w-]+/locations/[\w-]+/publishers/[\w-]+/models/[\w.-]+$",
       vertex_ai_embedding_model_endpoint,
   ):
     raise ValueError(
-        f"Invalid Vertex AI endpoint format: "
+        "Invalid Vertex AI endpoint format: "
         f"{vertex_ai_embedding_model_endpoint!r}. Expected format: "
-        f"projects/$project/locations/$location/publishers/google/models/$model"
+        "projects/$project/locations/$location/publishers/google/models/$model"
     )
   instances_json = f"""
       'instances',
