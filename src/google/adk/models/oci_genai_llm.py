@@ -22,7 +22,6 @@ import importlib.util
 import json
 import logging
 import os
-import threading
 from typing import Any
 from typing import AsyncGenerator
 from typing import Optional
@@ -131,21 +130,29 @@ def _media_blocks_for_part(part: types.Part) -> list[Any]:
 
   category = (mime or "").split("/", 1)[0].lower()
   if category == "image":
-    return [oci_models.ImageContent(
-        type="IMAGE", image_url=oci_models.ImageUrl(url=url)
-    )]
+    return [
+        oci_models.ImageContent(
+            type="IMAGE", image_url=oci_models.ImageUrl(url=url)
+        )
+    ]
   if category == "audio":
-    return [oci_models.AudioContent(
-        type="AUDIO", audio_url=oci_models.AudioUrl(url=url)
-    )]
+    return [
+        oci_models.AudioContent(
+            type="AUDIO", audio_url=oci_models.AudioUrl(url=url)
+        )
+    ]
   if category == "video":
-    return [oci_models.VideoContent(
-        type="VIDEO", video_url=oci_models.VideoUrl(url=url)
-    )]
+    return [
+        oci_models.VideoContent(
+            type="VIDEO", video_url=oci_models.VideoUrl(url=url)
+        )
+    ]
   # Documents (application/pdf, text/*, etc.) and any other mime
-  return [oci_models.DocumentContent(
-      type="DOCUMENT", document_url=oci_models.DocumentUrl(url=url)
-  )]
+  return [
+      oci_models.DocumentContent(
+          type="DOCUMENT", document_url=oci_models.DocumentUrl(url=url)
+      )
+  ]
 
 
 def _content_to_oci_message(content: types.Content) -> Any:
@@ -438,9 +445,7 @@ class OCIGenAILlm(BaseLlm):
     """Build OCI ChatDetails from an LlmRequest."""
     import oci.generative_ai_inference.models as oci_models
 
-    messages = [
-        _content_to_oci_message(c) for c in llm_request.contents or []
-    ]
+    messages = [_content_to_oci_message(c) for c in llm_request.contents or []]
 
     # Prepend SystemMessage when a system instruction is present
     if llm_request.config and llm_request.config.system_instruction:
@@ -539,9 +544,7 @@ class OCIGenAILlm(BaseLlm):
     """
     client = self._build_client(self._resolve_service_endpoint())
     chat_details = self._build_chat_details(llm_request, is_stream=True)
-    logger.debug(
-        "Sending streaming request to OCI GenAI: model=%s", self.model
-    )
+    logger.debug("Sending streaming request to OCI GenAI: model=%s", self.model)
     response = client.chat(chat_details)
 
     chunks: list[dict[str, Any]] = []

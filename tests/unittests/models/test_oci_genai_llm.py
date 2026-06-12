@@ -33,7 +33,6 @@ from google.genai.types import Content
 from google.genai.types import Part
 import pytest
 
-
 # ---------------------------------------------------------------------------
 # Helpers: build fake OCI SDK response objects without importing oci
 # ---------------------------------------------------------------------------
@@ -110,7 +109,9 @@ def oci_llm():
   return OCIGenAILlm(
       model="google.gemini-2.5-flash",
       compartment_id="ocid1.compartment.oc1..example",
-      service_endpoint="https://inference.generativeai.us-chicago-1.oci.oraclecloud.com",
+      service_endpoint=(
+          "https://inference.generativeai.us-chicago-1.oci.oraclecloud.com"
+      ),
   )
 
 
@@ -118,9 +119,7 @@ def oci_llm():
 def llm_request():
   return LlmRequest(
       model="google.gemini-2.5-flash",
-      contents=[
-          Content(role="user", parts=[Part.from_text(text="Hello")])
-      ],
+      contents=[Content(role="user", parts=[Part.from_text(text="Hello")])],
       config=types.GenerateContentConfig(
           system_instruction="You are a helpful assistant.",
       ),
@@ -133,9 +132,7 @@ def llm_request():
 
 
 def test_supported_models_gemini():
-  assert any(
-      "gemini" in p for p in OCIGenAILlm.supported_models()
-  )
+  assert any("gemini" in p for p in OCIGenAILlm.supported_models())
 
 
 def test_supported_models_llama():
@@ -334,9 +331,7 @@ async def test_generate_content_async_text(oci_llm, llm_request):
   fake_response = _make_oci_response(text="Hi! I am Gemini on OCI.")
 
   with patch.object(oci_llm, "_call_oci", return_value=fake_response):
-    responses = [
-        r async for r in oci_llm.generate_content_async(llm_request)
-    ]
+    responses = [r async for r in oci_llm.generate_content_async(llm_request)]
 
   assert len(responses) == 1
   assert responses[0].content.parts[0].text == "Hi! I am Gemini on OCI."
@@ -345,9 +340,7 @@ async def test_generate_content_async_text(oci_llm, llm_request):
 @pytest.mark.asyncio
 async def test_generate_content_async_yields_llm_response(oci_llm, llm_request):
   with patch.object(oci_llm, "_call_oci", return_value=_make_oci_response()):
-    responses = [
-        r async for r in oci_llm.generate_content_async(llm_request)
-    ]
+    responses = [r async for r in oci_llm.generate_content_async(llm_request)]
   assert all(isinstance(r, LlmResponse) for r in responses)
 
 
@@ -457,7 +450,8 @@ async def test_streaming_yields_partial_then_final(oci_llm, llm_request):
 
   with patch.object(oci_llm, "_call_oci_stream", return_value=chunks):
     responses = [
-        r async for r in oci_llm.generate_content_async(llm_request, stream=True)
+        r
+        async for r in oci_llm.generate_content_async(llm_request, stream=True)
     ]
 
   partial = [r for r in responses if r.partial]
@@ -479,7 +473,8 @@ async def test_streaming_final_has_usage_metadata(oci_llm, llm_request):
 
   with patch.object(oci_llm, "_call_oci_stream", return_value=chunks):
     responses = [
-        r async for r in oci_llm.generate_content_async(llm_request, stream=True)
+        r
+        async for r in oci_llm.generate_content_async(llm_request, stream=True)
     ]
 
   final = responses[-1]
@@ -495,12 +490,18 @@ async def test_streaming_tool_call(oci_llm):
   request = LlmRequest(
       model="google.gemini-2.5-flash",
       contents=[
-          Content(role="user", parts=[Part.from_text(text="Weather in Chicago?")])
+          Content(
+              role="user", parts=[Part.from_text(text="Weather in Chicago?")]
+          )
       ],
   )
   chunks = _make_sse_chunks(
       text_tokens=[],
-      tool_calls=[{"id": "call_stream_1", "name": "get_weather", "args": {"city": "Chicago"}}],
+      tool_calls=[{
+          "id": "call_stream_1",
+          "name": "get_weather",
+          "args": {"city": "Chicago"},
+      }],
   )
 
   with patch.object(oci_llm, "_call_oci_stream", return_value=chunks):
@@ -521,7 +522,8 @@ async def test_streaming_empty_chunks(oci_llm, llm_request):
   """Empty SSE chunk list yields a single empty final response."""
   with patch.object(oci_llm, "_call_oci_stream", return_value=[]):
     responses = [
-        r async for r in oci_llm.generate_content_async(llm_request, stream=True)
+        r
+        async for r in oci_llm.generate_content_async(llm_request, stream=True)
     ]
 
   assert len(responses) == 1
@@ -529,11 +531,20 @@ async def test_streaming_empty_chunks(oci_llm, llm_request):
 
 
 @pytest.mark.asyncio
-async def test_nonstreaming_uses_call_oci_not_call_oci_stream(oci_llm, llm_request):
+async def test_nonstreaming_uses_call_oci_not_call_oci_stream(
+    oci_llm, llm_request
+):
   """stream=False path calls _call_oci, not _call_oci_stream."""
-  with patch.object(oci_llm, "_call_oci", return_value=_make_oci_response()) as mock_call, \
-       patch.object(oci_llm, "_call_oci_stream") as mock_stream:
-    responses = [r async for r in oci_llm.generate_content_async(llm_request, stream=False)]
+  with (
+      patch.object(
+          oci_llm, "_call_oci", return_value=_make_oci_response()
+      ) as mock_call,
+      patch.object(oci_llm, "_call_oci_stream") as mock_stream,
+  ):
+    responses = [
+        r
+        async for r in oci_llm.generate_content_async(llm_request, stream=False)
+    ]
 
   mock_call.assert_called_once()
   mock_stream.assert_not_called()
@@ -541,13 +552,22 @@ async def test_nonstreaming_uses_call_oci_not_call_oci_stream(oci_llm, llm_reque
 
 
 @pytest.mark.asyncio
-async def test_streaming_uses_call_oci_stream_not_call_oci(oci_llm, llm_request):
+async def test_streaming_uses_call_oci_stream_not_call_oci(
+    oci_llm, llm_request
+):
   """stream=True path calls _call_oci_stream, not _call_oci."""
   chunks = _make_sse_chunks(["hi"])
 
-  with patch.object(oci_llm, "_call_oci_stream", return_value=chunks) as mock_stream, \
-       patch.object(oci_llm, "_call_oci") as mock_call:
-    responses = [r async for r in oci_llm.generate_content_async(llm_request, stream=True)]
+  with (
+      patch.object(
+          oci_llm, "_call_oci_stream", return_value=chunks
+      ) as mock_stream,
+      patch.object(oci_llm, "_call_oci") as mock_call,
+  ):
+    responses = [
+        r
+        async for r in oci_llm.generate_content_async(llm_request, stream=True)
+    ]
 
   mock_stream.assert_called_once()
   mock_call.assert_not_called()
@@ -587,21 +607,25 @@ def test_call_oci_stream_iterates_sse_via_events_method(
       raise TypeError("'SSEClient' object is not iterable")
 
   sse_payload = [
-      FakeSSEEvent(json.dumps({
-          "index": 0,
-          "message": {
-              "role": "ASSISTANT",
-              "content": [{"type": "TEXT", "text": "Hi"}],
-          },
-      })),
+      FakeSSEEvent(
+          json.dumps({
+              "index": 0,
+              "message": {
+                  "role": "ASSISTANT",
+                  "content": [{"type": "TEXT", "text": "Hi"}],
+              },
+          })
+      ),
       FakeSSEEvent(json.dumps({"finishReason": "stop"})),
-      FakeSSEEvent(json.dumps({
-          "usage": {
-              "promptTokens": 4,
-              "completionTokens": 1,
-              "totalTokens": 5,
-          },
-      })),
+      FakeSSEEvent(
+          json.dumps({
+              "usage": {
+                  "promptTokens": 4,
+                  "completionTokens": 1,
+                  "totalTokens": 5,
+              },
+          })
+      ),
       FakeSSEEvent("[DONE]"),
   ]
   fake_sse = FakeSSEClient(sse_payload)
@@ -615,7 +639,9 @@ def test_call_oci_stream_iterates_sse_via_events_method(
   llm = OCIGenAILlm(
       model="google.gemini-2.5-flash",
       compartment_id="ocid1.compartment.oc1..example",
-      service_endpoint="https://inference.generativeai.us-chicago-1.oci.oraclecloud.com",
+      service_endpoint=(
+          "https://inference.generativeai.us-chicago-1.oci.oraclecloud.com"
+      ),
   )
   request = LlmRequest(
       model="google.gemini-2.5-flash",
@@ -623,7 +649,9 @@ def test_call_oci_stream_iterates_sse_via_events_method(
   )
   chunks = llm._call_oci_stream(request)
 
-  assert len(chunks) == 3  # text + finish + usage; [DONE] sentinel breaks the loop
+  assert (
+      len(chunks) == 3
+  )  # text + finish + usage; [DONE] sentinel breaks the loop
   assert chunks[0]["message"]["content"][0]["text"] == "Hi"
   assert chunks[1]["finishReason"] == "stop"
   assert chunks[2]["usage"]["totalTokens"] == 5
@@ -643,10 +671,13 @@ async def test_concurrent_async_calls(oci_llm):
   async def run_call(call_id: int):
     request = LlmRequest(
         model="google.gemini-2.5-flash",
-        contents=[Content(role="user", parts=[Part.from_text(text=f"Call {call_id}")])],
+        contents=[
+            Content(role="user", parts=[Part.from_text(text=f"Call {call_id}")])
+        ],
     )
     with patch.object(
-        oci_llm, "_call_oci",
+        oci_llm,
+        "_call_oci",
         return_value=_make_oci_response(text=f"Response {call_id}"),
     ):
       results = [r async for r in oci_llm.generate_content_async(request)]
@@ -666,11 +697,17 @@ async def test_concurrent_streaming_calls(oci_llm):
   async def run_streaming(call_id: int):
     request = LlmRequest(
         model="google.gemini-2.5-flash",
-        contents=[Content(role="user", parts=[Part.from_text(text=f"Stream {call_id}")])],
+        contents=[
+            Content(
+                role="user", parts=[Part.from_text(text=f"Stream {call_id}")]
+            )
+        ],
     )
     chunks = _make_sse_chunks([f"Stream{call_id}"])
     with patch.object(oci_llm, "_call_oci_stream", return_value=chunks):
-      return [r async for r in oci_llm.generate_content_async(request, stream=True)]
+      return [
+          r async for r in oci_llm.generate_content_async(request, stream=True)
+      ]
 
   all_results = await asyncio.gather(*[run_streaming(i) for i in range(3)])
 
@@ -687,7 +724,10 @@ async def test_concurrent_streaming_calls(oci_llm):
 
 def test_missing_compartment_id_raises(llm_request):
   llm = OCIGenAILlm(model="google.gemini-2.5-flash")
-  with patch.dict(os.environ, {k: v for k, v in os.environ.items() if k != "OCI_COMPARTMENT_ID"}):
+  with patch.dict(
+      os.environ,
+      {k: v for k, v in os.environ.items() if k != "OCI_COMPARTMENT_ID"},
+  ):
     os.environ.pop("OCI_COMPARTMENT_ID", None)
     with pytest.raises(ValueError, match="compartment_id"):
       llm._resolve_compartment_id()
@@ -695,7 +735,9 @@ def test_missing_compartment_id_raises(llm_request):
 
 def test_compartment_id_from_env(llm_request):
   llm = OCIGenAILlm(model="google.gemini-2.0-flash-001")
-  with patch.dict(os.environ, {"OCI_COMPARTMENT_ID": "ocid1.compartment.example"}):
+  with patch.dict(
+      os.environ, {"OCI_COMPARTMENT_ID": "ocid1.compartment.example"}
+  ):
     assert llm._resolve_compartment_id() == "ocid1.compartment.example"
 
 
@@ -717,8 +759,12 @@ def test_service_endpoint_explicit_overrides_env():
       model="google.gemini-2.0-flash-001",
       service_endpoint="https://custom.endpoint.example.com",
   )
-  with patch.dict(os.environ, {"OCI_SERVICE_ENDPOINT": "https://ignored.example.com"}):
-    assert llm._resolve_service_endpoint() == "https://custom.endpoint.example.com"
+  with patch.dict(
+      os.environ, {"OCI_SERVICE_ENDPOINT": "https://ignored.example.com"}
+  ):
+    assert (
+        llm._resolve_service_endpoint() == "https://custom.endpoint.example.com"
+    )
 
 
 @patch("oci.config.from_file", return_value={"region": "us-chicago-1"})
@@ -730,7 +776,9 @@ def test_build_client_api_key(mock_client_cls, mock_from_file):
       auth_profile="DEFAULT",
       auth_file_location="~/.oci/config",
   )
-  llm._build_client("https://inference.generativeai.us-chicago-1.oci.oraclecloud.com")
+  llm._build_client(
+      "https://inference.generativeai.us-chicago-1.oci.oraclecloud.com"
+  )
   mock_from_file.assert_called_once_with(
       file_location="~/.oci/config", profile_name="DEFAULT"
   )
@@ -744,7 +792,9 @@ def test_build_client_instance_principal(mock_client_cls, mock_signer_cls):
       model="google.gemini-2.0-flash-001",
       auth_type="INSTANCE_PRINCIPAL",
   )
-  llm._build_client("https://inference.generativeai.us-chicago-1.oci.oraclecloud.com")
+  llm._build_client(
+      "https://inference.generativeai.us-chicago-1.oci.oraclecloud.com"
+  )
   mock_signer_cls.assert_called_once()
   mock_client_cls.assert_called_once()
   _, kwargs = mock_client_cls.call_args
@@ -758,7 +808,9 @@ def test_build_client_resource_principal(mock_client_cls, mock_signer_fn):
       model="google.gemini-2.0-flash-001",
       auth_type="RESOURCE_PRINCIPAL",
   )
-  llm._build_client("https://inference.generativeai.us-chicago-1.oci.oraclecloud.com")
+  llm._build_client(
+      "https://inference.generativeai.us-chicago-1.oci.oraclecloud.com"
+  )
   mock_signer_fn.assert_called_once()
   mock_client_cls.assert_called_once()
 
@@ -780,7 +832,9 @@ def test_call_oci_passes_model_and_compartment(mock_client_cls, _mock_cfg):
   llm = OCIGenAILlm(
       model="google.gemini-2.0-flash-001",
       compartment_id="ocid1.compartment.oc1..example",
-      service_endpoint="https://inference.generativeai.us-chicago-1.oci.oraclecloud.com",
+      service_endpoint=(
+          "https://inference.generativeai.us-chicago-1.oci.oraclecloud.com"
+      ),
   )
   request = LlmRequest(
       model="google.gemini-2.0-flash-001",
@@ -806,7 +860,9 @@ def test_call_oci_passes_system_instruction(mock_client_cls, _mock_cfg):
   llm = OCIGenAILlm(
       model="google.gemini-2.0-flash-001",
       compartment_id="ocid1.compartment.oc1..example",
-      service_endpoint="https://inference.generativeai.us-chicago-1.oci.oraclecloud.com",
+      service_endpoint=(
+          "https://inference.generativeai.us-chicago-1.oci.oraclecloud.com"
+      ),
   )
   request = LlmRequest(
       model="google.gemini-2.0-flash-001",
@@ -834,7 +890,9 @@ def test_call_oci_passes_tools(mock_client_cls, _mock_cfg):
   llm = OCIGenAILlm(
       model="google.gemini-2.0-flash-001",
       compartment_id="ocid1.compartment.oc1..example",
-      service_endpoint="https://inference.generativeai.us-chicago-1.oci.oraclecloud.com",
+      service_endpoint=(
+          "https://inference.generativeai.us-chicago-1.oci.oraclecloud.com"
+      ),
   )
   request = LlmRequest(
       model="google.gemini-2.0-flash-001",
@@ -885,7 +943,9 @@ def test_call_oci_uses_on_demand_serving_mode_by_default(
   llm = OCIGenAILlm(
       model="google.gemini-2.5-flash",
       compartment_id="ocid1.compartment.oc1..example",
-      service_endpoint="https://inference.generativeai.us-chicago-1.oci.oraclecloud.com",
+      service_endpoint=(
+          "https://inference.generativeai.us-chicago-1.oci.oraclecloud.com"
+      ),
   )
   llm._call_oci(
       LlmRequest(
@@ -915,7 +975,9 @@ def test_call_oci_uses_dedicated_serving_mode_when_endpoint_id_set(
       model="meta.llama-3.1-70b-instruct",
       endpoint_id=endpoint_ocid,
       compartment_id="ocid1.compartment.oc1..example",
-      service_endpoint="https://inference.generativeai.us-chicago-1.oci.oraclecloud.com",
+      service_endpoint=(
+          "https://inference.generativeai.us-chicago-1.oci.oraclecloud.com"
+      ),
   )
   llm._call_oci(
       LlmRequest(
@@ -929,7 +991,9 @@ def test_call_oci_uses_dedicated_serving_mode_when_endpoint_id_set(
   assert chat_details.serving_mode.endpoint_id == endpoint_ocid
 
 
-@patch.dict(os.environ, {"OCI_ENDPOINT_ID": "ocid1.generativeaiendpoint.oc1..env"})
+@patch.dict(
+    os.environ, {"OCI_ENDPOINT_ID": "ocid1.generativeaiendpoint.oc1..env"}
+)
 @patch("oci.config.from_file", return_value={})
 @patch("oci.generative_ai_inference.GenerativeAiInferenceClient")
 def test_call_oci_uses_dedicated_serving_mode_from_env_var(
@@ -944,7 +1008,9 @@ def test_call_oci_uses_dedicated_serving_mode_from_env_var(
   llm = OCIGenAILlm(
       model="meta.llama-3.1-70b-instruct",
       compartment_id="ocid1.compartment.oc1..example",
-      service_endpoint="https://inference.generativeai.us-chicago-1.oci.oraclecloud.com",
+      service_endpoint=(
+          "https://inference.generativeai.us-chicago-1.oci.oraclecloud.com"
+      ),
   )
   llm._call_oci(
       LlmRequest(
@@ -955,7 +1021,10 @@ def test_call_oci_uses_dedicated_serving_mode_from_env_var(
 
   chat_details = mock_client_instance.chat.call_args[0][0]
   assert isinstance(chat_details.serving_mode, oci_models.DedicatedServingMode)
-  assert chat_details.serving_mode.endpoint_id == "ocid1.generativeaiendpoint.oc1..env"
+  assert (
+      chat_details.serving_mode.endpoint_id
+      == "ocid1.generativeaiendpoint.oc1..env"
+  )
 
 
 @patch("oci.config.from_file", return_value={})
@@ -967,12 +1036,16 @@ def test_explicit_endpoint_id_overrides_env_var(mock_client_cls, _mock_cfg):
   mock_client_cls.return_value = mock_client_instance
   mock_client_instance.chat.return_value = _make_oci_response()
 
-  with patch.dict(os.environ, {"OCI_ENDPOINT_ID": "ocid1.generativeaiendpoint.oc1..env"}):
+  with patch.dict(
+      os.environ, {"OCI_ENDPOINT_ID": "ocid1.generativeaiendpoint.oc1..env"}
+  ):
     llm = OCIGenAILlm(
         model="meta.llama-3.1-70b-instruct",
         endpoint_id="ocid1.generativeaiendpoint.oc1..explicit",
         compartment_id="ocid1.compartment.oc1..example",
-        service_endpoint="https://inference.generativeai.us-chicago-1.oci.oraclecloud.com",
+        service_endpoint=(
+            "https://inference.generativeai.us-chicago-1.oci.oraclecloud.com"
+        ),
     )
     llm._call_oci(
         LlmRequest(
@@ -982,7 +1055,10 @@ def test_explicit_endpoint_id_overrides_env_var(mock_client_cls, _mock_cfg):
     )
 
   chat_details = mock_client_instance.chat.call_args[0][0]
-  assert chat_details.serving_mode.endpoint_id == "ocid1.generativeaiendpoint.oc1..explicit"
+  assert (
+      chat_details.serving_mode.endpoint_id
+      == "ocid1.generativeaiendpoint.oc1..explicit"
+  )
 
 
 # ---------------------------------------------------------------------------
@@ -1000,7 +1076,9 @@ def test_call_oci_passes_sampling_params(mock_client_cls, _mock_cfg):
   llm = OCIGenAILlm(
       model="google.gemini-2.5-flash",
       compartment_id="ocid1.compartment.oc1..example",
-      service_endpoint="https://inference.generativeai.us-chicago-1.oci.oraclecloud.com",
+      service_endpoint=(
+          "https://inference.generativeai.us-chicago-1.oci.oraclecloud.com"
+      ),
   )
   request = LlmRequest(
       model="google.gemini-2.5-flash",
@@ -1039,12 +1117,16 @@ def test_call_oci_omits_unset_sampling_params(mock_client_cls, _mock_cfg):
   llm = OCIGenAILlm(
       model="google.gemini-2.5-flash",
       compartment_id="ocid1.compartment.oc1..example",
-      service_endpoint="https://inference.generativeai.us-chicago-1.oci.oraclecloud.com",
+      service_endpoint=(
+          "https://inference.generativeai.us-chicago-1.oci.oraclecloud.com"
+      ),
   )
-  llm._call_oci(LlmRequest(
-      model="google.gemini-2.5-flash",
-      contents=[Content(role="user", parts=[Part.from_text(text="Hi")])],
-  ))
+  llm._call_oci(
+      LlmRequest(
+          model="google.gemini-2.5-flash",
+          contents=[Content(role="user", parts=[Part.from_text(text="Hi")])],
+      )
+  )
   cr = mock_client_instance.chat.call_args[0][0].chat_request
   assert cr.temperature is None
   assert cr.top_p is None
@@ -1063,6 +1145,7 @@ def test_inline_image_becomes_image_content_with_data_url(
     mock_client_cls, _mock_cfg
 ):
   import oci.generative_ai_inference.models as oci_models
+
   mock_client_instance = MagicMock()
   mock_client_cls.return_value = mock_client_instance
   mock_client_instance.chat.return_value = _make_oci_response()
@@ -1070,15 +1153,26 @@ def test_inline_image_becomes_image_content_with_data_url(
   llm = OCIGenAILlm(
       model="google.gemini-2.5-flash",
       compartment_id="ocid1.compartment.oc1..example",
-      service_endpoint="https://inference.generativeai.us-chicago-1.oci.oraclecloud.com",
+      service_endpoint=(
+          "https://inference.generativeai.us-chicago-1.oci.oraclecloud.com"
+      ),
   )
   png_bytes = b"\x89PNG\r\n\x1a\n_fake"
   request = LlmRequest(
       model="google.gemini-2.5-flash",
-      contents=[Content(role="user", parts=[
-          Part.from_text(text="What is this?"),
-          Part(inline_data=types.Blob(mime_type="image/png", data=png_bytes)),
-      ])],
+      contents=[
+          Content(
+              role="user",
+              parts=[
+                  Part.from_text(text="What is this?"),
+                  Part(
+                      inline_data=types.Blob(
+                          mime_type="image/png", data=png_bytes
+                      )
+                  ),
+              ],
+          )
+      ],
   )
   llm._call_oci(request)
 
@@ -1091,6 +1185,7 @@ def test_inline_image_becomes_image_content_with_data_url(
   assert isinstance(blocks[1], oci_models.ImageContent)
   assert blocks[1].image_url.url.startswith("data:image/png;base64,")
   import base64 as _b64
+
   encoded = blocks[1].image_url.url.split(",", 1)[1]
   assert _b64.b64decode(encoded) == png_bytes
 
@@ -1099,6 +1194,7 @@ def test_inline_image_becomes_image_content_with_data_url(
 @patch("oci.generative_ai_inference.GenerativeAiInferenceClient")
 def test_file_data_audio_becomes_audio_content(mock_client_cls, _mock_cfg):
   import oci.generative_ai_inference.models as oci_models
+
   mock_client_instance = MagicMock()
   mock_client_cls.return_value = mock_client_instance
   mock_client_instance.chat.return_value = _make_oci_response()
@@ -1106,16 +1202,25 @@ def test_file_data_audio_becomes_audio_content(mock_client_cls, _mock_cfg):
   llm = OCIGenAILlm(
       model="google.gemini-2.5-flash",
       compartment_id="ocid1.compartment.oc1..example",
-      service_endpoint="https://inference.generativeai.us-chicago-1.oci.oraclecloud.com",
+      service_endpoint=(
+          "https://inference.generativeai.us-chicago-1.oci.oraclecloud.com"
+      ),
   )
   request = LlmRequest(
       model="google.gemini-2.5-flash",
-      contents=[Content(role="user", parts=[
-          Part(file_data=types.FileData(
-              file_uri="https://example.com/clip.mp3",
-              mime_type="audio/mpeg",
-          )),
-      ])],
+      contents=[
+          Content(
+              role="user",
+              parts=[
+                  Part(
+                      file_data=types.FileData(
+                          file_uri="https://example.com/clip.mp3",
+                          mime_type="audio/mpeg",
+                      )
+                  ),
+              ],
+          )
+      ],
   )
   llm._call_oci(request)
 
@@ -1129,6 +1234,7 @@ def test_file_data_audio_becomes_audio_content(mock_client_cls, _mock_cfg):
 @patch("oci.generative_ai_inference.GenerativeAiInferenceClient")
 def test_inline_pdf_becomes_document_content(mock_client_cls, _mock_cfg):
   import oci.generative_ai_inference.models as oci_models
+
   mock_client_instance = MagicMock()
   mock_client_cls.return_value = mock_client_instance
   mock_client_instance.chat.return_value = _make_oci_response()
@@ -1136,13 +1242,24 @@ def test_inline_pdf_becomes_document_content(mock_client_cls, _mock_cfg):
   llm = OCIGenAILlm(
       model="google.gemini-2.5-flash",
       compartment_id="ocid1.compartment.oc1..example",
-      service_endpoint="https://inference.generativeai.us-chicago-1.oci.oraclecloud.com",
+      service_endpoint=(
+          "https://inference.generativeai.us-chicago-1.oci.oraclecloud.com"
+      ),
   )
   request = LlmRequest(
       model="google.gemini-2.5-flash",
-      contents=[Content(role="user", parts=[
-          Part(inline_data=types.Blob(mime_type="application/pdf", data=b"%PDF-1.4")),
-      ])],
+      contents=[
+          Content(
+              role="user",
+              parts=[
+                  Part(
+                      inline_data=types.Blob(
+                          mime_type="application/pdf", data=b"%PDF-1.4"
+                      )
+                  ),
+              ],
+          )
+      ],
   )
   llm._call_oci(request)
 
@@ -1163,6 +1280,7 @@ def test_response_schema_emits_json_schema_response_format(
     mock_client_cls, _mock_cfg
 ):
   import oci.generative_ai_inference.models as oci_models
+
   mock_client_instance = MagicMock()
   mock_client_cls.return_value = mock_client_instance
   mock_client_instance.chat.return_value = _make_oci_response()
@@ -1176,16 +1294,24 @@ def test_response_schema_emits_json_schema_response_format(
   llm = OCIGenAILlm(
       model="google.gemini-2.5-flash",
       compartment_id="ocid1.compartment.oc1..example",
-      service_endpoint="https://inference.generativeai.us-chicago-1.oci.oraclecloud.com",
-  )
-  llm._call_oci(LlmRequest(
-      model="google.gemini-2.5-flash",
-      contents=[Content(role="user", parts=[Part.from_text(text="Chicago weather?")])],
-      config=types.GenerateContentConfig(
-          response_mime_type="application/json",
-          response_schema=schema,
+      service_endpoint=(
+          "https://inference.generativeai.us-chicago-1.oci.oraclecloud.com"
       ),
-  ))
+  )
+  llm._call_oci(
+      LlmRequest(
+          model="google.gemini-2.5-flash",
+          contents=[
+              Content(
+                  role="user", parts=[Part.from_text(text="Chicago weather?")]
+              )
+          ],
+          config=types.GenerateContentConfig(
+              response_mime_type="application/json",
+              response_schema=schema,
+          ),
+      )
+  )
 
   rf = mock_client_instance.chat.call_args[0][0].chat_request.response_format
   assert isinstance(rf, oci_models.JsonSchemaResponseFormat)
@@ -1200,6 +1326,7 @@ def test_response_mime_type_only_emits_json_object_format(
     mock_client_cls, _mock_cfg
 ):
   import oci.generative_ai_inference.models as oci_models
+
   mock_client_instance = MagicMock()
   mock_client_cls.return_value = mock_client_instance
   mock_client_instance.chat.return_value = _make_oci_response()
@@ -1207,13 +1334,21 @@ def test_response_mime_type_only_emits_json_object_format(
   llm = OCIGenAILlm(
       model="google.gemini-2.5-flash",
       compartment_id="ocid1.compartment.oc1..example",
-      service_endpoint="https://inference.generativeai.us-chicago-1.oci.oraclecloud.com",
+      service_endpoint=(
+          "https://inference.generativeai.us-chicago-1.oci.oraclecloud.com"
+      ),
   )
-  llm._call_oci(LlmRequest(
-      model="google.gemini-2.5-flash",
-      contents=[Content(role="user", parts=[Part.from_text(text="JSON please")])],
-      config=types.GenerateContentConfig(response_mime_type="application/json"),
-  ))
+  llm._call_oci(
+      LlmRequest(
+          model="google.gemini-2.5-flash",
+          contents=[
+              Content(role="user", parts=[Part.from_text(text="JSON please")])
+          ],
+          config=types.GenerateContentConfig(
+              response_mime_type="application/json"
+          ),
+      )
+  )
 
   rf = mock_client_instance.chat.call_args[0][0].chat_request.response_format
   assert isinstance(rf, oci_models.JsonObjectResponseFormat)
@@ -1238,7 +1373,9 @@ def test_nonstreaming_surfaces_reasoning_tokens(mock_client_cls, _mock_cfg):
   llm = OCIGenAILlm(
       model="google.gemini-2.5-flash",
       compartment_id="ocid1.compartment.oc1..example",
-      service_endpoint="https://inference.generativeai.us-chicago-1.oci.oraclecloud.com",
+      service_endpoint=(
+          "https://inference.generativeai.us-chicago-1.oci.oraclecloud.com"
+      ),
   )
   out = _oci_response_to_llm_response(resp)
   assert out.usage_metadata.thoughts_token_count == 42
@@ -1252,7 +1389,8 @@ async def test_streaming_surfaces_reasoning_tokens(oci_llm, llm_request):
 
   with patch.object(oci_llm, "_call_oci_stream", return_value=chunks):
     responses = [
-        r async for r in oci_llm.generate_content_async(llm_request, stream=True)
+        r
+        async for r in oci_llm.generate_content_async(llm_request, stream=True)
     ]
   final = responses[-1]
   assert not final.partial

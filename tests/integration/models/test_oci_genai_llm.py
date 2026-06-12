@@ -35,10 +35,10 @@ from google.genai.types import Content
 from google.genai.types import Part
 import pytest
 
-
 # ---------------------------------------------------------------------------
 # Skip the entire module when required env vars are absent
 # ---------------------------------------------------------------------------
+
 
 # OCI tests do not use any Google backend (GOOGLE_AI / Vertex AI).
 # Override the autouse llm_backend fixture from the integration conftest so
@@ -86,8 +86,9 @@ def gemini_llm() -> OCIGenAILlm:
   )
 
 
-
-def _simple_request(model: str, text: str = "Reply with one word: hello.") -> LlmRequest:
+def _simple_request(
+    model: str, text: str = "Reply with one word: hello."
+) -> LlmRequest:
   return LlmRequest(
       model=model,
       contents=[Content(role="user", parts=[Part.from_text(text=text)])],
@@ -104,7 +105,9 @@ def _request_with_system(model: str) -> LlmRequest:
           )
       ],
       config=types.GenerateContentConfig(
-          system_instruction="Your name is Oracle. Always introduce yourself as Oracle.",
+          system_instruction=(
+              "Your name is Oracle. Always introduce yourself as Oracle."
+          ),
       ),
   )
 
@@ -223,12 +226,11 @@ async def test_gemini_generate_content_streaming_text(gemini_llm):
   partial_responses = [r for r in responses if r.partial]
   final_responses = [r for r in responses if not r.partial]
   assert partial_responses, "Expected at least one partial (streaming) chunk"
-  assert len(final_responses) == 1, "Expected exactly one final (non-partial) response"
+  assert (
+      len(final_responses) == 1
+  ), "Expected exactly one final (non-partial) response"
   full_text = "".join(
-      p.text
-      for r in partial_responses
-      for p in (r.content.parts or [])
-      if p.text
+      p.text for r in partial_responses for p in r.content.parts or [] if p.text
   )
   assert full_text.strip(), "Streamed text should be non-empty"
 
@@ -264,7 +266,9 @@ async def test_gemini_generate_content_streaming_tool_call(gemini_llm):
   final = next(r for r in responses if not r.partial)
   parts = final.content.parts or []
   function_calls = [p for p in parts if p.function_call]
-  assert function_calls, "Expected at least one function call in the streaming response"
+  assert (
+      function_calls
+  ), "Expected at least one function call in the streaming response"
   fc = function_calls[0].function_call
   assert fc.name == "get_weather"
   assert "city" in fc.args
@@ -284,10 +288,9 @@ async def test_gemini_generate_content_concurrent(gemini_llm):
     ]
     return responses[0].content.parts[0].text
 
-  results = await asyncio.gather(*[
-      single_call(f"Reply with the number {i} only.")
-      for i in range(3)
-  ])
+  results = await asyncio.gather(
+      *[single_call(f"Reply with the number {i} only.") for i in range(3)]
+  )
   assert len(results) == 3
   for result in results:
     assert result.strip(), "Each concurrent response should be non-empty"
@@ -297,8 +300,14 @@ async def test_gemini_generate_content_concurrent(gemini_llm):
 async def test_gemini_multi_turn(gemini_llm):
   """Multi-turn conversation passes history correctly."""
   history = [
-      Content(role="user", parts=[Part.from_text(text="My favourite colour is blue.")]),
-      Content(role="model", parts=[Part.from_text(text="Got it, blue is a great colour!")]),
+      Content(
+          role="user",
+          parts=[Part.from_text(text="My favourite colour is blue.")],
+      ),
+      Content(
+          role="model",
+          parts=[Part.from_text(text="Got it, blue is a great colour!")],
+      ),
   ]
   follow_up = Content(
       role="user",
@@ -434,7 +443,9 @@ def dedicated_llm() -> OCIGenAILlm:
 @pytest.mark.asyncio
 @pytest.mark.skipif(
     not _DEDICATED_ENDPOINT_ID,
-    reason="Set OCI_DEDICATED_ENDPOINT_ID to a dedicated endpoint OCID to enable.",
+    reason=(
+        "Set OCI_DEDICATED_ENDPOINT_ID to a dedicated endpoint OCID to enable."
+    ),
 )
 async def test_dedicated_generate_content_text(dedicated_llm):
   responses = [
@@ -450,7 +461,9 @@ async def test_dedicated_generate_content_text(dedicated_llm):
 @pytest.mark.asyncio
 @pytest.mark.skipif(
     not _DEDICATED_ENDPOINT_ID,
-    reason="Set OCI_DEDICATED_ENDPOINT_ID to a dedicated endpoint OCID to enable.",
+    reason=(
+        "Set OCI_DEDICATED_ENDPOINT_ID to a dedicated endpoint OCID to enable."
+    ),
 )
 async def test_dedicated_generate_content_streaming(dedicated_llm):
   chunks = []
@@ -481,9 +494,16 @@ async def test_gemini_max_output_tokens_caps_response(gemini_llm):
   budget = 64
   request = LlmRequest(
       model=_GEMINI_MODEL,
-      contents=[Content(role="user", parts=[
-          Part.from_text(text="Recite the alphabet, A through Z, comma separated.")
-      ])],
+      contents=[
+          Content(
+              role="user",
+              parts=[
+                  Part.from_text(
+                      text="Recite the alphabet, A through Z, comma separated."
+                  )
+              ],
+          )
+      ],
       config=types.GenerateContentConfig(max_output_tokens=budget),
   )
   responses = [r async for r in gemini_llm.generate_content_async(request)]
@@ -497,9 +517,12 @@ async def test_gemini_low_temperature_deterministic_with_seed(gemini_llm):
   """temperature=0 + seed should yield consistent answers across two calls."""
   request = LlmRequest(
       model=_GEMINI_MODEL,
-      contents=[Content(role="user", parts=[
-          Part.from_text(text="Reply with exactly: 'green'")
-      ])],
+      contents=[
+          Content(
+              role="user",
+              parts=[Part.from_text(text="Reply with exactly: 'green'")],
+          )
+      ],
       config=types.GenerateContentConfig(temperature=0.0, seed=12345),
   )
   call_a = [r async for r in gemini_llm.generate_content_async(request)]
@@ -512,9 +535,12 @@ async def test_gemini_low_temperature_deterministic_with_seed(gemini_llm):
 async def test_gemini_stop_sequences_terminate_output(gemini_llm):
   request = LlmRequest(
       model=_GEMINI_MODEL,
-      contents=[Content(role="user", parts=[
-          Part.from_text(text="Print: APPLE | BANANA | CHERRY")
-      ])],
+      contents=[
+          Content(
+              role="user",
+              parts=[Part.from_text(text="Print: APPLE | BANANA | CHERRY")],
+          )
+      ],
       config=types.GenerateContentConfig(
           temperature=0.0, stop_sequences=["BANANA"]
       ),
@@ -534,10 +560,16 @@ async def test_gemini_stop_sequences_terminate_output(gemini_llm):
 
 def _make_red_png_1x1() -> bytes:
   """Generate a guaranteed-valid 1x1 red PNG with correct CRCs."""
-  import struct, zlib
+  import struct
+  import zlib
+
   sig = b"\x89PNG\r\n\x1a\n"
+
   def chunk(t: bytes, d: bytes) -> bytes:
-    return struct.pack(">I", len(d)) + t + d + struct.pack(">I", zlib.crc32(t + d))
+    return (
+        struct.pack(">I", len(d)) + t + d + struct.pack(">I", zlib.crc32(t + d))
+    )
+
   ihdr = struct.pack(">IIBBBBB", 1, 1, 8, 2, 0, 0, 0)  # 1x1 RGB
   idat = zlib.compress(b"\x00\xff\x00\x00")  # filter byte + RGB(255,0,0)
   return sig + chunk(b"IHDR", ihdr) + chunk(b"IDAT", idat) + chunk(b"IEND", b"")
@@ -550,14 +582,27 @@ _TINY_RED_PNG = _make_red_png_1x1()
 async def test_gemini_inline_image_input(gemini_llm):
   request = LlmRequest(
       model=_GEMINI_MODEL,
-      contents=[Content(role="user", parts=[
-          Part.from_text(
-              text="What is the dominant colour of this image? "
-              "Reply with just the colour name."
-          ),
-          Part(inline_data=types.Blob(mime_type="image/png", data=_TINY_RED_PNG)),
-      ])],
-      config=types.GenerateContentConfig(temperature=0.0, max_output_tokens=256),
+      contents=[
+          Content(
+              role="user",
+              parts=[
+                  Part.from_text(
+                      text=(
+                          "What is the dominant colour of this image? "
+                          "Reply with just the colour name."
+                      )
+                  ),
+                  Part(
+                      inline_data=types.Blob(
+                          mime_type="image/png", data=_TINY_RED_PNG
+                      )
+                  ),
+              ],
+          )
+      ],
+      config=types.GenerateContentConfig(
+          temperature=0.0, max_output_tokens=256
+      ),
   )
   responses = [r async for r in gemini_llm.generate_content_async(request)]
   parts = responses[0].content.parts
@@ -585,9 +630,12 @@ async def test_gemini_response_schema_returns_valid_json(gemini_llm):
   }
   request = LlmRequest(
       model=_GEMINI_MODEL,
-      contents=[Content(role="user", parts=[
-          Part.from_text(text="Give me a fact about Paris.")
-      ])],
+      contents=[
+          Content(
+              role="user",
+              parts=[Part.from_text(text="Give me a fact about Paris.")],
+          )
+      ],
       config=types.GenerateContentConfig(
           response_mime_type="application/json",
           response_schema=schema,
@@ -611,9 +659,19 @@ async def test_gemini_reasoning_tokens_reported(gemini_llm):
   """Gemini 2.5 emits reasoningTokens in completionTokensDetails — surface them."""
   request = LlmRequest(
       model=_GEMINI_MODEL,
-      contents=[Content(role="user", parts=[
-          Part.from_text(text="If a train travels 60km in 30 minutes, what is its speed?")
-      ])],
+      contents=[
+          Content(
+              role="user",
+              parts=[
+                  Part.from_text(
+                      text=(
+                          "If a train travels 60km in 30 minutes, what is its"
+                          " speed?"
+                      )
+                  )
+              ],
+          )
+      ],
       config=types.GenerateContentConfig(temperature=0.0),
   )
   responses = [r async for r in gemini_llm.generate_content_async(request)]

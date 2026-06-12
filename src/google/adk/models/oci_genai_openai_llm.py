@@ -118,7 +118,9 @@ def _content_to_openai_messages(
   return messages
 
 
-def _tools_to_openai(tools: Optional[list[types.Tool]]) -> Optional[list[dict[str, Any]]]:
+def _tools_to_openai(
+    tools: Optional[list[types.Tool]],
+) -> Optional[list[dict[str, Any]]]:
   """Convert google.genai Tool list to OpenAI function-tool dicts."""
   if not tools:
     return None
@@ -338,7 +340,9 @@ class OCIGenAIOpenAILlm(BaseLlm):
         private_key_content=config.get("key_content"),
     )
 
-  def _build_create_kwargs(self, llm_request: LlmRequest, stream: bool) -> dict[str, Any]:
+  def _build_create_kwargs(
+      self, llm_request: LlmRequest, stream: bool
+  ) -> dict[str, Any]:
     cfg = llm_request.config or types.GenerateContentConfig()
     messages = _content_to_openai_messages(
         llm_request.contents or [],
@@ -403,9 +407,7 @@ class OCIGenAIOpenAILlm(BaseLlm):
         )
       for tc in delta.tool_calls or []:
         idx = tc.index
-        slot = tool_acc.setdefault(
-            idx, {"id": "", "name": "", "args": ""}
-        )
+        slot = tool_acc.setdefault(idx, {"id": "", "name": "", "args": ""})
         if tc.id:
           slot["id"] = tc.id
         if tc.function and tc.function.name:
