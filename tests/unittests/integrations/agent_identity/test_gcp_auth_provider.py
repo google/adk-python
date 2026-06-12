@@ -40,6 +40,8 @@ def context():
   context = Mock(spec=CallbackContext)
   context.user_id = "user"
   return context
+
+
 @pytest.fixture
 def provider():
   return GcpAuthProvider()
@@ -50,14 +52,20 @@ def test_supported_auth_schemes(provider):
   assert GcpAuthProviderScheme in provider.supported_auth_schemes
 
 
-@patch("google.adk.integrations.agent_identity.gcp_auth_provider._IamConnectorCredentialsProvider")
-async def test_gcp_auth_provider_delegates_get_auth_credential(mock_provider_class, auth_config, context):
+@patch(
+    "google.adk.integrations.agent_identity.gcp_auth_provider._IamConnectorCredentialsProvider"
+)
+async def test_gcp_auth_provider_delegates_get_auth_credential(
+    mock_provider_class, auth_config, context
+):
   """Test that get_auth_credential delegates to the internal provider."""
   provider = GcpAuthProvider()
 
   mock_credential = Mock(spec=AuthCredential)
   mock_provider_instance = mock_provider_class.return_value
-  mock_provider_instance.get_auth_credential = AsyncMock(return_value=mock_credential)
+  mock_provider_instance.get_auth_credential = AsyncMock(
+      return_value=mock_credential
+  )
 
   result = await provider.get_auth_credential(auth_config, context)
 
@@ -67,7 +75,9 @@ async def test_gcp_auth_provider_delegates_get_auth_credential(mock_provider_cla
   )
 
 
-async def test_get_auth_credential_raises_error_for_invalid_auth_scheme(context):
+async def test_get_auth_credential_raises_error_for_invalid_auth_scheme(
+    context,
+):
   """Test get_auth_credential raises ValueError for invalid auth scheme."""
   provider = GcpAuthProvider()
   invalid_auth_config = Mock(spec=AuthConfig)
