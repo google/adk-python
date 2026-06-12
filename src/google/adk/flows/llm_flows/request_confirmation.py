@@ -32,7 +32,7 @@ from ._base_llm_processor import BaseLlmRequestProcessor
 from .functions import REQUEST_CONFIRMATION_FUNCTION_CALL_NAME
 
 if TYPE_CHECKING:
-  from ...agents.llm_agent import LlmAgent
+  pass
 
 
 logger = logging.getLogger('google_adk.' + __name__)
@@ -104,7 +104,6 @@ class _RequestConfirmationLlmRequestProcessor(BaseLlmRequestProcessor):
   async def run_async(
       self, invocation_context: InvocationContext, llm_request: LlmRequest
   ) -> AsyncGenerator[Event, None]:
-    from ...agents.llm_agent import LlmAgent
 
     agent = invocation_context.agent
 

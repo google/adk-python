@@ -16,7 +16,6 @@
 
 from __future__ import annotations
 
-from collections.abc import Generator
 from enum import Enum
 import logging
 import os

@@ -21,8 +21,6 @@ from pydantic import BaseModel
 from pydantic import ConfigDict
 from pydantic import field_validator
 
-from ...features import FeatureName
-
 
 class WriteMode(Enum):
   """Write mode indicating what levels of write operations are allowed in BigQuery."""

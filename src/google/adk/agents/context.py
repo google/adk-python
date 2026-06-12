@@ -28,7 +28,6 @@ from .readonly_context import ReadonlyContext
 
 if TYPE_CHECKING:
   from google.genai import types
-  from pydantic import BaseModel
 
   from ..artifacts.base_artifact_service import ArtifactVersion
   from ..auth.auth_credential import AuthCredential

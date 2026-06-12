@@ -412,7 +412,6 @@ async def handle_function_call_list_async(
     tool_confirmation_dict: Optional[dict[str, ToolConfirmation]] = None,
 ) -> Optional[Event]:
   """Calls the functions and returns the function response event."""
-  from ...agents.llm_agent import LlmAgent
 
   agent = invocation_context.agent
 

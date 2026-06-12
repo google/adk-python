@@ -26,8 +26,8 @@ import yaml
         pytest.param("test_data/ask_data_insights_penguins_highest_mass.yaml"),
     ],
 )
-@mock.patch.object(data_insights_tool.requests.Session, "post")
-def test_ask_data_insights_pipeline_from_file(mock_post, case_file_path):
+@mock.patch.object(data_insights_tool._gda_stream_util, "get_stream")
+def test_ask_data_insights_pipeline_from_file(mock_get_stream, case_file_path):
   """Runs a full integration test for the ask_data_insights pipeline using data from a specific file."""
   # 1. Construct the full, absolute path to the data file
   full_path = pathlib.Path(__file__).parent / case_file_path
@@ -36,20 +36,11 @@ def test_ask_data_insights_pipeline_from_file(mock_post, case_file_path):
   with open(full_path, "r", encoding="utf-8") as f:
     case_data = yaml.safe_load(f)
 
-  # 3. Prepare the mock stream and expected output from the loaded data
-  mock_stream_str = case_data["mock_api_stream"]
-  fake_stream_lines = [
-      line.encode("utf-8") for line in mock_stream_str.splitlines()
-  ]
-  # Load the expected output as a list of dictionaries, not a single string
+  # 3. Load the expected output as a list of dictionaries, not a single string.
+  # Stream parsing is owned by _gda_stream_util.get_stream (covered by its own
+  # test), so here we mock it to return the already-parsed result.
   expected_final_list = case_data["expected_output"]
-
-  # 4. Configure the mock for requests.post
-  mock_response = mock.Mock()
-  mock_response.iter_lines.return_value = fake_stream_lines
-  # Add raise_for_status mock which is called in the updated code
-  mock_response.raise_for_status.return_value = None
-  mock_post.return_value.__enter__.return_value = mock_response
+  mock_get_stream.return_value = expected_final_list
 
   # 5. Call the function under test
   mock_creds = mock.Mock()

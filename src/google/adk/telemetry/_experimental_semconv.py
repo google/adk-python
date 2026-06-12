@@ -32,7 +32,6 @@ from google.genai.models import t as transformers
 from opentelemetry._logs import Logger
 
 if TYPE_CHECKING:
-  from mcp import ClientSession as McpClientSession
   from mcp import Tool as McpTool
 from opentelemetry._logs import LogRecord
 from opentelemetry.trace import Span

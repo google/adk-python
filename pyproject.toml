@@ -260,6 +260,17 @@ module.include = [ "py.typed" ]
 sdist.include = [ "src/**/*", "README.md", "pyproject.toml", "LICENSE" ]
 sdist.exclude = [ "src/**/*.sh", "src/**/README.md" ]
 
+[tool.ruff]
+extend-exclude = [
+  "src/google/adk/cli/browser/",
+  "src/google/adk/v1/",
+  "v1_tests/",
+]
+lint.select = [ "F401" ]
+# __init__.py files re-export symbols for the public API; unused imports
+# there are intentional, not dead code.
+lint.per-file-ignores."**/__init__.py" = [ "F401" ]
+
 [tool.isort]
 profile = "google"
 line_length = 200
