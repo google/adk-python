@@ -53,6 +53,9 @@ class GeminiLlmConnection(BaseLlmConnection):
     self._is_gemini_3_1_flash_live = model_name_utils.is_gemini_3_1_flash_live(
         model_version
     )
+    self._is_gemini_3_5_live_translate = (
+        model_name_utils.is_gemini_3_5_live_translate(model_version)
+    )
 
   async def send_history(self, history: list[types.Content]):
     """Sends the conversation history to the gemini model.
@@ -160,7 +163,7 @@ class GeminiLlmConnection(BaseLlmConnection):
     if isinstance(input, types.Blob):
       # The blob is binary and is very large. So let's not log it.
       logger.debug('Sending LLM Blob.')
-      if self._is_gemini_3_1_flash_live:
+      if self._is_gemini_3_1_flash_live or self._is_gemini_3_5_live_translate:
         if input.mime_type and input.mime_type.startswith('audio/'):
           await self._gemini_session.send_realtime_input(audio=input)
         elif input.mime_type and input.mime_type.startswith('image/'):
@@ -216,6 +219,35 @@ class GeminiLlmConnection(BaseLlmConnection):
         live_session_id=self._gemini_session.session_id,
     )
 
+  def _to_generate_content_usage_metadata(
+      self, usage_metadata: types.UsageMetadata
+  ) -> types.GenerateContentResponseUsageMetadata:
+    """Converts live API usage metadata to GenerateContentResponse usage metadata.
+
+    The live API names output tokens `response_token_count`/
+    `response_tokens_details`, whereas `GenerateContentResponseUsageMetadata`
+    names them `candidates_token_count`/`candidates_tokens_details`.
+
+    Args:
+      usage_metadata: The live API usage metadata.
+
+    Returns:
+      The converted usage metadata.
+    """
+    return types.GenerateContentResponseUsageMetadata(
+        prompt_token_count=usage_metadata.prompt_token_count,
+        cached_content_token_count=usage_metadata.cached_content_token_count,
+        candidates_token_count=usage_metadata.response_token_count,
+        total_token_count=usage_metadata.total_token_count,
+        thoughts_token_count=usage_metadata.thoughts_token_count,
+        tool_use_prompt_token_count=usage_metadata.tool_use_prompt_token_count,
+        prompt_tokens_details=usage_metadata.prompt_tokens_details,
+        cache_tokens_details=usage_metadata.cache_tokens_details,
+        candidates_tokens_details=usage_metadata.response_tokens_details,
+        tool_use_prompt_tokens_details=usage_metadata.tool_use_prompt_tokens_details,
+        traffic_type=usage_metadata.traffic_type,
+    )
+
   async def receive(self) -> AsyncGenerator[LlmResponse, None]:
     """Receives the model response using the llm server connection.
 
@@ -234,9 +266,11 @@ class GeminiLlmConnection(BaseLlmConnection):
         logger.debug('Got LLM Live message: %s', message)
         live_session_id = self._gemini_session.session_id
         if message.usage_metadata:
-          # Tracks token usage data per model.
+          # Remap live token usage to GenerateContentResponse usage metadata.
           yield LlmResponse(
-              usage_metadata=message.usage_metadata,
+              usage_metadata=self._to_generate_content_usage_metadata(
+                  message.usage_metadata
+              ),
               model_version=self._model_version,
               live_session_id=live_session_id,
           )
