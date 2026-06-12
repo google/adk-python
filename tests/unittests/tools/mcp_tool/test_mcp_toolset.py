@@ -22,7 +22,6 @@ from unittest.mock import MagicMock
 from unittest.mock import Mock
 
 from fastapi.openapi.models import OAuth2
-from google.auth import _agent_identity_utils
 from google.adk.agents.readonly_context import ReadonlyContext
 from google.adk.auth.auth_credential import AuthCredential
 from google.adk.auth.auth_credential import AuthCredentialTypes
@@ -38,6 +37,7 @@ from google.adk.tools.mcp_tool.mcp_session_manager import StreamableHTTPConnecti
 from google.adk.tools.mcp_tool.mcp_tool import MCPTool
 from google.adk.tools.mcp_tool.mcp_toolset import McpToolset
 from google.adk.tools.tool_configs import ToolArgsConfig
+from google.auth import _agent_identity_utils
 from mcp import StdioServerParameters
 from mcp.types import BlobResourceContents
 from mcp.types import ListResourcesResult
@@ -90,9 +90,7 @@ class TestMcpToolset:
     assert toolset._auth_credential is None
     assert toolset._use_mcp_resources is False
 
-  def test_init_preserves_agent_identity_bound_token_opt_in(
-      self, monkeypatch
-  ):
+  def test_init_preserves_agent_identity_bound_token_opt_in(self, monkeypatch):
     """McpToolset construction should not disable process-wide bound tokens."""
     env_name = "GOOGLE_API_PREVENT_AGENT_TOKEN_SHARING_FOR_GCP_SERVICES"
     fake_cert = object()

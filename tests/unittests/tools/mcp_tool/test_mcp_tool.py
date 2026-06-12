@@ -18,7 +18,6 @@ from unittest.mock import create_autospec
 from unittest.mock import Mock
 from unittest.mock import patch
 
-from google.auth import _agent_identity_utils
 from google.adk.agents.context import Context
 from google.adk.auth.auth_credential import AuthCredential
 from google.adk.auth.auth_credential import AuthCredentialTypes
@@ -32,6 +31,7 @@ from google.adk.tools.mcp_tool import mcp_tool
 from google.adk.tools.mcp_tool.mcp_session_manager import MCPSessionManager
 from google.adk.tools.mcp_tool.mcp_tool import MCPTool
 from google.adk.tools.tool_context import ToolContext
+from google.auth import _agent_identity_utils
 from google.genai.types import FunctionDeclaration
 from mcp.types import CallToolResult
 from mcp.types import TextContent
@@ -204,9 +204,7 @@ class TestMCPTool:
     assert tool._mcp_tool == self.mock_mcp_tool
     assert tool._mcp_session_manager == self.mock_session_manager
 
-  def test_init_preserves_agent_identity_bound_token_opt_in(
-      self, monkeypatch
-  ):
+  def test_init_preserves_agent_identity_bound_token_opt_in(self, monkeypatch):
     """MCPTool construction should not disable process-wide bound tokens."""
     env_name = "GOOGLE_API_PREVENT_AGENT_TOKEN_SHARING_FOR_GCP_SERVICES"
     fake_cert = object()
