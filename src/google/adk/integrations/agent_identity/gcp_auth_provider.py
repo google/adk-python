@@ -16,7 +16,6 @@
 
 from __future__ import annotations
 
-
 from google.adk.agents.callback_context import CallbackContext
 from google.adk.auth.auth_credential import AuthCredential
 from google.adk.auth.auth_tool import AuthConfig
