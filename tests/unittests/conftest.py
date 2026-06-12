@@ -28,6 +28,7 @@ _ENV_VARS = {
     'GOOGLE_CLOUD_PROJECT': 'fake_google_cloud_project',
     'GOOGLE_CLOUD_LOCATION': 'fake_google_cloud_location',
     'ADK_ALLOW_WIP_FEATURES': 'true',
+    'ADK_SUPPRESS_EXPERIMENTAL_FEATURE_WARNINGS': 'true',
 }
 
 ENV_SETUPS = {
