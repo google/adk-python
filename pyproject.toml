@@ -117,6 +117,7 @@ optional-dependencies.dev = [
   "pyink==25.12",
   "pylint>=2.6",
   "pyproject-fmt==2.24",
+  "ruff==0.15.17",
   "tox>=4.23.2",
   "tox-uv>=1.33.2",
 ]
