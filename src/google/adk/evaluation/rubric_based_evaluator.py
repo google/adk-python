@@ -277,7 +277,7 @@ class MeanInvocationResultsSummarizer(InvocationResultsSummarizer):
     )
 
 
-def _normalize_text(text: str) -> str:
+def _normalize_text(text: object) -> str:
   """Returns a normalized version of the passed in text."""
   if not isinstance(text, str):
     return ""
