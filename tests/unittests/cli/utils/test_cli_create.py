@@ -257,7 +257,7 @@ def test_prompt_for_google_api_key(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_prompt_for_model_gemini(monkeypatch: pytest.MonkeyPatch) -> None:
   """Selecting option '1' should return the default Gemini model string."""
   monkeypatch.setattr(click, "prompt", lambda *a, **k: "1")
-  assert cli_create._prompt_for_model() == "gemini-2.5-flash"
+  assert cli_create._prompt_for_model() == "gemini-3.5-flash"
 
 
 def test_prompt_for_model_other(monkeypatch: pytest.MonkeyPatch) -> None:
