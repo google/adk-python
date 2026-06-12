@@ -264,6 +264,14 @@ sdist.exclude = [ "src/**/*.sh", "src/**/README.md" ]
 [tool.ruff]
 extend-exclude = [
   "src/google/adk/cli/browser/",
+  # These hardcode googleapis.com endpoints and trip the check-file-contents
+  # mTLS policy check the moment they change. Excluded so unused-import
+  # cleanup does not pull them into a PR; clean them up when the mTLS policy
+  # is addressed.
+  "src/google/adk/integrations/bigquery/bigquery_credentials.py",
+  "src/google/adk/integrations/bigquery/data_insights_tool.py",
+  "src/google/adk/plugins/bigquery_agent_analytics_plugin.py",
+  "src/google/adk/tools/data_agent/data_agent_tool.py",
   "src/google/adk/v1/",
   "v1_tests/",
 ]

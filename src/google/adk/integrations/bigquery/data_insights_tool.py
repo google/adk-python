@@ -13,13 +13,17 @@
 # limitations under the License.
 from __future__ import annotations
 
+import json
 from typing import Any
 from typing import Dict
 from typing import List
 
 from google.adk.tools import _gda_stream_util
 from google.auth.credentials import Credentials
+from google.cloud import bigquery
+import requests
 
+from . import client
 from .config import BigQueryToolConfig
 
 _GDA_CLIENT_ID = "GOOGLE_ADK"

@@ -95,7 +95,11 @@ class HookSpec:
 # from its .pre-commit-hooks.yaml. The `local` hooks (addlicense,
 # check-new-py-prefix) are handled by _LOCAL_HOOKS below instead.
 _HOOK_SPECS: dict[str, HookSpec] = {
-    'ruff': HookSpec(['ruff', 'check'], ['ruff', 'check', '--fix'], _PY),
+    'ruff': HookSpec(
+        ['ruff', 'check', '--force-exclude'],
+        ['ruff', 'check', '--fix', '--force-exclude'],
+        _PY,
+    ),
     'isort': HookSpec(['isort', '--check-only', '--diff'], ['isort'], _PY),
     'pyink': HookSpec(['pyink', '--check', '--diff'], ['pyink'], _PY),
     'pyproject-fmt': HookSpec(
