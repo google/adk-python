@@ -22,8 +22,9 @@ import asyncio
 class ReplaySequenceBarrier:
   """Unified chronological sequence barrier to ensure deterministic replay ordering."""
 
-  def __init__(self, sequence: list[str]) -> None:
+  def __init__(self, sequence: list[str], timeout_sec: float = 15.0) -> None:
     self.sequence = sequence
+    self.timeout_sec = timeout_sec
     self.current_index = 0
     self.events = {key: asyncio.Event() for key in sequence}
     if sequence:
@@ -37,7 +38,15 @@ class ReplaySequenceBarrier:
     output are not in the sequence barrier, so they fast-forward immediately.
     """
     if key in self.events:
-      await self.events[key].wait()
+      try:
+        await asyncio.wait_for(
+            self.events[key].wait(), timeout=self.timeout_sec
+        )
+      except asyncio.TimeoutError:
+        raise RuntimeError(
+            "Replay divergence detected: Timed out waiting for sequence key"
+            f" '{key}' to be unblocked."
+        )
 
   def check_and_advance(self, key: str) -> None:
     """Advance the sequence if the key matches the current expected execution."""
