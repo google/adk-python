@@ -128,13 +128,13 @@ def _prompt_for_model() -> str:
   model_choice = click.prompt(
       """\
 Choose a model for the root agent:
-1. gemini-2.5-flash
+1. gemini-3.5-flash
 2. Other models (fill later)
 Choose model""",
       type=click.Choice(["1", "2"]),
   )
   if model_choice == "1":
-    return "gemini-2.5-flash"
+    return "gemini-3.5-flash"
   else:
     click.secho(_OTHER_MODEL_MSG, fg="green")
     return "<FILL_IN_MODEL>"
