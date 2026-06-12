@@ -534,5 +534,7 @@ class LocalEvalService(BaseEvalService):
       )
       inference_result.status = InferenceStatus.FAILURE
       inference_result.error_message = str(e)
-      inference_result.inferences = []  # Ensure inferences is not None on failure
+      inference_result.inferences = (
+          []
+      )  # Ensure inferences is not None on failure
       return inference_result

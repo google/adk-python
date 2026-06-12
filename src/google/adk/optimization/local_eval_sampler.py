@@ -289,7 +289,11 @@ class LocalEvalSampler(Sampler[UnstructuredSamplingResult]):
         for eval_metric_result in per_invocation_result.eval_metric_results:
           eval_metric_results.append({
               "metric_name": eval_metric_result.metric_name,
-              "score": round(eval_metric_result.score, 2) if eval_metric_result.score is not None else 0.0,
+              "score": (
+                  round(eval_metric_result.score, 2)
+                  if eval_metric_result.score is not None
+                  else 0.0
+              ),
               "eval_status": eval_metric_result.eval_status.name,
           })
         per_invocation_result_dict = {
