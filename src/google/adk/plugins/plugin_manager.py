@@ -291,7 +291,8 @@ class PluginManager:
             f"'on_pipeline_error_callback' callback: {e}"
         )
         logger.error(
-            "Error in plugin '%s' during 'on_pipeline_error_callback' callback: %s",
+            "Error in plugin '%s' during 'on_pipeline_error_callback'"
+            " callback: %s",
             plugin.name,
             e,
             exc_info=True,
