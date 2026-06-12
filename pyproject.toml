@@ -117,6 +117,7 @@ optional-dependencies.dev = [
   "pyink==25.12",
   "pylint>=2.6",
   "pyproject-fmt==2.24",
+  "ruff==0.15.17",
   "tox>=4.23.2",
   "tox-uv>=1.33.2",
 ]
@@ -259,6 +260,25 @@ module.name = "google.adk"
 module.include = [ "py.typed" ]
 sdist.include = [ "src/**/*", "README.md", "pyproject.toml", "LICENSE" ]
 sdist.exclude = [ "src/**/*.sh", "src/**/README.md" ]
+
+[tool.ruff]
+extend-exclude = [
+  "src/google/adk/cli/browser/",
+  # These hardcode googleapis.com endpoints and trip the check-file-contents
+  # mTLS policy check the moment they change. Excluded so unused-import
+  # cleanup does not pull them into a PR; clean them up when the mTLS policy
+  # is addressed.
+  "src/google/adk/integrations/bigquery/bigquery_credentials.py",
+  "src/google/adk/integrations/bigquery/data_insights_tool.py",
+  "src/google/adk/plugins/bigquery_agent_analytics_plugin.py",
+  "src/google/adk/tools/data_agent/data_agent_tool.py",
+  "src/google/adk/v1/",
+  "v1_tests/",
+]
+lint.select = [ "F401" ]
+# __init__.py files re-export symbols for the public API; unused imports
+# there are intentional, not dead code.
+lint.per-file-ignores."**/__init__.py" = [ "F401" ]
 
 [tool.isort]
 profile = "google"

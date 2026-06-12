@@ -95,6 +95,11 @@ class HookSpec:
 # from its .pre-commit-hooks.yaml. The `local` hooks (addlicense,
 # check-new-py-prefix) are handled by _LOCAL_HOOKS below instead.
 _HOOK_SPECS: dict[str, HookSpec] = {
+    'ruff': HookSpec(
+        ['ruff', 'check', '--force-exclude'],
+        ['ruff', 'check', '--fix', '--force-exclude'],
+        _PY,
+    ),
     'isort': HookSpec(['isort', '--check-only', '--diff'], ['isort'], _PY),
     'pyink': HookSpec(['pyink', '--check', '--diff'], ['pyink'], _PY),
     'pyproject-fmt': HookSpec(
@@ -317,7 +322,11 @@ def run_standard_hook(
   if spec.is_fixer and not fix:
     return _run_fixer_in_check_mode(tool, files)
   command = spec.fix_cmd if (fix and spec.fix_cmd) else spec.check_cmd
-  return _run(command + hook.args, files)
+  # Drop `--fix` from the config args: check mode must not modify files, and
+  # fix mode already gets `--fix` from the spec's fix_cmd (passing it twice is
+  # an error, e.g. ruff rejects a repeated `--fix`).
+  args = [a for a in hook.args if a != '--fix']
+  return _run(command + args, files)
 
 
 # --- local hooks (no upstream tool; bespoke handling) -----------------------
