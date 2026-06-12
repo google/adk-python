@@ -23,8 +23,8 @@ from a2a.server.routes import create_jsonrpc_routes
 from a2a.server.routes import create_rest_routes
 from a2a.server.routes.fastapi_routes import add_a2a_routes_to_fastapi
 from a2a.types import Message as A2AMessage
-from a2a.types import Part as A2APart
 from a2a.types import Part
+from a2a.types import Part as A2APart
 from a2a.types import Role
 from a2a.types import SendMessageRequest
 from a2a.types import Task
@@ -531,7 +531,7 @@ async def test_long_running_function_calls_error():
   # Extract the task from the stream responses
   task = None
   for sr in response_1_events:
-    if sr.WhichOneof('payload') == 'task':
+    if sr.WhichOneof("payload") == "task":
       task = sr.task
   assert task is not None
   assert task.status.state == TaskState.TASK_STATE_INPUT_REQUIRED
@@ -556,7 +556,7 @@ async def test_long_running_function_calls_error():
   assert len(response_2_events) >= 1
   error_task = None
   for sr in response_2_events:
-    if sr.WhichOneof('payload') == 'task':
+    if sr.WhichOneof("payload") == "task":
       error_task = sr.task
   assert error_task is not None
   assert error_task.status.message.parts[0].text == (
@@ -654,7 +654,7 @@ async def test_include_artifacts_in_a2a_event():
   # For a non-streaming client, the final task payload contains all artifacts
   task = None
   for sr in stream_events:
-    if sr.WhichOneof('payload') == 'task':
+    if sr.WhichOneof("payload") == "task":
       task = sr.task
   assert task is not None
   assert task.artifacts is not None

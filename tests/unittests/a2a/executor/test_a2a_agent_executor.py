@@ -770,7 +770,7 @@ class TestA2aAgentExecutor:
     from a2a.types import Message
     from a2a.types import Part
     from a2a.types import Role
-    
+
     test_message = Message(
         message_id="test-message-id",
         role=Role.ROLE_AGENT,
@@ -858,7 +858,7 @@ class TestA2aAgentExecutor:
     from a2a.types import Message
     from a2a.types import Part
     from a2a.types import Role
-    
+
     test_message = Message(
         message_id="test-message-id",
         role=Role.ROLE_AGENT,

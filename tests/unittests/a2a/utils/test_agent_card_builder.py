@@ -152,7 +152,9 @@ class TestAgentCardBuilder:
     mock_agent.description = "Test agent description"
 
     # Use real AgentSkill proto objects (proto rejects Mock objects)
-    primary_skill = AgentSkill(id="skill1", name="Primary Skill", description="desc")
+    primary_skill = AgentSkill(
+        id="skill1", name="Primary Skill", description="desc"
+    )
     sub_skill = AgentSkill(id="skill2", name="Sub Skill", description="desc")
     mock_build_primary_skills.return_value = [primary_skill]
     mock_build_sub_skills.return_value = [sub_skill]
@@ -192,13 +194,18 @@ class TestAgentCardBuilder:
     mock_agent.description = None  # Should use default description
 
     # Use real AgentSkill proto objects
-    primary_skill = AgentSkill(id="skill1", name="Primary Skill", description="desc")
+    primary_skill = AgentSkill(
+        id="skill1", name="Primary Skill", description="desc"
+    )
     sub_skill = AgentSkill(id="skill2", name="Sub Skill", description="desc")
     mock_build_primary_skills.return_value = [primary_skill]
     mock_build_sub_skills.return_value = [sub_skill]
 
     from a2a.types import AgentProvider as A2AAgentProvider
-    real_provider = A2AAgentProvider(organization="Test Org", url="https://example.com")
+
+    real_provider = A2AAgentProvider(
+        organization="Test Org", url="https://example.com"
+    )
 
     builder = AgentCardBuilder(
         agent=mock_agent,

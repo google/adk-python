@@ -38,7 +38,6 @@ from google.adk.workflow import Workflow
 import pytest
 from starlette.applications import Starlette
 
-
 # ---------------------------------------------------------------------------
 # Helper: decorator order note
 # @patch decorators are applied bottom-up; the innermost (closest to def)
@@ -102,13 +101,13 @@ class TestToA2A:
   @patch("google.adk.a2a.utils.agent_to_a2a.create_rest_routes")
   async def test_to_a2a_default_parameters(
       self,
-      mock_create_rest_routes,     # innermost → first param
+      mock_create_rest_routes,  # innermost → first param
       mock_create_jsonrpc_routes,
       mock_create_card_routes,
       mock_agent_executor_class,
       mock_request_handler_class,
       mock_task_store_class,
-      mock_card_builder_class,     # outermost → last param
+      mock_card_builder_class,  # outermost → last param
   ):
     """Test to_a2a with default parameters."""
     (
@@ -439,12 +438,12 @@ class TestToA2A:
     async with result.router.lifespan_context(result):
       pass
 
-    # Verify that the agent executor was created with a runner function
+    # Verify that the agent executor was created with a runner instance
     mock_agent_executor_class.assert_called_once()
     call_args = mock_agent_executor_class.call_args
     assert "runner" in call_args[1]
-    runner_func = call_args[1]["runner"]
-    assert callable(runner_func)
+    runner_instance = call_args[1]["runner"]
+    assert isinstance(runner_instance, Runner)
 
   @patch("google.adk.a2a.utils.agent_to_a2a.AgentCardBuilder")
   @patch("google.adk.a2a.utils.agent_to_a2a.InMemoryTaskStore")
@@ -489,14 +488,11 @@ class TestToA2A:
     async with result.router.lifespan_context(result):
       pass
 
-    # Get the runner function that was passed to A2aAgentExecutor
+    # Get the runner instance that was passed to A2aAgentExecutor
     call_args = mock_agent_executor_class.call_args
-    runner_func = call_args[1]["runner"]
+    runner_instance = call_args[1]["runner"]
 
-    # Call the runner function to verify it creates Runner correctly
-    runner_result = runner_func()
-
-    # Verify Runner was created with correct parameters
+    # Verify Runner was created with correct parameters (eagerly, not as a factory)
     mock_runner_class.assert_called_once_with(
         app_name="test_agent",
         agent=self.mock_agent,
@@ -510,8 +506,11 @@ class TestToA2A:
     assert isinstance(call_args["artifact_service"], InMemoryArtifactService)
     assert isinstance(call_args["session_service"], InMemorySessionService)
     assert isinstance(call_args["memory_service"], InMemoryMemoryService)
-    assert isinstance(call_args["credential_service"], InMemoryCredentialService)
-    assert runner_result == mock_runner
+    assert isinstance(
+        call_args["credential_service"], InMemoryCredentialService
+    )
+    # Runner is passed as an instance directly (not a callable factory)
+    assert runner_instance == mock_runner
 
   @patch("google.adk.a2a.utils.agent_to_a2a.AgentCardBuilder")
   @patch("google.adk.a2a.utils.agent_to_a2a.InMemoryTaskStore")

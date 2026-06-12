@@ -359,7 +359,12 @@ class TestA2aAgentExecutor:
 
     # Initialize executor context attributes as they would be in execute()
     self.executor._invocation_metadata = {}
-    self.executor._executor_context = ExecutorContext(app_name="test-app", user_id="test-user", session_id="test-session", runner=self.mock_runner)
+    self.executor._executor_context = ExecutorContext(
+        app_name="test-app",
+        user_id="test-user",
+        session_id="test-session",
+        runner=self.mock_runner,
+    )
 
     # Execute
     await self.executor._handle_request(
@@ -451,7 +456,12 @@ class TestA2aAgentExecutor:
 
     # Initialize executor context attributes
     self.executor._invocation_metadata = {}
-    self.executor._executor_context = ExecutorContext(app_name="test-app", user_id="test-user", session_id="test-session", runner=self.mock_runner)
+    self.executor._executor_context = ExecutorContext(
+        app_name="test-app",
+        user_id="test-user",
+        session_id="test-session",
+        runner=self.mock_runner,
+    )
 
     # Execute
     await self.executor._handle_request(
@@ -466,7 +476,8 @@ class TestA2aAgentExecutor:
     final_events = [
         call[0][0]
         for call in self.mock_event_queue.enqueue_event.call_args_list
-        if hasattr(call[0][0], "status") and call[0][0].status.state != TaskState.TASK_STATE_COMPLETED
+        if hasattr(call[0][0], "status")
+        and call[0][0].status.state != TaskState.TASK_STATE_COMPLETED
     ]
     assert len(final_events) >= 1
     # The last event should be the synthesized final event
@@ -503,7 +514,12 @@ class TestA2aAgentExecutor:
         run_config=Mock(spec=RunConfig),
     )
 
-    executor_context = ExecutorContext(app_name="test-app", user_id="test-user", session_id="test-session", runner=self.mock_runner)
+    executor_context = ExecutorContext(
+        app_name="test-app",
+        user_id="test-user",
+        session_id="test-session",
+        runner=self.mock_runner,
+    )
 
     await self.executor._handle_request(
         self.mock_context,
@@ -516,7 +532,8 @@ class TestA2aAgentExecutor:
     final_events = [
         call[0][0]
         for call in self.mock_event_queue.enqueue_event.call_args_list
-        if hasattr(call[0][0], "status") and call[0][0].status.state != TaskState.TASK_STATE_COMPLETED
+        if hasattr(call[0][0], "status")
+        and call[0][0].status.state != TaskState.TASK_STATE_COMPLETED
     ]
     assert len(final_events) >= 1
     final_event = final_events[-1]
@@ -719,7 +736,12 @@ class TestA2aAgentExecutor:
     self.mock_event_converter.return_value = []
 
     self.executor._invocation_metadata = {}
-    self.executor._executor_context = ExecutorContext(app_name="test-app", user_id="test-user", session_id="test-session", runner=self.mock_runner)
+    self.executor._executor_context = ExecutorContext(
+        app_name="test-app",
+        user_id="test-user",
+        session_id="test-session",
+        runner=self.mock_runner,
+    )
 
     await self.executor._handle_request(
         self.mock_context,
@@ -780,7 +802,12 @@ class TestA2aAgentExecutor:
     )
     self.mock_event_converter.return_value = [working_event]
 
-    self.executor._executor_context = ExecutorContext(app_name="test-app", user_id="test-user", session_id="test-session", runner=self.mock_runner)
+    self.executor._executor_context = ExecutorContext(
+        app_name="test-app",
+        user_id="test-user",
+        session_id="test-session",
+        runner=self.mock_runner,
+    )
     await self.executor._handle_request(
         self.mock_context,
         self.executor._executor_context,

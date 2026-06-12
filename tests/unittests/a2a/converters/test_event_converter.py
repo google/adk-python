@@ -76,7 +76,9 @@ class TestEventConverter:
     assert result == f"{ADK_METADATA_KEY_PREFIX}{key}"
 
   def test_create_error_status_event_is_final(self):
-    """Error status events must be marked final."""
+    """Error status events must use TASK_STATE_FAILED (finality via state in v1)."""
+    from a2a.types import TaskState
+
     result = _create_error_status_event(
         self.mock_event,
         self.mock_invocation_context,
@@ -84,7 +86,7 @@ class TestEventConverter:
         context_id="test-context-id",
     )
 
-    assert result.final is True
+    assert result.status.state == TaskState.TASK_STATE_FAILED
 
   def test_get_adk_event_metadata_key_empty_string(self):
     """Empty string key raises ValueError."""

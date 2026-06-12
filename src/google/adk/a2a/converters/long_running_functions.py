@@ -31,12 +31,12 @@ from google.genai import types as genai_types
 
 from ...events.event import Event
 from ...flows.llm_flows.functions import REQUEST_EUC_FUNCTION_CALL_NAME
+from .part_converter import _part_data_as_dict
 from .part_converter import A2A_DATA_PART_METADATA_IS_LONG_RUNNING_KEY
 from .part_converter import A2A_DATA_PART_METADATA_TYPE_FUNCTION_CALL
 from .part_converter import A2A_DATA_PART_METADATA_TYPE_FUNCTION_RESPONSE
 from .part_converter import A2A_DATA_PART_METADATA_TYPE_KEY
 from .part_converter import A2APartToGenAIPartConverter
-from .part_converter import _part_data_as_dict
 from .part_converter import convert_a2a_part_to_genai_part
 from .utils import _get_adk_metadata_key
 
@@ -149,13 +149,14 @@ class LongRunningFunctions:
         a2a_part.WhichOneof('content') == 'data'
         and a2a_part.metadata
         and type_key in a2a_part.metadata
-        and a2a_part.metadata[type_key] == A2A_DATA_PART_METADATA_TYPE_FUNCTION_CALL
+        and a2a_part.metadata[type_key]
+        == A2A_DATA_PART_METADATA_TYPE_FUNCTION_CALL
     ):
       a2a_part.metadata[
           _get_adk_metadata_key(A2A_DATA_PART_METADATA_IS_LONG_RUNNING_KEY)
       ] = True
       data = _part_data_as_dict(a2a_part)
-      if data.get("name") == REQUEST_EUC_FUNCTION_CALL_NAME:
+      if data.get('name') == REQUEST_EUC_FUNCTION_CALL_NAME:
         self._task_state = TaskState.TASK_STATE_AUTH_REQUIRED
       else:
         self._task_state = TaskState.TASK_STATE_INPUT_REQUIRED
@@ -168,8 +169,10 @@ def handle_user_input(context: RequestContext) -> TaskStatusUpdateEvent | None:
       not context.current_task
       or not context.current_task.status
       or (
-          context.current_task.status.state != TaskState.TASK_STATE_INPUT_REQUIRED
-          and context.current_task.status.state != TaskState.TASK_STATE_AUTH_REQUIRED
+          context.current_task.status.state
+          != TaskState.TASK_STATE_INPUT_REQUIRED
+          and context.current_task.status.state
+          != TaskState.TASK_STATE_AUTH_REQUIRED
       )
   ):
     return None
@@ -183,7 +186,8 @@ def handle_user_input(context: RequestContext) -> TaskStatusUpdateEvent | None:
         a2a_part.WhichOneof('content') == 'data'
         and a2a_part.metadata
         and type_key in a2a_part.metadata
-        and a2a_part.metadata[type_key] == A2A_DATA_PART_METADATA_TYPE_FUNCTION_RESPONSE
+        and a2a_part.metadata[type_key]
+        == A2A_DATA_PART_METADATA_TYPE_FUNCTION_RESPONSE
     ):
       return None
 
@@ -193,8 +197,8 @@ def handle_user_input(context: RequestContext) -> TaskStatusUpdateEvent | None:
       parts=[
           A2APart(
               text=(
-                  "It was not provided a function response for the"
-                  " function call."
+                  'It was not provided a function response for the'
+                  ' function call.'
               )
           )
       ],

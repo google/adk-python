@@ -51,7 +51,9 @@ class TestTaskResultAggregator:
     event = TaskStatusUpdateEvent(
         task_id="test-task",
         context_id="test-context",
-        status=TaskStatus(state=TaskState.TASK_STATE_FAILED, message=status_message),
+        status=TaskStatus(
+            state=TaskState.TASK_STATE_FAILED, message=status_message
+        ),
     )
 
     self.aggregator.process_event(event)
@@ -113,7 +115,9 @@ class TestTaskResultAggregator:
     auth_event = TaskStatusUpdateEvent(
         task_id="test-task",
         context_id="test-context",
-        status=TaskStatus(state=TaskState.TASK_STATE_AUTH_REQUIRED, message=auth_message),
+        status=TaskStatus(
+            state=TaskState.TASK_STATE_AUTH_REQUIRED, message=auth_message
+        ),
     )
     self.aggregator.process_event(auth_event)
     assert self.aggregator.task_state == TaskState.TASK_STATE_AUTH_REQUIRED
@@ -124,7 +128,9 @@ class TestTaskResultAggregator:
     failed_event = TaskStatusUpdateEvent(
         task_id="test-task",
         context_id="test-context",
-        status=TaskStatus(state=TaskState.TASK_STATE_FAILED, message=failed_message),
+        status=TaskStatus(
+            state=TaskState.TASK_STATE_FAILED, message=failed_message
+        ),
     )
     self.aggregator.process_event(failed_event)
     assert self.aggregator.task_state == TaskState.TASK_STATE_FAILED
@@ -150,7 +156,9 @@ class TestTaskResultAggregator:
     auth_event = TaskStatusUpdateEvent(
         task_id="test-task",
         context_id="test-context",
-        status=TaskStatus(state=TaskState.TASK_STATE_AUTH_REQUIRED, message=auth_message),
+        status=TaskStatus(
+            state=TaskState.TASK_STATE_AUTH_REQUIRED, message=auth_message
+        ),
     )
     self.aggregator.process_event(auth_event)
     assert self.aggregator.task_state == TaskState.TASK_STATE_AUTH_REQUIRED
@@ -175,7 +183,9 @@ class TestTaskResultAggregator:
     failed_event = TaskStatusUpdateEvent(
         task_id="test-task",
         context_id="test-context",
-        status=TaskStatus(state=TaskState.TASK_STATE_FAILED, message=failed_message),
+        status=TaskStatus(
+            state=TaskState.TASK_STATE_FAILED, message=failed_message
+        ),
     )
     self.aggregator.process_event(failed_event)
     assert self.aggregator.task_state == TaskState.TASK_STATE_FAILED
@@ -212,7 +222,9 @@ class TestTaskResultAggregator:
     auth_event = TaskStatusUpdateEvent(
         task_id="test-task",
         context_id="test-context",
-        status=TaskStatus(state=TaskState.TASK_STATE_AUTH_REQUIRED, message=auth_message),
+        status=TaskStatus(
+            state=TaskState.TASK_STATE_AUTH_REQUIRED, message=auth_message
+        ),
     )
     self.aggregator.process_event(auth_event)
     assert self.aggregator.task_status_message == auth_message
@@ -222,7 +234,9 @@ class TestTaskResultAggregator:
     failed_event = TaskStatusUpdateEvent(
         task_id="test-task",
         context_id="test-context",
-        status=TaskStatus(state=TaskState.TASK_STATE_FAILED, message=failed_message),
+        status=TaskStatus(
+            state=TaskState.TASK_STATE_FAILED, message=failed_message
+        ),
     )
     self.aggregator.process_event(failed_event)
     assert self.aggregator.task_status_message == failed_message
@@ -232,7 +246,9 @@ class TestTaskResultAggregator:
     working_event = TaskStatusUpdateEvent(
         task_id="test-task",
         context_id="test-context",
-        status=TaskStatus(state=TaskState.TASK_STATE_WORKING, message=working_message),
+        status=TaskStatus(
+            state=TaskState.TASK_STATE_WORKING, message=working_message
+        ),
     )
     self.aggregator.process_event(working_event)
     # State should still be failed, and message should remain the failed message
@@ -246,7 +262,9 @@ class TestTaskResultAggregator:
     event = TaskStatusUpdateEvent(
         task_id="test-task",
         context_id="test-context",
-        status=TaskStatus(state=TaskState.TASK_STATE_WORKING, message=working_message),
+        status=TaskStatus(
+            state=TaskState.TASK_STATE_WORKING, message=working_message
+        ),
     )
 
     self.aggregator.process_event(event)
@@ -274,7 +292,9 @@ class TestTaskResultAggregator:
     auth_event = TaskStatusUpdateEvent(
         task_id="test-task",
         context_id="test-context",
-        status=TaskStatus(state=TaskState.TASK_STATE_AUTH_REQUIRED, message=auth_message),
+        status=TaskStatus(
+            state=TaskState.TASK_STATE_AUTH_REQUIRED, message=auth_message
+        ),
     )
     self.aggregator.process_event(auth_event)
     assert self.aggregator.task_state == TaskState.TASK_STATE_AUTH_REQUIRED
@@ -285,7 +305,9 @@ class TestTaskResultAggregator:
     working_event = TaskStatusUpdateEvent(
         task_id="test-task",
         context_id="test-context",
-        status=TaskStatus(state=TaskState.TASK_STATE_WORKING, message=working_message),
+        status=TaskStatus(
+            state=TaskState.TASK_STATE_WORKING, message=working_message
+        ),
     )
     self.aggregator.process_event(working_event)
     assert (

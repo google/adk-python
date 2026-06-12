@@ -57,7 +57,7 @@ dependencies = [
   "websockets>=15.0.1,<16",
 ]
 optional-dependencies.a2a = [
-  "a2a-sdk>=1.0,<2",
+  "a2a-sdk>=1,<2",
 ]
 optional-dependencies.agent-identity = [
   "google-cloud-agentidentitycredentials>=0.1,<0.2",
@@ -190,7 +190,7 @@ optional-dependencies.otel-gcp = [
 ]
 optional-dependencies.slack = [ "slack-bolt>=1.22" ]
 optional-dependencies.test = [
-  "a2a-sdk>=1.0,<2",
+  "a2a-sdk>=1,<2",
   "anthropic>=0.78",                                                 # For anthropic model tests; 0.78 introduced ThinkingConfigAdaptiveParam (required for Claude Opus 4.7).
   "anyio>=4.9,<5",
   "crewai[tools]; python_version>='3.11' and python_version<'3.12'", # For CrewaiTool tests; chromadb/pypika fail on 3.12+
