@@ -36,7 +36,6 @@ from ._node_status import NodeStatus
 from ._schedule_dynamic_node import ScheduleDynamicNode
 from .utils._rehydration_utils import _ChildScanState
 from .utils._rehydration_utils import _reconstruct_node_states
-from .utils._rehydration_utils import _unwrap_response
 from .utils._rehydration_utils import is_terminal_event
 from .utils._replay_interceptor import check_interception
 from .utils._replay_interceptor import create_mock_context

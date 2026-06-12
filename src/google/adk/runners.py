@@ -33,7 +33,6 @@ import warnings
 from google.genai import types
 
 from .agents.base_agent import BaseAgent
-from .agents.base_agent import BaseAgentState
 from .agents.context_cache_config import ContextCacheConfig
 from .agents.invocation_context import InvocationContext
 from .agents.invocation_context import new_invocation_context_id
