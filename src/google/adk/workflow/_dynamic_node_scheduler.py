@@ -512,7 +512,11 @@ class DynamicNodeScheduler(ScheduleDynamicNode):
     elif child_ctx.actions.transfer_to_agent:
       state.status = NodeStatus.COMPLETED
       run.transfer_to_agent = child_ctx.actions.transfer_to_agent
-    elif node.wait_for_output and child_ctx.output is None:
+    elif (
+        node.wait_for_output
+        and child_ctx.output is None
+        and child_ctx.route is None
+    ):
       state.status = NodeStatus.WAITING
     else:
       state.status = NodeStatus.COMPLETED
