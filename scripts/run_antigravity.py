@@ -14,6 +14,8 @@
 
 """Runner script to execute prompts/commands via the Antigravity SDK."""
 
+from __future__ import annotations
+
 import argparse
 import asyncio
 import json
@@ -197,7 +199,7 @@ def fetch_github_pr(pr_number: int) -> str:
     return f"Error: Failed to run curl command: {e}"
 
 
-async def main():
+async def main() -> None:
   parser = argparse.ArgumentParser(
       description=(
           "Runner script to execute prompts/commands via the Antigravity SDK."
