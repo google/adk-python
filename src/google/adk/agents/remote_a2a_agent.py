@@ -27,7 +27,6 @@ from urllib.parse import urlparse
 
 from a2a.client import Client as A2AClient
 from a2a.client.card_resolver import A2ACardResolver
-from a2a.client.client import ClientCallContext
 from a2a.client.client import ClientConfig as A2AClientConfig
 from a2a.client.client_factory import ClientFactory as A2AClientFactory
 from a2a.client.errors import A2AClientError
@@ -37,11 +36,7 @@ from a2a.types import Part as A2APart
 from a2a.types import Role
 from a2a.types import SendMessageRequest
 from a2a.types import StreamResponse
-from a2a.types import Task as A2ATask
-from a2a.types import TaskArtifactUpdateEvent as A2ATaskArtifactUpdateEvent
 from a2a.types import TaskState
-from a2a.types import TaskStatusUpdateEvent as A2ATaskStatusUpdateEvent
-from a2a.utils.constants import PROTOCOL_VERSION_CURRENT
 from a2a.utils.constants import TransportProtocol
 from google.adk.platform import uuid as platform_uuid
 from google.genai import types as genai_types
@@ -568,7 +563,6 @@ class RemoteA2aAgent(BaseAgent):
         if not update.append or update.last_chunk:
           # Re-use the last known task state for artifact updates.
           # Build a minimal Task from the artifact update to reuse converter.
-          from a2a.types import Artifact as _Artifact
           from a2a.types import Task as _Task
 
           tmp_task = _Task(

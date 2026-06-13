@@ -29,7 +29,6 @@ from a2a.server.tasks import PushNotificationConfigStore
 from a2a.server.tasks import TaskStore
 from a2a.types import AgentCard
 from starlette.applications import Starlette
-from starlette.routing import Route
 
 from ...agents.base_agent import BaseAgent
 from ...artifacts.in_memory_artifact_service import InMemoryArtifactService
