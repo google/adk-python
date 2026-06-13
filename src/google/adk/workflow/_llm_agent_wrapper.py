@@ -296,7 +296,8 @@ async def run_llm_agent_as_node(
         f" but agent '{agent.name}' has mode='{agent.mode}'."
     )
 
-  if agent.mode == 'single_turn':
+  include_contents_explicit = 'include_contents' in agent.model_fields_set
+  if agent.mode == 'single_turn' and not include_contents_explicit:
     agent.include_contents = 'none'
 
   agent_ctx = prepare_llm_agent_context(agent, ctx)

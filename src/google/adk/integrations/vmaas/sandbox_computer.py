@@ -221,8 +221,6 @@ class AgentEngineSandboxComputer(BaseComputer):
         "Creating new sandbox under agent engine: %s", agent_engine_name
     )
 
-    from vertexai import types
-
     config = {
         "display_name": "adk_computer_use_sandbox",
     }

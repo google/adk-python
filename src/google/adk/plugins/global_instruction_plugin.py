@@ -28,7 +28,6 @@ from google.adk.utils import instructions_utils
 
 if TYPE_CHECKING:
   from google.adk.agents.llm_agent import InstructionProvider
-  from google.adk.agents.llm_agent import LlmAgent
 
 
 class GlobalInstructionPlugin(BasePlugin):

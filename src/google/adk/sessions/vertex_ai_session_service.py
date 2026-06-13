@@ -105,7 +105,7 @@ class VertexAiSessionService(BaseSessionService):
         https://cloud.google.com/vertex-ai/generative-ai/docs/start/express-mode/overview
     """
     try:
-      import vertexai
+      import vertexai  # noqa: F401
     except ImportError as e:
       from ..utils._dependency import missing_extra
 

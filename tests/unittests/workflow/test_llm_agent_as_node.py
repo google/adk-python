@@ -246,6 +246,71 @@ class TestBuildNode:
 
     assert node.mode == 'single_turn'
 
+  @pytest.mark.parametrize(
+      ('agent_kwargs', 'expected_include_contents'),
+      [
+          ({}, 'none'),
+          ({'mode': 'single_turn'}, 'none'),
+          (
+              {'mode': 'single_turn', 'include_contents': 'default'},
+              'default',
+          ),
+          ({'mode': 'single_turn', 'include_contents': 'none'}, 'none'),
+      ],
+  )
+  @pytest.mark.asyncio
+  async def test_single_turn_defaults_include_contents_only_when_unset(
+      self,
+      monkeypatch: pytest.MonkeyPatch,
+      agent_kwargs: dict[str, Any],
+      expected_include_contents: str,
+  ):
+    """Single-turn workflow nodes preserve explicit content inclusion."""
+    from unittest.mock import MagicMock
+
+    from google.adk.workflow import _llm_agent_wrapper
+
+    agent = LlmAgent(
+        name='test_agent',
+        model='gemini-2.5-flash',
+        instruction='Test.',
+        **agent_kwargs,
+    )
+    wrapper = build_node(agent)
+    seen_include_contents = []
+
+    async def mock_run_async(*args, **kwargs):
+      seen_include_contents.append(wrapper.include_contents)
+      yield Event(
+          invocation_id='inv',
+          author=wrapper.name,
+          content=types.Content(parts=[types.Part(text='ok')]),
+      )
+
+    object.__setattr__(wrapper, 'run_async', mock_run_async)
+    monkeypatch.setattr(
+        _llm_agent_wrapper,
+        'prepare_llm_agent_context',
+        lambda agent, ctx: ctx,
+    )
+    monkeypatch.setattr(
+        _llm_agent_wrapper,
+        'prepare_llm_agent_input',
+        lambda agent, ctx, node_input: None,
+    )
+    ctx = MagicMock(spec=Context)
+    ic = MagicMock()
+    ctx.get_invocation_context.return_value = ic
+    ic.model_copy.return_value = ic
+
+    events = [
+        event async for event in wrapper._run_impl(ctx=ctx, node_input='hi')
+    ]
+
+    assert seen_include_contents == [expected_include_contents]
+    assert wrapper.include_contents == expected_include_contents
+    assert events[0].content.parts[0].text == 'ok'
+
   def test_name_override(self):
     """build_node respects explicit name override."""
     node = build_node(_make_agent(mode='task'), name='override')
