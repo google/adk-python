@@ -204,7 +204,7 @@ class VertexAiMemoryBankService(BaseMemoryService):
       )
 
     try:
-      import vertexai
+      import vertexai  # noqa: F401
     except ImportError as e:
       from ..utils._dependency import missing_extra
 

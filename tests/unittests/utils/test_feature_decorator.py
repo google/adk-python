@@ -306,8 +306,11 @@ def test_experimental_class_not_bypassed_for_false_env_var(monkeypatch):
       assert "[EXPERIMENTAL] ExperimentalClass:" in str(w[0].message)
 
 
-def test_experimental_class_no_parens_warns():
+def test_experimental_class_no_parens_warns(monkeypatch):
   """Test that experimental class without parentheses shows default warning."""
+  monkeypatch.delenv(
+      "ADK_SUPPRESS_EXPERIMENTAL_FEATURE_WARNINGS", raising=False
+  )
   with warnings.catch_warnings(record=True) as w:
     warnings.simplefilter("always")
 
@@ -323,8 +326,11 @@ def test_experimental_class_no_parens_warns():
     )
 
 
-def test_experimental_class_empty_parens_warns():
+def test_experimental_class_empty_parens_warns(monkeypatch):
   """Test that experimental class with empty parentheses shows default warning."""
+  monkeypatch.delenv(
+      "ADK_SUPPRESS_EXPERIMENTAL_FEATURE_WARNINGS", raising=False
+  )
   with warnings.catch_warnings(record=True) as w:
     warnings.simplefilter("always")
 
@@ -340,8 +346,11 @@ def test_experimental_class_empty_parens_warns():
     )
 
 
-def test_experimental_function_no_parens_warns():
+def test_experimental_function_no_parens_warns(monkeypatch):
   """Test that experimental function without parentheses shows default warning."""
+  monkeypatch.delenv(
+      "ADK_SUPPRESS_EXPERIMENTAL_FEATURE_WARNINGS", raising=False
+  )
   with warnings.catch_warnings(record=True) as w:
     warnings.simplefilter("always")
 
@@ -356,8 +365,11 @@ def test_experimental_function_no_parens_warns():
     )
 
 
-def test_experimental_function_empty_parens_warns():
+def test_experimental_function_empty_parens_warns(monkeypatch):
   """Test that experimental function with empty parentheses shows default warning."""
+  monkeypatch.delenv(
+      "ADK_SUPPRESS_EXPERIMENTAL_FEATURE_WARNINGS", raising=False
+  )
   with warnings.catch_warnings(record=True) as w:
     warnings.simplefilter("always")
 

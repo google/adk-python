@@ -20,21 +20,18 @@ import copy
 from functools import cached_property
 import json
 import logging
-import os
 from typing import Any
 from typing import AsyncGenerator
-from typing import Iterable
 from typing import Literal
-from typing import Union
 
 from google.genai import types
 
 try:
   from openai import AsyncOpenAI
   from openai.types.chat import ChatCompletion
-  from openai.types.chat import ChatCompletionChunk
+  from openai.types.chat import ChatCompletionChunk  # noqa: F401
   from openai.types.chat import ChatCompletionContentPartImageParam
-  from openai.types.chat import ChatCompletionMessage
+  from openai.types.chat import ChatCompletionMessage  # noqa: F401
   from openai.types.chat import ChatCompletionMessageParam
   from openai.types.chat import ChatCompletionToolParam
 except ImportError as e:

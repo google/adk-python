@@ -40,7 +40,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger("google_adk." + __name__)
 
 
-def _get_elapsed_ms(
+def _get_elapsed_s(
     span: trace.Span | tracing.GenerateContentSpan | None,
     fallback_start: float,
 ) -> float:
@@ -54,20 +54,20 @@ def _get_elapsed_ms(
     fallback_start (float): Fallback start time in seconds (monotonic).
 
   Returns:
-    float: Elapsed duration in milliseconds.
+    float: Elapsed duration in seconds.
   """
   if span is None:
-    return (time.monotonic() - fallback_start) * 1000
+    return time.monotonic() - fallback_start
 
   span = span.span if hasattr(span, "span") else span
   start_ns = getattr(span, "start_time", None)
   end_ns = getattr(span, "end_time", None)
 
   if isinstance(start_ns, int) and isinstance(end_ns, int):
-    return (end_ns - start_ns) / 1e6  # Convert ns to ms
+    return (end_ns - start_ns) / 1e9  # Convert ns to s
 
   # Fallback if span times are missing
-  return (time.monotonic() - fallback_start) * 1000
+  return time.monotonic() - fallback_start
 
 
 @dataclasses.dataclass
@@ -93,7 +93,7 @@ class TelemetryContext:
 
 def _record_agent_metrics(
     agent_name: str,
-    elapsed_ms: float,
+    elapsed_s: float,
     user_content: Any,
     events: Any,
     caught_error: Exception | None,
@@ -101,7 +101,7 @@ def _record_agent_metrics(
   try:
     _metrics.record_agent_invocation_duration(
         agent_name,
-        elapsed_ms,
+        elapsed_s,
         caught_error,
     )
     _metrics.record_agent_request_size(agent_name, user_content)
@@ -130,10 +130,9 @@ async def record_agent_invocation(
     caught_error = e
     raise
   finally:
-    elapsed_ms = _get_elapsed_ms(span, start_time)
     _record_agent_metrics(
         agent.name,
-        elapsed_ms,
+        _get_elapsed_s(span, start_time),
         getattr(ctx, "user_content", None),
         getattr(getattr(ctx, "session", None), "events", []),
         caught_error,
@@ -178,7 +177,7 @@ async def record_tool_execution(
       _metrics.record_tool_execution_duration(
           tool_name=tool.name,
           agent_name=agent.name,
-          elapsed_ms=_get_elapsed_ms(span, start_time),
+          elapsed_s=_get_elapsed_s(span, start_time),
           error=caught_error,
       )
     except Exception:  # pylint: disable=broad-exception-caught
@@ -206,13 +205,13 @@ async def record_inference_telemetry(
       yield tel_ctx
   finally:
     inference_error = sys.exc_info()[1]
-    elapsed_ms = _get_elapsed_ms(tel_ctx.span, start_time)
     agent = invocation_context.agent
+    elapsed_s = _get_elapsed_s(tel_ctx.span, start_time)
     try:
       if agent is not None and tracing._should_emit_native_telemetry(agent):
         _metrics.record_client_operation_duration(
             agent_name=agent.name,
-            elapsed_ms=elapsed_ms,
+            elapsed_s=elapsed_s,
             llm_request=llm_request,
             responses=tel_ctx.llm_responses,
             error=(
