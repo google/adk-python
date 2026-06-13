@@ -16,7 +16,6 @@
 
 from __future__ import annotations
 
-
 import re
 
 from google.adk.agents.callback_context import CallbackContext

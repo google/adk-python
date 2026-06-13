@@ -3,7 +3,8 @@
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
 [![PyPI version](https://img.shields.io/pypi/v/google-adk.svg)](https://pypi.org/project/google-adk/)
 [![Python versions](https://img.shields.io/pypi/pyversions/google-adk.svg)](https://pypi.org/project/google-adk/)
-[![PyPI downloads](https://img.shields.io/pypi/dm/google-adk.svg)](https://pypi.org/project/google-adk/)
+[![PyPI downloads](https://static.pepy.tech/badge/google-adk/month)](https://pepy.tech/project/google-adk)
+[![Unit Tests](https://github.com/google/adk-python/actions/workflows/python-unit-tests.yml/badge.svg)](https://github.com/google/adk-python/actions/workflows/python-unit-tests.yml)
 [![Docs](https://img.shields.io/badge/docs-latest-blue.svg)](https://google.github.io/adk-docs/)
 
 <h2 align="center">
@@ -46,7 +47,7 @@ ______________________________________________________________________
 pip install google-adk
 ```
 
-**Requirements:** Python 3.11+.
+**Requirements:** Python 3.10+.
 
 To install optional integrations, you can use the following command:
 
