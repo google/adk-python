@@ -19,6 +19,7 @@ import base64
 import inspect
 import logging
 from typing import Any
+from typing import Awaitable
 from typing import Callable
 from typing import Dict
 from typing import List
@@ -142,7 +143,10 @@ class McpTool(BaseAuthenticatedTool):
       auth_credential: Optional[AuthCredential] = None,
       require_confirmation: Union[bool, Callable[..., bool]] = False,
       header_provider: Optional[
-          Callable[[ReadonlyContext], Dict[str, str]]
+          Callable[
+              [ReadonlyContext],
+              Union[Dict[str, str], Awaitable[Dict[str, str]]],
+          ]
       ] = None,
       progress_callback: Optional[
           Union[ProgressFnT, ProgressCallbackFactory]
@@ -379,6 +383,8 @@ class McpTool(BaseAuthenticatedTool):
       dynamic_headers = self._header_provider(
           ReadonlyContext(tool_context._invocation_context)
       )
+      if inspect.isawaitable(dynamic_headers):
+        dynamic_headers = await dynamic_headers
 
     headers: Dict[str, str] = {}
     if auth_headers:
