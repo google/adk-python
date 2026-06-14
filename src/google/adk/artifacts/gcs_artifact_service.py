@@ -153,6 +153,33 @@ class GcsArtifactService(BaseArtifactService):
     """
     return filename.startswith("user:")
 
+  @staticmethod
+  def _validate_gcs_path_segment(value: str, field_name: str) -> None:
+    """Rejects values that could alter the constructed GCS blob path.
+
+    Args:
+      value: The caller-supplied identifier (e.g. user_id or session_id).
+      field_name: Human-readable name used in the error message.
+
+    Raises:
+      InputValidationError: If the value contains path separators, traversal
+        segments, or null bytes.
+    """
+    if not value:
+      raise InputValidationError(f"{field_name} must not be empty.")
+    if "\x00" in value:
+      raise InputValidationError(
+          f"{field_name} must not contain null bytes."
+      )
+    if "/" in value or "\\" in value:
+      raise InputValidationError(
+          f"{field_name} {value!r} must not contain path separators."
+      )
+    if value in (".", "..") or ".." in value.split("/"):
+      raise InputValidationError(
+          f"{field_name} {value!r} must not contain traversal segments."
+      )
+
   def _get_blob_prefix(
       self,
       app_name: str,
@@ -161,6 +188,8 @@ class GcsArtifactService(BaseArtifactService):
       session_id: Optional[str] = None,
   ) -> str:
     """Constructs the blob name prefix in GCS for a given artifact."""
+    self._validate_gcs_path_segment(app_name, "app_name")
+    self._validate_gcs_path_segment(user_id, "user_id")
     if self._file_has_user_namespace(filename):
       return f"{app_name}/{user_id}/user/{filename}"
 
@@ -168,6 +197,7 @@ class GcsArtifactService(BaseArtifactService):
       raise InputValidationError(
           "Session ID must be provided for session-scoped artifacts."
       )
+    self._validate_gcs_path_segment(session_id, "session_id")
     return f"{app_name}/{user_id}/{session_id}/{filename}"
 
   def _get_blob_name(
