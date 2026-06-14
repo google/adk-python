@@ -15,6 +15,8 @@
 from __future__ import annotations
 
 import importlib
+import logging
+import re
 import inspect
 import os
 from typing import Any
@@ -28,6 +30,80 @@ from ..features import FeatureName
 from .agent_config import AgentConfig
 from .base_agent import BaseAgent
 from .base_agent_config import BaseAgentConfig
+
+logger = logging.getLogger("google_adk." + __name__)
+
+# Modules that must never be loaded via YAML agent configuration.
+# Importing these can lead to arbitrary code execution, file system
+# access, or process spawning.
+_BLOCKED_MODULE_PREFIXES: tuple[str, ...] = (
+    "os",
+    "sys",
+    "subprocess",
+    "shutil",
+    "socket",
+    "http",
+    "ctypes",
+    "multiprocessing",
+    "signal",
+    "importlib",
+    "pickle",
+    "shelve",
+    "marshal",
+    "code",
+    "codeop",
+    "compile",
+    "compileall",
+    "runpy",
+    "builtins",
+    "io",
+    "tempfile",
+    "glob",
+    "pathlib",
+    "webbrowser",
+    "antigravity",
+)
+
+_VALID_MODULE_PATH_RE = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_.]*$")
+
+
+def _validate_module_path(module_path: str) -> None:
+  """Validates that a module path is safe to import.
+
+  Rejects module paths that reference dangerous standard library modules
+  or contain suspicious patterns.
+
+  Args:
+    module_path: Dotted Python module path (e.g., 'my_package.my_module').
+
+  Raises:
+    ValueError: If the module path is blocked or invalid.
+  """
+  if not module_path:
+    raise ValueError("Module path must not be empty.")
+
+  if not _VALID_MODULE_PATH_RE.match(module_path):
+    raise ValueError(
+        f"Module path {module_path!r} contains invalid characters."
+    )
+
+  # Check for dunder/private module segments.
+  segments = module_path.split(".")
+  for segment in segments:
+    if segment.startswith("__") and segment.endswith("__"):
+      raise ValueError(
+          f"Module path {module_path!r} contains dunder segment"
+          f" {segment!r}."
+      )
+
+  # Block dangerous top-level modules.
+  top_level = segments[0]
+  if top_level in _BLOCKED_MODULE_PREFIXES:
+    raise ValueError(
+        f"Module path {module_path!r} references blocked module"
+        f" {top_level!r}. Importing arbitrary standard library modules"
+        " via YAML configuration is not permitted."
+    )
 from .common_configs import AgentRefConfig
 from .common_configs import CodeConfig
 
@@ -109,6 +185,7 @@ def _load_config_from_path(config_path: str) -> AgentConfig:
 def resolve_fully_qualified_name(name: str) -> Any:
   try:
     module_path, obj_name = name.rsplit(".", 1)
+    _validate_module_path(module_path)
     module = importlib.import_module(module_path)
     return getattr(module, obj_name)
   except Exception as e:
@@ -161,6 +238,7 @@ def _resolve_agent_code_reference(code: str) -> Any:
     raise ValueError(f"Invalid code reference: {code}")
 
   module_path, obj_name = code.rsplit(".", 1)
+  _validate_module_path(module_path)
   module = importlib.import_module(module_path)
   obj = getattr(module, obj_name)
 
@@ -190,6 +268,7 @@ def resolve_code_reference(code_config: CodeConfig) -> Any:
     raise ValueError("Invalid CodeConfig.")
 
   module_path, obj_name = code_config.name.rsplit(".", 1)
+  _validate_module_path(module_path)
   module = importlib.import_module(module_path)
   return getattr(module, obj_name)
 
