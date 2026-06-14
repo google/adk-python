@@ -1,0 +1,18 @@
+# OAuth Sample
+
+## Introduction
+
+This sample data science agent uses Agent Engine Code Execution Sandbox to execute LLM generated code.
+
+
+## How to use
+
+* 1. Follow https://docs.cloud.google.com/agent-builder/agent-engine/code-execution/quickstart#create-an-agent-engine-instance to create an agent engine instance. Replace the AGENT_ENGINE_RESOURCE_NAME with the one you just created. A new sandbox environment under this agent engine instance will be created for each session with TTL of 1 year. But sandbox can only main its state for up to 14 days. This is the recommended usage for production environments.
+
+* 2. For testing or protyping purposes, create a sandbox environment by following this guide: https://docs.cloud.google.com/agent-builder/agent-engine/code-execution/quickstart#create_a_sandbox. Replace the SANDBOX_RESOURCE_NAME with the one you just created. This will be used as the default sandbox environment for all the code executions throughout the lifetime of the agent. As the sandbox is re-used across sessions, all sessions will share the same Python environment and variable values."
+
+
+## Sample prompt
+
+* Can you write a function that calculates the sum from 1 to 100.
+* The dataset is given as below. Store,Date,Weekly_Sales,Holiday_Flag,Temperature,Fuel_Price,CPI,Unemployment Store 1,2023-06-01,1000,0,70,3.0,200,5 Store 2,2023-06-02,1200,1,80,3.5,210,6 Store 3,2023-06-03,1400,0,90,4.0,220,7 Store 4,2023-06-04,1600,1,70,4.5,230,8 Store 5,2023-06-05,1800,0,80,5.0,240,9 Store 6,2023-06-06,2000,1,90,5.5,250,10 Store 7,2023-06-07,2200,0,90,6.0,260,11 Plot a scatter plot showcasing the relationship between Weekly Sales and Temperature for each store, distinguishing stores with a Holiday Flag.

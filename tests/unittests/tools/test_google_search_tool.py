@@ -79,7 +79,7 @@ class TestGoogleSearchTool:
     tool_context = await _create_tool_context()
 
     llm_request = LlmRequest(
-        model='projects/265104255505/locations/us-central1/publishers/google/models/gemini-1.5-flash-001',
+        model='projects/265104255505/locations/us-central1/publishers/google/models/gemini-1.5-flash',
         config=types.GenerateContentConfig(),
     )
 
@@ -116,7 +116,7 @@ class TestGoogleSearchTool:
     tool_context = await _create_tool_context()
 
     llm_request = LlmRequest(
-        model='gemini-2.0-flash', config=types.GenerateContentConfig()
+        model='gemini-2.5-flash', config=types.GenerateContentConfig()
     )
 
     await tool.process_llm_request(
@@ -134,7 +134,7 @@ class TestGoogleSearchTool:
     tool_context = await _create_tool_context()
 
     llm_request = LlmRequest(
-        model='projects/265104255505/locations/us-central1/publishers/google/models/gemini-2.0-flash-001',
+        model='projects/265104255505/locations/us-central1/publishers/google/models/gemini-2.5-flash',
         config=types.GenerateContentConfig(),
     )
 
@@ -237,7 +237,7 @@ class TestGoogleSearchTool:
     )
 
     llm_request = LlmRequest(
-        model='gemini-2.0-flash',
+        model='gemini-2.5-flash',
         config=types.GenerateContentConfig(tools=[existing_tool]),
     )
 
@@ -348,7 +348,7 @@ class TestGoogleSearchTool:
     tool = GoogleSearchTool()
     tool_context = await _create_tool_context()
 
-    llm_request = LlmRequest(model='gemini-2.0-flash')
+    llm_request = LlmRequest(model='gemini-2.5-flash')
 
     await tool.process_llm_request(
         tool_context=tool_context, llm_request=llm_request
@@ -366,7 +366,7 @@ class TestGoogleSearchTool:
     tool_context = await _create_tool_context()
 
     llm_request = LlmRequest(
-        model='gemini-2.0-flash', config=types.GenerateContentConfig(tools=None)
+        model='gemini-2.5-flash', config=types.GenerateContentConfig(tools=None)
     )
 
     await tool.process_llm_request(
@@ -386,7 +386,7 @@ class TestGoogleSearchTool:
     # Test with model names that contain gemini but don't start with it
     edge_cases = [
         'my-gemini-1.5-model',
-        'custom-gemini-2.0-flash',
+        'custom-gemini-2.5-flash',
         'projects/265104255505/locations/us-central1/publishers/gemini/models/claude-3-sonnet',
     ]
 
@@ -418,7 +418,6 @@ class TestGoogleSearchTool:
     ]
 
     gemini_2_models = [
-        'gemini-2.0-flash',
         'gemini-2.0-pro',
         'gemini-2.5-flash',
         'gemini-2.5-pro',

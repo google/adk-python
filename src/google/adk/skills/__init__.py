@@ -17,11 +17,15 @@
 from typing import Any
 import warnings
 
+from ._utils import _list_skills_in_dir as list_skills_in_dir
+from ._utils import _list_skills_in_gcs_dir as list_skills_in_gcs_dir
 from ._utils import _load_skill_from_dir as load_skill_from_dir
+from ._utils import _load_skill_from_gcs_dir as load_skill_from_gcs_dir
 from .models import Frontmatter
 from .models import Resources
 from .models import Script
 from .models import Skill
+from .skill_registry import SkillRegistry
 
 __all__ = [
     "DEFAULT_SKILL_SYSTEM_INSTRUCTION",
@@ -29,7 +33,11 @@ __all__ = [
     "Resources",
     "Script",
     "Skill",
+    "SkillRegistry",
+    "list_skills_in_dir",
+    "list_skills_in_gcs_dir",
     "load_skill_from_dir",
+    "load_skill_from_gcs_dir",
 ]
 
 

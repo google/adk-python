@@ -1,4 +1,4 @@
-# Copyright 2024 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -14,27 +14,15 @@
 
 from __future__ import annotations
 
-from typing import Any
-from typing import Dict
-from typing import Optional
+import warnings
 
-from google.adk.plugins import BasePlugin
-from google.adk.tools.agent_simulator.agent_simulator_config import AgentSimulatorConfig
-from google.adk.tools.agent_simulator.agent_simulator_engine import AgentSimulatorEngine
-from google.adk.tools.base_tool import BaseTool
-from google.adk.tools.tool_context import ToolContext
+from google.adk.tools.environment_simulation.environment_simulation_plugin import EnvironmentSimulationPlugin as AgentSimulatorPlugin
 
+warnings.warn(
+    "google.adk.tools.agent_simulator.agent_simulator_plugin is moved to"
+    " google.adk.tools.environment_simulation.environment_simulation_plugin",
+    DeprecationWarning,
+    stacklevel=2,
+)
 
-class AgentSimulatorPlugin(BasePlugin):
-  """ADK Plugin for AgentSimulator."""
-
-  name: str = "AgentSimulator"
-
-  def __init__(self, simulator_engine: AgentSimulatorEngine):
-    self._simulator_engine = simulator_engine
-
-  async def before_tool_callback(
-      self, tool: BaseTool, tool_args: dict[str, Any], tool_context: ToolContext
-  ) -> Optional[Dict[str, Any]]:
-    """Invokes the AgentSimulatorEngine before a tool call."""
-    return await self._simulator_engine.simulate(tool, tool_args, tool_context)
+__all__ = ["AgentSimulatorPlugin"]

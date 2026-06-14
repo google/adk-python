@@ -401,6 +401,50 @@ class TestCachePerformanceAnalyzer:
     assert result["status"] == "active"
     assert result["requests_with_cache"] == 1
 
+  async def test_analyze_agent_cache_performance_with_fingerprint_only(self):
+    """Fingerprint-only entries (cache_name=None, invocations_used=None) don't crash."""
+    fp_only = CacheMetadata(fingerprint="fp", contents_count=3)
+    active = self.create_cache_metadata(invocations_used=4, cache_name="active")
+    fp_usage = self.create_mock_usage_metadata(
+        prompt_tokens=1000, cached_tokens=0
+    )
+    active_usage = self.create_mock_usage_metadata(
+        prompt_tokens=1000, cached_tokens=800
+    )
+
+    events = [
+        self.create_mock_event(
+            author="test_agent",
+            cache_metadata=fp_only,
+            usage_metadata=fp_usage,
+        ),
+        self.create_mock_event(
+            author="test_agent",
+            cache_metadata=active,
+            usage_metadata=active_usage,
+        ),
+    ]
+    mock_session = Session(
+        id="test_session",
+        app_name="test_app",
+        user_id="test_user",
+        events=events,
+    )
+    self.mock_session_service.get_session = AsyncMock(return_value=mock_session)
+
+    result = await self.analyzer.analyze_agent_cache_performance(
+        "test_session", "test_user", "test_app", "test_agent"
+    )
+
+    assert result["status"] == "active"
+    assert result["total_requests"] == 2
+    assert result["total_prompt_tokens"] == 2000
+    assert result["total_cached_tokens"] == 800
+    assert result["total_invocations"] == 4
+    assert result["avg_invocations_used"] == 4.0
+    assert result["cache_refreshes"] == 1
+    assert result["requests_with_cache"] == 2
+
   async def test_mixed_agents_filtering(self):
     """Test that analysis correctly filters by agent name."""
     target_cache = self.create_cache_metadata(

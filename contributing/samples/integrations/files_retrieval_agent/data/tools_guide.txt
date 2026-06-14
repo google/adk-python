@@ -1,0 +1,28 @@
+ADK Tools Guide
+
+Tools are capabilities that agents can invoke during their reasoning process.
+ADK supports several types of tools:
+
+1. Function Tools
+   Define Python functions and pass them directly to an agent.
+   The function signature and docstring become the tool schema.
+
+2. Retrieval Tools
+   - FilesRetrieval: Index and search local files using embeddings.
+     Uses gemini-embedding-2-preview by default.
+   - VertexAiRagRetrieval: Search Vertex AI RAG corpora.
+
+3. Code Execution
+   Agents can generate and execute code in a sandboxed environment.
+
+4. Third-Party Tool Integration
+   - LangchainTool: Wraps LangChain tools for use in ADK.
+   - CrewaiTool: Wraps CrewAI tools for use in ADK.
+
+5. MCP Tools
+   Connect to Model Context Protocol servers for external tool access.
+
+Tool Configuration:
+Tools can be configured with authentication, rate limiting, and custom
+schemas. The ToolContext provides access to session state, artifacts,
+and other contextual information during tool execution.

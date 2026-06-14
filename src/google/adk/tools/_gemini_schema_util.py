@@ -106,12 +106,27 @@ def _sanitize_schema_type(
 def _dereference_schema(schema: dict[str, Any]) -> dict[str, Any]:
   """Resolves $ref pointers in a JSON schema."""
 
-  defs = schema.get("$defs", {})
+  # Support both the draft 2019-09+/2020-12 keyword (`$defs`) and the
+  # draft-07 keyword (`definitions`). The MCP specification allows tool
+  # `inputSchema`s to use either, so a server sending draft-07 schemas with
+  # `definitions` + `$ref: "#/definitions/..."` must dereference correctly.
+  # `$defs` takes precedence on the (pathological) key collision.
+  defs = {**schema.get("definitions", {}), **schema.get("$defs", {})}
 
-  def _resolve_refs(sub_schema: Any) -> Any:
+  def _resolve_refs(sub_schema: Any, path_refs: frozenset[str]) -> Any:
     if isinstance(sub_schema, dict):
       if "$ref" in sub_schema:
-        ref_key = sub_schema["$ref"].split("/")[-1]
+        ref_uri = sub_schema["$ref"]
+        ref_key = ref_uri.split("/")[-1]
+
+        if ref_uri in path_refs:
+          return {
+              "type": "object",
+              "description": f"Circular ref to {ref_key}",
+          }
+
+        new_path = path_refs | {ref_uri}
+
         if ref_key in defs:
           # Found the reference, replace it with the definition.
           resolved = defs[ref_key].copy()
@@ -120,24 +135,29 @@ def _dereference_schema(schema: dict[str, Any]) -> dict[str, Any]:
           del sub_schema_copy["$ref"]
           resolved.update(sub_schema_copy)
           # Recursively resolve refs in the newly inserted part.
-          return _resolve_refs(resolved)
+          return _resolve_refs(resolved, new_path)
         else:
           # Reference not found, return as is.
           return sub_schema
       else:
         # No $ref, so traverse deeper into the dictionary.
-        return {key: _resolve_refs(value) for key, value in sub_schema.items()}
+        return {
+            key: _resolve_refs(value, path_refs)
+            for key, value in sub_schema.items()
+        }
     elif isinstance(sub_schema, list):
       # Traverse into lists.
-      return [_resolve_refs(item) for item in sub_schema]
+      return [_resolve_refs(item, path_refs) for item in sub_schema]
     else:
       # Not a dict or list, return as is.
       return sub_schema
 
-  dereferenced_schema = _resolve_refs(schema)
-  # Remove the definitions block after resolving.
-  if "$defs" in dereferenced_schema:
-    del dereferenced_schema["$defs"]
+  dereferenced_schema = _resolve_refs(schema, frozenset())
+  # Remove the definition blocks after resolving so the leftover keywords do
+  # not leak into the Gemini schema (which would otherwise raise a KeyError).
+  for defs_keyword in ("$defs", "definitions"):
+    if defs_keyword in dereferenced_schema:
+      del dereferenced_schema[defs_keyword]
   return dereferenced_schema
 
 

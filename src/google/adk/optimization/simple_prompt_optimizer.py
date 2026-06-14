@@ -21,12 +21,10 @@ import random
 
 from google.adk.agents.llm_agent import Agent
 from google.adk.evaluation._retry_options_utils import add_default_retry_options_if_not_present
-from google.adk.models import google_llm
-from google.adk.models import llm_request
 from google.adk.models.llm_request import LlmRequest
 from google.adk.models.registry import LLMRegistry
 from google.adk.optimization.agent_optimizer import AgentOptimizer
-from google.adk.optimization.data_types import BaseAgentWithScores
+from google.adk.optimization.data_types import AgentWithScores
 from google.adk.optimization.data_types import OptimizerResult
 from google.adk.optimization.data_types import UnstructuredSamplingResult
 from google.adk.optimization.sampler import Sampler
@@ -86,7 +84,7 @@ class SimplePromptOptimizerConfig(BaseModel):
 
 
 class SimplePromptOptimizer(
-    AgentOptimizer[UnstructuredSamplingResult, BaseAgentWithScores]
+    AgentOptimizer[UnstructuredSamplingResult, AgentWithScores]
 ):
   """A naive optimizer that iteratively tries to improve an agent's prompt."""
 
@@ -205,7 +203,7 @@ class SimplePromptOptimizer(
       self,
       initial_agent: Agent,
       sampler: Sampler[UnstructuredSamplingResult],
-  ) -> OptimizerResult[BaseAgentWithScores]:
+  ) -> OptimizerResult[AgentWithScores]:
     train_example_ids = sampler.get_train_example_ids()
 
     if self._config.batch_size > len(train_example_ids):
@@ -226,7 +224,7 @@ class SimplePromptOptimizer(
 
     return OptimizerResult(
         optimized_agents=[
-            BaseAgentWithScores(
+            AgentWithScores(
                 optimized_agent=best_agent, overall_score=final_score
             )
         ]

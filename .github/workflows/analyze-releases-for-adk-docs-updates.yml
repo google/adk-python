@@ -6,6 +6,20 @@ on:
     types: [published]
   # Manual trigger for testing and retrying.
   workflow_dispatch:
+    inputs:
+      resume:
+        description: 'Resume from the last failed/interrupted run'
+        required: false
+        type: boolean
+        default: false
+      start_tag:
+        description: 'Older release tag (base), e.g. v1.26.0'
+        required: false
+        type: string
+      end_tag:
+        description: 'Newer release tag (head), e.g. v1.27.0'
+        required: false
+        type: string
 
 jobs:
   analyze-new-release-for-adk-docs-updates:
@@ -31,17 +45,47 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install requests google-adk
+          pip install requests "google-adk[db]"
+
+      - name: Restore session DB from cache
+        if: ${{ github.event.inputs.resume == 'true' }}
+        uses: actions/cache/restore@v4
+        with:
+          path: contributing/samples/adk_team/adk_documentation/adk_release_analyzer/sessions.db
+          key: analyzer-session-db
 
       - name: Run Analyzing Script
         env:
           GITHUB_TOKEN: ${{ secrets.ADK_TRIAGE_AGENT }}
-          GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
+          GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY_FOR_DOCS_AGENTS }}
           GOOGLE_GENAI_USE_VERTEXAI: 0
           DOC_OWNER: 'google'
           CODE_OWNER: 'google'
           DOC_REPO: 'adk-docs'
           CODE_REPO: 'adk-python'
           INTERACTIVE: 0
-          PYTHONPATH: contributing/samples/adk_documentation
-        run: python -m adk_release_analyzer.main
+          PYTHONPATH: contributing/samples/adk_team
+          ANALYZER_RESUME: ${{ github.event.inputs.resume }}
+          ANALYZER_START_TAG: ${{ github.event.inputs.start_tag }}
+          ANALYZER_END_TAG: ${{ github.event.inputs.end_tag }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          args=()
+          if [[ "${ANALYZER_RESUME:-false}" == "true" ]]; then
+            args+=(--resume)
+          fi
+          if [[ -n "${ANALYZER_START_TAG:-}" ]]; then
+            args+=(--start-tag "$ANALYZER_START_TAG")
+          fi
+          if [[ -n "${ANALYZER_END_TAG:-}" ]]; then
+            args+=(--end-tag "$ANALYZER_END_TAG")
+          fi
+          python -m adk_documentation.adk_release_analyzer.main "${args[@]}"
+
+      - name: Save session DB to cache
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: contributing/samples/adk_team/adk_documentation/adk_release_analyzer/sessions.db
+          key: analyzer-session-db

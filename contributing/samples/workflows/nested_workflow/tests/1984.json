@@ -1,0 +1,139 @@
+{
+  "appName": "nested_workflow",
+  "events": [
+    {
+      "author": "user",
+      "content": {
+        "parts": [
+          {
+            "text": "1984"
+          }
+        ],
+        "role": "user"
+      },
+      "id": "e-1",
+      "invocationId": "i-1",
+      "nodeInfo": {
+        "path": ""
+      }
+    },
+    {
+      "actions": {
+        "stateDelta": {
+          "year": "1984"
+        }
+      },
+      "author": "root_agent",
+      "id": "e-2",
+      "invocationId": "i-1",
+      "nodeInfo": {
+        "path": "root_agent@1/process_input@1"
+      }
+    },
+    {
+      "author": "find_name",
+      "branch": "find_famous_person@1",
+      "content": {
+        "parts": [
+          {
+            "text": "Scarlett Johansson"
+          }
+        ],
+        "role": "model"
+      },
+      "finishReason": "STOP",
+      "id": "e-3",
+      "invocationId": "i-1",
+      "nodeInfo": {
+        "messageAsOutput": true,
+        "outputFor": [
+          "root_agent@1/find_famous_person@1/find_name@1"
+        ],
+        "path": "root_agent@1/find_famous_person@1/find_name@1"
+      }
+    },
+    {
+      "author": "generate_bio",
+      "branch": "find_famous_person@1",
+      "content": {
+        "parts": [
+          {
+            "text": "Scarlett Johansson is an acclaimed actress renowned for her distinctive voice and versatile performances across a wide range of genres. From her captivating early roles in films like \"Lost in Translation\" to her iconic portrayal of Black Widow in the Marvel Cinematic Universe, she has consistently delivered powerful performances. A four-time Golden Globe nominee and two-time Academy Award nominee, she remains one of Hollywood's most bankable and respected stars."
+          }
+        ],
+        "role": "model"
+      },
+      "finishReason": "STOP",
+      "id": "e-4",
+      "invocationId": "i-1",
+      "nodeInfo": {
+        "messageAsOutput": true,
+        "outputFor": [
+          "root_agent@1/find_famous_person@1/generate_bio@1",
+          "root_agent@1/find_famous_person@1"
+        ],
+        "path": "root_agent@1/find_famous_person@1/generate_bio@1"
+      }
+    },
+    {
+      "author": "find_historical_event",
+      "branch": "find_historical_event@1",
+      "content": {
+        "parts": [
+          {
+            "text": "In December 1984, the Union Carbide chemical plant in Bhopal, India, experienced a catastrophic gas leak, releasing deadly methyl isocyanate. This disaster killed thousands instantly and caused hundreds of thousands of injuries, becoming one of the world's worst industrial accidents and a lasting symbol of corporate negligence."
+          }
+        ],
+        "role": "model"
+      },
+      "finishReason": "STOP",
+      "id": "e-5",
+      "invocationId": "i-1",
+      "nodeInfo": {
+        "messageAsOutput": true,
+        "outputFor": [
+          "root_agent@1/find_historical_event@1"
+        ],
+        "path": "root_agent@1/find_historical_event@1"
+      }
+    },
+    {
+      "author": "root_agent",
+      "id": "e-6",
+      "invocationId": "i-1",
+      "nodeInfo": {
+        "outputFor": [
+          "root_agent@1/join_for_aggregation@1"
+        ],
+        "path": "root_agent@1/join_for_aggregation@1"
+      },
+      "output": {
+        "find_famous_person": "Scarlett Johansson is an acclaimed actress renowned for her distinctive voice and versatile performances across a wide range of genres. From her captivating early roles in films like \"Lost in Translation\" to her iconic portrayal of Black Widow in the Marvel Cinematic Universe, she has consistently delivered powerful performances. A four-time Golden Globe nominee and two-time Academy Award nominee, she remains one of Hollywood's most bankable and respected stars.",
+        "find_historical_event": "In December 1984, the Union Carbide chemical plant in Bhopal, India, experienced a catastrophic gas leak, releasing deadly methyl isocyanate. This disaster killed thousands instantly and caused hundreds of thousands of injuries, becoming one of the world's worst industrial accidents and a lasting symbol of corporate negligence."
+      }
+    },
+    {
+      "author": "root_agent",
+      "content": {
+        "parts": [
+          {
+            "text": "# Year: 1984\n\n## Famous Person Bio:\n\nScarlett Johansson is an acclaimed actress renowned for her distinctive voice and versatile performances across a wide range of genres. From her captivating early roles in films like \"Lost in Translation\" to her iconic portrayal of Black Widow in the Marvel Cinematic Universe, she has consistently delivered powerful performances. A four-time Golden Globe nominee and two-time Academy Award nominee, she remains one of Hollywood's most bankable and respected stars.\n\n## Historical Event:\n\nIn December 1984, the Union Carbide chemical plant in Bhopal, India, experienced a catastrophic gas leak, releasing deadly methyl isocyanate. This disaster killed thousands instantly and caused hundreds of thousands of injuries, becoming one of the world's worst industrial accidents and a lasting symbol of corporate negligence."
+          }
+        ],
+        "role": "user"
+      },
+      "id": "e-7",
+      "invocationId": "i-1",
+      "nodeInfo": {
+        "path": "root_agent@1/aggregate_results@1"
+      }
+    }
+  ],
+  "id": "b7848178-784d-4fe3-a11f-568b3419acb7",
+  "state": {
+    "__session_metadata__": {
+      "displayName": "1984"
+    }
+  },
+  "userId": "user"
+}

@@ -32,7 +32,7 @@ def _get_default_embedding_model() -> BaseEmbedding:
   """Get the default Google Gemini embedding model.
 
   Returns:
-    GoogleGenAIEmbedding instance configured with text-embedding-004 model.
+    GoogleGenAIEmbedding instance configured with gemini-embedding-2-preview model.
 
   Raises:
     ImportError: If llama-index-embeddings-google-genai package is not installed.
@@ -40,7 +40,10 @@ def _get_default_embedding_model() -> BaseEmbedding:
   try:
     from llama_index.embeddings.google_genai import GoogleGenAIEmbedding
 
-    return GoogleGenAIEmbedding(model_name="text-embedding-004")
+    return GoogleGenAIEmbedding(
+        model_name="gemini-embedding-2-preview",
+        embed_batch_size=1,
+    )
   except ImportError as e:
     raise ImportError(
         "llama-index-embeddings-google-genai package not found. "
@@ -65,7 +68,7 @@ class FilesRetrieval(LlamaIndexRetrieval):
       description: Description of the tool.
       input_dir: Directory path containing files to index.
       embedding_model: Optional custom embedding model. If None, defaults to
-        Google's text-embedding-004 model.
+        Google's gemini-embedding-2-preview model.
     """
     self.input_dir = input_dir
 

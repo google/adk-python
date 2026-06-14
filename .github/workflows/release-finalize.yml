@@ -29,7 +29,7 @@ jobs:
             echo "is_release_pr=false" >> $GITHUB_OUTPUT
           fi
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         if: steps.check.outputs.is_release_pr == 'true'
         with:
           ref: release/candidate

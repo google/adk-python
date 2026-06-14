@@ -14,7 +14,9 @@
 
 from __future__ import annotations
 
+import ast
 import base64
+import binascii
 import copy
 import importlib.util
 import json
@@ -97,12 +99,14 @@ _NEW_LINE = "\n"
 _EXCLUDED_PART_FIELD = {"inline_data": {"data"}}
 _LITELLM_STRUCTURED_TYPES = {"json_object", "json_schema"}
 _JSON_DECODER = json.JSONDecoder()
+_UNQUOTED_KEY_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 
 # Mapping of major MIME type prefixes to LiteLLM content types for URL blocks.
+# Audio is handled separately as `input_audio` content blocks because LiteLLM
+# (and OpenAI) do not accept an `audio_url` content type.
 _MEDIA_URL_CONTENT_TYPE_BY_MAJOR_MIME_TYPE = {
     "image": "image_url",
     "video": "video_url",
-    "audio": "audio_url",
 }
 
 # Mapping of LiteLLM finish_reason strings to FinishReason enum values
@@ -119,6 +123,100 @@ _FINISH_REASON_MAPPING = {
     "function_call": types.FinishReason.STOP,  # Legacy function call variant
     "content_filter": types.FinishReason.SAFETY,
 }
+
+
+def _quote_unquoted_json_object_keys(value: str) -> str:
+  """Quotes simple unquoted object keys without touching string contents."""
+  result = []
+  i = 0
+  in_string = False
+  string_quote = ""
+  escaped = False
+
+  while i < len(value):
+    char = value[i]
+    if in_string:
+      result.append(char)
+      if escaped:
+        escaped = False
+      elif char == "\\":
+        escaped = True
+      elif char == string_quote:
+        in_string = False
+        string_quote = ""
+      i += 1
+      continue
+
+    if char in {'"', "'"}:
+      in_string = True
+      string_quote = char
+      result.append(char)
+      i += 1
+      continue
+
+    if char in "{,":
+      result.append(char)
+      i += 1
+      whitespace_start = i
+      while i < len(value) and value[i].isspace():
+        i += 1
+      result.append(value[whitespace_start:i])
+
+      key_match = _UNQUOTED_KEY_RE.match(value, i)
+      if key_match:
+        key_end = key_match.end()
+        colon_index = key_end
+        while colon_index < len(value) and value[colon_index].isspace():
+          colon_index += 1
+        if colon_index < len(value) and value[colon_index] == ":":
+          result.append(f'"{key_match.group(0)}"')
+          result.append(value[key_end:colon_index])
+          i = colon_index
+          continue
+      continue
+
+    result.append(char)
+    i += 1
+
+  return "".join(result)
+
+
+def _parse_tool_call_arguments(arguments: Any) -> Any:
+  """Parses LiteLLM tool call arguments.
+
+  LiteLLM normally returns OpenAI-compatible tool call arguments as JSON
+  strings, but some providers can stream a complete tool call whose finalized
+  argument payload is a Python dict literal or has unquoted object keys. Keep
+  strict JSON as the primary path, then repair only those complete
+  object-literal shapes so ADK can still surface the intended function call.
+  """
+  if not arguments:
+    return {}
+  if not isinstance(arguments, str):
+    return arguments
+
+  try:
+    return json.loads(arguments)
+  except json.JSONDecodeError as exc:
+    json_error = exc
+
+  try:
+    return ast.literal_eval(arguments)
+  except (SyntaxError, ValueError):
+    pass
+
+  repaired_arguments = _quote_unquoted_json_object_keys(arguments)
+  if repaired_arguments != arguments:
+    try:
+      return json.loads(repaired_arguments)
+    except json.JSONDecodeError:
+      try:
+        return ast.literal_eval(repaired_arguments)
+      except (SyntaxError, ValueError):
+        pass
+
+  raise json_error
+
 
 # File MIME types supported for upload as file content (not decoded as text).
 # Note: text/* types are handled separately and decoded as text content.
@@ -142,6 +240,11 @@ _MISSING_TOOL_RESULT_MESSAGE = (
     "Error: Missing tool result (tool execution may have been interrupted "
     "before a response was recorded)."
 )
+
+# Separator LiteLLM uses to embed thought_signature in tool call IDs.
+# Gemini's thoughtSignature requirement is documented here:
+# https://ai.google.dev/gemini-api/docs/thought-signatures
+_THOUGHT_SIGNATURE_SEPARATOR = "__thought__"
 
 _LITELLM_IMPORTED = False
 _LITELLM_GLOBAL_SYMBOLS = (
@@ -274,7 +377,7 @@ def _infer_mime_type_from_uri(uri: str) -> Optional[str]:
 
 def _looks_like_openai_file_id(file_uri: str) -> bool:
   """Returns True when file_uri resembles an OpenAI/Azure file id."""
-  return file_uri.startswith("file-")
+  return file_uri.startswith(("file-", "assistant-"))
 
 
 def _is_http_url(uri: str) -> bool:
@@ -307,17 +410,15 @@ def _redact_file_uri_for_log(
   return f"{parsed.scheme}://<redacted>"
 
 
-def _requires_file_uri_fallback(
-    provider: str, model: str, file_uri: str
-) -> bool:
-  """Returns True when `file_uri` should not be sent as a file content block."""
+def _is_file_uri_supported(provider: str, model: str, file_uri: str) -> bool:
+  """Returns True when `file_uri` can be sent as a file content block."""
   if provider in _FILE_ID_REQUIRED_PROVIDERS:
-    return not _looks_like_openai_file_id(file_uri)
+    return _looks_like_openai_file_id(file_uri)
   if provider == "anthropic":
-    return True
+    return False
   if provider == "vertex_ai" and not _is_litellm_gemini_model(model):
-    return True
-  return False
+    return False
+  return True
 
 
 def _decode_inline_text_data(raw_bytes: bytes) -> str:
@@ -338,6 +439,18 @@ def _media_url_content_type(mime_type: str) -> str | None:
   """Returns the LiteLLM URL content type for known media MIME types."""
   major_mime_type = _normalize_mime_type(mime_type).split("/", 1)[0]
   return _MEDIA_URL_CONTENT_TYPE_BY_MAJOR_MIME_TYPE.get(major_mime_type)
+
+
+def _audio_format_from_mime_type(mime_type: str) -> str:
+  """Maps an audio MIME type to the format string for `input_audio` blocks."""
+  subtype = _normalize_mime_type(mime_type).split("/", 1)[1]
+  if subtype.startswith("x-"):
+    subtype = subtype[2:]
+  if subtype == "mpeg":
+    return "mp3"
+  if subtype in ("wave", "vnd.wave"):
+    return "wav"
+  return subtype
 
 
 def _iter_reasoning_texts(reasoning_value: Any) -> Iterable[str]:
@@ -378,8 +491,42 @@ def _iter_reasoning_texts(reasoning_value: Any) -> Iterable[str]:
     yield str(reasoning_value)
 
 
+def _is_thinking_blocks_format(reasoning_value: Any) -> bool:
+  """Returns True if reasoning_value is Anthropic thinking_blocks format.
+
+  Anthropic thinking_blocks is a list of dicts, each with 'type', 'thinking',
+  and 'signature' keys.
+  """
+  if not isinstance(reasoning_value, list) or not reasoning_value:
+    return False
+  first = reasoning_value[0]
+  return isinstance(first, dict) and "signature" in first
+
+
 def _convert_reasoning_value_to_parts(reasoning_value: Any) -> List[types.Part]:
-  """Converts provider reasoning payloads into Gemini thought parts."""
+  """Converts provider reasoning payloads into Gemini thought parts.
+
+  Handles Anthropic thinking_blocks (list of dicts with type/thinking/signature)
+  by preserving the signature on each part's thought_signature field. This is
+  required for Anthropic to maintain thinking across tool call boundaries.
+  """
+  if _is_thinking_blocks_format(reasoning_value):
+    parts: List[types.Part] = []
+    for block in reasoning_value:
+      if not isinstance(block, dict):
+        continue
+      block_type = block.get("type", "")
+      if block_type == "redacted":
+        continue
+      thinking_text = block.get("thinking", "")
+      signature = block.get("signature", "")
+      if not thinking_text:
+        continue
+      part = types.Part(text=thinking_text, thought=True)
+      if signature:
+        part.thought_signature = signature.encode("utf-8")
+      parts.append(part)
+    return parts
   return [
       types.Part(text=text, thought=True)
       for text in _iter_reasoning_texts(reasoning_value)
@@ -388,10 +535,25 @@ def _convert_reasoning_value_to_parts(reasoning_value: Any) -> List[types.Part]:
 
 
 def _extract_reasoning_value(message: Message | Delta | None) -> Any:
-  """Fetches the reasoning payload from a LiteLLM message."""
+  """Fetches the reasoning payload from a LiteLLM message.
+
+  Checks for 'thinking_blocks' (Anthropic structured format with signatures),
+  'reasoning_content' (LiteLLM standard, used by Azure/Foundry, Ollama via
+  LiteLLM) and 'reasoning' (used by LM Studio, vLLM).
+  Prioritizes 'thinking_blocks' when present (Anthropic models), then
+  'reasoning_content', then 'reasoning'.
+  """
   if message is None:
     return None
-  return message.get("reasoning_content")
+  # Anthropic models return thinking_blocks with type/thinking/signature fields.
+  # This must be preserved to maintain thinking across tool call boundaries.
+  thinking_blocks = message.get("thinking_blocks")
+  if thinking_blocks is not None:
+    return thinking_blocks
+  reasoning_content = message.get("reasoning_content")
+  if reasoning_content is not None:
+    return reasoning_content
+  return message.get("reasoning")
 
 
 class ChatCompletionFileUrlObject(TypedDict, total=False):
@@ -420,6 +582,7 @@ class UsageMetadataChunk(BaseModel):
   completion_tokens: int
   total_tokens: int
   cached_prompt_tokens: int = 0
+  reasoning_tokens: int = 0
 
 
 class LiteLLMClient:
@@ -487,7 +650,7 @@ def _safe_json_serialize(obj) -> str:
   try:
     # Try direct JSON serialization first
     return json.dumps(obj, ensure_ascii=False)
-  except (TypeError, OverflowError):
+  except (TypeError, ValueError, OverflowError):
     return str(obj)
 
 
@@ -593,6 +756,120 @@ def _extract_cached_prompt_tokens(usage: Any) -> int:
   return 0
 
 
+def _decode_thought_signature(value: Any) -> Optional[bytes]:
+  """Safely decodes a thought_signature value to bytes.
+
+  Args:
+    value: A base64 string or raw bytes thought_signature.
+
+  Returns:
+    The decoded bytes, or None if decoding fails.
+  """
+  if isinstance(value, bytes):
+    return value
+  try:
+    return base64.b64decode(value, validate=True)
+  except (binascii.Error, TypeError, ValueError):
+    logger.debug(
+        "Failed to decode thought_signature of type %s.",
+        type(value).__name__,
+    )
+    return None
+
+
+def _extract_reasoning_tokens(usage: Any) -> int:
+  """Extracts reasoning tokens from LiteLLM usage.
+
+  Providers expose reasoning token metrics under completion_tokens_details.
+
+  Args:
+    usage: Usage dictionary or object from LiteLLM response.
+
+  Returns:
+    Integer number of reasoning tokens if present; otherwise 0.
+  """
+  try:
+    usage_dict = usage
+    if hasattr(usage, "model_dump"):
+      usage_dict = usage.model_dump()
+    elif isinstance(usage, str):
+      try:
+        usage_dict = json.loads(usage)
+      except json.JSONDecodeError:
+        return 0
+
+    if not isinstance(usage_dict, dict):
+      return 0
+
+    details = usage_dict.get("completion_tokens_details")
+    if isinstance(details, dict):
+      value = details.get("reasoning_tokens")
+      if isinstance(value, int):
+        return value
+  except (TypeError, AttributeError) as e:
+    logger.debug("Error extracting reasoning tokens: %s", e)
+
+  return 0
+
+
+def _extract_thought_signature_from_tool_call(
+    tool_call: ChatCompletionMessageToolCall,
+) -> Optional[bytes]:
+  """Extracts thought_signature from a litellm tool call if present.
+
+  Gemini thinking models attach a thought_signature to function call parts.
+  See https://ai.google.dev/gemini-api/docs/thought-signatures.
+  This signature may appear in several locations depending on the
+  provider path:
+  1. extra_content.google.thought_signature (OpenAI-compatible API).
+  2. provider_specific_fields on the tool call or function (Vertex).
+  3. Embedded in the tool call ID via __thought__ separator.
+
+  Args:
+    tool_call: A litellm tool call object.
+
+  Returns:
+    The thought_signature as bytes, or None if not present.
+  """
+  # Check extra_content.google.thought_signature (OpenAI format)
+  extra_content = tool_call.get("extra_content")
+  if isinstance(extra_content, dict):
+    google_fields = extra_content.get("google")
+    if isinstance(google_fields, dict):
+      signature = google_fields.get("thought_signature")
+      if signature:
+        return _decode_thought_signature(signature)
+
+  # Check provider_specific_fields on the tool call
+  provider_fields = tool_call.get("provider_specific_fields")
+  if isinstance(provider_fields, dict):
+    signature = provider_fields.get("thought_signature")
+    if signature:
+      return _decode_thought_signature(signature)
+
+  # Check provider_specific_fields on the function
+  function = tool_call.get("function")
+  if function:
+    func_provider_fields = None
+    if isinstance(function, dict):
+      func_provider_fields = function.get("provider_specific_fields")
+    elif hasattr(function, "provider_specific_fields"):
+      func_provider_fields = function.provider_specific_fields
+    if isinstance(func_provider_fields, dict):
+      signature = func_provider_fields.get("thought_signature")
+      if signature:
+        return _decode_thought_signature(signature)
+
+  # Check if thought signature is embedded in the tool call ID
+  tool_call_id = tool_call.get("id") or ""
+  if _THOUGHT_SIGNATURE_SEPARATOR in tool_call_id:
+    parts = tool_call_id.split(_THOUGHT_SIGNATURE_SEPARATOR, 1)
+    if len(parts) == 2:
+      return _decode_thought_signature(parts[1])
+
+  return None
+
+
 async def _content_to_message_param(
     content: types.Content,
     *,
@@ -624,9 +901,14 @@ async def _content_to_message_param(
           if isinstance(response, str)
           else _safe_json_serialize(response)
       )
+      # gemma4 requires role='tool_responses' for recognizing function_response parts as responses
+      # from the tool call, instead of OpenAI-compatible 'tool' role used by other models.
+      # Earlier Gemma versions before version 4 do not support tool use,
+      # so this check is intentionally scoped to only look for "gemma4" in the model name.
+      tool_role = "tool_responses" if "gemma4" in model.lower() else "tool"
       tool_messages.append(
           ChatCompletionToolMessage(
-              role="tool",
+              role=tool_role,
               tool_call_id=part.function_response.id,
               content=response_content,
           )
@@ -641,6 +923,7 @@ async def _content_to_message_param(
     follow_up = await _content_to_message_param(
         types.Content(role=content.role, parts=non_tool_parts),
         provider=provider,
+        model=model,
     )
     follow_up_messages = (
         follow_up if isinstance(follow_up, list) else [follow_up]
@@ -662,16 +945,31 @@ async def _content_to_message_param(
     reasoning_parts: list[types.Part] = []
     for part in content.parts:
       if part.function_call:
-        tool_calls.append(
-            ChatCompletionAssistantToolCall(
-                type="function",
-                id=part.function_call.id,
-                function=Function(
-                    name=part.function_call.name,
-                    arguments=_safe_json_serialize(part.function_call.args),
-                ),
-            )
-        )
+        tool_call_id = part.function_call.id or ""
+        tool_call_dict: ChatCompletionAssistantToolCall = {
+            "type": "function",
+            "id": tool_call_id,
+            "function": {
+                "name": part.function_call.name,
+                "arguments": _safe_json_serialize(part.function_call.args),
+            },
+        }
+        # Preserve thought_signature for Gemini thinking models.
+        # LiteLLM's Gemini prompt conversion reads provider_specific_fields,
+        # while the OpenAI-compatible Gemini endpoint path expects the
+        # extra_content.google.thought_signature payload to survive.
+        # See https://ai.google.dev/gemini-api/docs/thought-signatures.
+        if part.thought_signature:
+          sig = part.thought_signature
+          if isinstance(sig, bytes):
+            sig = base64.b64encode(sig).decode("utf-8")
+          tool_call_dict["provider_specific_fields"] = {
+              "thought_signature": sig
+          }
+          tool_call_dict["extra_content"] = {
+              "google": {"thought_signature": sig}
+          }
+        tool_calls.append(tool_call_dict)
       elif part.thought:
         reasoning_parts.append(part)
       else:
@@ -690,6 +988,30 @@ async def _content_to_message_param(
           if final_content[0].get("type", None) == "text"
           else final_content
       )
+
+    # For Anthropic models, rebuild thinking_blocks with signatures so that
+    # thinking is preserved across tool call boundaries. Without this,
+    # Anthropic silently drops thinking after the first turn.
+    if model and _is_anthropic_model(model) and reasoning_parts:
+      thinking_blocks = []
+      for part in reasoning_parts:
+        if part.text and part.thought_signature:
+          sig = part.thought_signature
+          if isinstance(sig, bytes):
+            sig = sig.decode("utf-8")
+          thinking_blocks.append({
+              "type": "thinking",
+              "thinking": part.text,
+              "signature": sig,
+          })
+      if thinking_blocks:
+        msg = ChatCompletionAssistantMessage(
+            role=role,
+            content=final_content,
+            tool_calls=tool_calls or None,
+        )
+        msg["thinking_blocks"] = thinking_blocks  # type: ignore[typeddict-unknown-key]
+        return msg
 
     reasoning_texts = []
     for part in reasoning_parts:
@@ -712,12 +1034,16 @@ async def _content_to_message_param(
     )
 
 
-def _ensure_tool_results(messages: List[Message]) -> List[Message]:
+def _ensure_tool_results(messages: List[Message], model: str) -> List[Message]:
   """Insert placeholder tool messages for missing tool results.
 
   LiteLLM-backed providers like OpenAI and Anthropic reject histories where an
   assistant tool call is not followed by tool responses before the next
   non-tool message. This helps recover from interrupted tool execution.
+
+  For models that expect a different tool response role (e.g. Gemma4 models,
+  which require 'tool_responses' instead of 'tool'), the role is adjusted
+  accordingly.
   """
   if not messages:
     return messages
@@ -726,17 +1052,19 @@ def _ensure_tool_results(messages: List[Message]) -> List[Message]:
 
   healed_messages: List[Message] = []
   pending_tool_call_ids: List[str] = []
+  expected_tool_role = "tool_responses" if "gemma4" in model.lower() else "tool"
 
   for message in messages:
     role = message.get("role")
-    if pending_tool_call_ids and role != "tool":
+
+    if pending_tool_call_ids and role != expected_tool_role:
       logger.warning(
           "Missing tool results for tool_call_id(s): %s",
           pending_tool_call_ids,
       )
       healed_messages.extend(
           ChatCompletionToolMessage(
-              role="tool",
+              role=expected_tool_role,
               tool_call_id=tool_call_id,
               content=_MISSING_TOOL_RESULT_MESSAGE,
           )
@@ -749,13 +1077,14 @@ def _ensure_tool_results(messages: List[Message]) -> List[Message]:
       pending_tool_call_ids = [
           tool_call.get("id") for tool_call in tool_calls if tool_call.get("id")
       ]
-    elif role == "tool":
+    elif role == expected_tool_role:
       tool_call_id = message.get("tool_call_id")
       if tool_call_id in pending_tool_call_ids:
         pending_tool_call_ids.remove(tool_call_id)
 
     healed_messages.append(message)
 
+  # Final block also uses expected_tool_role
   if pending_tool_call_ids:
     logger.warning(
         "Missing tool results for tool_call_id(s): %s",
@@ -763,7 +1092,7 @@ def _ensure_tool_results(messages: List[Message]) -> List[Message]:
     )
     healed_messages.extend(
         ChatCompletionToolMessage(
-            role="tool",
+            role=expected_tool_role,
             tool_call_id=tool_call_id,
             content=_MISSING_TOOL_RESULT_MESSAGE,
         )
@@ -829,6 +1158,15 @@ async def _get_content(
         })
         continue
       base64_string = base64.b64encode(part.inline_data.data).decode("utf-8")
+      if mime_type.startswith("audio/"):
+        content_objects.append({
+            "type": "input_audio",
+            "input_audio": {
+                "data": base64_string,
+                "format": _audio_format_from_mime_type(mime_type),
+            },
+        })
+        continue
       data_uri = f"data:{mime_type};base64,{base64_string}"
       # LiteLLM providers extract the MIME type from the data URI; avoid
       # passing a separate `format` field that some backends reject.
@@ -900,21 +1238,15 @@ async def _get_content(
           })
           continue
 
-      if _requires_file_uri_fallback(provider, model, part.file_data.file_uri):
-        logger.debug(
-            "File URI %s not supported for provider %s, using text fallback",
-            _redact_file_uri_for_log(
-                part.file_data.file_uri,
-                display_name=part.file_data.display_name,
-            ),
-            provider,
+      if not _is_file_uri_supported(provider, model, part.file_data.file_uri):
+        redacted_file_uri = _redact_file_uri_for_log(
+            part.file_data.file_uri,
+            display_name=part.file_data.display_name,
         )
-        identifier = part.file_data.display_name or part.file_data.file_uri
-        content_objects.append({
-            "type": "text",
-            "text": f'[File reference: "{identifier}"]',
-        })
-        continue
+        raise ValueError(
+            f"File URI `{redacted_file_uri}` not supported for provider:"
+            f" {provider}."
+        )
 
       file_object: ChatCompletionFileUrlObject = {
           "file_id": part.file_data.file_uri,
@@ -942,14 +1274,19 @@ def _is_ollama_chat_provider(
   return False
 
 
+_MEDIA_BLOCK_TYPES = frozenset({"image_url", "video_url", "audio_url"})
+
+
 def _flatten_ollama_content(
     content: OpenAIMessageContent | str | None,
-) -> str | None:
+) -> OpenAIMessageContent | str | None:
   """Flattens multipart content to text for ollama_chat compatibility.
 
-  Ollama's chat endpoint rejects arrays for `content`. We keep textual parts,
-  join them with newlines, and fall back to a JSON string for non-text content.
-  If both text and non-text parts are present, only the text parts are kept.
+  Ollama's chat endpoint rejects arrays for `content` when it is text-only, so
+  text parts are joined with newlines and other non-media content falls back to
+  a JSON string. Multipart content with media blocks (image_url, video_url,
+  audio_url) is returned unchanged so LiteLLM's Ollama handler can convert it
+  to the native `images` field instead of silently dropping the media.
   """
   if content is None or isinstance(content, str):
     return content
@@ -966,6 +1303,12 @@ def _flatten_ollama_content(
     blocks = list(content)
   except TypeError:
     return str(content)
+
+  if any(
+      isinstance(block, dict) and block.get("type") in _MEDIA_BLOCK_TYPES
+      for block in blocks
+  ):
+    return blocks
 
   text_parts = []
   for block in blocks:
@@ -1302,6 +1645,7 @@ def _model_response_to_chunk(
         or message.get("tool_calls")
         or message.get("function_call")
         or message.get("reasoning_content")
+        or message.get("reasoning")
     )
 
   if isinstance(response, ModelResponseStream):
@@ -1384,6 +1728,7 @@ def _model_response_to_chunk(
           completion_tokens=usage.get("completion_tokens", 0) or 0,
           total_tokens=usage.get("total_tokens", 0) or 0,
           cached_prompt_tokens=_extract_cached_prompt_tokens(usage),
+          reasoning_tokens=_extract_reasoning_tokens(usage),
       ), None
     except AttributeError as e:
       raise TypeError(
@@ -1433,13 +1778,14 @@ def _model_response_to_generate_content_response(
           finish_reason_str, types.FinishReason.OTHER
       )
   if response.get("usage", None):
+    usage_dict = response["usage"]
+    reasoning_tokens = _extract_reasoning_tokens(usage_dict)
     llm_response.usage_metadata = types.GenerateContentResponseUsageMetadata(
-        prompt_token_count=response["usage"].get("prompt_tokens", 0),
-        candidates_token_count=response["usage"].get("completion_tokens", 0),
-        total_token_count=response["usage"].get("total_tokens", 0),
-        cached_content_token_count=_extract_cached_prompt_tokens(
-            response["usage"]
-        ),
+        prompt_token_count=usage_dict.get("prompt_tokens", 0),
+        candidates_token_count=usage_dict.get("completion_tokens", 0),
+        total_token_count=usage_dict.get("total_tokens", 0),
+        cached_content_token_count=_extract_cached_prompt_tokens(usage_dict),
+        thoughts_token_count=reasoning_tokens if reasoning_tokens else None,
     )
   return llm_response
 
@@ -1477,11 +1823,14 @@ def _message_to_generate_content_response(
   if tool_calls:
     for tool_call in tool_calls:
       if tool_call.type == "function":
+        thought_signature = _extract_thought_signature_from_tool_call(tool_call)
         part = types.Part.from_function_call(
             name=tool_call.function.name,
-            args=json.loads(tool_call.function.arguments or "{}"),
+            args=_parse_tool_call_arguments(tool_call.function.arguments),
         )
         part.function_call.id = tool_call.id
+        if thought_signature:
+          part.thought_signature = thought_signature
         parts.append(part)
 
   return LlmResponse(
@@ -1489,6 +1838,15 @@ def _message_to_generate_content_response(
       partial=is_partial,
       model_version=model_version,
   )
+
+
+def _finish_reason_to_error_message(
+    finish_reason: types.FinishReason,
+) -> str:
+  """Returns an error message for non-stop finish reasons."""
+  if finish_reason == types.FinishReason.MAX_TOKENS:
+    return "Maximum tokens reached"
+  return f"Finished with {finish_reason}"
 
 
 def _enforce_strict_openai_schema(schema: dict[str, Any]) -> None:
@@ -1659,7 +2017,7 @@ async def _get_completion_inputs(
             content=llm_request.config.system_instruction,
         ),
     )
-  messages = _ensure_tool_results(messages)
+  messages = _ensure_tool_results(messages, model)
 
   # 2. Convert tool declarations
   tools: Optional[List[Dict]] = None
@@ -1782,6 +2140,31 @@ Functions:
 {_NEW_LINE.join(function_logs)}
 -----------------------------------------------------------
 """
+
+
+def _is_anthropic_model(model_string: str) -> bool:
+  """Check if the model is an Anthropic Claude model accessed via LiteLLM.
+
+  Detects models using the anthropic/ provider prefix, bedrock/ models that
+  contain 'anthropic' or 'claude', and vertex_ai/ models that contain 'claude'.
+
+  Args:
+    model_string: A LiteLLM model string (e.g., "anthropic/claude-4-sonnet",
+      "bedrock/anthropic.claude-3-5-sonnet", "vertex_ai/claude-4-sonnet")
+
+  Returns:
+    True if it's an Anthropic Claude model, False otherwise.
+  """
+  lower = model_string.lower()
+  if lower.startswith("anthropic/"):
+    return True
+  if lower.startswith("bedrock/"):
+    model_part = lower.split("/", 1)[1]
+    return "anthropic" in model_part or "claude" in model_part
+  if lower.startswith("vertex_ai/"):
+    model_part = lower.split("/", 1)[1]
+    return "claude" in model_part
+  return False
 
 
 def _is_litellm_vertex_model(model_string: str) -> bool:
@@ -1940,7 +2323,8 @@ class LiteLlm(BaseLlm):
 
     self._maybe_append_user_content(llm_request)
     _append_fallback_user_content_if_missing(llm_request)
-    logger.debug(_build_request_log(llm_request))
+    if logger.isEnabledFor(logging.DEBUG):
+      logger.debug(_build_request_log(llm_request))
 
     effective_model = llm_request.model or self.model
     messages, tools, response_format, generation_params = (
@@ -1991,8 +2375,15 @@ class LiteLlm(BaseLlm):
           *, model_version: str, finish_reason: str
       ) -> LlmResponse:
         tool_calls = []
+        has_incomplete_tool_call_args = False
         for index, func_data in function_calls.items():
           if func_data["id"]:
+            if finish_reason == "length":
+              try:
+                _parse_tool_call_arguments(func_data["args"])
+              except json.JSONDecodeError:
+                has_incomplete_tool_call_args = True
+                continue
             tool_calls.append(
                 ChatCompletionMessageToolCall(
                     type="function",
@@ -2004,6 +2395,19 @@ class LiteLlm(BaseLlm):
                     ),
                 )
             )
+
+        if has_incomplete_tool_call_args:
+          return LlmResponse(
+              error_code=types.FinishReason.MAX_TOKENS,
+              error_message=(
+                  "Tool call arguments were truncated while streaming and"
+                  " could not be parsed as valid JSON. Increase"
+                  " `max_output_tokens` and retry."
+              ),
+              finish_reason=types.FinishReason.MAX_TOKENS,
+              model_version=model_version,
+          )
+
         llm_response = _message_to_generate_content_response(
             ChatCompletionAssistantMessage(
                 role="assistant",
@@ -2013,7 +2417,13 @@ class LiteLlm(BaseLlm):
             model_version=model_version,
             thought_parts=list(reasoning_parts) if reasoning_parts else None,
         )
-        llm_response.finish_reason = _map_finish_reason(finish_reason)
+        mapped_finish_reason = _map_finish_reason(finish_reason)
+        llm_response.finish_reason = mapped_finish_reason
+        if mapped_finish_reason != types.FinishReason.STOP:
+          llm_response.error_code = mapped_finish_reason
+          llm_response.error_message = _finish_reason_to_error_message(
+              mapped_finish_reason
+          )
         return llm_response
 
       def _finalize_text_response(
@@ -2028,7 +2438,13 @@ class LiteLlm(BaseLlm):
             model_version=model_version,
             thought_parts=list(reasoning_parts) if reasoning_parts else None,
         )
-        llm_response.finish_reason = _map_finish_reason(finish_reason)
+        mapped_finish_reason = _map_finish_reason(finish_reason)
+        llm_response.finish_reason = mapped_finish_reason
+        if mapped_finish_reason != types.FinishReason.STOP:
+          llm_response.error_code = mapped_finish_reason
+          llm_response.error_message = _finish_reason_to_error_message(
+              mapped_finish_reason
+          )
         return llm_response
 
       def _reset_stream_buffers() -> None:
@@ -2084,13 +2500,17 @@ class LiteLlm(BaseLlm):
                 candidates_token_count=chunk.completion_tokens,
                 total_token_count=chunk.total_tokens,
                 cached_content_token_count=chunk.cached_prompt_tokens,
+                thoughts_token_count=chunk.reasoning_tokens
+                if chunk.reasoning_tokens
+                else None,
             )
 
           # LiteLLM 1.81+ can set finish_reason="stop" on partial chunks. Only
-          # finalize tool calls on an explicit tool_calls finish_reason, or on a
-          # stop-only chunk (no content/tool deltas).
+          # finalize tool calls on an explicit tool_calls/length finish_reason,
+          # or on a stop-only chunk (no content/tool deltas).
           if function_calls and (
               finish_reason == "tool_calls"
+              or finish_reason == "length"
               or (finish_reason == "stop" and chunk is None)
           ):
             aggregated_llm_response_with_tool_call = (
@@ -2100,16 +2520,14 @@ class LiteLlm(BaseLlm):
                 )
             )
             _reset_stream_buffers()
-          elif (
-              finish_reason == "stop"
-              and (text or reasoning_parts)
-              and chunk is None
-              and not function_calls
+          elif (text or reasoning_parts) and (
+              finish_reason == "length"
+              or (
+                  finish_reason == "stop"
+                  and chunk is None
+                  and not function_calls
+              )
           ):
-            # Only aggregate text response when we have a true stop signal
-            # chunk is None means no content in this chunk, just finish signal.
-            # LiteLLM 1.81+ sets finish_reason="stop" on partial chunks with
-            # content.
             aggregated_llm_response = _finalize_text_response(
                 model_version=part.model,
                 finish_reason=finish_reason,

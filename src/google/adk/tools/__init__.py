@@ -20,11 +20,13 @@ from typing import TYPE_CHECKING
 # The TYPE_CHECKING block is needed for autocomplete to work.
 if TYPE_CHECKING:
   from ..auth.auth_tool import AuthToolArguments
+  from ._request_input_tool import request_input
   from .agent_tool import AgentTool
   from .api_registry import ApiRegistry
   from .apihub_tool.apihub_toolset import APIHubToolset
   from .base_tool import BaseTool
   from .discovery_engine_search_tool import DiscoveryEngineSearchTool
+  from .discovery_engine_search_tool import SearchResultMode
   from .enterprise_search_tool import enterprise_web_search_tool as enterprise_web_search
   from .example_tool import ExampleTool
   from .exit_loop_tool import exit_loop
@@ -55,6 +57,10 @@ _LAZY_MAPPING = {
         '.discovery_engine_search_tool',
         'DiscoveryEngineSearchTool',
     ),
+    'SearchResultMode': (
+        '.discovery_engine_search_tool',
+        'SearchResultMode',
+    ),
     'enterprise_web_search': (
         '.enterprise_search_tool',
         'enterprise_web_search_tool',
@@ -75,6 +81,7 @@ _LAZY_MAPPING = {
         'LongRunningFunctionTool',
     ),
     'preload_memory': ('.preload_memory_tool', 'preload_memory_tool'),
+    'request_input': ('._request_input_tool', 'request_input'),
     'ToolContext': ('.tool_context', 'ToolContext'),
     'transfer_to_agent': ('.transfer_to_agent_tool', 'transfer_to_agent'),
     'TransferToAgentTool': (

@@ -82,7 +82,9 @@ def execute_sql(
         project=project_id, credentials=credentials
     )
     instance = spanner_client.instance(instance_id)
-    database = instance.database(database_id)
+    database = instance.database(
+        database_id, database_role=settings.database_role
+    )
 
     if database.database_dialect == DatabaseDialect.POSTGRESQL:
       return {
@@ -244,7 +246,10 @@ class SpannerVectorStore:
               self._vector_store_settings.instance_id
           )
       )
-    self._database = instance.database(self._vector_store_settings.database_id)
+    self._database = instance.database(
+        self._vector_store_settings.database_id,
+        database_role=self._settings.database_role,
+    )
     if not self._database.exists():
       raise ValueError(
           "Database id {} doesn't exist.".format(

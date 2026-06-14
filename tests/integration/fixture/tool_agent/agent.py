@@ -137,14 +137,14 @@ docs_tool = CrewaiTool(
 )
 
 no_schema_agent = Agent(
-    model="gemini-1.5-flash",
+    model="gemini-2.5-flash",
     name="no_schema_agent",
     instruction="""Just say 'Hi'
 """,
 )
 
 schema_agent = Agent(
-    model="gemini-1.5-flash",
+    model="gemini-2.5-flash",
     name="schema_agent",
     instruction="""
     You will be given a test case.
@@ -155,7 +155,7 @@ schema_agent = Agent(
 )
 
 no_input_schema_agent = Agent(
-    model="gemini-1.5-flash",
+    model="gemini-2.5-flash",
     name="no_input_schema_agent",
     instruction="""
     Just return ['Tools_success, Tools_failure']
@@ -164,7 +164,7 @@ no_input_schema_agent = Agent(
 )
 
 no_output_schema_agent = Agent(
-    model="gemini-1.5-flash",
+    model="gemini-2.5-flash",
     name="no_output_schema_agent",
     instruction="""
     Just say 'Hi'
@@ -173,7 +173,7 @@ no_output_schema_agent = Agent(
 )
 
 single_function_agent = Agent(
-    model="gemini-1.5-flash",
+    model="gemini-2.5-flash",
     name="single_function_agent",
     description="An agent that calls a single function",
     instruction="When calling tools, just return what the tool returns.",
@@ -181,7 +181,7 @@ single_function_agent = Agent(
 )
 
 root_agent = Agent(
-    model="gemini-1.5-flash",
+    model="gemini-2.5-flash",
     name="tool_agent",
     description="An agent that can call other tools",
     instruction="When calling tools, just return what the tool returns.",

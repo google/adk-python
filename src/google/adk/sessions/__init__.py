@@ -14,15 +14,20 @@
 
 from __future__ import annotations
 
-from typing import Any
-
 from typing_extensions import override
+import importlib
+from typing import TYPE_CHECKING
 
+from ..utils._dependency import missing_extra
 from .base_session_service import BaseSessionService
-from .in_memory_session_service import InMemorySessionService
 from .session import Session
 from .state import State
-from .vertex_ai_session_service import VertexAiSessionService
+from .state import StateSchemaError
+
+if TYPE_CHECKING:
+  from .database_session_service import DatabaseSessionService
+  from .in_memory_session_service import InMemorySessionService
+  from .vertex_ai_session_service import VertexAiSessionService
 
 try:
   from .database_session_service import DatabaseSessionService
@@ -69,5 +74,25 @@ __all__ = [
     'InMemorySessionService',
     'Session',
     'State',
+    'StateSchemaError',
     'VertexAiSessionService',
 ]
+
+_LAZY_MEMBERS: dict[str, str] = {
+    'InMemorySessionService': 'in_memory_session_service',
+    'VertexAiSessionService': 'vertex_ai_session_service',
+}
+
+
+def __getattr__(name: str):
+  if name in _LAZY_MEMBERS:
+    module = importlib.import_module(f'{__name__}.{_LAZY_MEMBERS[name]}')
+    return vars(module)[name]
+  if name == 'DatabaseSessionService':
+    try:
+      module = importlib.import_module(f'{__name__}.database_session_service')
+    except ImportError as e:
+      raise missing_extra('sqlalchemy', 'db') from e
+    return vars(module)['DatabaseSessionService']
+  raise AttributeError(f'module {__name__!r} has no attribute {name!r}')
+

@@ -263,5 +263,8 @@ class SpannerToolSettings(BaseModel):
   query_result_mode: QueryResultMode = QueryResultMode.DEFAULT
   """Mode for Spanner execute sql query result."""
 
+  database_role: Optional[str] = None
+  """Optional. The database role to use for the Spanner session."""
+
   vector_store_settings: Optional[SpannerVectorStoreSettings] = None
   """Settings for Spanner vector store and vector similarity search."""

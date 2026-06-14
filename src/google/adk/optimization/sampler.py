@@ -21,10 +21,10 @@ from typing import Literal
 from typing import Optional
 
 from ..agents.llm_agent import Agent
-from .data_types import SamplingResult
+from .data_types import SamplingResultT
 
 
-class Sampler(ABC, Generic[SamplingResult]):
+class Sampler(ABC, Generic[SamplingResultT]):
   """Base class for agent optimizers to sample and score candidate agents.
 
   The developer must implement this interface for their evaluation service to
@@ -52,7 +52,7 @@ class Sampler(ABC, Generic[SamplingResult]):
       example_set: Literal[TRAIN_SET, VALIDATION_SET] = VALIDATION_SET,
       batch: Optional[list[str]] = None,
       capture_full_eval_data: bool = False,
-  ) -> SamplingResult:
+  ) -> SamplingResultT:
     """Evaluates the candidate agent on the batch of examples.
 
     Args:

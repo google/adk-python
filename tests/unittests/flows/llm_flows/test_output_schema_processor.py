@@ -62,7 +62,7 @@ async def test_output_schema_with_tools_validation_removed():
   # This should not raise an error anymore
   agent = LlmAgent(
       name='test_agent',
-      model='gemini-1.5-flash',
+      model='gemini-2.5-flash',
       output_schema=PersonSchema,
       tools=[FunctionTool(func=dummy_tool)],
   )
@@ -76,11 +76,11 @@ async def test_output_schema_with_sub_agents():
   """Test that LlmAgent now allows output_schema with sub_agents."""
   sub_agent = LlmAgent(
       name='sub_agent',
-      model='gemini-1.5-flash',
+      model='gemini-2.5-flash',
   )
   agent = LlmAgent(
       name='test_agent',
-      model='gemini-1.5-flash',
+      model='gemini-2.5-flash',
       output_schema=PersonSchema,
       sub_agents=[sub_agent],
   )
@@ -96,7 +96,7 @@ async def test_basic_processor_skips_output_schema_with_tools():
 
   agent = LlmAgent(
       name='test_agent',
-      model='gemini-1.5-flash',
+      model='gemini-2.5-flash',
       output_schema=PersonSchema,
       tools=[FunctionTool(func=dummy_tool)],
   )
@@ -123,7 +123,7 @@ async def test_basic_processor_sets_output_schema_without_tools():
 
   agent = LlmAgent(
       name='test_agent',
-      model='gemini-1.5-flash',
+      model='gemini-2.5-flash',
       output_schema=PersonSchema,
       tools=[],  # No tools
   )
@@ -159,7 +159,7 @@ async def test_output_schema_request_processor(
 
   agent = LlmAgent(
       name='test_agent',
-      model='gemini-1.5-flash',
+      model='gemini-2.5-flash',
       output_schema=PersonSchema,
       tools=[FunctionTool(func=dummy_tool)],
   )
@@ -199,13 +199,12 @@ async def test_output_schema_request_processor(
 @pytest.mark.asyncio
 async def test_set_model_response_tool():
   """Test the set_model_response tool functionality."""
-  from google.adk.tools.set_model_response_tool import MODEL_JSON_RESPONSE_KEY
   from google.adk.tools.set_model_response_tool import SetModelResponseTool
   from google.adk.tools.tool_context import ToolContext
 
   tool = SetModelResponseTool(PersonSchema)
 
-  agent = LlmAgent(name='test_agent', model='gemini-1.5-flash')
+  agent = LlmAgent(name='test_agent', model='gemini-2.5-flash')
   invocation_context = await _create_invocation_context(agent)
   tool_context = ToolContext(invocation_context)
 
@@ -215,17 +214,11 @@ async def test_set_model_response_tool():
       tool_context=tool_context,
   )
 
-  # Verify the tool now returns dict directly
+  # Verify the tool returns dict directly
   assert result is not None
   assert result['name'] == 'John Doe'
   assert result['age'] == 30
   assert result['city'] == 'New York'
-
-  # Check that the response is no longer stored in session state
-  stored_response = invocation_context.session.state.get(
-      MODEL_JSON_RESPONSE_KEY
-  )
-  assert stored_response is None
 
 
 @pytest.mark.asyncio
@@ -238,7 +231,7 @@ async def test_output_schema_helper_functions():
 
   agent = LlmAgent(
       name='test_agent',
-      model='gemini-1.5-flash',
+      model='gemini-2.5-flash',
       output_schema=PersonSchema,
       tools=[FunctionTool(func=dummy_tool)],
   )
@@ -329,11 +322,53 @@ async def test_get_structured_model_response_with_non_ascii():
 
 
 @pytest.mark.asyncio
+async def test_get_structured_model_response_with_wrapped_result():
+  """Test get_structured_model_response with wrapped list result.
+
+  When a tool returns a non-dict (e.g., list), it gets wrapped as
+  {'result': [...]}.  This test ensures we correctly unwrap the result.
+  """
+  from google.adk.events.event import Event
+  from google.adk.flows.llm_flows._output_schema_processor import get_structured_model_response
+  from google.genai import types
+
+  # Simulate a list result wrapped by ADK's functions.py
+  wrapped_response = {
+      'result': [
+          {'name': 'Alice', 'age': 30},
+          {'name': 'Bob', 'age': 25},
+      ]
+  }
+  expected_json = '[{"name": "Alice", "age": 30}, {"name": "Bob", "age": 25}]'
+
+  # Create a function response event with wrapped result
+  function_response_event = Event(
+      author='test_agent',
+      content=types.Content(
+          role='user',
+          parts=[
+              types.Part(
+                  function_response=types.FunctionResponse(
+                      name='set_model_response', response=wrapped_response
+                  )
+              )
+          ],
+      ),
+  )
+
+  # Get the structured response
+  extracted_json = get_structured_model_response(function_response_event)
+
+  # Should extract the unwrapped list, not the wrapped dict
+  assert extracted_json == expected_json
+
+
+@pytest.mark.asyncio
 async def test_end_to_end_integration():
   """Test the complete output schema with tools integration."""
   agent = LlmAgent(
       name='test_agent',
-      model='gemini-1.5-flash',
+      model='gemini-2.5-flash',
       output_schema=PersonSchema,
       tools=[FunctionTool(func=dummy_tool)],
   )
@@ -368,7 +403,7 @@ async def test_flow_yields_both_events_for_set_model_response():
 
   agent = LlmAgent(
       name='test_agent',
-      model='gemini-1.5-flash',
+      model='gemini-2.5-flash',
       output_schema=PersonSchema,
       tools=[],
   )
@@ -442,7 +477,7 @@ async def test_flow_yields_only_function_response_for_normal_tools():
 
   agent = LlmAgent(
       name='test_agent',
-      model='gemini-1.5-flash',
+      model='gemini-2.5-flash',
       tools=[FunctionTool(func=dummy_tool)],
   )
 

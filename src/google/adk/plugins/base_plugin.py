@@ -155,10 +155,10 @@ class BasePlugin(ABC):
   async def on_event_callback(
       self, *, invocation_context: InvocationContext, event: Event
   ) -> Optional[Event]:
-    """Callback executed after an event is yielded from runner.
+    """Callback executed when the runner produces an event.
 
-    This is the ideal place to make modification to the event before the event
-    is handled by the underlying agent app.
+    This is the ideal place to modify the event before it is persisted to the
+    session service and yielded to the caller.
 
     Args:
       invocation_context: The context for the entire invocation.

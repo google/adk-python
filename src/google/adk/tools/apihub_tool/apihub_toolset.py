@@ -199,13 +199,3 @@ class APIHubToolset(BaseToolset):
   async def close(self):
     if self._openapi_toolset:
       await self._openapi_toolset.close()
-
-  @override
-  def get_auth_config(self) -> Optional[AuthConfig]:
-    """Returns the auth config for this toolset.
-
-    ADK will populate exchanged_auth_credential on this config before calling
-    get_tools(). The toolset can then access the ready-to-use credential via
-    self._auth_config.exchanged_auth_credential.
-    """
-    return self._auth_config
