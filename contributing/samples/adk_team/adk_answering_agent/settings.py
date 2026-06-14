@@ -41,5 +41,6 @@ OWNER = os.getenv("OWNER", "google")
 REPO = os.getenv("REPO", "adk-python")
 BOT_RESPONSE_LABEL = os.getenv("BOT_RESPONSE_LABEL", "bot responded")
 DISCUSSION_NUMBER = os.getenv("DISCUSSION_NUMBER")
+LLM_MODEL_NAME = os.getenv("LLM_MODEL_NAME", "gemini-2.5-flash")
 
 IS_INTERACTIVE = os.getenv("INTERACTIVE", "1").lower() in ["true", "1"]
