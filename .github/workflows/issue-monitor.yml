@@ -30,6 +30,7 @@ on:
 
 jobs:
   sweep-spam:
+    if: github.repository == 'google/adk-python'
     runs-on: ubuntu-latest
     timeout-minutes: 120
     permissions:

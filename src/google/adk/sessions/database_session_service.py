@@ -198,7 +198,7 @@ class DatabaseSessionService(BaseSessionService):
     # 2. Create all tables based on schema
     # 3. Initialize all properties
     try:
-      import sqlalchemy
+      import sqlalchemy  # noqa: F401
     except ImportError as e:
       from ..utils._dependency import missing_extra
 

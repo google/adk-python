@@ -17,6 +17,7 @@ on:
 
 jobs:
   close-imported-pr:
+    if: github.repository == 'google/adk-python'
     runs-on: ubuntu-latest
     permissions:
       pull-requests: write

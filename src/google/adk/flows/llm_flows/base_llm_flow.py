@@ -44,13 +44,11 @@ from ...models.google_llm import GoogleLLMVariant
 from ...models.llm_request import LlmRequest
 from ...models.llm_response import LlmResponse
 from ...telemetry import _instrumentation
-from ...telemetry import tracing
 from ...telemetry.tracing import trace_call_llm
 from ...telemetry.tracing import trace_send_data
 from ...telemetry.tracing import tracer
 from ...tools.base_toolset import BaseToolset
 from ...tools.tool_context import ToolContext
-from ...utils import model_name_utils
 from ...utils.context_utils import Aclosing
 from .audio_cache_manager import AudioCacheManager
 from .functions import build_auth_request_event

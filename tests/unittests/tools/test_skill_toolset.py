@@ -1226,7 +1226,7 @@ def _make_real_executor_toolset(skills, **kwargs):
   if sys.executable is None:
     sys.executable = "/usr/bin/python3"
 
-  executor = UnsafeLocalCodeExecutor(timeout_seconds=10)
+  executor = UnsafeLocalCodeExecutor(timeout_seconds=60)
   return skill_toolset.SkillToolset(skills, code_executor=executor, **kwargs)
 
 
