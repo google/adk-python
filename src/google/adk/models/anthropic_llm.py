@@ -553,11 +553,14 @@ class AnthropicLlm(BaseLlm):
         else NOT_GIVEN
     )
     thinking = _build_anthropic_thinking_param(llm_request.config)
+    system = NOT_GIVEN
+    if llm_request.config.system_instruction is not None:
+      system = llm_request.config.system_instruction
 
     if not stream:
       message = await self._anthropic_client.messages.create(
           model=model_to_use,
-          system=llm_request.config.system_instruction,
+          system=system,
           messages=messages,
           tools=tools,
           tool_choice=tool_choice,
@@ -567,7 +570,7 @@ class AnthropicLlm(BaseLlm):
       yield message_to_generate_content_response(message)
     else:
       async for response in self._generate_content_streaming(
-          llm_request, messages, tools, tool_choice, thinking
+          llm_request, messages, system, tools, tool_choice, thinking
       ):
         yield response
 
@@ -575,6 +578,7 @@ class AnthropicLlm(BaseLlm):
       self,
       llm_request: LlmRequest,
       messages: list[anthropic_types.MessageParam],
+      system: Union[str, types.Content, NotGiven],
       tools: Union[Iterable[anthropic_types.ToolUnionParam], NotGiven],
       tool_choice: Union[anthropic_types.ToolChoiceParam, NotGiven],
       thinking: Union[
@@ -591,7 +595,7 @@ class AnthropicLlm(BaseLlm):
     model_to_use = self._resolve_model_name(llm_request.model)
     raw_stream = await self._anthropic_client.messages.create(
         model=model_to_use,
-        system=llm_request.config.system_instruction,
+        system=system,
         messages=messages,
         tools=tools,
         tool_choice=tool_choice,
