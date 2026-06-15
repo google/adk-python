@@ -14,6 +14,8 @@
 
 """Tests for Graph validation."""
 
+import logging
+
 from google.adk.workflow import Edge
 from google.adk.workflow import FunctionNode
 from google.adk.workflow import START
@@ -791,3 +793,26 @@ def test_chat_agent_wiring_validation_only_runs_on_llm_agent() -> None:
       ],
   )
   graph.validate_graph()  # Should not raise because node_b is a TestingNode, not LlmAgent
+
+
+def test_get_next_pending_nodes_unmatched_route_warning(caplog) -> None:
+  """Tests that a warning is logged when a route is unmatched and there's no DEFAULT_ROUTE."""
+  node_a = TestingNode(name='NodeA')
+  node_c = TestingNode(name='NodeC')
+
+  graph = Graph(
+      edges=[
+          Edge(from_node=node_a, to_node=node_c, route='route1'),
+      ],
+  )
+
+  with caplog.at_level(logging.WARNING):
+    next_nodes = graph.get_next_pending_nodes(
+        'NodeA', routes_to_match='unknown_route'
+    )
+
+  assert not next_nodes
+  assert any(
+      'has conditional/DEFAULT edges but none were matched' in record.message
+      for record in caplog.records
+  )

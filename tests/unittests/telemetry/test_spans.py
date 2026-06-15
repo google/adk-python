@@ -20,6 +20,7 @@ from unittest import mock
 
 from google.adk.agents.invocation_context import InvocationContext
 from google.adk.agents.llm_agent import LlmAgent
+from google.adk.agents.run_config import RunConfig
 from google.adk.errors.tool_execution_error import ToolErrorType
 from google.adk.errors.tool_execution_error import ToolExecutionError
 from google.adk.models.llm_request import LlmRequest
@@ -66,7 +67,7 @@ except ImportError:
 
 class Event:
 
-  def __init__(self, event_id: str, event_content: Any):
+  def __init__(self, event_id: str, event_content: object):
     self.id = event_id
     self.content = event_content
 
@@ -79,8 +80,8 @@ class Event:
 class SimpleTestTool(BaseTool):
 
   async def run_async(
-      self, *, args: dict[str, Any], tool_context: ToolContext
-  ) -> Any:
+      self, *, args: dict[str, object], tool_context: ToolContext
+  ) -> object:
     return 'SimpleTestTool result'
 
 
@@ -110,7 +111,7 @@ def mock_event_fixture():
 
 
 async def _create_invocation_context(
-    agent: LlmAgent, state: Optional[dict[str, Any]] = None
+    agent: LlmAgent, state: Optional[dict[str, object]] = None
 ) -> InvocationContext:
   session_service = InMemorySessionService()
   session = await session_service.create_session(
@@ -121,6 +122,7 @@ async def _create_invocation_context(
       agent=agent,
       session=session,
       session_service=session_service,
+      run_config=RunConfig(),
   )
   return invocation_context
 
@@ -198,21 +200,25 @@ async def test_trace_call_llm(monkeypatch, mock_span_fixture):
       mock.call('gen_ai.request.top_p', 0.95),
       mock.call('gen_ai.request.max_tokens', 1024),
       mock.call('gcp.vertex.agent.llm_response', mock.ANY),
-      mock.call('gen_ai.usage.input_tokens', 50),
-      mock.call('gen_ai.usage.output_tokens', 50),
       mock.call('gen_ai.usage.experimental.reasoning_tokens_limit', 10),
-      mock.call('gen_ai.usage.experimental.reasoning_tokens', 10),
       mock.call('gen_ai.response.finish_reasons', ['stop']),
   ]
+
+  expected_usage_attrs = {
+      'gen_ai.usage.input_tokens': 50,
+      'gen_ai.usage.output_tokens': 60,
+      'gen_ai.usage.reasoning.output_tokens': 10,
+  }
   if hasattr(llm_response.usage_metadata, 'system_instruction_tokens'):
-    expected_calls.append(
-        mock.call('gen_ai.usage.experimental.system_instruction_tokens', 5)
-    )
+    expected_usage_attrs[
+        'gen_ai.usage.experimental.system_instruction_tokens'
+    ] = 5
 
   assert mock_span_fixture.set_attribute.call_count == len(expected_calls) + 5
   mock_span_fixture.set_attribute.assert_has_calls(
       expected_calls, any_order=True
   )
+  mock_span_fixture.set_attributes.assert_called_once_with(expected_usage_attrs)
 
 
 @pytest.mark.asyncio
@@ -486,10 +492,10 @@ def test_trace_tool_call_with_scalar_response(
       'opentelemetry.trace.get_current_span', lambda: mock_span_fixture
   )
 
-  test_args: Dict[str, Any] = {'param_a': 'value_a', 'param_b': 100}
+  test_args: Dict[str, object] = {'param_a': 'value_a', 'param_b': 100}
   test_tool_call_id: str = 'tool_call_id_001'
   test_event_id: str = 'event_id_001'
-  scalar_function_response: Any = 'Scalar result'
+  scalar_function_response: object = 'Scalar result'
 
   expected_processed_response = {'result': scalar_function_response}
 
@@ -545,10 +551,10 @@ def test_trace_tool_call_with_dict_response(
       'opentelemetry.trace.get_current_span', lambda: mock_span_fixture
   )
 
-  test_args: Dict[str, Any] = {'query': 'details', 'id_list': [1, 2, 3]}
+  test_args: Dict[str, object] = {'query': 'details', 'id_list': [1, 2, 3]}
   test_tool_call_id: str = 'tool_call_id_002'
   test_event_id: str = 'event_id_dict_002'
-  dict_function_response: Dict[str, Any] = {
+  dict_function_response: Dict[str, object] = {
       'data': 'structured_data',
       'count': 5,
   }
@@ -693,10 +699,10 @@ def test_trace_tool_call_disabling_request_response_content(
       'opentelemetry.trace.get_current_span', lambda: mock_span_fixture
   )
 
-  test_args: Dict[str, Any] = {'query': 'details', 'id_list': [1, 2, 3]}
+  test_args: Dict[str, object] = {'query': 'details', 'id_list': [1, 2, 3]}
   test_tool_call_id: str = 'tool_call_id_002'
   test_event_id: str = 'event_id_dict_002'
-  dict_function_response: Dict[str, Any] = {
+  dict_function_response: Dict[str, object] = {
       'data': 'structured_data',
       'count': 5,
   }
@@ -810,13 +816,26 @@ async def test_trace_send_data_disabling_request_response_content(
     'google.adk.telemetry.tracing._guess_gemini_system_name',
     return_value='test_system',
 )
-@pytest.mark.parametrize('capture_content', [True, False])
+# (env_value, captured) pairs: pin both the documented OTel four-state
+# values that enable LogRecord content ('EVENT_ONLY' and 'SPAN_AND_EVENT')
+# and the cases that disable it (empty string and 'SPAN_ONLY' -- the latter
+# puts content on the span only).
+@pytest.mark.parametrize(
+    'env_capture_value,capture_content',
+    [
+        ('EVENT_ONLY', True),
+        ('SPAN_AND_EVENT', True),
+        ('', False),
+        ('SPAN_ONLY', False),
+    ],
+)
 @pytest.mark.parametrize('user_id', ['some-user-id', None])
 async def test_generate_content_span(
     mock_guess_system_name,
     mock_tracer,
     mock_otel_logger,
     monkeypatch,
+    env_capture_value,
     capture_content,
     user_id,
 ):
@@ -824,7 +843,7 @@ async def test_generate_content_span(
   # Arrange
   monkeypatch.setenv(
       'OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT',
-      str(capture_content).lower(),
+      env_capture_value,
   )
   monkeypatch.setattr(
       'google.adk.telemetry.tracing._instrumented_with_opentelemetry_instrumentation_google_genai',
@@ -871,7 +890,7 @@ async def test_generate_content_span(
   ) as gc_span:
     assert gc_span.span is mock_span
 
-    trace_inference_result(gc_span, llm_response)
+    trace_inference_result(invocation_context, gc_span, llm_response)
 
   # Assert Span
   mock_tracer.start_as_current_span.assert_called_once_with(
@@ -886,10 +905,12 @@ async def test_generate_content_span(
   mock_span.set_attribute.assert_any_call(
       GEN_AI_RESPONSE_FINISH_REASONS, ['stop']
   )
-  mock_span.set_attribute.assert_any_call(GEN_AI_USAGE_INPUT_TOKENS, 10)
-  mock_span.set_attribute.assert_any_call(GEN_AI_USAGE_OUTPUT_TOKENS, 20)
 
-  mock_span.set_attributes.assert_called_once_with({
+  mock_span.set_attributes.assert_any_call({
+      GEN_AI_USAGE_INPUT_TOKENS: 10,
+      GEN_AI_USAGE_OUTPUT_TOKENS: 20,
+  })
+  mock_span.set_attributes.assert_any_call({
       GEN_AI_AGENT_NAME: invocation_context.agent.name,
       GEN_AI_CONVERSATION_ID: invocation_context.session.id,
       'gcp.vertex.agent.event_id': 'event-123',
@@ -1134,7 +1155,7 @@ async def test_generate_content_span_with_experimental_semconv(
   ) as gc_span:
     assert gc_span.span is mock_span
 
-    trace_inference_result(gc_span, llm_response)
+    trace_inference_result(invocation_context, gc_span, llm_response)
 
   # Expected attributes
   expected_system_instructions = [
@@ -1262,10 +1283,12 @@ async def test_generate_content_span_with_experimental_semconv(
   mock_span.set_attribute.assert_any_call(
       GEN_AI_RESPONSE_FINISH_REASONS, ['stop']
   )
-  mock_span.set_attribute.assert_any_call(GEN_AI_USAGE_INPUT_TOKENS, 10)
-  mock_span.set_attribute.assert_any_call(GEN_AI_USAGE_OUTPUT_TOKENS, 20)
 
-  mock_span.set_attributes.assert_called_once_with({
+  mock_span.set_attributes.assert_any_call({
+      GEN_AI_USAGE_INPUT_TOKENS: 10,
+      GEN_AI_USAGE_OUTPUT_TOKENS: 20,
+  })
+  mock_span.set_attributes.assert_any_call({
       GEN_AI_AGENT_NAME: invocation_context.agent.name,
       GEN_AI_CONVERSATION_ID: invocation_context.session.id,
       'gcp.vertex.agent.event_id': 'event-123',
@@ -1377,7 +1400,7 @@ def test_trace_tool_call_with_tool_execution_error(
       'opentelemetry.trace.get_current_span', lambda: mock_span_fixture
   )
 
-  test_args: Dict[str, Any] = {'param_a': 'value_a'}
+  test_args: Dict[str, object] = {'param_a': 'value_a'}
   test_error = ToolExecutionError(
       message='Internal server error',
       error_type=ToolErrorType.INTERNAL_SERVER_ERROR,
@@ -1417,7 +1440,7 @@ def test_trace_tool_call_with_timeout_error(
       'opentelemetry.trace.get_current_span', lambda: mock_span_fixture
   )
 
-  test_args: Dict[str, Any] = {'param_a': 'value_a'}
+  test_args: Dict[str, object] = {'param_a': 'value_a'}
   test_error = ToolExecutionError(
       message='Request timed out',
       error_type=ToolErrorType.REQUEST_TIMEOUT,
@@ -1443,7 +1466,7 @@ def test_trace_tool_call_with_standard_error(
       'opentelemetry.trace.get_current_span', lambda: mock_span_fixture
   )
 
-  test_args: Dict[str, Any] = {'param': 1}
+  test_args: Dict[str, object] = {'param': 1}
   test_error = ValueError('Invalid arguments')
 
   trace_tool_call(

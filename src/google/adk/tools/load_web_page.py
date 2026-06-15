@@ -30,6 +30,8 @@ from requests.utils import select_proxy
 
 _ALLOWED_URL_SCHEMES = frozenset({'http', 'https'})
 _DEFAULT_PORT_BY_SCHEME = {'http': 80, 'https': 443}
+# Default timeout in seconds for HTTP requests.
+_DEFAULT_TIMEOUT_SECONDS = 30
 _ResolvedAddress = ipaddress.IPv4Address | ipaddress.IPv6Address
 
 
@@ -230,6 +232,7 @@ def _fetch_direct_response(
           url,
           allow_redirects=False,
           proxies={'http': None, 'https': None},
+          timeout=_DEFAULT_TIMEOUT_SECONDS,
       )
     except requests.RequestException as exc:
       last_error = exc
@@ -253,7 +256,9 @@ def _fetch_response(url: str) -> requests.Response:
     # localhost-style names can be rejected locally without breaking proxy use.
     if parsed_ip_literal is not None and _is_blocked_address(parsed_ip_literal):
       raise ValueError(f'Blocked host: {target.hostname}')
-    return requests.get(url, allow_redirects=False)
+    return requests.get(
+        url, allow_redirects=False, timeout=_DEFAULT_TIMEOUT_SECONDS
+    )
 
   if parsed_ip_literal is not None:
     if _is_blocked_address(parsed_ip_literal):
@@ -285,7 +290,7 @@ def load_web_page(url: str) -> str:
 
   try:
     response = _fetch_response(url)
-  except ValueError:
+  except (ValueError, requests.RequestException):
     return _failed_to_fetch_message(url)
 
   # Set allow_redirects=False to prevent SSRF attacks via redirection.

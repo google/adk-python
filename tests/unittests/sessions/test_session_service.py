@@ -1058,6 +1058,13 @@ async def test_get_session_with_config(session_service):
   events = session.events
   assert len(events) == num_test_events
 
+  # Explicitly requesting zero recent events should return no event history.
+  config = GetSessionConfig(num_recent_events=0)
+  session = await session_service.get_session(
+      app_name=app_name, user_id=user_id, session_id=session.id, config=config
+  )
+  assert not session.events
+
   # Only expect the most recent 3 events.
   num_recent_events = 3
   config = GetSessionConfig(num_recent_events=num_recent_events)
@@ -1657,14 +1664,16 @@ async def test_append_event_locks_only_scopes_with_deltas(
 async def test_get_user_state_returns_empty_dict_when_no_state_exists(
     session_service,
 ):
+  """Verifies get_user_state returns empty dict when no state exists."""
   state = await session_service.get_user_state(app_name='my_app', user_id='u1')
-  assert state == {}
+  assert not state
 
 
 @pytest.mark.asyncio
 async def test_get_user_state_returns_state_written_via_append_event(
     session_service,
 ):
+  """Verifies get_user_state returns state written via append_event."""
   session = await session_service.create_session(
       app_name='my_app', user_id='u1'
   )
@@ -1686,6 +1695,7 @@ async def test_get_user_state_returns_state_written_via_append_event(
 
 @pytest.mark.asyncio
 async def test_get_user_state_is_not_visible_across_users(session_service):
+  """Verifies user state is isolated between users."""
   session = await session_service.create_session(
       app_name='my_app', user_id='u1'
   )
@@ -1700,11 +1710,12 @@ async def test_get_user_state_is_not_visible_across_users(session_service):
   other_state = await session_service.get_user_state(
       app_name='my_app', user_id='u2'
   )
-  assert other_state == {}
+  assert not other_state
 
 
 @pytest.mark.asyncio
 async def test_get_user_state_is_not_visible_across_apps(session_service):
+  """Verifies user state is isolated between apps."""
   session = await session_service.create_session(
       app_name='my_app', user_id='u1'
   )
@@ -1719,13 +1730,14 @@ async def test_get_user_state_is_not_visible_across_apps(session_service):
   other_state = await session_service.get_user_state(
       app_name='other_app', user_id='u1'
   )
-  assert other_state == {}
+  assert not other_state
 
 
 @pytest.mark.asyncio
 async def test_get_user_state_available_before_session_is_created(
     session_service,
 ):
+  """Verifies user state can be retrieved before a session is created."""
   first_session = await session_service.create_session(
       app_name='my_app', user_id='u1'
   )
@@ -1743,6 +1755,7 @@ async def test_get_user_state_available_before_session_is_created(
 
 @pytest.mark.asyncio
 async def test_get_user_state_reflects_latest_write(session_service):
+  """Verifies get_user_state returns the latest state."""
   session = await session_service.create_session(
       app_name='my_app', user_id='u1'
   )
@@ -1767,6 +1780,7 @@ async def test_get_user_state_reflects_latest_write(session_service):
 
 @pytest.mark.asyncio
 async def test_vertex_ai_session_service_raises_not_implemented_for_get_user_state():
+  """Verifies VertexAiSessionService raises NotImplementedError."""
   service = VertexAiSessionService(project='proj', location='us-central1')
   with pytest.raises(NotImplementedError):
     await service.get_user_state(app_name='my_app', user_id='u1')

@@ -1,4 +1,4 @@
-name: Release: Update ADk Web
+name: "Release: Update ADk Web"
 
 on:
   workflow_dispatch:
@@ -27,7 +27,7 @@ jobs:
       run: |
         TARGET_DIR="src/google/adk/cli/browser"
         REPO="${{ github.event.inputs.adk_web_repo }}"
-        TAG="${{ github.event.inputs.adk_web_tag }}"  
+        TAG="${{ github.event.inputs.adk_web_tag }}"
         # Clean target directory
         rm -rf "$TARGET_DIR"/*
         mkdir -p "$TARGET_DIR"

@@ -39,6 +39,12 @@ def test_agent_name(mock_invocation_context):
   assert readonly_context.agent_name == "test-agent-name"
 
 
+def test_agent_name_without_agent(mock_invocation_context):
+  mock_invocation_context.agent = None
+  readonly_context = ReadonlyContext(mock_invocation_context)
+  assert readonly_context.agent_name == "unknown"
+
+
 def test_state_content(mock_invocation_context):
   readonly_context = ReadonlyContext(mock_invocation_context)
   state = readonly_context.state

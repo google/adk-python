@@ -21,6 +21,7 @@ from unittest.mock import AsyncMock
 
 from google.adk import version as adk_version
 from google.adk.agents.context_cache_config import ContextCacheConfig
+from google.adk.errors.malformed_function_call_error import MalformedFunctionCallError
 from google.adk.models.cache_metadata import CacheMetadata
 from google.adk.models.gemini_llm_connection import GeminiLlmConnection
 from google.adk.models.google_llm import _build_function_declaration_log
@@ -164,7 +165,7 @@ def test_gemini_api_client_creation_with_projects_prefix():
     _ = model.api_client
     mock_client.assert_called_once()
     _, kwargs = mock_client.call_args
-    assert kwargs["vertexai"] is True
+    assert kwargs["enterprise"] is True
     assert "project" not in kwargs
     assert "location" not in kwargs
 
@@ -179,7 +180,7 @@ def test_gemini_live_api_client_creation_with_projects_prefix():
 
     # Second call is for _live_api_client
     _, kwargs = mock_client.call_args_list[1]
-    assert kwargs["vertexai"] is True
+    assert kwargs["enterprise"] is True
 
 
 def test_client_version_header():
@@ -320,6 +321,70 @@ async def test_generate_content_async(
     assert isinstance(responses[0], LlmResponse)
     assert responses[0].content.parts[0].text == "Hello, how can I help you?"
     mock_client.aio.models.generate_content.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_generate_content_async_malformed_function_call_raises(
+    gemini_llm, llm_request
+):
+  malformed_response = types.GenerateContentResponse(
+      candidates=[
+          types.Candidate(
+              content=None,
+              finish_reason=types.FinishReason.MALFORMED_FUNCTION_CALL,
+              finish_message="Malformed function call: print(default_api.f(x=",
+          )
+      ]
+  )
+  with mock.patch.object(gemini_llm, "api_client") as mock_client:
+
+    async def mock_coro():
+      return malformed_response
+
+    mock_client.aio.models.generate_content.return_value = mock_coro()
+
+    with pytest.raises(
+        MalformedFunctionCallError, match="alformed function call"
+    ):
+      _ = [
+          resp
+          async for resp in gemini_llm.generate_content_async(
+              llm_request, stream=False
+          )
+      ]
+
+
+@pytest.mark.asyncio
+async def test_generate_content_async_stream_malformed_function_call_raises(
+    gemini_llm, llm_request
+):
+  mock_responses = [
+      types.GenerateContentResponse(
+          candidates=[
+              types.Candidate(
+                  content=None,
+                  finish_reason=types.FinishReason.MALFORMED_FUNCTION_CALL,
+                  finish_message="Malformed function call",
+              )
+          ]
+      ),
+  ]
+  with mock.patch.object(gemini_llm, "api_client") as mock_client:
+
+    async def mock_coro():
+      return MockAsyncIterator(mock_responses)
+
+    mock_client.aio.models.generate_content_stream.return_value = mock_coro()
+
+    with pytest.raises(
+        MalformedFunctionCallError, match="alformed function call"
+    ):
+      _ = [
+          resp
+          async for resp in gemini_llm.generate_content_async(
+              llm_request, stream=True
+          )
+      ]
 
 
 @pytest.mark.asyncio
