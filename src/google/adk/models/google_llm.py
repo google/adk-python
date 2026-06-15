@@ -612,11 +612,23 @@ def _build_response_log(resp: types.GenerateContentResponse) -> str:
       function_calls_text.append(
           f'name: {func_call.name}, args: {func_call.args}'
       )
+  # Avoid accessing resp.text directly: the genai SDK raises a UserWarning
+  # whenever .text is accessed on a response that contains non-text parts
+  # (e.g. function_call). This floods logs on every tool invocation.
+  # Instead, manually join only the text parts from candidates.
+  text_parts = []
+  if resp.candidates:
+    for candidate in resp.candidates:
+      if candidate.content and candidate.content.parts:
+        text_parts.extend(
+            p.text for p in candidate.content.parts if p.text is not None
+        )
+  text = ''.join(text_parts)
   return f"""
 LLM Response:
 -----------------------------------------------------------
 Text:
-{resp.text}
+{text}
 -----------------------------------------------------------
 Function calls:
 {_NEW_LINE.join(function_calls_text)}
