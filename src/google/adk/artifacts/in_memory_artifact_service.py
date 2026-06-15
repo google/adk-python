@@ -94,6 +94,28 @@ class InMemoryArtifactService(BaseArtifactService, BaseModel):
       )
     return f"{app_name}/{user_id}/{session_id}/{filename}"
 
+  def _validate_artifact_reference_scope(
+      self,
+      *,
+      app_name: str,
+      user_id: str,
+      session_id: Optional[str],
+      parsed_uri: artifact_util.ParsedArtifactUri,
+  ) -> None:
+    """Ensures artifact references cannot escape the caller's scope."""
+    if parsed_uri.app_name != app_name or parsed_uri.user_id != user_id:
+      raise InputValidationError(
+          "Artifact references must stay within the same app and user scope."
+      )
+    if (
+        parsed_uri.session_id is not None
+        and parsed_uri.session_id != session_id
+    ):
+      raise InputValidationError(
+          "Session-scoped artifact references must stay within the same"
+          " session scope."
+      )
+
   @override
   async def save_artifact(
       self,
@@ -128,10 +150,19 @@ class InMemoryArtifactService(BaseArtifactService, BaseModel):
       artifact_version.mime_type = "text/plain"
     elif artifact.file_data is not None:
       if artifact_util.is_artifact_ref(artifact):
-        if not artifact_util.parse_artifact_uri(artifact.file_data.file_uri):
+        parsed_uri = artifact_util.parse_artifact_uri(
+            artifact.file_data.file_uri
+        )
+        if not parsed_uri:
           raise InputValidationError(
               f"Invalid artifact reference URI: {artifact.file_data.file_uri}"
           )
+        self._validate_artifact_reference_scope(
+            app_name=app_name,
+            user_id=user_id,
+            session_id=session_id,
+            parsed_uri=parsed_uri,
+        )
         # If it's a valid artifact URI, we store the artifact part as-is.
         # And we don't know the mime type until we load it.
       else:
@@ -180,6 +211,12 @@ class InMemoryArtifactService(BaseArtifactService, BaseModel):
             "Invalid artifact reference URI:"
             f" {artifact_data.file_data.file_uri}"
         )
+      self._validate_artifact_reference_scope(
+          app_name=app_name,
+          user_id=user_id,
+          session_id=session_id,
+          parsed_uri=parsed_uri,
+      )
       return await self.load_artifact(
           app_name=parsed_uri.app_name,
           user_id=parsed_uri.user_id,
