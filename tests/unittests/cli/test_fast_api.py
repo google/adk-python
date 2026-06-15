@@ -25,6 +25,7 @@ from unittest.mock import AsyncMock
 from unittest.mock import call
 from unittest.mock import MagicMock
 from unittest.mock import patch
+from urllib.parse import quote
 
 from fastapi.testclient import TestClient
 from google.adk.agents.base_agent import BaseAgent
@@ -1698,6 +1699,98 @@ def test_save_artifact(test_app, create_test_session, mock_artifact_service):
   )
   stored = mock_artifact_service._artifacts[key][0]
   assert stored["artifact"].text == "hello world"
+
+
+def test_artifact_endpoints_support_nested_names(
+    test_app, create_test_session, mock_artifact_service
+):
+  """Test artifact endpoints support names containing path separators."""
+  info = create_test_session
+  filename = "reports/summary.txt"
+  encoded_filename = quote(filename, safe="")
+  base_url = (
+      f"/apps/{info['app_name']}/users/{info['user_id']}/sessions/"
+      f"{info['session_id']}/artifacts"
+  )
+
+  mock_artifact_service.add_artifact(
+      app_name=info["app_name"],
+      user_id=info["user_id"],
+      session_id=info["session_id"],
+      filename=filename,
+      artifact=types.Part(text="v0"),
+  )
+  mock_artifact_service.add_artifact(
+      app_name=info["app_name"],
+      user_id=info["user_id"],
+      session_id=info["session_id"],
+      filename=filename,
+      artifact=types.Part(text="v1"),
+      custom_metadata={"rev": "one"},
+      mime_type="text/plain",
+  )
+
+  response = test_app.get(base_url)
+  assert response.status_code == 200
+  assert filename in response.json()
+
+  for artifact_path in (filename, encoded_filename):
+    response = test_app.get(f"{base_url}/{artifact_path}")
+    assert response.status_code == 200
+    assert response.json()["text"] == "v1"
+
+  response = test_app.get(f"{base_url}/{encoded_filename}?version=0")
+  assert response.status_code == 200
+  assert response.json()["text"] == "v0"
+
+  response = test_app.get(f"{base_url}/{filename}/versions/0")
+  assert response.status_code == 200
+  assert response.json()["text"] == "v0"
+
+  response = test_app.get(f"{base_url}/{encoded_filename}/versions/1")
+  assert response.status_code == 200
+  assert response.json()["text"] == "v1"
+
+  response = test_app.get(f"{base_url}/{filename}/versions")
+  assert response.status_code == 200
+  assert response.json() == [0, 1]
+
+  response = test_app.get(f"{base_url}/{encoded_filename}/versions/metadata")
+  assert response.status_code == 200
+  versions_metadata = response.json()
+  assert len(versions_metadata) == 2
+  assert versions_metadata[1]["customMetadata"] == {"rev": "one"}
+
+  response = test_app.get(f"{base_url}/{filename}/versions/1/metadata")
+  assert response.status_code == 200
+  version_metadata = response.json()
+  assert version_metadata["version"] == 1
+  assert version_metadata["customMetadata"] == {"rev": "one"}
+
+  # Test loading latest version via path
+  for path in (filename, encoded_filename):
+    response = test_app.get(f"{base_url}/{path}/versions/latest")
+    assert response.status_code == 200
+    assert response.json()["text"] == "v1"
+
+    response = test_app.get(f"{base_url}/{path}/versions/latest/metadata")
+    assert response.status_code == 200
+    assert response.json()["version"] == 1
+
+  # Test invalid version ID
+  response = test_app.get(f"{base_url}/{filename}/versions/invalid")
+  assert response.status_code == 422
+  assert "Invalid version ID" in response.json()["detail"]
+
+  response = test_app.get(f"{base_url}/{filename}/versions/invalid/metadata")
+  assert response.status_code == 422
+  assert "Invalid version ID" in response.json()["detail"]
+
+  response = test_app.delete(f"{base_url}/{encoded_filename}")
+  assert response.status_code == 200
+
+  response = test_app.get(f"{base_url}/{encoded_filename}")
+  assert response.status_code == 404
 
 
 def test_save_artifact_returns_400_on_validation_error(

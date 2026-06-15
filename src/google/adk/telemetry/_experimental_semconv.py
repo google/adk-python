@@ -32,7 +32,6 @@ from google.genai.models import t as transformers
 from opentelemetry._logs import Logger
 
 if TYPE_CHECKING:
-  from mcp import ClientSession as McpClientSession
   from mcp import Tool as McpTool
 from opentelemetry._logs import LogRecord
 from opentelemetry.trace import Span
@@ -242,11 +241,14 @@ def _tool_to_tool_definition(tool: types.Tool) -> list[dict[str, Any]]:
   definitions = []
   if tool.function_declarations:
     for fd in tool.function_declarations:
+      parameters = getattr(fd, 'parameters', None) or getattr(
+          fd, 'parameters_json_schema', None
+      )
       definitions.append(
           FunctionToolDefinition(
               name=getattr(fd, 'name', type(fd).__name__),
               description=getattr(fd, 'description', None),
-              parameters=_clean_parameters(getattr(fd, 'parameters', None)),
+              parameters=_clean_parameters(parameters),
               type=FUNCTION_TOOL_DEFINITION_TYPE,
           )
       )

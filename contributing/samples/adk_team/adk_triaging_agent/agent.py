@@ -196,7 +196,7 @@ def assign_gtech_owner_to_issue(issue_number: int) -> dict[str, Any]:
   as long as the issue needs an owner.
 
   All unassigned issues will be considered for GTech ownership. Unassigned
-  issues will seperated in two categories: issues with type "Bug" and issues
+  issues will be separated in two categories: issues with type "Bug" and issues
   with type "Feature". Then bug issues and feature issues will be equally
   assigned to the Gtech members in such a way that every day all members get
   equal number of bug and feature issues.

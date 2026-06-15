@@ -254,3 +254,43 @@ class TestBasicLlmRequestProcessor:
 
     assert llm_request.live_connect_config.enable_affective_dialog is True
     assert llm_request.live_connect_config.proactivity is not None
+
+  @pytest.mark.asyncio
+  async def test_sets_translation_config(self):
+    """Translation config is forwarded to the live connect config."""
+    agent = LlmAgent(
+        name='test_agent',
+        model='gemini-3.5-live-translate-preview',
+    )
+    invocation_context = await _create_invocation_context(agent)
+    invocation_context.run_config = RunConfig(
+        translation_config=types.TranslationConfig(
+            target_language_code='pl',
+            echo_target_language=True,
+        ),
+    )
+    llm_request = LlmRequest()
+    processor = _BasicLlmRequestProcessor()
+
+    async for _ in processor.run_async(invocation_context, llm_request):
+      pass
+
+    translation_config = llm_request.live_connect_config.translation_config
+    assert translation_config.target_language_code == 'pl'
+    assert translation_config.echo_target_language is True
+
+  @pytest.mark.asyncio
+  async def test_translation_config_defaults_to_none(self):
+    """Without a translation config the live connect field stays None."""
+    agent = LlmAgent(
+        name='test_agent',
+        model='gemini-2.5-flash-live',
+    )
+    invocation_context = await _create_invocation_context(agent)
+    llm_request = LlmRequest()
+    processor = _BasicLlmRequestProcessor()
+
+    async for _ in processor.run_async(invocation_context, llm_request):
+      pass
+
+    assert llm_request.live_connect_config.translation_config is None

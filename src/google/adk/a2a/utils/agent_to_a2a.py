@@ -36,7 +36,6 @@ from ...runners import Runner
 from ...sessions.in_memory_session_service import InMemorySessionService
 from ...workflow import Workflow
 from ..executor.a2a_agent_executor import A2aAgentExecutor
-from ..executor.config import A2aAgentExecutorConfig
 from ..experimental import a2a_experimental
 from .agent_card_builder import AgentCardBuilder
 
