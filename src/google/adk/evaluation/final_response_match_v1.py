@@ -92,6 +92,30 @@ def _get_eval_status(score: float, threshold: float) -> EvalStatus:
   return EvalStatus.PASSED if score >= threshold else EvalStatus.FAILED
 
 
+def _unicode_tokenize(text: str):
+  """Tokenizes text using Unicode-aware word boundaries.
+
+  The default RougeScorer tokenizer uses r'\\w+' which only matches ASCII
+  [a-zA-Z0-9_]. For non-Latin scripts (Thai, Chinese, Japanese, Arabic, etc.),
+  this returns zero tokens, causing ROUGE scores of 0.0 on matching responses.
+
+  This tokenizer uses re.UNICODE for ASCII-majority text and falls back to
+  character-level tokenization for non-ASCII text.
+  """
+  import re
+  # For primarily non-ASCII text, tokenize by Unicode-aware patterns
+  ascii_chars = sum(1 for c in text if ord(c) < 128)
+  if ascii_chars > len(text) * 0.5:
+    return re.findall(r'[\\w]+', text.lower(), re.UNICODE)
+  # For non-Latin scripts, use whitespace splitting with Unicode support
+  tokens = re.split(r'[\\s\\p{P}]+', text, flags=re.UNICODE)
+  tokens = [t.lower() for t in tokens if t]
+  if tokens:
+    return tokens
+  # Character-level fallback for scripts without word boundaries
+  return list(text.lower())
+
+
 def _calculate_rouge_1_scores(candidate: str, reference: str):
   """Calculates the ROUGE-1 score between a candidate and reference text.
 
@@ -110,7 +134,11 @@ def _calculate_rouge_1_scores(candidate: str, reference: str):
   Returns:
       A dictionary containing the ROUGE-1 precision, recall, and f-measure.
   """
-  scorer = rouge_scorer.RougeScorer(["rouge1"], use_stemmer=True)
+  scorer = rouge_scorer.RougeScorer(
+        ["rouge1"],
+        use_stemmer=True,
+        tokenizer=_unicode_tokenize,
+    )
 
   # The score method returns a dictionary where keys are the ROUGE types
   # and values are Score objects (tuples) with precision, recall, and fmeasure.
