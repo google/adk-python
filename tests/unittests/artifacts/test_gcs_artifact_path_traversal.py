@@ -12,14 +12,34 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Tests for GcsArtifactService path traversal prevention."""
+"""Tests for GcsArtifactService path traversal prevention.
+
+Covers _validate_gcs_path_segment() directly and verifies that all four
+public operations (save, load, delete, list) reject traversal inputs
+before reaching the GCS backend.
+"""
 
 import pytest
+from unittest.mock import MagicMock, patch
 
 from google.adk.artifacts.gcs_artifact_service import GcsArtifactService
 from google.adk.errors.input_validation_error import InputValidationError
+from google.genai import types
 
 
+@pytest.fixture
+def gcs_service():
+    """Create a GcsArtifactService with a mocked GCS client."""
+    with patch("google.cloud.storage.Client") as mock_client:
+        mock_bucket = MagicMock()
+        mock_client.return_value.bucket.return_value = mock_bucket
+        service = GcsArtifactService(bucket_name="test-bucket")
+        yield service
+
+
+# ---------------------------------------------------------------------------
+# Unit tests for _validate_gcs_path_segment
+# ---------------------------------------------------------------------------
 class TestGcsPathSegmentValidation:
     """Tests for _validate_gcs_path_segment input validation."""
 
@@ -73,3 +93,118 @@ class TestGcsPathSegmentValidation:
         """session_id containing traversal should be rejected."""
         with pytest.raises(InputValidationError, match="must not contain path separators"):
             GcsArtifactService._validate_gcs_path_segment("../other-session", "session_id")
+
+
+# ---------------------------------------------------------------------------
+# Operation-level tests: save, load, delete, list
+# Each verifies that traversal in user_id is rejected BEFORE any GCS call.
+# ---------------------------------------------------------------------------
+class TestSaveArtifactTraversal:
+    """Verify save_artifact rejects path-traversal inputs."""
+
+    @pytest.mark.asyncio
+    async def test_save_rejects_traversal_user_id(self, gcs_service):
+        """save_artifact with user_id='../victim' should raise before GCS write."""
+        artifact = types.Part.from_bytes(data=b"secret", mime_type="text/plain")
+        with pytest.raises(InputValidationError, match="must not contain path separators"):
+            await gcs_service.save_artifact(
+                app_name="app",
+                user_id="../victim-user",
+                filename="user:secret-data",
+                artifact=artifact,
+            )
+
+    @pytest.mark.asyncio
+    async def test_save_rejects_traversal_app_name(self, gcs_service):
+        """save_artifact with app_name='../other-app' should raise."""
+        artifact = types.Part.from_bytes(data=b"data", mime_type="text/plain")
+        with pytest.raises(InputValidationError, match="must not contain path separators"):
+            await gcs_service.save_artifact(
+                app_name="../other-app",
+                user_id="user-1",
+                filename="user:file",
+                artifact=artifact,
+            )
+
+    @pytest.mark.asyncio
+    async def test_save_rejects_null_byte_user_id(self, gcs_service):
+        """save_artifact with null byte in user_id should raise."""
+        artifact = types.Part.from_bytes(data=b"data", mime_type="text/plain")
+        with pytest.raises(InputValidationError, match="must not contain null bytes"):
+            await gcs_service.save_artifact(
+                app_name="app",
+                user_id="user\x00evil",
+                filename="user:file",
+                artifact=artifact,
+            )
+
+
+class TestLoadArtifactTraversal:
+    """Verify load_artifact rejects path-traversal inputs."""
+
+    @pytest.mark.asyncio
+    async def test_load_rejects_traversal_user_id(self, gcs_service):
+        """load_artifact with user_id='../victim' should raise before GCS read."""
+        with pytest.raises(InputValidationError, match="must not contain path separators"):
+            await gcs_service.load_artifact(
+                app_name="app",
+                user_id="../victim-user",
+                filename="user:secret-data",
+            )
+
+    @pytest.mark.asyncio
+    async def test_load_rejects_traversal_session_id(self, gcs_service):
+        """load_artifact with traversal in session_id should raise."""
+        with pytest.raises(InputValidationError, match="must not contain path separators"):
+            await gcs_service.load_artifact(
+                app_name="app",
+                user_id="user-1",
+                filename="file.txt",
+                session_id="../other-session",
+            )
+
+
+class TestDeleteArtifactTraversal:
+    """Verify delete_artifact rejects path-traversal inputs."""
+
+    @pytest.mark.asyncio
+    async def test_delete_rejects_traversal_user_id(self, gcs_service):
+        """delete_artifact with user_id='../victim' should raise before GCS delete."""
+        with pytest.raises(InputValidationError, match="must not contain path separators"):
+            await gcs_service.delete_artifact(
+                app_name="app",
+                user_id="../victim-user",
+                filename="user:secret-data",
+            )
+
+    @pytest.mark.asyncio
+    async def test_delete_rejects_backslash_user_id(self, gcs_service):
+        """delete_artifact with backslash in user_id should raise."""
+        with pytest.raises(InputValidationError, match="must not contain path separators"):
+            await gcs_service.delete_artifact(
+                app_name="app",
+                user_id="user\\evil",
+                filename="user:file",
+            )
+
+
+class TestListArtifactKeysTraversal:
+    """Verify list_artifact_keys rejects path-traversal inputs."""
+
+    @pytest.mark.asyncio
+    async def test_list_rejects_traversal_user_id(self, gcs_service):
+        """list_artifact_keys with user_id='../victim' should raise before GCS list."""
+        with pytest.raises(InputValidationError, match="must not contain path separators"):
+            await gcs_service.list_artifact_keys(
+                app_name="app",
+                user_id="../victim-user",
+            )
+
+    @pytest.mark.asyncio
+    async def test_list_rejects_dot_dot_user_id(self, gcs_service):
+        """list_artifact_keys with user_id='..' should raise."""
+        with pytest.raises(InputValidationError, match="must not contain traversal segments"):
+            await gcs_service.list_artifact_keys(
+                app_name="app",
+                user_id="..",
+            )
