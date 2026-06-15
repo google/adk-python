@@ -23,7 +23,6 @@
 
 from __future__ import annotations
 
-import asyncio
 from collections.abc import AsyncIterator
 from collections.abc import Iterator
 from collections.abc import Mapping
@@ -31,7 +30,6 @@ from contextlib import asynccontextmanager
 from contextlib import contextmanager
 import json
 import logging
-import os
 from typing import Any
 from typing import TYPE_CHECKING
 
@@ -52,8 +50,6 @@ from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GEN_A
 from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GEN_AI_TOOL_DESCRIPTION
 from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GEN_AI_TOOL_NAME
 from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GEN_AI_TOOL_TYPE
-from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GEN_AI_USAGE_INPUT_TOKENS
-from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GEN_AI_USAGE_OUTPUT_TOKENS
 from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GenAiSystemValues
 from opentelemetry.semconv._incubating.attributes.user_attributes import USER_ID
 from opentelemetry.semconv.attributes.error_attributes import ERROR_TYPE

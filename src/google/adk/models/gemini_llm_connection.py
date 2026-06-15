@@ -53,6 +53,9 @@ class GeminiLlmConnection(BaseLlmConnection):
     self._is_gemini_3_1_flash_live = model_name_utils.is_gemini_3_1_flash_live(
         model_version
     )
+    self._is_gemini_3_5_live_translate = (
+        model_name_utils.is_gemini_3_5_live_translate(model_version)
+    )
 
   async def send_history(self, history: list[types.Content]):
     """Sends the conversation history to the gemini model.
@@ -160,7 +163,7 @@ class GeminiLlmConnection(BaseLlmConnection):
     if isinstance(input, types.Blob):
       # The blob is binary and is very large. So let's not log it.
       logger.debug('Sending LLM Blob.')
-      if self._is_gemini_3_1_flash_live:
+      if self._is_gemini_3_1_flash_live or self._is_gemini_3_5_live_translate:
         if input.mime_type and input.mime_type.startswith('audio/'):
           await self._gemini_session.send_realtime_input(audio=input)
         elif input.mime_type and input.mime_type.startswith('image/'):

@@ -25,7 +25,6 @@ from . import data_insights_tool
 from . import metadata_tool
 from . import query_tool
 from . import search_tool
-from ...features import FeatureName
 from ...tools.base_tool import BaseTool
 from ...tools.base_toolset import BaseToolset
 from ...tools.base_toolset import ToolPredicate
