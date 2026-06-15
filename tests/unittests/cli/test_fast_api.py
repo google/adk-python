@@ -33,6 +33,7 @@ from google.adk.agents.llm_agent import LlmAgent
 from google.adk.agents.run_config import RunConfig
 from google.adk.apps.app import App
 from google.adk.artifacts.base_artifact_service import ArtifactVersion
+from google.adk.artifacts.in_memory_artifact_service import InMemoryArtifactService
 from google.adk.cli import fast_api as fast_api_module
 from google.adk.cli.fast_api import get_fast_api_app
 from google.adk.errors.input_validation_error import InputValidationError
@@ -1699,6 +1700,79 @@ def test_save_artifact(test_app, create_test_session, mock_artifact_service):
   )
   stored = mock_artifact_service._artifacts[key][0]
   assert stored["artifact"].text == "hello world"
+
+
+def test_save_artifact_rejects_cross_scope_artifact_reference_http_flow(
+    mock_memory_service,
+    mock_agent_loader,
+    mock_eval_sets_manager,
+    mock_eval_set_results_manager,
+):
+  """The HTTP artifact flow rejects forged cross-scope artifact references."""
+  session_service = InMemorySessionService()
+  artifact_service = InMemoryArtifactService()
+  test_client = _create_test_client(
+      session_service,
+      artifact_service,
+      mock_memory_service,
+      mock_agent_loader,
+      mock_eval_sets_manager,
+      mock_eval_set_results_manager,
+  )
+
+  asyncio.run(
+      session_service.create_session(
+          app_name="victim-app",
+          user_id="victim",
+          session_id="victim-session",
+          state={},
+      )
+  )
+  asyncio.run(
+      session_service.create_session(
+          app_name="attacker-app",
+          user_id="attacker",
+          session_id="attacker-session",
+          state={},
+      )
+  )
+  asyncio.run(
+      artifact_service.save_artifact(
+          app_name="victim-app",
+          user_id="victim",
+          session_id="victim-session",
+          filename="private.txt",
+          artifact=types.Part(text="CROSS_SCOPE_SECRET"),
+      )
+  )
+
+  save_response = test_client.post(
+      "/apps/attacker-app/users/attacker/sessions/attacker-session/artifacts",
+      json={
+          "filename": "loot.txt",
+          "artifact": {
+              "fileData": {
+                  "fileUri": (
+                      "artifact://apps/victim-app/users/victim/sessions/"
+                      "victim-session/artifacts/private.txt/versions/0"
+                  ),
+                  "mimeType": "text/plain",
+              }
+          },
+      },
+  )
+
+  assert save_response.status_code == 400
+  assert (
+      save_response.json()["detail"]
+      == "Artifact references must stay within the same app and user scope."
+  )
+
+  load_response = test_client.get(
+      "/apps/attacker-app/users/attacker/sessions/attacker-session/"
+      "artifacts/loot.txt"
+  )
+  assert load_response.status_code == 404
 
 
 def test_artifact_endpoints_support_nested_names(
