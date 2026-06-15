@@ -106,8 +106,11 @@ class AuthConfig(BaseModelWithConfig):
     if auth_scheme.model_extra:
       auth_scheme = auth_scheme.model_copy(deep=True)
       auth_scheme.model_extra.clear()
+
+    type_ = auth_scheme.type_
+    type_name = type_.name if type_ and hasattr(type_, "name") else str(type_)
     scheme_name = (
-        f"{auth_scheme.type_.name}_{_stable_model_digest(auth_scheme)}"
+        f"{type_name}_{_stable_model_digest(auth_scheme)}"
         if auth_scheme
         else ""
     )

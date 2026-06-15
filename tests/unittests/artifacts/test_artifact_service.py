@@ -264,6 +264,52 @@ async def test_save_load_delete(service_type, artifact_service_factory):
 
 
 @pytest.mark.asyncio
+async def test_in_memory_loads_nested_artifact_reference(
+    artifact_service_factory,
+):
+  """Tests loading an artifact reference whose target name is nested."""
+  artifact_service = artifact_service_factory(ArtifactServiceType.IN_MEMORY)
+  app_name = "app0"
+  user_id = "user0"
+  session_id = "123"
+  target_filename = "folder/file456"
+  target_artifact = types.Part.from_text(text="target")
+
+  await artifact_service.save_artifact(
+      app_name=app_name,
+      user_id=user_id,
+      session_id=session_id,
+      filename=target_filename,
+      artifact=target_artifact,
+  )
+  await artifact_service.save_artifact(
+      app_name=app_name,
+      user_id=user_id,
+      session_id=session_id,
+      filename="reference",
+      artifact=types.Part(
+          file_data=types.FileData(
+              file_uri=(
+                  "artifact://apps/app0/users/user0/sessions/123/artifacts/"
+                  "folder/file456/versions/0"
+              ),
+              mime_type="text/plain",
+          )
+      ),
+  )
+
+  assert (
+      await artifact_service.load_artifact(
+          app_name=app_name,
+          user_id=user_id,
+          session_id=session_id,
+          filename="reference",
+      )
+      == target_artifact
+  )
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "service_type",
     [
@@ -740,6 +786,69 @@ async def test_file_save_artifact_rejects_out_of_scope_paths(
         user_id="user123",
         session_id=session_id,
         filename=filename,
+        artifact=part,
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "user_id",
+    [
+        "../escape",
+        "../../etc",
+        "foo/../../bar",
+        "valid/../..",
+        "..",
+        ".",
+        "has/slash",
+        "back\\slash",
+        "null\x00byte",
+        "",
+    ],
+)
+async def test_file_save_artifact_rejects_traversal_in_user_id(
+    tmp_path, user_id
+):
+  """FileArtifactService rejects user_id values that escape root_dir."""
+  artifact_service = FileArtifactService(root_dir=tmp_path / "artifacts")
+  part = types.Part(text="content")
+  with pytest.raises(InputValidationError):
+    await artifact_service.save_artifact(
+        app_name="myapp",
+        user_id=user_id,
+        session_id="sess123",
+        filename="safe.txt",
+        artifact=part,
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "session_id",
+    [
+        "../escape",
+        "../../tmp",
+        "foo/../../bar",
+        "..",
+        ".",
+        "has/slash",
+        "back\\slash",
+        "null\x00byte",
+        "",
+    ],
+)
+async def test_file_save_artifact_rejects_traversal_in_session_id(
+    tmp_path, session_id
+):
+  """FileArtifactService rejects session_id values that escape root_dir."""
+  artifact_service = FileArtifactService(root_dir=tmp_path / "artifacts")
+  part = types.Part(text="content")
+  with pytest.raises(InputValidationError):
+    await artifact_service.save_artifact(
+        app_name="myapp",
+        user_id="user123",
+        session_id=session_id,
+        filename="safe.txt",
         artifact=part,
     )
 

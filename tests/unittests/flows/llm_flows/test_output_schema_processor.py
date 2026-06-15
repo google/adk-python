@@ -62,7 +62,7 @@ async def test_output_schema_with_tools_validation_removed():
   # This should not raise an error anymore
   agent = LlmAgent(
       name='test_agent',
-      model='gemini-1.5-flash',
+      model='gemini-2.5-flash',
       output_schema=PersonSchema,
       tools=[FunctionTool(func=dummy_tool)],
   )
@@ -76,11 +76,11 @@ async def test_output_schema_with_sub_agents():
   """Test that LlmAgent now allows output_schema with sub_agents."""
   sub_agent = LlmAgent(
       name='sub_agent',
-      model='gemini-1.5-flash',
+      model='gemini-2.5-flash',
   )
   agent = LlmAgent(
       name='test_agent',
-      model='gemini-1.5-flash',
+      model='gemini-2.5-flash',
       output_schema=PersonSchema,
       sub_agents=[sub_agent],
   )
@@ -96,7 +96,7 @@ async def test_basic_processor_skips_output_schema_with_tools():
 
   agent = LlmAgent(
       name='test_agent',
-      model='gemini-1.5-flash',
+      model='gemini-2.5-flash',
       output_schema=PersonSchema,
       tools=[FunctionTool(func=dummy_tool)],
   )
@@ -123,7 +123,7 @@ async def test_basic_processor_sets_output_schema_without_tools():
 
   agent = LlmAgent(
       name='test_agent',
-      model='gemini-1.5-flash',
+      model='gemini-2.5-flash',
       output_schema=PersonSchema,
       tools=[],  # No tools
   )
@@ -159,7 +159,7 @@ async def test_output_schema_request_processor(
 
   agent = LlmAgent(
       name='test_agent',
-      model='gemini-1.5-flash',
+      model='gemini-2.5-flash',
       output_schema=PersonSchema,
       tools=[FunctionTool(func=dummy_tool)],
   )
@@ -204,7 +204,7 @@ async def test_set_model_response_tool():
 
   tool = SetModelResponseTool(PersonSchema)
 
-  agent = LlmAgent(name='test_agent', model='gemini-1.5-flash')
+  agent = LlmAgent(name='test_agent', model='gemini-2.5-flash')
   invocation_context = await _create_invocation_context(agent)
   tool_context = ToolContext(invocation_context)
 
@@ -231,7 +231,7 @@ async def test_output_schema_helper_functions():
 
   agent = LlmAgent(
       name='test_agent',
-      model='gemini-1.5-flash',
+      model='gemini-2.5-flash',
       output_schema=PersonSchema,
       tools=[FunctionTool(func=dummy_tool)],
   )
@@ -368,7 +368,7 @@ async def test_end_to_end_integration():
   """Test the complete output schema with tools integration."""
   agent = LlmAgent(
       name='test_agent',
-      model='gemini-1.5-flash',
+      model='gemini-2.5-flash',
       output_schema=PersonSchema,
       tools=[FunctionTool(func=dummy_tool)],
   )
@@ -403,7 +403,7 @@ async def test_flow_yields_both_events_for_set_model_response():
 
   agent = LlmAgent(
       name='test_agent',
-      model='gemini-1.5-flash',
+      model='gemini-2.5-flash',
       output_schema=PersonSchema,
       tools=[],
   )
@@ -477,7 +477,7 @@ async def test_flow_yields_only_function_response_for_normal_tools():
 
   agent = LlmAgent(
       name='test_agent',
-      model='gemini-1.5-flash',
+      model='gemini-2.5-flash',
       tools=[FunctionTool(func=dummy_tool)],
   )
 

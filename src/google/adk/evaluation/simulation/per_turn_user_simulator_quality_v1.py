@@ -325,6 +325,10 @@ class PerTurnUserSimulatorQualityV1(Evaluator):
         previous_invocations=invocation_history,
     )
 
+    config = (
+        self._llm_options.judge_model_config
+        or genai_types.GenerateContentConfig()
+    )
     llm_request = LlmRequest(
         model=self._llm_options.judge_model,
         contents=[
@@ -333,7 +337,7 @@ class PerTurnUserSimulatorQualityV1(Evaluator):
                 role="user",
             )
         ],
-        config=self._llm_options.judge_model_config,
+        config=config,
     )
     add_default_retry_options_if_not_present(llm_request)
     num_samples = self._llm_options.num_samples

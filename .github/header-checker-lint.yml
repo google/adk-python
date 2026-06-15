@@ -1,0 +1,13 @@
+allowedCopyrightHolders:
+  - 'Google LLC'
+allowedLicenses:
+  - 'Apache-2.0'
+  - 'MIT'
+  - 'BSD-3'
+sourceFileExtensions:
+  - 'ts'
+  - 'js'
+  - 'java'
+  - 'py'
+ignoreFiles:
+  - 'src/google/adk/cli/browser/**'

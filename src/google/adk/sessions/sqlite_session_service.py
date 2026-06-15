@@ -261,11 +261,14 @@ class SqliteSessionService(BaseSessionService):
 
       query_parts.append("ORDER BY timestamp DESC")
 
-      if config and config.num_recent_events:
+      if config and config.num_recent_events is not None:
         query_parts.append("LIMIT ?")
         params.append(config.num_recent_events)
 
-      event_rows = await db.execute_fetchall(" ".join(query_parts), params)
+      if config and config.num_recent_events == 0:
+        event_rows = []
+      else:
+        event_rows = await db.execute_fetchall(" ".join(query_parts), params)
       storage_events_data = [row["event_data"] for row in event_rows]
 
       # Fetch states from storage
@@ -357,6 +360,13 @@ class SqliteSessionService(BaseSessionService):
       await db.commit()
 
   @override
+  async def get_user_state(
+      self, *, app_name: str, user_id: str
+  ) -> dict[str, Any]:
+    async with self._get_db_connection() as db:
+      return await self._get_user_state(db, app_name, user_id)
+
+  @override
   async def append_event(self, session: Session, event: Event) -> Event:
     if event.partial:
       return event
@@ -388,7 +398,7 @@ class SqliteSessionService(BaseSessionService):
 
       # Apply state delta if present
       has_session_state_delta = False
-      if event.actions and event.actions.state_delta:
+      if event.actions.state_delta:
         state_deltas = _session_util.extract_state_delta(
             event.actions.state_delta
         )

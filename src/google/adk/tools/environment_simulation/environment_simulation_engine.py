@@ -15,10 +15,8 @@
 from __future__ import annotations
 
 import asyncio
-import concurrent.futures
 import logging
 import random
-import time
 from typing import Any
 from typing import Dict
 from typing import Optional
@@ -31,7 +29,6 @@ from google.adk.agents.llm_agent import LlmAgent
 from google.adk.tools.base_tool import BaseTool
 from google.adk.tools.environment_simulation.environment_simulation_config import EnvironmentSimulationConfig
 from google.adk.tools.environment_simulation.environment_simulation_config import MockStrategy as MockStrategyEnum
-from google.adk.tools.environment_simulation.environment_simulation_config import ToolSimulationConfig
 from google.adk.tools.environment_simulation.strategies import base as base_mock_strategies
 from google.adk.tools.environment_simulation.strategies import tool_spec_mock_strategy
 from google.adk.tools.environment_simulation.tool_connection_analyzer import ToolConnectionAnalyzer
@@ -107,7 +104,7 @@ class EnvironmentSimulationEngine:
           self._random_generator.random()
           < injection_config.injection_probability
       ):
-        time.sleep(injection_config.injected_latency_seconds)
+        await asyncio.sleep(injection_config.injected_latency_seconds)
         if injection_config.injected_error:
           return {
               "error_code": (

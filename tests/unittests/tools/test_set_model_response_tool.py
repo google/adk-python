@@ -15,10 +15,13 @@
 """Tests for SetModelResponseTool."""
 
 import inspect
+from typing import Optional
 
 from google.adk.agents.invocation_context import InvocationContext
 from google.adk.agents.llm_agent import LlmAgent
 from google.adk.agents.run_config import RunConfig
+from google.adk.features._feature_registry import FeatureName
+from google.adk.features._feature_registry import temporary_feature_override
 from google.adk.sessions.in_memory_session_service import InMemorySessionService
 from google.adk.tools.set_model_response_tool import SetModelResponseTool
 from google.adk.tools.tool_context import ToolContext
@@ -112,7 +115,7 @@ async def test_run_async_valid_data():
   """Test tool execution with valid data."""
   tool = SetModelResponseTool(PersonSchema)
 
-  agent = LlmAgent(name='test_agent', model='gemini-1.5-flash')
+  agent = LlmAgent(name='test_agent', model='gemini-2.5-flash')
   invocation_context = await _create_invocation_context(agent)
   tool_context = ToolContext(invocation_context)
 
@@ -134,7 +137,7 @@ async def test_run_async_complex_schema():
   """Test tool execution with complex schema."""
   tool = SetModelResponseTool(ComplexSchema)
 
-  agent = LlmAgent(name='test_agent', model='gemini-1.5-flash')
+  agent = LlmAgent(name='test_agent', model='gemini-2.5-flash')
   invocation_context = await _create_invocation_context(agent)
   tool_context = ToolContext(invocation_context)
 
@@ -164,7 +167,7 @@ async def test_run_async_validation_error():
   """Test tool execution with invalid data raises validation error."""
   tool = SetModelResponseTool(PersonSchema)
 
-  agent = LlmAgent(name='test_agent', model='gemini-1.5-flash')
+  agent = LlmAgent(name='test_agent', model='gemini-2.5-flash')
   invocation_context = await _create_invocation_context(agent)
   tool_context = ToolContext(invocation_context)
 
@@ -181,7 +184,7 @@ async def test_run_async_missing_required_field():
   """Test tool execution with missing required field."""
   tool = SetModelResponseTool(PersonSchema)
 
-  agent = LlmAgent(name='test_agent', model='gemini-1.5-flash')
+  agent = LlmAgent(name='test_agent', model='gemini-2.5-flash')
   invocation_context = await _create_invocation_context(agent)
   tool_context = ToolContext(invocation_context)
 
@@ -198,7 +201,7 @@ async def test_session_state_storage_key():
   """Test that response is no longer stored in session state."""
   tool = SetModelResponseTool(PersonSchema)
 
-  agent = LlmAgent(name='test_agent', model='gemini-1.5-flash')
+  agent = LlmAgent(name='test_agent', model='gemini-2.5-flash')
   invocation_context = await _create_invocation_context(agent)
   tool_context = ToolContext(invocation_context)
 
@@ -219,7 +222,7 @@ async def test_multiple_executions_return_latest():
   """Test that multiple executions return latest response independently."""
   tool = SetModelResponseTool(PersonSchema)
 
-  agent = LlmAgent(name='test_agent', model='gemini-1.5-flash')
+  agent = LlmAgent(name='test_agent', model='gemini-2.5-flash')
   invocation_context = await _create_invocation_context(agent)
   tool_context = ToolContext(invocation_context)
 
@@ -308,7 +311,7 @@ async def test_run_async_list_schema_valid_data():
   """Test tool execution with valid list data."""
   tool = SetModelResponseTool(list[ItemSchema])
 
-  agent = LlmAgent(name='test_agent', model='gemini-1.5-flash')
+  agent = LlmAgent(name='test_agent', model='gemini-2.5-flash')
   invocation_context = await _create_invocation_context(agent)
   tool_context = ToolContext(invocation_context)
 
@@ -339,7 +342,7 @@ async def test_run_async_list_schema_empty_list():
   """Test tool execution with empty list."""
   tool = SetModelResponseTool(list[ItemSchema])
 
-  agent = LlmAgent(name='test_agent', model='gemini-1.5-flash')
+  agent = LlmAgent(name='test_agent', model='gemini-2.5-flash')
   invocation_context = await _create_invocation_context(agent)
   tool_context = ToolContext(invocation_context)
 
@@ -360,7 +363,7 @@ async def test_run_async_list_schema_validation_error():
   """Test tool execution with invalid list data raises validation error."""
   tool = SetModelResponseTool(list[ItemSchema])
 
-  agent = LlmAgent(name='test_agent', model='gemini-1.5-flash')
+  agent = LlmAgent(name='test_agent', model='gemini-2.5-flash')
   invocation_context = await _create_invocation_context(agent)
   tool_context = ToolContext(invocation_context)
 
@@ -408,7 +411,7 @@ async def test_run_async_list_str_schema():
   """Test tool execution with list[str] data."""
   tool = SetModelResponseTool(list[str])
 
-  agent = LlmAgent(name='test_agent', model='gemini-1.5-flash')
+  agent = LlmAgent(name='test_agent', model='gemini-2.5-flash')
   invocation_context = await _create_invocation_context(agent)
   tool_context = ToolContext(invocation_context)
 
@@ -453,7 +456,7 @@ async def test_run_async_dict_schema():
   """Test tool execution with dict data."""
   tool = SetModelResponseTool(dict[str, int])
 
-  agent = LlmAgent(name='test_agent', model='gemini-1.5-flash')
+  agent = LlmAgent(name='test_agent', model='gemini-2.5-flash')
   invocation_context = await _create_invocation_context(agent)
   tool_context = ToolContext(invocation_context)
 
@@ -467,3 +470,67 @@ async def test_run_async_dict_schema():
   assert result is not None
   assert isinstance(result, dict)
   assert result == {'a': 1, 'b': 2, 'c': 3}
+
+
+class SubSchema(BaseModel):
+
+  field1: str = Field(description='Field 1')
+  field2: int = Field(description='Field 2')
+
+
+class ConsolidatedOptionalSchema(BaseModel):
+
+  nested: Optional[SubSchema] = Field(default=None, description='Nested model')
+  nested_list: Optional[list[SubSchema]] = Field(
+      default=None, description='Nested list of models'
+  )
+  pep604_nested: SubSchema | None = Field(
+      default=None, description='PEP 604 optional nested model'
+  )
+  pep604_raw_list: list | None = Field(default=None, description='Raw list')
+
+
+def test_get_declaration_optional_fields():
+  """Test that tool declaration preserves properties for various optional fields."""
+  with temporary_feature_override(FeatureName.JSON_SCHEMA_FOR_FUNC_DECL, False):
+    tool = SetModelResponseTool(ConsolidatedOptionalSchema)
+
+    declaration = tool._get_declaration()
+
+  assert declaration is not None
+  assert declaration.name == 'set_model_response'
+  params_schema = declaration.parameters
+  assert params_schema is not None
+  assert params_schema.type == 'OBJECT'
+
+  # 1. Optional[SubSchema]
+  assert 'nested' in params_schema.properties
+  nested_schema = params_schema.properties['nested']
+  assert nested_schema.type == 'OBJECT'
+  assert nested_schema.properties is not None
+  assert nested_schema.properties['field1'].type == 'STRING'
+  assert nested_schema.properties['field2'].type == 'INTEGER'
+
+  # 2. Optional[list[SubSchema]]
+  assert 'nested_list' in params_schema.properties
+  nested_list_schema = params_schema.properties['nested_list']
+  assert nested_list_schema.type == 'ARRAY'
+  assert nested_list_schema.items is not None
+  items_schema = nested_list_schema.items
+  assert items_schema.type == 'OBJECT'
+  assert items_schema.properties is not None
+  assert items_schema.properties['field1'].type == 'STRING'
+  assert items_schema.properties['field2'].type == 'INTEGER'
+
+  # 3. SubSchema | None (PEP 604)
+  assert 'pep604_nested' in params_schema.properties
+  pep604_nested_schema = params_schema.properties['pep604_nested']
+  assert pep604_nested_schema.type == 'OBJECT'
+  assert pep604_nested_schema.properties is not None
+  assert pep604_nested_schema.properties['field1'].type == 'STRING'
+  assert pep604_nested_schema.properties['field2'].type == 'INTEGER'
+
+  # 4. list | None (PEP 604)
+  assert 'pep604_raw_list' in params_schema.properties
+  pep604_raw_list_schema = params_schema.properties['pep604_raw_list']
+  assert pep604_raw_list_schema.type == 'ARRAY'

@@ -300,3 +300,110 @@ async def test_request_confirmation_processor_tool_not_confirmed():
     assert (
         args[4][MOCK_FUNCTION_CALL_ID] == user_confirmation
     )  # tool_confirmation_dict
+
+
+@pytest.mark.asyncio
+async def test_request_confirmation_processor_finds_user_confirmation_in_default_branch():
+  """Processor finds user confirmation in default branch when agent is in child branch.
+
+  Setup:
+    - Agent in 'child_branch'.
+    - RequestConfirmation event in 'child_branch'.
+    - User response event in default branch (None).
+  Act: Run request_processor.
+  Assert: Processor finds the response and triggers tool execution.
+  """
+  # Arrange
+  agent = LlmAgent(name="test_agent", tools=[mock_tool])
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent
+  )
+  # Set branch for the agent context
+  invocation_context.branch = "child_branch"
+  llm_request = LlmRequest()
+
+  original_function_call = types.FunctionCall(
+      name=MOCK_TOOL_NAME, args={"param1": "test"}, id=MOCK_FUNCTION_CALL_ID
+  )
+
+  tool_confirmation = ToolConfirmation(confirmed=False, hint="test hint")
+  tool_confirmation_args = {
+      "originalFunctionCall": original_function_call.model_dump(
+          exclude_none=True, by_alias=True
+      ),
+      "toolConfirmation": tool_confirmation.model_dump(
+          by_alias=True, exclude_none=True
+      ),
+  }
+
+  # Event with the request for confirmation (in child branch)
+  invocation_context.session.events.append(
+      Event(
+          author="agent",
+          branch="child_branch",
+          content=types.Content(
+              parts=[
+                  types.Part(
+                      function_call=types.FunctionCall(
+                          name=functions.REQUEST_CONFIRMATION_FUNCTION_CALL_NAME,
+                          args=tool_confirmation_args,
+                          id=MOCK_CONFIRMATION_FUNCTION_CALL_ID,
+                      )
+                  )
+              ]
+          ),
+      )
+  )
+
+  # Event with the user's confirmation (in default branch, branch=None)
+  user_confirmation = ToolConfirmation(confirmed=True)
+  invocation_context.session.events.append(
+      Event(
+          author="user",
+          branch=None,
+          content=types.Content(
+              parts=[
+                  types.Part(
+                      function_response=types.FunctionResponse(
+                          name=functions.REQUEST_CONFIRMATION_FUNCTION_CALL_NAME,
+                          id=MOCK_CONFIRMATION_FUNCTION_CALL_ID,
+                          response={
+                              "response": user_confirmation.model_dump_json()
+                          },
+                      )
+                  )
+              ]
+          ),
+      )
+  )
+
+  expected_event = Event(
+      author="agent",
+      branch="child_branch",
+      content=types.Content(
+          parts=[
+              types.Part(
+                  function_response=types.FunctionResponse(
+                      name=MOCK_TOOL_NAME,
+                      id=MOCK_FUNCTION_CALL_ID,
+                      response={"result": "Mock tool result with test"},
+                  )
+              )
+          ]
+      ),
+  )
+
+  # Act & Assert
+  with patch(
+      "google.adk.flows.llm_flows.functions.handle_function_call_list_async"
+  ) as mock_handle_function_call_list_async:
+    mock_handle_function_call_list_async.return_value = expected_event
+
+    events = []
+    async for event in request_processor.run_async(
+        invocation_context, llm_request
+    ):
+      events.append(event)
+
+    assert len(events) == 1
+    assert events[0] == expected_event

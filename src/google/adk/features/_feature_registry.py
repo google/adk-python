@@ -38,9 +38,18 @@ class FeatureName(str, Enum):
   DATA_AGENT_TOOL_CONFIG = "DATA_AGENT_TOOL_CONFIG"
   DATA_AGENT_TOOLSET = "DATA_AGENT_TOOLSET"
   ENVIRONMENT_SIMULATION = "ENVIRONMENT_SIMULATION"
+  GCS_ADMIN_TOOLSET = "GCS_ADMIN_TOOLSET"
+  GCS_TOOL_SETTINGS = "GCS_TOOL_SETTINGS"
+  GCS_TOOLSET = "GCS_TOOLSET"
   GOOGLE_CREDENTIALS_CONFIG = "GOOGLE_CREDENTIALS_CONFIG"
   GOOGLE_TOOL = "GOOGLE_TOOL"
   JSON_SCHEMA_FOR_FUNC_DECL = "JSON_SCHEMA_FOR_FUNC_DECL"
+  # Private (leading underscore): not part of the public API surface.
+  # GE flips this on by setting the env var
+  # `ADK_ENABLE_MCP_GRACEFUL_ERROR_HANDLING=1`; nothing should import this
+  # enum member by name. Keeping it private avoids a backward-compat
+  # obligation for what is intended as a temporary, internal kill-switch.
+  _MCP_GRACEFUL_ERROR_HANDLING = "MCP_GRACEFUL_ERROR_HANDLING"
   PROGRESSIVE_SSE_STREAMING = "PROGRESSIVE_SSE_STREAMING"
   PUBSUB_TOOL_CONFIG = "PUBSUB_TOOL_CONFIG"
   PUBSUB_TOOLSET = "PUBSUB_TOOLSET"
@@ -53,6 +62,7 @@ class FeatureName(str, Enum):
   TOOL_CONFIRMATION = "TOOL_CONFIRMATION"
   PLUGGABLE_AUTH = "PLUGGABLE_AUTH"
   SNAKE_CASE_SKILL_NAME = "SNAKE_CASE_SKILL_NAME"
+  IN_MEMORY_SESSION_SERVICE_LIGHT_COPY = "IN_MEMORY_SESSION_SERVICE_LIGHT_COPY"
 
 
 class FeatureStage(Enum):
@@ -98,10 +108,10 @@ _FEATURE_REGISTRY: dict[FeatureName, FeatureConfig] = {
         FeatureStage.EXPERIMENTAL, default_on=True
     ),
     FeatureName.BIG_QUERY_TOOLSET: FeatureConfig(
-        FeatureStage.EXPERIMENTAL, default_on=True
+        FeatureStage.STABLE, default_on=True
     ),
     FeatureName.BIG_QUERY_TOOL_CONFIG: FeatureConfig(
-        FeatureStage.EXPERIMENTAL, default_on=True
+        FeatureStage.STABLE, default_on=True
     ),
     FeatureName.BIGTABLE_TOOL_SETTINGS: FeatureConfig(
         FeatureStage.EXPERIMENTAL, default_on=True
@@ -121,6 +131,15 @@ _FEATURE_REGISTRY: dict[FeatureName, FeatureConfig] = {
     FeatureName.ENVIRONMENT_SIMULATION: FeatureConfig(
         FeatureStage.EXPERIMENTAL, default_on=True
     ),
+    FeatureName.GCS_ADMIN_TOOLSET: FeatureConfig(
+        FeatureStage.EXPERIMENTAL, default_on=True
+    ),
+    FeatureName.GCS_TOOL_SETTINGS: FeatureConfig(
+        FeatureStage.EXPERIMENTAL, default_on=True
+    ),
+    FeatureName.GCS_TOOLSET: FeatureConfig(
+        FeatureStage.EXPERIMENTAL, default_on=True
+    ),
     FeatureName.GOOGLE_CREDENTIALS_CONFIG: FeatureConfig(
         FeatureStage.EXPERIMENTAL, default_on=True
     ),
@@ -128,7 +147,10 @@ _FEATURE_REGISTRY: dict[FeatureName, FeatureConfig] = {
         FeatureStage.EXPERIMENTAL, default_on=True
     ),
     FeatureName.JSON_SCHEMA_FOR_FUNC_DECL: FeatureConfig(
-        FeatureStage.WIP, default_on=False
+        FeatureStage.EXPERIMENTAL, default_on=True
+    ),
+    FeatureName._MCP_GRACEFUL_ERROR_HANDLING: FeatureConfig(
+        FeatureStage.EXPERIMENTAL, default_on=True
     ),
     FeatureName.PROGRESSIVE_SSE_STREAMING: FeatureConfig(
         FeatureStage.EXPERIMENTAL, default_on=True
@@ -140,7 +162,7 @@ _FEATURE_REGISTRY: dict[FeatureName, FeatureConfig] = {
         FeatureStage.EXPERIMENTAL, default_on=True
     ),
     FeatureName.SKILL_TOOLSET: FeatureConfig(
-        FeatureStage.EXPERIMENTAL, default_on=True
+        FeatureStage.STABLE, default_on=True
     ),
     FeatureName.SPANNER_ADMIN_TOOLSET: FeatureConfig(
         FeatureStage.EXPERIMENTAL, default_on=True
@@ -165,6 +187,9 @@ _FEATURE_REGISTRY: dict[FeatureName, FeatureConfig] = {
     ),
     FeatureName.SNAKE_CASE_SKILL_NAME: FeatureConfig(
         FeatureStage.EXPERIMENTAL, default_on=False
+    ),
+    FeatureName.IN_MEMORY_SESSION_SERVICE_LIGHT_COPY: FeatureConfig(
+        FeatureStage.WIP, default_on=False
     ),
 }
 

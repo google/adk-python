@@ -1,0 +1,37 @@
+{
+  "events": [
+    {
+      "author": "user",
+      "content": {
+        "parts": [
+          {
+            "text": "Can you help me plan a trip?"
+          }
+        ],
+        "role": "user"
+      },
+      "id": "e-1",
+      "invocationId": "i-1",
+      "nodeInfo": {
+        "path": ""
+      }
+    },
+    {
+      "author": "greeter_agent",
+      "content": {
+        "parts": [
+          {
+            "text": "Hello there! I'd be absolutely delighted to help you plan your trip. To get started, I'll need a little more information.\n\nCould you tell me:\n\n1.  **Where are you hoping to go?** (e.g., a specific city, country, or region)\n2.  **When are you planning to travel?** (e.g., specific dates, a season, or a general time of year)\n3.  **What kind of trip are you envisioning?** (e.g., a relaxing beach vacation, an adventurous hiking trip, a cultural city break, a family holiday, etc.)\n4.  **Who are you traveling with?** (e.g., solo, with a partner, family with kids, friends)\n5.  **Do you have any specific interests or preferences?** (e.g., food, history, art, nature, nightlife, budget considerations)\n\nThe more details you can provide, the better I can assist you in creating an amazing itinerary!"
+          }
+        ],
+        "role": "model"
+      },
+      "finishReason": "STOP",
+      "id": "e-2",
+      "invocationId": "i-1",
+      "nodeInfo": {
+        "path": "greeter_agent@1"
+      }
+    }
+  ]
+}
