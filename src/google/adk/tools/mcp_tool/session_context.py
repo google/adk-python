@@ -15,11 +15,11 @@
 from __future__ import annotations
 
 import asyncio
+from contextlib import AbstractAsyncContextManager
 from contextlib import AsyncExitStack
 from datetime import timedelta
 import logging
 from typing import Any
-from typing import AsyncContextManager
 from typing import Coroutine
 from typing import Optional
 from typing import TypeVar
@@ -60,7 +60,7 @@ class SessionContext:
 
   def __init__(
       self,
-      client: AsyncContextManager,
+      client: AbstractAsyncContextManager[Any],
       timeout: Optional[float],
       sse_read_timeout: Optional[float],
       is_stdio: bool = False,
@@ -298,7 +298,17 @@ class SessionContext:
                   sampling_capabilities=self._sampling_capabilities,
               )
           )
-        await asyncio.wait_for(session.initialize(), timeout=self._timeout)
+        # pylint: disable-next=protected-access
+        if is_feature_enabled(FeatureName._MCP_GRACEFUL_ERROR_HANDLING):
+          # Use anyio.fail_after to keep session.initialize within the AnyIO
+          # cancel scope instead of asyncio.wait_for which runs in a nested
+          # task.
+          import anyio
+
+          with anyio.fail_after(self._timeout):
+            await session.initialize()
+        else:
+          await asyncio.wait_for(session.initialize(), timeout=self._timeout)
         logger.debug('Session has been successfully initialized')
 
         self._session = session

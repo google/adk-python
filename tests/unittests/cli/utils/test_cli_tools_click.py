@@ -1193,6 +1193,53 @@ def test_cli_web_passes_service_uris(
   assert called_kwargs.get("memory_service_uri") == "rag://mycorpus"
 
 
+@pytest.mark.parametrize(
+    "flag",
+    ["--allow-unsafe-unpickling", "--allow_unsafe_unpickling"],
+)
+def test_cli_migrate_session_allows_unsafe_unpickling_flag(
+    monkeypatch: pytest.MonkeyPatch, flag: str
+) -> None:
+  calls: list[dict[str, Any]] = []
+
+  def fake_upgrade(
+      source_db_url: str,
+      dest_db_url: str,
+      *,
+      allow_unsafe_unpickling: bool = False,
+  ) -> None:
+    calls.append({
+        "source_db_url": source_db_url,
+        "dest_db_url": dest_db_url,
+        "allow_unsafe_unpickling": allow_unsafe_unpickling,
+    })
+
+  monkeypatch.setattr(
+      "google.adk.sessions.migration.migration_runner.upgrade",
+      fake_upgrade,
+  )
+
+  result = CliRunner().invoke(
+      cli_tools_click.main,
+      [
+          "migrate",
+          "session",
+          "--source_db_url",
+          "sqlite:///source.db",
+          "--dest_db_url",
+          "sqlite:///dest.db",
+          flag,
+      ],
+  )
+
+  assert result.exit_code == 0, (result.output, repr(result.exception))
+  assert calls == [{
+      "source_db_url": "sqlite:///source.db",
+      "dest_db_url": "sqlite:///dest.db",
+      "allow_unsafe_unpickling": True,
+  }]
+
+
 def test_cli_eval_with_eval_set_file_path(
     mock_load_eval_set_from_file,
     mock_get_root_agent,

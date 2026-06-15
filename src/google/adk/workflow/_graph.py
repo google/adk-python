@@ -18,6 +18,9 @@ from __future__ import annotations
 
 from collections import Counter
 from collections.abc import Callable
+import logging
+
+logger = logging.getLogger("google_adk." + __name__)
 from collections.abc import Set
 from typing import Annotated
 from typing import Any
@@ -345,6 +348,7 @@ class Graph(BaseModel):
     next_pending_nodes: list[str] = []
     matched_specific_route = False
     default_route_node: str | None = None
+    has_routing_edges = False
 
     for edge in self.edges:
       if edge.from_node.name == node_name:
@@ -353,6 +357,7 @@ class Graph(BaseModel):
           next_pending_nodes.append(edge.to_node.name)
           continue
 
+        has_routing_edges = True
         if edge.route == DEFAULT_ROUTE:
           default_route_node = edge.to_node.name
           continue
@@ -375,6 +380,14 @@ class Graph(BaseModel):
 
     if not matched_specific_route and default_route_node:
       next_pending_nodes.append(default_route_node)
+
+    if has_routing_edges and not next_pending_nodes:
+      logger.warning(
+          "Node '%s' has conditional/DEFAULT edges but none were matched by the"
+          " emitted route(s): %s. The branch will end.",
+          node_name,
+          routes_to_match,
+      )
 
     return next_pending_nodes
 
@@ -517,6 +530,26 @@ class Graph(BaseModel):
               f" input schema {to_node.input_schema}."
           )
 
+  def _validate_chat_agent_wiring(self) -> None:
+    """Validates that chat-mode agents do not have incoming edges from non-START nodes."""
+    from ..agents.llm_agent import LlmAgent
+
+    for edge in self.edges:
+      to_node = edge.to_node
+      if (
+          isinstance(to_node, LlmAgent)
+          and getattr(to_node, "mode", None) == "chat"
+      ):
+        if edge.from_node.name != START.name:
+          raise ValueError(
+              f"The agent '{to_node.name}' has been added to the workflow with"
+              f" mode='chat' following node '{edge.from_node.name}'. This is"
+              " not supported because chat-mode agents rely on conversational"
+              " history (session events) and cannot consume direct node inputs"
+              " from preceding nodes. Please change the agent's mode to"
+              " 'single_turn'"
+          )
+
   def _compute_terminal_nodes(self) -> None:
     """Computes terminal nodes (no outgoing edges)."""
     from_names = {edge.from_node.name for edge in self.edges}
@@ -535,4 +568,5 @@ class Graph(BaseModel):
     self._validate_default_routes()
     self._detect_unconditional_cycles(node_names)
     self._validate_static_schemas()
+    self._validate_chat_agent_wiring()
     self._compute_terminal_nodes()

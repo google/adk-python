@@ -16,13 +16,13 @@ name: Pre-commit Checks
 
 on:
   push:
-    branches: [main, v2]
+    branches: [main, v1, v2]
     paths:
       - '**.py'
       - '.pre-commit-config.yaml'
       - 'pyproject.toml'
   pull_request:
-    branches: [main, v2]
+    branches: [main, v1, v2]
     paths:
       - '**.py'
       - '.pre-commit-config.yaml'

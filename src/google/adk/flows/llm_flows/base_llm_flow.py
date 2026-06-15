@@ -39,9 +39,11 @@ from ...agents.run_config import StreamingMode
 from ...auth.auth_tool import AuthConfig
 from ...events.event import Event
 from ...models.base_llm_connection import BaseLlmConnection
+from ...models.google_llm import Gemini
+from ...models.google_llm import GoogleLLMVariant
 from ...models.llm_request import LlmRequest
 from ...models.llm_response import LlmResponse
-from ...telemetry import tracing
+from ...telemetry import _instrumentation
 from ...telemetry.tracing import trace_call_llm
 from ...telemetry.tracing import trace_send_data
 from ...telemetry.tracing import tracer
@@ -374,18 +376,14 @@ async def _run_and_handle_error(
     return None
 
   try:
-    async with Aclosing(response_generator) as agen:
-      async with tracing.use_inference_span(
-          llm_request,
-          invocation_context,
-          model_response_event,
-      ) as gc_span:
+    async with _instrumentation.record_inference_telemetry(
+        llm_request,
+        invocation_context,
+        model_response_event,
+    ) as tel_ctx:
+      async with Aclosing(response_generator) as agen:
         async for llm_response in agen:
-          if gc_span:
-            tracing.trace_inference_result(
-                gc_span,
-                llm_response,
-            )
+          tel_ctx.record_llm_response(invocation_context, llm_response)
           yield llm_response
   except Exception as model_error:
     callback_context = CallbackContext(
@@ -421,21 +419,52 @@ async def _process_agent_tools(
   instances, and calls ``process_llm_request`` on each to register
   tool declarations in the request.
 
+  Tool-union resolution is dispatched concurrently via ``asyncio.gather``
+  to overlap I/O-bound listings (e.g. MCP ``list_tools`` over the
+  network). The subsequent ``process_llm_request`` calls are kept
+  serial in the original ``agent.tools`` order: some tools read/write
+  ``llm_request`` state (e.g. ``GoogleSearchTool`` writes
+  ``llm_request.model``; ``ComputerUseToolset`` performs an idempotency
+  check on ``llm_request.config.tools``) and rely on observing the
+  post-state of earlier tools.
+
   After this function returns, ``llm_request.tools_dict`` maps tool
   names to ``BaseTool`` instances ready for function call dispatch.
 
   Args:
-    invocation_context: The invocation context (``agent`` is read
-      from ``invocation_context.agent``).
+    invocation_context: The invocation context (``agent`` is read from
+      ``invocation_context.agent``).
     llm_request: The LLM request to populate with tool declarations.
   """
   agent = invocation_context.agent
-  if not hasattr(agent, 'tools') or not agent.tools:
+  if agent is None or not hasattr(agent, 'tools') or not agent.tools:
     return
 
   multiple_tools = len(agent.tools) > 1
   model = agent.canonical_model
-  for tool_union in agent.tools:
+
+  from ...agents.llm_agent import _convert_tool_union_to_tools
+
+  # Resolve tool_unions in parallel. ``asyncio.gather`` preserves
+  # input order in the returned list, so the serial commit phase below
+  # still observes ``agent.tools`` order. If any resolution raises,
+  # gather cancels the siblings and propagates -- same observable
+  # behavior as the previous serial loop, which would propagate the
+  # first exception and abandon the rest.
+  resolved_tools_per_union = await asyncio.gather(*(
+      _convert_tool_union_to_tools(
+          tool_union,
+          ReadonlyContext(invocation_context),
+          model,
+          multiple_tools,
+      )
+      for tool_union in agent.tools
+  ))
+
+  # Serial commit phase, in original ``agent.tools`` order. Mutations
+  # to ``llm_request`` and reads of its state (model, config.tools,
+  # tools_dict) preserve today's ordering semantics exactly.
+  for tool_union, tools in zip(agent.tools, resolved_tools_per_union):
     tool_context = ToolContext(invocation_context)
 
     # If it's a toolset, process it first
@@ -444,15 +473,7 @@ async def _process_agent_tools(
           tool_context=tool_context, llm_request=llm_request
       )
 
-    from ...agents.llm_agent import _convert_tool_union_to_tools
-
     # Then process all tools from this tool union
-    tools = await _convert_tool_union_to_tools(
-        tool_union,
-        ReadonlyContext(invocation_context),
-        model,
-        multiple_tools,
-    )
     for tool in tools:
       await tool.process_llm_request(
           tool_context=tool_context, llm_request=llm_request
@@ -517,13 +538,49 @@ class BaseLlmFlow(ABC):
           llm_request.live_connect_config.session_resumption.handle = (
               invocation_context.live_session_resumption_handle
           )
-          llm_request.live_connect_config.session_resumption.transparent = True
+
+          # Only set transparent=True for Vertex AI backend, as the Gemini API
+          # backend explicitly rejects it.
+          if (
+              isinstance(llm, Gemini)
+              and llm._api_backend == GoogleLLMVariant.VERTEX_AI  # pylint: disable=protected-access
+          ):
+            session_resumption = (
+                llm_request.live_connect_config.session_resumption
+            )
+            if session_resumption.transparent is None:
+              session_resumption.transparent = True
+
+        # When seeding a fresh connection with prior conversation history, set
+        # initial_history_in_client_content to True. This tells the Live server
+        # that the provided history already includes the model's past responses,
+        # preventing the server from generating duplicate responses for those replayed turns.
+        if (
+            llm_request.contents
+            and not invocation_context.live_session_resumption_handle
+        ):
+          if not llm_request.live_connect_config:
+            llm_request.live_connect_config = types.LiveConnectConfig()
+          if not llm_request.live_connect_config.history_config:
+            llm_request.live_connect_config.history_config = (
+                types.HistoryConfig()
+            )
+          if (
+              llm_request.live_connect_config.history_config.initial_history_in_client_content
+              is None
+          ):
+            llm_request.live_connect_config.history_config.initial_history_in_client_content = (
+                True
+            )
 
         logger.info(
             'Establishing live connection for agent: %s',
             invocation_context.agent.name,
         )
         async with llm.connect(llm_request) as llm_connection:
+          # Reset retry count to allow the maximum reconnect attempts for
+          # subsequent connection drops.
+          attempt = 1
           # Skip sending history if we are resuming a session. The server
           # already has the state associated with the resumption handle.
           if (
@@ -553,8 +610,6 @@ class BaseLlmFlow(ABC):
                 )
             ) as agen:
               async for event in agen:
-                # Reset attempt counter on successful communication.
-                attempt = 1
                 # Empty event means the queue is closed.
                 if not event:
                   break

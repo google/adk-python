@@ -90,7 +90,7 @@ class State:
 
   def __setitem__(self, key: str, value: Any) -> None:
     """Sets the value of the state dict for the given key."""
-    if self._schema is not None:
+    if self._schema is not None and isinstance(self._schema, type):
       _validate_state_entry(self._schema, key, value)
     # TODO: make new change only store in delta, so that self._value is only
     #   updated at the storage commit time.
@@ -121,7 +121,7 @@ class State:
 
   def update(self, delta: dict[str, Any]) -> None:
     """Updates the state dict with the given delta."""
-    if self._schema is not None:
+    if self._schema is not None and isinstance(self._schema, type):
       for key, value in delta.items():
         _validate_state_entry(self._schema, key, value)
     self._value.update(delta)

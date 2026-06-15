@@ -68,6 +68,48 @@ _TOOL_THREAD_POOLS: dict[int, ThreadPoolExecutor] = {}
 _TOOL_THREAD_POOL_LOCK = threading.Lock()
 
 
+def _detect_error_type_for_telemetry(
+    tool: BaseTool,
+    tool_context: ToolContext,
+    function_response: Any,
+) -> Optional[str]:
+  """Detects an error type from a tool response for telemetry purposes.
+
+  This does not modify the response. `_detect_error_in_response` is an optional
+  per-tool hook accessed via `getattr` to avoid adding a public API on
+  `BaseTool`. Any exception raised by the detector is logged and swallowed so
+  that telemetry logic never breaks tool execution.
+
+  Args:
+    tool: The tool whose response is being inspected.
+    tool_context: The tool context for the current invocation. Detection is
+      skipped when the tool is requesting auth or confirmation.
+    function_response: The raw response returned by the tool.
+
+  Returns:
+    The error type string reported by the tool's `_detect_error_in_response`
+    hook, or `None` if no error was detected, no hook is defined, or the hook
+    raised an exception.
+  """
+  try:
+    if (
+        tool_context.actions.requested_auth_configs
+        or tool_context.actions.requested_tool_confirmations
+    ):
+      return None
+    detector = getattr(tool, '_detect_error_in_response', None)
+    if detector is None:
+      return None
+    return detector(function_response)
+  except Exception:  # pylint: disable=broad-exception-caught
+    # Never let telemetry logic break tool execution.
+    logger.exception(
+        'Error while detecting error type for telemetry from tool %r.',
+        getattr(tool, 'name', tool),
+    )
+    return None
+
+
 def _is_live_request_queue_annotation(param: inspect.Parameter) -> bool:
   """Check whether a parameter is annotated as LiveRequestQueue.
 
@@ -339,9 +381,7 @@ def generate_request_confirmation_event(
       invocation_id=invocation_context.invocation_id,
       author=invocation_context.agent.name,
       branch=invocation_context.branch,
-      content=types.Content(
-          parts=parts, role=function_response_event.content.role
-      ),
+      content=types.Content(parts=parts, role='model'),
       long_running_tool_ids=long_running_tool_ids,
   )
 
@@ -372,7 +412,6 @@ async def handle_function_call_list_async(
     tool_confirmation_dict: Optional[dict[str, ToolConfirmation]] = None,
 ) -> Optional[Event]:
   """Calls the functions and returns the function response event."""
-  from ...agents.llm_agent import LlmAgent
 
   agent = invocation_context.agent
 
@@ -430,6 +469,7 @@ async def handle_function_call_list_async(
       trace_merged_tool_calls(
           response_event_id=merged_event.id,
           function_response_event=merged_event,
+          invocation_context=invocation_context,
       )
   return merged_event
 
@@ -482,6 +522,7 @@ async def _execute_single_function_call_async(
   function_args = (
       copy.deepcopy(function_call.args) if function_call.args else {}
   )
+  detected_error_type: Optional[str] = None
 
   tool_context = _create_tool_context(
       invocation_context, function_call, tool_confirmation
@@ -505,7 +546,7 @@ async def _execute_single_function_call_async(
       raise tool_error
 
   async def _run_with_trace():
-    nonlocal function_args
+    nonlocal function_args, detected_error_type
 
     # Step 1: Check if plugin before_tool_callback overrides the function
     # response.
@@ -586,6 +627,10 @@ async def _execute_single_function_call_async(
       # the tool returned nothing.
       return None
 
+    detected_error_type = _detect_error_type_for_telemetry(
+        tool, tool_context, function_response
+    )
+
     # Note: State deltas are not applied here - they are collected in
     # tool_context.actions.state_delta and applied later when the session
     # service processes the events
@@ -597,9 +642,10 @@ async def _execute_single_function_call_async(
     return function_response_event
 
   async with _instrumentation.record_tool_execution(
-      tool, agent, function_args
+      tool, agent, function_args, invocation_context=invocation_context
   ) as tel_ctx:
     tel_ctx.function_response_event = await _run_with_trace()
+    tel_ctx.error_type = detected_error_type
     return tel_ctx.function_response_event
 
 
@@ -666,6 +712,7 @@ async def handle_function_calls_live(
       trace_merged_tool_calls(
           response_event_id=merged_event.id,
           function_response_event=merged_event,
+          invocation_context=invocation_context,
       )
   return merged_event
 
@@ -718,6 +765,7 @@ async def _execute_single_function_call_live(
   function_args = (
       copy.deepcopy(function_call.args) if function_call.args else {}
   )
+  detected_error_type: Optional[str] = None
 
   tool_context = _create_tool_context(invocation_context, function_call)
 
@@ -738,7 +786,7 @@ async def _execute_single_function_call_live(
     raise tool_error
 
   async def _run_with_trace():
-    nonlocal function_args
+    nonlocal function_args, detected_error_type
 
     # Do not use "args" as the variable name, because it is a reserved keyword
     # in python debugger.
@@ -827,6 +875,10 @@ async def _execute_single_function_call_live(
       # build when the tool returned nothing.
       return None
 
+    detected_error_type = _detect_error_type_for_telemetry(
+        tool, tool_context, function_response
+    )
+
     # Note: State deltas are not applied here - they are collected in
     # tool_context.actions.state_delta and applied later when the session
     # service processes the events
@@ -838,9 +890,10 @@ async def _execute_single_function_call_live(
     return function_response_event
 
   async with _instrumentation.record_tool_execution(
-      tool, agent, function_args
+      tool, agent, function_args, invocation_context=invocation_context
   ) as tel_ctx:
     tel_ctx.function_response_event = await _run_with_trace()
+    tel_ctx.error_type = detected_error_type
     return tel_ctx.function_response_event
 
 

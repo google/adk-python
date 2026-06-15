@@ -53,8 +53,16 @@
               "id": "fc-1",
               "name": "create_entity_profile",
               "response": {
-                "message": "Unexpected entity type: <class 'dict'>",
-                "status": "error"
+                "entity_type": "company",
+                "message": "Company profile created for Acme Corp!",
+                "profile": {
+                  "company_name": "Acme Corp",
+                  "employee_count": 50,
+                  "industry": "tech",
+                  "model_type": "CompanyProfile",
+                  "website": "Not provided"
+                },
+                "status": "company_profile_created"
               }
             }
           }
@@ -72,64 +80,13 @@
       "content": {
         "parts": [
           {
-            "functionCall": {
-              "args": {
-                "entity": {
-                  "company_name": "Acme Corp",
-                  "employee_count": 50,
-                  "industry": "tech"
-                }
-              },
-              "id": "fc-2",
-              "name": "create_entity_profile"
-            }
+            "text": "I have created a profile for Acme Corp in the tech industry with 50 employees."
           }
         ],
         "role": "model"
       },
       "finishReason": "STOP",
       "id": "e-4",
-      "invocationId": "i-1",
-      "longRunningToolIds": [],
-      "nodeInfo": {
-        "path": "profile_agent@1"
-      }
-    },
-    {
-      "author": "profile_agent",
-      "content": {
-        "parts": [
-          {
-            "functionResponse": {
-              "id": "fc-2",
-              "name": "create_entity_profile",
-              "response": {
-                "message": "Unexpected entity type: <class 'dict'>",
-                "status": "error"
-              }
-            }
-          }
-        ],
-        "role": "user"
-      },
-      "id": "e-5",
-      "invocationId": "i-1",
-      "nodeInfo": {
-        "path": "profile_agent@1"
-      }
-    },
-    {
-      "author": "profile_agent",
-      "content": {
-        "parts": [
-          {
-            "text": "I apologize for the repeated errors. It seems I am having trouble with the tool's expected input format. I will try again to create the company profile for Acme Corp. I believe the issue was in how I was structuring the data for the `create_entity_profile` function. I will now use the correct dataclass constructor to create the profile. Please bear with me."
-          }
-        ],
-        "role": "model"
-      },
-      "finishReason": "STOP",
-      "id": "e-6",
       "invocationId": "i-1",
       "nodeInfo": {
         "path": "profile_agent@1"

@@ -92,9 +92,9 @@ def _generate_files(
   with open(dotenv_file_path, "w", encoding="utf-8") as f:
     lines = []
     if google_cloud_project and google_cloud_region:
-      lines.append("GOOGLE_GENAI_USE_VERTEXAI=1")
+      lines.append("GOOGLE_GENAI_USE_ENTERPRISE=1")
     elif google_api_key:
-      lines.append("GOOGLE_GENAI_USE_VERTEXAI=0")
+      lines.append("GOOGLE_GENAI_USE_ENTERPRISE=0")
     if google_api_key:
       lines.append(f"GOOGLE_API_KEY={google_api_key}")
     if google_cloud_project:
@@ -128,13 +128,13 @@ def _prompt_for_model() -> str:
   model_choice = click.prompt(
       """\
 Choose a model for the root agent:
-1. gemini-2.5-flash
+1. gemini-3.5-flash
 2. Other models (fill later)
 Choose model""",
       type=click.Choice(["1", "2"]),
   )
   if model_choice == "1":
-    return "gemini-2.5-flash"
+    return "gemini-3.5-flash"
   else:
     click.secho(_OTHER_MODEL_MSG, fg="green")
     return "<FILL_IN_MODEL>"

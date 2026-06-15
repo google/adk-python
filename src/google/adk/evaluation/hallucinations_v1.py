@@ -28,7 +28,6 @@ from typing_extensions import override
 
 from ..models.base_llm import BaseLlm
 from ..models.llm_request import LlmRequest
-from ..models.llm_response import LlmResponse
 from ..models.registry import LLMRegistry
 from ..utils.context_utils import Aclosing
 from ..utils.feature_decorator import experimental

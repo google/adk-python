@@ -22,6 +22,9 @@ Prerequisites:
      - GOOGLE_CLOUD_PROJECT: Your GCP project ID
      - VMAAS_SERVICE_ACCOUNT: Your service account email with
        roles/iam.serviceAccountTokenCreator permission
+     - VMAAS_SANDBOX_NAME: (Optional) Existing sandbox resource name for BYOS mode
+     - VMAAS_SANDBOX_TEMPLATE_NAME: (Optional) Sandbox template name to create a new sandbox (mutually exclusive with VMAAS_SANDBOX_NAME)
+     - VMAAS_SANDBOX_SNAPSHOT_NAME: (Optional) Sandbox snapshot name to create a new sandbox (mutually exclusive with VMAAS_SANDBOX_NAME)
 
 Usage:
   cd contributing/samples

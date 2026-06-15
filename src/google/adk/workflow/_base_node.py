@@ -28,6 +28,7 @@ from pydantic import TypeAdapter
 from pydantic import ValidationError
 
 from ..utils._schema_utils import SchemaType
+from ..utils.content_utils import extract_text_from_content
 from ._retry_config import RetryConfig
 
 if TYPE_CHECKING:
@@ -143,7 +144,7 @@ class BaseNode(BaseModel):
     """Validates data against input_schema if set."""
     if self.input_schema and isinstance(data, types.Content):
       # Extract text from Content (e.g. user input from START node).
-      text = ''.join(part.text for part in data.parts if part.text)
+      text = extract_text_from_content(data)
       if self.input_schema is str:
         return text
       # If schema is defined, try to parse the text as JSON.
@@ -168,7 +169,7 @@ class BaseNode(BaseModel):
     except ValidationError as e:
       # 2. If failed, try to parse JSON ONLY if it's Content
       if isinstance(data, types.Content):
-        text = ''.join(part.text for part in data.parts if part.text)
+        text = extract_text_from_content(data)
         if self.output_schema is str:
           return text
         if text.strip():

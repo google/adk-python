@@ -14,7 +14,6 @@
 
 from __future__ import annotations
 
-import asyncio
 from typing import Any
 from typing import Optional
 from typing import TYPE_CHECKING
@@ -249,6 +248,12 @@ class AgentTool(BaseTool):
         credential_service=tool_context._invocation_context.credential_service,
         plugins=plugins,
     )
+    # When plugins are inherited from the parent runner, the parent still owns
+    # them; tell the sub-Runner's plugin manager to skip closing them on exit
+    # so shared plugins (e.g. observability exporters) are not torn down while
+    # the parent is still using them.
+    if self.include_plugins:
+      runner.plugin_manager.set_skip_closing_plugins(True)
 
     state_dict = {
         k: v

@@ -32,7 +32,9 @@ from ..features import FeatureName
 from ..utils.context_utils import Aclosing
 from .base_agent import BaseAgent
 from .base_agent import BaseAgentState
+from .base_agent_config import BaseAgentConfig
 from .invocation_context import InvocationContext
+from .loop_agent_config import LoopAgentConfig
 
 logger = logging.getLogger('google_adk.' + __name__)
 
@@ -57,6 +59,17 @@ class LoopAgent(BaseAgent):
 
   When sub-agent generates an event with escalate or max_iterations are
   reached, the loop agent will stop.
+
+  .. deprecated::
+    LoopAgent is deprecated and will be removed in future versions.
+    Please use Workflow instead.
+  """
+
+  config_type: ClassVar[type[BaseAgentConfig]] = LoopAgentConfig
+  """The config type for this agent.
+
+  DEPRECATED: This attribute is deprecated and will be removed in a future
+  version, along with the AgentConfig YAML loader.
   """
 
   max_iterations: Optional[int] = None
@@ -152,3 +165,16 @@ class LoopAgent(BaseAgent):
   ) -> AsyncGenerator[Event, None]:
     raise NotImplementedError('This is not supported yet for LoopAgent.')
     yield  # AsyncGenerator requires having at least one yield statement
+
+  @override
+  @classmethod
+  @experimental(FeatureName.AGENT_CONFIG)
+  def _parse_config(
+      cls: type[LoopAgent],
+      config: LoopAgentConfig,
+      config_abs_path: str,
+      kwargs: Dict[str, Any],
+  ) -> Dict[str, Any]:
+    if config.max_iterations:
+      kwargs['max_iterations'] = config.max_iterations
+    return kwargs

@@ -27,6 +27,9 @@ Use snake_case for the folder name (e.g., `dynamic_nodes`, `fan_out_fan_in`).
 
 The `agent.py` should focus on demonstrating a specific feature or agent pattern. Use absolute imports for testing convenience.
 
+> [!IMPORTANT]
+> **Model Selection**: Do not set the `model` parameter explicitly (e.g., `model="gemini-2.5-flash"`) on `Agent` instances in sample agents. Instead, let them default to the system-configured model, unless a specific model is explicitly requested by the user.
+
 Choose one of the following patterns:
 
 #### Pattern A: Workflows (for complex graphs)
@@ -74,7 +77,6 @@ from google.adk.tools import google_search  # example
 ```python
 root_agent = Agent(
     name="standalone_assistant",
-    model="gemini-2.5-flash",
     instruction="You are a helpful assistant.",
     description="An assistant that can help with queries.",
     tools=[google_search],
@@ -89,6 +91,7 @@ Each sample should have a `README.md` with the following structure:
 - **Sample Inputs**: Examples of inputs to test with. Each prompt must be wrapped in backticks. If a prompt has an explanation, always add a blank line between the prompt and the explanation, and indent the explanation by two spaces.
 - **Graph**: Visualization of the graph flow (Mermaid recommended for workflows).
 - **How To**: Explanation of key techniques used (e.g., `ctx.run_node`).
+- **Related Guides**: Links to relevant developer guides in `docs/guides/` that explain the concepts or classes used.
 
 #### README Example Template:
 
@@ -114,12 +117,13 @@ graph TD
     START --> MyNode
 ```
 
-````
-
 ## How To
 
 Explain the details.
 
+## Related Guides
+
+- [Guide Title](../../docs/guides/path/to/guide.md) - Brief description of what the guide covers.
 ````
 
 ## Examples

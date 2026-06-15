@@ -383,6 +383,7 @@ class EvaluationGenerator:
       current_invocation_id: str,
       turn_complete_event: asyncio.Event,
       live_timeout_seconds: int,
+      agent_name: str = _DEFAULT_AUTHOR,
   ) -> AsyncGenerator[Event, None]:
     """Generates inferences for a single user invocation in live mode."""
     yield Event(
@@ -408,6 +409,22 @@ class EvaluationGenerator:
       event = await event_queue.get()
       if event.invocation_id == current_invocation_id:
         yield event
+        # Emit a synthetic text event for each transcription, preserving
+        # the order in which events are received.
+        if (
+            event.author != _USER_AUTHOR
+            and event.output_transcription
+            and event.output_transcription.text
+            and event.partial
+        ):
+          yield Event(
+              content=Content(
+                  role="model",
+                  parts=[types.Part(text=event.output_transcription.text)],
+              ),
+              author=agent_name,
+              invocation_id=current_invocation_id,
+          )
 
   @staticmethod
   async def _generate_inferences_from_root_agent_live(
@@ -495,30 +512,9 @@ class EvaluationGenerator:
                 current_invocation_id=live_session.current_invocation_id,
                 turn_complete_event=live_session.turn_complete_event,
                 live_timeout_seconds=live_timeout_seconds,
+                agent_name=runner.agent.name,
             ):
               events.append(event)
-
-            turn_transcription = ""
-            for evt in events:
-              if (
-                  evt.invocation_id == live_session.current_invocation_id
-                  and evt.author != _USER_AUTHOR
-                  and evt.output_transcription
-              ):
-                if not evt.partial and evt.output_transcription.text:
-                  turn_transcription = evt.output_transcription.text
-                else:
-                  turn_transcription += evt.output_transcription.text
-            if turn_transcription:
-              synthetic_event = Event(
-                  content=Content(
-                      role="model",
-                      parts=[types.Part(text=turn_transcription)],
-                  ),
-                  author=runner.agent.name,
-                  invocation_id=live_session.current_invocation_id,
-              )
-              events.append(synthetic_event)
 
             if live_session.live_finished.is_set():
               logger.info("Live session finished signal detected.")

@@ -12,15 +12,22 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from __future__ import annotations
+
+import asyncio
 import os
+from typing import Any
 
 from google.adk.agents import Agent
 from google.adk.auth.auth_credential import AuthCredentialTypes
+from google.adk.tools import load_artifacts
 from google.adk.tools.data_agent.config import DataAgentToolConfig
 from google.adk.tools.data_agent.credentials import DataAgentCredentialsConfig
 from google.adk.tools.data_agent.data_agent_toolset import DataAgentToolset
+from google.adk.tools.tool_context import ToolContext
 import google.auth
 import google.auth.transport.requests
+from google.genai import types
 
 # Define the desired credential type.
 # By default use Application Default Credentials (ADC) from the local
@@ -72,16 +79,63 @@ da_toolset = DataAgentToolset(
     ],
 )
 
+
+# NOTE: The generate_chart tool requires 'altair' and 'vl-convert-python' to be
+# installed in your environment. You can install them using:
+# pip install altair vl-convert-python
+async def generate_chart(
+    chart_spec: dict[str, Any], tool_context: ToolContext
+) -> dict[str, str]:
+  """Generates a professional chart using Altair based on a Vega-Lite spec.
+
+  Args:
+    chart_spec: A dictionary defining a Vega-Lite chart.
+    tool_context: The tool context.
+
+  Returns:
+    A dictionary containing the status of the chart generation ("success" or
+    "error"), a detail message, and the filename if successful.
+  """
+  import altair as alt
+  import vl_convert as vlc
+
+  try:
+    # Altair can take a Vega-Lite dict directly and render it.
+    # We use vl-convert to transform the spec into a high-quality PNG.
+    png_data = await asyncio.to_thread(vlc.vegalite_to_png, chart_spec, scale=2)
+
+    # Save as artifact
+    await tool_context.save_artifact(
+        "chart.png",
+        types.Part.from_bytes(data=png_data, mime_type="image/png"),
+    )
+    title = chart_spec.get("title", "Chart")
+    return {
+        "status": "success",
+        "detail": (
+            f"Professional chart '{title}' rendered using Altair/Vega-Lite."
+        ),
+        "filename": "chart.png",
+    }
+  except Exception as e:  # pylint: disable=broad-exception-caught
+    return {"status": "error", "detail": f"Failed to render chart: {str(e)}"}
+
+
 root_agent = Agent(
     name="data_agent",
-    description="Agent to answer user questions using Data Agents.",
+    description=(
+        "Agent to answer user questions using Data Agents and generate charts."
+    ),
     instruction=(
         "## Persona\nYou are a helpful assistant that uses Data Agents"
         " to answer user questions about their data.\n\n## Tools\n- You can"
         " list available data agents using `list_accessible_data_agents`.\n-"
         " You can get information about a specific data agent using"
         " `get_data_agent_info`.\n- You can chat with a specific data"
-        " agent using `ask_data_agent`.\n"
+        " agent using `ask_data_agent`.\n- `generate_chart` renders"
+        " professional charts from a `chart_spec` (Vega-Lite JSON). Use this"
+        " whenever you need to visualize data; do not show raw JSON to the"
+        " user.\n- You can load artifacts using `load_artifacts`.\n"
     ),
-    tools=[da_toolset],
+    tools=[da_toolset, generate_chart, load_artifacts],
 )

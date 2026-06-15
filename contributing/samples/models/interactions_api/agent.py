@@ -12,19 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Agent definition for testing the Interactions API integration.
-
-NOTE: The Interactions API does NOT support mixing custom function calling tools
-with built-in tools in the same agent. To work around this limitation, we use
-bypass_multi_tools_limit=True on GoogleSearchTool, which converts the built-in
-google_search to a function calling tool (via GoogleSearchAgentTool).
-
-The bypass is only triggered when len(agent.tools) > 1, so we include multiple
-tools in the agent (GoogleSearchTool + get_current_weather).
-
-With bypass_multi_tools_limit=True and multiple tools, all tools become function
-calling tools, which allows mixing google_search with custom function tools.
-"""
+"""Agent definition for testing the Interactions API integration."""
 
 from google.adk.agents.llm_agent import Agent
 from google.adk.models.google_llm import Gemini
@@ -74,16 +62,13 @@ def get_current_weather(city: str) -> dict:
     }
 
 
-# Main agent with google_search (via bypass) and custom function tools
-# Using bypass_multi_tools_limit=True converts google_search to a function calling tool.
-# We need len(tools) > 1 to trigger the bypass, so we include get_current_weather directly.
-# This allows mixing google_search with custom function tools via the Interactions API.
+# Main agent with google_search built-in tool and custom function tools
 #
 # NOTE: code_executor is not compatible with function calling mode because the model
 # tries to call a function (e.g., run_code) instead of outputting code in markdown.
 root_agent = Agent(
     model=Gemini(
-        model="gemini-3-flash-preview",
+        model="gemini-3.1-flash-lite",
         use_interactions_api=True,
     ),
     name="interactions_test_agent",
@@ -99,7 +84,7 @@ When users ask about weather, use get_current_weather.
 Be concise and helpful in your responses. Always confirm what you did.
 """,
     tools=[
-        GoogleSearchTool(bypass_multi_tools_limit=True),
+        GoogleSearchTool(),
         get_current_weather,
     ],
 )

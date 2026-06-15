@@ -16,16 +16,13 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import os
 import re
-from typing import Any
 from typing import Optional
 from typing import TYPE_CHECKING
 
 from google.cloud.firestore_v1.base_query import FieldFilter
 from typing_extensions import override
 
-from ...events.event import Event
 from ...memory import _utils
 from ...memory.base_memory_service import BaseMemoryService
 from ...memory.base_memory_service import SearchMemoryResponse

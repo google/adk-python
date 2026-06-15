@@ -100,3 +100,37 @@ jobs:
           else
             echo "✅ No relevant Python files found."
           fi
+
+      - name: Check for hardcoded googleapis.com endpoints
+        run: |
+          git fetch origin ${GITHUB_BASE_REF}
+          CHANGED_FILES=$(git diff --diff-filter=ACMR --name-only origin/${GITHUB_BASE_REF}...HEAD | grep -E '\.py$' || true)
+          if [ -n "$CHANGED_FILES" ]; then
+            echo "Checking for hardcoded endpoints in: $CHANGED_FILES"
+
+            # 1. Identify files containing any googleapis.com URL.
+            set +e
+            FILES_WITH_ENDPOINTS=$(grep -lE 'https?://[a-zA-Z0-9.-]+\.googleapis\.com' $CHANGED_FILES)
+
+            # 2. From those, identify files that are MISSING the required mTLS version.
+            if [ -n "$FILES_WITH_ENDPOINTS" ]; then
+              FILES_MISSING_MTLS=$(grep -L '.mtls.googleapis.com' $FILES_WITH_ENDPOINTS)
+            fi
+            set -e
+
+            if [ -n "$FILES_MISSING_MTLS" ]; then
+              echo "❌ Found hardcoded googleapis.com endpoints without mTLS support."
+              echo "The following files must define both standard and mTLS (.mtls.googleapis.com) endpoints"
+              echo "to support dynamic endpoint selection as required by security policy:"
+              echo "$FILES_MISSING_MTLS"
+              echo ""
+              echo "To fix this, please follow these steps:"
+              echo "1. Initialize an AuthorizedSession with your credentials."
+              echo "2. Use 'mtls.has_default_client_cert_source() from google-auth' to check for available client certificates."
+              echo "3. If certificates are present, use 'session.configure_mtls_channel()'."
+              echo "4. Dynamically select the '.mtls.' variant of the endpoint when mTLS is active."
+              exit 1
+            else
+              echo "✅ All hardcoded endpoints have corresponding mTLS definitions or no endpoints found."
+            fi
+          fi
