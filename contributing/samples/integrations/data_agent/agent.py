@@ -79,6 +79,7 @@ da_toolset = DataAgentToolset(
     ],
 )
 
+
 # NOTE: The generate_chart tool requires 'altair' and 'vl-convert-python' to be
 # installed in your environment. You can install them using:
 # pip install altair vl-convert-python

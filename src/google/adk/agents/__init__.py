@@ -17,16 +17,21 @@ from typing import Any
 from typing import TYPE_CHECKING
 
 from .base_agent import BaseAgent
+from .base_agent_config import BaseAgentConfig
 from .context import Context
 from .invocation_context import InvocationContext
 from .live_request_queue import LiveRequest
 from .live_request_queue import LiveRequestQueue
 from .llm_agent import Agent
 from .llm_agent import LlmAgent
+from .llm_agent_config import LlmAgentConfig
 from .loop_agent import LoopAgent
+from .loop_agent_config import LoopAgentConfig
 from .parallel_agent import ParallelAgent
+from .parallel_agent_config import ParallelAgentConfig
 from .run_config import RunConfig
 from .sequential_agent import SequentialAgent
+from .sequential_agent_config import SequentialAgentConfig
 
 if TYPE_CHECKING:
   from .mcp_instruction_provider import McpInstructionProvider
@@ -44,6 +49,11 @@ __all__ = [
     'LiveRequest',
     'LiveRequestQueue',
     'RunConfig',
+    'BaseAgentConfig',
+    'LlmAgentConfig',
+    'LoopAgentConfig',
+    'ParallelAgentConfig',
+    'SequentialAgentConfig',
 ]
 
 

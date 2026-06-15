@@ -411,7 +411,8 @@ def _list_skills_in_gcs_dir(
   except ImportError as e:
     raise ImportError(
         "google-cloud-storage is required to list skills in GCS. Install it"
-        " with `pip install google-cloud-storage` or `pip install google-adk[gcp]`."
+        " with `pip install google-cloud-storage` or `pip install"
+        " google-adk[gcp]`."
     ) from e
 
   client = storage.Client(project=project_id, credentials=credentials)
@@ -478,7 +479,8 @@ def _load_skill_from_gcs_dir(
   except ImportError as e:
     raise ImportError(
         "google-cloud-storage is required to load skills from GCS. Install it"
-        " with `pip install google-cloud-storage` or `pip install google-adk[gcp]`."
+        " with `pip install google-cloud-storage` or `pip install"
+        " google-adk[gcp]`."
     ) from e
 
   client = storage.Client(project=project_id, credentials=credentials)

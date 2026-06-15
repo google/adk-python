@@ -35,7 +35,6 @@ from .auth_schemes import OpenIdConnectWithConfig
 from .auth_tool import AuthConfig
 from .base_auth_provider import BaseAuthProvider
 from .exchanger.base_credential_exchanger import BaseCredentialExchanger
-from .exchanger.base_credential_exchanger import ExchangeResult
 from .exchanger.credential_exchanger_registry import CredentialExchangerRegistry
 from .oauth2_discovery import OAuth2DiscoveryManager
 from .refresher.credential_refresher_registry import CredentialRefresherRegistry

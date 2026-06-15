@@ -2539,6 +2539,7 @@ class TestRemoteA2aAgentIntegration:
     # Mock session with text event
     mock_part = Mock()
     mock_part.text = "Hello world"
+    mock_part.part_metadata = None
 
     mock_content = Mock()
     mock_content.parts = [mock_part]
@@ -2636,6 +2637,7 @@ class TestRemoteA2aAgentIntegration:
     # Mock session with text event
     mock_part = Mock()
     mock_part.text = "Hello world"
+    mock_part.part_metadata = {"test": "part_metadata"}
 
     mock_content = Mock()
     mock_content.parts = [mock_part]

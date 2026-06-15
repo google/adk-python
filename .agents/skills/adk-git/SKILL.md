@@ -73,6 +73,7 @@ Self-check before committing: read your subject line and ask "does this tell me 
 4. **50 char limit** on subject line when possible, max 72.
 5. **Use body for context** - Add a blank line then explain _why_,
    not _how_, when the subject alone isn't enough.
+6. **Reference GitHub issues** - If the commit fixes a GitHub issue, include "Fixes #<issue-number>" or "Closes #<issue-number>" (or the full issue URL if cross-repository) in the commit message body.
 
 ### Examples
 

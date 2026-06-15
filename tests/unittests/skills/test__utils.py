@@ -393,5 +393,3 @@ def test__load_skill_from_gcs_dir_import_error():
   with mock.patch("builtins.__import__", mock_import):
     with pytest.raises(ImportError, match="google-cloud-storage is required"):
       _load_skill_from_gcs_dir("my-bucket", "skills/my-skill/")
-
-

@@ -34,7 +34,7 @@ from .base_credential_exchanger import CredentialExchangeError
 from .base_credential_exchanger import ExchangeResult
 
 try:
-  from authlib.integrations.requests_client import OAuth2Session
+  from authlib.integrations.requests_client import OAuth2Session  # noqa: F401
 
   AUTHLIB_AVAILABLE = True
 except ImportError:

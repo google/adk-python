@@ -166,6 +166,128 @@ class TestSingleAgentInterruptions:
     assert any('Final answer' in t for t in text_parts(resume_events))
     assert len(mock_model.requests) == 2
 
+  async def test_single_agent_request_input_tool_interrupt_and_resume(self):
+    """Test that using RequestInputTool successfully triggers an interrupt and resumes with user input."""
+    from google.adk.tools import request_input
+
+    fc = types.Part.from_function_call(
+        name='adk_request_input',
+        args={'message': 'Which file?', 'response_schema': {'type': 'string'}},
+    )
+    mock_model = testing_utils.MockModel.create(
+        responses=[fc, 'Continuing with file: file_a.txt']
+    )
+
+    runner = await _setup_runner(mock_model, tools=[request_input])
+
+    # Act: Run first turn
+    events = await _run_turn(runner, 'Start')
+
+    # Assert: Verify the interrupt event is produced
+    assert any(e.long_running_tool_ids for e in events)
+    assert any(
+        any(
+            p.function_call and p.function_call.name == 'adk_request_input'
+            for p in e.content.parts or []
+        )
+        for e in events
+    )
+
+    # Act: Resume with the response
+    resume_events = await _resume_turn(
+        runner, events, 'adk_request_input', tool_response_value='file_a.txt'
+    )
+
+    # Assert: Execution should continue with user response in the prompt history
+    assert len(mock_model.requests) == 2
+
+    # Assert: Verify the second request contains the FunctionCall & FunctionResponse pair
+    second_req_contents = mock_model.requests[1].contents
+    assert any(
+        any(
+            p.function_call and p.function_call.name == 'adk_request_input'
+            for p in c.parts or []
+        )
+        for c in second_req_contents
+    )
+    assert any(
+        any(
+            p.function_response
+            and p.function_response.name == 'adk_request_input'
+            for p in c.parts or []
+        )
+        for c in second_req_contents
+    )
+
+  async def test_single_agent_request_input_tool_structured_schema(self):
+    """Test that using RequestInputTool with a structured object schema successfully interrupts and resumes with a dictionary response."""
+    from google.adk.tools import request_input
+
+    schema = {
+        'type': 'object',
+        'properties': {
+            'host': {'type': 'string'},
+            'port': {'type': 'integer'},
+        },
+        'required': ['host'],
+    }
+    fc = types.Part.from_function_call(
+        name='adk_request_input',
+        args={
+            'message': 'Provide DB connection details:',
+            'response_schema': schema,
+        },
+    )
+    mock_model = testing_utils.MockModel.create(
+        responses=[fc, 'Connected to localhost:3306']
+    )
+
+    runner = await _setup_runner(mock_model, tools=[request_input])
+
+    # Act: Run first turn
+    events = await _run_turn(runner, 'Start')
+
+    # Assert: Verify the interrupt event is produced with the schema args
+    assert any(e.long_running_tool_ids for e in events)
+    fc_event = next(
+        e
+        for e in events
+        if e.content
+        and any(
+            p.function_call and p.function_call.name == 'adk_request_input'
+            for p in e.content.parts or []
+        )
+    )
+    fc_part = next(p for p in fc_event.content.parts if p.function_call)
+    assert fc_part.function_call.args['response_schema'] == schema
+
+    # Act: Resume with a structured dict response
+    db_details = {'host': 'localhost', 'port': 3306}
+    resume_events = await _resume_turn(
+        runner, events, 'adk_request_input', tool_response_value=db_details
+    )
+
+    # Assert: Execution should continue with the structured user response
+    assert len(mock_model.requests) == 2
+
+    # Assert: Verify the second request contains the FunctionCall & FunctionResponse pair
+    second_req_contents = mock_model.requests[1].contents
+    assert any(
+        any(
+            p.function_call and p.function_call.name == 'adk_request_input'
+            for p in c.parts or []
+        )
+        for c in second_req_contents
+    )
+    assert any(
+        any(
+            p.function_response
+            and p.function_response.name == 'adk_request_input'
+            for p in c.parts or []
+        )
+        for c in second_req_contents
+    )
+
 
 class TestNestedAgentInterruptions:
   """Tests for multi-agent setups with interruptions."""

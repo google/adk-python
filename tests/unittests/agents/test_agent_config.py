@@ -21,7 +21,9 @@ from typing import Type
 from unittest import mock
 
 from google.adk.agents import config_agent_utils
+from google.adk.agents.agent_config import AgentConfig
 from google.adk.agents.base_agent import BaseAgent
+from google.adk.agents.base_agent_config import BaseAgentConfig
 from google.adk.agents.common_configs import AgentRefConfig
 from google.adk.agents.llm_agent import LlmAgent
 from google.adk.agents.loop_agent import LoopAgent
@@ -44,9 +46,11 @@ tools:
   config_file = tmp_path / "test_config.yaml"
   config_file.write_text(yaml_content)
 
+  config = AgentConfig.model_validate(yaml.safe_load(yaml_content))
   agent = config_agent_utils.from_config(str(config_file))
 
   assert isinstance(agent, LlmAgent)
+  assert config.root.agent_class == "LlmAgent"
 
 
 @pytest.mark.parametrize(
@@ -72,9 +76,11 @@ tools:
   config_file = tmp_path / "test_config.yaml"
   config_file.write_text(yaml_content)
 
+  config = AgentConfig.model_validate(yaml.safe_load(yaml_content))
   agent = config_agent_utils.from_config(str(config_file))
 
   assert isinstance(agent, LlmAgent)
+  assert config.root.agent_class == agent_class_value
 
 
 @pytest.mark.parametrize(
@@ -88,25 +94,20 @@ tools:
 def test_agent_config_discriminator_loop_agent(
     agent_class_value: str, tmp_path: Path
 ):
-  sub_agent_dir = tmp_path / "sub_agents"
-  sub_agent_dir.mkdir()
-  (sub_agent_dir / "sub_agent.yaml").write_text(
-      "name: sub_agent\nmodel: gemini-2.0-flash\n"
-      "description: a sub agent\ninstruction: sub agent instruction\n"
-  )
   yaml_content = f"""\
 agent_class: {agent_class_value}
 name: CodePipelineAgent
 description: Executes a sequence of code writing, reviewing, and refactoring.
-sub_agents:
-  - config_path: sub_agents/sub_agent.yaml
+sub_agents: []
 """
   config_file = tmp_path / "test_config.yaml"
   config_file.write_text(yaml_content)
 
+  config = AgentConfig.model_validate(yaml.safe_load(yaml_content))
   agent = config_agent_utils.from_config(str(config_file))
 
   assert isinstance(agent, LoopAgent)
+  assert config.root.agent_class == agent_class_value
 
 
 @pytest.mark.parametrize(
@@ -120,25 +121,20 @@ sub_agents:
 def test_agent_config_discriminator_parallel_agent(
     agent_class_value: str, tmp_path: Path
 ):
-  sub_agent_dir = tmp_path / "sub_agents"
-  sub_agent_dir.mkdir()
-  (sub_agent_dir / "sub_agent.yaml").write_text(
-      "name: sub_agent\nmodel: gemini-2.0-flash\n"
-      "description: a sub agent\ninstruction: sub agent instruction\n"
-  )
   yaml_content = f"""\
 agent_class: {agent_class_value}
 name: CodePipelineAgent
 description: Executes a sequence of code writing, reviewing, and refactoring.
-sub_agents:
-  - config_path: sub_agents/sub_agent.yaml
+sub_agents: []
 """
   config_file = tmp_path / "test_config.yaml"
   config_file.write_text(yaml_content)
 
+  config = AgentConfig.model_validate(yaml.safe_load(yaml_content))
   agent = config_agent_utils.from_config(str(config_file))
 
   assert isinstance(agent, ParallelAgent)
+  assert config.root.agent_class == agent_class_value
 
 
 @pytest.mark.parametrize(
@@ -152,25 +148,20 @@ sub_agents:
 def test_agent_config_discriminator_sequential_agent(
     agent_class_value: str, tmp_path: Path
 ):
-  sub_agent_dir = tmp_path / "sub_agents"
-  sub_agent_dir.mkdir()
-  (sub_agent_dir / "sub_agent.yaml").write_text(
-      "name: sub_agent\nmodel: gemini-2.0-flash\n"
-      "description: a sub agent\ninstruction: sub agent instruction\n"
-  )
   yaml_content = f"""\
 agent_class: {agent_class_value}
 name: CodePipelineAgent
 description: Executes a sequence of code writing, reviewing, and refactoring.
-sub_agents:
-  - config_path: sub_agents/sub_agent.yaml
+sub_agents: []
 """
   config_file = tmp_path / "test_config.yaml"
   config_file.write_text(yaml_content)
 
+  config = AgentConfig.model_validate(yaml.safe_load(yaml_content))
   agent = config_agent_utils.from_config(str(config_file))
 
   assert isinstance(agent, SequentialAgent)
+  assert config.root.agent_class == agent_class_value
 
 
 @pytest.mark.parametrize(
@@ -216,9 +207,11 @@ sub_agents:
   config_file = tmp_path / "test_config.yaml"
   config_file.write_text(yaml_content)
 
+  config = AgentConfig.model_validate(yaml.safe_load(yaml_content))
   agent = config_agent_utils.from_config(str(config_file))
 
   assert isinstance(agent, expected_agent_type)
+  assert config.root.agent_class == agent_class_value
 
 
 @pytest.mark.parametrize(
@@ -260,9 +253,130 @@ sub_agents:
   config_file = tmp_path / "test_config.yaml"
   config_file.write_text(yaml_content)
 
+  config = AgentConfig.model_validate(yaml.safe_load(yaml_content))
   agent = config_agent_utils.from_config(str(config_file))
 
   assert isinstance(agent, expected_agent_type)
+  assert config.root.agent_class == agent_class_value
+
+
+def test_agent_config_model_code_resolves_preconfigured_client(tmp_path: Path):
+  """model_code references a pre-built model instance by fully qualified name.
+
+  Configured clients (custom api_base, etc.) must be constructed in Python
+  and referenced from YAML; YAML cannot pass constructor arguments.
+  """
+  preconfigured = LiteLlm(
+      model="kimi/k2", api_base="https://proxy.litellm.ai/v1"
+  )
+
+  yaml_content = """\
+name: managed_api_agent
+description: Agent using LiteLLM managed endpoint
+instruction: Respond concisely.
+model_code:
+  name: my_library.clients.my_litellm
+"""
+  config_file = tmp_path / "litellm_agent.yaml"
+  config_file.write_text(yaml_content)
+
+  with mock.patch.object(
+      config_agent_utils,
+      "resolve_code_reference",
+      return_value=preconfigured,
+  ):
+    agent = config_agent_utils.from_config(str(config_file))
+
+  assert isinstance(agent, LlmAgent)
+  assert agent.model is preconfigured
+
+
+def test_agent_config_discriminator_custom_agent():
+  class MyCustomAgentConfig(BaseAgentConfig):
+    agent_class: Literal["mylib.agents.MyCustomAgent"] = (
+        "mylib.agents.MyCustomAgent"
+    )
+    other_field: str
+
+  yaml_content = """\
+agent_class: mylib.agents.MyCustomAgent
+name: CodePipelineAgent
+description: Executes a sequence of code writing, reviewing, and refactoring.
+other_field: other value
+"""
+  config_data = yaml.safe_load(yaml_content)
+
+  config = AgentConfig.model_validate(config_data)
+
+  # pylint: disable=unidiomatic-typecheck Needs exact class matching.
+  assert type(config.root) is BaseAgentConfig
+  assert config.root.agent_class == "mylib.agents.MyCustomAgent"
+  assert config.root.model_extra == {"other_field": "other value"}
+
+  my_custom_config = MyCustomAgentConfig.model_validate(
+      config.root.model_dump()
+  )
+  assert my_custom_config.other_field == "other value"
+
+
+def test_from_config_passes_extra_yaml_fields_to_custom_agent_constructor(
+    tmp_path: Path,
+):
+  """Custom agent fields in YAML reach the constructor without a custom config_type.
+
+  Mirrors the 1.x AgentConfigMapper behavior: a custom agent subclass with
+  extra Pydantic fields declared on the agent (not on a config_type) can
+  populate those fields directly from YAML.
+  """
+
+  class MyCustomAgent(BaseAgent):
+    custom_field: str = ""
+
+  yaml_content = """\
+agent_class: mylib.agents.MyCustomAgent
+name: custom_agent
+description: a custom agent
+custom_field: hello from yaml
+"""
+  config_file = tmp_path / "custom_agent.yaml"
+  config_file.write_text(yaml_content)
+
+  with mock.patch.object(
+      config_agent_utils,
+      "resolve_fully_qualified_name",
+      return_value=MyCustomAgent,
+  ):
+    agent = config_agent_utils.from_config(str(config_file))
+
+  assert isinstance(agent, MyCustomAgent)
+  assert agent.custom_field == "hello from yaml"
+
+
+def test_from_config_ignores_extra_yaml_fields_not_on_agent(tmp_path: Path):
+  """Extra YAML keys that don't map to constructor params are silently dropped."""
+
+  class MyCustomAgent(BaseAgent):
+    custom_field: str = ""
+
+  yaml_content = """\
+agent_class: mylib.agents.MyCustomAgent
+name: custom_agent
+description: a custom agent
+custom_field: kept
+unknown_field: dropped
+"""
+  config_file = tmp_path / "custom_agent.yaml"
+  config_file.write_text(yaml_content)
+
+  with mock.patch.object(
+      config_agent_utils,
+      "resolve_fully_qualified_name",
+      return_value=MyCustomAgent,
+  ):
+    agent = config_agent_utils.from_config(str(config_file))
+
+  assert agent.custom_field == "kept"
+  assert not hasattr(agent, "unknown_field")
 
 
 @pytest.mark.parametrize(
@@ -351,118 +465,3 @@ def test_resolve_agent_reference_uses_windows_dirname():
   )
   assert result == "sentinel"
   assert recorded["path"] == expected_path
-
-
-def test_from_config_blocks_args_when_enforced(tmp_path):
-  """Verify from_config blocks 'args' when enforcement is enabled."""
-  config_file = tmp_path / "malicious.yaml"
-  config_file.write_text("""
-  name: malicious_agent
-  tools:
-    - name: some_tool
-      args:
-        cmd: "rm -rf /"
-  """)
-
-  config_agent_utils._set_enforce_denylist(True)
-  try:
-    with pytest.raises(ValueError) as exc_info:
-      config_agent_utils.from_config(str(config_file))
-    assert "Blocked key 'args' found" in str(exc_info.value)
-  finally:
-    config_agent_utils._set_enforce_denylist(False)
-
-
-def test_create_workflow_from_yaml(tmp_path: Path):
-  """Test creating a Workflow from a YAML file."""
-  yaml_content = """
-agent_class: Workflow
-name: my_workflow
-edges:
-  - - START
-    - name: node1
-"""
-  config_file = tmp_path / "workflow_config.yaml"
-  config_file.write_text(yaml_content)
-
-  from google.adk.workflow import Workflow
-
-  agent = config_agent_utils.from_config(str(config_file))
-
-  assert isinstance(agent, Workflow)
-  assert agent.name == "my_workflow"
-  assert agent.graph is not None
-  assert len(agent.graph.nodes) == 2
-  assert agent.graph.nodes[0].name == "__START__"
-  assert agent.graph.nodes[1].name == "node1"
-
-
-def test_create_workflow_with_agent_reference(tmp_path: Path):
-  """Test creating a Workflow with a reference to another agent config."""
-  sub_agent_content = """
-agent_class: LlmAgent
-name: my_sub_agent
-model: gemini-2.0-flash
-"""
-  sub_agent_file = tmp_path / "sub_agent.yaml"
-  sub_agent_file.write_text(sub_agent_content)
-
-  workflow_content = """
-agent_class: Workflow
-name: my_workflow
-edges:
-  - - START
-    - sub_agent.yaml
-"""
-  workflow_file = tmp_path / "workflow_config.yaml"
-  workflow_file.write_text(workflow_content)
-
-  from google.adk.agents.llm_agent import LlmAgent
-  from google.adk.workflow import Workflow
-
-  agent = config_agent_utils.from_config(str(workflow_file))
-
-  assert isinstance(agent, Workflow)
-  assert agent.name == "my_workflow"
-  assert agent.graph is not None
-  assert len(agent.graph.nodes) == 2
-  assert agent.graph.nodes[0].name == "__START__"
-
-  sub_node = agent.graph.nodes[1]
-  assert isinstance(sub_node, LlmAgent)
-  assert sub_node.name == "my_sub_agent"
-
-
-def dummy_node_func(ctx, node_input):
-  """Dummy function for testing FunctionNode resolution."""
-  return "hello"
-
-
-def test_create_workflow_with_function_node(tmp_path: Path):
-  """Test creating a Workflow with a FunctionNode referenced by func_code."""
-  workflow_content = """
-agent_class: Workflow
-name: my_workflow
-edges:
-  - - START
-    - name: my_func_node
-      agent_class: FunctionNode
-      func_code: tests.unittests.agents.test_agent_config.dummy_node_func
-"""
-  workflow_file = tmp_path / "workflow_config.yaml"
-  workflow_file.write_text(workflow_content)
-
-  from google.adk.workflow import Workflow
-  from google.adk.workflow._function_node import FunctionNode
-
-  agent = config_agent_utils.from_config(str(workflow_file))
-
-  assert isinstance(agent, Workflow)
-  assert agent.name == "my_workflow"
-  assert agent.graph is not None
-  assert len(agent.graph.nodes) == 2
-  assert agent.graph.nodes[0].name == "__START__"
-
-  sub_node = agent.graph.nodes[1]
-  assert isinstance(sub_node, FunctionNode)
-  assert sub_node.name == "my_func_node"

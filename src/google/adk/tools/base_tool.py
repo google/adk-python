@@ -39,7 +39,11 @@ logger = logging.getLogger("google_adk." + __name__)
 if TYPE_CHECKING:
   from ..models.llm_request import LlmRequest
   from .tool_configs import ToolArgsConfig
-  from .tool_context import ToolContext
+
+# Re-exported for backward compatibility: existing code imports ToolContext
+# from this module and annotates tool methods with base_tool.ToolContext, which
+# ADK resolves at runtime via get_type_hints(), so it must be importable here.
+from .tool_context import ToolContext  # pylint: disable=unused-import
 
 SelfTool = TypeVar("SelfTool", bound="BaseTool")
 

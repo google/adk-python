@@ -36,3 +36,10 @@ def filter_audio_parts(content: types.Content) -> types.Content | None:
   if not filtered_parts:
     return None
   return types.Content(role=content.role, parts=filtered_parts)
+
+
+def extract_text_from_content(content: types.Content | None) -> str:
+  """Extracts text from a Content object, filtering out thoughts."""
+  if not content or not content.parts:
+    return ''
+  return ''.join(p.text for p in content.parts if p.text and not p.thought)

@@ -25,6 +25,7 @@ from google.genai import types as genai_types
 from .app_details import AppDetails
 from .common import EvalBaseModel
 from .eval_case import get_all_tool_calls_with_responses
+from .eval_case import IntermediateData
 from .eval_case import IntermediateDataType
 from .eval_case import Invocation
 from .eval_case import InvocationEvents
@@ -71,6 +72,12 @@ def get_text_from_content(
         text = get_text_from_content(event.content)
         if text:
           parts.append(text)
+    elif isinstance(content.intermediate_data, IntermediateData):
+      for _, response_parts in content.intermediate_data.intermediate_responses:
+        text = get_text_from_content(genai_types.Content(parts=response_parts))
+        if text:
+          parts.append(text)
+
     # Then fetch the final response text and append it to the end.
     final_text = get_text_from_content(content.final_response)
     if final_text:
