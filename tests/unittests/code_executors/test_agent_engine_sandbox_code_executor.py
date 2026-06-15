@@ -20,6 +20,7 @@ from unittest.mock import patch
 from google.adk.agents.invocation_context import InvocationContext
 from google.adk.code_executors.agent_engine_sandbox_code_executor import AgentEngineSandboxCodeExecutor
 from google.adk.code_executors.code_execution_utils import CodeExecutionInput
+from google.adk.code_executors.code_execution_utils import File
 from google.adk.sessions.session import Session
 import pytest
 
@@ -124,6 +125,40 @@ class TestAgentEngineSandboxCodeExecutor:
         name="projects/123/locations/us-central1/reasoningEngines/456/sandboxEnvironments/789",
         input_data={"code": 'print("hello world")'},
     )
+
+  @patch("vertexai.Client")
+  def test_execute_code_sends_input_files_with_content_key(
+      self,
+      mock_vertexai_client,
+      mock_invocation_context,
+  ):
+    """Input files must be sent under the 'content' key the SDK expects."""
+    mock_api_client = MagicMock()
+    mock_vertexai_client.return_value = mock_api_client
+    mock_response = MagicMock()
+    mock_response.outputs = []
+    mock_api_client.agent_engines.sandboxes.execute_code.return_value = (
+        mock_response
+    )
+
+    executor = AgentEngineSandboxCodeExecutor(
+        sandbox_resource_name="projects/123/locations/us-central1/reasoningEngines/456/sandboxEnvironments/789"
+    )
+    code_input = CodeExecutionInput(
+        code='print("hi")',
+        input_files=[
+            File(name="data.csv", content="a,b,c", mime_type="text/csv")
+        ],
+    )
+    executor.execute_code(mock_invocation_context, code_input)
+
+    _, call_kwargs = (
+        mock_api_client.agent_engines.sandboxes.execute_code.call_args
+    )
+    sent_files = call_kwargs["input_data"]["files"]
+    assert sent_files == [
+        {"name": "data.csv", "content": "a,b,c", "mimeType": "text/csv"}
+    ]
 
   @patch("vertexai.Client")
   def test_execute_code_recreates_sandbox_when_get_returns_none(

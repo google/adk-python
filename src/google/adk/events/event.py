@@ -20,13 +20,11 @@ from typing import Optional
 
 from google.adk.platform import time as platform_time
 from google.adk.platform import uuid as platform_uuid
-from google.genai import types
 from pydantic import alias_generators
 from pydantic import BaseModel
 from pydantic import ConfigDict
 from pydantic import Field
 from pydantic import model_validator
-from pydantic import PrivateAttr
 
 from ..models.llm_response import LlmResponse
 from .event_actions import EventActions

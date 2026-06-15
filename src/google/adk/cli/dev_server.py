@@ -36,12 +36,10 @@ from typing import Optional
 
 from fastapi import FastAPI
 from fastapi import HTTPException
-from fastapi import Response
 from fastapi import UploadFile
 from fastapi.responses import FileResponse
 from fastapi.responses import PlainTextResponse
 from fastapi.responses import StreamingResponse
-from fastapi.staticfiles import StaticFiles
 import graphviz
 from pydantic import Field
 from pydantic import ValidationError
@@ -49,7 +47,6 @@ from typing_extensions import deprecated
 import yaml
 
 from . import agent_graph
-from ..agents.base_agent import BaseAgent
 from ..errors.not_found_error import NotFoundError
 from ..evaluation.base_eval_service import InferenceConfig
 from ..evaluation.base_eval_service import InferenceRequest
@@ -62,9 +59,7 @@ from ..evaluation.eval_metrics import EvalStatus
 from ..evaluation.eval_metrics import MetricInfo
 from ..evaluation.eval_result import EvalSetResult
 from ..evaluation.eval_set import EvalSet
-from ..events.event import Event
 from .api_server import ApiServer
-from .cli_eval import EVAL_SESSION_ID_PREFIX
 from .utils import common
 from .utils import evals
 from .utils.graph_serialization import serialize_app_info

@@ -13,7 +13,7 @@ by retrieving relevant documents before generating a response.
 
 ## Prerequisites
 
-- Python 3.11+
+- Python 3.10+
 - `google-genai >= 1.64.0` (required for `gemini-embedding-2-preview`
   support via the Vertex AI `embedContent` endpoint)
 - `llama-index-embeddings-google-genai >= 0.3.0`
@@ -37,7 +37,7 @@ export GOOGLE_API_KEY="your-api-key"
 **Vertex AI:**
 
 ```bash
-export GOOGLE_GENAI_USE_VERTEXAI=1
+export GOOGLE_GENAI_USE_ENTERPRISE=1
 export GOOGLE_CLOUD_PROJECT="your-project-id"
 export GOOGLE_CLOUD_LOCATION="us-central1"
 ```

@@ -29,13 +29,16 @@ LABEL_TO_OWNER = {
     "agent engine": "yeesian",
     "auth": "xuanyang15",
     "bq": "shobsi",
+    "cli": "wyf7107",
     "core": "Jacksunwei",
     "documentation": "joefernandez",
     "eval": "ankursharmas",
+    "integrations": "wukath",
     "live": "wuliang229",
     "mcp": "wukath",
     "models": "xuanyang15",
     "services": "DeanChensj",
+    "skills": "wukath",
     "tools": "xuanyang15",
     "tracing": "mhenc",
     "web": "wyf7107",
@@ -44,7 +47,6 @@ LABEL_TO_OWNER = {
 
 
 LABEL_TO_GTECH = [
-    "klateefa",
     "llalitkumarrr",
     "surajksharma07",
     "sanketpatil06",
@@ -63,8 +65,13 @@ LABEL_GUIDELINES = """
       - "live": Streaming, bidi, audio, or Gemini Live configuration.
       - "models": Non-Gemini model adapters (LiteLLM, Ollama, OpenAI, etc.).
       - "tracing": Telemetry, observability, structured logs, or spans.
+      - "cli": ADK CLI commands (e.g., create, deploy, eval) and CLI tools.
+      - "skills": GCP Skills Registry (`GCPSkillRegistry`), skill prompt models,
+        and dynamic skill toolsets.
+      - "integrations": Third-party integrations (e.g., CrewAI, LangChain,
+        Slack) excluding BigQuery.
       - "core": Core ADK runtime (Agent definitions, Runner, planners,
-        thinking config, CLI commands, GlobalInstructionPlugin, CPU usage, or
+        thinking config, GlobalInstructionPlugin, CPU usage, or
         general orchestration including agent transfer for multi-agents system).
         Default to "core" when the topic is about ADK behavior and no other
         label is a better fit.
@@ -189,7 +196,7 @@ def assign_gtech_owner_to_issue(issue_number: int) -> dict[str, Any]:
   as long as the issue needs an owner.
 
   All unassigned issues will be considered for GTech ownership. Unassigned
-  issues will seperated in two categories: issues with type "Bug" and issues
+  issues will be separated in two categories: issues with type "Bug" and issues
   with type "Feature". Then bug issues and feature issues will be equally
   assigned to the Gtech members in such a way that every day all members get
   equal number of bug and feature issues.
