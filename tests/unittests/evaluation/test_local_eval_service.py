@@ -498,6 +498,37 @@ async def test_evaluate_single_inference_result_failed_without_inferences(
 
 
 @pytest.mark.asyncio
+async def test_evaluate_single_inference_result_inferences_none(
+    eval_service, mock_eval_sets_manager, mocker
+):
+  inference_result = InferenceResult(
+      app_name="test_app",
+      eval_set_id="test_eval_set",
+      eval_case_id="case1",
+      inferences=None,
+      session_id="session1",
+  )
+  eval_metric = EvalMetric(metric_name="fake_metric", threshold=0.5)
+  evaluate_config = EvaluateConfig(eval_metrics=[eval_metric], parallelism=1)
+
+  mock_eval_case = mocker.MagicMock(spec=EvalCase)
+  mock_eval_case.conversation = []
+  mock_eval_case.conversation_scenario = None
+  mock_eval_case.session_input = None
+  mock_eval_sets_manager.get_eval_case.return_value = mock_eval_case
+
+  _, result = await eval_service._evaluate_single_inference_result(
+      inference_result=inference_result, evaluate_config=evaluate_config
+  )
+
+  assert isinstance(result, EvalCaseResult)
+  assert result.eval_id == "case1"
+  assert result.final_eval_status == EvalStatus.NOT_EVALUATED
+  assert result.overall_eval_metric_results == []
+  assert result.eval_metric_result_per_invocation == []
+
+
+@pytest.mark.asyncio
 async def test_evaluate_single_inference_result_for_conversation_scenario(
     eval_service, mock_eval_sets_manager, mocker
 ):
