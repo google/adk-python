@@ -99,10 +99,22 @@ class BigtableParameterizedViewTool(GoogleTool):
   ) -> Any:
     args_to_call = args.copy()
     signature = inspect.signature(self.func)
-    if "view_parameters" in signature.parameters:
+    if "view_parameters" in signature.parameters and self._view_parameter_name:
       view_params = {}
-      if self._view_parameter_name and hasattr(tool_context, self._view_parameter_name):
-        view_params[self._view_parameter_name] = getattr(tool_context, self._view_parameter_name)
+      # 1. Check if it's a strongly-typed top-level property (like 'user_id')
+      if hasattr(tool_context, self._view_parameter_name):
+        view_params[self._view_parameter_name] = getattr(
+            tool_context, self._view_parameter_name
+        )
+      # 2. Fallback to checking application-level session state
+      elif (
+          tool_context.state
+          and self._view_parameter_name in tool_context.state
+      ):
+        view_params[self._view_parameter_name] = tool_context.state[
+            self._view_parameter_name
+        ]
+
       args_to_call["view_parameters"] = view_params
     return await super()._run_async_with_credential(
         credentials, tool_settings, args_to_call, tool_context

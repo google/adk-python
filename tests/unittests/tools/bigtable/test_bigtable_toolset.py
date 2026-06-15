@@ -247,3 +247,50 @@ async def test_bigtable_parameterized_view_tool_login_flow():
       "status": "SUCCESS",
       "view_parameters": {"user_id": "authenticated-user-999"},
   }
+
+
+@pytest.mark.asyncio
+async def test_bigtable_parameterized_view_tool_execution_session_state_fallback():
+  """Test that BigtableParameterizedViewTool falls back to tool_context.state for custom parameters."""
+  def mock_execute_sql(view_parameters=None):
+    return {"status": "SUCCESS", "view_parameters": view_parameters}
+
+  from google.adk.sessions.session import Session
+  from google.adk.agents.invocation_context import InvocationContext
+  from google.adk.agents.context import Context
+
+  # Create session with application-level state
+  session = Session(
+      id="session-1",
+      app_name="test-app",
+      user_id="user-123",
+      state={"tenant_id": "tenant-xyz"},
+  )
+
+  invocation_context = mock.create_autospec(InvocationContext, instance=True)
+  invocation_context.session = session
+  type(invocation_context).user_id = property(lambda self: self.session.user_id)
+
+  tool_context = Context(invocation_context=invocation_context)
+
+  # Ensure 'tenant_id' is NOT a top-level property or attribute on tool_context
+  assert not hasattr(tool_context, "tenant_id")
+  assert "tenant_id" in tool_context.state
+
+  credentials = mock.create_autospec(Credentials, instance=True)
+  tool = BigtableParameterizedViewTool(
+      func=mock_execute_sql,
+      view_parameter_name="tenant_id",
+  )
+
+  res = await tool._run_async_with_credential(
+      credentials=credentials,
+      tool_settings=BigtableToolSettings(),
+      args={},
+      tool_context=tool_context,
+  )
+
+  assert res == {
+      "status": "SUCCESS",
+      "view_parameters": {"tenant_id": "tenant-xyz"},
+  }
