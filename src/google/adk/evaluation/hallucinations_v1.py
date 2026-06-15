@@ -56,8 +56,8 @@ Your task is to segment the provided response sentence by sentence so that we co
 **Instructions:**
 1. Overall, you should decompose the whole provided response into individual sentences. You should make sure the output covers ALL the sentences in the provided response block.
 2. You should COPY each sentence as it is, WORD BY WORD. DO NOT modify the sentence or the surrounding punctuation.
-3. If there are bullet points in the response, you should segment each bullet point into DIFFERENT sentences. If one bullet point has sub bullet points, you should further decompose sub bullet points into DIFFERENT sentences.
-For example, if there are responses like "it has three criteria: * aaa. * bbb. * ccc", you should segment them into FOUR sentences: "it has three criteria", "aaa", "bbb", "ccc". Bullet points could start with numbers (1/2/3/etc) or symbols like "*", "-" etc.
+3. If there are bullet points in the response, you should segment each bullet point into DIFFERENT sentences. If one bullet point has sub bullet points, you should further decompose sub bullet poi[...]
+For example, if there are responses like "it has three criteria: * aaa. * bbb. * ccc", you should segment them into FOUR sentences: "it has three criteria", "aaa", "bbb", "ccc". Bullet points coul[...]
 4. When encountering tables, you should include the whole table in ONE sentence output.
 5. Each sentence should be meaningful to further analyze on. DO NOT ONLY put symbols themselves into a sentence.
 6. You should ONLY output segmented sentences in the provided response. DO NOT make up any new sentences.
@@ -123,8 +123,8 @@ Your task is to analyze sentence by sentence and classify each sentence accordin
     * **`disputed`**: The given context contains both supporting and contradicting information. Provide both supporting and contradicting excerpt from the context.
     * **`not_applicable`**: The sentence does not require factual attribution (e.g., opinions, planning steps, greetings, questions, disclaimers, mathematical calculation).
 3. **For each label, provide a short rationale explaining your decision.** The rationale should be separate from the excerpt.
-4. **Be very strict with your `supported`, `contradictory` and `disputed` decisions.** Unless you can find straightforward, indisputable evidence excepts *in the context* that a sentence is `supported`, `contradictory` or `disputed`, consider it `unsupported`.  You should not employ world knowledge unless it is truly trivial.
-5. "tool_outputs" blocks contain code execution results of the "tool_code" blocks immediately above them. If any sentence is based on "tool_outputs" results, first analyze if the corresponding "tool_code" is supported and if the results are error-free. Only if the "tool_code" block is supported, you can treat code execution results as correct.
+4. **Be very strict with your `supported`, `contradictory` and `disputed` decisions.** Unless you can find straightforward, indisputable evidence excepts *in the context* that a sentence is `supp[...]
+5. "tool_outputs" blocks contain code execution results of the "tool_code" blocks immediately above them. If any sentence is based on "tool_outputs" results, first analyze if the corresponding "t[...]
 6. If you need to cite multiple supporting excerpts, simply concatenate them. Excerpt could be summary from the context if it is too long.
 
 **Input Format:**
@@ -560,8 +560,8 @@ class HallucinationsV1Evaluator(Evaluator):
     scores = []
     for result in validation_results:
       label = result.get("label")
-      if label is None:
-        logger.debug("No label found for sentence: %s", result)
+      if label is None or not isinstance(label, str):
+        logger.debug("Invalid label found for sentence: %s", result)
         continue
 
       label = label.strip().lower()
