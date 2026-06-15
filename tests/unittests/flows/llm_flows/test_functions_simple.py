@@ -15,12 +15,22 @@
 import asyncio
 from typing import Any
 from typing import Callable
+from unittest import mock
 
+from fastapi.openapi.models import HTTPBearer
 from google.adk.agents.llm_agent import Agent
+from google.adk.auth.auth_tool import AuthConfig
 from google.adk.events.event import Event
+from google.adk.events.event_actions import EventActions
+from google.adk.events.ui_widget import UiWidget
 from google.adk.flows.llm_flows.functions import find_matching_function_call
+from google.adk.flows.llm_flows.functions import handle_function_calls_async
+from google.adk.flows.llm_flows.functions import handle_function_calls_live
 from google.adk.flows.llm_flows.functions import merge_parallel_function_response_events
+from google.adk.tools.base_tool import BaseTool
+from google.adk.tools.computer_use.computer_use_tool import ComputerUseTool
 from google.adk.tools.function_tool import FunctionTool
+from google.adk.tools.tool_confirmation import ToolConfirmation
 from google.adk.tools.tool_context import ToolContext
 from google.genai import types
 import pytest
@@ -397,8 +407,6 @@ def test_find_function_call_event_multiple_function_responses():
 @pytest.mark.asyncio
 async def test_function_call_args_not_modified():
   """Test that function_call.args is not modified when making a copy."""
-  from google.adk.flows.llm_flows.functions import handle_function_calls_async
-  from google.adk.flows.llm_flows.functions import handle_function_calls_live
 
   def simple_fn(**kwargs) -> dict:
     return {'result': 'test'}
@@ -455,8 +463,6 @@ async def test_function_call_args_not_modified():
 @pytest.mark.asyncio
 async def test_function_call_args_none_handling():
   """Test that function_call.args=None is handled correctly."""
-  from google.adk.flows.llm_flows.functions import handle_function_calls_async
-  from google.adk.flows.llm_flows.functions import handle_function_calls_live
 
   def simple_fn(**kwargs) -> dict:
     return {'result': 'test'}
@@ -504,8 +510,6 @@ async def test_function_call_args_none_handling():
 @pytest.mark.asyncio
 async def test_function_call_args_copy_behavior():
   """Test that modifying the copied args doesn't affect the original."""
-  from google.adk.flows.llm_flows.functions import handle_function_calls_async
-  from google.adk.flows.llm_flows.functions import handle_function_calls_live
 
   def simple_fn(test_param: str, other_param: int) -> dict:
     # Modify the args to test that the copy prevents affecting the original
@@ -565,8 +569,6 @@ async def test_function_call_args_copy_behavior():
 @pytest.mark.asyncio
 async def test_function_call_args_deep_copy_behavior():
   """Test that deep copy behavior works correctly with nested structures."""
-  from google.adk.flows.llm_flows.functions import handle_function_calls_async
-  from google.adk.flows.llm_flows.functions import handle_function_calls_live
 
   def simple_fn(nested_dict: dict, list_param: list) -> dict:
     # Modify the nested structures to test deep copy
@@ -683,26 +685,17 @@ def test_shallow_vs_deep_copy_demonstration():
 @pytest.mark.asyncio
 async def test_parallel_function_execution_timing():
   """Test that multiple function calls are executed in parallel, not sequentially."""
-  import time
-
   execution_order = []
-  execution_times = {}
 
   async def slow_function_1(delay: float = 0.1) -> dict:
-    start_time = time.time()
     execution_order.append('start_1')
     await asyncio.sleep(delay)
-    end_time = time.time()
-    execution_times['func_1'] = (start_time, end_time)
     execution_order.append('end_1')
     return {'result': 'function_1_result'}
 
   async def slow_function_2(delay: float = 0.1) -> dict:
-    start_time = time.time()
     execution_order.append('start_2')
     await asyncio.sleep(delay)
-    end_time = time.time()
-    execution_times['func_2'] = (start_time, end_time)
     execution_order.append('end_2')
     return {'result': 'function_2_result'}
 
@@ -738,35 +731,19 @@ async def test_parallel_function_execution_timing():
   )
   runner = testing_utils.TestInMemoryRunner(agent)
 
-  # Measure total execution time
-  start_time = time.time()
   events = await runner.run_async_with_new_session('test')
-  total_time = time.time() - start_time
 
-  # Verify parallel execution by checking execution order
-  # In parallel execution, both functions should start before either finishes
-  assert 'start_1' in execution_order
-  assert 'start_2' in execution_order
-  assert 'end_1' in execution_order
-  assert 'end_2' in execution_order
-
-  # Verify both functions started within a reasonable time window
-  func_1_start, func_1_end = execution_times['func_1']
-  func_2_start, func_2_end = execution_times['func_2']
-
-  # Functions should start at approximately the same time (within 10ms)
-  start_time_diff = abs(func_1_start - func_2_start)
-  assert (
-      start_time_diff < 0.01
-  ), f'Functions started too far apart: {start_time_diff}s'
-
-  # Total execution time should be less than the sum of all parallel function delays (0.2s)
-  # This proves parallel execution rather than sequential execution
-  sequential_time = 0.2  # 0.1s + 0.1s if functions ran sequentially
-  assert total_time < sequential_time, (
-      f'Execution took too long: {total_time}s, expected < {sequential_time}s'
-      ' (sequential time)'
+  # Parallel execution means both functions start before either one finishes.
+  assert set(execution_order) == {'start_1', 'start_2', 'end_1', 'end_2'}
+  last_start = max(
+      execution_order.index('start_1'), execution_order.index('start_2')
   )
+  first_end = min(
+      execution_order.index('end_1'), execution_order.index('end_2')
+  )
+  assert (
+      last_start < first_end
+  ), f'Functions did not overlap; execution was sequential: {execution_order}'
 
   # Verify the results are correct
   assert testing_utils.simplify_events(events) == [
@@ -1141,3 +1118,444 @@ async def test_mixed_function_types_execution_order():
       'yield_E',
       'yield_F',
   ]
+
+
+def test_merge_parallel_function_response_events_merges_ui_widgets():
+  """Test that merge_parallel_function_response_events merges render_ui_widgets."""
+  invocation_id = 'base_invocation_123'
+
+  widget1 = UiWidget(
+      id='widget_1', provider='mcp', payload={'resource_uri': 'ui://widget1'}
+  )
+  widget2 = UiWidget(
+      id='widget_2', provider='mcp', payload={'resource_uri': 'ui://widget2'}
+  )
+  widget3 = UiWidget(
+      id='widget_3', provider='mcp', payload={'resource_uri': 'ui://widget3'}
+  )
+
+  event1 = Event(
+      invocation_id=invocation_id,
+      author='test_agent',
+      actions=EventActions(render_ui_widgets=[widget1]),
+  )
+
+  event2 = Event(
+      invocation_id='different_invocation_456',
+      author='different_agent',
+      actions=EventActions(render_ui_widgets=[widget2, widget3]),
+  )
+
+  # Merge the events
+  merged_event = merge_parallel_function_response_events([event1, event2])
+
+  # Should contain all ui widgets
+  assert merged_event.actions.render_ui_widgets is not None
+  assert len(merged_event.actions.render_ui_widgets) == 3
+
+  widget_ids = {widget.id for widget in merged_event.actions.render_ui_widgets}
+  assert 'widget_1' in widget_ids
+  assert 'widget_2' in widget_ids
+  assert 'widget_3' in widget_ids
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    'handle_function_calls',
+    [
+        (handle_function_calls_async),
+        (handle_function_calls_live),
+    ],
+)
+async def test_computer_use_tool_decoding_behavior(handle_function_calls):
+  """Tests that computer use tools automatically decode base64 images."""
+  valid_b64 = 'R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7'
+
+  # make the tool return a dictionary with the image
+  async def mock_run(*args, **kwargs):
+    return {
+        'image': {'data': valid_b64, 'mimetype': 'image/png'},
+        'url': 'https://example.com',
+    }
+
+  # create a ComputerUseTool
+  tool = ComputerUseTool(func=mock_run, screen_size=(1024, 768))
+
+  model = testing_utils.MockModel.create(responses=[])
+  agent = Agent(
+      name='test_agent',
+      model=model,
+      tools=[tool],
+  )
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent, user_content=''
+  )
+
+  # Create function call
+  function_call = types.FunctionCall(name=tool.name, args={})
+  content = types.Content(parts=[types.Part(function_call=function_call)])
+  event = Event(
+      invocation_id=invocation_context.invocation_id,
+      author=agent.name,
+      content=content,
+  )
+  tools_dict = {tool.name: tool}
+
+  result = await handle_function_calls(
+      invocation_context,
+      event,
+      tools_dict,
+  )
+
+  assert result is not None
+  response_part = result.content.parts[0].function_response
+
+  # Verify original image data is removed from the dict response
+  assert 'image' not in response_part.response
+  assert 'url' in response_part.response
+  # Verify the image was converted to a blob
+  assert len(response_part.parts) == 1
+  assert response_part.parts[0].inline_data is not None
+
+
+@pytest.mark.asyncio
+async def test_handle_function_calls_live_preserves_live_session_id():
+  """Tests that handle_function_calls_live preserves live_session_id for single call."""
+
+  def simple_fn() -> dict[str, str]:
+    return {'result': 'test'}
+
+  tool1 = FunctionTool(simple_fn)
+  model = testing_utils.MockModel.create(responses=[])
+  agent = Agent(
+      name='test_agent',
+      model=model,
+      tools=[tool1],
+  )
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent, user_content=''
+  )
+
+  function_call1 = types.FunctionCall(id='call_1', name=tool1.name, args={})
+  content1 = types.Content(parts=[types.Part(function_call=function_call1)])
+  event1 = Event(
+      invocation_id=invocation_context.invocation_id,
+      author=agent.name,
+      content=content1,
+      live_session_id='test-live-session-id',
+  )
+  tools_dict = {tool1.name: tool1}
+
+  result_single = await handle_function_calls_live(
+      invocation_context,
+      event1,
+      tools_dict,
+  )
+
+  assert result_single is not None
+  assert result_single.live_session_id == 'test-live-session-id'
+
+
+@pytest.mark.asyncio
+async def test_handle_function_calls_live_parallel_preserves_live_session_id():
+  """Tests that handle_function_calls_live preserves live_session_id for parallel calls."""
+
+  def simple_fn() -> dict[str, str]:
+    return {'result': 'test'}
+
+  tool1 = FunctionTool(simple_fn)
+  tool2 = FunctionTool(simple_fn)
+  model = testing_utils.MockModel.create(responses=[])
+  agent = Agent(
+      name='test_agent',
+      model=model,
+      tools=[tool1, tool2],
+  )
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent, user_content=''
+  )
+
+  function_call1 = types.FunctionCall(id='call_1', name=tool1.name, args={})
+  function_call2 = types.FunctionCall(id='call_2', name=tool2.name, args={})
+  content2 = types.Content(
+      parts=[
+          types.Part(function_call=function_call1),
+          types.Part(function_call=function_call2),
+      ]
+  )
+  event2 = Event(
+      invocation_id=invocation_context.invocation_id,
+      author=agent.name,
+      content=content2,
+      live_session_id='test-live-session-id-parallel',
+  )
+  tools_dict = {tool1.name: tool1, tool2.name: tool2}
+
+  result_parallel = await handle_function_calls_live(
+      invocation_context,
+      event2,
+      tools_dict,
+  )
+
+  assert result_parallel is not None
+  assert result_parallel.live_session_id == 'test-live-session-id-parallel'
+
+
+class _MockControlSignalTool(BaseTool):
+  """A tool that simulates requesting confirmation or OAuth authentication."""
+
+  def __init__(self, name: str, behavior: str):
+    super().__init__(name=name, description='Simulated control tool')
+    self.behavior = behavior
+
+  async def run_async(self, *, args, tool_context):
+    if self.behavior == 'confirm':
+      tool_context.actions.requested_tool_confirmations = {
+          'fc_test_confirm': ToolConfirmation(hint='Authorize execution?')
+      }
+      return {'error': 'This tool requires user approval.'}
+    elif self.behavior == 'auth':
+      tool_context.actions.requested_auth_configs = {
+          'fc_test_auth': AuthConfig(auth_scheme=HTTPBearer())
+      }
+      return {'error': 'Please complete OAuth setup.'}
+
+  def _detect_error_in_response(self, response: Any) -> str | None:
+    if isinstance(response, dict) and 'error' in response:
+      return 'TOOL_ERROR'
+    return None
+
+
+class _ErrorDetectingTool(BaseTool):
+  """A test tool whose _detect_error_in_response raises an exception."""
+
+  async def run_async(self, *, args, tool_context):
+    return {'result': 'result'}
+
+  def _detect_error_in_response(self, response: Any) -> str | None:
+    raise RuntimeError('detection exploded')
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    'handle_function_calls',
+    [
+        (handle_function_calls_async),
+        (handle_function_calls_live),
+    ],
+)
+@pytest.mark.parametrize(
+    'mock_response,expected_error_type',
+    [
+        ({'error': 'Internal component timeout'}, 'TOOL_ERROR'),
+        ({'result': 'Execution succeeded'}, None),
+    ],
+    ids=['dict_error_recorded', 'success_dict_ignored'],
+)
+async def test_e2e_telemetry_error_classification(
+    monkeypatch, handle_function_calls, mock_response, expected_error_type
+):
+  """E2E: asserts that tool outputs successfully translate to targeted OTel span error attributes."""
+  recorded_calls = []
+
+  # Intercept trace_tool_call to capture final telemetry state
+  monkeypatch.setattr(
+      'google.adk.telemetry._instrumentation.tracing.trace_tool_call',
+      lambda **kw: recorded_calls.append(kw),
+  )
+
+  tool = FunctionTool(func=lambda: mock_response)
+  model = testing_utils.MockModel.create(responses=[])
+  agent = Agent(name='test_agent', model=model, tools=[tool])
+
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent, user_content=''
+  )
+
+  function_call = types.FunctionCall(name=tool.name, args={}, id='fc_test')
+  event = Event(
+      invocation_id=invocation_context.invocation_id,
+      author=agent.name,
+      content=types.Content(parts=[types.Part(function_call=function_call)]),
+  )
+
+  await handle_function_calls(invocation_context, event, {tool.name: tool})
+
+  assert len(recorded_calls) == 1
+  assert recorded_calls[0]['error_type'] == expected_error_type
+  assert recorded_calls[0]['error'] is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    'handle_function_calls',
+    [
+        (handle_function_calls_async),
+        (handle_function_calls_live),
+    ],
+)
+async def test_exception_takes_precedence_over_dict_error(
+    monkeypatch, handle_function_calls
+):
+  """End-to-end integration: exception takes strict precedence over manual dict error_type."""
+  recorded_calls = []
+  monkeypatch.setattr(
+      'google.adk.telemetry._instrumentation.tracing.trace_tool_call',
+      lambda **kw: recorded_calls.append(kw),
+  )
+
+  def mock_crashing_func():
+    raise ValueError('Fatal arithmetic error')
+
+  tool = FunctionTool(func=mock_crashing_func)
+  model = testing_utils.MockModel.create(responses=[])
+  agent = Agent(name='test_agent', model=model, tools=[tool])
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent, user_content=''
+  )
+
+  function_call = types.FunctionCall(
+      name=tool.name, args={}, id='fc_test_exception'
+  )
+  event = Event(
+      invocation_id=invocation_context.invocation_id,
+      author=agent.name,
+      content=types.Content(parts=[types.Part(function_call=function_call)]),
+  )
+
+  with pytest.raises(ValueError, match='Fatal arithmetic error'):
+    await handle_function_calls(invocation_context, event, {tool.name: tool})
+
+  assert len(recorded_calls) == 1
+  assert isinstance(recorded_calls[0]['error'], ValueError)
+  assert recorded_calls[0]['error_type'] is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    'handle_function_calls',
+    [
+        (handle_function_calls_async),
+        (handle_function_calls_live),
+    ],
+)
+async def test_detection_skipped_when_confirmation_requested(
+    monkeypatch, handle_function_calls
+):
+  """E2E confirmation verification: control prompt avoids polluting telemetry with TOOL_ERROR."""
+  recorded_calls = []
+  monkeypatch.setattr(
+      'google.adk.telemetry._instrumentation.tracing.trace_tool_call',
+      lambda **kw: recorded_calls.append(kw),
+  )
+
+  tool = _MockControlSignalTool(name='confirm_tool', behavior='confirm')
+  model = testing_utils.MockModel.create(responses=[])
+  agent = Agent(name='test_agent', model=model, tools=[tool])
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent, user_content=''
+  )
+
+  function_call = types.FunctionCall(
+      name=tool.name, args={}, id='fc_test_confirm'
+  )
+  event = Event(
+      invocation_id=invocation_context.invocation_id,
+      author=agent.name,
+      content=types.Content(parts=[types.Part(function_call=function_call)]),
+  )
+
+  await handle_function_calls(invocation_context, event, {tool.name: tool})
+
+  assert len(recorded_calls) == 1
+  assert recorded_calls[0]['error_type'] is None
+  assert recorded_calls[0]['error'] is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    'handle_function_calls',
+    [
+        (handle_function_calls_async),
+        (handle_function_calls_live),
+    ],
+)
+async def test_detection_skipped_when_auth_requested(
+    monkeypatch, handle_function_calls
+):
+  """E2E OAuth verification: authenticate control prompt avoids polluting telemetry with TOOL_ERROR."""
+  recorded_calls = []
+  monkeypatch.setattr(
+      'google.adk.telemetry._instrumentation.tracing.trace_tool_call',
+      lambda **kw: recorded_calls.append(kw),
+  )
+
+  tool = _MockControlSignalTool(name='auth_tool', behavior='auth')
+  model = testing_utils.MockModel.create(responses=[])
+  agent = Agent(name='test_agent', model=model, tools=[tool])
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent, user_content=''
+  )
+
+  function_call = types.FunctionCall(name=tool.name, args={}, id='fc_test_auth')
+  event = Event(
+      invocation_id=invocation_context.invocation_id,
+      author=agent.name,
+      content=types.Content(parts=[types.Part(function_call=function_call)]),
+  )
+
+  await handle_function_calls(invocation_context, event, {tool.name: tool})
+
+  assert len(recorded_calls) == 1
+  assert recorded_calls[0]['error_type'] is None
+  assert recorded_calls[0]['error'] is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    'handle_function_calls',
+    [
+        (handle_function_calls_async),
+        (handle_function_calls_live),
+    ],
+)
+async def test_detection_exception_does_not_break_tool_call(
+    monkeypatch, handle_function_calls
+):
+  """Safety Verification: telemetry errors during error parsing are caught cleanly, not crashing tool calls."""
+  recorded_calls = []
+  monkeypatch.setattr(
+      'google.adk.telemetry._instrumentation.tracing.trace_tool_call',
+      lambda **kw: recorded_calls.append(kw),
+  )
+
+  tool = _ErrorDetectingTool(
+      name='buggy_telemetry_tool', description='raises on tel'
+  )
+  model = testing_utils.MockModel.create(responses=[])
+  agent = Agent(name='test_agent', model=model, tools=[tool])
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent, user_content=''
+  )
+
+  function_call = types.FunctionCall(
+      name=tool.name, args={}, id='fc_test_buggy'
+  )
+  event = Event(
+      invocation_id=invocation_context.invocation_id,
+      author=agent.name,
+      content=types.Content(parts=[types.Part(function_call=function_call)]),
+  )
+
+  result_event = await handle_function_calls(
+      invocation_context, event, {tool.name: tool}
+  )
+
+  assert result_event is not None
+  assert result_event.content.parts[0].function_response.response == {
+      'result': 'result'
+  }
+
+  assert len(recorded_calls) == 1
+  assert recorded_calls[0]['error_type'] is None
+  assert recorded_calls[0]['error'] is None

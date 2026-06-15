@@ -28,6 +28,7 @@ from ...auth.auth_credential import AuthCredentialTypes
 from ...auth.auth_credential import ServiceAccount
 from ...auth.auth_credential import ServiceAccountCredential
 from ...auth.auth_schemes import AuthScheme
+from ...auth.auth_tool import AuthConfig
 from ..base_toolset import BaseToolset
 from ..base_toolset import ToolPredicate
 from ..openapi_tool.auth.auth_helpers import service_account_scheme_credential
@@ -41,7 +42,7 @@ from .integration_connector_tool import IntegrationConnectorTool
 logger = logging.getLogger("google_adk." + __name__)
 
 
-# TODO(cheliu): Apply a common toolset interface
+# TODO: Apply a common toolset interface
 class ApplicationIntegrationToolset(BaseToolset):
   """ApplicationIntegrationToolset generates tools from a given Application
   Integration or Integration Connector resource.
@@ -142,6 +143,16 @@ class ApplicationIntegrationToolset(BaseToolset):
     self._service_account_json = service_account_json
     self._auth_scheme = auth_scheme
     self._auth_credential = auth_credential
+    # Store auth config as instance variable so ADK can populate
+    # exchanged_auth_credential in-place before calling get_tools()
+    self._auth_config: Optional[AuthConfig] = (
+        AuthConfig(
+            auth_scheme=auth_scheme,
+            raw_auth_credential=auth_credential,
+        )
+        if auth_scheme
+        else None
+    )
 
     integration_client = IntegrationClient(
         project,

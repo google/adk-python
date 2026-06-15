@@ -13,6 +13,7 @@
 # limitations under the License.
 
 """Project explorer tool for analyzing structure and suggesting file paths."""
+
 from __future__ import annotations
 
 from pathlib import Path

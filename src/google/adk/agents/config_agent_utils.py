@@ -20,9 +20,11 @@ import os
 from typing import Any
 from typing import List
 
+from typing_extensions import deprecated
 import yaml
 
-from ..utils.feature_decorator import experimental
+from ..features import experimental
+from ..features import FeatureName
 from .agent_config import AgentConfig
 from .base_agent import BaseAgent
 from .base_agent_config import BaseAgentConfig
@@ -30,12 +32,13 @@ from .common_configs import AgentRefConfig
 from .common_configs import CodeConfig
 
 
-@experimental
+@deprecated("from_config is deprecated and will be removed in future versions.")
+@experimental(FeatureName.AGENT_CONFIG)
 def from_config(config_path: str) -> BaseAgent:
   """Build agent from a configfile path.
 
   Args:
-    config: the path to a YAML config file.
+    config_path: the path to a YAML config file.
 
   Returns:
     The created agent instance.
@@ -102,7 +105,7 @@ def _load_config_from_path(config_path: str) -> AgentConfig:
   return AgentConfig.model_validate(config_data)
 
 
-@experimental
+@experimental(FeatureName.AGENT_CONFIG)
 def resolve_fully_qualified_name(name: str) -> Any:
   try:
     module_path, obj_name = name.rsplit(".", 1)
@@ -112,7 +115,7 @@ def resolve_fully_qualified_name(name: str) -> Any:
     raise ValueError(f"Invalid fully qualified name: {name}") from e
 
 
-@experimental
+@experimental(FeatureName.AGENT_CONFIG)
 def resolve_agent_reference(
     ref_config: AgentRefConfig, referencing_agent_config_abs_path: str
 ) -> BaseAgent:
@@ -170,7 +173,7 @@ def _resolve_agent_code_reference(code: str) -> Any:
   return obj
 
 
-@experimental
+@experimental(FeatureName.AGENT_CONFIG)
 def resolve_code_reference(code_config: CodeConfig) -> Any:
   """Resolve a code reference to actual Python object.
 
@@ -188,18 +191,10 @@ def resolve_code_reference(code_config: CodeConfig) -> Any:
 
   module_path, obj_name = code_config.name.rsplit(".", 1)
   module = importlib.import_module(module_path)
-  obj = getattr(module, obj_name)
-
-  if code_config.args and callable(obj):
-    kwargs = {arg.name: arg.value for arg in code_config.args if arg.name}
-    positional_args = [arg.value for arg in code_config.args if not arg.name]
-
-    return obj(*positional_args, **kwargs)
-  else:
-    return obj
+  return getattr(module, obj_name)
 
 
-@experimental
+@experimental(FeatureName.AGENT_CONFIG)
 def resolve_callbacks(callbacks_config: List[CodeConfig]) -> Any:
   """Resolve callbacks from configuration.
 

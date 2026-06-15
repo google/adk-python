@@ -18,12 +18,18 @@ from __future__ import annotations
 
 from pydantic import ConfigDict
 from pydantic import Field
+from typing_extensions import deprecated
 
-from ..agents.base_agent import experimental
 from ..agents.base_agent_config import BaseAgentConfig
+from ..features import experimental
+from ..features import FeatureName
 
 
-@experimental
+@deprecated(
+    "SequentialAgentConfig is deprecated and will be removed in future"
+    " versions."
+)
+@experimental(FeatureName.AGENT_CONFIG)
 class SequentialAgentConfig(BaseAgentConfig):
   """The config for the YAML schema of a SequentialAgent."""
 

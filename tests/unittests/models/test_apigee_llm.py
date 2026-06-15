@@ -19,6 +19,7 @@ from unittest import mock
 from unittest.mock import AsyncMock
 
 from google.adk.models.apigee_llm import ApigeeLlm
+from google.adk.models.apigee_llm import CompletionsHTTPClient
 from google.adk.models.llm_request import LlmRequest
 from google.genai import types
 from google.genai.types import Content
@@ -81,7 +82,7 @@ async def test_generate_content_async_non_streaming(
 
   mock_client_constructor.assert_called_once()
   _, kwargs = mock_client_constructor.call_args
-  assert not kwargs['vertexai']
+  assert not kwargs['enterprise']
   http_options = kwargs['http_options']
   assert http_options.base_url == PROXY_URL
   assert http_options.api_version == 'v1'
@@ -238,7 +239,7 @@ async def test_vertex_model_path_parsing(mock_client_constructor):
 
   mock_client_constructor.assert_called_once()
   _, kwargs = mock_client_constructor.call_args
-  assert kwargs['vertexai']
+  assert kwargs['enterprise']
   assert kwargs['http_options'].api_version == 'v1beta'
 
   mock_client_instance.aio.models.generate_content.assert_called_once()
@@ -300,14 +301,14 @@ async def test_proxy_url_from_env_variable(mock_client_constructor):
         (
             'apigee/gemini-2.5-flash',
             {
-                'GOOGLE_GENAI_USE_VERTEXAI': 'true',
+                'GOOGLE_GENAI_USE_ENTERPRISE': 'true',
                 'GOOGLE_CLOUD_LOCATION': 'test-location',
             },
         ),
         (
             'apigee/gemini-2.5-flash',
             {
-                'GOOGLE_GENAI_USE_VERTEXAI': 'true',
+                'GOOGLE_GENAI_USE_ENTERPRISE': 'true',
                 'GOOGLE_CLOUD_PROJECT': 'test-project',
             },
         ),
@@ -393,7 +394,7 @@ async def test_model_string_parsing_and_client_initialization(
   """Tests model string parsing and genai.Client initialization."""
   env_vars = {}
   if use_vertexai_env is not None:
-    env_vars['GOOGLE_GENAI_USE_VERTEXAI'] = use_vertexai_env
+    env_vars['GOOGLE_GENAI_USE_ENTERPRISE'] = use_vertexai_env
 
   if expected_is_vertexai:
     env_vars['GOOGLE_CLOUD_PROJECT'] = 'test-project'
@@ -421,7 +422,7 @@ async def test_model_string_parsing_and_client_initialization(
 
     mock_client_constructor.assert_called_once()
     _, kwargs = mock_client_constructor.call_args
-    assert kwargs['vertexai'] == expected_is_vertexai
+    assert kwargs['enterprise'] == expected_is_vertexai
     if expected_is_vertexai:
       assert kwargs['project'] == 'test-project'
       assert kwargs['location'] == 'test-location'
@@ -441,7 +442,6 @@ async def test_model_string_parsing_and_client_initialization(
 @pytest.mark.parametrize(
     'invalid_model_string',
     [
-        'apigee/openai/v1/gpt',
         'apigee/',  # Missing model_id
         'apigee',  # Invalid format
         'gemini-pro',  # Invalid format
@@ -455,3 +455,345 @@ async def test_invalid_model_strings_raise_value_error(invalid_model_string):
       ValueError, match=f'Invalid model string: {invalid_model_string}'
   ):
     ApigeeLlm(model=invalid_model_string, proxy_url=PROXY_URL)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    'model',
+    [
+        'apigee/openai/gpt-4o',
+        'apigee/openai/v1/gpt-4o',
+        'apigee/openai/v1/gpt-3.5-turbo',
+    ],
+)
+async def test_validate_model_for_chat_completion_providers(model):
+  """Tests that new providers like OpenAI are accepted."""
+  # Should not raise ValueError
+  ApigeeLlm(model=model, proxy_url=PROXY_URL)
+
+
+@pytest.mark.parametrize(
+    ('model', 'api_type', 'expected_api_type'),
+    [
+        # Default case (input defaults to UNKNOWN)
+        (
+            'apigee/openai/gpt-4o',
+            ApigeeLlm.ApiType.UNKNOWN,
+            ApigeeLlm.ApiType.CHAT_COMPLETIONS,
+        ),
+        (
+            'apigee/openai/v1/gpt-3.5-turbo',
+            ApigeeLlm.ApiType.UNKNOWN,
+            ApigeeLlm.ApiType.CHAT_COMPLETIONS,
+        ),
+        (
+            'apigee/gemini/v1/gemini-pro',
+            ApigeeLlm.ApiType.UNKNOWN,
+            ApigeeLlm.ApiType.GENAI,
+        ),
+        (
+            'apigee/vertex_ai/gemini-pro',
+            ApigeeLlm.ApiType.UNKNOWN,
+            ApigeeLlm.ApiType.GENAI,
+        ),
+        (
+            'apigee/vertex_ai/v1beta/gemini-1.5-pro',
+            ApigeeLlm.ApiType.UNKNOWN,
+            ApigeeLlm.ApiType.GENAI,
+        ),
+        # Override by setting the ApiType
+        (
+            'apigee/gemini/pro',
+            ApigeeLlm.ApiType.CHAT_COMPLETIONS,
+            ApigeeLlm.ApiType.CHAT_COMPLETIONS,
+        ),
+        (
+            'apigee/gemini/pro',
+            ApigeeLlm.ApiType.GENAI,
+            ApigeeLlm.ApiType.GENAI,
+        ),
+        (
+            'apigee/openai/gpt-4o',
+            ApigeeLlm.ApiType.CHAT_COMPLETIONS,
+            ApigeeLlm.ApiType.CHAT_COMPLETIONS,
+        ),
+        (
+            'apigee/openai/gpt-4o',
+            ApigeeLlm.ApiType.GENAI,
+            ApigeeLlm.ApiType.GENAI,
+        ),
+        # Override by setting the ApiType as a string
+        (
+            'apigee/gemini/pro',
+            'chat_completions',
+            ApigeeLlm.ApiType.CHAT_COMPLETIONS,
+        ),
+        (
+            'apigee/gemini/pro',
+            'genai',
+            ApigeeLlm.ApiType.GENAI,
+        ),
+        (
+            'apigee/openai/gpt-4o',
+            'chat_completions',
+            ApigeeLlm.ApiType.CHAT_COMPLETIONS,
+        ),
+        (
+            'apigee/openai/gpt-4o',
+            'genai',
+            ApigeeLlm.ApiType.GENAI,
+        ),
+    ],
+)
+def test_api_type_resolution(model, api_type, expected_api_type):
+  """Tests that api_type is resolved correctly."""
+  llm = ApigeeLlm(
+      model=model,
+      proxy_url=PROXY_URL,
+      api_type=api_type,
+  )
+  assert llm._api_type == expected_api_type
+
+
+@pytest.mark.parametrize(
+    ('input_value', 'expected_type'),
+    [
+        ('chat_completions', ApigeeLlm.ApiType.CHAT_COMPLETIONS),
+        ('genai', ApigeeLlm.ApiType.GENAI),
+        ('unknown', ApigeeLlm.ApiType.UNKNOWN),
+        ('', ApigeeLlm.ApiType.UNKNOWN),
+        (None, ApigeeLlm.ApiType.UNKNOWN),
+    ],
+)
+def test_apitype_creation(input_value, expected_type):
+  """Tests the creation of ApiType enum members."""
+  assert ApigeeLlm.ApiType(input_value) == expected_type
+
+
+def test_apitype_creation_invalid():
+  """Tests that invalid ApiType raises ValueError."""
+  with pytest.raises(ValueError):
+    ApigeeLlm.ApiType('invalid')
+
+
+def test_invalid_api_type_raises_error():
+  """Tests that invalid string for api_type raises ValueError."""
+  with pytest.raises(ValueError):
+    ApigeeLlm(
+        model='apigee/gemini-pro',
+        proxy_url=PROXY_URL,
+        api_type='invalid_type',
+    )
+
+
+@pytest.mark.asyncio
+async def test_generate_content_async_dispatch_to_completions_client(
+    llm_request,
+):
+  """Tests that generate_content_async uses CompletionsHTTPClient for OpenAI models."""
+  llm_request.model = 'apigee/openai/gpt-4o'
+  with (
+      mock.patch.object(
+          CompletionsHTTPClient,
+          'generate_content_async',
+      ) as mock_completions_generate_content,
+      mock.patch('google.genai.Client') as mock_genai_client,
+  ):
+    apigee_llm = ApigeeLlm(model='apigee/openai/gpt-4o', proxy_url=PROXY_URL)
+    _ = [
+        r
+        async for r in apigee_llm.generate_content_async(
+            llm_request, stream=False
+        )
+    ]
+    mock_completions_generate_content.assert_called_once()
+    mock_genai_client.assert_not_called()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    'model',
+    [
+        'apigee/openai/gpt-4o',
+        'apigee/openai/v1/gpt-3.5-turbo',
+    ],
+)
+async def test_api_key_injection_openai(model):
+  """Tests that api_key is injected for OpenAI models."""
+  apigee_llm = ApigeeLlm(
+      model=model,
+      proxy_url=PROXY_URL,
+      custom_headers={'Authorization': 'Bearer sk-test-key'},
+  )
+  client = apigee_llm._completions_http_client
+  assert client._headers['Authorization'] == 'Bearer sk-test-key'
+
+
+def test_parse_response_usage_metadata():
+  """Tests that CompletionsHTTPClient parses usage metadata correctly including reasoning tokens."""
+  client = CompletionsHTTPClient(base_url='http://test')
+  response_dict = {
+      'choices': [{
+          'message': {'role': 'assistant', 'content': 'hello'},
+          'finish_reason': 'stop',
+      }],
+      'usage': {
+          'prompt_tokens': 10,
+          'completion_tokens': 5,
+          'total_tokens': 15,
+          'completion_tokens_details': {'reasoning_tokens': 4},
+      },
+  }
+  llm_response = client._parse_response(response_dict)
+  assert llm_response.usage_metadata.prompt_token_count == 10
+  assert llm_response.usage_metadata.candidates_token_count == 5
+  assert llm_response.usage_metadata.total_token_count == 15
+  assert llm_response.usage_metadata.thoughts_token_count == 4
+
+
+@pytest.mark.asyncio
+@mock.patch('google.genai.Client')
+async def test_api_client_passes_credentials_when_provided(
+    mock_client_constructor, llm_request
+):
+  """Tests that credentials passed to __init__ are forwarded to genai.Client."""
+  mock_credentials = mock.Mock()
+
+  mock_client_instance = mock.Mock()
+  mock_client_instance.aio.models.generate_content = AsyncMock(
+      return_value=types.GenerateContentResponse(
+          candidates=[
+              types.Candidate(
+                  content=Content(
+                      parts=[Part.from_text(text='Test response')],
+                      role='model',
+                  )
+              )
+          ]
+      )
+  )
+  mock_client_constructor.return_value = mock_client_instance
+
+  apigee_llm = ApigeeLlm(
+      model=APIGEE_GEMINI_MODEL_ID,
+      proxy_url=PROXY_URL,
+      credentials=mock_credentials,
+  )
+  _ = [resp async for resp in apigee_llm.generate_content_async(llm_request)]
+
+  _, kwargs = mock_client_constructor.call_args
+  assert kwargs['credentials'] is mock_credentials
+
+
+@pytest.mark.asyncio
+@mock.patch('google.genai.Client')
+async def test_api_client_omits_credentials_when_not_provided(
+    mock_client_constructor, llm_request
+):
+  """Tests that credentials kwarg is not forwarded when not supplied."""
+  mock_client_instance = mock.Mock()
+  mock_client_instance.aio.models.generate_content = AsyncMock(
+      return_value=types.GenerateContentResponse(
+          candidates=[
+              types.Candidate(
+                  content=Content(
+                      parts=[Part.from_text(text='Test response')],
+                      role='model',
+                  )
+              )
+          ]
+      )
+  )
+  mock_client_constructor.return_value = mock_client_instance
+
+  apigee_llm = ApigeeLlm(
+      model=APIGEE_GEMINI_MODEL_ID,
+      proxy_url=PROXY_URL,
+  )
+  _ = [resp async for resp in apigee_llm.generate_content_async(llm_request)]
+
+  _, kwargs = mock_client_constructor.call_args
+  assert 'credentials' not in kwargs
+
+
+def test_parse_response_with_refusal():
+  """Tests that CompletionsHTTPClient parses refusal correctly."""
+  client = CompletionsHTTPClient(base_url='http://test')
+
+  response_dict = {
+      'choices': [{
+          'message': {
+              'role': 'assistant',
+              'refusal': 'I refuse to answer',
+          },
+          'finish_reason': 'stop',
+      }],
+  }
+  llm_response = client._parse_response(response_dict)
+  assert len(llm_response.content.parts) == 1
+  assert llm_response.content.parts[0].text == '[[REFUSAL]]: I refuse to answer'
+
+  response_dict_mixed = {
+      'choices': [{
+          'message': {
+              'role': 'assistant',
+              'content': 'Here is some content',
+              'refusal': 'But I refuse to answer the rest',
+          },
+          'finish_reason': 'stop',
+      }],
+  }
+  llm_response_mixed = client._parse_response(response_dict_mixed)
+  assert len(llm_response_mixed.content.parts) == 1
+  assert (
+      llm_response_mixed.content.parts[0].text
+      == 'Here is some content\n[[REFUSAL]]: But I refuse to answer the rest'
+  )
+
+
+@pytest.mark.parametrize(
+    ('parts', 'expected_message'),
+    [
+        (
+            [
+                types.Part.from_text(text='[[REFUSAL]]: I refuse to answer'),
+                types.Part.from_text(text='normal content'),
+            ],
+            {
+                'role': 'assistant',
+                'refusal': 'I refuse to answer',
+                'content': 'normal content',
+            },
+        ),
+        (
+            [
+                types.Part.from_text(
+                    text=(
+                        'Here is some content\n[[REFUSAL]]: But I refuse to'
+                        ' answer the rest'
+                    )
+                ),
+            ],
+            {
+                'role': 'assistant',
+                'refusal': 'But I refuse to answer the rest',
+                'content': 'Here is some content',
+            },
+        ),
+    ],
+)
+def test_construct_payload_with_refusal(parts, expected_message):
+  """Tests that CompletionsHTTPClient constructs payload with refusal correctly."""
+  client = CompletionsHTTPClient(base_url='http://test')
+  req = LlmRequest(
+      model='apigee/openai/gpt-4o',
+      contents=[
+          types.Content(
+              role='model',
+              parts=parts,
+          )
+      ],
+  )
+  payload = client._construct_payload(req, stream=False)
+  messages = payload['messages']
+  assert messages == [expected_message]

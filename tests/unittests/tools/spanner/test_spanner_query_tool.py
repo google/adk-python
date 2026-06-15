@@ -191,8 +191,9 @@ async def test_execute_sql_query_result(
   assert tool.description == expected_description
 
 
+@pytest.mark.asyncio
 @mock.patch.object(query_tool.utils, "execute_sql", spec_set=True)
-def test_execute_sql(mock_utils_execute_sql):
+async def test_execute_sql(mock_utils_execute_sql):
   """Test execute_sql function in query result default mode."""
   mock_credentials = mock.create_autospec(
       Credentials, instance=True, spec_set=True
@@ -202,7 +203,7 @@ def test_execute_sql(mock_utils_execute_sql):
   )
   mock_utils_execute_sql.return_value = {"status": "SUCCESS", "rows": [[1]]}
 
-  result = query_tool.execute_sql(
+  result = await query_tool.execute_sql(
       project_id="test-project",
       instance_id="test-instance",
       database_id="test-database",

@@ -17,13 +17,17 @@ from unittest.mock import Mock
 from unittest.mock import patch
 
 from a2a.server.agent_execution.context import RequestContext
+from a2a.server.events import Event as A2AEvent
 from a2a.server.events.event_queue import EventQueue
 from a2a.types import Message
+from a2a.types import Part
+from a2a.types import Role
 from a2a.types import TaskState
 from a2a.types import TextPart
 from google.adk.a2a.converters.request_converter import AgentRunRequest
 from google.adk.a2a.executor.a2a_agent_executor import A2aAgentExecutor
 from google.adk.a2a.executor.a2a_agent_executor import A2aAgentExecutorConfig
+from google.adk.a2a.executor.config import ExecuteInterceptor
 from google.adk.events.event import Event
 from google.adk.runners import RunConfig
 from google.adk.runners import Runner
@@ -62,6 +66,7 @@ class TestA2aAgentExecutor:
     self.mock_context.current_task = None
     self.mock_context.task_id = "test-task-id"
     self.mock_context.context_id = "test-context-id"
+    self.mock_context.requested_extensions = []
 
     self.mock_event_queue = Mock(spec=EventQueue)
 
@@ -959,3 +964,187 @@ class TestA2aAgentExecutor:
       assert final_event.status.message == test_message
       assert final_event.task_id == "test-task-id"
       assert final_event.context_id == "test-context-id"
+
+  @pytest.mark.asyncio
+  async def test_after_event_interceptors_receive_correct_arguments_and_can_modify_event(
+      self,
+  ):
+    """Test that after_event interceptors receive correct arguments and can modify the event."""
+    # Create distinct mock objects for ADK event and A2A event
+    adk_event = Mock(spec=Event, name="ADK_EVENT")
+    a2a_event = Mock(spec=A2AEvent, name="A2A_EVENT")
+    modified_a2a_event = Mock(spec=A2AEvent, name="MODIFIED_A2A_EVENT")
+
+    # Mocks for conversion
+    self.mock_event_converter.return_value = [a2a_event]
+    self.mock_request_converter.return_value = AgentRunRequest(
+        user_id="test-user",
+        session_id="test-session",
+        new_message=Mock(spec=Content),
+        run_config=Mock(spec=RunConfig),
+    )
+
+    # Setup Interceptor
+    mock_interceptor = Mock(spec=ExecuteInterceptor)
+
+    # after_event should return the modified event
+    async def side_effect_after_event(context, event, original_event):
+      return modified_a2a_event
+
+    mock_interceptor.after_event = AsyncMock(
+        side_effect=side_effect_after_event
+    )
+    mock_interceptor.before_agent = None
+    mock_interceptor.after_agent = None
+
+    # Update config with interceptor
+    self.mock_config.execute_interceptors = [mock_interceptor]
+    # Re-initialize executor with updated config - but we can just update
+    # the config in place if it's mutable
+    # The executor uses self._config which is this mock_config basically.
+    # self.executor was initialized in setup_method with self.mock_config.
+
+    # However, A2aAgentExecutor constructor does: self._config = config or ...
+    # So updating self.mock_config properties should work as
+    # it is the same object reference.
+
+    # Mock context
+    self.mock_context.task_id = "task-1"
+    self.mock_context.context_id = "ctx-1"
+    # Ensure current_task is set so we skip the initial
+    # submitted event creation logic
+    # which might complicate this specific test if we don't care about it.
+    self.mock_context.current_task = Mock()
+
+    # Mock runner.run_async to yield our ADK event
+    async def mock_run_async(**kwargs):
+      async for item in self._create_async_generator([adk_event]):
+        yield item
+
+    self.mock_runner.run_async = mock_run_async
+
+    # Configure session service
+    mock_session = Mock()
+    mock_session.id = "test-session"
+    self.mock_runner.session_service.get_session = AsyncMock(
+        return_value=mock_session
+    )
+    self.mock_runner._new_invocation_context.return_value = Mock()
+
+    # We patch TaskResultAggregator just to avoid other errors and simplfy
+    with patch(
+        "google.adk.a2a.executor.a2a_agent_executor.TaskResultAggregator"
+    ) as mock_agg_class:
+      mock_agg = Mock()
+      mock_agg.task_status_message = None
+      mock_agg.task_state = TaskState.working
+      mock_agg_class.return_value = mock_agg
+
+      await self.executor.execute(self.mock_context, self.mock_event_queue)
+
+      # Verify aggregator processed the MODIFIED event
+      mock_agg.process_event.assert_called_with(modified_a2a_event)
+
+    # Verification of arguments passed to interceptor
+    assert mock_interceptor.after_event.called
+    call_args = mock_interceptor.after_event.call_args
+    # call_args.args should be (executor_context, a2a_event, adk_event)
+
+    passed_a2a_event = call_args.args[1]
+    passed_adk_event = call_args.args[2]
+
+    # These assertions verify the bug fix
+    assert (
+        passed_a2a_event is a2a_event
+    ), f"Expected A2A event to be passed as 2nd arg, but got {passed_a2a_event}"
+    assert (
+        passed_adk_event is adk_event
+    ), f"Expected ADK event to be passed as 3rd arg, but got {passed_adk_event}"
+
+    # Verify that the modified event was enqueued
+    # We check if enqueue_event was called with modified_a2a_event
+    # Note: enqueue_event is called multiple times.
+
+    enqueued_events = [
+        call[0][0]
+        for call in self.mock_event_queue.enqueue_event.call_args_list
+    ]
+    assert (
+        modified_a2a_event in enqueued_events
+    ), "The modified event should have been enqueued"
+
+  @pytest.mark.asyncio
+  async def test_handle_request_preserves_metadata_in_final_events(
+      self,
+  ) -> None:
+    """Test that final events preserve invocation_id, author, and event_id in metadata."""
+    # Setup context with task_id
+    self.mock_context.task_id = "test-task-id"
+    self.mock_context.context_id = "test-context-id"
+
+    # Setup detailed mocks
+    self.mock_request_converter.return_value = AgentRunRequest(
+        user_id="test-user",
+        session_id="test-session",
+        new_message=Mock(spec=Content),
+        run_config=Mock(spec=RunConfig),
+    )
+
+    # Mock session service
+    mock_session = Mock()
+    mock_session.id = "test-session"
+    self.mock_runner.session_service.get_session = AsyncMock(
+        return_value=mock_session
+    )
+
+    # Mock invocation context
+    mock_invocation_context = Mock()
+    self.mock_runner._new_invocation_context.return_value = (
+        mock_invocation_context
+    )
+
+    # Mock ADK event with specific metadata to preserve
+    mock_adk_event = Mock(spec=Event)
+    mock_adk_event.invocation_id = "test-invocation-id"
+    mock_adk_event.author = "test-author"
+    mock_adk_event.id = "test-event-id"
+
+    # Configure run_async to yield our mock ADK event
+    async def mock_run_async(**kwargs):
+      async for item in self._create_async_generator([mock_adk_event]):
+        yield item
+
+    self.mock_runner.run_async = mock_run_async
+    self.mock_event_converter.return_value = [Mock()]
+
+    with patch(
+        "google.adk.a2a.executor.a2a_agent_executor.TaskResultAggregator"
+    ) as mock_aggregator_class:
+      mock_aggregator = Mock()
+      mock_aggregator.task_state = TaskState.completed
+      mock_aggregator.task_status_message = Mock(spec=Message)
+      mock_aggregator_class.return_value = mock_aggregator
+
+      # Execute
+      await self.executor._handle_request(
+          self.mock_context, self.mock_event_queue
+      )
+
+      # Verify final status event was published and has correct metadata
+      final_events = [
+          call[0][0]
+          for call in self.mock_event_queue.enqueue_event.call_args_list
+          if hasattr(call[0][0], "final") and call[0][0].final == True
+      ]
+      assert len(final_events) >= 1
+      final_event = final_events[-1]
+
+      assert final_event.metadata is not None
+      assert (
+          final_event.metadata.get("adk_invocation_id") == "test-invocation-id"
+      )
+      assert final_event.metadata.get("adk_author") == "test-author"
+      assert final_event.metadata.get("adk_event_id") == "test-event-id"
+      assert final_event.metadata.get("adk_app_name") == "test-app"
+      assert final_event.metadata.get("adk_user_id") == "test-user"
+      assert final_event.metadata.get("adk_session_id") == "test-session"

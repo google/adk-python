@@ -14,9 +14,9 @@
 
 from __future__ import annotations
 
+import asyncio
 import functools
 import textwrap
-import types
 from typing import Callable
 
 from google.auth.credentials import Credentials
@@ -27,7 +27,7 @@ from .settings import QueryResultMode
 from .settings import SpannerToolSettings
 
 
-def execute_sql(
+async def execute_sql(
     project_id: str,
     instance_id: str,
     database_id: str,
@@ -82,7 +82,8 @@ def execute_sql(
   Note:
     This is running with Read-Only Transaction for query that only read data.
   """
-  return utils.execute_sql(
+  return await asyncio.to_thread(
+      utils.execute_sql,
       project_id,
       instance_id,
       database_id,
@@ -179,15 +180,10 @@ def get_execute_sql(settings: SpannerToolSettings) -> Callable[..., dict]:
 
   if settings and settings.query_result_mode is QueryResultMode.DICT_LIST:
 
-    execute_sql_wrapper = types.FunctionType(
-        execute_sql.__code__,
-        execute_sql.__globals__,
-        execute_sql.__name__,
-        execute_sql.__defaults__,
-        execute_sql.__closure__,
-    )
-    functools.update_wrapper(execute_sql_wrapper, execute_sql)
-    # Update with the new docstring
+    @functools.wraps(execute_sql)
+    async def execute_sql_wrapper(*args, **kwargs) -> dict:
+      return await execute_sql(*args, **kwargs)
+
     execute_sql_wrapper.__doc__ = _EXECUTE_SQL_DICT_LIST_MODE_DOCSTRING
     return execute_sql_wrapper
 

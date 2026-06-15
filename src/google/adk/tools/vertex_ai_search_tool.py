@@ -21,8 +21,10 @@ from typing import TYPE_CHECKING
 from google.genai import types
 from typing_extensions import override
 
+from ..agents.readonly_context import ReadonlyContext
 from ..utils.model_name_utils import is_gemini_1_model
 from ..utils.model_name_utils import is_gemini_model
+from ..utils.model_name_utils import is_gemini_model_id_check_disabled
 from .base_tool import BaseTool
 from .tool_context import ToolContext
 
@@ -38,6 +40,25 @@ class VertexAiSearchTool(BaseTool):
   Attributes:
     data_store_id: The Vertex AI search data store resource ID.
     search_engine_id: The Vertex AI search engine resource ID.
+
+  To dynamically customize the search configuration at runtime (e.g., set
+  filter based on user context), subclass this tool and override the
+  `_build_vertex_ai_search_config` method.
+
+  Example:
+    ```python
+    class DynamicFilterSearchTool(VertexAiSearchTool):
+      def _build_vertex_ai_search_config(
+          self, ctx: ReadonlyContext
+      ) -> types.VertexAISearch:
+        user_id = ctx.state.get('user_id')
+        return types.VertexAISearch(
+            datastore=self.data_store_id,
+            engine=self.search_engine_id,
+            filter=f"user_id = '{user_id}'",
+            max_results=self.max_results,
+        )
+    ```
   """
 
   def __init__(
@@ -90,6 +111,30 @@ class VertexAiSearchTool(BaseTool):
     self.max_results = max_results
     self.bypass_multi_tools_limit = bypass_multi_tools_limit
 
+  def _build_vertex_ai_search_config(
+      self, readonly_context: ReadonlyContext
+  ) -> types.VertexAISearch:
+    """Builds the VertexAISearch configuration.
+
+    Override this method in a subclass to dynamically customize the search
+    configuration based on the context (e.g., set filter based on session
+    state).
+
+    Args:
+      readonly_context: The readonly context with access to state and session
+        info.
+
+    Returns:
+      The VertexAISearch configuration to use for this request.
+    """
+    return types.VertexAISearch(
+        datastore=self.data_store_id,
+        data_store_specs=self.data_store_specs,
+        engine=self.search_engine_id,
+        filter=self.filter,
+        max_results=self.max_results,
+    )
+
   @override
   async def process_llm_request(
       self,
@@ -97,23 +142,31 @@ class VertexAiSearchTool(BaseTool):
       tool_context: ToolContext,
       llm_request: LlmRequest,
   ) -> None:
-    if is_gemini_model(llm_request.model):
+    model_check_disabled = is_gemini_model_id_check_disabled()
+    llm_request.config = llm_request.config or types.GenerateContentConfig()
+    llm_request.config.tools = llm_request.config.tools or []
+
+    if is_gemini_model(llm_request.model) or model_check_disabled:
       if is_gemini_1_model(llm_request.model) and llm_request.config.tools:
         raise ValueError(
             'Vertex AI search tool cannot be used with other tools in Gemini'
             ' 1.x.'
         )
-      llm_request.config = llm_request.config or types.GenerateContentConfig()
-      llm_request.config.tools = llm_request.config.tools or []
+
+      # Build the search config (can be overridden by subclasses)
+      vertex_ai_search_config = self._build_vertex_ai_search_config(
+          tool_context
+      )
 
       # Format data_store_specs concisely for logging
-      if self.data_store_specs:
+      if vertex_ai_search_config.data_store_specs:
         spec_ids = [
             spec.data_store.split('/')[-1] if spec.data_store else 'unnamed'
-            for spec in self.data_store_specs
+            for spec in vertex_ai_search_config.data_store_specs
         ]
         specs_info = (
-            f'{len(self.data_store_specs)} spec(s): [{", ".join(spec_ids)}]'
+            f'{len(vertex_ai_search_config.data_store_specs)} spec(s):'
+            f' [{", ".join(spec_ids)}]'
         )
       else:
         specs_info = None
@@ -122,23 +175,17 @@ class VertexAiSearchTool(BaseTool):
           'Adding Vertex AI Search tool config to LLM request: '
           'datastore=%s, engine=%s, filter=%s, max_results=%s, '
           'data_store_specs=%s',
-          self.data_store_id,
-          self.search_engine_id,
-          self.filter,
-          self.max_results,
+          vertex_ai_search_config.datastore,
+          vertex_ai_search_config.engine,
+          vertex_ai_search_config.filter,
+          vertex_ai_search_config.max_results,
           specs_info,
       )
 
       llm_request.config.tools.append(
           types.Tool(
               retrieval=types.Retrieval(
-                  vertex_ai_search=types.VertexAISearch(
-                      datastore=self.data_store_id,
-                      data_store_specs=self.data_store_specs,
-                      engine=self.search_engine_id,
-                      filter=self.filter,
-                      max_results=self.max_results,
-                  )
+                  vertex_ai_search=vertex_ai_search_config
               )
           )
       )

@@ -23,6 +23,7 @@ from typing import Optional
 import click
 import yaml
 
+from ...agents.run_config import StreamingMode
 from ...sessions.session import Session
 from .test_case import TestSpec
 
@@ -35,9 +36,17 @@ def load_test_case(test_case_dir: Path) -> TestSpec:
   return TestSpec.model_validate(data)
 
 
-def load_recorded_session(test_case_dir: Path) -> Optional[Session]:
-  """Load recorded session data from generated-session.yaml file."""
-  session_file = test_case_dir / "generated-session.yaml"
+def load_recorded_session(
+    test_case_dir: Path, streaming_mode: StreamingMode
+) -> Optional[Session]:
+  """Load recorded session data from YAML file."""
+  if streaming_mode == StreamingMode.SSE:
+    session_file = test_case_dir / "generated-session-sse.yaml"
+  elif streaming_mode == StreamingMode.NONE:
+    session_file = test_case_dir / "generated-session.yaml"
+  else:
+    raise ValueError(f"Unsupported streaming mode: {streaming_mode}")
+
   if not session_file.exists():
     return None
 

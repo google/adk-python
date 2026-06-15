@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from contextlib import contextmanager
 import contextvars
 import os
@@ -32,7 +33,7 @@ EVAL_CLIENT_LABEL = f"google-adk-eval/{version.__version__}"
 """Label used to denote calls emerging to external system as a part of Evals."""
 
 # The ContextVar holds client label collected for the current request.
-_LABEL_CONTEXT: contextvars.ContextVar[str] = contextvars.ContextVar(
+_LABEL_CONTEXT: contextvars.ContextVar[str | None] = contextvars.ContextVar(
     "_LABEL_CONTEXT", default=None
 )
 
@@ -49,7 +50,7 @@ def _get_default_labels() -> List[str]:
 
 
 @contextmanager
-def client_label_context(client_label: str):
+def client_label_context(client_label: str) -> Iterator[None]:
   """Runs the operation within the context of the given client label."""
   current_client_label = _LABEL_CONTEXT.get()
 

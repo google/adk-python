@@ -106,6 +106,12 @@ class GoogleTool(FunctionTool):
           "error_details": str(ex),
       }
 
+  def _detect_error_in_response(self, response: Any) -> Optional[str]:
+    """Telemetry hook: returns an error type if the response indicates an error."""
+    if isinstance(response, dict) and response.get("status") == "ERROR":
+      return "TOOL_ERROR"
+    return None
+
   async def _run_async_with_credential(
       self,
       credentials: Credentials,

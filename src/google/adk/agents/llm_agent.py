@@ -14,6 +14,8 @@
 
 from __future__ import annotations
 
+import abc
+import asyncio
 import importlib
 import inspect
 import logging
@@ -40,6 +42,8 @@ from typing_extensions import TypeAlias
 
 from ..code_executors.base_code_executor import BaseCodeExecutor
 from ..events.event import Event
+from ..features import experimental
+from ..features import FeatureName
 from ..flows.llm_flows.auto_flow import AutoFlow
 from ..flows.llm_flows.base_llm_flow import BaseLlmFlow
 from ..flows.llm_flows.single_flow import SingleFlow
@@ -53,14 +57,15 @@ from ..tools.base_toolset import BaseToolset
 from ..tools.function_tool import FunctionTool
 from ..tools.tool_configs import ToolConfig
 from ..tools.tool_context import ToolContext
+from ..utils._schema_utils import SchemaType
+from ..utils._schema_utils import validate_schema
 from ..utils.context_utils import Aclosing
-from ..utils.feature_decorator import experimental
 from .base_agent import BaseAgent
 from .base_agent import BaseAgentState
-from .base_agent_config import BaseAgentConfig
+from .base_agent_config import BaseAgentConfig as BaseAgentConfig
 from .callback_context import CallbackContext
 from .invocation_context import InvocationContext
-from .llm_agent_config import LlmAgentConfig
+from .llm_agent_config import LlmAgentConfig as LlmAgentConfig
 from .readonly_context import ReadonlyContext
 
 logger = logging.getLogger('google_adk.' + __name__)
@@ -177,28 +182,48 @@ async def _convert_tool_union_to_tools(
     return [FunctionTool(func=tool_union)]
 
   # At this point, tool_union must be a BaseToolset
-  return await tool_union.get_tools_with_prefix(ctx)
+  try:
+    return await tool_union.get_tools_with_prefix(ctx)
+  except Exception as e:
+    logger.warning(
+        'Failed to get tools from toolset %s: %s',
+        type(tool_union).__name__,
+        e,
+    )
+    return []
 
 
-class LlmAgent(BaseAgent):
+# TODO: drop the explicit abc.ABC base once BaseNode surfaces ABCMeta to
+# static type checkers.
+class LlmAgent(BaseAgent, abc.ABC):
   """LLM-based Agent."""
 
-  DEFAULT_MODEL: ClassVar[str] = 'gemini-2.5-flash'
+  DEFAULT_MODEL: ClassVar[str] = 'gemini-3.5-flash'
   """System default model used when no model is set on an agent."""
+
+  DEFAULT_LIVE_MODEL: ClassVar[str] = 'gemini-live-2.5-flash-native-audio'
+  """System default model used for live mode when no model is set on an agent."""
 
   _default_model: ClassVar[Union[str, BaseLlm]] = DEFAULT_MODEL
   """Current default model used when an agent has no model set."""
+
+  _default_live_model: ClassVar[Union[str, BaseLlm]] = DEFAULT_LIVE_MODEL
+  """Current default model used for live mode when an agent has no model set."""
 
   model: Union[str, BaseLlm] = ''
   """The model to use for the agent.
 
   When not set, the agent will inherit the model from its ancestor. If no
   ancestor provides a model, the agent uses the default model configured via
-  LlmAgent.set_default_model. The built-in default is gemini-2.5-flash.
+  LlmAgent.set_default_model. The built-in default is gemini-3.5-flash.
   """
 
   config_type: ClassVar[Type[BaseAgentConfig]] = LlmAgentConfig
-  """The config type for this agent."""
+  """The config type for this agent.
+
+  DEPRECATED: This attribute is deprecated and will be removed in a future
+  version, along with the AgentConfig YAML loader.
+  """
 
   instruction: Union[str, InstructionProvider] = ''
   """Dynamic instructions for the LLM model, guiding the agent's behavior.
@@ -291,6 +316,20 @@ class LlmAgent(BaseAgent):
   settings, etc.
   """
 
+  mode: Literal['chat', 'task', 'single_turn'] | None = None
+  """The delegation mode for this agent.
+
+  Options:
+    chat: Standard chat agent reachable via transfer_to_agent.
+    task: Task agent that chats with the user to accomplish a task.
+    single_turn: Agents that complete a task without chatting with the user.
+
+  Default value is chat as a sub-agent, single_turn as a node in a workflow.
+  """
+
+  parallel_worker: bool | None = None
+  """Whether to run the agent in parallel worker mode."""
+
   # LLM-based agent transfer configs - Start
   disallow_transfer_to_parent: bool = False
   """Disallows LLM-controlled transferring to the parent agent.
@@ -316,12 +355,20 @@ class LlmAgent(BaseAgent):
   # Controlled input/output configurations - Start
   input_schema: Optional[type[BaseModel]] = None
   """The input schema when agent is used as a tool."""
-  output_schema: Optional[type[BaseModel]] = None
+  output_schema: Optional[SchemaType] = None
   """The output schema when agent replies.
 
+  Supports all schema types that the underlying Google GenAI API supports:
+    - type[BaseModel]: e.g., MySchema
+    - list[type[BaseModel]]: e.g., list[MySchema]
+    - list[primitive]: e.g., list[str], list[int]
+    - dict: Raw dict schemas
+    - Schema: Google's Schema type
+
   NOTE:
-    When this is set, agent can ONLY reply and CANNOT use any tools, such as
-    function tools, RAGs, agent transfer, etc.
+    The ADK supports using `output_schema` and `tools` together. It works by
+    exposing tools during the thought loop and enforcing structure only on the
+    final output.
   """
   output_key: Optional[str] = None
   """The key in session state to store the output of the agent.
@@ -469,7 +516,7 @@ class LlmAgent(BaseAgent):
         self.__maybe_save_output_to_state(event)
         yield event
         if ctx.should_pause_invocation(event):
-          # Do not pause immediately, wait until the long running tool call is
+          # Do not pause immediately, wait until the long-running tool call is
           # executed.
           should_pause = True
     if should_pause:
@@ -479,7 +526,7 @@ class LlmAgent(BaseAgent):
       events = ctx._get_events(current_invocation=True, current_branch=True)
       if events and any(ctx.should_pause_invocation(e) for e in events[-2:]):
         return
-      # Only yield an end state if the last event is no longer a long running
+      # Only yield an end state if the last event is no longer a long-running
       # tool call.
       ctx.set_agent_state(self.name, end_of_agent=True)
       yield self._create_agent_state_event(ctx)
@@ -494,6 +541,27 @@ class LlmAgent(BaseAgent):
         yield event
       if ctx.end_invocation:
         return
+
+  @override
+  async def _run_impl(
+      self,
+      *,
+      ctx: Context,
+      node_input: Any,
+  ) -> AsyncGenerator[Any, None]:
+    """Runs the agent as a node in a workflow graph."""
+    from ..utils.context_utils import Aclosing
+    from ..workflow._llm_agent_wrapper import run_llm_agent_as_node
+
+    async with Aclosing(
+        run_llm_agent_as_node(self, ctx=ctx, node_input=node_input)
+    ) as agen:
+      async for event in agen:
+        # Keep the agent's true event author so the outer NodeRunner does
+        # not overwrite it with the parent workflow's event_author.
+        if event.author:
+          ctx.event_author = event.author
+        yield event
 
   @property
   def canonical_model(self) -> BaseLlm:
@@ -513,6 +581,24 @@ class LlmAgent(BaseAgent):
         ancestor_agent = ancestor_agent.parent_agent
       return self._resolve_default_model()
 
+  @property
+  def canonical_live_model(self) -> BaseLlm:
+    """The resolved self.model field as BaseLlm for live mode.
+
+    This method is only for use by Agent Development Kit.
+    """
+    if isinstance(self.model, BaseLlm):
+      return self.model
+    elif self.model:  # model is non-empty str
+      return LLMRegistry.new_llm(self.model)
+    else:  # find model from ancestors.
+      ancestor_agent = self.parent_agent
+      while ancestor_agent is not None:
+        if isinstance(ancestor_agent, LlmAgent):
+          return ancestor_agent.canonical_live_model
+        ancestor_agent = ancestor_agent.parent_agent
+      return self._resolve_default_live_model()
+
   @classmethod
   def set_default_model(cls, model: Union[str, BaseLlm]) -> None:
     """Overrides the default model used when an agent has no model set."""
@@ -529,6 +615,23 @@ class LlmAgent(BaseAgent):
     if isinstance(default_model, BaseLlm):
       return default_model
     return LLMRegistry.new_llm(default_model)
+
+  @classmethod
+  def set_default_live_model(cls, model: Union[str, BaseLlm]) -> None:
+    """Overrides the default model used for live mode when an agent has no model set."""
+    if not isinstance(model, (str, BaseLlm)):
+      raise TypeError('Default live model must be a model name or BaseLlm.')
+    if isinstance(model, str) and not model:
+      raise ValueError('Default live model must be a non-empty string.')
+    cls._default_live_model = model
+
+  @classmethod
+  def _resolve_default_live_model(cls) -> BaseLlm:
+    """Resolves the current default live model to a BaseLlm instance."""
+    default_live_model = cls._default_live_model
+    if isinstance(default_live_model, BaseLlm):
+      return default_live_model
+    return LLMRegistry.new_llm(default_live_model)
 
   async def canonical_instruction(
       self, ctx: ReadonlyContext
@@ -589,24 +692,27 @@ class LlmAgent(BaseAgent):
       return global_instruction, True
 
   async def canonical_tools(
-      self, ctx: ReadonlyContext = None
+      self, ctx: Optional[ReadonlyContext] = None
   ) -> list[BaseTool]:
     """The resolved self.tools field as a list of BaseTool based on the context.
 
     This method is only for use by Agent Development Kit.
     """
-    resolved_tools = []
     # We may need to wrap some built-in tools if there are other tools
     # because the built-in tools cannot be used together with other tools.
     # TODO(b/448114567): Remove once the workaround is no longer needed.
     multiple_tools = len(self.tools) > 1
     model = self.canonical_model
-    for tool_union in self.tools:
-      resolved_tools.extend(
-          await _convert_tool_union_to_tools(
-              tool_union, ctx, model, multiple_tools
-          )
-      )
+
+    results = await asyncio.gather(*(
+        _convert_tool_union_to_tools(tool_union, ctx, model, multiple_tools)
+        for tool_union in self.tools
+    ))
+
+    resolved_tools = []
+    for tools in results:
+      resolved_tools.extend(tools)
+
     return resolved_tools
 
   @property
@@ -815,12 +921,23 @@ class LlmAgent(BaseAgent):
           event.author,
       )
       return
-    if (
-        self.output_key
-        and event.is_final_response()
-        and event.content
-        and event.content.parts
-    ):
+
+    if not self.output_key:
+      return
+
+    # Handle text responses
+    if event.is_final_response() and event.content and event.content.parts:
+
+      # Skip if no text parts at all to avoid overwriting state_delta values
+      # already set (e.g. after_tool_callback with skip_summarization
+      # on function_response-only events).
+      has_text_part = any(
+          part.text is not None and not part.thought
+          for part in event.content.parts
+      )
+
+      if not has_text_part:
+        return
 
       result = ''.join(
           part.text
@@ -833,9 +950,7 @@ class LlmAgent(BaseAgent):
         # Do not attempt to parse it as JSON.
         if not result.strip():
           return
-        result = self.output_schema.model_validate_json(result).model_dump(
-            exclude_none=True
-        )
+        result = validate_schema(self.output_schema, result)
       event.actions.state_delta[self.output_key] = result
 
   @model_validator(mode='after')
@@ -866,10 +981,14 @@ class LlmAgent(BaseAgent):
     """Provides a warning if multiple thinking configurations are found."""
     super().model_post_init(__context)
 
-    # Note: Using getattr to check both locations for thinking_config
-    if getattr(
-        self.generate_content_config, 'thinking_config', None
-    ) and getattr(self.planner, 'thinking_config', None):
+    from ..planners.built_in_planner import BuiltInPlanner
+
+    if (
+        self.generate_content_config is not None
+        and self.generate_content_config.thinking_config is not None
+        and isinstance(self.planner, BuiltInPlanner)
+        and self.planner.thinking_config is not None
+    ):
       warnings.warn(
           'Both `thinking_config` in `generate_content_config` and a '
           'planner with `thinking_config` are provided. The '
@@ -878,8 +997,32 @@ class LlmAgent(BaseAgent):
           stacklevel=3,
       )
 
+    if self.mode == 'task':
+      from .llm.task._finish_task_tool import FinishTaskTool
+
+      self.tools.append(FinishTaskTool(self))
+
+    # Add sub-agents as tools based on their mode
+    from ..tools.agent_tool import _SingleTurnAgentTool
+    from ..tools.agent_tool import _TaskAgentTool
+
+    if self.sub_agents:
+      for sub_agent in self.sub_agents:
+        if isinstance(sub_agent, LlmAgent):
+          mode = getattr(sub_agent, 'mode', None)
+          if mode is None:
+            try:
+              sub_agent.mode = 'chat'
+              mode = 'chat'
+            except (AttributeError, TypeError):
+              continue
+          if mode == 'single_turn':
+            self.tools.append(_SingleTurnAgentTool(sub_agent))
+          elif mode == 'task':
+            self.tools.append(_TaskAgentTool(sub_agent))
+
   @classmethod
-  @experimental
+  @experimental(FeatureName.AGENT_CONFIG)
   def _resolve_tools(
       cls, tool_configs: list[ToolConfig], config_abs_path: str
   ) -> list[Any]:
@@ -938,7 +1081,7 @@ class LlmAgent(BaseAgent):
 
   @override
   @classmethod
-  @experimental
+  @experimental(FeatureName.AGENT_CONFIG)
   def _parse_config(
       cls: Type[LlmAgent],
       config: LlmAgentConfig,

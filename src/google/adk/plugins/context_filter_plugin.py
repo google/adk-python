@@ -17,13 +17,11 @@ from __future__ import annotations
 from collections.abc import Sequence
 import logging
 from typing import Callable
-from typing import List
 from typing import Optional
 
 from google.genai import types
 
 from ..agents.callback_context import CallbackContext
-from ..events.event import Event
 from ..models.llm_request import LlmRequest
 from ..models.llm_response import LlmResponse
 from .base_plugin import BasePlugin
@@ -62,21 +60,61 @@ def _adjust_split_index_to_avoid_orphaned_function_responses(
   return 0
 
 
+def _is_function_response_content(content: types.Content) -> bool:
+  """Returns whether a content contains function responses."""
+  return bool(content.parts) and any(
+      part.function_response is not None for part in content.parts
+  )
+
+
+def _is_human_user_content(content: types.Content) -> bool:
+  """Returns whether a content represents user input (not tool output)."""
+  return content.role == "user" and not _is_function_response_content(content)
+
+
+def _get_invocation_start_indices(
+    contents: Sequence[types.Content],
+) -> list[int]:
+  """Returns indices that begin a user-started invocation.
+
+  An invocation begins with one or more consecutive user messages. Tool outputs
+  (function responses) are role="user" but are *not* considered invocation
+  starts.
+
+  Args:
+    contents: Full conversation contents in chronological order.
+
+  Returns:
+    A list of indices where each index marks the beginning of an invocation.
+  """
+  invocation_start_indices = []
+  previous_was_human_user = False
+  for i, content in enumerate(contents):
+    is_human_user = _is_human_user_content(content)
+    if is_human_user and not previous_was_human_user:
+      invocation_start_indices.append(i)
+    previous_was_human_user = is_human_user
+  return invocation_start_indices
+
+
 class ContextFilterPlugin(BasePlugin):
   """A plugin that filters the LLM context to reduce its size."""
 
   def __init__(
       self,
       num_invocations_to_keep: Optional[int] = None,
-      custom_filter: Optional[Callable[[List[Event]], List[Event]]] = None,
+      custom_filter: Optional[
+          Callable[[list[types.Content]], list[types.Content]]
+      ] = None,
       name: str = "context_filter_plugin",
   ):
     """Initializes the context management plugin.
 
     Args:
       num_invocations_to_keep: The number of last invocations to keep. An
-        invocation is defined as one or more consecutive user messages followed
-        by a model response.
+        invocation starts with one or more consecutive user messages and can
+        contain multiple model turns (e.g. tool calls) until the next user
+        message starts a new invocation.
       custom_filter: A function to filter the context.
       name: The name of the plugin instance.
     """
@@ -89,27 +127,16 @@ class ContextFilterPlugin(BasePlugin):
   ) -> Optional[LlmResponse]:
     """Filters the LLM request's context before it is sent to the model."""
     try:
-      contents = llm_request.contents
+      contents: list[types.Content] = llm_request.contents
 
       if (
           self._num_invocations_to_keep is not None
           and self._num_invocations_to_keep > 0
       ):
-        num_model_turns = sum(1 for c in contents if c.role == "model")
-        if num_model_turns >= self._num_invocations_to_keep:
-          model_turns_to_find = self._num_invocations_to_keep
-          split_index = 0
-          for i in range(len(contents) - 1, -1, -1):
-            if contents[i].role == "model":
-              model_turns_to_find -= 1
-              if model_turns_to_find == 0:
-                start_index = i
-                while (
-                    start_index > 0 and contents[start_index - 1].role == "user"
-                ):
-                  start_index -= 1
-                split_index = start_index
-                break
+        invocation_start_indices = _get_invocation_start_indices(contents)
+        if len(invocation_start_indices) > self._num_invocations_to_keep:
+          split_index = invocation_start_indices[-self._num_invocations_to_keep]
+
           # Adjust split_index to avoid orphaned function_responses.
           split_index = (
               _adjust_split_index_to_avoid_orphaned_function_responses(
@@ -122,7 +149,7 @@ class ContextFilterPlugin(BasePlugin):
         contents = self._custom_filter(contents)
 
       llm_request.contents = contents
-    except Exception as e:
-      logger.error(f"Failed to reduce context for request: {e}")
+    except Exception:
+      logger.exception("Failed to reduce context for request")
 
     return None

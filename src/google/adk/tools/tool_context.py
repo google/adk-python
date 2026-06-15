@@ -14,93 +14,27 @@
 
 from __future__ import annotations
 
-from typing import Any
-from typing import Optional
+import importlib
 from typing import TYPE_CHECKING
 
-from ..agents.callback_context import CallbackContext
-from ..auth.auth_credential import AuthCredential
-from ..auth.auth_handler import AuthHandler
-from ..auth.auth_tool import AuthConfig
-from .tool_confirmation import ToolConfirmation
+from ..agents.callback_context import CallbackContext as CallbackContext
+from ..agents.context import Context
 
 if TYPE_CHECKING:
-  from ..agents.invocation_context import InvocationContext
-  from ..events.event_actions import EventActions
-  from ..memory.base_memory_service import SearchMemoryResponse
+  pass
+
+ToolContext = Context
+
+_LAZY_REEXPORTS: dict[str, tuple[str, str]] = {
+    'AuthCredential': ('google.adk.auth.auth_credential', 'AuthCredential'),
+    'AuthHandler': ('google.adk.auth.auth_handler', 'AuthHandler'),
+    'AuthConfig': ('google.adk.auth.auth_tool', 'AuthConfig'),
+}
 
 
-class ToolContext(CallbackContext):
-  """The context of the tool.
-
-  This class provides the context for a tool invocation, including access to
-  the invocation context, function call ID, event actions, and authentication
-  response. It also provides methods for requesting credentials, retrieving
-  authentication responses, listing artifacts, and searching memory.
-
-  Attributes:
-    invocation_context: The invocation context of the tool.
-    function_call_id: The function call id of the current tool call. This id was
-      returned in the function call event from LLM to identify a function call.
-      If LLM didn't return this id, ADK will assign one to it. This id is used
-      to map function call response to the original function call.
-    event_actions: The event actions of the current tool call.
-    tool_confirmation: The tool confirmation of the current tool call.
-  """
-
-  def __init__(
-      self,
-      invocation_context: InvocationContext,
-      *,
-      function_call_id: Optional[str] = None,
-      event_actions: Optional[EventActions] = None,
-      tool_confirmation: Optional[ToolConfirmation] = None,
-  ):
-    super().__init__(invocation_context, event_actions=event_actions)
-    self.function_call_id = function_call_id
-    self.tool_confirmation = tool_confirmation
-
-  @property
-  def actions(self) -> EventActions:
-    return self._event_actions
-
-  def request_credential(self, auth_config: AuthConfig) -> None:
-    if not self.function_call_id:
-      raise ValueError('function_call_id is not set.')
-    self._event_actions.requested_auth_configs[self.function_call_id] = (
-        AuthHandler(auth_config).generate_auth_request()
-    )
-
-  def get_auth_response(self, auth_config: AuthConfig) -> AuthCredential:
-    return AuthHandler(auth_config).get_auth_response(self.state)
-
-  def request_confirmation(
-      self,
-      *,
-      hint: Optional[str] = None,
-      payload: Optional[Any] = None,
-  ) -> None:
-    """Requests confirmation for the given function call.
-
-    Args:
-      hint: A hint to the user on how to confirm the tool call.
-      payload: The payload used to confirm the tool call.
-    """
-    if not self.function_call_id:
-      raise ValueError('function_call_id is not set.')
-    self._event_actions.requested_tool_confirmations[self.function_call_id] = (
-        ToolConfirmation(
-            hint=hint,
-            payload=payload,
-        )
-    )
-
-  async def search_memory(self, query: str) -> SearchMemoryResponse:
-    """Searches the memory of the current user."""
-    if self._invocation_context.memory_service is None:
-      raise ValueError('Memory service is not available.')
-    return await self._invocation_context.memory_service.search_memory(
-        app_name=self._invocation_context.app_name,
-        user_id=self._invocation_context.user_id,
-        query=query,
-    )
+def __getattr__(name: str):
+  if name in _LAZY_REEXPORTS:
+    module_path, attr = _LAZY_REEXPORTS[name]
+    module = importlib.import_module(module_path)
+    return getattr(module, attr)
+  raise AttributeError(f'module {__name__!r} has no attribute {name!r}')

@@ -28,6 +28,7 @@ from typing import TypeVar
 from typing import Union
 
 from ..agents.readonly_context import ReadonlyContext
+from ..auth.auth_tool import AuthConfig
 from .base_tool import BaseTool
 
 if TYPE_CHECKING:
@@ -79,6 +80,9 @@ class BaseToolset(ABC):
     """
     self.tool_filter = tool_filter
     self.tool_name_prefix = tool_name_prefix
+    self._cached_invocation_id: Optional[str] = None
+    self._cached_prefixed_tools: Optional[list[BaseTool]] = None
+    self._use_invocation_cache = True
 
   @abstractmethod
   async def get_tools(
@@ -111,9 +115,20 @@ class BaseToolset(ABC):
     Returns:
       list[BaseTool]: A list of tools with prefixed names if tool_name_prefix is provided.
     """
+    invocation_id = readonly_context.invocation_id if readonly_context else None
+
+    if (
+        self._use_invocation_cache
+        and self._cached_prefixed_tools is not None
+        and self._cached_invocation_id == invocation_id
+    ):
+      return self._cached_prefixed_tools
+
     tools = await self.get_tools(readonly_context)
 
     if not self.tool_name_prefix:
+      self._cached_invocation_id = invocation_id
+      self._cached_prefixed_tools = tools
       return tools
 
     prefix = self.tool_name_prefix
@@ -146,6 +161,8 @@ class BaseToolset(ABC):
       tool_copy._get_declaration = _create_prefixed_declaration()
       prefixed_tools.append(tool_copy)
 
+    self._cached_invocation_id = invocation_id
+    self._cached_prefixed_tools = prefixed_tools
     return prefixed_tools
 
   async def close(self) -> None:
@@ -175,7 +192,7 @@ class BaseToolset(ABC):
     raise ValueError(f"from_config() not implemented for toolset: {cls}")
 
   def _is_tool_selected(
-      self, tool: BaseTool, readonly_context: ReadonlyContext
+      self, tool: BaseTool, readonly_context: Optional[ReadonlyContext]
   ) -> bool:
     if not self.tool_filter:
       return True
@@ -204,3 +221,21 @@ class BaseToolset(ABC):
       llm_request: The outgoing LLM request, mutable this method.
     """
     pass
+
+  def get_auth_config(self) -> Optional[AuthConfig]:
+    """Returns the auth config for this toolset. ADK will make sure the
+    'exchanged_auth_credential' field in the config is populated with
+    ready-to-use credential (e.g. oauth token for OAuth flow) before calling
+    get_tools method or execute any tools returned by this toolset. Thus toolset
+    can use this credential either for tool listing or tool calling. If tool
+    calling needs a different credential from ADK client, call
+    tool_context.request_credential in the tool.
+
+    Toolsets that support authentication should override this method to return
+    an AuthConfig constructed from their auth_scheme, auth_credential, and
+    optional credential_key parameters.
+
+    Returns:
+      AuthConfig if the toolset has authentication configured, None otherwise.
+    """
+    return None

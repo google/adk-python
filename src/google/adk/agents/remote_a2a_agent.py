@@ -24,7 +24,6 @@ from typing import Callable
 from typing import Optional
 from typing import Union
 from urllib.parse import urlparse
-import uuid
 
 from a2a.client import Client as A2AClient
 from a2a.client import ClientEvent as A2AClientEvent
@@ -32,7 +31,6 @@ from a2a.client.card_resolver import A2ACardResolver
 from a2a.client.client import ClientConfig as A2AClientConfig
 from a2a.client.client_factory import ClientFactory as A2AClientFactory
 from a2a.client.errors import A2AClientHTTPError
-from a2a.client.middleware import ClientCallContext
 from a2a.types import AgentCard
 from a2a.types import Message as A2AMessage
 from a2a.types import Part as A2APart
@@ -41,6 +39,7 @@ from a2a.types import TaskArtifactUpdateEvent as A2ATaskArtifactUpdateEvent
 from a2a.types import TaskState
 from a2a.types import TaskStatusUpdateEvent as A2ATaskStatusUpdateEvent
 from a2a.types import TransportProtocol as A2ATransport
+from google.adk.platform import uuid as platform_uuid
 from google.genai import types as genai_types
 import httpx
 
@@ -50,6 +49,11 @@ except ImportError:
   # Fallback for older versions of a2a-sdk.
   AGENT_CARD_WELL_KNOWN_PATH = "/.well-known/agent.json"
 
+from ..a2a.agent.config import A2aRemoteAgentConfig
+from ..a2a.agent.interceptors.new_integration_extension import _NEW_A2A_ADK_INTEGRATION_EXTENSION
+from ..a2a.agent.interceptors.new_integration_extension import _new_integration_extension_interceptor
+from ..a2a.agent.utils import execute_after_request_interceptors
+from ..a2a.agent.utils import execute_before_request_interceptors
 from ..a2a.converters.event_converter import convert_a2a_message_to_event
 from ..a2a.converters.event_converter import convert_a2a_task_to_event
 from ..a2a.converters.event_converter import convert_event_to_a2a_message
@@ -57,6 +61,9 @@ from ..a2a.converters.part_converter import A2APartToGenAIPartConverter
 from ..a2a.converters.part_converter import convert_a2a_part_to_genai_part
 from ..a2a.converters.part_converter import convert_genai_part_to_a2a_part
 from ..a2a.converters.part_converter import GenAIPartToA2APartConverter
+from ..a2a.converters.to_adk_event import _create_mock_function_call_for_required_user_input
+from ..a2a.converters.to_adk_event import MOCK_FUNCTION_CALL_FOR_REQUIRED_USER_AUTH
+from ..a2a.converters.to_adk_event import MOCK_FUNCTION_CALL_FOR_REQUIRED_USER_INPUT
 from ..a2a.experimental import a2a_experimental
 from ..a2a.logs.log_utils import build_a2a_request_log
 from ..a2a.logs.log_utils import build_a2a_response_log
@@ -96,6 +103,22 @@ class A2AClientError(Exception):
   pass
 
 
+def _add_mock_function_call(event: Event, state: TaskState) -> None:
+  """Generates a mock function call for input-required events if applicable."""
+  if event.content is None:
+    return
+
+  output_parts, long_running_tool_ids = (
+      _create_mock_function_call_for_required_user_input(
+          state,
+          event.content.parts,
+          event.long_running_tool_ids,
+      )
+  )
+  event.content.parts = output_parts
+  event.long_running_tool_ids = long_running_tool_ids
+
+
 @a2a_experimental
 class RemoteA2aAgent(BaseAgent):
   """Agent that communicates with a remote A2A agent via A2A client.
@@ -127,6 +150,8 @@ class RemoteA2aAgent(BaseAgent):
           Callable[[InvocationContext, A2AMessage], dict[str, Any]]
       ] = None,
       full_history_when_stateless: bool = False,
+      config: Optional[A2aRemoteAgentConfig] = None,
+      use_legacy: bool = True,
       **kwargs: Any,
   ) -> None:
     """Initialize RemoteA2aAgent.
@@ -147,6 +172,9 @@ class RemoteA2aAgent(BaseAgent):
         return Tasks or context IDs) will receive all session events on every
         request. If False, the default behavior of sending only events since the
         last reply from the agent will be used.
+      config: Optional configuration object.
+      use_legacy: If false, send request to the server including the extension
+        indicating that the server should use the new implementation.
       **kwargs: Additional arguments passed to BaseAgent
 
     Raises:
@@ -174,6 +202,14 @@ class RemoteA2aAgent(BaseAgent):
     self._a2a_client_factory: Optional[A2AClientFactory] = a2a_client_factory
     self._a2a_request_meta_provider = a2a_request_meta_provider
     self._full_history_when_stateless = full_history_when_stateless
+    self._config = config or A2aRemoteAgentConfig()
+
+    if not use_legacy:
+      if self._config.request_interceptors is None:
+        self._config.request_interceptors = []
+      self._config.request_interceptors.append(
+          _new_integration_extension_interceptor
+      )
 
     # Validate and store agent card reference
     if isinstance(agent_card, AgentCard):
@@ -211,7 +247,7 @@ class RemoteA2aAgent(BaseAgent):
           httpx_client=self._httpx_client,
           streaming=False,
           polling=False,
-          supported_transports=[A2ATransport.jsonrpc],
+          supported_transports=[A2ATransport.jsonrpc, A2ATransport.http_json],
       )
       self._a2a_client_factory = A2AClientFactory(config=client_config)
     return self._httpx_client
@@ -338,8 +374,45 @@ class RemoteA2aAgent(BaseAgent):
     if not function_call_event:
       return None
 
+    event = ctx.session.events[-1]
+    # If the user function_response replies to a function_call for non-ADK
+    # input-required / auth-required events (fc.name in
+    # {MOCK_FUNCTION_CALL_FOR_REQUIRED_USER_INPUT,
+    # MOCK_FUNCTION_CALL_FOR_REQUIRED_USER_AUTH}), the function_response part
+    # is replaced with text extracted from the function response.
+    # The implementation is based on the assumption that the user
+    # function_response event will contain a function_response with one of
+    # those names and the response will contain a "result" field with the user
+    # input as a string text.
+    mock_function_call_names = {
+        MOCK_FUNCTION_CALL_FOR_REQUIRED_USER_INPUT,
+        MOCK_FUNCTION_CALL_FOR_REQUIRED_USER_AUTH,
+    }
+    mock_function_call = [
+        fc
+        for fc in function_call_event.get_function_calls()
+        if fc.name in mock_function_call_names
+    ]
+    if mock_function_call:
+      new_parts = []
+      for function_response in event.get_function_responses():
+        if (
+            function_response.name in mock_function_call_names
+            and function_response.response
+            and "result" in function_response.response
+        ):
+          text_value = function_response.response.get("result")
+          new_parts.append(
+              genai_types.Part(
+                  text=str(text_value),
+              )
+          )
+      new_event = event.model_copy(deep=True)
+      new_event.content.parts = new_parts
+      event = new_event
+
     a2a_message = convert_event_to_a2a_message(
-        ctx.session.events[-1], ctx, Role.user, self._genai_part_converter
+        event, ctx, Role.user, self._genai_part_converter
     )
     if function_call_event.custom_metadata:
       metadata = function_call_event.custom_metadata
@@ -400,6 +473,11 @@ class RemoteA2aAgent(BaseAgent):
         if not isinstance(converted_parts, list):
           converted_parts = [converted_parts] if converted_parts else []
 
+        if event.author == "user":
+          for part in converted_parts:
+            part.root.metadata = part.root.metadata or {}
+            part.root.metadata["is_user_input"] = True
+
         if converted_parts:
           message_parts.extend(converted_parts)
         else:
@@ -445,6 +523,7 @@ class RemoteA2aAgent(BaseAgent):
           ):
             for part in event.content.parts:
               part.thought = True
+          _add_mock_function_call(event, task.status.state)
         elif (
             isinstance(update, A2ATaskStatusUpdateEvent)
             and update.status
@@ -460,6 +539,7 @@ class RemoteA2aAgent(BaseAgent):
           ):
             for part in event.content.parts:
               part.thought = True
+          _add_mock_function_call(event, update.status.state)
         elif isinstance(update, A2ATaskArtifactUpdateEvent) and (
             not update.append or update.last_chunk
         ):
@@ -490,6 +570,76 @@ class RemoteA2aAgent(BaseAgent):
       elif isinstance(a2a_response, A2AMessage):
         event = convert_a2a_message_to_event(
             a2a_response, self.name, ctx, self._a2a_part_converter
+        )
+        event.custom_metadata = event.custom_metadata or {}
+
+        if a2a_response.context_id:
+          event.custom_metadata[A2A_METADATA_PREFIX + "context_id"] = (
+              a2a_response.context_id
+          )
+      else:
+        event = Event(
+            author=self.name,
+            error_message="Unknown A2A response type",
+            invocation_id=ctx.invocation_id,
+            branch=ctx.branch,
+        )
+      return event
+    except A2AClientError as e:
+      logger.error("Failed to handle A2A response: %s", e)
+      return Event(
+          author=self.name,
+          error_message=f"Failed to process A2A response: {e}",
+          invocation_id=ctx.invocation_id,
+          branch=ctx.branch,
+      )
+
+  async def _handle_a2a_response_v2(
+      self, a2a_response: A2AClientEvent | A2AMessage, ctx: InvocationContext
+  ) -> Optional[Event]:
+    """Handle A2A response and convert to Event.
+
+    Args:
+      a2a_response: The A2A response object
+      ctx: The invocation context
+
+    Returns:
+      Event object representing the response, or None if no event should be
+      emitted.
+    """
+    try:
+      if isinstance(a2a_response, tuple):
+        task, update = a2a_response
+        event = None
+        if update is None:
+          # This is the initial response for a streaming task or the complete
+          # response for a non-streaming task.
+          event = self._config.a2a_task_converter(
+              task, self.name, ctx, self._config.a2a_part_converter
+          )
+        elif isinstance(update, A2ATaskStatusUpdateEvent):
+          # This is a streaming task status update.
+          event = self._config.a2a_status_update_converter(
+              update, self.name, ctx, self._config.a2a_part_converter
+          )
+        elif isinstance(update, A2ATaskArtifactUpdateEvent):
+          # This is a streaming task artifact update.
+          event = self._config.a2a_artifact_update_converter(
+              update, self.name, ctx, self._config.a2a_part_converter
+          )
+        if not event:
+          return None
+        event.custom_metadata = event.custom_metadata or {}
+        event.custom_metadata[A2A_METADATA_PREFIX + "task_id"] = task.id
+        if task.context_id:
+          event.custom_metadata[A2A_METADATA_PREFIX + "context_id"] = (
+              task.context_id
+          )
+
+      # Otherwise, it's a regular A2AMessage.
+      elif isinstance(a2a_response, A2AMessage):
+        event = self._config.a2a_message_converter(
+            a2a_response, self.name, ctx, self._config.a2a_part_converter
         )
         event.custom_metadata = event.custom_metadata or {}
 
@@ -549,7 +699,7 @@ class RemoteA2aAgent(BaseAgent):
         return
 
       a2a_request = A2AMessage(
-          message_id=str(uuid.uuid4()),
+          message_id=platform_uuid.new_uuid(),
           parts=message_parts,
           role="user",
           context_id=context_id,
@@ -558,18 +708,47 @@ class RemoteA2aAgent(BaseAgent):
     logger.debug(build_a2a_request_log(a2a_request))
 
     try:
-      request_metadata = None
-      if self._a2a_request_meta_provider:
-        request_metadata = self._a2a_request_meta_provider(ctx, a2a_request)
+      a2a_request, parameters = await execute_before_request_interceptors(
+          self._config.request_interceptors, ctx, a2a_request
+      )
 
+      if isinstance(a2a_request, Event):
+        yield a2a_request
+        return
+
+      # Backward compatibility
+      if self._a2a_request_meta_provider:
+        parameters.request_metadata = self._a2a_request_meta_provider(
+            ctx, a2a_request
+        )
+
+      # TODO: Add support for requested_extension and
+      # message_send_configuration once they are supported by the A2A client.
       async for a2a_response in self._a2a_client.send_message(
           request=a2a_request,
-          request_metadata=request_metadata,
-          context=ClientCallContext(state=ctx.session.state),
+          request_metadata=parameters.request_metadata,
+          context=parameters.client_call_context,
       ):
         logger.debug(build_a2a_response_log(a2a_response))
 
-        event = await self._handle_a2a_response(a2a_response, ctx)
+        metadata = None
+        if isinstance(a2a_response, tuple):
+          task = a2a_response[0]
+          if task:
+            metadata = task.metadata
+        else:
+          metadata = a2a_response.metadata
+
+        if metadata and metadata.get(_NEW_A2A_ADK_INTEGRATION_EXTENSION):
+          event = await self._handle_a2a_response_v2(a2a_response, ctx)
+        else:
+          event = await self._handle_a2a_response(a2a_response, ctx)
+        if not event:
+          continue
+
+        event = await execute_after_request_interceptors(
+            self._config.request_interceptors, ctx, a2a_response, event
+        )
         if not event:
           continue
 

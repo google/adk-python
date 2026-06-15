@@ -178,6 +178,35 @@ def test_add_contents_empty_contents(
     mock_spanner_database.batch.assert_not_called()
 
 
+@mock.patch.object(spanner_utils.client, "get_spanner_client", autospec=True)
+def test_execute_sql_circular_row_fallback_to_string(mock_get_spanner_client):
+  """Test execute_sql stringifies rows with circular references."""
+  mock_spanner_client = mock.MagicMock()
+  mock_instance = mock.MagicMock()
+  mock_database = mock.MagicMock()
+  mock_snapshot = mock.MagicMock()
+  circular_row = []
+  circular_row.append(circular_row)
+  mock_snapshot.execute_sql.return_value = iter([circular_row])
+  mock_database.snapshot.return_value.__enter__.return_value = mock_snapshot
+  mock_database.database_dialect = DatabaseDialect.GOOGLE_STANDARD_SQL
+  mock_instance.database.return_value = mock_database
+  mock_spanner_client.instance.return_value = mock_instance
+  mock_get_spanner_client.return_value = mock_spanner_client
+
+  result = spanner_utils.execute_sql(
+      project_id="test-project",
+      instance_id="test-instance",
+      database_id="test-database",
+      query="SELECT 1",
+      credentials=mock.Mock(),
+      settings=SpannerToolSettings(),
+      tool_context=mock.Mock(),
+  )
+
+  assert result == {"status": "SUCCESS", "rows": [str(circular_row)]}
+
+
 @mock.patch.object(spanner_utils, "embed_contents", autospec=True)
 def test_add_contents_additional_columns_list_mismatch(
     mock_embed_contents, spanner_tool_settings, mock_spanner_client
@@ -382,3 +411,64 @@ def test_create_vector_search_index_fails(
     vector_store = spanner_utils.SpannerVectorStore(spanner_tool_settings)
     with pytest.raises(RuntimeError, match="DDL failed"):
       vector_store.create_vector_search_index()
+
+
+@mock.patch.object(spanner_utils.client, "get_spanner_client", autospec=True)
+def test_execute_sql_with_database_role(mock_get_spanner_client):
+  """Test that execute_sql passes database_role to instance.database."""
+  mock_spanner_client = mock.MagicMock()
+  mock_instance = mock.MagicMock()
+  mock_database = mock.MagicMock()
+  mock_snapshot = mock.MagicMock()
+
+  mock_snapshot.execute_sql.return_value = iter([["row1"]])
+  mock_database.snapshot.return_value.__enter__.return_value = mock_snapshot
+  mock_database.database_dialect = DatabaseDialect.GOOGLE_STANDARD_SQL
+  mock_instance.database.return_value = mock_database
+  mock_spanner_client.instance.return_value = mock_instance
+  mock_get_spanner_client.return_value = mock_spanner_client
+
+  database_role = "test-role"
+  settings = SpannerToolSettings(database_role=database_role)
+
+  spanner_utils.execute_sql(
+      project_id="test-project",
+      instance_id="test-instance",
+      database_id="test-database",
+      query="SELECT 1",
+      credentials=mock.Mock(),
+      settings=settings,
+      tool_context=mock.Mock(),
+  )
+
+  mock_instance.database.assert_called_once_with(
+      "test-database", database_role=database_role
+  )
+
+
+@mock.patch.object(spanner_utils.client, "get_spanner_client", autospec=True)
+def test_spanner_vector_store_with_database_role(
+    mock_get_spanner_client, vector_store_settings
+):
+  """Test that SpannerVectorStore passes database_role to instance.database."""
+  mock_spanner_client = mock.MagicMock()
+  mock_instance = mock.MagicMock()
+  mock_database = mock.MagicMock()
+
+  mock_instance.database.return_value = mock_database
+  mock_instance.exists.return_value = True
+  mock_database.exists.return_value = True
+  mock_spanner_client.instance.return_value = mock_instance
+  mock_get_spanner_client.return_value = mock_spanner_client
+  mock_spanner_client._client_info = mock.Mock(user_agent="test-agent")
+
+  database_role = "test-role"
+  settings = SpannerToolSettings(
+      database_role=database_role, vector_store_settings=vector_store_settings
+  )
+
+  spanner_utils.SpannerVectorStore(settings)
+
+  mock_instance.database.assert_called_once_with(
+      "test-database", database_role=database_role
+  )

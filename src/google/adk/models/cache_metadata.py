@@ -20,6 +20,7 @@ from typing import Optional
 from pydantic import BaseModel
 from pydantic import ConfigDict
 from pydantic import Field
+from pydantic import model_validator
 
 
 class CacheMetadata(BaseModel):
@@ -96,6 +97,16 @@ class CacheMetadata(BaseModel):
           "Unix timestamp when cache was created (None if no active cache)"
       ),
   )
+
+  @model_validator(mode="after")
+  def _enforce_active_state_invariant(self) -> "CacheMetadata":
+    active = (self.cache_name, self.expire_time, self.invocations_used)
+    if len({f is not None for f in active}) > 1:
+      raise ValueError(
+          "cache_name, expire_time, and invocations_used must all be set "
+          "(active cache) or all be None (fingerprint-only state)"
+      )
+    return self
 
   @property
   def expire_soon(self) -> bool:

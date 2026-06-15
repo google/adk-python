@@ -23,11 +23,13 @@ from typing import ClassVar
 from typing import Dict
 from typing import Optional
 
+from typing_extensions import deprecated
 from typing_extensions import override
 
 from ..events.event import Event
+from ..features import experimental
+from ..features import FeatureName
 from ..utils.context_utils import Aclosing
-from ..utils.feature_decorator import experimental
 from .base_agent import BaseAgent
 from .base_agent import BaseAgentState
 from .base_agent_config import BaseAgentConfig
@@ -37,7 +39,7 @@ from .loop_agent_config import LoopAgentConfig
 logger = logging.getLogger('google_adk.' + __name__)
 
 
-@experimental
+@experimental(FeatureName.AGENT_STATE)
 class LoopAgentState(BaseAgentState):
   """State for LoopAgent."""
 
@@ -48,15 +50,27 @@ class LoopAgentState(BaseAgentState):
   """The number of times the loop agent has looped."""
 
 
+@deprecated(
+    'LoopAgent is deprecated and will be removed in future versions.'
+    ' Please use Workflow instead.'
+)
 class LoopAgent(BaseAgent):
   """A shell agent that run its sub-agents in a loop.
 
   When sub-agent generates an event with escalate or max_iterations are
   reached, the loop agent will stop.
+
+  .. deprecated::
+    LoopAgent is deprecated and will be removed in future versions.
+    Please use Workflow instead.
   """
 
   config_type: ClassVar[type[BaseAgentConfig]] = LoopAgentConfig
-  """The config type for this agent."""
+  """The config type for this agent.
+
+  DEPRECATED: This attribute is deprecated and will be removed in a future
+  version, along with the AgentConfig YAML loader.
+  """
 
   max_iterations: Optional[int] = None
   """The maximum number of iterations to run the loop agent.
@@ -107,11 +121,12 @@ class LoopAgent(BaseAgent):
         if should_exit or pause_invocation:
           break  # break inner for loop
 
-      # Restart from the beginning of the loop.
-      start_index = 0
-      times_looped += 1
-      # Reset the state of all sub-agents in the loop.
-      ctx.reset_sub_agent_states(self.name)
+      if not pause_invocation:
+        # Restart from the beginning of the loop.
+        start_index = 0
+        times_looped += 1
+        # Reset the state of all sub-agents in the loop.
+        ctx.reset_sub_agent_states(self.name)
 
     # If the invocation is paused, we should not yield the end of agent event.
     if pause_invocation:
@@ -153,7 +168,7 @@ class LoopAgent(BaseAgent):
 
   @override
   @classmethod
-  @experimental
+  @experimental(FeatureName.AGENT_CONFIG)
   def _parse_config(
       cls: type[LoopAgent],
       config: LoopAgentConfig,

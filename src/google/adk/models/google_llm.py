@@ -19,18 +19,22 @@ import contextlib
 import copy
 from functools import cached_property
 import logging
+import re
 from typing import Any
 from typing import AsyncGenerator
 from typing import cast
 from typing import Optional
 from typing import TYPE_CHECKING
 from typing import Union
+from urllib.parse import urlparse
+from urllib.parse import urlunparse
 
 from google.genai import types
 from google.genai.errors import ClientError
 from typing_extensions import override
 
-from ..utils._client_labels_utils import get_client_labels
+from ..utils._google_client_headers import get_tracking_headers
+from ..utils._google_client_headers import merge_tracking_headers
 from ..utils.context_utils import Aclosing
 from ..utils.streaming_utils import StreamingResponseAggregator
 from ..utils.variant_utils import GoogleLLMVariant
@@ -48,12 +52,13 @@ logger = logging.getLogger('google_adk.' + __name__)
 
 _NEW_LINE = '\n'
 _EXCLUDED_PART_FIELD = {'inline_data': {'data'}}
+_GOOGLE_API_VERSION_SUFFIX_PATTERN = re.compile(r'/?(v[0-9][a-z0-9.-]*)/?')
 
 
 _RESOURCE_EXHAUSTED_POSSIBLE_FIX_MESSAGE = """
 On how to mitigate this issue, please refer to:
 
-https://google.github.io/adk-docs/agents/models/#error-code-429-resource_exhausted
+https://google.github.io/adk-docs/agents/models/google-gemini/#error-code-429-resource_exhausted
 """
 
 
@@ -86,9 +91,31 @@ class Gemini(BaseLlm):
     model: The name of the Gemini model.
     use_interactions_api: Whether to use the interactions API for model
       invocation.
+
+  Customizing the underlying Client:
+    To set ``google.genai.Client`` options ADK doesn't expose as fields
+    directly (location, project, credentials, http_options, etc.),
+    subclass ``Gemini`` and override the ``api_client`` property::
+
+        from functools import cached_property
+        from google.adk.models import Gemini
+        from google.genai import Client
+
+        class GlobalGemini(Gemini):
+          @cached_property
+          def api_client(self) -> Client:
+            return Client(enterprise=True, location="global")
+
+        agent = Agent(model=GlobalGemini(model="gemini-3-pro-preview"))
+
+    Use ``@property`` instead of ``@cached_property`` if you hit asyncio
+    lock contention in multithreaded code.
   """
 
   model: str = 'gemini-2.5-flash'
+
+  base_url: Optional[str] = None
+  """The base URL for the AI platform service endpoint."""
 
   speech_config: Optional[types.SpeechConfig] = None
 
@@ -194,6 +221,9 @@ class Gemini(BaseLlm):
       llm_request.config.http_options.headers = self._merge_tracking_headers(
           llm_request.config.http_options.headers
       )
+      _, api_version = self._base_url_and_api_version
+      if api_version:
+        llm_request.config.http_options.api_version = api_version
 
     try:
       # Use interactions API if enabled
@@ -222,7 +252,8 @@ class Gemini(BaseLlm):
         aggregator = StreamingResponseAggregator()
         async with Aclosing(responses) as agen:
           async for response in agen:
-            logger.debug(_build_response_log(response))
+            if logger.isEnabledFor(logging.DEBUG):
+              logger.debug(_build_response_log(response))
             async with Aclosing(
                 aggregator.process_response(response)
             ) as aggregator_gen:
@@ -244,7 +275,8 @@ class Gemini(BaseLlm):
             config=llm_request.config,
         )
         logger.info('Response received from the model.')
-        logger.debug(_build_response_log(response))
+        if logger.isEnabledFor(logging.DEBUG):
+          logger.debug(_build_response_log(response))
 
         llm_response = LlmResponse.create(response)
         if cache_metadata:
@@ -300,12 +332,22 @@ class Gemini(BaseLlm):
     """
     from google.genai import Client
 
-    return Client(
-        http_options=types.HttpOptions(
-            headers=self._tracking_headers(),
-            retry_options=self.retry_options,
-        )
-    )
+    base_url, api_version = self._base_url_and_api_version
+    kwargs_for_http_options: dict[str, Any] = {
+        'headers': self._tracking_headers(),
+        'retry_options': self.retry_options,
+        'base_url': base_url,
+    }
+    if api_version:
+      kwargs_for_http_options['api_version'] = api_version
+
+    kwargs: dict[str, Any] = {
+        'http_options': types.HttpOptions(**kwargs_for_http_options),
+    }
+    if self.model.startswith('projects/'):
+      kwargs['enterprise'] = True
+
+    return Client(**kwargs)
 
   @cached_property
   def _api_backend(self) -> GoogleLLMVariant:
@@ -316,16 +358,17 @@ class Gemini(BaseLlm):
     )
 
   def _tracking_headers(self) -> dict[str, str]:
-    labels = get_client_labels()
-    header_value = ' '.join(labels)
-    tracking_headers = {
-        'x-goog-api-client': header_value,
-        'user-agent': header_value,
-    }
-    return tracking_headers
+    return get_tracking_headers()
+
+  @cached_property
+  def _base_url_and_api_version(self) -> tuple[Optional[str], Optional[str]]:
+    return _normalize_base_url_and_api_version(self.base_url)
 
   @cached_property
   def _live_api_version(self) -> str:
+    _, api_version = self._base_url_and_api_version
+    if api_version:
+      return api_version
     if self._api_backend == GoogleLLMVariant.VERTEX_AI:
       # use beta version for vertex api
       return 'v1beta1'
@@ -337,11 +380,19 @@ class Gemini(BaseLlm):
   def _live_api_client(self) -> Client:
     from google.genai import Client
 
-    return Client(
-        http_options=types.HttpOptions(
-            headers=self._tracking_headers(), api_version=self._live_api_version
+    base_url, _ = self._base_url_and_api_version
+
+    kwargs: dict[str, Any] = {
+        'http_options': types.HttpOptions(
+            headers=self._tracking_headers(),
+            api_version=self._live_api_version,
+            base_url=base_url,
         )
-    )
+    }
+    if self.model.startswith('projects/'):
+      kwargs['enterprise'] = True
+
+    return Client(**kwargs)
 
   @contextlib.asynccontextmanager
   async def connect(self, llm_request: LlmRequest) -> BaseLlmConnection:
@@ -362,8 +413,10 @@ class Gemini(BaseLlm):
     ):
       if not llm_request.live_connect_config.http_options.headers:
         llm_request.live_connect_config.http_options.headers = {}
-      llm_request.live_connect_config.http_options.headers.update(
-          self._tracking_headers()
+      llm_request.live_connect_config.http_options.headers = (
+          self._merge_tracking_headers(
+              llm_request.live_connect_config.http_options.headers
+          )
       )
       llm_request.live_connect_config.http_options.api_version = (
           self._live_api_version
@@ -417,8 +470,8 @@ class Gemini(BaseLlm):
     from ..tools.computer_use.computer_use_toolset import ComputerUseToolset
 
     async def convert_wait_to_wait_5_seconds(wait_func):
-      async def wait_5_seconds():
-        return await wait_func(5)
+      async def wait_5_seconds(tool_context=None):
+        return await wait_func(5, tool_context=tool_context)
 
       return wait_5_seconds
 
@@ -456,20 +509,7 @@ class Gemini(BaseLlm):
 
   def _merge_tracking_headers(self, headers: dict[str, str]) -> dict[str, str]:
     """Merge tracking headers to the given headers."""
-    headers = headers or {}
-    for key, tracking_header_value in self._tracking_headers().items():
-      custom_value = headers.get(key, None)
-      if not custom_value:
-        headers[key] = tracking_header_value
-        continue
-
-      # Merge tracking headers with existing headers and avoid duplicates.
-      value_parts = tracking_header_value.split(' ')
-      for custom_value_part in custom_value.split(' '):
-        if custom_value_part not in value_parts:
-          value_parts.append(custom_value_part)
-      headers[key] = ' '.join(value_parts)
-    return headers
+    return merge_tracking_headers(headers)
 
 
 def _build_function_declaration_log(
@@ -597,3 +637,43 @@ def _remove_display_name_if_present(
   """
   if data_obj and data_obj.display_name:
     data_obj.display_name = None
+
+
+def _normalize_base_url_and_api_version(
+    base_url: Optional[str],
+) -> tuple[Optional[str], Optional[str]]:
+  """Extracts a Google API version suffix from a base URL when present.
+
+  Returns:
+    A tuple ``(normalized_base_url, api_version)``, where
+    ``normalized_base_url`` is the input URL with any version path suffix
+    stripped (only for ``*.googleapis.com`` URLs that end in a recognized
+    version path), and ``api_version`` is the extracted version string
+    (e.g. ``"v1alpha"``) or ``None`` when no version was extracted. Non-Google
+    URLs and URLs without a version suffix are returned unchanged with
+    ``api_version`` as ``None``. When ``base_url`` is ``None``, both elements
+    are ``None``.
+  """
+  if not base_url:
+    return None, None
+
+  parsed_base_url = urlparse(base_url)
+  if (
+      not parsed_base_url.netloc.endswith('.googleapis.com')
+      or parsed_base_url.query
+      or parsed_base_url.fragment
+  ):
+    return base_url, None
+
+  path = parsed_base_url.path or ''
+  if not path or path == '/':
+    return base_url, None
+
+  version_match = _GOOGLE_API_VERSION_SUFFIX_PATTERN.fullmatch(path)
+  if not version_match:
+    return base_url, None
+
+  normalized_base_url = urlunparse(
+      parsed_base_url._replace(path='/', params='', query='', fragment='')
+  )
+  return normalized_base_url, version_match.group(1)

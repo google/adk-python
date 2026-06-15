@@ -20,6 +20,8 @@ from typing import Union
 from pydantic import TypeAdapter
 from typing_extensions import override
 
+from ..errors.tool_execution_error import ToolErrorType
+from ..errors.tool_execution_error import ToolExecutionError
 from ..examples import example_util
 from ..examples.base_example_provider import BaseExampleProvider
 from ..examples.example import Example
@@ -76,16 +78,22 @@ class ExampleTool(BaseTool):
           example_tool_config.examples
       )
       if not isinstance(example_provider, BaseExampleProvider):
-        raise ValueError(
-            'Example provider must be an instance of BaseExampleProvider.'
+        raise ToolExecutionError(
+            message=(
+                'Example provider must be an instance of BaseExampleProvider.'
+            ),
+            error_type=ToolErrorType.BAD_REQUEST,
         )
       return cls(example_provider)
     elif isinstance(example_tool_config.examples, list):
       return cls(example_tool_config.examples)
     else:
-      raise ValueError(
-          'Example tool config must be a list of examples or a fully-qualified'
-          ' name to a BaseExampleProvider object in code.'
+      raise ToolExecutionError(
+          message=(
+              'Example tool config must be a list of examples or a '
+              'fully-qualified name to a BaseExampleProvider object in code.'
+          ),
+          error_type=ToolErrorType.BAD_REQUEST,
       )
 
 

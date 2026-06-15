@@ -21,11 +21,13 @@ from typing import AsyncGenerator
 from typing import ClassVar
 from typing import Type
 
+from typing_extensions import deprecated
 from typing_extensions import override
 
 from ..events.event import Event
+from ..features import experimental
+from ..features import FeatureName
 from ..utils.context_utils import Aclosing
-from ..utils.feature_decorator import experimental
 from .base_agent import BaseAgent
 from .base_agent import BaseAgentState
 from .base_agent_config import BaseAgentConfig
@@ -36,7 +38,7 @@ from .sequential_agent_config import SequentialAgentConfig
 logger = logging.getLogger('google_adk.' + __name__)
 
 
-@experimental
+@experimental(FeatureName.AGENT_STATE)
 class SequentialAgentState(BaseAgentState):
   """State for SequentialAgent."""
 
@@ -44,11 +46,24 @@ class SequentialAgentState(BaseAgentState):
   """The name of the current sub-agent to run."""
 
 
+@deprecated(
+    'SequentialAgent is deprecated and will be removed in future versions.'
+    ' Please use Workflow instead.'
+)
 class SequentialAgent(BaseAgent):
-  """A shell agent that runs its sub-agents in sequence."""
+  """A shell agent that runs its sub-agents in sequence.
+
+  .. deprecated::
+    SequentialAgent is deprecated and will be removed in future versions.
+    Please use Workflow instead.
+  """
 
   config_type: ClassVar[Type[BaseAgentConfig]] = SequentialAgentConfig
-  """The config type for this agent."""
+  """The config type for this agent.
+
+  DEPRECATED: This attribute is deprecated and will be removed in a future
+  version, along with the AgentConfig YAML loader.
+  """
 
   @override
   async def _run_async_impl(

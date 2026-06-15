@@ -18,6 +18,8 @@ from google.adk.evaluation import conversation_scenarios
 from google.adk.evaluation.simulation.llm_backed_user_simulator import LlmBackedUserSimulator
 from google.adk.evaluation.simulation.llm_backed_user_simulator import LlmBackedUserSimulatorConfig
 from google.adk.evaluation.simulation.user_simulator import Status
+from google.adk.evaluation.simulation.user_simulator_personas import UserBehavior
+from google.adk.evaluation.simulation.user_simulator_personas import UserPersona
 from google.adk.events.event import Event
 from google.genai import types
 from pydantic import ValidationError
@@ -94,7 +96,7 @@ def test_llm_backed_user_simulator_config_validation():
   config = LlmBackedUserSimulatorConfig(custom_instructions=None)
   assert config.custom_instructions is None
   valid_instructions = (
-      "{stop_signal} {conversation_plan} {conversation_history}"
+      "{{ stop_signal }} {{ conversation_plan }} {{ conversation_history }}"
   )
   config = LlmBackedUserSimulatorConfig(custom_instructions=valid_instructions)
   assert config.custom_instructions == valid_instructions
@@ -117,6 +119,19 @@ class TestHelperMethods:
     )
     assert rewritten_dialogue == _EXPECTED_REWRITTEN_DIALOGUE_LONG
 
+  def test_summarize_conversation_with_function_calls(self):
+    """Tests _summarize_conversation with include_function_calls=True."""
+    rewritten_dialogue = LlmBackedUserSimulator._summarize_conversation(
+        _INPUT_EVENTS, include_function_calls=True
+    )
+    expected = (
+        "user: Can you help me?\n\n"
+        "helpful_assistant called tool 'get_user_name' with args: None\n\n"
+        "Tool 'get_user_name' returned: {'name': 'John Doe'}\n\n"
+        "helpful_assistant: Hi John, what can I do for you?"
+    )
+    assert rewritten_dialogue == expected
+
 
 async def to_async_iter(items):
   for item in items:
@@ -127,7 +142,8 @@ async def to_async_iter(items):
 def mock_llm_agent(mocker):
   """Provides a mock LLM agent."""
   mock_llm_registry_cls = mocker.patch(
-      "google.adk.evaluation.simulation.llm_backed_user_simulator.LLMRegistry"
+      "google.adk.evaluation.simulation.llm_backed_user_simulator.LLMRegistry",
+      autospec=True,
   )
   mock_llm_registry = mocker.MagicMock()
   mock_llm_registry_cls.return_value = mock_llm_registry
@@ -145,14 +161,53 @@ def conversation_scenario():
 
 
 @pytest.fixture
+def user_persona():
+  """Provides a test user persona."""
+  return UserPersona(
+      id="test_persona",
+      description="A test persona",
+      behaviors=[
+          UserBehavior(
+              name="polite",
+              description="is polite",
+              behavior_instructions=["Always say please and thank you."],
+              violation_rubrics=["is rude"],
+          )
+      ],
+  )
+
+
+@pytest.fixture
+def conversation_scenario_with_persona(user_persona):
+  """Provides a test conversation scenario with a user persona."""
+  return conversation_scenarios.ConversationScenario(
+      starting_prompt="Hello",
+      conversation_plan="test plan with persona",
+      user_persona=user_persona,
+  )
+
+
+@pytest.fixture
 def simulator(mock_llm_agent, conversation_scenario):
   """Provides an LlmBackedUserSimulator instance for testing."""
   config = LlmBackedUserSimulatorConfig(
       model="test-model",
-      model_configuration=types.GenerateContentConfig(),
   )
   sim = LlmBackedUserSimulator(
       config=config, conversation_scenario=conversation_scenario
+  )
+  sim._invocation_count = 1  # Bypass starting prompt by default for tests
+  return sim
+
+
+@pytest.fixture
+def simulator_with_persona(mock_llm_agent, conversation_scenario_with_persona):
+  """Provides an LlmBackedUserSimulator instance for testing."""
+  config = LlmBackedUserSimulatorConfig(
+      model="test-model",
+  )
+  sim = LlmBackedUserSimulator(
+      config=config, conversation_scenario=conversation_scenario_with_persona
   )
   sim._invocation_count = 1  # Bypass starting prompt by default for tests
   return sim
@@ -166,18 +221,25 @@ class TestLlmBackedUserSimulator:
       self, simulator, mock_llm_agent, mocker
   ):
     """Tests that _get_llm_response returns the full response correctly."""
-    mock_llm_response = mocker.MagicMock()
+    mock_llm_response = mocker.create_autospec(
+        types.GenerateContentResponse, instance=True
+    )
+    mock_llm_response.error_code = None
     mock_llm_response.content = types.Content(
         parts=[
             types.Part(text="some thought", thought=True),
             types.Part(text="Hello world!"),
         ]
     )
+    mock_llm_response.parts = mock_llm_response.content.parts
     mock_llm_agent.generate_content_async.return_value = to_async_iter(
         [mock_llm_response]
     )
-    response = await simulator._get_llm_response(rewritten_dialogue="")
+    response, error_reason = await simulator._get_llm_response(
+        rewritten_dialogue=""
+    )
     assert response == "Hello world!"
+    assert error_reason is None
 
   @pytest.mark.asyncio
   async def test_get_next_user_message_first_invocation(
@@ -216,10 +278,14 @@ class TestLlmBackedUserSimulator:
   @pytest.mark.asyncio
   async def test_stop_signal_detected(self, simulator, mock_llm_agent, mocker):
     """Tests get_next_user_message when the stop signal is detected."""
-    mock_llm_response = mocker.MagicMock()
+    mock_llm_response = mocker.create_autospec(
+        types.GenerateContentResponse, instance=True
+    )
+    mock_llm_response.error_code = None
     mock_llm_response.content = types.Content(
         parts=[types.Part(text="Thanks! Bye!</finished>")]
     )
+    mock_llm_response.parts = mock_llm_response.content.parts
     mock_llm_agent.generate_content_async.return_value = to_async_iter(
         [mock_llm_response]
     )
@@ -232,11 +298,69 @@ class TestLlmBackedUserSimulator:
     assert next_user_message.user_message is None
 
   @pytest.mark.asyncio
-  async def test_no_message_generated(self, simulator, mock_llm_agent):
-    """Tests get_next_user_message when no message is generated."""
+  async def test_no_message_generated_empty_response(
+      self, simulator, mock_llm_agent
+  ):
+    """Tests get_next_user_message when no message is generated (empty stream)."""
     mock_llm_agent.generate_content_async.return_value = to_async_iter([])
 
-    with pytest.raises(RuntimeError, match="Failed to generate a user message"):
+    with pytest.raises(
+        RuntimeError,
+        match="Failed to generate a user message: LLM returned empty response",
+    ):
+      await simulator.get_next_user_message(events=_INPUT_EVENTS)
+
+  @pytest.mark.asyncio
+  async def test_get_next_user_message_safety_blocked(
+      self, simulator, mock_llm_agent, mocker
+  ):
+    """Tests get_next_user_message when response is safety blocked."""
+    mock_llm_response = mocker.create_autospec(
+        types.GenerateContentResponse, instance=True
+    )
+    mock_llm_response.content = None
+    mock_llm_response.error_code = "SAFETY"
+    mock_llm_response.error_message = "Blocked by safety"
+    mock_llm_response.parts = []
+    mock_llm_agent.generate_content_async.return_value = to_async_iter(
+        [mock_llm_response]
+    )
+
+    with pytest.raises(
+        RuntimeError,
+        match=(
+            "Failed to generate a user message: safety filters or other error"
+            " \\(code=SAFETY\\)"
+        ),
+    ):
+      await simulator.get_next_user_message(events=_INPUT_EVENTS)
+
+  @pytest.mark.asyncio
+  async def test_get_next_user_message_thinking_only(
+      self, simulator, mock_llm_agent, mocker
+  ):
+    """Tests get_next_user_message when response contains only thinking tokens."""
+    mock_llm_response = mocker.create_autospec(
+        types.GenerateContentResponse, instance=True
+    )
+    mock_llm_response.content = types.Content(
+        parts=[
+            types.Part(text="thinking...", thought=True),
+        ]
+    )
+    mock_llm_response.error_code = None
+    mock_llm_response.parts = mock_llm_response.content.parts
+    mock_llm_agent.generate_content_async.return_value = to_async_iter(
+        [mock_llm_response]
+    )
+
+    with pytest.raises(
+        RuntimeError,
+        match=(
+            "Failed to generate a user message: LLM returned only thinking"
+            " tokens"
+        ),
+    ):
       await simulator.get_next_user_message(events=_INPUT_EVENTS)
 
   @pytest.mark.asyncio
@@ -244,15 +368,47 @@ class TestLlmBackedUserSimulator:
       self, simulator, mock_llm_agent, mocker
   ):
     """Tests get_next_user_message when the user message is generated successfully."""
-    mock_llm_response = mocker.MagicMock()
+    mock_llm_response = mocker.create_autospec(
+        types.GenerateContentResponse, instance=True
+    )
+    mock_llm_response.error_code = None
     mock_llm_response.content = types.Content(
         parts=[types.Part(text="I need to book a flight.")]
     )
+    mock_llm_response.parts = mock_llm_response.content.parts
     mock_llm_agent.generate_content_async.return_value = to_async_iter(
         [mock_llm_response]
     )
 
     next_user_message = await simulator.get_next_user_message(
+        events=_INPUT_EVENTS
+    )
+
+    expected_user_message = types.Content(
+        parts=[types.Part(text="I need to book a flight.")], role="user"
+    )
+
+    assert next_user_message.status == Status.SUCCESS
+    assert next_user_message.user_message == expected_user_message
+
+  @pytest.mark.asyncio
+  async def test_get_next_user_message_with_persona_success(
+      self, simulator_with_persona, mock_llm_agent, mocker
+  ):
+    """Tests get_next_user_message when the user message is generated successfully."""
+    mock_llm_response = mocker.create_autospec(
+        types.GenerateContentResponse, instance=True
+    )
+    mock_llm_response.error_code = None
+    mock_llm_response.content = types.Content(
+        parts=[types.Part(text="I need to book a flight.")]
+    )
+    mock_llm_response.parts = mock_llm_response.content.parts
+    mock_llm_agent.generate_content_async.return_value = to_async_iter(
+        [mock_llm_response]
+    )
+
+    next_user_message = await simulator_with_persona.get_next_user_message(
         events=_INPUT_EVENTS
     )
 

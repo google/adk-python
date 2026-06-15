@@ -14,7 +14,7 @@
 
 """Unit tests for the ContextFilteringPlugin."""
 
-from unittest.mock import Mock
+from unittest import mock
 
 from google.adk.agents.callback_context import CallbackContext
 from google.adk.models.llm_request import LlmRequest
@@ -40,7 +40,8 @@ async def test_filter_last_n_invocations():
   llm_request = LlmRequest(contents=contents)
 
   await plugin.before_model_callback(
-      callback_context=Mock(spec=CallbackContext), llm_request=llm_request
+      callback_context=mock.create_autospec(CallbackContext, instance=True),
+      llm_request=llm_request,
   )
 
   assert len(llm_request.contents) == 2
@@ -65,7 +66,8 @@ async def test_filter_with_function():
   llm_request = LlmRequest(contents=contents)
 
   await plugin.before_model_callback(
-      callback_context=Mock(spec=CallbackContext), llm_request=llm_request
+      callback_context=mock.create_autospec(CallbackContext, instance=True),
+      llm_request=llm_request,
   )
 
   assert len(llm_request.contents) == 2
@@ -93,7 +95,8 @@ async def test_filter_with_function_and_last_n_invocations():
   llm_request = LlmRequest(contents=contents)
 
   await plugin.before_model_callback(
-      callback_context=Mock(spec=CallbackContext), llm_request=llm_request
+      callback_context=mock.create_autospec(CallbackContext, instance=True),
+      llm_request=llm_request,
   )
 
   assert len(llm_request.contents) == 0
@@ -111,7 +114,8 @@ async def test_no_filtering_when_no_options_provided():
   original_contents = list(llm_request.contents)
 
   await plugin.before_model_callback(
-      callback_context=Mock(spec=CallbackContext), llm_request=llm_request
+      callback_context=mock.create_autospec(CallbackContext, instance=True),
+      llm_request=llm_request,
   )
 
   assert llm_request.contents == original_contents
@@ -131,7 +135,8 @@ async def test_last_n_invocations_with_multiple_user_turns():
   llm_request = LlmRequest(contents=contents)
 
   await plugin.before_model_callback(
-      callback_context=Mock(spec=CallbackContext), llm_request=llm_request
+      callback_context=mock.create_autospec(CallbackContext, instance=True),
+      llm_request=llm_request,
   )
 
   assert len(llm_request.contents) == 3
@@ -157,7 +162,8 @@ async def test_last_n_invocations_more_than_existing_invocations():
   original_contents = list(llm_request.contents)
 
   await plugin.before_model_callback(
-      callback_context=Mock(spec=CallbackContext), llm_request=llm_request
+      callback_context=mock.create_autospec(CallbackContext, instance=True),
+      llm_request=llm_request,
   )
 
   assert llm_request.contents == original_contents
@@ -179,7 +185,8 @@ async def test_filter_function_raises_exception():
   original_contents = list(llm_request.contents)
 
   await plugin.before_model_callback(
-      callback_context=Mock(spec=CallbackContext), llm_request=llm_request
+      callback_context=mock.create_autospec(CallbackContext, instance=True),
+      llm_request=llm_request,
   )
 
   assert llm_request.contents == original_contents
@@ -237,7 +244,8 @@ async def test_filter_preserves_function_call_response_pairs():
   llm_request = LlmRequest(contents=contents)
 
   await plugin.before_model_callback(
-      callback_context=Mock(spec=CallbackContext), llm_request=llm_request
+      callback_context=mock.create_autospec(CallbackContext, instance=True),
+      llm_request=llm_request,
   )
 
   # Verify function_call for call_1 is included (not orphaned function_response)
@@ -276,7 +284,8 @@ async def test_filter_with_nested_function_calls():
   llm_request = LlmRequest(contents=contents)
 
   await plugin.before_model_callback(
-      callback_context=Mock(spec=CallbackContext), llm_request=llm_request
+      callback_context=mock.create_autospec(CallbackContext, instance=True),
+      llm_request=llm_request,
   )
 
   # Verify no orphaned function_responses
@@ -290,4 +299,47 @@ async def test_filter_with_nested_function_calls():
         if part.function_response and part.function_response.id:
           response_ids.add(part.function_response.id)
 
+  texts = []
+  for content in llm_request.contents:
+    if content.parts:
+      for part in content.parts:
+        if part.text:
+          texts.append(part.text)
+
+  assert "Do task" in texts
+  assert "Done with tasks" in texts
+  assert "Hello" not in texts
+  assert "Hi!" not in texts
+
   assert response_ids.issubset(call_ids)
+
+
+@pytest.mark.asyncio
+async def test_last_invocation_with_tool_call_keeps_user_prompt():
+  """Tests that multi-model-turn invocations keep the initial user prompt."""
+  plugin = ContextFilterPlugin(num_invocations_to_keep=1)
+
+  contents = [
+      _create_content("user", "user_prompt_1"),
+      _create_content("model", "model_response_1"),
+      _create_content("user", "user_prompt_2"),
+      _create_function_call_content("get_weather", "call_1"),
+      _create_function_response_content("get_weather", "call_1"),
+      _create_content("model", "final_answer_2"),
+  ]
+  llm_request = LlmRequest(contents=contents)
+
+  await plugin.before_model_callback(
+      callback_context=mock.create_autospec(CallbackContext, instance=True),
+      llm_request=llm_request,
+  )
+
+  texts = []
+  for content in llm_request.contents:
+    if content.parts:
+      for part in content.parts:
+        if part.text:
+          texts.append(part.text)
+
+  assert "user_prompt_2" in texts
+  assert "final_answer_2" in texts

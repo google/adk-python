@@ -47,13 +47,23 @@ class SaveFilesAsArtifactsPlugin(BasePlugin):
   tool to the agent, or load the artifacts in your own tool to use the files.
   """
 
-  def __init__(self, name: str = 'save_files_as_artifacts_plugin'):
+  def __init__(
+      self,
+      name: str = 'save_files_as_artifacts_plugin',
+      *,
+      attach_file_reference: bool = True,
+  ):
     """Initialize the save files as artifacts plugin.
 
     Args:
       name: The name of the plugin instance.
+      attach_file_reference: Whether to attach a file reference to the
+        user message. If False, only save the files as artifacts without
+        adding a file reference, and the files will not be directly
+        accessible to the model.
     """
     super().__init__(name)
+    self._attach_file_reference = attach_file_reference
 
   async def on_user_message_callback(
       self,
@@ -73,6 +83,7 @@ class SaveFilesAsArtifactsPlugin(BasePlugin):
       return None
 
     new_parts = []
+    pending_delta: dict[str, int] = {}
     modified = False
 
     for i, part in enumerate(user_message.parts):
@@ -107,15 +118,17 @@ class SaveFilesAsArtifactsPlugin(BasePlugin):
         )
         new_parts.append(placeholder_part)
 
-        file_part = await self._build_file_reference_part(
-            invocation_context=invocation_context,
-            filename=file_name,
-            version=version,
-            mime_type=inline_data.mime_type,
-            display_name=display_name,
-        )
-        if file_part:
-          new_parts.append(file_part)
+        if self._attach_file_reference:
+          file_part = await self._build_file_reference_part(
+              invocation_context=invocation_context,
+              filename=file_name,
+              version=version,
+              mime_type=inline_data.mime_type,
+              display_name=display_name,
+          )
+          if file_part:
+            new_parts.append(file_part)
+        pending_delta[file_name] = version
 
         modified = True
         logger.info(f'Successfully saved artifact: {file_name}')
@@ -127,9 +140,27 @@ class SaveFilesAsArtifactsPlugin(BasePlugin):
         continue
 
     if modified:
+      # Store pending delta in state until it can be written to event actions.
+      state = invocation_context.session.state
+      state.setdefault(self.name + ':pending_delta', {})
+      state[self.name + ':pending_delta'] |= pending_delta
       return types.Content(role=user_message.role, parts=new_parts)
     else:
       return None
+
+  async def before_agent_callback(
+      self, *, agent: BaseAgent, callback_context: CallbackContext
+  ) -> Optional[types.Content]:
+    """Writes the pending delta to event actions."""
+    pending_delta = callback_context.state.get(self.name + ':pending_delta')
+    if pending_delta:
+      try:
+        callback_context.actions.artifact_delta |= pending_delta
+      except TypeError as e:
+        logger.warning('Incompatible pending_delta type: %s', e)
+      finally:
+        callback_context.state[self.name + ':pending_delta'] = {}
+    return None
 
   async def _build_file_reference_part(
       self,

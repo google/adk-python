@@ -16,7 +16,6 @@ from __future__ import annotations
 
 from abc import ABC
 from abc import abstractmethod
-from typing import Optional
 
 from .eval_result import EvalCaseResult
 from .eval_result import EvalSetResult

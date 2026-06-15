@@ -61,6 +61,16 @@ class PrebuiltMetrics(Enum):
 
   PER_TURN_USER_SIMULATOR_QUALITY_V1 = "per_turn_user_simulator_quality_v1"
 
+  MULTI_TURN_TASK_SUCCESS_V1 = "multi_turn_task_success_v1"
+
+  MULTI_TURN_TRAJECTORY_QUALITY_V1 = "multi_turn_trajectory_quality_v1"
+
+  MULTI_TURN_TOOL_USE_QUALITY_V1 = "multi_turn_tool_use_quality_v1"
+
+  RUBRIC_BASED_MULTI_TURN_TRAJECTORY_QUALITY_V1 = (
+      "rubric_based_multi_turn_trajectory_quality_v1"
+  )
+
 
 MetricName: TypeAlias = Union[str, PrebuiltMetrics]
 Threshold: TypeAlias = float
@@ -107,6 +117,19 @@ class BaseCriterion(BaseModel):
 
   threshold: Threshold = Field(
       description="The threshold to be used by the metric.",
+  )
+
+  include_intermediate_responses_in_final: bool = Field(
+      default=False,
+      description=(
+          "Whether to evaluate the full agent response including intermediate"
+          " natural language text (e.g. text emitted before tool calls) in"
+          " addition to the final response. By default, only the final"
+          " response text is sent to the judge. When True, text from all"
+          " intermediate invocation events is concatenated with the final"
+          " response before evaluation. This is useful for agents that emit"
+          " text both before and after tool calls within a single invocation."
+      ),
   )
 
 
@@ -189,7 +212,7 @@ class ToolTrajectoryCriterion(BaseCriterion):
       Actual tool calls: [T1, T1.1, T2, T2.1, T2.2, T3, T3.1]
 
       While the tool calls T1, T2 and T3 happened in the "Actual" and in
-      the same order as "Expected", but the the tool calls T4 is missing.
+      the same order as "Expected", but the tool calls T4 is missing.
     """
 
     ANY_ORDER = 2
@@ -215,7 +238,7 @@ class ToolTrajectoryCriterion(BaseCriterion):
       Actual tool calls: [T1, T1.1, T2, T2.1, T2.2, T3, T3.1]
 
       While the tool calls T1, T2 and T3 happened in the "Actual" and in
-      the same order as "Expected", but the the tool calls T4 is missing.
+      the same order as "Expected", but the tool calls T4 is missing.
     """
 
   match_type: MatchType = Field(
@@ -258,20 +281,12 @@ class EvalMetric(EvalBaseModel):
       description="The name of the metric.",
   )
 
-  threshold: float = Field(
-      description=(
-          "A threshold value. Each metric decides how to interpret this"
-          " threshold."
-      ),
-  )
-
-  judge_model_options: Optional[JudgeModelOptions] = Field(
-      deprecated=True,
+  threshold: Optional[float] = Field(
       default=None,
       description=(
-          "[DEPRECATED] This field is deprecated in favor of `criterion`."
-          " Depending on the metric you may want to one of the sub-classes of"
-          " BaseCriterion."
+          "This field will be deprecated soon. Please use `criterion` instead."
+          " A threshold value. Each metric decides how to interpret this"
+          " threshold."
       ),
   )
 

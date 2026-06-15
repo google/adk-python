@@ -77,6 +77,25 @@ async def test_process_llm_request_failure_with_non_gemini_models():
 
 
 @pytest.mark.asyncio
+async def test_process_llm_request_non_gemini_with_disabled_check(monkeypatch):
+  monkeypatch.setenv('ADK_DISABLE_GEMINI_MODEL_ID_CHECK', 'true')
+  tool = EnterpriseWebSearchTool()
+  llm_request = LlmRequest(
+      model='internal-model-v1', config=types.GenerateContentConfig()
+  )
+  tool_context = await _create_tool_context()
+
+  await tool.process_llm_request(
+      tool_context=tool_context, llm_request=llm_request
+  )
+
+  assert (
+      llm_request.config.tools[0].enterprise_web_search
+      == types.EnterpriseWebSearch()
+  )
+
+
+@pytest.mark.asyncio
 async def test_process_llm_request_failure_with_multiple_tools_gemini_1_models():
   tool = EnterpriseWebSearchTool()
   llm_request = LlmRequest(

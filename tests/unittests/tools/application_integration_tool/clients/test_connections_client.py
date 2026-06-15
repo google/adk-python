@@ -631,6 +631,25 @@ class TestConnectionsClient:
       ):
         client._get_access_token()
 
+  def test_get_access_token_default_credentials_error(
+      self, project, location, connection_name
+  ):
+    client = ConnectionsClient(project, location, connection_name, None)
+    with mock.patch(
+        "google.adk.tools.application_integration_tool.clients.connections_client.default_service_credential",
+        side_effect=google.auth.exceptions.DefaultCredentialsError(
+            "ADC not found"
+        ),
+    ):
+      with pytest.raises(
+          ValueError,
+          match=(
+              "Please provide a service account that has the required"
+              " permissions"
+          ),
+      ):
+        client._get_access_token()
+
   def test_get_access_token_refreshes_expired_token(
       self, project, location, connection_name, mock_credentials
   ):

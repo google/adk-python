@@ -32,10 +32,12 @@ class StreamingResponseAggregator:
   individual (partial) model responses, as well as for aggregated content.
   """
 
-  def __init__(self):
+  def __init__(self) -> None:
     self._text = ''
     self._thought_text = ''
     self._usage_metadata = None
+    self._grounding_metadata: Optional[types.GroundingMetadata] = None
+    self._citation_metadata: Optional[types.CitationMetadata] = None
     self._response = None
 
     # For progressive SSE streaming mode: accumulate parts in order
@@ -48,9 +50,9 @@ class StreamingResponseAggregator:
     self._current_fc_name: Optional[str] = None
     self._current_fc_args: dict[str, Any] = {}
     self._current_fc_id: Optional[str] = None
-    self._current_thought_signature: Optional[str] = None
+    self._current_thought_signature: Optional[bytes] = None
 
-  def _flush_text_buffer_to_sequence(self):
+  def _flush_text_buffer_to_sequence(self) -> None:
     """Flush current text buffer to parts sequence.
 
     This helper is used in progressive SSE mode to maintain part ordering.
@@ -70,7 +72,7 @@ class StreamingResponseAggregator:
 
   def _get_value_from_partial_arg(
       self, partial_arg: types.PartialArg, json_path: str
-  ):
+  ) -> tuple[Any, bool]:
     """Extract value from a partial argument.
 
     Args:
@@ -80,7 +82,7 @@ class StreamingResponseAggregator:
     Returns:
       Tuple of (value, has_value) where has_value indicates if a value exists
     """
-    value = None
+    value: Any = None
     has_value = False
 
     if partial_arg.string_value is not None:
@@ -95,12 +97,11 @@ class StreamingResponseAggregator:
       path_parts = path_without_prefix.split('.')
 
       # Try to get existing value
-      existing_value = self._current_fc_args
+      existing_value: Any = self._current_fc_args
       for part in path_parts:
         if isinstance(existing_value, dict) and part in existing_value:
           existing_value = existing_value[part]
         else:
-          existing_value = None
           break
 
       # Append to existing string or set new value
@@ -121,7 +122,7 @@ class StreamingResponseAggregator:
 
     return value, has_value
 
-  def _set_value_by_json_path(self, json_path: str, value: Any):
+  def _set_value_by_json_path(self, json_path: str, value: Any) -> None:
     """Set a value in _current_fc_args using JSONPath notation.
 
     Args:
@@ -147,7 +148,7 @@ class StreamingResponseAggregator:
     # Set the final value
     current[path_parts[-1]] = value
 
-  def _flush_function_call_to_sequence(self):
+  def _flush_function_call_to_sequence(self) -> None:
     """Flush current function call to parts sequence.
 
     This creates a complete FunctionCall part from accumulated partial args.
@@ -175,7 +176,7 @@ class StreamingResponseAggregator:
       self._current_fc_id = None
       self._current_thought_signature = None
 
-  def _process_streaming_function_call(self, fc: types.FunctionCall):
+  def _process_streaming_function_call(self, fc: types.FunctionCall) -> None:
     """Process a streaming function call with partialArgs.
 
     Args:
@@ -188,7 +189,7 @@ class StreamingResponseAggregator:
       self._current_fc_id = fc.id
 
     # Process each partial argument
-    for partial_arg in getattr(fc, 'partial_args', []):
+    for partial_arg in fc.partial_args or []:
       json_path = partial_arg.json_path
       if not json_path:
         continue
@@ -203,23 +204,33 @@ class StreamingResponseAggregator:
         self._set_value_by_json_path(json_path, value)
 
     # Check if function call is complete
-    fc_will_continue = getattr(fc, 'will_continue', False)
-    if not fc_will_continue:
+    if not fc.will_continue:
       # Function call complete, flush it
       self._flush_text_buffer_to_sequence()
       self._flush_function_call_to_sequence()
 
-  def _process_function_call_part(self, part: types.Part):
+  def _process_function_call_part(self, part: types.Part) -> None:
     """Process a function call part (streaming or non-streaming).
 
     Args:
       part: The part containing a function call
     """
     fc = part.function_call
+    if fc is None:
+      return
 
-    # Check if this is a streaming FC (has partialArgs)
-    if hasattr(fc, 'partial_args') and fc.partial_args:
+    # Check if this is a streaming FC (has partialArgs or will_continue=True)
+    # The first chunk of a streaming function call may have will_continue=True
+    # but no partial_args yet, so we need to check both conditions.
+    if fc.partial_args or fc.will_continue:
       # Streaming function call arguments
+
+      # Generate ID on first chunk if not provided by LLM
+      if not fc.id and not self._current_fc_id:
+        # Lazy import to avoid circular dependency
+        from ..flows.llm_flows.functions import generate_client_function_call_id
+
+        fc.id = generate_client_function_call_id()
 
       # Save thought_signature from the part (first chunk should have it)
       if part.thought_signature and not self._current_thought_signature:
@@ -229,6 +240,12 @@ class StreamingResponseAggregator:
       # Non-streaming function call (standard format with args)
       # Skip empty function calls (used as streaming end markers)
       if fc.name:
+        # Generate ID if not provided by LLM
+        if not fc.id:
+          # Lazy import to avoid circular dependency
+          from ..flows.llm_flows.functions import generate_client_function_call_id
+
+          fc.id = generate_client_function_call_id()
         # Flush any buffered text first, then add the FC part
         self._flush_text_buffer_to_sequence()
         self._parts_sequence.append(part)
@@ -249,6 +266,10 @@ class StreamingResponseAggregator:
     self._response = response
     llm_response = LlmResponse.create(response)
     self._usage_metadata = llm_response.usage_metadata
+    if llm_response.grounding_metadata:
+      self._grounding_metadata = llm_response.grounding_metadata
+    if llm_response.citation_metadata:
+      self._citation_metadata = llm_response.citation_metadata
 
     # ========== Progressive SSE Streaming (new feature) ==========
     # Save finish_reason for final aggregation
@@ -295,10 +316,11 @@ class StreamingResponseAggregator:
         and llm_response.content.parts[0].text
     ):
       part0 = llm_response.content.parts[0]
+      part_text = part0.text or ''
       if part0.thought:
-        self._thought_text += part0.text
+        self._thought_text += part_text
       else:
-        self._text += part0.text
+        self._text += part_text
       llm_response.partial = True
     elif (self._thought_text or self._text) and (
         not llm_response.content
@@ -314,6 +336,10 @@ class StreamingResponseAggregator:
       yield LlmResponse(
           content=types.ModelContent(parts=parts),
           usage_metadata=llm_response.usage_metadata,
+          grounding_metadata=llm_response.grounding_metadata,
+          citation_metadata=llm_response.citation_metadata,
+          finish_reason=llm_response.finish_reason,
+          model_version=llm_response.model_version,
       )
       self._thought_text = ''
       self._text = ''
@@ -327,55 +353,62 @@ class StreamingResponseAggregator:
     Returns:
       The aggregated LlmResponse.
     """
+    if not self._response:
+      return None
+
+    candidate = (
+        self._response.candidates[0] if self._response.candidates else None
+    )
+
+    finish_reason = self._finish_reason
+    if not finish_reason and candidate:
+      finish_reason = candidate.finish_reason
+
+    error_code = None
+    error_message = None
+    if finish_reason and finish_reason != types.FinishReason.STOP:
+      error_code = finish_reason
+      error_message = candidate.finish_message if candidate else None
+    elif not candidate and self._response.prompt_feedback:
+      error_code = self._response.prompt_feedback.block_reason
+      error_message = self._response.prompt_feedback.block_reason_message
+
     # ========== Progressive SSE Streaming (new feature) ==========
     if is_feature_enabled(FeatureName.PROGRESSIVE_SSE_STREAMING):
-      # Always generate final aggregated response in progressive mode
-      if self._response and self._response.candidates:
-        # Flush any remaining buffers to complete the sequence
-        self._flush_text_buffer_to_sequence()
-        self._flush_function_call_to_sequence()
+      self._flush_text_buffer_to_sequence()
+      self._flush_function_call_to_sequence()
 
-        # Use the parts sequence which preserves original ordering
-        final_parts = self._parts_sequence
+      final_parts = self._parts_sequence
+      content = types.ModelContent(parts=final_parts) if final_parts else None
 
-        if final_parts:
-          candidate = self._response.candidates[0]
-          finish_reason = self._finish_reason or candidate.finish_reason
-
-          return LlmResponse(
-              content=types.ModelContent(parts=final_parts),
-              error_code=None
-              if finish_reason == types.FinishReason.STOP
-              else finish_reason,
-              error_message=None
-              if finish_reason == types.FinishReason.STOP
-              else candidate.finish_message,
-              usage_metadata=self._usage_metadata,
-              finish_reason=finish_reason,
-              partial=False,
-          )
-
-        return None
+      return LlmResponse(
+          content=content,
+          grounding_metadata=self._grounding_metadata,
+          citation_metadata=self._citation_metadata,
+          error_code=error_code,
+          error_message=error_message,
+          usage_metadata=self._usage_metadata,
+          finish_reason=finish_reason,
+          partial=False,
+          model_version=self._response.model_version,
+      )
 
     # ========== Non-Progressive SSE Streaming (old behavior) ==========
-    if (
-        (self._text or self._thought_text)
-        and self._response
-        and self._response.candidates
-    ):
-      parts = []
-      if self._thought_text:
-        parts.append(types.Part(text=self._thought_text, thought=True))
-      if self._text:
-        parts.append(types.Part.from_text(text=self._text))
-      candidate = self._response.candidates[0]
-      return LlmResponse(
-          content=types.ModelContent(parts=parts),
-          error_code=None
-          if candidate.finish_reason == types.FinishReason.STOP
-          else candidate.finish_reason,
-          error_message=None
-          if candidate.finish_reason == types.FinishReason.STOP
-          else candidate.finish_message,
-          usage_metadata=self._usage_metadata,
-      )
+    parts = []
+    if self._thought_text:
+      parts.append(types.Part(text=self._thought_text, thought=True))
+    if self._text:
+      parts.append(types.Part.from_text(text=self._text))
+    content = types.ModelContent(parts=parts) if parts else None
+
+    return LlmResponse(
+        content=content,
+        grounding_metadata=self._grounding_metadata,
+        citation_metadata=self._citation_metadata,
+        error_code=error_code,
+        error_message=error_message,
+        usage_metadata=self._usage_metadata,
+        finish_reason=finish_reason,
+        partial=False,
+        model_version=self._response.model_version,
+    )

@@ -14,6 +14,7 @@
 
 """Tests for Progressive SSE Streaming Stage 1 implementation."""
 
+import asyncio
 from typing import Any
 from typing import AsyncGenerator
 
@@ -26,6 +27,7 @@ from google.adk.models.llm_response import LlmResponse
 from google.adk.runners import InMemoryRunner
 from google.adk.utils.streaming_utils import StreamingResponseAggregator
 from google.genai import types
+import pytest
 
 
 def get_weather(location: str) -> dict[str, Any]:
@@ -631,6 +633,126 @@ def test_progressive_sse_handles_empty_function_call():
   args = fc_part.function_call.args
   assert args["num"] == 100
   assert args["s"] == "ADK"
+
+
+@pytest.mark.parametrize(
+    "first_chunk_partial_args",
+    [
+        pytest.param(None, id="partial_args_none"),
+        pytest.param([], id="partial_args_empty_list"),
+    ],
+)
+def test_streaming_fc_chunk_with_will_continue_but_no_partial_args(
+    first_chunk_partial_args,
+):
+  """Test streaming function call with will_continue=True but no partial_args."""
+
+  aggregator = StreamingResponseAggregator()
+
+  # Chunk 1: FC name + will_continue=True, but NO partial_args (or empty list)
+  # This is the first chunk that Gemini 3 sends for streaming FC
+  chunk1_fc = types.FunctionCall(
+      name="my_tool",
+      id="fc_gemini3",
+      will_continue=True,
+      partial_args=first_chunk_partial_args,
+  )
+  chunk1_part = types.Part(
+      function_call=chunk1_fc,
+      thought_signature=b"test_sig_123",
+  )
+  chunk1 = types.GenerateContentResponse(
+      candidates=[
+          types.Candidate(
+              content=types.Content(role="model", parts=[chunk1_part])
+          )
+      ]
+  )
+
+  # Chunk 2: Middle chunk with partial_args, name is None
+  chunk2_fc = types.FunctionCall(
+      partial_args=[
+          types.PartialArg(json_path="$.document", string_value="Once upon ")
+      ],
+      will_continue=True,
+  )
+  chunk2 = types.GenerateContentResponse(
+      candidates=[
+          types.Candidate(
+              content=types.Content(
+                  role="model", parts=[types.Part(function_call=chunk2_fc)]
+              )
+          )
+      ]
+  )
+
+  # Chunk 3: Another middle chunk continuing the string argument
+  chunk3_fc = types.FunctionCall(
+      partial_args=[
+          types.PartialArg(json_path="$.document", string_value="a time...")
+      ],
+      will_continue=True,
+  )
+  chunk3 = types.GenerateContentResponse(
+      candidates=[
+          types.Candidate(
+              content=types.Content(
+                  role="model", parts=[types.Part(function_call=chunk3_fc)]
+              )
+          )
+      ]
+  )
+
+  # Chunk 4: Final chunk - no name, no partial_args, will_continue=False
+  # This signals the end of the streaming function call
+  chunk4_fc = types.FunctionCall(
+      will_continue=False,
+  )
+  chunk4 = types.GenerateContentResponse(
+      candidates=[
+          types.Candidate(
+              content=types.Content(
+                  role="model", parts=[types.Part(function_call=chunk4_fc)]
+              ),
+              finish_reason=types.FinishReason.STOP,
+          )
+      ]
+  )
+
+  # Process all chunks through aggregator
+  async def process():
+    results = []
+    for chunk in [chunk1, chunk2, chunk3, chunk4]:
+      async for response in aggregator.process_response(chunk):
+        results.append(response)
+    return results
+
+  processed_chunks = asyncio.run(process())
+
+  # All intermediate chunks should be marked as partial
+  assert all(chunk.partial for chunk in processed_chunks)
+
+  # Get final aggregated response
+  final_response = aggregator.close()
+
+  # Verify final aggregated response has the complete FC with accumulated args
+  assert final_response is not None
+  assert len(final_response.content.parts) == 1
+
+  fc_part = final_response.content.parts[0]
+  assert fc_part.function_call is not None
+  assert fc_part.function_call.name == "my_tool"
+  assert fc_part.function_call.id == "fc_gemini3"
+
+  # Verify the document argument was correctly accumulated
+  args = fc_part.function_call.args
+  assert "document" in args
+  assert (
+      args["document"] == "Once upon a time..."
+  )  # Concatenated from chunks 2 + 3
+
+  # Verify thought_signature was preserved from the first chunk
+  assert fc_part.thought_signature == b"test_sig_123"
 
 
 class PartialFunctionCallMockModel(BaseLlm):

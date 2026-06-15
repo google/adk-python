@@ -14,7 +14,9 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 import logging
+import threading
 from typing import Optional
 
 from fastapi.openapi.models import OAuth2
@@ -24,17 +26,39 @@ from ..tools.openapi_tool.auth.credential_exchangers.service_account_exchanger i
 from ..utils.feature_decorator import experimental
 from .auth_credential import AuthCredential
 from .auth_credential import AuthCredentialTypes
+from .auth_provider_registry import AuthProviderRegistry
+from .auth_schemes import AuthScheme
 from .auth_schemes import AuthSchemeType
+from .auth_schemes import CustomAuthScheme
 from .auth_schemes import ExtendedOAuth2
 from .auth_schemes import OpenIdConnectWithConfig
 from .auth_tool import AuthConfig
+from .base_auth_provider import BaseAuthProvider
 from .exchanger.base_credential_exchanger import BaseCredentialExchanger
-from .exchanger.base_credential_exchanger import ExchangeResult
 from .exchanger.credential_exchanger_registry import CredentialExchangerRegistry
 from .oauth2_discovery import OAuth2DiscoveryManager
 from .refresher.credential_refresher_registry import CredentialRefresherRegistry
 
 logger = logging.getLogger("google_adk." + __name__)
+
+
+def _rehydrate_custom_scheme(
+    scheme: CustomAuthScheme, supported_schemes: Sequence[type[AuthScheme]]
+) -> CustomAuthScheme:
+  """Rehydrate a CustomAuthScheme into one of the given supported_schemes."""
+  incoming_type = scheme.type_
+  for scheme_class in supported_schemes:
+    type_field = scheme_class.model_fields.get("type_")
+    # Custom AuthScheme classes must define a `default` for their `type_` field
+    # to be rehydrated correctly.
+    if type_field and type_field.default == incoming_type:
+      data = scheme.model_dump(by_alias=True)
+      if scheme.model_extra:
+        data.update(scheme.model_extra)
+      return scheme_class.model_validate(data)
+  raise ValueError(
+      f"Cannot rehydrate: no registered scheme matches type '{incoming_type}'"
+  )
 
 
 @experimental
@@ -72,9 +96,30 @@ class CredentialManager:
       )
 
       # Load and prepare credential
-      credential = await manager.load_auth_credential(callback_context)
+      credential = await manager.load_auth_credential(tool_context)
       ```
   """
+
+  _auth_provider_registry = AuthProviderRegistry()
+  _registry_lock = threading.Lock()
+
+  @classmethod
+  def register_auth_provider(cls, provider: BaseAuthProvider) -> None:
+    """Public API for developers to register custom auth providers."""
+    with cls._registry_lock:
+      for scheme_type in provider.supported_auth_schemes:
+        existing_provider = cls._auth_provider_registry.get_provider(
+            scheme_type
+        )
+        if existing_provider is not None:
+          if existing_provider is not provider:
+            logger.warning(
+                "An auth provider is already registered for scheme %s. "
+                "Ignoring the new provider.",
+                scheme_type,
+            )
+            continue
+        cls._auth_provider_registry.register(scheme_type, provider)
 
   def __init__(
       self,
@@ -124,37 +169,91 @@ class CredentialManager:
     """
     self._exchanger_registry.register(credential_type, exchanger_instance)
 
-  async def request_credential(self, callback_context: CallbackContext) -> None:
-    callback_context.request_credential(self._auth_config)
+  async def request_credential(self, context: CallbackContext) -> None:
+    if not hasattr(context, "request_credential"):
+      raise TypeError(
+          "request_credential requires a ToolContext with request_credential"
+          " method, not a plain CallbackContext"
+      )
+    context.request_credential(self._auth_config)
 
   async def get_auth_credential(
-      self, callback_context: CallbackContext
+      self, context: CallbackContext
   ) -> Optional[AuthCredential]:
     """Load and prepare authentication credential through a structured workflow."""
+
+    # Step 0: Handle CustomAuthScheme if present
+    if isinstance(self._auth_config.auth_scheme, CustomAuthScheme):
+      # Pydantic may have deserialized an unknown scheme into a generic
+      # CustomAuthScheme. If so, rehydrate it first into a specific subclass.
+      # Note: Custom authentication scheme classes must have been imported into
+      # the Python runtime before get_auth_credential is called for their
+      # subclasses to be registered. This is fine as developer will anyway
+      # import them while registering the auth providers.
+      # Note: `__subclasses__()` only returns immediate subclasses, if there is
+      # a subclass of a subclass of CustomAuthScheme then it will not be
+      # returned.
+      # pylint: disable=unidiomatic-typecheck Needs exact class matching.
+      if type(self._auth_config.auth_scheme) is CustomAuthScheme:
+        self._auth_config.auth_scheme = _rehydrate_custom_scheme(
+            self._auth_config.auth_scheme,
+            CustomAuthScheme.__subclasses__(),
+        )
+
+      provider = self._auth_provider_registry.get_provider(
+          self._auth_config.auth_scheme
+      )
+      if provider is None:
+        raise ValueError(
+            "No auth provider registered for custom auth scheme "
+            f"{self._auth_config.auth_scheme.type_!r}. "
+            "Register it using `CredentialManager.register_auth_provider("
+            "<YourAuthProviderInstance>)`."
+        )
+      provided_credential = await provider.get_auth_credential(
+          self._auth_config, context
+      )
+      if not provided_credential:
+        raise ValueError("AuthProvider did not return a credential.")
+      # Handle special case for OAuth2 user consent flow.
+      if (
+          provided_credential.oauth2
+          and not provided_credential.oauth2.access_token
+          and provided_credential.oauth2.auth_uri
+      ):
+        # User consent is required. We save the auth uri and return None
+        # to signal the need for user consent.
+        self._auth_config.exchanged_auth_credential = provided_credential
+        return None
+      return provided_credential
 
     # Step 1: Validate credential configuration
     await self._validate_credential()
 
     # Step 2: Check if credential is already ready (no processing needed)
     if self._is_credential_ready():
-      return self._auth_config.raw_auth_credential
+      # Return a copy to avoid leaking mutations across invocations/users when
+      # tools share a long-lived AuthConfig instance.
+      return self._auth_config.raw_auth_credential.model_copy(deep=True)
 
     # Step 3: Try to load existing processed credential
-    credential = await self._load_existing_credential(callback_context)
+    credential = await self._load_existing_credential(context)
 
     # Step 4: If no existing credential, load from auth response
     # TODO instead of load from auth response, we can store auth response in
     # credential service.
     was_from_auth_response = False
     if not credential:
-      credential = await self._load_from_auth_response(callback_context)
+      credential = await self._load_from_auth_response(context)
       was_from_auth_response = True
 
     # Step 5: If still no credential available, check if client credentials
     if not credential:
       # For client credentials flow, use raw credentials directly
       if self._is_client_credentials_flow():
-        credential = self._auth_config.raw_auth_credential
+        # Exchange/refresh steps may mutate the credential object in-place, so
+        # do not operate on the shared tool config.
+        credential = self._auth_config.raw_auth_credential.model_copy(deep=True)
       else:
         # For authorization code flow, return None to trigger user authorization
         return None
@@ -169,38 +268,38 @@ class CredentialManager:
 
     # Step 8: Save credential if it was modified
     if was_from_auth_response or was_exchanged or was_refreshed:
-      await self._save_credential(callback_context, credential)
+      await self._save_credential(context, credential)
 
     return credential
 
   async def _load_existing_credential(
-      self, callback_context: CallbackContext
+      self, context: CallbackContext
   ) -> Optional[AuthCredential]:
     """Load existing credential from credential service."""
 
     # Try loading from credential service first
-    credential = await self._load_from_credential_service(callback_context)
+    credential = await self._load_from_credential_service(context)
     if credential:
       return credential
 
     return None
 
   async def _load_from_credential_service(
-      self, callback_context: CallbackContext
+      self, context: CallbackContext
   ) -> Optional[AuthCredential]:
     """Load credential from credential service if available."""
-    credential_service = callback_context._invocation_context.credential_service
+    credential_service = context._invocation_context.credential_service
     if credential_service:
       # Note: This should be made async in a future refactor
       # For now, assuming synchronous operation
-      return await callback_context.load_credential(self._auth_config)
+      return await context.load_credential(self._auth_config)
     return None
 
   async def _load_from_auth_response(
-      self, callback_context: CallbackContext
+      self, context: CallbackContext
   ) -> Optional[AuthCredential]:
-    """Load credential from auth response in callback context."""
-    return callback_context.get_auth_response(self._auth_config)
+    """Load credential from auth response in context."""
+    return context.get_auth_response(self._auth_config)
 
   async def _exchange_credential(
       self, credential: AuthCredential
@@ -290,15 +389,14 @@ class CredentialManager:
     # Additional validation can be added here
 
   async def _save_credential(
-      self, callback_context: CallbackContext, credential: AuthCredential
+      self, context: CallbackContext, credential: AuthCredential
   ) -> None:
     """Save credential to credential service if available."""
-    # Update the exchanged credential in config
-    self._auth_config.exchanged_auth_credential = credential
-
-    credential_service = callback_context._invocation_context.credential_service
+    credential_service = context._invocation_context.credential_service
     if credential_service:
-      await callback_context.save_credential(self._auth_config)
+      auth_config_to_save = self._auth_config.model_copy(deep=True)
+      auth_config_to_save.exchanged_auth_credential = credential
+      await context.save_credential(auth_config_to_save)
 
   async def _populate_auth_scheme(self) -> bool:
     """Auto-discover server metadata and populate missing auth scheme info.

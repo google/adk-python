@@ -163,8 +163,8 @@ class GemmaFunctionCallModel(BaseModel):
 class Gemma(GemmaFunctionCallingMixin, Gemini):
   """Integration for Gemma models exposed via the Gemini API.
 
-  Only Gemma 3 models are supported at this time. For agentic use cases,
-  use of gemma-3-27b-it and gemma-3-12b-it are strongly recommended.
+  For agentic use cases, use of gemma-3-27b-it, gemma-3-12b-it, and
+  gemma-4-31b-it are strongly recommended.
 
   For full documentation, see: https://ai.google.dev/gemma/docs/core/
 
@@ -205,7 +205,7 @@ class Gemma(GemmaFunctionCallingMixin, Gemini):
     """
 
     return [
-        r'gemma-3.*',
+        r'gemma-.*',
     ]
 
   @cached_property
@@ -323,7 +323,7 @@ def _get_last_valid_json_substring(text: str) -> tuple[bool, str | None]:
   """Attempts to find and return the last valid JSON object in a string.
 
   This function is designed to extract JSON that might be embedded in a larger
-  text, potentially with introductory or concluding remarks. It will always chose
+  text, potentially with introductory or concluding remarks. It will always choose
   the last block of valid json found within the supplied text (if it exists).
 
   Args:
@@ -356,8 +356,8 @@ def _get_last_valid_json_substring(text: str) -> tuple[bool, str | None]:
 
 try:
   from google.adk.models.lite_llm import LiteLlm  # noqa: F401
-except Exception:
-  # LiteLLM not available, Gemma3Ollama will not be defined
+except ImportError as e:
+  logger.debug('LiteLlm not available; Gemma3Ollama will not be defined: %s', e)
   LiteLlm = None
 
 if LiteLlm is not None:

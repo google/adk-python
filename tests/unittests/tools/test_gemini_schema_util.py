@@ -337,6 +337,66 @@ class TestToGeminiSchema:
     ]
     assert gemini_schema.properties["payload"].required == ["adDomain"]
 
+  def test_to_gemini_schema_draft_07_definitions_and_ref(self):
+    """Draft-07 schemas use `definitions`/`#/definitions/...` instead of `$defs`.
+
+    The MCP spec allows tool `inputSchema`s to use JSON Schema draft-07, so a
+    server sending `definitions` + `$ref: "#/definitions/..."` must dereference
+    correctly instead of raising `KeyError: 'definitions'`.
+    """
+    openapi_schema = {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "definitions": {
+            "DeviceEnum": {
+                "enum": ["GLOBAL", "desktop", "mobile"],
+                "title": "DeviceEnum",
+                "type": "string",
+            },
+            "DomainPayload": {
+                "properties": {
+                    "adDomain": {
+                        "description": "List of one or many domains.",
+                        "items": {"type": "string"},
+                        "title": "Addomain",
+                        "type": "array",
+                    },
+                    "device": {
+                        "$ref": "#/definitions/DeviceEnum",
+                        "default": "GLOBAL",
+                    },
+                },
+                "required": ["adDomain"],
+                "title": "DomainPayload",
+                "type": "object",
+            },
+        },
+        "properties": {"payload": {"$ref": "#/definitions/DomainPayload"}},
+        "required": ["payload"],
+        "title": "query_domainsArguments",
+        "type": "object",
+    }
+    gemini_schema = _to_gemini_schema(openapi_schema)
+    assert gemini_schema.type == Type.OBJECT
+    assert gemini_schema.properties["payload"].type == Type.OBJECT
+    assert (
+        gemini_schema.properties["payload"].properties["adDomain"].type
+        == Type.ARRAY
+    )
+    assert (
+        gemini_schema.properties["payload"].properties["adDomain"].items.type
+        == Type.STRING
+    )
+    assert (
+        gemini_schema.properties["payload"].properties["device"].type
+        == Type.STRING
+    )
+    assert gemini_schema.properties["payload"].properties["device"].enum == [
+        "GLOBAL",
+        "desktop",
+        "mobile",
+    ]
+    assert gemini_schema.properties["payload"].required == ["adDomain"]
+
   def test_sanitize_integer_formats(self):
     """Test that int32 and int64 formats are preserved for integer types"""
     openapi_schema = {
@@ -579,6 +639,20 @@ class TestToGeminiSchema:
         "null",
     ]
 
+  def test_sanitize_schema_formats_for_gemini_with_list_property_value(self):
+    schema = {
+        "type": "object",
+        "properties": {
+            "required": ["sql"],
+            "sql": {"type": "string"},
+        },
+    }
+
+    sanitized = _sanitize_schema_formats_for_gemini(schema)
+
+    assert sanitized["properties"]["required"] == ["sql"]
+    assert sanitized["properties"]["sql"]["type"] == "string"
+
   def test_sanitize_schema_formats_for_gemini_nullable(self):
     openapi_schema = {
         "properties": {
@@ -633,6 +707,197 @@ class TestToGeminiSchema:
     assert isinstance(gemini_schema, Schema)
     assert gemini_schema.type == Type.OBJECT
     assert gemini_schema.properties is None
+
+  def test_to_gemini_schema_boolean_true_property(self):
+    """Tests that a JSON Schema boolean `true` property is handled.
+
+    JSON Schema allows `true` as a schema meaning "accept any value".
+    Some MCP servers use this pattern for fields whose content is not
+    further constrained.
+    """
+    openapi_schema = {
+        "type": "object",
+        "properties": {
+            "items": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "refId": {"type": "string"},
+                        "model": True,  # JSON Schema boolean schema
+                    },
+                },
+            }
+        },
+    }
+    gemini_schema = _to_gemini_schema(openapi_schema)
+    assert isinstance(gemini_schema, Schema)
+    items_schema = gemini_schema.properties["items"]
+    assert items_schema.type == Type.ARRAY
+    # `model: true` should be converted to an object schema
+    model_schema = items_schema.items.properties["model"]
+    assert model_schema.type == Type.OBJECT
+
+  def test_to_gemini_schema_boolean_false_property(self):
+    """Tests that a JSON Schema boolean `false` property does not raise.
+
+    `false` means "no value is valid" in JSON Schema, which has no Gemini
+    equivalent. Conversion falls back to an object schema to avoid crashing;
+    the result is semantically imprecise but safe.
+    """
+    openapi_schema = {
+        "type": "object",
+        "properties": {
+            "anything": False,  # JSON Schema boolean schema (reject all)
+        },
+    }
+    # Should not raise even though `false` has no Gemini equivalent.
+    gemini_schema = _to_gemini_schema(openapi_schema)
+    assert isinstance(gemini_schema, Schema)
+    assert gemini_schema.properties["anything"] is not None
+
+  def test_to_gemini_schema_boolean_true_in_array_items_properties(self):
+    """Regression test: boolean `true` schema inside array item properties.
+
+    Some MCP servers use `"field": true` in an array item's properties to
+    indicate an unconstrained field, which is valid JSON Schema.
+    """
+    openapi_schema = {
+        "type": "object",
+        "properties": {
+            "title": {"type": "string"},
+            "data": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "datasourceUid": {"type": "string"},
+                        "model": True,
+                        "queryType": {"type": "string"},
+                        "refId": {"type": "string"},
+                    },
+                },
+            },
+        },
+        "required": ["title", "data"],
+    }
+    # Should not raise a ValidationError
+    gemini_schema = _to_gemini_schema(openapi_schema)
+    assert isinstance(gemini_schema, Schema)
+    assert gemini_schema.type == Type.OBJECT
+    data_schema = gemini_schema.properties["data"]
+    assert data_schema.type == Type.ARRAY
+    model_schema = data_schema.items.properties["model"]
+    assert model_schema.type == Type.OBJECT
+
+  def test_to_gemini_schema_circular_ref(self):
+    """Test that circular references in schema are handled without RecursionError."""
+    openapi_schema = {
+        "$defs": {
+            "Node": {
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string"},
+                    "parent": {"$ref": "#/$defs/Node"},
+                },
+            }
+        },
+        "properties": {"tree": {"$ref": "#/$defs/Node"}},
+        "type": "object",
+    }
+    # Should not raise RecursionError
+    gemini_schema = _to_gemini_schema(openapi_schema)
+    assert gemini_schema.type == Type.OBJECT
+    assert gemini_schema.properties["tree"].type == Type.OBJECT
+    assert (
+        gemini_schema.properties["tree"].properties["name"].type == Type.STRING
+    )
+    assert (
+        gemini_schema.properties["tree"].properties["parent"].type
+        == Type.OBJECT
+    ), "The circular ref should be handled and return the fallback object"
+    assert (
+        gemini_schema.properties["tree"].properties["parent"].description
+        == "Circular ref to Node"
+    )
+
+  def test_to_gemini_schema_multi_step_circular_ref(self):
+    """Test that multi-step circular references (Value -> Struct -> Value) are handled."""
+    openapi_schema = {
+        "$defs": {
+            "Value": {
+                "anyOf": [
+                    {"type": "string"},
+                    {"$ref": "#/$defs/Struct"},
+                ]
+            },
+            "Struct": {
+                "type": "object",
+                "properties": {
+                    "fields": {
+                        "type": "object",
+                        "properties": {
+                            "my_val": {
+                                "type": "array",
+                                "items": {"$ref": "#/$defs/Value"},
+                            }
+                        },
+                    }
+                },
+            },
+        },
+        "properties": {"root": {"$ref": "#/$defs/Value"}},
+        "type": "object",
+    }
+
+    gemini_schema = _to_gemini_schema(openapi_schema)
+    # Individual assertions are used here instead of comparing the whole Schema
+    # object or its properties dictionary because Schema objects with deep
+    # nesting can have subtle differences in default fields that are hard to
+    # debug due to pytest truncation limits.
+    assert gemini_schema.type == Type.OBJECT
+    # root is Value, which resolved to anyOf
+    assert len(gemini_schema.properties["root"].any_of) == 2
+    assert gemini_schema.properties["root"].any_of[0].type == Type.STRING
+    # any_of[1] is Struct
+    struct_schema = gemini_schema.properties["root"].any_of[1]
+    assert struct_schema.type == Type.OBJECT
+    assert struct_schema.properties["fields"].type == Type.OBJECT
+    # properties["fields"].properties["my_val"] is an array
+    my_val_schema = struct_schema.properties["fields"].properties["my_val"]
+    assert my_val_schema.type == Type.ARRAY
+    assert (
+        my_val_schema.items.type == Type.OBJECT
+    ), "Array items referencing a circular $ref should resolve to Type.OBJECT"
+
+  def test_to_gemini_schema_reused_non_circular_ref(self):
+    """Test that reused non-circular references are handled correctly."""
+    openapi_schema = {
+        "$defs": {
+            "CommonType": {"type": "string"},
+            "ObjectA": {
+                "type": "object",
+                "properties": {"prop_a": {"$ref": "#/$defs/CommonType"}},
+            },
+            "ObjectB": {
+                "type": "object",
+                "properties": {"prop_b": {"$ref": "#/$defs/CommonType"}},
+            },
+        },
+        "properties": {
+            "a": {"$ref": "#/$defs/ObjectA"},
+            "b": {"$ref": "#/$defs/ObjectB"},
+        },
+        "type": "object",
+    }
+    gemini_schema = _to_gemini_schema(openapi_schema)
+    assert gemini_schema.type == Type.OBJECT
+    assert (
+        gemini_schema.properties["a"].properties["prop_a"].type == Type.STRING
+    )
+    assert (
+        gemini_schema.properties["b"].properties["prop_b"].type == Type.STRING
+    )
 
 
 class TestToSnakeCase:

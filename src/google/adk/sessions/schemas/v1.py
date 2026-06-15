@@ -26,13 +26,14 @@ from __future__ import annotations
 from datetime import datetime
 from datetime import timezone
 from typing import Any
-from typing import Optional
-import uuid
 
+from google.adk.platform import uuid as platform_uuid
+from sqlalchemy import desc
 from sqlalchemy import ForeignKeyConstraint
 from sqlalchemy import func
+from sqlalchemy import Index
+from sqlalchemy import inspect
 from sqlalchemy.ext.mutable import MutableDict
-from sqlalchemy.inspection import inspect
 from sqlalchemy.orm import DeclarativeBase
 from sqlalchemy.orm import Mapped
 from sqlalchemy.orm import mapped_column
@@ -82,7 +83,7 @@ class StorageSession(Base):
   id: Mapped[str] = mapped_column(
       String(DEFAULT_MAX_KEY_LENGTH),
       primary_key=True,
-      default=lambda: str(uuid.uuid4()),
+      default=platform_uuid.new_uuid,
   )
 
   state: Mapped[MutableDict[str, Any]] = mapped_column(
@@ -107,24 +108,40 @@ class StorageSession(Base):
     return f"<StorageSession(id={self.id}, update_time={self.update_time})>"
 
   @property
-  def _dialect_name(self) -> Optional[str]:
-    session = inspect(self).session
-    return session.bind.dialect.name if session else None
+  def update_timestamp_tz(self) -> float:
+    """Returns the update timestamp as a POSIX timestamp.
 
-  @property
-  def update_timestamp_tz(self) -> datetime:
+    This is a compatibility alias for callers that used the pre-`main` API.
+    """
+    sqlalchemy_session = inspect(self).session
+    is_sqlite = bool(
+        sqlalchemy_session
+        and sqlalchemy_session.bind
+        and sqlalchemy_session.bind.dialect.name == "sqlite"
+    )
+    return self.get_update_timestamp(is_sqlite=is_sqlite)
+
+  def get_update_timestamp(self, is_sqlite: bool) -> float:
     """Returns the time zone aware update timestamp."""
-    if self._dialect_name == "sqlite":
+    if is_sqlite:
       # SQLite does not support timezone. SQLAlchemy returns a naive datetime
       # object without timezone information. We need to convert it to UTC
       # manually.
       return self.update_time.replace(tzinfo=timezone.utc).timestamp()
     return self.update_time.timestamp()
 
+  def get_update_marker(self) -> str:
+    """Returns a stable revision marker for optimistic concurrency checks."""
+    update_time = self.update_time
+    if update_time.tzinfo is not None:
+      update_time = update_time.astimezone(timezone.utc)
+    return update_time.isoformat(timespec="microseconds")
+
   def to_session(
       self,
       state: dict[str, Any] | None = None,
       events: list[Event] | None = None,
+      is_sqlite: bool = False,
   ) -> Session:
     """Converts the storage session to a session object."""
     if state is None:
@@ -132,14 +149,16 @@ class StorageSession(Base):
     if events is None:
       events = []
 
-    return Session(
+    session = Session(
         app_name=self.app_name,
         user_id=self.user_id,
         id=self.id,
         state=state,
         events=events,
-        last_update_time=self.update_timestamp_tz,
+        last_update_time=self.get_update_timestamp(is_sqlite=is_sqlite),
     )
+    session._storage_update_marker = self.get_update_marker()
+    return session
 
 
 class StorageEvent(Base):
@@ -178,6 +197,13 @@ class StorageEvent(Base):
           ["app_name", "user_id", "session_id"],
           ["sessions.app_name", "sessions.user_id", "sessions.id"],
           ondelete="CASCADE",
+      ),
+      Index(
+          "idx_events_app_user_session_ts",
+          "app_name",
+          "user_id",
+          "session_id",
+          desc("timestamp"),
       ),
   )
 

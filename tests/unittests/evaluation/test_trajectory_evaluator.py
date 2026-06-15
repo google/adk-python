@@ -14,7 +14,6 @@
 
 """Testings for the Trajectory Evaluator."""
 
-
 from google.adk.evaluation.eval_case import IntermediateData
 from google.adk.evaluation.eval_case import Invocation
 from google.adk.evaluation.eval_metrics import EvalMetric

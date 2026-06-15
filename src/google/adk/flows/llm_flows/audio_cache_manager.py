@@ -15,9 +15,9 @@
 from __future__ import annotations
 
 import logging
-import time
 from typing import TYPE_CHECKING
 
+from google.adk.platform import time as platform_time
 from google.genai import types
 
 from ...agents.invocation_context import RealtimeCacheEntry
@@ -70,7 +70,7 @@ class AudioCacheManager:
       raise ValueError("cache_type must be either 'input' or 'output'")
 
     audio_entry = RealtimeCacheEntry(
-        role=role, data=audio_blob, timestamp=time.time()
+        role=role, data=audio_blob, timestamp=platform_time.get_time()
     )
     cache.append(audio_entry)
 
@@ -233,11 +233,11 @@ class AudioCacheManager:
 
     input_bytes = sum(
         len(entry.data.data)
-        for entry in (invocation_context.input_realtime_cache or [])
+        for entry in invocation_context.input_realtime_cache or []
     )
     output_bytes = sum(
         len(entry.data.data)
-        for entry in (invocation_context.output_realtime_cache or [])
+        for entry in invocation_context.output_realtime_cache or []
     )
 
     return {

@@ -18,10 +18,11 @@ from pydantic import BaseModel
 from pydantic import ConfigDict
 from pydantic import Field
 
-from ..utils.feature_decorator import experimental
+from ..features import experimental
+from ..features import FeatureName
 
 
-@experimental
+@experimental(FeatureName.AGENT_CONFIG)
 class ContextCacheConfig(BaseModel):
   """Configuration for context caching across all agents in an app.
 

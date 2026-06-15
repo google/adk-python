@@ -49,7 +49,6 @@ def create_oauth2_session(
       logger.warning("OpenIdConnect scheme missing token_endpoint")
       return None, None
     token_endpoint = auth_scheme.token_endpoint
-    scopes = auth_scheme.scopes or []
   elif isinstance(auth_scheme, OAuth2):
     # Support both authorization code and client credentials flows
     if (
@@ -57,13 +56,11 @@ def create_oauth2_session(
         and auth_scheme.flows.authorizationCode.tokenUrl
     ):
       token_endpoint = auth_scheme.flows.authorizationCode.tokenUrl
-      scopes = list(auth_scheme.flows.authorizationCode.scopes.keys())
     elif (
         auth_scheme.flows.clientCredentials
         and auth_scheme.flows.clientCredentials.tokenUrl
     ):
       token_endpoint = auth_scheme.flows.clientCredentials.tokenUrl
-      scopes = list(auth_scheme.flows.clientCredentials.scopes.keys())
     else:
       logger.warning(
           "OAuth2 scheme missing required flow configuration. Expected either"
@@ -84,14 +81,16 @@ def create_oauth2_session(
   ):
     return None, None
 
+  # Scope is intentionally omitted: token exchange and refresh don't require
+  # it per RFC 6749, and some providers reject it on these requests.
   return (
       OAuth2Session(
           auth_credential.oauth2.client_id,
           auth_credential.oauth2.client_secret,
-          scope=" ".join(scopes),
           redirect_uri=auth_credential.oauth2.redirect_uri,
           state=auth_credential.oauth2.state,
           token_endpoint_auth_method=auth_credential.oauth2.token_endpoint_auth_method,
+          code_challenge_method=auth_credential.oauth2.code_challenge_method,
       ),
       token_endpoint,
   )
@@ -107,11 +106,13 @@ def update_credential_with_tokens(
       auth_credential: The authentication credential to update.
       tokens: The OAuth2Token object containing new token information.
   """
-  auth_credential.oauth2.access_token = tokens.get("access_token")
-  auth_credential.oauth2.refresh_token = tokens.get("refresh_token")
-  auth_credential.oauth2.expires_at = (
-      int(tokens.get("expires_at")) if tokens.get("expires_at") else None
-  )
-  auth_credential.oauth2.expires_in = (
-      int(tokens.get("expires_in")) if tokens.get("expires_in") else None
-  )
+  if auth_credential.oauth2 and tokens:
+    auth_credential.oauth2.access_token = tokens.get("access_token")
+    auth_credential.oauth2.refresh_token = tokens.get("refresh_token")
+    auth_credential.oauth2.id_token = tokens.get("id_token")
+    auth_credential.oauth2.expires_at = (
+        int(tokens.get("expires_at")) if tokens.get("expires_at") else None
+    )
+    auth_credential.oauth2.expires_in = (
+        int(tokens.get("expires_in")) if tokens.get("expires_in") else None
+    )

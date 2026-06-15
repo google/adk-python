@@ -1,0 +1,40 @@
+{
+  "events": [
+    {
+      "author": "user",
+      "content": {
+        "parts": [
+          {
+            "text": "Tell me a joke"
+          }
+        ],
+        "role": "user"
+      },
+      "id": "e-1",
+      "invocationId": "i-1",
+      "nodeInfo": {
+        "path": ""
+      }
+    },
+    {
+      "author": "logprobs_demo_agent",
+      "content": {
+        "parts": [
+          {
+            "text": "Why don't scientists trust atoms?\n\nBecause they make up everything!"
+          },
+          {
+            "text": "\n\n---\n\n### \ud83d\udcca Log Probability Analysis\n\n* **Average Log Probability**: -0.4411\n* **Confidence Level**: High\n* **Confidence Score**: 73.7%\n* **Top Alternatives Analyzed**: 15"
+          }
+        ],
+        "role": "model"
+      },
+      "finishReason": "STOP",
+      "id": "e-2",
+      "invocationId": "i-1",
+      "nodeInfo": {
+        "path": "logprobs_demo_agent@1"
+      }
+    }
+  ]
+}

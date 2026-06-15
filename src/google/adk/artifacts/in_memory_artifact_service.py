@@ -17,6 +17,7 @@ import dataclasses
 import logging
 from typing import Any
 from typing import Optional
+from typing import Union
 
 from google.genai import types
 from pydantic import BaseModel
@@ -27,6 +28,7 @@ from . import artifact_util
 from ..errors.input_validation_error import InputValidationError
 from .base_artifact_service import ArtifactVersion
 from .base_artifact_service import BaseArtifactService
+from .base_artifact_service import ensure_part
 
 logger = logging.getLogger("google_adk." + __name__)
 
@@ -99,10 +101,11 @@ class InMemoryArtifactService(BaseArtifactService, BaseModel):
       app_name: str,
       user_id: str,
       filename: str,
-      artifact: types.Part,
+      artifact: Union[types.Part, dict[str, Any]],
       session_id: Optional[str] = None,
       custom_metadata: Optional[dict[str, Any]] = None,
   ) -> int:
+    artifact = ensure_part(artifact)
     path = self._artifact_path(app_name, user_id, filename, session_id)
     if path not in self.artifacts:
       self.artifacts[path] = []

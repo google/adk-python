@@ -33,6 +33,7 @@ from google.adk.a2a.converters.event_converter import convert_a2a_task_to_event
 from google.adk.a2a.converters.event_converter import convert_event_to_a2a_events
 from google.adk.a2a.converters.event_converter import convert_event_to_a2a_message
 from google.adk.a2a.converters.event_converter import DEFAULT_ERROR_MESSAGE
+from google.adk.a2a.converters.part_converter import convert_genai_part_to_a2a_part
 from google.adk.a2a.converters.utils import ADK_METADATA_KEY_PREFIX
 from google.adk.agents.invocation_context import InvocationContext
 from google.adk.events.event import Event
@@ -56,6 +57,7 @@ class TestEventConverter:
     self.mock_invocation_context.artifact_service = self.mock_artifact_service
 
     self.mock_event = Mock(spec=Event)
+    self.mock_event.id = None
     self.mock_event.invocation_id = "test-invocation-id"
     self.mock_event.author = "test-author"
     self.mock_event.branch = None
@@ -73,6 +75,17 @@ class TestEventConverter:
     key = "test_key"
     result = _get_adk_metadata_key(key)
     assert result == f"{ADK_METADATA_KEY_PREFIX}{key}"
+
+  def test_create_error_status_event_is_final(self):
+    """Error status events must be marked final."""
+    result = _create_error_status_event(
+        self.mock_event,
+        self.mock_invocation_context,
+        task_id="test-task-id",
+        context_id="test-context-id",
+    )
+
+    assert result.final is True
 
   def test_get_adk_event_metadata_key_empty_string(self):
     """Test metadata key generation with empty string."""
@@ -130,6 +143,7 @@ class TestEventConverter:
         f"{ADK_METADATA_KEY_PREFIX}session_id",
         f"{ADK_METADATA_KEY_PREFIX}invocation_id",
         f"{ADK_METADATA_KEY_PREFIX}author",
+        f"{ADK_METADATA_KEY_PREFIX}event_id",
     ]
 
     for key in expected_keys:
@@ -436,6 +450,42 @@ class TestEventConverter:
             context_id,
         )
 
+  def test_convert_event_to_a2a_events_user_role(self):
+    """Test event to A2A events conversion with events from a user."""
+    # Setup message
+    mock_message = Mock(spec=Message)
+    mock_message.parts = []
+
+    with patch(
+        "google.adk.a2a.converters.event_converter.convert_event_to_a2a_message"
+    ) as mock_convert_message:
+      mock_convert_message.return_value = mock_message
+
+      with patch(
+          "google.adk.a2a.converters.event_converter._create_status_update_event"
+      ) as mock_create_running:
+        mock_running_event = Mock()
+        mock_create_running.return_value = mock_running_event
+        self.mock_event.author = "user"
+
+        task_id = "custom-task-id"
+        context_id = "custom-context-id"
+
+        result = convert_event_to_a2a_events(
+            self.mock_event, self.mock_invocation_context, task_id, context_id
+        )
+
+        assert len(result) == 1
+        assert result[0] == mock_running_event
+
+        # Verify the function is called with the specific task_id and context_id
+        mock_convert_message.assert_called_once_with(
+            self.mock_event,
+            self.mock_invocation_context,
+            part_converter=convert_genai_part_to_a2a_part,
+            role=Role.user,
+        )
+
   def test_create_status_update_event_with_auth_required_state(self):
     """Test creation of status update event with auth_required state."""
     from a2a.types import DataPart
@@ -460,7 +510,7 @@ class TestEventConverter:
     with patch(
         "google.adk.a2a.converters.event_converter.datetime"
     ) as mock_datetime:
-      mock_datetime.now.return_value.isoformat.return_value = (
+      mock_datetime.fromtimestamp.return_value.isoformat.return_value = (
           "2023-01-01T00:00:00"
       )
 
@@ -524,7 +574,7 @@ class TestEventConverter:
     with patch(
         "google.adk.a2a.converters.event_converter.datetime"
     ) as mock_datetime:
-      mock_datetime.now.return_value.isoformat.return_value = (
+      mock_datetime.fromtimestamp.return_value.isoformat.return_value = (
           "2023-01-01T00:00:00"
       )
 
@@ -740,7 +790,7 @@ class TestA2AToEventConverters:
     assert result.branch == "test-branch"
     assert result.invocation_id == "test-invocation-id"
 
-  @patch("google.adk.a2a.converters.event_converter.uuid.uuid4")
+  @patch("google.adk.a2a.converters.event_converter.platform_uuid.new_uuid")
   def test_convert_a2a_task_to_event_default_author(self, mock_uuid):
     """Test converting A2A task with default author and no invocation context."""
     from google.adk.a2a.converters.event_converter import convert_a2a_task_to_event
@@ -972,7 +1022,7 @@ class TestA2AToEventConverters:
     # Parts will be empty since conversion returned None
     assert len(result.content.parts) == 0
 
-  @patch("google.adk.a2a.converters.event_converter.uuid.uuid4")
+  @patch("google.adk.a2a.converters.event_converter.platform_uuid.new_uuid")
   def test_convert_a2a_message_to_event_default_author(self, mock_uuid):
     """Test conversion with default author and no invocation context."""
     from google.adk.a2a.converters.event_converter import convert_a2a_message_to_event

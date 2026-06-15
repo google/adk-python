@@ -22,7 +22,9 @@ from google.adk.agents.callback_context import CallbackContext
 from google.adk.auth.auth_credential import AuthCredential
 from google.adk.auth.auth_credential import AuthCredentialTypes
 from google.adk.auth.auth_tool import AuthConfig
+from google.adk.memory.memory_entry import MemoryEntry
 from google.adk.tools.tool_context import ToolContext
+from google.genai import types
 from google.genai.types import Part
 import pytest
 
@@ -371,6 +373,106 @@ class TestCallbackContextAddSessionToMemory:
 
     with pytest.raises(Exception, match="Memory service error"):
       await context.add_session_to_memory()
+
+
+class TestCallbackContextAddEventsToMemory:
+  """Tests add_events_to_memory in CallbackContext."""
+
+  @pytest.mark.asyncio
+  async def test_add_events_to_memory_success(self, mock_invocation_context):
+    """Tests that add_events_to_memory calls the memory service correctly."""
+    memory_service = AsyncMock()
+    mock_invocation_context.memory_service = memory_service
+    test_event = MagicMock()
+
+    context = CallbackContext(mock_invocation_context)
+    await context.add_events_to_memory(
+        events=[test_event],
+        custom_metadata={"ttl": "6000s"},
+    )
+
+    memory_service.add_events_to_memory.assert_called_once_with(
+        app_name=mock_invocation_context.session.app_name,
+        user_id=mock_invocation_context.session.user_id,
+        session_id=mock_invocation_context.session.id,
+        events=[test_event],
+        custom_metadata={"ttl": "6000s"},
+    )
+
+  @pytest.mark.asyncio
+  async def test_add_events_to_memory_no_service_raises(
+      self, mock_invocation_context
+  ):
+    """Tests that add_events_to_memory raises ValueError with no service."""
+    mock_invocation_context.memory_service = None
+
+    context = CallbackContext(mock_invocation_context)
+
+    with pytest.raises(
+        ValueError,
+        match=r"Cannot add events to memory: memory service is not available\.",
+    ):
+      await context.add_events_to_memory(events=[MagicMock()])
+
+  @pytest.mark.asyncio
+  async def test_add_memory_forwards_metadata(self, mock_invocation_context):
+    """Tests that add_memory forwards memories and metadata."""
+    memory_service = AsyncMock()
+    mock_invocation_context.memory_service = memory_service
+    memories = [
+        MemoryEntry(content=types.Content(parts=[types.Part(text="fact one")]))
+    ]
+    metadata = {"ttl": "6000s"}
+
+    context = CallbackContext(mock_invocation_context)
+    await context.add_memory(memories=memories, custom_metadata=metadata)
+
+    memory_service.add_memory.assert_called_once_with(
+        app_name=mock_invocation_context.session.app_name,
+        user_id=mock_invocation_context.session.user_id,
+        memories=memories,
+        custom_metadata=metadata,
+    )
+
+  @pytest.mark.asyncio
+  async def test_add_memory_accepts_memory_entries(
+      self, mock_invocation_context
+  ):
+    """Tests that add_memory forwards MemoryEntry inputs unchanged."""
+    memory_service = AsyncMock()
+    mock_invocation_context.memory_service = memory_service
+    memory_entry = MemoryEntry(
+        content=types.Content(parts=[types.Part(text="fact one")])
+    )
+
+    context = CallbackContext(mock_invocation_context)
+    await context.add_memory(memories=[memory_entry])
+
+    memory_service.add_memory.assert_called_once_with(
+        app_name=mock_invocation_context.session.app_name,
+        user_id=mock_invocation_context.session.user_id,
+        memories=[memory_entry],
+        custom_metadata=None,
+    )
+
+  @pytest.mark.asyncio
+  async def test_add_memory_no_service_raises(self, mock_invocation_context):
+    """Tests that add_memory raises ValueError with no service."""
+    mock_invocation_context.memory_service = None
+
+    context = CallbackContext(mock_invocation_context)
+
+    with pytest.raises(
+        ValueError,
+        match=r"Cannot add memory: memory service is not available\.",
+    ):
+      await context.add_memory(
+          memories=[
+              MemoryEntry(
+                  content=types.Content(parts=[types.Part(text="fact one")])
+              )
+          ]
+      )
 
 
 class TestToolContextAddSessionToMemory:

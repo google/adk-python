@@ -52,14 +52,14 @@ class TestVertexAiSearchToolHelperFunctions:
   def test_extract_model_name_simple_model(self):
     """Test extraction of simple model names."""
     assert extract_model_name('gemini-2.5-pro') == 'gemini-2.5-pro'
-    assert extract_model_name('gemini-1.5-flash') == 'gemini-1.5-flash'
+    assert extract_model_name('gemini-2.5-flash') == 'gemini-2.5-flash'
     assert extract_model_name('gemini-1.0-pro') == 'gemini-1.0-pro'
     assert extract_model_name('claude-3-sonnet') == 'claude-3-sonnet'
 
   def test_extract_model_name_path_based_model(self):
     """Test extraction of path-based model names."""
-    path_model = 'projects/265104255505/locations/us-central1/publishers/google/models/gemini-2.0-flash-001'
-    assert extract_model_name(path_model) == 'gemini-2.0-flash-001'
+    path_model = 'projects/265104255505/locations/us-central1/publishers/google/models/gemini-2.5-flash'
+    assert extract_model_name(path_model) == 'gemini-2.5-flash'
 
     path_model_2 = 'projects/12345/locations/us-east1/publishers/google/models/gemini-1.5-pro-preview'
     assert extract_model_name(path_model_2) == 'gemini-1.5-pro-preview'
@@ -72,7 +72,7 @@ class TestVertexAiSearchToolHelperFunctions:
   def test_is_gemini_model_simple_names(self):
     """Test Gemini model detection with simple model names."""
     assert is_gemini_model('gemini-2.5-pro') is True
-    assert is_gemini_model('gemini-1.5-flash') is True
+    assert is_gemini_model('gemini-2.5-flash') is True
     assert is_gemini_model('gemini-1.0-pro') is True
     assert is_gemini_model('claude-3-sonnet') is False
     assert is_gemini_model('gpt-4') is False
@@ -80,7 +80,7 @@ class TestVertexAiSearchToolHelperFunctions:
 
   def test_is_gemini_model_path_based_names(self):
     """Test Gemini model detection with path-based model names."""
-    gemini_path = 'projects/265104255505/locations/us-central1/publishers/google/models/gemini-2.0-flash-001'
+    gemini_path = 'projects/265104255505/locations/us-central1/publishers/google/models/gemini-2.5-flash'
     assert is_gemini_model(gemini_path) is True
 
     non_gemini_path = 'projects/265104255505/locations/us-central1/publishers/google/models/claude-3-sonnet'
@@ -92,16 +92,17 @@ class TestVertexAiSearchToolHelperFunctions:
     assert is_gemini_1_model('gemini-1.0-pro') is True
     assert is_gemini_1_model('gemini-1.5-pro-preview') is True
     assert is_gemini_1_model('gemini-2.0-flash') is False
+    assert is_gemini_1_model('gemini-2.5-flash') is False
     assert is_gemini_1_model('gemini-2.5-pro') is False
     assert is_gemini_1_model('gemini-10.0-pro') is False  # Only 1.x versions
     assert is_gemini_1_model('claude-3-sonnet') is False
 
   def test_is_gemini_1_model_path_based_names(self):
     """Test Gemini 1.x model detection with path-based model names."""
-    gemini_1_path = 'projects/265104255505/locations/us-central1/publishers/google/models/gemini-1.5-flash-001'
+    gemini_1_path = 'projects/265104255505/locations/us-central1/publishers/google/models/gemini-1.5-flash'
     assert is_gemini_1_model(gemini_1_path) is True
 
-    gemini_2_path = 'projects/265104255505/locations/us-central1/publishers/google/models/gemini-2.0-flash-001'
+    gemini_2_path = 'projects/265104255505/locations/us-central1/publishers/google/models/gemini-2.5-flash'
     assert is_gemini_1_model(gemini_2_path) is False
 
   def test_edge_cases(self):
@@ -262,7 +263,7 @@ class TestVertexAiSearchTool:
     llm_request = LlmRequest(
         model=(
             'projects/265104255505/locations/us-central1/publishers/'
-            'google/models/gemini-2.0-flash-001'
+            'google/models/gemini-2.5-flash'
         ),
         config=types.GenerateContentConfig(),
     )
@@ -377,6 +378,29 @@ class TestVertexAiSearchTool:
       )
 
   @pytest.mark.asyncio
+  async def test_process_llm_request_with_non_gemini_model_and_disabled_check(
+      self, monkeypatch
+  ):
+    """Test non-Gemini model can pass when model-id check is disabled."""
+    monkeypatch.setenv('ADK_DISABLE_GEMINI_MODEL_ID_CHECK', 'true')
+    tool = VertexAiSearchTool(data_store_id='test_data_store')
+    tool_context = await _create_tool_context()
+
+    llm_request = LlmRequest(
+        model='internal-model-v1', config=types.GenerateContentConfig()
+    )
+
+    await tool.process_llm_request(
+        tool_context=tool_context, llm_request=llm_request
+    )
+
+    assert llm_request.config.tools is not None
+    assert len(llm_request.config.tools) == 1
+    retrieval_tool = llm_request.config.tools[0]
+    assert retrieval_tool.retrieval is not None
+    assert retrieval_tool.retrieval.vertex_ai_search is not None
+
+  @pytest.mark.asyncio
   async def test_process_llm_request_with_path_based_non_gemini_model_raises_error(
       self,
   ):
@@ -449,3 +473,110 @@ class TestVertexAiSearchTool:
     assert 'filter=None' in log_message
     assert 'max_results=None' in log_message
     assert 'data_store_specs=None' in log_message
+
+  @pytest.mark.asyncio
+  async def test_subclass_with_dynamic_filter(self):
+    """Test subclassing to provide dynamic filter based on context."""
+
+    class DynamicFilterSearchTool(VertexAiSearchTool):
+      """Custom search tool with dynamic filter."""
+
+      def _build_vertex_ai_search_config(self, ctx):
+        user_id = ctx.state.get('user_id', 'default_user')
+        return types.VertexAISearch(
+            datastore=self.data_store_id,
+            engine=self.search_engine_id,
+            filter=f"user_id = '{user_id}'",
+            max_results=self.max_results,
+        )
+
+    tool = DynamicFilterSearchTool(data_store_id='test_data_store')
+    tool_context = await _create_tool_context()
+    tool_context.state['user_id'] = 'test_user_123'
+
+    llm_request = LlmRequest(
+        model='gemini-2.5-pro', config=types.GenerateContentConfig()
+    )
+
+    await tool.process_llm_request(
+        tool_context=tool_context, llm_request=llm_request
+    )
+
+    assert llm_request.config.tools is not None
+    assert len(llm_request.config.tools) == 1
+    retrieval_tool = llm_request.config.tools[0]
+    assert retrieval_tool.retrieval is not None
+    assert retrieval_tool.retrieval.vertex_ai_search is not None
+    # Verify the filter was dynamically set
+    assert (
+        retrieval_tool.retrieval.vertex_ai_search.filter
+        == "user_id = 'test_user_123'"
+    )
+
+  @pytest.mark.asyncio
+  async def test_subclass_with_dynamic_max_results(self):
+    """Test subclassing to provide dynamic max_results based on context."""
+
+    class DynamicMaxResultsSearchTool(VertexAiSearchTool):
+      """Custom search tool with dynamic max_results."""
+
+      def _build_vertex_ai_search_config(self, ctx):
+        # Use a larger max_results for premium users
+        is_premium = ctx.state.get('is_premium', False)
+        dynamic_max_results = 20 if is_premium else 5
+        return types.VertexAISearch(
+            datastore=self.data_store_id,
+            engine=self.search_engine_id,
+            filter=self.filter,
+            max_results=dynamic_max_results,
+        )
+
+    tool = DynamicMaxResultsSearchTool(
+        data_store_id='test_data_store', max_results=10
+    )
+    tool_context = await _create_tool_context()
+    tool_context.state['is_premium'] = True
+
+    llm_request = LlmRequest(
+        model='gemini-2.5-pro', config=types.GenerateContentConfig()
+    )
+
+    await tool.process_llm_request(
+        tool_context=tool_context, llm_request=llm_request
+    )
+
+    retrieval_tool = llm_request.config.tools[0]
+    # Verify max_results was dynamically set to premium value
+    assert retrieval_tool.retrieval.vertex_ai_search.max_results == 20
+
+  @pytest.mark.asyncio
+  async def test_subclass_receives_readonly_context(self):
+    """Test that subclass receives the context correctly."""
+    received_contexts = []
+
+    class ContextCapturingSearchTool(VertexAiSearchTool):
+      """Custom search tool that captures the context."""
+
+      def _build_vertex_ai_search_config(self, ctx):
+        received_contexts.append(ctx)
+        return types.VertexAISearch(
+            datastore=self.data_store_id,
+            engine=self.search_engine_id,
+            filter=self.filter,
+            max_results=self.max_results,
+        )
+
+    tool = ContextCapturingSearchTool(data_store_id='test_data_store')
+    tool_context = await _create_tool_context()
+
+    llm_request = LlmRequest(
+        model='gemini-2.5-pro', config=types.GenerateContentConfig()
+    )
+
+    await tool.process_llm_request(
+        tool_context=tool_context, llm_request=llm_request
+    )
+
+    # Verify the context was passed to _build_vertex_ai_search_config
+    assert len(received_contexts) == 1
+    assert received_contexts[0] is tool_context

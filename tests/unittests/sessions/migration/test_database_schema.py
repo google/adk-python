@@ -72,6 +72,16 @@ async def test_new_db_uses_latest_schema(tmp_path):
     event_col_names = {c['name'] for c in event_cols}
     assert 'event_data' in event_col_names
     assert 'actions' not in event_col_names
+
+    event_indexes = await conn.run_sync(
+        lambda sync_conn: inspect(sync_conn).get_indexes('events')
+    )
+    assert any(
+        index['name'] == 'idx_events_app_user_session_ts'
+        and index['column_names']
+        == ['app_name', 'user_id', 'session_id', 'timestamp']
+        for index in event_indexes
+    )
   await engine.dispose()
 
 
@@ -168,3 +178,74 @@ async def test_existing_latest_db_uses_latest_schema(tmp_path):
     assert 'event_data' in event_col_names
     assert 'actions' not in event_col_names
   await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_prepare_tables_recreates_missing_latest_events_index(tmp_path):
+  db_path = tmp_path / 'missing_latest_index.db'
+  db_url = f'sqlite+aiosqlite:///{db_path}'
+
+  async with DatabaseSessionService(db_url) as session_service:
+    await session_service.create_session(
+        app_name='my_app', user_id='test_user', session_id='s1'
+    )
+
+  engine = create_async_engine(db_url)
+  async with engine.begin() as conn:
+    await conn.execute(text('DROP INDEX idx_events_app_user_session_ts'))
+  await engine.dispose()
+
+  async with DatabaseSessionService(db_url) as session_service:
+    session = await session_service.get_session(
+        app_name='my_app', user_id='test_user', session_id='s1'
+    )
+    assert session.id == 's1'
+
+  engine = create_async_engine(db_url)
+  async with engine.connect() as conn:
+    event_indexes = await conn.run_sync(
+        lambda sync_conn: inspect(sync_conn).get_indexes('events')
+    )
+  await engine.dispose()
+
+  assert any(
+      index['name'] == 'idx_events_app_user_session_ts'
+      and index['column_names']
+      == ['app_name', 'user_id', 'session_id', 'timestamp']
+      for index in event_indexes
+  )
+
+
+@pytest.mark.asyncio
+async def test_prepare_tables_recreates_missing_v0_events_index(tmp_path):
+  db_path = tmp_path / 'missing_v0_index.db'
+  await create_v0_db(db_path)
+  db_url = f'sqlite+aiosqlite:///{db_path}'
+
+  engine = create_async_engine(db_url)
+  async with engine.begin() as conn:
+    await conn.execute(text('DROP INDEX idx_events_app_user_session_ts'))
+  await engine.dispose()
+
+  async with DatabaseSessionService(db_url) as session_service:
+    await session_service.create_session(
+        app_name='my_app', user_id='test_user', session_id='s1'
+    )
+    session = await session_service.get_session(
+        app_name='my_app', user_id='test_user', session_id='s1'
+    )
+    assert session.id == 's1'
+
+  engine = create_async_engine(db_url)
+  async with engine.connect() as conn:
+    event_indexes = await conn.run_sync(
+        lambda sync_conn: inspect(sync_conn).get_indexes('events')
+    )
+  await engine.dispose()
+
+  assert any(
+      index['name'] == 'idx_events_app_user_session_ts'
+      and index['column_names']
+      == ['app_name', 'user_id', 'session_id', 'timestamp']
+      for index in event_indexes
+  )

@@ -19,6 +19,8 @@ from google.adk.flows.llm_flows import contents
 from google.adk.flows.llm_flows.contents import request_processor
 from google.adk.flows.llm_flows.functions import REQUEST_CONFIRMATION_FUNCTION_CALL_NAME
 from google.adk.flows.llm_flows.functions import REQUEST_EUC_FUNCTION_CALL_NAME
+from google.adk.models.anthropic_llm import AnthropicLlm
+from google.adk.models.google_llm import Gemini
 from google.adk.models.llm_request import LlmRequest
 from google.genai import types
 import pytest
@@ -790,3 +792,551 @@ async def test_code_execution_result_not_in_first_part_is_not_skipped():
       and part.code_execution_result.output == "42"
       for part in llm_request.contents[1].parts
   )
+
+
+@pytest.mark.asyncio
+async def test_function_call_with_thought_not_filtered():
+  """Test that function calls marked as thought are not filtered out.
+
+  Some models (e.g., Gemini 3 Flash Preview) may mark function calls as
+  thought=True. These should still be included in the context because they
+  represent actions that need to be executed.
+  """
+  agent = Agent(model="gemini-2.5-flash", name="test_agent")
+  llm_request = LlmRequest(model="gemini-2.5-flash")
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent
+  )
+
+  # Create event with function call marked as thought (as Gemini 3 Flash does)
+  function_call = types.FunctionCall(
+      id="fc_123",
+      name="test_tool",
+      args={"query": "test"},
+  )
+  fc_part = types.Part(function_call=function_call)
+  # Simulate model marking function call as thought
+  fc_part.thought = True
+
+  events = [
+      Event(
+          invocation_id="inv1",
+          author="user",
+          content=types.UserContent("Call the tool"),
+      ),
+      Event(
+          invocation_id="inv2",
+          author="test_agent",
+          content=types.Content(
+              role="model",
+              parts=[
+                  types.Part(text="Let me think about this", thought=True),
+                  fc_part,  # Function call with thought=True
+                  types.Part(text="Planning next steps", thought=True),
+              ],
+          ),
+      ),
+      Event(
+          invocation_id="inv3",
+          author="test_agent",
+          content=types.Content(
+              role="user",
+              parts=[
+                  types.Part(
+                      function_response=types.FunctionResponse(
+                          id="fc_123",
+                          name="test_tool",
+                          response={"result": "success"},
+                      )
+                  )
+              ],
+          ),
+      ),
+  ]
+  invocation_context.session.events = events
+
+  async for _ in contents.request_processor.run_async(
+      invocation_context, llm_request
+  ):
+    pass
+
+  # Verify all 3 contents are present (user, model with FC, function response)
+  assert len(llm_request.contents) == 3
+
+  # Verify the function call is included (not filtered out)
+  model_content = llm_request.contents[1]
+  assert model_content.role == "model"
+  fc_parts = [p for p in model_content.parts if p.function_call]
+  assert len(fc_parts) == 1
+  assert fc_parts[0].function_call.name == "test_tool"
+  assert fc_parts[0].function_call.id == "fc_123"
+
+
+@pytest.mark.asyncio
+async def test_function_response_with_thought_not_filtered():
+  """Test that function responses marked as thought are not filtered out."""
+  agent = Agent(model="gemini-2.5-flash", name="test_agent")
+  llm_request = LlmRequest(model="gemini-2.5-flash")
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent
+  )
+
+  function_call = types.FunctionCall(
+      id="fc_456",
+      name="calc_tool",
+      args={"x": 1, "y": 2},
+  )
+  function_response = types.FunctionResponse(
+      id="fc_456",
+      name="calc_tool",
+      response={"result": 3},
+  )
+  fr_part = types.Part(function_response=function_response)
+  # Simulate marking function response as thought
+  fr_part.thought = True
+
+  events = [
+      Event(
+          invocation_id="inv1",
+          author="user",
+          content=types.UserContent("Calculate 1+2"),
+      ),
+      Event(
+          invocation_id="inv2",
+          author="test_agent",
+          content=types.Content(
+              role="model",
+              parts=[types.Part(function_call=function_call)],
+          ),
+      ),
+      Event(
+          invocation_id="inv3",
+          author="test_agent",
+          content=types.Content(
+              role="user",
+              parts=[fr_part],  # Function response with thought=True
+          ),
+      ),
+  ]
+  invocation_context.session.events = events
+
+  async for _ in contents.request_processor.run_async(
+      invocation_context, llm_request
+  ):
+    pass
+
+  # Verify all 3 contents are present
+  assert len(llm_request.contents) == 3
+
+  # Verify the function response is included (not filtered out)
+  fr_content = llm_request.contents[2]
+  fr_parts = [p for p in fr_content.parts if p.function_response]
+  assert len(fr_parts) == 1
+  assert fr_parts[0].function_response.name == "calc_tool"
+
+
+@pytest.mark.asyncio
+async def test_adk_function_call_ids_are_stripped_for_non_interactions_model():
+  """Test ADK generated ids are removed for non-interactions requests."""
+  agent = Agent(model="gemini-2.5-flash", name="test_agent")
+  llm_request = LlmRequest(model="gemini-2.5-flash")
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent
+  )
+
+  function_call_id = "adk-test-call-id"
+  events = [
+      Event(
+          invocation_id="inv1",
+          author="user",
+          content=types.UserContent("Call the tool"),
+      ),
+      Event(
+          invocation_id="inv2",
+          author="test_agent",
+          content=types.Content(
+              role="model",
+              parts=[
+                  types.Part(
+                      function_call=types.FunctionCall(
+                          id=function_call_id,
+                          name="test_tool",
+                          args={"x": 1},
+                      )
+                  )
+              ],
+          ),
+      ),
+      Event(
+          invocation_id="inv3",
+          author="test_agent",
+          content=types.Content(
+              role="user",
+              parts=[
+                  types.Part(
+                      function_response=types.FunctionResponse(
+                          id=function_call_id,
+                          name="test_tool",
+                          response={"result": 2},
+                      )
+                  )
+              ],
+          ),
+      ),
+  ]
+  invocation_context.session.events = events
+
+  async for _ in contents.request_processor.run_async(
+      invocation_context, llm_request
+  ):
+    pass
+
+  model_fc_part = llm_request.contents[1].parts[0]
+  assert model_fc_part.function_call is not None
+  assert model_fc_part.function_call.id is None
+
+  user_fr_part = llm_request.contents[2].parts[0]
+  assert user_fr_part.function_response is not None
+  assert user_fr_part.function_response.id is None
+
+
+@pytest.mark.asyncio
+async def test_adk_function_call_ids_preserved_for_interactions_model():
+  """Test ADK generated ids are preserved for interactions requests."""
+  agent = Agent(
+      model=Gemini(
+          model="gemini-2.5-flash",
+          use_interactions_api=True,
+      ),
+      name="test_agent",
+  )
+  llm_request = LlmRequest(model="gemini-2.5-flash")
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent
+  )
+
+  function_call_id = "adk-test-call-id"
+  events = [
+      Event(
+          invocation_id="inv1",
+          author="user",
+          content=types.UserContent("Call the tool"),
+      ),
+      Event(
+          invocation_id="inv2",
+          author="test_agent",
+          content=types.Content(
+              role="model",
+              parts=[
+                  types.Part(
+                      function_call=types.FunctionCall(
+                          id=function_call_id,
+                          name="test_tool",
+                          args={"x": 1},
+                      )
+                  )
+              ],
+          ),
+      ),
+      Event(
+          invocation_id="inv3",
+          author="test_agent",
+          content=types.Content(
+              role="user",
+              parts=[
+                  types.Part(
+                      function_response=types.FunctionResponse(
+                          id=function_call_id,
+                          name="test_tool",
+                          response={"result": 2},
+                      )
+                  )
+              ],
+          ),
+      ),
+  ]
+  invocation_context.session.events = events
+
+  async for _ in contents.request_processor.run_async(
+      invocation_context, llm_request
+  ):
+    pass
+
+  model_fc_part = llm_request.contents[1].parts[0]
+  assert model_fc_part.function_call is not None
+  assert model_fc_part.function_call.id == function_call_id
+
+  user_fr_part = llm_request.contents[2].parts[0]
+  assert user_fr_part.function_response is not None
+  assert user_fr_part.function_response.id == function_call_id
+
+
+@pytest.mark.asyncio
+async def test_adk_function_call_ids_preserved_for_anthropic_model():
+  """Anthropic ids must round-trip through replay so Claude can match
+  tool_use blocks with their tool_result blocks (issue #5074).
+  """
+  from google.adk.models.anthropic_llm import AnthropicLlm
+
+  agent = Agent(
+      model=AnthropicLlm(model="claude-sonnet-4-20250514"),
+      name="test_agent",
+  )
+  llm_request = LlmRequest(model="claude-sonnet-4-20250514")
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent
+  )
+
+  # ADK fallback ids look like ``adk-<uuid>`` and would previously be
+  # stripped to None for non-Gemini models on the replay path.
+  function_call_id = "adk-test-call-id"
+  events = [
+      Event(
+          invocation_id="inv1",
+          author="user",
+          content=types.UserContent("Call the tool"),
+      ),
+      Event(
+          invocation_id="inv2",
+          author="test_agent",
+          content=types.Content(
+              role="model",
+              parts=[
+                  types.Part(
+                      function_call=types.FunctionCall(
+                          id=function_call_id,
+                          name="test_tool",
+                          args={"x": 1},
+                      )
+                  )
+              ],
+          ),
+      ),
+      Event(
+          invocation_id="inv3",
+          author="test_agent",
+          content=types.Content(
+              role="user",
+              parts=[
+                  types.Part(
+                      function_response=types.FunctionResponse(
+                          id=function_call_id,
+                          name="test_tool",
+                          response={"result": 2},
+                      )
+                  )
+              ],
+          ),
+      ),
+  ]
+  invocation_context.session.events = events
+
+  async for _ in contents.request_processor.run_async(
+      invocation_context, llm_request
+  ):
+    pass
+
+  model_fc_part = llm_request.contents[1].parts[0]
+  assert model_fc_part.function_call is not None
+  assert model_fc_part.function_call.id == function_call_id
+
+  user_fr_part = llm_request.contents[2].parts[0]
+  assert user_fr_part.function_response is not None
+  assert user_fr_part.function_response.id == function_call_id
+
+
+def test_is_other_agent_reply_live_session():
+  """Test _is_other_agent_reply when live_session_id is present."""
+  event = Event(author="another_agent", live_session_id="session_123")
+  assert contents._is_other_agent_reply("current_agent", event) is True
+
+  event = Event(author="user", live_session_id="session_123")
+  assert contents._is_other_agent_reply("current_agent", event) is False
+
+  event = Event(author="current_agent", live_session_id="session_123")
+  assert contents._is_other_agent_reply("current_agent", event) is True
+
+
+def test_is_other_agent_reply_non_live_session():
+  """Test _is_other_agent_reply when live_session_id is not present."""
+  event = Event(author="another_agent")
+  assert contents._is_other_agent_reply("current_agent", event) is True
+
+  event = Event(author="user")
+  assert contents._is_other_agent_reply("current_agent", event) is False
+
+  event = Event(author="current_agent")
+  assert contents._is_other_agent_reply("current_agent", event) is False
+
+  event = Event(author="another_agent")
+  assert contents._is_other_agent_reply("", event) is False
+
+
+@pytest.mark.asyncio
+async def test_anthropic_model_preserves_function_call_ids():
+  """AnthropicLlm should preserve function call IDs during session replay."""
+  anthropic_model = AnthropicLlm(model="claude-sonnet-4-20250514")
+  agent = Agent(
+      model=anthropic_model,
+      name="test_agent",
+      include_contents="default",
+  )
+  llm_request = LlmRequest(model="claude-sonnet-4-20250514")
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent
+  )
+
+  function_call_id = "toolu_test123"
+  events = [
+      Event(
+          invocation_id="inv1",
+          author="user",
+          content=types.Content(
+              role="user",
+              parts=[types.Part.from_text(text="Use the tool")],
+          ),
+      ),
+      Event(
+          invocation_id="inv2",
+          author="test_agent",
+          content=types.Content(
+              role="model",
+              parts=[
+                  types.Part(
+                      function_call=types.FunctionCall(
+                          id=function_call_id,
+                          name="my_tool",
+                          args={"arg": "value"},
+                      )
+                  )
+              ],
+          ),
+      ),
+      Event(
+          invocation_id="inv3",
+          author="user",
+          content=types.Content(
+              role="user",
+              parts=[
+                  types.Part(
+                      function_response=types.FunctionResponse(
+                          id=function_call_id,
+                          name="my_tool",
+                          response={"result": "done"},
+                      )
+                  )
+              ],
+          ),
+      ),
+  ]
+  invocation_context.session.events = events
+
+  async for _ in contents.request_processor.run_async(
+      invocation_context, llm_request
+  ):
+    pass
+
+  model_fc_part = llm_request.contents[1].parts[0]
+  assert model_fc_part.function_call is not None
+  assert model_fc_part.function_call.id == function_call_id
+
+  user_fr_part = llm_request.contents[2].parts[0]
+  assert user_fr_part.function_response is not None
+  assert user_fr_part.function_response.id == function_call_id
+
+
+def test_get_contents_live_history_rebuild():
+  """Test that _get_contents successfully reconstructs history with Live session IDs."""
+  call_id = "b00a1bcc-42b5-4dc4-9ba2-11c15816b8b1"
+  live_session_id = "live-session-1"
+  agent_name = "root_agent"
+
+  # 1. Model Function Call event (has live_session_id)
+  call_event = Event(
+      invocation_id="inv1",
+      author=agent_name,
+      live_session_id=live_session_id,
+      content=types.Content(
+          role="model",
+          parts=[
+              types.Part(
+                  function_call=types.FunctionCall(
+                      id=call_id,
+                      name="my_tool",
+                      args={"arg": "val"},
+                  )
+              )
+          ],
+      ),
+  )
+
+  # 2. User Function Response event (has live_session_id, preserved by ADK)
+  response_event = Event(
+      invocation_id="inv1",
+      author=agent_name,
+      live_session_id=live_session_id,
+      content=types.Content(
+          role="user",
+          parts=[
+              types.Part(
+                  function_response=types.FunctionResponse(
+                      id=call_id,
+                      name="my_tool",
+                      response={"result": "ok"},
+                  )
+              )
+          ],
+      ),
+  )
+
+  events = [call_event, response_event]
+
+  # Rebuild history using _get_contents
+  result = contents._get_contents(
+      current_branch=None,
+      events=events,
+      agent_name=agent_name,
+      preserve_function_call_ids=True,
+  )
+
+  assert len(result) == 2
+
+  assert result[0].role == "user"
+  assert "called tool" in result[0].parts[1].text
+
+  assert result[1].role == "user"
+  assert "returned result" in result[1].parts[1].text
+
+
+def test_rearrange_async_function_responses_early_returns_when_no_responses():
+  """Rearrangement is a no-op when no event carries function_responses."""
+  events = [
+      Event(
+          invocation_id="inv1",
+          author="user",
+          content=types.UserContent("hi"),
+      ),
+      Event(
+          invocation_id="inv2",
+          author="test_agent",
+          content=types.ModelContent("hello"),
+      ),
+      Event(
+          invocation_id="inv3",
+          author="test_agent",
+          content=types.Content(
+              role="model",
+              parts=[
+                  types.Part(
+                      function_call=types.FunctionCall(
+                          id="adk-1", name="tool", args={}
+                      )
+                  )
+              ],
+          ),
+      ),
+  ]
+  result = contents._rearrange_events_for_async_function_responses_in_history(  # pylint: disable=protected-access
+      events
+  )
+  assert result is events

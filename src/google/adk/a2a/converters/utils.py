@@ -59,7 +59,9 @@ def _to_a2a_context_id(app_name: str, user_id: str, session_id: str) -> str:
   )
 
 
-def _from_a2a_context_id(context_id: str) -> tuple[str, str, str]:
+def _from_a2a_context_id(
+    context_id: str | None,
+) -> tuple[str, str, str] | tuple[None, None, None]:
   """Converts an A2A context id to app name, user id and session id.
   if context_id is None, return None, None, None
   if context_id is not None, but not in the format of
@@ -69,7 +71,7 @@ def _from_a2a_context_id(context_id: str) -> tuple[str, str, str]:
     context_id: The A2A context id.
 
   Returns:
-    The app name, user id and session id.
+    The app name, user id and session id, or (None, None, None) if invalid.
   """
   if not context_id:
     return None, None, None

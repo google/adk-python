@@ -14,7 +14,6 @@
 
 import unittest
 from unittest.mock import AsyncMock
-from unittest.mock import Mock
 
 from google.adk.apps.llm_event_summarizer import LlmEventSummarizer
 from google.adk.events.event import Event
@@ -22,6 +21,8 @@ from google.adk.events.event_actions import EventActions
 from google.adk.events.event_actions import EventCompaction
 from google.adk.models.base_llm import BaseLlm
 from google.adk.models.llm_request import LlmRequest
+from google.adk.models.llm_response import LlmResponse
+from google.genai import types
 from google.genai.types import Content
 from google.genai.types import FunctionCall
 from google.genai.types import FunctionResponse
@@ -53,14 +54,17 @@ class TestLlmEventSummarizer(unittest.IsolatedAsyncioTestCase):
         self._create_event(1.0, 'Hello', 'user'),
         self._create_event(2.0, 'Hi there!', 'model'),
     ]
-    expected_conversation_history = 'user: Hello\\nmodel: Hi there!'
+    expected_conversation_history = 'user: Hello\nmodel: Hi there!'
     expected_prompt = self.compactor._DEFAULT_PROMPT_TEMPLATE.format(
         conversation_history=expected_conversation_history
     )
-    mock_llm_response = Mock(content=Content(parts=[Part(text='Summary')]))
+    llm_response = LlmResponse(
+        content=Content(parts=[Part(text='Summary')]),
+        usage_metadata=None,
+    )
 
     async def async_gen():
-      yield mock_llm_response
+      yield llm_response
 
     self.mock_llm.generate_content_async.return_value = async_gen()
 
@@ -72,6 +76,7 @@ class TestLlmEventSummarizer(unittest.IsolatedAsyncioTestCase):
         'Summary',
     )
     self.assertEqual(compacted_event.author, 'user')
+    self.assertIsNone(compacted_event.usage_metadata)
     self.assertIsNotNone(compacted_event.actions)
     self.assertIsNotNone(compacted_event.actions.compaction)
     self.assertEqual(compacted_event.actions.compaction.start_timestamp, 1.0)
@@ -94,15 +99,41 @@ class TestLlmEventSummarizer(unittest.IsolatedAsyncioTestCase):
     events = [
         self._create_event(1.0, 'Hello', 'user'),
     ]
-    mock_llm_response = Mock(content=None)
+    llm_response = LlmResponse(content=None, usage_metadata=None)
 
     async def async_gen():
-      yield mock_llm_response
+      yield llm_response
 
     self.mock_llm.generate_content_async.return_value = async_gen()
 
     compacted_event = await self.compactor.maybe_summarize_events(events=events)
     self.assertIsNone(compacted_event)
+
+  async def test_maybe_compact_events_includes_usage_metadata(self):
+    events = [
+        self._create_event(1.0, 'Hello', 'user'),
+        self._create_event(2.0, 'Hi there!', 'model'),
+    ]
+    usage_metadata = types.GenerateContentResponseUsageMetadata(
+        prompt_token_count=10,
+        candidates_token_count=5,
+    )
+    llm_response = LlmResponse(
+        content=Content(parts=[Part(text='Summary')]),
+        usage_metadata=usage_metadata,
+    )
+
+    async def async_gen():
+      yield llm_response
+
+    self.mock_llm.generate_content_async.return_value = async_gen()
+
+    compacted_event = await self.compactor.maybe_summarize_events(events=events)
+
+    self.assertIsNotNone(compacted_event)
+    self.assertEqual(compacted_event.usage_metadata, usage_metadata)
+    self.assertEqual(compacted_event.usage_metadata.prompt_token_count, 10)
+    self.assertEqual(compacted_event.usage_metadata.candidates_token_count, 5)
 
   async def test_maybe_compact_events_empty_input(self):
     compacted_event = await self.compactor.maybe_summarize_events(events=[])
@@ -131,7 +162,7 @@ class TestLlmEventSummarizer(unittest.IsolatedAsyncioTestCase):
                 parts=[
                     Part(
                         function_call=FunctionCall(
-                            id='call_1', name='tool', args={}
+                            id='call_1', name='tool', args={'q': 'x'}
                         )
                     )
                 ]
@@ -155,8 +186,80 @@ class TestLlmEventSummarizer(unittest.IsolatedAsyncioTestCase):
         ),
     ]
     expected_formatted_history = (
-        'user: User says...\\nmodel: Model replies...\\nuser: Another user'
-        ' input\\nmodel: More model text'
+        'user: User says...\nmodel: Model replies...\nuser: Another user'
+        ' input\nmodel: More model text\nmodel called tool:'
+        " tool({'q': 'x'})\nTool response from tool: {'result': 'done'}"
     )
     formatted_history = self.compactor._format_events_for_prompt(events)
     self.assertEqual(formatted_history, expected_formatted_history)
+
+  def test_format_events_for_prompt_includes_thoughts(self):
+    events = [
+        self._create_event(1.0, 'What is the weather?', 'user'),
+        Event(
+            timestamp=2.0,
+            author='model',
+            content=Content(
+                parts=[
+                    Part(text='Let me check the tool output.', thought=True),
+                    Part(text='It is sunny.'),
+                ]
+            ),
+        ),
+    ]
+    expected_formatted_history = (
+        'user: What is the weather?\nmodel (thought): Let me check the tool'
+        ' output.\nmodel: It is sunny.'
+    )
+    formatted_history = self.compactor._format_events_for_prompt(events)
+    self.assertEqual(formatted_history, expected_formatted_history)
+
+  def test_format_events_for_prompt_skips_compaction_event_thought(self):
+    events = [
+        Event(
+            timestamp=1.0,
+            author='model',
+            content=Content(
+                parts=[
+                    Part(text='Stale summarizer reasoning.', thought=True),
+                    Part(text='Prior summary.'),
+                ]
+            ),
+            actions=EventActions(
+                compaction=EventCompaction(
+                    start_timestamp=0.0,
+                    end_timestamp=1.0,
+                    compacted_content=Content(parts=[Part(text='Prior')]),
+                )
+            ),
+        ),
+        self._create_event(2.0, 'New user input', 'user'),
+    ]
+    expected_formatted_history = 'model: Prior summary.\nuser: New user input'
+    formatted_history = self.compactor._format_events_for_prompt(events)
+    self.assertEqual(formatted_history, expected_formatted_history)
+
+  def test_format_events_for_prompt_truncates_large_tool_response(self):
+    limit = self.compactor._MAX_TOOL_CONTENT_CHARS
+    large_value = 'x' * (limit + 500)
+    events = [
+        Event(
+            timestamp=1.0,
+            author='model',
+            content=Content(
+                parts=[
+                    Part(
+                        function_response=FunctionResponse(
+                            id='call_1',
+                            name='search',
+                            response={'data': large_value},
+                        )
+                    )
+                ]
+            ),
+        ),
+    ]
+    formatted_history = self.compactor._format_events_for_prompt(events)
+    self.assertIn('Tool response from search:', formatted_history)
+    self.assertIn('... [truncated', formatted_history)
+    self.assertLess(len(formatted_history), len(large_value))
