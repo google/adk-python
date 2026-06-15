@@ -33,6 +33,7 @@ from google.genai import types
 from google.genai.errors import ClientError
 from typing_extensions import override
 
+from ..errors.malformed_function_call_error import MalformedFunctionCallError
 from ..utils._google_client_headers import get_tracking_headers
 from ..utils._google_client_headers import merge_tracking_headers
 from ..utils.context_utils import Aclosing
@@ -60,6 +61,27 @@ On how to mitigate this issue, please refer to:
 
 https://google.github.io/adk-docs/agents/models/google-gemini/#error-code-429-resource_exhausted
 """
+
+
+def _raise_for_malformed_function_call(llm_response: LlmResponse) -> None:
+  """Raises when the model returned a malformed function call with no content.
+
+  A ``MALFORMED_FUNCTION_CALL`` finish reason yields a response that carries an
+  error code but nothing the agent can act on. Left alone it builds a
+  content-free event with no function call, which silently ends the invocation.
+  Raising routes it through the on_model_error callbacks so they can recover,
+  mirroring the LiteLlm malformed-arguments path. The error subclasses
+  ``ValueError`` so callbacks can match this case specifically without breaking
+  existing handlers.
+  """
+  if (
+      llm_response.finish_reason == types.FinishReason.MALFORMED_FUNCTION_CALL
+      and not (llm_response.content and llm_response.content.parts)
+  ):
+    raise MalformedFunctionCallError(
+        llm_response.error_message
+        or 'Model returned a malformed function call.'
+    )
 
 
 class _ResourceExhaustedError(ClientError):
@@ -258,6 +280,7 @@ class Gemini(BaseLlm):
                 aggregator.process_response(response)
             ) as aggregator_gen:
               async for llm_response in aggregator_gen:
+                _raise_for_malformed_function_call(llm_response)
                 yield llm_response
         if (close_result := aggregator.close()) is not None:
           # Populate cache metadata in the final aggregated response for
@@ -266,6 +289,7 @@ class Gemini(BaseLlm):
             cache_manager.populate_cache_metadata_in_response(
                 close_result, cache_metadata
             )
+          _raise_for_malformed_function_call(close_result)
           yield close_result
 
       else:
@@ -283,6 +307,7 @@ class Gemini(BaseLlm):
           cache_manager.populate_cache_metadata_in_response(
               llm_response, cache_metadata
           )
+        _raise_for_malformed_function_call(llm_response)
         yield llm_response
     except ClientError as ce:
       if ce.code == 429:
