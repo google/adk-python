@@ -672,6 +672,12 @@ class EvaluationGenerator:
               events_to_add.append(event)
               break
 
+      # Skip invocations without user content — evaluations without
+      # user input are not meaningful and would cause a Pydantic
+      # ValidationError on Invocation.user_content.
+      if not user_content.parts:
+        continue
+
       invocation_events = [
           InvocationEvent(author=e.author, content=e.content)
           for e in events_to_add
