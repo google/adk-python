@@ -1306,3 +1306,37 @@ def test_get_contents_live_history_rebuild():
 
   assert result[1].role == "user"
   assert "returned result" in result[1].parts[1].text
+
+
+def test_rearrange_async_function_responses_early_returns_when_no_responses():
+  """Rearrangement is a no-op when no event carries function_responses."""
+  events = [
+      Event(
+          invocation_id="inv1",
+          author="user",
+          content=types.UserContent("hi"),
+      ),
+      Event(
+          invocation_id="inv2",
+          author="test_agent",
+          content=types.ModelContent("hello"),
+      ),
+      Event(
+          invocation_id="inv3",
+          author="test_agent",
+          content=types.Content(
+              role="model",
+              parts=[
+                  types.Part(
+                      function_call=types.FunctionCall(
+                          id="adk-1", name="tool", args={}
+                      )
+                  )
+              ],
+          ),
+      ),
+  ]
+  result = contents._rearrange_events_for_async_function_responses_in_history(  # pylint: disable=protected-access
+      events
+  )
+  assert result is events
