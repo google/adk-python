@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+import abc
 import inspect
 import logging
 from typing import Any
@@ -35,6 +36,7 @@ from pydantic import BaseModel
 from pydantic import ConfigDict
 from pydantic import Field
 from pydantic import field_validator
+from typing_extensions import deprecated
 from typing_extensions import override
 from typing_extensions import TypeAlias
 
@@ -44,8 +46,12 @@ from ..features import experimental
 from ..features import FeatureName
 from ..telemetry import _instrumentation
 from ..utils.context_utils import Aclosing
-from .base_agent_config import BaseAgentConfig
+from ..workflow import BaseNode
+from .base_agent_config import BaseAgentConfig as BaseAgentConfig
 from .callback_context import CallbackContext
+from .context import Context
+
+__all__ = ['BaseAgentConfig']
 
 if TYPE_CHECKING:
   from .invocation_context import InvocationContext
@@ -82,7 +88,9 @@ class BaseAgentState(BaseModel):
 AgentState = TypeVar('AgentState', bound=BaseAgentState)
 
 
-class BaseAgent(BaseModel):
+# TODO: drop the explicit abc.ABC base once BaseNode surfaces ABCMeta to
+# static type checkers.
+class BaseAgent(BaseNode, abc.ABC):
   """Base class for all agents in Agent Development Kit."""
 
   model_config = ConfigDict(
@@ -93,6 +101,9 @@ class BaseAgent(BaseModel):
 
   config_type: ClassVar[type[BaseAgentConfig]] = BaseAgentConfig
   """The config type for this agent.
+
+  DEPRECATED: This attribute is deprecated and will be removed in a future
+  version, along with the AgentConfig YAML loader.
 
   Sub-classes should override this to specify their own config type.
 
@@ -269,7 +280,6 @@ class BaseAgent(BaseModel):
     cloned_agent.parent_agent = None
     return cloned_agent
 
-  @final
   async def run_async(
       self,
       parent_context: InvocationContext,
@@ -300,6 +310,25 @@ class BaseAgent(BaseModel):
 
       if event := await self._handle_after_agent_callback(ctx):
         yield event
+
+  @override
+  async def _run_impl(
+      self,
+      *,
+      ctx: Context,
+      node_input: Any,
+  ) -> AsyncGenerator[Any, None]:
+    """Runs the agent as a node."""
+    async for event in self.run_async(
+        parent_context=ctx.get_invocation_context()
+    ):
+      # Preserve author by setting it in context for NodeRunner
+      if event.author:
+        ctx.event_author = event.author
+
+      if not event.node_info.path and event.author == self.name:
+        event.node_info.path = ctx.node_path
+      yield event
 
   @final
   async def run_live(
@@ -547,6 +576,7 @@ class BaseAgent(BaseModel):
 
   @override
   def model_post_init(self, __context: Any) -> None:
+    super().model_post_init(__context)
     self.__set_parent_agent_for_sub_agents()
 
   @field_validator('name', mode='after')
@@ -616,8 +646,11 @@ class BaseAgent(BaseModel):
       sub_agent.parent_agent = self
     return self
 
-  @final
   @classmethod
+  @deprecated(
+      'BaseAgent.from_config is deprecated and will be removed in future'
+      ' versions.'
+  )
   @experimental(FeatureName.AGENT_CONFIG)
   def from_config(
       cls: Type[SelfAgent],
@@ -626,8 +659,8 @@ class BaseAgent(BaseModel):
   ) -> SelfAgent:
     """Creates an agent from a config.
 
-    If sub-classes uses a custom agent config, override `_from_config_kwargs`
-    method to return an updated kwargs for agent constructor.
+    If sub-classes use a custom agent config, override `_parse_config` to
+    return updated kwargs for the agent constructor.
 
     Args:
       config: The config to create the agent from.
@@ -694,4 +727,11 @@ class BaseAgent(BaseModel):
       kwargs['after_agent_callback'] = resolve_callbacks(
           config.after_agent_callbacks
       )
+
+    # Preserves 1.x AgentConfigMapper behavior: extra YAML fields that match
+    # a constructor parameter pass through automatically.
+    if config.model_extra:
+      for key, value in config.model_extra.items():
+        if key in cls.model_fields and key not in kwargs:
+          kwargs[key] = value
     return kwargs

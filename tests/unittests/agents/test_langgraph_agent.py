@@ -230,6 +230,7 @@ async def test_langgraph_agent(
   }
 
   mock_parent_context = MagicMock(spec=InvocationContext)
+  mock_parent_context._state_schema = None
   mock_session = MagicMock()
   mock_parent_context.session = mock_session
   mock_parent_context.user_content = types.Content(

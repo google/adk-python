@@ -296,24 +296,31 @@ def test_clone_preserves_agent_type():
   assert isinstance(llm_cloned, LlmAgent)
 
   # Test SequentialAgent
-  seq_original = SequentialAgent(name="seq_test")
+  seq_original = SequentialAgent(
+      name="seq_test", sub_agents=[LlmAgent(name="dummy_seq")]
+  )
   seq_cloned = seq_original.clone()
   assert isinstance(seq_cloned, SequentialAgent)
 
   # Test ParallelAgent
-  par_original = ParallelAgent(name="par_test")
+  par_original = ParallelAgent(
+      name="par_test", sub_agents=[LlmAgent(name="dummy_par")]
+  )
   par_cloned = par_original.clone()
   assert isinstance(par_cloned, ParallelAgent)
 
   # Test LoopAgent
-  loop_original = LoopAgent(name="loop_test")
+  loop_original = LoopAgent(
+      name="loop_test", sub_agents=[LlmAgent(name="dummy_loop")]
+  )
   loop_cloned = loop_original.clone()
   assert isinstance(loop_cloned, LoopAgent)
 
 
 def test_clone_with_agent_specific_fields():
   # Test LoopAgent
-  loop_original = LoopAgent(name="loop_test")
+  dummy = LlmAgent(name="dummy")
+  loop_original = LoopAgent(name="loop_test", sub_agents=[dummy])
   loop_cloned = loop_original.clone({"max_iterations": 10})
   assert isinstance(loop_cloned, LoopAgent)
   assert loop_cloned.max_iterations == 10

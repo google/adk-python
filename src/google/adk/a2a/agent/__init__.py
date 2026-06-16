@@ -14,12 +14,32 @@
 
 """A2A agents package."""
 
-from .config import A2aRemoteAgentConfig
-from .config import ParametersConfig
-from .config import RequestInterceptor
+from ...utils._dependency import missing_extra
 
 __all__ = [
     "A2aRemoteAgentConfig",
     "ParametersConfig",
     "RequestInterceptor",
 ]
+
+
+def __getattr__(name: str):
+  if name in [
+      "A2aRemoteAgentConfig",
+      "ParametersConfig",
+      "RequestInterceptor",
+  ]:
+    try:
+      from .config import A2aRemoteAgentConfig
+      from .config import ParametersConfig
+      from .config import RequestInterceptor
+
+      if name == "A2aRemoteAgentConfig":
+        return A2aRemoteAgentConfig
+      elif name == "ParametersConfig":
+        return ParametersConfig
+      elif name == "RequestInterceptor":
+        return RequestInterceptor
+    except ImportError as e:
+      raise missing_extra("a2a-sdk", "a2a") from e
+  raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

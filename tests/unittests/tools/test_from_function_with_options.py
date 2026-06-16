@@ -324,7 +324,7 @@ def test_from_function_with_async_generator_complex_yield_type_vertex():
 def test_required_fields_set_in_json_schema_fallback():
   """Test that required fields are populated when the json_schema fallback path is used.
 
-  When a parameter has a complex union type (e.g. list[str] | None) that
+  When a parameter has a complex type (e.g. tuple[str, ...] | None) that
   _parse_schema_from_parameter can't handle, from_function_with_options falls
   back to the parameters_json_schema branch. This test verifies that the
   required fields are correctly populated in that fallback branch.
@@ -333,7 +333,7 @@ def test_required_fields_set_in_json_schema_fallback():
   def complex_tool(
       query: str,
       mode: str = 'default',
-      tags: list[str] | None = None,
+      tags: tuple[str, ...] | None = None,
   ) -> str:
     """A tool where one param has a complex union type."""
     return query

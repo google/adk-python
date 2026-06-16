@@ -24,13 +24,22 @@ from unittest.mock import Mock
 from unittest.mock import patch
 
 from google.adk.platform import thread as platform_thread
+from google.adk.tools.mcp_tool.mcp_session_manager import _SharedAsyncTransport
 from google.adk.tools.mcp_tool.mcp_session_manager import MCPSessionManager
 from google.adk.tools.mcp_tool.mcp_session_manager import retry_on_errors
 from google.adk.tools.mcp_tool.mcp_session_manager import SseConnectionParams
 from google.adk.tools.mcp_tool.mcp_session_manager import StdioConnectionParams
 from google.adk.tools.mcp_tool.mcp_session_manager import StreamableHTTPConnectionParams
+import httpx
 from mcp import StdioServerParameters
 import pytest
+
+try:
+  from google.auth.aio.transport.sessions import AsyncAuthorizedSession
+
+  AIO_SUPPORTED = True
+except ImportError:
+  AIO_SUPPORTED = False
 
 
 class MockClientSession:
@@ -588,6 +597,9 @@ class TestMCPSessionManager:
       self,
   ):
     """Verify that sessions from different loops are cleaned up without calling aclose()."""
+    from google.adk.features import FeatureName
+    from google.adk.features._feature_registry import temporary_feature_override
+
     manager = MCPSessionManager(self.mock_stdio_connection_params)
 
     # 1. Simulate a session created in a "different" loop
@@ -617,8 +629,11 @@ class TestMCPSessionManager:
           mock_wait_for.return_value = new_session
           mock_session_context_class.return_value = AsyncMock()
 
-          # 3. Call create_session
-          session = await manager.create_session()
+          # 3. Call create_session with flag off to hit wait_for branch
+          with temporary_feature_override(
+              FeatureName._MCP_GRACEFUL_ERROR_HANDLING, False
+          ):
+            session = await manager.create_session()
 
           # 4. Verify results
           assert session == new_session
@@ -682,6 +697,145 @@ class TestMCPSessionManager:
     new_lock = unpickled._session_lock
     assert isinstance(new_lock, asyncio.Lock)
     assert new_lock is not lock
+
+  @pytest.mark.asyncio
+  async def test_get_mtls_transport_flag_off(self):
+    """Test that _get_mtls_transport returns None when flag is off."""
+    sse_params = SseConnectionParams(url="https://example.com/mcp")
+    manager = MCPSessionManager(sse_params)
+    with patch.dict(
+        "os.environ", {"GOOGLE_API_USE_CLIENT_CERTIFICATE": "false"}
+    ):
+      transport = await manager._get_mtls_transport()
+      assert transport is None
+
+  @pytest.mark.asyncio
+  @pytest.mark.skipif(not AIO_SUPPORTED, reason="google.auth.aio not supported")
+  async def test_get_mtls_transport_success(self):
+    """Test successful _GoogleAuthAsyncTransport creation with mTLS."""
+    sse_params = SseConnectionParams(url="https://example.com/mcp")
+    manager = MCPSessionManager(sse_params)
+
+    mock_creds = Mock()
+    mock_session = AsyncMock()
+    mock_session.is_mtls = True
+    mock_session.configure_mtls_channel = AsyncMock()
+
+    with patch.dict(
+        "os.environ", {"GOOGLE_API_USE_CLIENT_CERTIFICATE": "true"}
+    ):
+      with patch("google.auth.default", return_value=(mock_creds, None)):
+        with patch(
+            "google.adk.tools.mcp_tool.mcp_session_manager.AsyncAuthorizedSession",
+            return_value=mock_session,
+        ):
+          with patch(
+              "google.adk.tools.mcp_tool.mcp_session_manager._GoogleAuthAsyncTransport"
+          ) as mock_transport_class:
+            mock_transport = Mock()
+            mock_transport_class.return_value = mock_transport
+
+            transport = await manager._get_mtls_transport()
+
+            assert transport == mock_transport
+            mock_session.configure_mtls_channel.assert_called_once()
+            mock_transport_class.assert_called_once_with(mock_session)
+
+            # Test caching
+            transport2 = await manager._get_mtls_transport()
+            assert transport2 == transport
+            mock_session.configure_mtls_channel.assert_called_once()
+
+  @pytest.mark.asyncio
+  @pytest.mark.skipif(not AIO_SUPPORTED, reason="google.auth.aio not supported")
+  async def test_get_mtls_transport_failure_not_mtls(self):
+    """Test that _get_mtls_transport returns None when channel is not mTLS."""
+    sse_params = SseConnectionParams(url="https://example.com/mcp")
+    manager = MCPSessionManager(sse_params)
+
+    mock_creds = Mock()
+    mock_session = AsyncMock()
+    mock_session.is_mtls = False
+    mock_session.configure_mtls_channel = AsyncMock()
+
+    with patch.dict(
+        "os.environ", {"GOOGLE_API_USE_CLIENT_CERTIFICATE": "true"}
+    ):
+      with patch("google.auth.default", return_value=(mock_creds, None)):
+        with patch(
+            "google.adk.tools.mcp_tool.mcp_session_manager.AsyncAuthorizedSession",
+            return_value=mock_session,
+        ):
+          transport = await manager._get_mtls_transport()
+          assert transport is None
+
+  @pytest.mark.asyncio
+  @pytest.mark.skipif(not AIO_SUPPORTED, reason="google.auth.aio not supported")
+  async def test_get_mtls_transport_failure_exception(self):
+    """Test that _get_mtls_transport returns None when exception occurs."""
+    sse_params = SseConnectionParams(url="https://example.com/mcp")
+    manager = MCPSessionManager(sse_params)
+
+    with patch.dict(
+        "os.environ", {"GOOGLE_API_USE_CLIENT_CERTIFICATE": "true"}
+    ):
+      with patch("google.auth.default", side_effect=Exception("auth error")):
+        transport = await manager._get_mtls_transport()
+        assert transport is None
+
+  @patch("google.adk.tools.mcp_tool.mcp_session_manager.sse_client")
+  def test_create_client_with_mtls_transport_sse(self, mock_sse_client):
+    """Test that _create_client uses mtls_transport to create factory for SSE."""
+    sse_params = SseConnectionParams(url="https://example.com/mcp")
+    manager = MCPSessionManager(sse_params)
+
+    mock_transport = Mock(spec=httpx.AsyncBaseTransport)
+
+    manager._create_client(mtls_transport=mock_transport)
+
+    mock_sse_client.assert_called_once()
+    called_kwargs = mock_sse_client.call_args[1]
+    factory = called_kwargs["httpx_client_factory"]
+
+    # Verify the factory creates client with transport
+    client = factory(headers={"a": "b"}, timeout=httpx.Timeout(10.0))
+    assert isinstance(client, httpx.AsyncClient)
+    assert isinstance(client._transport, _SharedAsyncTransport)
+    assert client._transport._transport == mock_transport
+    assert client.headers.get("a") == "b"
+    assert client.timeout.read == 10.0
+
+  @pytest.mark.asyncio
+  async def test_google_auth_async_transport_handle_request(self):
+    """Test that _GoogleAuthAsyncTransport correctly forwards request and returns response."""
+    from google.adk.tools.mcp_tool.mcp_session_manager import _GoogleAuthAsyncTransport
+
+    mock_session = AsyncMock()
+    mock_auth_response = AsyncMock()
+    mock_auth_response.status_code = 200
+    mock_auth_response.headers = {"content-type": "application/json"}
+    mock_auth_response.content = AsyncMock()
+
+    mock_session.request.return_value = mock_auth_response
+
+    transport = _GoogleAuthAsyncTransport(mock_session)
+
+    request = httpx.Request(
+        "GET", "https://example.com/api", headers={"x-test": "value"}
+    )
+
+    response = await transport.handle_async_request(request)
+
+    assert response.status_code == 200
+    assert response.headers["content-type"] == "application/json"
+
+    mock_session.request.assert_called_once_with(
+        method="GET",
+        url="https://example.com/api",
+        data=None,
+        headers={"x-test": "value", "host": "example.com"},
+        timeout=30.0,
+    )
 
 
 @pytest.mark.asyncio
@@ -969,8 +1123,8 @@ class TestMCPGracefulErrorHandlingFlagContract:
   loudly so we don't silently break GE's rollout.
   """
 
-  def test_default_state_is_off_so_cl_is_a_noop(self):
-    """The CL must be a no-op until GE explicitly enables it."""
+  def test_default_state_is_on(self):
+    """The fix must be enabled by default."""
     import os
 
     from google.adk.features import FeatureName
@@ -981,34 +1135,34 @@ class TestMCPGracefulErrorHandlingFlagContract:
     saved = {k: os.environ.pop(k) for k in (enable, disable) if k in os.environ}
     try:
       assert (
-          is_feature_enabled(FeatureName._MCP_GRACEFUL_ERROR_HANDLING) is False
+          is_feature_enabled(FeatureName._MCP_GRACEFUL_ERROR_HANDLING) is True
       )
     finally:
       os.environ.update(saved)
 
-  def test_env_var_enable_flips_flag_on_at_runtime(self):
-    """The env var GE will set must turn the fix on without a rebuild."""
+  def test_env_var_disable_flips_flag_off_at_runtime(self):
+    """The env var must turn the fix off without a rebuild."""
     import os
 
     from google.adk.features import FeatureName
     from google.adk.features import is_feature_enabled
 
-    enable = "ADK_ENABLE_MCP_GRACEFUL_ERROR_HANDLING"
-    saved = os.environ.pop(enable, None)
+    disable = "ADK_DISABLE_MCP_GRACEFUL_ERROR_HANDLING"
+    saved = os.environ.pop(disable, None)
     try:
-      os.environ[enable] = "1"
-      assert (
-          is_feature_enabled(FeatureName._MCP_GRACEFUL_ERROR_HANDLING) is True
-      )
-      # And once it's removed, we revert. Confirms the value is read
-      # live from os.environ on every call (no caching, no binary push).
-      del os.environ[enable]
+      os.environ[disable] = "1"
       assert (
           is_feature_enabled(FeatureName._MCP_GRACEFUL_ERROR_HANDLING) is False
       )
+      # And once it's removed, we revert. Confirms the value is read
+      # live from os.environ on every call (no caching, no binary push).
+      del os.environ[disable]
+      assert (
+          is_feature_enabled(FeatureName._MCP_GRACEFUL_ERROR_HANDLING) is True
+      )
     finally:
       if saved is not None:
-        os.environ[enable] = saved
+        os.environ[disable] = saved
 
   def test_env_var_disable_acts_as_kill_switch(self):
     """The disable env var lets consumers turn off without a rebuild."""
@@ -1043,3 +1197,92 @@ class TestMCPGracefulErrorHandlingFlagContract:
         os.environ[disable] = saved_disable
       if saved_enable is not None:
         os.environ[enable] = saved_enable
+
+  @pytest.mark.asyncio
+  @patch("google.adk.tools.mcp_tool.mcp_session_manager.asyncio.wait_for")
+  async def test_create_session_does_not_use_wait_for_when_ge_is_enabled(
+      self, mock_wait_for
+  ):
+    """create_session must not wrap enter_async_context in asyncio.wait_for when GE is enabled."""
+    from google.adk.features import FeatureName
+    from google.adk.features._feature_registry import temporary_feature_override
+
+    manager = MCPSessionManager(
+        StdioConnectionParams(
+            server_params=StdioServerParameters(command="dummy", args=[]),
+            timeout=5.0,
+        )
+    )
+    with temporary_feature_override(
+        FeatureName._MCP_GRACEFUL_ERROR_HANDLING, True
+    ):
+      with patch(
+          "google.adk.tools.mcp_tool.mcp_session_manager.AsyncExitStack"
+      ) as mock_stack:
+        mock_stack.return_value.enter_async_context = AsyncMock()
+        with patch(
+            "google.adk.tools.mcp_tool.mcp_session_manager.SessionContext"
+        ):
+          with patch(
+              "google.adk.tools.mcp_tool.mcp_session_manager.stdio_client"
+          ):
+            await manager.create_session()
+
+    mock_wait_for.assert_not_called()
+
+
+class TestRefreshableAsyncCredentials:
+
+  @pytest.mark.skipif(not AIO_SUPPORTED, reason="google.auth.aio not supported")
+  @pytest.mark.asyncio
+  async def test_before_request_refreshes_and_injects_token(self):
+    from google.adk.tools.mcp_tool.mcp_session_manager import _RefreshableAsyncCredentials
+
+    mock_creds = Mock()
+    mock_creds.expired = True
+    mock_creds.token = "new_token"
+
+    # Mock creds.refresh to simulate refresh
+    def mock_refresh(req):
+      mock_creds.token = "refreshed_token"
+      mock_creds.expired = False
+
+    mock_creds.refresh = mock_refresh
+
+    credentials = _RefreshableAsyncCredentials(mock_creds)
+    headers = {}
+
+    await credentials.before_request(None, "GET", "http://example.com", headers)
+
+    assert headers["Authorization"] == "Bearer refreshed_token"
+
+
+class TestGoogleAuthAsyncByteStream:
+
+  @pytest.mark.asyncio
+  async def test_iteration_yields_chunks(self):
+    from google.adk.tools.mcp_tool.mcp_session_manager import _GoogleAuthAsyncByteStream
+
+    mock_auth_response = AsyncMock()
+
+    async def mock_content():
+      yield b"chunk1"
+      yield b"chunk2"
+
+    mock_auth_response.content = mock_content
+
+    stream = _GoogleAuthAsyncByteStream(mock_auth_response)
+    chunks = []
+    async for chunk in stream:
+      chunks.append(chunk)
+
+    assert chunks == [b"chunk1", b"chunk2"]
+
+  @pytest.mark.asyncio
+  async def test_aclose_closes_response(self):
+    from google.adk.tools.mcp_tool.mcp_session_manager import _GoogleAuthAsyncByteStream
+
+    mock_auth_response = AsyncMock()
+    stream = _GoogleAuthAsyncByteStream(mock_auth_response)
+    await stream.aclose()
+    mock_auth_response.close.assert_called_once()

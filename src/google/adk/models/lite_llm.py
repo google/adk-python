@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+import ast
 import base64
 import binascii
 import copy
@@ -98,6 +99,7 @@ _NEW_LINE = "\n"
 _EXCLUDED_PART_FIELD = {"inline_data": {"data"}}
 _LITELLM_STRUCTURED_TYPES = {"json_object", "json_schema"}
 _JSON_DECODER = json.JSONDecoder()
+_UNQUOTED_KEY_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 
 # Mapping of major MIME type prefixes to LiteLLM content types for URL blocks.
 # Audio is handled separately as `input_audio` content blocks because LiteLLM
@@ -121,6 +123,100 @@ _FINISH_REASON_MAPPING = {
     "function_call": types.FinishReason.STOP,  # Legacy function call variant
     "content_filter": types.FinishReason.SAFETY,
 }
+
+
+def _quote_unquoted_json_object_keys(value: str) -> str:
+  """Quotes simple unquoted object keys without touching string contents."""
+  result = []
+  i = 0
+  in_string = False
+  string_quote = ""
+  escaped = False
+
+  while i < len(value):
+    char = value[i]
+    if in_string:
+      result.append(char)
+      if escaped:
+        escaped = False
+      elif char == "\\":
+        escaped = True
+      elif char == string_quote:
+        in_string = False
+        string_quote = ""
+      i += 1
+      continue
+
+    if char in {'"', "'"}:
+      in_string = True
+      string_quote = char
+      result.append(char)
+      i += 1
+      continue
+
+    if char in "{,":
+      result.append(char)
+      i += 1
+      whitespace_start = i
+      while i < len(value) and value[i].isspace():
+        i += 1
+      result.append(value[whitespace_start:i])
+
+      key_match = _UNQUOTED_KEY_RE.match(value, i)
+      if key_match:
+        key_end = key_match.end()
+        colon_index = key_end
+        while colon_index < len(value) and value[colon_index].isspace():
+          colon_index += 1
+        if colon_index < len(value) and value[colon_index] == ":":
+          result.append(f'"{key_match.group(0)}"')
+          result.append(value[key_end:colon_index])
+          i = colon_index
+          continue
+      continue
+
+    result.append(char)
+    i += 1
+
+  return "".join(result)
+
+
+def _parse_tool_call_arguments(arguments: Any) -> Any:
+  """Parses LiteLLM tool call arguments.
+
+  LiteLLM normally returns OpenAI-compatible tool call arguments as JSON
+  strings, but some providers can stream a complete tool call whose finalized
+  argument payload is a Python dict literal or has unquoted object keys. Keep
+  strict JSON as the primary path, then repair only those complete
+  object-literal shapes so ADK can still surface the intended function call.
+  """
+  if not arguments:
+    return {}
+  if not isinstance(arguments, str):
+    return arguments
+
+  try:
+    return json.loads(arguments)
+  except json.JSONDecodeError as exc:
+    json_error = exc
+
+  try:
+    return ast.literal_eval(arguments)
+  except (SyntaxError, ValueError):
+    pass
+
+  repaired_arguments = _quote_unquoted_json_object_keys(arguments)
+  if repaired_arguments != arguments:
+    try:
+      return json.loads(repaired_arguments)
+    except json.JSONDecodeError:
+      try:
+        return ast.literal_eval(repaired_arguments)
+      except (SyntaxError, ValueError):
+        pass
+
+  raise json_error
+
 
 # File MIME types supported for upload as file content (not decoded as text).
 # Note: text/* types are handled separately and decoded as text content.
@@ -281,7 +377,7 @@ def _infer_mime_type_from_uri(uri: str) -> Optional[str]:
 
 def _looks_like_openai_file_id(file_uri: str) -> bool:
   """Returns True when file_uri resembles an OpenAI/Azure file id."""
-  return file_uri.startswith("file-")
+  return file_uri.startswith(("file-", "assistant-"))
 
 
 def _is_http_url(uri: str) -> bool:
@@ -314,17 +410,15 @@ def _redact_file_uri_for_log(
   return f"{parsed.scheme}://<redacted>"
 
 
-def _requires_file_uri_fallback(
-    provider: str, model: str, file_uri: str
-) -> bool:
-  """Returns True when `file_uri` should not be sent as a file content block."""
+def _is_file_uri_supported(provider: str, model: str, file_uri: str) -> bool:
+  """Returns True when `file_uri` can be sent as a file content block."""
   if provider in _FILE_ID_REQUIRED_PROVIDERS:
-    return not _looks_like_openai_file_id(file_uri)
+    return _looks_like_openai_file_id(file_uri)
   if provider == "anthropic":
-    return True
+    return False
   if provider == "vertex_ai" and not _is_litellm_gemini_model(model):
-    return True
-  return False
+    return False
+  return True
 
 
 def _decode_inline_text_data(raw_bytes: bytes) -> str:
@@ -807,9 +901,14 @@ async def _content_to_message_param(
           if isinstance(response, str)
           else _safe_json_serialize(response)
       )
+      # gemma4 requires role='tool_responses' for recognizing function_response parts as responses
+      # from the tool call, instead of OpenAI-compatible 'tool' role used by other models.
+      # Earlier Gemma versions before version 4 do not support tool use,
+      # so this check is intentionally scoped to only look for "gemma4" in the model name.
+      tool_role = "tool_responses" if "gemma4" in model.lower() else "tool"
       tool_messages.append(
           ChatCompletionToolMessage(
-              role="tool",
+              role=tool_role,
               tool_call_id=part.function_response.id,
               content=response_content,
           )
@@ -824,6 +923,7 @@ async def _content_to_message_param(
     follow_up = await _content_to_message_param(
         types.Content(role=content.role, parts=non_tool_parts),
         provider=provider,
+        model=model,
     )
     follow_up_messages = (
         follow_up if isinstance(follow_up, list) else [follow_up]
@@ -934,12 +1034,16 @@ async def _content_to_message_param(
     )
 
 
-def _ensure_tool_results(messages: List[Message]) -> List[Message]:
+def _ensure_tool_results(messages: List[Message], model: str) -> List[Message]:
   """Insert placeholder tool messages for missing tool results.
 
   LiteLLM-backed providers like OpenAI and Anthropic reject histories where an
   assistant tool call is not followed by tool responses before the next
   non-tool message. This helps recover from interrupted tool execution.
+
+  For models that expect a different tool response role (e.g. Gemma4 models,
+  which require 'tool_responses' instead of 'tool'), the role is adjusted
+  accordingly.
   """
   if not messages:
     return messages
@@ -948,17 +1052,19 @@ def _ensure_tool_results(messages: List[Message]) -> List[Message]:
 
   healed_messages: List[Message] = []
   pending_tool_call_ids: List[str] = []
+  expected_tool_role = "tool_responses" if "gemma4" in model.lower() else "tool"
 
   for message in messages:
     role = message.get("role")
-    if pending_tool_call_ids and role != "tool":
+
+    if pending_tool_call_ids and role != expected_tool_role:
       logger.warning(
           "Missing tool results for tool_call_id(s): %s",
           pending_tool_call_ids,
       )
       healed_messages.extend(
           ChatCompletionToolMessage(
-              role="tool",
+              role=expected_tool_role,
               tool_call_id=tool_call_id,
               content=_MISSING_TOOL_RESULT_MESSAGE,
           )
@@ -971,13 +1077,14 @@ def _ensure_tool_results(messages: List[Message]) -> List[Message]:
       pending_tool_call_ids = [
           tool_call.get("id") for tool_call in tool_calls if tool_call.get("id")
       ]
-    elif role == "tool":
+    elif role == expected_tool_role:
       tool_call_id = message.get("tool_call_id")
       if tool_call_id in pending_tool_call_ids:
         pending_tool_call_ids.remove(tool_call_id)
 
     healed_messages.append(message)
 
+  # Final block also uses expected_tool_role
   if pending_tool_call_ids:
     logger.warning(
         "Missing tool results for tool_call_id(s): %s",
@@ -985,7 +1092,7 @@ def _ensure_tool_results(messages: List[Message]) -> List[Message]:
     )
     healed_messages.extend(
         ChatCompletionToolMessage(
-            role="tool",
+            role=expected_tool_role,
             tool_call_id=tool_call_id,
             content=_MISSING_TOOL_RESULT_MESSAGE,
         )
@@ -1131,21 +1238,15 @@ async def _get_content(
           })
           continue
 
-      if _requires_file_uri_fallback(provider, model, part.file_data.file_uri):
-        logger.debug(
-            "File URI %s not supported for provider %s, using text fallback",
-            _redact_file_uri_for_log(
-                part.file_data.file_uri,
-                display_name=part.file_data.display_name,
-            ),
-            provider,
+      if not _is_file_uri_supported(provider, model, part.file_data.file_uri):
+        redacted_file_uri = _redact_file_uri_for_log(
+            part.file_data.file_uri,
+            display_name=part.file_data.display_name,
         )
-        identifier = part.file_data.display_name or part.file_data.file_uri
-        content_objects.append({
-            "type": "text",
-            "text": f'[File reference: "{identifier}"]',
-        })
-        continue
+        raise ValueError(
+            f"File URI `{redacted_file_uri}` not supported for provider:"
+            f" {provider}."
+        )
 
       file_object: ChatCompletionFileUrlObject = {
           "file_id": part.file_data.file_uri,
@@ -1173,14 +1274,19 @@ def _is_ollama_chat_provider(
   return False
 
 
+_MEDIA_BLOCK_TYPES = frozenset({"image_url", "video_url", "audio_url"})
+
+
 def _flatten_ollama_content(
     content: OpenAIMessageContent | str | None,
-) -> str | None:
+) -> OpenAIMessageContent | str | None:
   """Flattens multipart content to text for ollama_chat compatibility.
 
-  Ollama's chat endpoint rejects arrays for `content`. We keep textual parts,
-  join them with newlines, and fall back to a JSON string for non-text content.
-  If both text and non-text parts are present, only the text parts are kept.
+  Ollama's chat endpoint rejects arrays for `content` when it is text-only, so
+  text parts are joined with newlines and other non-media content falls back to
+  a JSON string. Multipart content with media blocks (image_url, video_url,
+  audio_url) is returned unchanged so LiteLLM's Ollama handler can convert it
+  to the native `images` field instead of silently dropping the media.
   """
   if content is None or isinstance(content, str):
     return content
@@ -1197,6 +1303,12 @@ def _flatten_ollama_content(
     blocks = list(content)
   except TypeError:
     return str(content)
+
+  if any(
+      isinstance(block, dict) and block.get("type") in _MEDIA_BLOCK_TYPES
+      for block in blocks
+  ):
+    return blocks
 
   text_parts = []
   for block in blocks:
@@ -1714,7 +1826,7 @@ def _message_to_generate_content_response(
         thought_signature = _extract_thought_signature_from_tool_call(tool_call)
         part = types.Part.from_function_call(
             name=tool_call.function.name,
-            args=json.loads(tool_call.function.arguments or "{}"),
+            args=_parse_tool_call_arguments(tool_call.function.arguments),
         )
         part.function_call.id = tool_call.id
         if thought_signature:
@@ -1905,7 +2017,7 @@ async def _get_completion_inputs(
             content=llm_request.config.system_instruction,
         ),
     )
-  messages = _ensure_tool_results(messages)
+  messages = _ensure_tool_results(messages, model)
 
   # 2. Convert tool declarations
   tools: Optional[List[Dict]] = None
@@ -2211,7 +2323,8 @@ class LiteLlm(BaseLlm):
 
     self._maybe_append_user_content(llm_request)
     _append_fallback_user_content_if_missing(llm_request)
-    logger.debug(_build_request_log(llm_request))
+    if logger.isEnabledFor(logging.DEBUG):
+      logger.debug(_build_request_log(llm_request))
 
     effective_model = llm_request.model or self.model
     messages, tools, response_format, generation_params = (
@@ -2267,7 +2380,7 @@ class LiteLlm(BaseLlm):
           if func_data["id"]:
             if finish_reason == "length":
               try:
-                json.loads(func_data["args"] or "{}")
+                _parse_tool_call_arguments(func_data["args"])
               except json.JSONDecodeError:
                 has_incomplete_tool_call_args = True
                 continue

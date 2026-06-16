@@ -77,6 +77,7 @@ def mock_agent(mocker):
   agent = mocker.MagicMock(spec=Agent)
   agent.instruction = "Initial instruction"
   agent.sub_agents = {}
+  agent.mode = None
   agent.clone.return_value = agent
   return agent
 

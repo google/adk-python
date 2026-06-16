@@ -16,6 +16,8 @@
 
 from google.adk.utils.model_name_utils import extract_model_name
 from google.adk.utils.model_name_utils import is_gemini_1_model
+from google.adk.utils.model_name_utils import is_gemini_3_1_flash_live
+from google.adk.utils.model_name_utils import is_gemini_3_5_live_translate
 from google.adk.utils.model_name_utils import is_gemini_eap_or_2_or_above
 from google.adk.utils.model_name_utils import is_gemini_model
 from google.adk.utils.model_name_utils import is_gemini_model_id_check_disabled
@@ -338,3 +340,49 @@ class TestGeminiModelIdCheckFlag:
   def test_true_enables_check_bypass(self, monkeypatch):
     monkeypatch.setenv('ADK_DISABLE_GEMINI_MODEL_ID_CHECK', 'true')
     assert is_gemini_model_id_check_disabled() is True
+
+
+class TestIsGemini31FlashLive:
+  """Test the is_gemini_3_1_flash_live function."""
+
+  def test_is_gemini_3_1_flash_live_simple_name(self):
+    """Test with simple model name format."""
+    assert is_gemini_3_1_flash_live('gemini-3.1-flash-live') is True
+    assert is_gemini_3_1_flash_live('gemini-3.1-flash-live-preview') is True
+    assert is_gemini_3_1_flash_live('gemini-3.1-pro-live') is False
+    assert is_gemini_3_1_flash_live('gemini-2.5-flash-live') is False
+
+  def test_is_gemini_3_1_flash_live_path_based_name(self):
+    """Test with path-based format (Vertex AI etc.)."""
+    vertex_path = 'projects/123/locations/us-central1/publishers/google/models/gemini-3.1-flash-live'
+    assert is_gemini_3_1_flash_live(vertex_path) is True
+
+    vertex_path_preview = 'projects/123/locations/us-central1/publishers/google/models/gemini-3.1-flash-live-preview'
+    assert is_gemini_3_1_flash_live(vertex_path_preview) is True
+
+    non_live_path = 'projects/123/locations/us-central1/publishers/google/models/gemini-3.1-flash'
+    assert is_gemini_3_1_flash_live(non_live_path) is False
+
+  def test_is_gemini_3_1_flash_live_edge_cases(self):
+    """Test edge cases."""
+    assert is_gemini_3_1_flash_live(None) is False
+    assert is_gemini_3_1_flash_live('') is False
+
+
+class TestIsGemini35LiveTranslate:
+  """Test the is_gemini_3_5_live_translate function."""
+
+  def test_is_gemini_3_5_live_translate_simple_name(self):
+    """Test with simple model name format."""
+    assert is_gemini_3_5_live_translate('gemini-3.5-live-translate') is True
+    assert is_gemini_3_5_live_translate('gemini-3.5-flash-live') is False
+
+  def test_is_gemini_3_5_live_translate_path_based_name(self):
+    """Test with path-based format (Vertex AI etc.)."""
+    vertex_path = 'projects/123/locations/us-central1/publishers/google/models/gemini-3.5-live-translate-preview'
+    assert is_gemini_3_5_live_translate(vertex_path) is True
+
+  def test_is_gemini_3_5_live_translate_edge_cases(self):
+    """Test edge cases."""
+    assert is_gemini_3_5_live_translate(None) is False
+    assert is_gemini_3_5_live_translate('') is False

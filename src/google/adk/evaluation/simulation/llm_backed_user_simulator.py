@@ -85,6 +85,12 @@ instructions must contain the following formatting placeholders following Jinja 
 """,
   )
 
+  include_function_calls: bool = Field(
+      default=False,
+      description="""Whether to include function calls and responses in the
+conversation history prompt provided to the user simulator.""",
+  )
+
   @field_validator("custom_instructions")
   @classmethod
   def validate_custom_instructions(cls, value: str | None) -> str | None:
@@ -132,13 +138,15 @@ class LlmBackedUserSimulator(UserSimulator):
   def _summarize_conversation(
       cls,
       events: list[Event],
+      include_function_calls: bool = False,
   ) -> str:
     """Summarize the conversation to add to the prompt.
 
-    Removes tool calls, responses, and thoughts.
+    Removes responses, thoughts, optionally tool calls and tool responses.
 
     Args:
       events: The conversation history to rewrite.
+      include_function_calls: Whether to include function calls and responses.
 
     Returns:
       The summarized conversation history as a string.
@@ -151,6 +159,16 @@ class LlmBackedUserSimulator(UserSimulator):
       for part in e.content.parts:
         if part.text and not part.thought:
           rewritten_dialogue.append(f"{author}: {part.text}")
+        elif include_function_calls and part.function_call:
+          rewritten_dialogue.append(
+              f"{author} called tool '{part.function_call.name}' with args:"
+              f" {part.function_call.args}"
+          )
+        elif include_function_calls and part.function_response:
+          rewritten_dialogue.append(
+              f"Tool '{part.function_response.name}' returned:"
+              f" {part.function_response.response}"
+          )
 
     return "\n\n".join(rewritten_dialogue)
 
@@ -255,7 +273,9 @@ class LlmBackedUserSimulator(UserSimulator):
       return NextUserMessage(status=Status.TURN_LIMIT_REACHED)
 
     # rewrite events for the user simulator
-    rewritten_dialogue = self._summarize_conversation(events)
+    rewritten_dialogue = self._summarize_conversation(
+        events, self._config.include_function_calls
+    )
 
     # query the LLM for the next user message
     response, error_reason = await self._get_llm_response(rewritten_dialogue)

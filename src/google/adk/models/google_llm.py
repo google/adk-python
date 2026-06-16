@@ -104,7 +104,7 @@ class Gemini(BaseLlm):
         class GlobalGemini(Gemini):
           @cached_property
           def api_client(self) -> Client:
-            return Client(vertexai=True, location="global")
+            return Client(enterprise=True, location="global")
 
         agent = Agent(model=GlobalGemini(model="gemini-3-pro-preview"))
 
@@ -252,7 +252,8 @@ class Gemini(BaseLlm):
         aggregator = StreamingResponseAggregator()
         async with Aclosing(responses) as agen:
           async for response in agen:
-            logger.debug(_build_response_log(response))
+            if logger.isEnabledFor(logging.DEBUG):
+              logger.debug(_build_response_log(response))
             async with Aclosing(
                 aggregator.process_response(response)
             ) as aggregator_gen:
@@ -274,7 +275,8 @@ class Gemini(BaseLlm):
             config=llm_request.config,
         )
         logger.info('Response received from the model.')
-        logger.debug(_build_response_log(response))
+        if logger.isEnabledFor(logging.DEBUG):
+          logger.debug(_build_response_log(response))
 
         llm_response = LlmResponse.create(response)
         if cache_metadata:
@@ -343,7 +345,7 @@ class Gemini(BaseLlm):
         'http_options': types.HttpOptions(**kwargs_for_http_options),
     }
     if self.model.startswith('projects/'):
-      kwargs['vertexai'] = True
+      kwargs['enterprise'] = True
 
     return Client(**kwargs)
 
@@ -388,7 +390,7 @@ class Gemini(BaseLlm):
         )
     }
     if self.model.startswith('projects/'):
-      kwargs['vertexai'] = True
+      kwargs['enterprise'] = True
 
     return Client(**kwargs)
 

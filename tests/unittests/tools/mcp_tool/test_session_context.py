@@ -297,6 +297,108 @@ class TestSessionContext:
       assert 'Failed to create MCP session' in str(exc_info.value)
 
   @pytest.mark.asyncio
+  async def test_timeout_during_initialization_with_flag_on(self):
+    """Test timeout during session initialization with flag ON.
+
+    Verifies that session initialization uses `anyio.fail_after` under the
+    graceful error handling feature flag.
+    """
+    mock_client = MockClient()
+    session_context = SessionContext(
+        mock_client, timeout=0.1, sse_read_timeout=None
+    )
+
+    # Mock ClientSession with slow initialize
+    mock_session = MockClientSession()
+
+    async def slow_initialize():
+      await asyncio.sleep(1.0)
+      return mock_session
+
+    mock_session.initialize = slow_initialize
+
+    with patch(
+        'google.adk.tools.mcp_tool.session_context.ClientSession'
+    ) as mock_session_class:
+      mock_session_class.return_value = mock_session
+
+      with temporary_feature_override(
+          FeatureName._MCP_GRACEFUL_ERROR_HANDLING, True
+      ):
+        with pytest.raises(ConnectionError) as exc_info:
+          await session_context.start()
+
+      assert 'Failed to create MCP session' in str(exc_info.value)
+
+  @pytest.mark.asyncio
+  async def test_timeout_during_initialization_with_flag_off(self):
+    """Test timeout during session initialization with flag OFF.
+
+    Verifies that session initialization falls back to `asyncio.wait_for`
+    when graceful error handling is disabled.
+    """
+    mock_client = MockClient()
+    session_context = SessionContext(
+        mock_client, timeout=0.1, sse_read_timeout=None
+    )
+
+    # Mock ClientSession with slow initialize
+    mock_session = MockClientSession()
+
+    async def slow_initialize():
+      await asyncio.sleep(1.0)
+      return mock_session
+
+    mock_session.initialize = slow_initialize
+
+    with patch(
+        'google.adk.tools.mcp_tool.session_context.ClientSession'
+    ) as mock_session_class:
+      mock_session_class.return_value = mock_session
+
+      with temporary_feature_override(
+          FeatureName._MCP_GRACEFUL_ERROR_HANDLING, False
+      ):
+        with pytest.raises(ConnectionError) as exc_info:
+          await session_context.start()
+
+      assert 'Failed to create MCP session' in str(exc_info.value)
+
+  @pytest.mark.asyncio
+  async def test_uses_anyio_fail_after_when_flag_on(self):
+    """Test that session initialization structurally uses anyio.fail_after.
+
+    Asserts that the session runner enters `anyio.fail_after` context
+    with the timeout limit when graceful error handling is enabled.
+    """
+    mock_client = MockClient()
+    session_context = SessionContext(
+        mock_client, timeout=2.5, sse_read_timeout=None
+    )
+    mock_session = MockClientSession()
+
+    with (
+        patch(
+            'google.adk.tools.mcp_tool.session_context.ClientSession'
+        ) as mock_session_class,
+        patch('anyio.fail_after') as mock_fail_after,
+    ):
+      mock_session_class.return_value = mock_session
+      # Configure mock_fail_after synchronous context manager to do nothing
+      mock_fail_after.return_value.__enter__ = Mock()
+      mock_fail_after.return_value.__exit__ = Mock(return_value=False)
+
+      with temporary_feature_override(
+          FeatureName._MCP_GRACEFUL_ERROR_HANDLING, True
+      ):
+        await session_context.start()
+
+        # Verify anyio.fail_after was called with the correct timeout
+        mock_fail_after.assert_called_once_with(2.5)
+
+      await session_context.close()
+
+  @pytest.mark.asyncio
   async def test_stdio_client_with_read_timeout(self):
     """Test stdio client includes read_timeout_seconds parameter."""
     mock_client = MockClient()

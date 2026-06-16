@@ -92,6 +92,20 @@ def get_list_inner_type(schema: SchemaType) -> Optional[type[BaseModel]]:
   return args[0]
 
 
+def schema_to_json_schema(schema: SchemaType) -> dict[str, Any]:
+  """Converts a SchemaType to a JSON Schema dict.
+
+  Args:
+    schema: The schema to convert.
+
+  Returns:
+    A JSON Schema dict representation of the schema.
+  """
+  if isinstance(schema, dict):
+    return schema
+  return TypeAdapter(schema).json_schema()
+
+
 def validate_schema(schema: SchemaType, json_text: str) -> Any:
   """Validate JSON text against a schema and return the result.
 

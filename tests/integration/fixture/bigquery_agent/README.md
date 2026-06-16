@@ -5,14 +5,14 @@
 1. Set environment variables in your terminal:
 
   ```shell
-  export GOOGLE_GENAI_USE_VERTEXAI=FALSE
+  export GOOGLE_GENAI_USE_ENTERPRISE=FALSE
   export GOOGLE_API_KEY=<your_api_key>
   export GOOGLE_CLOUD_PROJECT=<your_bigquery_project>
   ```
 1. Change to the current directory:
 
   ```shell
-  cd third_party/py/google/adk/tests/integration/fixture/bigquery_agent/
+  cd tests/integration/fixture/bigquery_agent/
   ```
 1. Customize the evaluation dataset to the environment `GOOGLE_CLOUD_PROJECT`
    by replacing the placeholder to the real project set in your environment:
@@ -34,7 +34,7 @@
 1. Set environment variables in your terminal:
 
   ```shell
-  export GOOGLE_GENAI_USE_VERTEXAI=FALSE
+  export GOOGLE_GENAI_USE_ENTERPRISE=FALSE
   export GOOGLE_API_KEY=<your_api_key>
   export GOOGLE_CLOUD_PROJECT=<your_bigquery_project>
   ```
@@ -47,7 +47,7 @@
 1. Change to the directory containing agent folder:
 
   ```shell
-  cd third_party/py/google/adk/tests/integration/fixture/
+  cd tests/integration/fixture/
   ```
 1. Run the following command to start the ADK web app:
 

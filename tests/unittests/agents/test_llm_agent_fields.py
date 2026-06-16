@@ -96,6 +96,35 @@ def test_canonical_model_inherit():
   assert sub_agent.canonical_model == parent_agent.canonical_model
 
 
+def test_canonical_live_model_default_fallback():
+  original_default = LlmAgent._default_live_model
+  LlmAgent.set_default_live_model('gemini-2.0-flash')
+  try:
+    agent = LlmAgent(name='test_agent')
+    assert agent.canonical_live_model.model == 'gemini-2.0-flash'
+  finally:
+    LlmAgent.set_default_live_model(original_default)
+
+
+def test_canonical_live_model_str():
+  agent = LlmAgent(name='test_agent', model='gemini-pro')
+  assert agent.canonical_live_model.model == 'gemini-pro'
+
+
+def test_canonical_live_model_llm():
+  llm = LLMRegistry.new_llm('gemini-pro')
+  agent = LlmAgent(name='test_agent', model=llm)
+  assert agent.canonical_live_model == llm
+
+
+def test_canonical_live_model_inherit():
+  sub_agent = LlmAgent(name='sub_agent')
+  parent_agent = LlmAgent(
+      name='parent_agent', model='gemini-pro', sub_agents=[sub_agent]
+  )
+  assert sub_agent.canonical_live_model == parent_agent.canonical_live_model
+
+
 async def test_canonical_instruction_str():
   agent = LlmAgent(name='test_agent', instruction='instruction')
   ctx = await _create_readonly_context(agent)

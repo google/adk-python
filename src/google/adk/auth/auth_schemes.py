@@ -54,8 +54,8 @@ class CustomAuthScheme(BaseModelWithConfig):
 
 
 # AuthSchemes contains SecuritySchemes from OpenAPI 3.0, an extra flattened
-# OpenIdConnectWithConfig, and supports external schemes that subclasses
-# CustomAuthScheme
+# OpenIdConnectWithConfig, and supports external schemes
+# that subclass CustomAuthScheme.
 AuthScheme = Union[SecurityScheme, OpenIdConnectWithConfig, CustomAuthScheme]
 
 

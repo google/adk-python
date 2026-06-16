@@ -50,6 +50,12 @@ class GeminiLlmConnection(BaseLlmConnection):
     self._output_transcription_text: str = ''
     self._api_backend = api_backend
     self._model_version = model_version
+    self._is_gemini_3_1_flash_live = model_name_utils.is_gemini_3_1_flash_live(
+        model_version
+    )
+    self._is_gemini_3_5_live_translate = (
+        model_name_utils.is_gemini_3_5_live_translate(model_version)
+    )
 
   async def send_history(self, history: list[types.Content]):
     """Sends the conversation history to the gemini model.
@@ -80,10 +86,33 @@ class GeminiLlmConnection(BaseLlmConnection):
     ]
 
     if contents:
+      # Gemini Enterprise Agent Platform does not support history_config in the
+      # SDK. To initialize a live session with prior history without hitting a
+      # 1007 protocol error (invalid role mid-session), we consolidate previous
+      # multi-turn interactions into a unified contextual preamble on a single
+      # user role turn.
+      if (
+          self._is_gemini_3_1_flash_live
+          and self._api_backend != GoogleLLMVariant.GEMINI_API
+      ):
+        collapsed_text = 'Previous conversation history:\n'
+        for c in contents:
+          text_parts = ''.join(p.text for p in c.parts if p.text)
+          collapsed_text += f'[{c.role}]: {text_parts}\n'
+        contents = [
+            types.Content(
+                role='user', parts=[types.Part.from_text(text=collapsed_text)]
+            )
+        ]
+
       logger.debug('Sending history to live connection: %s', contents)
       await self._gemini_session.send_client_content(
           turns=contents,
-          turn_complete=contents[-1].role == 'user',
+          turn_complete=(
+              True
+              if self._is_gemini_3_1_flash_live
+              else contents[-1].role == 'user'
+          ),
       )
     else:
       logger.info('no content is sent')
@@ -108,10 +137,11 @@ class GeminiLlmConnection(BaseLlmConnection):
       )
     else:
       logger.debug('Sending LLM new content %s', content)
-      is_gemini_31 = model_name_utils.is_gemini_3_1_flash_live(
-          self._model_version
-      )
-      if is_gemini_31 and len(content.parts) == 1 and content.parts[0].text:
+      if (
+          self._is_gemini_3_1_flash_live
+          and len(content.parts) == 1
+          and content.parts[0].text
+      ):
         logger.debug('Using send_realtime_input for Gemini 3.1 text input')
         await self._gemini_session.send_realtime_input(
             text=content.parts[0].text
@@ -133,10 +163,7 @@ class GeminiLlmConnection(BaseLlmConnection):
     if isinstance(input, types.Blob):
       # The blob is binary and is very large. So let's not log it.
       logger.debug('Sending LLM Blob.')
-      is_gemini_31 = model_name_utils.is_gemini_3_1_flash_live(
-          self._model_version
-      )
-      if is_gemini_31:
+      if self._is_gemini_3_1_flash_live or self._is_gemini_3_5_live_translate:
         if input.mime_type and input.mime_type.startswith('audio/'):
           await self._gemini_session.send_realtime_input(audio=input)
         elif input.mime_type and input.mime_type.startswith('image/'):
@@ -159,7 +186,12 @@ class GeminiLlmConnection(BaseLlmConnection):
     else:
       raise ValueError('Unsupported input type: %s' % type(input))
 
-  def __build_full_text_response(self, text: str):
+  def __build_full_text_response(
+      self,
+      text: str,
+      is_thought: bool = False,
+      grounding_metadata: types.GroundingMetadata | None = None,
+  ):
     """Builds a full text response.
 
     The text should not be partial and the returned LlmResponse is not
@@ -167,16 +199,53 @@ class GeminiLlmConnection(BaseLlmConnection):
 
     Args:
       text: The text to be included in the response.
+      is_thought: Whether the text is a thought.
+      grounding_metadata: The grounding metadata to include.
 
     Returns:
       An LlmResponse containing the full text.
     """
+    part = types.Part.from_text(text=text)
+    if is_thought:
+      part.thought = True
+
     return LlmResponse(
         content=types.Content(
             role='model',
-            parts=[types.Part.from_text(text=text)],
+            parts=[part],
         ),
+        grounding_metadata=grounding_metadata,
+        partial=False,
         live_session_id=self._gemini_session.session_id,
+    )
+
+  def _to_generate_content_usage_metadata(
+      self, usage_metadata: types.UsageMetadata
+  ) -> types.GenerateContentResponseUsageMetadata:
+    """Converts live API usage metadata to GenerateContentResponse usage metadata.
+
+    The live API names output tokens `response_token_count`/
+    `response_tokens_details`, whereas `GenerateContentResponseUsageMetadata`
+    names them `candidates_token_count`/`candidates_tokens_details`.
+
+    Args:
+      usage_metadata: The live API usage metadata.
+
+    Returns:
+      The converted usage metadata.
+    """
+    return types.GenerateContentResponseUsageMetadata(
+        prompt_token_count=usage_metadata.prompt_token_count,
+        cached_content_token_count=usage_metadata.cached_content_token_count,
+        candidates_token_count=usage_metadata.response_token_count,
+        total_token_count=usage_metadata.total_token_count,
+        thoughts_token_count=usage_metadata.thoughts_token_count,
+        tool_use_prompt_token_count=usage_metadata.tool_use_prompt_token_count,
+        prompt_tokens_details=usage_metadata.prompt_tokens_details,
+        cache_tokens_details=usage_metadata.cache_tokens_details,
+        candidates_tokens_details=usage_metadata.response_tokens_details,
+        tool_use_prompt_tokens_details=usage_metadata.tool_use_prompt_tokens_details,
+        traffic_type=usage_metadata.traffic_type,
     )
 
   async def receive(self) -> AsyncGenerator[LlmResponse, None]:
@@ -187,7 +256,9 @@ class GeminiLlmConnection(BaseLlmConnection):
     """
 
     text = ''
+    is_thought = False
     tool_call_parts = []
+    pending_grounding_metadata = None
     async with Aclosing(self._gemini_session.receive()) as agen:
       # TODO(b/440101573): Reuse StreamingResponseAggregator to accumulate
       # partial content and emit responses as needed.
@@ -195,14 +266,20 @@ class GeminiLlmConnection(BaseLlmConnection):
         logger.debug('Got LLM Live message: %s', message)
         live_session_id = self._gemini_session.session_id
         if message.usage_metadata:
-          # Tracks token usage data per model.
+          # Remap live token usage to GenerateContentResponse usage metadata.
           yield LlmResponse(
-              usage_metadata=message.usage_metadata,
+              usage_metadata=self._to_generate_content_usage_metadata(
+                  message.usage_metadata
+              ),
               model_version=self._model_version,
               live_session_id=live_session_id,
           )
         if message.server_content:
           content = message.server_content.model_turn
+          if message.server_content.grounding_metadata:
+            pending_grounding_metadata = (
+                message.server_content.grounding_metadata
+            )
 
           # Standalone grounding_metadata event (when content is empty)
           if (
@@ -215,6 +292,9 @@ class GeminiLlmConnection(BaseLlmConnection):
                 interrupted=message.server_content.interrupted,
                 model_version=self._model_version,
                 live_session_id=live_session_id,
+                turn_complete_reason=getattr(
+                    message.server_content, 'turn_complete_reason', None
+                ),
             )
 
           if content and content.parts:
@@ -223,51 +303,77 @@ class GeminiLlmConnection(BaseLlmConnection):
                 interrupted=message.server_content.interrupted,
                 model_version=self._model_version,
                 live_session_id=live_session_id,
+                turn_complete_reason=getattr(
+                    message.server_content, 'turn_complete_reason', None
+                ),
             )
             # grounding_metadata is yielded again at turn_complete,
             # so avoid duplicating it here if turn_complete is true.
             if not message.server_content.turn_complete:
-              llm_response.grounding_metadata = (
-                  message.server_content.grounding_metadata
-              )
+              if message.server_content.grounding_metadata is not None:
+                llm_response.grounding_metadata = (
+                    message.server_content.grounding_metadata
+                )
             if content.parts[0].text:
+              current_is_thought = getattr(content.parts[0], 'thought', False)
+              if text and current_is_thought != is_thought:
+                yield self.__build_full_text_response(text, is_thought)
+                text = ''
+                is_thought = False
+
               text += content.parts[0].text
+              is_thought = current_is_thought
               llm_response.partial = True
             # don't yield the merged text event when receiving audio data
             elif text and not content.parts[0].inline_data:
-              yield self.__build_full_text_response(text)
+              yield self.__build_full_text_response(text, is_thought)
               text = ''
+              is_thought = False
             yield llm_response
           # Note: in some cases, tool_call may arrive before
           # generation_complete, causing transcription to appear after
           # tool_call in the session log.
           if message.server_content.input_transcription:
-            if message.server_content.input_transcription.text:
-              self._input_transcription_text += (
-                  message.server_content.input_transcription.text
-              )
-              yield LlmResponse(
-                  input_transcription=types.Transcription(
-                      text=message.server_content.input_transcription.text,
-                      finished=False,
-                  ),
-                  partial=True,
-                  model_version=self._model_version,
-                  live_session_id=live_session_id,
-              )
-            # finished=True and partial transcription may happen in the same
-            # message.
-            if message.server_content.input_transcription.finished:
-              yield LlmResponse(
-                  input_transcription=types.Transcription(
-                      text=self._input_transcription_text,
-                      finished=True,
-                  ),
-                  partial=False,
-                  model_version=self._model_version,
-                  live_session_id=live_session_id,
-              )
-              self._input_transcription_text = ''
+            # Gemini 3.1 Flash Live only sends a single final input
+            # transcription
+            if self._is_gemini_3_1_flash_live:
+              if message.server_content.input_transcription.text:
+                yield LlmResponse(
+                    input_transcription=types.Transcription(
+                        text=message.server_content.input_transcription.text,
+                        finished=True,
+                    ),
+                    partial=False,
+                    model_version=self._model_version,
+                    live_session_id=live_session_id,
+                )
+            else:
+              if message.server_content.input_transcription.text:
+                self._input_transcription_text += (
+                    message.server_content.input_transcription.text
+                )
+                yield LlmResponse(
+                    input_transcription=types.Transcription(
+                        text=message.server_content.input_transcription.text,
+                        finished=False,
+                    ),
+                    partial=True,
+                    model_version=self._model_version,
+                    live_session_id=live_session_id,
+                )
+              # finished=True and partial transcription may happen in the same
+              # message.
+              if message.server_content.input_transcription.finished:
+                yield LlmResponse(
+                    input_transcription=types.Transcription(
+                        text=self._input_transcription_text,
+                        finished=True,
+                    ),
+                    partial=False,
+                    model_version=self._model_version,
+                    live_session_id=live_session_id,
+                )
+                self._input_transcription_text = ''
           if message.server_content.output_transcription:
             if message.server_content.output_transcription.text:
               self._output_transcription_text += (
@@ -293,10 +399,10 @@ class GeminiLlmConnection(BaseLlmConnection):
                   live_session_id=live_session_id,
               )
               self._output_transcription_text = ''
-          # The Gemini API might not send a transcription finished signal.
+          # The Gemini API or Vertex AI might not send a transcription finished signal.
           # Instead, we rely on generation_complete, turn_complete or
           # interrupted signals to flush any pending transcriptions.
-          if self._api_backend == GoogleLLMVariant.GEMINI_API and (
+          if (
               message.server_content.interrupted
               or message.server_content.turn_complete
               or message.server_content.generation_complete
@@ -324,9 +430,14 @@ class GeminiLlmConnection(BaseLlmConnection):
               )
               self._output_transcription_text = ''
           if message.server_content.turn_complete:
+            g_metadata_to_yield = pending_grounding_metadata
             if text:
-              yield self.__build_full_text_response(text)
+              yield self.__build_full_text_response(
+                  text, is_thought, g_metadata_to_yield
+              )
               text = ''
+              is_thought = False
+              g_metadata_to_yield = None
             if tool_call_parts:
               logger.debug('Returning aggregated tool_call_parts')
               yield LlmResponse(
@@ -338,9 +449,18 @@ class GeminiLlmConnection(BaseLlmConnection):
             yield LlmResponse(
                 turn_complete=True,
                 interrupted=message.server_content.interrupted,
-                grounding_metadata=message.server_content.grounding_metadata,
+                grounding_metadata=message.server_content.grounding_metadata
+                or g_metadata_to_yield
+                or (
+                    types.GroundingMetadata()
+                    if self._is_gemini_3_1_flash_live
+                    else None
+                ),
                 model_version=self._model_version,
                 live_session_id=live_session_id,
+                turn_complete_reason=getattr(
+                    message.server_content, 'turn_complete_reason', None
+                ),
             )
             break
           # in case of empty content or parts, we still surface it
@@ -349,8 +469,9 @@ class GeminiLlmConnection(BaseLlmConnection):
           # safety threshold is triggered
           if message.server_content.interrupted:
             if text:
-              yield self.__build_full_text_response(text)
+              yield self.__build_full_text_response(text, is_thought)
               text = ''
+              is_thought = False
             else:
               yield LlmResponse(
                   interrupted=message.server_content.interrupted,
@@ -360,8 +481,9 @@ class GeminiLlmConnection(BaseLlmConnection):
         if message.tool_call:
           logger.debug('Received tool call: %s', message.tool_call)
           if text:
-            yield self.__build_full_text_response(text)
+            yield self.__build_full_text_response(text, is_thought)
             text = ''
+            is_thought = False
           tool_call_parts.extend([
               types.Part(function_call=function_call)
               for function_call in message.tool_call.function_calls
@@ -371,10 +493,7 @@ class GeminiLlmConnection(BaseLlmConnection):
           # deadlocking the conversation. Other models (e.g. 2.5-pro,
           # native-audio) send turn_complete after tool calls, so buffer
           # and merge them into a single response at turn_complete.
-          if (
-              model_name_utils.is_gemini_3_1_flash_live(self._model_version)
-              and tool_call_parts
-          ):
+          if self._is_gemini_3_1_flash_live and tool_call_parts:
             logger.debug(
                 'Yielding tool_call_parts immediately for Gemini 3.1 live tool'
                 ' call'
