@@ -21,20 +21,28 @@ from datetime import timezone
 import logging
 from typing import Any
 from typing import AsyncIterator
+from typing import Optional
 from typing import TypeAlias
 from typing import TypeVar
 
 from google.adk.platform import time as platform_time
-from sqlalchemy import delete
-from sqlalchemy import event
-from sqlalchemy import select
-from sqlalchemy.engine import make_url
-from sqlalchemy.exc import ArgumentError
-from sqlalchemy.ext.asyncio import async_sessionmaker
-from sqlalchemy.ext.asyncio import AsyncEngine
-from sqlalchemy.ext.asyncio import AsyncSession as DatabaseSessionFactory
-from sqlalchemy.ext.asyncio import create_async_engine
-from sqlalchemy.pool import StaticPool
+
+try:
+  from sqlalchemy import delete
+  from sqlalchemy import event
+  from sqlalchemy import MetaData
+  from sqlalchemy import select
+  from sqlalchemy.engine import Connection
+  from sqlalchemy.engine import make_url
+  from sqlalchemy.exc import ArgumentError
+  from sqlalchemy.exc import IntegrityError
+  from sqlalchemy.ext.asyncio import async_sessionmaker
+  from sqlalchemy.ext.asyncio import AsyncEngine
+  from sqlalchemy.ext.asyncio import AsyncSession as DatabaseSessionFactory
+  from sqlalchemy.ext.asyncio import create_async_engine
+  from sqlalchemy.pool import StaticPool
+except ImportError:
+  pass
 from typing_extensions import override
 
 from . import _session_util
@@ -100,10 +108,55 @@ async def _select_required_state(
   return state_row
 
 
+async def _get_or_create_state(
+    *,
+    sql_session: DatabaseSessionFactory,
+    state_model: type[_StorageStateT],
+    primary_key: Any,
+    defaults: dict[str, Any],
+) -> _StorageStateT:
+  """Returns an existing state row or creates one, handling concurrent inserts.
+
+  Uses a SAVEPOINT so that an IntegrityError from a racing INSERT does not
+  invalidate the outer transaction.
+  """
+  row = await sql_session.get(state_model, primary_key)
+  if row is not None:
+    return row
+  try:
+    async with sql_session.begin_nested():
+      row = state_model(**defaults)
+      sql_session.add(row)
+    return row
+  except IntegrityError:
+    # Another concurrent caller inserted the row first.
+    # The savepoint was rolled back, so re-fetch the winner's row.
+    row = await sql_session.get(state_model, primary_key)
+    if row is None:
+      raise
+    return row
+
+
 def _set_sqlite_pragma(dbapi_connection, connection_record):
   cursor = dbapi_connection.cursor()
   cursor.execute("PRAGMA foreign_keys=ON")
   cursor.close()
+
+
+def _ensure_schema_indexes_exist(
+    connection: Connection, metadata: MetaData
+) -> None:
+  """Ensures indexes declared in metadata exist for existing tables."""
+  logger.debug("Ensuring schema indexes exist for metadata tables.")
+  for table in metadata.sorted_tables:
+    for index in sorted(table.indexes, key=lambda item: item.name or ""):
+      index.create(bind=connection, checkfirst=True)
+
+
+def _setup_database_schema(connection: Connection, metadata: MetaData) -> None:
+  """Ensures tables and indexes declared in metadata exist."""
+  metadata.create_all(bind=connection)
+  _ensure_schema_indexes_exist(connection, metadata)
 
 
 def _merge_state(
@@ -144,6 +197,13 @@ class DatabaseSessionService(BaseSessionService):
     # 1. Create DB engine for db connection
     # 2. Create all tables based on schema
     # 3. Initialize all properties
+    try:
+      import sqlalchemy  # noqa: F401
+    except ImportError as e:
+      from ..utils._dependency import missing_extra
+
+      raise missing_extra("sqlalchemy", "db") from e
+
     try:
       engine_kwargs = dict(kwargs)
       url = make_url(db_url)
@@ -306,11 +366,11 @@ class DatabaseSessionService(BaseSessionService):
           # Uncomment to recreate DB every time
           # await conn.run_sync(BaseV1.metadata.drop_all)
           logger.debug("Using V1 schema tables...")
-          await conn.run_sync(BaseV1.metadata.create_all)
+          await conn.run_sync(_setup_database_schema, BaseV1.metadata)
         else:
           # await conn.run_sync(BaseV0.metadata.drop_all)
           logger.debug("Using V0 schema tables...")
-          await conn.run_sync(BaseV0.metadata.create_all)
+          await conn.run_sync(_setup_database_schema, BaseV0.metadata)
 
       if self._db_schema_version == _schema_check_utils.LATEST_SCHEMA_VERSION:
         async with self._rollback_on_exception_session() as sql_session:
@@ -387,23 +447,19 @@ class DatabaseSessionService(BaseSessionService):
         raise AlreadyExistsError(
             f"Session with id {session_id} already exists."
         )
-      # Fetch app and user states from storage
-      storage_app_state = await sql_session.get(
-          schema.StorageAppState, (app_name)
+      # Get or create state rows, handling concurrent insert races.
+      storage_app_state = await _get_or_create_state(
+          sql_session=sql_session,
+          state_model=schema.StorageAppState,
+          primary_key=app_name,
+          defaults={"app_name": app_name, "state": {}},
       )
-      storage_user_state = await sql_session.get(
-          schema.StorageUserState, (app_name, user_id)
+      storage_user_state = await _get_or_create_state(
+          sql_session=sql_session,
+          state_model=schema.StorageUserState,
+          primary_key=(app_name, user_id),
+          defaults={"app_name": app_name, "user_id": user_id, "state": {}},
       )
-
-      # Create state tables if not exist
-      if not storage_app_state:
-        storage_app_state = schema.StorageAppState(app_name=app_name, state={})
-        sql_session.add(storage_app_state)
-      if not storage_user_state:
-        storage_user_state = schema.StorageUserState(
-            app_name=app_name, user_id=user_id, state={}
-        )
-        sql_session.add(storage_user_state)
 
       # Extract state deltas
       state_deltas = _session_util.extract_state_delta(state)
@@ -480,7 +536,7 @@ class DatabaseSessionService(BaseSessionService):
 
       stmt = stmt.order_by(schema.StorageEvent.timestamp.desc())
 
-      if config and config.num_recent_events:
+      if config and config.num_recent_events is not None:
         stmt = stmt.limit(config.num_recent_events)
 
       result = await sql_session.execute(stmt)
@@ -577,6 +633,22 @@ class DatabaseSessionService(BaseSessionService):
       await sql_session.commit()
 
   @override
+  async def get_user_state(
+      self, *, app_name: str, user_id: str
+  ) -> dict[str, Any]:
+    await self._prepare_tables()
+    schema = self._get_schema_classes()
+    async with self._rollback_on_exception_session(
+        read_only=True
+    ) as sql_session:
+      storage_user_state = await sql_session.get(
+          schema.StorageUserState, (app_name, user_id)
+      )
+      if storage_user_state is None:
+        return {}
+      return dict(storage_user_state.state or {})
+
+  @override
   async def append_event(self, session: Session, event: Event) -> Event:
     await self.prepare_tables()
     if event.partial:
@@ -595,11 +667,7 @@ class DatabaseSessionService(BaseSessionService):
     is_sqlite = self.db_engine.dialect.name == _SQLITE_DIALECT
     use_row_level_locking = self._supports_row_level_locking()
 
-    state_delta = (
-        event.actions.state_delta
-        if event.actions and event.actions.state_delta
-        else {}
-    )
+    state_delta = event.actions.state_delta if event.actions.state_delta else {}
     state_deltas = _session_util.extract_state_delta(state_delta)
     has_app_delta = bool(state_deltas["app"])
     has_user_delta = bool(state_deltas["user"])

@@ -251,8 +251,10 @@ class A2aAgentExecutor(AgentExecutor):
     )
 
     task_result_aggregator = TaskResultAggregator()
+    last_adk_event = None
     async with Aclosing(runner.run_async(**vars(run_request))) as agen:
       async for adk_event in agen:
+        last_adk_event = adk_event
         for a2a_event in self._config.event_converter(
             adk_event,
             invocation_context,
@@ -260,17 +262,31 @@ class A2aAgentExecutor(AgentExecutor):
             context.context_id,
             self._config.gen_ai_part_converter,
         ):
-          a2a_event = await execute_after_event_interceptors(
+          a2a_events = await execute_after_event_interceptors(
               a2a_event,
               executor_context,
               adk_event,
               self._config.execute_interceptors,
           )
-          if a2a_event is None:
-            continue
+          for e in a2a_events:
+            task_result_aggregator.process_event(e)
+            await event_queue.enqueue_event(e)
 
-          task_result_aggregator.process_event(a2a_event)
-          await event_queue.enqueue_event(a2a_event)
+    # Build metadata for final event to preserve invocation_id and event_id.
+    final_metadata = {
+        _get_adk_metadata_key('app_name'): runner.app_name,
+        _get_adk_metadata_key('user_id'): run_request.user_id,
+        _get_adk_metadata_key('session_id'): run_request.session_id,
+    }
+    if last_adk_event:
+      for key, attr in [
+          ('invocation_id', 'invocation_id'),
+          ('author', 'author'),
+          ('event_id', 'id'),
+      ]:
+        val = getattr(last_adk_event, attr, None)
+        if val is not None:
+          final_metadata[_get_adk_metadata_key(key)] = val
 
     # publish the task result event - this is final
     if (
@@ -289,6 +305,7 @@ class A2aAgentExecutor(AgentExecutor):
                   artifact_id=platform_uuid.new_uuid(),
                   parts=task_result_aggregator.task_status_message.parts,
               ),
+              metadata=final_metadata,
           )
       )
       # public the final status update event
@@ -301,6 +318,7 @@ class A2aAgentExecutor(AgentExecutor):
               ).isoformat(),
           ),
           context_id=context.context_id,
+          metadata=final_metadata,
           final=True,
       )
     else:
@@ -314,6 +332,7 @@ class A2aAgentExecutor(AgentExecutor):
               message=task_result_aggregator.task_status_message,
           ),
           context_id=context.context_id,
+          metadata=final_metadata,
           final=True,
       )
 

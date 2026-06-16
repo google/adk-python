@@ -108,8 +108,12 @@ class Frontmatter(BaseModel):
   def _validate_description(cls, v: str) -> str:
     if not v:
       raise ValueError("description must not be empty")
-    if len(v) > 1024:
-      raise ValueError("description must be at most 1024 characters")
+    description_len = len(v)
+    if description_len > 1024:
+      raise ValueError(
+          "description must be at most 1024 characters. Description length:"
+          f" {description_len}"
+      )
     return v
 
   @field_validator("compatibility")

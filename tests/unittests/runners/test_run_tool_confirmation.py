@@ -218,7 +218,7 @@ class TestHITLConfirmationFlowWithSingleAgent(BaseHITLTest):
         (agent.name, "test llm response after tool call"),
     ]
     for event in events:
-      assert event.invocation_id != invocation_id
+      assert event.invocation_id == invocation_id
     assert (
         testing_utils.simplify_events(copy.deepcopy(events))
         == expected_parts_final
@@ -369,7 +369,7 @@ class TestHITLConfirmationFlowWithCustomPayloadSchema(BaseHITLTest):
         (agent.name, "test llm response after final tool call"),
     ]
     for event in events:
-      assert event.invocation_id != invocation_id
+      assert event.invocation_id == invocation_id
     assert (
         testing_utils.simplify_events(copy.deepcopy(events))
         == expected_parts_final

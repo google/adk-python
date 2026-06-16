@@ -16,6 +16,7 @@
 
 from __future__ import annotations
 
+import copy
 from typing import Any
 from typing import Awaitable
 from typing import Callable
@@ -108,3 +109,16 @@ class A2aRemoteAgentConfig(BaseModel):
   )
 
   request_interceptors: Optional[list[RequestInterceptor]] = None
+
+  def __deepcopy__(self, memo):
+    cls = self.__class__
+    copied_values = {}
+    for k, v in self.__dict__.items():
+      if not k.startswith('_'):
+        if callable(v):
+          copied_values[k] = v
+        else:
+          copied_values[k] = copy.deepcopy(v, memo)
+    result = cls.model_construct(**copied_values)
+    memo[id(self)] = result
+    return result

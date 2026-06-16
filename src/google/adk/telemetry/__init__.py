@@ -12,6 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from .context import ContentCapturingMode
+from .context import TelemetryConfig
 from .tracing import trace_call_llm
 from .tracing import trace_merged_tool_calls
 from .tracing import trace_send_data
@@ -19,6 +21,8 @@ from .tracing import trace_tool_call
 from .tracing import tracer
 
 __all__ = [
+    'ContentCapturingMode',
+    'TelemetryConfig',
     'trace_call_llm',
     'trace_merged_tool_calls',
     'trace_send_data',

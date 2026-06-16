@@ -207,6 +207,82 @@ class TestOAuth2CredentialUtil:
     assert token_endpoint == "https://example.com/token"
     assert client.token_endpoint_auth_method == "client_secret_jwt"
 
+  def _oauth2_scheme_with_scopes(self):
+    """Build an OAuth2 scheme that declares scopes."""
+    return OAuth2(
+        type_="oauth2",
+        flows=OAuthFlows(
+            authorizationCode=OAuthFlowAuthorizationCode(
+                authorizationUrl="https://example.com/auth",
+                tokenUrl="https://example.com/token",
+                scopes={"read": "Read access", "write": "Write access"},
+            )
+        ),
+    )
+
+  def _capturing_post(self, captured):
+    """Stub for OAuth2Session.post that records the token-request body."""
+
+    def _post(*args, **kwargs):
+      captured["data"] = kwargs.get("data")
+      response = Mock()
+      response.status_code = 200
+      response.json.return_value = {
+          "access_token": "new_access_token",
+          "token_type": "Bearer",
+          "expires_in": 3600,
+          "refresh_token": "new_refresh_token",
+      }
+      return response
+
+    return _post
+
+  def test_refresh_request_omits_scope(self):
+    """Refresh requests must not carry scope (some providers reject it)."""
+    credential = AuthCredential(
+        auth_type=AuthCredentialTypes.OAUTH2,
+        oauth2=OAuth2Auth(
+            client_id="test_client_id",
+            client_secret="test_client_secret",
+            redirect_uri="https://example.com/callback",
+        ),
+    )
+
+    client, token_endpoint = create_oauth2_session(
+        self._oauth2_scheme_with_scopes(), credential
+    )
+    assert client is not None
+
+    captured = {}
+    client.post = self._capturing_post(captured)
+    client.refresh_token(token_endpoint, refresh_token="old_refresh_token")
+
+    assert "scope" not in captured["data"]
+
+  def test_token_exchange_omits_scope(self):
+    """Authorization-code exchange must not carry scope (it is redundant)."""
+    credential = AuthCredential(
+        auth_type=AuthCredentialTypes.OAUTH2,
+        oauth2=OAuth2Auth(
+            client_id="test_client_id",
+            client_secret="test_client_secret",
+            redirect_uri="https://example.com/callback",
+        ),
+    )
+
+    client, token_endpoint = create_oauth2_session(
+        self._oauth2_scheme_with_scopes(), credential
+    )
+    assert client is not None
+
+    captured = {}
+    client.post = self._capturing_post(captured)
+    client.fetch_token(
+        token_endpoint, grant_type="authorization_code", code="test_code"
+    )
+
+    assert "scope" not in captured["data"]
+
   def test_update_credential_with_tokens(self):
     """Test update_credential_with_tokens function."""
     credential = AuthCredential(

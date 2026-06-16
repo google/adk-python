@@ -1,0 +1,10 @@
+agent_class: Workflow
+name: loop_workflow
+edges:
+  - - START
+    - .agent.process_input
+    - generate_headline.yaml
+    - evaluate_headline.yaml
+    - .agent.route_headline
+  - - .agent.route_headline
+    - unrelated: generate_headline.yaml

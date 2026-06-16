@@ -69,7 +69,6 @@ import os
 from pathlib import Path
 import sys
 from typing import Any
-from typing import Optional
 from typing import Protocol
 from urllib.parse import unquote
 from urllib.parse import urlparse
@@ -98,6 +97,7 @@ class ServiceRegistry:
     self._session_factories: dict[str, ServiceFactory] = {}
     self._artifact_factories: dict[str, ServiceFactory] = {}
     self._memory_factories: dict[str, ServiceFactory] = {}
+    self._task_store_factories: dict[str, ServiceFactory] = {}
 
   def register_session_service(
       self, scheme: str, factory: ServiceFactory
@@ -122,6 +122,12 @@ class ServiceRegistry:
   ) -> None:
     """Register a factory for a custom memory service URI scheme."""
     self._memory_factories[scheme] = factory
+
+  def _register_task_store_service(
+      self, scheme: str, factory: ServiceFactory
+  ) -> None:
+    """Register a factory for a custom A2A task store URI scheme."""
+    self._task_store_factories[scheme] = factory
 
   def create_session_service(
       self, uri: str, **kwargs
@@ -149,6 +155,17 @@ class ServiceRegistry:
     if scheme and scheme in self._memory_factories:
       return self._memory_factories[scheme](uri, **kwargs)
     return None
+
+  def _create_task_store_service(self, uri: str, **kwargs: Any) -> Any:
+    """Create A2A task store from URI using registered factories."""
+    scheme = urlparse(uri).scheme
+    if scheme and scheme in self._task_store_factories:
+      return self._task_store_factories[scheme](uri, **kwargs)
+    supported = sorted(self._task_store_factories.keys())
+    raise ValueError(
+        f"Unsupported A2A task store URI scheme: '{scheme}'."
+        f" Supported schemes: {supported}"
+    )
 
 
 def get_service_registry() -> ServiceRegistry:
@@ -333,9 +350,42 @@ def _register_builtin_services(registry: ServiceRegistry) -> None:
   registry.register_memory_service("rag", rag_memory_factory)
   registry.register_memory_service("agentengine", agentengine_memory_factory)
 
+  # -- A2A Task Store Services --
+  def memory_task_store_factory(uri: str, **kwargs: Any) -> Any:
+    try:
+      from a2a.server.tasks import InMemoryTaskStore
+    except ImportError as e:
+      raise ImportError(
+          "A2A task store support requires the 'a2a' package."
+          " Install it with: pip install google-adk[a2a]"
+      ) from e
+
+    return InMemoryTaskStore()
+
+  def database_task_store_factory(uri: str, **kwargs: Any) -> Any:
+    try:
+      from a2a.server.tasks import DatabaseTaskStore
+    except ImportError as e:
+      raise ImportError(
+          "A2A task store support requires the 'a2a' package."
+          " Install it with: pip install google-adk[a2a]"
+      ) from e
+    from sqlalchemy.ext.asyncio import create_async_engine
+
+    engine = create_async_engine(uri)
+    return DatabaseTaskStore(engine=engine)
+
+  registry._register_task_store_service("memory", memory_task_store_factory)
+  for scheme in [
+      "postgresql+asyncpg",
+      "mysql+aiomysql",
+      "sqlite+aiosqlite",
+  ]:
+    registry._register_task_store_service(scheme, database_task_store_factory)
+
 
 def _load_gcp_config(
-    agents_dir: Optional[str], service_name: str
+    agents_dir: str | None, service_name: str
 ) -> tuple[str, str]:
   """Loads GCP project and location from environment."""
   if not agents_dir:
@@ -355,7 +405,7 @@ def _load_gcp_config(
 
 
 def _parse_agent_engine_kwargs(
-    uri_part: str, agents_dir: Optional[str]
+    uri_part: str, agents_dir: str | None
 ) -> dict[str, Any]:
   """Helper to parse agent engine resource name."""
   if not uri_part:
@@ -437,5 +487,7 @@ def _register_services_from_yaml_config(
       registry.register_artifact_service(scheme, factory)
     elif service_type == "memory":
       registry.register_memory_service(scheme, factory)
+    elif service_type == "task_store":
+      registry._register_task_store_service(scheme, factory)
     else:
       logger.warning("Unknown service type in YAML: %s", service_type)

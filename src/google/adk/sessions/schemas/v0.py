@@ -29,6 +29,7 @@ from __future__ import annotations
 from datetime import datetime
 from datetime import timezone
 import json
+import logging
 import pickle
 from typing import Any
 from typing import Optional
@@ -36,8 +37,10 @@ from typing import Optional
 from google.adk.platform import uuid as platform_uuid
 from google.genai import types
 from sqlalchemy import Boolean
+from sqlalchemy import desc
 from sqlalchemy import ForeignKeyConstraint
 from sqlalchemy import func
+from sqlalchemy import Index
 from sqlalchemy import inspect
 from sqlalchemy import Text
 from sqlalchemy.dialects import mysql
@@ -58,6 +61,32 @@ from .shared import DEFAULT_MAX_KEY_LENGTH
 from .shared import DEFAULT_MAX_VARCHAR_LENGTH
 from .shared import DynamicJSON
 from .shared import PreciseTimestamp
+
+logger = logging.getLogger("google_adk." + __name__)
+
+_TRUNCATION_SUFFIX = "...[truncated]"
+
+
+def _truncate_str(value: Optional[str], max_length: int) -> Optional[str]:
+  """Truncates a string to fit within *max_length* characters.
+
+  Old databases may still carry ``VARCHAR(N)`` columns that were never
+  ALTERed after ADK upgraded the schema definition to ``TEXT``.  Truncating
+  before the INSERT prevents a ``StringDataRightTruncationError`` crash.
+  """
+  if value is not None and len(value) > max_length:
+    truncated = value[: max_length - len(_TRUNCATION_SUFFIX)] + (
+        _TRUNCATION_SUFFIX
+    )
+    logger.warning(
+        "Truncated value from %d to %d characters to fit database"
+        " column constraint. Run the appropriate ALTER TABLE command"
+        " or migrate to the v1 schema to store full-length values.",
+        len(value),
+        max_length,
+    )
+    return truncated
+  return value
 
 
 class DynamicPickleType(TypeDecorator):
@@ -256,6 +285,13 @@ class StorageEvent(Base):
           ["sessions.app_name", "sessions.user_id", "sessions.id"],
           ondelete="CASCADE",
       ),
+      Index(
+          "idx_events_app_user_session_ts",
+          "app_name",
+          "user_id",
+          "session_id",
+          desc("timestamp"),
+      ),
   )
 
   @property
@@ -289,7 +325,9 @@ class StorageEvent(Base):
         partial=event.partial,
         turn_complete=event.turn_complete,
         error_code=event.error_code,
-        error_message=event.error_message,
+        error_message=_truncate_str(
+            event.error_message, DEFAULT_MAX_VARCHAR_LENGTH
+        ),
         interrupted=event.interrupted,
     )
     if event.content:

@@ -22,13 +22,11 @@ from typing import Any
 from typing import Dict
 from typing import List
 from typing import Optional
-from typing import Tuple
 from typing import Union
 import uuid
 
 from a2a.server.events import Event as A2AEvent
 from a2a.types import Artifact
-from a2a.types import DataPart
 from a2a.types import Message
 from a2a.types import Part as A2APart
 from a2a.types import Role
@@ -39,11 +37,7 @@ from a2a.types import TaskStatusUpdateEvent
 from a2a.types import TextPart
 
 from ...events.event import Event
-from ...flows.llm_flows.functions import REQUEST_EUC_FUNCTION_CALL_NAME
 from ..experimental import a2a_experimental
-from .part_converter import A2A_DATA_PART_METADATA_IS_LONG_RUNNING_KEY
-from .part_converter import A2A_DATA_PART_METADATA_TYPE_FUNCTION_CALL
-from .part_converter import A2A_DATA_PART_METADATA_TYPE_KEY
 from .part_converter import convert_genai_part_to_a2a_part
 from .part_converter import GenAIPartToA2APartConverter
 from .utils import _get_adk_metadata_key
@@ -218,6 +212,23 @@ def convert_event_to_a2a_events(
               ),
           )
       )
+    elif _serialize_value(event.actions) is not None:
+      a2a_events.append(
+          TaskStatusUpdateEvent(
+              task_id=task_id,
+              context_id=context_id,
+              status=TaskStatus(
+                  state=TaskState.working,
+                  message=Message(
+                      message_id=str(uuid.uuid4()),
+                      role=Role.agent,
+                      parts=[],
+                  ),
+                  timestamp=datetime.now(timezone.utc).isoformat(),
+              ),
+              final=False,
+          )
+      )
 
     a2a_events = _add_event_metadata(event, a2a_events)
     return a2a_events
@@ -240,7 +251,6 @@ def _serialize_value(value: Any) -> Optional[Any]:
     try:
       dumped = value.model_dump(
           exclude_none=True,
-          exclude_unset=True,
           exclude_defaults=True,
           by_alias=True,
       )
@@ -280,7 +290,10 @@ def _add_event_metadata(
       metadata[_get_adk_metadata_key(field_name)] = value
 
   for a2a_event in a2a_events:
-    if isinstance(a2a_event, TaskStatusUpdateEvent):
+    if (
+        isinstance(a2a_event, TaskStatusUpdateEvent)
+        and a2a_event.status.message
+    ):
       a2a_event.status.message.metadata = metadata.copy()
     elif isinstance(a2a_event, TaskArtifactUpdateEvent):
       a2a_event.artifact.metadata = metadata.copy()

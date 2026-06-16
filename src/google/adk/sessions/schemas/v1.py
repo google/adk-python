@@ -28,8 +28,10 @@ from datetime import timezone
 from typing import Any
 
 from google.adk.platform import uuid as platform_uuid
+from sqlalchemy import desc
 from sqlalchemy import ForeignKeyConstraint
 from sqlalchemy import func
+from sqlalchemy import Index
 from sqlalchemy import inspect
 from sqlalchemy.ext.mutable import MutableDict
 from sqlalchemy.orm import DeclarativeBase
@@ -195,6 +197,13 @@ class StorageEvent(Base):
           ["app_name", "user_id", "session_id"],
           ["sessions.app_name", "sessions.user_id", "sessions.id"],
           ondelete="CASCADE",
+      ),
+      Index(
+          "idx_events_app_user_session_ts",
+          "app_name",
+          "user_id",
+          "session_id",
+          desc("timestamp"),
       ),
   )
 
