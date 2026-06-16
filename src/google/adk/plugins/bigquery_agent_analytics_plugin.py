@@ -3241,6 +3241,53 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
 
   # --- UPDATED CALLBACKS FOR V1 PARITY ---
 
+  def _resolve_same_session_pause_orphan(
+      self,
+      invocation_context: "InvocationContext",
+      function_call_id: Optional[str],
+  ) -> Optional[bool]:
+    """Same-session resolution of ``pause_orphan`` for a long-running resume.
+
+    Scans the in-memory session history for the originating paused
+    function call. This is a hot-path-safe, zero-I/O check: it never
+    issues a session-service or BigQuery read, so it adds no latency to
+    the resume path.
+
+    Returns:
+      * ``False`` — the originating paused call is present in this
+        session's in-memory history, so this completion is definitely
+        not an orphan.
+      * ``None`` — unknown / not yet settled: there is no id to pair on,
+        no session history is available, or the pause was not found in
+        the (possibly trimmed) in-memory history. Callers omit the
+        ``pause_orphan`` attribute in this case so consumers read it as
+        SQL NULL ("not yet determined").
+
+    Never returns ``True``. Declaring a true orphan requires the settled
+    fallback (an off-hot-path session-service / BigQuery reconciliation),
+    which is intentionally out of scope here so the resume path stays
+    free of added reads. A persistent ``None`` is what that future
+    fallback upgrades to ``True``.
+    """
+    if not function_call_id:
+      return None
+    session = getattr(invocation_context, "session", None)
+    events = getattr(session, "events", None) if session is not None else None
+    if not events:
+      return None
+    for event in events:
+      ids = getattr(event, "long_running_tool_ids", None)
+      if not ids or function_call_id not in ids:
+        continue
+      content = getattr(event, "content", None)
+      parts = getattr(content, "parts", None) if content is not None else None
+      for part in parts or ():
+        function_call = getattr(part, "function_call", None)
+        if function_call is not None and function_call.id == function_call_id:
+          # The originating paused call is in this session's history.
+          return False
+    return None
+
   @_safe_callback
   async def on_user_message_callback(
       self,
@@ -3300,8 +3347,6 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
           # tool calls complete inside the agent run via
           # after_tool_callback, so a function_response inside a user
           # message is the resume side of a previously-paused tool.
-          # Stamp the pair keys; pause_orphan / registry semantics
-          # are intentionally deferred.
           if not part.function_response.id:
             logger.debug(
                 "User-message function_response for tool %s has no id;"
@@ -3309,17 +3354,26 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
                 " TOOL_PAUSED row.",
                 part.function_response.name,
             )
+          adk_extras = {
+              "pause_kind": "tool",
+              "function_call_id": part.function_response.id,
+          }
+          # pause_orphan: stamped False only when this session's history
+          # proves the completion pairs with a real pause. Omitted (->
+          # SQL NULL = "unknown / not yet settled") otherwise. True is
+          # reserved for the off-hot-path settled fallback so the resume
+          # path stays free of session-service / BigQuery reads.
+          pause_orphan = self._resolve_same_session_pause_orphan(
+              invocation_context, part.function_response.id
+          )
+          if pause_orphan is not None:
+            adk_extras["pause_orphan"] = pause_orphan
           await self._log_event(
               "TOOL_COMPLETED",
               callback_ctx,
               raw_content=content_dict,
               is_truncated=is_truncated,
-              event_data=EventData(
-                  adk_extras={
-                      "pause_kind": "tool",
-                      "function_call_id": part.function_response.id,
-                  },
-              ),
+              event_data=EventData(adk_extras=adk_extras),
           )
 
   @_safe_callback
