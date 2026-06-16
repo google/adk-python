@@ -16,9 +16,11 @@ from unittest.mock import MagicMock
 
 import pytest
 
-# Skip entire module if Python < 3.10 (must be before crewai_tool import)
+# Skip the module when the optional crewai dependency is not installed. Guard on
+# the third-party dep itself rather than the adk wrapper, so a real import bug in
+# crewai_tool surfaces as a failure instead of being silently skipped.
 pytest.importorskip(
-    "google.adk.integrations.crewai.crewai_tool", reason="Requires Python 3.10+"
+    "crewai.tools", reason="Requires crewai (google-adk[extensions])"
 )
 
 from google.adk.agents.context import Context

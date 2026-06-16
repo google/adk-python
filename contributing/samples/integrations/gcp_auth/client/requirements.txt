@@ -1,4 +1,6 @@
 fastapi
-uvicorn
-httpx
+google-adk[agent-engine,agent-identity]
 google-auth
+google-cloud-aiplatform
+httpx
+uvicorn

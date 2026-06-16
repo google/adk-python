@@ -164,7 +164,7 @@ def test_gemini_api_client_creation_with_projects_prefix():
     _ = model.api_client
     mock_client.assert_called_once()
     _, kwargs = mock_client.call_args
-    assert kwargs["vertexai"] is True
+    assert kwargs["enterprise"] is True
     assert "project" not in kwargs
     assert "location" not in kwargs
 
@@ -179,7 +179,7 @@ def test_gemini_live_api_client_creation_with_projects_prefix():
 
     # Second call is for _live_api_client
     _, kwargs = mock_client.call_args_list[1]
-    assert kwargs["vertexai"] is True
+    assert kwargs["enterprise"] is True
 
 
 def test_client_version_header():

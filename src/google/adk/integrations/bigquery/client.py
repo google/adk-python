@@ -14,7 +14,6 @@
 
 from __future__ import annotations
 
-import os
 from typing import List
 from typing import Optional
 from typing import Union

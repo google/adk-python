@@ -43,12 +43,12 @@ meter = metrics.get_meter(
 
 _agent_invocation_duration = meter.create_histogram(
     "gen_ai.agent.invocation.duration",
-    unit="ms",
+    unit="s",
     description="Duration of agent invocations.",
 )
 _tool_execution_duration = meter.create_histogram(
     "gen_ai.tool.execution.duration",
-    unit="ms",
+    unit="s",
     description="Duration of tool executions.",
 )
 _agent_request_size = meter.create_histogram(
@@ -74,14 +74,14 @@ _client_token_usage = gen_ai_metrics.create_gen_ai_client_token_usage(meter)
 
 def record_agent_invocation_duration(
     agent_name: str,
-    elapsed_ms: float,
+    elapsed_s: float,
     error: Exception | None = None,
 ):
   """Records the duration of the agent invocation."""
   attrs = {gen_ai_attributes.GEN_AI_AGENT_NAME: agent_name}
   if error is not None:
     attrs[error_attributes.ERROR_TYPE] = type(error).__name__
-  _agent_invocation_duration.record(elapsed_ms, attributes=attrs)
+  _agent_invocation_duration.record(elapsed_s, attributes=attrs)
 
 
 def record_agent_request_size(
@@ -116,7 +116,7 @@ def record_agent_workflow_steps(agent_name: str, events: list[Event]):
 def record_tool_execution_duration(
     tool_name: str,
     agent_name: str,
-    elapsed_ms: float,
+    elapsed_s: float,
     error: Exception | None = None,
 ):
   """Records the duration of the tool execution."""
@@ -126,12 +126,12 @@ def record_tool_execution_duration(
   }
   if error is not None:
     attrs[error_attributes.ERROR_TYPE] = type(error).__name__
-  _tool_execution_duration.record(elapsed_ms, attributes=attrs)
+  _tool_execution_duration.record(elapsed_s, attributes=attrs)
 
 
 def record_client_operation_duration(
     agent_name: str,
-    elapsed_ms: float,
+    elapsed_s: float,
     llm_request: LlmRequest,
     responses: list[LlmResponse],
     error: Exception | None = None,
@@ -154,7 +154,7 @@ def record_client_operation_duration(
   if error is not None:
     attrs[error_attributes.ERROR_TYPE] = type(error).__name__
 
-  _client_operation_duration.record(elapsed_ms / 1000.0, attributes=attrs)
+  _client_operation_duration.record(elapsed_s, attributes=attrs)
 
 
 def record_client_token_usage(

@@ -379,7 +379,7 @@ def test_to_gke_happy_path(
   assert dockerfile_path.is_file()
   dockerfile_content = dockerfile_path.read_text()
   assert "CMD adk api_server --with_ui --port=9090" in dockerfile_content
-  assert "RUN pip install google-adk==1.2.0" in dockerfile_content
+  assert 'RUN pip install "google-adk[a2a]==1.2.0"' in dockerfile_content
 
   assert len(run_recorder.calls) == 3, "Expected 3 subprocess calls"
 

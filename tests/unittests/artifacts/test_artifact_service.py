@@ -264,6 +264,52 @@ async def test_save_load_delete(service_type, artifact_service_factory):
 
 
 @pytest.mark.asyncio
+async def test_in_memory_loads_nested_artifact_reference(
+    artifact_service_factory,
+):
+  """Tests loading an artifact reference whose target name is nested."""
+  artifact_service = artifact_service_factory(ArtifactServiceType.IN_MEMORY)
+  app_name = "app0"
+  user_id = "user0"
+  session_id = "123"
+  target_filename = "folder/file456"
+  target_artifact = types.Part.from_text(text="target")
+
+  await artifact_service.save_artifact(
+      app_name=app_name,
+      user_id=user_id,
+      session_id=session_id,
+      filename=target_filename,
+      artifact=target_artifact,
+  )
+  await artifact_service.save_artifact(
+      app_name=app_name,
+      user_id=user_id,
+      session_id=session_id,
+      filename="reference",
+      artifact=types.Part(
+          file_data=types.FileData(
+              file_uri=(
+                  "artifact://apps/app0/users/user0/sessions/123/artifacts/"
+                  "folder/file456/versions/0"
+              ),
+              mime_type="text/plain",
+          )
+      ),
+  )
+
+  assert (
+      await artifact_service.load_artifact(
+          app_name=app_name,
+          user_id=user_id,
+          session_id=session_id,
+          filename="reference",
+      )
+      == target_artifact
+  )
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "service_type",
     [
@@ -595,6 +641,35 @@ async def test_get_artifact_version_out_of_index(
       session_id=session_id,
       filename=filename,
       version=3,
+  )
+
+
+@pytest.mark.asyncio
+async def test_gcs_save_and_load_empty_text_artifact(
+    artifact_service_factory,
+):
+  """GcsArtifactService should treat empty text as stored content."""
+  artifact_service = artifact_service_factory(ArtifactServiceType.GCS)
+  artifact = types.Part.from_text(text="")
+
+  version = await artifact_service.save_artifact(
+      app_name="app0",
+      user_id="user0",
+      session_id="123",
+      filename="empty.txt",
+      artifact=artifact,
+  )
+
+  assert version == 0
+  loaded_artifact = await artifact_service.load_artifact(
+      app_name="app0",
+      user_id="user0",
+      session_id="123",
+      filename="empty.txt",
+  )
+
+  assert loaded_artifact == types.Part.from_bytes(
+      data=b"", mime_type="text/plain"
   )
 
 

@@ -4,12 +4,14 @@ Nested workflows, dynamic nodes, retry configuration, custom node types, and gra
 
 ## 📋 Agent Verification Checklist (Advanced Patterns)
 Use this checklist when implementing complex workflows:
+
 - [ ] **Validation**: Does your graph follow all 7 validation rules? (e.g., no unconditional cycles)
 - [ ] **Custom Nodes**: If creating a custom node, did you override `get_name()` and `run()`?
 - [ ] **Dynamic Execution**: If using `run_node`, did you follow the rules in the dedicated dynamic-nodes reference?
 - [ ] **Waiting State**: Did you use `wait_for_output=True` if the node should stay in WAITING state until output is yielded?
 
 ## 💡 Quick Reference
+
 - **Retry**: `RetryConfig(max_attempts=5, initial_delay=1.0)`
 - **Custom Node Fields**: `rerun_on_resume`, `wait_for_output`, `retry_config`, `timeout`
 
@@ -46,7 +48,8 @@ The inner workflow receives the predecessor's output as its START input and its 
 
 Schedule nodes at runtime using `ctx.run_node()`.
 
-See the dedicated [Dynamic Node Scheduling Reference](file:///Users/deanchen/Desktop/adk-workflow/.agents/skills/adk-workflow/references/dynamic-nodes.md) for detailed rules, examples, and best practices.
+See the dedicated [Dynamic Node Scheduling Reference](dynamic-nodes.md) for
+detailed rules, examples, and best practices.
 
 ## Retry Configuration
 
@@ -80,12 +83,13 @@ delay = min(delay, max_delay)
 delay = delay * (1 + random(0, jitter))
 ```
 
-### Accessing retry count
+### Accessing the attempt count
 
 ```python
 def my_node(ctx: Context, node_input: str) -> str:
-  if ctx.retry_count > 0:
-    print(f"Retry attempt {ctx.retry_count}")
+  # attempt_count is 1 on the first try, ≥2 on retries
+  if ctx.attempt_count > 1:
+    print(f"Retry attempt {ctx.attempt_count}")
   return "result"
 ```
 
@@ -167,6 +171,7 @@ class CollectorNode(BaseNode):
 ```
 
 Nodes with `wait_for_output=True` default:
+
 - `JoinNode`: `True` (waits for all predecessors)
 - `LlmAgentWrapper` (task mode): `True` (set in `model_post_init`)
 - All other nodes: `False`
