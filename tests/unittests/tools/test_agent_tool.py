@@ -1431,3 +1431,409 @@ class TestAgentToolWithCompositeAgents:
       }
     else:
       assert declaration.parameters.properties['request'].type == 'STRING'
+
+
+@mark.asyncio
+async def test_propagate_history_injects_user_and_model_events(monkeypatch):
+  """Parent user/model text events are injected into the child session."""
+  child_session_events: list[Event] = []
+
+  class RecordingSessionService(InMemorySessionService):
+
+    async def append_event(self, session, event):
+      child_session_events.append(event)
+      return await super().append_event(session, event)
+
+  monkeypatch.setattr(
+      'google.adk.sessions.in_memory_session_service.InMemorySessionService',
+      RecordingSessionService,
+  )
+
+  tool_agent = Agent(name='tool_agent', model='test-model')
+  agent_tool = AgentTool(agent=tool_agent, propagate_conversation_history=True)
+  root_agent = Agent(name='root_agent', model='test-model', tools=[agent_tool])
+
+  parent_session_service = InMemorySessionService()
+  parent_session = await parent_session_service.create_session(
+      app_name='test_app', user_id='user'
+  )
+  await parent_session_service.append_event(
+      parent_session,
+      Event(
+          author='user',
+          content=types.Content(
+              role='user', parts=[types.Part.from_text(text='hello')]
+          ),
+      ),
+  )
+  await parent_session_service.append_event(
+      parent_session,
+      Event(
+          author='root_agent',
+          content=types.Content(
+              role='model', parts=[types.Part.from_text(text='hi there')]
+          ),
+      ),
+  )
+
+  async def _empty_async_generator():
+    if False:
+      yield None
+
+  class StubRunner:
+
+    def __init__(
+        self,
+        *,
+        app_name,
+        agent,
+        artifact_service,
+        session_service,
+        memory_service,
+        credential_service,
+        plugins,
+    ):
+      self.session_service = session_service
+      self.plugin_manager = PluginManager(plugins=plugins)
+
+    def run_async(self, *, user_id, session_id, new_message, **kwargs):
+      return _empty_async_generator()
+
+    async def close(self):
+      pass
+
+  monkeypatch.setattr('google.adk.runners.Runner', StubRunner)
+
+  invocation_context = InvocationContext(
+      invocation_id='inv-id',
+      agent=root_agent,
+      session=parent_session,
+      session_service=parent_session_service,
+      memory_service=InMemoryMemoryService(),
+      plugin_manager=PluginManager(),
+      run_config=RunConfig(),
+  )
+  tool_context = ToolContext(invocation_context)
+
+  await agent_tool.run_async(
+      args={'request': 'do something'}, tool_context=tool_context
+  )
+
+  injected_roles = [e.content.role for e in child_session_events]
+  assert injected_roles == ['user', 'model']
+  assert child_session_events[0].content.parts[0].text == 'hello'
+  assert child_session_events[1].content.parts[0].text == 'hi there'
+
+
+@mark.asyncio
+async def test_propagate_history_excludes_function_call_events(monkeypatch):
+  """Events with only function_call parts are not injected."""
+  child_session_events: list[Event] = []
+
+  class RecordingSessionService(InMemorySessionService):
+
+    async def append_event(self, session, event):
+      child_session_events.append(event)
+      return await super().append_event(session, event)
+
+  monkeypatch.setattr(
+      'google.adk.sessions.in_memory_session_service.InMemorySessionService',
+      RecordingSessionService,
+  )
+
+  tool_agent = Agent(name='tool_agent', model='test-model')
+  agent_tool = AgentTool(agent=tool_agent, propagate_conversation_history=True)
+  root_agent = Agent(name='root_agent', model='test-model', tools=[agent_tool])
+
+  parent_session_service = InMemorySessionService()
+  parent_session = await parent_session_service.create_session(
+      app_name='test_app', user_id='user'
+  )
+  await parent_session_service.append_event(
+      parent_session,
+      Event(
+          author='user',
+          content=types.Content(
+              role='user', parts=[types.Part.from_text(text='hello')]
+          ),
+      ),
+  )
+  await parent_session_service.append_event(
+      parent_session,
+      Event(
+          author='root_agent',
+          content=types.Content(
+              role='model',
+              parts=[Part.from_function_call(name='some_tool', args={})],
+          ),
+      ),
+  )
+
+  async def _empty_async_generator():
+    if False:
+      yield None
+
+  class StubRunner:
+
+    def __init__(
+        self,
+        *,
+        app_name,
+        agent,
+        artifact_service,
+        session_service,
+        memory_service,
+        credential_service,
+        plugins,
+    ):
+      self.session_service = session_service
+      self.plugin_manager = PluginManager(plugins=plugins)
+
+    def run_async(self, *, user_id, session_id, new_message, **kwargs):
+      return _empty_async_generator()
+
+    async def close(self):
+      pass
+
+  monkeypatch.setattr('google.adk.runners.Runner', StubRunner)
+
+  invocation_context = InvocationContext(
+      invocation_id='inv-id',
+      agent=root_agent,
+      session=parent_session,
+      session_service=parent_session_service,
+      memory_service=InMemoryMemoryService(),
+      plugin_manager=PluginManager(),
+      run_config=RunConfig(),
+  )
+  tool_context = ToolContext(invocation_context)
+
+  await agent_tool.run_async(
+      args={'request': 'do something'}, tool_context=tool_context
+  )
+
+  assert len(child_session_events) == 1
+  assert child_session_events[0].content.role == 'user'
+
+
+@mark.asyncio
+async def test_propagate_history_creates_events_without_state_delta(
+    monkeypatch,
+):
+  """Injected events carry no state_delta to prevent child state corruption."""
+  child_session_events: list[Event] = []
+
+  class RecordingSessionService(InMemorySessionService):
+
+    async def append_event(self, session, event):
+      child_session_events.append(event)
+      return await super().append_event(session, event)
+
+  monkeypatch.setattr(
+      'google.adk.sessions.in_memory_session_service.InMemorySessionService',
+      RecordingSessionService,
+  )
+
+  tool_agent = Agent(name='tool_agent', model='test-model')
+  agent_tool = AgentTool(agent=tool_agent, propagate_conversation_history=True)
+  root_agent = Agent(name='root_agent', model='test-model', tools=[agent_tool])
+
+  parent_session_service = InMemorySessionService()
+  parent_session = await parent_session_service.create_session(
+      app_name='test_app', user_id='user'
+  )
+  parent_event = Event(
+      author='user',
+      content=types.Content(
+          role='user', parts=[types.Part.from_text(text='hello')]
+      ),
+  )
+  parent_event.actions.state_delta = {'key': 'value'}
+  await parent_session_service.append_event(parent_session, parent_event)
+
+  async def _empty_async_generator():
+    if False:
+      yield None
+
+  class StubRunner:
+
+    def __init__(
+        self,
+        *,
+        app_name,
+        agent,
+        artifact_service,
+        session_service,
+        memory_service,
+        credential_service,
+        plugins,
+    ):
+      self.session_service = session_service
+      self.plugin_manager = PluginManager(plugins=plugins)
+
+    def run_async(self, *, user_id, session_id, new_message, **kwargs):
+      return _empty_async_generator()
+
+    async def close(self):
+      pass
+
+  monkeypatch.setattr('google.adk.runners.Runner', StubRunner)
+
+  invocation_context = InvocationContext(
+      invocation_id='inv-id',
+      agent=root_agent,
+      session=parent_session,
+      session_service=parent_session_service,
+      memory_service=InMemoryMemoryService(),
+      plugin_manager=PluginManager(),
+      run_config=RunConfig(),
+  )
+  tool_context = ToolContext(invocation_context)
+
+  await agent_tool.run_async(
+      args={'request': 'do something'}, tool_context=tool_context
+  )
+
+  assert len(child_session_events) == 1
+  assert not child_session_events[0].actions.state_delta
+
+
+@mark.asyncio
+async def test_propagate_history_disabled_by_default(monkeypatch):
+  """Default behavior: child session receives no history events."""
+  child_session_events: list[Event] = []
+
+  class RecordingSessionService(InMemorySessionService):
+
+    async def append_event(self, session, event):
+      child_session_events.append(event)
+      return await super().append_event(session, event)
+
+  monkeypatch.setattr(
+      'google.adk.sessions.in_memory_session_service.InMemorySessionService',
+      RecordingSessionService,
+  )
+
+  tool_agent = Agent(name='tool_agent', model='test-model')
+  agent_tool = AgentTool(agent=tool_agent)
+  root_agent = Agent(name='root_agent', model='test-model', tools=[agent_tool])
+
+  parent_session_service = InMemorySessionService()
+  parent_session = await parent_session_service.create_session(
+      app_name='test_app', user_id='user'
+  )
+  await parent_session_service.append_event(
+      parent_session,
+      Event(
+          author='user',
+          content=types.Content(
+              role='user', parts=[types.Part.from_text(text='hello')]
+          ),
+      ),
+  )
+
+  async def _empty_async_generator():
+    if False:
+      yield None
+
+  class StubRunner:
+
+    def __init__(
+        self,
+        *,
+        app_name,
+        agent,
+        artifact_service,
+        session_service,
+        memory_service,
+        credential_service,
+        plugins,
+    ):
+      self.session_service = session_service
+      self.plugin_manager = PluginManager(plugins=plugins)
+
+    def run_async(self, *, user_id, session_id, new_message, **kwargs):
+      return _empty_async_generator()
+
+    async def close(self):
+      pass
+
+  monkeypatch.setattr('google.adk.runners.Runner', StubRunner)
+
+  invocation_context = InvocationContext(
+      invocation_id='inv-id',
+      agent=root_agent,
+      session=parent_session,
+      session_service=parent_session_service,
+      memory_service=InMemoryMemoryService(),
+      plugin_manager=PluginManager(),
+      run_config=RunConfig(),
+  )
+  tool_context = ToolContext(invocation_context)
+
+  await agent_tool.run_async(
+      args={'request': 'do something'}, tool_context=tool_context
+  )
+
+  assert len(child_session_events) == 0
+
+
+@mark.asyncio
+async def test_propagate_history_child_sees_context_end_to_end():
+  """Child agent's LLM request includes parent conversation turns."""
+  mock_model = testing_utils.MockModel.create(
+      responses=[
+          function_call_no_schema,
+          'child response',
+          'final response',
+      ]
+  )
+
+  tool_agent = Agent(
+      name='tool_agent',
+      model=mock_model,
+  )
+
+  root_agent = Agent(
+      name='root_agent',
+      model=mock_model,
+      tools=[AgentTool(agent=tool_agent, propagate_conversation_history=True)],
+  )
+
+  runner = testing_utils.InMemoryRunner(root_agent)
+
+  # Add prior conversation turns to the parent session.
+  await runner.runner.session_service.append_event(
+      runner.session,
+      Event(
+          author='user',
+          content=types.Content(
+              role='user',
+              parts=[types.Part.from_text(text='I need 2 bedrooms')],
+          ),
+      ),
+  )
+  await runner.runner.session_service.append_event(
+      runner.session,
+      Event(
+          author='root_agent',
+          content=types.Content(
+              role='model',
+              parts=[types.Part.from_text(text='Looking for apartments')],
+          ),
+      ),
+  )
+
+  runner.run('find options')
+
+  # The child agent (second LLM call) should see the injected history.
+  child_request = mock_model.requests[1]
+  child_contents = child_request.contents
+  user_texts = [
+      part.text
+      for content in child_contents
+      if content.role == 'user'
+      for part in content.parts
+      if part.text
+  ]
+  assert 'I need 2 bedrooms' in user_texts

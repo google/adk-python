@@ -40,6 +40,8 @@ from .tool_context import ToolContext
 
 if TYPE_CHECKING:
   from ..agents.base_agent import BaseAgent
+  from ..sessions.base_session_service import BaseSessionService
+  from ..sessions.session import Session
 
 
 def _part_to_text(part: types.Part) -> str:
@@ -103,6 +105,54 @@ def _get_output_schema(agent: BaseAgent) -> Optional[SchemaType]:
   return None
 
 
+async def _inject_conversation_history(
+    tool_context: ToolContext,
+    session_service: BaseSessionService,
+    session: Session,
+) -> None:
+  """Injects parent conversation events into the child session.
+
+  Copies user and model text events from the parent session into the child,
+  giving the tool agent multi-turn conversational awareness.
+
+  Function-call and function-response events are excluded because they
+  reference tools that only exist in the parent runner. A new Event object
+  is created for each injected turn to prevent state_delta values from being
+  replayed and corrupting the child session state.
+
+  Args:
+    tool_context: The parent tool context containing the session to read
+      from.
+    session_service: The child runner's session service for appending
+      events.
+    session: The child session to inject events into.
+  """
+  from ..events.event import Event
+
+  for parent_event in tool_context.session.events:
+    if not parent_event.content or not parent_event.content.parts:
+      continue
+    if parent_event.content.role not in ('user', 'model'):
+      continue
+    text_parts = [
+        part
+        for part in parent_event.content.parts
+        if part.text and not part.thought
+    ]
+    if not text_parts:
+      continue
+    await session_service.append_event(
+        session,
+        Event(
+            author=parent_event.author,
+            content=types.Content(
+                role=parent_event.content.role,
+                parts=text_parts,
+            ),
+        ),
+    )
+
+
 class AgentTool(BaseTool):
   """A tool that wraps an agent.
 
@@ -117,6 +167,10 @@ class AgentTool(BaseTool):
       to the agent's runner. When True (default), the agent will inherit all
       plugins from its parent. Set to False to run the agent with an isolated
       plugin environment.
+    propagate_conversation_history: Whether to inject parent session's user
+      and model text events into the child session before execution. When
+      True, the child agent receives the full conversational context. Default
+      is False (isolated session with no history).
   """
 
   def __init__(
@@ -126,11 +180,13 @@ class AgentTool(BaseTool):
       *,
       include_plugins: bool = True,
       propagate_grounding_metadata: bool = False,
+      propagate_conversation_history: bool = False,
   ):
     self.agent = agent
     self.skip_summarization: bool = skip_summarization
     self.include_plugins = include_plugins
     self.propagate_grounding_metadata = propagate_grounding_metadata
+    self.propagate_conversation_history = propagate_conversation_history
 
     super().__init__(name=agent.name, description=agent.description)
 
@@ -266,6 +322,11 @@ class AgentTool(BaseTool):
         state=state_dict,
     )
 
+    if self.propagate_conversation_history:
+      await _inject_conversation_history(
+          tool_context, runner.session_service, session
+      )
+
     last_content = None
     last_grounding_metadata = None
     async with Aclosing(
@@ -384,12 +445,14 @@ class _TaskAgentTool(AgentTool):
       *,
       include_plugins: bool = True,
       propagate_grounding_metadata: bool = False,
+      propagate_conversation_history: bool = False,
   ):
     super().__init__(
         agent,
         skip_summarization,
         include_plugins=include_plugins,
         propagate_grounding_metadata=propagate_grounding_metadata,
+        propagate_conversation_history=propagate_conversation_history,
     )
     self._defers_response = True
 
