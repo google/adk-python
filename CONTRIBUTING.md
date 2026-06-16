@@ -133,7 +133,7 @@ part before or alongside your code PR.
 1. **Clone the repository:**
 
    ```shell
-   gh repo clone google/adk-python -- -b v2
+   gh repo clone google/adk-python
    cd adk-python
    ```
 

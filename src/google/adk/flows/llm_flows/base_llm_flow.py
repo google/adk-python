@@ -1197,6 +1197,9 @@ class BaseLlmFlow(ABC):
       if auth_event:
         yield auth_event
 
+        # Interrupt invocation (mirrors _resolve_toolset_auth behavior)
+        invocation_context.end_invocation = True
+
       tool_confirmation_event = functions.generate_request_confirmation_event(
           invocation_context, function_call_event, function_response_event
       )
