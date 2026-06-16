@@ -146,12 +146,13 @@ def llm_request_with_computer_use():
 
 def test_supported_models():
   models = Gemini.supported_models()
-  assert len(models) == 4
+  assert len(models) == 5
   assert models[0] == r"gemini-.*"
-  assert models[1] == r"model-optimizer-.*"
-  assert models[2] == r"projects\/.+\/locations\/.+\/endpoints\/.+"
+  assert models[1] == r"gemma-4.*"
+  assert models[2] == r"model-optimizer-.*"
+  assert models[3] == r"projects\/.+\/locations\/.+\/endpoints\/.+"
   assert (
-      models[3]
+      models[4]
       == r"projects\/.+\/locations\/.+\/publishers\/google\/models\/gemini.+"
   )
 
@@ -164,7 +165,7 @@ def test_gemini_api_client_creation_with_projects_prefix():
     _ = model.api_client
     mock_client.assert_called_once()
     _, kwargs = mock_client.call_args
-    assert kwargs["vertexai"] is True
+    assert kwargs["enterprise"] is True
     assert "project" not in kwargs
     assert "location" not in kwargs
 
@@ -179,7 +180,7 @@ def test_gemini_live_api_client_creation_with_projects_prefix():
 
     # Second call is for _live_api_client
     _, kwargs = mock_client.call_args_list[1]
-    assert kwargs["vertexai"] is True
+    assert kwargs["enterprise"] is True
 
 
 def test_client_version_header():

@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+from google.adk.agents.llm_agent import LlmAgent
 from google.adk.tools.base_tool import BaseTool
 from google.adk.workflow._base_node import BaseNode
 from google.adk.workflow._base_node import START
@@ -117,3 +118,19 @@ class TestBuildNode:
     """build_node raises ValueError for invalid types."""
     with pytest.raises(ValueError, match="Invalid node type"):
       build_node(123)
+
+  def test_llm_agent_mode_defaults(self):
+    """build_node sets correct default mode for LlmAgent."""
+    root_agent = LlmAgent(name="root", instruction="test")
+    sub_agent = LlmAgent(name="sub", description="test")
+    # Dynamic subagent attachment without model_post_init normalization
+    sub_agent.parent_agent = root_agent
+
+    # Subagent with parent_agent should default to chat mode
+    built_sub = build_node(sub_agent)
+    assert built_sub.mode == "chat"
+
+    # Standalone agent without parent_agent should default to single_turn
+    standalone = LlmAgent(name="standalone", instruction="test")
+    built_standalone = build_node(standalone)
+    assert built_standalone.mode == "single_turn"

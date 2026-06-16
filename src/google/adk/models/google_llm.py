@@ -104,7 +104,7 @@ class Gemini(BaseLlm):
         class GlobalGemini(Gemini):
           @cached_property
           def api_client(self) -> Client:
-            return Client(vertexai=True, location="global")
+            return Client(enterprise=True, location="global")
 
         agent = Agent(model=GlobalGemini(model="gemini-3-pro-preview"))
 
@@ -165,6 +165,8 @@ class Gemini(BaseLlm):
 
     return [
         r'gemini-.*',
+        # Gemma 4+ works natively with Gemini (no workarounds needed).
+        r'gemma-4.*',
         # model optimizer pattern
         r'model-optimizer-.*',
         # fine-tuned vertex endpoint pattern
@@ -345,7 +347,7 @@ class Gemini(BaseLlm):
         'http_options': types.HttpOptions(**kwargs_for_http_options),
     }
     if self.model.startswith('projects/'):
-      kwargs['vertexai'] = True
+      kwargs['enterprise'] = True
 
     return Client(**kwargs)
 
@@ -390,7 +392,7 @@ class Gemini(BaseLlm):
         )
     }
     if self.model.startswith('projects/'):
-      kwargs['vertexai'] = True
+      kwargs['enterprise'] = True
 
     return Client(**kwargs)
 

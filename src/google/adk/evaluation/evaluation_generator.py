@@ -23,7 +23,6 @@ from typing import AsyncGenerator
 from typing import Optional
 import uuid
 
-from google.genai import errors
 from google.genai import types
 from google.genai.types import Content
 from pydantic import BaseModel
@@ -228,6 +227,8 @@ class _LiveSession:
 
   async def __aexit__(self, exc_type, exc_val, exc_tb) -> None:
     """Closes the queue and waits for the background task to finish."""
+    from google.genai import errors
+
     self.live_request_queue.close()
     try:
       await asyncio.wait_for(self.consume_task, timeout=30)
@@ -626,7 +627,7 @@ class EvaluationGenerator:
     invocations = []
     for invocation_id, events in events_by_invocation_id.items():
       final_response = None
-      final_event = None
+      final_event: Optional[Event] = None
       user_content = Content(parts=[])
       invocation_timestamp = 0
       app_details = None
@@ -666,7 +667,9 @@ class EvaluationGenerator:
       invocation_events = [
           InvocationEvent(author=e.author, content=e.content)
           for e in events_to_add
-          if e is not final_event
+          if final_event is None
+          or e is not final_event
+          or e.get_function_calls()
       ]
       invocations.append(
           Invocation(

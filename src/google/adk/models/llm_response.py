@@ -189,9 +189,7 @@ class LlmResponse(BaseModel):
     usage_metadata = generate_content_response.usage_metadata
     if generate_content_response.candidates:
       candidate = generate_content_response.candidates[0]
-      if (
-          candidate.content and candidate.content.parts
-      ) or candidate.finish_reason == types.FinishReason.STOP:
+      if candidate.content and candidate.content.parts:
         return LlmResponse(
             content=candidate.content,
             grounding_metadata=candidate.grounding_metadata,
@@ -202,17 +200,29 @@ class LlmResponse(BaseModel):
             logprobs_result=candidate.logprobs_result,
             model_version=generate_content_response.model_version,
         )
-      else:
-        return LlmResponse(
-            error_code=candidate.finish_reason,
-            error_message=candidate.finish_message,
-            citation_metadata=candidate.citation_metadata,
-            usage_metadata=usage_metadata,
-            finish_reason=candidate.finish_reason,
-            avg_logprobs=candidate.avg_logprobs,
-            logprobs_result=candidate.logprobs_result,
-            model_version=generate_content_response.model_version,
+      # Empty/missing parts. Distinguish empty-with-STOP (e.g. some
+      # gemini-2.5-flash-lite turns after a tool call return zero output
+      # tokens with finish_reason=STOP) from other finish reasons so callers
+      # see an actionable error instead of a silent empty final output.
+      if candidate.finish_reason == types.FinishReason.STOP:
+        error_code = 'MODEL_RETURNED_NO_CONTENT'
+        error_message = (
+            candidate.finish_message
+            or 'The model returned no content (finish_reason=STOP with empty parts).'
         )
+      else:
+        error_code = candidate.finish_reason
+        error_message = candidate.finish_message
+      return LlmResponse(
+          error_code=error_code,
+          error_message=error_message,
+          citation_metadata=candidate.citation_metadata,
+          usage_metadata=usage_metadata,
+          finish_reason=candidate.finish_reason,
+          avg_logprobs=candidate.avg_logprobs,
+          logprobs_result=candidate.logprobs_result,
+          model_version=generate_content_response.model_version,
+      )
     else:
       if generate_content_response.prompt_feedback:
         prompt_feedback = generate_content_response.prompt_feedback

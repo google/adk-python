@@ -185,10 +185,15 @@ class TestStreamingResponseAggregator:
 
   @pytest.mark.asyncio
   @pytest.mark.parametrize("use_progressive_sse", [True, False])
-  async def test_empty_content_produces_empty_final_frame(
+  async def test_empty_content_with_stop_surfaces_no_content_error(
       self, use_progressive_sse
   ):
-    """A candidate with an empty parts list produces an empty final frame."""
+    """Empty parts + STOP surfaces a MODEL_RETURNED_NO_CONTENT error frame.
+
+    Previously the aggregator yielded a successful frame with empty content
+    here; that let an empty Gemini turn (e.g. gemini-2.5-flash-lite returning
+    zero output tokens after a tool call) silently become the final output.
+    """
     with temporary_feature_override(
         FeatureName.PROGRESSIVE_SSE_STREAMING, use_progressive_sse
     ):
@@ -207,7 +212,9 @@ class TestStreamingResponseAggregator:
       closed_response = aggregator.close()
 
       assert len(results) == 1
-      assert results[0].content is not None
+      assert results[0].content is None
+      assert results[0].error_code == "MODEL_RETURNED_NO_CONTENT"
+      assert results[0].error_message
       assert closed_response is not None
       assert closed_response.partial is False
       assert closed_response.content is None
@@ -385,6 +392,103 @@ class TestStreamingResponseAggregator:
         await run_test()
     else:
       await run_test()
+
+  @pytest.mark.asyncio
+  @pytest.mark.parametrize("use_progressive_sse", [False, True])
+  async def test_close_propagates_model_version(self, use_progressive_sse):
+    """close() should carry model_version into the aggregated response."""
+    aggregator = streaming_utils.StreamingResponseAggregator()
+    response1 = types.GenerateContentResponse(
+        candidates=[
+            types.Candidate(
+                content=types.Content(parts=[types.Part(text="Hello ")]),
+            )
+        ],
+        model_version="gemini-test-1.0",
+    )
+    response2 = types.GenerateContentResponse(
+        candidates=[
+            types.Candidate(
+                content=types.Content(parts=[types.Part(text="World!")]),
+                finish_reason=types.FinishReason.STOP,
+            )
+        ],
+        model_version="gemini-test-1.0",
+    )
+
+    async def run_test():
+      async for _ in aggregator.process_response(response1):
+        pass
+      async for _ in aggregator.process_response(response2):
+        pass
+
+      closed_response = aggregator.close()
+      assert closed_response is not None
+      assert closed_response.model_version == "gemini-test-1.0"
+
+    if use_progressive_sse:
+      with temporary_feature_override(
+          FeatureName.PROGRESSIVE_SSE_STREAMING, True
+      ):
+        await run_test()
+    else:
+      await run_test()
+
+  @pytest.mark.asyncio
+  async def test_non_progressive_merged_yield_propagates_model_version(self):
+    """The mid-stream merged text event should carry model_version forward.
+
+    In non-progressive mode, when a new non-text response arrives after buffered
+    text, the aggregator yields a synthesized merged-text LlmResponse before
+    yielding the current partial. That merged event must preserve fields from
+    the source response (model_version, grounding_metadata, citation_metadata,
+    finish_reason).
+    """
+    # PROGRESSIVE_SSE_STREAMING defaults to on; explicitly disable it to
+    # exercise the non-progressive merged-yield code path under test.
+    with temporary_feature_override(
+        FeatureName.PROGRESSIVE_SSE_STREAMING, False
+    ):
+      aggregator = streaming_utils.StreamingResponseAggregator()
+      # First: buffer some text.
+      response1 = types.GenerateContentResponse(
+          candidates=[
+              types.Candidate(
+                  content=types.Content(
+                      parts=[types.Part(text="Hello World!")]
+                  ),
+              )
+          ],
+          model_version="gemini-test-2.0",
+      )
+      # Second: a response without text triggers the merged yield path.
+      response2 = types.GenerateContentResponse(
+          candidates=[
+              types.Candidate(
+                  content=types.Content(parts=[]),
+                  finish_reason=types.FinishReason.STOP,
+              )
+          ],
+          model_version="gemini-test-2.0",
+      )
+
+      results = []
+      async for r in aggregator.process_response(response1):
+        results.append(r)
+      async for r in aggregator.process_response(response2):
+        results.append(r)
+
+      # The synthesized merged-text event should carry model_version.
+      merged_events = [
+          r
+          for r in results
+          if r.content
+          and r.content.parts
+          and r.content.parts[0].text == "Hello World!"
+          and not r.partial
+      ]
+      assert merged_events, "expected a merged non-partial text event"
+      assert merged_events[0].model_version == "gemini-test-2.0"
 
 
 class TestFunctionCallIdGeneration:

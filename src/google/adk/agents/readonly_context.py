@@ -49,6 +49,8 @@ class ReadonlyContext:
   @property
   def agent_name(self) -> str:
     """The name of the agent that is currently running."""
+    if self._invocation_context.agent is None:
+      return "unknown"
     return self._invocation_context.agent.name
 
   @property

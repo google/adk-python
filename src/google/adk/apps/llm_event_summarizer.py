@@ -15,7 +15,6 @@ from __future__ import annotations
 
 from typing import Optional
 
-from google.genai import types
 from google.genai.types import Content
 from google.genai.types import Part
 

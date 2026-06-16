@@ -1,6 +1,5 @@
 [build-system]
 build-backend = "flit_core.buildapi"
-
 # Build system specify which backend is used to build/install the project (flit,
 # poetry, setuptools,...). All backends are supported by `pip install`
 requires = [ "flit-core>=3.8,<4" ]
@@ -8,7 +7,6 @@ requires = [ "flit-core>=3.8,<4" ]
 [project]
 # Project metadata. Available keys are documented at:
 # https://packaging.python.org/en/latest/specifications/declaring-project-metadata
-
 name = "google-adk"
 description = "Agent Development Kit"
 readme = "README.md"
@@ -26,29 +24,28 @@ classifiers = [
   "Programming Language :: Python :: 3.11",
   "Programming Language :: Python :: 3.12",
   "Programming Language :: Python :: 3.13",
+  "Programming Language :: Python :: 3.14",
   "Topic :: Software Development :: Libraries :: Python Modules",
   # List of https://pypi.org/classifiers/
   "Typing :: Typed",
 ]
 dynamic = [ "version" ]
-
 dependencies = [
   "aiosqlite>=0.21",
   "authlib>=1.6.6,<2",
   "click>=8.1.8,<9",
   "fastapi>=0.133,<1",
   "google-auth[pyopenssl]>=2.47",
-  "google-genai>=2.4,<3",
+  "google-genai>=2.8,<3",
   "graphviz>=0.20.2,<1",
   "httpx>=0.27,<1",
   "jsonschema>=4.23,<5",
-  "opentelemetry-api>=1.36,<=1.41.1",
-  "opentelemetry-sdk>=1.36,<=1.41.1",
+  "opentelemetry-api>=1.39,<=1.42.1",
+  "opentelemetry-sdk>=1.39,<=1.42.1",
   "packaging>=21",
   "pydantic>=2.12,<3",
   "python-dotenv>=1,<2",
   "python-multipart>=0.0.9,<1",
-  # go/keep-sorted start
   "pyyaml>=6.0.2,<7",
   "requests>=2.32.4,<3",
   "starlette>=1.0.1,<2",
@@ -58,17 +55,17 @@ dependencies = [
   "uvicorn>=0.34,<1",
   "watchdog>=6,<7",
   "websockets>=15.0.1,<16",
-  # go/keep-sorted end
 ]
-
 optional-dependencies.a2a = [
   "a2a-sdk>=0.3.4,<0.4",
 ]
 optional-dependencies.agent-identity = [
+  "google-cloud-agentidentitycredentials>=0.1,<0.2",
   "google-cloud-iamconnectorcredentials>=0.1,<0.2",
 ]
 optional-dependencies.all = [
   "anyio>=4.9,<5",
+  "e2b>=2,<3",
   "google-api-python-client>=2.157,<3",
   "google-cloud-aiplatform[agent-engines]>=1.148.1,<2",
   "google-cloud-bigquery>=2.2",
@@ -76,6 +73,7 @@ optional-dependencies.all = [
   "google-cloud-bigtable>=2.32",
   "google-cloud-dataplex>=1.7,<3",
   "google-cloud-discoveryengine>=0.13.12,<0.14",
+  "google-cloud-parametermanager>=0.4,<1",
   "google-cloud-pubsub>=2,<3",
   "google-cloud-resource-manager>=1.12,<2",
   "google-cloud-secret-manager>=2.22,<3",
@@ -93,7 +91,10 @@ optional-dependencies.all = [
   "sqlalchemy>=2,<3",
   "sqlalchemy-spanner>=1.14",
 ]
-
+optional-dependencies.antigravity = [
+  "google-antigravity>=0.1,<0.2",
+  "protobuf>=6",
+]
 optional-dependencies.community = [
   "google-adk-community",
 ]
@@ -101,17 +102,25 @@ optional-dependencies.db = [
   "sqlalchemy>=2,<3",
   "sqlalchemy-spanner>=1.14",
 ]
-
 optional-dependencies.dev = [
   "flit>=3.10",
+  # Lint tools used by scripts/run_precommit_checks.sh (which runs them directly,
+  # without the pre-commit framework). Formatters that rewrite files are pinned
+  # to the exact versions in .pre-commit-config.yaml so local runs produce
+  # byte-identical output to CI.
+  "isort==8.0.1",
+  "mdformat==0.7.22",
+  "mdformat-gfm",
   "mypy>=1.15",
   "pre-commit>=4",
-  "pyink>=25.12",
+  "pre-commit-hooks==4.6",
+  "pyink==25.12",
   "pylint>=2.6",
+  "pyproject-fmt==2.24",
+  "ruff==0.15.17",
   "tox>=4.23.2",
   "tox-uv>=1.33.2",
 ]
-
 optional-dependencies.docs = [
   "autodoc-pydantic",
   "furo",
@@ -121,7 +130,9 @@ optional-dependencies.docs = [
   "sphinx-click",
   "sphinx-rtd-theme",
 ]
-
+optional-dependencies.e2b = [
+  "e2b>=2,<3", # For E2BEnvironment remote sandbox.
+]
 optional-dependencies.eval = [
   "gepa>=0.1",
   "google-cloud-aiplatform[evaluation]>=1.148",
@@ -130,14 +141,12 @@ optional-dependencies.eval = [
   "rouge-score>=0.1.2",
   "tabulate>=0.9",
 ]
-
 optional-dependencies.extensions = [
   "anthropic>=0.78",                                                 # For anthropic model support; 0.78 introduced ThinkingConfigAdaptiveParam (required for Claude Opus 4.7).
   "beautifulsoup4>=3.2.2",                                           # For load_web_page tool.
   "crewai[tools]; python_version>='3.11' and python_version<'3.12'", # For CrewaiTool; chromadb/pypika fail on 3.12+
   "docker>=7",                                                       # For ContainerCodeExecutor
   "google-cloud-firestore>=2.11,<3",                                 # For Firestore services
-  "google-cloud-parametermanager>=0.4,<1",
   "k8s-agent-sandbox>=0.1.1.post3",
   "kubernetes>=29",
   "langgraph>=0.2.60,<0.4.8",
@@ -148,7 +157,6 @@ optional-dependencies.extensions = [
   "pypika>=0.50",
   "toolbox-adk>=1,<2",
 ]
-
 optional-dependencies.gcp = [
   "google-cloud-aiplatform[agent-engines]>=1.148.1,<2",
   "google-cloud-bigquery>=2.2",
@@ -156,6 +164,7 @@ optional-dependencies.gcp = [
   "google-cloud-bigtable>=2.32",
   "google-cloud-dataplex>=1.7,<3",
   "google-cloud-discoveryengine>=0.13.12,<0.14",
+  "google-cloud-parametermanager>=0.4,<1",
   "google-cloud-pubsub>=2,<3",
   "google-cloud-resource-manager>=1.12,<2",
   "google-cloud-secret-manager>=2.22,<3",
@@ -170,14 +179,12 @@ optional-dependencies.gcp = [
   "pyarrow>=14",
   "python-dateutil>=2.9.0.post0,<3",
 ]
-
 optional-dependencies.mcp = [
   "anyio>=4.9,<5",
   "mcp>=1.24,<2",
 ]
-
 optional-dependencies.otel-gcp = [
-  "opentelemetry-instrumentation-google-genai>=0.6b0,<1",
+  "opentelemetry-instrumentation-google-genai>=0.7b1,<1",
   "opentelemetry-instrumentation-grpc>=0.43b0,<1",
   "opentelemetry-instrumentation-httpx>=0.54b0,<1",
 ]
@@ -187,8 +194,11 @@ optional-dependencies.test = [
   "anthropic>=0.78",                                                 # For anthropic model tests; 0.78 introduced ThinkingConfigAdaptiveParam (required for Claude Opus 4.7).
   "anyio>=4.9,<5",
   "crewai[tools]; python_version>='3.11' and python_version<'3.12'", # For CrewaiTool tests; chromadb/pypika fail on 3.12+
+  "e2b>=2,<3",
   "gepa>=0.1",
+  "google-antigravity>=0.1,<0.2",
   "google-api-python-client>=2.157,<3",
+  "google-cloud-agentidentitycredentials>=0.1,<0.2",
   "google-cloud-aiplatform[agent-engines,evaluation]>=1.148.1,<2",
   "google-cloud-bigquery>=2.2",
   "google-cloud-bigquery-storage>=2",
@@ -216,9 +226,10 @@ optional-dependencies.test = [
   "opentelemetry-exporter-gcp-monitoring>=1.9.0a0,<2",
   "opentelemetry-exporter-gcp-trace>=1.9,<2",
   "opentelemetry-exporter-otlp-proto-http>=1.36",
-  "opentelemetry-instrumentation-google-genai>=0.3b0,<1",
+  "opentelemetry-instrumentation-google-genai>=0.7b1,<1",
   "opentelemetry-resourcedetector-gcp>=1.9.0a0,<2",
   "pandas>=2.2.3",
+  "protobuf>=6",
   "pyarrow>=14",
   "pypika>=0.50",
   "pytest>=9,<10",
@@ -234,45 +245,59 @@ optional-dependencies.test = [
   "tabulate>=0.9",
   "tomli>=2,<3; python_version<'3.11'",
 ]
-
 optional-dependencies.toolbox = [ "toolbox-adk>=1,<2" ]
-
 optional-dependencies.tools = [
   "google-api-python-client>=2.157,<3",
 ]
-
 urls.changelog = "https://github.com/google/adk-python/blob/main/CHANGELOG.md"
 urls.documentation = "https://google.github.io/adk-docs/"
 urls.homepage = "https://google.github.io/adk-docs/"
 urls.repository = "https://github.com/google/adk-python"
 scripts.adk = "google.adk.cli:main"
 
-[tool.flit.sdist]
-include = [ 'src/**/*', 'README.md', 'pyproject.toml', 'LICENSE' ]
-exclude = [ 'src/**/*.sh', 'src/**/README.md' ]
+[tool.flit]
+module.name = "google.adk"
+module.include = [ "py.typed" ]
+sdist.include = [ "src/**/*", "README.md", "pyproject.toml", "LICENSE" ]
+sdist.exclude = [ "src/**/*.sh", "src/**/README.md" ]
 
-[tool.flit.module]
-name = "google.adk"
-include = [ "py.typed" ]
+[tool.ruff]
+extend-exclude = [
+  "src/google/adk/cli/browser/",
+  # These hardcode googleapis.com endpoints and trip the check-file-contents
+  # mTLS policy check the moment they change. Excluded so unused-import
+  # cleanup does not pull them into a PR; clean them up when the mTLS policy
+  # is addressed.
+  "src/google/adk/integrations/bigquery/bigquery_credentials.py",
+  "src/google/adk/integrations/bigquery/data_insights_tool.py",
+  "src/google/adk/plugins/bigquery_agent_analytics_plugin.py",
+  "src/google/adk/tools/data_agent/data_agent_tool.py",
+  "src/google/adk/v1/",
+  "v1_tests/",
+]
+lint.select = [ "F401" ]
+# __init__.py files re-export symbols for the public API; unused imports
+# there are intentional, not dead code.
+lint.per-file-ignores."**/__init__.py" = [ "F401" ]
 
 [tool.isort]
 profile = "google"
-single_line_exclusions = [  ]
 line_length = 200
-known_third_party = [ "google.adk", "a2a" ]
-
-[tool.pytest.ini_options]
-testpaths = [ "tests" ]
-asyncio_default_fixture_loop_scope = "function"
-asyncio_mode = "auto"
+single_line_exclusions = []
+known_third_party = [ "a2a", "google.adk" ]
 
 [tool.mypy]
-python_version = "3.11"
-exclude = [ "tests/", "contributing/samples/" ]
-plugins = [ "pydantic.mypy" ]
-strict = true
-disable_error_code = [ "import-not-found", "import-untyped", "unused-ignore" ]
+exclude = [ "contributing/samples/", "tests/" ]
 follow_imports = "skip"
+python_version = "3.11"
+disable_error_code = [ "import-not-found", "import-untyped", "unused-ignore" ]
+strict = true
+plugins = [ "pydantic.mypy" ]
+
+[tool.pytest]
+ini_options.testpaths = [ "tests" ]
+ini_options.asyncio_default_fixture_loop_scope = "function"
+ini_options.asyncio_mode = "auto"
 
 [tool.pyink]
 line-length = 80
