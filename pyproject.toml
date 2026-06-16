@@ -40,8 +40,8 @@ dependencies = [
   "graphviz>=0.20.2,<1",
   "httpx>=0.27,<1",
   "jsonschema>=4.23,<5",
-  "opentelemetry-api>=1.36,<=1.41.1",
-  "opentelemetry-sdk>=1.36,<=1.41.1",
+  "opentelemetry-api>=1.39,<=1.42.1",
+  "opentelemetry-sdk>=1.39,<=1.42.1",
   "packaging>=21",
   "pydantic>=2.12,<3",
   "python-dotenv>=1,<2",
@@ -117,6 +117,7 @@ optional-dependencies.dev = [
   "pyink==25.12",
   "pylint>=2.6",
   "pyproject-fmt==2.24",
+  "ruff==0.15.17",
   "tox>=4.23.2",
   "tox-uv>=1.33.2",
 ]
@@ -183,7 +184,7 @@ optional-dependencies.mcp = [
   "mcp>=1.24,<2",
 ]
 optional-dependencies.otel-gcp = [
-  "opentelemetry-instrumentation-google-genai>=0.6b0,<1",
+  "opentelemetry-instrumentation-google-genai>=0.7b1,<1",
   "opentelemetry-instrumentation-grpc>=0.43b0,<1",
   "opentelemetry-instrumentation-httpx>=0.54b0,<1",
 ]
@@ -225,7 +226,7 @@ optional-dependencies.test = [
   "opentelemetry-exporter-gcp-monitoring>=1.9.0a0,<2",
   "opentelemetry-exporter-gcp-trace>=1.9,<2",
   "opentelemetry-exporter-otlp-proto-http>=1.36",
-  "opentelemetry-instrumentation-google-genai>=0.3b0,<1",
+  "opentelemetry-instrumentation-google-genai>=0.7b1,<1",
   "opentelemetry-resourcedetector-gcp>=1.9.0a0,<2",
   "pandas>=2.2.3",
   "protobuf>=6",
@@ -259,6 +260,25 @@ module.name = "google.adk"
 module.include = [ "py.typed" ]
 sdist.include = [ "src/**/*", "README.md", "pyproject.toml", "LICENSE" ]
 sdist.exclude = [ "src/**/*.sh", "src/**/README.md" ]
+
+[tool.ruff]
+extend-exclude = [
+  "src/google/adk/cli/browser/",
+  # These hardcode googleapis.com endpoints and trip the check-file-contents
+  # mTLS policy check the moment they change. Excluded so unused-import
+  # cleanup does not pull them into a PR; clean them up when the mTLS policy
+  # is addressed.
+  "src/google/adk/integrations/bigquery/bigquery_credentials.py",
+  "src/google/adk/integrations/bigquery/data_insights_tool.py",
+  "src/google/adk/plugins/bigquery_agent_analytics_plugin.py",
+  "src/google/adk/tools/data_agent/data_agent_tool.py",
+  "src/google/adk/v1/",
+  "v1_tests/",
+]
+lint.select = [ "F401" ]
+# __init__.py files re-export symbols for the public API; unused imports
+# there are intentional, not dead code.
+lint.per-file-ignores."**/__init__.py" = [ "F401" ]
 
 [tool.isort]
 profile = "google"

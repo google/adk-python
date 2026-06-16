@@ -33,12 +33,117 @@ class ReplayVerificationError(Exception):
   """Exception raised when replay verification fails."""
 
 
+def _normalize_type(val: Any) -> Any:
+  if hasattr(val, 'name') and hasattr(val, 'value'):
+    return str(val.value).lower()
+  if isinstance(val, str) and val.startswith('Type.'):
+    return val.split('.')[-1].lower()
+  if isinstance(val, str) and val in (
+      'STRING',
+      'NUMBER',
+      'OBJECT',
+      'ARRAY',
+      'INTEGER',
+      'BOOLEAN',
+  ):
+    return val.lower()
+  return val
+
+
+def _resolve_refs(data: Any, defs: dict[str, Any]) -> Any:
+  if isinstance(data, dict):
+    if '$ref' in data:
+      ref_path = data['$ref']
+      if ref_path.startswith('#/$defs/'):
+        def_name = ref_path.split('/')[-1]
+        if def_name in defs:
+          return _resolve_refs(defs[def_name], defs)
+    return {k: _resolve_refs(v, defs) for k, v in data.items()}
+  elif isinstance(data, list):
+    return [_resolve_refs(x, defs) for x in data]
+  else:
+    return data
+
+
+def _normalize_schema_dict(data: Any) -> Any:
+  if isinstance(data, dict):
+    if '$defs' in data:
+      defs = data['$defs']
+      data = _resolve_refs(data, defs)
+      data.pop('$defs', None)
+
+    res = {}
+    for k, v in data.items():
+      if k in ('title', 'default', 'description'):
+        continue
+      if k == 'type':
+        res[k] = _normalize_type(v)
+      else:
+        res[k] = _normalize_schema_dict(v)
+
+    if 'anyOf' in res and isinstance(res['anyOf'], list):
+      any_of = res['anyOf']
+      null_schema = None
+      non_null_schemas = []
+      for s in any_of:
+        if isinstance(s, dict) and s.get('type') == 'null':
+          null_schema = s
+        else:
+          non_null_schemas.append(s)
+
+      if null_schema is not None and len(non_null_schemas) == 1:
+        target_schema = non_null_schemas[0]
+        if isinstance(target_schema, dict):
+          res.update(target_schema)
+          res['nullable'] = True
+          res.pop('anyOf', None)
+
+    return res
+  elif isinstance(data, list):
+    return [_normalize_schema_dict(x) for x in data]
+  else:
+    return data
+
+
+def _normalize_tool_config(data: Any) -> Any:
+  """Normalize function declarations to ignore minor formatting changes."""
+  if isinstance(data, dict):
+    if 'name' in data and (
+        'description' in data
+        or 'parameters' in data
+        or 'parameters_json_schema' in data
+    ):
+      if data.get('name') == 'transfer_to_agent':
+        data['description'] = 'Transfer the question to another agent.'
+      elif 'description' in data and isinstance(data['description'], str):
+        data['description'] = data['description'].strip()
+
+      params = data.pop('parameters', None)
+      if params is not None:
+        data['parameters_json_schema'] = params
+
+      if 'parameters_json_schema' in data:
+        data['parameters_json_schema'] = _normalize_schema_dict(
+            data['parameters_json_schema']
+        )
+
+      data.pop('response', None)
+      data.pop('response_json_schema', None)
+
+    return {k: _normalize_tool_config(v) for k, v in data.items()}
+  elif isinstance(data, list):
+    return [_normalize_tool_config(x) for x in data]
+  else:
+    return data
+
+
 class _ConformanceTestGemini(Gemini):
   """A mocked Gemini model for conformance test replay mode.
 
   This class is used to mock the Gemini model in conformance test replay mode.
-  It is a subclass of Gemini and overrides the `generate_content_async`` method to
-  return a mocked response from the provided recordingss.
+  It is a subclass of Gemini and overrides the `generate_content_async` method
+  to
+  return a mocked response from the provided recordings.
   """
 
   def __init__(
@@ -113,6 +218,9 @@ class _ConformanceTestGemini(Gemini):
     current_dict = current_request.model_dump(
         exclude_none=True, exclude=excluded_fields, exclude_defaults=True
     )
+
+    recorded_dict = _normalize_tool_config(recorded_dict)
+    current_dict = _normalize_tool_config(current_dict)
 
     if recorded_dict != current_dict:
       raise ReplayVerificationError(

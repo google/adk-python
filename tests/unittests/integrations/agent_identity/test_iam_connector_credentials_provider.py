@@ -82,11 +82,12 @@ def context():
   return context
 
 
-
 @patch.dict(_iam_connector_credentials_provider.os.environ, clear=True)
 @patch.object(_iam_connector_credentials_provider, "Client")
 def test_get_client_uses_rest_transport(mock_client_class):
-  provider = _iam_connector_credentials_provider._IamConnectorCredentialsProvider()
+  provider = (
+      _iam_connector_credentials_provider._IamConnectorCredentialsProvider()
+  )
   provider._get_client()
 
   mock_client_class.assert_called_once()
@@ -101,7 +102,9 @@ def test_get_client_uses_rest_transport(mock_client_class):
 @patch.object(_iam_connector_credentials_provider, "Client")
 @patch.object(_iam_connector_credentials_provider, "ClientOptions")
 def test_get_client_with_env_var(mock_client_options_class, mock_client_class):
-  provider = _iam_connector_credentials_provider._IamConnectorCredentialsProvider()
+  provider = (
+      _iam_connector_credentials_provider._IamConnectorCredentialsProvider()
+  )
   client = provider._get_client()
 
   assert client == mock_client_class.return_value
@@ -390,7 +393,8 @@ async def test_get_auth_credential_returns_token_if_consent_was_completed(
   function_call.id = "auth-req-1"
   function_call.name = REQUEST_EUC_FUNCTION_CALL_NAME
   function_call.args = AuthToolArguments(
-      function_call_id="call-123", auth_config=Mock(spec=AuthConfig, auth_scheme=auth_scheme)
+      function_call_id="call-123",
+      auth_config=Mock(spec=AuthConfig, auth_scheme=auth_scheme),
   ).model_dump(by_alias=True, exclude_none=True)
 
   event1 = Mock()
@@ -433,7 +437,8 @@ async def test_get_auth_credential_raises_error_if_consent_canceled(
   function_call.id = "auth-req-1"
   function_call.name = REQUEST_EUC_FUNCTION_CALL_NAME
   function_call.args = AuthToolArguments(
-      function_call_id="call-123", auth_config=Mock(spec=AuthConfig, auth_scheme=auth_scheme)
+      function_call_id="call-123",
+      auth_config=Mock(spec=AuthConfig, auth_scheme=auth_scheme),
   ).model_dump(by_alias=True, exclude_none=True)
 
   event1 = Mock()

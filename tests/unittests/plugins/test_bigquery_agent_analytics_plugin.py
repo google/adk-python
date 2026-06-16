@@ -8564,7 +8564,7 @@ class TestC7ToolPauseAndComplete:
     await bq_plugin_inst.on_event_callback(
         invocation_context=invocation_context, event=event
     )
-    await asyncio.sleep(0.01)
+    await bq_plugin_inst.flush()
     rows = await _get_captured_rows_async(mock_write_client, dummy_arrow_schema)
     pauses = [r for r in rows if r["event_type"] == "TOOL_PAUSED"]
     assert len(pauses) == 1
@@ -8598,7 +8598,7 @@ class TestC7ToolPauseAndComplete:
     await bq_plugin_inst.on_event_callback(
         invocation_context=invocation_context, event=event
     )
-    await asyncio.sleep(0.01)
+    await bq_plugin_inst.flush()
     rows = await _get_captured_rows_async(mock_write_client, dummy_arrow_schema)
     pauses = [r for r in rows if r["event_type"] == "TOOL_PAUSED"]
     assert len(pauses) == 1
@@ -8626,7 +8626,7 @@ class TestC7ToolPauseAndComplete:
             role="user", parts=[types.Part(function_response=fr)]
         ),
     )
-    await asyncio.sleep(0.01)
+    await bq_plugin_inst.flush()
     rows = await _get_captured_rows_async(mock_write_client, dummy_arrow_schema)
     completed = [r for r in rows if r["event_type"] == "TOOL_COMPLETED"]
     assert len(completed) == 1
@@ -8657,7 +8657,7 @@ class TestC7ToolPauseAndComplete:
             role="user", parts=[types.Part(function_response=fr)]
         ),
     )
-    await asyncio.sleep(0.01)
+    await bq_plugin_inst.flush()
     rows = await _get_captured_rows_async(mock_write_client, dummy_arrow_schema)
     types_emitted = {r["event_type"] for r in rows}
     assert "HITL_CONFIRMATION_REQUEST_COMPLETED" in types_emitted
@@ -8777,7 +8777,7 @@ class TestUnmatchedLongRunningIdFallback:
       await bq_plugin_inst.on_event_callback(
           invocation_context=invocation_context, event=event
       )
-    await asyncio.sleep(0.01)
+    await bq_plugin_inst.flush()
     rows = await _get_captured_rows_async(mock_write_client, dummy_arrow_schema)
     pauses = [r for r in rows if r["event_type"] == "TOOL_PAUSED"]
     assert len(pauses) == 1
@@ -8811,7 +8811,7 @@ class TestUnmatchedLongRunningIdFallback:
     await bq_plugin_inst.on_event_callback(
         invocation_context=invocation_context, event=event
     )
-    await asyncio.sleep(0.01)
+    await bq_plugin_inst.flush()
     rows = await _get_captured_rows_async(mock_write_client, dummy_arrow_schema)
     pauses = [r for r in rows if r["event_type"] == "TOOL_PAUSED"]
     assert len(pauses) == 1
