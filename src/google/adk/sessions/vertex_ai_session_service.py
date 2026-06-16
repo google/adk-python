@@ -50,6 +50,29 @@ _USAGE_METADATA_CUSTOM_METADATA_KEY = '_usage_metadata'
 _SESSION_ID_PATTERN = re.compile(r'^[A-Za-z0-9_-]+$')
 
 
+def _extract_short_session_id(
+    session_id: str, expected_engine_id: str | None = None
+) -> str:
+  """Extracts the short session ID if a full resource name is provided."""
+  if isinstance(session_id, str) and '/' in session_id:
+    parts = session_id.split('/')
+    if len(parts) >= 2 and parts[-2] == 'sessions':
+      if (
+          len(parts) >= 4
+          and parts[-4] == 'reasoningEngines'
+          and expected_engine_id
+      ):
+        passed_engine_id = parts[-3]
+        if passed_engine_id != expected_engine_id:
+          raise ValueError(
+              'Session resource name mismatch: session belongs to '
+              f'reasoningEngine {passed_engine_id!r}, but service is '
+              f'configured for {expected_engine_id!r}.'
+          )
+      return parts[-1]
+  return session_id
+
+
 def _validate_session_id(session_id: str) -> None:
   """Rejects session IDs that could escape the URL path segment."""
   if not isinstance(session_id, str) or not _SESSION_ID_PATTERN.fullmatch(
@@ -146,6 +169,9 @@ class VertexAiSessionService(BaseSessionService):
 
     config = {'session_state': state} if state else {}
     if session_id:
+      session_id = _extract_short_session_id(
+          session_id, expected_engine_id=reasoning_engine_id
+      )
       _validate_session_id(session_id)
       config['session_id'] = session_id
     config.update(kwargs)
@@ -177,8 +203,11 @@ class VertexAiSessionService(BaseSessionService):
       session_id: str,
       config: Optional[GetSessionConfig] = None,
   ) -> Optional[Session]:
-    _validate_session_id(session_id)
     reasoning_engine_id = self._get_reasoning_engine_id(app_name)
+    session_id = _extract_short_session_id(
+        session_id, expected_engine_id=reasoning_engine_id
+    )
+    _validate_session_id(session_id)
     session_resource_name = (
         f'reasoningEngines/{reasoning_engine_id}/sessions/{session_id}'
     )
@@ -277,8 +306,11 @@ class VertexAiSessionService(BaseSessionService):
   async def delete_session(
       self, *, app_name: str, user_id: str, session_id: str
   ) -> None:
-    _validate_session_id(session_id)
     reasoning_engine_id = self._get_reasoning_engine_id(app_name)
+    session_id = _extract_short_session_id(
+        session_id, expected_engine_id=reasoning_engine_id
+    )
+    _validate_session_id(session_id)
     session_resource_name = (
         f'reasoningEngines/{reasoning_engine_id}/sessions/{session_id}'
     )

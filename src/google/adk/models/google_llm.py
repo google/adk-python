@@ -165,6 +165,8 @@ class Gemini(BaseLlm):
 
     return [
         r'gemini-.*',
+        # Gemma 4+ works natively with Gemini (no workarounds needed).
+        r'gemma-4.*',
         # model optimizer pattern
         r'model-optimizer-.*',
         # fine-tuned vertex endpoint pattern

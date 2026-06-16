@@ -1304,7 +1304,8 @@ class TestRunnerCacheConfig:
 
     # Verify string representation
     expected_str = (
-        "ContextCacheConfig(cache_intervals=30, ttl=14400s, min_tokens=4096)"
+        "ContextCacheConfig(cache_intervals=30, ttl=14400s, min_tokens=4096, "
+        "create_http_options=None)"
     )
     assert str(runner.context_cache_config) == expected_str
 

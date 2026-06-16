@@ -25,12 +25,8 @@ from google.adk.models.llm_response import LlmResponse
 from google.adk.telemetry import ContentCapturingMode
 from google.adk.telemetry import TelemetryConfig
 from google.adk.telemetry import tracing
-from google.adk.telemetry._experimental_semconv import get_content_capturing_mode
-from google.adk.telemetry._experimental_semconv import is_experimental_semconv
 from google.adk.telemetry._experimental_semconv import set_operation_details_common_attributes
 from google.adk.telemetry.context import ADK_TELEMETRY_IGNORE_RUN_CONFIG
-from google.adk.telemetry.tracing import _should_add_request_response_to_spans
-from google.adk.telemetry.tracing import _should_log_prompt_response_content
 from google.adk.telemetry.tracing import trace_inference_result
 from google.genai.types import Part
 from opentelemetry.sdk.trace import TracerProvider
@@ -201,7 +197,7 @@ def test_capture_mode_env_invalid_values_treated_as_disabled(
   ``test_capture_mode_env_legacy_*``.
   """
   monkeypatch.setenv(_ENV_CAPTURE, invalid)
-  assert get_content_capturing_mode() == ''
+  assert TelemetryConfig().content_capturing_mode_value == ''
 
 
 @pytest.mark.parametrize('legacy', ['true', 'TRUE', 'True', '1'])
@@ -217,7 +213,7 @@ def test_capture_mode_env_legacy_values_coerced_to_event_only(
   Coercion preserves observable behavior for existing deployments.
   """
   monkeypatch.setenv(_ENV_CAPTURE, legacy)
-  assert get_content_capturing_mode() == 'EVENT_ONLY', (
+  assert TelemetryConfig().content_capturing_mode_value == 'EVENT_ONLY', (
       f"legacy env value {legacy!r} should coerce to 'EVENT_ONLY' for"
       ' back-compat'
   )
@@ -234,7 +230,7 @@ def test_capture_mode_env_legacy_coercion_is_silent(
   with caplog.at_level(
       'WARNING', logger='google.adk.telemetry._experimental_semconv'
   ):
-    assert get_content_capturing_mode() == 'EVENT_ONLY'
+    assert TelemetryConfig().content_capturing_mode_value == 'EVENT_ONLY'
   assert not caplog.records, (
       'legacy-value coercion must be silent; got log records:'
       f' {[(r.levelname, r.message) for r in caplog.records]}'
@@ -471,9 +467,9 @@ def _run_set_common_attrs(
   out: dict = {}
   set_operation_details_common_attributes(
       out,
+      telemetry_config or TelemetryConfig(),
       {'gen_ai.operation.name': 'chat'},
       log_only_attributes={'gen_ai.user.id': 'user-123'},
-      telemetry_config=telemetry_config,
   )
   return out
 
@@ -561,12 +557,12 @@ def test_admin_lock_value_parsing(
       genai_semconv_stability_opt_in='experimental',
       capture_message_content=ContentCapturingMode.EVENT_ONLY,
   )
-  assert is_experimental_semconv(cfg) is (not locked)
-  assert _should_log_prompt_response_content(cfg) is (not locked)
-  assert bool(get_content_capturing_mode(cfg)) is (not locked)
+  assert cfg.should_use_experimental_genai_semconv is (not locked)
+  assert cfg.should_add_content_to_logs is (not locked)
+  assert bool(cfg.content_capturing_mode_value) is (not locked)
   # SPAN-bearing knob: EVENT_ONLY does not enable spans, so when unlocked the
   # cfg disables span capture; when locked the env default (on) wins.
-  assert _should_add_request_response_to_spans(cfg) is locked
+  assert cfg.should_add_content_to_legacy_spans is locked
 
 
 def _make_test_runner(
@@ -1045,7 +1041,5 @@ async def test_runner_invocation_with_admin_lock_ignores_span_capture_override(
   assert all(v == '{}' for v in llm_request_attrs), (
       'admin lock + env=false should suppress the legacy ADK span'
       ' content attribute regardless of per-request capture=True; some'
-      ' call site bypassed the lock guard in'
-      ' _should_add_request_response_to_spans. attrs='
-      f'{llm_request_attrs}'
+      ' call site bypassed the lock guard. attrs={llm_request_attrs}'
   )

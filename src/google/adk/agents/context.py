@@ -403,6 +403,7 @@ class Context(ReadonlyContext):
     ctx_with_proxy = ctx.model_copy(
         update={
             'session': self.session,
+            'isolation_scope': self.isolation_scope,
         }
     )
     return ctx_with_proxy
