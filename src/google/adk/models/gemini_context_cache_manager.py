@@ -411,6 +411,13 @@ class GeminiContextCacheManager:
       if llm_request.config and llm_request.config.tool_config:
         cache_config.tool_config = llm_request.config.tool_config
 
+      # Pass through HTTP options (e.g. timeout) from cache config
+      if (
+          llm_request.cache_config
+          and llm_request.cache_config.create_http_options
+      ):
+        cache_config.http_options = llm_request.cache_config.create_http_options
+
       span.set_attribute("cache_contents_count", cache_contents_count)
       span.set_attribute("model", llm_request.model)
       span.set_attribute("ttl_seconds", llm_request.cache_config.ttl_seconds)

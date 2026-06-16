@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+from google.genai import types
 from pydantic import BaseModel
 from pydantic import ConfigDict
 from pydantic import Field
@@ -72,6 +73,18 @@ class ContextCacheConfig(BaseModel):
       ),
   )
 
+  create_http_options: types.HttpOptions | None = Field(
+      default=None,
+      description=(
+          "Optional HTTP options to pass to the GenAI client. Set this to add a"
+          " timeout on CachedContent.create() calls (e.g."
+          " types.HttpOptions(timeout=10000) for a 10-second timeout in"
+          " milliseconds). When the cache creation call exceeds the timeout,"
+          " it fails and the request proceeds without caching. None uses the"
+          " client's default HTTP options."
+      ),
+  )
+
   @property
   def ttl_string(self) -> str:
     """Get TTL as string format for cache creation."""
@@ -81,5 +94,6 @@ class ContextCacheConfig(BaseModel):
     """String representation for logging."""
     return (
         f"ContextCacheConfig(cache_intervals={self.cache_intervals}, "
-        f"ttl={self.ttl_seconds}s, min_tokens={self.min_tokens})"
+        f"ttl={self.ttl_seconds}s, min_tokens={self.min_tokens}, "
+        f"create_http_options={self.create_http_options})"
     )

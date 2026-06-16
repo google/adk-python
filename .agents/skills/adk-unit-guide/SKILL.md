@@ -28,6 +28,7 @@ This skill creates a detailed developer guide for new or updated code file or di
 - Look for an existing guide in the `/docs/guides/***` directory of this repository.
   - If a guide already exists, update the existing guide incrementally and prioritize preserving the previous content as much as possible.
   - If no guide exists, create a guide file for the new code unit in the `/docs/guides/***` directory of this repository, using the relative path of the code unit. For example, if the code unit is called `/topic/function/class.ext`, create a guide in the location `/docs/guides/topic/function/class/index.md`.
+- **Update the Index**: Whenever a new guide is created, or an existing guide's title/summary changes, update the index file `/docs/guides/README.md`. Ensure the guide is listed under the correct category with a link and a brief summary.
 
 ### Guide structure and content
 
@@ -50,6 +51,8 @@ Use the following structure and instructions to create the guide for the code un
 - Present a single, minimum implementation of the code unit to demonstrate its use.
 - Show enough of the containing classes to make it clear where the code could be used.
 - Use unit test code as a starting point for the code example, if available.
+- When writing a sample agent, do not set the `model` attribute.
+- For workflow node samples, prefer using a simple Python function rather than extending `BaseNode` to demonstrate the node's logic, unless class extension is explicitly required for the use case.
 
 ## How it works
 
@@ -60,7 +63,8 @@ Use the following structure and instructions to create the guide for the code un
 
 ## Configuration options
 
-- If the code unit has configuration options, document them in a table detailing parameters, types, default values, and descriptions.
+- If the code unit has configuration options (e.g., settings, configuration objects), document them in a table detailing parameters, types, default values, and descriptions.
+- **Do NOT** list references of all attributes or methods of the classes. Exhaustive API references belong in auto-generated reference documentation, not in guides. Guides should focus on how to use the code unit.
 
 ## Advanced applications
 
@@ -72,5 +76,9 @@ Use the following structure and instructions to create the guide for the code un
 ## Limitations
 
 - Mention any limitations of the code unit, if known.
+
+## Related samples
+
+- Link to relevant samples in the `contributing/` directory that demonstrate the use of this code unit.
 
 ```
