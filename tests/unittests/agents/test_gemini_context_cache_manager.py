@@ -41,15 +41,22 @@ class TestGeminiContextCacheManager:
         min_tokens=0,  # Allow caching for tests
     )
 
-  def create_llm_request(self, cache_metadata=None, contents_count=3):
-    """Helper to create test LlmRequest."""
+  def create_llm_request(
+      self, cache_metadata=None, contents_count=3, message_text=None
+  ):
+    """Helper to create test LlmRequest.
+
+    Args:
+        cache_metadata: Optional existing cache metadata to attach.
+        contents_count: Number of user contents to generate.
+        message_text: When provided, every content uses this exact text instead
+            of the default ``f"Test message {i}"``. Useful for building a
+            cacheable prefix large enough to clear Gemini's token minimum.
+    """
     contents = []
     for i in range(contents_count):
-      contents.append(
-          types.Content(
-              role="user", parts=[types.Part(text=f"Test message {i}")]
-          )
-      )
+      text = message_text if message_text is not None else f"Test message {i}"
+      contents.append(types.Content(role="user", parts=[types.Part(text=text)]))
 
     # Create tools for testing fingerprinting
     tools = [
@@ -201,6 +208,43 @@ class TestGeminiContextCacheManager:
     )
     mock_cleanup.assert_called_once_with(existing_cache.cache_name)
     self.manager.genai_client.aio.caches.create.assert_called_once()
+
+  async def test_create_cache_gates_on_prefix_not_full_prompt(self):
+    """Cache creation is gated on the cacheable prefix, not the full prompt.
+
+    Regression test for https://github.com/google/adk-python/issues/5847.
+
+    On a long conversation the previous-prompt token count
+    (``cacheable_contents_token_count``) can be well above Gemini's 4096-token
+    minimum while the cached prefix ``contents[:cache_contents_count]`` is far
+    below it. Creating a cache in that case makes ``caches.create`` fail with a
+    400 INVALID_ARGUMENT. The manager must skip cache creation instead.
+    """
+    self.manager.genai_client.aio.caches.create = AsyncMock()
+
+    # A tiny cacheable prefix followed by a huge trailing user turn.
+    contents = [
+        types.Content(role="user", parts=[types.Part(text="Short prefix.")]),
+        types.Content(role="user", parts=[types.Part(text="word " * 100_000)]),
+    ]
+    llm_request = LlmRequest(
+        model="gemini-2.5-flash",
+        contents=contents,
+        config=types.GenerateContentConfig(
+            system_instruction="You are a helpful assistant.",
+        ),
+        cache_config=self.cache_config,
+    )
+    # Full previous prompt is large (clears the old, buggy gate)...
+    llm_request.cacheable_contents_token_count = 75000
+
+    # ...but only the tiny first content is cacheable.
+    result = await self.manager._create_new_cache_with_contents(
+        llm_request, cache_contents_count=1
+    )
+
+    assert result is None
+    self.manager.genai_client.aio.caches.create.assert_not_called()
 
   async def test_handle_context_caching_invalid_cache_fingerprint_mismatch(
       self,
@@ -904,8 +948,14 @@ class TestGeminiContextCacheManager:
     1. First call: no metadata -> returns fingerprint-only metadata
     2. Second call: fingerprint matches, cache created successfully
     """
+    # Use a prefix large enough to clear Gemini's token minimum, otherwise the
+    # cached prefix (contents[:3]) would be correctly rejected as too small.
+    big_text = "lorem ipsum " * 1000  # ~12k chars -> ~3k tokens per content
+
     # --- First LLM call: no existing metadata ---
-    llm_request_1 = self.create_llm_request(contents_count=3)
+    llm_request_1 = self.create_llm_request(
+        contents_count=3, message_text=big_text
+    )
 
     result_1 = await self.manager.handle_context_caching(llm_request_1)
 
@@ -916,9 +966,11 @@ class TestGeminiContextCacheManager:
     # --- Second LLM call: carry forward fingerprint-only metadata ---
     # Contents grew but we still have same prefix
     llm_request_2 = self.create_llm_request(
-        cache_metadata=result_1, contents_count=5
+        cache_metadata=result_1, contents_count=5, message_text=big_text
     )
-    llm_request_2.cacheable_contents_token_count = 4096
+    # Full previous prompt is large; the cached prefix (first 3 contents) also
+    # clears Gemini's 4096-token minimum.
+    llm_request_2.cacheable_contents_token_count = 30000
 
     # Verify prefix fingerprint matches (real implementation).
     # The fingerprint-only metadata is "invalid" (no cache_name),
