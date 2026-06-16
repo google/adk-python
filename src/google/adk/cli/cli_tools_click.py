@@ -963,7 +963,7 @@ def cli_eval(
   logs.setup_adk_logger(getattr(logging, log_level.upper()))
 
   try:
-    import importlib
+    import importlib  # noqa: F401
 
     from ..evaluation.base_eval_service import InferenceConfig
     from ..evaluation.base_eval_service import InferenceRequest
@@ -1215,14 +1215,14 @@ def cli_optimize(
   logs.setup_adk_logger(getattr(logging, log_level.upper()))
 
   try:
-    from ..evaluation.custom_metric_evaluator import _CustomMetricEvaluator
+    from ..evaluation.custom_metric_evaluator import _CustomMetricEvaluator  # noqa: F401
     from ..evaluation.local_eval_sets_manager import LocalEvalSetsManager
     from ..optimization.gepa_root_agent_prompt_optimizer import GEPARootAgentPromptOptimizer
     from ..optimization.gepa_root_agent_prompt_optimizer import GEPARootAgentPromptOptimizerConfig
     from ..optimization.local_eval_sampler import LocalEvalSampler
     from ..optimization.local_eval_sampler import LocalEvalSamplerConfig
-    from .cli_eval import _collect_eval_results
-    from .cli_eval import _collect_inferences
+    from .cli_eval import _collect_eval_results  # noqa: F401
+    from .cli_eval import _collect_inferences  # noqa: F401
     from .cli_eval import get_root_agent
 
   except ModuleNotFoundError as mnf:

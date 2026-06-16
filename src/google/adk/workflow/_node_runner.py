@@ -28,7 +28,6 @@ import logging
 from typing import Any
 from typing import TYPE_CHECKING
 
-from ..events._node_path_builder import _NodePathBuilder
 from ..telemetry import node_tracing
 
 if TYPE_CHECKING:
@@ -247,7 +246,6 @@ class NodeRunner:
   ) -> None:
     """Iterate node.run(), enqueue events, write results to ctx."""
     from ._errors import NodeInterruptedError
-    from ._errors import NodeTimeoutError
 
     try:
       timeout = self._node.timeout

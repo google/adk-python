@@ -108,7 +108,6 @@ def _rearrange_events_for_async_function_responses_in_history(
     events: list[Event],
 ) -> list[Event]:
   """Rearrange the async function_response events in the history."""
-
   function_call_id_to_response_events_index: dict[str, int] = {}
   for i, event in enumerate(events):
     function_responses = event.get_function_responses()
@@ -116,6 +115,9 @@ def _rearrange_events_for_async_function_responses_in_history(
       for function_response in function_responses:
         function_call_id = function_response.id
         function_call_id_to_response_events_index[function_call_id] = i
+
+  if not function_call_id_to_response_events_index:
+    return events
 
   result_events: list[Event] = []
   for event in events:
