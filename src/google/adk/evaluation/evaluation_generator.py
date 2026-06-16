@@ -558,12 +558,18 @@ class EvaluationGenerator:
     user_id = initial_session.user_id if initial_session else "test_user_id"
     session_id = session_id if session_id else str(uuid.uuid4())
 
-    _ = await session_service.create_session(
+    session = await session_service.create_session(
         app_name=app_name,
         user_id=user_id,
         state=initial_session.state if initial_session else {},
         session_id=session_id,
     )
+
+    # Seed session with prior conversation history so that eval turns
+    # run with realistic prior context without being scored.
+    if initial_session and initial_session.conversation_history:
+      for event in initial_session.conversation_history:
+        await session_service.append_event(session=session, event=event)
 
     if not artifact_service:
       artifact_service = InMemoryArtifactService()

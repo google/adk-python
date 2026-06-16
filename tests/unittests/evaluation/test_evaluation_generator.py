@@ -595,6 +595,115 @@ class TestGenerateInferencesFromRootAgent:
     assert called_with_content.parts[0].text == "message 1"
 
   @pytest.mark.asyncio
+  async def test_seed_events_are_appended_to_session(self, mocker, mock_runner):
+    """Tests that seed events from SessionInput.conversation_history are appended after create_session."""
+    from google.adk.evaluation.eval_case import SessionInput
+
+    mock_agent = mocker.MagicMock()
+    mock_user_sim = mocker.MagicMock(spec=UserSimulator)
+    mock_user_sim.get_next_user_message = mocker.AsyncMock(
+        return_value=NextUserMessage(
+            status=UserSimulatorStatus.STOP_SIGNAL_DETECTED
+        )
+    )
+
+    # Create a real InMemorySessionService so we can verify events are appended
+    mock_session_service = mocker.MagicMock()
+    mock_session = mocker.MagicMock()
+    mock_session_service.create_session = mocker.AsyncMock(
+        return_value=mock_session
+    )
+    mock_session_service.append_event = mocker.AsyncMock()
+
+    mocker.patch(
+        "google.adk.evaluation.evaluation_generator.EvaluationGenerator._get_app_details_by_invocation_id"
+    )
+    mocker.patch(
+        "google.adk.evaluation.evaluation_generator.EvaluationGenerator.convert_events_to_eval_invocations"
+    )
+
+    seed_event_1 = Event(
+        content=types.Content(
+            parts=[types.Part(text="How do I pay my water bill?")],
+            role="user",
+        ),
+        author="user",
+        invocation_id="seed-0",
+    )
+    seed_event_2 = Event(
+        content=types.Content(
+            parts=[types.Part(text="You can pay by calling ABC.")],
+            role="model",
+        ),
+        author="root_agent",
+        invocation_id="seed-0",
+    )
+
+    initial_session = SessionInput(
+        app_name="test_app",
+        user_id="test_user",
+        conversation_history=[seed_event_1, seed_event_2],
+    )
+
+    await EvaluationGenerator._generate_inferences_from_root_agent(
+        root_agent=mock_agent,
+        user_simulator=mock_user_sim,
+        initial_session=initial_session,
+        session_service=mock_session_service,
+    )
+
+    # Verify append_event was called for each seed event
+    assert mock_session_service.append_event.call_count == 2
+    mock_session_service.append_event.assert_any_call(
+        session=mock_session, event=seed_event_1
+    )
+    mock_session_service.append_event.assert_any_call(
+        session=mock_session, event=seed_event_2
+    )
+
+  @pytest.mark.asyncio
+  async def test_no_seed_events_when_events_is_none(self, mocker, mock_runner):
+    """Tests that append_event is not called when SessionInput.conversation_history is None."""
+    from google.adk.evaluation.eval_case import SessionInput
+
+    mock_agent = mocker.MagicMock()
+    mock_user_sim = mocker.MagicMock(spec=UserSimulator)
+    mock_user_sim.get_next_user_message = mocker.AsyncMock(
+        return_value=NextUserMessage(
+            status=UserSimulatorStatus.STOP_SIGNAL_DETECTED
+        )
+    )
+
+    mock_session_service = mocker.MagicMock()
+    mock_session = mocker.MagicMock()
+    mock_session_service.create_session = mocker.AsyncMock(
+        return_value=mock_session
+    )
+    mock_session_service.append_event = mocker.AsyncMock()
+
+    mocker.patch(
+        "google.adk.evaluation.evaluation_generator.EvaluationGenerator._get_app_details_by_invocation_id"
+    )
+    mocker.patch(
+        "google.adk.evaluation.evaluation_generator.EvaluationGenerator.convert_events_to_eval_invocations"
+    )
+
+    initial_session = SessionInput(
+        app_name="test_app",
+        user_id="test_user",
+    )
+
+    await EvaluationGenerator._generate_inferences_from_root_agent(
+        root_agent=mock_agent,
+        user_simulator=mock_user_sim,
+        initial_session=initial_session,
+        session_service=mock_session_service,
+    )
+
+    # Verify append_event was NOT called
+    mock_session_service.append_event.assert_not_called()
+
+  @pytest.mark.asyncio
   async def test_generates_inferences_with_user_simulator_live(
       self, mocker, mock_runner, mock_session_service
   ):
@@ -618,6 +727,7 @@ class TestGenerateInferencesFromRootAgent:
     mock_generate_inferences_live = mocker.patch(
         "google.adk.evaluation.evaluation_generator.EvaluationGenerator._generate_inferences_for_single_user_invocation_live"
     )
+
     mocker.patch(
         "google.adk.evaluation.evaluation_generator.EvaluationGenerator._get_app_details_by_invocation_id"
     )
@@ -860,3 +970,4 @@ class TestLiveSessionCallbacks:
     )
     assert isinstance(called_after_args.kwargs["llm_response"], Event)
     assert called_after_args.kwargs["llm_response"] == mock_event
+
