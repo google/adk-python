@@ -55,3 +55,7 @@ def __getattr__(name: str):
       raise missing_extra('sqlalchemy', 'db') from e
     return vars(module)['DatabaseSessionService']
   raise AttributeError(f'module {__name__!r} has no attribute {name!r}')
+
+
+def __dir__() -> list[str]:
+  return sorted(__all__)

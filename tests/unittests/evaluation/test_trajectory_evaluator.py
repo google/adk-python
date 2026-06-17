@@ -16,6 +16,8 @@
 
 from google.adk.evaluation.eval_case import IntermediateData
 from google.adk.evaluation.eval_case import Invocation
+from google.adk.evaluation.eval_case import InvocationEvent
+from google.adk.evaluation.eval_case import InvocationEvents
 from google.adk.evaluation.eval_metrics import EvalMetric
 from google.adk.evaluation.eval_metrics import PrebuiltMetrics
 from google.adk.evaluation.eval_metrics import ToolTrajectoryCriterion
@@ -462,3 +464,62 @@ def test_evaluate_invocations_no_invocations(evaluator: TrajectoryEvaluator):
   assert result.overall_score is None
   assert result.overall_eval_status == EvalStatus.NOT_EVALUATED
   assert not result.per_invocation_results
+
+
+def _make_invocation_events(
+    *tool_calls: genai_types.FunctionCall,
+) -> Invocation:
+  """Returns an Invocation using InvocationEvents intermediate_data format."""
+  return Invocation(
+      user_content=_USER_CONTENT,
+      intermediate_data=InvocationEvents(
+          invocation_events=[
+              InvocationEvent(
+                  author="agent",
+                  content=genai_types.Content(
+                      parts=[genai_types.Part(function_call=tc)]
+                  ),
+              )
+              for tc in tool_calls
+          ]
+      ),
+  )
+
+
+def test_evaluate_invocations_invocation_events_format_exact_match(
+    evaluator: TrajectoryEvaluator,
+):
+  """InvocationEvents intermediate_data format should score 1.0 on exact match.
+
+  Regression test for #5410: tool_trajectory_avg_score returned 0.0 even when
+  tool name and args were identical because function-call events with
+  skip_summarization=True were incorrectly excluded from invocation_events.
+  """
+  tool_call = genai_types.FunctionCall(
+      id="toolu_01", name="execute_sql", args={"query": "SELECT 1"}
+  )
+  expected_tool_call = genai_types.FunctionCall(
+      name="execute_sql", args={"query": "SELECT 1"}
+  )
+  actual = _make_invocation_events(tool_call)
+  expected = _make_invocation_events(expected_tool_call)
+
+  result = evaluator.evaluate_invocations([actual], [expected])
+  assert result.overall_score == 1.0
+  assert result.overall_eval_status == EvalStatus.PASSED
+
+
+def test_evaluate_invocations_invocation_events_format_mismatch(
+    evaluator: TrajectoryEvaluator,
+):
+  """InvocationEvents format should score 0.0 when tool calls differ."""
+  actual = _make_invocation_events(
+      genai_types.FunctionCall(name="tool_a", args={"x": "1"})
+  )
+  expected = _make_invocation_events(
+      genai_types.FunctionCall(name="tool_b", args={"x": "1"})
+  )
+
+  result = evaluator.evaluate_invocations([actual], [expected])
+  assert result.overall_score == 0.0
+  assert result.overall_eval_status == EvalStatus.FAILED
