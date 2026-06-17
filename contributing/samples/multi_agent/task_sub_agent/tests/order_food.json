@@ -1,0 +1,198 @@
+{
+  "events": [
+    {
+      "author": "user",
+      "content": {
+        "parts": [
+          {
+            "text": "order food"
+          }
+        ],
+        "role": "user"
+      },
+      "id": "e-1",
+      "invocationId": "i-1",
+      "nodeInfo": {
+        "path": ""
+      }
+    },
+    {
+      "author": "coordinator",
+      "content": {
+        "parts": [
+          {
+            "functionCall": {
+              "args": {
+                "request": "Please help the user order food by collecting the items and quantities they want."
+              },
+              "id": "fc-1",
+              "name": "order_collector"
+            }
+          }
+        ],
+        "role": "model"
+      },
+      "finishReason": "STOP",
+      "id": "e-2",
+      "invocationId": "i-1",
+      "longRunningToolIds": [],
+      "nodeInfo": {
+        "path": "coordinator@1"
+      }
+    },
+    {
+      "author": "order_collector",
+      "content": {
+        "parts": [
+          {
+            "text": "Hello! What would you like to order today? Our menu includes:\n1. Pizza\n2. Burger\n3. Salad\n\nPlease let me know which items and how many of each you'd like."
+          }
+        ],
+        "role": "model"
+      },
+      "finishReason": "STOP",
+      "id": "e-3",
+      "invocationId": "i-1",
+      "isolationScope": "fc-1",
+      "nodeInfo": {
+        "path": "coordinator@1/order_collector@fc-1"
+      }
+    },
+    {
+      "author": "user",
+      "content": {
+        "parts": [
+          {
+            "text": "burger"
+          }
+        ],
+        "role": "user"
+      },
+      "id": "e-4",
+      "invocationId": "i-2",
+      "nodeInfo": {
+        "path": ""
+      }
+    },
+    {
+      "author": "order_collector",
+      "content": {
+        "parts": [
+          {
+            "text": "How many burgers would you like to order?"
+          }
+        ],
+        "role": "model"
+      },
+      "finishReason": "STOP",
+      "id": "e-5",
+      "invocationId": "i-2",
+      "isolationScope": "fc-1",
+      "nodeInfo": {
+        "path": "coordinator@1/order_collector@fc-1"
+      }
+    },
+    {
+      "author": "user",
+      "content": {
+        "parts": [
+          {
+            "text": "3"
+          }
+        ],
+        "role": "user"
+      },
+      "id": "e-6",
+      "invocationId": "i-3",
+      "nodeInfo": {
+        "path": ""
+      }
+    },
+    {
+      "author": "order_collector",
+      "content": {
+        "parts": [
+          {
+            "text": "Great! You've ordered 3 burgers. Would you like to add anything else to your order (Pizza or Salad), or is that all for today?"
+          }
+        ],
+        "role": "model"
+      },
+      "finishReason": "STOP",
+      "id": "e-7",
+      "invocationId": "i-3",
+      "isolationScope": "fc-1",
+      "nodeInfo": {
+        "path": "coordinator@1/order_collector@fc-1"
+      }
+    },
+    {
+      "author": "user",
+      "content": {
+        "parts": [
+          {
+            "text": "1234-1234"
+          }
+        ],
+        "role": "user"
+      },
+      "id": "e-8",
+      "invocationId": "i-4",
+      "nodeInfo": {
+        "path": ""
+      }
+    },
+    {
+      "author": "order_collector",
+      "content": {
+        "parts": [
+          {
+            "text": "I'm sorry, I didn't quite understand that. Would you like to add any Pizza or Salad to your order of 3 Burgers, or is that all?"
+          }
+        ],
+        "role": "model"
+      },
+      "finishReason": "STOP",
+      "id": "e-9",
+      "invocationId": "i-4",
+      "isolationScope": "fc-1",
+      "nodeInfo": {
+        "path": "coordinator@1/order_collector@fc-1"
+      }
+    },
+    {
+      "author": "user",
+      "content": {
+        "parts": [
+          {
+            "text": "123"
+          }
+        ],
+        "role": "user"
+      },
+      "id": "e-10",
+      "invocationId": "i-5",
+      "nodeInfo": {
+        "path": ""
+      }
+    },
+    {
+      "author": "order_collector",
+      "content": {
+        "parts": [
+          {
+            "text": "I'm sorry, I'm not sure what you mean by \"123\". Would you like to add 123 of one of our menu items (Pizza or Salad) to your order, or would you like to finish your order with just the 3 burgers?"
+          }
+        ],
+        "role": "model"
+      },
+      "finishReason": "STOP",
+      "id": "e-11",
+      "invocationId": "i-5",
+      "isolationScope": "fc-1",
+      "nodeInfo": {
+        "path": "coordinator@1/order_collector@fc-1"
+      }
+    }
+  ]
+}

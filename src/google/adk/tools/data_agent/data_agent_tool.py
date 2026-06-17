@@ -19,6 +19,7 @@ from typing import Any
 from google.auth.credentials import Credentials
 import requests
 
+from .. import _gda_stream_util
 from ..tool_context import ToolContext
 from .config import DataAgentToolConfig
 
@@ -129,7 +130,7 @@ def list_accessible_data_agents(
   except Exception as ex:  # pylint: disable=broad-except
     return {
         "status": "ERROR",
-        "error_details": repr(ex),
+        "error_details": str(ex),
     }
 
 
@@ -196,7 +197,7 @@ def get_data_agent_info(
   except Exception as ex:  # pylint: disable=broad-except
     return {
         "status": "ERROR",
-        "error_details": repr(ex),
+        "error_details": str(ex),
     }
 
 
@@ -221,21 +222,19 @@ def ask_data_agent(
       A dictionary with two keys:
       - 'status': A string indicating the final status (e.g., "SUCCESS").
       - 'response': A list of dictionaries, where each dictionary
-        represents a step in the agent's execution process (e.g., SQL
-        generation, data retrieval, final answer). Note that the 'Answer'
-        step contains a text response which may summarize findings or refer
-        to previous steps of agent execution, such as 'Data Retrieved', in
-        which cases, the 'Answer' step does not include the result data.
+        represents a step in the agent's execution process and can
+        contain keys like 'text', 'data', or 'Data Retrieved' indicating
+        thought process, SQL generation, data retrieval, or final answer.
 
   Examples:
       A query to a data agent, showing the full return structure.
-      The original question: "Which customer from New York spent the most last
-      month?"
+      The original question: "What is the average tree height in San
+      Francisco?"
 
       >>> ask_data_agent(
       ...
-      data_agent_name="projects/my-project/locations/global/dataAgents/sales-agent",
-      ...     query="Which customer from New York spent the most last month?",
+      data_agent_name="projects/my-project/locations/global/dataAgents/sf-trees-agent",
+      ...     query="What is the average tree height in San Francisco?",
       ...     credentials=credentials,
       ...     tool_context=tool_context,
       ... )
@@ -243,42 +242,39 @@ def ask_data_agent(
         "status": "SUCCESS",
         "response": [
           {
-            "Question": "Which customer from New York spent the most last
-            month?"
-          },
-          {
-            "Schema Resolved": [
-              {
-                "source_name": "my-gcp-project.sales_data.customers",
-                "schema": {
-                  "headers": ["Column", "Type", "Description", "Mode"],
-                  "rows": [
-                    ["customer_id", "INT64", "Customer ID", "REQUIRED"],
-                    ["customer_name", "STRING", "Customer Name", "NULLABLE"],
-                  ]
-                }
-              }
-            ]
-          },
-          {
-            "Retrieval Query": {
-              "Query Name": "top_spender",
-              "Question": "Find top spending customer from New York in the last
-              month."
+            "text": {
+              "parts": [
+                "Analyzing context",
+                "Retrieved context for 1 table."
+              ],
+              "textType": "THOUGHT"
             }
           },
           {
-            "SQL Generated": "SELECT t1.customer_name, SUM(t2.order_total) ... "
+            "data": {
+              "generatedSql": "SELECT\n AVG(SAFE_CAST(street_trees.dbh AS FLOAT64)) AS average_height\nFROM\n bigquery-public-data.san_francisco.street_trees AS street_trees;"
+            }
           },
           {
             "Data Retrieved": {
-              "headers": ["customer_name", "total_spent"],
-              "rows": [["Jane Doe", 1234.56]],
+              "headers": [
+                "average_height"
+              ],
+              "rows": [
+                [
+                  10.073475670972512
+                ]
+              ],
               "summary": "Showing all 1 rows."
             }
           },
           {
-            "Answer": "The customer who spent the most last month was Jane Doe."
+            "text": {
+              "parts": [
+                "### Summary\nBased on the street tree data for San Francisco, the average height (recorded in the dbh column) is approximately 10.07."
+              ],
+              "textType": "FINAL_RESPONSE"
+            }
           }
         ]
       }
@@ -298,196 +294,16 @@ def ask_data_agent(
         },
         "clientIdEnum": _GDA_CLIENT_ID,
     }
-    resp = _get_stream(
+    resp = _gda_stream_util.get_stream(
         chat_url,
         chat_payload,
-        headers=headers,
-        max_query_result_rows=settings.max_query_result_rows,
+        headers,
+        settings.max_query_result_rows,
     )
+
     return {"status": "SUCCESS", "response": resp}
   except Exception as ex:  # pylint: disable=broad-except
     return {
         "status": "ERROR",
-        "error_details": repr(ex),
+        "error_details": str(ex),
     }
-
-
-def _get_stream(
-    url: str,
-    ca_payload: dict[str, Any],
-    *,
-    headers: dict[str, str],
-    max_query_result_rows: int,
-) -> list[dict[str, Any]]:
-  """Sends a JSON request to a streaming API and returns a list of messages."""
-  s = requests.Session()
-
-  accumulator = ""
-  messages = []
-
-  with s.post(url, json=ca_payload, headers=headers, stream=True) as resp:
-    for line in resp.iter_lines():
-      if not line:
-        continue
-
-      decoded_line = str(line, encoding="utf-8")
-
-      if decoded_line == "[{":
-        accumulator = "{"
-      elif decoded_line == "}]":
-        accumulator += "}"
-      elif decoded_line == ",":
-        continue
-      else:
-        accumulator += decoded_line
-
-      try:
-        data_json = json.loads(accumulator)
-      except ValueError:
-        continue
-      if "systemMessage" not in data_json:
-        if "error" in data_json:
-          _append_message(
-              messages,
-              _handle_error(data_json["error"]),
-          )
-        continue
-
-      system_message = data_json["systemMessage"]
-      if "text" in system_message:
-        _append_message(
-            messages,
-            _handle_text_response(system_message["text"]),
-        )
-      elif "schema" in system_message:
-        _append_message(
-            messages,
-            _handle_schema_response(system_message["schema"]),
-        )
-      elif "data" in system_message:
-        _append_message(
-            messages,
-            _handle_data_response(
-                system_message["data"], max_query_result_rows
-            ),
-        )
-      accumulator = ""
-  return messages
-
-
-def _format_bq_table_ref(table_ref: dict[str, str]) -> str:
-  """Formats a BigQuery table reference dictionary into a string."""
-  return f"{table_ref.get('projectId')}.{table_ref.get('datasetId')}.{table_ref.get('tableId')}"
-
-
-def _format_schema_as_dict(
-    data: dict[str, Any],
-) -> dict[str, list[Any]]:
-  """Extracts schema fields into a dictionary."""
-  fields = data.get("fields", [])
-  if not fields:
-    return {"columns": []}
-
-  column_details = []
-  headers = ["Column", "Type", "Description", "Mode"]
-  rows: list[list[str, str, str, str]] = []
-  for field in fields:
-    row_list = [
-        field.get("name", ""),
-        field.get("type", ""),
-        field.get("description", ""),
-        field.get("mode", ""),
-    ]
-    rows.append(row_list)
-
-  return {"headers": headers, "rows": rows}
-
-
-def _format_datasource_as_dict(datasource: dict[str, Any]) -> dict[str, Any]:
-  """Formats a full datasource object into a dictionary with its name and schema."""
-  source_name = _format_bq_table_ref(datasource["bigqueryTableReference"])
-
-  schema = _format_schema_as_dict(datasource["schema"])
-  return {"source_name": source_name, "schema": schema}
-
-
-def _handle_text_response(resp: dict[str, Any]) -> dict[str, str]:
-  """Formats a text response into a dictionary."""
-  parts = resp.get("parts", [])
-  return {"Answer": "".join(parts)}
-
-
-def _handle_schema_response(resp: dict[str, Any]) -> dict[str, Any]:
-  """Formats a schema response into a dictionary."""
-  if "query" in resp:
-    return {"Question": resp["query"].get("question", "")}
-  elif "result" in resp:
-    datasources = resp["result"].get("datasources", [])
-    # Format each datasource and join them with newlines
-    formatted_sources = [_format_datasource_as_dict(ds) for ds in datasources]
-    return {"Schema Resolved": formatted_sources}
-  return {}
-
-
-def _handle_data_response(
-    resp: dict[str, Any], max_query_result_rows: int
-) -> dict[str, Any]:
-  """Formats a data response into a dictionary."""
-  if "query" in resp:
-    query = resp["query"]
-    return {
-        "Retrieval Query": {
-            "Query Name": query.get("name", "N/A"),
-            "Question": query.get("question", "N/A"),
-        }
-    }
-  elif "generatedSql" in resp:
-    return {"SQL Generated": resp["generatedSql"]}
-  elif "result" in resp:
-    schema = resp["result"]["schema"]
-    headers = [field.get("name") for field in schema.get("fields", [])]
-
-    all_rows = resp["result"].get("data", [])
-    total_rows = len(all_rows)
-
-    compact_rows = []
-    for row_dict in all_rows[:max_query_result_rows]:
-      row_values = [row_dict.get(header) for header in headers]
-      compact_rows.append(row_values)
-
-    summary_string = f"Showing all {total_rows} rows."
-    if total_rows > max_query_result_rows:
-      summary_string = (
-          f"Showing the first {len(compact_rows)} of {total_rows} total rows."
-      )
-
-    return {
-        "Data Retrieved": {
-            "headers": headers,
-            "rows": compact_rows,
-            "summary": summary_string,
-        }
-    }
-
-  return {}
-
-
-def _handle_error(resp: dict[str, Any]) -> dict[str, dict[str, Any]]:
-  """Formats an error response into a dictionary."""
-  return {
-      "Error": {
-          "Code": resp.get("code", "N/A"),
-          "Message": resp.get("message", "No message provided."),
-      }
-  }
-
-
-def _append_message(
-    messages: list[dict[str, Any]],
-    new_message: dict[str, Any],
-):
-  """Appends a message to the list."""
-  if not new_message:
-    return
-
-  messages.append(new_message)

@@ -1,4 +1,0 @@
-fastapi
-uvicorn
-httpx
-google-auth

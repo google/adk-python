@@ -25,6 +25,8 @@ from .llm_response import LlmResponse
 from .registry import LLMRegistry
 
 if TYPE_CHECKING:
+  from google.adk.labs.openai import OpenAILlm
+
   from .anthropic_llm import Claude
   from .apigee_llm import ApigeeLlm
   from .gemma_llm import Gemma
@@ -47,16 +49,24 @@ _LAZY_PROVIDERS: dict[str, tuple[list[str], str]] = {
     'Gemini': (
         [
             r'gemini-.*',
+            # Gemma 4+ uses Gemini natively; must precede Gemma's gemma-.* so
+            # gemma-4-* resolves to Gemini, not the Gemma 3 workaround class.
+            r'gemma-4.*',
             r'model-optimizer-.*',
             r'projects\/.+\/locations\/.+\/endpoints\/.+',
             r'projects\/.+\/locations\/.+\/publishers\/google\/models\/gemini.+',
         ],
         'google_llm',
     ),
+    # Gemma 3 only (function-calling workarounds). Gemma 4+ resolves to Gemini.
     'Gemma': ([r'gemma-.*'], 'gemma_llm'),
     'ApigeeLlm': ([r'.*-apigee$'], 'apigee_llm'),
     'Claude': ([r'claude-3-.*', r'claude-.*-4.*'], 'anthropic_llm'),
     'Gemma3Ollama': ([r'ollama/gemma3.*'], 'gemma_llm'),
+    'OpenAILlm': (
+        [r'gpt-.*', r'o1-.*', r'o3-.*'],
+        'google.adk.labs.openai',
+    ),
     'LiteLlm': (
         [
             r'openai/.*',
@@ -81,14 +91,20 @@ _LAZY_PROVIDERS: dict[str, tuple[list[str], str]] = {
 }
 
 for _name, (_patterns, _module) in _LAZY_PROVIDERS.items():
-  LLMRegistry._register_lazy(_patterns, f'{__name__}.{_module}', _name)
+  _target_module = (
+      _module if _module.startswith('google.adk.') else f'{__name__}.{_module}'
+  )
+  LLMRegistry._register_lazy(_patterns, _target_module, _name)
 
 
 def __getattr__(name: str):
   if name in _LAZY_PROVIDERS:
     module_name = _LAZY_PROVIDERS[name][1]
     try:
-      module = importlib.import_module(f'{__name__}.{module_name}')
+      if module_name.startswith('google.adk.'):
+        module = importlib.import_module(module_name)
+      else:
+        module = importlib.import_module(f'{__name__}.{module_name}')
     except ImportError as e:
       raise ImportError(
           f'`{name}` requires an optional dependency that is not installed.'

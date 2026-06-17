@@ -107,6 +107,31 @@ def test_llm_response_create_no_candidates():
   assert response.error_message == 'Prompt blocked for safety'
 
 
+def test_llm_response_create_no_candidates_without_prompt_feedback():
+  """Test LlmResponse.create() for empty successful model responses."""
+  usage_metadata = types.GenerateContentResponseUsageMetadata(
+      prompt_token_count=10,
+      candidates_token_count=0,
+      total_token_count=10,
+  )
+  generate_content_response = types.GenerateContentResponse(
+      candidates=[],
+      usage_metadata=usage_metadata,
+      model_version='gemini-2.5-flash',
+  )
+
+  response = LlmResponse.create(generate_content_response)
+
+  assert response.error_code is None
+  assert response.error_message is None
+  assert response.finish_reason is None
+  assert response.content is not None
+  assert response.content.role == 'model'
+  assert not response.content.parts
+  assert response.usage_metadata == usage_metadata
+  assert response.model_version == 'gemini-2.5-flash'
+
+
 def test_llm_response_create_with_concrete_logprobs_result():
   """Test LlmResponse.create() with detailed logprobs_result containing actual token data."""
   # Create realistic logprobs data

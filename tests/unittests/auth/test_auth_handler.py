@@ -22,6 +22,7 @@ from fastapi.openapi.models import APIKey
 from fastapi.openapi.models import APIKeyIn
 from fastapi.openapi.models import OAuth2
 from fastapi.openapi.models import OAuthFlowAuthorizationCode
+from fastapi.openapi.models import OAuthFlowClientCredentials
 from fastapi.openapi.models import OAuthFlows
 from google.adk.auth.auth_credential import AuthCredential
 from google.adk.auth.auth_credential import AuthCredentialTypes
@@ -53,12 +54,14 @@ class MockOAuth2Session:
       scope=None,
       redirect_uri=None,
       state=None,
+      **kwargs,
   ):
     self.client_id = client_id
     self.client_secret = client_secret
     self.scope = scope
     self.redirect_uri = redirect_uri
     self.state = state
+    self.extra_kwargs = kwargs
 
   def create_authorization_url(self, url, **kwargs):
     params = f"client_id={self.client_id}&scope={self.scope}"
@@ -270,6 +273,83 @@ class TestGenerateAuthUri:
     )
     assert "client_id=mock_client_id" in result.oauth2.auth_uri
     assert result.oauth2.state == "mock_state"
+
+  @patch("google.adk.auth.auth_handler.OAuth2Session", MockOAuth2Session)
+  def test_generate_auth_uri_client_credentials_with_missing_scopes(
+      self, oauth2_credentials
+  ):
+    """Test client credentials flow tolerates missing scopes."""
+    auth_scheme = OAuth2(
+        flows=OAuthFlows(
+            clientCredentials=OAuthFlowClientCredentials(
+                tokenUrl="https://example.com/oauth2/token"
+            )
+        )
+    )
+    auth_scheme.flows.clientCredentials.scopes = None
+
+    config = AuthConfig(
+        auth_scheme=auth_scheme,
+        raw_auth_credential=oauth2_credentials,
+        exchanged_auth_credential=oauth2_credentials.model_copy(deep=True),
+    )
+
+    handler = AuthHandler(config)
+    result = handler.generate_auth_uri()
+
+    assert (
+        result.oauth2.auth_uri
+        == "https://example.com/oauth2/token?client_id=mock_client_id&scope="
+    )
+    assert result.oauth2.state == "mock_state"
+
+  @patch("google.adk.auth.auth_handler.OAuth2Session")
+  def test_generate_auth_uri_pkce(
+      self, mock_oauth2_session, oauth2_auth_scheme, oauth2_credentials
+  ):
+    """Test generating an auth URI with PKCE."""
+    oauth2_credentials.oauth2.code_challenge_method = "S256"
+    exchanged = oauth2_credentials.model_copy(deep=True)
+
+    config = AuthConfig(
+        auth_scheme=oauth2_auth_scheme,
+        raw_auth_credential=oauth2_credentials,
+        exchanged_auth_credential=exchanged,
+    )
+
+    mock_client = Mock()
+    mock_oauth2_session.return_value = mock_client
+    mock_client.create_authorization_url.return_value = (
+        "https://example.com/oauth2/authorize?code_challenge=...&code_challenge_method=S256",
+        "mock_state",
+    )
+
+    handler = AuthHandler(config)
+    result = handler.generate_auth_uri()
+
+    assert result.oauth2.code_verifier is not None
+    assert len(result.oauth2.code_verifier) == 48
+    mock_client.create_authorization_url.assert_called_once()
+    _, kwargs = mock_client.create_authorization_url.call_args
+    assert "code_verifier" in kwargs
+    assert kwargs["code_verifier"] == result.oauth2.code_verifier
+
+  def test_generate_auth_uri_unsupported_pkce_method(
+      self, oauth2_auth_scheme, oauth2_credentials
+  ):
+    """Test generating an auth URI with unsupported PKCE method."""
+    oauth2_credentials.oauth2.code_challenge_method = "plain"
+    exchanged = oauth2_credentials.model_copy(deep=True)
+
+    config = AuthConfig(
+        auth_scheme=oauth2_auth_scheme,
+        raw_auth_credential=oauth2_credentials,
+        exchanged_auth_credential=exchanged,
+    )
+
+    handler = AuthHandler(config)
+    with pytest.raises(ValueError, match="Unsupported code_challenge_method"):
+      handler.generate_auth_uri()
 
 
 class TestGenerateAuthRequest:

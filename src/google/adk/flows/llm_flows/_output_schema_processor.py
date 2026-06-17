@@ -36,7 +36,6 @@ class _OutputSchemaRequestProcessor(BaseLlmRequestProcessor):
   async def run_async(
       self, invocation_context: InvocationContext, llm_request: LlmRequest
   ) -> AsyncGenerator[Event, None]:
-    from ...agents.llm_agent import LlmAgent
 
     agent = invocation_context.agent
 
@@ -46,6 +45,7 @@ class _OutputSchemaRequestProcessor(BaseLlmRequestProcessor):
         not agent.output_schema
         or not agent.tools
         or can_use_output_schema_with_tools(agent.canonical_model)
+        or getattr(agent, 'mode', None) == 'task'
     ):
       return
 
