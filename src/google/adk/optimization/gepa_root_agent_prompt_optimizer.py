@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import logging
 from typing import Any
 from typing import Optional
@@ -298,7 +299,8 @@ class GEPARootAgentPromptOptimizer(
 
     _logger.info("Running the GEPA optimizer...")
 
-    gepa_results = await loop.run_in_executor(None, run_gepa)
+    ctx = contextvars.copy_context()
+    gepa_results = await loop.run_in_executor(None, lambda: ctx.run(run_gepa))
 
     _logger.info("GEPA optimization finished. Preparing final results...")
 

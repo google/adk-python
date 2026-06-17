@@ -105,6 +105,7 @@ def test_run_live_applies_run_config_query_options():
       "&proactive_audio=true"
       "&enable_affective_dialog=true"
       "&enable_session_resumption=true"
+      "&save_live_blob=true"
   )
 
   with client.websocket_connect(url) as ws:
@@ -118,21 +119,24 @@ def test_run_live_applies_run_config_query_options():
   assert run_config.proactivity.proactive_audio is True
   assert run_config.session_resumption is not None
   assert run_config.session_resumption.transparent is True
+  assert run_config.save_live_blob is True
 
 
 @pytest.mark.parametrize(
     (
         "query,expected_enable_affective,expected_proactive_audio,"
-        "expected_session_resumption_transparent"
+        "expected_session_resumption_transparent,expected_save_live_blob"
     ),
     [
-        ("", None, None, None),
-        ("&proactive_audio=true", None, True, None),
-        ("&proactive_audio=false", None, False, None),
-        ("&enable_affective_dialog=true", True, None, None),
-        ("&enable_affective_dialog=false", False, None, None),
-        ("&enable_session_resumption=true", None, None, True),
-        ("&enable_session_resumption=false", None, None, False),
+        ("", None, None, None, False),
+        ("&proactive_audio=true", None, True, None, False),
+        ("&proactive_audio=false", None, False, None, False),
+        ("&enable_affective_dialog=true", True, None, None, False),
+        ("&enable_affective_dialog=false", False, None, None, False),
+        ("&enable_session_resumption=true", None, None, True, False),
+        ("&enable_session_resumption=false", None, None, False, False),
+        ("&save_live_blob=true", None, None, None, True),
+        ("&save_live_blob=false", None, None, None, False),
     ],
 )
 def test_run_live_defaults_and_individual_options(
@@ -140,6 +144,7 @@ def test_run_live_defaults_and_individual_options(
     expected_enable_affective: bool | None,
     expected_proactive_audio: bool | None,
     expected_session_resumption_transparent: bool | None,
+    expected_save_live_blob: bool,
 ):
   session_service = InMemorySessionService()
   asyncio.run(
@@ -204,6 +209,7 @@ def test_run_live_defaults_and_individual_options(
         run_config.session_resumption.transparent
         is expected_session_resumption_transparent
     )
+  assert run_config.save_live_blob is expected_save_live_blob
 
 
 _WS_BASE_URL = (

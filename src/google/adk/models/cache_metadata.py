@@ -20,6 +20,7 @@ from typing import Optional
 from pydantic import BaseModel
 from pydantic import ConfigDict
 from pydantic import Field
+from pydantic import model_validator
 
 
 class CacheMetadata(BaseModel):
@@ -97,6 +98,16 @@ class CacheMetadata(BaseModel):
       ),
   )
 
+  @model_validator(mode="after")
+  def _enforce_active_state_invariant(self) -> "CacheMetadata":
+    active = (self.cache_name, self.expire_time, self.invocations_used)
+    if len({f is not None for f in active}) > 1:
+      raise ValueError(
+          "cache_name, expire_time, and invocations_used must all be set "
+          "(active cache) or all be None (fingerprint-only state)"
+      )
+    return self
+
   @property
   def expire_soon(self) -> bool:
     """Check if the cache will expire soon (with 2-minute buffer)."""
@@ -113,12 +124,6 @@ class CacheMetadata(BaseModel):
           f"fingerprint={self.fingerprint[:8]}..."
       )
     cache_id = self.cache_name.split("/")[-1]
-    if self.expire_time is None:
-      return (
-          f"Cache {cache_id}: used {self.invocations_used} invocations, "
-          f"cached {self.contents_count} contents, "
-          "expires unknown"
-      )
     time_until_expiry_minutes = (self.expire_time - time.time()) / 60
     return (
         f"Cache {cache_id}: used {self.invocations_used} invocations, "

@@ -1,0 +1,96 @@
+{
+  "events": [
+    {
+      "author": "user",
+      "content": {
+        "parts": [
+          {
+            "text": "Create a profile for company Acme Corp in tech industry with 50 employees."
+          }
+        ],
+        "role": "user"
+      },
+      "id": "e-1",
+      "invocationId": "i-1",
+      "nodeInfo": {
+        "path": ""
+      }
+    },
+    {
+      "author": "profile_agent",
+      "content": {
+        "parts": [
+          {
+            "functionCall": {
+              "args": {
+                "entity": {
+                  "company_name": "Acme Corp",
+                  "employee_count": 50,
+                  "industry": "tech"
+                }
+              },
+              "id": "fc-1",
+              "name": "create_entity_profile"
+            }
+          }
+        ],
+        "role": "model"
+      },
+      "finishReason": "STOP",
+      "id": "e-2",
+      "invocationId": "i-1",
+      "longRunningToolIds": [],
+      "nodeInfo": {
+        "path": "profile_agent@1"
+      }
+    },
+    {
+      "author": "profile_agent",
+      "content": {
+        "parts": [
+          {
+            "functionResponse": {
+              "id": "fc-1",
+              "name": "create_entity_profile",
+              "response": {
+                "entity_type": "company",
+                "message": "Company profile created for Acme Corp!",
+                "profile": {
+                  "company_name": "Acme Corp",
+                  "employee_count": 50,
+                  "industry": "tech",
+                  "model_type": "CompanyProfile",
+                  "website": "Not provided"
+                },
+                "status": "company_profile_created"
+              }
+            }
+          }
+        ],
+        "role": "user"
+      },
+      "id": "e-3",
+      "invocationId": "i-1",
+      "nodeInfo": {
+        "path": "profile_agent@1"
+      }
+    },
+    {
+      "author": "profile_agent",
+      "content": {
+        "parts": [
+          {
+            "text": "I have created a profile for Acme Corp in the tech industry with 50 employees."
+          }
+        ],
+        "role": "model"
+      },
+      "finishReason": "STOP",
+      "id": "e-4",
+      "invocationId": "i-1",
+      "nodeInfo": {
+        "path": "profile_agent@1"
+      }
+    }
+  ]
+}

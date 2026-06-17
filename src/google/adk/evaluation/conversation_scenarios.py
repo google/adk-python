@@ -75,3 +75,33 @@ class ConversationScenarios(EvalBaseModel):
   scenarios: list[ConversationScenario] = Field(
       default_factory=list, description="""A list of ConversationScenario."""
   )
+
+
+class ConversationGenerationConfig(EvalBaseModel):
+  """Configuration for generating conversation scenarios."""
+
+  count: int = Field(
+      description="The number of conversation scenarios to generate."
+  )
+  generation_instruction: Optional[str] = Field(
+      default=None,
+      description=(
+          "Optional natural language goal to guide the EvalSet generation."
+      ),
+  )
+  environment_context: Optional[str] = Field(
+      default=None,
+      description=(
+          "Context describing the backend data or state accessible to the"
+          " agent's tools. This acts as the 'ground truth' for the simulation,"
+          " ensuring generated queries reference data that actually exists"
+          " (e.g., a list of available models so the generator knows what the"
+          " 'get_model_available' tool will return)."
+      ),
+  )
+  model_name: str = Field(
+      description=(
+          "The name of the Gemini model to use for generating the scenarios"
+          " (e.g., 'gemini-2.5-flash')."
+      )
+  )

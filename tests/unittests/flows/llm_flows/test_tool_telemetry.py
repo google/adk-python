@@ -70,7 +70,7 @@ async def test_simple_function_with_mocked_tracer(monkeypatch):
 
   mock_adk_trace_tool_call = mock.Mock()
   monkeypatch.setattr(
-      'google.adk.flows.llm_flows.functions.trace_tool_call',
+      'google.adk.telemetry.tracing.trace_tool_call',
       mock_adk_trace_tool_call,
   )
 

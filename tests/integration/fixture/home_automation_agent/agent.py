@@ -284,7 +284,7 @@ def list_devices(status: str = "", location: str = "") -> list:
 
 
 root_agent = Agent(
-    model="gemini-2.0-flash-001",
+    model="gemini-2.5-flash",
     name="Home_automation_agent",
     instruction="""
     You are Home Automation Agent. You are responsible for controlling the devices in the home.

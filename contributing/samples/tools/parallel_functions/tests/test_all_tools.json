@@ -1,0 +1,196 @@
+{
+  "events": [
+    {
+      "author": "user",
+      "content": {
+        "parts": [
+          {
+            "text": "Tell me about Paris and Sydney: weather, distance between them, and their populations."
+          }
+        ],
+        "role": "user"
+      },
+      "id": "e-1",
+      "invocationId": "i-1",
+      "nodeInfo": {
+        "path": ""
+      }
+    },
+    {
+      "author": "parallel_function_test_agent",
+      "content": {
+        "parts": [
+          {
+            "functionCall": {
+              "args": {
+                "city": "Paris"
+              },
+              "id": "fc-1",
+              "name": "get_weather"
+            }
+          },
+          {
+            "functionCall": {
+              "args": {
+                "city": "Sydney"
+              },
+              "id": "fc-2",
+              "name": "get_weather"
+            }
+          },
+          {
+            "functionCall": {
+              "args": {
+                "city1": "Paris",
+                "city2": "Sydney"
+              },
+              "id": "fc-3",
+              "name": "calculate_distance"
+            }
+          },
+          {
+            "functionCall": {
+              "args": {
+                "cities": [
+                  "Paris",
+                  "Sydney"
+                ]
+              },
+              "id": "fc-4",
+              "name": "get_population"
+            }
+          }
+        ],
+        "role": "model"
+      },
+      "finishReason": "STOP",
+      "id": "e-2",
+      "invocationId": "i-1",
+      "longRunningToolIds": [],
+      "nodeInfo": {
+        "path": "parallel_function_test_agent@1"
+      }
+    },
+    {
+      "actions": {
+        "stateDelta": {
+          "distance_requests": [
+            {
+              "city1": "Paris",
+              "city2": "Sydney",
+              "distance": 18903
+            }
+          ],
+          "population_requests": [
+            {
+              "cities": [
+                "Paris",
+                "Sydney"
+              ],
+              "results": {
+                "Paris": 2161000,
+                "Sydney": 5312163
+              }
+            }
+          ],
+          "weather_requests": [
+            {
+              "city": "Paris",
+              "result": {
+                "condition": "overcast",
+                "humidity": 70,
+                "temp": 58
+              }
+            },
+            {
+              "city": "Sydney",
+              "result": {
+                "condition": "sunny",
+                "humidity": 60,
+                "temp": 75
+              }
+            }
+          ]
+        }
+      },
+      "author": "parallel_function_test_agent",
+      "content": {
+        "parts": [
+          {
+            "functionResponse": {
+              "id": "fc-1",
+              "name": "get_weather",
+              "response": {
+                "city": "Paris",
+                "condition": "overcast",
+                "humidity": 70,
+                "temperature": 58
+              }
+            }
+          },
+          {
+            "functionResponse": {
+              "id": "fc-2",
+              "name": "get_weather",
+              "response": {
+                "city": "Sydney",
+                "condition": "sunny",
+                "humidity": 60,
+                "temperature": 75
+              }
+            }
+          },
+          {
+            "functionResponse": {
+              "id": "fc-3",
+              "name": "calculate_distance",
+              "response": {
+                "city1": "Paris",
+                "city2": "Sydney",
+                "distance_km": 18903,
+                "distance_miles": 11745
+              }
+            }
+          },
+          {
+            "functionResponse": {
+              "id": "fc-4",
+              "name": "get_population",
+              "response": {
+                "cities_count": 2,
+                "populations": {
+                  "Paris": 2161000,
+                  "Sydney": 5312163
+                },
+                "total_population": 7473163
+              }
+            }
+          }
+        ],
+        "role": "user"
+      },
+      "id": "e-3",
+      "invocationId": "i-1",
+      "nodeInfo": {
+        "path": "parallel_function_test_agent@1"
+      }
+    },
+    {
+      "author": "parallel_function_test_agent",
+      "content": {
+        "parts": [
+          {
+            "text": "Here's the information about Paris and Sydney:\n\n**Paris:**\n*   **Weather:** The current weather in Paris is overcast with a temperature of 58\u00b0F and 70% humidity.\n*   **Population:** The population of Paris is 2,161,000.\n\n**Sydney:**\n*   **Weather:** The current weather in Sydney is sunny with a temperature of 75\u00b0F and 60% humidity.\n*   **Population:** The population of Sydney is 5,312,163.\n\n**Distance between Paris and Sydney:**\nThe distance between Paris and Sydney is 18,903 km (11,745 miles)."
+          }
+        ],
+        "role": "model"
+      },
+      "finishReason": "STOP",
+      "id": "e-4",
+      "invocationId": "i-1",
+      "nodeInfo": {
+        "path": "parallel_function_test_agent@1"
+      }
+    }
+  ]
+}

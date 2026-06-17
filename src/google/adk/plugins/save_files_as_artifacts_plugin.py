@@ -47,13 +47,23 @@ class SaveFilesAsArtifactsPlugin(BasePlugin):
   tool to the agent, or load the artifacts in your own tool to use the files.
   """
 
-  def __init__(self, name: str = 'save_files_as_artifacts_plugin'):
+  def __init__(
+      self,
+      name: str = 'save_files_as_artifacts_plugin',
+      *,
+      attach_file_reference: bool = True,
+  ):
     """Initialize the save files as artifacts plugin.
 
     Args:
       name: The name of the plugin instance.
+      attach_file_reference: Whether to attach a file reference to the
+        user message. If False, only save the files as artifacts without
+        adding a file reference, and the files will not be directly
+        accessible to the model.
     """
     super().__init__(name)
+    self._attach_file_reference = attach_file_reference
 
   async def on_user_message_callback(
       self,
@@ -108,15 +118,16 @@ class SaveFilesAsArtifactsPlugin(BasePlugin):
         )
         new_parts.append(placeholder_part)
 
-        file_part = await self._build_file_reference_part(
-            invocation_context=invocation_context,
-            filename=file_name,
-            version=version,
-            mime_type=inline_data.mime_type,
-            display_name=display_name,
-        )
-        if file_part:
-          new_parts.append(file_part)
+        if self._attach_file_reference:
+          file_part = await self._build_file_reference_part(
+              invocation_context=invocation_context,
+              filename=file_name,
+              version=version,
+              mime_type=inline_data.mime_type,
+              display_name=display_name,
+          )
+          if file_part:
+            new_parts.append(file_part)
         pending_delta[file_name] = version
 
         modified = True

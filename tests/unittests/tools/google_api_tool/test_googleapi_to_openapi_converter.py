@@ -261,6 +261,27 @@ class TestGoogleApiToOpenApiConverter:
     # Verify the results
     assert converter_with_patched_build._google_api_spec == calendar_api_spec
 
+  def test_fetch_google_api_spec_with_discovery_url(
+      self, monkeypatch, mock_api_resource, calendar_api_spec
+  ):
+    """Test fetching Google API specification with custom discovery URL."""
+    mock_build = MagicMock(return_value=mock_api_resource)
+    monkeypatch.setattr(
+        "google.adk.tools.google_api_tool.googleapi_to_openapi_converter.build",
+        mock_build,
+    )
+
+    discovery_url = "https://example.com/discovery"
+    converter = GoogleApiToOpenApiConverter(
+        "calendar", "v3", discovery_url=discovery_url
+    )
+    converter.fetch_google_api_spec()
+
+    assert converter._google_api_spec == calendar_api_spec
+    mock_build.assert_called_once_with(
+        "calendar", "v3", discoveryServiceUrl=discovery_url
+    )
+
   def test_fetch_google_api_spec_error(self, monkeypatch, converter):
     """Test error handling when fetching Google API specification."""
     # Create a mock that raises an error

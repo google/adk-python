@@ -182,6 +182,8 @@ class LocalEvalService(BaseEvalService):
             eval_set_id=inference_request.eval_set_id,
             eval_case=eval_case,
             root_agent=self._root_agent,
+            use_live=inference_request.inference_config.use_live,
+            live_timeout_seconds=inference_request.inference_config.live_timeout_seconds,
         )
 
     inference_results = [run_inference(eval_case) for eval_case in eval_cases]
@@ -215,17 +217,24 @@ class LocalEvalService(BaseEvalService):
         for inference_result in evaluate_request.inference_results
     ]
 
+    results_by_set = {}
+
     for evaluation_task in asyncio.as_completed(evaluation_tasks):
       inference_result, eval_case_result = await evaluation_task
-
-      if self._eval_set_results_manager:
-        self._eval_set_results_manager.save_eval_set_result(
-            app_name=inference_result.app_name,
-            eval_set_id=inference_result.eval_set_id,
-            eval_case_results=[eval_case_result],
-        )
-
+      results_by_set.setdefault(inference_result.eval_set_id, []).append(
+          (inference_result.app_name, eval_case_result)
+      )
       yield eval_case_result
+
+    if self._eval_set_results_manager:
+      for eval_set_id, results in results_by_set.items():
+        app_name = results[0][0]
+        cases = [r[1] for r in results]
+        self._eval_set_results_manager.save_eval_set_result(
+            app_name=app_name,
+            eval_set_id=eval_set_id,
+            eval_case_results=cases,
+        )
 
   async def _evaluate_single_inference_result(
       self, inference_result: InferenceResult, evaluate_config: EvaluateConfig
@@ -267,6 +276,29 @@ class LocalEvalService(BaseEvalService):
         if eval_case.session_input and eval_case.session_input.user_id
         else 'test_user_id'
     )
+
+    if inference_result.inferences is None:
+      session_details = None
+      if inference_result.session_id is not None:
+        session_details = await self._session_service.get_session(
+            app_name=inference_result.app_name,
+            user_id=user_id,
+            session_id=inference_result.session_id,
+        )
+      return (
+          inference_result,
+          EvalCaseResult(
+              eval_set_file=inference_result.eval_set_id,
+              eval_set_id=inference_result.eval_set_id,
+              eval_id=inference_result.eval_case_id,
+              final_eval_status=EvalStatus.FAILED,
+              overall_eval_metric_results=[],
+              eval_metric_result_per_invocation=[],
+              session_id=inference_result.session_id or '',
+              session_details=session_details,
+              user_id=user_id,
+          ),
+      )
 
     if eval_case.conversation_scenario is None and len(
         inference_result.inferences
@@ -470,6 +502,8 @@ class LocalEvalService(BaseEvalService):
       eval_set_id: str,
       eval_case: EvalCase,
       root_agent: BaseAgent,
+      use_live: bool,
+      live_timeout_seconds: int,
   ) -> InferenceResult:
     initial_session = eval_case.session_input
     session_id = self._session_id_supplier()
@@ -482,17 +516,31 @@ class LocalEvalService(BaseEvalService):
 
     try:
       with client_label_context(EVAL_CLIENT_LABEL):
-        inferences = (
-            await EvaluationGenerator._generate_inferences_from_root_agent(
-                root_agent=root_agent,
-                user_simulator=self._user_simulator_provider.provide(eval_case),
-                initial_session=initial_session,
-                session_id=session_id,
-                session_service=self._session_service,
-                artifact_service=self._artifact_service,
-                memory_service=self._memory_service,
-            )
-        )
+        if use_live:
+          inferences = await EvaluationGenerator._generate_inferences_from_root_agent_live(
+              root_agent=root_agent,
+              user_simulator=self._user_simulator_provider.provide(eval_case),
+              initial_session=initial_session,
+              session_id=session_id,
+              session_service=self._session_service,
+              artifact_service=self._artifact_service,
+              memory_service=self._memory_service,
+              live_timeout_seconds=live_timeout_seconds,
+          )
+        else:
+          inferences = (
+              await EvaluationGenerator._generate_inferences_from_root_agent(
+                  root_agent=root_agent,
+                  user_simulator=self._user_simulator_provider.provide(
+                      eval_case
+                  ),
+                  initial_session=initial_session,
+                  session_id=session_id,
+                  session_service=self._session_service,
+                  artifact_service=self._artifact_service,
+                  memory_service=self._memory_service,
+              )
+          )
 
       inference_result.inferences = inferences
       inference_result.status = InferenceStatus.SUCCESS

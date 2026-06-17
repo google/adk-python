@@ -1,0 +1,101 @@
+description: "Tests a full, realistic stream about finding the penguin island with the highest body mass."
+
+user_question: "Penguins on which island have the highest average body mass?"
+
+mock_api_stream: |
+  [{
+    "timestamp": "2025-07-17T17:25:28.231Z",
+    "systemMessage": {
+      "text": {
+        "parts": [
+          "Penguins on which island have the highest average body mass?"
+        ],
+        "textType": "THOUGHT"
+      }
+    }
+  }
+  ,
+  {
+    "timestamp": "2025-07-17T17:25:31.171Z",
+    "systemMessage": {
+      "data": {
+        "generatedSql": "SELECT island, AVG(body_mass_g) AS average_body_mass\nFROM `bigframes-dev-perf`.`bigframes_testing_eu`.`penguins`\nGROUP BY island;"
+      }
+    }
+  }
+  ,
+  {
+    "timestamp": "2025-07-17T17:25:32.664Z",
+    "systemMessage": {
+      "data": {
+        "result": {
+          "data": [
+            {
+              "island": "Biscoe",
+              "average_body_mass": "4716.017964071853"
+            },
+            {
+              "island": "Dream",
+              "average_body_mass": "3712.9032258064512"
+            },
+            {
+              "island": "Torgersen",
+              "average_body_mass": "3706.3725490196075"
+            }
+          ],
+          "name": "average_body_mass_by_island",
+          "schema": {
+            "fields": [
+              {
+                "name": "island",
+                "type": "STRING",
+                "mode": "NULLABLE"
+              },
+              {
+                "name": "average_body_mass",
+                "type": "FLOAT",
+                "mode": "NULLABLE"
+              }
+            ]
+          }
+        }
+      }
+    }
+  }
+  ,
+  {
+    "timestamp": "2025-07-17T17:25:40.018Z",
+    "systemMessage": {
+      "text": {
+        "parts": [
+          "Penguins on Biscoe island have the highest average body mass, with an average of 4716.02g."
+        ],
+        "textType": "FINAL_RESPONSE"
+      }
+    }
+  }
+  ]
+
+expected_output:
+- text:
+    parts:
+      - 'Penguins on which island have the highest average body mass?'
+    textType: THOUGHT
+- data:
+    generatedSql: "SELECT island, AVG(body_mass_g) AS average_body_mass\nFROM `bigframes-dev-perf`.`bigframes_testing_eu`.`penguins`\nGROUP BY island;"
+- Data Retrieved:
+    headers:
+      - island
+      - average_body_mass
+    rows:
+      - - Biscoe
+        - '4716.017964071853'
+      - - Dream
+        - '3712.9032258064512'
+      - - Torgersen
+        - '3706.3725490196075'
+    summary: Showing all 3 rows.
+- text:
+    parts:
+      - "Penguins on Biscoe island have the highest average body mass, with an average of 4716.02g."
+    textType: FINAL_RESPONSE

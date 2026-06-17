@@ -36,6 +36,7 @@ from google.adk.events.event import Event
 from google.adk.events.event_actions import EventActions
 from google.adk.runners import RunConfig
 from google.adk.runners import Runner
+from google.adk.sessions.base_session_service import GetSessionConfig
 from google.genai.types import Content
 import pytest
 
@@ -659,6 +660,7 @@ class TestA2aAgentExecutor:
         app_name=self.mock_runner.app_name,
         user_id="test-user",
         session_id="old-session-id",
+        config=GetSessionConfig(num_recent_events=0, after_timestamp=None),
     )
     self.mock_runner.session_service.create_session.assert_called_once_with(
         app_name=self.mock_runner.app_name,

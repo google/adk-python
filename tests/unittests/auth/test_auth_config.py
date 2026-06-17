@@ -23,6 +23,7 @@ from fastapi.openapi.models import OAuthFlows
 from google.adk.auth.auth_credential import AuthCredential
 from google.adk.auth.auth_credential import AuthCredentialTypes
 from google.adk.auth.auth_credential import OAuth2Auth
+from google.adk.auth.auth_schemes import CustomAuthScheme
 from google.adk.auth.auth_tool import AuthConfig
 import pytest
 
@@ -162,3 +163,16 @@ def test_credential_key_is_stable_across_python_hash_seed():
     ).strip()
 
   assert _run_with_seed("0") == _run_with_seed("1")
+
+
+def test_credential_key_with_custom_auth_scheme():
+  """Test generating a credential key when the auth scheme is a CustomAuthScheme (type_ is a string)."""
+  custom_scheme = CustomAuthScheme.model_validate({"type": "mock_custom_type"})
+
+  custom_config = AuthConfig(
+      auth_scheme=custom_scheme,
+  )
+
+  key = custom_config.credential_key
+  assert key.startswith("adk_mock_custom_type_")
+  assert len(key) > len("adk_mock_custom_type_")
