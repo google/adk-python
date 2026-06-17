@@ -15,11 +15,11 @@
 from __future__ import annotations
 
 import asyncio
+from contextlib import AbstractAsyncContextManager
 from contextlib import AsyncExitStack
 from datetime import timedelta
 import logging
 from typing import Any
-from typing import AsyncContextManager
 from typing import Coroutine
 from typing import Optional
 from typing import TypeVar
@@ -60,7 +60,7 @@ class SessionContext:
 
   def __init__(
       self,
-      client: AsyncContextManager,
+      client: AbstractAsyncContextManager[Any],
       timeout: Optional[float],
       sse_read_timeout: Optional[float],
       is_stdio: bool = False,

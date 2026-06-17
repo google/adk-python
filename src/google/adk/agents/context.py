@@ -28,7 +28,6 @@ from .readonly_context import ReadonlyContext
 
 if TYPE_CHECKING:
   from google.genai import types
-  from pydantic import BaseModel
 
   from ..artifacts.base_artifact_service import ArtifactVersion
   from ..auth.auth_credential import AuthCredential
@@ -220,12 +219,13 @@ class Context(ReadonlyContext):
         parent_ctx.isolation_scope if parent_ctx else None
     )
 
+    self._output_for_ancestors: list[str]
     if use_as_output and parent_ctx:
-      self._output_for_ancestors: list[str] = [parent_ctx.node_path] + list(
+      self._output_for_ancestors = [parent_ctx.node_path] + list(
           parent_ctx._output_for_ancestors or []
       )
     else:
-      self._output_for_ancestors: list[str] = []
+      self._output_for_ancestors = []
     self._error: Exception | None = None
     self._error_node_path: str = ''
 
@@ -403,6 +403,7 @@ class Context(ReadonlyContext):
     ctx_with_proxy = ctx.model_copy(
         update={
             'session': self.session,
+            'isolation_scope': self.isolation_scope,
         }
     )
     return ctx_with_proxy
@@ -544,6 +545,14 @@ class Context(ReadonlyContext):
         override_isolation_scope=override_isolation_scope,
         run_id=run_id,
     )
+    if result.error:
+      from ..workflow import _errors
+
+      raise _errors.DynamicNodeFailError(
+          message=f'Dynamic node {built_node.name} failed',
+          error=result.error,
+          error_node_path=result.error_node_path,
+      )
     if (
         raise_on_wait
         and built_node.wait_for_output

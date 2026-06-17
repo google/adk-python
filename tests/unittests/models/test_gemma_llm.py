@@ -14,6 +14,7 @@
 
 from google.adk import models
 from google.adk.models.gemma_llm import Gemma
+from google.adk.models.google_llm import Gemini
 from google.adk.models.llm_request import LlmRequest
 from google.adk.models.llm_response import LlmResponse
 from google.genai import types
@@ -88,8 +89,8 @@ def llm_request_with_tools():
 
 
 def test_supported_models_matches_gemma4():
-  """Gemma 4 model strings must resolve to the Gemma class via the registry."""
-  assert models.LLMRegistry.resolve("gemma-4-31b-it") is Gemma
+  """Gemma 4 model strings must resolve to the Gemini class via the registry."""
+  assert models.LLMRegistry.resolve("gemma-4-31b-it") is Gemini
 
 
 def test_supported_models_matches_gemma3():
@@ -515,6 +516,14 @@ def test_process_response_last_json_object():
   assert part.function_call.name == "second_call"
   assert part.function_call.args == {"b": 2}
   assert part.text is None
+
+
+# Tests for Gemma 4 registry routing
+def test_gemma4_resolves_to_gemini_not_gemma():
+  """Gemma 4 models should resolve to Gemini, not the Gemma workaround class."""
+  resolved = models.LLMRegistry.resolve("gemma-4-31b-it")
+  assert resolved is not Gemma
+  assert resolved is Gemini
 
 
 # Tests for Gemma3Ollama (only run when LiteLLM is installed)

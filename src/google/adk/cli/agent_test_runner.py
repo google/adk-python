@@ -728,11 +728,9 @@ def rebuild_tests(path: str):
   """Discovers test files and rebuilds them by running the agent live."""
   import json
   import sys
-  import time
 
   from google.adk.apps.app import App
   from google.adk.events.event import Event as AdkEvent
-  from google.genai import types
 
   path_obj = Path(path)
   if path_obj.is_dir():

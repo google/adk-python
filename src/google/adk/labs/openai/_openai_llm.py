@@ -20,21 +20,18 @@ import copy
 from functools import cached_property
 import json
 import logging
-import os
 from typing import Any
 from typing import AsyncGenerator
-from typing import Iterable
 from typing import Literal
-from typing import Union
 
 from google.genai import types
 
 try:
   from openai import AsyncOpenAI
   from openai.types.chat import ChatCompletion
-  from openai.types.chat import ChatCompletionChunk
+  from openai.types.chat import ChatCompletionChunk  # noqa: F401
   from openai.types.chat import ChatCompletionContentPartImageParam
-  from openai.types.chat import ChatCompletionMessage
+  from openai.types.chat import ChatCompletionMessage  # noqa: F401
   from openai.types.chat import ChatCompletionMessageParam
   from openai.types.chat import ChatCompletionToolParam
 except ImportError as e:
@@ -301,6 +298,13 @@ def _function_declaration_to_openai_tool(
   }
 
 
+def _extract_cached_token_count(usage: Any) -> int | None:
+  """Returns OpenAI prompt_tokens_details.cached_tokens, if present."""
+  details = getattr(usage, "prompt_tokens_details", None)
+  cached = getattr(details, "cached_tokens", None)
+  return cached if isinstance(cached, int) else None
+
+
 def _response_to_llm_response(response: ChatCompletion) -> LlmResponse:
   """Parses an OpenAI response into an LlmResponse."""
   choice = response.choices[0]
@@ -334,6 +338,9 @@ def _response_to_llm_response(response: ChatCompletion) -> LlmResponse:
           prompt_token_count=response.usage.prompt_tokens,
           candidates_token_count=response.usage.completion_tokens,
           total_token_count=response.usage.total_tokens,
+          cached_content_token_count=_extract_cached_token_count(
+              response.usage
+          ),
       ),
   )
 

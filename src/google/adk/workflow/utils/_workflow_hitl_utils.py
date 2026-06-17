@@ -29,7 +29,6 @@ from ...auth.auth_credential import AuthCredentialTypes as _AuthCredentialTypes
 from ...auth.auth_handler import AuthHandler
 from ...auth.auth_tool import AuthConfig
 from ...auth.auth_tool import AuthToolArguments
-from ...events._node_path_builder import _NodePathBuilder
 from ...events.event import Event
 from ...events.request_input import RequestInput
 from ...utils._schema_utils import schema_to_json_schema

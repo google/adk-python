@@ -754,8 +754,7 @@ def test_append_instructions_warning_unsupported_system_instruction_type(
   )
 
 
-@pytest.mark.parametrize('llm_backend', ['GOOGLE_AI', 'VERTEX'])
-def test_append_instructions_with_mixed_content(llm_backend):
+def test_append_instructions_with_mixed_content():
   """Test append_instructions with mixed text and non-text content."""
   request = LlmRequest()
 
@@ -813,8 +812,7 @@ def test_append_instructions_with_mixed_content(llm_backend):
   assert user_contents[1].parts[1].file_data.display_name == 'document.txt'
 
 
-@pytest.mark.parametrize('llm_backend', ['GOOGLE_AI', 'VERTEX'])
-def test_append_instructions_with_only_text_parts(llm_backend):
+def test_append_instructions_with_only_text_parts():
   """Test append_instructions with only text parts."""
   request = LlmRequest()
 
