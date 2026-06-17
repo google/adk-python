@@ -66,6 +66,32 @@ logger = logging.getLogger('google_adk.' + __name__)
 
 _ADK_AGENT_NAME_LABEL_KEY = 'adk_agent_name'
 
+# Maximum number of retries when the model returns an empty response after
+# tool execution. Prevents infinite loops if the model keeps returning empty.
+_MAX_EMPTY_RESPONSE_RETRIES = 2
+
+
+def _has_meaningful_content(event: Event) -> bool:
+  """Returns whether the event has content worth showing to the user.
+
+  An event with no content, empty parts, or only thought / whitespace parts
+  is not meaningful. Used to detect empty model responses after tool
+  execution so the loop can re-prompt instead of silently halting.
+  """
+  if not event.content or not event.content.parts:
+    return False
+  for part in event.content.parts:
+    if part.function_call or part.function_response:
+      return True
+    if part.thought:
+      continue
+    if part.text and part.text.strip():
+      return True
+    if part.inline_data or part.file_data:
+      return True
+  return False
+
+
 # Timing configuration
 DEFAULT_TRANSFER_AGENT_DELAY = 1.0
 DEFAULT_TASK_COMPLETION_DELAY = 1.0
@@ -883,12 +909,70 @@ class BaseLlmFlow(ABC):
       self, invocation_context: InvocationContext
   ) -> AsyncGenerator[Event, None]:
     """Runs the flow."""
+    empty_response_count = 0
+    has_prior_tool_call = False
     while True:
       last_event = None
       async with Aclosing(self._run_one_step_async(invocation_context)) as agen:
         async for event in agen:
           last_event = event
           yield event
+          # Track if any tool calls have been executed in this invocation.
+          # Empty responses are only retried after tool execution because
+          # that is where models intermittently return 0 output tokens.
+          if event.get_function_calls():
+            has_prior_tool_call = True
+
+      # Determine if the model returned an empty / useless response that
+      # should be retried.  Three cases:
+      #   1. Last event is partial with no meaningful content (streaming +
+      #      thinking: only thought chunks arrived, no final response)
+      #   2. Last event is a final response with no meaningful content
+      #      (non-streaming empty response, or streaming empty aggregated)
+      is_empty_response = False
+      if (
+          last_event
+          and last_event.partial
+          and not _has_meaningful_content(last_event)
+      ):
+        is_empty_response = True
+      elif (
+          last_event
+          and last_event.is_final_response()
+          and not _has_meaningful_content(last_event)
+          and last_event.author == invocation_context.agent.name
+      ):
+        is_empty_response = True
+
+      # Reset retry budget after a successful (non-empty) response so that
+      # later empty responses in the same invocation still get retried.
+      if not is_empty_response and empty_response_count > 0:
+        empty_response_count = 0
+
+      if (
+          is_empty_response
+          and has_prior_tool_call
+          and empty_response_count < _MAX_EMPTY_RESPONSE_RETRIES
+      ):
+        empty_response_count += 1
+        logger.warning(
+            'Model returned an empty response (attempt %d/%d), re-prompting.',
+            empty_response_count,
+            _MAX_EMPTY_RESPONSE_RETRIES,
+        )
+        continue
+
+      if (
+          is_empty_response
+          and empty_response_count >= _MAX_EMPTY_RESPONSE_RETRIES
+      ):
+        logger.warning(
+            'Model returned an empty response but retry budget (%d) is'
+            ' exhausted. Halting.',
+            _MAX_EMPTY_RESPONSE_RETRIES,
+        )
+
+      # Normal termination conditions.
       if not last_event or last_event.is_final_response() or last_event.partial:
         if last_event and last_event.partial:
           logger.warning('The last event is partial, which is not expected.')

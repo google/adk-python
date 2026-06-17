@@ -2372,6 +2372,7 @@ class LiteLlm(BaseLlm):
       aggregated_llm_response_with_tool_call = None
       usage_metadata = None
       fallback_index = 0
+      last_model_version = None
 
       def _finalize_tool_call_response(
           *, model_version: str, finish_reason: str
@@ -2456,6 +2457,7 @@ class LiteLlm(BaseLlm):
         function_calls.clear()
 
       async for part in await self.llm_client.acompletion(**completion_args):
+        last_model_version = part.model
         for chunk, finish_reason in _model_response_to_chunk(part):
           if isinstance(chunk, FunctionChunk):
             index = chunk.index or fallback_index
@@ -2549,6 +2551,22 @@ class LiteLlm(BaseLlm):
             finish_reason="stop",
         )
         _reset_stream_buffers()
+
+      # Fallback: if the model produced no meaningful output at all (no text,
+      # no reasoning, no tool calls), yield an explicit empty non-partial
+      # response so that downstream retry logic in run_async() can detect it
+      # and re-prompt instead of silently halting.
+      if (
+          not aggregated_llm_response
+          and not aggregated_llm_response_with_tool_call
+          and last_model_version is not None
+      ):
+        aggregated_llm_response = LlmResponse(
+            content=types.Content(role="model", parts=[]),
+            partial=False,
+            finish_reason=_map_finish_reason("stop"),
+            model_version=last_model_version,
+        )
 
       # waiting until streaming ends to yield the llm_response as litellm tends
       # to send chunk that contains usage_metadata after the chunk with

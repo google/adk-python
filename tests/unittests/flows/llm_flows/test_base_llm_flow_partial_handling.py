@@ -93,7 +93,9 @@ async def test_run_async_breaks_on_final_response():
 @pytest.mark.asyncio
 async def test_run_async_breaks_on_no_last_event():
   """Test that run_async breaks when there is no last event."""
-  # Create a mock model that returns an empty response (no content)
+  # content=None is filtered by _postprocess_async, so no events are
+  # yielded and last_event stays None.  The loop should break immediately
+  # (no retry) because this is legitimate for sub-agents.
   empty_response = LlmResponse(content=None, partial=False)
 
   mock_model = testing_utils.MockModel.create(responses=[empty_response])
