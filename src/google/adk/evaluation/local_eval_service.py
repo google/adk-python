@@ -277,6 +277,29 @@ class LocalEvalService(BaseEvalService):
         else 'test_user_id'
     )
 
+    if inference_result.inferences is None:
+      session_details = None
+      if inference_result.session_id is not None:
+        session_details = await self._session_service.get_session(
+            app_name=inference_result.app_name,
+            user_id=user_id,
+            session_id=inference_result.session_id,
+        )
+      return (
+          inference_result,
+          EvalCaseResult(
+              eval_set_file=inference_result.eval_set_id,
+              eval_set_id=inference_result.eval_set_id,
+              eval_id=inference_result.eval_case_id,
+              final_eval_status=EvalStatus.FAILED,
+              overall_eval_metric_results=[],
+              eval_metric_result_per_invocation=[],
+              session_id=inference_result.session_id or '',
+              session_details=session_details,
+              user_id=user_id,
+          ),
+      )
+
     if eval_case.conversation_scenario is None and len(
         inference_result.inferences
     ) != len(eval_case.conversation):

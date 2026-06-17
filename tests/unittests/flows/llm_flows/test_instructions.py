@@ -541,8 +541,7 @@ async def test_string_global_instruction_respects_bypass_state_injection():
 # Static Instruction Tests (moved from test_static_instructions.py)
 
 
-@pytest.mark.parametrize("llm_backend", ["GOOGLE_AI", "VERTEX"])
-def test_static_instruction_field_exists(llm_backend):
+def test_static_instruction_field_exists():
   """Test that static_instruction field exists and works with types.Content."""
   static_content = types.Content(
       role="user", parts=[types.Part(text="This is a static instruction")]
@@ -551,8 +550,7 @@ def test_static_instruction_field_exists(llm_backend):
   assert agent.static_instruction == static_content
 
 
-@pytest.mark.parametrize("llm_backend", ["GOOGLE_AI", "VERTEX"])
-def test_static_instruction_supports_string(llm_backend):
+def test_static_instruction_supports_string():
   """Test that static_instruction field supports simple strings."""
   static_str = "This is a static instruction as a string"
   agent = LlmAgent(name="test_agent", static_instruction=static_str)
@@ -560,8 +558,7 @@ def test_static_instruction_supports_string(llm_backend):
   assert isinstance(agent.static_instruction, str)
 
 
-@pytest.mark.parametrize("llm_backend", ["GOOGLE_AI", "VERTEX"])
-def test_static_instruction_supports_part(llm_backend):
+def test_static_instruction_supports_part():
   """Test that static_instruction field supports types.Part."""
   static_part = types.Part(text="This is a static instruction as Part")
   agent = LlmAgent(name="test_agent", static_instruction=static_part)
@@ -569,8 +566,7 @@ def test_static_instruction_supports_part(llm_backend):
   assert isinstance(agent.static_instruction, types.Part)
 
 
-@pytest.mark.parametrize("llm_backend", ["GOOGLE_AI", "VERTEX"])
-def test_static_instruction_supports_file(llm_backend):
+def test_static_instruction_supports_file():
   """Test that static_instruction field supports types.File."""
   static_file = types.File(uri="gs://bucket/file.txt", mime_type="text/plain")
   agent = LlmAgent(name="test_agent", static_instruction=static_file)
@@ -578,8 +574,7 @@ def test_static_instruction_supports_file(llm_backend):
   assert isinstance(agent.static_instruction, types.File)
 
 
-@pytest.mark.parametrize("llm_backend", ["GOOGLE_AI", "VERTEX"])
-def test_static_instruction_supports_list_of_parts(llm_backend):
+def test_static_instruction_supports_list_of_parts():
   """Test that static_instruction field supports list[PartUnion]."""
   static_parts_list = [
       types.Part(text="First part"),
@@ -591,8 +586,7 @@ def test_static_instruction_supports_list_of_parts(llm_backend):
   assert len(agent.static_instruction) == 2
 
 
-@pytest.mark.parametrize("llm_backend", ["GOOGLE_AI", "VERTEX"])
-def test_static_instruction_supports_list_of_strings(llm_backend):
+def test_static_instruction_supports_list_of_strings():
   """Test that static_instruction field supports list of strings."""
   static_strings_list = ["First instruction", "Second instruction"]
   agent = LlmAgent(name="test_agent", static_instruction=static_strings_list)
@@ -601,8 +595,7 @@ def test_static_instruction_supports_list_of_strings(llm_backend):
   assert all(isinstance(s, str) for s in agent.static_instruction)
 
 
-@pytest.mark.parametrize("llm_backend", ["GOOGLE_AI", "VERTEX"])
-def test_static_instruction_supports_multiple_parts(llm_backend):
+def test_static_instruction_supports_multiple_parts():
   """Test that static_instruction supports multiple parts including files."""
   static_content = types.Content(
       role="user",
@@ -621,8 +614,7 @@ def test_static_instruction_supports_multiple_parts(llm_backend):
   assert len(agent.static_instruction.parts) == 3
 
 
-@pytest.mark.parametrize("llm_backend", ["GOOGLE_AI", "VERTEX"])
-def test_static_instruction_outputs_placeholders_literally(llm_backend):
+def test_static_instruction_outputs_placeholders_literally():
   """Test that static instructions output placeholders literally without processing."""
   static_content = types.Content(
       role="user",
@@ -635,9 +627,8 @@ def test_static_instruction_outputs_placeholders_literally(llm_backend):
   assert "{count}" in agent.static_instruction.parts[0].text
 
 
-@pytest.mark.parametrize("llm_backend", ["GOOGLE_AI", "VERTEX"])
 @pytest.mark.asyncio
-async def test_static_instruction_added_to_contents(llm_backend):
+async def test_static_instruction_added_to_contents():
   """Test that static instructions are added to llm_request.config.system_instruction."""
   static_content = types.Content(
       role="user", parts=[types.Part(text="Static instruction content")]
@@ -657,9 +648,8 @@ async def test_static_instruction_added_to_contents(llm_backend):
   assert llm_request.config.system_instruction == "Static instruction content"
 
 
-@pytest.mark.parametrize("llm_backend", ["GOOGLE_AI", "VERTEX"])
 @pytest.mark.asyncio
-async def test_static_instruction_string_added_to_system(llm_backend):
+async def test_static_instruction_string_added_to_system():
   """Test that string static instructions are added to system_instruction."""
   agent = LlmAgent(
       name="test_agent", static_instruction="Static instruction as string"
@@ -678,9 +668,8 @@ async def test_static_instruction_string_added_to_system(llm_backend):
   assert llm_request.config.system_instruction == "Static instruction as string"
 
 
-@pytest.mark.parametrize("llm_backend", ["GOOGLE_AI", "VERTEX"])
 @pytest.mark.asyncio
-async def test_static_instruction_part_converted_to_system(llm_backend):
+async def test_static_instruction_part_converted_to_system():
   """Test that Part static instructions are converted and added to system_instruction."""
   static_part = types.Part(text="Static instruction from Part")
   agent = LlmAgent(name="test_agent", static_instruction=static_part)
@@ -696,11 +685,8 @@ async def test_static_instruction_part_converted_to_system(llm_backend):
   assert llm_request.config.system_instruction == "Static instruction from Part"
 
 
-@pytest.mark.parametrize("llm_backend", ["GOOGLE_AI", "VERTEX"])
 @pytest.mark.asyncio
-async def test_static_instruction_list_of_parts_converted_to_system(
-    llm_backend,
-):
+async def test_static_instruction_list_of_parts_converted_to_system():
   """Test that list of Parts is converted and added to system_instruction."""
   static_parts_list = [
       types.Part(text="First part"),
@@ -719,11 +705,8 @@ async def test_static_instruction_list_of_parts_converted_to_system(
   assert llm_request.config.system_instruction == "First part\n\nSecond part"
 
 
-@pytest.mark.parametrize("llm_backend", ["GOOGLE_AI", "VERTEX"])
 @pytest.mark.asyncio
-async def test_static_instruction_list_of_strings_converted_to_system(
-    llm_backend,
-):
+async def test_static_instruction_list_of_strings_converted_to_system():
   """Test that list of strings is converted and added to system_instruction."""
   static_strings_list = ["First instruction", "Second instruction"]
   agent = LlmAgent(name="test_agent", static_instruction=static_strings_list)
@@ -742,9 +725,8 @@ async def test_static_instruction_list_of_strings_converted_to_system(
   )
 
 
-@pytest.mark.parametrize("llm_backend", ["GOOGLE_AI", "VERTEX"])
 @pytest.mark.asyncio
-async def test_dynamic_instruction_without_static_goes_to_system(llm_backend):
+async def test_dynamic_instruction_without_static_goes_to_system():
   """Test that dynamic instructions go to system when no static instruction exists."""
   agent = LlmAgent(name="test_agent", instruction="Dynamic instruction content")
 
@@ -761,9 +743,8 @@ async def test_dynamic_instruction_without_static_goes_to_system(llm_backend):
   assert len(llm_request.contents) == 0
 
 
-@pytest.mark.parametrize("llm_backend", ["GOOGLE_AI", "VERTEX"])
 @pytest.mark.asyncio
-async def test_dynamic_instruction_with_static_not_in_system(llm_backend):
+async def test_dynamic_instruction_with_static_not_in_system():
   """Test that dynamic instructions don't go to system when static instruction exists."""
   static_content = types.Content(
       role="user", parts=[types.Part(text="Static instruction content")]
@@ -793,11 +774,8 @@ async def test_dynamic_instruction_with_static_not_in_system(llm_backend):
   assert llm_request.contents[0].parts[0].text == "Dynamic instruction content"
 
 
-@pytest.mark.parametrize("llm_backend", ["GOOGLE_AI", "VERTEX"])
 @pytest.mark.asyncio
-async def test_dynamic_instruction_with_string_static_not_in_system(
-    llm_backend,
-):
+async def test_dynamic_instruction_with_string_static_not_in_system():
   """Test that dynamic instructions go to user content when string static_instruction exists."""
   agent = LlmAgent(
       name="test_agent",
@@ -823,9 +801,8 @@ async def test_dynamic_instruction_with_string_static_not_in_system(
   assert llm_request.contents[0].parts[0].text == "Dynamic instruction content"
 
 
-@pytest.mark.parametrize("llm_backend", ["GOOGLE_AI", "VERTEX"])
 @pytest.mark.asyncio
-async def test_dynamic_instructions_added_to_user_content(llm_backend):
+async def test_dynamic_instructions_added_to_user_content():
   """Test that dynamic instructions are added to user content when static exists."""
   static_content = types.Content(
       role="user", parts=[types.Part(text="Static instruction")]
@@ -863,11 +840,8 @@ async def test_dynamic_instructions_added_to_user_content(llm_backend):
   assert llm_request.contents[1].parts[0].text == "Hello world"
 
 
-@pytest.mark.parametrize("llm_backend", ["GOOGLE_AI", "VERTEX"])
 @pytest.mark.asyncio
-async def test_dynamic_instructions_create_user_content_when_none_exists(
-    llm_backend,
-):
+async def test_dynamic_instructions_create_user_content_when_none_exists():
   """Test that dynamic instructions create user content when none exists."""
   static_content = types.Content(
       role="user", parts=[types.Part(text="Static instruction")]
@@ -898,9 +872,8 @@ async def test_dynamic_instructions_create_user_content_when_none_exists(
   assert llm_request.contents[0].parts[0].text == "Dynamic instruction"
 
 
-@pytest.mark.parametrize("llm_backend", ["GOOGLE_AI", "VERTEX"])
 @pytest.mark.asyncio
-async def test_no_dynamic_instructions_when_no_static(llm_backend):
+async def test_no_dynamic_instructions_when_no_static():
   """Test that no dynamic instructions are added to content when no static instructions exist."""
   agent = LlmAgent(name="test_agent", instruction="Dynamic instruction only")
 
@@ -958,9 +931,8 @@ async def test_instructions_insert_after_function_response():
   assert llm_request.contents[2].parts[0].text == "Dynamic instruction"
 
 
-@pytest.mark.parametrize("llm_backend", ["GOOGLE_AI", "VERTEX"])
 @pytest.mark.asyncio
-async def test_static_instruction_with_files_and_text(llm_backend):
+async def test_static_instruction_with_files_and_text():
   """Test that static instruction can contain files and text together."""
   static_content = types.Content(
       role="user",
@@ -1002,11 +974,8 @@ async def test_static_instruction_with_files_and_text(llm_backend):
   assert llm_request.contents[0].parts[1].inline_data.data == b"fake_image_data"
 
 
-@pytest.mark.parametrize("llm_backend", ["GOOGLE_AI", "VERTEX"])
 @pytest.mark.asyncio
-async def test_static_instruction_non_text_parts_moved_to_user_content(
-    llm_backend,
-):
+async def test_static_instruction_non_text_parts_moved_to_user_content():
   """Test that non-text parts from static instruction are moved to user content."""
   static_content = types.Content(
       role="user",
@@ -1075,9 +1044,8 @@ async def test_static_instruction_non_text_parts_moved_to_user_content(
   assert file_content.parts[1].file_data.display_name == "test_file.txt"
 
 
-@pytest.mark.parametrize("llm_backend", ["GOOGLE_AI", "VERTEX"])
 @pytest.mark.asyncio
-async def test_static_instruction_reference_id_generation(llm_backend):
+async def test_static_instruction_reference_id_generation():
   """Test that reference IDs are generated correctly for non-text parts."""
   static_content = types.Content(
       role="user",
@@ -1125,9 +1093,8 @@ async def test_static_instruction_reference_id_generation(llm_backend):
     assert len(content.parts) == 2
 
 
-@pytest.mark.parametrize("llm_backend", ["GOOGLE_AI", "VERTEX"])
 @pytest.mark.asyncio
-async def test_static_instruction_only_text_parts(llm_backend):
+async def test_static_instruction_only_text_parts():
   """Test that static instruction with only text parts works normally."""
   static_content = types.Content(
       role="user",
@@ -1151,9 +1118,8 @@ async def test_static_instruction_only_text_parts(llm_backend):
   assert len(llm_request.contents) == 0
 
 
-@pytest.mark.parametrize("llm_backend", ["GOOGLE_AI", "VERTEX"])
 @pytest.mark.asyncio
-async def test_static_instruction_only_non_text_parts(llm_backend):
+async def test_static_instruction_only_non_text_parts():
   """Test that static instruction with only non-text parts works correctly."""
   static_content = types.Content(
       role="user",

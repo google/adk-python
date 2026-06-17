@@ -49,12 +49,16 @@ _LAZY_PROVIDERS: dict[str, tuple[list[str], str]] = {
     'Gemini': (
         [
             r'gemini-.*',
+            # Gemma 4+ uses Gemini natively; must precede Gemma's gemma-.* so
+            # gemma-4-* resolves to Gemini, not the Gemma 3 workaround class.
+            r'gemma-4.*',
             r'model-optimizer-.*',
             r'projects\/.+\/locations\/.+\/endpoints\/.+',
             r'projects\/.+\/locations\/.+\/publishers\/google\/models\/gemini.+',
         ],
         'google_llm',
     ),
+    # Gemma 3 only (function-calling workarounds). Gemma 4+ resolves to Gemini.
     'Gemma': ([r'gemma-.*'], 'gemma_llm'),
     'ApigeeLlm': ([r'.*-apigee$'], 'apigee_llm'),
     'Claude': ([r'claude-3-.*', r'claude-.*-4.*'], 'anthropic_llm'),

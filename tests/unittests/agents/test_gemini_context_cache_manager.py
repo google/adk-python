@@ -951,3 +951,63 @@ class TestGeminiContextCacheManager:
     assert result_2.contents_count == 3  # Preserved from prefix
     assert result_2.invocations_used == 1
     self.manager.genai_client.aio.caches.create.assert_called_once()
+
+  async def test_create_http_options_passthrough(self):
+    """Test that create_http_options is passed through to cache creation config."""
+    mock_cached_content = AsyncMock()
+    mock_cached_content.name = (
+        "projects/test/locations/us-central1/cachedContents/test123"
+    )
+    self.manager.genai_client.aio.caches.create = AsyncMock(
+        return_value=mock_cached_content
+    )
+
+    # Create config with http_options (e.g. 10s timeout)
+    http_options = types.HttpOptions(timeout=10000)
+    cache_config_with_timeout = ContextCacheConfig(
+        cache_intervals=10,
+        ttl_seconds=1800,
+        min_tokens=0,
+        create_http_options=http_options,
+    )
+
+    llm_request = self.create_llm_request()
+    llm_request.cache_config = cache_config_with_timeout
+
+    cache_contents_count = max(0, len(llm_request.contents) - 1)
+
+    with patch.object(
+        self.manager, "_generate_cache_fingerprint", return_value="test_fp"
+    ):
+      await self.manager._create_gemini_cache(llm_request, cache_contents_count)
+
+    # Verify cache creation call includes http_options
+    create_call = self.manager.genai_client.aio.caches.create.call_args
+    assert create_call is not None
+    cache_config = create_call[1]["config"]
+    assert cache_config.http_options is not None
+    assert cache_config.http_options.timeout == 10000
+
+  async def test_create_without_http_options(self):
+    """Test that cache creation works without create_http_options."""
+    mock_cached_content = AsyncMock()
+    mock_cached_content.name = (
+        "projects/test/locations/us-central1/cachedContents/test123"
+    )
+    self.manager.genai_client.aio.caches.create = AsyncMock(
+        return_value=mock_cached_content
+    )
+
+    llm_request = self.create_llm_request()
+    cache_contents_count = max(0, len(llm_request.contents) - 1)
+
+    with patch.object(
+        self.manager, "_generate_cache_fingerprint", return_value="test_fp"
+    ):
+      await self.manager._create_gemini_cache(llm_request, cache_contents_count)
+
+    # Verify cache creation call does not include http_options
+    create_call = self.manager.genai_client.aio.caches.create.call_args
+    assert create_call is not None
+    cache_config = create_call[1]["config"]
+    assert cache_config.http_options is None

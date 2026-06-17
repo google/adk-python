@@ -101,7 +101,7 @@ def _register_builder_endpoints(app: FastAPI, web: bool, agents_dir: str):
   if not web:
     return
   try:
-    import multipart
+    import multipart  # noqa: F401
   except ImportError:
     logger.warning(
         "python-multipart not installed. Builder UI endpoints will not be"

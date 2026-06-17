@@ -4948,6 +4948,20 @@ def test_convert_reasoning_value_to_parts_thinking_blocks_preserves_signature():
   assert parts[1].thought_signature == b"sig_def"
 
 
+def test_convert_reasoning_value_to_parts_gemini_thinking_blocks_no_signature():
+  """Gemini thinking_blocks (no signature) still produce thought parts."""
+  thinking_blocks = [
+      {"type": "thinking", "thinking": "gemini step 1"},
+      {"type": "thinking", "thinking": "gemini step 2"},
+  ]
+  parts = _convert_reasoning_value_to_parts(thinking_blocks)
+  assert len(parts) == 2
+  assert parts[0].text == "gemini step 1"
+  assert parts[0].thought is True
+  assert parts[0].thought_signature is None
+  assert parts[1].text == "gemini step 2"
+
+
 def test_convert_reasoning_value_to_parts_skips_redacted_blocks():
   """Redacted thinking blocks are excluded from parts."""
   thinking_blocks = [

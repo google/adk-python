@@ -31,13 +31,10 @@ from a2a.client.card_resolver import A2ACardResolver
 from a2a.client.client import ClientConfig as A2AClientConfig
 from a2a.client.client_factory import ClientFactory as A2AClientFactory
 from a2a.client.errors import A2AClientHTTPError
-from a2a.client.middleware import ClientCallContext
 from a2a.types import AgentCard
 from a2a.types import Message as A2AMessage
-from a2a.types import MessageSendConfiguration
 from a2a.types import Part as A2APart
 from a2a.types import Role
-from a2a.types import Task as A2ATask
 from a2a.types import TaskArtifactUpdateEvent as A2ATaskArtifactUpdateEvent
 from a2a.types import TaskState
 from a2a.types import TaskStatusUpdateEvent as A2ATaskStatusUpdateEvent
@@ -45,7 +42,6 @@ from a2a.types import TransportProtocol as A2ATransport
 from google.adk.platform import uuid as platform_uuid
 from google.genai import types as genai_types
 import httpx
-from pydantic import BaseModel
 
 try:
   from a2a.utils.constants import AGENT_CARD_WELL_KNOWN_PATH
@@ -68,7 +64,6 @@ from ..a2a.converters.part_converter import GenAIPartToA2APartConverter
 from ..a2a.converters.to_adk_event import _create_mock_function_call_for_required_user_input
 from ..a2a.converters.to_adk_event import MOCK_FUNCTION_CALL_FOR_REQUIRED_USER_AUTH
 from ..a2a.converters.to_adk_event import MOCK_FUNCTION_CALL_FOR_REQUIRED_USER_INPUT
-from ..a2a.converters.utils import _get_adk_metadata_key
 from ..a2a.experimental import a2a_experimental
 from ..a2a.logs.log_utils import build_a2a_request_log
 from ..a2a.logs.log_utils import build_a2a_response_log
