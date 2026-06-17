@@ -818,6 +818,31 @@ async def test_execute_script_shell_success(mock_skill1):
 
 
 @pytest.mark.asyncio
+async def test_build_wrapper_code_with_unicode(mock_skill1):
+  """Verify that generated code uses utf-8 encoding for materializing files."""
+  # Add unicode content to mock_skill1 resources
+  unicode_content = "你好"
+  mock_skill1.resources.list_references.return_value = ["unicode.txt"]
+  mock_skill1.resources.get_reference.side_effect = lambda name: (
+      unicode_content if name == "unicode.txt" else None
+  )
+
+  executor = _make_mock_executor()
+  toolset = skill_toolset.SkillToolset([mock_skill1], code_executor=executor)
+  tool = skill_toolset.RunSkillScriptTool(toolset)
+  ctx = _make_tool_context_with_agent()
+  await tool.run_async(
+      args={"skill_name": "skill1", "file_path": "run.py"},
+      tool_context=ctx,
+  )
+
+  call_args = executor.execute_code.call_args
+  code_input = call_args[0][1]
+  assert "encoding='utf-8' if mode == 'w' else None" in code_input.code
+  assert unicode_content in code_input.code
+
+
+@pytest.mark.asyncio
 async def test_execute_script_with_input_args_python(mock_skill1):
   executor = _make_mock_executor(stdout="done\n")
   toolset = skill_toolset.SkillToolset([mock_skill1], code_executor=executor)
@@ -1249,6 +1274,35 @@ async def test_integration_python_stdout():
   assert result["status"] == "success"
   assert result["stdout"] == "hello world\n"
   assert result["stderr"] == ""
+
+
+@pytest.mark.asyncio
+async def test_integration_python_unicode_materialization():
+  """Real executor: Python script with unicode resources."""
+  script = models.Script(
+      src=(
+          "with open('references/unicode.txt', 'r', encoding='utf-8') as f:"
+          " print(f.read())"
+      )
+  )
+  skill = _make_skill_with_script("test_skill", "unicode.py", script)
+  skill.resources.get_reference.side_effect = lambda n: (
+      "你好，世界" if n == "unicode.txt" else None
+  )
+  skill.resources.list_references.return_value = ["unicode.txt"]
+  toolset = _make_real_executor_toolset([skill])
+  tool = skill_toolset.RunSkillScriptTool(toolset)
+  ctx = _make_tool_context_with_agent()
+  result = await tool.run_async(
+      args={
+          "skill_name": "test_skill",
+          "file_path": "unicode.py",
+      },
+      tool_context=ctx,
+  )
+  assert "status" in result, f"Result missing status: {result}"
+  assert result["status"] == "success"
+  assert "你好，世界" in result["stdout"]
 
 
 @pytest.mark.asyncio

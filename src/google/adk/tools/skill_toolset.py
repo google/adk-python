@@ -669,7 +669,10 @@ class _SkillScriptCodeExecutor:
         "      full_path = os.path.join(os.path.abspath(td), norm_rel)",
         "      os.makedirs(os.path.dirname(full_path), exist_ok=True)",
         "      mode = 'wb' if isinstance(content, bytes) else 'w'",
-        "      with open(full_path, mode) as f:",
+        (
+            "      with open(full_path, mode, encoding='utf-8' if mode == 'w'"
+            " else None) as f:"
+        ),
         "        f.write(content)",
         "    os.chdir(td)",
         "    try:",
