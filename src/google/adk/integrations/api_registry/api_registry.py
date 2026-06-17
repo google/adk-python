@@ -61,7 +61,10 @@ class ApiRegistry:
       page_token = None
       with httpx.Client() as client:
         while True:
-          params = {}
+          params = {
+              # Include all the apis including disabled ones. API registry no longer supports enabling APIs.
+              "filter": "enabled=false"
+          }
           if page_token:
             params["pageToken"] = page_token
 

@@ -144,6 +144,53 @@ async def test_load_artifacts_keeps_supported_mime_types():
   assert artifact_part.inline_data.mime_type == 'application/pdf'
 
 
+@mark.asyncio
+@mark.parametrize(
+    'mime_type',
+    ['image/svg+xml', 'image/svg', 'application/svg+xml', 'image/xml'],
+)
+async def test_load_artifacts_converts_svg_to_text(mime_type):
+  """SVG/XML image variants are rejected by Gemini with 400 INVALID_ARGUMENT,
+  so they must fall through to the text-conversion path instead of being
+  forwarded as inline image data.
+  """
+  artifact_name = 'logo.svg'
+  svg_bytes = (
+      b'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10">'
+      b'<circle cx="5" cy="5" r="4"/></svg>'
+  )
+  artifact = types.Part(
+      inline_data=types.Blob(data=svg_bytes, mime_type=mime_type)
+  )
+
+  tool_context = _StubToolContext({artifact_name: artifact})
+  llm_request = LlmRequest(
+      contents=[
+          types.Content(
+              role='user',
+              parts=[
+                  types.Part(
+                      function_response=types.FunctionResponse(
+                          name='load_artifacts',
+                          response={'artifact_names': [artifact_name]},
+                      )
+                  )
+              ],
+          )
+      ]
+  )
+
+  await load_artifacts_tool.process_llm_request(
+      tool_context=tool_context, llm_request=llm_request
+  )
+
+  artifact_part = llm_request.contents[-1].parts[1]
+  # The SVG must NOT be forwarded as inline image data — Gemini would 400.
+  assert artifact_part.inline_data is None
+  # And the original SVG markup is delivered as a text part instead.
+  assert artifact_part.text == svg_bytes.decode('utf-8')
+
+
 def test_maybe_base64_to_bytes_decodes_standard_base64():
   """Standard base64 encoded strings are decoded correctly."""
   original = b'hello world'
