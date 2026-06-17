@@ -34,6 +34,10 @@ MOCK_MCP_SERVERS_LIST = {
             "urls": ["mcp.server2.com"],
         },
         {
+            "name": "test-mcp-server-google",
+            "urls": ["mcp.googleapis.com"],
+        },
+        {
             "name": "test-mcp-server-no-url",
         },
         {
@@ -79,7 +83,7 @@ class TestApiRegistry(unittest.IsolatedAsyncioTestCase):
         api_registry_project_id=self.project_id, location=self.location
     )
 
-    self.assertEqual(len(api_registry._mcp_servers), 5)
+    self.assertEqual(len(api_registry._mcp_servers), 6)
     self.assertIn("test-mcp-server-1", api_registry._mcp_servers)
     self.assertIn("test-mcp-server-2", api_registry._mcp_servers)
     self.assertIn("test-mcp-server-no-url", api_registry._mcp_servers)
@@ -107,7 +111,7 @@ class TestApiRegistry(unittest.IsolatedAsyncioTestCase):
         api_registry_project_id=self.project_id, location=self.location
     )
 
-    self.assertEqual(len(api_registry._mcp_servers), 5)
+    self.assertEqual(len(api_registry._mcp_servers), 6)
     self.assertIn("test-mcp-server-1", api_registry._mcp_servers)
     self.assertIn("test-mcp-server-2", api_registry._mcp_servers)
     self.assertIn("test-mcp-server-no-url", api_registry._mcp_servers)
@@ -237,9 +241,43 @@ class TestApiRegistry(unittest.IsolatedAsyncioTestCase):
 
     toolset = api_registry.get_toolset("test-mcp-server-1")
 
+    # A non-Google host must not receive the runtime's ADC credentials.
     MockMcpToolset.assert_called_once_with(
         connection_params=StreamableHTTPConnectionParams(
             url="https://mcp.server1.com",
+            headers={},
+        ),
+        tool_filter=None,
+        tool_name_prefix=None,
+        header_provider=None,
+    )
+    self.assertEqual(toolset, MockMcpToolset.return_value)
+
+  @patch(
+      "google.adk.integrations.api_registry.api_registry.McpToolset",
+      autospec=True,
+  )
+  @patch("httpx.Client", autospec=True)
+  async def test_get_toolset_google_host_includes_credentials(
+      self, MockHttpClient, MockMcpToolset
+  ):
+    mock_response = MagicMock()
+    mock_response.raise_for_status = MagicMock()
+    mock_response.json = MagicMock(return_value=MOCK_MCP_SERVERS_LIST)
+    mock_client_instance = MockHttpClient.return_value
+    mock_client_instance.__enter__.return_value = mock_client_instance
+    mock_client_instance.get.return_value = mock_response
+
+    api_registry = ApiRegistry(
+        api_registry_project_id=self.project_id, location=self.location
+    )
+
+    toolset = api_registry.get_toolset("test-mcp-server-google")
+
+    # A Google API host receives the runtime's ADC credentials.
+    MockMcpToolset.assert_called_once_with(
+        connection_params=StreamableHTTPConnectionParams(
+            url="https://mcp.googleapis.com",
             headers={"Authorization": "Bearer mock_token"},
         ),
         tool_filter=None,
@@ -267,11 +305,11 @@ class TestApiRegistry(unittest.IsolatedAsyncioTestCase):
         api_registry_project_id=self.project_id, location=self.location
     )
 
-    toolset = api_registry.get_toolset("test-mcp-server-1")
+    toolset = api_registry.get_toolset("test-mcp-server-google")
 
     MockMcpToolset.assert_called_once_with(
         connection_params=StreamableHTTPConnectionParams(
-            url="https://mcp.server1.com",
+            url="https://mcp.googleapis.com",
             headers={
                 "Authorization": "Bearer mock_token",
                 "x-goog-user-project": "quota-project",
@@ -312,7 +350,7 @@ class TestApiRegistry(unittest.IsolatedAsyncioTestCase):
     MockMcpToolset.assert_called_once_with(
         connection_params=StreamableHTTPConnectionParams(
             url="https://mcp.server1.com",
-            headers={"Authorization": "Bearer mock_token"},
+            headers={},
         ),
         tool_filter=tool_filter,
         tool_name_prefix=tool_name_prefix,
@@ -348,7 +386,7 @@ class TestApiRegistry(unittest.IsolatedAsyncioTestCase):
           MockMcpToolset.assert_called_once_with(
               connection_params=StreamableHTTPConnectionParams(
                   url=mock_url,
-                  headers={"Authorization": "Bearer mock_token"},
+                  headers={},
               ),
               tool_filter=None,
               tool_name_prefix=None,
