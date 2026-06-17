@@ -61,8 +61,15 @@ class LiveRequestQueue:
 
   def __init__(self):
     self._queue = asyncio.Queue()
+    self._closed = False
+
+  @property
+  def is_closed(self) -> bool:
+    """Returns True if close() has been called on this queue."""
+    return self._closed
 
   def close(self):
+    self._closed = True
     self._queue.put_nowait(LiveRequest(close=True))
 
   def send_content(self, content: types.Content):

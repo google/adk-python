@@ -31,6 +31,24 @@ async def test_close_queue():
     mock_put_nowait.assert_called_once_with(LiveRequest(close=True))
 
 
+def test_is_closed_initially_false():
+  queue = LiveRequestQueue()
+  assert queue.is_closed is False
+
+
+def test_is_closed_true_after_close():
+  queue = LiveRequestQueue()
+  queue.close()
+  assert queue.is_closed is True
+
+
+def test_is_closed_not_affected_by_other_sends():
+  queue = LiveRequestQueue()
+  queue.send_content(MagicMock(spec=types.Content))
+  queue.send_realtime(MagicMock(spec=types.Blob))
+  assert queue.is_closed is False
+
+
 def test_send_content():
   queue = LiveRequestQueue()
   content = MagicMock(spec=types.Content)

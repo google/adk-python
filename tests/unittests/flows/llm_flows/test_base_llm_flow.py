@@ -1026,6 +1026,168 @@ async def test_run_live_reconnect_reset_attempt():
 
 
 @pytest.mark.asyncio
+async def test_run_live_no_reconnect_after_queue_close_api_error_1000():
+  """Test that run_live does not reconnect after LiveRequestQueue.close() (APIError 1000).
+
+  Calling LiveRequestQueue.close() signals an intentional client-side shutdown.
+  When the resulting APIError(1000) arrives, run_live must terminate instead of
+  reconnecting — even when a session resumption handle is present.
+  """
+  from google.adk.agents.live_request_queue import LiveRequestQueue
+  from google.genai.errors import APIError
+
+  real_model = Gemini()
+  mock_connection = mock.AsyncMock()
+
+  async def mock_receive():
+    # Simulate receiving a session resumption handle from the server.
+    yield LlmResponse(
+        live_session_resumption_update=types.LiveServerSessionResumptionUpdate(
+            new_handle='test_handle'
+        )
+    )
+    # Simulate the normal-close APIError that arrives after llm_connection.close().
+    raise APIError(1000, {})
+
+  mock_connection.receive = mock.Mock(side_effect=mock_receive)
+
+  agent = Agent(name='test_agent', model=real_model)
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent
+  )
+  invocation_context.live_request_queue = LiveRequestQueue()
+  # Simulate what live_request_queue.close() does before the error arrives.
+  invocation_context.live_request_queue.close()
+
+  flow = BaseLlmFlowForTesting()
+
+  with mock.patch.object(flow, '_send_to_model', new_callable=AsyncMock):
+    with mock.patch(
+        'google.adk.models.google_llm.Gemini.connect'
+    ) as mock_connect:
+      mock_connect.return_value.__aenter__.return_value = mock_connection
+
+      events = []
+      async for event in flow.run_live(invocation_context):
+        events.append(event)
+
+      # run_live must terminate after the first connection — no reconnect.
+      assert mock_connect.call_count == 1
+
+
+@pytest.mark.asyncio
+async def test_run_live_no_reconnect_after_queue_close_connection_closed():
+  """Test that run_live does not reconnect after LiveRequestQueue.close() (ConnectionClosed).
+
+  Same as the APIError(1000) case but the connection surfaces as ConnectionClosed,
+  which can happen depending on the websockets library version or transport layer.
+  """
+  from google.adk.agents.live_request_queue import LiveRequestQueue
+  from websockets.exceptions import ConnectionClosed
+
+  real_model = Gemini()
+  mock_connection = mock.AsyncMock()
+
+  async def mock_receive():
+    yield LlmResponse(
+        live_session_resumption_update=types.LiveServerSessionResumptionUpdate(
+            new_handle='test_handle'
+        )
+    )
+    raise ConnectionClosed(None, None)
+
+  mock_connection.receive = mock.Mock(side_effect=mock_receive)
+
+  agent = Agent(name='test_agent', model=real_model)
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent
+  )
+  invocation_context.live_request_queue = LiveRequestQueue()
+  invocation_context.live_request_queue.close()
+
+  flow = BaseLlmFlowForTesting()
+
+  with mock.patch.object(flow, '_send_to_model', new_callable=AsyncMock):
+    with mock.patch(
+        'google.adk.models.google_llm.Gemini.connect'
+    ) as mock_connect:
+      mock_connect.return_value.__aenter__.return_value = mock_connection
+
+      events = []
+      async for event in flow.run_live(invocation_context):
+        events.append(event)
+
+      # run_live must terminate after the first connection — no reconnect.
+      assert mock_connect.call_count == 1
+
+
+@pytest.mark.asyncio
+async def test_run_live_still_reconnects_on_unintentional_drop_with_handle():
+  """Test that session-resumption reconnection still works for genuine drops.
+
+  A genuine network drop (ConnectionClosed without queue.close()) with a session
+  resumption handle must still trigger reconnection.  The queue.close() fix
+  must not break this existing behaviour.
+  """
+  from google.adk.agents.live_request_queue import LiveRequestQueue
+  from websockets.exceptions import ConnectionClosed
+
+  real_model = Gemini()
+  mock_connection = mock.AsyncMock()
+
+  async def mock_receive():
+    yield LlmResponse(
+        live_session_resumption_update=types.LiveServerSessionResumptionUpdate(
+            new_handle='test_handle'
+        )
+    )
+    # Genuine network drop (queue was NOT closed).
+    raise ConnectionClosed(None, None)
+
+  mock_connection.receive = mock.Mock(side_effect=mock_receive)
+
+  agent = Agent(name='test_agent', model=real_model)
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent
+  )
+  invocation_context.live_request_queue = LiveRequestQueue()
+  # Note: queue.close() is NOT called — this is an unintentional drop.
+
+  flow = BaseLlmFlowForTesting()
+
+  with mock.patch.object(flow, '_send_to_model', new_callable=AsyncMock):
+    mock_connection_2 = mock.AsyncMock()
+
+    class NonRetryableError(Exception):
+      pass
+
+    async def mock_receive_2():
+      if False:
+        yield
+      raise NonRetryableError('stop')
+
+    mock_connection_2.receive = mock.Mock(side_effect=mock_receive_2)
+
+    mock_aenter = mock.AsyncMock()
+    mock_aenter.side_effect = [mock_connection, mock_connection_2]
+
+    with mock.patch(
+        'google.adk.models.google_llm.Gemini.connect'
+    ) as mock_connect:
+      mock_connect.return_value.__aenter__ = mock_aenter
+
+      try:
+        async for _ in flow.run_live(invocation_context):
+          pass
+      except NonRetryableError:
+        pass
+
+      # Reconnection must have been attempted (2 connections).
+      assert mock_connect.call_count == 2
+      assert invocation_context.live_session_resumption_handle == 'test_handle'
+
+      
+@pytest.mark.asyncio
 async def test_postprocess_live_session_resumption_update():
   """Test that _postprocess_live yields live_session_resumption_update."""
   agent = Agent(name='test_agent')

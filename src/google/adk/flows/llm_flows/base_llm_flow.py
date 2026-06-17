@@ -700,6 +700,14 @@ class BaseLlmFlow(ABC):
             except asyncio.CancelledError:
               pass
       except (ConnectionClosed, ConnectionClosedOK) as e:
+        # An intentional close via LiveRequestQueue.close() may surface as a
+        # ConnectionClosed event.  Do not reconnect in that case.
+        if invocation_context.live_request_queue.is_closed:
+          logger.info(
+              'Live session for agent %s closed by client request.',
+              invocation_context.agent.name,
+          )
+          return
         # If we have a session resumption handle, we attempt to reconnect.
         # This handle is updated dynamically during the session.
         if invocation_context.live_session_resumption_handle:
@@ -713,6 +721,15 @@ class BaseLlmFlow(ABC):
         logger.error('Connection closed: %s.', e)
         raise
       except errors.APIError as e:
+        # Error code 1000 indicates a normal (intentional) closure.  If the
+        # client called LiveRequestQueue.close(), do not treat this as an error
+        # and do not attempt to reconnect regardless of session handle state.
+        if e.code == 1000 and invocation_context.live_request_queue.is_closed:
+          logger.info(
+              'Live session for agent %s closed by client request.',
+              invocation_context.agent.name,
+          )
+          return
         # Error code 1000 and 1006 indicates a recoverable connection drop.
         # In that case, we attempt to reconnect with session handle if available.
         if e.code in [1000, 1006]:
@@ -731,6 +748,15 @@ class BaseLlmFlow(ABC):
             'An unexpected error occurred in live flow: %s', e, exc_info=True
         )
         raise
+
+      # If the client explicitly closed the queue and no exception was raised
+      # (e.g. the receive generator returned normally), do not reconnect.
+      if invocation_context.live_request_queue.is_closed:
+        logger.info(
+            'Live session for agent %s closed by client request.',
+            invocation_context.agent.name,
+        )
+        return
 
   async def _send_to_model(
       self,
