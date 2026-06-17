@@ -39,6 +39,8 @@ from .base_artifact_service import ensure_part
 
 logger = logging.getLogger("google_adk." + __name__)
 
+_GCS_DISPLAY_NAME_METADATA_KEY = "adkDisplayName"
+
 
 class GcsArtifactService(BaseArtifactService):
   """An artifact service implementation using Google Cloud Storage (GCS)."""
@@ -216,8 +218,13 @@ class GcsArtifactService(BaseArtifactService):
         app_name, user_id, filename, version, session_id
     )
     blob = self.bucket.blob(blob_name)
-    if custom_metadata:
-      blob.metadata = {k: str(v) for k, v in custom_metadata.items()}
+    blob_metadata = {k: str(v) for k, v in (custom_metadata or {}).items()}
+    if artifact.inline_data and artifact.inline_data.display_name:
+      blob_metadata[_GCS_DISPLAY_NAME_METADATA_KEY] = (
+          artifact.inline_data.display_name
+      )
+    if blob_metadata:
+      blob.metadata = blob_metadata
 
     if artifact.inline_data:
       blob.upload_from_string(
@@ -268,10 +275,20 @@ class GcsArtifactService(BaseArtifactService):
       return None
 
     artifact_bytes = blob.download_as_bytes()
-    artifact = types.Part.from_bytes(
+    display_name = None
+    if blob.metadata:
+      display_name = blob.metadata.get(_GCS_DISPLAY_NAME_METADATA_KEY)
+    if display_name:
+      return types.Part(
+          inline_data=types.Blob(
+              mime_type=blob.content_type,
+              data=artifact_bytes,
+              display_name=display_name,
+          )
+      )
+    return types.Part.from_bytes(
         data=artifact_bytes, mime_type=blob.content_type
     )
-    return artifact
 
   def _list_artifact_keys(
       self, app_name: str, user_id: str, session_id: Optional[str]

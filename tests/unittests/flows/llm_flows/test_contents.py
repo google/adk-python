@@ -1145,6 +1145,78 @@ async def test_adk_function_call_ids_preserved_for_anthropic_model():
   assert user_fr_part.function_response.id == function_call_id
 
 
+@pytest.mark.asyncio
+async def test_adk_function_call_ids_preserved_for_lite_llm_model():
+  """LiteLLM-backed providers (e.g. OpenAI) pair tool calls with their
+  results by id, so `adk-*` fallback ids must survive replay.
+  """
+  from google.adk.models.lite_llm import LiteLlm
+
+  agent = Agent(
+      model=LiteLlm(model="openai/gpt-4o-mini"),
+      name="test_agent",
+  )
+  llm_request = LlmRequest(model="openai/gpt-4o-mini")
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent
+  )
+
+  function_call_id = "adk-test-call-id"
+  events = [
+      Event(
+          invocation_id="inv1",
+          author="user",
+          content=types.UserContent("Call the tool"),
+      ),
+      Event(
+          invocation_id="inv2",
+          author="test_agent",
+          content=types.Content(
+              role="model",
+              parts=[
+                  types.Part(
+                      function_call=types.FunctionCall(
+                          id=function_call_id,
+                          name="test_tool",
+                          args={"x": 1},
+                      )
+                  )
+              ],
+          ),
+      ),
+      Event(
+          invocation_id="inv3",
+          author="test_agent",
+          content=types.Content(
+              role="user",
+              parts=[
+                  types.Part(
+                      function_response=types.FunctionResponse(
+                          id=function_call_id,
+                          name="test_tool",
+                          response={"result": 2},
+                      )
+                  )
+              ],
+          ),
+      ),
+  ]
+  invocation_context.session.events = events
+
+  async for _ in contents.request_processor.run_async(
+      invocation_context, llm_request
+  ):
+    pass
+
+  model_fc_part = llm_request.contents[1].parts[0]
+  assert model_fc_part.function_call is not None
+  assert model_fc_part.function_call.id == function_call_id
+
+  user_fr_part = llm_request.contents[2].parts[0]
+  assert user_fr_part.function_response is not None
+  assert user_fr_part.function_response.id == function_call_id
+
+
 def test_is_other_agent_reply_live_session():
   """Test _is_other_agent_reply when live_session_id is present."""
   event = Event(author="another_agent", live_session_id="session_123")

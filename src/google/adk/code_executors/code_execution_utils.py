@@ -20,7 +20,6 @@ import base64
 import binascii
 import copy
 import dataclasses
-import re
 from typing import List
 from typing import Optional
 
@@ -145,31 +144,41 @@ class CodeExecutionUtils:
     first_text_part = copy.deepcopy(text_parts[0])
     response_text = '\n'.join([p.text for p in text_parts])
 
-    # Find the first code block.
-    leading_delimiter_pattern = '|'.join(d[0] for d in code_block_delimiters)
-    trailing_delimiter_pattern = '|'.join(d[1] for d in code_block_delimiters)
-    pattern = re.compile(
-        (
-            rf'(?P<prefix>.*?)({leading_delimiter_pattern})(?P<code>.*?)({trailing_delimiter_pattern})(?P<suffix>.*?)$'
-        ).encode(),
-        re.DOTALL,
-    )
-    pattern_match = pattern.search(response_text.encode())
-    if pattern_match is None:
+    # Find the first code block using simple string search
+    best_start = -1
+    best_end = -1
+    best_lead_len = 0
+
+    for lead, trail in code_block_delimiters:
+      start_idx = response_text.find(lead)
+      if start_idx == -1:
+        continue
+      code_start = start_idx + len(lead)
+      end_idx = response_text.find(trail, code_start)
+      if end_idx == -1:
+        continue
+      # Pick the earliest occurring code block.
+      if best_start == -1 or start_idx < best_start:
+        best_start = start_idx
+        best_end = end_idx
+        best_lead_len = len(lead)
+
+    if best_start == -1:
       return
 
-    code_str = pattern_match.group('code').decode()
+    code_str = response_text[best_start + best_lead_len : best_end]
     if not code_str:
       return
 
     content.parts = []
-    if pattern_match.group('prefix'):
-      first_text_part.text = pattern_match.group('prefix').decode()
+    prefix_text = response_text[:best_start]
+    if prefix_text:
+      first_text_part.text = prefix_text
       content.parts.append(first_text_part)
     content.parts.append(
         CodeExecutionUtils.build_executable_code_part(code_str)
     )
-    return pattern_match.group('code').decode()
+    return code_str
 
   @staticmethod
   def build_executable_code_part(code: str) -> types.Part:

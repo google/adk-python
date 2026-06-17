@@ -141,9 +141,7 @@ class TestContextCacheConfig:
     assert "Time-to-live for cache" in fields["ttl_seconds"].description
 
     assert "min_tokens" in fields
-    assert (
-        "Minimum estimated request tokens" in fields["min_tokens"].description
-    )
+    assert "Minimum prior-request tokens" in fields["min_tokens"].description
 
   def test_immutability_config(self):
     """Test that the model config is set correctly."""

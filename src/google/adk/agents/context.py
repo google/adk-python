@@ -403,6 +403,7 @@ class Context(ReadonlyContext):
     ctx_with_proxy = ctx.model_copy(
         update={
             'session': self.session,
+            'isolation_scope': self.isolation_scope,
         }
     )
     return ctx_with_proxy
@@ -544,6 +545,14 @@ class Context(ReadonlyContext):
         override_isolation_scope=override_isolation_scope,
         run_id=run_id,
     )
+    if result.error:
+      from ..workflow import _errors
+
+      raise _errors.DynamicNodeFailError(
+          message=f'Dynamic node {built_node.name} failed',
+          error=result.error,
+          error_node_path=result.error_node_path,
+      )
     if (
         raise_on_wait
         and built_node.wait_for_output
