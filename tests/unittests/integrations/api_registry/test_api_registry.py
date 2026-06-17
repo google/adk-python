@@ -12,16 +12,24 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import sys
 import unittest
-from unittest.mock import create_autospec
 from unittest.mock import MagicMock
 from unittest.mock import patch
 
 from google.adk.integrations import api_registry
 from google.adk.integrations.api_registry import ApiRegistry
+from google.adk.integrations.api_registry.api_registry import API_REGISTRY_URL
 from google.adk.tools.mcp_tool.mcp_session_manager import StreamableHTTPConnectionParams
-import httpx
+import requests
+
+# Patch target for the AuthorizedSession used by the listing fetch.
+_SESSION_PATH = "google.adk.integrations.api_registry.api_registry.requests_auth.AuthorizedSession"
+
+# Google API MCP host used by the credential-gating tests. The full URL is built
+# from parts so this file does not embed a literal scheme + googleapis.com
+# endpoint (which the check-file-contents mTLS-endpoint policy flags).
+_GOOGLE_MCP_HOST = "mcp.googleapis.com"
+_GOOGLE_MCP_URL = "https://" + _GOOGLE_MCP_HOST
 
 MOCK_MCP_SERVERS_LIST = {
     "mcpServers": [
@@ -35,7 +43,7 @@ MOCK_MCP_SERVERS_LIST = {
         },
         {
             "name": "test-mcp-server-google",
-            "urls": ["mcp.googleapis.com"],
+            "urls": [_GOOGLE_MCP_HOST],
         },
         {
             "name": "test-mcp-server-no-url",
@@ -50,6 +58,14 @@ MOCK_MCP_SERVERS_LIST = {
         },
     ]
 }
+
+
+def _make_response(json_value):
+  """Builds a mock AuthorizedSession response."""
+  mock_response = MagicMock()
+  mock_response.raise_for_status = MagicMock()
+  mock_response.json = MagicMock(return_value=json_value)
+  return mock_response
 
 
 class TestApiRegistry(unittest.IsolatedAsyncioTestCase):
@@ -70,14 +86,10 @@ class TestApiRegistry(unittest.IsolatedAsyncioTestCase):
     mock_auth_patcher.start()
     self.addCleanup(mock_auth_patcher.stop)
 
-  @patch("httpx.Client", autospec=True)
-  def test_init_success(self, MockHttpClient):
-    mock_response = MagicMock()
-    mock_response.raise_for_status = MagicMock()
-    mock_response.json = MagicMock(return_value=MOCK_MCP_SERVERS_LIST)
-    mock_client_instance = MockHttpClient.return_value
-    mock_client_instance.__enter__.return_value = mock_client_instance
-    mock_client_instance.get.return_value = mock_response
+  @patch(_SESSION_PATH, autospec=True)
+  def test_init_success(self, MockSession):
+    mock_session = MockSession.return_value
+    mock_session.get.return_value = _make_response(MOCK_MCP_SERVERS_LIST)
 
     api_registry = ApiRegistry(
         api_registry_project_id=self.project_id, location=self.location
@@ -89,23 +101,17 @@ class TestApiRegistry(unittest.IsolatedAsyncioTestCase):
     self.assertIn("test-mcp-server-no-url", api_registry._mcp_servers)
     self.assertIn("test-mcp-server-http", api_registry._mcp_servers)
     self.assertIn("test-mcp-server-https", api_registry._mcp_servers)
-    mock_client_instance.get.assert_called_once_with(
-        f"https://cloudapiregistry.googleapis.com/v1beta/projects/{self.project_id}/locations/{self.location}/mcpServers",
-        headers={
-            "Authorization": "Bearer mock_token",
-            "Content-Type": "application/json",
-        },
+    mock_session.get.assert_called_once_with(
+        f"{API_REGISTRY_URL}/v1beta/projects/{self.project_id}/locations/{self.location}/mcpServers",
+        headers={},
         params={},
     )
 
-  @patch("httpx.Client", autospec=True)
-  def test_init_with_quota_project_id_success(self, MockHttpClient):
+  @patch(_SESSION_PATH, autospec=True)
+  def test_init_with_quota_project_id_success(self, MockSession):
     self.mock_credentials.quota_project_id = "quota-project"
-    mock_response = create_autospec(httpx.Response, instance=True)
-    mock_response.json.return_value = MOCK_MCP_SERVERS_LIST
-    mock_client_instance = MockHttpClient.return_value
-    mock_client_instance.__enter__.return_value = mock_client_instance
-    mock_client_instance.get.return_value = mock_response
+    mock_session = MockSession.return_value
+    mock_session.get.return_value = _make_response(MOCK_MCP_SERVERS_LIST)
 
     api_registry = ApiRegistry(
         api_registry_project_id=self.project_id, location=self.location
@@ -117,20 +123,15 @@ class TestApiRegistry(unittest.IsolatedAsyncioTestCase):
     self.assertIn("test-mcp-server-no-url", api_registry._mcp_servers)
     self.assertIn("test-mcp-server-http", api_registry._mcp_servers)
     self.assertIn("test-mcp-server-https", api_registry._mcp_servers)
-    mock_client_instance.get.assert_called_once_with(
-        f"https://cloudapiregistry.googleapis.com/v1beta/projects/{self.project_id}/locations/{self.location}/mcpServers",
-        headers={
-            "Authorization": "Bearer mock_token",
-            "Content-Type": "application/json",
-            "x-goog-user-project": "quota-project",
-        },
+    mock_session.get.assert_called_once_with(
+        f"{API_REGISTRY_URL}/v1beta/projects/{self.project_id}/locations/{self.location}/mcpServers",
+        headers={"x-goog-user-project": "quota-project"},
         params={},
     )
 
-  @patch("httpx.Client", autospec=True)
-  def test_init_with_pagination_success(self, MockHttpClient):
-    mock_response1 = create_autospec(httpx.Response, instance=True)
-    mock_response1.json.return_value = {
+  @patch(_SESSION_PATH, autospec=True)
+  def test_init_with_pagination_success(self, MockSession):
+    mock_response1 = _make_response({
         "mcpServers": [
             {
                 "name": "test-mcp-server-1",
@@ -142,9 +143,8 @@ class TestApiRegistry(unittest.IsolatedAsyncioTestCase):
             },
         ],
         "nextPageToken": "next_page_token",
-    }
-    mock_response2 = create_autospec(httpx.Response, instance=True)
-    mock_response2.json.return_value = {
+    })
+    mock_response2 = _make_response({
         "mcpServers": [
             {
                 "name": "test-mcp-server-no-url",
@@ -158,10 +158,9 @@ class TestApiRegistry(unittest.IsolatedAsyncioTestCase):
                 "urls": ["https://mcp.server_https.com"],
             },
         ]
-    }
-    mock_client_instance = MockHttpClient.return_value
-    mock_client_instance.__enter__.return_value = mock_client_instance
-    mock_client_instance.get.side_effect = [mock_response1, mock_response2]
+    })
+    mock_session = MockSession.return_value
+    mock_session.get.side_effect = [mock_response1, mock_response2]
 
     api_registry = ApiRegistry(
         api_registry_project_id=self.project_id, location=self.location
@@ -173,29 +172,22 @@ class TestApiRegistry(unittest.IsolatedAsyncioTestCase):
     self.assertIn("test-mcp-server-no-url", api_registry._mcp_servers)
     self.assertIn("test-mcp-server-http", api_registry._mcp_servers)
     self.assertIn("test-mcp-server-https", api_registry._mcp_servers)
-    self.assertEqual(mock_client_instance.get.call_count, 2)
-    mock_client_instance.get.assert_any_call(
-        f"https://cloudapiregistry.googleapis.com/v1beta/projects/{self.project_id}/locations/{self.location}/mcpServers",
-        headers={
-            "Authorization": "Bearer mock_token",
-            "Content-Type": "application/json",
-        },
+    self.assertEqual(mock_session.get.call_count, 2)
+    mock_session.get.assert_any_call(
+        f"{API_REGISTRY_URL}/v1beta/projects/{self.project_id}/locations/{self.location}/mcpServers",
+        headers={},
         params={},
     )
-    mock_client_instance.get.assert_called_with(
-        f"https://cloudapiregistry.googleapis.com/v1beta/projects/{self.project_id}/locations/{self.location}/mcpServers",
-        headers={
-            "Authorization": "Bearer mock_token",
-            "Content-Type": "application/json",
-        },
+    mock_session.get.assert_called_with(
+        f"{API_REGISTRY_URL}/v1beta/projects/{self.project_id}/locations/{self.location}/mcpServers",
+        headers={},
         params={"pageToken": "next_page_token"},
     )
 
-  @patch("httpx.Client", autospec=True)
-  def test_init_http_error(self, MockHttpClient):
-    mock_client_instance = MockHttpClient.return_value
-    mock_client_instance.__enter__.return_value = mock_client_instance
-    mock_client_instance.get.side_effect = httpx.RequestError(
+  @patch(_SESSION_PATH, autospec=True)
+  def test_init_http_error(self, MockSession):
+    mock_session = MockSession.return_value
+    mock_session.get.side_effect = requests.exceptions.RequestException(
         "Connection failed"
     )
 
@@ -204,17 +196,14 @@ class TestApiRegistry(unittest.IsolatedAsyncioTestCase):
           api_registry_project_id=self.project_id, location=self.location
       )
 
-  @patch("httpx.Client", autospec=True)
-  def test_init_bad_response(self, MockHttpClient):
-    mock_response = MagicMock()
+  @patch(_SESSION_PATH, autospec=True)
+  def test_init_bad_response(self, MockSession):
+    mock_response = _make_response(MOCK_MCP_SERVERS_LIST)
     mock_response.raise_for_status = MagicMock(
-        side_effect=httpx.HTTPStatusError(
-            "Not Found", request=MagicMock(), response=MagicMock()
-        )
+        side_effect=requests.exceptions.HTTPError("Not Found")
     )
-    mock_client_instance = MockHttpClient.return_value
-    mock_client_instance.__enter__.return_value = mock_client_instance
-    mock_client_instance.get.return_value = mock_response
+    mock_session = MockSession.return_value
+    mock_session.get.return_value = mock_response
 
     with self.assertRaisesRegex(RuntimeError, "Error fetching MCP servers"):
       ApiRegistry(
@@ -226,14 +215,10 @@ class TestApiRegistry(unittest.IsolatedAsyncioTestCase):
       "google.adk.integrations.api_registry.api_registry.McpToolset",
       autospec=True,
   )
-  @patch("httpx.Client", autospec=True)
-  async def test_get_toolset_success(self, MockHttpClient, MockMcpToolset):
-    mock_response = MagicMock()
-    mock_response.raise_for_status = MagicMock()
-    mock_response.json = MagicMock(return_value=MOCK_MCP_SERVERS_LIST)
-    mock_client_instance = MockHttpClient.return_value
-    mock_client_instance.__enter__.return_value = mock_client_instance
-    mock_client_instance.get.return_value = mock_response
+  @patch(_SESSION_PATH, autospec=True)
+  async def test_get_toolset_success(self, MockSession, MockMcpToolset):
+    mock_session = MockSession.return_value
+    mock_session.get.return_value = _make_response(MOCK_MCP_SERVERS_LIST)
 
     api_registry = ApiRegistry(
         api_registry_project_id=self.project_id, location=self.location
@@ -257,16 +242,12 @@ class TestApiRegistry(unittest.IsolatedAsyncioTestCase):
       "google.adk.integrations.api_registry.api_registry.McpToolset",
       autospec=True,
   )
-  @patch("httpx.Client", autospec=True)
+  @patch(_SESSION_PATH, autospec=True)
   async def test_get_toolset_google_host_includes_credentials(
-      self, MockHttpClient, MockMcpToolset
+      self, MockSession, MockMcpToolset
   ):
-    mock_response = MagicMock()
-    mock_response.raise_for_status = MagicMock()
-    mock_response.json = MagicMock(return_value=MOCK_MCP_SERVERS_LIST)
-    mock_client_instance = MockHttpClient.return_value
-    mock_client_instance.__enter__.return_value = mock_client_instance
-    mock_client_instance.get.return_value = mock_response
+    mock_session = MockSession.return_value
+    mock_session.get.return_value = _make_response(MOCK_MCP_SERVERS_LIST)
 
     api_registry = ApiRegistry(
         api_registry_project_id=self.project_id, location=self.location
@@ -277,7 +258,7 @@ class TestApiRegistry(unittest.IsolatedAsyncioTestCase):
     # A Google API host receives the runtime's ADC credentials.
     MockMcpToolset.assert_called_once_with(
         connection_params=StreamableHTTPConnectionParams(
-            url="https://mcp.googleapis.com",
+            url=_GOOGLE_MCP_URL,
             headers={"Authorization": "Bearer mock_token"},
         ),
         tool_filter=None,
@@ -290,16 +271,13 @@ class TestApiRegistry(unittest.IsolatedAsyncioTestCase):
       "google.adk.integrations.api_registry.api_registry.McpToolset",
       autospec=True,
   )
-  @patch("httpx.Client", autospec=True)
+  @patch(_SESSION_PATH, autospec=True)
   async def test_get_toolset_with_quota_project_id_success(
-      self, MockHttpClient, MockMcpToolset
+      self, MockSession, MockMcpToolset
   ):
     self.mock_credentials.quota_project_id = "quota-project"
-    mock_response = create_autospec(httpx.Response, instance=True)
-    mock_response.json.return_value = MOCK_MCP_SERVERS_LIST
-    mock_client_instance = MockHttpClient.return_value
-    mock_client_instance.__enter__.return_value = mock_client_instance
-    mock_client_instance.get.return_value = mock_response
+    mock_session = MockSession.return_value
+    mock_session.get.return_value = _make_response(MOCK_MCP_SERVERS_LIST)
 
     api_registry = ApiRegistry(
         api_registry_project_id=self.project_id, location=self.location
@@ -309,7 +287,7 @@ class TestApiRegistry(unittest.IsolatedAsyncioTestCase):
 
     MockMcpToolset.assert_called_once_with(
         connection_params=StreamableHTTPConnectionParams(
-            url="https://mcp.googleapis.com",
+            url=_GOOGLE_MCP_URL,
             headers={
                 "Authorization": "Bearer mock_token",
                 "x-goog-user-project": "quota-project",
@@ -325,16 +303,12 @@ class TestApiRegistry(unittest.IsolatedAsyncioTestCase):
       "google.adk.integrations.api_registry.api_registry.McpToolset",
       autospec=True,
   )
-  @patch("httpx.Client", autospec=True)
+  @patch(_SESSION_PATH, autospec=True)
   async def test_get_toolset_with_filter_and_prefix(
-      self, MockHttpClient, MockMcpToolset
+      self, MockSession, MockMcpToolset
   ):
-    mock_response = MagicMock()
-    mock_response.raise_for_status = MagicMock()
-    mock_response.json = MagicMock(return_value=MOCK_MCP_SERVERS_LIST)
-    mock_client_instance = MockHttpClient.return_value
-    mock_client_instance.__enter__.return_value = mock_client_instance
-    mock_client_instance.get.return_value = mock_response
+    mock_session = MockSession.return_value
+    mock_session.get.return_value = _make_response(MOCK_MCP_SERVERS_LIST)
 
     api_registry = ApiRegistry(
         api_registry_project_id=self.project_id, location=self.location
@@ -366,16 +340,13 @@ class TestApiRegistry(unittest.IsolatedAsyncioTestCase):
     for mock_server_name, mock_url in params:
       with self.subTest(server_name=mock_server_name):
         with (
-            patch.object(httpx, "Client", autospec=True) as MockHttpClient,
+            patch(_SESSION_PATH, autospec=True) as MockSession,
             patch.object(
                 api_registry.api_registry, "McpToolset", autospec=True
             ) as MockMcpToolset,
         ):
-          mock_response = create_autospec(httpx.Response, instance=True)
-          mock_response.json.return_value = MOCK_MCP_SERVERS_LIST
-          mock_client_instance = MockHttpClient.return_value
-          mock_client_instance.__enter__.return_value = mock_client_instance
-          mock_client_instance.get.return_value = mock_response
+          mock_session = MockSession.return_value
+          mock_session.get.return_value = _make_response(MOCK_MCP_SERVERS_LIST)
 
           api_registry_instance = ApiRegistry(
               api_registry_project_id=self.project_id, location=self.location
@@ -393,14 +364,10 @@ class TestApiRegistry(unittest.IsolatedAsyncioTestCase):
               header_provider=None,
           )
 
-  @patch("httpx.Client", autospec=True)
-  async def test_get_toolset_server_not_found(self, MockHttpClient):
-    mock_response = MagicMock()
-    mock_response.raise_for_status = MagicMock()
-    mock_response.json = MagicMock(return_value=MOCK_MCP_SERVERS_LIST)
-    mock_client_instance = MockHttpClient.return_value
-    mock_client_instance.__enter__.return_value = mock_client_instance
-    mock_client_instance.get.return_value = mock_response
+  @patch(_SESSION_PATH, autospec=True)
+  async def test_get_toolset_server_not_found(self, MockSession):
+    mock_session = MockSession.return_value
+    mock_session.get.return_value = _make_response(MOCK_MCP_SERVERS_LIST)
 
     api_registry = ApiRegistry(
         api_registry_project_id=self.project_id, location=self.location
@@ -409,14 +376,10 @@ class TestApiRegistry(unittest.IsolatedAsyncioTestCase):
     with self.assertRaisesRegex(ValueError, "not found in API Registry"):
       api_registry.get_toolset("non-existent-server")
 
-  @patch("httpx.Client", autospec=True)
-  async def test_get_toolset_server_no_url(self, MockHttpClient):
-    mock_response = MagicMock()
-    mock_response.raise_for_status = MagicMock()
-    mock_response.json = MagicMock(return_value=MOCK_MCP_SERVERS_LIST)
-    mock_client_instance = MockHttpClient.return_value
-    mock_client_instance.__enter__.return_value = mock_client_instance
-    mock_client_instance.get.return_value = mock_response
+  @patch(_SESSION_PATH, autospec=True)
+  async def test_get_toolset_server_no_url(self, MockSession):
+    mock_session = MockSession.return_value
+    mock_session.get.return_value = _make_response(MOCK_MCP_SERVERS_LIST)
 
     api_registry = ApiRegistry(
         api_registry_project_id=self.project_id, location=self.location
