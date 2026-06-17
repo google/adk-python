@@ -59,6 +59,10 @@ The release cadence is roughly bi-weekly.
 
 ## Quick Start
 
+> **Beginner Note:** ADK applications are built using two main classes:
+> **`Agent`** (defines an AI's instructions, tools, and behavior) and
+> **`Workflow`** (orchestrates agents and tasks in a graph-based flow).
+
 ### Agent
 
 ```python

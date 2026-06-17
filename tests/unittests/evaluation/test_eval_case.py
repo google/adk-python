@@ -22,8 +22,36 @@ from google.adk.evaluation.eval_case import get_all_tool_responses
 from google.adk.evaluation.eval_case import IntermediateData
 from google.adk.evaluation.eval_case import InvocationEvent
 from google.adk.evaluation.eval_case import InvocationEvents
+from google.adk.evaluation.eval_case import SessionInput
 from google.genai import types as genai_types
 import pytest
+
+
+def test_eval_models_preserve_extra_metadata():
+  session_input = SessionInput(
+      app_name='app',
+      user_id='user',
+      eval_group='retrieval',
+      source='nightly',
+  )
+
+  assert session_input.model_extra == {
+      'eval_group': 'retrieval',
+      'source': 'nightly',
+  }
+  assert session_input.model_dump()['eval_group'] == 'retrieval'
+
+  eval_case = EvalCase(
+      eval_id='case_1',
+      conversation=[],
+      session_input=session_input,
+      owner='platform',
+  )
+
+  assert eval_case.model_extra == {'owner': 'platform'}
+  dumped = eval_case.model_dump()
+  assert dumped['owner'] == 'platform'
+  assert dumped['session_input']['source'] == 'nightly'
 
 
 def test_get_all_tool_calls_with_none_input():

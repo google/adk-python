@@ -193,6 +193,7 @@ optional-dependencies.test = [
   "a2a-sdk>=0.3,<0.4",
   "anthropic>=0.78",                                                 # For anthropic model tests; 0.78 introduced ThinkingConfigAdaptiveParam (required for Claude Opus 4.7).
   "anyio>=4.9,<5",
+  "beautifulsoup4>=3.2.2",
   "crewai[tools]; python_version>='3.11' and python_version<'3.12'", # For CrewaiTool tests; chromadb/pypika fail on 3.12+
   "e2b>=2,<3",
   "gepa>=0.1",
@@ -220,6 +221,7 @@ optional-dependencies.test = [
   "langgraph>=0.2.60,<0.4.8",
   "litellm>=1.83.7,<=1.83.14",
   "llama-index-readers-file>=0.4",
+  "lxml>=5.3",
   "mcp>=1.24,<2",
   "openai>=1.100.2",
   "opentelemetry-exporter-gcp-logging>=1.9.0a0,<=1.12.0a0",
