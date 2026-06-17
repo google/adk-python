@@ -73,6 +73,7 @@ def test_to_cloud_run_respects_ignore_files(
       temp_folder=str(temp_deploy_dir),
       port=8080,
       trace_to_cloud=False,
+      otel_to_cloud=False,
       with_ui=False,
       log_level="info",
       verbosity="info",
@@ -138,12 +139,13 @@ def test_to_agent_engine_respects_multiple_ignore_files(
   assert len(temp_folders) == 1
   agent_src_path = temp_folders[0]
 
-  assert (agent_src_path / "agent.py").exists()
+  copied_agent_dir = agent_src_path / "agents" / "my_agent"
+  assert (copied_agent_dir / "agent.py").exists()
   assert not (
-      agent_src_path / "ignored_by_git.txt"
+      copied_agent_dir / "ignored_by_git.txt"
   ).exists(), "Should respect .gitignore"
   assert not (
-      agent_src_path / "ignored_by_ae.txt"
+      copied_agent_dir / "ignored_by_ae.txt"
   ).exists(), "Should respect .ae_ignore"
 
 
@@ -184,6 +186,7 @@ def test_to_gke_respects_ignore_files(
       temp_folder=str(temp_deploy_dir),
       port=8080,
       trace_to_cloud=False,
+      otel_to_cloud=False,
       with_ui=False,
       log_level="info",
       adk_version="1.0.0",
