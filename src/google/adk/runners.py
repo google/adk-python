@@ -529,7 +529,7 @@ class Runner:
 
       # Run before_run callbacks
       corrected_user_message = await ic.plugin_manager.run_before_run_callback(
-        invocation_context=ic
+          invocation_context=ic
       )
       if corrected_user_message is not None:
         if isinstance(corrected_user_message, types.Content):
