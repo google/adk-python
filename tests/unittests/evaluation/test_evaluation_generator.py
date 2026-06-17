@@ -231,6 +231,52 @@ class TestConvertEventsToEvalInvocation:
     assert intermediate_events[0].author == "agent1"
     assert intermediate_events[0].content.parts[0].text == "First response"
 
+  def test_invocation_without_user_event_is_skipped(self):
+    """Invocations with no user-authored event must be skipped.
+
+    Regression test for https://github.com/google/adk-python/issues/3760.
+    When a session contains an invocation_id whose events are all authored by
+    agents or tools (no 'user' event), convert_events_to_eval_invocations used
+    to leave user_content as a bare string, causing a Pydantic ValidationError
+    from Invocation.user_content which requires genai_types.Content.
+    The fix skips such invocations because they represent internal/system-driven
+    turns that are not meaningful for evaluation.
+    """
+    events = [
+        _build_event("agent", [types.Part(text="agent-only event")], "inv1"),
+    ]
+
+    # Must not raise a Pydantic ValidationError.
+    invocations = EvaluationGenerator.convert_events_to_eval_invocations(events)
+
+    assert (
+        invocations == []
+    ), "Invocations without a user event should be skipped."
+
+  def test_mixed_invocations_skips_only_agent_only_ones(self):
+    """Only agent-only invocations are skipped; normal invocations are kept.
+
+    Regression test for https://github.com/google/adk-python/issues/3760.
+    """
+    events = [
+        # inv1: normal user+agent turn — should be kept.
+        _build_event("user", [types.Part(text="Hello")], "inv1"),
+        _build_event("agent", [types.Part(text="Hi there!")], "inv1"),
+        # inv2: agent-only turn (e.g. background/system task) — should be skipped.
+        _build_event("agent", [types.Part(text="Internal work")], "inv2"),
+        # inv3: normal user+agent turn — should be kept.
+        _build_event("user", [types.Part(text="Follow-up")], "inv3"),
+        _build_event("agent", [types.Part(text="Sure!")], "inv3"),
+    ]
+
+    invocations = EvaluationGenerator.convert_events_to_eval_invocations(events)
+
+    assert len(invocations) == 2
+    assert invocations[0].invocation_id == "inv1"
+    assert invocations[0].user_content.parts[0].text == "Hello"
+    assert invocations[1].invocation_id == "inv3"
+    assert invocations[1].user_content.parts[0].text == "Follow-up"
+
 
 class TestGetAppDetailsByInvocationId:
   """Test cases for EvaluationGenerator._get_app_details_by_invocation_id method."""

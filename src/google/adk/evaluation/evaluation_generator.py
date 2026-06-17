@@ -628,7 +628,7 @@ class EvaluationGenerator:
     for invocation_id, events in events_by_invocation_id.items():
       final_response = None
       final_event: Optional[Event] = None
-      user_content = Content(parts=[])
+      user_content = None
       invocation_timestamp = 0
       app_details = None
       if (
@@ -663,6 +663,18 @@ class EvaluationGenerator:
             ):
               events_to_add.append(event)
               break
+
+      if user_content is None:
+        # Skip invocations that have no user-authored event.  Such invocations
+        # arise from internal/system-driven turns (e.g. background agent tasks)
+        # and are not meaningful for evaluation purposes.  Including them would
+        # also cause a Pydantic ValidationError because Invocation.user_content
+        # requires a Content object.
+        logger.debug(
+            "Skipping invocation %s: no user-authored event found.",
+            invocation_id,
+        )
+        continue
 
       invocation_events = [
           InvocationEvent(author=e.author, content=e.content)
