@@ -1,3 +1,17 @@
+// Copyright 2026 Google LLC
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 function Bs(r,e){(e==null||e>r.length)&&(e=r.length);for(var t=0,a=Array(e);t<e;t++)a[t]=r[t];return a}function ec(r){if(Array.isArray(r))return r}function rc(r){if(Array.isArray(r))return Bs(r)}function ht(r,e){if(!(r instanceof e))throw new TypeError("Cannot call a class as a function")}function tc(r,e){for(var t=0;t<e.length;t++){var a=e[t];a.enumerable=a.enumerable||!1,a.configurable=!0,"value"in a&&(a.writable=!0),Object.defineProperty(r,jl(a.key),a)}}function gt(r,e,t){return e&&tc(r.prototype,e),Object.defineProperty(r,"prototype",{writable:!1}),r}function kr(r,e){var t=typeof Symbol<"u"&&r[Symbol.iterator]||r["@@iterator"];if(!t){if(Array.isArray(r)||(t=Xs(r))||e){t&&(r=t);var a=0,n=function(){};return{s:n,n:function(){return a>=r.length?{done:!0}:{done:!1,value:r[a++]}},e:function(l){throw l},f:n}}throw new TypeError(`Invalid attempt to iterate non-iterable instance.
 In order to be iterable, non-array objects must have a [Symbol.iterator]() method.`)}var i,s=!0,o=!1;return{s:function(){t=t.call(r)},n:function(){var l=t.next();return s=l.done,l},e:function(l){o=!0,i=l},f:function(){try{s||t.return==null||t.return()}finally{if(o)throw i}}}}function Jl(r,e,t){return(e=jl(e))in r?Object.defineProperty(r,e,{value:t,enumerable:!0,configurable:!0,writable:!0}):r[e]=t,r}function ac(r){if(typeof Symbol<"u"&&r[Symbol.iterator]!=null||r["@@iterator"]!=null)return Array.from(r)}function nc(r,e){var t=r==null?null:typeof Symbol<"u"&&r[Symbol.iterator]||r["@@iterator"];if(t!=null){var a,n,i,s,o=[],l=!0,u=!1;try{if(i=(t=t.call(r)).next,e===0){if(Object(t)!==t)return;l=!1}else for(;!(l=(a=i.call(t)).done)&&(o.push(a.value),o.length!==e);l=!0);}catch(v){u=!0,n=v}finally{try{if(!l&&t.return!=null&&(s=t.return(),Object(s)!==s))return}finally{if(u)throw n}}return o}}function ic(){throw new TypeError(`Invalid attempt to destructure non-iterable instance.
 In order to be iterable, non-array objects must have a [Symbol.iterator]() method.`)}function sc(){throw new TypeError(`Invalid attempt to spread non-iterable instance.
