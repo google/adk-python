@@ -51,4 +51,4 @@ For detailed architecture patterns, component descriptions, and core interfaces,
 
 ## Development Setup
 
-The project uses `uv` for package management and Python 3.11+. Please refer to the **`adk-setup`** skill at `.agents/skills/adk-setup/SKILL.md` for detailed instructions.
+The project uses `uv` for package management and Python 3.10+. Please refer to the **`adk-setup`** skill at `.agents/skills/adk-setup/SKILL.md` for detailed instructions.

@@ -16,6 +16,7 @@
 
 from __future__ import annotations
 
+import re
 
 from google.adk.agents.callback_context import CallbackContext
 from google.adk.auth.auth_credential import AuthCredential
@@ -23,15 +24,17 @@ from google.adk.auth.auth_tool import AuthConfig
 from google.adk.auth.base_auth_provider import BaseAuthProvider
 from typing_extensions import override
 
+from ._agent_identity_credentials_provider import _AgentIdentityCredentialsProvider
 from ._iam_connector_credentials_provider import _IamConnectorCredentialsProvider
 from .gcp_auth_provider_scheme import GcpAuthProviderScheme
 
 
 class GcpAuthProvider(BaseAuthProvider):
-  """An auth provider that uses the Agent Identity Credentials service to generate access tokens."""
+  """An auth provider that uses Credentials service to generate access tokens."""
 
   def __init__(self):
     self._iam_connector_provider = _IamConnectorCredentialsProvider()
+    self._agent_identity_provider = _AgentIdentityCredentialsProvider()
 
   @property
   @override
@@ -44,7 +47,7 @@ class GcpAuthProvider(BaseAuthProvider):
       auth_config: AuthConfig,
       context: CallbackContext | None = None,
   ) -> AuthCredential:
-    """Retrieves credentials using the Agent Identity Credentials service.
+    """Retrieves credentials using the Credentials service.
 
     Args:
       auth_config: The authentication configuration.
@@ -62,6 +65,13 @@ class GcpAuthProvider(BaseAuthProvider):
           f"Expected GcpAuthProviderScheme, got {type(auth_scheme)}"
       )
 
-    return await self._iam_connector_provider.get_auth_credential(
+    if re.match(
+        r"^projects/[^/]+/locations/[^/]+/connectors/[^/]+$", auth_scheme.name
+    ):
+      return await self._iam_connector_provider.get_auth_credential(
+          auth_scheme=auth_scheme, context=context
+      )
+
+    return await self._agent_identity_provider.get_auth_credential(
         auth_scheme=auth_scheme, context=context
     )

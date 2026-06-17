@@ -11,6 +11,12 @@ repos:
     rev: v2.24.0
     hooks:
       - id: pyproject-fmt
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.15.17
+    hooks:
+      - id: ruff
+        args: [--fix]
+        files: ^src/
   - repo: https://github.com/PyCQA/isort
     rev: 8.0.1
     hooks:

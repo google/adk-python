@@ -20,7 +20,7 @@ from a2a.server.events import Event as A2AEvent
 from a2a.types import TaskStatusUpdateEvent
 
 from ...events.event import Event
-from ..converters.utils import _get_adk_metadata_key
+from ..converters.utils import _get_adk_metadata_key as _get_adk_metadata_key
 from .config import ExecuteInterceptor
 from .executor_context import ExecutorContext
 
