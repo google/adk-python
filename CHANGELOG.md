@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.35.2](https://github.com/google/adk-python/compare/v1.35.1...v1.35.2) (2026-06-17)
+
+
+### Bug Fixes
+
+* remove live event buffering in runner ([#6151](https://github.com/google/adk-python/issues/6151)) ([afe4083](https://github.com/google/adk-python/commit/afe408376a9c12fc3b206df234a1655f565c826c))
+
 ## [1.35.0](https://github.com/google/adk-python/compare/v1.34.2...v1.35.0) (2026-06-15)
 
 
