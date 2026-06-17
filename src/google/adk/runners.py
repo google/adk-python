@@ -474,7 +474,11 @@ class Runner:
     with tracer.start_as_current_span('invocation'):
       # 1. Setup
       session = await self._get_or_create_session(
-          user_id=user_id, session_id=session_id
+          user_id=user_id,
+          session_id=session_id,
+          get_session_config=run_config.get_session_config
+          if run_config
+          else None,
       )
 
       # Validate and resolve resume inputs
@@ -1000,7 +1004,9 @@ class Runner:
 
       if self.agent.mode == 'chat':
         session = await self._get_or_create_session(
-            user_id=user_id, session_id=session_id
+            user_id=user_id,
+            session_id=session_id,
+            get_session_config=run_config.get_session_config,
         )
         # when the chat coordinator has task-mode sub-agents,
         # the wrapper handles delegation via ctx.run_node. Don't let

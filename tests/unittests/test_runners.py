@@ -1695,9 +1695,28 @@ async def test_run_async_passes_get_session_config():
         ),
     )
 
+  events_seen_by_agent = []
+
+  class EventCheckingAgent(BaseAgent):
+
+    def __init__(self, name: str):
+      super().__init__(name=name, sub_agents=[])
+
+    async def _run_async_impl(
+        self, invocation_context: InvocationContext
+    ) -> AsyncGenerator[Event, None]:
+      events_seen_by_agent.extend(invocation_context.session.events)
+      yield Event(
+          invocation_id=invocation_context.invocation_id,
+          author=self.name,
+          content=types.Content(
+              role="model", parts=[types.Part(text="Test response")]
+          ),
+      )
+
   runner = Runner(
       app_name=TEST_APP_ID,
-      agent=MockAgent("test_agent"),
+      agent=EventCheckingAgent("test_agent"),
       session_service=session_service,
       artifact_service=InMemoryArtifactService(),
   )
@@ -1719,6 +1738,13 @@ async def test_run_async_passes_get_session_config():
   # Agent should still produce output (session was found).
   assert len(events) >= 1
   assert events[0].author == "test_agent"
+
+  # The agent should have only seen 3 historical events + 1 new message = 4 events.
+  assert len(events_seen_by_agent) == 4
+  assert events_seen_by_agent[0].invocation_id == "inv_7"
+  assert events_seen_by_agent[1].invocation_id == "inv_8"
+  assert events_seen_by_agent[2].invocation_id == "inv_9"
+  assert events_seen_by_agent[3].content.parts[0].text == "hello"
 
 
 @pytest.mark.asyncio
