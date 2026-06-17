@@ -4,12 +4,14 @@ Embed LLM-powered agents as nodes in workflow graphs.
 
 ## 📋 Agent Verification Checklist (LLM Nodes)
 Use this checklist to verify your LLM agent configuration:
+
 - [ ] **Output Type**: If no `output_schema` is set, downstream now receives `str` (auto-extracted from `types.Content`). You can safely type-hint `node_input: str`.
 - [ ] **State Serialization**: If this agent feeds into a `JoinNode`, did you set `output_schema` to avoid non-serializable `types.Content` errors?
 - [ ] **Instructions**: Are `{var}` templates used in instructions resolving ONLY from `ctx.state`? (Not `node_input`)
 - [ ] **Config**: Are instructions, tools, and response schema set on the `LlmAgent` directly, and NOT in `generate_content_config`?
 
 ## 💡 Quick Reference
+
 - **Chat Mode**: Default. Multi-turn, keeps session history.
 - **Single-Turn Mode**: Isolated. Set `mode="single_turn"` or rely on auto-wrapping defaults.
 - **Task Mode**: Multi-turn within a task. Set `mode="task"`.
@@ -70,25 +72,25 @@ agent = Workflow(
 )
 ```
 
-## LLM Agent Output Types (Critical)
+## LLM Agent Output Types
 
-**LlmAgentWrapper auto-extracts text and outputs `str` when no `output_schema` is set.** Previously, it outputted `types.Content` causing type errors. Now, if you type-hint `node_input: str`, it will work correctly for standard text output.
+When an `LlmAgent` runs as a workflow node, `process_llm_agent_output` (in
+`_llm_agent_wrapper.py`) sets `event.output` to:
 
-**Solutions (pick one):**
+-   The **concatenated text** of the model's response (a `str`) — when
+    `output_schema` is not set.
+-   The **validated dict** (`model_dump()` of the Pydantic model) — when
+    `output_schema=MyModel` is set.
 
-1. **Use `Any` and extract text** (recommended for function nodes after LLM agents):
+A downstream function node typed `node_input: str` therefore works in the
+default case, and `node_input: dict` works when `output_schema` is set.
 
-```python
-from typing import Any
-from google.genai import types
-
-def process_llm_output(node_input: Any) -> str:
-  if isinstance(node_input, types.Content):
-    return ''.join(p.text for p in (node_input.parts or []) if p.text)
-  return str(node_input) if node_input is not None else ''
-```
-
-2. **Use `output_schema`** on the LLM agent to get a parsed `dict` instead:
+**Observability caveat:** the value above is set on the event internally and
+forwarded to the next node, but `event.output` is **`None`** when you observe it
+from `runner.run_async(...)` for the LLM agent's own event — the framework
+clears it before the event reaches user code. Don't write tests that assert on
+`event.output` for an LLM agent's event; assert on the downstream node's output,
+on `session.state[output_key]`, or on `event.content.parts[*].text` instead.
 
 ```python
 from pydantic import BaseModel
@@ -104,23 +106,28 @@ writer = LlmAgent(
     output_schema=CodeOutput,
 )
 
-# Downstream node receives dict: {"code": "...", "language": "python"}
+# Downstream node receives a dict: {"code": "...", "language": "python"}
 def process_code(node_input: dict) -> str:
   return node_input["code"]
 ```
 
 **Summary of LLM agent node output types:**
 
-| LLM Agent Config | `node_input` Type for Next Node |
-|-----------------|-------------------------------|
-| No `output_schema` | `types.Content` |
-| With `output_schema` | `dict` (parsed from Pydantic model) |
+LLM Agent Config     | `node_input` Type for Next Node
+-------------------- | -----------------------------------
+No `output_schema`   | `str` (concatenated model text)
+With `output_schema` | `dict` (parsed from Pydantic model)
 
-**State serialization warning:** When LLM agents feed into a `JoinNode`, the JoinNode stores intermediate results in session state. Without `output_schema`, this stores `types.Content` objects which are **not JSON-serializable** and will cause `TypeError` with SQLite/database session services. Always use `output_schema` on LLM agents that feed into a JoinNode.
+**Prefer `output_schema` when downstream nodes need structured access.** Strings
+are fine for pass-through text, but a typed dict is easier to consume and is
+required when the predecessor feeds a `JoinNode` whose results land in a
+persistent session service (raw text is fine; objects that aren't
+JSON-serializable break `DatabaseSessionService`).
 
 ## Auto-Wrapping Behavior
 
 When you place an `LlmAgent` in workflow edges, it is auto-wrapped as `_LlmAgentWrapper`. The wrapper:
+
 - Defaults to `single_turn` mode (agent sees only current input, not session history)
 - Sets `rerun_on_resume=True` (reruns after HITL interrupts)
 - Creates a content branch for isolation between parallel LLM agents
@@ -260,6 +267,7 @@ agent = LlmAgent(
 ```
 
 Tools can be:
+
 - Python functions (auto-wrapped as `FunctionTool`)
 - `BaseTool` instances
 - `BaseToolset` instances (e.g., MCP toolsets)

@@ -33,6 +33,7 @@ from google.adk.sessions.in_memory_session_service import InMemorySessionService
 from google.adk.workflow import node
 from google.adk.workflow._base_node import BaseNode
 from google.adk.workflow._base_node import START
+from google.adk.workflow._errors import DynamicNodeFailError
 from google.adk.workflow._workflow import Workflow
 from google.genai import types
 import pytest
@@ -716,6 +717,63 @@ async def test_run_node_works_without_workflow():
 
   outputs = [e.output for e in events if e.output is not None]
   assert 'parent got: child got: hello' in outputs
+
+
+@pytest.mark.asyncio
+async def test_run_node_propagates_error_without_workflow():
+  """A standalone node propagates errors raised by its dynamically executed child nodes."""
+
+  class _ChildNode(BaseNode):
+    """A helper child node that fails."""
+
+    async def _run_impl(
+        self, *, ctx: Context, node_input: Any
+    ) -> AsyncGenerator[Any, None]:
+      raise ValueError('child failure')
+      yield
+
+  class _ParentNode(BaseNode):
+    """A helper parent node that calls the child."""
+
+    rerun_on_resume: bool = True
+
+    async def _run_impl(
+        self, *, ctx: Context, node_input: Any
+    ) -> AsyncGenerator[Any, None]:
+      try:
+        await ctx.run_node(_ChildNode(name='child'), 'hello')
+      except DynamicNodeFailError as e:
+        yield f'parent caught: {type(e).__name__}'
+        raise
+      yield 'parent got success'
+
+  # Arrange
+  ss = InMemorySessionService()
+  runner = Runner(
+      app_name='test',
+      node=_ParentNode(name='parent'),
+      session_service=ss,
+  )
+  session = await ss.create_session(app_name='test', user_id='u')
+  msg = types.Content(parts=[types.Part(text='go')], role='user')
+  events = []
+
+  # Act
+  # The runner unwraps DynamicNodeFailError to the original ValueError
+  with pytest.raises(ValueError, match='child failure'):
+    async for event in runner.run_async(
+        user_id='u', session_id=session.id, new_message=msg
+    ):
+      events.append(event)
+
+  # Assert
+  # Verify that parent node caught DynamicNodeFailError before propagating
+  parent_caught_events = [
+      e.output
+      for e in events
+      if isinstance(e.output, str) and 'parent caught' in e.output
+  ]
+  assert parent_caught_events == ['parent caught: DynamicNodeFailError']
 
 
 @pytest.mark.asyncio

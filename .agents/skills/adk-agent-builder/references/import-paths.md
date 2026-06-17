@@ -2,6 +2,7 @@
 
 ## 📋 Agent Verification Checklist (Imports)
 Use this checklist to ensure you are using the most idiomatic import paths:
+
 - [ ] **Canonical Imports**: Did you use the short canonical imports where available (e.g., `from google.adk import Agent`) instead of the verbose ones?
 - [ ] **Avoid Deprecated**: Are you avoiding deprecated paths (e.g., use `McpToolset` instead of `MCPToolset`)?
 
@@ -34,16 +35,25 @@ from google.adk.workflow import node, RetryConfig, Edge, JoinNode
 
 ## Workflow Nodes
 
-| Component | Import |
-|-----------|--------|
-| `FunctionNode` | `from google.adk.workflow import FunctionNode` |
-| `_LlmAgentWrapper` (private, auto-used) | `from google.adk.workflow._llm_agent_wrapper import _LlmAgentWrapper` |
-| `AgentNode` | `from google.adk.workflow._agent_node import AgentNode` |
-| `_ToolNode` (private) | `from google.adk.workflow._tool_node import _ToolNode` |
-| `JoinNode` | `from google.adk.workflow import JoinNode` |
-| `ParallelWorker` | `from google.adk.workflow._parallel_worker import ParallelWorker` |
-| `BaseNode`, `START` | `from google.adk.workflow import BaseNode, START` |
-| `@node` decorator | `from google.adk.workflow import node` |
+| Component                           | Import                                 |
+| ----------------------------------- | -------------------------------------- |
+| `FunctionNode`                      | `from google.adk.workflow import       |
+:                                     : FunctionNode`                          :
+| `_LlmAgentWrapper` (private,        | `from                                  |
+: auto-used)                          : google.adk.workflow._llm_agent_wrapper :
+:                                     : import _LlmAgentWrapper`               :
+| `AgentNode`                         | `from google.adk.workflow._agent_node  |
+:                                     : import AgentNode`                      :
+| `_ToolNode` (private)               | `from google.adk.workflow._tool_node   |
+:                                     : import _ToolNode`                      :
+| `JoinNode`                          | `from google.adk.workflow import       |
+:                                     : JoinNode`                              :
+| Parallel-worker behavior (no public | Set `parallel_worker=True` on `@node`  |
+: class)                              : or `LlmAgent`; the framework wraps     :
+:                                     : with an internal `_ParallelWorker`     :
+| `BaseNode`, `START`                 | `from google.adk.workflow import       |
+:                                     : BaseNode, START`                       :
+| `@node` decorator                   | `from google.adk.workflow import node` |
 
 ## Workflow Events and Context
 
