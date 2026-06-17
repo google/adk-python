@@ -19,7 +19,6 @@ import dataclasses
 import logging
 import sys
 import time
-from typing import Any
 from typing import AsyncIterator
 from typing import TYPE_CHECKING
 
@@ -94,8 +93,8 @@ class TelemetryContext:
 def _record_agent_metrics(
     agent_name: str,
     elapsed_s: float,
-    user_content: Any,
-    events: Any,
+    user_content: object,
+    events: object,
     caught_error: Exception | None,
 ) -> None:
   try:
@@ -143,7 +142,7 @@ async def record_agent_invocation(
 async def record_tool_execution(
     tool: BaseTool,
     agent: BaseAgent,
-    function_args: dict[str, Any],
+    function_args: dict[str, object],
     invocation_context: InvocationContext | None = None,
 ) -> AsyncIterator[TelemetryContext]:
   """Unified context manager for consolidated tool execution telemetry."""

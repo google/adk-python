@@ -1254,6 +1254,137 @@ async def test_append_event_calls_rollback_on_commit_failure():
     await service.close()
 
 
+class _CommitOrderSpySession:
+  """SQLAlchemy session spy that marks when commit() has completed."""
+
+  def __init__(self, real_session, on_committed):
+    self._real = real_session
+    self._on_committed = on_committed
+
+  async def __aenter__(self):
+    self._real = await self._real.__aenter__()
+    return self
+
+  async def __aexit__(self, *args):
+    return await self._real.__aexit__(*args)
+
+  async def commit(self):
+    result = await self._real.commit()
+    self._on_committed()
+    return result
+
+  def __getattr__(self, name):
+    return getattr(self._real, name)
+
+
+@pytest.mark.asyncio
+async def test_append_event_reads_storage_revision_before_commit():
+  """append_event captures session revision before commit completes."""
+  service = DatabaseSessionService('sqlite+aiosqlite:///:memory:')
+  await service._prepare_tables()
+  schema = service._get_schema_classes()
+  original_get_update_timestamp = schema.StorageSession.get_update_timestamp
+  original_get_update_marker = schema.StorageSession.get_update_marker
+  revision_read_state = {'committed': False, 'post_commit_reads': 0}
+
+  def _track_revision_read(original):
+    def wrapper(self, *args, **kwargs):
+      if revision_read_state['committed']:
+        revision_read_state['post_commit_reads'] += 1
+      return original(self, *args, **kwargs)
+
+    return wrapper
+
+  schema.StorageSession.get_update_timestamp = _track_revision_read(
+      original_get_update_timestamp
+  )
+  schema.StorageSession.get_update_marker = _track_revision_read(
+      original_get_update_marker
+  )
+
+  try:
+    session = await service.create_session(
+        app_name='app', user_id='user', session_id='s1'
+    )
+    event_timestamp = session.last_update_time + 10
+    event = Event(
+        invocation_id='inv1',
+        author='user',
+        timestamp=event_timestamp,
+    )
+
+    original_factory = service.database_session_factory
+
+    def _spy_factory():
+      return _CommitOrderSpySession(
+          original_factory(),
+          on_committed=lambda: revision_read_state.update({'committed': True}),
+      )
+
+    service.database_session_factory = _spy_factory
+
+    await service.append_event(session, event)
+
+    assert revision_read_state['post_commit_reads'] == 0
+    assert session.last_update_time == pytest.approx(event_timestamp, abs=1e-6)
+    assert session._storage_update_marker is not None
+  finally:
+    schema.StorageSession.get_update_timestamp = original_get_update_timestamp
+    schema.StorageSession.get_update_marker = original_get_update_marker
+
+    await service.close()
+
+
+@pytest.mark.asyncio
+async def test_create_session_reads_storage_revision_before_commit():
+  """create_session captures session revision before commit completes."""
+  service = DatabaseSessionService('sqlite+aiosqlite:///:memory:')
+  await service._prepare_tables()
+  schema = service._get_schema_classes()
+  original_get_update_timestamp = schema.StorageSession.get_update_timestamp
+  original_get_update_marker = schema.StorageSession.get_update_marker
+  revision_read_state = {'committed': False, 'post_commit_reads': 0}
+
+  def _track_revision_read(original):
+    def wrapper(self, *args, **kwargs):
+      if revision_read_state['committed']:
+        revision_read_state['post_commit_reads'] += 1
+      return original(self, *args, **kwargs)
+
+    return wrapper
+
+  schema.StorageSession.get_update_timestamp = _track_revision_read(
+      original_get_update_timestamp
+  )
+  schema.StorageSession.get_update_marker = _track_revision_read(
+      original_get_update_marker
+  )
+
+  try:
+    original_factory = service.database_session_factory
+
+    def _spy_factory():
+      return _CommitOrderSpySession(
+          original_factory(),
+          on_committed=lambda: revision_read_state.update({'committed': True}),
+      )
+
+    service.database_session_factory = _spy_factory
+
+    session = await service.create_session(
+        app_name='app', user_id='user', session_id='s1'
+    )
+
+    assert revision_read_state['post_commit_reads'] == 0
+    assert session.last_update_time is not None
+    assert session._storage_update_marker is not None
+  finally:
+    schema.StorageSession.get_update_timestamp = original_get_update_timestamp
+    schema.StorageSession.get_update_marker = original_get_update_marker
+
+    await service.close()
+
+
 @pytest.mark.asyncio
 async def test_delete_session_calls_rollback_on_commit_failure():
   """Verifies that a commit failure during delete_session triggers an explicit
@@ -1784,3 +1915,15 @@ async def test_vertex_ai_session_service_raises_not_implemented_for_get_user_sta
   service = VertexAiSessionService(project='proj', location='us-central1')
   with pytest.raises(NotImplementedError):
     await service.get_user_state(app_name='my_app', user_id='u1')
+
+
+def test_database_session_service_visible_in_module_namespace():
+  """DatabaseSessionService must be in dir() so Sphinx autodoc renders it.
+
+  It is imported lazily via module __getattr__, so without an explicit
+  __dir__ it drops out of the generated API reference (issue #4331).
+  """
+  import google.adk.sessions as sessions_module
+
+  assert 'DatabaseSessionService' in dir(sessions_module)
+  assert sessions_module.DatabaseSessionService is DatabaseSessionService
