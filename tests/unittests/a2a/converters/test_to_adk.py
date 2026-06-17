@@ -20,6 +20,7 @@ from unittest.mock import Mock
 from a2a.types import Artifact
 from a2a.types import Message
 from a2a.types import Part as A2APart
+from a2a.types import Role as A2ARole
 from a2a.types import Task
 from a2a.types import TaskArtifactUpdateEvent
 from a2a.types import TaskState
@@ -643,3 +644,41 @@ class TestToAdk:
     """Test convert_a2a_artifact_update_to_event with None."""
     with pytest.raises(ValueError, match="A2A artifact update cannot be None"):
       convert_a2a_artifact_update_to_event(None)
+
+  def test_convert_a2a_message_to_event_user_role(self) -> None:
+    """Test that A2A user role maps to GenAI content role 'user'."""
+    a2a_part = Mock(spec=A2APart)
+    a2a_part.root = Mock(spec=TextPart)
+    a2a_part.root.metadata = {}
+    message = Message(message_id="msg-1", role=A2ARole.user, parts=[a2a_part])
+
+    mock_genai_part = genai_types.Part.from_text(text="hello from user")
+    mock_part_converter = Mock(return_value=[mock_genai_part])
+
+    event = convert_a2a_message_to_event(
+        message,
+        author="user",
+        invocation_context=self.mock_context,
+        part_converter=mock_part_converter,
+    )
+
+    assert event.content.role == "user"
+
+  def test_convert_a2a_message_to_event_agent_role(self) -> None:
+    """Test that A2A agent role maps to GenAI content role 'model'."""
+    a2a_part = Mock(spec=A2APart)
+    a2a_part.root = Mock(spec=TextPart)
+    a2a_part.root.metadata = {}
+    message = Message(message_id="msg-1", role=A2ARole.agent, parts=[a2a_part])
+
+    mock_genai_part = genai_types.Part.from_text(text="hello from agent")
+    mock_part_converter = Mock(return_value=[mock_genai_part])
+
+    event = convert_a2a_message_to_event(
+        message,
+        author="test-agent",
+        invocation_context=self.mock_context,
+        part_converter=mock_part_converter,
+    )
+
+    assert event.content.role == "model"

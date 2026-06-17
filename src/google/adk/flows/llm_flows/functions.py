@@ -302,7 +302,7 @@ def build_auth_request_event(
         args=AuthToolArguments(
             function_call_id=function_call_id,
             auth_config=auth_config,
-        ).model_dump(exclude_none=True, by_alias=True),
+        ).model_dump(mode='json', exclude_none=True, by_alias=True),
     )
     long_running_tool_ids.add(request_euc_function_call.id)
     parts.append(types.Part(function_call=request_euc_function_call))

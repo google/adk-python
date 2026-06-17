@@ -398,7 +398,8 @@ def _redact_file_uri_for_log(
   if file_uri.startswith("assistant-"):
     return "assistant-<redacted>"
   if _looks_like_openai_file_id(file_uri):
-    return "file-<redacted>"
+    prefix = file_uri.split("-", 1)[0]
+    return f"{prefix}-<redacted>"
   try:
     parsed = urlparse(file_uri)
   except ValueError:

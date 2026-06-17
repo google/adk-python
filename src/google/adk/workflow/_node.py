@@ -19,6 +19,7 @@ from __future__ import annotations
 from collections.abc import AsyncGenerator
 from collections.abc import Callable
 from typing import Any
+from typing import Literal
 from typing import overload
 from typing import TYPE_CHECKING
 from typing import TypeVar
@@ -38,7 +39,7 @@ if TYPE_CHECKING:
   from ..agents.context import Context
   from ..auth.auth_tool import AuthConfig
 
-T = TypeVar("T", bound=Callable[..., Any])
+T = TypeVar('T', bound=Callable[..., Any])
 
 
 @overload
@@ -50,6 +51,7 @@ def node(
     timeout: float | None = None,
     parallel_worker: bool = False,
     auth_config: AuthConfig | None = None,
+    parameter_binding: Literal['state', 'node_input'] = 'state',
 ) -> Callable[
     [T], function_node.FunctionNode | parallel_worker_lib._ParallelWorker
 ]:
@@ -66,6 +68,7 @@ def node(
     timeout: float | None = None,
     parallel_worker: bool = False,
     auth_config: AuthConfig | None = None,
+    parameter_binding: Literal['state', 'node_input'] = 'state',
 ) -> base_node.BaseNode:
   ...
 
@@ -79,6 +82,7 @@ def node(
     timeout: float | None = None,
     parallel_worker: bool = False,
     auth_config: AuthConfig | None = None,
+    parameter_binding: Literal['state', 'node_input'] = 'state',
 ) -> Any:
   """Decorator or function to wrap a NodeLike in a node or override its properties.
 
@@ -107,6 +111,11 @@ def node(
     parallel_worker: If True, wraps the node in a _ParallelWorker.
     auth_config: If provided, the framework requests user authentication
       before running the node. Requires rerun_on_resume=True.
+    parameter_binding: How function parameters are bound. ``'state'``
+      (default) binds parameters from ``ctx.state``. ``'node_input'``
+      binds parameters from ``node_input`` dict and infers
+      ``input_schema`` / ``output_schema`` from the function signature
+      (used when the node acts as an agent's tool).
 
   Returns:
     If used as a decorator factory (@node() or @node(...)), returns a decorator.
@@ -126,6 +135,7 @@ def node(
         retry_config=retry_config,
         timeout=timeout,
         auth_config=auth_config,
+        parameter_binding=parameter_binding,
     )
     if parallel_worker:
       return parallel_worker_lib._ParallelWorker(node=built_node)
@@ -142,6 +152,7 @@ def node(
         retry_config=retry_config,
         timeout=timeout,
         auth_config=auth_config,
+        parameter_binding=parameter_binding,
     )
     if parallel_worker:
       return parallel_worker_lib._ParallelWorker(node=built_node)
@@ -166,7 +177,7 @@ class Node(base_node.BaseNode):
       # to avoid infinite recursion when its run() method is called.
       # The cloned node preserves the class identity and behavior of the
       # original (essential for LlmAgent and Workflow subclasses).
-      worker_node = self.model_copy(update={"parallel_worker": False})
+      worker_node = self.model_copy(update={'parallel_worker': False})
 
       inner = parallel_worker_lib._ParallelWorker(node=worker_node)
       self._inner_node = inner
@@ -181,7 +192,7 @@ class Node(base_node.BaseNode):
     copied = super().model_copy(update=update, deep=deep)
 
     if copied.parallel_worker:
-      worker_node = copied.model_copy(update={"parallel_worker": False})
+      worker_node = copied.model_copy(update={'parallel_worker': False})
       copied._inner_node = parallel_worker_lib._ParallelWorker(node=worker_node)
       copied.rerun_on_resume = copied._inner_node.rerun_on_resume
 
@@ -195,7 +206,7 @@ class Node(base_node.BaseNode):
     Subclasses can directly benefit from advanced flags like parallel_worker
     by providing their custom execution logic here.
     """
-    raise NotImplementedError("run_node_impl must be implemented.")
+    raise NotImplementedError('run_node_impl must be implemented.')
     yield
 
   @override
@@ -205,7 +216,7 @@ class Node(base_node.BaseNode):
     """Dispatches to run_node_impl() or parallel_worker inner node."""
     if self.parallel_worker:
       if self._inner_node is None:
-        raise ValueError("inner_node is not initialized for parallel worker.")
+        raise ValueError('inner_node is not initialized for parallel worker.')
       async for output in self._inner_node.run(ctx=ctx, node_input=node_input):
         yield output
     else:

@@ -160,6 +160,41 @@ def test_node_decorator_rerun_on_resume():
   assert not my_func2.rerun_on_resume
 
 
+def test_node_decorator_parameter_binding():
+  """Tests that @node decorator can configure parameter_binding."""
+
+  @node(parameter_binding="node_input")
+  def my_func(foo: str):
+    return f"Hello {foo}"
+
+  assert isinstance(my_func, FunctionNode)
+  assert my_func.parameter_binding == "node_input"
+
+
+@pytest.mark.asyncio
+async def test_node_decorator_parameter_binding_execution():
+  """Tests execution of a node with parameter_binding='node_input'."""
+
+  async def producer_func() -> dict[str, Any]:
+    return {"foo": "hello", "bar": 42}
+
+  @node(parameter_binding="node_input")
+  def my_func(foo: str, bar: int):
+    return f"{foo}:{bar}"
+
+  wf = Workflow(
+      name="test_agent",
+      edges=[
+          (START, producer_func),
+          (producer_func, my_func),
+      ],
+  )
+  events, _, _ = await _run_workflow(wf)
+
+  by_node = _output_by_node(events)
+  assert ("my_func", "hello:42") in by_node
+
+
 def test_node_function_with_base_node():
   """Tests that node() function returns a copied node when given a BaseNode."""
 
