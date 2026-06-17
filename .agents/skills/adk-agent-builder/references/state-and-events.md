@@ -4,12 +4,14 @@ Manage shared state across workflow nodes and understand the event system.
 
 ## 📋 Agent Verification Checklist (State & Events)
 Use this checklist when working with state and events:
+
 - [ ] **State Updates**: Did you use `Event(state=...)` for state updates? (Captures delta in event history)
 - [ ] **Parameter Resolution**: Are custom parameters named after keys in `ctx.state`?
 - [ ] **Output Serialization**: Is `event.output` JSON-serializable? (Required for DB session services)
 - [ ] **Web UI Display**: Did you use `Event(message=...)` for output meant for users?
 
 ## 💡 Quick Reference (Resolution Order)
+
 1. **`ctx`**: Workflow `Context` object.
 2. **`node_input`**: Predecessor output.
 3. **Other names**: Looked up from `ctx.state[param_name]`.
@@ -33,9 +35,9 @@ def my_node(ctx: Context, node_input: str) -> str:
   invocation_id = ctx.invocation_id
 
   # Get node metadata
-  node_path = ctx.node_path        # e.g., "MyWorkflow/my_node"
-  triggered_by = ctx.triggered_by  # Name of predecessor node
-  retry_count = ctx.retry_count    # 0 on first attempt
+  node_path = ctx.node_path          # e.g., "MyWorkflow/my_node"
+  run_id = ctx.run_id                # this node-run's identifier
+  attempt = ctx.attempt_count        # 1 on first attempt, ≥1 thereafter
 
   return f"Processed: {value}"
 ```
@@ -57,21 +59,21 @@ def my_node(ctx: Context, node_input: str) -> str:
 
 ### Workflow-Only Properties
 
-| Property | Type | Description |
-|----------|------|-------------|
-| `node_path` | `str` | Full path of current node (e.g., "WorkflowA/node1") |
-| `execution_id` | `str` | Unique ID for this execution |
-| `triggered_by` | `str` | Name of node that triggered current node |
-| `in_nodes` | `frozenset[str]` | Names of all predecessor nodes |
-| `resume_inputs` | `dict[str, Any]` | Inputs for resuming (keyed by interrupt_id) |
-| `retry_count` | `int` | Number of times this node has been retried |
+| Property        | Type             | Description                           |
+| --------------- | ---------------- | ------------------------------------- |
+| `node_path`     | `str`            | Full path of current node (e.g.,      |
+:                 :                  : "WorkflowA/node1")                    :
+| `run_id`        | `str`            | Identifier for this node-run (e.g.,   |
+:                 :                  : `"1"`, `"2"`)                         :
+| `attempt_count` | `int`            | Retry attempt number (1 on first try) |
+| `resume_inputs` | `dict[str, Any]` | Inputs for resuming (keyed by         |
+:                 :                  : interrupt_id)                         :
 
 ### Workflow-Only Methods
 
 | Method | Returns | Description |
 |--------|---------|-------------|
 | `run_node(node, node_input, *, name)` | `Any` | Execute a node dynamically (requires `rerun_on_resume=True`) |
-| `get_next_child_execution_id(name)` | `str` | Generate a deterministic child execution ID |
 
 ## State Management
 
@@ -92,6 +94,7 @@ def node_a(ctx: Context, node_input: str) -> str:
 ```
 
 **Why `Event(state=...)` is preferred:**
+
 - State deltas are persisted in event history as `event.actions.state_delta`
 - Non-resumable HITL can reconstruct state by replaying events
 - Makes state changes explicit and traceable
@@ -120,6 +123,7 @@ def my_node(node_input: str, user_name: str, threshold: float) -> str:
 ```
 
 Resolution order:
+
 1. `ctx` -> Context object
 2. `node_input` -> predecessor output
 3. Other names -> `ctx.state[param_name]` (with auto type conversion)

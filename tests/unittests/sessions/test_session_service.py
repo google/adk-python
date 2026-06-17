@@ -1058,6 +1058,13 @@ async def test_get_session_with_config(session_service):
   events = session.events
   assert len(events) == num_test_events
 
+  # Explicitly requesting zero recent events should return no event history.
+  config = GetSessionConfig(num_recent_events=0)
+  session = await session_service.get_session(
+      app_name=app_name, user_id=user_id, session_id=session.id, config=config
+  )
+  assert not session.events
+
   # Only expect the most recent 3 events.
   num_recent_events = 3
   config = GetSessionConfig(num_recent_events=num_recent_events)
@@ -1777,3 +1784,15 @@ async def test_vertex_ai_session_service_raises_not_implemented_for_get_user_sta
   service = VertexAiSessionService(project='proj', location='us-central1')
   with pytest.raises(NotImplementedError):
     await service.get_user_state(app_name='my_app', user_id='u1')
+
+
+def test_database_session_service_visible_in_module_namespace():
+  """DatabaseSessionService must be in dir() so Sphinx autodoc renders it.
+
+  It is imported lazily via module __getattr__, so without an explicit
+  __dir__ it drops out of the generated API reference (issue #4331).
+  """
+  import google.adk.sessions as sessions_module
+
+  assert 'DatabaseSessionService' in dir(sessions_module)
+  assert sessions_module.DatabaseSessionService is DatabaseSessionService

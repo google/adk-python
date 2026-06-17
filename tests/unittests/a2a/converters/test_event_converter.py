@@ -76,6 +76,17 @@ class TestEventConverter:
     result = _get_adk_metadata_key(key)
     assert result == f"{ADK_METADATA_KEY_PREFIX}{key}"
 
+  def test_create_error_status_event_is_final(self):
+    """Error status events must be marked final."""
+    result = _create_error_status_event(
+        self.mock_event,
+        self.mock_invocation_context,
+        task_id="test-task-id",
+        context_id="test-context-id",
+    )
+
+    assert result.final is True
+
   def test_get_adk_event_metadata_key_empty_string(self):
     """Test metadata key generation with empty string."""
     with pytest.raises(ValueError) as exc_info:

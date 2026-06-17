@@ -963,7 +963,7 @@ def cli_eval(
   logs.setup_adk_logger(getattr(logging, log_level.upper()))
 
   try:
-    import importlib
+    import importlib  # noqa: F401
 
     from ..evaluation.base_eval_service import InferenceConfig
     from ..evaluation.base_eval_service import InferenceRequest
@@ -1215,14 +1215,14 @@ def cli_optimize(
   logs.setup_adk_logger(getattr(logging, log_level.upper()))
 
   try:
-    from ..evaluation.custom_metric_evaluator import _CustomMetricEvaluator
+    from ..evaluation.custom_metric_evaluator import _CustomMetricEvaluator  # noqa: F401
     from ..evaluation.local_eval_sets_manager import LocalEvalSetsManager
     from ..optimization.gepa_root_agent_prompt_optimizer import GEPARootAgentPromptOptimizer
     from ..optimization.gepa_root_agent_prompt_optimizer import GEPARootAgentPromptOptimizerConfig
     from ..optimization.local_eval_sampler import LocalEvalSampler
     from ..optimization.local_eval_sampler import LocalEvalSamplerConfig
-    from .cli_eval import _collect_eval_results
-    from .cli_eval import _collect_inferences
+    from .cli_eval import _collect_eval_results  # noqa: F401
+    from .cli_eval import _collect_inferences  # noqa: F401
     from .cli_eval import get_root_agent
 
   except ModuleNotFoundError as mnf:
@@ -1490,7 +1490,7 @@ def cli_generate_eval_cases(
     click.echo("Generating scenarios utilizing Vertex AI Eval SDK...")
     scenarios = generator.generate_scenarios(root_agent, config)
 
-    # TODO(pthodoroff): Expose initial session state when simulation library
+    # TODO: Expose initial session state when simulation library
     # supports it.
     initial_session_state = create_empty_state(root_agent)
 
@@ -2289,7 +2289,7 @@ def cli_migrate_session(
     help=(
         "Optional. The API key to use for Express Mode. If not"
         " provided, the API key from the GOOGLE_API_KEY environment variable"
-        " will be used. It will only be used if GOOGLE_GENAI_USE_VERTEXAI is"
+        " will be used. It will only be used if GOOGLE_GENAI_USE_ENTERPRISE is"
         " true. (It will override GOOGLE_API_KEY in the .env file if it"
         " exists.)"
     ),

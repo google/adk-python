@@ -24,24 +24,30 @@ This skill guides AI assistants in performing a comprehensive, rigorous review o
   - **Boundary and Null Conditions**: Ensure robust handling for boundary conditions and null values (e.g., `None`, empty collections, zero, or empty strings) using validation or fallback defaults.
   - **Preconditions & Invariants**: Validate that preconditions and state invariants are checked before performing core logic.
 
-### 2. Style and Convention Compliance
+### 2. Code Quality & Design
+- **Complexity & Readability**: Identify overly complex functions or classes. Suggest refactoring (e.g., splitting functions, extracting helper classes) to improve readability and maintainability. Ensure code is self-documenting.
+- **Design Patterns**: Check if appropriate design patterns are used. Avoid anti-patterns. Ensure high cohesion and low coupling.
+- **Performance & Efficiency**: Look for performance bottlenecks, such as unnecessary database queries, redundant computations, inefficient loops, or excessive memory allocation.
+- **Security & Privacy**: Verify that inputs are validated, sensitive data is handled securely, and there are no potential security vulnerabilities (like injection, resource exhaustion, or exposure of internal state).
+
+### 3. Style and Convention Compliance
 - **ADK Style Guide**: Cross-reference all code changes with the guidelines in the `adk-style` skill (including Pydantic v2 patterns, lazy logging evaluation, and file structure).
 - **Pre-commit Hooks**: Ensure changed files are formatted and linted. Remind the user to run `pre-commit run --files <files>` if hooks like `isort`, `pyink`, `addlicense`, or `mdformat` are not configured automatically.
 
-### 3. Architectural Integrity & Unintended Outcomes
+### 4. Architectural Integrity & Unintended Outcomes
 - **Public API Stability**: Verify whether changes modify, remove, or restrict public-facing interfaces, classes, methods, argument lists, or CLI structures (e.g., in the public package namespaces under `src/google/adk/`). Breaking changes are unacceptable without a formal deprecation cycle under Semantic Versioning.
 - **Execution & Resumption**: If changing workflows, nodes, or state management, ensure compatibility with the ADK 2.0 event execution lifecycle and session resumption (HITL/checkpoints).
 - **Concurrency & Safety**: Check for race conditions or resource leaks. Ensure long-running or shared resources (like plugins, exporters, and connections) are closed/disposed of safely.
 
-### 4. Documentation Impact (`docs/design` and `docs/guides`)
+### 5. Documentation Impact (`docs/design` and `docs/guides`)
 - **Design & Architecture**: Determine if the change updates a core design contract. If so, check if design docs under `docs/design/` require updates or new documents need to be written.
 - **Guides**: If the changes introduce a new feature or change a public API/workflow pattern, check if the guides under `docs/guides/` need updates.
 
-### 5. Sample Compatibility & Updates
+### 6. Sample Compatibility & Updates
 - **Sample Integrity**: Verify if existing samples under `contributing/samples/` are affected by the change.
 - **New Samples**: If the changes introduce a key new capability, assess whether a new sample should be added to demonstrate the feature (following `adk-sample-creator` conventions).
 
-### 6. Test Coverage & Quality
+### 7. Test Coverage & Quality
 - **Coverage**: Ensure that all modified or new code paths have corresponding unit or integration tests under `tests/`.
 - **ADK Test Rules**: Ensure test implementations adhere to the 9 rules in the `adk-style` testing reference (e.g., using deterministic IDs, event normalization, and clean up utilities).
 
@@ -55,12 +61,13 @@ When the `adk-review` skill is triggered, you MUST execute the following steps:
 Run `git status` and `git diff` to identify exactly which files have been modified, added, or deleted.
 
 ### Step 2: Perform the Multi-Dimensional Review
-Analyze the retrieved diffs file-by-file against the six dimensions in the Checklist. Identify any errors, deviations, or missing files (such as docs, tests, or samples).
+Analyze the retrieved diffs file-by-file against the seven dimensions in the Checklist. Identify any errors, deviations, or missing files (such as docs, tests, or samples).
 
 ### Step 3: Generate and Present a Review Report
 Generate a clear, beautifully formatted Markdown report categorized by priority:
-- 🔴 **Critical Errors / Bugs**: Syntax, type safety violations, race conditions, or resource leaks.
-- 🟡 **Style & Conventions**: Lints, formatting issues, non-lazy logging, or typing mismatches.
+- 🔴 **Critical Errors, Bugs, & Security**: Syntax, type safety violations, race conditions, resource leaks, or security vulnerabilities.
+- 🟠 **Code Quality & Design**: High complexity, poor readability, performance bottlenecks, or architectural misalignment.
+- 🟡 **Style & Conventions**: Lints, formatting issues, non-lazy logging, or minor typing mismatches.
 - 🔵 **Documentation, Tests, & Samples**: Missing or stale test coverage, design docs, or user guides.
 
 Include the specific filename and line number/context for each finding.

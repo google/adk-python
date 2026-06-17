@@ -91,6 +91,7 @@ Each sample should have a `README.md` with the following structure:
 - **Sample Inputs**: Examples of inputs to test with. Each prompt must be wrapped in backticks. If a prompt has an explanation, always add a blank line between the prompt and the explanation, and indent the explanation by two spaces.
 - **Graph**: Visualization of the graph flow (Mermaid recommended for workflows).
 - **How To**: Explanation of key techniques used (e.g., `ctx.run_node`).
+- **Related Guides**: Links to relevant developer guides in `docs/guides/` that explain the concepts or classes used.
 
 #### README Example Template:
 
@@ -116,12 +117,13 @@ graph TD
     START --> MyNode
 ```
 
-````
-
 ## How To
 
 Explain the details.
 
+## Related Guides
+
+- [Guide Title](../../docs/guides/path/to/guide.md) - Brief description of what the guide covers.
 ````
 
 ## Examples

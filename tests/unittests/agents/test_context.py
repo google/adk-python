@@ -647,3 +647,29 @@ class TestDeriveScheduler:
 
     scheduler = _derive_scheduler(mock_parent)
     assert isinstance(scheduler, DynamicNodeScheduler)
+
+
+class TestContextGetInvocationContext:
+  """Test get_invocation_context method in Context."""
+
+  def test_get_invocation_context_propagates_isolation_scope(
+      self, mock_invocation_context
+  ):
+    """Test that get_invocation_context propagates isolation_scope to the copy."""
+    context = Context(mock_invocation_context)
+    context.isolation_scope = "test-isolation-scope"
+
+    # Mock model_copy to return a mock copy
+    mock_copy = MagicMock()
+    mock_invocation_context.model_copy.return_value = mock_copy
+
+    result = context.get_invocation_context()
+
+    # Verify model_copy was called with correct update dict
+    mock_invocation_context.model_copy.assert_called_once_with(
+        update={
+            "session": context.session,
+            "isolation_scope": "test-isolation-scope",
+        }
+    )
+    assert result is mock_copy

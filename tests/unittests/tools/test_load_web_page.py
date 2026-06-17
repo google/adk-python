@@ -147,7 +147,9 @@ def test_load_web_page_uses_proxy_for_unresolved_public_hostnames(monkeypatch):
 
   assert result == 'This page has enough words to keep.'
   mock_get.assert_called_once_with(
-      'https://does-not-resolve.invalid', allow_redirects=False
+      'https://does-not-resolve.invalid',
+      allow_redirects=False,
+      timeout=load_web_page_module._DEFAULT_TIMEOUT_SECONDS,
   )
   mock_send.assert_not_called()
 
@@ -272,3 +274,124 @@ def test_load_web_page_tries_another_resolved_address_after_connect_error(
       'https://93.184.216.35',
   ]
   mock_get.assert_not_called()
+
+
+def test_load_web_page_passes_timeout_to_pinned_session(monkeypatch):
+  """Verify that the default timeout is passed to the pinned IP session."""
+  _clear_proxy_env(monkeypatch)
+  monkeypatch.setattr(
+      load_web_page_module.socket,
+      'getaddrinfo',
+      mock.Mock(
+          return_value=[(
+              socket.AF_INET,
+              socket.SOCK_STREAM,
+              socket.IPPROTO_TCP,
+              '',
+              ('93.184.216.34', 0),
+          )]
+      ),
+  )
+  monkeypatch.setattr(
+      'bs4.BeautifulSoup',
+      mock.Mock(
+          return_value=mock.Mock(
+              get_text=mock.Mock(
+                  return_value='This page has enough words to keep.'
+              )
+          )
+      ),
+  )
+  captured_timeouts: list[object] = []
+
+  def _send(
+      self,
+      request,
+      stream=False,
+      timeout=None,
+      verify=True,
+      cert=None,
+      proxies=None,
+  ):
+    del self, request, stream, verify, cert, proxies
+    captured_timeouts.append(timeout)
+    return _create_response(
+        '<html><body><p>This page has enough words to keep.</p></body></html>'
+    )
+
+  monkeypatch.setattr(load_web_page_module.HTTPAdapter, 'send', _send)
+
+  load_web_page('https://example.com')
+
+  assert captured_timeouts == [load_web_page_module._DEFAULT_TIMEOUT_SECONDS]
+
+
+def test_load_web_page_passes_timeout_to_proxied_get(monkeypatch):
+  """Verify that the default timeout is passed to requests.get when proxy is used."""
+  monkeypatch.setenv('HTTPS_PROXY', 'http://proxy.example.test:8080')
+  monkeypatch.setenv('NO_PROXY', '')
+  monkeypatch.setattr(
+      load_web_page_module.socket,
+      'getaddrinfo',
+      mock.Mock(side_effect=AssertionError('unexpected local DNS lookup')),
+  )
+  monkeypatch.setattr(
+      'bs4.BeautifulSoup',
+      mock.Mock(
+          return_value=mock.Mock(
+              get_text=mock.Mock(
+                  return_value='This page has enough words to keep.'
+              )
+          )
+      ),
+  )
+  mock_get = mock.Mock(
+      return_value=_create_response(
+          '<html><body><p>This page has enough words to keep.</p></body></html>'
+      )
+  )
+  monkeypatch.setattr(load_web_page_module.requests, 'get', mock_get)
+
+  load_web_page('https://does-not-resolve.invalid')
+
+  mock_get.assert_called_once_with(
+      'https://does-not-resolve.invalid',
+      allow_redirects=False,
+      timeout=load_web_page_module._DEFAULT_TIMEOUT_SECONDS,
+  )
+
+
+def test_load_web_page_returns_failure_on_timeout(monkeypatch):
+  """Verify that a timeout exception is converted to a failed to fetch message."""
+  _clear_proxy_env(monkeypatch)
+  monkeypatch.setattr(
+      load_web_page_module.socket,
+      'getaddrinfo',
+      mock.Mock(
+          return_value=[(
+              socket.AF_INET,
+              socket.SOCK_STREAM,
+              socket.IPPROTO_TCP,
+              '',
+              ('93.184.216.34', 0),
+          )]
+      ),
+  )
+
+  def _send(
+      self,
+      request,
+      stream=False,
+      timeout=None,
+      verify=True,
+      cert=None,
+      proxies=None,
+  ):
+    del self, request, stream, timeout, verify, cert, proxies
+    raise requests.exceptions.Timeout('boom')
+
+  monkeypatch.setattr(load_web_page_module.HTTPAdapter, 'send', _send)
+
+  result = load_web_page('https://example.com')
+
+  assert result == 'Failed to fetch url: https://example.com'

@@ -16,21 +16,44 @@ from __future__ import annotations
 
 import asyncio
 from collections import deque
+from contextlib import AbstractAsyncContextManager
 from contextlib import AsyncExitStack
 from datetime import timedelta
 import functools
 import hashlib
 import json
 import logging
+import os
 import sys
 import threading
 from typing import Any
+from typing import AsyncIterator
 from typing import Dict
 from typing import Optional
 from typing import Protocol
 from typing import runtime_checkable
 from typing import TextIO
-from typing import Union
+import urllib.parse
+
+import google.auth
+import google.auth.credentials
+from google.auth.transport.requests import Request
+import httpx
+
+try:
+  from google.auth.aio.credentials import Credentials as AsyncCredentials
+  from google.auth.aio.transport.sessions import AsyncAuthorizedSession
+
+  _AIO_SUPPORTED = True
+except ImportError:
+
+  class AsyncCredentials:  # pylint: disable=g-bad-classes
+    pass
+
+  class AsyncAuthorizedSession:  # pylint: disable=g-bad-classes
+    pass
+
+  _AIO_SUPPORTED = False
 
 from mcp import ClientSession
 from mcp import SamplingCapability
@@ -187,6 +210,151 @@ def retry_on_errors(func):
   return wrapper
 
 
+class _RefreshableAsyncCredentials(AsyncCredentials):
+  """Adapter to refresh sync credentials asynchronously."""
+
+  def __init__(
+      self,
+      creds: google.auth.credentials.Credentials,
+      target_host: str | None = None,
+  ):
+    super().__init__()
+    self._creds = creds
+    self._target_host = target_host
+    self._lock = asyncio.Lock()
+
+  async def before_request(
+      self,
+      _request: Any,
+      _method: str,
+      url: str,
+      headers: dict[str, str],
+  ) -> None:
+    if self._target_host:
+      parsed_url = urllib.parse.urlparse(url)
+      if parsed_url.netloc != self._target_host:
+        logger.debug(
+            'Skipping token injection for redirect to %s', parsed_url.netloc
+        )
+        return
+
+    if 'Authorization' in headers:
+      logger.debug('Authorization header already present, not overwriting')
+      return
+
+    async with self._lock:
+      await asyncio.to_thread(self._refresh_sync)
+    if self._creds.token:
+      headers['Authorization'] = f'Bearer {self._creds.token}'
+
+  def _refresh_sync(self) -> None:
+    if self._creds.expired or not self._creds.token:
+      self._creds.refresh(Request())
+
+
+class _GoogleAuthAsyncByteStream(httpx.AsyncByteStream):
+  """Adapter to bridge google-auth Response.content with httpx.AsyncByteStream."""
+
+  def __init__(self, auth_response: Any):
+    self._auth_response = auth_response
+
+  async def __aiter__(self) -> AsyncIterator[bytes]:
+    async for chunk in self._auth_response.content():
+      yield chunk
+
+  async def aclose(self) -> None:
+    await self._auth_response.close()
+
+
+class _GoogleAuthAsyncTransport(httpx.AsyncBaseTransport):
+  """Adapter to bridge google-auth AsyncAuthorizedSession with httpx.AsyncBaseTransport."""
+
+  def __init__(self, auth_session: Any):
+    self._auth_session = auth_session
+
+  async def handle_async_request(
+      self, request: httpx.Request
+  ) -> httpx.Response:
+    content = await request.aread()
+    headers_dict = dict(request.headers)
+
+    timeout_val = 30.0
+    if request.extensions and 'timeout' in request.extensions:
+      timeout_dict = request.extensions['timeout']
+      if 'read' in timeout_dict and timeout_dict['read'] is not None:
+        timeout_val = timeout_dict['read']
+
+    if request.headers.get('accept') == 'text/event-stream':
+      # google-auth-aio translates timeout to aiohttp ClientTimeout(total=timeout).
+      # For SSE streams, we disable the total timeout (setting it to 0.0) to
+      # prevent aiohttp from forcibly closing the stream after sse_read_timeout.
+      timeout_val = 0.0
+
+    auth_response: Any = await self._auth_session.request(
+        method=request.method,
+        url=str(request.url),
+        data=content if content else None,
+        headers=headers_dict,
+        timeout=timeout_val,
+    )
+
+    # google-auth-aio uses aiohttp internally, which automatically handles
+    # decompression and decodes chunked transfer encoding, but leaves the
+    # headers intact. We must strip these headers so httpx doesn't attempt
+    # to decompress or parse chunked framing again on the raw stream.
+    response_headers = {
+        k: v
+        for k, v in auth_response.headers.items()
+        if k.lower()
+        not in ('content-encoding', 'content-length', 'transfer-encoding')
+    }
+
+    return httpx.Response(
+        status_code=auth_response.status_code,
+        headers=response_headers,
+        stream=_GoogleAuthAsyncByteStream(auth_response),
+    )
+
+  async def aclose(self) -> None:
+    await self._auth_session.close()
+
+
+class _SharedAsyncTransport(httpx.AsyncBaseTransport):
+  """Wrapper transport that prevents the wrapped transport from being closed."""
+
+  def __init__(self, transport: httpx.AsyncBaseTransport):
+    self._transport = transport
+
+  async def handle_async_request(
+      self, request: httpx.Request
+  ) -> httpx.Response:
+    return await self._transport.handle_async_request(request)
+
+  async def aclose(self) -> None:
+    pass
+
+
+def _create_mtls_client_factory(
+    mtls_transport: httpx.AsyncBaseTransport,
+) -> CheckableMcpHttpClientFactory:
+  """Returns a factory that creates httpx.AsyncClient using the mtls_transport."""
+
+  def factory(
+      headers: dict[str, Any] | None = None,
+      auth: httpx.Auth | None = None,
+      timeout: httpx.Timeout | None = None,
+  ) -> httpx.AsyncClient:
+    return httpx.AsyncClient(
+        headers=headers,
+        auth=auth,
+        timeout=timeout,
+        transport=_SharedAsyncTransport(mtls_transport),
+        follow_redirects=True,
+    )
+
+  return factory
+
+
 class MCPSessionManager:
   """Manages MCP client sessions.
 
@@ -197,16 +365,16 @@ class MCPSessionManager:
 
   def __init__(
       self,
-      connection_params: Union[
-          StdioServerParameters,
-          StdioConnectionParams,
-          SseConnectionParams,
-          StreamableHTTPConnectionParams,
-      ],
+      connection_params: (
+          StdioServerParameters
+          | StdioConnectionParams
+          | SseConnectionParams
+          | StreamableHTTPConnectionParams
+      ),
       errlog: TextIO = sys.stderr,
       *,
-      sampling_callback: Optional[SamplingFnT] = None,
-      sampling_capabilities: Optional[SamplingCapability] = None,
+      sampling_callback: SamplingFnT | None = None,
+      sampling_capabilities: SamplingCapability | None = None,
   ):
     """Initializes the MCP session manager.
 
@@ -242,19 +410,24 @@ class MCPSessionManager:
     # Session pool: maps session keys to (session, exit_stack, loop) tuples.
     # Kept as a tuple for backward-compatibility with downstream tests
     # that construct or unpack entries directly.
-    self._sessions: Dict[
+    self._sessions: dict[
         str, tuple[ClientSession, AsyncExitStack, asyncio.AbstractEventLoop]
     ] = {}
 
     # Sibling pool: maps session keys to their SessionContext. Stored
     # separately from `_sessions` so the tuple shape above stays stable.
     # Used by McpTool to access `_run_guarded` for transport-crash detection.
-    self._session_contexts: Dict[str, SessionContext] = {}
+    self._session_contexts: dict[str, SessionContext] = {}
 
     # Map of event loops to their respective locks to prevent race conditions
     # across different event loops in session creation.
     self._session_lock_map: dict[asyncio.AbstractEventLoop, asyncio.Lock] = {}
     self._lock_map_lock = threading.Lock()
+
+    # Cache for mTLS transports per event loop to avoid re-creation.
+    self._mtls_transports: dict[
+        asyncio.AbstractEventLoop, _GoogleAuthAsyncTransport
+    ] = {}
 
   @property
   def _session_lock(self) -> asyncio.Lock:
@@ -264,6 +437,56 @@ class MCPSessionManager:
       if current_loop not in self._session_lock_map:
         self._session_lock_map[current_loop] = asyncio.Lock()
       return self._session_lock_map[current_loop]
+
+  async def _get_mtls_transport(self) -> _GoogleAuthAsyncTransport | None:
+    """Attempts to create a _GoogleAuthAsyncTransport for mTLS, caching it per loop."""
+    if isinstance(self._connection_params, StdioConnectionParams):
+      return None
+
+    if not _AIO_SUPPORTED:
+      logger.debug('google.auth.aio not available, mTLS not configured')
+      return None
+
+    use_client_cert = (
+        os.environ.get('GOOGLE_API_USE_CLIENT_CERTIFICATE', 'true').lower()
+        == 'true'
+    )
+    if not use_client_cert:
+      return None
+
+    current_loop = asyncio.get_running_loop()
+    if current_loop in self._mtls_transports:
+      return self._mtls_transports[current_loop]
+
+    try:
+      scopes = ['https://www.googleapis.com/auth/cloud-platform']
+      sync_credentials, _ = await asyncio.to_thread(
+          google.auth.default, scopes=scopes
+      )
+
+      target_url = self._connection_params.url
+      target_host = urllib.parse.urlparse(target_url).netloc
+
+      credentials = _RefreshableAsyncCredentials(
+          sync_credentials, target_host=target_host
+      )
+      auth_session = AsyncAuthorizedSession(credentials)
+      await auth_session.configure_mtls_channel()
+
+      if auth_session.is_mtls:
+        logger.info('Successfully configured mTLS using AsyncAuthorizedSession')
+        transport = _GoogleAuthAsyncTransport(auth_session)
+        self._mtls_transports[current_loop] = transport
+        return transport
+      else:
+        logger.warning(
+            'mTLS was requested but AsyncAuthorizedSession channel is not mTLS'
+        )
+    except Exception as e:  # pylint: disable=broad-except
+      logger.warning(
+          'Failed to configure mTLS using AsyncAuthorizedSession: %s', e
+      )
+    return None
 
   def _generate_session_key(
       self, merged_headers: Optional[Dict[str, str]] = None
@@ -412,33 +635,32 @@ class MCPSessionManager:
       if session_key in self._session_contexts:
         del self._session_contexts[session_key]
 
-  def _create_client(self, merged_headers: Optional[Dict[str, str]] = None):
-    """Creates an MCP client based on the connection parameters.
-
-    Args:
-        merged_headers: Optional headers to include in the connection.
-                       Only applicable for SSE and StreamableHTTP connections.
-
-    Returns:
-        The appropriate MCP client instance.
-
-    Raises:
-        ValueError: If the connection parameters are not supported.
-    """
+  def _create_client(
+      self,
+      merged_headers: dict[str, str] | None = None,
+      mtls_transport: httpx.AsyncBaseTransport | None = None,
+  ) -> AbstractAsyncContextManager[Any]:
+    """Creates an MCP client based on the connection parameters."""
     if isinstance(self._connection_params, StdioConnectionParams):
       client = stdio_client(
           server=self._connection_params.server_params,
           errlog=self._errlog,
       )
     elif isinstance(self._connection_params, SseConnectionParams):
+      factory = self._connection_params.httpx_client_factory
+      if mtls_transport:
+        factory = _create_mtls_client_factory(mtls_transport)
       client = sse_client(
           url=self._connection_params.url,
           headers=merged_headers,
           timeout=self._connection_params.timeout,
           sse_read_timeout=self._connection_params.sse_read_timeout,
-          httpx_client_factory=self._connection_params.httpx_client_factory,
+          httpx_client_factory=factory,
       )
     elif isinstance(self._connection_params, StreamableHTTPConnectionParams):
+      factory = self._connection_params.httpx_client_factory
+      if mtls_transport:
+        factory = _create_mtls_client_factory(mtls_transport)
       client = streamablehttp_client(
           url=self._connection_params.url,
           headers=merged_headers,
@@ -447,7 +669,7 @@ class MCPSessionManager:
               seconds=self._connection_params.sse_read_timeout
           ),
           terminate_on_close=self._connection_params.terminate_on_close,
-          httpx_client_factory=self._connection_params.httpx_client_factory,
+          httpx_client_factory=factory,
       )
     else:
       raise ValueError(
@@ -458,7 +680,7 @@ class MCPSessionManager:
     return client
 
   async def create_session(
-      self, headers: Optional[Dict[str, str]] = None
+      self, headers: dict[str, str] | None = None
   ) -> ClientSession:
     """Creates and initializes an MCP client session.
 
@@ -530,7 +752,10 @@ class MCPSessionManager:
       )
 
       try:
-        client = self._create_client(merged_headers)
+        mtls_transport = await self._get_mtls_transport()
+        client = self._create_client(
+            merged_headers, mtls_transport=mtls_transport
+        )
         is_stdio = isinstance(self._connection_params, StdioConnectionParams)
 
         session_context = SessionContext(
@@ -583,6 +808,7 @@ class MCPSessionManager:
     state['_sessions'] = {}
     state['_session_contexts'] = {}
     state['_session_lock_map'] = {}
+    state['_mtls_transports'] = {}
 
     # Locks and file-like objects cannot be pickled
     state.pop('_lock_map_lock', None)
@@ -597,6 +823,7 @@ class MCPSessionManager:
     self._sessions = {}
     self._session_contexts = {}
     self._session_lock_map = {}
+    self._mtls_transports = {}
     self._lock_map_lock = threading.Lock()
     # If _errlog was removed during pickling, default to sys.stderr
     if not hasattr(self, '_errlog') or self._errlog is None:
@@ -608,6 +835,10 @@ class MCPSessionManager:
       for session_key in list(self._sessions.keys()):
         _, exit_stack, stored_loop = self._sessions[session_key]
         await self._cleanup_session(session_key, exit_stack, stored_loop)
+
+      for transport in self._mtls_transports.values():
+        await transport.aclose()
+      self._mtls_transports.clear()
 
 
 SseServerParams = SseConnectionParams
