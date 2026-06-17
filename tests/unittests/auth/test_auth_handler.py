@@ -22,6 +22,7 @@ from fastapi.openapi.models import APIKey
 from fastapi.openapi.models import APIKeyIn
 from fastapi.openapi.models import OAuth2
 from fastapi.openapi.models import OAuthFlowAuthorizationCode
+from fastapi.openapi.models import OAuthFlowClientCredentials
 from fastapi.openapi.models import OAuthFlows
 from google.adk.auth.auth_credential import AuthCredential
 from google.adk.auth.auth_credential import AuthCredentialTypes
@@ -271,6 +272,35 @@ class TestGenerateAuthUri:
         "https://example.com/oauth2/authorize"
     )
     assert "client_id=mock_client_id" in result.oauth2.auth_uri
+    assert result.oauth2.state == "mock_state"
+
+  @patch("google.adk.auth.auth_handler.OAuth2Session", MockOAuth2Session)
+  def test_generate_auth_uri_client_credentials_with_missing_scopes(
+      self, oauth2_credentials
+  ):
+    """Test client credentials flow tolerates missing scopes."""
+    auth_scheme = OAuth2(
+        flows=OAuthFlows(
+            clientCredentials=OAuthFlowClientCredentials(
+                tokenUrl="https://example.com/oauth2/token"
+            )
+        )
+    )
+    auth_scheme.flows.clientCredentials.scopes = None
+
+    config = AuthConfig(
+        auth_scheme=auth_scheme,
+        raw_auth_credential=oauth2_credentials,
+        exchanged_auth_credential=oauth2_credentials.model_copy(deep=True),
+    )
+
+    handler = AuthHandler(config)
+    result = handler.generate_auth_uri()
+
+    assert (
+        result.oauth2.auth_uri
+        == "https://example.com/oauth2/token?client_id=mock_client_id&scope="
+    )
     assert result.oauth2.state == "mock_state"
 
   @patch("google.adk.auth.auth_handler.OAuth2Session")

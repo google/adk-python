@@ -349,3 +349,120 @@ async def test_generate_content_async_with_image():
       assert content[0]["text"] == "Analyze this"
       assert content[1]["type"] == "image_url"
       assert content[1]["image_url"]["url"].startswith("data:image/png;base64,")
+
+
+def _completion_with_cached_tokens(cached_tokens):
+  """Builds a mock ChatCompletion whose usage carries prompt_tokens_details."""
+  mock_response = mock.MagicMock()
+  mock_choice = mock.MagicMock()
+  mock_message = mock.MagicMock()
+  mock_message.content = "Hello there!"
+  mock_message.tool_calls = None
+  mock_choice.message = mock_message
+  mock_response.choices = [mock_choice]
+  mock_response.usage.prompt_tokens = 100
+  mock_response.usage.completion_tokens = 5
+  mock_response.usage.total_tokens = 105
+  if cached_tokens is None:
+    mock_response.usage.prompt_tokens_details = None
+  else:
+    mock_response.usage.prompt_tokens_details.cached_tokens = cached_tokens
+  return mock_response
+
+
+@pytest.mark.asyncio
+async def test_generate_content_async_reports_cached_tokens():
+  """prompt_tokens_details.cached_tokens populates cached_content_token_count."""
+  with mock.patch.dict(os.environ, {"OPENAI_API_KEY": "test_key"}):
+    openai_llm = OpenAILlm(model="gpt-4o")
+    llm_request = LlmRequest(
+        model="gpt-4o",
+        contents=[Content(role="user", parts=[Part.from_text(text="Hello")])],
+    )
+
+    mock_response = _completion_with_cached_tokens(64)
+
+    async def mock_create(*args, **kwargs):
+      return mock_response
+
+    with mock.patch(
+        "google.adk.labs.openai._openai_llm.AsyncOpenAI"
+    ) as mock_client_class:
+      mock_client = mock.MagicMock()
+      mock_client_class.return_value = mock_client
+      mock_client.chat.completions.create = mock_create
+
+      responses = [
+          resp
+          async for resp in openai_llm.generate_content_async(
+              llm_request, stream=False
+          )
+      ]
+
+      assert len(responses) == 1
+      assert responses[0].usage_metadata.cached_content_token_count == 64
+      assert responses[0].usage_metadata.prompt_token_count == 100
+
+
+@pytest.mark.asyncio
+async def test_generate_content_async_zero_cached_tokens():
+  """No cache hit (cached_tokens=0) reports 0, not a regression."""
+  with mock.patch.dict(os.environ, {"OPENAI_API_KEY": "test_key"}):
+    openai_llm = OpenAILlm(model="gpt-4o")
+    llm_request = LlmRequest(
+        model="gpt-4o",
+        contents=[Content(role="user", parts=[Part.from_text(text="Hello")])],
+    )
+
+    mock_response = _completion_with_cached_tokens(0)
+
+    async def mock_create(*args, **kwargs):
+      return mock_response
+
+    with mock.patch(
+        "google.adk.labs.openai._openai_llm.AsyncOpenAI"
+    ) as mock_client_class:
+      mock_client = mock.MagicMock()
+      mock_client_class.return_value = mock_client
+      mock_client.chat.completions.create = mock_create
+
+      responses = [
+          resp
+          async for resp in openai_llm.generate_content_async(
+              llm_request, stream=False
+          )
+      ]
+
+      assert responses[0].usage_metadata.cached_content_token_count == 0
+
+
+@pytest.mark.asyncio
+async def test_generate_content_async_absent_prompt_tokens_details():
+  """Missing prompt_tokens_details maps to None (no cached count reported)."""
+  with mock.patch.dict(os.environ, {"OPENAI_API_KEY": "test_key"}):
+    openai_llm = OpenAILlm(model="gpt-4o")
+    llm_request = LlmRequest(
+        model="gpt-4o",
+        contents=[Content(role="user", parts=[Part.from_text(text="Hello")])],
+    )
+
+    mock_response = _completion_with_cached_tokens(None)
+
+    async def mock_create(*args, **kwargs):
+      return mock_response
+
+    with mock.patch(
+        "google.adk.labs.openai._openai_llm.AsyncOpenAI"
+    ) as mock_client_class:
+      mock_client = mock.MagicMock()
+      mock_client_class.return_value = mock_client
+      mock_client.chat.completions.create = mock_create
+
+      responses = [
+          resp
+          async for resp in openai_llm.generate_content_async(
+              llm_request, stream=False
+          )
+      ]
+
+      assert responses[0].usage_metadata.cached_content_token_count is None

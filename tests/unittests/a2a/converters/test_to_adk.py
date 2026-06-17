@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+import json
 from unittest.mock import Mock
 
 from a2a.types import Artifact
@@ -25,7 +26,10 @@ from a2a.types import TaskState
 from a2a.types import TaskStatus
 from a2a.types import TaskStatusUpdateEvent
 from a2a.types import TextPart
+from google.adk.a2a.converters.part_converter import A2A_DATA_PART_END_TAG
 from google.adk.a2a.converters.part_converter import A2A_DATA_PART_METADATA_IS_LONG_RUNNING_KEY
+from google.adk.a2a.converters.part_converter import A2A_DATA_PART_START_TAG
+from google.adk.a2a.converters.part_converter import A2A_DATA_PART_TEXT_MIME_TYPE
 from google.adk.a2a.converters.to_adk_event import convert_a2a_artifact_update_to_event
 from google.adk.a2a.converters.to_adk_event import convert_a2a_message_to_event
 from google.adk.a2a.converters.to_adk_event import convert_a2a_status_update_to_event
@@ -464,6 +468,99 @@ class TestToAdk:
     assert event is not None
     assert event.content is not None
     assert event.content.parts == [mock_image_part]
+
+  def test_convert_a2a_task_to_event_data_part_input_required(self):
+    """Input-required prompt carried in a data part becomes a function call."""
+    part1 = Mock(spec=A2APart)
+    part1.root = Mock()  # Not a TextPart.
+    part1.root.metadata = {}
+
+    task = Task(
+        id="task-1",
+        context_id="context-1",
+        kind="task",
+        status=TaskStatus(
+            state=TaskState.input_required,
+            timestamp="now",
+            message=Message(
+                message_id="m1",
+                role="agent",
+                parts=[part1],
+            ),
+        ),
+    )
+
+    prompt = {
+        "id": "abc123",
+        "text": "Please confirm this action. Do you want to continue?",
+    }
+    data_part_json = json.dumps({"data": prompt, "kind": "data"}).encode(
+        "utf-8"
+    )
+    mock_data_blob_part = genai_types.Part(
+        inline_data=genai_types.Blob(
+            mime_type=A2A_DATA_PART_TEXT_MIME_TYPE,
+            data=A2A_DATA_PART_START_TAG
+            + data_part_json
+            + A2A_DATA_PART_END_TAG,
+        )
+    )
+
+    event = convert_a2a_task_to_event(
+        task,
+        author="test-author",
+        invocation_context=self.mock_context,
+        part_converter=Mock(return_value=[mock_data_blob_part]),
+    )
+
+    assert event is not None
+    assert event.content is not None
+    assert (
+        event.content.parts[0].function_call.name
+        == MOCK_FUNCTION_CALL_FOR_REQUIRED_USER_INPUT
+    )
+    assert event.content.parts[0].function_call.args["input_required"] == prompt
+    assert event.long_running_tool_ids
+
+  def test_convert_a2a_task_to_event_data_part_malformed_json(self):
+    """A malformed data-part blob is left untouched (no crash, no fc)."""
+    part1 = Mock(spec=A2APart)
+    part1.root = Mock()  # Not a TextPart.
+    part1.root.metadata = {}
+
+    task = Task(
+        id="task-1",
+        context_id="context-1",
+        kind="task",
+        status=TaskStatus(
+            state=TaskState.input_required,
+            timestamp="now",
+            message=Message(
+                message_id="m1",
+                role="agent",
+                parts=[part1],
+            ),
+        ),
+    )
+
+    mock_bad_blob_part = genai_types.Part(
+        inline_data=genai_types.Blob(
+            mime_type=A2A_DATA_PART_TEXT_MIME_TYPE,
+            data=A2A_DATA_PART_START_TAG + b"not-json" + A2A_DATA_PART_END_TAG,
+        )
+    )
+
+    event = convert_a2a_task_to_event(
+        task,
+        author="test-author",
+        invocation_context=self.mock_context,
+        part_converter=Mock(return_value=[mock_bad_blob_part]),
+    )
+
+    assert event is not None
+    assert event.content is not None
+    assert event.content.parts == [mock_bad_blob_part]
+    assert not event.long_running_tool_ids
 
   def test_convert_a2a_status_update_to_event_success(self):
     """Test successful conversion of A2A status update to Event."""

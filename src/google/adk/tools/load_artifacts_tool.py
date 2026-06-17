@@ -35,10 +35,28 @@ _GEMINI_SUPPORTED_INLINE_MIME_PREFIXES = (
     'video/',
 )
 _GEMINI_SUPPORTED_INLINE_MIME_TYPES = frozenset({'application/pdf'})
+# MIME subtypes that match a supported prefix above but that Gemini
+# rejects with 400 INVALID_ARGUMENT when sent as inline data. These
+# must fall through to the text-conversion path in
+# `_as_safe_part_for_llm` instead of being forwarded as inline image
+# data. Verified empirically against gemini-2.5-flash via
+# google-genai 1.69.0 on 2026-05-13.
+_GEMINI_UNSUPPORTED_INLINE_SUBTYPES = frozenset({
+    'image/svg',
+    'image/svg+xml',
+    'image/xml',
+})
 _TEXT_LIKE_MIME_TYPES = frozenset({
     'application/csv',
     'application/json',
+    'application/svg+xml',
     'application/xml',
+    # SVG/XML image variants are XML-based and Gemini rejects them as
+    # inline image data (see _GEMINI_UNSUPPORTED_INLINE_SUBTYPES above), so
+    # they fall through here and are delivered to the model as text.
+    'image/svg',
+    'image/svg+xml',
+    'image/xml',
 })
 
 if TYPE_CHECKING:
@@ -59,6 +77,8 @@ def _is_inline_mime_type_supported(mime_type: str | None) -> bool:
   """Returns True if Gemini accepts this MIME type as inline data."""
   normalized = _normalize_mime_type(mime_type)
   if not normalized:
+    return False
+  if normalized in _GEMINI_UNSUPPORTED_INLINE_SUBTYPES:
     return False
   return normalized.startswith(_GEMINI_SUPPORTED_INLINE_MIME_PREFIXES) or (
       normalized in _GEMINI_SUPPORTED_INLINE_MIME_TYPES

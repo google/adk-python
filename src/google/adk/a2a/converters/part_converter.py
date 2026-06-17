@@ -28,6 +28,8 @@ from typing import Union
 from a2a import types as a2a_types
 from google.genai import types as genai_types
 
+from ...utils.variant_utils import get_google_llm_variant
+from ...utils.variant_utils import GoogleLLMVariant
 from ..experimental import a2a_experimental
 from .utils import _get_adk_metadata_key
 
@@ -58,13 +60,23 @@ def convert_a2a_part_to_genai_part(
     a2a_part: a2a_types.Part,
 ) -> Optional[genai_types.Part]:
   """Convert an A2A Part to a Google GenAI Part."""
+
+  # part_metadata is only accepted by the Gemini Developer API. In Vertex AI /
+  # Enterprise mode it must be omitted to avoid a client-side ValueError.
+  def _part_metadata(metadata):
+    if get_google_llm_variant() == GoogleLLMVariant.VERTEX_AI:
+      return None
+    return metadata
+
   part = a2a_part.root
   if isinstance(part, a2a_types.TextPart):
     thought = None
     if part.metadata:
       thought = part.metadata.get(_get_adk_metadata_key('thought'))
     return genai_types.Part(
-        text=part.text, thought=thought, part_metadata=part.metadata
+        text=part.text,
+        thought=thought,
+        part_metadata=_part_metadata(part.metadata),
     )
 
   if isinstance(part, a2a_types.FilePart):
@@ -75,7 +87,7 @@ def convert_a2a_part_to_genai_part(
               mime_type=part.file.mime_type,
               display_name=part.file.name,
           ),
-          part_metadata=part.metadata,
+          part_metadata=_part_metadata(part.metadata),
       )
 
     elif isinstance(part.file, a2a_types.FileWithBytes):
@@ -85,7 +97,7 @@ def convert_a2a_part_to_genai_part(
               mime_type=part.file.mime_type,
               display_name=part.file.name,
           ),
-          part_metadata=part.metadata,
+          part_metadata=_part_metadata(part.metadata),
       )
     else:
       logger.warning(
@@ -129,7 +141,7 @@ def convert_a2a_part_to_genai_part(
                 part.data, by_alias=True
             ),
             thought_signature=thought_signature,
-            part_metadata=part.metadata,
+            part_metadata=_part_metadata(part.metadata),
         )
       if (
           part.metadata[_get_adk_metadata_key(A2A_DATA_PART_METADATA_TYPE_KEY)]
@@ -139,7 +151,7 @@ def convert_a2a_part_to_genai_part(
             function_response=genai_types.FunctionResponse.model_validate(
                 part.data, by_alias=True
             ),
-            part_metadata=part.metadata,
+            part_metadata=_part_metadata(part.metadata),
         )
       if (
           part.metadata[_get_adk_metadata_key(A2A_DATA_PART_METADATA_TYPE_KEY)]
@@ -149,7 +161,7 @@ def convert_a2a_part_to_genai_part(
             code_execution_result=genai_types.CodeExecutionResult.model_validate(
                 part.data, by_alias=True
             ),
-            part_metadata=part.metadata,
+            part_metadata=_part_metadata(part.metadata),
         )
       if (
           part.metadata[_get_adk_metadata_key(A2A_DATA_PART_METADATA_TYPE_KEY)]
@@ -159,7 +171,7 @@ def convert_a2a_part_to_genai_part(
             executable_code=genai_types.ExecutableCode.model_validate(
                 part.data, by_alias=True
             ),
-            part_metadata=part.metadata,
+            part_metadata=_part_metadata(part.metadata),
         )
     return genai_types.Part(
         inline_data=genai_types.Blob(
@@ -170,7 +182,7 @@ def convert_a2a_part_to_genai_part(
             + A2A_DATA_PART_END_TAG,
             mime_type=A2A_DATA_PART_TEXT_MIME_TYPE,
         ),
-        part_metadata=part.metadata,
+        part_metadata=_part_metadata(part.metadata),
     )
 
   logger.warning(
