@@ -186,11 +186,55 @@ class GeminiLlmConnection(BaseLlmConnection):
     else:
       raise ValueError('Unsupported input type: %s' % type(input))
 
+  @staticmethod
+  def _merge_grounding_metadata(
+      existing: types.GroundingMetadata | None,
+      new: types.GroundingMetadata | None,
+  ) -> types.GroundingMetadata | None:
+    """Merges two GroundingMetadata instances, accumulating list fields safely."""
+    if existing is None:
+      return new
+    if new is None:
+      return existing
+    existing_data = existing.model_dump(exclude_none=True)
+    new_data = new.model_dump(exclude_none=True)
+
+    # Get offset from existing grounding chunks for shifting support indices
+    chunk_offset = len(existing_data.get('grounding_chunks', []))
+
+    for key, val in new_data.items():
+      if isinstance(val, list) and all(isinstance(x, str) for x in val):
+        existing_list = existing_data.get(key, [])
+        for item in val:
+          if item not in existing_list:
+            existing_list.append(item)
+        existing_data[key] = existing_list
+      elif key == 'grounding_chunks':
+        existing_chunks = existing_data.get('grounding_chunks', [])
+        existing_chunks.extend(val)
+        existing_data['grounding_chunks'] = existing_chunks
+      elif key == 'grounding_supports':
+        existing_supports = existing_data.get('grounding_supports', [])
+        for support in val:
+          if (
+              'grounding_chunk_indices' in support
+              and support['grounding_chunk_indices']
+          ):
+            support['grounding_chunk_indices'] = [
+                idx + chunk_offset for idx in support['grounding_chunk_indices']
+            ]
+          existing_supports.append(support)
+        existing_data['grounding_supports'] = existing_supports
+      else:
+        existing_data[key] = val
+    return types.GroundingMetadata(**existing_data)
+
   def __build_full_text_response(
       self,
       text: str,
       is_thought: bool = False,
       grounding_metadata: types.GroundingMetadata | None = None,
+      interrupted: bool = False,
   ):
     """Builds a full text response.
 
@@ -201,6 +245,7 @@ class GeminiLlmConnection(BaseLlmConnection):
       text: The text to be included in the response.
       is_thought: Whether the text is a thought.
       grounding_metadata: The grounding metadata to include.
+      interrupted: Whether this response was interrupted.
 
     Returns:
       An LlmResponse containing the full text.
@@ -215,6 +260,7 @@ class GeminiLlmConnection(BaseLlmConnection):
             parts=[part],
         ),
         grounding_metadata=grounding_metadata,
+        interrupted=interrupted,
         partial=False,
         live_session_id=self._gemini_session.session_id,
     )
@@ -258,7 +304,8 @@ class GeminiLlmConnection(BaseLlmConnection):
     text = ''
     is_thought = False
     tool_call_parts = []
-    pending_grounding_metadata = None
+    last_grounding_metadata = None
+    tool_call_metadata = None
     async with Aclosing(self._gemini_session.receive()) as agen:
       # TODO(b/440101573): Reuse StreamingResponseAggregator to accumulate
       # partial content and emit responses as needed.
@@ -276,9 +323,10 @@ class GeminiLlmConnection(BaseLlmConnection):
           )
         if message.server_content:
           content = message.server_content.model_turn
-          if message.server_content.grounding_metadata:
-            pending_grounding_metadata = (
-                message.server_content.grounding_metadata
+          grounding_metadata = message.server_content.grounding_metadata
+          if grounding_metadata:
+            last_grounding_metadata = self._merge_grounding_metadata(
+                last_grounding_metadata, grounding_metadata
             )
 
           # Standalone grounding_metadata event (when content is empty)
@@ -326,9 +374,12 @@ class GeminiLlmConnection(BaseLlmConnection):
               llm_response.partial = True
             # don't yield the merged text event when receiving audio data
             elif text and not content.parts[0].inline_data:
-              yield self.__build_full_text_response(text, is_thought)
+              yield self.__build_full_text_response(
+                  text, is_thought, last_grounding_metadata
+              )
               text = ''
               is_thought = False
+              last_grounding_metadata = None
             yield llm_response
           # Note: in some cases, tool_call may arrive before
           # generation_complete, causing transcription to appear after
@@ -430,27 +481,58 @@ class GeminiLlmConnection(BaseLlmConnection):
               )
               self._output_transcription_text = ''
           if message.server_content.turn_complete:
-            g_metadata_to_yield = pending_grounding_metadata
+            # Capture final grounding metadata before last_grounding_metadata is cleared in the next block.
+            final_grounding_metadata = (
+                grounding_metadata
+                or last_grounding_metadata
+                or (
+                    types.GroundingMetadata()
+                    if self._is_gemini_3_1_flash_live
+                    else None
+                )
+            )
+            if (
+                final_grounding_metadata
+                and final_grounding_metadata.retrieval_queries
+                and not final_grounding_metadata.grounding_chunks
+            ):
+              logger.warning(
+                  'Incomplete grounding_metadata received: retrieval_queries=%s'
+                  ' but grounding_chunks is empty. This may indicate a'
+                  ' transient issue with the Vertex AI Search backend.',
+                  final_grounding_metadata.retrieval_queries,
+              )
+
             if text:
               yield self.__build_full_text_response(
-                  text, is_thought, g_metadata_to_yield
+                  text,
+                  is_thought,
+                  last_grounding_metadata,
+                  message.server_content.interrupted,
               )
               text = ''
               is_thought = False
-              g_metadata_to_yield = None
+              last_grounding_metadata = None
             if tool_call_parts:
               logger.debug('Returning aggregated tool_call_parts')
               yield LlmResponse(
                   content=types.Content(role='model', parts=tool_call_parts),
+                  grounding_metadata=tool_call_metadata,
                   model_version=self._model_version,
                   live_session_id=live_session_id,
               )
               tool_call_parts = []
+              if tool_call_metadata is not None:
+                last_grounding_metadata = None
+              tool_call_metadata = None
+
             yield LlmResponse(
                 turn_complete=True,
                 interrupted=message.server_content.interrupted,
-                grounding_metadata=message.server_content.grounding_metadata
-                or g_metadata_to_yield
+                # If last_grounding_metadata was cleared in the full text yield,
+                # avoid duplicating it here.
+                grounding_metadata=grounding_metadata
+                or last_grounding_metadata
                 or (
                     types.GroundingMetadata()
                     if self._is_gemini_3_1_flash_live
@@ -462,6 +544,7 @@ class GeminiLlmConnection(BaseLlmConnection):
                     message.server_content, 'turn_complete_reason', None
                 ),
             )
+            last_grounding_metadata = None  # Reset after yielding
             break
           # in case of empty content or parts, we still surface it
           # in case it's an interrupted message, we merge the previous partial
@@ -469,25 +552,39 @@ class GeminiLlmConnection(BaseLlmConnection):
           # safety threshold is triggered
           if message.server_content.interrupted:
             if text:
-              yield self.__build_full_text_response(text, is_thought)
+              yield self.__build_full_text_response(
+                  text,
+                  is_thought,
+                  last_grounding_metadata,
+                  interrupted=True,
+              )
               text = ''
               is_thought = False
+              last_grounding_metadata = None
             else:
               yield LlmResponse(
                   interrupted=message.server_content.interrupted,
+                  grounding_metadata=last_grounding_metadata,
                   model_version=self._model_version,
                   live_session_id=live_session_id,
               )
+              last_grounding_metadata = None
         if message.tool_call:
           logger.debug('Received tool call: %s', message.tool_call)
           if text:
-            yield self.__build_full_text_response(text, is_thought)
+            yield self.__build_full_text_response(
+                text, is_thought, last_grounding_metadata
+            )
             text = ''
             is_thought = False
+            last_grounding_metadata = None
           tool_call_parts.extend([
               types.Part(function_call=function_call)
               for function_call in message.tool_call.function_calls
           ])
+          if not self._is_gemini_3_1_flash_live:
+            if tool_call_metadata is None:
+              tool_call_metadata = last_grounding_metadata
           # Gemini 3.1 does not emit turn_complete until it receives the
           # tool response, so yield tool calls immediately to avoid
           # deadlocking the conversation. Other models (e.g. 2.5-pro,
@@ -500,10 +597,12 @@ class GeminiLlmConnection(BaseLlmConnection):
             )
             yield LlmResponse(
                 content=types.Content(role='model', parts=tool_call_parts),
+                grounding_metadata=last_grounding_metadata,
                 model_version=self._model_version,
                 live_session_id=live_session_id,
             )
             tool_call_parts = []
+            last_grounding_metadata = None
         if message.session_resumption_update:
           logger.debug('Received session resumption message: %s', message)
           yield (

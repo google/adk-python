@@ -382,7 +382,21 @@ class RubricBasedEvaluator(LlmAsJudge):
   ) -> AutoRaterScore:
     """Returns an AutoRaterScore generated from AutoRater's response."""
     response_text = get_text_from_content(auto_rater_response.content)
-    rubric_responses = self._auto_rater_response_parser.parse(response_text)
+    if not response_text:
+      logger.warning(
+          "Auto-rater returned an empty response; no rubric verdicts could be"
+          " parsed and this sample will not be scored."
+      )
+      rubric_responses = []
+    else:
+      rubric_responses = self._auto_rater_response_parser.parse(response_text)
+      if not rubric_responses:
+        logger.warning(
+            "Auto-rater response did not match the expected"
+            " Property/Rationale/Verdict format; no rubric verdicts were"
+            " parsed. Raw auto-rater response: %s",
+            response_text,
+        )
     rubric_scores = []
 
     normalized_rubric_to_rubric_map = {}

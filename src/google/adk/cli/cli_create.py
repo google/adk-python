@@ -54,22 +54,46 @@ https://google.github.io/adk-docs/agents/models
 _SUCCESS_MSG_CODE = """
 Agent created in {agent_folder}:
 - .env
+- .gitignore
 - __init__.py
 - agent.py
 
 ⚠️  WARNING: Secrets (like GOOGLE_API_KEY) are stored in .env.
-Please ensure .env is added to your .gitignore to avoid committing secrets to version control.
 """
 
 _SUCCESS_MSG_CONFIG = """
 Agent created in {agent_folder}:
 - .env
+- .gitignore
 - __init__.py
 - root_agent.yaml
 
 ⚠️  WARNING: Secrets (like GOOGLE_API_KEY) are stored in .env.
-Please ensure .env is added to your .gitignore to avoid committing secrets to version control.
 """
+
+
+def _ensure_dotenv_gitignored(agent_folder: str) -> None:
+  """Ensures generated secrets are excluded from version control."""
+  gitignore_file_path = os.path.join(agent_folder, ".gitignore")
+  dotenv_entry = ".env"
+
+  if not os.path.exists(gitignore_file_path):
+    with open(gitignore_file_path, "w", encoding="utf-8") as f:
+      f.write(f"{dotenv_entry}\n")
+    return
+
+  with open(gitignore_file_path, "r", encoding="utf-8") as f:
+    content = f.read()
+
+  existing_lines = content.splitlines()
+  if dotenv_entry in existing_lines:
+    return
+
+  # Append .env, ensuring proper newline separation.
+  with open(gitignore_file_path, "a", encoding="utf-8") as f:
+    if content and not content.endswith("\n"):
+      f.write("\n")
+    f.write(f"{dotenv_entry}\n")
 
 
 def _generate_files(
@@ -102,6 +126,7 @@ def _generate_files(
     if google_cloud_region:
       lines.append(f"GOOGLE_CLOUD_LOCATION={google_cloud_region}")
     f.write("\n".join(lines))
+  _ensure_dotenv_gitignored(agent_folder)
 
   if type == "config":
     with open(agent_config_file_path, "w", encoding="utf-8") as f:
