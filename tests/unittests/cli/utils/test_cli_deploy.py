@@ -682,3 +682,14 @@ def test_cli_deploy_agent_engine_artifact_service_uri(tmp_path: Path):
     mock_to_agent_engine.assert_called_once()
     _, kwargs = mock_to_agent_engine.call_args
     assert kwargs["artifact_service_uri"] == "gs://my-bucket"
+
+
+def test_bidi_stream_query_in_class_methods():
+  """Tests that bidi_stream_query is in _AGENT_ENGINE_CLASS_METHODS."""
+  methods = cli_deploy._AGENT_ENGINE_CLASS_METHODS
+  bidi_method = next(
+      (m for m in methods if m["name"] == "bidi_stream_query"), None
+  )
+  assert bidi_method is not None
+  assert bidi_method["api_mode"] == "bidi_stream"
+  assert "request_queue" in bidi_method["parameters"]["required"]

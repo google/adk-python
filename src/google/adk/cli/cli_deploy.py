@@ -380,6 +380,18 @@ _AGENT_ENGINE_CLASS_METHODS = [
         },
         'api_mode': 'async_stream',
     },
+    {
+        'name': 'bidi_stream_query',
+        'description': 'Bidi streaming query the ADK application.',
+        'parameters': {
+            'properties': {
+                'request_queue': {},
+            },
+            'required': ['request_queue'],
+            'type': 'object',
+        },
+        'api_mode': 'bidi_stream',
+    },
 ]
 
 
