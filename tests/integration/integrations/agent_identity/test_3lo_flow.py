@@ -168,7 +168,6 @@ async def test_gcp_agent_identity_3lo_user_consent_flow() -> None:
     mock_model = testing_utils.MockModel.create(
         responses=[
             types.Part.from_function_call(name="dummy_tool", args={}),
-            "I am waiting for your authorization.",
             "Tool executed successfully.",
         ]
     )
@@ -276,11 +275,9 @@ async def test_gcp_agent_identity_3lo_user_consent_flow() -> None:
 
     # Validate requests received by the mock model
     requests = mock_model.requests
-    # Events:
-    # 1. User Input (Get me the token.)
-    # 2. LLM (I am waiting for your authorization.)
-    # 3. LLM (Tool executed successfully.)
-    assert len(requests) == 3
+    # Two LLM calls: the tool call in turn 1 (which ends at the EUC) and the
+    # post-consent response in turn 2.
+    assert len(requests) == 2
 
     # Extract the function response from the prompt payload sent to the LLM
     last_request = requests[-1]

@@ -500,6 +500,44 @@ async def test_single_turn_isolates_content_via_branch(
   assert captured_branches[0] is None
 
 
+@pytest.mark.asyncio
+async def test_single_turn_propagates_isolation_scope(
+    request: pytest.FixtureRequest,
+):
+  """Single-turn workflow node propagates isolation_scope to the agent."""
+  agent = _make_agent(mode='single_turn')
+  wrapper = build_node(agent)
+  captured_isolation_scopes = []
+
+  async def fake_run_async(invocation_context):
+    captured_isolation_scopes.append(invocation_context.isolation_scope)
+    yield Event(
+        invocation_id='inv',
+        author=wrapper.name,
+        content=types.Content(parts=[types.Part(text='ok')]),
+    )
+
+  object.__setattr__(wrapper, 'run_async', fake_run_async)
+
+  # Use the helper to create a real InvocationContext
+  ic = await create_parent_invocation_context(
+      request.function.__name__, wrapper
+  )
+
+  # Create the parent context with isolation_scope
+  ctx = Context(invocation_context=ic)
+  ctx.isolation_scope = 'test-scope-123'
+
+  # Run the node
+  events = [
+      event async for event in wrapper._run_impl(ctx=ctx, node_input='hi')
+  ]
+
+  assert len(events) == 1
+  assert events[0].content.parts[0].text == 'ok'
+  assert captured_isolation_scopes == ['test-scope-123']
+
+
 @pytest.mark.xfail(
     strict=True,
     reason=(

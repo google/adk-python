@@ -207,12 +207,14 @@ def prepare_llm_agent_context(agent: Any, ctx: Context) -> Context:
 
   ic = ctx._invocation_context.model_copy()
   ic._event_queue = ctx._invocation_context._event_queue
+  ic.isolation_scope = ctx.isolation_scope
   agent_ctx = Context(
       invocation_context=ic,
       node_path=ctx.node_path,
       run_id=ctx.run_id,
       resume_inputs=ctx.resume_inputs,
   )
+  agent_ctx.isolation_scope = ctx.isolation_scope
 
   ic.session = ic.session.model_copy(deep=False)
   return agent_ctx

@@ -645,6 +645,35 @@ async def test_get_artifact_version_out_of_index(
 
 
 @pytest.mark.asyncio
+async def test_gcs_save_and_load_empty_text_artifact(
+    artifact_service_factory,
+):
+  """GcsArtifactService should treat empty text as stored content."""
+  artifact_service = artifact_service_factory(ArtifactServiceType.GCS)
+  artifact = types.Part.from_text(text="")
+
+  version = await artifact_service.save_artifact(
+      app_name="app0",
+      user_id="user0",
+      session_id="123",
+      filename="empty.txt",
+      artifact=artifact,
+  )
+
+  assert version == 0
+  loaded_artifact = await artifact_service.load_artifact(
+      app_name="app0",
+      user_id="user0",
+      session_id="123",
+      filename="empty.txt",
+  )
+
+  assert loaded_artifact == types.Part.from_bytes(
+      data=b"", mime_type="text/plain"
+  )
+
+
+@pytest.mark.asyncio
 async def test_file_metadata_camelcase(tmp_path, artifact_service_factory):
   """Ensures FileArtifactService writes camelCase metadata without newlines."""
   artifact_service = artifact_service_factory(ArtifactServiceType.FILE)
@@ -1005,3 +1034,49 @@ async def test_save_artifact_with_snake_case_dict(
   assert loaded is not None
   assert loaded.inline_data is not None
   assert loaded.inline_data.mime_type == "text/plain"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "service_type",
+    [
+        ArtifactServiceType.IN_MEMORY,
+        ArtifactServiceType.GCS,
+        ArtifactServiceType.FILE,
+    ],
+)
+async def test_load_artifact_preserves_inline_data_display_name(
+    service_type, artifact_service_factory
+):
+  """Binary artifact load restores inline_data.display_name after save."""
+  artifact_service = artifact_service_factory(service_type)
+  app_name = "app0"
+  user_id = "user0"
+  session_id = "sess0"
+  filename = "artifact.bin"
+  display_name = "My Report (final).png"
+  artifact = types.Part(
+      inline_data=types.Blob(
+          mime_type="image/png",
+          data=b"\x89PNG\r\n\x1a\n",
+          display_name=display_name,
+      )
+  )
+
+  await artifact_service.save_artifact(
+      app_name=app_name,
+      user_id=user_id,
+      session_id=session_id,
+      filename=filename,
+      artifact=artifact,
+  )
+  loaded = await artifact_service.load_artifact(
+      app_name=app_name,
+      user_id=user_id,
+      session_id=session_id,
+      filename=filename,
+  )
+
+  assert loaded is not None
+  assert loaded.inline_data is not None
+  assert loaded.inline_data.display_name == display_name

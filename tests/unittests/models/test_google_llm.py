@@ -146,12 +146,13 @@ def llm_request_with_computer_use():
 
 def test_supported_models():
   models = Gemini.supported_models()
-  assert len(models) == 4
+  assert len(models) == 5
   assert models[0] == r"gemini-.*"
-  assert models[1] == r"model-optimizer-.*"
-  assert models[2] == r"projects\/.+\/locations\/.+\/endpoints\/.+"
+  assert models[1] == r"gemma-4.*"
+  assert models[2] == r"model-optimizer-.*"
+  assert models[3] == r"projects\/.+\/locations\/.+\/endpoints\/.+"
   assert (
-      models[3]
+      models[4]
       == r"projects\/.+\/locations\/.+\/publishers\/google\/models\/gemini.+"
   )
 
