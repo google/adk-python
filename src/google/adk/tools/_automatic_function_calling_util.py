@@ -37,6 +37,7 @@ from . import _function_tool_declarations
 from ..features import FeatureName
 from ..features import is_feature_enabled
 from ..utils.variant_utils import GoogleLLMVariant
+from ._gemini_schema_util import _sanitize_schema_formats_for_gemini
 
 _py_type_2_schema_type = {
     'str': types.Type.STRING,
@@ -365,8 +366,13 @@ def from_function_with_options(
               param
           )
 
+          sanitized_schema = json_schema_dict
+          if variant == GoogleLLMVariant.GEMINI_API:
+            sanitized_schema = _sanitize_schema_formats_for_gemini(
+                json_schema_dict
+            )
           parameters_json_schema[name] = types.Schema.model_validate(
-              json_schema_dict
+              sanitized_schema
           )
           if param.default is not inspect.Parameter.empty:
             if param.default is not None:
