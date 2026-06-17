@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import builtins
 import json
+import logging
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -1538,3 +1539,73 @@ def test_cli_deploy_cloud_run_gcloud_arg_conflict(
       " command."
   )
   assert expected_msg in result.output
+
+
+@pytest.mark.parametrize(
+    "cli_args,expected_log_level",
+    [
+        pytest.param(
+            [],
+            "INFO",
+            id="default_info",
+        ),
+        pytest.param(
+            ["--log_level", "DEBUG"],
+            "DEBUG",
+            id="explicit_debug",
+        ),
+        pytest.param(
+            ["--log_level", "WARNING"],
+            "WARNING",
+            id="explicit_warning",
+        ),
+        pytest.param(
+            ["-v"],
+            "DEBUG",
+            id="verbose_flag",
+        ),
+        pytest.param(
+            ["--verbose"],
+            "DEBUG",
+            id="verbose_long_flag",
+        ),
+        pytest.param(
+            ["-v", "--log_level", "WARNING"],
+            "WARNING",
+            id="both_verbose_and_explicit_warning",
+        ),
+    ],
+)
+def test_cli_run_log_level(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    cli_args: list[str],
+    expected_log_level: str,
+) -> None:
+  """`adk run` should configure log level correctly based on flags."""
+  agent_dir = tmp_path / "agent"
+  agent_dir.mkdir()
+  (agent_dir / "__init__.py").touch()
+  (agent_dir / "agent.py").touch()
+
+  # Mock logs.log_to_tmp_folder
+  mock_log_to_tmp_folder = mock.Mock()
+  monkeypatch.setattr(
+      cli_tools_click.logs, "log_to_tmp_folder", mock_log_to_tmp_folder
+  )
+
+  # Mock asyncio.run to do nothing, preventing full run
+  monkeypatch.setattr(cli_tools_click.asyncio, "run", mock.Mock())
+
+  runner = CliRunner()
+  result = runner.invoke(
+      cli_tools_click.main,
+      ["run", *cli_args, str(agent_dir)],
+  )
+  assert result.exit_code == 0, (result.output, repr(result.exception))
+
+  # Check if log_to_tmp_folder was called with the correct log level object from `logging` module
+  expected_logging_level = getattr(logging, expected_log_level)
+  mock_log_to_tmp_folder.assert_called_once()
+  kwargs = mock_log_to_tmp_folder.call_args[1]
+  assert kwargs.get("level") == expected_logging_level

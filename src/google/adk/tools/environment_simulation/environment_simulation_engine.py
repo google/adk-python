@@ -15,7 +15,6 @@
 from __future__ import annotations
 
 import asyncio
-import concurrent.futures
 import logging
 import random
 from typing import Any
@@ -30,7 +29,6 @@ from google.adk.agents.llm_agent import LlmAgent
 from google.adk.tools.base_tool import BaseTool
 from google.adk.tools.environment_simulation.environment_simulation_config import EnvironmentSimulationConfig
 from google.adk.tools.environment_simulation.environment_simulation_config import MockStrategy as MockStrategyEnum
-from google.adk.tools.environment_simulation.environment_simulation_config import ToolSimulationConfig
 from google.adk.tools.environment_simulation.strategies import base as base_mock_strategies
 from google.adk.tools.environment_simulation.strategies import tool_spec_mock_strategy
 from google.adk.tools.environment_simulation.tool_connection_analyzer import ToolConnectionAnalyzer

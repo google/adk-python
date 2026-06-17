@@ -44,13 +44,11 @@ from ...models.google_llm import GoogleLLMVariant
 from ...models.llm_request import LlmRequest
 from ...models.llm_response import LlmResponse
 from ...telemetry import _instrumentation
-from ...telemetry import tracing
 from ...telemetry.tracing import trace_call_llm
 from ...telemetry.tracing import trace_send_data
 from ...telemetry.tracing import tracer
 from ...tools.base_toolset import BaseToolset
 from ...tools.tool_context import ToolContext
-from ...utils import model_name_utils
 from ...utils.context_utils import Aclosing
 from .audio_cache_manager import AudioCacheManager
 from .functions import build_auth_request_event
@@ -557,9 +555,18 @@ class BaseLlmFlow(ABC):
         # initial_history_in_client_content to True. This tells the Live server
         # that the provided history already includes the model's past responses,
         # preventing the server from generating duplicate responses for those replayed turns.
+        #
+        # ``history_config`` is only supported by the Gemini Developer API
+        # backend; the Vertex AI / Gemini Enterprise Agent Platform backend has
+        # no such field on its live setup message and rejects it. On Vertex,
+        # history is instead seeded by ``send_history`` below
+        # (``send_client_content`` with prior turns), so we skip
+        # ``history_config`` for that backend.
         if (
             llm_request.contents
             and not invocation_context.live_session_resumption_handle
+            and isinstance(llm, Gemini)
+            and llm._api_backend == GoogleLLMVariant.GEMINI_API  # pylint: disable=protected-access
         ):
           if not llm_request.live_connect_config:
             llm_request.live_connect_config = types.LiveConnectConfig()
@@ -1198,6 +1205,9 @@ class BaseLlmFlow(ABC):
       )
       if auth_event:
         yield auth_event
+
+        # Interrupt invocation (mirrors _resolve_toolset_auth behavior)
+        invocation_context.end_invocation = True
 
       tool_confirmation_event = functions.generate_request_confirmation_event(
           invocation_context, function_call_event, function_response_event

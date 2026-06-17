@@ -4,11 +4,13 @@ Execute multiple nodes concurrently and collect their results.
 
 ## 📋 Agent Verification Checklist (Parallel & Fan-Out)
 Use this checklist when implementing parallel patterns:
+
 - [ ] **JoinNode Serialization**: If LLM agents feed into a `JoinNode`, did you set `output_schema` on them to prevent JSON serialization errors?
 - [ ] **ParallelWorker Usage**: Did you avoid using `parallel_worker=True` on fan-out nodes? (It expects a list input)
 - [ ] **Multi-Trigger vs Join**: Do you understand that Multi-Trigger fires downstream once per branch, while JoinNode waits and fires once with merged dict?
 
 ## 💡 Quick Reference
+
 - **Fan-Out (Tuple)**: `('START', (node_a, node_b))`
 - **Fan-In (JoinNode)**: `((node_a, node_b), join_node)`
 - **List Worker**: `@node(parallel_worker=True)` (Takes list, outputs list)
@@ -16,11 +18,12 @@ Use this checklist when implementing parallel patterns:
 ## Imports
 
 ```python
-from google.adk.workflow import Workflow
-from google.adk.workflow._parallel_worker import ParallelWorker
-from google.adk.workflow import JoinNode
-from google.adk.workflow import node
+from google.adk.workflow import Workflow, JoinNode, node
 ```
+
+Parallel-worker behavior is opted into via the `parallel_worker=True` flag on
+`@node` or `LlmAgent`. The underlying wrapper class is internal — don't import
+it directly.
 
 ## Fan-Out: Multiple Branches
 
@@ -91,15 +94,18 @@ def final_processor(node_input: dict) -> str:
 
 **Serialization warning:** JoinNode stores partial inputs in session state while waiting. If predecessors are LLM agents without `output_schema`, the stored values are `types.Content` objects which are **not JSON-serializable**. This causes `TypeError` with SQLite/database session services. Fix: use `output_schema` on LLM agents feeding into a JoinNode.
 
-## ParallelWorker: Process Lists in Parallel
+## Parallel workers: process lists in parallel
 
-Apply the same node to each item in a list concurrently:
+Apply the same node to each item in a list concurrently by setting the
+`parallel_worker=True` flag. The framework wraps the node internally — there is
+no public `ParallelWorker` class to import.
 
 ```python
+from google.adk.workflow import node, Workflow
+
+@node(parallel_worker=True)
 def process_item(node_input: int) -> int:
   return node_input * 2
-
-parallel = ParallelWorker(node(process_item))
 
 def produce_list(node_input: str) -> list:
   return [1, 2, 3, 4, 5]
@@ -108,34 +114,23 @@ agent = Workflow(
     name="parallel_processing",
     edges=[
         ('START', produce_list),
-        (produce_list, parallel),
+        (produce_list, process_item),
     ],
 )
 # Output: [2, 4, 6, 8, 10]
 ```
 
-### ParallelWorker Details
+### Behavior
 
 - Input: a **list** (or single item, which gets wrapped in a list)
 - Output: a **list** of results in the same order as inputs
 - Empty list input produces empty list output
 - Each item is processed by a dynamically created worker node
-- Workers are named `{parent_name}__{index}` (e.g., `process_item__0`)
 - Default `rerun_on_resume=True`
 
-### ParallelWorker with @node Decorator
+### Parallel workers with Agents
 
-```python
-@node(parallel_worker=True)
-def process_item(node_input: int) -> int:
-  return node_input * 2
-
-# Equivalent to: ParallelWorker(FunctionNode(process_item_fn))
-```
-
-### ParallelWorker with Agents
-
-Set `parallel_worker=True` directly on an Agent:
+Set `parallel_worker=True` directly on an Agent — no extra wrapping needed:
 
 ```python
 from google.adk import Agent
@@ -153,12 +148,6 @@ agent = Workflow(
         ('START', process_input, find_related_topics, explain_topic, aggregate),
     ],
 )
-```
-
-Or wrap manually:
-
-```python
-parallel_analyzer = ParallelWorker(analyzer)
 ```
 
 **Do NOT use `parallel_worker=True` on fan-out nodes.** Fan-out edges `(a, (b, c, d))` already run nodes in parallel. Adding `parallel_worker=True` makes the node expect a list input and iterate over it — if it receives a single value or None, it produces no output and the JoinNode gets nothing.

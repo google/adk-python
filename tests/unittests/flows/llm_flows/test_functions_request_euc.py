@@ -152,6 +152,8 @@ def test_function_request_euc():
         == auth_configs[idx].raw_auth_credential
     )
 
+  assert len(mock_model.requests) == 1
+
 
 def test_function_get_auth_response():
   id_1 = 'id_1'
@@ -309,7 +311,7 @@ def test_function_get_auth_response():
   )
   runner = testing_utils.InMemoryRunner(agent)
   runner.run('test')
-  request_euc_function_call_event = runner.session.events[-3]
+  request_euc_function_call_event = runner.session.events[-2]
   function_response1 = types.FunctionResponse(
       name=request_euc_function_call_event.content.parts[0].function_call.name,
       response=auth_response1.model_dump(),
@@ -505,7 +507,7 @@ def test_function_get_auth_response_partial():
   )
   runner = testing_utils.InMemoryRunner(agent)
   runner.run('test')
-  request_euc_function_call_event = runner.session.events[-3]
+  request_euc_function_call_event = runner.session.events[-2]
   function_response1 = types.FunctionResponse(
       name=request_euc_function_call_event.content.parts[0].function_call.name,
       response=auth_response1.model_dump(),
@@ -531,7 +533,7 @@ def test_function_get_auth_response_partial():
   )
 
   assert function_invoked == 3
-  assert len(mock_model.requests) == 3
+  assert len(mock_model.requests) == 2
   request = mock_model.requests[-1]
   content = request.contents[-1]
   parts = content.parts
@@ -550,7 +552,7 @@ def test_function_get_auth_response_partial():
       ),
   )
   assert function_invoked == 4
-  assert len(mock_model.requests) == 4
+  assert len(mock_model.requests) == 3
   request = mock_model.requests[-1]
   content = request.contents[-1]
   parts = content.parts

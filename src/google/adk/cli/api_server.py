@@ -1219,29 +1219,40 @@ class ApiServer:
       return session
 
     @app.get(
-        "/apps/{app_name}/users/{user_id}/sessions/{session_id}/artifacts/{artifact_name}",
+        "/apps/{app_name}/users/{user_id}/sessions/{session_id}/artifacts/{artifact_name:path}/versions/{version_id}/metadata",
+        response_model=ArtifactVersion,
         response_model_exclude_none=True,
     )
-    async def load_artifact(
+    async def get_artifact_version_metadata(
         app_name: str,
         user_id: str,
         session_id: str,
         artifact_name: str,
-        version: Optional[int] = Query(None),
-    ) -> Optional[types.Part]:
-      artifact = await self.artifact_service.load_artifact(
+        version_id: str,
+    ) -> ArtifactVersion:
+      version: int | None = None
+      if version_id != "latest":
+        try:
+          version = int(version_id)
+        except ValueError:
+          raise HTTPException(
+              status_code=422, detail="Invalid version ID"
+          ) from None
+      artifact_version = await self.artifact_service.get_artifact_version(
           app_name=app_name,
           user_id=user_id,
           session_id=session_id,
           filename=artifact_name,
           version=version,
       )
-      if not artifact:
-        raise HTTPException(status_code=404, detail="Artifact not found")
-      return artifact
+      if not artifact_version:
+        raise HTTPException(
+            status_code=404, detail="Artifact version not found"
+        )
+      return artifact_version
 
     @app.get(
-        "/apps/{app_name}/users/{user_id}/sessions/{session_id}/artifacts/{artifact_name}/versions/metadata",
+        "/apps/{app_name}/users/{user_id}/sessions/{session_id}/artifacts/{artifact_name:path}/versions/metadata",
         response_model=list[ArtifactVersion],
         response_model_exclude_none=True,
     )
@@ -1257,28 +1268,6 @@ class ApiServer:
           session_id=session_id,
           filename=artifact_name,
       )
-
-    @app.get(
-        "/apps/{app_name}/users/{user_id}/sessions/{session_id}/artifacts/{artifact_name}/versions/{version_id}",
-        response_model_exclude_none=True,
-    )
-    async def load_artifact_version(
-        app_name: str,
-        user_id: str,
-        session_id: str,
-        artifact_name: str,
-        version_id: int,
-    ) -> Optional[types.Part]:
-      artifact = await self.artifact_service.load_artifact(
-          app_name=app_name,
-          user_id=user_id,
-          session_id=session_id,
-          filename=artifact_name,
-          version=version_id,
-      )
-      if not artifact:
-        raise HTTPException(status_code=404, detail="Artifact not found")
-      return artifact
 
     @app.post(
         "/apps/{app_name}/users/{user_id}/sessions/{session_id}/artifacts",
@@ -1329,29 +1318,34 @@ class ApiServer:
       return artifact_version
 
     @app.get(
-        "/apps/{app_name}/users/{user_id}/sessions/{session_id}/artifacts/{artifact_name}/versions/{version_id}/metadata",
-        response_model=ArtifactVersion,
+        "/apps/{app_name}/users/{user_id}/sessions/{session_id}/artifacts/{artifact_name:path}/versions/{version_id}",
         response_model_exclude_none=True,
     )
-    async def get_artifact_version_metadata(
+    async def load_artifact_version(
         app_name: str,
         user_id: str,
         session_id: str,
         artifact_name: str,
-        version_id: int,
-    ) -> ArtifactVersion:
-      artifact_version = await self.artifact_service.get_artifact_version(
+        version_id: str,
+    ) -> types.Part | None:
+      version: int | None = None
+      if version_id != "latest":
+        try:
+          version = int(version_id)
+        except ValueError:
+          raise HTTPException(
+              status_code=422, detail="Invalid version ID"
+          ) from None
+      artifact = await self.artifact_service.load_artifact(
           app_name=app_name,
           user_id=user_id,
           session_id=session_id,
           filename=artifact_name,
-          version=version_id,
+          version=version,
       )
-      if not artifact_version:
-        raise HTTPException(
-            status_code=404, detail="Artifact version not found"
-        )
-      return artifact_version
+      if not artifact:
+        raise HTTPException(status_code=404, detail="Artifact not found")
+      return artifact
 
     @app.get(
         "/apps/{app_name}/users/{user_id}/sessions/{session_id}/artifacts",
@@ -1365,7 +1359,7 @@ class ApiServer:
       )
 
     @app.get(
-        "/apps/{app_name}/users/{user_id}/sessions/{session_id}/artifacts/{artifact_name}/versions",
+        "/apps/{app_name}/users/{user_id}/sessions/{session_id}/artifacts/{artifact_name:path}/versions",
         response_model_exclude_none=True,
     )
     async def list_artifact_versions(
@@ -1378,8 +1372,33 @@ class ApiServer:
           filename=artifact_name,
       )
 
+    # Keep this catch-all artifact route after the version-specific routes.
+    # Artifact names may contain '/', so {artifact_name:path} would otherwise
+    # capture requests for /versions/... endpoints.
+    @app.get(
+        "/apps/{app_name}/users/{user_id}/sessions/{session_id}/artifacts/{artifact_name:path}",
+        response_model_exclude_none=True,
+    )
+    async def load_artifact(
+        app_name: str,
+        user_id: str,
+        session_id: str,
+        artifact_name: str,
+        version: int | None = Query(None),
+    ) -> types.Part | None:
+      artifact = await self.artifact_service.load_artifact(
+          app_name=app_name,
+          user_id=user_id,
+          session_id=session_id,
+          filename=artifact_name,
+          version=version,
+      )
+      if not artifact:
+        raise HTTPException(status_code=404, detail="Artifact not found")
+      return artifact
+
     @app.delete(
-        "/apps/{app_name}/users/{user_id}/sessions/{session_id}/artifacts/{artifact_name}",
+        "/apps/{app_name}/users/{user_id}/sessions/{session_id}/artifacts/{artifact_name:path}",
     )
     async def delete_artifact(
         app_name: str, user_id: str, session_id: str, artifact_name: str

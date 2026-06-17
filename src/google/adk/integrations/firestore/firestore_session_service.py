@@ -31,7 +31,6 @@ _SessionLockKey = tuple[str, str, str]
 if TYPE_CHECKING:
   from google.cloud import firestore
 
-from pydantic import BaseModel
 
 from ...events.event import Event
 from ...sessions import _session_util
