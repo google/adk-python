@@ -528,7 +528,18 @@ class Runner:
           yield user_event
 
       # Run before_run callbacks
-      await ic.plugin_manager.run_before_run_callback(invocation_context=ic)
+      corrected_user_message = await ic.plugin_manager.run_before_run_callback(invocation_context=ic)
+      if corrected_user_message is not None:
+        if isinstance(corrected_user_message, types.Content):
+          node_input = corrected_user_message
+          ic.user_content = corrected_user_message
+          if hasattr(ic.session, 'events') and len(ic.session.events) > 0:
+              ic.session.events.pop()
+          user_event = await self._append_user_event(
+              ic, corrected_user_message
+          )
+          if yield_user_message and user_event:
+            yield user_event
 
       # 3. Start root node in background
       from .agents.base_agent import BaseAgent
