@@ -675,7 +675,7 @@ class EvaluationGenerator:
       # Skip invocations without user content — evaluations without
       # user input are not meaningful and would cause a Pydantic
       # ValidationError on Invocation.user_content.
-      if not user_content.parts:
+      if not (user_content and user_content.parts):
         continue
 
       invocation_events = [
