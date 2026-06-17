@@ -104,7 +104,7 @@ class TestApiRegistry(unittest.IsolatedAsyncioTestCase):
     mock_session.get.assert_called_once_with(
         f"{API_REGISTRY_URL}/v1beta/projects/{self.project_id}/locations/{self.location}/mcpServers",
         headers={},
-        params={},
+        params={"filter": "enabled=false"},
     )
 
   @patch(_SESSION_PATH, autospec=True)
@@ -126,7 +126,7 @@ class TestApiRegistry(unittest.IsolatedAsyncioTestCase):
     mock_session.get.assert_called_once_with(
         f"{API_REGISTRY_URL}/v1beta/projects/{self.project_id}/locations/{self.location}/mcpServers",
         headers={"x-goog-user-project": "quota-project"},
-        params={},
+        params={"filter": "enabled=false"},
     )
 
   @patch(_SESSION_PATH, autospec=True)
@@ -176,12 +176,12 @@ class TestApiRegistry(unittest.IsolatedAsyncioTestCase):
     mock_session.get.assert_any_call(
         f"{API_REGISTRY_URL}/v1beta/projects/{self.project_id}/locations/{self.location}/mcpServers",
         headers={},
-        params={},
+        params={"filter": "enabled=false"},
     )
     mock_session.get.assert_called_with(
         f"{API_REGISTRY_URL}/v1beta/projects/{self.project_id}/locations/{self.location}/mcpServers",
         headers={},
-        params={"pageToken": "next_page_token"},
+        params={"filter": "enabled=false", "pageToken": "next_page_token"},
     )
 
   @patch(_SESSION_PATH, autospec=True)
