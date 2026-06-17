@@ -1129,6 +1129,144 @@ EXPECTED_EXPERIMENTAL_SPAN_AND_EVENT = SpanDigest(
 
 
 # ---------------------------------------------------------------------------
+# MCP-integration single-turn shape (experimental semconv only).
+#
+# Used by ``test_functional.py``'s MCP integration test. The scenario is
+# a single-turn agent (``MockModel`` returns text immediately) whose only
+# tool source is an ``McpToolset`` whose underlying session exposes one
+# ``mcp_echo`` tool. ``McpToolset`` calls ``list_tools()`` once per agent
+# invocation and materializes the result into a ``FunctionDeclaration``;
+# the experimental semconv builder reads that declaration straight from
+# ``llm_request.config.tools`` without ever talking to the MCP server
+# itself.
+#
+# Only the experimental path needs a dedicated shape: stable semconv
+# doesn't emit ``gen_ai.tool.definitions`` at all, so the MCP integration
+# would be indistinguishable from any other tool-bearing agent under
+# stable semconv.
+#
+# In ``EXPECTED_EXPERIMENTAL_SPAN_AND_EVENT_WITH_MCP``, the MCP-resolved
+# ``mcp_echo`` definition surfaces in both ``gen_ai.tool.definitions``
+# (span attribute) and the same key on the completion-details log
+# record. The ``parameters`` block uses standard JSON Schema vocabulary
+# (``object``, ``string``) because ``McpTool._get_declaration`` passes
+# the MCP ``inputSchema`` through ``parameters_json_schema`` when the
+# ``JSON_SCHEMA_FOR_FUNC_DECL`` feature is enabled.
+# ---------------------------------------------------------------------------
+
+_MCP_TOOL_NAME = "mcp_echo"
+_MCP_TOOL_DESCRIPTION = "Echoes back its input."
+_MCP_TOOL_DEFINITION_FULL = {
+    "name": _MCP_TOOL_NAME,
+    "description": _MCP_TOOL_DESCRIPTION,
+    "parameters": {
+        "properties": {"text": {"type": "string"}},
+        "required": ["text"],
+        "type": "object",
+    },
+    "type": "function",
+}
+
+_MCP_TURN_INPUT_MESSAGES = [{
+    "role": "user",
+    "parts": [{"content": USER_PROMPT, "type": "text"}],
+}]
+
+_MCP_TURN_OUTPUT_MESSAGES = [{
+    "role": "assistant",
+    "parts": [{"content": FINAL_TEXT, "type": "text"}],
+    # ``MockModel`` does not populate ``finish_reason``; it surfaces here as
+    # the empty string from ``_to_finish_reason(None)``.
+    "finish_reason": "",
+}]
+
+
+EXPECTED_EXPERIMENTAL_SPAN_AND_EVENT_WITH_MCP = SpanDigest(
+    name="invocation",
+    attributes={},
+    children=[
+        SpanDigest(
+            name="invoke_agent some_root_agent",
+            attributes={
+                "gen_ai.operation.name": "invoke_agent",
+                "gen_ai.agent.description": AGENT_DESCRIPTION,
+                "gen_ai.agent.name": AGENT_NAME,
+                "gen_ai.conversation.id": PRESENT,
+            },
+            children=[
+                SpanDigest(
+                    name="call_llm",
+                    attributes={
+                        "gen_ai.system": "gcp.vertex.agent",
+                        "gen_ai.request.model": "mock",
+                        "gcp.vertex.agent.invocation_id": PRESENT,
+                        "gcp.vertex.agent.session_id": PRESENT,
+                        "gcp.vertex.agent.event_id": PRESENT,
+                        "gcp.vertex.agent.llm_request": "{}",
+                        "gcp.vertex.agent.llm_response": "{}",
+                    },
+                    children=[
+                        SpanDigest(
+                            name="generate_content mock",
+                            attributes={
+                                "gen_ai.operation.name": "generate_content",
+                                "gen_ai.request.model": "mock",
+                                "gen_ai.agent.name": AGENT_NAME,
+                                "gen_ai.conversation.id": PRESENT,
+                                "gcp.vertex.agent.event_id": PRESENT,
+                                "gcp.vertex.agent.invocation_id": PRESENT,
+                                "gen_ai.input.messages": (
+                                    _MCP_TURN_INPUT_MESSAGES
+                                ),
+                                "gen_ai.system_instructions": [{
+                                    "content": FULL_SYSTEM_INSTRUCTION,
+                                    "type": "text",
+                                }],
+                                "gen_ai.tool.definitions": [
+                                    _MCP_TOOL_DEFINITION_FULL
+                                ],
+                                "gen_ai.output.messages": (
+                                    _MCP_TURN_OUTPUT_MESSAGES
+                                ),
+                            },
+                            logs=[
+                                LogDigest(
+                                    event_name=GEN_AI_COMPLETION_DETAILS_EVENT,
+                                    body=None,
+                                    attributes={
+                                        "gen_ai.agent.name": AGENT_NAME,
+                                        "gen_ai.conversation.id": PRESENT,
+                                        "user.id": "test_user",
+                                        "gcp.vertex.agent.event_id": PRESENT,
+                                        "gcp.vertex.agent.invocation_id": (
+                                            PRESENT
+                                        ),
+                                        "gen_ai.input.messages": (
+                                            _MCP_TURN_INPUT_MESSAGES
+                                        ),
+                                        "gen_ai.system_instructions": [{
+                                            "content": FULL_SYSTEM_INSTRUCTION,
+                                            "type": "text",
+                                        }],
+                                        "gen_ai.tool.definitions": [
+                                            _MCP_TOOL_DEFINITION_FULL
+                                        ],
+                                        "gen_ai.output.messages": (
+                                            _MCP_TURN_OUTPUT_MESSAGES
+                                        ),
+                                    },
+                                ),
+                            ],
+                        ),
+                    ],
+                ),
+            ],
+        ),
+    ],
+)
+
+
+# ---------------------------------------------------------------------------
 # Parametrization list.
 # ---------------------------------------------------------------------------
 

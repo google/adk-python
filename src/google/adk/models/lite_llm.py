@@ -492,15 +492,17 @@ def _iter_reasoning_texts(reasoning_value: Any) -> Iterable[str]:
 
 
 def _is_thinking_blocks_format(reasoning_value: Any) -> bool:
-  """Returns True if reasoning_value is Anthropic thinking_blocks format.
+  """Returns True if reasoning_value is thinking_blocks format.
 
-  Anthropic thinking_blocks is a list of dicts, each with 'type', 'thinking',
-  and 'signature' keys.
+  Anthropic blocks carry a 'signature'; Gemini blocks carry 'thinking'/'type'
+  without one. Match either so Gemini thought text is not dropped.
   """
   if not isinstance(reasoning_value, list) or not reasoning_value:
     return False
   first = reasoning_value[0]
-  return isinstance(first, dict) and "signature" in first
+  return isinstance(first, dict) and (
+      "thinking" in first or "signature" in first
+  )
 
 
 def _convert_reasoning_value_to_parts(reasoning_value: Any) -> List[types.Part]:
