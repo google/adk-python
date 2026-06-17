@@ -82,7 +82,7 @@ async def test_generate_content_async_non_streaming(
 
   mock_client_constructor.assert_called_once()
   _, kwargs = mock_client_constructor.call_args
-  assert not kwargs['vertexai']
+  assert not kwargs['enterprise']
   http_options = kwargs['http_options']
   assert http_options.base_url == PROXY_URL
   assert http_options.api_version == 'v1'
@@ -239,7 +239,7 @@ async def test_vertex_model_path_parsing(mock_client_constructor):
 
   mock_client_constructor.assert_called_once()
   _, kwargs = mock_client_constructor.call_args
-  assert kwargs['vertexai']
+  assert kwargs['enterprise']
   assert kwargs['http_options'].api_version == 'v1beta'
 
   mock_client_instance.aio.models.generate_content.assert_called_once()
@@ -301,14 +301,14 @@ async def test_proxy_url_from_env_variable(mock_client_constructor):
         (
             'apigee/gemini-2.5-flash',
             {
-                'GOOGLE_GENAI_USE_VERTEXAI': 'true',
+                'GOOGLE_GENAI_USE_ENTERPRISE': 'true',
                 'GOOGLE_CLOUD_LOCATION': 'test-location',
             },
         ),
         (
             'apigee/gemini-2.5-flash',
             {
-                'GOOGLE_GENAI_USE_VERTEXAI': 'true',
+                'GOOGLE_GENAI_USE_ENTERPRISE': 'true',
                 'GOOGLE_CLOUD_PROJECT': 'test-project',
             },
         ),
@@ -394,7 +394,7 @@ async def test_model_string_parsing_and_client_initialization(
   """Tests model string parsing and genai.Client initialization."""
   env_vars = {}
   if use_vertexai_env is not None:
-    env_vars['GOOGLE_GENAI_USE_VERTEXAI'] = use_vertexai_env
+    env_vars['GOOGLE_GENAI_USE_ENTERPRISE'] = use_vertexai_env
 
   if expected_is_vertexai:
     env_vars['GOOGLE_CLOUD_PROJECT'] = 'test-project'
@@ -422,7 +422,7 @@ async def test_model_string_parsing_and_client_initialization(
 
     mock_client_constructor.assert_called_once()
     _, kwargs = mock_client_constructor.call_args
-    assert kwargs['vertexai'] == expected_is_vertexai
+    assert kwargs['enterprise'] == expected_is_vertexai
     if expected_is_vertexai:
       assert kwargs['project'] == 'test-project'
       assert kwargs['location'] == 'test-location'
@@ -649,6 +649,71 @@ def test_parse_response_usage_metadata():
   assert llm_response.usage_metadata.candidates_token_count == 5
   assert llm_response.usage_metadata.total_token_count == 15
   assert llm_response.usage_metadata.thoughts_token_count == 4
+
+
+@pytest.mark.asyncio
+@mock.patch('google.genai.Client')
+async def test_api_client_passes_credentials_when_provided(
+    mock_client_constructor, llm_request
+):
+  """Tests that credentials passed to __init__ are forwarded to genai.Client."""
+  mock_credentials = mock.Mock()
+
+  mock_client_instance = mock.Mock()
+  mock_client_instance.aio.models.generate_content = AsyncMock(
+      return_value=types.GenerateContentResponse(
+          candidates=[
+              types.Candidate(
+                  content=Content(
+                      parts=[Part.from_text(text='Test response')],
+                      role='model',
+                  )
+              )
+          ]
+      )
+  )
+  mock_client_constructor.return_value = mock_client_instance
+
+  apigee_llm = ApigeeLlm(
+      model=APIGEE_GEMINI_MODEL_ID,
+      proxy_url=PROXY_URL,
+      credentials=mock_credentials,
+  )
+  _ = [resp async for resp in apigee_llm.generate_content_async(llm_request)]
+
+  _, kwargs = mock_client_constructor.call_args
+  assert kwargs['credentials'] is mock_credentials
+
+
+@pytest.mark.asyncio
+@mock.patch('google.genai.Client')
+async def test_api_client_omits_credentials_when_not_provided(
+    mock_client_constructor, llm_request
+):
+  """Tests that credentials kwarg is not forwarded when not supplied."""
+  mock_client_instance = mock.Mock()
+  mock_client_instance.aio.models.generate_content = AsyncMock(
+      return_value=types.GenerateContentResponse(
+          candidates=[
+              types.Candidate(
+                  content=Content(
+                      parts=[Part.from_text(text='Test response')],
+                      role='model',
+                  )
+              )
+          ]
+      )
+  )
+  mock_client_constructor.return_value = mock_client_instance
+
+  apigee_llm = ApigeeLlm(
+      model=APIGEE_GEMINI_MODEL_ID,
+      proxy_url=PROXY_URL,
+  )
+  _ = [resp async for resp in apigee_llm.generate_content_async(llm_request)]
+
+  _, kwargs = mock_client_constructor.call_args
+  assert 'credentials' not in kwargs
 
 
 def test_parse_response_with_refusal():

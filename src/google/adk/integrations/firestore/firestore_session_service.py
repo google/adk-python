@@ -31,7 +31,6 @@ _SessionLockKey = tuple[str, str, str]
 if TYPE_CHECKING:
   from google.cloud import firestore
 
-from pydantic import BaseModel
 
 from ...events.event import Event
 from ...sessions import _session_util
@@ -551,6 +550,7 @@ class FirestoreSessionService(BaseSessionService):  # type: ignore[misc]
             for k, v in session.state.items()
             if not k.startswith(State.APP_PREFIX)
             and not k.startswith(State.USER_PREFIX)
+            and not k.startswith(State.TEMP_PREFIX)
         }
         transaction.update(
             session_ref,

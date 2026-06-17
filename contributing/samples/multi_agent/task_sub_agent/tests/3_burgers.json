@@ -1,0 +1,410 @@
+{
+  "events": [
+    {
+      "author": "user",
+      "content": {
+        "parts": [
+          {
+            "text": "3 burgers"
+          }
+        ],
+        "role": "user"
+      },
+      "id": "e-1",
+      "invocationId": "i-1",
+      "nodeInfo": {
+        "path": ""
+      }
+    },
+    {
+      "author": "coordinator",
+      "content": {
+        "parts": [
+          {
+            "functionCall": {
+              "args": {
+                "request": "The user wants to order 3 burgers. Please confirm if there are any specific types or details they'd like for these burgers."
+              },
+              "id": "fc-1",
+              "name": "order_collector"
+            }
+          }
+        ],
+        "role": "model"
+      },
+      "finishReason": "STOP",
+      "id": "e-2",
+      "invocationId": "i-1",
+      "longRunningToolIds": [],
+      "nodeInfo": {
+        "path": "coordinator@1"
+      }
+    },
+    {
+      "author": "order_collector",
+      "content": {
+        "parts": [
+          {
+            "text": "Hello! We have Pizza, Burgers, and Salads on our menu today. You've chosen 3 Burgers. Would you like to add any Pizza or Salads to your order, or is that all for today?"
+          }
+        ],
+        "role": "model"
+      },
+      "finishReason": "STOP",
+      "id": "e-3",
+      "invocationId": "i-1",
+      "isolationScope": "fc-1",
+      "nodeInfo": {
+        "path": "coordinator@1/order_collector@fc-1"
+      }
+    },
+    {
+      "author": "user",
+      "content": {
+        "parts": [
+          {
+            "text": "ready to pay"
+          }
+        ],
+        "role": "user"
+      },
+      "id": "e-4",
+      "invocationId": "i-2",
+      "nodeInfo": {
+        "path": ""
+      }
+    },
+    {
+      "author": "order_collector",
+      "content": {
+        "parts": [
+          {
+            "functionCall": {
+              "args": {
+                "result": [
+                  {
+                    "name": "Burger",
+                    "quantity": 3
+                  }
+                ]
+              },
+              "id": "fc-2",
+              "name": "finish_task"
+            }
+          }
+        ],
+        "role": "model"
+      },
+      "finishReason": "STOP",
+      "id": "e-5",
+      "invocationId": "i-2",
+      "isolationScope": "fc-1",
+      "longRunningToolIds": [],
+      "nodeInfo": {
+        "path": "coordinator@1/order_collector@fc-1"
+      }
+    },
+    {
+      "author": "order_collector",
+      "content": {
+        "parts": [
+          {
+            "functionResponse": {
+              "id": "fc-2",
+              "name": "finish_task",
+              "response": {
+                "result": "Task completed."
+              }
+            }
+          }
+        ],
+        "role": "user"
+      },
+      "id": "e-6",
+      "invocationId": "i-2",
+      "isolationScope": "fc-1",
+      "nodeInfo": {
+        "outputFor": [
+          "coordinator@1/order_collector@fc-1"
+        ],
+        "path": "coordinator@1/order_collector@fc-1"
+      },
+      "output": [
+        {
+          "name": "Burger",
+          "quantity": 3
+        }
+      ]
+    },
+    {
+      "author": "user",
+      "content": {
+        "parts": [
+          {
+            "functionResponse": {
+              "id": "fc-1",
+              "name": "order_collector",
+              "response": {
+                "output": [
+                  {
+                    "name": "Burger",
+                    "quantity": 3
+                  }
+                ]
+              }
+            }
+          }
+        ],
+        "role": "user"
+      },
+      "id": "e-7",
+      "invocationId": "i-2",
+      "nodeInfo": {
+        "path": "coordinator@1"
+      }
+    },
+    {
+      "author": "coordinator",
+      "content": {
+        "parts": [
+          {
+            "functionCall": {
+              "args": {
+                "request": "Please collect the user's credit card number and CVV for their order of 3 burgers."
+              },
+              "id": "fc-3",
+              "name": "payment_collector"
+            }
+          }
+        ],
+        "role": "model"
+      },
+      "finishReason": "STOP",
+      "id": "e-8",
+      "invocationId": "i-2",
+      "longRunningToolIds": [],
+      "nodeInfo": {
+        "path": "coordinator@1"
+      }
+    },
+    {
+      "author": "payment_collector",
+      "content": {
+        "parts": [
+          {
+            "text": "To process your order for 3 burgers, could you please provide your credit card number and the 3-digit CVV code?"
+          }
+        ],
+        "role": "model"
+      },
+      "finishReason": "STOP",
+      "id": "e-9",
+      "invocationId": "i-2",
+      "isolationScope": "fc-3",
+      "nodeInfo": {
+        "path": "coordinator@1/payment_collector@fc-3"
+      }
+    },
+    {
+      "author": "user",
+      "content": {
+        "parts": [
+          {
+            "text": "1234-1234"
+          }
+        ],
+        "role": "user"
+      },
+      "id": "e-10",
+      "invocationId": "i-3",
+      "nodeInfo": {
+        "path": ""
+      }
+    },
+    {
+      "author": "payment_collector",
+      "content": {
+        "parts": [
+          {
+            "text": "Thank you. Could you also provide the 3-digit CVV code for your card?"
+          }
+        ],
+        "role": "model"
+      },
+      "finishReason": "STOP",
+      "id": "e-11",
+      "invocationId": "i-3",
+      "isolationScope": "fc-3",
+      "nodeInfo": {
+        "path": "coordinator@1/payment_collector@fc-3"
+      }
+    },
+    {
+      "author": "user",
+      "content": {
+        "parts": [
+          {
+            "text": "123"
+          }
+        ],
+        "role": "user"
+      },
+      "id": "e-12",
+      "invocationId": "i-4",
+      "nodeInfo": {
+        "path": ""
+      }
+    },
+    {
+      "author": "payment_collector",
+      "content": {
+        "parts": [
+          {
+            "functionCall": {
+              "args": {
+                "credit_card_number": "1234-1234",
+                "cvv": "123"
+              },
+              "id": "fc-4",
+              "name": "finish_task"
+            }
+          }
+        ],
+        "role": "model"
+      },
+      "finishReason": "STOP",
+      "id": "e-13",
+      "invocationId": "i-4",
+      "isolationScope": "fc-3",
+      "longRunningToolIds": [],
+      "nodeInfo": {
+        "path": "coordinator@1/payment_collector@fc-3"
+      }
+    },
+    {
+      "author": "payment_collector",
+      "content": {
+        "parts": [
+          {
+            "functionResponse": {
+              "id": "fc-4",
+              "name": "finish_task",
+              "response": {
+                "result": "Task completed."
+              }
+            }
+          }
+        ],
+        "role": "user"
+      },
+      "id": "e-14",
+      "invocationId": "i-4",
+      "isolationScope": "fc-3",
+      "nodeInfo": {
+        "outputFor": [
+          "coordinator@1/payment_collector@fc-3"
+        ],
+        "path": "coordinator@1/payment_collector@fc-3"
+      },
+      "output": {
+        "credit_card_number": "1234-1234",
+        "cvv": "123"
+      }
+    },
+    {
+      "author": "user",
+      "content": {
+        "parts": [
+          {
+            "functionResponse": {
+              "id": "fc-3",
+              "name": "payment_collector",
+              "response": {
+                "credit_card_number": "1234-1234",
+                "cvv": "123"
+              }
+            }
+          }
+        ],
+        "role": "user"
+      },
+      "id": "e-15",
+      "invocationId": "i-4",
+      "nodeInfo": {
+        "path": "coordinator@1"
+      }
+    },
+    {
+      "author": "coordinator",
+      "content": {
+        "parts": [
+          {
+            "functionCall": {
+              "args": {
+                "orders": [
+                  {
+                    "name": "Burger",
+                    "quantity": 3
+                  }
+                ],
+                "payment_info": {
+                  "credit_card_number": "1234-1234",
+                  "cvv": "123"
+                }
+              },
+              "id": "fc-5",
+              "name": "place_order"
+            }
+          }
+        ],
+        "role": "model"
+      },
+      "finishReason": "STOP",
+      "id": "e-16",
+      "invocationId": "i-4",
+      "longRunningToolIds": [],
+      "nodeInfo": {
+        "path": "coordinator@1"
+      }
+    },
+    {
+      "author": "coordinator",
+      "content": {
+        "parts": [
+          {
+            "functionResponse": {
+              "id": "fc-5",
+              "name": "place_order",
+              "response": {
+                "result": "Successfully placed order for 3 items."
+              }
+            }
+          }
+        ],
+        "role": "user"
+      },
+      "id": "e-17",
+      "invocationId": "i-4",
+      "nodeInfo": {
+        "path": "coordinator@1"
+      }
+    },
+    {
+      "author": "coordinator",
+      "content": {
+        "parts": [
+          {
+            "text": "Your order for 3 burgers has been successfully placed!"
+          }
+        ],
+        "role": "model"
+      },
+      "finishReason": "STOP",
+      "id": "e-18",
+      "invocationId": "i-4",
+      "nodeInfo": {
+        "path": "coordinator@1"
+      }
+    }
+  ]
+}

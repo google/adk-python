@@ -14,11 +14,19 @@
 
 """Integration tests for A2A client-server interaction."""
 
+import logging
+from unittest.mock import AsyncMock
+
+from a2a.server.apps.jsonrpc.fastapi_app import A2AFastAPIApplication
+from a2a.server.request_handlers.request_handler import RequestHandler
 from a2a.types import Message as A2AMessage
 from a2a.types import Part as A2APart
 from a2a.types import Task
 from a2a.types import TaskState
+from a2a.types import TaskStatus
 from a2a.types import TextPart
+from google.adk.a2a.agent.interceptors.new_integration_extension import _NEW_A2A_ADK_INTEGRATION_EXTENSION
+from google.adk.a2a.converters.to_adk_event import MOCK_FUNCTION_CALL_FOR_REQUIRED_USER_INPUT
 from google.adk.a2a.executor.config import A2aAgentExecutorConfig
 from google.adk.a2a.executor.interceptors.include_artifacts_in_a2a_event import include_artifacts_in_a2a_event_interceptor
 from google.adk.agents.remote_a2a_agent import A2A_METADATA_PREFIX
@@ -32,7 +40,10 @@ import pytest
 
 from .client import create_a2a_client
 from .client import create_client
+from .server import agent_card
 from .server import create_server_app
+
+logger = logging.getLogger("google_adk." + __name__)
 
 
 def create_streaming_mock_run_async(received_requests: list):
@@ -636,3 +647,161 @@ async def test_include_artifacts_in_a2a_event():
   assert task.artifacts[2].artifact_id == "artifact2_1"
   assert task.artifacts[2].name == "artifact2"
   assert task.artifacts[2].parts[0].root.text == "artifact content"
+
+
+@pytest.mark.asyncio
+async def test_user_follow_up_sends_task_id_with_input_required():
+  """Test that client follow-up sends the same task_id."""
+
+  task_id = "mocked-task-id-123"
+  context_id = "mocked-context-id-456"
+  mock_task = Task(
+      id=task_id,
+      context_id=context_id,
+      kind="task",
+      status=TaskStatus(
+          state=TaskState.input_required,
+          message=A2AMessage(
+              message_id="mocked-message-id-789",
+              role="user",
+              parts=[A2APart(root=TextPart(text="Input required"))],
+          ),
+      ),
+      metadata={_NEW_A2A_ADK_INTEGRATION_EXTENSION: True},
+  )
+
+  mock_handler = AsyncMock(spec=RequestHandler)
+  # First call returns input_required, second call completes
+  mock_handler.on_message_send.side_effect = [
+      mock_task,
+      Task(
+          id=task_id,
+          context_id=context_id,
+          kind="task",
+          status=TaskStatus(state=TaskState.completed),
+          metadata={_NEW_A2A_ADK_INTEGRATION_EXTENSION: True},
+      ),
+  ]
+
+  app = A2AFastAPIApplication(
+      agent_card=agent_card, http_handler=mock_handler
+  ).build()
+  agent = create_client(app, streaming=False)
+
+  session_service = InMemorySessionService()
+  await session_service.create_session(
+      app_name="ClientApp", user_id="test_user", session_id="test_session"
+  )
+  client_runner = Runner(
+      app_name="ClientApp", agent=agent, session_service=session_service
+  )
+
+  # First Turn
+  new_message_1 = types.Content(parts=[types.Part(text="Turn 1")], role="user")
+  found_call_id = None
+  async for event in client_runner.run_async(
+      user_id="test_user", session_id="test_session", new_message=new_message_1
+  ):
+    for call in event.get_function_calls():
+      if call.name == MOCK_FUNCTION_CALL_FOR_REQUIRED_USER_INPUT:
+        found_call_id = call.id
+
+  assert found_call_id is not None
+
+  # Second Turn (Follow-up)
+  function_response = types.FunctionResponse(
+      id=found_call_id,
+      name=MOCK_FUNCTION_CALL_FOR_REQUIRED_USER_INPUT,
+      response={"result": "Turn 2"},
+  )
+  new_message_2 = types.Content(
+      parts=[types.Part(function_response=function_response)], role="user"
+  )
+  async for _ in client_runner.run_async(
+      user_id="test_user", session_id="test_session", new_message=new_message_2
+  ):
+    pass
+
+  assert mock_handler.on_message_send.call_count == 2
+  # Second call args
+  call_args_2 = mock_handler.on_message_send.call_args_list[1]
+  params_2 = call_args_2[0][0]
+  assert params_2.message.task_id == task_id
+
+
+@pytest.mark.asyncio
+async def test_user_follow_up_sends_task_id_with_input_required_legacy_impl():
+  """Test that client follow-up sends the same task_id."""
+
+  task_id = "mocked-task-id-123"
+  context_id = "mocked-context-id-456"
+  mock_task = Task(
+      id=task_id,
+      context_id=context_id,
+      kind="task",
+      status=TaskStatus(
+          state=TaskState.input_required,
+          message=A2AMessage(
+              message_id="mocked-message-id-789",
+              role="user",
+              parts=[A2APart(root=TextPart(text="Input required"))],
+          ),
+      ),
+  )
+
+  mock_handler = AsyncMock(spec=RequestHandler)
+  # First call returns input_required, second call completes
+  mock_handler.on_message_send.side_effect = [
+      mock_task,
+      Task(
+          id=task_id,
+          context_id=context_id,
+          kind="task",
+          status=TaskStatus(state=TaskState.completed),
+      ),
+  ]
+
+  app = A2AFastAPIApplication(
+      agent_card=agent_card, http_handler=mock_handler
+  ).build()
+  agent = create_client(app, streaming=False)
+
+  session_service = InMemorySessionService()
+  await session_service.create_session(
+      app_name="ClientApp", user_id="test_user", session_id="test_session"
+  )
+  client_runner = Runner(
+      app_name="ClientApp", agent=agent, session_service=session_service
+  )
+
+  # First Turn
+  new_message_1 = types.Content(parts=[types.Part(text="Turn 1")], role="user")
+  found_call_id = None
+  async for event in client_runner.run_async(
+      user_id="test_user", session_id="test_session", new_message=new_message_1
+  ):
+    for call in event.get_function_calls():
+      if call.name == MOCK_FUNCTION_CALL_FOR_REQUIRED_USER_INPUT:
+        found_call_id = call.id
+
+  assert found_call_id is not None
+
+  # Second Turn (Follow-up)
+  function_response = types.FunctionResponse(
+      id=found_call_id,
+      name=MOCK_FUNCTION_CALL_FOR_REQUIRED_USER_INPUT,
+      response={"result": "Turn 2"},
+  )
+  new_message_2 = types.Content(
+      parts=[types.Part(function_response=function_response)], role="user"
+  )
+  async for _ in client_runner.run_async(
+      user_id="test_user", session_id="test_session", new_message=new_message_2
+  ):
+    pass
+
+  assert mock_handler.on_message_send.call_count == 2
+  # Second call args
+  call_args_2 = mock_handler.on_message_send.call_args_list[1]
+  params_2 = call_args_2[0][0]
+  assert params_2.message.task_id == task_id

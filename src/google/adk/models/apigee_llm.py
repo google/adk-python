@@ -35,11 +35,12 @@ import httpx
 import tenacity
 from typing_extensions import override
 
-from ..utils.env_utils import is_env_enabled
+from ..utils.env_utils import is_enterprise_mode_enabled
 from .google_llm import Gemini
 from .llm_response import LlmResponse
 
 if TYPE_CHECKING:
+  from google.auth.credentials import Credentials
   from google.genai import Client
 
   from .llm_request import LlmRequest
@@ -48,7 +49,6 @@ if TYPE_CHECKING:
 logger = logging.getLogger('google_adk.' + __name__)
 
 _APIGEE_PROXY_URL_ENV_VARIABLE_NAME = 'APIGEE_PROXY_URL'
-_GOOGLE_GENAI_USE_VERTEXAI_ENV_VARIABLE_NAME = 'GOOGLE_GENAI_USE_VERTEXAI'
 _PROJECT_ENV_VARIABLE_NAME = 'GOOGLE_CLOUD_PROJECT'
 _LOCATION_ENV_VARIABLE_NAME = 'GOOGLE_CLOUD_LOCATION'
 
@@ -92,6 +92,7 @@ class ApigeeLlm(Gemini):
       custom_headers: dict[str, str] | None = None,
       retry_options: Optional[types.HttpRetryOptions] = None,
       api_type: ApiType | str = ApiType.UNKNOWN,
+      credentials: Credentials | None = None,
   ):
     """Initializes the Apigee LLM backend.
 
@@ -102,9 +103,9 @@ class ApigeeLlm(Gemini):
 
         Components
           `provider` (optional): `vertex_ai` or `gemini`. If omitted, behavior
-            depends on the `GOOGLE_GENAI_USE_VERTEXAI` environment variable. If
+            depends on the `GOOGLE_GENAI_USE_ENTERPRISE` environment variable. If
             that is not set to TRUE or 1, it defaults to `gemini`. `provider`
-            takes precedence over `GOOGLE_GENAI_USE_VERTEXAI`.
+            takes precedence over `GOOGLE_GENAI_USE_ENTERPRISE`.
           `version` (optional): The API version (e.g., `v1`, `v1beta`). If
             omitted, the default version for the provider is used.
           `model_id` (required): The model identifier (e.g.,
@@ -123,6 +124,11 @@ class ApigeeLlm(Gemini):
         authorization headers in Vertex AI and Gemini API calls.
       retry_options: Allow google-genai to retry failed responses.
       api_type: The type of API to use. One of `ApiType` or string.
+      credentials: Optional google-auth credentials passed through to the
+        underlying `genai.Client`. Use this when the Apigee proxy requires
+        additional OAuth scopes (e.g., `userinfo.email` for tokeninfo-based
+        caller identification). When omitted, the default `genai.Client`
+        authentication flow is used.
     """  # fmt: skip
 
     super().__init__(model=model, retry_options=retry_options)
@@ -165,6 +171,7 @@ class ApigeeLlm(Gemini):
     )
     self._custom_headers = custom_headers or {}
     self._user_agent = f'google-adk/{adk_version.__version__}'
+    self._credentials = credentials
 
   @classmethod
   @override
@@ -235,10 +242,12 @@ class ApigeeLlm(Gemini):
     )
 
     kwargs_for_client = {}
-    kwargs_for_client['vertexai'] = self._isvertexai
+    kwargs_for_client['enterprise'] = self._isvertexai
     if self._isvertexai:
       kwargs_for_client['project'] = self._project
       kwargs_for_client['location'] = self._location
+    if self._credentials is not None:
+      kwargs_for_client['credentials'] = self._credentials
 
     return Client(
         http_options=http_options,
@@ -255,8 +264,8 @@ def _identify_vertexai(model: str, api_type: ApigeeLlm.ApiType) -> bool:
   """Returns if a model is Vertex AI.
 
   1. The api_type is GENAI or UNKNOWN.
-  2. The model is provider is Vertex AI model or the
-    GOOGLE_GENAI_USE_VERTEXAI environment variable is set to TRUE or 1.
+  2. The model provider is a Vertex AI model or the
+    enterprise mode is enabled.
 
   Args:
     model: The model string.
@@ -268,9 +277,7 @@ def _identify_vertexai(model: str, api_type: ApigeeLlm.ApiType) -> bool:
     return False
   if model.startswith('apigee/openai/'):
     return False
-  return model.startswith('apigee/vertex_ai/') or is_env_enabled(
-      _GOOGLE_GENAI_USE_VERTEXAI_ENV_VARIABLE_NAME
-  )
+  return model.startswith('apigee/vertex_ai/') or is_enterprise_mode_enabled()
 
 
 def _identify_api_version(model: str) -> str:

@@ -48,6 +48,8 @@ class GoogleApiToolset(BaseToolset):
     tool_name_prefix: Optional prefix to add to all tool names in this toolset.
     additional_headers: Optional dict of HTTP headers to inject into every request
       executed by this toolset.
+    additional_scopes: Optional list of additional scopes to request.
+    discovery_url: Optional custom discovery URL to use for the API.
   """
 
   def __init__(
@@ -61,6 +63,8 @@ class GoogleApiToolset(BaseToolset):
       tool_name_prefix: Optional[str] = None,
       *,
       additional_headers: Optional[Dict[str, str]] = None,
+      additional_scopes: Optional[List[str]] = None,
+      discovery_url: Optional[str] = None,
   ):
     super().__init__(tool_filter=tool_filter, tool_name_prefix=tool_name_prefix)
     self.api_name = api_name
@@ -69,6 +73,8 @@ class GoogleApiToolset(BaseToolset):
     self._client_secret = client_secret
     self._service_account = service_account
     self._additional_headers = additional_headers
+    self._additional_scopes = additional_scopes
+    self._discovery_url = discovery_url
     self._openapi_toolset = self._load_toolset_with_oidc_auth()
 
   @override
@@ -93,13 +99,22 @@ class GoogleApiToolset(BaseToolset):
 
   def _load_toolset_with_oidc_auth(self) -> OpenAPIToolset:
     spec_dict = GoogleApiToOpenApiConverter(
-        self.api_name, self.api_version
+        self.api_name, self.api_version, discovery_url=self._discovery_url
     ).convert()
-    scope = list(
+    discovery_scopes = list(
         spec_dict['components']['securitySchemes']['oauth2']['flows'][
             'authorizationCode'
         ]['scopes'].keys()
-    )[0]
+    )
+    default_scope = discovery_scopes[0] if discovery_scopes else None
+
+    scopes = list(
+        dict.fromkeys(
+            ([default_scope] if default_scope else [])
+            + (self._additional_scopes or [])
+        )
+    )
+
     return OpenAPIToolset(
         spec_dict=spec_dict,
         spec_str_type='yaml',
@@ -117,7 +132,7 @@ class GoogleApiToolset(BaseToolset):
                 'client_secret_basic',
             ],
             grant_types_supported=['authorization_code'],
-            scopes=[scope],
+            scopes=scopes,
         ),
     )
 

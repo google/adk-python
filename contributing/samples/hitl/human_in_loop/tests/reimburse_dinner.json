@@ -1,0 +1,88 @@
+{
+  "events": [
+    {
+      "author": "user",
+      "content": {
+        "parts": [
+          {
+            "text": "I would like to request a reimbursement of $150 for a client dinner."
+          }
+        ],
+        "role": "user"
+      },
+      "id": "e-1",
+      "invocationId": "i-1",
+      "nodeInfo": {
+        "path": ""
+      }
+    },
+    {
+      "author": "reimbursement_agent",
+      "content": {
+        "parts": [
+          {
+            "functionCall": {
+              "args": {
+                "amount": 150,
+                "purpose": "client dinner"
+              },
+              "id": "fc-1",
+              "name": "ask_for_approval"
+            }
+          }
+        ],
+        "role": "model"
+      },
+      "finishReason": "STOP",
+      "id": "e-2",
+      "invocationId": "i-1",
+      "longRunningToolIds": [
+        "fc-1"
+      ],
+      "nodeInfo": {
+        "path": "reimbursement_agent@1"
+      }
+    },
+    {
+      "author": "reimbursement_agent",
+      "content": {
+        "parts": [
+          {
+            "functionResponse": {
+              "id": "fc-1",
+              "name": "ask_for_approval",
+              "response": {
+                "amount": 150,
+                "status": "pending",
+                "ticketId": "reimbursement-ticket-001"
+              }
+            }
+          }
+        ],
+        "role": "user"
+      },
+      "id": "e-3",
+      "invocationId": "i-1",
+      "nodeInfo": {
+        "path": "reimbursement_agent@1"
+      }
+    },
+    {
+      "author": "reimbursement_agent",
+      "content": {
+        "parts": [
+          {
+            "text": "Your reimbursement request for $150 for a client dinner has been sent for approval. Your ticket ID is reimbursement-ticket-001. I will let you know once I have an update."
+          }
+        ],
+        "role": "model"
+      },
+      "finishReason": "STOP",
+      "id": "e-4",
+      "invocationId": "i-1",
+      "nodeInfo": {
+        "path": "reimbursement_agent@1"
+      }
+    }
+  ]
+}

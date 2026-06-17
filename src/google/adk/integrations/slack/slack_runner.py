@@ -19,15 +19,15 @@ from typing import Any
 
 from google.adk.runners import Runner
 from google.genai import types
-from slack_bolt.adapter.socket_mode.aiohttp import AsyncSocketModeHandler
 
 try:
+  from slack_bolt.adapter.socket_mode.aiohttp import AsyncSocketModeHandler
   from slack_bolt.app.async_app import AsyncApp
-except ImportError:
+except ImportError as e:
   raise ImportError(
       "slack_bolt is not installed. Please install it with "
       '`pip install "google-adk[slack]"`.'
-  )
+  ) from e
 
 logger = logging.getLogger("google_adk." + __name__)
 

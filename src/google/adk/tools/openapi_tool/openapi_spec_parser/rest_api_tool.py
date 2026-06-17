@@ -75,6 +75,18 @@ def snake_to_lower_camel(snake_case_string: str):
 
 AuthPreparationState = Literal["pending", "done"]
 
+HttpxClientFactory = Callable[[], httpx.AsyncClient]
+"""Type alias for a zero-argument factory returning an ``httpx.AsyncClient``.
+
+When supplied to ``RestApiTool`` or ``OpenAPIToolset``, the factory is invoked
+once per API call and its returned client is used as an async context
+manager to issue the request, in place of the default
+```httpx.AsyncClient(verify=..., timeout=None)```. Because the client is closed
+when the request completes, the factory must return a fresh client on every
+call. This unlocks knobs that the narrower ``ssl_verify`` parameter can't
+reach: proxies, HTTP/2, custom transports (e.g. request-signing), and so on.
+"""
+
 
 class RestApiTool(BaseTool):
   """A generic tool that interacts with a REST API.
@@ -103,6 +115,7 @@ class RestApiTool(BaseTool):
       header_provider: Optional[
           Callable[[ReadonlyContext], Dict[str, str]]
       ] = None,
+      httpx_client_factory: Optional[HttpxClientFactory] = None,
       *,
       credential_key: Optional[str] = None,
   ):
@@ -131,17 +144,26 @@ class RestApiTool(BaseTool):
           (https://github.com/OAI/OpenAPI-Specification/blob/main/versions/3.1.0.md#security-scheme-object)
         auth_credential: The authentication credential of the tool.
         should_parse_operation: Whether to parse the operation.
-        ssl_verify: SSL certificate verification option. Can be:
-          - None: Use default verification
-          - True: Verify SSL certificates using system CA
-          - False: Disable SSL verification (insecure, not recommended)
-          - str: Path to a CA bundle file or directory for custom CA
-          - ssl.SSLContext: Custom SSL context for advanced configuration
+        ssl_verify: SSL certificate verification option. Can be: - None: Use
+          default verification - True: Verify SSL certificates using system CA -
+          False: Disable SSL verification (insecure, not recommended) - str:
+            Path to a CA bundle file or directory for custom CA -
+            ssl.SSLContext: Custom SSL context for advanced configuration
         header_provider: A callable that returns a dictionary of headers to be
           included in API requests. The callable receives the ReadonlyContext as
           an argument, allowing dynamic header generation based on the current
           context. Useful for adding custom headers like correlation IDs,
           authentication tokens, or other request metadata.
+        httpx_client_factory: Optional zero-argument callable returning an
+          ``httpx.AsyncClient``. When provided, the returned client is used as
+          an async context manager to issue the request and is closed once the
+          request completes, so the factory must return a fresh client on each
+          call. This lets callers configure proxies, HTTP/2, custom transports
+          (e.g. request signing), or any other ``httpx.AsyncClient`` option that
+          ``ssl_verify`` can't reach. When ``None`` (default), a fresh
+          ``httpx.AsyncClient(verify=..., timeout=None)`` is created per
+          request. Mirrors the pattern exposed for MCP by
+          ``StreamableHTTPConnectionParams.httpx_client_factory``.
         credential_key: Optional stable key used for interactive auth and
           credential caching.
     """
@@ -169,6 +191,7 @@ class RestApiTool(BaseTool):
     self._default_headers: Dict[str, str] = {}
     self._ssl_verify = ssl_verify
     self._header_provider = header_provider
+    self._httpx_client_factory = httpx_client_factory
     self._logger = logger
     if should_parse_operation:
       self._operation_parser = OperationParser(self.operation)
@@ -181,6 +204,7 @@ class RestApiTool(BaseTool):
       header_provider: Optional[
           Callable[[ReadonlyContext], Dict[str, str]]
       ] = None,
+      httpx_client_factory: Optional[HttpxClientFactory] = None,
   ) -> "RestApiTool":
     """Initializes the RestApiTool from a ParsedOperation object.
 
@@ -192,6 +216,9 @@ class RestApiTool(BaseTool):
           an argument, allowing dynamic header generation based on the current
           context. Useful for adding custom headers like correlation IDs,
           authentication tokens, or other request metadata.
+        httpx_client_factory: Optional zero-argument callable returning an
+          ``httpx.AsyncClient`` to be used for the API call. See
+          ``RestApiTool.__init__`` for details.
 
     Returns:
         A RestApiTool object.
@@ -212,6 +239,7 @@ class RestApiTool(BaseTool):
         auth_credential=parsed.auth_credential,
         ssl_verify=ssl_verify,
         header_provider=header_provider,
+        httpx_client_factory=httpx_client_factory,
     )
     generated._operation_parser = operation_parser
     return generated
@@ -520,7 +548,9 @@ class RestApiTool(BaseTool):
       if provider_headers:
         request_params.setdefault("headers", {}).update(provider_headers)
 
-    response = await _request(**request_params)
+    response = await _request(
+        httpx_client_factory=self._httpx_client_factory, **request_params
+    )
 
     # Log the API response
     self._logger.debug(
@@ -554,6 +584,12 @@ class RestApiTool(BaseTool):
       self._logger.debug("API Response (non-JSON): %s", response.text)
       return {"text": response.text}  # Return text if not JSON
 
+  def _detect_error_in_response(self, response: Any) -> Optional[str]:
+    """Telemetry hook: returns an error type if the response indicates an error."""
+    if isinstance(response, dict) and response.get("error"):
+      return "HTTP_ERROR"
+    return None
+
   def __str__(self):
     return (
         f'RestApiTool(name="{self.name}", description="{self.description}",'
@@ -569,9 +605,14 @@ class RestApiTool(BaseTool):
     )
 
 
-async def _request(**request_params) -> httpx.Response:
-  async with httpx.AsyncClient(
-      verify=request_params.pop("verify", True),
-      timeout=None,
-  ) as client:
+async def _request(
+    *,
+    httpx_client_factory: Optional[HttpxClientFactory] = None,
+    **request_params,
+) -> httpx.Response:
+  verify = request_params.pop("verify", True)
+  if httpx_client_factory is not None:
+    async with httpx_client_factory() as client:
+      return await client.request(**request_params)
+  async with httpx.AsyncClient(verify=verify, timeout=None) as client:
     return await client.request(**request_params)

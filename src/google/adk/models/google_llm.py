@@ -104,7 +104,7 @@ class Gemini(BaseLlm):
         class GlobalGemini(Gemini):
           @cached_property
           def api_client(self) -> Client:
-            return Client(vertexai=True, location="global")
+            return Client(enterprise=True, location="global")
 
         agent = Agent(model=GlobalGemini(model="gemini-3-pro-preview"))
 
@@ -165,6 +165,8 @@ class Gemini(BaseLlm):
 
     return [
         r'gemini-.*',
+        # Gemma 4+ works natively with Gemini (no workarounds needed).
+        r'gemma-4.*',
         # model optimizer pattern
         r'model-optimizer-.*',
         # fine-tuned vertex endpoint pattern
@@ -252,7 +254,8 @@ class Gemini(BaseLlm):
         aggregator = StreamingResponseAggregator()
         async with Aclosing(responses) as agen:
           async for response in agen:
-            logger.debug(_build_response_log(response))
+            if logger.isEnabledFor(logging.DEBUG):
+              logger.debug(_build_response_log(response))
             async with Aclosing(
                 aggregator.process_response(response)
             ) as aggregator_gen:
@@ -274,7 +277,8 @@ class Gemini(BaseLlm):
             config=llm_request.config,
         )
         logger.info('Response received from the model.')
-        logger.debug(_build_response_log(response))
+        if logger.isEnabledFor(logging.DEBUG):
+          logger.debug(_build_response_log(response))
 
         llm_response = LlmResponse.create(response)
         if cache_metadata:
@@ -343,7 +347,7 @@ class Gemini(BaseLlm):
         'http_options': types.HttpOptions(**kwargs_for_http_options),
     }
     if self.model.startswith('projects/'):
-      kwargs['vertexai'] = True
+      kwargs['enterprise'] = True
 
     return Client(**kwargs)
 
@@ -388,7 +392,7 @@ class Gemini(BaseLlm):
         )
     }
     if self.model.startswith('projects/'):
-      kwargs['vertexai'] = True
+      kwargs['enterprise'] = True
 
     return Client(**kwargs)
 
@@ -610,11 +614,30 @@ def _build_response_log(resp: types.GenerateContentResponse) -> str:
       function_calls_text.append(
           f'name: {func_call.name}, args: {func_call.args}'
       )
+  # Avoid accessing resp.text directly: the genai SDK raises a UserWarning
+  # whenever .text is accessed on a response that contains non-text parts
+  # (e.g. function_call). This floods logs on every tool invocation.
+  # Instead, manually join only the text parts from candidates.
+  text_parts = []
+  # Mimic resp.text behavior exactly but without triggering linter warnings:
+  # 1. Only use the first candidate.
+  # 2. Exclude thought/reasoning parts.
+  if (
+      resp.candidates
+      and resp.candidates[0].content
+      and resp.candidates[0].content.parts
+  ):
+    for part in resp.candidates[0].content.parts:
+      if isinstance(part.text, str):
+        if getattr(part, 'thought', False):
+          continue
+        text_parts.append(part.text)
+  text = ''.join(text_parts)
   return f"""
 LLM Response:
 -----------------------------------------------------------
 Text:
-{resp.text}
+{text}
 -----------------------------------------------------------
 Function calls:
 {_NEW_LINE.join(function_calls_text)}

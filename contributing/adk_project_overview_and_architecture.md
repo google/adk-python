@@ -79,6 +79,15 @@ async def health_check():
     return {"status": "ok"}
 ```
 
+### Default Application Resolution (`ADK_DEFAULT_APP_NAME`)
+
+By default, the ADK API server expects an explicit application context in all requests (e.g., via the `/apps/{app_name}/...` path or in the payload body).
+
+However, if the environment variable `ADK_DEFAULT_APP_NAME` is set, or if the server is running in **single agent mode** (when pointing directly to a directory containing an agent instead of a directory of agents), the server will automatically resolve and fall back to that agent as the default application whenever a request lacks an explicit app name. In single agent mode, the local agent takes precedence over the `ADK_DEFAULT_APP_NAME` environment variable.
+
+- **URL Path-Rewriting (Production Endpoints)**: Requests to production endpoints that omit the `/apps/{app_name}` prefix (such as `/users/{user_id}/sessions` or `/app-info`) are automatically rewritten by an internal ASGI middleware to target the default application. (Note: `/dev` and `/builder` endpoints are excluded from rewriting).
+- **Agent Execution & Streaming**: Requests to `/run`, `/run_sse`, or `/run_live` that omit the `app_name` parameter in their payload body or query string will automatically resolve to the default application.
+
 ## Deployment to Production
 
 The adk cli provides the "adk deploy" command to deploy to Google Vertex Agent Engine, Google CloudRun, Google GKE.

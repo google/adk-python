@@ -573,6 +573,9 @@ class TestRemoteA2aAgentMessageHandling:
     mock_function_event.custom_metadata = {
         A2A_METADATA_PREFIX + "task_id": "task-123"
     }
+    mock_function_event.content = Mock()
+    mock_function_event.content.parts = [Mock()]
+    mock_function_event.get_function_calls.return_value = []
 
     # Mock latest event with function response - set proper author
     mock_latest_event = Mock()
@@ -1372,6 +1375,9 @@ class TestRemoteA2aAgentMessageHandlingFromFactory:
     mock_function_event.custom_metadata = {
         A2A_METADATA_PREFIX + "task_id": "task-123"
     }
+    mock_function_event.content = Mock()
+    mock_function_event.content.parts = [Mock()]
+    mock_function_event.get_function_calls.return_value = []
 
     # Mock latest event with function response - set proper author
     mock_latest_event = Mock()
@@ -2533,6 +2539,7 @@ class TestRemoteA2aAgentIntegration:
     # Mock session with text event
     mock_part = Mock()
     mock_part.text = "Hello world"
+    mock_part.part_metadata = None
 
     mock_content = Mock()
     mock_content.parts = [mock_part]
@@ -2630,6 +2637,7 @@ class TestRemoteA2aAgentIntegration:
     # Mock session with text event
     mock_part = Mock()
     mock_part.text = "Hello world"
+    mock_part.part_metadata = {"test": "part_metadata"}
 
     mock_content = Mock()
     mock_content.parts = [mock_part]

@@ -260,51 +260,35 @@ sub_agents:
   assert config.root.agent_class == agent_class_value
 
 
-def test_agent_config_litellm_model_with_custom_args(tmp_path: Path):
+def test_agent_config_model_code_resolves_preconfigured_client(tmp_path: Path):
+  """model_code references a pre-built model instance by fully qualified name.
+
+  Configured clients (custom api_base, etc.) must be constructed in Python
+  and referenced from YAML; YAML cannot pass constructor arguments.
+  """
+  preconfigured = LiteLlm(
+      model="kimi/k2", api_base="https://proxy.litellm.ai/v1"
+  )
+
   yaml_content = """\
 name: managed_api_agent
 description: Agent using LiteLLM managed endpoint
 instruction: Respond concisely.
 model_code:
-  name: google.adk.models.lite_llm.LiteLlm
-  args:
-    - name: model
-      value: kimi/k2
-    - name: api_base
-      value: https://proxy.litellm.ai/v1
+  name: my_library.clients.my_litellm
 """
   config_file = tmp_path / "litellm_agent.yaml"
   config_file.write_text(yaml_content)
 
-  agent = config_agent_utils.from_config(str(config_file))
+  with mock.patch.object(
+      config_agent_utils,
+      "resolve_code_reference",
+      return_value=preconfigured,
+  ):
+    agent = config_agent_utils.from_config(str(config_file))
 
   assert isinstance(agent, LlmAgent)
-  assert isinstance(agent.model, LiteLlm)
-  assert agent.model.model == "kimi/k2"
-  assert agent.model._additional_args.get("api_base") == (
-      "https://proxy.litellm.ai/v1"
-  )
-
-
-def test_agent_config_legacy_model_mapping_still_supported(tmp_path: Path):
-  yaml_content = """\
-name: managed_api_agent
-description: Agent using LiteLLM managed endpoint
-instruction: Respond concisely.
-model:
-  name: google.adk.models.lite_llm.LiteLlm
-  args:
-    - name: model
-      value: kimi/k2
-"""
-  config_file = tmp_path / "legacy_litellm_agent.yaml"
-  config_file.write_text(yaml_content)
-
-  agent = config_agent_utils.from_config(str(config_file))
-
-  assert isinstance(agent, LlmAgent)
-  assert isinstance(agent.model, LiteLlm)
-  assert agent.model.model == "kimi/k2"
+  assert agent.model is preconfigured
 
 
 def test_agent_config_discriminator_custom_agent():
@@ -333,6 +317,66 @@ other_field: other value
       config.root.model_dump()
   )
   assert my_custom_config.other_field == "other value"
+
+
+def test_from_config_passes_extra_yaml_fields_to_custom_agent_constructor(
+    tmp_path: Path,
+):
+  """Custom agent fields in YAML reach the constructor without a custom config_type.
+
+  Mirrors the 1.x AgentConfigMapper behavior: a custom agent subclass with
+  extra Pydantic fields declared on the agent (not on a config_type) can
+  populate those fields directly from YAML.
+  """
+
+  class MyCustomAgent(BaseAgent):
+    custom_field: str = ""
+
+  yaml_content = """\
+agent_class: mylib.agents.MyCustomAgent
+name: custom_agent
+description: a custom agent
+custom_field: hello from yaml
+"""
+  config_file = tmp_path / "custom_agent.yaml"
+  config_file.write_text(yaml_content)
+
+  with mock.patch.object(
+      config_agent_utils,
+      "resolve_fully_qualified_name",
+      return_value=MyCustomAgent,
+  ):
+    agent = config_agent_utils.from_config(str(config_file))
+
+  assert isinstance(agent, MyCustomAgent)
+  assert agent.custom_field == "hello from yaml"
+
+
+def test_from_config_ignores_extra_yaml_fields_not_on_agent(tmp_path: Path):
+  """Extra YAML keys that don't map to constructor params are silently dropped."""
+
+  class MyCustomAgent(BaseAgent):
+    custom_field: str = ""
+
+  yaml_content = """\
+agent_class: mylib.agents.MyCustomAgent
+name: custom_agent
+description: a custom agent
+custom_field: kept
+unknown_field: dropped
+"""
+  config_file = tmp_path / "custom_agent.yaml"
+  config_file.write_text(yaml_content)
+
+  with mock.patch.object(
+      config_agent_utils,
+      "resolve_fully_qualified_name",
+      return_value=MyCustomAgent,
+  ):
+    agent = config_agent_utils.from_config(str(config_file))
+
+  assert agent.custom_field == "kept"
+  assert not hasattr(agent, "unknown_field")
 
 
 @pytest.mark.parametrize(
@@ -421,23 +465,3 @@ def test_resolve_agent_reference_uses_windows_dirname():
   )
   assert result == "sentinel"
   assert recorded["path"] == expected_path
-
-
-def test_load_config_from_path_blocks_args_when_enforced(tmp_path):
-  """Verify _load_config_from_path blocks 'args' when enforcement is enabled."""
-  config_file = tmp_path / "malicious.yaml"
-  config_file.write_text("""
-  name: malicious_agent
-  tools:
-    - name: some_tool
-      args:
-        cmd: "rm -rf /"
-  """)
-
-  config_agent_utils._set_enforce_denylist(True)
-  try:
-    with pytest.raises(ValueError) as exc_info:
-      config_agent_utils._load_config_from_path(str(config_file))
-    assert "Blocked key 'args' found" in str(exc_info.value)
-  finally:
-    config_agent_utils._set_enforce_denylist(False)

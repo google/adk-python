@@ -17,7 +17,6 @@ from __future__ import annotations
 import asyncio
 import base64
 import logging
-import os
 import sys
 from typing import Any
 from typing import Awaitable
@@ -83,7 +82,6 @@ class McpToolset(BaseToolset):
 
     # Use in an agent
     agent = LlmAgent(
-        model='gemini-2.5-flash',
         name='enterprise_assistant',
         instruction='Help user accessing their file systems',
         tools=[toolset],
@@ -161,15 +159,6 @@ class McpToolset(BaseToolset):
       credential_key: A user specified key used to load and save this credential
         in a credential service. Used with auth_scheme.
     """
-
-    # --- BEGIN BOUND TOKEN PATCH ---
-    # Set GOOGLE_API_PREVENT_AGENT_TOKEN_SHARING_FOR_GCP_SERVICES to false
-    # to disable bound token sharing. Tracking on
-    # https://github.com/google/adk-python/issues/5361
-    os.environ["GOOGLE_API_PREVENT_AGENT_TOKEN_SHARING_FOR_GCP_SERVICES"] = (
-        "false"
-    )
-    # --- END BOUND TOKEN  PATCH ---
 
     super().__init__(tool_filter=tool_filter, tool_name_prefix=tool_name_prefix)
 
@@ -436,7 +425,7 @@ class McpToolset(BaseToolset):
       await self._mcp_session_manager.close()
     except Exception as e:
       # Log the error but don't re-raise to avoid blocking shutdown
-      print(f"Warning: Error during McpToolset cleanup: {e}", file=self._errlog)
+      logger.warning("Error during McpToolset cleanup: %s", e)
 
   @override
   def get_auth_config(self) -> Optional[AuthConfig]:

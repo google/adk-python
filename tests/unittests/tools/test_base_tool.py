@@ -139,3 +139,19 @@ async def test_process_llm_request_with_builtin_tool_and_another_declaration():
 
   # function_declaration is added to existing types.Tool with function_declaration.
   assert llm_request.config.tools[1].function_declarations[1] == declaration
+
+
+def test_defers_response_flag():
+  """Tests that _defers_response defaults to False and can be set by subclasses."""
+
+  class SimpleTool(BaseTool):
+
+    async def run_async(self, **kwargs):
+      pass
+
+  t = SimpleTool(name='test', description='desc')
+  assert t._defers_response is False
+
+  t2 = SimpleTool(name='test2', description='desc')
+  t2._defers_response = True
+  assert t2._defers_response is True

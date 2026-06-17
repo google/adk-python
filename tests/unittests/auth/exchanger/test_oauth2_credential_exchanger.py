@@ -135,6 +135,57 @@ class TestOAuth2CredentialExchanger:
     assert exchange_result.was_exchanged
     mock_client.fetch_token.assert_called_once()
 
+  @patch("google.adk.auth.oauth2_credential_util.OAuth2Session")
+  async def test_exchange_success_pkce(self, mock_oauth2_session):
+    """Test successful token exchange with PKCE."""
+    # Setup mock
+    mock_client = Mock()
+    mock_oauth2_session.return_value = mock_client
+    mock_tokens = OAuth2Token({
+        "access_token": "new_access_token",
+        "refresh_token": "new_refresh_token",
+        "expires_at": int(time.time()) + 3600,
+        "expires_in": 3600,
+    })
+    mock_client.fetch_token.return_value = mock_tokens
+
+    scheme = OpenIdConnectWithConfig(
+        type_="openIdConnect",
+        openId_connect_url=(
+            "https://example.com/.well-known/openid_configuration"
+        ),
+        authorization_endpoint="https://example.com/auth",
+        token_endpoint="https://example.com/token",
+        scopes=["openid"],
+    )
+    credential = AuthCredential(
+        auth_type=AuthCredentialTypes.OPEN_ID_CONNECT,
+        oauth2=OAuth2Auth(
+            client_id="test_client_id",
+            client_secret="test_client_secret",
+            auth_response_uri="https://example.com/callback?code=auth_code",
+            auth_code="auth_code",
+            code_verifier="mock_code_verifier",
+        ),
+    )
+
+    exchanger = OAuth2CredentialExchanger()
+    exchange_result = await exchanger.exchange(credential, scheme)
+
+    # Verify token exchange was successful
+    assert exchange_result.credential.oauth2.access_token == "new_access_token"
+    assert (
+        exchange_result.credential.oauth2.refresh_token == "new_refresh_token"
+    )
+    assert exchange_result.was_exchanged
+    mock_client.fetch_token.assert_called_once_with(
+        "https://example.com/token",
+        authorization_response="https://example.com/callback?code=auth_code",
+        code="auth_code",
+        grant_type=OAuthGrantType.AUTHORIZATION_CODE,
+        code_verifier="mock_code_verifier",
+    )
+
   async def test_exchange_missing_auth_scheme(self):
     """Test exchange with missing auth_scheme raises ValueError."""
     credential = AuthCredential(
