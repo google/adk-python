@@ -1222,7 +1222,7 @@ async def _get_content(
       if not mime_type:
         # LiteLLM's Vertex AI backend requires format for GCS URIs.
         mime_type = _DEFAULT_MIME_TYPE
-        logger.debug(
+        logger.warning(
             "Could not determine MIME type for file_uri %s, using default: %s",
             part.file_data.file_uri,
             mime_type,
