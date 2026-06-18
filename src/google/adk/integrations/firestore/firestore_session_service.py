@@ -18,6 +18,7 @@ import asyncio
 from contextlib import asynccontextmanager
 from datetime import datetime
 from datetime import timezone
+import json
 import logging
 import os
 from typing import Any
@@ -31,7 +32,6 @@ _SessionLockKey = tuple[str, str, str]
 if TYPE_CHECKING:
   from google.cloud import firestore
 
-from pydantic import BaseModel
 
 from ...events.event import Event
 from ...sessions import _session_util
@@ -203,7 +203,7 @@ class FirestoreSessionService(BaseSessionService):  # type: ignore[misc]
         "id": session_id,
         "appName": app_name,
         "userId": user_id,
-        "state": session_state,
+        "state": json.dumps(session_state),
         "createTime": now,
         "updateTime": now,
         "revision": 1,
@@ -314,7 +314,10 @@ class FirestoreSessionService(BaseSessionService):  # type: ignore[misc]
         events.append(Event.model_validate(ed))
 
     # Let's continue getting session.
-    session_state = data.get("state", {})
+    raw_state = data.get("state", {})
+    session_state = (
+        json.loads(raw_state) if isinstance(raw_state, str) else raw_state
+    )
 
     # Fetch shared state
     app_ref = self.client.collection(self.app_state_collection).document(
@@ -407,7 +410,12 @@ class FirestoreSessionService(BaseSessionService):  # type: ignore[misc]
       data = doc.to_dict()
       if data:
         u_id = data["userId"]
-        s_state = data.get("state", {})
+        raw_s_state = data.get("state", {})
+        s_state = (
+            json.loads(raw_s_state)
+            if isinstance(raw_s_state, str)
+            else raw_s_state
+        )
         u_state = user_states_map.get(u_id, {})
         merged = self._merge_state(app_state, u_state, s_state)
 
@@ -551,11 +559,12 @@ class FirestoreSessionService(BaseSessionService):  # type: ignore[misc]
             for k, v in session.state.items()
             if not k.startswith(State.APP_PREFIX)
             and not k.startswith(State.USER_PREFIX)
+            and not k.startswith(State.TEMP_PREFIX)
         }
         transaction.update(
             session_ref,
             {
-                "state": session_only_state,
+                "state": json.dumps(session_only_state),
                 "updateTime": firestore.SERVER_TIMESTAMP,
                 "revision": new_revision,
             },

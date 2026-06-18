@@ -12,8 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Agent definition for testing the Interactions API integration.
-"""
+"""Agent definition for testing the Interactions API integration."""
 
 from google.adk.agents.llm_agent import Agent
 from google.adk.models.google_llm import Gemini

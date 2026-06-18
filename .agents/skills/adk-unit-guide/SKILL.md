@@ -1,0 +1,87 @@
+---
+name: adk-unit-guide
+description: Creates detailed code unit guides for source code documentation.
+---
+
+# ADK code unit guide
+This skill creates a detailed developer guide for new or updated code file or direct code input. The guide it generates is meant to explain the code to a developer who wants to use it in an application, but with a higher level of technical detail than what would appear in published developer documentation. Similar to a *unit test*, a *unit guide* provides generated, granular-level documentation for a unit of code, without worrying about bloating the actual developer documentation with too many details.
+
+## Input
+
+- Code files containing new functionality
+- Code unit tests (optional)
+- Code design files (optional)
+- Names of new methods and classes (optional)
+
+## Analysis
+
+- Review the code design files, if provided. Make note of:
+  - Purpose and intended use of the new or updated code units
+  - Classes that depend on the new or updated code units
+  - Additional dependencies required by the new or updated code units
+  - Limitations of the new or updated code units
+- Review specified code file for changes and named methods, if provided.
+- Determine what classes and code files may depend on the new or updated code units.
+
+## Output
+
+- Look for an existing guide in the `/docs/guides/***` directory of this repository.
+  - If a guide already exists, update the existing guide incrementally and prioritize preserving the previous content as much as possible.
+  - If no guide exists, create a guide file for the new code unit in the `/docs/guides/***` directory of this repository, using the relative path of the code unit. For example, if the code unit is called `/topic/function/class.ext`, create a guide in the location `/docs/guides/topic/function/class/index.md`.
+- **Update the Index**: Whenever a new guide is created, or an existing guide's title/summary changes, update the index file `/docs/guides/README.md`. Ensure the guide is listed under the correct category with a link and a brief summary.
+
+### Guide structure and content
+
+Use the following structure and instructions to create the guide for the code unit:
+
+```
+# Title: name of the code file or code unit
+
+- 2-sentence summary of the code unit
+
+## Introduction
+
+- Paragraph(s) explaining:
+  - The purpose and application of the code unit
+  - Key classes that depend on this code unit
+  - Developer problems solved by this code unit
+
+## Get started
+
+- Present a single, minimum implementation of the code unit to demonstrate its use.
+- Show enough of the containing classes to make it clear where the code could be used.
+- Use unit test code as a starting point for the code example, if available.
+- When writing a sample agent, do not set the `model` attribute.
+- For workflow node samples, prefer using a simple Python function rather than extending `BaseNode` to demonstrate the node's logic, unless class extension is explicitly required for the use case.
+- When wrapping Python functions as workflow nodes, prefer using the `@node` decorator instead of `FunctionNode` directly, whenever possible.
+
+## How it works
+
+- Explain how the code unit accomplishes its purpose or solves a problem.
+- Mention key code classes that depend on this code unit.
+- Mention code classes that this code unit depends on.
+- Explain any cross-class dependencies of the code unit.
+
+## Configuration options
+
+- If the code unit has configuration options (e.g., settings, configuration objects), document them in a table detailing parameters, types, default values, and descriptions.
+- **Do NOT** list options inherited from base classes. Focus only on options introduced by the code unit itself.
+- Dive into each option to provide detailed description and usage patterns, rather than just repeating the type and a brief description.
+- **Do NOT** list references of all attributes or methods of the classes. Exhaustive API references belong in auto-generated reference documentation, not in guides. Guides should focus on how to use the code unit.
+
+## Advanced applications
+
+- Determine if there are advanced use cases for the code unit.
+- Add advanced applications of the code unit, including:
+  - Problem solved
+  - Implementations for special circumstances
+
+## Limitations
+
+- Mention any limitations of the code unit, if known.
+
+## Related samples
+
+- Link to relevant samples in the `contributing/` directory that demonstrate the use of this code unit.
+
+```

@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+import abc
 import asyncio
 import importlib
 import inspect
@@ -61,10 +62,10 @@ from ..utils._schema_utils import validate_schema
 from ..utils.context_utils import Aclosing
 from .base_agent import BaseAgent
 from .base_agent import BaseAgentState
-from .base_agent_config import BaseAgentConfig
+from .base_agent_config import BaseAgentConfig as BaseAgentConfig
 from .callback_context import CallbackContext
 from .invocation_context import InvocationContext
-from .llm_agent_config import LlmAgentConfig
+from .llm_agent_config import LlmAgentConfig as LlmAgentConfig
 from .readonly_context import ReadonlyContext
 
 logger = logging.getLogger('google_adk.' + __name__)
@@ -192,10 +193,12 @@ async def _convert_tool_union_to_tools(
     return []
 
 
-class LlmAgent(BaseAgent):
+# TODO: drop the explicit abc.ABC base once BaseNode surfaces ABCMeta to
+# static type checkers.
+class LlmAgent(BaseAgent, abc.ABC):
   """LLM-based Agent."""
 
-  DEFAULT_MODEL: ClassVar[str] = 'gemini-3-flash-preview'
+  DEFAULT_MODEL: ClassVar[str] = 'gemini-3.5-flash'
   """System default model used when no model is set on an agent."""
 
   DEFAULT_LIVE_MODEL: ClassVar[str] = 'gemini-live-2.5-flash-native-audio'
@@ -212,7 +215,7 @@ class LlmAgent(BaseAgent):
 
   When not set, the agent will inherit the model from its ancestor. If no
   ancestor provides a model, the agent uses the default model configured via
-  LlmAgent.set_default_model. The built-in default is gemini-3-flash-preview.
+  LlmAgent.set_default_model. The built-in default is gemini-3.5-flash.
   """
 
   config_type: ClassVar[Type[BaseAgentConfig]] = LlmAgentConfig
@@ -487,6 +490,15 @@ class LlmAgent(BaseAgent):
     When present, the returned dict will be used as tool result.
   """
   # Callbacks - End
+
+  @override
+  async def _handle_before_agent_callback(
+      self, ctx: InvocationContext
+  ) -> Optional[Event]:
+    event = await super()._handle_before_agent_callback(ctx)
+    if event is not None:
+      self.__maybe_save_output_to_state(event)
+    return event
 
   @override
   async def _run_async_impl(
@@ -1006,11 +1018,16 @@ class LlmAgent(BaseAgent):
     if self.sub_agents:
       for sub_agent in self.sub_agents:
         if isinstance(sub_agent, LlmAgent):
-          if sub_agent.mode is None:
-            sub_agent.mode = 'chat'
-          if sub_agent.mode == 'single_turn':
+          mode = getattr(sub_agent, 'mode', None)
+          if mode is None:
+            try:
+              sub_agent.mode = 'chat'
+              mode = 'chat'
+            except (AttributeError, TypeError):
+              continue
+          if mode == 'single_turn':
             self.tools.append(_SingleTurnAgentTool(sub_agent))
-          elif sub_agent.mode == 'task':
+          elif mode == 'task':
             self.tools.append(_TaskAgentTool(sub_agent))
 
   @classmethod

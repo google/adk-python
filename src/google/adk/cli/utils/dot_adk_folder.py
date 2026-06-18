@@ -23,7 +23,7 @@ def _resolve_agent_dir(*, agents_root: Path | str, app_name: str) -> Path:
   """Resolves the agent directory with safety checks."""
   agents_root_path = Path(agents_root).resolve()
   agent_dir = (agents_root_path / app_name).resolve()
-  if not str(agent_dir).startswith(str(agents_root_path)):
+  if not agent_dir.is_relative_to(agents_root_path):
     raise ValueError(
         f"Invalid app_name '{app_name}': resolves outside base directory"
     )

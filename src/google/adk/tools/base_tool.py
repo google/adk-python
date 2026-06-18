@@ -39,7 +39,11 @@ logger = logging.getLogger("google_adk." + __name__)
 if TYPE_CHECKING:
   from ..models.llm_request import LlmRequest
   from .tool_configs import ToolArgsConfig
-  from .tool_context import ToolContext
+
+# Re-exported for backward compatibility: existing code imports ToolContext
+# from this module and annotates tool methods with base_tool.ToolContext, which
+# ADK resolves at runtime via get_type_hints(), so it must be importable here.
+from .tool_context import ToolContext  # pylint: disable=unused-import
 
 SelfTool = TypeVar("SelfTool", bound="BaseTool")
 
@@ -86,6 +90,18 @@ class BaseTool(ABC):
   NOTE: the entire dict must be JSON serializable.
   """
 
+  response_scheduling: Optional[types.FunctionResponseScheduling] = None
+  """Controls when the model reacts to the tool's response (Live API only).
+
+  Applied to the emitted ``FunctionResponse`` for asynchronous function calling:
+    - ``SILENT``: feeds the response back without triggering a model turn.
+    - ``WHEN_IDLE``: defers the reaction until the model is idle.
+    - ``INTERRUPT``: reacts immediately.
+
+  Ignored by models that don't support asynchronous function calling. ``None``
+  preserves the default behavior.
+  """
+
   def __init__(
       self,
       *,
@@ -93,12 +109,14 @@ class BaseTool(ABC):
       description,
       is_long_running: bool = False,
       custom_metadata: Optional[dict[str, Any]] = None,
+      response_scheduling: Optional[types.FunctionResponseScheduling] = None,
   ):
     self.name = name
     self.description = description
     self.is_long_running = is_long_running
     self._defers_response = False
     self.custom_metadata = custom_metadata
+    self.response_scheduling = response_scheduling
 
   def _get_declaration(self) -> Optional[types.FunctionDeclaration]:
     """Gets the OpenAPI specification of this tool in the form of a FunctionDeclaration.

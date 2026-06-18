@@ -72,9 +72,9 @@ _RETRY_OPTIONS = types.HttpRetryOptions(
     http_status_codes=[429, 503],
 )
 
-# Use gemini-3-pro-preview for planning and summary (better quality)
+# Use gemini-3.1-pro-preview for planning and summary (better quality)
 GEMINI_PRO_WITH_RETRY = Gemini(
-    model="gemini-3-pro-preview",
+    model="gemini-3.1-pro-preview",
     retry_options=_RETRY_OPTIONS,
 )
 

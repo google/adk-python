@@ -40,11 +40,13 @@ from google.adk.models.lite_llm import _get_completion_inputs
 from google.adk.models.lite_llm import _get_content
 from google.adk.models.lite_llm import _get_provider_from_model
 from google.adk.models.lite_llm import _is_anthropic_model
+from google.adk.models.lite_llm import _looks_like_openai_file_id
 from google.adk.models.lite_llm import _message_to_generate_content_response
 from google.adk.models.lite_llm import _MISSING_TOOL_RESULT_MESSAGE
 from google.adk.models.lite_llm import _model_response_to_chunk
 from google.adk.models.lite_llm import _model_response_to_generate_content_response
 from google.adk.models.lite_llm import _parse_tool_calls_from_text
+from google.adk.models.lite_llm import _redact_file_uri_for_log
 from google.adk.models.lite_llm import _redirect_litellm_loggers_to_stdout
 from google.adk.models.lite_llm import _safe_json_serialize
 from google.adk.models.lite_llm import _schema_to_dict
@@ -705,6 +707,14 @@ def test_safe_json_serialize_circular_list_falls_back_to_str():
   obj = []
   obj.append(obj)
   assert isinstance(_safe_json_serialize(obj), str)
+
+
+def test_safe_json_serialize_recursion_error_falls_back_to_str():
+  with patch(
+      "google.adk.models.lite_llm.json.dumps",
+      side_effect=RecursionError("maximum recursion depth"),
+  ):
+    assert _safe_json_serialize({"a": 1}) == str({"a": 1})
 
 
 MULTIPLE_FUNCTION_CALLS_STREAM = [
@@ -1716,7 +1726,7 @@ async def test_generate_content_async_with_usage_metadata(
 
 
 @pytest.mark.asyncio
-async def test_generate_content_async_ollama_chat_flattens_content(
+async def test_generate_content_async_ollama_chat_preserves_multimodal_content(
     mock_acompletion, mock_completion
 ):
   llm_client = MockLLMClient(mock_acompletion, mock_completion)
@@ -1748,12 +1758,26 @@ async def test_generate_content_async_ollama_chat_flattens_content(
   )
   _, kwargs = mock_acompletion.call_args
   message_content = kwargs["messages"][0]["content"]
-  assert isinstance(message_content, str)
-  assert "Describe this image." in message_content
+  # Multimodal content (text + image) should be kept as a list so LiteLLM
+  # can convert it to Ollama's native images field.
+  assert isinstance(message_content, list)
+  text_blocks = [
+      b
+      for b in message_content
+      if isinstance(b, dict) and b.get("type") == "text"
+  ]
+  image_blocks = [
+      b
+      for b in message_content
+      if isinstance(b, dict) and b.get("type") == "image_url"
+  ]
+  assert len(text_blocks) >= 1
+  assert "Describe this image." in text_blocks[0].get("text", "")
+  assert len(image_blocks) >= 1
 
 
 @pytest.mark.asyncio
-async def test_generate_content_async_custom_provider_flattens_content(
+async def test_generate_content_async_custom_provider_preserves_multimodal(
     mock_acompletion, mock_completion
 ):
   llm_client = MockLLMClient(mock_acompletion, mock_completion)
@@ -1784,8 +1808,14 @@ async def test_generate_content_async_custom_provider_flattens_content(
   assert kwargs["custom_llm_provider"] == "ollama_chat"
   assert kwargs["model"] == "qwen2.5:7b"
   message_content = kwargs["messages"][0]["content"]
-  assert isinstance(message_content, str)
-  assert "Describe this image." in message_content
+  # Multimodal content should be preserved as a list.
+  assert isinstance(message_content, list)
+  text_blocks = [
+      b
+      for b in message_content
+      if isinstance(b, dict) and b.get("type") == "text"
+  ]
+  assert any("Describe this image." in b.get("text", "") for b in text_blocks)
 
 
 def test_flatten_ollama_content_accepts_tuple_blocks():
@@ -1811,16 +1841,6 @@ def test_flatten_ollama_content_accepts_tuple_blocks():
             ],
             "first\nsecond",
         ),
-        (
-            [
-                {"type": "text", "text": "Describe this image."},
-                {
-                    "type": "image_url",
-                    "image_url": {"url": "http://example.com"},
-                },
-            ],
-            "Describe this image.",
-        ),
     ],
 )
 def test_flatten_ollama_content_returns_str_or_none(content, expected):
@@ -1831,15 +1851,58 @@ def test_flatten_ollama_content_returns_str_or_none(content, expected):
   assert flattened is None or isinstance(flattened, str)
 
 
-def test_flatten_ollama_content_serializes_non_text_blocks_to_json():
+def test_flatten_ollama_content_preserves_image_url_blocks():
+  """Media blocks should be kept as a list so LiteLLM can convert them."""
   from google.adk.models.lite_llm import _flatten_ollama_content
 
   blocks = [
-      {"type": "image_url", "image_url": {"url": "http://example.com"}},
+      {"type": "image_url", "image_url": {"url": "http://example.com/img.png"}},
   ]
-  flattened = _flatten_ollama_content(blocks)
-  assert isinstance(flattened, str)
-  assert json.loads(flattened) == blocks
+  result = _flatten_ollama_content(blocks)
+  assert isinstance(result, list)
+  assert result == blocks
+
+
+def test_flatten_ollama_content_preserves_mixed_text_and_image():
+  """Text + image_url should return the full list, not just the text."""
+  from google.adk.models.lite_llm import _flatten_ollama_content
+
+  blocks = [
+      {"type": "text", "text": "Describe this image."},
+      {
+          "type": "image_url",
+          "image_url": {"url": "data:image/png;base64,iVBORw0KGgo="},
+      },
+  ]
+  result = _flatten_ollama_content(blocks)
+  assert isinstance(result, list)
+  assert len(result) == 2
+  assert result[0]["type"] == "text"
+  assert result[1]["type"] == "image_url"
+
+
+def test_flatten_ollama_content_preserves_video_url_blocks():
+  from google.adk.models.lite_llm import _flatten_ollama_content
+
+  blocks = [
+      {"type": "text", "text": "What happens in this clip?"},
+      {"type": "video_url", "video_url": {"url": "http://example.com/v.mp4"}},
+  ]
+  result = _flatten_ollama_content(blocks)
+  assert isinstance(result, list)
+  assert len(result) == 2
+
+
+def test_flatten_ollama_content_serializes_non_media_non_text_blocks_to_json():
+  """Blocks with unknown types and no media should still serialize to JSON."""
+  from google.adk.models.lite_llm import _flatten_ollama_content
+
+  blocks = [
+      {"type": "custom_block", "data": "something"},
+  ]
+  result = _flatten_ollama_content(blocks)
+  assert isinstance(result, str)
+  assert json.loads(result) == blocks
 
 
 def test_flatten_ollama_content_serializes_dict_to_json():
@@ -2253,6 +2316,57 @@ def test_message_to_generate_content_response_tool_call():
   assert response.content.parts[0].function_call.id == "test_tool_call_id"
 
 
+def test_message_to_generate_content_response_tool_call_accepts_python_literal_arguments():
+  message = ChatCompletionAssistantMessage(
+      role="assistant",
+      content=None,
+      tool_calls=[
+          ChatCompletionMessageToolCall(
+              type="function",
+              id="test_tool_call_id",
+              function=Function(
+                  name="test_function",
+                  arguments="{'query': 'MATCH (n) RETURN n'}",
+              ),
+          )
+      ],
+  )
+
+  response = _message_to_generate_content_response(message)
+
+  assert response.content.role == "model"
+  assert response.content.parts[0].function_call.name == "test_function"
+  assert response.content.parts[0].function_call.args == {
+      "query": "MATCH (n) RETURN n"
+  }
+
+
+def test_message_to_generate_content_response_tool_call_accepts_unquoted_json_keys():
+  message = ChatCompletionAssistantMessage(
+      role="assistant",
+      content=None,
+      tool_calls=[
+          ChatCompletionMessageToolCall(
+              type="function",
+              id="test_tool_call_id",
+              function=Function(
+                  name="test_function",
+                  arguments='{query: "MATCH (n) RETURN n", limit: 5}',
+              ),
+          )
+      ],
+  )
+
+  response = _message_to_generate_content_response(message)
+
+  assert response.content.role == "model"
+  assert response.content.parts[0].function_call.name == "test_function"
+  assert response.content.parts[0].function_call.args == {
+      "query": "MATCH (n) RETURN n",
+      "limit": 5,
+  }
+
+
 def test_message_to_generate_content_response_inline_tool_call_text():
   message = ChatCompletionAssistantMessage(
       role="assistant",
@@ -2357,6 +2471,68 @@ def test_model_response_to_generate_content_response_reasoning_field():
   assert response.content.parts[0].text == "Chain of thought"
   assert response.content.parts[0].thought is True
   assert response.content.parts[1].text == "Result"
+
+
+def test_model_response_to_generate_content_response_grounding_metadata_dict():
+  """vertex_ai_grounding_metadata as a dict is propagated to the LlmResponse."""
+  model_response = ModelResponse(
+      model="gemini/gemini-2.5-flash",
+      choices=[{
+          "message": {"role": "assistant", "content": "Answer"},
+          "finish_reason": "stop",
+      }],
+  )
+  model_response.vertex_ai_grounding_metadata = {
+      "grounding_chunks": [
+          {"web": {"uri": "https://example.com", "title": "Example"}}
+      ],
+  }
+
+  response = _model_response_to_generate_content_response(model_response)
+
+  assert response.grounding_metadata is not None
+  assert (
+      response.grounding_metadata.grounding_chunks[0].web.uri
+      == "https://example.com"
+  )
+
+
+def test_model_response_to_generate_content_response_grounding_metadata_list():
+  """LiteLLM may emit a list (per candidate); the first entry is used."""
+  model_response = ModelResponse(
+      model="gemini/gemini-2.5-flash",
+      choices=[{
+          "message": {"role": "assistant", "content": "Answer"},
+          "finish_reason": "stop",
+      }],
+  )
+  model_response.vertex_ai_grounding_metadata = [
+      {"grounding_chunks": [{"web": {"uri": "https://a.test", "title": "A"}}]},
+      {"grounding_chunks": [{"web": {"uri": "https://b.test", "title": "B"}}]},
+  ]
+
+  response = _model_response_to_generate_content_response(model_response)
+
+  assert response.grounding_metadata is not None
+  assert (
+      response.grounding_metadata.grounding_chunks[0].web.uri
+      == "https://a.test"
+  )
+
+
+def test_model_response_to_generate_content_response_no_grounding_metadata():
+  """Without vertex_ai_grounding_metadata, grounding_metadata stays None."""
+  model_response = ModelResponse(
+      model="gemini/gemini-2.5-flash",
+      choices=[{
+          "message": {"role": "assistant", "content": "Answer"},
+          "finish_reason": "stop",
+      }],
+  )
+
+  response = _model_response_to_generate_content_response(model_response)
+
+  assert response.grounding_metadata is None
 
 
 def test_reasoning_content_takes_precedence_over_reasoning():
@@ -2859,7 +3035,7 @@ async def test_get_content_file_uri(file_uri, mime_type):
         ("azure", "azure/gpt-4"),
     ],
 )
-async def test_get_content_file_uri_file_id_required_falls_back_to_text(
+async def test_get_content_file_uri_file_id_required_raises_error(
     provider, model
 ):
   parts = [
@@ -2871,10 +3047,11 @@ async def test_get_content_file_uri_file_id_required_falls_back_to_text(
           )
       )
   ]
-  content = await _get_content(parts, provider=provider, model=model)
-  assert content == [
-      {"type": "text", "text": '[File reference: "document.pdf"]'}
-  ]
+  with pytest.raises(
+      ValueError,
+      match=f"File URI `document.pdf` not supported for provider: {provider}",
+  ):
+    _ = await _get_content(parts, provider=provider, model=model)
 
 
 @pytest.mark.asyncio
@@ -2944,6 +3121,20 @@ async def test_get_content_file_uri_file_id_required_preserves_file_id(
 
 
 @pytest.mark.asyncio
+async def test_get_content_file_uri_azure_preserves_assistant_file_id():
+  parts = [
+      types.Part(
+          file_data=types.FileData(
+              file_uri="assistant-abc123",
+              mime_type="application/pdf",
+          )
+      )
+  ]
+  content = await _get_content(parts, provider="azure", model="azure/gpt-4.1")
+  assert content == [{"type": "file", "file": {"file_id": "assistant-abc123"}}]
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "provider,model",
     [
@@ -2951,23 +3142,23 @@ async def test_get_content_file_uri_file_id_required_preserves_file_id(
         ("azure", "azure/gpt-4"),
     ],
 )
-async def test_get_content_file_uri_http_pdf_file_id_required_falls_back_to_text(
+async def test_get_content_file_uri_http_pdf_file_id_required_raises_error(
     provider, model
 ):
-  file_uri = "https://example.com/document.pdf"
   parts = [
       types.Part(
           file_data=types.FileData(
-              file_uri=file_uri,
+              file_uri="https://example.com/document.pdf",
               mime_type="application/pdf",
               display_name="document.pdf",
           )
       )
   ]
-  content = await _get_content(parts, provider=provider, model=model)
-  assert content == [
-      {"type": "text", "text": '[File reference: "document.pdf"]'}
-  ]
+  with pytest.raises(
+      ValueError,
+      match=f"File URI `document.pdf` not supported for provider: {provider}",
+  ):
+    _ = await _get_content(parts, provider=provider, model=model)
 
 
 @pytest.mark.asyncio
@@ -2991,7 +3182,7 @@ async def test_get_content_file_uri_http_pdf_non_file_id_provider_uses_file():
 
 
 @pytest.mark.asyncio
-async def test_get_content_file_uri_anthropic_falls_back_to_text():
+async def test_get_content_file_uri_anthropic_raises_error():
   parts = [
       types.Part(
           file_data=types.FileData(
@@ -3001,27 +3192,29 @@ async def test_get_content_file_uri_anthropic_falls_back_to_text():
           )
       )
   ]
-  content = await _get_content(
-      parts, provider="anthropic", model="anthropic/claude-3-5"
-  )
-  assert content == [
-      {"type": "text", "text": '[File reference: "document.pdf"]'}
-  ]
+  with pytest.raises(
+      ValueError,
+      match="File URI `document.pdf` not supported for provider: anthropic",
+  ):
+    _ = await _get_content(
+        parts, provider="anthropic", model="anthropic/claude-3-5"
+    )
 
 
 @pytest.mark.asyncio
-async def test_get_content_file_uri_anthropic_openai_file_id_falls_back_to_text():
+async def test_get_content_file_uri_anthropic_openai_file_id_raises_error():
   parts = [types.Part(file_data=types.FileData(file_uri="file-abc123"))]
-  content = await _get_content(
-      parts, provider="anthropic", model="anthropic/claude-3-5"
-  )
-  assert content == [
-      {"type": "text", "text": '[File reference: "file-abc123"]'}
-  ]
+  with pytest.raises(
+      ValueError,
+      match="File URI `file-<redacted>` not supported for provider: anthropic",
+  ):
+    _ = await _get_content(
+        parts, provider="anthropic", model="anthropic/claude-3-5"
+    )
 
 
 @pytest.mark.asyncio
-async def test_get_content_file_uri_vertex_ai_non_gemini_falls_back_to_text():
+async def test_get_content_file_uri_vertex_ai_non_gemini_raises_error():
   parts = [
       types.Part(
           file_data=types.FileData(
@@ -3031,12 +3224,13 @@ async def test_get_content_file_uri_vertex_ai_non_gemini_falls_back_to_text():
           )
       )
   ]
-  content = await _get_content(
-      parts, provider="vertex_ai", model="vertex_ai/claude-3-5"
-  )
-  assert content == [
-      {"type": "text", "text": '[File reference: "document.pdf"]'}
-  ]
+  with pytest.raises(
+      ValueError,
+      match="File URI `document.pdf` not supported for provider: vertex_ai",
+  ):
+    _ = await _get_content(
+        parts, provider="vertex_ai", model="vertex_ai/claude-3-5"
+    )
 
 
 @pytest.mark.asyncio
@@ -3200,21 +3394,22 @@ async def test_get_content_audio_inline_data_emits_input_audio(
         ("azure", "azure/gpt-4"),
     ],
 )
-async def test_get_content_audio_file_uri_http_falls_back_to_text(
-    provider, model
-):
-  """Audio HTTP file_uri falls back to a text reference for openai/azure."""
+async def test_get_content_audio_file_uri_http_raises_error(provider, model):
+  """Audio HTTP file_uri raises an error for openai/azure."""
   file_uri = "https://example.com/audio.mp3"
   parts = [
       types.Part(
           file_data=types.FileData(file_uri=file_uri, mime_type="audio/mpeg")
       )
   ]
-  content = await _get_content(parts, provider=provider, model=model)
-  assert content == [{
-      "type": "text",
-      "text": f'[File reference: "{file_uri}"]',
-  }]
+  with pytest.raises(
+      ValueError,
+      match=(
+          "File URI `https://<redacted>/audio.mp3` not supported for provider:"
+          f" {provider}"
+      ),
+  ):
+    _ = await _get_content(parts, provider=provider, model=model)
 
 
 def test_to_litellm_role():
@@ -3642,7 +3837,56 @@ async def test_completion_with_drop_params(mock_completion, mock_client):
 
 
 @pytest.mark.asyncio
-async def test_generate_content_async_stream(
+async def test_generate_content_async_stream_grounding_metadata(
+    mock_completion, lite_llm_instance
+):
+  final_chunk = ModelResponseStream(
+      model="test_model",
+      choices=[StreamingChoices(finish_reason="stop", delta=Delta())],
+  )
+  final_chunk.vertex_ai_grounding_metadata = {
+      "grounding_chunks": [
+          {"web": {"uri": "https://example.com", "title": "Example"}}
+      ],
+  }
+  mock_completion.return_value = iter([
+      ModelResponseStream(
+          model="test_model",
+          choices=[
+              StreamingChoices(
+                  finish_reason=None,
+                  delta=Delta(role="assistant", content="Grounded answer"),
+              )
+          ],
+      ),
+      final_chunk,
+  ])
+
+  llm_request = LlmRequest(
+      contents=[
+          types.Content(
+              role="user", parts=[types.Part.from_text(text="Test prompt")]
+          )
+      ],
+  )
+
+  responses = [
+      response
+      async for response in lite_llm_instance.generate_content_async(
+          llm_request, stream=True
+      )
+  ]
+
+  assert responses[-1].partial is False
+  assert responses[-1].grounding_metadata is not None
+  assert (
+      responses[-1].grounding_metadata.grounding_chunks[0].web.uri
+      == "https://example.com"
+  )
+
+
+@pytest.mark.asyncio
+async def test_generate_content_async_stream_with_usage_metadata(
     mock_completion, lite_llm_instance
 ):
 
@@ -4825,6 +5069,20 @@ def test_convert_reasoning_value_to_parts_thinking_blocks_preserves_signature():
   assert parts[1].thought_signature == b"sig_def"
 
 
+def test_convert_reasoning_value_to_parts_gemini_thinking_blocks_no_signature():
+  """Gemini thinking_blocks (no signature) still produce thought parts."""
+  thinking_blocks = [
+      {"type": "thinking", "thinking": "gemini step 1"},
+      {"type": "thinking", "thinking": "gemini step 2"},
+  ]
+  parts = _convert_reasoning_value_to_parts(thinking_blocks)
+  assert len(parts) == 2
+  assert parts[0].text == "gemini step 1"
+  assert parts[0].thought is True
+  assert parts[0].thought_signature is None
+  assert parts[1].text == "gemini step 2"
+
+
 def test_convert_reasoning_value_to_parts_skips_redacted_blocks():
   """Redacted thinking blocks are excluded from parts."""
   thinking_blocks = [
@@ -4987,3 +5245,44 @@ async def test_generate_content_async_skips_request_log_build_above_debug(
       assert mock_build.called is should_call
   finally:
     litellm_logger.setLevel(original_level)
+
+
+@pytest.mark.parametrize(
+    "file_uri, expected",
+    [
+        ("file-abc123", True),
+        ("assistant-abc123", True),
+        ("https://example.com/file.pdf", False),
+        ("not-a-file-id", False),
+        ("", False),
+        ("FILE-abc123", False),
+    ],
+)
+def test_looks_like_openai_file_id(file_uri, expected):
+  """Both `file-` and `assistant-` (Azure assistants) prefixes count as OpenAI file IDs."""
+  assert _looks_like_openai_file_id(file_uri) is expected
+
+
+@pytest.mark.parametrize(
+    "file_uri, expected",
+    [
+        ("file-abc123", "file-<redacted>"),
+        ("assistant-abc123", "assistant-<redacted>"),
+    ],
+)
+def test_redact_file_uri_for_log_openai_prefixes(file_uri, expected):
+  """OpenAI-style IDs are redacted while preserving the prefix kind."""
+  assert _redact_file_uri_for_log(file_uri) == expected
+
+
+def test_redact_file_uri_for_log_uses_display_name_when_provided():
+  assert (
+      _redact_file_uri_for_log("file-abc123", display_name="my.pdf") == "my.pdf"
+  )
+
+
+def test_redact_file_uri_for_log_http_url_keeps_scheme_and_tail():
+  assert (
+      _redact_file_uri_for_log("https://example.com/path/file.pdf")
+      == "https://<redacted>/file.pdf"
+  )

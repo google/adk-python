@@ -59,6 +59,10 @@ class LoopAgent(BaseAgent):
 
   When sub-agent generates an event with escalate or max_iterations are
   reached, the loop agent will stop.
+
+  .. deprecated::
+    LoopAgent is deprecated and will be removed in future versions.
+    Please use Workflow instead.
   """
 
   config_type: ClassVar[type[BaseAgentConfig]] = LoopAgentConfig

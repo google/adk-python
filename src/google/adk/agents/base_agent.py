@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+import abc
 import inspect
 import logging
 from typing import Any
@@ -45,10 +46,12 @@ from ..features import experimental
 from ..features import FeatureName
 from ..telemetry import _instrumentation
 from ..utils.context_utils import Aclosing
-from ..workflow._base_node import BaseNode
-from .base_agent_config import BaseAgentConfig
+from ..workflow import BaseNode
+from .base_agent_config import BaseAgentConfig as BaseAgentConfig
 from .callback_context import CallbackContext
 from .context import Context
+
+__all__ = ['BaseAgentConfig']
 
 if TYPE_CHECKING:
   from .invocation_context import InvocationContext
@@ -85,7 +88,9 @@ class BaseAgentState(BaseModel):
 AgentState = TypeVar('AgentState', bound=BaseAgentState)
 
 
-class BaseAgent(BaseNode):
+# TODO: drop the explicit abc.ABC base once BaseNode surfaces ABCMeta to
+# static type checkers.
+class BaseAgent(BaseNode, abc.ABC):
   """Base class for all agents in Agent Development Kit."""
 
   model_config = ConfigDict(

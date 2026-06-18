@@ -12,6 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import asyncio
+import json
 from typing import Any
 from typing import Optional
 
@@ -30,6 +32,7 @@ from google.adk.models.llm_request import LlmRequest
 from google.adk.models.llm_response import LlmResponse
 from google.adk.plugins.base_plugin import BasePlugin
 from google.adk.plugins.plugin_manager import PluginManager
+from google.adk.runners import Runner
 from google.adk.sessions.in_memory_session_service import InMemorySessionService
 from google.adk.tools.agent_tool import AgentTool
 from google.adk.tools.tool_context import ToolContext
@@ -372,7 +375,7 @@ async def test_update_artifacts():
     'env_variables',
     [
         'GOOGLE_AI',
-        # TODO(wanyif): re-enable after fix.
+        # TODO: re-enable after fix.
         # 'VERTEX',
     ],
     indirect=True,
@@ -725,6 +728,61 @@ def test_include_plugins_false():
 
   # Plugin should only be called for root_agent, not tool_agent.
   assert tracking_plugin.before_agent_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_include_plugins_true_sub_runner_does_not_close_parent_plugins():
+  """Sub-Runner must not close plugins owned by the parent runner."""
+
+  class SlowClosePlugin(BasePlugin):
+
+    def __init__(self, name: str):
+      super().__init__(name)
+      self.close_calls = 0
+
+    async def close(self):
+      self.close_calls += 1
+      # Would otherwise blow past the sub-Runner's plugin_close_timeout.
+      await asyncio.sleep(10)
+
+  parent_plugin = SlowClosePlugin(name='parent_plugin')
+
+  mock_model = testing_utils.MockModel.create(
+      responses=[function_call_no_schema, 'response1', 'response2']
+  )
+
+  tool_agent = Agent(name='tool_agent', model=mock_model)
+  root_agent = Agent(
+      name='root_agent',
+      model=mock_model,
+      tools=[AgentTool(agent=tool_agent, include_plugins=True)],
+  )
+
+  runner = Runner(
+      app_name='test_app',
+      agent=root_agent,
+      artifact_service=InMemoryArtifactService(),
+      session_service=InMemorySessionService(),
+      memory_service=InMemoryMemoryService(),
+      plugins=[parent_plugin],
+      # Tight timeout amplifies the bug if it regresses; with the fix, the
+      # sub-Runner's close skips the parent's plugins entirely.
+      plugin_close_timeout=0.01,
+  )
+  session = await runner.session_service.create_session(
+      app_name='test_app', user_id='test_user'
+  )
+  # Must not raise RuntimeError("Failed to close plugins: ...") from the
+  # sub-Runner closing the parent's slow-to-close plugin.
+  async for _ in runner.run_async(
+      user_id=session.user_id,
+      session_id=session.id,
+      new_message=testing_utils.get_user_content('test1'),
+  ):
+    pass
+
+  # The sub-Runner must not have closed the parent's plugin.
+  assert parent_plugin.close_calls == 0
 
 
 def test_agent_tool_description_with_input_schema():
@@ -1374,3 +1432,102 @@ class TestAgentToolWithCompositeAgents:
       }
     else:
       assert declaration.parameters.properties['request'].type == 'STRING'
+
+
+@mark.parametrize(
+    'args,expected_text',
+    [
+        (
+            {'brand': 'Nike', 'product': 'running shoes'},
+            '{"brand": "Nike", "product": "running shoes"}',
+        ),
+        (
+            {'request': 'find me Nike running shoes'},
+            'find me Nike running shoes',
+        ),
+        (
+            {'request': ''},
+            '',
+        ),
+    ],
+)
+@mark.asyncio
+async def test_no_schema_args_handling(monkeypatch, args, expected_text):
+  """AgentTool.run_async handles fallback schema cases properly.
+
+  - Non-'request' args are serialized as JSON.
+  - 'request' key is kept as plain text (backward compatibility).
+  - Empty string 'request' is correctly preserved instead of evaluating to
+  false.
+  """
+  captured = {}
+
+  async def _empty_async_generator():
+    if False:
+      yield None
+
+  class StubRunner:
+
+    def __init__(
+        self,
+        *,
+        app_name: str,
+        agent,
+        artifact_service,
+        session_service,
+        memory_service,
+        credential_service,
+        plugins,
+    ):
+      del artifact_service, memory_service, credential_service
+      self.agent = agent
+      self.session_service = session_service
+      self.plugin_manager = PluginManager(plugins=plugins)
+      self.app_name = app_name
+
+    def run_async(
+        self,
+        *,
+        user_id: str,
+        session_id: str,
+        invocation_id=None,
+        new_message=None,
+        state_delta=None,
+        run_config=None,
+    ):
+      captured['new_message'] = new_message
+      return _empty_async_generator()
+
+    async def close(self):
+      pass
+
+  monkeypatch.setattr('google.adk.runners.Runner', StubRunner)
+
+  tool_agent = Agent(name='tool_agent', model='test-model')
+  agent_tool = AgentTool(agent=tool_agent)
+  root_agent = Agent(name='root_agent', model='test-model', tools=[agent_tool])
+
+  session_service = InMemorySessionService()
+  session = await session_service.create_session(
+      app_name='test_app', user_id='user'
+  )
+  invocation_context = InvocationContext(
+      artifact_service=InMemoryArtifactService(),
+      session_service=session_service,
+      memory_service=InMemoryMemoryService(),
+      plugin_manager=PluginManager(),
+      invocation_id='test-invocation',
+      agent=root_agent,
+      session=session,
+      run_config=RunConfig(),
+  )
+  tool_context = ToolContext(invocation_context)
+
+  await agent_tool.run_async(
+      args=args,
+      tool_context=tool_context,
+  )
+
+  assert captured['new_message'] is not None
+  text = captured['new_message'].parts[0].text
+  assert text == expected_text

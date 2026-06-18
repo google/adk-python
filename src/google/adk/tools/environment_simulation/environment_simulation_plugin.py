@@ -20,7 +20,6 @@ from typing import Optional
 
 from google.adk.plugins import BasePlugin
 from google.adk.tools.base_tool import BaseTool
-from google.adk.tools.environment_simulation.environment_simulation_config import EnvironmentSimulationConfig
 from google.adk.tools.environment_simulation.environment_simulation_engine import EnvironmentSimulationEngine
 from google.adk.tools.tool_context import ToolContext
 

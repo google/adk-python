@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+import json
 from unittest import mock
 
 from google.adk.events.event import Event
@@ -117,7 +118,7 @@ async def test_create_session(mock_firestore_client):
   assert args[1]["id"] == session.id
   assert args[1]["appName"] == app_name
   assert args[1]["userId"] == user_id
-  assert args[1]["state"] == {}
+  assert json.loads(args[1]["state"]) == {}
   assert args[1]["createTime"] == firestore.SERVER_TIMESTAMP
   assert args[1]["updateTime"] == firestore.SERVER_TIMESTAMP
 
@@ -324,8 +325,7 @@ async def test_append_event_with_state_delta(mock_firestore_client):
 
   transaction.update.assert_called_once()
   args, kwargs = transaction.update.call_args
-  # In modular Firestore configurations alignments, updating variables mock assertions core setups
-  assert args[1]["state"] == session.state
+  assert json.loads(args[1]["state"]) == session.state
   assert args[1]["updateTime"] == firestore.SERVER_TIMESTAMP
 
 
@@ -385,6 +385,15 @@ async def test_append_event_with_temp_state(mock_firestore_client):
   # Temporary keys should be deleted from delta before snapshot
   assert "temp:k1" not in event_data["actions"]["state_delta"]
   assert event_data["actions"]["state_delta"]["session_key"] == "session_val"
+
+  # 3. Verify temp keys are NOT written to session state in Firestore
+  transaction.update.assert_called_once()
+  update_args, _ = transaction.update.call_args
+  persisted_state = update_args[1]["state"]
+  assert (
+      "temp:k1" not in persisted_state
+  ), "temp: keys must not be persisted to Firestore session state"
+  assert "session_key" in persisted_state
 
 
 @pytest.mark.asyncio
