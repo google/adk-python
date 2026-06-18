@@ -636,6 +636,26 @@ class TestRubricBasedEvaluator:
     assert len(effective_rubrics) == 2
     assert {r.rubric_id for r in effective_rubrics} == {"1", "2"}
 
+  def test_get_effective_rubrics_list_with_no_rubrics_raises_error(self):
+    judge_model_options = JudgeModelOptions(
+        judge_model_config=None,
+        num_samples=3,
+    )
+    criterion = RubricsBasedCriterion(
+        threshold=0.5, judge_model_options=judge_model_options
+    )
+    metric = EvalMetric(
+        metric_name=PrebuiltMetrics.RUBRIC_BASED_FINAL_RESPONSE_QUALITY_V1.value,
+        threshold=0.5,
+        criterion=criterion,
+    )
+    evaluator = FakeRubricBasedEvaluator(metric)
+
+    evaluator.create_effective_rubrics_list(None)
+
+    with pytest.raises(ValueError, match="Rubrics are required."):
+      evaluator.get_effective_rubrics_list()
+
   def test_get_effective_rubrics_list_before_creation_raises_error(
       self, evaluator: RubricBasedEvaluator
   ):
