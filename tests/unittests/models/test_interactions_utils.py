@@ -26,11 +26,18 @@ from unittest.mock import MagicMock
 from google.adk.models import interactions_utils
 from google.adk.models.llm_request import LlmRequest
 from google.genai import types
-from google.genai._interactions.types.interaction import Interaction
-from google.genai._interactions.types.interaction_complete_event import InteractionCompleteEvent
-from google.genai._interactions.types.interaction_start_event import InteractionStartEvent
-from google.genai._interactions.types.interaction_status_update import InteractionStatusUpdate
 import pytest
+
+try:
+  from google.genai._interactions.types.interaction import Interaction
+  from google.genai._interactions.types.interaction_complete_event import InteractionCompleteEvent
+  from google.genai._interactions.types.interaction_start_event import InteractionStartEvent
+  from google.genai._interactions.types.interaction_status_update import InteractionStatusUpdate
+except ImportError:
+  pytest.skip(
+      "Skipping interactions API tests as the legacy google.genai._interactions module is not available (likely on google-genai v2.x).",
+      allow_module_level=True,
+  )
 
 
 class _MockAsyncIterator:
