@@ -1135,6 +1135,7 @@ class BaseLlmFlow(ABC):
         and not llm_response.usage_metadata
         and not llm_response.live_session_resumption_update
         and not llm_response.grounding_metadata
+        and not llm_response.live_setup_complete
     ):
       return
 
@@ -1142,6 +1143,14 @@ class BaseLlmFlow(ABC):
     if llm_response.live_session_resumption_update:
       model_response_event.live_session_resumption_update = (
           llm_response.live_session_resumption_update
+      )
+      yield model_response_event
+      return
+
+    # Handle setup completion signal from the Live model.
+    if llm_response.live_setup_complete:
+      model_response_event.live_setup_complete = (
+          llm_response.live_setup_complete
       )
       yield model_response_event
       return

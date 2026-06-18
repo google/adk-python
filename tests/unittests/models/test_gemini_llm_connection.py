@@ -166,6 +166,7 @@ async def test_receive_transcript_finished(
   msg.usage_metadata = None
   msg.session_resumption_update = None
   msg.go_away = None
+  msg.setup_complete = None
   msg.server_content.model_turn = None
   msg.server_content.interrupted = False
   msg.server_content.turn_complete = False
@@ -232,6 +233,7 @@ async def test_receive_usage_metadata_and_server_content(
   mock_message.tool_call = None
   mock_message.session_resumption_update = None
   mock_message.go_away = None
+  mock_message.setup_complete = None
 
   async def mock_receive_generator():
     yield mock_message
@@ -299,6 +301,7 @@ async def test_receive_usage_metadata_remaps_output_tokens(
   mock_message.tool_call = None
   mock_message.session_resumption_update = None
   mock_message.go_away = None
+  mock_message.setup_complete = None
 
   async def mock_receive_generator():
     yield mock_message
@@ -341,6 +344,7 @@ async def test_receive_populates_live_session_id(
   mock_message.tool_call = None
   mock_message.session_resumption_update = None
   mock_message.go_away = None
+  mock_message.setup_complete = None
 
   mock_server_content = mock.Mock()
   mock_server_content.model_turn = types.Content(
@@ -394,6 +398,7 @@ async def test_receive_transcript_finished_on_interrupt(
   message1.tool_call = None
   message1.session_resumption_update = None
   message1.go_away = None
+  message1.setup_complete = None
 
   message2 = mock.Mock()
   message2.usage_metadata = None
@@ -410,6 +415,7 @@ async def test_receive_transcript_finished_on_interrupt(
   message2.tool_call = None
   message2.session_resumption_update = None
   message2.go_away = None
+  message2.setup_complete = None
 
   message3 = mock.Mock()
   message3.usage_metadata = None
@@ -424,6 +430,7 @@ async def test_receive_transcript_finished_on_interrupt(
   message3.tool_call = None
   message3.session_resumption_update = None
   message3.go_away = None
+  message3.setup_complete = None
 
   async def mock_receive_generator():
     yield message1
@@ -480,6 +487,7 @@ async def test_receive_transcript_finished_on_generation_complete(
   message1.tool_call = None
   message1.session_resumption_update = None
   message1.go_away = None
+  message1.setup_complete = None
 
   message2 = mock.Mock()
   message2.usage_metadata = None
@@ -496,6 +504,7 @@ async def test_receive_transcript_finished_on_generation_complete(
   message2.tool_call = None
   message2.session_resumption_update = None
   message2.go_away = None
+  message2.setup_complete = None
 
   message3 = mock.Mock()
   message3.usage_metadata = None
@@ -510,6 +519,7 @@ async def test_receive_transcript_finished_on_generation_complete(
   message3.tool_call = None
   message3.session_resumption_update = None
   message3.go_away = None
+  message3.setup_complete = None
 
   async def mock_receive_generator():
     yield message1
@@ -565,6 +575,7 @@ async def test_receive_transcript_finished_on_turn_complete(
   message1.tool_call = None
   message1.session_resumption_update = None
   message1.go_away = None
+  message1.setup_complete = None
 
   message2 = mock.Mock()
   message2.usage_metadata = None
@@ -581,6 +592,7 @@ async def test_receive_transcript_finished_on_turn_complete(
   message2.tool_call = None
   message2.session_resumption_update = None
   message2.go_away = None
+  message2.setup_complete = None
 
   message3 = mock.Mock()
   message3.usage_metadata = None
@@ -595,6 +607,7 @@ async def test_receive_transcript_finished_on_turn_complete(
   message3.tool_call = None
   message3.session_resumption_update = None
   message3.go_away = None
+  message3.setup_complete = None
 
   async def mock_receive_generator():
     yield message1
@@ -643,6 +656,7 @@ async def test_receive_handles_input_transcription_fragments(
   message1.tool_call = None
   message1.session_resumption_update = None
   message1.go_away = None
+  message1.setup_complete = None
 
   message2 = mock.Mock()
   message2.usage_metadata = None
@@ -659,6 +673,7 @@ async def test_receive_handles_input_transcription_fragments(
   message2.tool_call = None
   message2.session_resumption_update = None
   message2.go_away = None
+  message2.setup_complete = None
 
   message3 = mock.Mock()
   message3.usage_metadata = None
@@ -675,6 +690,7 @@ async def test_receive_handles_input_transcription_fragments(
   message3.tool_call = None
   message3.session_resumption_update = None
   message3.go_away = None
+  message3.setup_complete = None
 
   async def mock_receive_generator():
     yield message1
@@ -718,6 +734,7 @@ async def test_receive_handles_output_transcription_fragments(
   message1.tool_call = None
   message1.session_resumption_update = None
   message1.go_away = None
+  message1.setup_complete = None
 
   message2 = mock.Mock()
   message2.usage_metadata = None
@@ -734,6 +751,7 @@ async def test_receive_handles_output_transcription_fragments(
   message2.tool_call = None
   message2.session_resumption_update = None
   message2.go_away = None
+  message2.setup_complete = None
 
   message3 = mock.Mock()
   message3.usage_metadata = None
@@ -750,6 +768,7 @@ async def test_receive_handles_output_transcription_fragments(
   message3.tool_call = None
   message3.session_resumption_update = None
   message3.go_away = None
+  message3.setup_complete = None
 
   async def mock_receive_generator():
     yield message1
@@ -1028,6 +1047,7 @@ async def test_receive_grounding_metadata_standalone(
   mock_message.tool_call = None
   mock_message.session_resumption_update = None
   mock_message.go_away = None
+  mock_message.setup_complete = None
 
   async def mock_receive_generator():
     yield mock_message
@@ -1073,6 +1093,7 @@ async def test_receive_grounding_metadata_with_content(
   mock_message.tool_call = None
   mock_message.session_resumption_update = None
   mock_message.go_away = None
+  mock_message.setup_complete = None
 
   async def mock_receive_generator():
     yield mock_message
@@ -1106,6 +1127,7 @@ async def test_receive_tool_call_and_grounding_metadata_with_native_audio(
   mock_tool_call_msg.server_content = None
   mock_tool_call_msg.session_resumption_update = None
   mock_tool_call_msg.go_away = None
+  mock_tool_call_msg.setup_complete = None
 
   function_call = types.FunctionCall(
       name='enterprise_web_search',
@@ -1146,6 +1168,7 @@ async def test_receive_tool_call_and_grounding_metadata_with_native_audio(
   mock_metadata_msg.tool_call = None
   mock_metadata_msg.session_resumption_update = None
   mock_metadata_msg.go_away = None
+  mock_metadata_msg.setup_complete = None
 
   # 3. Message with turn_complete
   mock_turn_complete_content = mock.create_autospec(
@@ -1167,6 +1190,7 @@ async def test_receive_tool_call_and_grounding_metadata_with_native_audio(
   mock_turn_complete_msg.tool_call = None
   mock_turn_complete_msg.session_resumption_update = None
   mock_turn_complete_msg.go_away = None
+  mock_turn_complete_msg.setup_complete = None
 
   async def mock_receive_generator():
     yield mock_tool_call_msg
@@ -1217,6 +1241,7 @@ async def test_receive_multiple_tool_calls_buffered_until_turn_complete(
   mock_tool_call_msg1.server_content = None
   mock_tool_call_msg1.session_resumption_update = None
   mock_tool_call_msg1.go_away = None
+  mock_tool_call_msg1.setup_complete = None
 
   function_call1 = types.FunctionCall(
       name='tool_1',
@@ -1236,6 +1261,7 @@ async def test_receive_multiple_tool_calls_buffered_until_turn_complete(
   mock_tool_call_msg2.server_content = None
   mock_tool_call_msg2.session_resumption_update = None
   mock_tool_call_msg2.go_away = None
+  mock_tool_call_msg2.setup_complete = None
 
   function_call2 = types.FunctionCall(
       name='tool_2',
@@ -1266,6 +1292,7 @@ async def test_receive_multiple_tool_calls_buffered_until_turn_complete(
   mock_turn_complete_msg.tool_call = None
   mock_turn_complete_msg.session_resumption_update = None
   mock_turn_complete_msg.go_away = None
+  mock_turn_complete_msg.setup_complete = None
 
   async def mock_receive_generator():
     yield mock_tool_call_msg1
@@ -1311,6 +1338,7 @@ async def test_receive_tool_calls_yielded_immediately_for_gemini_3_1(
   mock_tool_call_msg.server_content = None
   mock_tool_call_msg.session_resumption_update = None
   mock_tool_call_msg.go_away = None
+  mock_tool_call_msg.setup_complete = None
 
   function_call = types.FunctionCall(
       name='test_tool',
@@ -1346,6 +1374,7 @@ async def test_receive_go_away(gemini_connection, mock_gemini_session):
   mock_msg.tool_call = None
   mock_msg.session_resumption_update = None
   mock_msg.go_away = mock_go_away
+  mock_msg.setup_complete = None
 
   async def mock_receive_generator():
     yield mock_msg
@@ -1357,6 +1386,30 @@ async def test_receive_go_away(gemini_connection, mock_gemini_session):
 
   assert len(responses) == 1
   assert responses[0].go_away == mock_go_away
+
+
+@pytest.mark.asyncio
+async def test_receive_setup_complete(gemini_connection, mock_gemini_session):
+  """Test receive yields setup_complete message."""
+  mock_setup_complete = types.LiveServerSetupComplete()
+  mock_msg = mock.MagicMock()
+  mock_msg.usage_metadata = None
+  mock_msg.server_content = None
+  mock_msg.tool_call = None
+  mock_msg.session_resumption_update = None
+  mock_msg.go_away = None
+  mock_msg.setup_complete = mock_setup_complete
+
+  async def mock_receive_generator():
+    yield mock_msg
+
+  receive_mock = mock.Mock(return_value=mock_receive_generator())
+  mock_gemini_session.receive = receive_mock
+
+  responses = [resp async for resp in gemini_connection.receive()]
+
+  assert len(responses) == 1
+  assert responses[0].live_setup_complete == mock_setup_complete
 
 
 @pytest.mark.asyncio
@@ -1465,6 +1518,7 @@ async def test_receive_video_content(gemini_connection, mock_gemini_session):
   mock_message.tool_call = None
   mock_message.session_resumption_update = None
   mock_message.go_away = None
+  mock_message.setup_complete = None
 
   async def mock_receive_generator():
     yield mock_message
@@ -1499,6 +1553,7 @@ async def test_receive_grounding_metadata_pending(
         tool_call=None,
         session_resumption_update=None,
         go_away=None,
+        setup_complete=None,
     )
     msg.server_content = mock.Mock(
         interrupted=False,
@@ -1576,6 +1631,7 @@ async def test_receive_populates_turn_complete_reason(
   mock_message.tool_call = None
   mock_message.session_resumption_update = None
   mock_message.go_away = None
+  mock_message.setup_complete = None
 
   async def mock_receive_generator():
     yield mock_message
@@ -1617,6 +1673,7 @@ async def test_receive_populates_turn_complete_reason_standalone_grounding(
   mock_message.tool_call = None
   mock_message.session_resumption_update = None
   mock_message.go_away = None
+  mock_message.setup_complete = None
 
   async def mock_receive_generator():
     yield mock_message
@@ -1663,6 +1720,7 @@ async def test_receive_populates_turn_complete_reason_with_content(
   mock_message.tool_call = None
   mock_message.session_resumption_update = None
   mock_message.go_away = None
+  mock_message.setup_complete = None
 
   async def mock_receive_generator():
     yield mock_message
@@ -1699,6 +1757,7 @@ async def test_receive_grounding_metadata_default_gemini_3_1(
     msg.tool_call = tool_call
     msg.session_resumption_update = None
     msg.go_away = None
+    msg.setup_complete = None
     msg.server_content = mock.Mock()
     msg.server_content.interrupted = False
     msg.server_content.input_transcription = None
@@ -1770,6 +1829,7 @@ async def test_receive_grounding_metadata_default_non_gemini_3_1(
     msg.tool_call = None
     msg.session_resumption_update = None
     msg.go_away = None
+    msg.setup_complete = None
     msg.server_content = mock.Mock()
     msg.server_content.interrupted = False
     msg.server_content.input_transcription = None
@@ -1827,6 +1887,7 @@ async def test_receive_input_transcription_gemini_3_1(
     msg.tool_call = None
     msg.session_resumption_update = None
     msg.go_away = None
+    msg.setup_complete = None
     msg.server_content = mock.Mock()
     msg.server_content.interrupted = False
     msg.server_content.input_transcription = (
@@ -1898,6 +1959,7 @@ def _create_mock_receive_message(
   mock_message.tool_call = tool_call
   mock_message.session_resumption_update = None
   mock_message.go_away = None
+  mock_message.setup_complete = None
   return mock_message
 
 

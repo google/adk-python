@@ -45,6 +45,8 @@ class LlmResponse(BaseModel):
     custom_metadata: The custom metadata of the LlmResponse.
     input_transcription: Audio transcription of user input.
     output_transcription: Audio transcription of model output.
+    live_setup_complete: The setup completion signal from the Live model,
+      indicating the model is ready to receive user input.
     avg_logprobs: Average log probability of the generated tokens.
     logprobs_result: Detailed log probabilities for chosen and top candidate tokens.
   """
@@ -122,6 +124,9 @@ class LlmResponse(BaseModel):
 
   go_away: Optional[types.LiveServerGoAway] = None
   """The GoAway signal from the Live model."""
+
+  live_setup_complete: Optional[types.LiveServerSetupComplete] = None
+  """The setup completion signal from the Live model."""
 
   input_transcription: Optional[types.Transcription] = None
   """Audio transcription of user input."""

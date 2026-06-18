@@ -619,6 +619,15 @@ class GeminiLlmConnection(BaseLlmConnection):
               model_version=self._model_version,
               live_session_id=live_session_id,
           )
+        if message.setup_complete:
+          logger.debug(
+              'Received setup complete message: %s', message.setup_complete
+          )
+          yield LlmResponse(
+              live_setup_complete=message.setup_complete,
+              model_version=self._model_version,
+              live_session_id=live_session_id,
+          )
 
       if tool_call_parts:
         logger.debug('Exited loop with pending tool_call_parts')
