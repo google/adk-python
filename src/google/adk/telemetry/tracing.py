@@ -509,7 +509,16 @@ def _build_llm_request_for_trace(llm_request: LlmRequest) -> dict[str, object]:
   result = {
       "model": llm_request.model,
       "config": llm_request.config.model_dump(
-          exclude_none=True, exclude="response_schema", mode="json"
+          exclude_none=True,
+          exclude={
+              "response_schema": True,
+              "http_options": {
+                  "httpx_client": True,
+                  "httpx_async_client": True,
+                  "aiohttp_client": True,
+              },
+          },
+          mode="json",
       ),
       "contents": [],
   }

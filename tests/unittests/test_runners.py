@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from contextlib import aclosing
 import importlib
 from pathlib import Path
 import sys
@@ -761,6 +762,48 @@ def test_run_passes_state_delta():
 
   user_event = next(e for e in session_events if e.author == "user")
   assert user_event.actions.state_delta == state_delta
+
+
+@pytest.mark.asyncio
+async def test_run_async_propagates_invocation_id():
+  """run_async should propagate invocation_id to the invocation context and events."""
+
+  session_service = InMemorySessionService()
+  runner = Runner(
+      app_name=TEST_APP_ID,
+      agent=MockAgent("test_agent"),
+      session_service=session_service,
+      artifact_service=InMemoryArtifactService(),
+      auto_create_session=True,
+  )
+
+  custom_invocation_id = "my_custom_invocation_id"
+
+  agen = runner.run_async(
+      user_id=TEST_USER_ID,
+      session_id=TEST_SESSION_ID,
+      new_message=types.Content(role="user", parts=[types.Part(text="hello")]),
+      invocation_id=custom_invocation_id,
+  )
+
+  events = []
+  async with aclosing(agen) as a:
+    async for event in a:
+      events.append(event)
+
+  assert len(events) >= 1
+  # Verify yielded events have the custom invocation ID
+  for event in events:
+    assert event.invocation_id == custom_invocation_id
+
+  # Verify the session has the custom invocation ID in its events
+  session = await session_service.get_session(
+      app_name=TEST_APP_ID, user_id=TEST_USER_ID, session_id=TEST_SESSION_ID
+  )
+  assert session is not None
+  assert len(session.events) == 2
+  for event in session.events:
+    assert event.invocation_id == custom_invocation_id
 
 
 @pytest.mark.asyncio

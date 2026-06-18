@@ -709,6 +709,14 @@ def test_safe_json_serialize_circular_list_falls_back_to_str():
   assert isinstance(_safe_json_serialize(obj), str)
 
 
+def test_safe_json_serialize_recursion_error_falls_back_to_str():
+  with patch(
+      "google.adk.models.lite_llm.json.dumps",
+      side_effect=RecursionError("maximum recursion depth"),
+  ):
+    assert _safe_json_serialize({"a": 1}) == str({"a": 1})
+
+
 MULTIPLE_FUNCTION_CALLS_STREAM = [
     ModelResponseStream(
         choices=[
@@ -2465,6 +2473,68 @@ def test_model_response_to_generate_content_response_reasoning_field():
   assert response.content.parts[1].text == "Result"
 
 
+def test_model_response_to_generate_content_response_grounding_metadata_dict():
+  """vertex_ai_grounding_metadata as a dict is propagated to the LlmResponse."""
+  model_response = ModelResponse(
+      model="gemini/gemini-2.5-flash",
+      choices=[{
+          "message": {"role": "assistant", "content": "Answer"},
+          "finish_reason": "stop",
+      }],
+  )
+  model_response.vertex_ai_grounding_metadata = {
+      "grounding_chunks": [
+          {"web": {"uri": "https://example.com", "title": "Example"}}
+      ],
+  }
+
+  response = _model_response_to_generate_content_response(model_response)
+
+  assert response.grounding_metadata is not None
+  assert (
+      response.grounding_metadata.grounding_chunks[0].web.uri
+      == "https://example.com"
+  )
+
+
+def test_model_response_to_generate_content_response_grounding_metadata_list():
+  """LiteLLM may emit a list (per candidate); the first entry is used."""
+  model_response = ModelResponse(
+      model="gemini/gemini-2.5-flash",
+      choices=[{
+          "message": {"role": "assistant", "content": "Answer"},
+          "finish_reason": "stop",
+      }],
+  )
+  model_response.vertex_ai_grounding_metadata = [
+      {"grounding_chunks": [{"web": {"uri": "https://a.test", "title": "A"}}]},
+      {"grounding_chunks": [{"web": {"uri": "https://b.test", "title": "B"}}]},
+  ]
+
+  response = _model_response_to_generate_content_response(model_response)
+
+  assert response.grounding_metadata is not None
+  assert (
+      response.grounding_metadata.grounding_chunks[0].web.uri
+      == "https://a.test"
+  )
+
+
+def test_model_response_to_generate_content_response_no_grounding_metadata():
+  """Without vertex_ai_grounding_metadata, grounding_metadata stays None."""
+  model_response = ModelResponse(
+      model="gemini/gemini-2.5-flash",
+      choices=[{
+          "message": {"role": "assistant", "content": "Answer"},
+          "finish_reason": "stop",
+      }],
+  )
+
+  response = _model_response_to_generate_content_response(model_response)
+
+  assert response.grounding_metadata is None
+
+
 def test_reasoning_content_takes_precedence_over_reasoning():
   """Test that 'reasoning_content' is prioritized over 'reasoning'."""
   message = {
@@ -3767,7 +3837,56 @@ async def test_completion_with_drop_params(mock_completion, mock_client):
 
 
 @pytest.mark.asyncio
-async def test_generate_content_async_stream(
+async def test_generate_content_async_stream_grounding_metadata(
+    mock_completion, lite_llm_instance
+):
+  final_chunk = ModelResponseStream(
+      model="test_model",
+      choices=[StreamingChoices(finish_reason="stop", delta=Delta())],
+  )
+  final_chunk.vertex_ai_grounding_metadata = {
+      "grounding_chunks": [
+          {"web": {"uri": "https://example.com", "title": "Example"}}
+      ],
+  }
+  mock_completion.return_value = iter([
+      ModelResponseStream(
+          model="test_model",
+          choices=[
+              StreamingChoices(
+                  finish_reason=None,
+                  delta=Delta(role="assistant", content="Grounded answer"),
+              )
+          ],
+      ),
+      final_chunk,
+  ])
+
+  llm_request = LlmRequest(
+      contents=[
+          types.Content(
+              role="user", parts=[types.Part.from_text(text="Test prompt")]
+          )
+      ],
+  )
+
+  responses = [
+      response
+      async for response in lite_llm_instance.generate_content_async(
+          llm_request, stream=True
+      )
+  ]
+
+  assert responses[-1].partial is False
+  assert responses[-1].grounding_metadata is not None
+  assert (
+      responses[-1].grounding_metadata.grounding_chunks[0].web.uri
+      == "https://example.com"
+  )
+
+
+@pytest.mark.asyncio
+async def test_generate_content_async_stream_with_usage_metadata(
     mock_completion, lite_llm_instance
 ):
 

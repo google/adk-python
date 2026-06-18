@@ -492,6 +492,15 @@ class LlmAgent(BaseAgent, abc.ABC):
   # Callbacks - End
 
   @override
+  async def _handle_before_agent_callback(
+      self, ctx: InvocationContext
+  ) -> Optional[Event]:
+    event = await super()._handle_before_agent_callback(ctx)
+    if event is not None:
+      self.__maybe_save_output_to_state(event)
+    return event
+
+  @override
   async def _run_async_impl(
       self, ctx: InvocationContext
   ) -> AsyncGenerator[Event, None]:

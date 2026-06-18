@@ -648,7 +648,7 @@ async def test_get_artifact_version_out_of_index(
 async def test_gcs_save_and_load_empty_text_artifact(
     artifact_service_factory,
 ):
-  """GcsArtifactService should treat empty text as stored content."""
+  """GcsArtifactService should round-trip empty text as text."""
   artifact_service = artifact_service_factory(ArtifactServiceType.GCS)
   artifact = types.Part.from_text(text="")
 
@@ -668,9 +668,7 @@ async def test_gcs_save_and_load_empty_text_artifact(
       filename="empty.txt",
   )
 
-  assert loaded_artifact == types.Part.from_bytes(
-      data=b"", mime_type="text/plain"
-  )
+  assert loaded_artifact == types.Part(text="")
 
 
 @pytest.mark.asyncio
@@ -1080,3 +1078,74 @@ async def test_load_artifact_preserves_inline_data_display_name(
   assert loaded is not None
   assert loaded.inline_data is not None
   assert loaded.inline_data.display_name == display_name
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "service_type",
+    [
+        ArtifactServiceType.IN_MEMORY,
+        ArtifactServiceType.GCS,
+        ArtifactServiceType.FILE,
+    ],
+)
+@pytest.mark.parametrize(
+    "text_content",
+    ['{"key": "value"}', "some other text"],
+)
+async def test_save_load_text_artifact(
+    service_type, artifact_service_factory, text_content
+):
+  """Tests that text artifacts retain .text after round-trip save/load."""
+  artifact_service = artifact_service_factory(service_type)
+  artifact = types.Part.from_text(text=text_content)
+
+  await artifact_service.save_artifact(
+      app_name="app0",
+      user_id="user0",
+      session_id="123",
+      filename="data.json",
+      artifact=artifact,
+  )
+  loaded = await artifact_service.load_artifact(
+      app_name="app0",
+      user_id="user0",
+      session_id="123",
+      filename="data.json",
+  )
+  assert loaded is not None
+  assert loaded.text == text_content
+  assert loaded.inline_data is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "service_type",
+    [
+        ArtifactServiceType.GCS,
+        ArtifactServiceType.FILE,
+    ],
+)
+async def test_save_load_empty_text_artifact(
+    service_type, artifact_service_factory
+):
+  """Tests that empty text artifacts survive round-trip save/load."""
+  artifact_service = artifact_service_factory(service_type)
+  artifact = types.Part.from_text(text="")
+
+  await artifact_service.save_artifact(
+      app_name="app0",
+      user_id="user0",
+      session_id="123",
+      filename="empty.txt",
+      artifact=artifact,
+  )
+  loaded = await artifact_service.load_artifact(
+      app_name="app0",
+      user_id="user0",
+      session_id="123",
+      filename="empty.txt",
+  )
+  assert loaded is not None
+  assert loaded.text == ""
+  assert loaded.inline_data is None

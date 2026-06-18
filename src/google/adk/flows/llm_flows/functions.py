@@ -977,13 +977,8 @@ async def _process_function_live_helper(
             )
         ) as agen:
           async for result in agen:
-            updated_content = types.Content(
-                role='user',
-                parts=[
-                    types.Part.from_text(
-                        text=f'Function {tool.name} returned: {result}'
-                    )
-                ],
+            updated_content = _build_function_response_content(
+                tool, result, tool_context.function_call_id
             )
             invocation_context.live_request_queue.send_content(updated_content)
       except asyncio.CancelledError:
@@ -1182,16 +1177,11 @@ def __build_response_event(
         tool, function_result
     )
 
-  part_function_response = types.Part.from_function_response(
-      name=tool.name,
-      response=function_result,
-      parts=function_response_parts,
-  )
-  part_function_response.function_response.id = tool_context.function_call_id
-
-  content = types.Content(
-      role='user',
-      parts=[part_function_response],
+  content = _build_function_response_content(
+      tool,
+      function_result,
+      tool_context.function_call_id,
+      function_response_parts,
   )
 
   function_response_event = Event(
@@ -1203,6 +1193,31 @@ def __build_response_event(
   )
 
   return function_response_event
+
+
+def _build_function_response_content(
+    tool: BaseTool,
+    function_result: object,
+    function_call_id: Optional[str],
+    function_response_parts: Optional[list[types.FunctionResponsePart]] = None,
+) -> types.Content:
+  """Builds the content carrying a tool result as a FunctionResponse."""
+  # Specs requires the result to be a dict.
+  if not isinstance(function_result, dict):
+    function_result = {'result': function_result}
+
+  part_function_response = types.Part.from_function_response(
+      name=tool.name,
+      response=function_result,
+      parts=function_response_parts,
+  )
+  part_function_response.function_response.id = function_call_id
+  if tool.response_scheduling is not None:
+    part_function_response.function_response.scheduling = (
+        tool.response_scheduling
+    )
+
+  return types.Content(role='user', parts=[part_function_response])
 
 
 def deep_merge_dicts(d1: dict, d2: dict) -> dict:

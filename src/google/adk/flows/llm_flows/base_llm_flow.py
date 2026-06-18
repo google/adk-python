@@ -479,6 +479,29 @@ async def _process_agent_tools(
           tool_context=tool_context, llm_request=llm_request
       )
 
+  if invocation_context.live_request_queue is not None:
+    _mark_live_async_tools_non_blocking(llm_request)
+
+
+def _mark_live_async_tools_non_blocking(llm_request: LlmRequest) -> None:
+  """Marks live streaming and response-scheduling tools as NON_BLOCKING.
+
+  These tools emit asynchronous FunctionResponses, which the Live API only
+  accepts for NON_BLOCKING declarations.
+  """
+  if not llm_request.config.tools:
+    return
+  for gemini_tool in llm_request.config.tools:
+    for declaration in gemini_tool.function_declarations or []:
+      tool = llm_request.tools_dict.get(declaration.name)
+      if tool is None:
+        continue
+      is_streaming_tool = hasattr(tool, 'func') and inspect.isasyncgenfunction(
+          tool.func
+      )
+      if tool.response_scheduling is not None or is_streaming_tool:
+        declaration.behavior = types.Behavior.NON_BLOCKING
+
 
 class BaseLlmFlow(ABC):
   """A basic flow that calls the LLM in a loop until a final response is generated.
@@ -713,9 +736,9 @@ class BaseLlmFlow(ABC):
         logger.error('Connection closed: %s.', e)
         raise
       except errors.APIError as e:
-        # Error code 1000 and 1006 indicates a recoverable connection drop.
+        # Error code 1000, 1006 and 1011 indicates a recoverable connection drop.
         # In that case, we attempt to reconnect with session handle if available.
-        if e.code in [1000, 1006]:
+        if e.code in [1000, 1006, 1011]:
           if invocation_context.live_session_resumption_handle:
             if attempt > DEFAULT_MAX_RECONNECT_ATTEMPTS:
               logger.error('Max reconnection attempts reached (%s).', e)
@@ -724,6 +747,7 @@ class BaseLlmFlow(ABC):
                 'Connection lost (%s), reconnecting with session handle.', e
             )
             continue
+
         logger.error('APIError in live flow: %s', e)
         raise
       except Exception as e:
@@ -1254,6 +1278,16 @@ class BaseLlmFlow(ABC):
     agent_to_run = root_agent.find_agent(agent_name)
     if not agent_to_run:
       raise ValueError(f'Agent {agent_name} not found in the agent tree.')
+
+    from google.adk.agents.llm_agent import LlmAgent
+
+    if (
+        isinstance(invocation_context.agent, LlmAgent)
+        and invocation_context.agent.disallow_transfer_to_peers
+        and agent_to_run.parent_agent == invocation_context.agent.parent_agent
+        and agent_to_run != invocation_context.agent
+    ):
+      raise ValueError(f'Transfer to sibling agent {agent_name} is disallowed.')
     return agent_to_run
 
   async def _call_llm_async(
