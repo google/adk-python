@@ -18,3 +18,5 @@ MISSING_EVAL_DEPENDENCIES_MESSAGE = (
     'Eval module is not installed, please install via `pip install'
     ' "google-adk[eval]"`.'
 )
+
+DEFAULT_LIVE_TIMEOUT_SECONDS = 300

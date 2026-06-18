@@ -1,0 +1,6 @@
+agent_class: LlmAgent
+name: generate_headline
+instruction: |
+  Write a headline about the topic "{topic}".
+  If feedback is provided, take it into account.
+  The feedback: {feedback?}

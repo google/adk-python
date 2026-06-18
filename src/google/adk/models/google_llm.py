@@ -19,15 +19,19 @@ import contextlib
 import copy
 from functools import cached_property
 import logging
+import re
 from typing import Any
 from typing import AsyncGenerator
 from typing import cast
 from typing import Optional
 from typing import TYPE_CHECKING
 from typing import Union
+from urllib.parse import urlparse
+from urllib.parse import urlunparse
 
 from google.genai import types
 from google.genai.errors import ClientError
+from pydantic import Field
 from typing_extensions import override
 
 from ..utils._google_client_headers import get_tracking_headers
@@ -49,6 +53,7 @@ logger = logging.getLogger('google_adk.' + __name__)
 
 _NEW_LINE = '\n'
 _EXCLUDED_PART_FIELD = {'inline_data': {'data'}}
+_GOOGLE_API_VERSION_SUFFIX_PATTERN = re.compile(r'/?(v[0-9][a-z0-9.-]*)/?')
 
 
 _RESOURCE_EXHAUSTED_POSSIBLE_FIX_MESSAGE = """
@@ -87,9 +92,33 @@ class Gemini(BaseLlm):
     model: The name of the Gemini model.
     use_interactions_api: Whether to use the interactions API for model
       invocation.
+
+  Customizing the underlying Client:
+    To set ``google.genai.Client`` options ADK doesn't expose as fields
+    directly (location, project, credentials, http_options, etc.),
+    subclass ``Gemini`` and override the ``api_client`` property::
+
+        from functools import cached_property
+        from google.adk.models import Gemini
+        from google.genai import Client
+
+        class GlobalGemini(Gemini):
+          @cached_property
+          def api_client(self) -> Client:
+            return Client(enterprise=True, location="global")
+
+        agent = Agent(model=GlobalGemini(model="gemini-3-pro-preview"))
+
+    Use ``@property`` instead of ``@cached_property`` if you hit asyncio
+    lock contention in multithreaded code.
   """
 
   model: str = 'gemini-2.5-flash'
+
+  client_kwargs: Optional[dict[str, Any]] = Field(
+      default=None, exclude=True, repr=False
+  )
+  """Extra arguments to pass to the google.genai.Client constructor."""
 
   base_url: Optional[str] = None
   """The base URL for the AI platform service endpoint."""
@@ -142,6 +171,8 @@ class Gemini(BaseLlm):
 
     return [
         r'gemini-.*',
+        # Gemma 4+ works natively with Gemini (no workarounds needed).
+        r'gemma-4.*',
         # model optimizer pattern
         r'model-optimizer-.*',
         # fine-tuned vertex endpoint pattern
@@ -198,6 +229,9 @@ class Gemini(BaseLlm):
       llm_request.config.http_options.headers = self._merge_tracking_headers(
           llm_request.config.http_options.headers
       )
+      _, api_version = self._base_url_and_api_version
+      if api_version:
+        llm_request.config.http_options.api_version = api_version
 
     try:
       # Use interactions API if enabled
@@ -226,7 +260,8 @@ class Gemini(BaseLlm):
         aggregator = StreamingResponseAggregator()
         async with Aclosing(responses) as agen:
           async for response in agen:
-            logger.debug(_build_response_log(response))
+            if logger.isEnabledFor(logging.DEBUG):
+              logger.debug(_build_response_log(response))
             async with Aclosing(
                 aggregator.process_response(response)
             ) as aggregator_gen:
@@ -248,7 +283,8 @@ class Gemini(BaseLlm):
             config=llm_request.config,
         )
         logger.info('Response received from the model.')
-        logger.debug(_build_response_log(response))
+        if logger.isEnabledFor(logging.DEBUG):
+          logger.debug(_build_response_log(response))
 
         llm_response = LlmResponse.create(response)
         if cache_metadata:
@@ -304,17 +340,23 @@ class Gemini(BaseLlm):
     """
     from google.genai import Client
 
-    base_url = self.base_url
+    base_url, api_version = self._base_url_and_api_version
+    kwargs_for_http_options: dict[str, Any] = {
+        'headers': self._tracking_headers(),
+        'retry_options': self.retry_options,
+        'base_url': base_url,
+    }
+    if api_version:
+      kwargs_for_http_options['api_version'] = api_version
 
     kwargs: dict[str, Any] = {
-        'http_options': types.HttpOptions(
-            headers=self._tracking_headers(),
-            retry_options=self.retry_options,
-            base_url=base_url,
-        )
+        'http_options': types.HttpOptions(**kwargs_for_http_options),
     }
     if self.model.startswith('projects/'):
-      kwargs['vertexai'] = True
+      kwargs['enterprise'] = True
+
+    if self.client_kwargs:
+      kwargs.update(self.client_kwargs)
 
     return Client(**kwargs)
 
@@ -330,7 +372,14 @@ class Gemini(BaseLlm):
     return get_tracking_headers()
 
   @cached_property
+  def _base_url_and_api_version(self) -> tuple[Optional[str], Optional[str]]:
+    return _normalize_base_url_and_api_version(self.base_url)
+
+  @cached_property
   def _live_api_version(self) -> str:
+    _, api_version = self._base_url_and_api_version
+    if api_version:
+      return api_version
     if self._api_backend == GoogleLLMVariant.VERTEX_AI:
       # use beta version for vertex api
       return 'v1beta1'
@@ -342,7 +391,7 @@ class Gemini(BaseLlm):
   def _live_api_client(self) -> Client:
     from google.genai import Client
 
-    base_url = self.base_url
+    base_url, _ = self._base_url_and_api_version
 
     kwargs: dict[str, Any] = {
         'http_options': types.HttpOptions(
@@ -352,7 +401,10 @@ class Gemini(BaseLlm):
         )
     }
     if self.model.startswith('projects/'):
-      kwargs['vertexai'] = True
+      kwargs['enterprise'] = True
+
+    if self.client_kwargs:
+      kwargs.update(self.client_kwargs)
 
     return Client(**kwargs)
 
@@ -415,6 +467,10 @@ class Gemini(BaseLlm):
             ' backend. Please use Vertex AI backend.'
         )
     llm_request.live_connect_config.tools = llm_request.config.tools
+    if llm_request.config.thinking_config is not None:
+      llm_request.live_connect_config.thinking_config = (
+          llm_request.config.thinking_config
+      )
     logger.debug('Connecting to live with llm_request:%s', llm_request)
     logger.debug('Live connect config: %s', llm_request.live_connect_config)
     async with self._live_api_client.aio.live.connect(
@@ -432,8 +488,8 @@ class Gemini(BaseLlm):
     from ..tools.computer_use.computer_use_toolset import ComputerUseToolset
 
     async def convert_wait_to_wait_5_seconds(wait_func):
-      async def wait_5_seconds():
-        return await wait_func(5)
+      async def wait_5_seconds(tool_context=None):
+        return await wait_func(5, tool_context=tool_context)
 
       return wait_5_seconds
 
@@ -574,11 +630,30 @@ def _build_response_log(resp: types.GenerateContentResponse) -> str:
       function_calls_text.append(
           f'name: {func_call.name}, args: {func_call.args}'
       )
+  # Avoid accessing resp.text directly: the genai SDK raises a UserWarning
+  # whenever .text is accessed on a response that contains non-text parts
+  # (e.g. function_call). This floods logs on every tool invocation.
+  # Instead, manually join only the text parts from candidates.
+  text_parts = []
+  # Mimic resp.text behavior exactly but without triggering linter warnings:
+  # 1. Only use the first candidate.
+  # 2. Exclude thought/reasoning parts.
+  if (
+      resp.candidates
+      and resp.candidates[0].content
+      and resp.candidates[0].content.parts
+  ):
+    for part in resp.candidates[0].content.parts:
+      if isinstance(part.text, str):
+        if getattr(part, 'thought', False):
+          continue
+        text_parts.append(part.text)
+  text = ''.join(text_parts)
   return f"""
 LLM Response:
 -----------------------------------------------------------
 Text:
-{resp.text}
+{text}
 -----------------------------------------------------------
 Function calls:
 {_NEW_LINE.join(function_calls_text)}
@@ -599,3 +674,43 @@ def _remove_display_name_if_present(
   """
   if data_obj and data_obj.display_name:
     data_obj.display_name = None
+
+
+def _normalize_base_url_and_api_version(
+    base_url: Optional[str],
+) -> tuple[Optional[str], Optional[str]]:
+  """Extracts a Google API version suffix from a base URL when present.
+
+  Returns:
+    A tuple ``(normalized_base_url, api_version)``, where
+    ``normalized_base_url`` is the input URL with any version path suffix
+    stripped (only for ``*.googleapis.com`` URLs that end in a recognized
+    version path), and ``api_version`` is the extracted version string
+    (e.g. ``"v1alpha"``) or ``None`` when no version was extracted. Non-Google
+    URLs and URLs without a version suffix are returned unchanged with
+    ``api_version`` as ``None``. When ``base_url`` is ``None``, both elements
+    are ``None``.
+  """
+  if not base_url:
+    return None, None
+
+  parsed_base_url = urlparse(base_url)
+  if (
+      not parsed_base_url.netloc.endswith('.googleapis.com')
+      or parsed_base_url.query
+      or parsed_base_url.fragment
+  ):
+    return base_url, None
+
+  path = parsed_base_url.path or ''
+  if not path or path == '/':
+    return base_url, None
+
+  version_match = _GOOGLE_API_VERSION_SUFFIX_PATTERN.fullmatch(path)
+  if not version_match:
+    return base_url, None
+
+  normalized_base_url = urlunparse(
+      parsed_base_url._replace(path='/', params='', query='', fragment='')
+  )
+  return normalized_base_url, version_match.group(1)

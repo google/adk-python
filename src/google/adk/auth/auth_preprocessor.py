@@ -22,8 +22,8 @@ from typing_extensions import override
 from ..agents.invocation_context import InvocationContext
 from ..agents.readonly_context import ReadonlyContext
 from ..events.event import Event
-from ..flows.llm_flows import functions
 from ..flows.llm_flows._base_llm_processor import BaseLlmRequestProcessor
+from ..flows.llm_flows.functions import handle_function_calls_async
 from ..flows.llm_flows.functions import REQUEST_EUC_FUNCTION_CALL_NAME
 from ..models.llm_request import LlmRequest
 from ..sessions.state import State
@@ -189,7 +189,7 @@ class _AuthLlmRequestProcessor(BaseLlmRequestProcessor):
           function_call.id in tools_to_resume
           for function_call in function_calls
       ]):
-        if function_response_event := await functions.handle_function_calls_async(
+        if function_response_event := await handle_function_calls_async(
             invocation_context,
             event,
             {

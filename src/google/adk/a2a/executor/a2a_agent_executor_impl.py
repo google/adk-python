@@ -26,9 +26,7 @@ import uuid
 from a2a.server.agent_execution import AgentExecutor
 from a2a.server.agent_execution.context import RequestContext
 from a2a.server.events.event_queue import EventQueue
-from a2a.types import Artifact
 from a2a.types import Message
-from a2a.types import Part
 from a2a.types import Role
 from a2a.types import Task
 from a2a.types import TaskState
@@ -221,15 +219,14 @@ class _A2aAgentExecutor(AgentExecutor):
             self._config.gen_ai_part_converter,
         ):
           a2a_event.metadata = self._get_invocation_metadata(executor_context)
-          a2a_event = await execute_after_event_interceptors(
+          a2a_events = await execute_after_event_interceptors(
               a2a_event,
               executor_context,
               adk_event,
               self._config.execute_interceptors,
           )
-          if not a2a_event:
-            continue
-          await event_queue.enqueue_event(a2a_event)
+          for e in a2a_events:
+            await event_queue.enqueue_event(e)
 
     if error_event:
       final_event = error_event

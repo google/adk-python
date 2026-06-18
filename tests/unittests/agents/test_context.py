@@ -619,3 +619,57 @@ class TestContextAddUiWidget:
 
     assert len(context.actions.render_ui_widgets) == 1
     assert context.actions.render_ui_widgets[0] is w1
+
+
+class TestDeriveScheduler:
+  """Tests for _derive_scheduler helper."""
+
+  def test_derive_scheduler_no_parent(self):
+    from google.adk.agents.context import _derive_scheduler
+
+    assert _derive_scheduler(None) is None
+
+  def test_derive_scheduler_with_parent_having_scheduler(self):
+    from google.adk.agents.context import _derive_scheduler
+
+    mock_parent = MagicMock()
+    mock_scheduler = MagicMock()
+    mock_parent._workflow_scheduler = mock_scheduler
+
+    assert _derive_scheduler(mock_parent) is mock_scheduler
+
+  def test_derive_scheduler_with_parent_no_scheduler(self):
+    from google.adk.agents.context import _derive_scheduler
+    from google.adk.workflow._dynamic_node_scheduler import DynamicNodeScheduler
+
+    mock_parent = MagicMock()
+    mock_parent._workflow_scheduler = None
+
+    scheduler = _derive_scheduler(mock_parent)
+    assert isinstance(scheduler, DynamicNodeScheduler)
+
+
+class TestContextGetInvocationContext:
+  """Test get_invocation_context method in Context."""
+
+  def test_get_invocation_context_propagates_isolation_scope(
+      self, mock_invocation_context
+  ):
+    """Test that get_invocation_context propagates isolation_scope to the copy."""
+    context = Context(mock_invocation_context)
+    context.isolation_scope = "test-isolation-scope"
+
+    # Mock model_copy to return a mock copy
+    mock_copy = MagicMock()
+    mock_invocation_context.model_copy.return_value = mock_copy
+
+    result = context.get_invocation_context()
+
+    # Verify model_copy was called with correct update dict
+    mock_invocation_context.model_copy.assert_called_once_with(
+        update={
+            "session": context.session,
+            "isolation_scope": "test-isolation-scope",
+        }
+    )
+    assert result is mock_copy

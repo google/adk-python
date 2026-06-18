@@ -89,3 +89,35 @@ def test_response_modalities_serialization_no_warning():
         x for x in w if "PydanticSerializationUnexpectedValue" in str(x.message)
     ]
     assert len(pydantic_warnings) == 0
+
+
+def test_avatar_config_initialization():
+  custom_avatar = types.CustomizedAvatar(
+      image_mime_type="image/jpeg", image_data=b"image_bytes"
+  )
+  avatar_config = types.AvatarConfig(
+      audio_bitrate_bps=128000,
+      video_bitrate_bps=1000000,
+      customized_avatar=custom_avatar,
+  )
+  run_config = RunConfig(avatar_config=avatar_config)
+
+  assert run_config.avatar_config == avatar_config
+  assert run_config.avatar_config.customized_avatar == custom_avatar
+  assert (
+      run_config.avatar_config.customized_avatar.image_mime_type == "image/jpeg"
+  )
+  assert run_config.avatar_config.customized_avatar.image_data == b"image_bytes"
+
+
+def test_avatar_config_with_name():
+  avatar_config = types.AvatarConfig(
+      audio_bitrate_bps=128000,
+      video_bitrate_bps=1000000,
+      avatar_name="test_avatar",
+  )
+  run_config = RunConfig(avatar_config=avatar_config)
+
+  assert run_config.avatar_config == avatar_config
+  assert run_config.avatar_config.avatar_name == "test_avatar"
+  assert run_config.avatar_config.customized_avatar is None

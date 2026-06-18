@@ -573,6 +573,9 @@ class TestRemoteA2aAgentMessageHandling:
     mock_function_event.custom_metadata = {
         A2A_METADATA_PREFIX + "task_id": "task-123"
     }
+    mock_function_event.content = Mock()
+    mock_function_event.content.parts = [Mock()]
+    mock_function_event.get_function_calls.return_value = []
 
     # Mock latest event with function response - set proper author
     mock_latest_event = Mock()
@@ -629,6 +632,37 @@ class TestRemoteA2aAgentMessageHandling:
       assert len(parts) == 1
       assert parts[0] == mock_a2a_part
       assert context_id is None
+
+  def test_construct_message_parts_from_session_user_input_metadata(self):
+    """Test that user input metadata is added for user messages."""
+    mock_part = Mock()
+    mock_content = Mock()
+    mock_content.parts = [mock_part]
+
+    mock_event = Mock()
+    mock_event.content = mock_content
+    mock_event.author = "user"
+    mock_event.custom_metadata = None
+
+    self.mock_session.events = [mock_event]
+
+    with patch(
+        "google.adk.agents.remote_a2a_agent._present_other_agent_message"
+    ) as mock_convert:
+      mock_convert.return_value = mock_event
+
+      mock_a2a_part = Mock()
+      mock_a2a_part.root = Mock()
+      mock_a2a_part.root.metadata = {}
+      self.mock_genai_part_converter.return_value = mock_a2a_part
+
+      parts, _ = self.agent._construct_message_parts_from_session(
+          self.mock_context
+      )
+
+      assert len(parts) == 1
+      assert parts[0] == mock_a2a_part
+      assert parts[0].root.metadata.get("is_user_input") is True
 
   def test_construct_message_parts_from_session_success_multiple_parts(self):
     """Test successful message parts construction from session."""
@@ -717,6 +751,8 @@ class TestRemoteA2aAgentMessageHandling:
     def mock_converter(part):
       mock_a2a_part = Mock()
       mock_a2a_part.text = part.text
+      mock_a2a_part.root = Mock()
+      mock_a2a_part.root.metadata = {}
       return mock_a2a_part
 
     self.mock_genai_part_converter.side_effect = mock_converter
@@ -767,6 +803,8 @@ class TestRemoteA2aAgentMessageHandling:
     def mock_converter(part):
       mock_a2a_part = Mock()
       mock_a2a_part.text = part.text
+      mock_a2a_part.root = Mock()
+      mock_a2a_part.root.metadata = {}
       return mock_a2a_part
 
     self.mock_genai_part_converter.side_effect = mock_converter
@@ -822,6 +860,8 @@ class TestRemoteA2aAgentMessageHandling:
     def mock_converter(part):
       mock_a2a_part = Mock()
       mock_a2a_part.text = part.text
+      mock_a2a_part.root = Mock()
+      mock_a2a_part.root.metadata = {}
       return mock_a2a_part
 
     self.mock_genai_part_converter.side_effect = mock_converter
@@ -869,6 +909,29 @@ class TestRemoteA2aAgentMessageHandling:
       # Check that metadata was added
       assert result.custom_metadata is not None
       assert A2A_METADATA_PREFIX + "context_id" in result.custom_metadata
+
+  @pytest.mark.asyncio
+  async def test_handle_a2a_response_message_converter_returns_none(self):
+    """Test _handle_a2a_response returns None when message converter returns None."""
+    mock_a2a_message = Mock(spec=A2AMessage)
+    mock_a2a_message.context_id = "context-123"
+
+    with patch(
+        "google.adk.agents.remote_a2a_agent.convert_a2a_message_to_event"
+    ) as mock_convert:
+      mock_convert.return_value = None
+
+      result = await self.agent._handle_a2a_response(
+          mock_a2a_message, self.mock_context
+      )
+
+      assert result is None
+      mock_convert.assert_called_once_with(
+          mock_a2a_message,
+          self.agent.name,
+          self.mock_context,
+          self.mock_a2a_part_converter,
+      )
 
   @pytest.mark.asyncio
   async def test_handle_a2a_response_with_task_completed_and_no_update(self):
@@ -956,6 +1019,8 @@ class TestRemoteA2aAgentMessageHandling:
       def mock_converter(part):
         mock_a2a_part = Mock()
         mock_a2a_part.original_text = part.text
+        mock_a2a_part.root = Mock()
+        mock_a2a_part.root.metadata = {}
         converted_parts.append(mock_a2a_part)
         return mock_a2a_part
 
@@ -1333,6 +1398,9 @@ class TestRemoteA2aAgentMessageHandlingFromFactory:
     mock_function_event.custom_metadata = {
         A2A_METADATA_PREFIX + "task_id": "task-123"
     }
+    mock_function_event.content = Mock()
+    mock_function_event.content.parts = [Mock()]
+    mock_function_event.get_function_calls.return_value = []
 
     # Mock latest event with function response - set proper author
     mock_latest_event = Mock()
@@ -1875,6 +1943,27 @@ class TestRemoteA2aAgentMessageHandlingV2:
     assert result is None
     self.mock_config.a2a_artifact_update_converter.assert_called_once_with(
         mock_update,
+        self.agent.name,
+        self.mock_context,
+        self.mock_config.a2a_part_converter,
+    )
+
+  @pytest.mark.asyncio
+  async def test_handle_a2a_response_impl_message_converter_returns_none(self):
+    """Test _handle_a2a_response_v2 returns None when message converter returns None."""
+    mock_a2a_message = Mock(spec=A2AMessage)
+    mock_a2a_message.metadata = {}
+    mock_a2a_message.context_id = "context-123"
+
+    self.mock_config.a2a_message_converter.return_value = None
+
+    result = await self.agent._handle_a2a_response_v2(
+        mock_a2a_message, self.mock_context
+    )
+
+    assert result is None
+    self.mock_config.a2a_message_converter.assert_called_once_with(
+        mock_a2a_message,
         self.agent.name,
         self.mock_context,
         self.mock_config.a2a_part_converter,
@@ -2494,6 +2583,7 @@ class TestRemoteA2aAgentIntegration:
     # Mock session with text event
     mock_part = Mock()
     mock_part.text = "Hello world"
+    mock_part.part_metadata = None
 
     mock_content = Mock()
     mock_content.parts = [mock_part]
@@ -2591,6 +2681,7 @@ class TestRemoteA2aAgentIntegration:
     # Mock session with text event
     mock_part = Mock()
     mock_part.text = "Hello world"
+    mock_part.part_metadata = {"test": "part_metadata"}
 
     mock_content = Mock()
     mock_content.parts = [mock_part]

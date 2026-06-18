@@ -412,8 +412,19 @@ class TestTriggerPubSub:
     assert resp.status_code == 500
     assert "Agent processing failed" in resp.json()["detail"]
 
-  def test_with_subscription_metadata(self, client):
-    """Subscription field is used for user_id derivation."""
+  def test_with_subscription_metadata(self, client, monkeypatch):
+    """Subscription field is sanitized for user_id (slashes replaced)."""
+    captured_user_ids = []
+
+    async def dummy_run_async_capture(
+        self, user_id, session_id, new_message, **kwargs
+    ):
+      captured_user_ids.append(user_id)
+      yield _model_event("Success")
+      await asyncio.sleep(0)
+
+    monkeypatch.setattr(Runner, "run_async", dummy_run_async_capture)
+
     message_data = base64.b64encode(b"test").decode("utf-8")
     payload = {
         "message": {"data": message_data},
@@ -422,6 +433,32 @@ class TestTriggerPubSub:
     resp = client.post("/apps/test_app/trigger/pubsub", json=payload)
 
     assert resp.status_code == 200
+    assert len(captured_user_ids) == 1
+    assert captured_user_ids[0] == "projects--p--subscriptions--orders-sub"
+    assert "/" not in captured_user_ids[0]
+
+  def test_default_user_id_when_no_subscription(self, client, monkeypatch):
+    """Default user_id is used when subscription is absent."""
+    captured_user_ids = []
+
+    async def dummy_run_async_capture(
+        self, user_id, session_id, new_message, **kwargs
+    ):
+      captured_user_ids.append(user_id)
+      yield _model_event("Success")
+      await asyncio.sleep(0)
+
+    monkeypatch.setattr(Runner, "run_async", dummy_run_async_capture)
+
+    message_data = base64.b64encode(b"test").decode("utf-8")
+    payload = {
+        "message": {"data": message_data},
+    }
+    resp = client.post("/apps/test_app/trigger/pubsub", json=payload)
+
+    assert resp.status_code == 200
+    assert len(captured_user_ids) == 1
+    assert captured_user_ids[0] == "pubsub-caller"
 
   def test_unknown_app_fails_early(
       self, client, mock_agent_loader, mock_session_service
@@ -491,27 +528,87 @@ class TestTriggerEventarc:
         == "google.cloud.storage.object.v1.finalized"
     )
 
-  def test_source_derived_from_body(self, client):
-    """Source from body is used for user_id."""
+  def test_source_derived_from_body_sanitized(self, client, monkeypatch):
+    """Source from body is sanitized for user_id (slashes replaced)."""
+    captured_user_ids = []
+
+    async def dummy_run_async_capture(
+        self, user_id, session_id, new_message, **kwargs
+    ):
+      captured_user_ids.append(user_id)
+      yield _model_event("Success")
+      await asyncio.sleep(0)
+
+    monkeypatch.setattr(Runner, "run_async", dummy_run_async_capture)
+
     payload = {
         "data": {"key": "value"},
-        "source": "my-custom-source",
+        "source": "//pubsub.googleapis.com/projects/p/topics/t",
     }
     resp = client.post("/apps/test_app/trigger/eventarc", json=payload)
 
     assert resp.status_code == 200
+    assert len(captured_user_ids) == 1
+    assert (
+        captured_user_ids[0] == "pubsub.googleapis.com--projects--p--topics--t"
+    )
+    assert "/" not in captured_user_ids[0]
 
-  def test_source_from_ce_header(self, client):
-    """ce-source header is used when body source is absent."""
+  def test_source_from_ce_header_sanitized(self, client, monkeypatch):
+    """ce-source header is sanitized for user_id (slashes replaced)."""
+    captured_user_ids = []
+
+    async def dummy_run_async_capture(
+        self, user_id, session_id, new_message, **kwargs
+    ):
+      captured_user_ids.append(user_id)
+      yield _model_event("Success")
+      await asyncio.sleep(0)
+
+    monkeypatch.setattr(Runner, "run_async", dummy_run_async_capture)
+
     payload = {
         "data": {"key": "value"},
     }
     resp = client.post(
         "/apps/test_app/trigger/eventarc",
         json=payload,
-        headers={"ce-source": "header-source"},
+        headers={
+            "ce-source": (
+                "//storage.googleapis.com/projects/_/buckets/my-bucket"
+            ),
+        },
     )
+
     assert resp.status_code == 200
+    assert len(captured_user_ids) == 1
+    assert (
+        captured_user_ids[0]
+        == "storage.googleapis.com--projects--_--buckets--my-bucket"
+    )
+    assert "/" not in captured_user_ids[0]
+
+  def test_default_user_id_when_no_source(self, client, monkeypatch):
+    """Default user_id is used when source is absent."""
+    captured_user_ids = []
+
+    async def dummy_run_async_capture(
+        self, user_id, session_id, new_message, **kwargs
+    ):
+      captured_user_ids.append(user_id)
+      yield _model_event("Success")
+      await asyncio.sleep(0)
+
+    monkeypatch.setattr(Runner, "run_async", dummy_run_async_capture)
+
+    payload = {
+        "data": {"key": "value"},
+    }
+    resp = client.post("/apps/test_app/trigger/eventarc", json=payload)
+
+    assert resp.status_code == 200
+    assert len(captured_user_ids) == 1
+    assert captured_user_ids[0] == "eventarc-caller"
 
   def test_complex_event_data(self, client, monkeypatch):
     """Complex nested event data is serialized as JSON for the agent."""

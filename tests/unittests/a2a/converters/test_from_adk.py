@@ -24,6 +24,7 @@ from a2a.types import TaskState
 from a2a.types import TaskStatusUpdateEvent
 from a2a.types import TextPart
 from google.adk.a2a.converters.from_adk_event import convert_event_to_a2a_events
+from google.adk.events import event_actions
 from google.adk.events.event import Event
 from google.genai import types as genai_types
 import pytest
@@ -106,3 +107,75 @@ class TestFromAdk:
     """Test convert_event_to_a2a_events with None agents_artifacts."""
     with pytest.raises(ValueError, match="Agents artifacts cannot be None"):
       convert_event_to_a2a_events(self.mock_event, None)
+
+  def test_convert_event_to_a2a_events_with_actions(self):
+    """Test conversion of event with actions to TaskStatusUpdateEvent."""
+    self.mock_event.actions = event_actions.EventActions()
+    self.mock_event.actions.artifact_delta["image"] = 0
+
+    agents_artifacts = {}
+
+    result = convert_event_to_a2a_events(
+        self.mock_event,
+        agents_artifacts,
+        task_id="task-123",
+        context_id="context-456",
+    )
+
+    assert len(result) == 1
+    assert isinstance(result[0], TaskStatusUpdateEvent)
+    assert result[0].task_id == "task-123"
+    assert result[0].context_id == "context-456"
+
+    metadata = result[0].status.message.metadata
+    assert "adk_actions" in metadata
+    assert metadata["adk_actions"]["artifactDelta"] == {"image": 0}
+
+
+class TestSerializeValue:
+  """Tests for _serialize_value preserving JSON-native types."""
+
+  def setup_method(self) -> None:
+    from google.adk.a2a.converters.from_adk_event import _serialize_value
+
+    self.serialize = _serialize_value
+
+  def test_dict_preserved(self) -> None:
+    value = {"key": "val", "nested": {"a": 1}}
+    result = self.serialize(value)
+    assert result == value
+    assert isinstance(result, dict)
+
+  def test_list_preserved(self) -> None:
+    value = [1, "two", {"three": 3}]
+    result = self.serialize(value)
+    assert result == value
+    assert isinstance(result, list)
+
+  def test_int_preserved(self) -> None:
+    result = self.serialize(42)
+    assert result == 42
+    assert isinstance(result, int)
+
+  def test_float_preserved(self) -> None:
+    result = self.serialize(3.14)
+    assert result == 3.14
+    assert isinstance(result, float)
+
+  def test_bool_preserved(self) -> None:
+    assert self.serialize(True) is True
+    assert self.serialize(False) is False
+
+  def test_string_preserved(self) -> None:
+    assert self.serialize("hello") == "hello"
+
+  def test_none_returns_none(self) -> None:
+    assert self.serialize(None) is None
+
+  def test_non_json_type_stringified(self) -> None:
+    """Non-JSON-native types should still be converted to str."""
+    from datetime import datetime
+
+    dt = datetime(2025, 1, 1)
+    result = self.serialize(dt)
+    assert isinstance(result, str)

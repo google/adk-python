@@ -17,12 +17,15 @@
 import logging
 from unittest.mock import patch
 
+from google.adk.agents.callback_context import CallbackContext
 from google.adk.agents.llm_agent import LlmAgent
 from google.adk.events.event import Event
 from google.adk.events.event_actions import EventActions
 from google.genai import types
 from pydantic import BaseModel
 import pytest
+
+from .. import testing_utils
 
 
 class MockOutputSchema(BaseModel):
@@ -276,3 +279,79 @@ class TestLlmAgentOutputSave:
     # ASSERT: Because the method should return early, the state_delta
     # should remain empty.
     assert len(event.actions.state_delta) == 0
+
+  @pytest.mark.asyncio
+  async def test_output_key_saved_when_before_agent_callback_short_circuits(
+      self,
+  ):
+    """Test that output_key is written to session state when
+    before_agent_callback short-circuits the agent."""
+
+    def cache_callback(callback_context: CallbackContext) -> types.Content:
+      return types.Content(parts=[types.Part.from_text(text="cached answer")])
+
+    agent = LlmAgent(
+        name="test_agent",
+        output_key="result",
+        before_agent_callback=cache_callback,
+    )
+
+    runner = testing_utils.InMemoryRunner(agent)
+    await runner.run_async("hello")
+
+    assert runner.session.state.get("result") == "cached answer"
+
+  def test_maybe_save_output_to_state_skips_function_response_only_event(self):
+    """Test that state_delta set by callback is not overwritten when event
+
+    only has function_response parts and no text.
+    """
+    agent = LlmAgent(name="test_agent", output_key="result")
+
+    # Simulate a function_response-only event (no text parts)
+    parts = [
+        types.Part(
+            function_response=types.FunctionResponse(
+                name="my_tool",
+                response={"status": "success", "data": [1, 2, 3]},
+            )
+        )
+    ]
+    content = types.Content(role="user", parts=parts)
+
+    event = Event(
+        invocation_id="test_invocation",
+        author="test_agent",
+        content=content,
+        actions=EventActions(
+            skip_summarization=True,
+            state_delta={"result": [1, 2, 3]},
+        ),
+    )
+
+    agent._LlmAgent__maybe_save_output_to_state(event)
+
+    # The callback-set value should be preserved, not overwritten with ""
+    assert event.actions.state_delta["result"] == [1, 2, 3]
+
+  def test_maybe_save_output_to_state_saves_empty_string_when_text_is_empty(
+      self,
+  ):
+    """Test that output is saved as empty string when part.text is explicitly empty."""
+    agent = LlmAgent(name="test_agent", output_key="result")
+
+    # Explicitly construct a part with empty string text
+    parts = [types.Part(text="")]
+    content = types.Content(role="model", parts=parts)
+    event = Event(
+        invocation_id="test_invocation",
+        author="test_agent",
+        content=content,
+        actions=EventActions(),
+    )
+
+    agent._LlmAgent__maybe_save_output_to_state(event)
+
+    # Assert key exists and value is empty string
+    assert "result" in event.actions.state_delta
+    assert not event.actions.state_delta["result"]

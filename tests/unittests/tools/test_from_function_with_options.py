@@ -21,6 +21,7 @@ from typing import Generator
 from google.adk.tools import _automatic_function_calling_util
 from google.adk.utils.variant_utils import GoogleLLMVariant
 from google.genai import types
+import pydantic
 
 
 def test_from_function_with_options_no_return_annotation_gemini():
@@ -319,3 +320,98 @@ def test_from_function_with_async_generator_complex_yield_type_vertex():
   # VERTEX_AI should extract yield type (Dict[str, str]) from AsyncGenerator
   assert declaration.response is not None
   assert declaration.response.type == types.Type.OBJECT
+
+
+def test_required_fields_set_in_json_schema_fallback():
+  """Test that required fields are populated when the json_schema fallback path is used.
+
+  When a parameter has a complex type (e.g. tuple[str, ...] | None) that
+  _parse_schema_from_parameter can't handle, from_function_with_options falls
+  back to the parameters_json_schema branch. This test verifies that the
+  required fields are correctly populated in that fallback branch.
+  """
+
+  def complex_tool(
+      query: str,
+      mode: str = 'default',
+      tags: tuple[str, ...] | None = None,
+  ) -> str:
+    """A tool where one param has a complex union type."""
+    return query
+
+  declaration = _automatic_function_calling_util.from_function_with_options(
+      complex_tool, GoogleLLMVariant.GEMINI_API
+  )
+
+  assert declaration.name == 'complex_tool'
+  assert declaration.parameters == types.Schema(
+      type=types.Type.OBJECT,
+      required=['query'],
+      properties={
+          'query': types.Schema(type=types.Type.STRING),
+          'mode': types.Schema(type=types.Type.STRING, default='default'),
+          'tags': types.Schema(
+              any_of=[
+                  types.Schema(
+                      items=types.Schema(type=types.Type.STRING),
+                      type=types.Type.ARRAY,
+                  ),
+                  types.Schema(type=types.Type.NULL),
+              ],
+              nullable=True,
+          ),
+      },
+  )
+
+
+def test_schema_sanitization_for_complex_union_type():
+  """Test schema is sanitized for complex union type."""
+
+  def complex_tool(
+      query: str,
+      mode: str = 'default',
+      tags: dict[str, str] | None = None,
+  ) -> str:
+    return query
+
+  declaration = _automatic_function_calling_util.from_function_with_options(
+      complex_tool, GoogleLLMVariant.GEMINI_API
+  )
+
+  assert declaration.parameters.properties['tags'] == types.Schema(
+      type=types.Type.OBJECT,
+      nullable=True,
+  )
+
+
+def test_format_preservation_for_vertex_fallback():
+  """Test that format is preserved for VERTEX_AI variant in fallback path."""
+
+  class ComplexModel(pydantic.BaseModel):
+    # Field with format that would be stripped by Gemini sanitization
+    email: str = pydantic.Field(json_schema_extra={'format': 'email'})
+    # Complex field to trigger fallback (tuple is not handled by _parse_schema_from_parameter)
+    complex_field: tuple[str, ...]
+
+  def my_tool(param: ComplexModel) -> str:
+    return f'ok {param}'
+
+  # Run with VERTEX_AI, should preserve format
+  declaration_vertex = (
+      _automatic_function_calling_util.from_function_with_options(
+          my_tool, GoogleLLMVariant.VERTEX_AI
+      )
+  )
+
+  # Check that format is preserved
+  param_schema_vertex = declaration_vertex.parameters.properties['param']
+  assert param_schema_vertex.properties['email'].format == 'email'
+
+  # Run with GEMINI_API, should strip format (current behavior)
+  declaration_gemini = (
+      _automatic_function_calling_util.from_function_with_options(
+          my_tool, GoogleLLMVariant.GEMINI_API
+      )
+  )
+  param_schema_gemini = declaration_gemini.parameters.properties['param']
+  assert param_schema_gemini.properties['email'].format is None

@@ -31,13 +31,10 @@ from a2a.client.card_resolver import A2ACardResolver
 from a2a.client.client import ClientConfig as A2AClientConfig
 from a2a.client.client_factory import ClientFactory as A2AClientFactory
 from a2a.client.errors import A2AClientHTTPError
-from a2a.client.middleware import ClientCallContext
 from a2a.types import AgentCard
 from a2a.types import Message as A2AMessage
-from a2a.types import MessageSendConfiguration
 from a2a.types import Part as A2APart
 from a2a.types import Role
-from a2a.types import Task as A2ATask
 from a2a.types import TaskArtifactUpdateEvent as A2ATaskArtifactUpdateEvent
 from a2a.types import TaskState
 from a2a.types import TaskStatusUpdateEvent as A2ATaskStatusUpdateEvent
@@ -45,7 +42,6 @@ from a2a.types import TransportProtocol as A2ATransport
 from google.adk.platform import uuid as platform_uuid
 from google.genai import types as genai_types
 import httpx
-from pydantic import BaseModel
 
 try:
   from a2a.utils.constants import AGENT_CARD_WELL_KNOWN_PATH
@@ -65,7 +61,9 @@ from ..a2a.converters.part_converter import A2APartToGenAIPartConverter
 from ..a2a.converters.part_converter import convert_a2a_part_to_genai_part
 from ..a2a.converters.part_converter import convert_genai_part_to_a2a_part
 from ..a2a.converters.part_converter import GenAIPartToA2APartConverter
-from ..a2a.converters.utils import _get_adk_metadata_key
+from ..a2a.converters.to_adk_event import _create_mock_function_call_for_required_user_input
+from ..a2a.converters.to_adk_event import MOCK_FUNCTION_CALL_FOR_REQUIRED_USER_AUTH
+from ..a2a.converters.to_adk_event import MOCK_FUNCTION_CALL_FOR_REQUIRED_USER_INPUT
 from ..a2a.experimental import a2a_experimental
 from ..a2a.logs.log_utils import build_a2a_request_log
 from ..a2a.logs.log_utils import build_a2a_response_log
@@ -103,6 +101,22 @@ class A2AClientError(Exception):
   """Raised when A2A client operations fail."""
 
   pass
+
+
+def _add_mock_function_call(event: Event, state: TaskState) -> None:
+  """Generates a mock function call for input-required events if applicable."""
+  if event.content is None:
+    return
+
+  output_parts, long_running_tool_ids = (
+      _create_mock_function_call_for_required_user_input(
+          state,
+          event.content.parts,
+          event.long_running_tool_ids,
+      )
+  )
+  event.content.parts = output_parts
+  event.long_running_tool_ids = long_running_tool_ids
 
 
 @a2a_experimental
@@ -360,8 +374,45 @@ class RemoteA2aAgent(BaseAgent):
     if not function_call_event:
       return None
 
+    event = ctx.session.events[-1]
+    # If the user function_response replies to a function_call for non-ADK
+    # input-required / auth-required events (fc.name in
+    # {MOCK_FUNCTION_CALL_FOR_REQUIRED_USER_INPUT,
+    # MOCK_FUNCTION_CALL_FOR_REQUIRED_USER_AUTH}), the function_response part
+    # is replaced with text extracted from the function response.
+    # The implementation is based on the assumption that the user
+    # function_response event will contain a function_response with one of
+    # those names and the response will contain a "result" field with the user
+    # input as a string text.
+    mock_function_call_names = {
+        MOCK_FUNCTION_CALL_FOR_REQUIRED_USER_INPUT,
+        MOCK_FUNCTION_CALL_FOR_REQUIRED_USER_AUTH,
+    }
+    mock_function_call = [
+        fc
+        for fc in function_call_event.get_function_calls()
+        if fc.name in mock_function_call_names
+    ]
+    if mock_function_call:
+      new_parts = []
+      for function_response in event.get_function_responses():
+        if (
+            function_response.name in mock_function_call_names
+            and function_response.response
+            and "result" in function_response.response
+        ):
+          text_value = function_response.response.get("result")
+          new_parts.append(
+              genai_types.Part(
+                  text=str(text_value),
+              )
+          )
+      new_event = event.model_copy(deep=True)
+      new_event.content.parts = new_parts
+      event = new_event
+
     a2a_message = convert_event_to_a2a_message(
-        ctx.session.events[-1], ctx, Role.user, self._genai_part_converter
+        event, ctx, Role.user, self._genai_part_converter
     )
     if function_call_event.custom_metadata:
       metadata = function_call_event.custom_metadata
@@ -422,6 +473,11 @@ class RemoteA2aAgent(BaseAgent):
         if not isinstance(converted_parts, list):
           converted_parts = [converted_parts] if converted_parts else []
 
+        if event.author == "user":
+          for part in converted_parts:
+            part.root.metadata = part.root.metadata or {}
+            part.root.metadata["is_user_input"] = True
+
         if converted_parts:
           message_parts.extend(converted_parts)
         else:
@@ -467,6 +523,7 @@ class RemoteA2aAgent(BaseAgent):
           ):
             for part in event.content.parts:
               part.thought = True
+          _add_mock_function_call(event, task.status.state)
         elif (
             isinstance(update, A2ATaskStatusUpdateEvent)
             and update.status
@@ -476,12 +533,15 @@ class RemoteA2aAgent(BaseAgent):
           event = convert_a2a_message_to_event(
               update.status.message, self.name, ctx, self._a2a_part_converter
           )
+          if not event:
+            return None
           if event.content is not None and update.status.state in (
               TaskState.submitted,
               TaskState.working,
           ):
             for part in event.content.parts:
               part.thought = True
+          _add_mock_function_call(event, update.status.state)
         elif isinstance(update, A2ATaskArtifactUpdateEvent) and (
             not update.append or update.last_chunk
         ):
@@ -501,6 +561,8 @@ class RemoteA2aAgent(BaseAgent):
           # for now.
           return None
 
+        if not event:
+          return None
         event.custom_metadata = event.custom_metadata or {}
         event.custom_metadata[A2A_METADATA_PREFIX + "task_id"] = task.id
         if task.context_id:
@@ -513,6 +575,8 @@ class RemoteA2aAgent(BaseAgent):
         event = convert_a2a_message_to_event(
             a2a_response, self.name, ctx, self._a2a_part_converter
         )
+        if not event:
+          return None
         event.custom_metadata = event.custom_metadata or {}
 
         if a2a_response.context_id:
@@ -583,6 +647,8 @@ class RemoteA2aAgent(BaseAgent):
         event = self._config.a2a_message_converter(
             a2a_response, self.name, ctx, self._config.a2a_part_converter
         )
+        if not event:
+          return None
         event.custom_metadata = event.custom_metadata or {}
 
         if a2a_response.context_id:

@@ -25,7 +25,6 @@ from .eval_case import Invocation
 from .eval_case import InvocationEvents
 from .eval_metrics import EvalMetric
 from .eval_metrics import RubricsBasedCriterion
-from .eval_rubrics import Rubric
 from .llm_as_judge_utils import get_text_from_content
 from .llm_as_judge_utils import get_tool_calls_and_responses_as_json_str
 from .llm_as_judge_utils import get_tool_declarations_as_json_str
@@ -274,7 +273,18 @@ class RubricBasedFinalResponseQualityV1Evaluator(RubricBasedEvaluator):
     """Returns the autorater prompt."""
     self.create_effective_rubrics_list(actual_invocation.rubrics)
     user_input = get_text_from_content(actual_invocation.user_content)
-    final_response = get_text_from_content(actual_invocation.final_response)
+
+    criterion = self._eval_metric.criterion
+    include_intermediate = getattr(
+        criterion, "include_intermediate_responses_in_final", False
+    )
+    final_response = (
+        get_text_from_content(
+            actual_invocation,
+            include_intermediate_responses_in_final=include_intermediate,
+        )
+        or ""
+    )
 
     rubrics_text = "\n".join([
         f"*  {r.rubric_content.text_property}"

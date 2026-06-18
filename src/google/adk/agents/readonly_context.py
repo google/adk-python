@@ -22,6 +22,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
   from google.genai import types
 
+  from ..auth.auth_credential import AuthCredential
   from ..sessions.session import Session
   from .invocation_context import InvocationContext
   from .run_config import RunConfig
@@ -48,6 +49,8 @@ class ReadonlyContext:
   @property
   def agent_name(self) -> str:
     """The name of the agent that is currently running."""
+    if self._invocation_context.agent is None:
+      return "unknown"
     return self._invocation_context.agent.name
 
   @property
@@ -69,3 +72,7 @@ class ReadonlyContext:
   def run_config(self) -> Optional[RunConfig]:
     """The run config of the current invocation. READONLY field."""
     return self._invocation_context.run_config
+
+  def get_credential(self, key: str) -> Optional[AuthCredential]:
+    """Gets a resolved credential by key for this invocation."""
+    return self._invocation_context.credential_by_key.get(key)

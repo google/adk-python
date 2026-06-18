@@ -62,6 +62,74 @@ class _ToolUseAccumulator:
   args_json: str
 
 
+@dataclasses.dataclass
+class _ThinkingAccumulator:
+  """Accumulates streamed thinking content block data."""
+
+  thinking: str
+  signature: str
+
+
+def _build_anthropic_thinking_param(
+    config: Optional[types.GenerateContentConfig],
+) -> Union[
+    anthropic_types.ThinkingConfigEnabledParam,
+    anthropic_types.ThinkingConfigDisabledParam,
+    anthropic_types.ThinkingConfigAdaptiveParam,
+    NotGiven,
+]:
+  """Maps genai ThinkingConfig to Anthropic's thinking parameter.
+
+  Per ``google.genai.types.ThinkingConfig``, ``thinking_budget`` semantics are:
+    * ``None``: not specified; the genai default is model-dependent. Anthropic
+      requires an explicit choice whenever thinking is configured, so we
+      surface this as a ``ValueError`` to keep the developer's intent
+      explicit (mirroring the Anthropic API).
+    * ``0``: thinking is DISABLED (``thinking.type: "disabled"``).
+    * negative (e.g. ``-1`` AUTOMATIC): maps to Anthropic's adaptive thinking
+      (``thinking.type: "adaptive"``). The model picks the depth itself
+      (controlled by the separate ``output_config.effort`` parameter when
+      set). REQUIRED for Claude Opus 4.7 and later models that reject
+      ``"enabled"`` with a 400 error; also recommended for Opus 4.6 and
+      Sonnet 4.6 where ``"enabled"`` is deprecated.
+    * positive int: budget in tokens for legacy manual mode
+      (``thinking.type: "enabled"``; Anthropic requires ``>= 1024`` and
+      ``< max_tokens``; validation is delegated to the Anthropic API so the
+      caller gets the canonical error message). Rejected by Claude Opus 4.7
+      -- callers targeting 4.7+ must use a negative value (adaptive) or
+      ``0`` (disabled).
+  """
+  if not config or not config.thinking_config:
+    return NOT_GIVEN
+
+  thinking_budget = config.thinking_config.thinking_budget
+
+  if thinking_budget is None:
+    raise ValueError(
+        "thinking_budget must be set explicitly when ThinkingConfig is"
+        " provided for Anthropic models. Use 0 to disable thinking, -1 for"
+        " adaptive (model-chosen depth), or a positive integer (>= 1024)"
+        " for manual budgeting."
+    )
+
+  if thinking_budget == 0:
+    return anthropic_types.ThinkingConfigDisabledParam(type="disabled")
+
+  if thinking_budget < 0:
+    # genai AUTOMATIC (-1) and any other negative value map to Anthropic
+    # adaptive thinking. Required for Claude Opus 4.7 (which returns a 400
+    # error for ``"enabled"``) and recommended for Opus 4.6 / Sonnet 4.6
+    # where ``"enabled"`` is deprecated. Adaptive does not accept a budget;
+    # depth is controlled by the model itself (or by the separate
+    # ``output_config.effort`` parameter when set).
+    return anthropic_types.ThinkingConfigAdaptiveParam(type="adaptive")
+
+  return anthropic_types.ThinkingConfigEnabledParam(
+      type="enabled",
+      budget_tokens=thinking_budget,
+  )
+
+
 class ClaudeRequest(BaseModel):
   system_instruction: str
   messages: Iterable[anthropic_types.MessageParam]
@@ -100,22 +168,61 @@ def _is_pdf_part(part: types.Part) -> bool:
   )
 
 
-def part_to_message_block(
+class _ToolUseIdSanitizer:
+  """Maps invalid tool_use IDs to deterministic fallbacks.
+
+  Reuse one instance per conversation so a tool_use and its paired
+  tool_result with the same invalid source ID get matching outputs.
+  """
+
+  def __init__(self) -> None:
+    self._mapping: dict[str, str] = {}
+    self._next_fallback: int = 0
+
+  def sanitize(self, tool_id: str | None) -> str:
+    if tool_id and re.fullmatch(r"[a-zA-Z0-9_-]+", tool_id):
+      return tool_id
+    key = tool_id or ""
+    if key not in self._mapping:
+      self._mapping[key] = f"toolu_fallback_{self._next_fallback}"
+      self._next_fallback += 1
+    return self._mapping[key]
+
+
+def _part_to_message_block(
     part: types.Part,
+    sanitizer: _ToolUseIdSanitizer,
 ) -> Union[
     anthropic_types.TextBlockParam,
+    anthropic_types.ThinkingBlockParam,
     anthropic_types.ImageBlockParam,
     anthropic_types.DocumentBlockParam,
     anthropic_types.ToolUseBlockParam,
     anthropic_types.ToolResultBlockParam,
 ]:
+  if part.thought and part.text:
+    signature = ""
+    if part.thought_signature:
+      signature = part.thought_signature.decode("utf-8")
+    return anthropic_types.ThinkingBlockParam(
+        type="thinking",
+        thinking=part.text,
+        signature=signature,
+    )
+  if part.thought and part.thought_signature:
+    # Redacted thinking: no plaintext, only the encrypted blob produced by
+    # content_block_to_part for round-tripping back to Claude.
+    return anthropic_types.RedactedThinkingBlockParam(
+        type="redacted_thinking",
+        data=part.thought_signature.decode("utf-8"),
+    )
   if part.text:
     return anthropic_types.TextBlockParam(text=part.text, type="text")
   elif part.function_call:
     assert part.function_call.name
 
     return anthropic_types.ToolUseBlockParam(
-        id=part.function_call.id or "",
+        id=sanitizer.sanitize(part.function_call.id),
         name=part.function_call.name,
         input=part.function_call.args,
         type="tool_use",
@@ -124,20 +231,27 @@ def part_to_message_block(
     content = ""
     response_data = part.function_response.response
 
-    # Handle response with content array
-    if "content" in response_data and response_data["content"]:
+    if (
+        "content" in response_data
+        and isinstance(response_data["content"], list)
+        and response_data["content"]
+    ):
       content_items = []
       for item in response_data["content"]:
         if isinstance(item, dict):
-          # Handle text content blocks
           if item.get("type") == "text" and "text" in item:
             content_items.append(item["text"])
           else:
-            # Handle other structured content
             content_items.append(str(item))
         else:
           content_items.append(str(item))
       content = "\n".join(content_items) if content_items else ""
+    elif (
+        "content" in response_data
+        and isinstance(response_data["content"], str)
+        and response_data["content"]
+    ):
+      content = response_data["content"]
     # We serialize to str here
     # SDK ref: anthropic.types.tool_result_block_param
     # https://github.com/anthropics/anthropic-sdk-python/blob/main/src/anthropic/types/tool_result_block_param.py
@@ -155,7 +269,7 @@ def part_to_message_block(
       content = json.dumps(response_data)
 
     return anthropic_types.ToolResultBlockParam(
-        tool_use_id=part.function_response.id or "",
+        tool_use_id=sanitizer.sanitize(part.function_response.id),
         type="tool_result",
         content=content,
         is_error=False,
@@ -192,8 +306,9 @@ def part_to_message_block(
   raise NotImplementedError(f"Not supported yet: {part}")
 
 
-def content_to_message_param(
+def _content_to_message_param(
     content: types.Content,
+    sanitizer: _ToolUseIdSanitizer,
 ) -> anthropic_types.MessageParam:
   message_block = []
   for part in content.parts or []:
@@ -209,7 +324,7 @@ def content_to_message_param(
       logger.warning("PDF data is not supported in Claude for assistant turns.")
       continue
 
-    message_block.append(part_to_message_block(part))
+    message_block.append(_part_to_message_block(part, sanitizer))
 
   return {
       "role": to_claude_role(content.role),
@@ -217,9 +332,40 @@ def content_to_message_param(
   }
 
 
+def part_to_message_block(
+    part: types.Part,
+) -> Union[
+    anthropic_types.TextBlockParam,
+    anthropic_types.ImageBlockParam,
+    anthropic_types.DocumentBlockParam,
+    anthropic_types.ToolUseBlockParam,
+    anthropic_types.ToolResultBlockParam,
+]:
+  return _part_to_message_block(part, _ToolUseIdSanitizer())
+
+
+def content_to_message_param(
+    content: types.Content,
+) -> anthropic_types.MessageParam:
+  return _content_to_message_param(content, _ToolUseIdSanitizer())
+
+
 def content_block_to_part(
     content_block: anthropic_types.ContentBlock,
 ) -> types.Part:
+  """Converts an Anthropic content block to a genai Part."""
+  if isinstance(content_block, anthropic_types.ThinkingBlock):
+    part = types.Part(text=content_block.thinking, thought=True)
+    if content_block.signature:
+      part.thought_signature = content_block.signature.encode("utf-8")
+    return part
+  if isinstance(content_block, anthropic_types.RedactedThinkingBlock):
+    # Preserve the encrypted blob so it can round-trip back to Claude in
+    # the next turn; required to keep the model's reasoning chain intact.
+    return types.Part(
+        thought=True,
+        thought_signature=content_block.data.encode("utf-8"),
+    )
   if isinstance(content_block, anthropic_types.TextBlock):
     return types.Part.from_text(text=content_block.text)
   if isinstance(content_block, anthropic_types.ToolUseBlock):
@@ -229,7 +375,15 @@ def content_block_to_part(
     )
     part.function_call.id = content_block.id
     return part
-  raise NotImplementedError("Not supported yet.")
+  raise NotImplementedError(
+      f"Unsupported content block type: {type(content_block)}"
+  )
+
+
+def _extract_cached_token_count(usage: Any) -> int | None:
+  """Returns Anthropic cache-read tokens, the analog of cached_content tokens."""
+  cached = getattr(usage, "cache_read_input_tokens", None)
+  return cached if isinstance(cached, int) else None
 
 
 def message_to_generate_content_response(
@@ -241,10 +395,12 @@ def message_to_generate_content_response(
       message.model_dump_json(indent=2, exclude_none=True),
   )
 
+  parts = [content_block_to_part(cb) for cb in message.content]
+
   return LlmResponse(
       content=types.Content(
           role="model",
-          parts=[content_block_to_part(cb) for cb in message.content],
+          parts=parts,
       ),
       usage_metadata=types.GenerateContentResponseUsageMetadata(
           prompt_token_count=message.usage.input_tokens,
@@ -252,6 +408,7 @@ def message_to_generate_content_response(
           total_token_count=(
               message.usage.input_tokens + message.usage.output_tokens
           ),
+          cached_content_token_count=_extract_cached_token_count(message.usage),
       ),
       # TODO: Deal with these later.
       # finish_reason=to_google_genai_finish_reason(message.stop_reason),
@@ -382,8 +539,9 @@ class AnthropicLlm(BaseLlm):
       self, llm_request: LlmRequest, stream: bool = False
   ) -> AsyncGenerator[LlmResponse, None]:
     model_to_use = self._resolve_model_name(llm_request.model)
+    sanitizer = _ToolUseIdSanitizer()
     messages = [
-        content_to_message_param(content)
+        _content_to_message_param(content, sanitizer)
         for content in llm_request.contents or []
     ]
     tools = NOT_GIVEN
@@ -401,20 +559,25 @@ class AnthropicLlm(BaseLlm):
         if llm_request.tools_dict
         else NOT_GIVEN
     )
+    thinking = _build_anthropic_thinking_param(llm_request.config)
+    system = NOT_GIVEN
+    if llm_request.config.system_instruction is not None:
+      system = llm_request.config.system_instruction
 
     if not stream:
       message = await self._anthropic_client.messages.create(
           model=model_to_use,
-          system=llm_request.config.system_instruction,
+          system=system,
           messages=messages,
           tools=tools,
           tool_choice=tool_choice,
           max_tokens=self.max_tokens,
+          thinking=thinking,
       )
       yield message_to_generate_content_response(message)
     else:
       async for response in self._generate_content_streaming(
-          llm_request, messages, tools, tool_choice
+          llm_request, messages, system, tools, tool_choice, thinking
       ):
         yield response
 
@@ -422,8 +585,14 @@ class AnthropicLlm(BaseLlm):
       self,
       llm_request: LlmRequest,
       messages: list[anthropic_types.MessageParam],
+      system: Union[str, types.Content, NotGiven],
       tools: Union[Iterable[anthropic_types.ToolUnionParam], NotGiven],
       tool_choice: Union[anthropic_types.ToolChoiceParam, NotGiven],
+      thinking: Union[
+          anthropic_types.ThinkingConfigEnabledParam,
+          anthropic_types.ThinkingConfigDisabledParam,
+          NotGiven,
+      ] = NOT_GIVEN,
   ) -> AsyncGenerator[LlmResponse, None]:
     """Handles streaming responses from Anthropic models.
 
@@ -433,29 +602,42 @@ class AnthropicLlm(BaseLlm):
     model_to_use = self._resolve_model_name(llm_request.model)
     raw_stream = await self._anthropic_client.messages.create(
         model=model_to_use,
-        system=llm_request.config.system_instruction,
+        system=system,
         messages=messages,
         tools=tools,
         tool_choice=tool_choice,
         max_tokens=self.max_tokens,
         stream=True,
+        thinking=thinking,
     )
 
     # Track content blocks being built during streaming.
     # Each entry maps a block index to its accumulated state.
     text_blocks: dict[int, str] = {}
     tool_use_blocks: dict[int, _ToolUseAccumulator] = {}
+    thinking_blocks: dict[int, _ThinkingAccumulator] = {}
+    redacted_thinking_blocks: dict[int, str] = {}
     input_tokens = 0
     output_tokens = 0
+    cached_input_tokens: int | None = None
 
     async for event in raw_stream:
       if event.type == "message_start":
         input_tokens = event.message.usage.input_tokens
         output_tokens = event.message.usage.output_tokens
+        cached_input_tokens = _extract_cached_token_count(event.message.usage)
 
       elif event.type == "content_block_start":
         block = event.content_block
-        if isinstance(block, anthropic_types.TextBlock):
+        if isinstance(block, anthropic_types.ThinkingBlock):
+          thinking_blocks[event.index] = _ThinkingAccumulator(
+              thinking=block.thinking,
+              signature=block.signature,
+          )
+        elif isinstance(block, anthropic_types.RedactedThinkingBlock):
+          # Redacted blocks arrive fully formed at start; no deltas follow.
+          redacted_thinking_blocks[event.index] = block.data
+        elif isinstance(block, anthropic_types.TextBlock):
           text_blocks[event.index] = block.text
         elif isinstance(block, anthropic_types.ToolUseBlock):
           tool_use_blocks[event.index] = _ToolUseAccumulator(
@@ -466,7 +648,20 @@ class AnthropicLlm(BaseLlm):
 
       elif event.type == "content_block_delta":
         delta = event.delta
-        if isinstance(delta, anthropic_types.TextDelta):
+        if isinstance(delta, anthropic_types.ThinkingDelta):
+          thinking_blocks.setdefault(
+              event.index,
+              _ThinkingAccumulator(thinking="", signature=""),
+          )
+          thinking_blocks[event.index].thinking += delta.thinking
+          yield LlmResponse(
+              content=types.Content(
+                  role="model",
+                  parts=[types.Part(text=delta.thinking, thought=True)],
+              ),
+              partial=True,
+          )
+        elif isinstance(delta, anthropic_types.TextDelta):
           text_blocks.setdefault(event.index, "")
           text_blocks[event.index] += delta.text
           yield LlmResponse(
@@ -486,9 +681,27 @@ class AnthropicLlm(BaseLlm):
     # Build the final aggregated response with all content.
     all_parts: list[types.Part] = []
     all_indices = sorted(
-        set(list(text_blocks.keys()) + list(tool_use_blocks.keys()))
+        set(
+            list(thinking_blocks.keys())
+            + list(redacted_thinking_blocks.keys())
+            + list(text_blocks.keys())
+            + list(tool_use_blocks.keys())
+        )
     )
     for idx in all_indices:
+      if idx in thinking_blocks:
+        acc = thinking_blocks[idx]
+        part = types.Part(text=acc.thinking, thought=True)
+        if acc.signature:
+          part.thought_signature = acc.signature.encode("utf-8")
+        all_parts.append(part)
+      if idx in redacted_thinking_blocks:
+        all_parts.append(
+            types.Part(
+                thought=True,
+                thought_signature=redacted_thinking_blocks[idx].encode("utf-8"),
+            )
+        )
       if idx in text_blocks:
         all_parts.append(types.Part.from_text(text=text_blocks[idx]))
       if idx in tool_use_blocks:
@@ -504,6 +717,7 @@ class AnthropicLlm(BaseLlm):
             prompt_token_count=input_tokens,
             candidates_token_count=output_tokens,
             total_token_count=input_tokens + output_tokens,
+            cached_content_token_count=cached_input_tokens,
         ),
         partial=False,
     )
