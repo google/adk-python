@@ -49,6 +49,7 @@ from google.adk.models.llm_response import LlmResponse
 from google.adk.runners import InMemoryRunner
 from google.adk.telemetry import node_tracing
 from google.adk.telemetry import tracing
+from google.adk.telemetry._user_id import _UserIdLogRecordProcessor
 from google.adk.tools.function_tool import FunctionTool
 from google.adk.workflow._base_node import START
 from google.adk.workflow._workflow import Workflow
@@ -315,6 +316,11 @@ def install_telemetry(
   )
 
   logger_provider = LoggerProvider()
+  # Tag records with user.id before they are exported, mirroring the
+  # process-global install done by maybe_install_log_record_processor(). It must
+  # run before the exporting processor since SimpleLogRecordProcessor exports
+  # synchronously in on_emit.
+  logger_provider.add_log_record_processor(_UserIdLogRecordProcessor())
   logger_provider.add_log_record_processor(
       SimpleLogRecordProcessor(log_exporter)
   )

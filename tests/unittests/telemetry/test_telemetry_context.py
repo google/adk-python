@@ -25,7 +25,8 @@ from google.adk.models.llm_response import LlmResponse
 from google.adk.telemetry import ContentCapturingMode
 from google.adk.telemetry import TelemetryConfig
 from google.adk.telemetry import tracing
-from google.adk.telemetry._experimental_semconv import set_operation_details_common_attributes
+from google.adk.telemetry._user_id import _get_from_context
+from google.adk.telemetry._user_id import maybe_propagate_user_id_to_records
 from google.adk.telemetry.context import ADK_TELEMETRY_IGNORE_RUN_CONFIG
 from google.adk.telemetry.tracing import trace_inference_result
 from google.genai.types import Part
@@ -450,49 +451,27 @@ def test_admin_lock_falls_back_to_env_not_per_request_field(
   assert cfg.should_add_content_to_legacy_spans is False
 
 
-# ---------------------------------------------------------------------------
-# set_operation_details_common_attributes: must honor the per-request config.
-#
-# log_only_attributes carry PII-ish data (e.g. user_id). The gate must consult
-# the per-request TelemetryConfig, not just the process-global env var, or a
-# request that opted out via capture_message_content=NO_CONTENT would still leak
-# log-only attributes when the host env defaults to a content-capturing mode.
-# ---------------------------------------------------------------------------
-
-
-def _run_set_common_attrs(
-    telemetry_config: Optional[TelemetryConfig],
-) -> dict:
-  """Runs set_operation_details_common_attributes and returns the result map."""
-  out: dict = {}
-  set_operation_details_common_attributes(
-      out,
-      telemetry_config or TelemetryConfig(),
-      {'gen_ai.operation.name': 'chat'},
-      log_only_attributes={'gen_ai.user.id': 'user-123'},
-  )
-  return out
-
-
-def test_set_common_attrs_cfg_no_content_overrides_env_capture(
+def test_user_id_propagation_cfg_no_content_overrides_env_capture(
     monkeypatch: pytest.MonkeyPatch,
 ):
-  """Per-request NO_CONTENT suppresses PII-ish log-only attrs even if env opts in.
+  """Per-request NO_CONTENT suppresses user.id propagation even if env opts in.
 
-  Security regression guard: ``log_only_attributes`` (e.g. ``user_id``) must be
-  gated on the per-request config, not just the process-global env var, or a
-  request that opted out via ``capture_message_content=NO_CONTENT`` would leak
-  log-only attributes when the host env defaults to a content-capturing mode.
-  The functional ``Runner`` tests do not assert on log-only attribute routing,
-  so this stays as a dedicated unit guard.
+  Security regression guard: ``user.id`` must be gated on the per-request
+  config, not just the process-global env var, or a request that opted out via
+  ``capture_message_content=NO_CONTENT`` would leak the user id onto records
+  when the host env defaults to a content-capturing mode.
   """
   monkeypatch.setenv(_ENV_CAPTURE, 'EVENT_ONLY')
-  out = _run_set_common_attrs(
-      TelemetryConfig(capture_message_content=ContentCapturingMode.NO_CONTENT)
+  no_content = TelemetryConfig(
+      capture_message_content=ContentCapturingMode.NO_CONTENT
   )
-  assert 'gen_ai.user.id' not in out
-  # Non-log-only attributes are always set.
-  assert out['gen_ai.operation.name'] == 'chat'
+  with maybe_propagate_user_id_to_records('user-123', no_content):
+    assert _get_from_context(None) is None
+
+  # Sanity check the positive path: when content is captured the user id is
+  # propagated for the LogRecordProcessor to pick up.
+  with maybe_propagate_user_id_to_records('user-123', TelemetryConfig()):
+    assert _get_from_context(None) == 'user-123'
 
 
 # ---------------------------------------------------------------------------

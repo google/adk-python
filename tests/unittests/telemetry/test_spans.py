@@ -27,7 +27,6 @@ from google.adk.models.llm_request import LlmRequest
 from google.adk.models.llm_response import LlmResponse
 from google.adk.sessions.in_memory_session_service import InMemorySessionService
 from google.adk.telemetry._experimental_semconv import _safe_json_serialize_no_whitespaces
-from google.adk.telemetry.tracing import _use_extra_generate_content_attributes
 from google.adk.telemetry.tracing import ADK_CAPTURE_MESSAGE_CONTENT_IN_SPANS
 from google.adk.telemetry.tracing import GCP_MCP_SERVER_DESTINATION_ID
 from google.adk.telemetry.tracing import safe_json_serialize
@@ -961,11 +960,11 @@ async def test_generate_content_span(
   assert len(user_logs) == 2
   assert expected_user1_body == user_logs[0].body
   assert expected_user2_body == user_logs[1].body
-  expected_user_log_attributes = {GEN_AI_SYSTEM: 'test_system'}
-  if capture_content and user_id is not None:
-    expected_user_log_attributes[USER_ID] = user_id
+  # user.id is no longer baked into the emitted record; it is added downstream
+  # by the installed _UserIdLogRecordProcessor (which the mocked logger here
+  # bypasses). See test_functional for the end-to-end user.id assertions.
   for log in user_logs:
-    assert log.attributes == expected_user_log_attributes
+    assert log.attributes == {GEN_AI_SYSTEM: 'test_system'}
 
   choice_log = next(
       (lr for lr in log_records if lr.event_name == 'gen_ai.choice'),
@@ -1308,14 +1307,10 @@ async def test_generate_content_span_with_experimental_semconv(
 
   attributes = operation_details_log.attributes
 
-  if (
-      capture_content in ['EVENT_ONLY', 'SPAN_AND_EVENT']
-      and user_id is not None
-  ):
-    assert USER_ID in attributes
-    assert attributes[USER_ID] == user_id
-  else:
-    assert USER_ID not in attributes
+  # user.id is no longer baked into the emitted record; it is added downstream
+  # by the installed _UserIdLogRecordProcessor (which the mocked logger here
+  # bypasses). See test_functional for the end-to-end user.id assertions.
+  assert USER_ID not in attributes
 
   if capture_content in ['SPAN_AND_EVENT', 'EVENT_ONLY']:
     assert GEN_AI_SYSTEM_INSTRUCTIONS in attributes
@@ -1468,56 +1463,6 @@ def test_safe_json_serialize_no_whitespaces_recursion_error_returns_not_serializ
       json, 'dumps', side_effect=RecursionError('maximum recursion depth')
   ):
     assert _safe_json_serialize_no_whitespaces({'a': 1}) == '<not serializable>'
-
-
-def test_use_extra_generate_content_attributes_upgraded_version(monkeypatch):
-  # Arrange: Mock the presence of the new event-only context key in the contrib module
-  from opentelemetry.instrumentation import google_genai
-
-  mock_event_only_key = 'MOCKED_EVENT_ONLY_EXTRA_ATTRIBUTES_CONTEXT_KEY'
-  monkeypatch.setattr(
-      google_genai,
-      'GENERATE_CONTENT_EVENT_ONLY_EXTRA_ATTRIBUTES_CONTEXT_KEY',
-      mock_event_only_key,
-      raising=False,
-  )
-
-  # Act: Run the helper with mock.patch on the otel context
-  with mock.patch('opentelemetry.context.set_value') as mock_set_value:
-    with _use_extra_generate_content_attributes(
-        extra_attributes={'span.attr': 'value'},
-        log_only_extra_attributes={USER_ID: 'user_123'},
-    ):
-      pass
-
-    # Assert: Verify set_value was called with the mocked event-only key
-    mock_set_value.assert_any_call(
-        mock_event_only_key,
-        {USER_ID: 'user_123'},
-        context=mock.ANY,
-    )
-
-
-def test_use_extra_generate_content_attributes_older_version(monkeypatch):
-  # Arrange: Simulate an older version by deleting the key if present
-  from opentelemetry.instrumentation import google_genai
-
-  if hasattr(
-      google_genai, 'GENERATE_CONTENT_EVENT_ONLY_EXTRA_ATTRIBUTES_CONTEXT_KEY'
-  ):
-    monkeypatch.delattr(
-        google_genai, 'GENERATE_CONTENT_EVENT_ONLY_EXTRA_ATTRIBUTES_CONTEXT_KEY'
-    )
-
-  # Act & Assert: Ensure execution does not throw any ImportError/AttributeError
-  try:
-    with _use_extra_generate_content_attributes(
-        extra_attributes={'span.attr': 'value'},
-        log_only_extra_attributes={USER_ID: 'user_123'},
-    ):
-      pass
-  except Exception as e:  # pylint: disable=broad-exception-caught
-    pytest.fail(f'Graceful degradation failed: {e}')
 
 
 # ---------------------------------------------------------------------------

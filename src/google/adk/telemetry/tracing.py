@@ -50,7 +50,6 @@ from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GEN_A
 from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GEN_AI_TOOL_NAME
 from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GEN_AI_TOOL_TYPE
 from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GenAiSystemValues
-from opentelemetry.semconv._incubating.attributes.user_attributes import USER_ID
 from opentelemetry.semconv.attributes.error_attributes import ERROR_TYPE
 from opentelemetry.semconv.schemas import Schemas
 from opentelemetry.trace import Span
@@ -63,7 +62,6 @@ from ..utils.model_name_utils import is_gemini_model
 from ._experimental_semconv import maybe_log_completion_details
 from ._experimental_semconv import set_operation_details_attributes_from_request
 from ._experimental_semconv import set_operation_details_attributes_from_response
-from ._experimental_semconv import set_operation_details_common_attributes
 from ._serialization import safe_json_serialize
 from ._stable_semconv import choice_body
 from ._stable_semconv import GEN_AI_CHOICE_EVENT
@@ -74,6 +72,7 @@ from ._stable_semconv import system_message_body
 from ._stable_semconv import USER_CONTENT_ELIDED
 from ._stable_semconv import user_message_body
 from ._token_usage import TokenUsage
+from ._user_id import maybe_propagate_user_id_to_records as _maybe_propagate_user_id_to_records
 from .context import TelemetryConfig
 
 # By default some ADK spans include attributes with potential PII data.
@@ -567,23 +566,19 @@ def use_generate_content_span(
       "gcp.vertex.agent.event_id": model_response_event.id,
       "gcp.vertex.agent.invocation_id": invocation_context.invocation_id,
   }
-  log_only_common_attributes = {}
-  if invocation_context.session.user_id is not None:
-    log_only_common_attributes[USER_ID] = invocation_context.session.user_id
-  if _should_emit_native_telemetry(invocation_context.agent):
-    with _use_native_generate_content_span_stable_semconv(
-        llm_request=llm_request,
-        common_attributes=common_attributes,
-        log_only_common_attributes=log_only_common_attributes,
-        telemetry_config=telemetry_config,
-    ) as span:
-      yield span.span
-  else:
-    with _use_extra_generate_content_attributes(
-        common_attributes,
-        log_only_extra_attributes=log_only_common_attributes,
-    ):
-      yield
+  with _maybe_propagate_user_id_to_records(
+      invocation_context.session.user_id, telemetry_config
+  ):
+    if _should_emit_native_telemetry(invocation_context.agent):
+      with _use_native_generate_content_span_stable_semconv(
+          llm_request=llm_request,
+          common_attributes=common_attributes,
+          telemetry_config=telemetry_config,
+      ) as span:
+        yield span.span
+    else:
+      with _use_extra_generate_content_attributes(common_attributes):
+        yield
 
 
 @asynccontextmanager
@@ -608,39 +603,35 @@ async def use_inference_span(
       "gcp.vertex.agent.event_id": model_response_event.id,
       "gcp.vertex.agent.invocation_id": invocation_context.invocation_id,
   }
-  log_only_common_attributes = {}
-  if invocation_context.session.user_id is not None:
-    log_only_common_attributes[USER_ID] = invocation_context.session.user_id
-  if _should_emit_native_telemetry(invocation_context.agent):
-    async with _use_native_generate_content_span(
-        llm_request=llm_request,
-        common_attributes=common_attributes,
-        log_only_common_attributes=log_only_common_attributes,
-        telemetry_config=telemetry_config,
-    ) as gc_span:
-      if telemetry_config.should_use_experimental_genai_semconv:
-        set_operation_details_common_attributes(
-            gc_span.operation_details_common_attributes,
-            telemetry_config,
-            common_attributes,
-            log_only_attributes=log_only_common_attributes,
-        )
-      try:
-        yield gc_span
-      finally:
-        maybe_log_completion_details(
-            gc_span.span,
-            otel_logger,
-            gc_span.operation_details_attributes,
-            gc_span.operation_details_common_attributes,
-            telemetry_config,
-        )
-  else:
-    with _use_extra_generate_content_attributes(
-        common_attributes,
-        log_only_extra_attributes=log_only_common_attributes,
-    ):
-      yield
+  # user.id is propagated on the OTel context and copied onto the relevant log
+  # records by the installed LogRecordProcessor (see ._user_id). This is the
+  # single mechanism for both the ADK-native and the delegated inference paths;
+  # on the delegated path the genai instrumentation library owns the records, so
+  # ADK cannot set the attribute directly.
+  with _maybe_propagate_user_id_to_records(
+      invocation_context.session.user_id, telemetry_config
+  ):
+    if _should_emit_native_telemetry(invocation_context.agent):
+      async with _use_native_generate_content_span(
+          llm_request=llm_request,
+          common_attributes=common_attributes,
+          telemetry_config=telemetry_config,
+      ) as gc_span:
+        if telemetry_config.should_use_experimental_genai_semconv:
+          gc_span.operation_details_common_attributes.update(common_attributes)
+        try:
+          yield gc_span
+        finally:
+          maybe_log_completion_details(
+              gc_span.span,
+              otel_logger,
+              gc_span.operation_details_attributes,
+              gc_span.operation_details_common_attributes,
+              telemetry_config,
+          )
+    else:
+      with _use_extra_generate_content_attributes(common_attributes):
+        yield
 
 
 def _instrumented_with_opentelemetry_instrumentation_google_genai() -> bool:
@@ -670,7 +661,6 @@ def _should_emit_native_telemetry(agent: BaseAgent) -> bool:
 @contextmanager
 def _use_extra_generate_content_attributes(
     extra_attributes: Mapping[str, AttributeValue],
-    log_only_extra_attributes: Mapping[str, AttributeValue] | None = None,
 ):
   try:
     from opentelemetry.instrumentation.google_genai import GENERATE_CONTENT_EXTRA_ATTRIBUTES_CONTEXT_KEY
@@ -688,18 +678,6 @@ def _use_extra_generate_content_attributes(
   ctx = otel_context.set_value(
       GENERATE_CONTENT_EXTRA_ATTRIBUTES_CONTEXT_KEY, extra_attributes
   )
-  if log_only_extra_attributes:
-    try:
-      from opentelemetry.instrumentation.google_genai import GENERATE_CONTENT_EVENT_ONLY_EXTRA_ATTRIBUTES_CONTEXT_KEY
-
-      ctx = otel_context.set_value(
-          GENERATE_CONTENT_EVENT_ONLY_EXTRA_ATTRIBUTES_CONTEXT_KEY,
-          log_only_extra_attributes,
-          context=ctx,
-      )
-    except (ImportError, AttributeError):
-      pass
-
   tok = otel_context.attach(ctx)
   try:
     yield
@@ -732,7 +710,6 @@ def _set_common_generate_content_attributes(
 def _use_native_generate_content_span_stable_semconv(
     llm_request: LlmRequest,
     common_attributes: Mapping[str, AttributeValue],
-    log_only_common_attributes: Mapping[str, AttributeValue] | None = None,
     telemetry_config: TelemetryConfig | None = None,
 ) -> Iterator[GenerateContentSpan]:
   telemetry_config = telemetry_config or TelemetryConfig()
@@ -753,13 +730,6 @@ def _use_native_generate_content_span_stable_semconv(
         )
     )
     user_message_attributes = {GEN_AI_SYSTEM: _guess_gemini_system_name()}
-    if (
-        telemetry_config.should_add_content_to_logs
-        and log_only_common_attributes
-    ):
-      user_id = log_only_common_attributes.get(USER_ID)
-      if user_id is not None:
-        user_message_attributes[USER_ID] = user_id
 
     for content in llm_request.contents:
       otel_logger.emit(
@@ -778,13 +748,11 @@ async def _use_native_generate_content_span(
     llm_request: LlmRequest,
     common_attributes: Mapping[str, AttributeValue],
     telemetry_config: TelemetryConfig,
-    log_only_common_attributes: Mapping[str, AttributeValue] | None = None,
 ) -> AsyncIterator[GenerateContentSpan]:
   if not telemetry_config.should_use_experimental_genai_semconv:
     with _use_native_generate_content_span_stable_semconv(
         llm_request,
         common_attributes,
-        log_only_common_attributes=log_only_common_attributes,
         telemetry_config=telemetry_config,
     ) as gc_span:
       yield gc_span

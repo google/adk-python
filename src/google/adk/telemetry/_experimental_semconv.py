@@ -581,17 +581,6 @@ def _build_completion_span_attributes(
 # ---------------------------------------------------------------------------
 
 
-def set_operation_details_common_attributes(
-    operation_details_common_attributes: MutableMapping[str, AttributeValue],
-    telemetry_config: TelemetryConfig,
-    attributes: Mapping[str, AttributeValue],
-    log_only_attributes: Mapping[str, AttributeValue] | None = None,
-) -> None:
-  operation_details_common_attributes.update(attributes)
-  if log_only_attributes and telemetry_config.should_add_content_to_logs:
-    operation_details_common_attributes.update(log_only_attributes)
-
-
 def set_operation_details_attributes_from_request(
     operation_details_attributes: MutableMapping[str, AttributeValue],
     llm_request: LlmRequest,
