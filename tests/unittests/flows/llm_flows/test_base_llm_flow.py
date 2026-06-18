@@ -24,12 +24,14 @@ from google.adk.agents.run_config import RunConfig
 from google.adk.events.event import Event
 from google.adk.flows.llm_flows.base_llm_flow import _handle_after_model_callback
 from google.adk.flows.llm_flows.base_llm_flow import BaseLlmFlow
+from google.adk.models.base_llm_connection import BaseLlmConnection
 from google.adk.models.google_llm import Gemini
 from google.adk.models.llm_request import LlmRequest
 from google.adk.models.llm_response import LlmResponse
 from google.adk.plugins.base_plugin import BasePlugin
 from google.adk.tools.base_toolset import BaseToolset
 from google.adk.tools.google_search_tool import GoogleSearchTool
+from google.adk.utils.variant_utils import GoogleLLMVariant
 from google.genai import types
 import pytest
 from websockets.exceptions import ConnectionClosed
@@ -353,6 +355,89 @@ async def test_process_agent_tools_preserves_order_when_later_unions_resolve_fir
   # Even though fast_tool was resolved first, process_llm_request must
   # be invoked in agent.tools order (slow_tool first).
   assert process_call_order == ['slow_tool', 'fast_tool']
+
+
+async def _preprocess(agent, *, is_live: bool) -> LlmRequest:
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent, user_content='test message'
+  )
+  if is_live:
+    invocation_context.live_request_queue = LiveRequestQueue()
+  flow = BaseLlmFlowForTesting()
+  llm_request = LlmRequest()
+  async for _ in flow._preprocess_async(invocation_context, llm_request):
+    pass
+  return llm_request
+
+
+def _declarations(llm_request: LlmRequest) -> dict:
+  return {
+      decl.name: decl
+      for decl in llm_request.config.tools[0].function_declarations
+  }
+
+
+async def _streaming_tool(query: str):
+  """A streaming tool."""
+  yield f'streaming: {query}'
+
+
+def _scheduled_tool(query: str) -> str:
+  """A scheduled tool."""
+  return f'scheduled: {query}'
+
+
+@pytest.mark.asyncio
+async def test_process_agent_tools_marks_streaming_tool_non_blocking_for_live():
+  """Live streaming async-generator tools are marked NON_BLOCKING."""
+  agent = Agent(name='test_agent', tools=[_streaming_tool])
+
+  llm_request = await _preprocess(agent, is_live=True)
+
+  declaration = llm_request.config.tools[0].function_declarations[0]
+  assert declaration.behavior is types.Behavior.NON_BLOCKING
+
+
+@pytest.mark.asyncio
+async def test_process_agent_tools_marks_scheduled_tool_non_blocking_for_live():
+  """Live response-scheduling tools are marked NON_BLOCKING."""
+  from google.adk.tools.function_tool import FunctionTool
+
+  tool = FunctionTool(func=_scheduled_tool)
+  tool.response_scheduling = types.FunctionResponseScheduling.SILENT
+  agent = Agent(name='test_agent', tools=[tool])
+
+  llm_request = await _preprocess(agent, is_live=True)
+
+  declaration = llm_request.config.tools[0].function_declarations[0]
+  assert declaration.behavior is types.Behavior.NON_BLOCKING
+
+
+@pytest.mark.asyncio
+async def test_process_agent_tools_does_not_mark_non_blocking_for_non_live():
+  """Non-live requests never set behavior, even for streaming tools."""
+  from google.adk.tools.function_tool import FunctionTool
+
+  scheduled = FunctionTool(func=_scheduled_tool)
+  scheduled.response_scheduling = types.FunctionResponseScheduling.SILENT
+  agent = Agent(name='test_agent', tools=[_streaming_tool, scheduled])
+
+  llm_request = await _preprocess(agent, is_live=False)
+
+  declarations = _declarations(llm_request)
+  assert declarations['_streaming_tool'].behavior is None
+  assert declarations['_scheduled_tool'].behavior is None
+
+
+@pytest.mark.asyncio
+async def test_process_agent_tools_leaves_regular_tool_behavior_unset_for_live():
+  """Regular (non-streaming, non-scheduled) live tools are left untouched."""
+  agent = Agent(name='test_agent', tools=[_scheduled_tool])
+
+  llm_request = await _preprocess(agent, is_live=True)
+
+  declaration = llm_request.config.tools[0].function_declarations[0]
+  assert declaration.behavior is None
 
 
 class _AsyncProcessLlmRequestTool:
@@ -680,8 +765,9 @@ async def test_run_live_reconnects_on_connection_closed():
       assert invocation_context.live_session_resumption_handle == 'test_handle'
 
 
+@pytest.mark.parametrize('error_code', [1000, 1006, 1011])
 @pytest.mark.asyncio
-async def test_run_live_reconnects_on_api_error():
+async def test_run_live_reconnects_on_api_error(error_code):
   """Test that run_live reconnects when APIError occurs."""
   from google.genai.errors import APIError
 
@@ -696,7 +782,7 @@ async def test_run_live_reconnects_on_api_error():
         )
     )
     # Simulate an API error occurring, triggering reconnection logic.
-    raise APIError(1000, {})
+    raise APIError(error_code, {})
 
   mock_connection.receive = mock.Mock(side_effect=mock_receive)
 
@@ -914,21 +1000,22 @@ async def test_run_live_reconnect_limit():
   async def mock_connect_impl(*args, **kwargs):
     nonlocal connection_cnt
     connection_cnt += 1
-    conn = mock.AsyncMock()
+    if connection_cnt > 1:
+      raise ConnectionClosed(None, None)
+
+    conn = mock.create_autospec(BaseLlmConnection, instance=True)
 
     async def mock_receive():
-      if connection_cnt == 1:
-        # Yield handle only on the first connection.
-        yield LlmResponse(
-            live_session_resumption_update=types.LiveServerSessionResumptionUpdate(
-                new_handle='test_handle'
-            ),
-            turn_complete=True,
-        )
+      yield LlmResponse(
+          live_session_resumption_update=types.LiveServerSessionResumptionUpdate(
+              new_handle='test_handle'
+          ),
+          turn_complete=True,
+      )
       # All subsequent receives (and all receives on later connections) fail.
       raise ConnectionClosed(None, None)
 
-    conn.receive = mock.Mock(side_effect=mock_receive)
+    conn.receive.side_effect = mock_receive
     return conn
 
   agent = Agent(name='test_agent', model=real_model)
@@ -960,7 +1047,7 @@ async def test_run_live_reconnect_limit():
 
 @pytest.mark.asyncio
 async def test_run_live_reconnect_reset_attempt():
-  """Test that attempt counter is reset on successful communication."""
+  """Test that attempt counter is reset on successful connection establishment."""
   from google.adk.flows.llm_flows.base_llm_flow import DEFAULT_MAX_RECONNECT_ATTEMPTS
 
   real_model = Gemini()
@@ -970,22 +1057,28 @@ async def test_run_live_reconnect_reset_attempt():
   async def mock_connect_impl(*args, **kwargs):
     nonlocal connection_cnt
     connection_cnt += 1
-    conn = mock.AsyncMock()
+    # Establish connection successfully on attempts 1, 2, and 5
+    if connection_cnt in (1, 2, 5):
+      conn = mock.create_autospec(BaseLlmConnection, instance=True)
 
-    async def mock_receive():
-      if connection_cnt <= 2:
-        # Yield handle on the first two connections.
-        yield LlmResponse(
-            live_session_resumption_update=types.LiveServerSessionResumptionUpdate(
-                new_handle='test_handle'
-            ),
-            turn_complete=True,
-        )
-      # All subsequent receives fail.
+      async def mock_receive():
+        if connection_cnt == 1:
+          yield LlmResponse(
+              live_session_resumption_update=types.LiveServerSessionResumptionUpdate(
+                  new_handle='test_handle'
+              ),
+              turn_complete=True,
+          )
+        else:
+          if False:
+            yield
+        raise ConnectionClosed(None, None)
+
+      conn.receive.side_effect = mock_receive
+      return conn
+    else:
+      # Failed connection establishments on other attempts
       raise ConnectionClosed(None, None)
-
-    conn.receive = mock.Mock(side_effect=mock_receive)
-    return conn
 
   agent = Agent(name='test_agent', model=real_model)
   invocation_context = await testing_utils.create_invocation_context(
@@ -1007,9 +1100,13 @@ async def test_run_live_reconnect_reset_attempt():
         async for _ in flow.run_live(invocation_context):
           pass
 
-      # We expect 2 successful attempts + DEFAULT_MAX_RECONNECT_ATTEMPTS failed attempts
-      # Total calls = 2 + 5 = 7
-      assert mock_connect.call_count == DEFAULT_MAX_RECONNECT_ATTEMPTS + 2
+      # Connection 1: succeeds (resets to 1), yields handle, receive raises ConnectionClosed.
+      # Connection 2: succeeds (resets to 1), receive raises ConnectionClosed.
+      # Connection 3: fails (attempt becomes 2)
+      # Connection 4: fails (attempt becomes 3)
+      # Connection 5: succeeds (resets to 1), receive raises ConnectionClosed.
+      # Connection 6-10: fail. Connection 10 has attempt = 6 > DEFAULT_MAX_RECONNECT_ATTEMPTS (5), so raises and terminates.
+      assert mock_connect.call_count == DEFAULT_MAX_RECONNECT_ATTEMPTS + 5
 
 
 @pytest.mark.asyncio
@@ -1386,3 +1483,203 @@ async def test_run_live_reconnect_sets_transparent_for_vertex():
         second_call_req = mock_connect.call_args_list[1][0][0]
         session_resump = second_call_req.live_connect_config.session_resumption
         assert session_resump.transparent
+
+
+@pytest.mark.asyncio
+async def test_run_live_history_config_set_for_gemini_api_backend():
+  """history_config is auto-set when seeding history on the Gemini API backend."""
+
+  real_model = Gemini(model='gemini-3.1-flash-live-preview')
+  mock_connection = mock.AsyncMock()
+
+  agent = Agent(name='test_agent', model=real_model)
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent
+  )
+  invocation_context.live_request_queue = LiveRequestQueue()
+  invocation_context.run_config = RunConfig()
+
+  flow = BaseLlmFlowForTesting()
+
+  async def mock_preprocess(ctx, req):
+    req.contents = [types.Content(parts=[types.Part.from_text(text='history')])]
+    from google.adk.flows.llm_flows.basic import _build_basic_request
+
+    _build_basic_request(ctx, req)
+    yield Event(id=Event.new_id(), author='test')
+
+  with mock.patch.object(
+      flow, '_preprocess_async', side_effect=mock_preprocess
+  ):
+    with mock.patch.object(flow, '_send_to_model', new_callable=AsyncMock):
+
+      class StopTestError(Exception):
+        pass
+
+      async def mock_receive():
+        yield LlmResponse(
+            content=types.Content(parts=[types.Part.from_text(text='hi')])
+        )
+        raise StopTestError('stop')
+
+      mock_connection.receive = mock.Mock(side_effect=mock_receive)
+
+      with mock.patch(
+          'google.adk.models.google_llm.Gemini.connect'
+      ) as mock_connect:
+        mock_connect.return_value.__aenter__.return_value = mock_connection
+
+        # Mock the api_backend property
+        with mock.patch.object(
+            Gemini,
+            '_api_backend',
+            new_callable=mock.PropertyMock,
+            return_value=GoogleLLMVariant.GEMINI_API,
+        ):
+          try:
+            async for _ in flow.run_live(invocation_context):
+              pass
+          except StopTestError:
+            pass
+
+          assert mock_connect.call_count == 1
+          called_req = mock_connect.call_args[0][0]
+          assert called_req.live_connect_config is not None
+          assert called_req.live_connect_config.history_config is not None
+          assert (
+              called_req.live_connect_config.history_config.initial_history_in_client_content
+              is True
+          )
+
+
+@pytest.mark.asyncio
+async def test_run_live_history_config_not_set_for_vertex_backend():
+  """history_config is NOT auto-set on the Vertex backend (it rejects it).
+
+  The Vertex AI / Gemini Enterprise Agent Platform live setup message has no
+  ``history``/``history_config`` field. ADK seeds Vertex history via
+  ``send_history`` (``send_client_content``) instead, so the auto-injection of
+  ``history_config`` must be skipped for this backend.
+  """
+
+  real_model = Gemini(model='gemini-3.1-flash-live-preview')
+  mock_connection = mock.AsyncMock()
+
+  class StopTestError(Exception):
+    pass
+
+  async def mock_receive():
+    yield LlmResponse(
+        content=types.Content(parts=[types.Part.from_text(text='hi')])
+    )
+    raise StopTestError('stop')
+
+  mock_connection.receive = mock.Mock(side_effect=mock_receive)
+
+  agent = Agent(name='test_agent', model=real_model)
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent
+  )
+  invocation_context.live_request_queue = LiveRequestQueue()
+
+  flow = BaseLlmFlowForTesting()
+
+  with mock.patch.object(flow, '_send_to_model', new_callable=AsyncMock):
+
+    async def mock_preprocess(ctx, req):
+      req.contents = [
+          types.Content(parts=[types.Part.from_text(text='history')])
+      ]
+      yield Event(id=Event.new_id(), author='test')
+
+    with mock.patch.object(
+        flow, '_preprocess_async', side_effect=mock_preprocess
+    ):
+      with mock.patch.object(
+          Gemini, '_api_backend', new_callable=mock.PropertyMock
+      ) as mock_backend:
+        mock_backend.return_value = GoogleLLMVariant.VERTEX_AI
+        with mock.patch(
+            'google.adk.models.google_llm.Gemini.connect'
+        ) as mock_connect:
+          mock_connect.return_value.__aenter__.return_value = mock_connection
+
+          try:
+            async for _ in flow.run_live(invocation_context):
+              pass
+          except StopTestError:
+            pass
+
+          assert mock_connect.call_count == 1
+          called_req = mock_connect.call_args[0][0]
+          # history_config must NOT be auto-injected on Vertex.
+          assert (
+              called_req.live_connect_config is None
+              or called_req.live_connect_config.history_config is None
+          )
+          # History is still seeded via send_history (send_client_content).
+          mock_connection.send_history.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_run_live_respects_explicit_initial_history_in_client_content_false():
+  """Test that run_live respects explicit initial_history_in_client_content=False in RunConfig."""
+
+  real_model = Gemini()
+  mock_connection = mock.AsyncMock()
+
+  agent = Agent(name='test_agent', model=real_model)
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent
+  )
+  invocation_context.live_request_queue = LiveRequestQueue()
+  run_config = RunConfig(
+      history_config=types.HistoryConfig(
+          initial_history_in_client_content=False
+      )
+  )
+  invocation_context.run_config = run_config
+
+  flow = BaseLlmFlowForTesting()
+
+  async def mock_preprocess(ctx, req):
+    req.contents = [types.Content(parts=[types.Part.from_text(text='history')])]
+    from google.adk.flows.llm_flows.basic import _build_basic_request
+
+    _build_basic_request(ctx, req)
+    yield Event(id=Event.new_id(), author='test')
+
+  with mock.patch.object(
+      flow, '_preprocess_async', side_effect=mock_preprocess
+  ):
+    with mock.patch.object(flow, '_send_to_model', new_callable=AsyncMock):
+
+      class StopTestError(Exception):
+        pass
+
+      async def mock_receive():
+        yield LlmResponse(
+            content=types.Content(parts=[types.Part.from_text(text='hi')])
+        )
+        raise StopTestError('stop')
+
+      mock_connection.receive = mock.Mock(side_effect=mock_receive)
+
+      with mock.patch(
+          'google.adk.models.google_llm.Gemini.connect'
+      ) as mock_connect:
+        mock_connect.return_value.__aenter__.return_value = mock_connection
+
+        try:
+          async for _ in flow.run_live(invocation_context):
+            pass
+        except StopTestError:
+          pass
+
+        assert mock_connect.call_count == 1
+        call_req = mock_connect.call_args[0][0]
+        assert call_req.live_connect_config.history_config is not None
+        assert (
+            call_req.live_connect_config.history_config.initial_history_in_client_content
+            is False
+        )

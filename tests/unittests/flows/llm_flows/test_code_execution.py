@@ -23,6 +23,7 @@ from google.adk.agents.llm_agent import Agent
 from google.adk.code_executors.base_code_executor import BaseCodeExecutor
 from google.adk.code_executors.built_in_code_executor import BuiltInCodeExecutor
 from google.adk.code_executors.code_execution_utils import CodeExecutionResult
+from google.adk.flows.llm_flows._code_execution import _DATA_FILE_HELPER_LIB
 from google.adk.flows.llm_flows._code_execution import response_processor
 from google.adk.models.llm_response import LlmResponse
 from google.genai import types
@@ -150,3 +151,18 @@ async def test_logs_executed_code(mock_logger):
   mock_logger.debug.assert_called_once_with(
       'Executed code:\n```\n%s\n```', 'print("hello")'
   )
+
+
+def test_data_file_helper_lib_defines_crop():
+  """`explore_df` in the injected helper lib calls `crop`, which must exist."""
+  pd = pytest.importorskip('pandas')
+  namespace = {}
+  exec(_DATA_FILE_HELPER_LIB, namespace)  # pylint: disable=exec-used
+
+  crop = namespace['crop']
+  assert crop('short') == 'short'
+  assert crop('x' * 100, max_chars=10) == 'x' * 7 + '...'
+  assert crop('abcdef', max_chars=2) == 'ab'
+
+  # Regression for #4011: explore_df raised NameError when crop was undefined.
+  namespace['explore_df'](pd.DataFrame({'a': [1, 2], 'b': ['x', 'y']}))

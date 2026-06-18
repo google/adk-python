@@ -20,13 +20,11 @@ from typing import Optional
 
 from google.adk.platform import time as platform_time
 from google.adk.platform import uuid as platform_uuid
-from google.genai import types
 from pydantic import alias_generators
 from pydantic import BaseModel
 from pydantic import ConfigDict
 from pydantic import Field
 from pydantic import model_validator
-from pydantic import PrivateAttr
 
 from ..models.llm_response import LlmResponse
 from .event_actions import EventActions
@@ -230,13 +228,30 @@ class Event(LlmResponse):
     return data
 
   @property
-  def message(self) -> Optional[types.Content]:
-    """Alias for content. Returns the user-facing message of the event."""
+  def message(self) -> Any:
+    """Alias for content. Returns the user-facing message of the event.
+
+    Subclasses may declare ``message`` as a real field (see
+    ``_accept_convenience_kwargs``, which already routes construction kwargs to
+    such fields). When they do, return that field's value so reads stay
+    consistent with construction and serialization instead of returning the
+    ``content`` alias. The return type is ``Any`` because such a subclass field
+    may be typed differently (e.g. ``str``); for a plain ``Event`` this returns
+    ``Optional[types.Content]``.
+    """
+    if 'message' in type(self).model_fields:
+      return self.__dict__.get('message')
     return self.content
 
   @message.setter
-  def message(self, value: Optional[types.ContentUnion]) -> None:
-    """Sets the content of the event."""
+  def message(self, value: Any) -> None:
+    """Sets the content of the event (or a subclass ``message`` field)."""
+    if 'message' in type(self).model_fields:
+      # Route through Pydantic so a subclass field's validators/type are
+      # enforced. A direct __dict__ write would skip validation, and
+      # object.__setattr__/self.message would recurse through this property.
+      self.__pydantic_validator__.validate_assignment(self, 'message', value)
+      return
     if value is not None:
       from google.genai import _transformers
 
@@ -260,7 +275,8 @@ class Event(LlmResponse):
   def is_final_response(self) -> bool:
     """Returns whether the event is the final response of an agent.
 
-    NOTE: This method is ONLY for use by Agent Development Kit.
+    Application and UI layers can rely on this helper to detect a complete,
+    user-facing response instead of replicating its logic.
 
     Note that when multiple agents participate in one invocation, there could be
     one event has `is_final_response()` as True for each participating agent.

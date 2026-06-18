@@ -31,6 +31,21 @@ def test_parse_session_scoped_artifact_uri():
   assert parsed.version == 123
 
 
+def test_parse_session_scoped_artifact_uri_with_nested_filename():
+  """Tests parsing a session-scoped artifact URI with a nested filename."""
+  uri = (
+      "artifact://apps/app1/users/user1/sessions/session1/artifacts/"
+      "folder/file1/versions/123"
+  )
+  parsed = artifact_util.parse_artifact_uri(uri)
+  assert parsed is not None
+  assert parsed.app_name == "app1"
+  assert parsed.user_id == "user1"
+  assert parsed.session_id == "session1"
+  assert parsed.filename == "folder/file1"
+  assert parsed.version == 123
+
+
 def test_parse_user_scoped_artifact_uri():
   """Tests parsing a valid user-scoped artifact URI."""
   uri = "artifact://apps/app2/users/user2/artifacts/file2/versions/456"
@@ -43,6 +58,18 @@ def test_parse_user_scoped_artifact_uri():
   assert parsed.version == 456
 
 
+def test_parse_user_scoped_artifact_uri_with_nested_filename():
+  """Tests parsing a user-scoped artifact URI with a nested filename."""
+  uri = "artifact://apps/app2/users/user2/artifacts/folder/file2/versions/456"
+  parsed = artifact_util.parse_artifact_uri(uri)
+  assert parsed is not None
+  assert parsed.app_name == "app2"
+  assert parsed.user_id == "user2"
+  assert parsed.session_id is None
+  assert parsed.filename == "folder/file2"
+  assert parsed.version == 456
+
+
 @pytest.mark.parametrize(
     "invalid_uri",
     [
@@ -51,6 +78,7 @@ def test_parse_user_scoped_artifact_uri():
         "artifact://app1/user1/sessions/session1/artifacts/file1",
         "artifact://apps/app1/users/user1/sessions/session1/artifacts/file1",
         "artifact://apps/app1/users/user1/artifacts/file1",
+        "artifact://apps/app1/users/user1/artifacts/file1/versions/1/extra",
     ],
 )
 def test_parse_invalid_artifact_uri(invalid_uri):

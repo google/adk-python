@@ -57,7 +57,7 @@ Expecting `+se.join(", ")+", got '"+(this.terminals_[f]||f)+"'":fe="Parse error 
     stroke: ${t.lineColor} !important;
     stroke-width: 1;
   }
-
+    
   .edgeLabel {
     background-color: ${t.edgeLabelBackground};
   }

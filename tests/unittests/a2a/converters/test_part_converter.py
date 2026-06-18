@@ -29,6 +29,7 @@ from google.adk.a2a.converters.part_converter import A2A_DATA_PART_TEXT_MIME_TYP
 from google.adk.a2a.converters.part_converter import convert_a2a_part_to_genai_part
 from google.adk.a2a.converters.part_converter import convert_genai_part_to_a2a_part
 from google.adk.a2a.converters.utils import _get_adk_metadata_key
+from google.adk.utils.variant_utils import GoogleLLMVariant
 from google.genai import types as genai_types
 import pytest
 
@@ -262,6 +263,138 @@ class TestConvertA2aPartToGenaiPart:
     # Assert
     assert result is None
     mock_logger.warning.assert_called_once()
+
+
+class TestConvertA2aPartToGenaiPartApiVariant:
+  """Tests for part_metadata suppression based on api_variant (Vertex AI)."""
+
+  def _text_part_with_metadata(self):
+    return a2a_types.Part(
+        root=a2a_types.TextPart(
+            text="hello",
+            metadata={
+                _get_adk_metadata_key("thought"): True,
+                "custom": "value",
+            },
+        )
+    )
+
+  def test_text_part_metadata_suppressed_in_vertex_mode(self):
+    """In Vertex AI mode, part_metadata must be None to avoid SDK ValueError."""
+    a2a_part = self._text_part_with_metadata()
+
+    with patch(
+        "google.adk.a2a.converters.part_converter.get_google_llm_variant",
+        return_value=GoogleLLMVariant.VERTEX_AI,
+    ):
+      result = convert_a2a_part_to_genai_part(a2a_part)
+
+    assert result is not None
+    assert result.part_metadata is None
+    # Native fields are still populated from the metadata.
+    assert result.text == "hello"
+    assert result.thought is True
+
+  def test_text_part_metadata_preserved_in_gemini_api_mode(self):
+    """In Gemini Developer API mode, part_metadata is preserved."""
+    a2a_part = self._text_part_with_metadata()
+
+    with patch(
+        "google.adk.a2a.converters.part_converter.get_google_llm_variant",
+        return_value=GoogleLLMVariant.GEMINI_API,
+    ):
+      result = convert_a2a_part_to_genai_part(a2a_part)
+
+    assert result is not None
+    assert result.part_metadata == {
+        _get_adk_metadata_key("thought"): True,
+        "custom": "value",
+    }
+
+  def test_function_call_metadata_suppressed_in_vertex_mode(self):
+    """Function call data parts also suppress part_metadata in Vertex mode."""
+    a2a_part = a2a_types.Part(
+        root=a2a_types.DataPart(
+            data={"name": "my_func", "args": {"x": 1}},
+            metadata={
+                _get_adk_metadata_key(
+                    A2A_DATA_PART_METADATA_TYPE_KEY
+                ): A2A_DATA_PART_METADATA_TYPE_FUNCTION_CALL,
+                "custom": "value",
+            },
+        )
+    )
+
+    with patch(
+        "google.adk.a2a.converters.part_converter.get_google_llm_variant",
+        return_value=GoogleLLMVariant.VERTEX_AI,
+    ):
+      result = convert_a2a_part_to_genai_part(a2a_part)
+
+    assert result is not None
+    assert result.function_call is not None
+    assert result.part_metadata is None
+
+  def test_function_response_metadata_suppressed_in_vertex_mode(self):
+    """Function response data parts suppress part_metadata in Vertex mode."""
+    a2a_part = a2a_types.Part(
+        root=a2a_types.DataPart(
+            data={"name": "my_func", "response": {"ok": True}},
+            metadata={
+                _get_adk_metadata_key(
+                    A2A_DATA_PART_METADATA_TYPE_KEY
+                ): A2A_DATA_PART_METADATA_TYPE_FUNCTION_RESPONSE,
+                "custom": "value",
+            },
+        )
+    )
+
+    with patch(
+        "google.adk.a2a.converters.part_converter.get_google_llm_variant",
+        return_value=GoogleLLMVariant.VERTEX_AI,
+    ):
+      result = convert_a2a_part_to_genai_part(a2a_part)
+
+    assert result is not None
+    assert result.function_response is not None
+    assert result.part_metadata is None
+
+  def test_file_with_uri_metadata_suppressed_in_vertex_mode(self):
+    """File parts suppress part_metadata in Vertex mode."""
+    a2a_part = a2a_types.Part(
+        root=a2a_types.FilePart(
+            file=a2a_types.FileWithUri(
+                uri="gs://bucket/file.txt",
+                mime_type="text/plain",
+                name="my_file.txt",
+            ),
+            metadata={"custom": "value"},
+        )
+    )
+
+    with patch(
+        "google.adk.a2a.converters.part_converter.get_google_llm_variant",
+        return_value=GoogleLLMVariant.VERTEX_AI,
+    ):
+      result = convert_a2a_part_to_genai_part(a2a_part)
+
+    assert result is not None
+    assert result.file_data is not None
+    assert result.part_metadata is None
+
+  def test_api_variant_resolved_from_env(self):
+    """The api variant is resolved via get_google_llm_variant."""
+    a2a_part = self._text_part_with_metadata()
+
+    with patch(
+        "google.adk.a2a.converters.part_converter.get_google_llm_variant",
+        return_value=GoogleLLMVariant.VERTEX_AI,
+    ) as mock_get_variant:
+      result = convert_a2a_part_to_genai_part(a2a_part)
+
+    mock_get_variant.assert_called_once()
+    assert result is not None
+    assert result.part_metadata is None
 
 
 class TestConvertGenaiPartToA2aPart:
@@ -737,6 +870,52 @@ class TestRoundTripConversions:
     assert isinstance(result_a2a_part.root, a2a_types.DataPart)
     assert result_a2a_part.root.data == data
     # The 'mime_type' key in the metadata should be preserved as is
+    assert result_a2a_part.root.metadata == metadata
+
+  def test_text_part_metadata_round_trip(self):
+    """Test round-trip conversion for text parts with metadata."""
+    # Arrange
+    metadata = {"key1": "value1", "key2": "value2"}
+    a2a_part = a2a_types.Part(
+        root=a2a_types.TextPart(text="some text", metadata=metadata)
+    )
+
+    # Act
+    genai_part = convert_a2a_part_to_genai_part(a2a_part)
+    result_a2a_part = convert_genai_part_to_a2a_part(genai_part)
+
+    # Assert
+    assert result_a2a_part is not None
+    assert isinstance(result_a2a_part, a2a_types.Part)
+    assert isinstance(result_a2a_part.root, a2a_types.TextPart)
+    assert result_a2a_part.root.text == "some text"
+    assert result_a2a_part.root.metadata == metadata
+
+  def test_file_part_metadata_round_trip(self):
+    """Test round-trip conversion for file parts with metadata."""
+    # Arrange
+    metadata = {"key1": "value1"}
+    a2a_part = a2a_types.Part(
+        root=a2a_types.FilePart(
+            file=a2a_types.FileWithUri(
+                uri="gs://bucket/file.txt",
+                mime_type="text/plain",
+                name="my_file.txt",
+            ),
+            metadata=metadata,
+        )
+    )
+
+    # Act
+    genai_part = convert_a2a_part_to_genai_part(a2a_part)
+    result_a2a_part = convert_genai_part_to_a2a_part(genai_part)
+
+    # Assert
+    assert result_a2a_part is not None
+    assert isinstance(result_a2a_part, a2a_types.Part)
+    assert isinstance(result_a2a_part.root, a2a_types.FilePart)
+    assert isinstance(result_a2a_part.root.file, a2a_types.FileWithUri)
+    assert result_a2a_part.root.file.uri == "gs://bucket/file.txt"
     assert result_a2a_part.root.metadata == metadata
 
 

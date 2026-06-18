@@ -107,12 +107,12 @@ def test_record_agent_invocation_duration(mock_meter_setup):
   """Tests record_agent_invocation_duration records correctly."""
   _metrics.record_agent_invocation_duration(
       "test_agent",
-      1000.0,
+      1.0,
   )
   agent_duration_hist = mock_meter_setup["agent_duration"]
   agent_duration_hist.record.assert_called_once()
   args, kwargs = agent_duration_hist.record.call_args
-  assert args[0] == 1000.0
+  assert args[0] == 1.0
   want_attributes = {"gen_ai.agent.name": "test_agent"}
   assert kwargs["attributes"] == want_attributes
 
@@ -122,7 +122,7 @@ def test_record_agent_invocation_duration_with_error(mock_meter_setup):
   test_error = ValueError("agent failed")
   _metrics.record_agent_invocation_duration(
       "test_agent",
-      1000.0,
+      1.0,
       error=test_error,
   )
   agent_duration_hist = mock_meter_setup["agent_duration"]
@@ -170,12 +170,12 @@ def test_record_tool_execution_duration(mock_meter_setup):
   _metrics.record_tool_execution_duration(
       "test_tool",
       "test_agent",
-      500.0,
+      0.5,
   )
   tool_duration_hist = mock_meter_setup["tool_duration"]
   tool_duration_hist.record.assert_called_once()
   args, kwargs = tool_duration_hist.record.call_args
-  assert args[0] == 500.0
+  assert args[0] == 0.5
   want_attributes = {
       "gen_ai.agent.name": "test_agent",
       "gen_ai.tool.name": "test_tool",
@@ -189,7 +189,7 @@ def test_record_tool_execution_duration_with_error(mock_meter_setup):
   _metrics.record_tool_execution_duration(
       "test_tool",
       "test_agent",
-      500.0,
+      0.5,
       error=test_error,
   )
   tool_duration_hist = mock_meter_setup["tool_duration"]
@@ -260,7 +260,7 @@ def test_record_client_operation_duration(mock_meter_setup):
   )
   _metrics.record_client_operation_duration(
       agent_name="test_agent",
-      elapsed_ms=100.0,
+      elapsed_s=0.1,
       llm_request=llm_request,
       responses=[response],
   )

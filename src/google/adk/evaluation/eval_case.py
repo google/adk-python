@@ -19,6 +19,7 @@ from typing import Optional
 from typing import Union
 
 from google.genai import types as genai_types
+import pydantic
 from pydantic import Field
 from pydantic import model_validator
 from typing_extensions import TypeAlias
@@ -115,6 +116,8 @@ SessionState: TypeAlias = dict[str, Any]
 class SessionInput(EvalBaseModel):
   """Values that help initialize a Session."""
 
+  model_config = pydantic.ConfigDict(extra="allow")
+
   app_name: str
   """The name of the app."""
 
@@ -131,6 +134,8 @@ StaticConversation: TypeAlias = list[Invocation]
 
 class EvalCase(EvalBaseModel):
   """An eval case."""
+
+  model_config = pydantic.ConfigDict(extra="allow")
 
   eval_id: str
   """Unique identifier for the evaluation case."""

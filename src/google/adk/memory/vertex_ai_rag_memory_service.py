@@ -109,7 +109,7 @@ class VertexAiRagMemoryService(BaseMemoryService):
           smaller than the threshold.
     """
     try:
-      import vertexai
+      import vertexai  # noqa: F401
     except ImportError as e:
       from ..utils._dependency import missing_extra
 

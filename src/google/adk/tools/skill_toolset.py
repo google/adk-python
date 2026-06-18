@@ -75,7 +75,7 @@ def _build_skill_system_instruction(prefix: str | None = None) -> str:
       "- **scripts/** (Optional): Executable scripts that can be run via "
       "bash.\n\n"
       "This is very important:\n\n"
-      f"1. If a skill seems relevant to the current user query, you MUST use "
+      "1. If a skill seems relevant to the current user query, you MUST use "
       f'the `{p}load_skill` tool with `skill_name="<SKILL_NAME>"` to read '
       "its full instructions before proceeding.\n"
       "2. Once you have read the instructions, follow them exactly as "
@@ -93,6 +93,9 @@ def _build_skill_system_instruction(prefix: str | None = None) -> str:
       "needed.\n"
       f"5. If `{p}load_skill_resource` returns any error, do not retry any "
       "path. Report the error to the user and stop.\n"
+      f"6. If `{p}run_skill_script` returns an error (for example "
+      f"`SCRIPT_NOT_FOUND`), do not retry the same script or guess a "
+      "different script path. Report the error to the user and stop.\n"
   )
 
 
@@ -302,16 +305,15 @@ class LoadSkillResourceTool(BaseTool):
   async def run_async(
       self, *, args: dict[str, Any], tool_context: ToolContext
   ) -> Any:
-    skill_name = args.get("skill_name")
-    file_path = args.get("file_path")
+    skill_name: str | None = args.get("skill_name")
+    file_path: str | None = args.get("file_path")
 
-    errors = []
-    if not skill_name:
-      errors.append("Argument 'skill_name' is required.")
-    if not file_path:
-      errors.append("Argument 'file_path' is required.")
-
-    if errors:
+    if not skill_name or not file_path:
+      errors = []
+      if not skill_name:
+        errors.append("Argument 'skill_name' is required.")
+      if not file_path:
+        errors.append("Argument 'file_path' is required.")
       return {
           "error": "\n".join(errors),
           "error_code": "INVALID_ARGUMENTS",
@@ -661,10 +663,19 @@ class _SkillScriptCodeExecutor:
         "  _orig_cwd = os.getcwd()",
         "  with tempfile.TemporaryDirectory() as td:",
         "    for rel_path, content in _files.items():",
-        "      full_path = os.path.join(td, rel_path)",
+        "      norm_rel = os.path.normpath(rel_path)",
+        "      if norm_rel.startswith('..') or os.path.isabs(norm_rel):",
+        (
+            "        raise PermissionError('Path traversal blocked in skill"
+            " file: ' + rel_path)"
+        ),
+        "      full_path = os.path.join(os.path.abspath(td), norm_rel)",
         "      os.makedirs(os.path.dirname(full_path), exist_ok=True)",
         "      mode = 'wb' if isinstance(content, bytes) else 'w'",
-        "      with open(full_path, mode) as f:",
+        (
+            "      with open(full_path, mode, encoding='utf-8' if mode == 'w'"
+            " else None) as f:"
+        ),
         "        f.write(content)",
         "    os.chdir(td)",
         "    try:",
@@ -815,17 +826,24 @@ class RunSkillScriptTool(BaseTool):
       self, *, args: dict[str, Any], tool_context: ToolContext
   ) -> Any:
     # Standardized arguments: skill_name and file_path.
-    skill_name = args.get("skill_name")
-    file_path = args.get("file_path")
+    skill_name: str | None = args.get("skill_name")
+    file_path: str | None = args.get("file_path")
     script_args = args.get("args")
     short_options = args.get("short_options")
     positional_args = args.get("positional_args")
 
+    if not skill_name or not file_path:
+      errors = []
+      if not skill_name:
+        errors.append("Argument 'skill_name' is required.")
+      if not file_path:
+        errors.append("Argument 'file_path' is required.")
+      return {
+          "error": "\n".join(errors),
+          "error_code": "INVALID_ARGUMENTS",
+      }
+
     errors = []
-    if not skill_name:
-      errors.append("Argument 'skill_name' is required.")
-    if not file_path:
-      errors.append("Argument 'file_path' is required.")
 
     if script_args is not None and not isinstance(script_args, (dict, list)):
       errors.append(
@@ -879,6 +897,25 @@ class RunSkillScriptTool(BaseTool):
       script = skill.resources.get_script(file_path)
 
     if script is None:
+      # Invocation-scoped failure counter. Counts SCRIPT_NOT_FOUND across ALL
+      # paths so the guard fires even when the LLM hallucinates a different
+      # script path on each retry. The `temp:` prefix prevents persistence to
+      # durable session storage; invocation_id isolates in-memory backends.
+      counter_key = (
+          f"temp:_adk_skill_script_not_found_count_{tool_context.invocation_id}"
+      )
+      fail_count = int(tool_context.state.get(counter_key) or 0) + 1
+      tool_context.state[counter_key] = fail_count
+      if fail_count > 1:
+        return {
+            "error": (
+                f"Script '{file_path}' not found in skill '{skill_name}'."
+                f" This is script lookup failure #{fail_count} this"
+                " invocation. Do not retry any script path — report the"
+                " error to the user and stop."
+            ),
+            "error_code": "SCRIPT_NOT_FOUND_FATAL",
+        }
       return {
           "error": f"Script '{file_path}' not found in skill '{skill_name}'.",
           "error_code": "SCRIPT_NOT_FOUND",
@@ -1107,6 +1144,26 @@ class SkillToolset(BaseToolset):
   def _list_skills(self) -> list[models.Skill]:
     """Lists all available skills."""
     return list(self._skills.values())
+
+  @property
+  def skills(self) -> list[models.Skill]:
+    """Returns the list of available skills."""
+    return self._list_skills()
+
+  def clone_with_updated_skills(
+      self, skills: list[models.Skill]
+  ) -> SkillToolset:
+    """Creates a new SkillToolset with identical configuration but modified skills."""
+    additional_tools = (
+        list(self._provided_tools_by_name.values()) + self._provided_toolsets
+    )
+    return SkillToolset(
+        skills=skills,
+        registry=self._registry,
+        code_executor=self._code_executor,
+        script_timeout=self._script_timeout,
+        additional_tools=additional_tools,
+    )
 
   async def process_llm_request(
       self, *, tool_context: ToolContext, llm_request: LlmRequest

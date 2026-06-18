@@ -27,6 +27,7 @@ from ...memory.base_memory_service import BaseMemoryService
 from ...sessions.base_session_service import BaseSessionService
 from ...utils.env_utils import is_env_enabled
 from ..service_registry import get_service_registry
+from .dot_adk_folder import DotAdkFolder
 from .local_storage import create_local_artifact_service
 from .local_storage import create_local_session_service
 
@@ -273,6 +274,7 @@ def create_artifact_service_from_options(
     base_dir: Path | str,
     artifact_service_uri: str | None = None,
     strict_uri: bool = False,
+    app_name_to_dir: dict[str, str] | None = None,
     use_local_storage: bool = True,
 ) -> BaseArtifactService:
   """Creates an artifact service based on CLI/web options."""
@@ -312,8 +314,22 @@ def create_artifact_service_from_options(
         "Set --artifact_service_uri for production deployments."
     )
 
+  # Default to per-agent local storage in <agents_root>/<agent>/.adk/artifacts.
+  legacy_artifacts_dir = DotAdkFolder(base_path).artifacts_dir
+  if legacy_artifacts_dir.exists():
+    logger.warning(
+        "Found legacy shared artifacts at %s. Artifacts now persist"
+        " per-agent under <agent>/.adk/artifacts and legacy artifacts remain"
+        " readable via fallback. To migrate, move the 'users' directory into"
+        " the agent's .adk/artifacts folder.",
+        legacy_artifacts_dir,
+    )
   try:
-    return create_local_artifact_service(base_dir=base_path)
+    return create_local_artifact_service(
+        base_dir=base_path,
+        per_agent=True,
+        app_name_to_dir=app_name_to_dir,
+    )
   except OSError as exc:
     if exc.errno not in _LOCAL_STORAGE_ERRNOS and not isinstance(
         exc, PermissionError

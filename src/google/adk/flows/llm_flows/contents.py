@@ -52,15 +52,23 @@ class _ContentLlmRequestProcessor(BaseLlmRequestProcessor):
       ):
         preserve_function_call_ids = True
       else:
-        # Anthropic pairs tool_use/tool_result by id, so `adk-*` fallback
-        # ids must survive replay.
+        # Anthropic and LiteLLM-backed providers (e.g. OpenAI) pair tool
+        # calls with their results by id, so `adk-*` fallback ids must
+        # survive replay.
+        id_pairing_model_types: list[type] = []
         try:
           from ...models.anthropic_llm import AnthropicLlm
+
+          id_pairing_model_types.append(AnthropicLlm)
         except (ImportError, OSError):
-          AnthropicLlm = None
-        if AnthropicLlm is not None and isinstance(
-            canonical_model, AnthropicLlm
-        ):
+          pass
+        try:
+          from ...models.lite_llm import LiteLlm
+
+          id_pairing_model_types.append(LiteLlm)
+        except (ImportError, OSError):
+          pass
+        if isinstance(canonical_model, tuple(id_pairing_model_types)):
           preserve_function_call_ids = True
 
     # Preserve all contents that were added by instruction processor
@@ -108,7 +116,6 @@ def _rearrange_events_for_async_function_responses_in_history(
     events: list[Event],
 ) -> list[Event]:
   """Rearrange the async function_response events in the history."""
-
   function_call_id_to_response_events_index: dict[str, int] = {}
   for i, event in enumerate(events):
     function_responses = event.get_function_responses()
@@ -116,6 +123,9 @@ def _rearrange_events_for_async_function_responses_in_history(
       for function_response in function_responses:
         function_call_id = function_response.id
         function_call_id_to_response_events_index[function_call_id] = i
+
+  if not function_call_id_to_response_events_index:
+    return events
 
   result_events: list[Event] = []
   for event in events:

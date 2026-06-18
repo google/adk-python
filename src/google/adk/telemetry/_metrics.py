@@ -19,6 +19,7 @@ from typing import TYPE_CHECKING
 
 from google.adk import version
 from google.adk.telemetry import tracing
+from google.adk.telemetry._token_usage import TokenUsage
 from google.genai import types
 from opentelemetry import metrics
 from opentelemetry.semconv._incubating.attributes import gen_ai_attributes
@@ -42,12 +43,12 @@ meter = metrics.get_meter(
 
 _agent_invocation_duration = meter.create_histogram(
     "gen_ai.agent.invocation.duration",
-    unit="ms",
+    unit="s",
     description="Duration of agent invocations.",
 )
 _tool_execution_duration = meter.create_histogram(
     "gen_ai.tool.execution.duration",
-    unit="ms",
+    unit="s",
     description="Duration of tool executions.",
 )
 _agent_request_size = meter.create_histogram(
@@ -73,14 +74,14 @@ _client_token_usage = gen_ai_metrics.create_gen_ai_client_token_usage(meter)
 
 def record_agent_invocation_duration(
     agent_name: str,
-    elapsed_ms: float,
+    elapsed_s: float,
     error: Exception | None = None,
 ):
   """Records the duration of the agent invocation."""
   attrs = {gen_ai_attributes.GEN_AI_AGENT_NAME: agent_name}
   if error is not None:
     attrs[error_attributes.ERROR_TYPE] = type(error).__name__
-  _agent_invocation_duration.record(elapsed_ms, attributes=attrs)
+  _agent_invocation_duration.record(elapsed_s, attributes=attrs)
 
 
 def record_agent_request_size(
@@ -115,7 +116,7 @@ def record_agent_workflow_steps(agent_name: str, events: list[Event]):
 def record_tool_execution_duration(
     tool_name: str,
     agent_name: str,
-    elapsed_ms: float,
+    elapsed_s: float,
     error: Exception | None = None,
 ):
   """Records the duration of the tool execution."""
@@ -125,12 +126,12 @@ def record_tool_execution_duration(
   }
   if error is not None:
     attrs[error_attributes.ERROR_TYPE] = type(error).__name__
-  _tool_execution_duration.record(elapsed_ms, attributes=attrs)
+  _tool_execution_duration.record(elapsed_s, attributes=attrs)
 
 
 def record_client_operation_duration(
     agent_name: str,
-    elapsed_ms: float,
+    elapsed_s: float,
     llm_request: LlmRequest,
     responses: list[LlmResponse],
     error: Exception | None = None,
@@ -153,7 +154,7 @@ def record_client_operation_duration(
   if error is not None:
     attrs[error_attributes.ERROR_TYPE] = type(error).__name__
 
-  _client_operation_duration.record(elapsed_ms / 1000.0, attributes=attrs)
+  _client_operation_duration.record(elapsed_s, attributes=attrs)
 
 
 def record_client_token_usage(
@@ -183,13 +184,9 @@ def record_client_token_usage(
   # thoughts tokens for "output".
   # `cached_content_token_count` is omitted as it's already included in prompt tokens.
   # `total_token_count` is omitted as SemConv expects input/output breakdown.
-  usage = last_response.usage_metadata
-  input_token_count = (usage.prompt_token_count or 0) + (
-      usage.tool_use_prompt_token_count or 0
-  )
-  output_token_count = (usage.candidates_token_count or 0) + (
-      usage.thoughts_token_count or 0
-  )
+  token_usage = TokenUsage(last_response.usage_metadata)
+  input_token_count = token_usage.input_token_count or 0
+  output_token_count = token_usage.output_token_count or 0
   response_model = last_response.model_version or llm_request.model
   base_attrs = {
       gen_ai_attributes.GEN_AI_AGENT_NAME: agent_name,

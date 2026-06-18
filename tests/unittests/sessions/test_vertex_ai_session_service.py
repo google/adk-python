@@ -31,6 +31,8 @@ from google.adk.events.event_actions import EventCompaction
 from google.adk.models.cache_metadata import CacheMetadata
 from google.adk.sessions.base_session_service import GetSessionConfig
 from google.adk.sessions.session import Session
+from google.adk.sessions.vertex_ai_session_service import _extract_short_session_id
+from google.adk.sessions.vertex_ai_session_service import _validate_session_id
 from google.adk.sessions.vertex_ai_session_service import VertexAiSessionService
 from google.api_core import exceptions as api_core_exceptions
 from google.genai import types as genai_types
@@ -727,6 +729,45 @@ async def test_get_and_delete_session():
 
 @pytest.mark.asyncio
 @pytest.mark.usefixtures('mock_get_api_client')
+async def test_delete_session_rejects_other_users_session():
+  """delete_session must not delete a session owned by a different user."""
+  session_service = mock_vertex_ai_session_service()
+
+  # session '1' belongs to 'user'; 'user2' must not be allowed to delete it.
+  with pytest.raises(ValueError) as excinfo:
+    await session_service.delete_session(
+        app_name='123', user_id='user2', session_id='1'
+    )
+  assert 'does not belong to user user2' in str(excinfo.value)
+
+  # Session must still exist.
+  assert (
+      await session_service.get_session(
+          app_name='123', user_id='user', session_id='1'
+      )
+      == MOCK_SESSION
+  )
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures('mock_get_api_client')
+async def test_session_id_path_traversal_rejected():
+  """Session IDs containing path-traversal characters must be rejected."""
+  session_service = mock_vertex_ai_session_service()
+
+  for bad_id in ['..', '../foo', '..?force=true', 'a/b', '']:
+    with pytest.raises(ValueError):
+      await session_service.delete_session(
+          app_name='123', user_id='user', session_id=bad_id
+      )
+    with pytest.raises(ValueError):
+      await session_service.get_session(
+          app_name='123', user_id='user', session_id=bad_id
+      )
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures('mock_get_api_client')
 async def test_get_session_with_page_token():
   session_service = mock_vertex_ai_session_service()
 
@@ -1311,3 +1352,53 @@ async def test_append_event_fallback_for_older_sdk(mock_api_client_instance):
 
   assert appended_event.actions.compaction is not None
   assert appended_event.actions.compaction.start_timestamp == 1000.0
+
+
+def test_extract_short_session_id_short_id():
+  assert _extract_short_session_id('123') == '123'
+  assert _extract_short_session_id('session-123_abc') == 'session-123_abc'
+
+
+def test_extract_short_session_id_strips_full_resource_name():
+  resource_name = 'projects/123/locations/us-east4/reasoningEngines/456/sessions/session-123'
+  assert _extract_short_session_id(resource_name) == 'session-123'
+  assert (
+      _extract_short_session_id(resource_name, expected_engine_id='456')
+      == 'session-123'
+  )
+
+
+def test_extract_short_session_id_mismatch():
+  resource_name = 'projects/123/locations/us-east4/reasoningEngines/wrong/sessions/session-123'
+  with pytest.raises(ValueError, match='Session resource name mismatch'):
+    _extract_short_session_id(resource_name, expected_engine_id='right')
+
+
+def test_validate_session_id_rejects_invalid_chars():
+  with pytest.raises(ValueError, match='Invalid session_id'):
+    _validate_session_id('invalid@id')
+  with pytest.raises(ValueError, match='Invalid session_id'):
+    _validate_session_id('invalid/id')
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures('mock_get_api_client')
+async def test_get_session_strips_full_resource_name(
+    mock_api_client_instance,
+):
+  session_service = mock_vertex_ai_session_service()
+  mock_api_client_instance.session_dict['session-123'] = {
+      'name': (
+          'projects/123/locations/us-east4/reasoningEngines/123/sessions/session-123'
+      ),
+      'update_time': '2023-01-01T00:00:00Z',
+      'user_id': 'user',
+  }
+  resource_name = 'projects/123/locations/us-east4/reasoningEngines/123/sessions/session-123'
+  session = await session_service.get_session(
+      app_name='123', user_id='user', session_id=resource_name
+  )
+  assert session.id == 'session-123'
+  mock_api_client_instance.agent_engines.sessions.get.assert_called_once_with(
+      name='reasoningEngines/123/sessions/session-123'
+  )
