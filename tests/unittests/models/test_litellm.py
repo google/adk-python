@@ -40,11 +40,13 @@ from google.adk.models.lite_llm import _get_completion_inputs
 from google.adk.models.lite_llm import _get_content
 from google.adk.models.lite_llm import _get_provider_from_model
 from google.adk.models.lite_llm import _is_anthropic_model
+from google.adk.models.lite_llm import _looks_like_openai_file_id
 from google.adk.models.lite_llm import _message_to_generate_content_response
 from google.adk.models.lite_llm import _MISSING_TOOL_RESULT_MESSAGE
 from google.adk.models.lite_llm import _model_response_to_chunk
 from google.adk.models.lite_llm import _model_response_to_generate_content_response
 from google.adk.models.lite_llm import _parse_tool_calls_from_text
+from google.adk.models.lite_llm import _redact_file_uri_for_log
 from google.adk.models.lite_llm import _redirect_litellm_loggers_to_stdout
 from google.adk.models.lite_llm import _safe_json_serialize
 from google.adk.models.lite_llm import _schema_to_dict
@@ -705,6 +707,14 @@ def test_safe_json_serialize_circular_list_falls_back_to_str():
   obj = []
   obj.append(obj)
   assert isinstance(_safe_json_serialize(obj), str)
+
+
+def test_safe_json_serialize_recursion_error_falls_back_to_str():
+  with patch(
+      "google.adk.models.lite_llm.json.dumps",
+      side_effect=RecursionError("maximum recursion depth"),
+  ):
+    assert _safe_json_serialize({"a": 1}) == str({"a": 1})
 
 
 MULTIPLE_FUNCTION_CALLS_STREAM = [
@@ -2463,6 +2473,68 @@ def test_model_response_to_generate_content_response_reasoning_field():
   assert response.content.parts[1].text == "Result"
 
 
+def test_model_response_to_generate_content_response_grounding_metadata_dict():
+  """vertex_ai_grounding_metadata as a dict is propagated to the LlmResponse."""
+  model_response = ModelResponse(
+      model="gemini/gemini-2.5-flash",
+      choices=[{
+          "message": {"role": "assistant", "content": "Answer"},
+          "finish_reason": "stop",
+      }],
+  )
+  model_response.vertex_ai_grounding_metadata = {
+      "grounding_chunks": [
+          {"web": {"uri": "https://example.com", "title": "Example"}}
+      ],
+  }
+
+  response = _model_response_to_generate_content_response(model_response)
+
+  assert response.grounding_metadata is not None
+  assert (
+      response.grounding_metadata.grounding_chunks[0].web.uri
+      == "https://example.com"
+  )
+
+
+def test_model_response_to_generate_content_response_grounding_metadata_list():
+  """LiteLLM may emit a list (per candidate); the first entry is used."""
+  model_response = ModelResponse(
+      model="gemini/gemini-2.5-flash",
+      choices=[{
+          "message": {"role": "assistant", "content": "Answer"},
+          "finish_reason": "stop",
+      }],
+  )
+  model_response.vertex_ai_grounding_metadata = [
+      {"grounding_chunks": [{"web": {"uri": "https://a.test", "title": "A"}}]},
+      {"grounding_chunks": [{"web": {"uri": "https://b.test", "title": "B"}}]},
+  ]
+
+  response = _model_response_to_generate_content_response(model_response)
+
+  assert response.grounding_metadata is not None
+  assert (
+      response.grounding_metadata.grounding_chunks[0].web.uri
+      == "https://a.test"
+  )
+
+
+def test_model_response_to_generate_content_response_no_grounding_metadata():
+  """Without vertex_ai_grounding_metadata, grounding_metadata stays None."""
+  model_response = ModelResponse(
+      model="gemini/gemini-2.5-flash",
+      choices=[{
+          "message": {"role": "assistant", "content": "Answer"},
+          "finish_reason": "stop",
+      }],
+  )
+
+  response = _model_response_to_generate_content_response(model_response)
+
+  assert response.grounding_metadata is None
+
+
 def test_reasoning_content_takes_precedence_over_reasoning():
   """Test that 'reasoning_content' is prioritized over 'reasoning'."""
   message = {
@@ -3765,7 +3837,56 @@ async def test_completion_with_drop_params(mock_completion, mock_client):
 
 
 @pytest.mark.asyncio
-async def test_generate_content_async_stream(
+async def test_generate_content_async_stream_grounding_metadata(
+    mock_completion, lite_llm_instance
+):
+  final_chunk = ModelResponseStream(
+      model="test_model",
+      choices=[StreamingChoices(finish_reason="stop", delta=Delta())],
+  )
+  final_chunk.vertex_ai_grounding_metadata = {
+      "grounding_chunks": [
+          {"web": {"uri": "https://example.com", "title": "Example"}}
+      ],
+  }
+  mock_completion.return_value = iter([
+      ModelResponseStream(
+          model="test_model",
+          choices=[
+              StreamingChoices(
+                  finish_reason=None,
+                  delta=Delta(role="assistant", content="Grounded answer"),
+              )
+          ],
+      ),
+      final_chunk,
+  ])
+
+  llm_request = LlmRequest(
+      contents=[
+          types.Content(
+              role="user", parts=[types.Part.from_text(text="Test prompt")]
+          )
+      ],
+  )
+
+  responses = [
+      response
+      async for response in lite_llm_instance.generate_content_async(
+          llm_request, stream=True
+      )
+  ]
+
+  assert responses[-1].partial is False
+  assert responses[-1].grounding_metadata is not None
+  assert (
+      responses[-1].grounding_metadata.grounding_chunks[0].web.uri
+      == "https://example.com"
+  )
+
+
+@pytest.mark.asyncio
+async def test_generate_content_async_stream_with_usage_metadata(
     mock_completion, lite_llm_instance
 ):
 
@@ -5124,3 +5245,44 @@ async def test_generate_content_async_skips_request_log_build_above_debug(
       assert mock_build.called is should_call
   finally:
     litellm_logger.setLevel(original_level)
+
+
+@pytest.mark.parametrize(
+    "file_uri, expected",
+    [
+        ("file-abc123", True),
+        ("assistant-abc123", True),
+        ("https://example.com/file.pdf", False),
+        ("not-a-file-id", False),
+        ("", False),
+        ("FILE-abc123", False),
+    ],
+)
+def test_looks_like_openai_file_id(file_uri, expected):
+  """Both `file-` and `assistant-` (Azure assistants) prefixes count as OpenAI file IDs."""
+  assert _looks_like_openai_file_id(file_uri) is expected
+
+
+@pytest.mark.parametrize(
+    "file_uri, expected",
+    [
+        ("file-abc123", "file-<redacted>"),
+        ("assistant-abc123", "assistant-<redacted>"),
+    ],
+)
+def test_redact_file_uri_for_log_openai_prefixes(file_uri, expected):
+  """OpenAI-style IDs are redacted while preserving the prefix kind."""
+  assert _redact_file_uri_for_log(file_uri) == expected
+
+
+def test_redact_file_uri_for_log_uses_display_name_when_provided():
+  assert (
+      _redact_file_uri_for_log("file-abc123", display_name="my.pdf") == "my.pdf"
+  )
+
+
+def test_redact_file_uri_for_log_http_url_keeps_scheme_and_tail():
+  assert (
+      _redact_file_uri_for_log("https://example.com/path/file.pdf")
+      == "https://<redacted>/file.pdf"
+  )

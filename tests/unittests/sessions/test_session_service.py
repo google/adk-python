@@ -34,6 +34,9 @@ from google.adk.sessions.vertex_ai_session_service import VertexAiSessionService
 from google.genai import types
 import pytest
 from sqlalchemy import delete
+from sqlalchemy import text
+from sqlalchemy.ext.asyncio import create_async_engine
+from sqlalchemy.pool import StaticPool
 
 
 class SessionServiceType(enum.Enum):
@@ -103,45 +106,29 @@ def test_database_session_service_enables_pool_pre_ping_by_default():
   assert captured_kwargs.get('pool_pre_ping') is True
 
 
-@pytest.mark.parametrize('dialect_name', ['sqlite', 'postgresql'])
+@pytest.mark.parametrize('dialect_name', ['sqlite', 'postgresql', 'mysql'])
 def test_database_session_service_strips_timezone_for_dialect(dialect_name):
   """Verifies that timezone-aware datetimes are converted to naive datetimes
-  for SQLite and PostgreSQL to avoid 'can't subtract offset-naive and
-  offset-aware datetimes' errors.
+  for SQLite, PostgreSQL, and MySQL.
 
-  PostgreSQL's default TIMESTAMP type is WITHOUT TIME ZONE, which cannot
-  accept timezone-aware datetime objects when using asyncpg. SQLite also
-  requires naive datetimes.
+  These databases store DATETIME/TIMESTAMP WITHOUT TIME ZONE, so keeping
+  tzinfo on the Python datetime causes a mismatch between the marker
+  produced by create_session (with +00:00) and the marker read back by
+  get_session (without +00:00), triggering a false stale-writer error
+  on the first append_event after create_session.
   """
   # Simulate the logic in create_session
   is_sqlite = dialect_name == 'sqlite'
   is_postgres = dialect_name == 'postgresql'
+  is_mysql = dialect_name == 'mysql'
 
   now = datetime.now(timezone.utc)
   assert now.tzinfo is not None  # Starts with timezone
 
-  if is_sqlite or is_postgres:
+  if is_sqlite or is_postgres or is_mysql:
     now = now.replace(tzinfo=None)
 
-  # Both SQLite and PostgreSQL should have timezone stripped
   assert now.tzinfo is None
-
-
-def test_database_session_service_preserves_timezone_for_other_dialects():
-  """Verifies that timezone info is preserved for dialects that support it."""
-  # For dialects like MySQL with explicit timezone support, we don't strip
-  dialect_name = 'mysql'
-  is_sqlite = dialect_name == 'sqlite'
-  is_postgres = dialect_name == 'postgresql'
-
-  now = datetime.now(timezone.utc)
-  assert now.tzinfo is not None
-
-  if is_sqlite or is_postgres:
-    now = now.replace(tzinfo=None)
-
-  # MySQL should preserve timezone (if the column type supports it)
-  assert now.tzinfo is not None
 
 
 def test_database_session_service_respects_pool_pre_ping_override():
@@ -285,7 +272,7 @@ async def test_get_empty_session(session_service):
 @pytest.mark.asyncio
 async def test_database_session_service_get_session_uses_read_only_factory():
   service = DatabaseSessionService('sqlite+aiosqlite:///:memory:')
-  service._prepare_tables = mock.AsyncMock()
+  service.prepare_tables = mock.AsyncMock()
 
   read_only_session = mock.AsyncMock()
   read_only_session.get = mock.AsyncMock(return_value=None)
@@ -315,7 +302,7 @@ async def test_database_session_service_get_session_uses_read_only_factory():
 @pytest.mark.asyncio
 async def test_database_session_service_list_sessions_uses_read_only_factory():
   service = DatabaseSessionService('sqlite+aiosqlite:///:memory:')
-  service._prepare_tables = mock.AsyncMock()
+  service.prepare_tables = mock.AsyncMock()
 
   read_only_session = mock.AsyncMock()
   empty_result = mock.Mock()
@@ -1281,7 +1268,7 @@ class _CommitOrderSpySession:
 async def test_append_event_reads_storage_revision_before_commit():
   """append_event captures session revision before commit completes."""
   service = DatabaseSessionService('sqlite+aiosqlite:///:memory:')
-  await service._prepare_tables()
+  await service.prepare_tables()
   schema = service._get_schema_classes()
   original_get_update_timestamp = schema.StorageSession.get_update_timestamp
   original_get_update_marker = schema.StorageSession.get_update_marker
@@ -1339,7 +1326,7 @@ async def test_append_event_reads_storage_revision_before_commit():
 async def test_create_session_reads_storage_revision_before_commit():
   """create_session captures session revision before commit completes."""
   service = DatabaseSessionService('sqlite+aiosqlite:///:memory:')
-  await service._prepare_tables()
+  await service.prepare_tables()
   schema = service._get_schema_classes()
   original_get_update_timestamp = schema.StorageSession.get_update_timestamp
   original_get_update_marker = schema.StorageSession.get_update_marker
@@ -1470,10 +1457,10 @@ async def test_service_recovers_after_multiple_failures():
 
 @pytest.mark.asyncio
 async def test_concurrent_prepare_tables_no_race_condition():
-  """Verifies that concurrent calls to _prepare_tables wait for table creation.
+  """Verifies that concurrent calls to prepare_tables wait for table creation.
   Reproduces the race condition from
   https://github.com/google/adk-python/issues/4445: when concurrent requests
-  arrive at startup, _prepare_tables must not return before tables exist.
+  arrive at startup, prepare_tables must not return before tables exist.
   Previously, the early-return guard checked _db_schema_version (set during
   schema detection) instead of _tables_created, so a second request could
   slip through after schema detection but before table creation finished.
@@ -1486,7 +1473,7 @@ async def test_concurrent_prepare_tables_no_race_condition():
 
     # Launch several concurrent create_session calls, each with a unique
     # app_name to avoid IntegrityError on the shared app_states row.
-    # Each will call _prepare_tables internally.  If the race condition
+    # Each will call prepare_tables internally.  If the race condition
     # exists, some of these will fail because the "sessions" table doesn't
     # exist yet.
     num_concurrent = 5
@@ -1504,7 +1491,7 @@ async def test_concurrent_prepare_tables_no_race_condition():
     for i, result in enumerate(results):
       assert not isinstance(result, BaseException), (
           f'Concurrent create_session #{i} raised {result!r}; tables were'
-          ' likely not ready due to the _prepare_tables race condition.'
+          ' likely not ready due to the prepare_tables race condition.'
       )
 
     # All sessions should be retrievable.
@@ -1523,7 +1510,7 @@ async def test_concurrent_prepare_tables_no_race_condition():
 async def test_prepare_tables_serializes_schema_detection_and_creation():
   """Verifies schema detection and table creation happen atomically under one
   lock, so concurrent callers cannot observe a partially-initialized state.
-  After _prepare_tables completes, both _db_schema_version and _tables_created
+  After prepare_tables completes, both _db_schema_version and _tables_created
   must be set.
   """
   service = DatabaseSessionService('sqlite+aiosqlite:///:memory:')
@@ -1531,9 +1518,9 @@ async def test_prepare_tables_serializes_schema_detection_and_creation():
     assert not service._tables_created
     assert service._db_schema_version is None
 
-    await service._prepare_tables()
+    await service.prepare_tables()
 
-    # Both must be set after a single _prepare_tables call.
+    # Both must be set after a single prepare_tables call.
     assert service._tables_created
     assert service._db_schema_version is not None
 
@@ -1552,7 +1539,7 @@ async def test_get_or_create_state_returns_existing_row():
   """_get_or_create_state returns an existing row without inserting."""
   service = DatabaseSessionService('sqlite+aiosqlite:///:memory:')
   try:
-    await service._prepare_tables()
+    await service.prepare_tables()
     schema = service._get_schema_classes()
 
     # Pre-create the app_state row.
@@ -1579,7 +1566,7 @@ async def test_get_or_create_state_creates_new_row():
   """_get_or_create_state creates a row when none exists."""
   service = DatabaseSessionService('sqlite+aiosqlite:///:memory:')
   try:
-    await service._prepare_tables()
+    await service.prepare_tables()
     schema = service._get_schema_classes()
 
     async with service.database_session_factory() as sql_session:
@@ -1612,7 +1599,7 @@ async def test_get_or_create_state_handles_race_condition():
   """
   service = DatabaseSessionService('sqlite+aiosqlite:///:memory:')
   try:
-    await service._prepare_tables()
+    await service.prepare_tables()
     schema = service._get_schema_classes()
 
     # Pre-create the row to guarantee the INSERT will fail.
@@ -1680,17 +1667,17 @@ async def test_create_session_sequential_same_app_name():
 
 @pytest.mark.asyncio
 async def test_prepare_tables_idempotent_after_creation():
-  """Calling _prepare_tables multiple times is safe and idempotent.
+  """Calling prepare_tables multiple times is safe and idempotent.
   After tables are created, subsequent calls should return immediately via
   the fast path without errors.
   """
   service = DatabaseSessionService('sqlite+aiosqlite:///:memory:')
   try:
-    await service._prepare_tables()
+    await service.prepare_tables()
     assert service._tables_created
 
     # Call again — should be a no-op via the fast path.
-    await service._prepare_tables()
+    await service.prepare_tables()
     assert service._tables_created
 
     # Service should still work.
@@ -1700,6 +1687,30 @@ async def test_prepare_tables_idempotent_after_creation():
     assert session.id == 's1'
   finally:
     await service.close()
+
+
+@pytest.mark.asyncio
+async def test_public_prepare_tables_eager_initialization():
+  """Calling the public prepare_tables() eagerly initializes tables so that
+  the first real database operation does not pay the setup cost.
+  """
+  async with DatabaseSessionService('sqlite+aiosqlite:///:memory:') as service:
+    # Before calling prepare_tables, tables are not created.
+    assert not service._tables_created
+    assert service._db_schema_version is None
+
+    # Eagerly prepare tables via the public API.
+    await service.prepare_tables()
+
+    # Tables should now be ready.
+    assert service._tables_created
+    assert service._db_schema_version is not None
+
+    # Subsequent operations should work without any additional setup cost.
+    session = await service.create_session(
+        app_name='app', user_id='user', session_id='s1'
+    )
+    assert session.id == 's1'
 
 
 @pytest.mark.asyncio
@@ -1927,3 +1938,108 @@ def test_database_session_service_visible_in_module_namespace():
 
   assert 'DatabaseSessionService' in dir(sessions_module)
   assert sessions_module.DatabaseSessionService is DatabaseSessionService
+
+
+@pytest.mark.asyncio
+async def test_database_session_service_with_db_url():
+  """Test DatabaseSessionService initialization with db_url."""
+  # Test db_url as positional argument
+  service = DatabaseSessionService('sqlite+aiosqlite:///:memory:')
+  app_name = 'test_app'
+  user_id = 'test_user'
+
+  # Create and retrieve a session
+  session = await service.create_session(
+      app_name=app_name, user_id=user_id, state={'key': 'value'}
+  )
+  assert session.app_name == app_name
+  assert session.user_id == user_id
+  assert session.state == {'key': 'value'}
+
+  # Let's check that we can retrieve it
+  retrieved = await service.get_session(
+      app_name=app_name, user_id=user_id, session_id=session.id
+  )
+  assert retrieved == session
+
+  # test db_url as keyword argument
+  service2 = DatabaseSessionService(db_url='sqlite+aiosqlite:///:memory:')
+  session2 = await service2.create_session(
+      app_name=app_name, user_id=user_id, state={'key': 'value2'}
+  )
+  assert session2.state == {'key': 'value2'}
+
+
+@pytest.mark.asyncio
+async def test_database_session_service_with_db_engine():
+  """Test DatabaseSessionService initialization with db_engine."""
+  # Create an engine manually with StaticPool to avoid flakes
+  engine = create_async_engine(
+      'sqlite+aiosqlite:///:memory:',
+      poolclass=StaticPool,
+      connect_args={'check_same_thread': False},
+  )
+
+  # Create service with db_engine
+  service = DatabaseSessionService(db_engine=engine)
+  app_name = 'test_app'
+  user_id = 'test_user'
+
+  # Create and retrieve a session
+  session = await service.create_session(
+      app_name=app_name, user_id=user_id, state={'key': 'value'}
+  )
+  assert session.app_name == app_name
+  assert session.user_id == user_id
+  assert session.state == {'key': 'value'}
+
+  # Let's check that we can retrieve it
+  retrieved = await service.get_session(
+      app_name=app_name, user_id=user_id, session_id=session.id
+  )
+  assert retrieved == session
+
+
+@pytest.mark.asyncio
+async def test_database_session_service_caller_owned_engine_not_disposed_on_close():
+  """Verifies that a caller-owned engine is not disposed when the service is closed."""
+  engine = create_async_engine(
+      'sqlite+aiosqlite:///:memory:',
+      poolclass=StaticPool,
+      connect_args={'check_same_thread': False},
+  )
+
+  service = DatabaseSessionService(db_engine=engine)
+
+  # Use the service
+  session = await service.create_session(app_name='app', user_id='user')
+  assert session is not None
+
+  # Close the service
+  await service.close()
+
+  # Verify engine is still usable by running a query
+  async with engine.connect() as conn:
+    result = await conn.execute(text('SELECT 1;'))
+    assert result.scalar() == 1
+
+
+@pytest.mark.asyncio
+async def test_database_session_service_requires_one_argument():
+  """Test that DatabaseSessionService requires exactly one of db_url or db_engine."""
+  # Neither argument provided
+  with pytest.raises(
+      ValueError,
+      match="Exactly one of 'db_url' or 'db_engine' must be provided",
+  ):
+    DatabaseSessionService()
+
+  # Both arguments provided
+  engine = create_async_engine('sqlite+aiosqlite:///:memory:')
+  with pytest.raises(
+      ValueError,
+      match="Exactly one of 'db_url' or 'db_engine' must be provided",
+  ):
+    DatabaseSessionService(
+        db_url='sqlite+aiosqlite:///:memory:', db_engine=engine
+    )

@@ -157,7 +157,7 @@ class TestAgentEngineSandboxCodeExecutor:
     )
     sent_files = call_kwargs["input_data"]["files"]
     assert sent_files == [
-        {"name": "data.csv", "content": "a,b,c", "mimeType": "text/csv"}
+        {"name": "data.csv", "content": "a,b,c", "mime_type": "text/csv"}
     ]
 
   @patch("vertexai.Client")
@@ -353,6 +353,54 @@ class TestAgentEngineSandboxCodeExecutor:
     mock_api_client.agent_engines.sandboxes.execute_code.assert_called_once_with(
         name=created_sandbox_name,
         input_data={"code": 'print("hello world")'},
+    )
+
+  @patch("vertexai.Client")
+  def test_execute_code_sends_correct_field_names_for_input_files(
+      self,
+      mock_vertexai_client,
+      mock_invocation_context,
+  ):
+    """Input files are sent with 'content' and 'mime_type' keys (not 'contents'/'mimeType')."""
+    mock_api_client = MagicMock()
+    mock_vertexai_client.return_value = mock_api_client
+
+    mock_response = MagicMock()
+    mock_json_output = MagicMock()
+    mock_json_output.mime_type = "application/json"
+    mock_json_output.data = json.dumps({"msg_out": "", "msg_err": ""}).encode(
+        "utf-8"
+    )
+    mock_json_output.metadata = None
+    mock_response.outputs = [mock_json_output]
+    mock_api_client.agent_engines.sandboxes.execute_code.return_value = (
+        mock_response
+    )
+
+    executor = AgentEngineSandboxCodeExecutor(
+        sandbox_resource_name="projects/123/locations/us-central1/reasoningEngines/456/sandboxEnvironments/789"
+    )
+    code_input = CodeExecutionInput(
+        code="import pandas as pd; df = pd.read_csv('data.csv')",
+        input_files=[
+            File(
+                name="data.csv", content=b"col1,col2\n1,2", mime_type="text/csv"
+            )
+        ],
+    )
+
+    executor.execute_code(mock_invocation_context, code_input)
+
+    mock_api_client.agent_engines.sandboxes.execute_code.assert_called_once_with(
+        name="projects/123/locations/us-central1/reasoningEngines/456/sandboxEnvironments/789",
+        input_data={
+            "code": "import pandas as pd; df = pd.read_csv('data.csv')",
+            "files": [{
+                "name": "data.csv",
+                "content": b"col1,col2\n1,2",
+                "mime_type": "text/csv",
+            }],
+        },
     )
 
   def test_init_with_agent_engine_resource_name(self):

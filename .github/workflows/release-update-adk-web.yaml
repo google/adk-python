@@ -21,7 +21,7 @@ jobs:
 
     steps:
     - name: Checkout repository
-      uses: actions/checkout@v5
+      uses: actions/checkout@v6
 
     - name: Fetch and unzip frontend assets
       run: |
@@ -51,14 +51,25 @@ jobs:
         rm frontend.zip
         echo "Assets extracted successfully."
 
+    - name: Extract Bot Identity
+      id: bot-identity
+      env:
+        GH_TOKEN: ${{ secrets.RELEASE_PAT }}
+      run: |
+        USER_JSON=$(gh api user)
+        echo "name=$(echo "$USER_JSON" | jq -r '.login')" >> $GITHUB_OUTPUT
+        echo "email=$(echo "$USER_JSON" | jq -r '.id')+$(echo "$USER_JSON" | jq -r '.login')@users.noreply.github.com" >> $GITHUB_OUTPUT
+
     - name: Create Pull Request
       uses: peter-evans/create-pull-request@v6
       with:
-        token: ${{ secrets.GITHUB_TOKEN }}
+        token: ${{ secrets.RELEASE_PAT }}
         commit-message: "Update compiled adk web files from ${{ github.event.inputs.adk_web_repo }}@${{ github.event.inputs.adk_web_tag || 'latest' }}"
         branch: update-frontend-assets
         delete-branch: true
         title: "chore: update compiled adk web assets"
+        committer: "${{ steps.bot-identity.outputs.name }} <${{ steps.bot-identity.outputs.email }}>"
+        author: "${{ steps.bot-identity.outputs.name }} <${{ steps.bot-identity.outputs.email }}>"
         body: |
           This PR automatically updates the compiled adk web files in `src/google/adk/cli/browser/` using the assets from `${{ github.event.inputs.adk_web_repo }}@${{ github.event.inputs.adk_web_tag || 'latest' }}`.
           Please review the diff before merging.

@@ -20,6 +20,7 @@ from unittest.mock import AsyncMock
 
 from google.adk.agents.live_request_queue import LiveRequestQueue
 from google.adk.agents.llm_agent import Agent
+from google.adk.agents.loop_agent import LoopAgent
 from google.adk.agents.run_config import RunConfig
 from google.adk.events.event import Event
 from google.adk.flows.llm_flows.base_llm_flow import _handle_after_model_callback
@@ -357,6 +358,89 @@ async def test_process_agent_tools_preserves_order_when_later_unions_resolve_fir
   assert process_call_order == ['slow_tool', 'fast_tool']
 
 
+async def _preprocess(agent, *, is_live: bool) -> LlmRequest:
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent, user_content='test message'
+  )
+  if is_live:
+    invocation_context.live_request_queue = LiveRequestQueue()
+  flow = BaseLlmFlowForTesting()
+  llm_request = LlmRequest()
+  async for _ in flow._preprocess_async(invocation_context, llm_request):
+    pass
+  return llm_request
+
+
+def _declarations(llm_request: LlmRequest) -> dict:
+  return {
+      decl.name: decl
+      for decl in llm_request.config.tools[0].function_declarations
+  }
+
+
+async def _streaming_tool(query: str):
+  """A streaming tool."""
+  yield f'streaming: {query}'
+
+
+def _scheduled_tool(query: str) -> str:
+  """A scheduled tool."""
+  return f'scheduled: {query}'
+
+
+@pytest.mark.asyncio
+async def test_process_agent_tools_marks_streaming_tool_non_blocking_for_live():
+  """Live streaming async-generator tools are marked NON_BLOCKING."""
+  agent = Agent(name='test_agent', tools=[_streaming_tool])
+
+  llm_request = await _preprocess(agent, is_live=True)
+
+  declaration = llm_request.config.tools[0].function_declarations[0]
+  assert declaration.behavior is types.Behavior.NON_BLOCKING
+
+
+@pytest.mark.asyncio
+async def test_process_agent_tools_marks_scheduled_tool_non_blocking_for_live():
+  """Live response-scheduling tools are marked NON_BLOCKING."""
+  from google.adk.tools.function_tool import FunctionTool
+
+  tool = FunctionTool(func=_scheduled_tool)
+  tool.response_scheduling = types.FunctionResponseScheduling.SILENT
+  agent = Agent(name='test_agent', tools=[tool])
+
+  llm_request = await _preprocess(agent, is_live=True)
+
+  declaration = llm_request.config.tools[0].function_declarations[0]
+  assert declaration.behavior is types.Behavior.NON_BLOCKING
+
+
+@pytest.mark.asyncio
+async def test_process_agent_tools_does_not_mark_non_blocking_for_non_live():
+  """Non-live requests never set behavior, even for streaming tools."""
+  from google.adk.tools.function_tool import FunctionTool
+
+  scheduled = FunctionTool(func=_scheduled_tool)
+  scheduled.response_scheduling = types.FunctionResponseScheduling.SILENT
+  agent = Agent(name='test_agent', tools=[_streaming_tool, scheduled])
+
+  llm_request = await _preprocess(agent, is_live=False)
+
+  declarations = _declarations(llm_request)
+  assert declarations['_streaming_tool'].behavior is None
+  assert declarations['_scheduled_tool'].behavior is None
+
+
+@pytest.mark.asyncio
+async def test_process_agent_tools_leaves_regular_tool_behavior_unset_for_live():
+  """Regular (non-streaming, non-scheduled) live tools are left untouched."""
+  agent = Agent(name='test_agent', tools=[_scheduled_tool])
+
+  llm_request = await _preprocess(agent, is_live=True)
+
+  declaration = llm_request.config.tools[0].function_declarations[0]
+  assert declaration.behavior is None
+
+
 class _AsyncProcessLlmRequestTool:
   """Minimal stand-in for a BaseTool that records process_llm_request calls."""
 
@@ -682,8 +766,9 @@ async def test_run_live_reconnects_on_connection_closed():
       assert invocation_context.live_session_resumption_handle == 'test_handle'
 
 
+@pytest.mark.parametrize('error_code', [1000, 1006, 1011])
 @pytest.mark.asyncio
-async def test_run_live_reconnects_on_api_error():
+async def test_run_live_reconnects_on_api_error(error_code):
   """Test that run_live reconnects when APIError occurs."""
   from google.genai.errors import APIError
 
@@ -698,7 +783,7 @@ async def test_run_live_reconnects_on_api_error():
         )
     )
     # Simulate an API error occurring, triggering reconnection logic.
-    raise APIError(1000, {})
+    raise APIError(error_code, {})
 
   mock_connection.receive = mock.Mock(side_effect=mock_receive)
 
@@ -1599,3 +1684,104 @@ async def test_run_live_respects_explicit_initial_history_in_client_content_fals
             call_req.live_connect_config.history_config.initial_history_in_client_content
             is False
         )
+
+
+def _make_agent_tree():
+  root = Agent(name='root')
+  child1 = Agent(name='child1')
+  child2 = Agent(name='child2')
+
+  child1.parent_agent = root
+  child2.parent_agent = root
+  root.sub_agents = [child1, child2]
+  return root, child1, child2
+
+
+@pytest.mark.asyncio
+async def test_transfer_to_sibling_disallowed_raises_value_error():
+  """Transfer to sibling raises ValueError when disallow_transfer_to_peers is True."""
+  # Arrange
+  root, child1, child2 = _make_agent_tree()
+  caller = child1
+  caller.disallow_transfer_to_peers = True
+  ctx = await testing_utils.create_invocation_context(caller)
+  flow = BaseLlmFlow()
+
+  # Act & Assert
+  with pytest.raises(
+      ValueError, match='Transfer to sibling agent child2 is disallowed'
+  ):
+    flow._get_agent_to_run(ctx, 'child2')
+
+
+@pytest.mark.asyncio
+async def test_transfer_to_sibling_allowed_returns_agent():
+  """Transfer to sibling returns the agent when disallow_transfer_to_peers is False."""
+  # Arrange
+  root, child1, child2 = _make_agent_tree()
+  caller = child1
+  caller.disallow_transfer_to_peers = False
+  ctx = await testing_utils.create_invocation_context(caller)
+  flow = BaseLlmFlow()
+
+  # Act
+  agent = flow._get_agent_to_run(ctx, 'child2')
+
+  # Assert
+  assert agent is not None
+  assert agent.name == 'child2'
+
+
+@pytest.mark.asyncio
+async def test_transfer_to_unknown_agent_raises_value_error():
+  """Transfer to unknown agent name raises ValueError."""
+  # Arrange
+  root, child1, child2 = _make_agent_tree()
+  caller = child1
+  ctx = await testing_utils.create_invocation_context(caller)
+  flow = BaseLlmFlow()
+
+  # Act & Assert
+  with pytest.raises(ValueError, match='not found in the agent tree'):
+    flow._get_agent_to_run(ctx, 'not_in_tree')
+
+
+@pytest.mark.asyncio
+async def test_transfer_to_self_allowed_when_peers_disallowed():
+  """Transfer to self is allowed even when disallow_transfer_to_peers is True."""
+  # Arrange
+  root, child1, child2 = _make_agent_tree()
+  caller = child1
+  caller.disallow_transfer_to_peers = True
+  ctx = await testing_utils.create_invocation_context(caller)
+  flow = BaseLlmFlow()
+
+  # Act
+  agent = flow._get_agent_to_run(ctx, 'child1')
+
+  # Assert
+  assert agent is not None
+  assert agent.name == 'child1'
+
+
+@pytest.mark.asyncio
+async def test_transfer_to_sibling_from_non_llm_agent_allowed():
+  """Transfer to sibling is allowed when the caller is not an LlmAgent."""
+  # Arrange
+  root = Agent(name='root')
+  child1 = LoopAgent(name='child1')
+  child2 = Agent(name='child2')
+
+  child1.parent_agent = root
+  child2.parent_agent = root
+  root.sub_agents = [child1, child2]
+
+  ctx = await testing_utils.create_invocation_context(child1)
+  flow = BaseLlmFlow()
+
+  # Act
+  agent = flow._get_agent_to_run(ctx, 'child2')
+
+  # Assert
+  assert agent is not None
+  assert agent.name == 'child2'

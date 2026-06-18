@@ -172,7 +172,7 @@ def create_auth_request_event(
   args = AuthToolArguments(
       function_call_id=interrupt_id,
       auth_config=auth_request,
-  ).model_dump(exclude_none=True, by_alias=True)
+  ).model_dump(mode='json', exclude_none=True, by_alias=True)
 
   # Add message so the UI / CLI knows what to display.
   args['message'] = _build_auth_message(auth_config)

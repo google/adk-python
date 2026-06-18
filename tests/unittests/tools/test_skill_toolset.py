@@ -721,6 +721,118 @@ async def test_execute_script_script_not_found(mock_skill1):
       tool_context=ctx,
   )
   assert result["error_code"] == "SCRIPT_NOT_FOUND"
+  assert result["error"] == (
+      "Script 'nonexistent.py' not found in skill 'skill1'."
+  )
+
+
+@pytest.mark.asyncio
+async def test_execute_script_repeated_failure_escalates_to_fatal(mock_skill1):
+  """Any second SCRIPT_NOT_FOUND within an invocation returns SCRIPT_NOT_FOUND_FATAL."""
+  executor = _make_mock_executor()
+  toolset = skill_toolset.SkillToolset([mock_skill1], code_executor=executor)
+  tool = skill_toolset.RunSkillScriptTool(toolset)
+  ctx = _make_tool_context_with_agent()
+
+  args = {"skill_name": "skill1", "file_path": "scripts/nonexistent.py"}
+
+  result1 = await tool.run_async(args=args, tool_context=ctx)
+  assert result1["error_code"] == "SCRIPT_NOT_FOUND"
+
+  result2 = await tool.run_async(args=args, tool_context=ctx)
+  assert result2["error_code"] == "SCRIPT_NOT_FOUND_FATAL"
+  assert "Do not retry" in result2["error"]
+  assert "stop" in result2["error"].lower()
+  assert "failure #2" in result2["error"]
+
+
+@pytest.mark.asyncio
+async def test_execute_script_different_path_also_escalates_to_fatal(
+    mock_skill1,
+):
+  """A different missing script on the second call still escalates to SCRIPT_NOT_FOUND_FATAL.
+
+  The counter is path-agnostic: any second not-found within the same invocation
+  is fatal, even when the LLM hallucinates a different script path on each
+  retry.
+  """
+  executor = _make_mock_executor()
+  toolset = skill_toolset.SkillToolset([mock_skill1], code_executor=executor)
+  tool = skill_toolset.RunSkillScriptTool(toolset)
+  ctx = _make_tool_context_with_agent()
+
+  result1 = await tool.run_async(
+      args={"skill_name": "skill1", "file_path": "scripts/missing_a.py"},
+      tool_context=ctx,
+  )
+  assert result1["error_code"] == "SCRIPT_NOT_FOUND"
+
+  result2 = await tool.run_async(
+      args={"skill_name": "skill1", "file_path": "scripts/missing_b.py"},
+      tool_context=ctx,
+  )
+  assert result2["error_code"] == "SCRIPT_NOT_FOUND_FATAL"
+  assert "Do not retry" in result2["error"]
+
+
+@pytest.mark.asyncio
+async def test_execute_script_failures_isolated_per_invocation(mock_skill1):
+  """Failure counter does not leak across invocations.
+
+  A SCRIPT_NOT_FOUND in invocation A must not increment invocation B's
+  counter; invocation B's first missing-script call must still return the
+  soft error, even when both invocations share the same session state dict.
+  """
+  executor = _make_mock_executor()
+  toolset = skill_toolset.SkillToolset([mock_skill1], code_executor=executor)
+  tool = skill_toolset.RunSkillScriptTool(toolset)
+
+  shared_state = {}
+  ctx_a = _make_tool_context_with_agent(invocation_id="inv_a")
+  ctx_a.state = shared_state
+  ctx_b = _make_tool_context_with_agent(invocation_id="inv_b")
+  ctx_b.state = shared_state
+
+  # invocation A: one failure — counter for inv_a reaches 1 (soft).
+  result_a = await tool.run_async(
+      args={"skill_name": "skill1", "file_path": "scripts/typo.py"},
+      tool_context=ctx_a,
+  )
+  assert result_a["error_code"] == "SCRIPT_NOT_FOUND"
+
+  # invocation B, first attempt (same path) — counter for inv_b = 1 (soft).
+  result_b1 = await tool.run_async(
+      args={"skill_name": "skill1", "file_path": "scripts/typo.py"},
+      tool_context=ctx_b,
+  )
+  assert result_b1["error_code"] == "SCRIPT_NOT_FOUND"
+
+  # invocation B, second attempt (different path) — counter for inv_b = 2 (fatal).
+  result_b2 = await tool.run_async(
+      args={"skill_name": "skill1", "file_path": "scripts/other.py"},
+      tool_context=ctx_b,
+  )
+  assert result_b2["error_code"] == "SCRIPT_NOT_FOUND_FATAL"
+
+
+@pytest.mark.asyncio
+async def test_execute_script_counter_uses_temp_prefix(mock_skill1):
+  """Failure-counter key uses the `temp:` prefix so it is not persisted."""
+  executor = _make_mock_executor()
+  toolset = skill_toolset.SkillToolset([mock_skill1], code_executor=executor)
+  tool = skill_toolset.RunSkillScriptTool(toolset)
+  ctx = _make_tool_context_with_agent()
+
+  await tool.run_async(
+      args={"skill_name": "skill1", "file_path": "scripts/missing.py"},
+      tool_context=ctx,
+  )
+
+  # The counter key must start with `temp:` so it is trimmed from the event
+  # delta and never reaches durable storage.
+  guard_keys = [k for k in ctx.state if "skill_script_not_found_count" in k]
+  assert guard_keys, "Failure counter did not write a tracking key."
+  assert all(k.startswith("temp:") for k in guard_keys)
 
 
 @pytest.mark.asyncio
@@ -815,6 +927,31 @@ async def test_execute_script_shell_success(mock_skill1):
   assert "subprocess.run" in code_input.code
   assert "bash" in code_input.code
   assert "__shell_result__" in code_input.code
+
+
+@pytest.mark.asyncio
+async def test_build_wrapper_code_with_unicode(mock_skill1):
+  """Verify that generated code uses utf-8 encoding for materializing files."""
+  # Add unicode content to mock_skill1 resources
+  unicode_content = "你好"
+  mock_skill1.resources.list_references.return_value = ["unicode.txt"]
+  mock_skill1.resources.get_reference.side_effect = lambda name: (
+      unicode_content if name == "unicode.txt" else None
+  )
+
+  executor = _make_mock_executor()
+  toolset = skill_toolset.SkillToolset([mock_skill1], code_executor=executor)
+  tool = skill_toolset.RunSkillScriptTool(toolset)
+  ctx = _make_tool_context_with_agent()
+  await tool.run_async(
+      args={"skill_name": "skill1", "file_path": "run.py"},
+      tool_context=ctx,
+  )
+
+  call_args = executor.execute_code.call_args
+  code_input = call_args[0][1]
+  assert "encoding='utf-8' if mode == 'w' else None" in code_input.code
+  assert unicode_content in code_input.code
 
 
 @pytest.mark.asyncio
@@ -1249,6 +1386,35 @@ async def test_integration_python_stdout():
   assert result["status"] == "success"
   assert result["stdout"] == "hello world\n"
   assert result["stderr"] == ""
+
+
+@pytest.mark.asyncio
+async def test_integration_python_unicode_materialization():
+  """Real executor: Python script with unicode resources."""
+  script = models.Script(
+      src=(
+          "with open('references/unicode.txt', 'r', encoding='utf-8') as f:"
+          " print(f.read())"
+      )
+  )
+  skill = _make_skill_with_script("test_skill", "unicode.py", script)
+  skill.resources.get_reference.side_effect = lambda n: (
+      "你好，世界" if n == "unicode.txt" else None
+  )
+  skill.resources.list_references.return_value = ["unicode.txt"]
+  toolset = _make_real_executor_toolset([skill])
+  tool = skill_toolset.RunSkillScriptTool(toolset)
+  ctx = _make_tool_context_with_agent()
+  result = await tool.run_async(
+      args={
+          "skill_name": "test_skill",
+          "file_path": "unicode.py",
+      },
+      tool_context=ctx,
+  )
+  assert "status" in result, f"Result missing status: {result}"
+  assert result["status"] == "success"
+  assert "你好，世界" in result["stdout"]
 
 
 @pytest.mark.asyncio

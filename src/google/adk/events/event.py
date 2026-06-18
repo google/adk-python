@@ -275,7 +275,8 @@ class Event(LlmResponse):
   def is_final_response(self) -> bool:
     """Returns whether the event is the final response of an agent.
 
-    NOTE: This method is ONLY for use by Agent Development Kit.
+    Application and UI layers can rely on this helper to detect a complete,
+    user-facing response instead of replicating its logic.
 
     Note that when multiple agents participate in one invocation, there could be
     one event has `is_final_response()` as True for each participating agent.

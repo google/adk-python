@@ -192,8 +192,8 @@ class Runner:
     Args:
         app: An `App` instance. Mutually exclusive with `agent` and `node`.
         app_name: The application name. Required when `agent` is provided.
-          Optional override for `app.name` when `app` is provided. Defaults
-          to `node.name` when only `node` is provided.
+          Optional override for `app.name` when `app` is provided. Defaults to
+          `node.name` when only `node` is provided.
         agent: The root agent to run. Mutually exclusive with `app` and `node`.
         node: The root node to run. Mutually exclusive with `app` and `agent`.
         plugins: Deprecated. A list of plugins for the runner. Please use the
@@ -203,8 +203,8 @@ class Runner:
         memory_service: The memory service for the runner.
         credential_service: The credential service for the runner.
         plugin_close_timeout: The timeout in seconds for plugin close methods.
-        auto_create_session: Whether to automatically create a session when
-          not found. Defaults to False. If False, a missing session raises
+        auto_create_session: Whether to automatically create a session when not
+          found. Defaults to False. If False, a missing session raises
           ValueError with a helpful message.
 
     Raises:
@@ -747,6 +747,7 @@ class Runner:
       iso = _find_active_task_isolation_scope(ic.session)
       if iso is not None:
         event.isolation_scope = iso
+    _apply_run_config_custom_metadata(event, ic.run_config)
     return await self.session_service.append_event(
         session=ic.session, event=event
     )
@@ -1082,6 +1083,7 @@ class Runner:
               new_message=new_message,
               run_config=run_config,
               state_delta=state_delta,
+              invocation_id=invocation_id,
           )
         else:
           invocation_id = self._resolve_invocation_id(
@@ -1844,6 +1846,7 @@ class Runner:
       new_message: types.Content,
       run_config: RunConfig,
       state_delta: Optional[dict[str, Any]],
+      invocation_id: Optional[str] = None,
   ) -> InvocationContext:
     """Sets up the context for a new invocation.
 
@@ -1852,6 +1855,7 @@ class Runner:
       new_message: The new message to process and append to the session.
       run_config: The run config of the agent.
       state_delta: Optional state changes to apply to the session.
+      invocation_id: Optional invocation identifier.
 
     Returns:
       The invocation context for the new invocation.
@@ -1861,6 +1865,7 @@ class Runner:
         session,
         new_message=new_message,
         run_config=run_config,
+        invocation_id=invocation_id,
     )
     # Step 2: Handle new message, by running callbacks and appending to
     # session.

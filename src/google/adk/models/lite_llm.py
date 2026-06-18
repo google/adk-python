@@ -395,8 +395,11 @@ def _redact_file_uri_for_log(
   """Returns a privacy-preserving identifier for logs."""
   if display_name:
     return display_name
+  if file_uri.startswith("assistant-"):
+    return "assistant-<redacted>"
   if _looks_like_openai_file_id(file_uri):
-    return "file-<redacted>"
+    prefix = file_uri.split("-", 1)[0]
+    return f"{prefix}-<redacted>"
   try:
     parsed = urlparse(file_uri)
   except ValueError:
@@ -652,7 +655,7 @@ def _safe_json_serialize(obj) -> str:
   try:
     # Try direct JSON serialization first
     return json.dumps(obj, ensure_ascii=False)
-  except (TypeError, ValueError, OverflowError):
+  except (TypeError, ValueError, OverflowError, RecursionError):
     return str(obj)
 
 
@@ -1738,6 +1741,38 @@ def _model_response_to_chunk(
       ) from e
 
 
+def _extract_grounding_metadata(
+    response: ModelResponse | ModelResponseStream,
+) -> types.GroundingMetadata | None:
+  """Pulls Gemini grounding metadata off a LiteLLM response or stream chunk.
+
+  LiteLLM exposes Gemini's grounding metadata on the response/chunk object
+  rather than inside the message, so the native Gemini path
+  (`candidate.grounding_metadata`) misses it. Mirroring it here lets downstream
+  consumers (event.grounding_metadata, after_model_callback, citation
+  pipelines, ...) rely on it for both model paths.
+
+  Returns the parsed metadata, or None when it is absent or malformed.
+  """
+  raw_grounding = getattr(response, "vertex_ai_grounding_metadata", None)
+  if not raw_grounding:
+    return None
+  # LiteLLM may emit a list (one entry per candidate) or a single value.
+  if isinstance(raw_grounding, list):
+    raw_grounding = raw_grounding[0] if raw_grounding else None
+  if isinstance(raw_grounding, types.GroundingMetadata):
+    return raw_grounding
+  if isinstance(raw_grounding, dict):
+    try:
+      return types.GroundingMetadata.model_validate(raw_grounding)
+    except Exception:  # pragma: no cover
+      logger.warning(
+          "LiteLlm: vertex_ai_grounding_metadata did not match the"
+          " GroundingMetadata schema and was dropped."
+      )
+  return None
+
+
 def _model_response_to_generate_content_response(
     response: ModelResponse,
 ) -> LlmResponse:
@@ -1789,6 +1824,11 @@ def _model_response_to_generate_content_response(
         cached_content_token_count=_extract_cached_prompt_tokens(usage_dict),
         thoughts_token_count=reasoning_tokens if reasoning_tokens else None,
     )
+
+  grounding_metadata = _extract_grounding_metadata(response)
+  if grounding_metadata:
+    llm_response.grounding_metadata = grounding_metadata
+
   return llm_response
 
 
@@ -2371,6 +2411,7 @@ class LiteLlm(BaseLlm):
       aggregated_llm_response = None
       aggregated_llm_response_with_tool_call = None
       usage_metadata = None
+      grounding_metadata = None
       fallback_index = 0
 
       def _finalize_tool_call_response(
@@ -2456,6 +2497,11 @@ class LiteLlm(BaseLlm):
         function_calls.clear()
 
       async for part in await self.llm_client.acompletion(**completion_args):
+        # Grounding metadata can arrive on the first chunk (search queries) or
+        # the final chunk (supports); keep the latest non-empty one.
+        part_grounding = _extract_grounding_metadata(part)
+        if part_grounding:
+          grounding_metadata = part_grounding
         for chunk, finish_reason in _model_response_to_chunk(part):
           if isinstance(chunk, FunctionChunk):
             index = chunk.index or fallback_index
@@ -2557,11 +2603,17 @@ class LiteLlm(BaseLlm):
         if usage_metadata:
           aggregated_llm_response.usage_metadata = usage_metadata
           usage_metadata = None
+        if grounding_metadata:
+          aggregated_llm_response.grounding_metadata = grounding_metadata
         yield aggregated_llm_response
 
       if aggregated_llm_response_with_tool_call:
         if usage_metadata:
           aggregated_llm_response_with_tool_call.usage_metadata = usage_metadata
+        if grounding_metadata:
+          aggregated_llm_response_with_tool_call.grounding_metadata = (
+              grounding_metadata
+          )
         yield aggregated_llm_response_with_tool_call
 
     else:
