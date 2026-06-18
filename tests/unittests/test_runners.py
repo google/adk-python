@@ -972,6 +972,41 @@ async def test_run_config_custom_metadata_propagates_to_events():
   assert user_event.custom_metadata == {"request_id": "req-1"}
 
 
+@pytest.mark.asyncio
+async def test_run_config_custom_metadata_stamps_user_event_in_chat_mode():
+  """LlmAgent chat path stamps the user event with run-level custom_metadata."""
+  session_service = InMemorySessionService()
+
+  def _before_agent_callback(callback_context) -> types.Content:
+    del callback_context  # Unused; short-circuits the model call.
+    return types.Content(role="model", parts=[types.Part(text="hi back")])
+
+  agent = LlmAgent(
+      name="chat_agent", before_agent_callback=_before_agent_callback
+  )
+  runner = Runner(
+      app_name=TEST_APP_ID, agent=agent, session_service=session_service
+  )
+  await session_service.create_session(
+      app_name=TEST_APP_ID, user_id=TEST_USER_ID, session_id=TEST_SESSION_ID
+  )
+
+  run_config = RunConfig(custom_metadata={"turn_id": "t-1"})
+  async for _ in runner.run_async(
+      user_id=TEST_USER_ID,
+      session_id=TEST_SESSION_ID,
+      new_message=types.Content(role="user", parts=[types.Part(text="hi")]),
+      run_config=run_config,
+  ):
+    pass
+
+  session = await session_service.get_session(
+      app_name=TEST_APP_ID, user_id=TEST_USER_ID, session_id=TEST_SESSION_ID
+  )
+  user_event = next(event for event in session.events if event.author == "user")
+  assert user_event.custom_metadata == {"turn_id": "t-1"}
+
+
 class TestRunnerWithPlugins:
   """Tests for Runner with plugins."""
 

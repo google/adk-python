@@ -736,6 +736,7 @@ class Runner:
       iso = _find_active_task_isolation_scope(ic.session)
       if iso is not None:
         event.isolation_scope = iso
+    _apply_run_config_custom_metadata(event, ic.run_config)
     return await self.session_service.append_event(
         session=ic.session, event=event
     )

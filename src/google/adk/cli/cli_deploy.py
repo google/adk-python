@@ -603,6 +603,34 @@ def _get_service_option_by_adk_version(
   return ' '.join(options)
 
 
+def _get_ignore_patterns_func(agent_folder: str):
+  """Returns a shutil.ignore_patterns function with combined patterns from .gitignore, .gcloudignore and .ae_ignore."""
+  patterns = set()
+
+  for filename in ['.gitignore', '.gcloudignore', '.ae_ignore']:
+    filepath = os.path.join(agent_folder, filename)
+    if os.path.exists(filepath):
+      click.echo(f'Reading ignore patterns from {filename}...')
+      try:
+        with open(filepath, 'r') as f:
+          for line in f:
+            line = line.strip()
+            if line and not line.startswith('#'):
+              # If it ends with /, remove it for fnmatch compatibility
+              if line.endswith('/'):
+                line = line[:-1]
+              # Strip leading / from root-anchored patterns; shutil.ignore_patterns
+              # matches basenames via fnmatch, so '/venv' would match nothing.
+              if line.startswith('/'):
+                line = line[1:]
+              if line:
+                patterns.add(line)
+      except Exception as e:
+        click.secho(f'Warning: Failed to read {filename}: {e}', fg='yellow')
+
+  return shutil.ignore_patterns(*patterns)
+
+
 def to_cloud_run(
     *,
     agent_folder: str,
@@ -679,7 +707,8 @@ def to_cloud_run(
     # copy agent source code
     click.echo('Copying agent source code...')
     agent_src_path = os.path.join(temp_folder, 'agents', app_name)
-    shutil.copytree(agent_folder, agent_src_path)
+    ignore_func = _get_ignore_patterns_func(agent_folder)
+    shutil.copytree(agent_folder, agent_src_path, ignore=ignore_func)
     requirements_txt_path = os.path.join(agent_src_path, 'requirements.txt')
     install_agent_deps = (
         f'RUN pip install -r "/app/agents/{app_name}/requirements.txt"'
@@ -943,18 +972,12 @@ def to_agent_engine(
     shutil.rmtree(temp_folder_path)
 
   try:
-    ignore_patterns = None
-    ae_ignore_path = os.path.join(agent_folder, '.ae_ignore')
-    if os.path.exists(ae_ignore_path):
-      click.echo(f'Ignoring files matching the patterns in {ae_ignore_path}')
-      with open(ae_ignore_path, 'r') as f:
-        patterns = [pattern.strip() for pattern in f.readlines()]
-        ignore_patterns = shutil.ignore_patterns(*patterns)
+    ignore_func = _get_ignore_patterns_func(agent_folder)
     click.echo('Copying agent source code...')
     shutil.copytree(
         agent_folder,
         agent_src_path,
-        ignore=ignore_patterns,
+        ignore=ignore_func,
         dirs_exist_ok=True,
     )
     os.chdir(temp_folder_path)
@@ -1302,7 +1325,8 @@ def to_gke(
     # copy agent source code
     click.echo('  - Copying agent source code...')
     agent_src_path = os.path.join(temp_folder, 'agents', app_name)
-    shutil.copytree(agent_folder, agent_src_path)
+    ignore_func = _get_ignore_patterns_func(agent_folder)
+    shutil.copytree(agent_folder, agent_src_path, ignore=ignore_func)
     requirements_txt_path = os.path.join(agent_src_path, 'requirements.txt')
     install_agent_deps = (
         f'RUN pip install -r "/app/agents/{app_name}/requirements.txt"'

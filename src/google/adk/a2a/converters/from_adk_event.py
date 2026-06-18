@@ -259,6 +259,10 @@ def _serialize_value(value: Any) -> Optional[Any]:
       logger.warning("Failed to serialize Pydantic model, falling back: %s", e)
       return str(value)
 
+  # Pass through JSON-native types as-is
+  if isinstance(value, (dict, list, int, float, bool, str)):
+    return value
+
   return str(value)
 
 

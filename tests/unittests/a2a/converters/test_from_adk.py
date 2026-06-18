@@ -130,3 +130,52 @@ class TestFromAdk:
     metadata = result[0].status.message.metadata
     assert "adk_actions" in metadata
     assert metadata["adk_actions"]["artifactDelta"] == {"image": 0}
+
+
+class TestSerializeValue:
+  """Tests for _serialize_value preserving JSON-native types."""
+
+  def setup_method(self) -> None:
+    from google.adk.a2a.converters.from_adk_event import _serialize_value
+
+    self.serialize = _serialize_value
+
+  def test_dict_preserved(self) -> None:
+    value = {"key": "val", "nested": {"a": 1}}
+    result = self.serialize(value)
+    assert result == value
+    assert isinstance(result, dict)
+
+  def test_list_preserved(self) -> None:
+    value = [1, "two", {"three": 3}]
+    result = self.serialize(value)
+    assert result == value
+    assert isinstance(result, list)
+
+  def test_int_preserved(self) -> None:
+    result = self.serialize(42)
+    assert result == 42
+    assert isinstance(result, int)
+
+  def test_float_preserved(self) -> None:
+    result = self.serialize(3.14)
+    assert result == 3.14
+    assert isinstance(result, float)
+
+  def test_bool_preserved(self) -> None:
+    assert self.serialize(True) is True
+    assert self.serialize(False) is False
+
+  def test_string_preserved(self) -> None:
+    assert self.serialize("hello") == "hello"
+
+  def test_none_returns_none(self) -> None:
+    assert self.serialize(None) is None
+
+  def test_non_json_type_stringified(self) -> None:
+    """Non-JSON-native types should still be converted to str."""
+    from datetime import datetime
+
+    dt = datetime(2025, 1, 1)
+    result = self.serialize(dt)
+    assert isinstance(result, str)
