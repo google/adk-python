@@ -2322,7 +2322,7 @@ class LiteLlm(BaseLlm):
     llm_client: The LLM client to use for the model.
   """
 
-  llm_client: LiteLLMClient = Field(default_factory=LiteLLMClient)
+  llm_client: LiteLLMClient = Field(default_factory=LiteLLMClient, exclude=True)
   """The LLM client to use for the model."""
 
   _additional_args: Dict[str, Any] = None
