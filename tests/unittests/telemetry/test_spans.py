@@ -1455,6 +1455,20 @@ def test_safe_json_serialize_no_whitespaces_circular_dict_returns_not_serializab
   assert _safe_json_serialize_no_whitespaces(obj) == '<not serializable>'
 
 
+def test_safe_json_serialize_recursion_error_returns_not_serializable():
+  with mock.patch.object(
+      json, 'dumps', side_effect=RecursionError('maximum recursion depth')
+  ):
+    assert safe_json_serialize({'a': 1}) == '<not serializable>'
+
+
+def test_safe_json_serialize_no_whitespaces_recursion_error_returns_not_serializable():
+  with mock.patch.object(
+      json, 'dumps', side_effect=RecursionError('maximum recursion depth')
+  ):
+    assert _safe_json_serialize_no_whitespaces({'a': 1}) == '<not serializable>'
+
+
 def test_use_extra_generate_content_attributes_upgraded_version(monkeypatch):
   # Arrange: Mock the presence of the new event-only context key in the contrib module
   from opentelemetry.instrumentation import google_genai
@@ -1745,3 +1759,31 @@ def test_trace_tool_call_no_error_no_error_type(
       if c == mock.call('error.type', mock.ANY)
   ]
   assert len(error_type_calls) == 0
+
+
+def test_build_llm_request_for_trace_excludes_live_http_clients():
+  """Tracing must not crash when config.http_options holds live SDK clients.
+
+  HttpOptions.{httpx_client, httpx_async_client, aiohttp_client} are live
+  transport objects that pydantic cannot serialize; they must be excluded so
+  the trace serialization does not raise PydanticSerializationError.
+  """
+  from google.adk.telemetry.tracing import _build_llm_request_for_trace
+  import httpx
+
+  llm_request = LlmRequest(
+      model='gemini-2.0-flash',
+      config=types.GenerateContentConfig(
+          temperature=0.1,
+          http_options=types.HttpOptions(
+              httpx_async_client=httpx.AsyncClient()
+          ),
+      ),
+  )
+
+  result = _build_llm_request_for_trace(llm_request)
+
+  # Must be JSON-serializable (raised PydanticSerializationError before the fix).
+  json.dumps(result)
+  assert 'httpx_async_client' not in result['config'].get('http_options', {})
+  assert result['config']['temperature'] == 0.1

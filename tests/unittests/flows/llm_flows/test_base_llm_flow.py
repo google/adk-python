@@ -682,8 +682,9 @@ async def test_run_live_reconnects_on_connection_closed():
       assert invocation_context.live_session_resumption_handle == 'test_handle'
 
 
+@pytest.mark.parametrize('error_code', [1000, 1006, 1011])
 @pytest.mark.asyncio
-async def test_run_live_reconnects_on_api_error():
+async def test_run_live_reconnects_on_api_error(error_code):
   """Test that run_live reconnects when APIError occurs."""
   from google.genai.errors import APIError
 
@@ -698,7 +699,7 @@ async def test_run_live_reconnects_on_api_error():
         )
     )
     # Simulate an API error occurring, triggering reconnection logic.
-    raise APIError(1000, {})
+    raise APIError(error_code, {})
 
   mock_connection.receive = mock.Mock(side_effect=mock_receive)
 

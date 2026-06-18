@@ -24,6 +24,7 @@ import uuid
 
 from a2a.types import Message
 from a2a.types import Part as A2APart
+from a2a.types import Role as A2ARole
 from a2a.types import Task
 from a2a.types import TaskArtifactUpdateEvent
 from a2a.types import TaskState
@@ -187,6 +188,7 @@ def _create_event(
     actions: Optional[EventActions] = None,
     long_running_function_ids: Optional[set[str]] = None,
     partial: bool = False,
+    content_role: str = "model",
 ) -> Optional[Event]:
   """Creates an ADK event from parts and metadata."""
   event_actions = actions or EventActions()
@@ -209,7 +211,7 @@ def _create_event(
       ),
       content=(
           genai_types.Content(
-              role="model",
+              role=content_role,
               parts=output_parts,
           )
           if output_parts
@@ -219,6 +221,13 @@ def _create_event(
   )
 
   return event
+
+
+def _a2a_role_to_content_role(role: Optional[A2ARole]) -> str:
+  """Maps an A2A Role to the corresponding GenAI content role."""
+  if role == A2ARole.user:
+    return "user"
+  return "model"
 
 
 def _parse_adk_metadata_value(value: Any) -> Any:
@@ -468,11 +477,13 @@ def convert_a2a_message_to_event(
     output_parts, _ = _convert_a2a_parts_to_adk_parts(
         a2a_message.parts, part_converter
     )
+    content_role = _a2a_role_to_content_role(getattr(a2a_message, "role", None))
     return _create_event(
         output_parts,
         invocation_context,
         author,
         _extract_event_actions(a2a_message.metadata),
+        content_role=content_role,
     )
 
   except Exception as e:

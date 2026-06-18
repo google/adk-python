@@ -713,9 +713,9 @@ class BaseLlmFlow(ABC):
         logger.error('Connection closed: %s.', e)
         raise
       except errors.APIError as e:
-        # Error code 1000 and 1006 indicates a recoverable connection drop.
+        # Error code 1000, 1006 and 1011 indicates a recoverable connection drop.
         # In that case, we attempt to reconnect with session handle if available.
-        if e.code in [1000, 1006]:
+        if e.code in [1000, 1006, 1011]:
           if invocation_context.live_session_resumption_handle:
             if attempt > DEFAULT_MAX_RECONNECT_ATTEMPTS:
               logger.error('Max reconnection attempts reached (%s).', e)
@@ -724,6 +724,7 @@ class BaseLlmFlow(ABC):
                 'Connection lost (%s), reconnecting with session handle.', e
             )
             continue
+
         logger.error('APIError in live flow: %s', e)
         raise
       except Exception as e:

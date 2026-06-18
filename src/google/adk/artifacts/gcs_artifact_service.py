@@ -40,6 +40,7 @@ from .base_artifact_service import ensure_part
 logger = logging.getLogger("google_adk." + __name__)
 
 _GCS_DISPLAY_NAME_METADATA_KEY = "adkDisplayName"
+_GCS_IS_TEXT_METADATA_KEY = "adkIsText"
 
 
 class GcsArtifactService(BaseArtifactService):
@@ -223,6 +224,11 @@ class GcsArtifactService(BaseArtifactService):
       blob_metadata[_GCS_DISPLAY_NAME_METADATA_KEY] = (
           artifact.inline_data.display_name
       )
+    elif artifact.inline_data is None and artifact.text is not None:
+      # Flag text artifacts so they can be reconstructed as Part(text=...) on
+      # load instead of Part.from_bytes() (which would only populate
+      # inline_data).
+      blob_metadata[_GCS_IS_TEXT_METADATA_KEY] = "true"
     if blob_metadata:
       blob.metadata = blob_metadata
 
@@ -275,6 +281,8 @@ class GcsArtifactService(BaseArtifactService):
       return None
 
     artifact_bytes = blob.download_as_bytes()
+    if blob.metadata and blob.metadata.get(_GCS_IS_TEXT_METADATA_KEY) == "true":
+      return types.Part(text=artifact_bytes.decode("utf-8"))
     display_name = None
     if blob.metadata:
       display_name = blob.metadata.get(_GCS_DISPLAY_NAME_METADATA_KEY)

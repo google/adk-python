@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import logging
 import re
+from typing import Any
 
 from ..agents.readonly_context import ReadonlyContext
 from ..sessions.state import State
@@ -46,7 +47,11 @@ async def inject_session_state(
   ) -> str:
     return await inject_session_state(
         'You can inject a state variable like {var_name} or an artifact '
-        '{artifact.file_name} into the instruction template.',
+        '{artifact.file_name} into the instruction template.'
+        'You can also inject a nested variable like {var_name.nested_var}.'
+        'If a variable or nested attribute may be missing, append `?` to the '
+        'path or attribute name for optional handling, e.g. '
+        '{var_name.optional_nested_var?}.',
         readonly_context,
     )
 
@@ -78,14 +83,52 @@ async def inject_session_state(
     result.append(string[last_end:])
     return ''.join(result)
 
+  def _get_nested_value(obj: Any, path: str) -> Any:
+    """Retrieve nested value from an object based on dot-separated path."""
+    parts = path.split('.')
+    current = obj
+
+    for part in parts:
+      if current is None:
+        return None
+
+      optional = part.endswith('?')
+      key = part.removesuffix('?')
+
+      # Try dictionary access first
+      if hasattr(current, '__getitem__'):
+        try:
+          current = current[key]
+          continue
+        except (KeyError, TypeError) as e:
+          # If dict access fails, fall through to try getattr
+          # UNLESS it's a pure dict which definitely doesn't have attributes
+          if isinstance(current, dict):
+            if optional:
+              return None
+            raise KeyError(f"Key '{key}' not found in path '{path}'") from e
+          pass
+
+      # Try attribute access
+      try:
+        current = getattr(current, key)
+      except AttributeError as e:
+        # Both dict access and attribute access failed.
+        if optional:
+          return None
+        raise KeyError(f"Key '{key}' not found in path '{path}'") from e
+
+    return current
+
   async def _replace_match(match) -> str:
-    var_name = match.group().lstrip('{').rstrip('}').strip()
-    optional = False
-    if var_name.endswith('?'):
-      optional = True
-      var_name = var_name.removesuffix('?')
-    if var_name.startswith('artifact.'):
-      var_name = var_name.removeprefix('artifact.')
+    full_path = match.group().lstrip('{').rstrip('}').strip()
+
+    if full_path.startswith('artifact.'):
+      var_name = full_path.removeprefix('artifact.')
+      optional = var_name.endswith('?')
+      if optional:
+        var_name = var_name.removesuffix('?')
+
       if invocation_context.artifact_service is None:
         raise ValueError('Artifact service is not initialized.')
       artifact = await invocation_context.artifact_service.load_artifact(
@@ -104,22 +147,17 @@ async def inject_session_state(
           raise KeyError(f'Artifact {var_name} not found.')
       return str(artifact)
     else:
-      if not _is_valid_state_name(var_name):
+      if not _is_valid_state_name(full_path.split('.')[0].removesuffix('?')):
         return match.group()
-      if var_name in invocation_context.session.state:
-        value = invocation_context.session.state[var_name]
+
+      try:
+        value = _get_nested_value(invocation_context.session.state, full_path)
+
         if value is None:
           return ''
         return str(value)
-      else:
-        if optional:
-          logger.debug(
-              'Context variable %s not found, replacing with empty string',
-              var_name,
-          )
-          return ''
-        else:
-          raise KeyError(f'Context variable not found: `{var_name}`.')
+      except KeyError as e:
+        raise KeyError(f'Context variable not found: `{full_path}`.') from e
 
   return await _async_sub(r'{+[^{}]*}+', _replace_match, template)
 
