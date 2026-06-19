@@ -22,5 +22,7 @@ sourceFileExtensions:
   - 'js'
   - 'java'
   - 'py'
+  - 'yaml'
+  - 'yml'
 ignoreFiles:
   - 'src/google/adk/cli/browser/**'
