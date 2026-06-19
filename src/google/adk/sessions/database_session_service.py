@@ -531,7 +531,8 @@ class DatabaseSessionService(BaseSessionService):
       now = datetime.fromtimestamp(platform_time.get_time(), tz=timezone.utc)
       is_sqlite = self.db_engine.dialect.name == _SQLITE_DIALECT
       is_postgresql = self.db_engine.dialect.name == _POSTGRESQL_DIALECT
-      if is_sqlite or is_postgresql:
+      is_mysql = self.db_engine.dialect.name == _MYSQL_DIALECT
+      if is_sqlite or is_postgresql or is_mysql:
         now = now.replace(tzinfo=None)
 
       storage_session = schema.StorageSession(

@@ -120,11 +120,28 @@ async def inject_session_state(
 
     return current
 
-  async def _replace_match(match) -> str:
-    full_path = match.group().lstrip('{').rstrip('}').strip()
+  def _is_valid_path(path: str) -> bool:
+    """Checks if the path is a valid state variable path."""
+    parts = path.split('.')
+    if not parts:
+      return False
 
-    if full_path.startswith('artifact.'):
-      var_name = full_path.removeprefix('artifact.')
+    # Check first segment (can have prefix)
+    first_seg = parts[0].removesuffix('?')
+    if not _is_valid_state_name(first_seg):
+      return False
+
+    # Check subsequent segments (must be plain identifiers)
+    for part in parts[1:]:
+      seg = part.removesuffix('?')
+      if not seg.isidentifier():
+        return False
+
+    return True
+
+  async def _evaluate_path(path: str) -> str:
+    if path.startswith('artifact.'):
+      var_name = path.removeprefix('artifact.')
       optional = var_name.endswith('?')
       if optional:
         var_name = var_name.removesuffix('?')
@@ -147,17 +164,45 @@ async def inject_session_state(
           raise KeyError(f'Artifact {var_name} not found.')
       return str(artifact)
     else:
-      if not _is_valid_state_name(full_path.split('.')[0].removesuffix('?')):
-        return match.group()
-
       try:
-        value = _get_nested_value(invocation_context.session.state, full_path)
+        value = _get_nested_value(invocation_context.session.state, path)
 
         if value is None:
           return ''
         return str(value)
       except KeyError as e:
-        raise KeyError(f'Context variable not found: `{full_path}`.') from e
+        raise KeyError(f'Context variable not found: `{path}`.') from e
+
+  async def _replace_match(match) -> str:
+    raw_match = match.group()
+    leading_count = len(raw_match) - len(raw_match.lstrip('{'))
+    trailing_count = len(raw_match) - len(raw_match.rstrip('}'))
+    full_path = raw_match.lstrip('{').rstrip('}').strip()
+
+    if leading_count == trailing_count:
+      n = leading_count
+      is_valid = _is_valid_path(full_path) or full_path.startswith('artifact.')
+      if n % 2 == 0:
+        # Even: Escaped, no evaluation
+        if is_valid:
+          half_n = n // 2
+          return '{' * half_n + full_path + '}' * half_n
+        else:
+          return raw_match
+      else:
+        # Odd: Evaluate and wrap
+        if not is_valid:
+          return raw_match
+        evaluated_value = await _evaluate_path(full_path)
+        wrap_braces = (n - 1) // 2
+        return '{' * wrap_braces + evaluated_value + '}' * wrap_braces
+    else:
+      # Asymmetric: fallback to old behavior (treat as N=1 if valid path)
+      if not _is_valid_path(full_path) and not full_path.startswith(
+          'artifact.'
+      ):
+        return raw_match
+      return await _evaluate_path(full_path)
 
   return await _async_sub(r'{+[^{}]*}+', _replace_match, template)
 

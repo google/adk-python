@@ -27,6 +27,7 @@ from typing import AsyncGenerator
 from google.adk.agents.callback_context import CallbackContext
 from google.adk.agents.context import Context
 from google.adk.agents.llm_agent import LlmAgent
+from google.adk.agents.run_config import RunConfig
 from google.adk.events.event import Event
 from google.adk.runners import Runner
 from google.adk.sessions.in_memory_session_service import InMemorySessionService
@@ -254,6 +255,30 @@ async def test_multiple_invocations_accumulate_events():
   )
   outputs = [e.output for e in updated.events if e.output is not None]
   assert outputs == ['Echo: first', 'Echo: second', 'Echo: third']
+
+
+@pytest.mark.asyncio
+async def test_run_config_custom_metadata_stamps_user_event():
+  """The node path stamps the user event with run-level custom_metadata."""
+  ss = InMemorySessionService()
+  runner = Runner(
+      app_name='test', node=_EchoNode(name='echo'), session_service=ss
+  )
+  session = await ss.create_session(app_name='test', user_id='u')
+
+  async for _ in runner.run_async(
+      user_id='u',
+      session_id=session.id,
+      new_message=_user_message('hi'),
+      run_config=RunConfig(custom_metadata={'turn_id': 't-1'}),
+  ):
+    pass
+
+  updated = await ss.get_session(
+      app_name='test', user_id='u', session_id=session.id
+  )
+  user_event = next(e for e in updated.events if e.author == 'user')
+  assert user_event.custom_metadata == {'turn_id': 't-1'}
 
 
 # ---------------------------------------------------------------------------

@@ -497,3 +497,94 @@ async def test_inject_session_state_with_nested_object_attribute_access():
       instruction_template, invocation_context
   )
   assert populated_instruction == "Name: Frank, Role: Engineer"
+
+
+@pytest.mark.asyncio
+async def test_inject_session_state_with_invalid_nested_path_returns_original():
+  """Test that invalid nested paths (e.g. containing spaces or equals) are ignored."""
+  instruction_template = "Value: {LabelConfidence.Enum confidence = 441216274;}"
+  invocation_context = await _create_test_readonly_context()
+
+  populated_instruction = await instructions_utils.inject_session_state(
+      instruction_template, invocation_context
+  )
+  assert (
+      populated_instruction
+      == "Value: {LabelConfidence.Enum confidence = 441216274;}"
+  )
+
+
+@pytest.mark.asyncio
+async def test_inject_session_state_escaped_braces():
+  instruction_template = (
+      "This is a literal {{placeholder}} and this is {value}."
+  )
+  invocation_context = await _create_test_readonly_context(
+      state={"value": "real_value"}
+  )
+  populated_instruction = await instructions_utils.inject_session_state(
+      instruction_template, invocation_context
+  )
+  assert (
+      populated_instruction
+      == "This is a literal {placeholder} and this is real_value."
+  )
+
+
+@pytest.mark.asyncio
+async def test_inject_session_state_escaped_braces_missing_state():
+  instruction_template = "This is a literal {{task_N.result}}."
+  # task_N is NOT in state
+  invocation_context = await _create_test_readonly_context(state={})
+  populated_instruction = await instructions_utils.inject_session_state(
+      instruction_template, invocation_context
+  )
+  assert populated_instruction == "This is a literal {task_N.result}."
+
+
+@pytest.mark.asyncio
+async def test_inject_session_state_triple_braces_evaluates_and_wraps():
+  instruction_template = "This is a wrapped value: {{{value}}}."
+  invocation_context = await _create_test_readonly_context(
+      state={"value": "real_value"}
+  )
+  populated_instruction = await instructions_utils.inject_session_state(
+      instruction_template, invocation_context
+  )
+  assert populated_instruction == "This is a wrapped value: {real_value}."
+
+
+@pytest.mark.asyncio
+async def test_inject_session_state_quadruple_braces():
+  instruction_template = "This is literal double braces: {{{{placeholder}}}}."
+  invocation_context = await _create_test_readonly_context(state={})
+  populated_instruction = await instructions_utils.inject_session_state(
+      instruction_template, invocation_context
+  )
+  assert (
+      populated_instruction == "This is literal double braces: {{placeholder}}."
+  )
+
+
+@pytest.mark.asyncio
+async def test_inject_session_state_asymmetric_braces_left():
+  instruction_template = "Asymmetric left: {{value}."
+  invocation_context = await _create_test_readonly_context(
+      state={"value": "real_value"}
+  )
+  populated_instruction = await instructions_utils.inject_session_state(
+      instruction_template, invocation_context
+  )
+  assert populated_instruction == "Asymmetric left: real_value."
+
+
+@pytest.mark.asyncio
+async def test_inject_session_state_asymmetric_braces_right():
+  instruction_template = "Asymmetric right: {value}}."
+  invocation_context = await _create_test_readonly_context(
+      state={"value": "real_value"}
+  )
+  populated_instruction = await instructions_utils.inject_session_state(
+      instruction_template, invocation_context
+  )
+  assert populated_instruction == "Asymmetric right: real_value."
