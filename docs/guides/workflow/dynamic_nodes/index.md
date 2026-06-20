@@ -31,7 +31,7 @@ generate_headline = Agent(
 async def orchestrate(ctx: Context, node_input: str) -> str:
   # Dynamically execute the child agent and await its output
   headline = await ctx.run_node(generate_headline, node_input=node_input)
-  
+
   yield Event(output=headline)
 
 # Build the workflow
@@ -175,7 +175,7 @@ async def parallel_orchestrator(ctx: Context, node_input: list[str]):
             use_sub_branch=True, # Critical for parallel isolation
         )
     )
-  
+
   # Await all tasks concurrently
   results = await asyncio.gather(*tasks)
   yield Event(output=results)
