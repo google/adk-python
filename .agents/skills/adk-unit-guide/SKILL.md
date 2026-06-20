@@ -53,6 +53,7 @@ Use the following structure and instructions to create the guide for the code un
 - Use unit test code as a starting point for the code example, if available.
 - When writing a sample agent, do not set the `model` attribute.
 - For workflow node samples, prefer using a simple Python function rather than extending `BaseNode` to demonstrate the node's logic, unless class extension is explicitly required for the use case.
+- When wrapping Python functions as workflow nodes, prefer using the `@node` decorator instead of `FunctionNode` directly, whenever possible.
 
 ## How it works
 
@@ -64,6 +65,8 @@ Use the following structure and instructions to create the guide for the code un
 ## Configuration options
 
 - If the code unit has configuration options (e.g., settings, configuration objects), document them in a table detailing parameters, types, default values, and descriptions.
+- **Do NOT** list options inherited from base classes. Focus only on options introduced by the code unit itself.
+- Dive into each option to provide detailed description and usage patterns, rather than just repeating the type and a brief description.
 - **Do NOT** list references of all attributes or methods of the classes. Exhaustive API references belong in auto-generated reference documentation, not in guides. Guides should focus on how to use the code unit.
 
 ## Advanced applications

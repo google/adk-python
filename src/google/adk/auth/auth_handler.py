@@ -36,6 +36,17 @@ except ImportError:
   AUTHLIB_AVAILABLE = False
 
 
+def _normalize_oauth_scopes(
+    scopes: dict[str, str] | list[str] | None,
+) -> list[str]:
+  """Normalize OAuth scopes into the list shape expected by authlib."""
+  if not scopes:
+    return []
+  if isinstance(scopes, dict):
+    return list(scopes.keys())
+  return list(scopes)
+
+
 class AuthHandler:
   """A handler that handles the auth flow in Agent Development Kit to help
   orchestrate the credential request and response flow (e.g. OAuth flow)
@@ -164,7 +175,7 @@ class AuthHandler:
 
     if isinstance(auth_scheme, OpenIdConnectWithConfig):
       authorization_endpoint = auth_scheme.authorization_endpoint
-      scopes = auth_scheme.scopes
+      scopes = _normalize_oauth_scopes(auth_scheme.scopes)
     else:
       authorization_endpoint = (
           auth_scheme.flows.implicit
@@ -176,17 +187,20 @@ class AuthHandler:
           or auth_scheme.flows.password
           and auth_scheme.flows.password.tokenUrl
       )
-      scopes = (
-          auth_scheme.flows.implicit
-          and auth_scheme.flows.implicit.scopes
-          or auth_scheme.flows.authorizationCode
-          and auth_scheme.flows.authorizationCode.scopes
-          or auth_scheme.flows.clientCredentials
-          and auth_scheme.flows.clientCredentials.scopes
-          or auth_scheme.flows.password
-          and auth_scheme.flows.password.scopes
-      )
-      scopes = list(scopes.keys())
+      if auth_scheme.flows.implicit:
+        scopes = _normalize_oauth_scopes(auth_scheme.flows.implicit.scopes)
+      elif auth_scheme.flows.authorizationCode:
+        scopes = _normalize_oauth_scopes(
+            auth_scheme.flows.authorizationCode.scopes
+        )
+      elif auth_scheme.flows.clientCredentials:
+        scopes = _normalize_oauth_scopes(
+            auth_scheme.flows.clientCredentials.scopes
+        )
+      elif auth_scheme.flows.password:
+        scopes = _normalize_oauth_scopes(auth_scheme.flows.password.scopes)
+      else:
+        scopes = []
 
     client = OAuth2Session(
         auth_credential.oauth2.client_id,

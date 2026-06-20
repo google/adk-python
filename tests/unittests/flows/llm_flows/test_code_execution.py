@@ -14,6 +14,7 @@
 
 """Unit tests for Code Execution logic."""
 
+import ast
 import datetime
 from unittest.mock import AsyncMock
 from unittest.mock import MagicMock
@@ -23,7 +24,9 @@ from google.adk.agents.llm_agent import Agent
 from google.adk.code_executors.base_code_executor import BaseCodeExecutor
 from google.adk.code_executors.built_in_code_executor import BuiltInCodeExecutor
 from google.adk.code_executors.code_execution_utils import CodeExecutionResult
+from google.adk.code_executors.code_execution_utils import File
 from google.adk.flows.llm_flows._code_execution import _DATA_FILE_HELPER_LIB
+from google.adk.flows.llm_flows._code_execution import _get_data_file_preprocessing_code
 from google.adk.flows.llm_flows._code_execution import response_processor
 from google.adk.models.llm_response import LlmResponse
 from google.genai import types
@@ -166,3 +169,41 @@ def test_data_file_helper_lib_defines_crop():
 
   # Regression for #4011: explore_df raised NameError when crop was undefined.
   namespace['explore_df'](pd.DataFrame({'a': [1, 2], 'b': ['x', 'y']}))
+
+
+def test_get_data_file_preprocessing_code_injection_reproduction():
+  """Test that filenames with injection payloads are safely escaped."""
+  bad_filename = "'); print('PWNED')#"
+  file = File(name=bad_filename, mime_type='text/csv', content=b'')
+  code = _get_data_file_preprocessing_code(file)
+
+  tree = ast.parse(code)
+  for node in ast.walk(tree):
+    if isinstance(node, ast.Call):
+      if isinstance(node.func, ast.Name) and node.func.id == 'print':
+        if (
+            len(node.args) == 1
+            and isinstance(node.args[0], ast.Constant)
+            and node.args[0].value == 'PWNED'
+        ):
+          pytest.fail(
+              "Vulnerability reproduction: print('PWNED') was parsed as"
+              ' executable code!'
+          )
+
+  # Check that read_csv was called with bad_filename as a safe string literal.
+  read_csv_arg = None
+  for node in ast.walk(tree):
+    if (
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == 'read_csv'
+        and isinstance(node.func.value, ast.Name)
+        and node.func.value.id == 'pd'
+    ):
+      assert len(node.args) == 1
+      assert isinstance(node.args[0], ast.Constant)
+      read_csv_arg = node.args[0].value
+      break
+
+  assert read_csv_arg == bad_filename

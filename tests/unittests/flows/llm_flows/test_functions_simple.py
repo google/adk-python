@@ -18,6 +18,7 @@ from typing import Callable
 from unittest import mock
 
 from fastapi.openapi.models import HTTPBearer
+from google.adk.agents.live_request_queue import LiveRequestQueue
 from google.adk.agents.llm_agent import Agent
 from google.adk.auth.auth_tool import AuthConfig
 from google.adk.events.event import Event
@@ -1559,3 +1560,151 @@ async def test_detection_exception_does_not_break_tool_call(
   assert len(recorded_calls) == 1
   assert recorded_calls[0]['error_type'] is None
   assert recorded_calls[0]['error'] is None
+
+
+@pytest.mark.asyncio
+async def test_response_scheduling_applied_to_function_response():
+  """response_scheduling on a tool is stamped onto the FunctionResponse part."""
+
+  def simple_fn(**kwargs) -> dict:
+    return {'result': 'test'}
+
+  tool = FunctionTool(simple_fn)
+  tool.response_scheduling = types.FunctionResponseScheduling.SILENT
+  model = testing_utils.MockModel.create(responses=[])
+  agent = Agent(name='test_agent', model=model, tools=[tool])
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent, user_content=''
+  )
+
+  function_call = types.FunctionCall(name=tool.name, args={}, id='fc_test')
+  event = Event(
+      invocation_id=invocation_context.invocation_id,
+      author=agent.name,
+      content=types.Content(parts=[types.Part(function_call=function_call)]),
+  )
+
+  result_event = await handle_function_calls_async(
+      invocation_context, event, {tool.name: tool}
+  )
+
+  assert result_event is not None
+  function_response = result_event.content.parts[0].function_response
+  assert function_response.scheduling is types.FunctionResponseScheduling.SILENT
+
+
+@pytest.mark.asyncio
+async def test_response_scheduling_unset_by_default():
+  """Without response_scheduling, the FunctionResponse part leaves it unset."""
+
+  def simple_fn(**kwargs) -> dict:
+    return {'result': 'test'}
+
+  tool = FunctionTool(simple_fn)
+  model = testing_utils.MockModel.create(responses=[])
+  agent = Agent(name='test_agent', model=model, tools=[tool])
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent, user_content=''
+  )
+
+  function_call = types.FunctionCall(name=tool.name, args={}, id='fc_test')
+  event = Event(
+      invocation_id=invocation_context.invocation_id,
+      author=agent.name,
+      content=types.Content(parts=[types.Part(function_call=function_call)]),
+  )
+
+  result_event = await handle_function_calls_async(
+      invocation_context, event, {tool.name: tool}
+  )
+
+  assert result_event is not None
+  function_response = result_event.content.parts[0].function_response
+  assert function_response.scheduling is None
+
+
+async def _drain_live_function_responses(
+    live_request_queue: LiveRequestQueue,
+    count: int,
+) -> list[types.Content]:
+  """Drains ``count`` contents from a live request queue, ignoring acks."""
+  contents = []
+  while len(contents) < count:
+    request = await asyncio.wait_for(live_request_queue._queue.get(), timeout=5)
+    if request.content is not None:
+      contents.append(request.content)
+  return contents
+
+
+@pytest.mark.asyncio
+async def test_streaming_tool_with_scheduling_emits_function_response():
+  """A streaming tool with response_scheduling relays yields as FunctionResponses."""
+
+  async def streaming_fn(**kwargs):
+    yield 'first'
+    yield 'second'
+
+  tool = FunctionTool(streaming_fn)
+  tool.response_scheduling = types.FunctionResponseScheduling.SILENT
+  model = testing_utils.MockModel.create(responses=[])
+  agent = Agent(name='test_agent', model=model, tools=[tool])
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent, user_content=''
+  )
+  invocation_context.live_request_queue = LiveRequestQueue()
+
+  function_call = types.FunctionCall(name=tool.name, args={}, id='fc_stream')
+  event = Event(
+      invocation_id=invocation_context.invocation_id,
+      author=agent.name,
+      content=types.Content(parts=[types.Part(function_call=function_call)]),
+  )
+
+  await handle_function_calls_live(invocation_context, event, {tool.name: tool})
+  contents = await _drain_live_function_responses(
+      invocation_context.live_request_queue, count=2
+  )
+
+  responses = [content.parts[0].function_response for content in contents]
+  assert [r.response for r in responses] == [
+      {'result': 'first'},
+      {'result': 'second'},
+  ]
+  assert all(r.id == 'fc_stream' for r in responses)
+  assert all(
+      r.scheduling is types.FunctionResponseScheduling.SILENT for r in responses
+  )
+
+
+@pytest.mark.asyncio
+async def test_streaming_tool_without_scheduling_emits_function_response():
+  """A streaming tool without response_scheduling still relays yields as
+  FunctionResponses, leaving scheduling unset."""
+
+  async def streaming_fn(**kwargs):
+    yield 'hello'
+
+  tool = FunctionTool(streaming_fn)
+  model = testing_utils.MockModel.create(responses=[])
+  agent = Agent(name='test_agent', model=model, tools=[tool])
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent, user_content=''
+  )
+  invocation_context.live_request_queue = LiveRequestQueue()
+
+  function_call = types.FunctionCall(name=tool.name, args={}, id='fc_stream')
+  event = Event(
+      invocation_id=invocation_context.invocation_id,
+      author=agent.name,
+      content=types.Content(parts=[types.Part(function_call=function_call)]),
+  )
+
+  await handle_function_calls_live(invocation_context, event, {tool.name: tool})
+  contents = await _drain_live_function_responses(
+      invocation_context.live_request_queue, count=1
+  )
+
+  function_response = contents[0].parts[0].function_response
+  assert function_response.response == {'result': 'hello'}
+  assert function_response.id == 'fc_stream'
+  assert function_response.scheduling is None

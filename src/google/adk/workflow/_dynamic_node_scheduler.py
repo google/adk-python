@@ -99,7 +99,11 @@ class DynamicNodeState:
 
   def get_dynamic_tasks(self) -> list[asyncio.Task[Context]]:
     """Get all active dynamic node tasks."""
-    return [run.task for run in self.runs.values() if run.task]
+    return [
+        run.task
+        for run in self.runs.values()
+        if run.task and not run.task.done()
+    ]
 
 
 class DynamicNodeScheduler(ScheduleDynamicNode):

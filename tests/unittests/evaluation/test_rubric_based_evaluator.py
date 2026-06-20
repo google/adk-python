@@ -14,6 +14,8 @@
 
 from __future__ import annotations
 
+import logging
+
 from google.adk.evaluation.eval_case import Invocation
 from google.adk.evaluation.eval_metrics import EvalMetric
 from google.adk.evaluation.eval_metrics import JudgeModelOptions
@@ -492,6 +494,41 @@ class TestRubricBasedEvaluator:
     auto_rater_score = evaluator.convert_auto_rater_response_to_score(response)
     assert auto_rater_score.score is None
     assert auto_rater_score.rubric_scores == []
+
+  def test_convert_auto_rater_response_to_score_with_none_content(
+      self,
+      evaluator: RubricBasedEvaluator,
+      caplog: pytest.LogCaptureFixture,
+  ):
+    """An empty auto-rater response is scored as empty, not crashed on."""
+    evaluator.create_effective_rubrics_list(None)
+    response = LlmResponse(content=None)
+    with caplog.at_level(logging.WARNING):
+      auto_rater_score = evaluator.convert_auto_rater_response_to_score(
+          response
+      )
+    assert auto_rater_score.score is None
+    assert auto_rater_score.rubric_scores == []
+    assert "empty response" in caplog.text
+
+  def test_convert_auto_rater_response_to_score_warns_on_unparseable(
+      self,
+      evaluator: RubricBasedEvaluator,
+      caplog: pytest.LogCaptureFixture,
+  ):
+    """Auto-rater output that misses the expected format logs a diagnostic."""
+    evaluator.create_effective_rubrics_list(None)
+    response = LlmResponse(
+        content=genai_types.Content(
+            parts=[genai_types.Part(text="**Verdict**: Yes")]
+        )
+    )
+    with caplog.at_level(logging.WARNING):
+      auto_rater_score = evaluator.convert_auto_rater_response_to_score(
+          response
+      )
+    assert auto_rater_score.rubric_scores == []
+    assert "did not match the expected" in caplog.text
 
   def test_convert_auto_rater_response_to_score_with_mixed_verdicts(
       self,

@@ -380,6 +380,12 @@ def content_block_to_part(
   )
 
 
+def _extract_cached_token_count(usage: Any) -> int | None:
+  """Returns Anthropic cache-read tokens, the analog of cached_content tokens."""
+  cached = getattr(usage, "cache_read_input_tokens", None)
+  return cached if isinstance(cached, int) else None
+
+
 def message_to_generate_content_response(
     message: anthropic_types.Message,
 ) -> LlmResponse:
@@ -402,6 +408,7 @@ def message_to_generate_content_response(
           total_token_count=(
               message.usage.input_tokens + message.usage.output_tokens
           ),
+          cached_content_token_count=_extract_cached_token_count(message.usage),
       ),
       # TODO: Deal with these later.
       # finish_reason=to_google_genai_finish_reason(message.stop_reason),
@@ -612,11 +619,13 @@ class AnthropicLlm(BaseLlm):
     redacted_thinking_blocks: dict[int, str] = {}
     input_tokens = 0
     output_tokens = 0
+    cached_input_tokens: int | None = None
 
     async for event in raw_stream:
       if event.type == "message_start":
         input_tokens = event.message.usage.input_tokens
         output_tokens = event.message.usage.output_tokens
+        cached_input_tokens = _extract_cached_token_count(event.message.usage)
 
       elif event.type == "content_block_start":
         block = event.content_block
@@ -708,6 +717,7 @@ class AnthropicLlm(BaseLlm):
             prompt_token_count=input_tokens,
             candidates_token_count=output_tokens,
             total_token_count=input_tokens + output_tokens,
+            cached_content_token_count=cached_input_tokens,
         ),
         partial=False,
     )

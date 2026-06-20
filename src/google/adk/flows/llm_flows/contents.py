@@ -52,15 +52,23 @@ class _ContentLlmRequestProcessor(BaseLlmRequestProcessor):
       ):
         preserve_function_call_ids = True
       else:
-        # Anthropic pairs tool_use/tool_result by id, so `adk-*` fallback
-        # ids must survive replay.
+        # Anthropic and LiteLLM-backed providers (e.g. OpenAI) pair tool
+        # calls with their results by id, so `adk-*` fallback ids must
+        # survive replay.
+        id_pairing_model_types: list[type] = []
         try:
           from ...models.anthropic_llm import AnthropicLlm
+
+          id_pairing_model_types.append(AnthropicLlm)
         except (ImportError, OSError):
-          AnthropicLlm = None
-        if AnthropicLlm is not None and isinstance(
-            canonical_model, AnthropicLlm
-        ):
+          pass
+        try:
+          from ...models.lite_llm import LiteLlm
+
+          id_pairing_model_types.append(LiteLlm)
+        except (ImportError, OSError):
+          pass
+        if isinstance(canonical_model, tuple(id_pairing_model_types)):
           preserve_function_call_ids = True
 
     # Preserve all contents that were added by instruction processor

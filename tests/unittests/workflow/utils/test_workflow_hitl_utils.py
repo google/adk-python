@@ -14,6 +14,8 @@
 
 from __future__ import annotations
 
+import json
+
 from google.adk.events.event import Event
 from google.adk.events.event import NodeInfo
 from google.adk.events.request_input import RequestInput
@@ -171,6 +173,47 @@ class TestCreateAuthRequestEvent:
     assert fc.name == REQUEST_CREDENTIAL_FUNCTION_CALL_NAME
     assert fc.id == "auth-id-1"
     assert "authConfig" in fc.args
+
+  def test_args_are_json_serializable(self):
+    from fastapi.openapi.models import OAuth2
+    from fastapi.openapi.models import OAuthFlowAuthorizationCode
+    from fastapi.openapi.models import OAuthFlows
+    from google.adk.auth.auth_credential import AuthCredential
+    from google.adk.auth.auth_credential import AuthCredentialTypes
+    from google.adk.auth.auth_credential import OAuth2Auth
+    from google.adk.auth.auth_tool import AuthConfig
+
+    auth_config = AuthConfig(
+        auth_scheme=OAuth2(
+            flows=OAuthFlows(
+                authorizationCode=OAuthFlowAuthorizationCode(
+                    authorizationUrl=(
+                        "https://accounts.google.com/o/oauth2/auth"
+                    ),
+                    tokenUrl="https://oauth2.googleapis.com/token",
+                    scopes={
+                        "https://www.googleapis.com/auth/calendar": (
+                            "See calendars"
+                        )
+                    },
+                )
+            )
+        ),
+        raw_auth_credential=AuthCredential(
+            auth_type=AuthCredentialTypes.OAUTH2,
+            oauth2=OAuth2Auth(
+                client_id="oauth_client_id",
+                client_secret="oauth_client_secret",
+            ),
+        ),
+    )
+    event = create_auth_request_event(auth_config, "auth-id-1")
+
+    fc = event.content.parts[0].function_call
+
+    # python-mode dump leaves auth_scheme.type a live enum, breaking json.dumps
+    json.dumps(fc.args)
+    assert fc.args["authConfig"]["authScheme"]["type"] == "oauth2"
 
 
 #
