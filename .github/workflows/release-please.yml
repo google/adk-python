@@ -27,12 +27,12 @@ jobs:
             echo "exists=false" >> $GITHUB_OUTPUT
           fi
 
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         if: steps.check.outputs.exists == 'true'
         with:
           ref: release/candidate
 
-      - uses: googleapis/release-please-action@v4
+      - uses: googleapis/release-please-action@5c625bfb5d1ff62eadeeb3772007f7f66fdcf071 # v4
         if: steps.check.outputs.exists == 'true'
         with:
           token: ${{ secrets.RELEASE_PAT }}
