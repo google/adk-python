@@ -19,7 +19,7 @@ jobs:
         with:
           ref: v2
           fetch-depth: 0
-          token: ${{ secrets.RELEASE_PAT }}
+          token: ${{ secrets.RELEASE_PAT || github.token }}
 
       - name: Check for new commits on main
         id: check
@@ -50,7 +50,7 @@ jobs:
       - name: Create sync PR
         if: steps.check.outputs.behind != '0' && steps.existing.outputs.exists == 'false'
         env:
-          GH_TOKEN: ${{ secrets.RELEASE_PAT }}
+          GH_TOKEN: ${{ secrets.RELEASE_PAT || github.token }}
         run: |
           gh pr create \
             --base v2 \

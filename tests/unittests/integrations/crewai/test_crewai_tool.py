@@ -16,9 +16,13 @@ from unittest.mock import MagicMock
 
 import pytest
 
-# Skip entire module if Python < 3.10 (must be before crewai_tool import)
+# Skip entire module if crewai is not installed (must be before crewai_tool import).
+# exc_type=ImportError is required because crewai_tool.py re-raises the
+# ModuleNotFoundError as ImportError, which pytest 9.1+ does not catch by default.
 pytest.importorskip(
-    "google.adk.integrations.crewai.crewai_tool", reason="Requires Python 3.10+"
+    "google.adk.integrations.crewai.crewai_tool",
+    reason="Requires crewai package (pip install 'google-adk[extensions]')",
+    exc_type=ImportError,
 )
 
 from google.adk.agents.context import Context
