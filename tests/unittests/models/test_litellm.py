@@ -5094,17 +5094,6 @@ def test_convert_reasoning_value_to_parts_skips_redacted_blocks():
   assert parts[0].text == "visible"
 
 
-def test_convert_reasoning_value_to_parts_skips_empty_thinking():
-  """Blocks with empty thinking text are excluded."""
-  thinking_blocks = [
-      {"type": "thinking", "thinking": "", "signature": "sig1"},
-      {"type": "thinking", "thinking": "real thought", "signature": "sig2"},
-  ]
-  parts = _convert_reasoning_value_to_parts(thinking_blocks)
-  assert len(parts) == 1
-  assert parts[0].text == "real thought"
-
-
 def test_convert_reasoning_value_to_parts_flat_string_unchanged():
   """Flat string reasoning still produces thought parts without signature."""
   parts = _convert_reasoning_value_to_parts("simple reasoning text")

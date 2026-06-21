@@ -1554,7 +1554,7 @@ class Runner:
     # Some native audio models requires the modality to be set. So we set it to
     # AUDIO by default.
     if run_config.response_modalities is None:
-      run_config.response_modalities = ['AUDIO']
+      run_config.response_modalities = [types.Modality.AUDIO]
     if session is None and (user_id is None or session_id is None):
       raise ValueError(
           'Either session or user_id and session_id must be provided.'
@@ -2021,7 +2021,7 @@ class Runner:
     # For live multi-agents system, we need model's text transcription as
     # context for the transferred agent.
     if hasattr(self.agent, 'sub_agents') and self.agent.sub_agents:
-      if 'AUDIO' in run_config.response_modalities:
+      if types.Modality.AUDIO in run_config.response_modalities:
         if not run_config.output_audio_transcription:
           run_config.output_audio_transcription = (
               types.AudioTranscriptionConfig()

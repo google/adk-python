@@ -26,6 +26,9 @@ from pydantic import BaseModel
 def safe_json_serialize(obj: object) -> str:
   """Convert any Python object to a JSON-serializable type or string.
 
+  Handles Pydantic `BaseModel` instances (common as tool return types) by
+  calling `model_dump(mode="json")` before JSON encoding.
+
   Args:
     obj: The object to serialize.
 
@@ -33,10 +36,14 @@ def safe_json_serialize(obj: object) -> str:
     The JSON-serialized object string or `<not serializable>` if the object
     cannot be serialized.
   """
+
+  def _default(o: object) -> object:
+    if isinstance(o, BaseModel):
+      return o.model_dump(mode="json")
+    return "<not serializable>"
+
   try:
-    return json.dumps(
-        obj, ensure_ascii=False, default=lambda o: "<not serializable>"
-    )
+    return json.dumps(obj, ensure_ascii=False, default=_default)
   except (TypeError, ValueError, OverflowError, RecursionError):
     return "<not serializable>"
 

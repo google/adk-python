@@ -121,8 +121,14 @@ def test_to_agent_engine_respects_multiple_ignore_files(
   (agent_dir / ".gitignore").write_text("ignored_by_git.txt\n")
   (agent_dir / ".ae_ignore").write_text("ignored_by_ae.txt\n")
 
-  # Mock vertexai.Client and other things to avoid network/complex setup
-  monkeypatch.setattr("vertexai.Client", mock.Mock())
+  # Mock vertexai.Client and other things to avoid network/complex setup. The
+  # created agent engine must expose a realistic resource name so the downstream
+  # console-URL formatting does not choke on a bare Mock.
+  mock_client = mock.Mock()
+  mock_client.agent_engines.create.return_value.api_resource.name = (
+      "projects/proj/locations/us-central1/reasoningEngines/123"
+  )
+  monkeypatch.setattr("vertexai.Client", mock.Mock(return_value=mock_client))
   # Mock shutil.rmtree to keep the temp folder for verification
   original_rmtree = shutil.rmtree
 
@@ -137,6 +143,12 @@ def test_to_agent_engine_respects_multiple_ignore_files(
       agent_folder=str(agent_dir),
       staging_bucket="gs://test",
       adk_app="adk_app",
+      # Pass project/region explicitly so the function does not fall back to
+      # the interactive `gcloud auth application-default login` onboarding flow,
+      # which fails on CI runners without Application Default Credentials.
+      project="proj",
+      region="us-central1",
+      adk_version="1.0.0",
   )
 
   # Find the temp folder created by to_agent_engine

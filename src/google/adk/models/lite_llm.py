@@ -525,7 +525,7 @@ def _convert_reasoning_value_to_parts(reasoning_value: Any) -> List[types.Part]:
         continue
       thinking_text = block.get("thinking", "")
       signature = block.get("signature", "")
-      if not thinking_text:
+      if not thinking_text and not signature:
         continue
       part = types.Part(text=thinking_text, thought=True)
       if signature:
