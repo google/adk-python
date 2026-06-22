@@ -302,7 +302,7 @@ def build_auth_request_event(
         args=AuthToolArguments(
             function_call_id=function_call_id,
             auth_config=auth_config,
-        ).model_dump(exclude_none=True, by_alias=True),
+        ).model_dump(mode='json', exclude_none=True, by_alias=True),
     )
     long_running_tool_ids.add(request_euc_function_call.id)
     parts.append(types.Part(function_call=request_euc_function_call))
@@ -381,9 +381,7 @@ def generate_request_confirmation_event(
       invocation_id=invocation_context.invocation_id,
       author=invocation_context.agent.name,
       branch=invocation_context.branch,
-      content=types.Content(
-          parts=parts, role=function_response_event.content.role
-      ),
+      content=types.Content(parts=parts, role='model'),
       long_running_tool_ids=long_running_tool_ids,
   )
 
@@ -414,7 +412,6 @@ async def handle_function_call_list_async(
     tool_confirmation_dict: Optional[dict[str, ToolConfirmation]] = None,
 ) -> Optional[Event]:
   """Calls the functions and returns the function response event."""
-  from ...agents.llm_agent import LlmAgent
 
   agent = invocation_context.agent
 
@@ -472,6 +469,7 @@ async def handle_function_call_list_async(
       trace_merged_tool_calls(
           response_event_id=merged_event.id,
           function_response_event=merged_event,
+          invocation_context=invocation_context,
       )
   return merged_event
 
@@ -644,7 +642,7 @@ async def _execute_single_function_call_async(
     return function_response_event
 
   async with _instrumentation.record_tool_execution(
-      tool, agent, function_args
+      tool, agent, function_args, invocation_context=invocation_context
   ) as tel_ctx:
     tel_ctx.function_response_event = await _run_with_trace()
     tel_ctx.error_type = detected_error_type
@@ -714,6 +712,7 @@ async def handle_function_calls_live(
       trace_merged_tool_calls(
           response_event_id=merged_event.id,
           function_response_event=merged_event,
+          invocation_context=invocation_context,
       )
   return merged_event
 
@@ -891,7 +890,7 @@ async def _execute_single_function_call_live(
     return function_response_event
 
   async with _instrumentation.record_tool_execution(
-      tool, agent, function_args
+      tool, agent, function_args, invocation_context=invocation_context
   ) as tel_ctx:
     tel_ctx.function_response_event = await _run_with_trace()
     tel_ctx.error_type = detected_error_type
@@ -978,13 +977,8 @@ async def _process_function_live_helper(
             )
         ) as agen:
           async for result in agen:
-            updated_content = types.Content(
-                role='user',
-                parts=[
-                    types.Part.from_text(
-                        text=f'Function {tool.name} returned: {result}'
-                    )
-                ],
+            updated_content = _build_function_response_content(
+                tool, result, tool_context.function_call_id
             )
             invocation_context.live_request_queue.send_content(updated_content)
       except asyncio.CancelledError:
@@ -1183,16 +1177,11 @@ def __build_response_event(
         tool, function_result
     )
 
-  part_function_response = types.Part.from_function_response(
-      name=tool.name,
-      response=function_result,
-      parts=function_response_parts,
-  )
-  part_function_response.function_response.id = tool_context.function_call_id
-
-  content = types.Content(
-      role='user',
-      parts=[part_function_response],
+  content = _build_function_response_content(
+      tool,
+      function_result,
+      tool_context.function_call_id,
+      function_response_parts,
   )
 
   function_response_event = Event(
@@ -1204,6 +1193,31 @@ def __build_response_event(
   )
 
   return function_response_event
+
+
+def _build_function_response_content(
+    tool: BaseTool,
+    function_result: object,
+    function_call_id: Optional[str],
+    function_response_parts: Optional[list[types.FunctionResponsePart]] = None,
+) -> types.Content:
+  """Builds the content carrying a tool result as a FunctionResponse."""
+  # Specs requires the result to be a dict.
+  if not isinstance(function_result, dict):
+    function_result = {'result': function_result}
+
+  part_function_response = types.Part.from_function_response(
+      name=tool.name,
+      response=function_result,
+      parts=function_response_parts,
+  )
+  part_function_response.function_response.id = function_call_id
+  if tool.response_scheduling is not None:
+    part_function_response.function_response.scheduling = (
+        tool.response_scheduling
+    )
+
+  return types.Content(role='user', parts=[part_function_response])
 
 
 def deep_merge_dicts(d1: dict, d2: dict) -> dict:

@@ -18,6 +18,9 @@ from __future__ import annotations
 
 from collections import Counter
 from collections.abc import Callable
+import logging
+
+logger = logging.getLogger("google_adk." + __name__)
 from collections.abc import Set
 from typing import Annotated
 from typing import Any
@@ -345,6 +348,7 @@ class Graph(BaseModel):
     next_pending_nodes: list[str] = []
     matched_specific_route = False
     default_route_node: str | None = None
+    has_routing_edges = False
 
     for edge in self.edges:
       if edge.from_node.name == node_name:
@@ -353,6 +357,7 @@ class Graph(BaseModel):
           next_pending_nodes.append(edge.to_node.name)
           continue
 
+        has_routing_edges = True
         if edge.route == DEFAULT_ROUTE:
           default_route_node = edge.to_node.name
           continue
@@ -375,6 +380,14 @@ class Graph(BaseModel):
 
     if not matched_specific_route and default_route_node:
       next_pending_nodes.append(default_route_node)
+
+    if has_routing_edges and not next_pending_nodes:
+      logger.warning(
+          "Node '%s' has conditional/DEFAULT edges but none were matched by the"
+          " emitted route(s): %s. The branch will end.",
+          node_name,
+          routes_to_match,
+      )
 
     return next_pending_nodes
 

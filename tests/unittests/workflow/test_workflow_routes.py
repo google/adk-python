@@ -15,7 +15,6 @@
 """Testings for the Workflow routes."""
 
 from typing import Any
-from typing import Dict
 
 from google.adk.agents.context import Context
 from google.adk.apps.app import App
@@ -28,7 +27,6 @@ from google.adk.workflow._workflow import Workflow
 import pytest
 
 from .. import testing_utils
-from .workflow_testing_utils import create_parent_invocation_context
 from .workflow_testing_utils import simplify_events_with_node
 from .workflow_testing_utils import TestingNode
 
@@ -37,7 +35,7 @@ from .workflow_testing_utils import TestingNode
 async def test_run_async_with_edge_routes(request: pytest.FixtureRequest):
   route_holder = {'route': 'route_b'}
 
-  def dynamic_router(ctx: Context, node_input: Any):
+  def dynamic_router(_ctx: Context, _node_input: Any):
     return route_holder['route']
 
   node_a = TestingNode(name='NodeA', output='A', route=dynamic_router)
@@ -136,6 +134,39 @@ async def test_output_route_bool(request: pytest.FixtureRequest):
       (
           'test_workflow_agent_route_bool@1/NodeB@1',
           {'output': 'B'},
+      ),
+  ]
+
+
+@pytest.mark.asyncio
+async def test_wait_for_output_with_route_only_completes_successfully(
+    request: pytest.FixtureRequest,
+):
+  """A node with wait_for_output=True that yields only a route should complete and continue the workflow."""
+  node_a = TestingNode(name='NodeA', route='go_next', wait_for_output=True)
+  node_b = TestingNode(name='NodeB', output='B_done')
+
+  agent = Workflow(
+      name='test_wait_for_output_route',
+      edges=[
+          (START, node_a),
+          (node_a, {'go_next': node_b}),
+      ],
+  )
+  app = App(name=request.function.__name__, root_agent=agent)
+  runner = testing_utils.InMemoryRunner(app=app)
+
+  # NodeA should yield no output, and NodeB should yield its output.
+  events = await runner.run_async(testing_utils.get_user_content('start'))
+
+  assert simplify_events_with_node(events) == [
+      (
+          'test_wait_for_output_route@1/NodeA@1',
+          {'output': None},
+      ),
+      (
+          'test_wait_for_output_route@1/NodeB@1',
+          {'output': 'B_done'},
       ),
   ]
 

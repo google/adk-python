@@ -193,7 +193,10 @@ def _get_transfer_targets(agent: LlmAgent) -> list[BaseAgent]:
         peer_agent
         for peer_agent in agent.parent_agent.sub_agents
         if peer_agent.name != agent.name
-        and peer_agent.mode not in ('single_turn', 'task')
+        and (
+            not hasattr(peer_agent, 'mode')
+            or peer_agent.mode not in ('single_turn', 'task')
+        )
     ])
 
   return result

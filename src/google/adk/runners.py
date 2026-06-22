@@ -33,7 +33,6 @@ import warnings
 from google.genai import types
 
 from .agents.base_agent import BaseAgent
-from .agents.base_agent import BaseAgentState
 from .agents.context_cache_config import ContextCacheConfig
 from .agents.invocation_context import InvocationContext
 from .agents.invocation_context import new_invocation_context_id
@@ -107,10 +106,6 @@ def _find_active_task_isolation_scope(session) -> Optional[str]:
   return None
 
 
-def _is_tool_call_or_response(event: Event) -> bool:
-  return bool(event.get_function_calls() or event.get_function_responses())
-
-
 def _get_function_responses_from_content(
     content: types.Content,
 ) -> list[types.FunctionResponse]:
@@ -119,21 +114,6 @@ def _get_function_responses_from_content(
   return [
       part.function_response for part in content.parts if part.function_response
   ]
-
-
-def _is_transcription(event: Event) -> bool:
-  return (
-      event.input_transcription is not None
-      or event.output_transcription is not None
-  )
-
-
-def _has_non_empty_transcription_text(
-    transcription: types.Transcription,
-) -> bool:
-  return bool(
-      transcription and transcription.text and transcription.text.strip()
-  )
 
 
 def _apply_run_config_custom_metadata(
@@ -212,8 +192,8 @@ class Runner:
     Args:
         app: An `App` instance. Mutually exclusive with `agent` and `node`.
         app_name: The application name. Required when `agent` is provided.
-          Optional override for `app.name` when `app` is provided. Defaults
-          to `node.name` when only `node` is provided.
+          Optional override for `app.name` when `app` is provided. Defaults to
+          `node.name` when only `node` is provided.
         agent: The root agent to run. Mutually exclusive with `app` and `node`.
         node: The root node to run. Mutually exclusive with `app` and `agent`.
         plugins: Deprecated. A list of plugins for the runner. Please use the
@@ -223,8 +203,8 @@ class Runner:
         memory_service: The memory service for the runner.
         credential_service: The credential service for the runner.
         plugin_close_timeout: The timeout in seconds for plugin close methods.
-        auto_create_session: Whether to automatically create a session when
-          not found. Defaults to False. If False, a missing session raises
+        auto_create_session: Whether to automatically create a session when not
+          found. Defaults to False. If False, a missing session raises
           ValueError with a helpful message.
 
     Raises:
@@ -459,6 +439,7 @@ class Runner:
       *,
       user_id: str,
       session_id: str,
+      invocation_id: Optional[str] = None,
       new_message: Optional[types.Content] = None,
       state_delta: Optional[dict[str, Any]] = None,
       run_config: Optional[RunConfig] = None,
@@ -481,11 +462,10 @@ class Runner:
       resume_inputs = self._extract_resume_inputs(new_message)
       self._validate_new_message(new_message, resume_inputs)
 
-      invocation_id = (
-          self._resolve_invocation_id_from_fr(session, new_message)
-          if new_message
-          else None
-      )
+      if not invocation_id and new_message:
+        invocation_id = self._resolve_invocation_id_from_fr(
+            session, new_message
+        )
 
       ic = self._new_invocation_context(
           session,
@@ -496,12 +476,16 @@ class Runner:
       ic._event_queue = asyncio.Queue()
 
       # 2. Append user message to session and resolve node_input
-      if resume_inputs:
-        # Resume: find original user message, use as node_input
+      node_input = None
+      if resume_inputs or invocation_id:
+        # Resume: recover the original user content. new_message here is a
+        # function response (or None), so it can't populate user_content.
         node_input = self._find_original_user_content(
             ic.session, ic.invocation_id
         )
-      else:
+        if node_input:
+          ic.user_content = node_input
+      if not node_input:
         # Fresh: use user message as node_input
         node_input = new_message
 
@@ -752,6 +736,7 @@ class Runner:
       iso = _find_active_task_isolation_scope(ic.session)
       if iso is not None:
         event.isolation_scope = iso
+    _apply_run_config_custom_metadata(event, ic.run_config)
     return await self.session_service.append_event(
         session=ic.session, event=event
     )
@@ -883,6 +868,7 @@ class Runner:
       user_id: str,
       session_id: str,
       new_message: types.Content,
+      state_delta: Optional[dict[str, Any]] = None,
       run_config: Optional[RunConfig] = None,
   ) -> Generator[Event, None, None]:
     """Runs the agent.
@@ -900,6 +886,7 @@ class Runner:
       user_id: The user ID of the session.
       session_id: The session ID of the session.
       new_message: A new message to append to the session.
+      state_delta: Optional state changes to apply to the session.
       run_config: The run config for the agent.
 
     Yields:
@@ -915,6 +902,7 @@ class Runner:
                 user_id=user_id,
                 session_id=session_id,
                 new_message=new_message,
+                state_delta=state_delta,
                 run_config=run_config,
             )
         ) as agen:
@@ -1019,6 +1007,7 @@ class Runner:
           self._run_node_async(
               user_id=user_id,
               session_id=session_id,
+              invocation_id=invocation_id,
               new_message=new_message,
               state_delta=state_delta,
               run_config=run_config,
@@ -1039,6 +1028,7 @@ class Runner:
           self._run_node_async(
               user_id=user_id,
               session_id=session_id,
+              invocation_id=invocation_id,
               new_message=new_message,
               state_delta=state_delta,
               run_config=run_config,
@@ -1082,6 +1072,7 @@ class Runner:
               new_message=new_message,
               run_config=run_config,
               state_delta=state_delta,
+              invocation_id=invocation_id,
           )
         else:
           invocation_id = self._resolve_invocation_id(
@@ -1385,22 +1376,6 @@ class Runner:
       yield early_exit_event
     else:
       # Step 2: Otherwise continue with normal execution
-      # Note for live/bidi:
-      # the transcription may arrive later than the action(function call
-      # event and thus function response event). In this case, the order of
-      # transcription and function call event will be wrong if we just
-      # append as it arrives. To address this, we should check if there is
-      # transcription going on. If there is transcription going on, we
-      # should hold on appending the function call event until the
-      # transcription is finished. The transcription in progress can be
-      # identified by checking if the transcription event is partial. When
-      # the next transcription event is not partial, it means the previous
-      # transcription is finished. Then if there is any buffered function
-      # call event, we should append them after this finished(non-partial)
-      # transcription event.
-      buffered_events: list[Event] = []
-      is_transcribing: bool = False
-
       async with aclosing(execute_fn(invocation_context)) as agen:
         async for event in agen:
           _apply_run_config_custom_metadata(
@@ -1418,50 +1393,14 @@ class Runner:
           )
 
           if is_live_call:
-            if event.partial and _is_transcription(event):
-              is_transcribing = True
-            if is_transcribing and _is_tool_call_or_response(event):
-              # only buffer function call and function response event which is
-              # non-partial
-              buffered_events.append(output_event)
-              continue
-            # Note for live/bidi: for audio response, it's considered as
-            # non-partial event(event.partial=None)
-            # event.partial=False and event.partial=None are considered as
-            # non-partial event; event.partial=True is considered as partial
-            # event.
-            if event.partial is not True:
-              if _is_transcription(event) and (
-                  _has_non_empty_transcription_text(event.input_transcription)
-                  or _has_non_empty_transcription_text(
-                      event.output_transcription
-                  )
-              ):
-                # transcription end signal, append buffered events
-                is_transcribing = False
-                logger.debug(
-                    'Appending transcription finished event: %s', event
-                )
-                if self._should_append_event(event, is_live_call):
-                  await self.session_service.append_event(
-                      session=invocation_context.session, event=output_event
-                  )
-
-                for buffered_event in buffered_events:
-                  logger.debug('Appending buffered event: %s', buffered_event)
-                  await self.session_service.append_event(
-                      session=invocation_context.session, event=buffered_event
-                  )
-                  yield buffered_event  # yield buffered events to caller
-                buffered_events = []
-              else:
-                # non-transcription event or empty transcription event, for
-                # example, event that stores blob reference, should be appended.
-                if self._should_append_event(event, is_live_call):
-                  logger.debug('Appending non-buffered event: %s', event)
-                  await self.session_service.append_event(
-                      session=invocation_context.session, event=output_event
-                  )
+            # Skip partial transcriptions for Live
+            if event.partial is not True and self._should_append_event(
+                event, is_live_call
+            ):
+              logger.debug('Appending live event: %s', output_event)
+              await self.session_service.append_event(
+                  session=invocation_context.session, event=output_event
+              )
           else:
             if event.partial is not True:
               await self.session_service.append_event(
@@ -1615,7 +1554,7 @@ class Runner:
     # Some native audio models requires the modality to be set. So we set it to
     # AUDIO by default.
     if run_config.response_modalities is None:
-      run_config.response_modalities = ['AUDIO']
+      run_config.response_modalities = [types.Modality.AUDIO]
     if session is None and (user_id is None or session_id is None):
       raise ValueError(
           'Either session or user_id and session_id must be provided.'
@@ -1722,7 +1661,15 @@ class Runner:
     # shouldn't trap the next turn on that same agent if it's not transferable.
     # Falling through allows it to return to root.
     if event and event.author and is_resumable:
-      return root_agent.find_agent(event.author)
+      # `find_agent` returns None when the author does not correspond to any
+      # agent in the current hierarchy (e.g. the author is "user" or a stale or
+      # foreign agent name carried over from a previous turn/session). Returning
+      # None here would propagate to `build_node`, raising a confusing
+      # "Invalid node type: <class 'NoneType'>" error. Fall through to the
+      # event-scan logic below (which ultimately falls back to the root agent)
+      # whenever the author cannot be resolved.
+      if (resumed_agent := root_agent.find_agent(event.author)) is not None:
+        return resumed_agent
 
     def _event_filter(event: Event) -> bool:
       """Filters out user-authored events and agent state change events."""
@@ -1888,6 +1835,7 @@ class Runner:
       new_message: types.Content,
       run_config: RunConfig,
       state_delta: Optional[dict[str, Any]],
+      invocation_id: Optional[str] = None,
   ) -> InvocationContext:
     """Sets up the context for a new invocation.
 
@@ -1896,6 +1844,7 @@ class Runner:
       new_message: The new message to process and append to the session.
       run_config: The run config of the agent.
       state_delta: Optional state changes to apply to the session.
+      invocation_id: Optional invocation identifier.
 
     Returns:
       The invocation context for the new invocation.
@@ -1905,6 +1854,7 @@ class Runner:
         session,
         new_message=new_message,
         run_config=run_config,
+        invocation_id=invocation_id,
     )
     # Step 2: Handle new message, by running callbacks and appending to
     # session.
@@ -2071,7 +2021,7 @@ class Runner:
     # For live multi-agents system, we need model's text transcription as
     # context for the transferred agent.
     if hasattr(self.agent, 'sub_agents') and self.agent.sub_agents:
-      if 'AUDIO' in run_config.response_modalities:
+      if types.Modality.AUDIO in run_config.response_modalities:
         if not run_config.output_audio_transcription:
           run_config.output_audio_transcription = (
               types.AudioTranscriptionConfig()

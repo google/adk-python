@@ -180,8 +180,8 @@ class AgentEngineSandboxCodeExecutor(BaseCodeExecutor):
       input_data['files'] = [
           {
               'name': f.name,
-              'contents': f.content,
-              'mimeType': f.mime_type,
+              'content': f.content,
+              'mime_type': f.mime_type,
           }
           for f in code_execution_input.input_files
       ]

@@ -237,6 +237,14 @@ class FinalResponseMatchV2Evaluator(LlmAsJudge):
         continue
       num_evaluated += 1
       num_valid += result.score
+
+    if num_evaluated == 0:
+      return EvaluationResult(
+          overall_score=None,
+          overall_eval_status=EvalStatus.NOT_EVALUATED,
+          per_invocation_results=per_invocation_results,
+      )
+
     overall_score = num_valid / num_evaluated
     return EvaluationResult(
         overall_score=overall_score,

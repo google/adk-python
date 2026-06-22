@@ -20,6 +20,8 @@ from google.adk.evaluation.simulation.per_turn_user_simulator_quality_prompts im
 from google.adk.evaluation.simulation.per_turn_user_simulator_quality_prompts import get_per_turn_user_simulator_quality_prompt
 from google.adk.evaluation.simulation.user_simulator_personas import UserBehavior
 from google.adk.evaluation.simulation.user_simulator_personas import UserPersona
+from jinja2.exceptions import SecurityError
+import pytest
 
 _MOCK_DEFAULT_TEMPLATE = textwrap.dedent("""\
   Default template
@@ -182,3 +184,56 @@ class TestGetPerTurnUserSimulatorQualityPrompt:
       # Stop signal
       stop""").strip()
     assert prompt == expected_prompt
+
+  def test_get_per_turn_user_simulator_quality_prompt_renders_persona_templates_in_sandbox(
+      self,
+  ):
+    persona = UserPersona(
+        id="test_persona",
+        description="Test persona description.",
+        behaviors=[
+            UserBehavior(
+                name="criteria {{ stop_signal }}",
+                description="Test behavior {{ stop_signal }}.",
+                behavior_instructions=["instruction1"],
+                violation_rubrics=["violation {{ stop_signal }}"],
+            )
+        ],
+    )
+
+    prompt = get_per_turn_user_simulator_quality_prompt(
+        conversation_plan="plan",
+        conversation_history="history",
+        generated_user_response="response",
+        stop_signal="stop",
+        user_persona=persona,
+    )
+
+    assert "## Criteria: criteria stop" in prompt
+    assert "Test behavior stop." in prompt
+    assert "  * violation stop" in prompt
+
+  def test_get_per_turn_user_simulator_quality_prompt_blocks_unsafe_persona_templates(
+      self,
+  ):
+    persona = UserPersona(
+        id="test_persona",
+        description="Test persona description.",
+        behaviors=[
+            UserBehavior(
+                name="{{ ''.__class__.__mro__ }}",
+                description="Test behavior description.",
+                behavior_instructions=["instruction1"],
+                violation_rubrics=["violation1"],
+            )
+        ],
+    )
+
+    with pytest.raises(SecurityError):
+      get_per_turn_user_simulator_quality_prompt(
+          conversation_plan="plan",
+          conversation_history="history",
+          generated_user_response="response",
+          stop_signal="stop",
+          user_persona=persona,
+      )

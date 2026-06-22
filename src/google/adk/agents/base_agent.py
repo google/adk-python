@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+import abc
 import inspect
 import logging
 from typing import Any
@@ -87,7 +88,9 @@ class BaseAgentState(BaseModel):
 AgentState = TypeVar('AgentState', bound=BaseAgentState)
 
 
-class BaseAgent(BaseNode):
+# TODO: drop the explicit abc.ABC base once BaseNode surfaces ABCMeta to
+# static type checkers.
+class BaseAgent(BaseNode, abc.ABC):
   """Base class for all agents in Agent Development Kit."""
 
   model_config = ConfigDict(

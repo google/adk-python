@@ -279,6 +279,56 @@ class TestCallToolInThreadPool:
     ), f'Event loop should have ticked at least 5 times, got {event_loop_ticks}'
 
   @pytest.mark.asyncio
+  @pytest.mark.parametrize(
+      'return_value,use_implicit_return',
+      [
+          (None, True),  # implicit None (no return statement)
+          (None, False),  # explicit `return None`
+          (0, False),  # falsy int
+          ('', False),  # falsy str
+          ({}, False),  # falsy dict
+          (False, False),  # falsy bool
+      ],
+  )
+  async def test_sync_tool_falsy_return_executes_exactly_once(
+      self, return_value, use_implicit_return
+  ):
+    """FunctionTools returning None or other falsy values must execute exactly once.
+
+    Regression test for https://github.com/google/adk-python/issues/5284.
+    Previously, a None return was mistaken for the internal sentinel used to
+    signal 'non-FunctionTool, fall back to run_async', causing a second
+    invocation. The fix uses an identity-based sentinel so that None and other
+    falsy values (0, '', {}, False) are treated as valid results.
+    """
+    call_count = 0
+
+    def sync_func():
+      nonlocal call_count
+      call_count += 1
+      if not use_implicit_return:
+        return return_value
+      # implicit None — no return statement
+
+    tool = FunctionTool(sync_func)
+    model = testing_utils.MockModel.create(responses=[])
+    agent = Agent(name='test_agent', model=model, tools=[tool])
+    invocation_context = await testing_utils.create_invocation_context(
+        agent=agent, user_content=''
+    )
+    tool_context = ToolContext(
+        invocation_context=invocation_context,
+        function_call_id='test_id',
+    )
+
+    result = await _call_tool_in_thread_pool(tool, {}, tool_context)
+
+    assert result == return_value
+    assert (
+        call_count == 1
+    ), f'Tool function executed {call_count} time(s); expected exactly 1.'
+
+  @pytest.mark.asyncio
   async def test_sync_tool_exception_propagates(self):
     """Test that exceptions from sync tools propagate correctly."""
 

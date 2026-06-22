@@ -14,7 +14,11 @@
 
 """Tests for graph_serialization edge handling with routing maps."""
 
+import json
+
+from google.adk.agents import LlmAgent
 from google.adk.cli.utils.graph_serialization import serialize_agent
+from google.adk.models.lite_llm import LiteLlm
 from google.adk.tools.base_toolset import BaseToolset
 from google.adk.workflow import START
 from google.adk.workflow import Workflow
@@ -126,3 +130,34 @@ def test_serialize_agent_with_toolset() -> None:
   assert len(result['tools']) == 1
   assert result['tools'][0]['name'] == 'MockToolset'
   assert result['tools'][0]['type'] == 'tool'
+
+
+def test_serialize_agent_with_litellm_model_is_json_safe() -> None:
+  agent = LlmAgent(
+      name='repro',
+      model=LiteLlm(model='ollama_chat/llama3'),
+  )
+
+  result = serialize_agent(agent)
+
+  assert result['model'] == 'ollama_chat/llama3'
+  json.dumps(result)
+
+
+def test_serialize_agent_skips_excluded_fields() -> None:
+  """Fields marked Field(exclude=True) are omitted from serialization."""
+  from typing import Any
+
+  from google.adk.agents.base_agent import BaseAgent
+  from pydantic import ConfigDict
+  from pydantic import Field
+
+  class _Agent(BaseAgent):
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+    secret: Any = Field(default=None, exclude=True)
+
+  agent = _Agent(name='a', secret=lambda: None)
+  result = serialize_agent(agent)
+
+  assert 'secret' not in result
+  assert result['name'] == 'a'

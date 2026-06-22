@@ -21,6 +21,7 @@ from unittest import mock
 from unittest.mock import AsyncMock
 from unittest.mock import MagicMock
 
+from anthropic import NOT_GIVEN
 from anthropic import types as anthropic_types
 from google.adk import version as adk_version
 from google.adk.models import anthropic_llm
@@ -1632,6 +1633,64 @@ def test_message_to_generate_content_response_with_thinking():
   assert text_part.thought is not True
 
 
+def test_message_to_generate_content_response_reports_cache_read_tokens():
+  """cache_read_input_tokens maps to usage_metadata.cached_content_token_count."""
+  from google.adk.models.anthropic_llm import message_to_generate_content_response
+
+  message = anthropic_types.Message(
+      id="msg_cache_read",
+      content=[
+          anthropic_types.TextBlock(text="hi", type="text", citations=None)
+      ],
+      model="claude-sonnet-4-20250514",
+      role="assistant",
+      stop_reason="end_turn",
+      stop_sequence=None,
+      type="message",
+      usage=anthropic_types.Usage(
+          input_tokens=100,
+          output_tokens=20,
+          cache_creation_input_tokens=0,
+          cache_read_input_tokens=75,
+          server_tool_use=None,
+          service_tier=None,
+      ),
+  )
+
+  response = message_to_generate_content_response(message)
+
+  assert response.usage_metadata.cached_content_token_count == 75
+
+
+def test_message_to_generate_content_response_no_cache_read_tokens():
+  """Absent cache_read_input_tokens yields cached_content_token_count=None."""
+  from google.adk.models.anthropic_llm import message_to_generate_content_response
+
+  message = anthropic_types.Message(
+      id="msg_no_cache",
+      content=[
+          anthropic_types.TextBlock(text="hi", type="text", citations=None)
+      ],
+      model="claude-sonnet-4-20250514",
+      role="assistant",
+      stop_reason="end_turn",
+      stop_sequence=None,
+      type="message",
+      usage=anthropic_types.Usage(
+          input_tokens=100,
+          output_tokens=20,
+          cache_creation_input_tokens=0,
+          cache_read_input_tokens=None,
+          server_tool_use=None,
+          service_tier=None,
+      ),
+  )
+
+  response = message_to_generate_content_response(message)
+
+  assert response.usage_metadata.cached_content_token_count is None
+
+
 def test_part_to_message_block_thinking_roundtrip():
   """Part with thought=True and signature creates ThinkingBlockParam."""
   part = Part(
@@ -2134,3 +2193,93 @@ async def test_generate_content_async_pairs_invalid_tool_ids(
   ]
   assert len(set(use_ids)) == expected_unique
   assert set(use_ids) == set(result_ids)
+
+
+@pytest.mark.asyncio
+async def test_non_streaming_no_system_instruction_passes_not_given():
+  """system=NOT_GIVEN when LlmRequest has no system_instruction."""
+  llm = AnthropicLlm(model="claude-sonnet-4-20250514")
+
+  mock_message = anthropic_types.Message(
+      id="msg_test",
+      content=[
+          anthropic_types.TextBlock(text="ok", type="text", citations=None)
+      ],
+      model="claude-sonnet-4-20250514",
+      role="assistant",
+      stop_reason="end_turn",
+      stop_sequence=None,
+      type="message",
+      usage=anthropic_types.Usage(
+          input_tokens=1,
+          output_tokens=1,
+          cache_creation_input_tokens=0,
+          cache_read_input_tokens=0,
+          server_tool_use=None,
+          service_tier=None,
+      ),
+  )
+
+  mock_client = MagicMock()
+  mock_client.messages.create = AsyncMock(return_value=mock_message)
+
+  request = LlmRequest(
+      model="claude-sonnet-4-20250514",
+      contents=[Content(role="user", parts=[Part.from_text(text="Hi")])],
+  )
+  assert request.config.system_instruction is None
+
+  with mock.patch.object(llm, "_anthropic_client", mock_client):
+    _ = [r async for r in llm.generate_content_async(request, stream=False)]
+
+  mock_client.messages.create.assert_called_once()
+  _, kwargs = mock_client.messages.create.call_args
+  assert kwargs["system"] is NOT_GIVEN
+
+
+@pytest.mark.asyncio
+async def test_streaming_no_system_instruction_passes_not_given():
+  """system=NOT_GIVEN on the streaming path when no system_instruction."""
+  llm = AnthropicLlm(model="claude-sonnet-4-20250514")
+
+  events = [
+      MagicMock(
+          type="message_start",
+          message=MagicMock(usage=MagicMock(input_tokens=1, output_tokens=0)),
+      ),
+      MagicMock(
+          type="content_block_start",
+          index=0,
+          content_block=anthropic_types.TextBlock(text="", type="text"),
+      ),
+      MagicMock(
+          type="content_block_delta",
+          index=0,
+          delta=anthropic_types.TextDelta(text="ok", type="text_delta"),
+      ),
+      MagicMock(type="content_block_stop", index=0),
+      MagicMock(
+          type="message_delta",
+          delta=MagicMock(stop_reason="end_turn"),
+          usage=MagicMock(output_tokens=1),
+      ),
+      MagicMock(type="message_stop"),
+  ]
+
+  mock_client = MagicMock()
+  mock_client.messages.create = AsyncMock(
+      return_value=_make_mock_stream_events(events)
+  )
+
+  request = LlmRequest(
+      model="claude-sonnet-4-20250514",
+      contents=[Content(role="user", parts=[Part.from_text(text="Hi")])],
+  )
+  assert request.config.system_instruction is None
+
+  with mock.patch.object(llm, "_anthropic_client", mock_client):
+    _ = [r async for r in llm.generate_content_async(request, stream=True)]
+
+  mock_client.messages.create.assert_called_once()
+  _, kwargs = mock_client.messages.create.call_args
+  assert kwargs["system"] is NOT_GIVEN

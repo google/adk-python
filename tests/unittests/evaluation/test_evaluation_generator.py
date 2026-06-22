@@ -18,13 +18,20 @@ import asyncio
 
 from google.adk.evaluation.app_details import AgentDetails
 from google.adk.evaluation.app_details import AppDetails
+from google.adk.evaluation.conversation_scenarios import ConversationScenario
+from google.adk.evaluation.eval_case import EvalCase
+from google.adk.evaluation.eval_case import get_all_tool_calls
+from google.adk.evaluation.eval_set import EvalSet
 from google.adk.evaluation.evaluation_generator import _LiveSession
 from google.adk.evaluation.evaluation_generator import EvaluationGenerator
 from google.adk.evaluation.request_intercepter_plugin import _RequestIntercepterPlugin
+from google.adk.evaluation.simulation.llm_backed_user_simulator import LlmBackedUserSimulator
+from google.adk.evaluation.simulation.llm_backed_user_simulator import LlmBackedUserSimulatorConfig
 from google.adk.evaluation.simulation.user_simulator import NextUserMessage
 from google.adk.evaluation.simulation.user_simulator import Status as UserSimulatorStatus
 from google.adk.evaluation.simulation.user_simulator import UserSimulator
 from google.adk.events.event import Event
+from google.adk.events.event_actions import EventActions
 from google.adk.models.llm_request import LlmRequest
 from google.genai import types
 import pytest
@@ -684,6 +691,60 @@ class TestGenerateInferencesFromRootAgent:
     mock_live_session_cls.assert_called_once()
 
 
+class TestGenerateResponses:
+  """Test cases for EvaluationGenerator.generate_responses method."""
+
+  @pytest.mark.asyncio
+  async def test_generate_responses_passes_config_to_simulator_instance(
+      self, mocker
+  ):
+    """Tests that user_simulator_config reaches the actual UserSimulator instance when UserSimulatorProvider is not mocked."""
+    mock_process_query = mocker.patch(
+        "google.adk.evaluation.evaluation_generator.EvaluationGenerator._process_query",
+        new_callable=mocker.AsyncMock,
+        return_value=[],
+    )
+
+    user_simulator_config = LlmBackedUserSimulatorConfig(
+        model="gemini-2.5-flash",
+        max_allowed_invocations=5,
+        custom_instructions=(
+            "custom {{ stop_signal }} {{ conversation_plan }} {{"
+            " conversation_history }}"
+        ),
+    )
+    eval_set = EvalSet(
+        eval_set_id="test_set",
+        eval_cases=[
+            EvalCase(
+                eval_id="case_0",
+                conversation_scenario=ConversationScenario(
+                    starting_prompt="hello",
+                    conversation_plan="test plan",
+                ),
+            )
+        ],
+    )
+
+    await EvaluationGenerator.generate_responses(
+        eval_set=eval_set,
+        agent_module_path="some.agent.module",
+        repeat_num=1,
+        user_simulator_config=user_simulator_config,
+    )
+
+    mock_process_query.assert_called_once()
+    user_simulator = mock_process_query.call_args.args[1]
+    assert isinstance(user_simulator, LlmBackedUserSimulator)
+    assert user_simulator._config.model == "gemini-2.5-flash"
+    assert user_simulator._config.max_allowed_invocations == 5
+    assert (
+        user_simulator._config.custom_instructions
+        == "custom {{ stop_signal }} {{ conversation_plan }} {{"
+        " conversation_history }}"
+    )
+
+
 class TestLiveSessionCallbacks:
   """Unit tests verifying that _LiveSession manually triggers callbacks."""
 
@@ -860,3 +921,48 @@ class TestLiveSessionCallbacks:
     )
     assert isinstance(called_after_args.kwargs["llm_response"], Event)
     assert called_after_args.kwargs["llm_response"] == mock_event
+
+
+def test_convert_events_preserves_tool_calls_when_skip_summarization():
+  """Regression test for #5410.
+
+  When an event has skip_summarization=True, is_final_response() returns True
+  even if the event contains function calls.  Previously such an event was
+  treated as final_event and excluded from invocation_events, causing
+  get_all_tool_calls() to return an empty list and tool_trajectory_avg_score
+  to always be 0.0 despite matching tool calls.
+  """
+  events = [
+      Event(
+          invocation_id="inv1",
+          author="user",
+          content=types.Content(
+              parts=[types.Part(text="run a query")], role="user"
+          ),
+          timestamp=1000.0,
+      ),
+      Event(
+          invocation_id="inv1",
+          author="agent",
+          content=types.Content(
+              parts=[
+                  types.Part(
+                      function_call=types.FunctionCall(
+                          id="call_01",
+                          name="execute_sql",
+                          args={"project_id": "my-proj", "query": "SELECT 1"},
+                      )
+                  )
+              ]
+          ),
+          actions=EventActions(skip_summarization=True),
+      ),
+  ]
+
+  invocations = EvaluationGenerator.convert_events_to_eval_invocations(events)
+  assert len(invocations) == 1
+
+  tool_calls = get_all_tool_calls(invocations[0].intermediate_data)
+  assert len(tool_calls) == 1
+  assert tool_calls[0].name == "execute_sql"
+  assert tool_calls[0].args == {"project_id": "my-proj", "query": "SELECT 1"}
