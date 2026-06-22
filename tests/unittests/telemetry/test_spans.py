@@ -57,6 +57,7 @@ from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GEN_A
 from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GEN_AI_USAGE_INPUT_TOKENS
 from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GEN_AI_USAGE_OUTPUT_TOKENS
 from opentelemetry.semconv._incubating.attributes.user_attributes import USER_ID
+from pydantic import BaseModel
 import pytest
 
 try:
@@ -1787,3 +1788,57 @@ def test_build_llm_request_for_trace_excludes_live_http_clients():
   json.dumps(result)
   assert 'httpx_async_client' not in result['config'].get('http_options', {})
   assert result['config']['temperature'] == 0.1
+
+
+# ---------------------------------------------------------------------------
+# safe_json_serialize tests
+# ---------------------------------------------------------------------------
+
+
+class _SampleToolResult(BaseModel):
+  query: str
+  total: int
+  items: list[str] = []
+
+
+class _NestedModel(BaseModel):
+  inner: _SampleToolResult
+
+
+def test_safe_json_serialize_plain_dict():
+  """Plain dicts serialize normally."""
+  result = safe_json_serialize({'key': 'value', 'num': 42})
+  assert json.loads(result) == {'key': 'value', 'num': 42}
+
+
+def test_safe_json_serialize_pydantic_model_in_dict():
+  """Pydantic models nested in a dict are serialized via model_dump."""
+  model = _SampleToolResult(query='test', total=2, items=['a', 'b'])
+  result = safe_json_serialize({'result': model})
+  parsed = json.loads(result)
+  assert parsed == {
+      'result': {'query': 'test', 'total': 2, 'items': ['a', 'b']}
+  }
+
+
+def test_safe_json_serialize_nested_pydantic_model():
+  """Nested Pydantic models are fully serialized."""
+  inner = _SampleToolResult(query='q', total=0, items=[])
+  outer = _NestedModel(inner=inner)
+  result = safe_json_serialize({'result': outer})
+  parsed = json.loads(result)
+  assert parsed['result']['inner'] == {'query': 'q', 'total': 0, 'items': []}
+
+
+def test_safe_json_serialize_top_level_pydantic_model():
+  """A top-level Pydantic model (not wrapped in a dict) is serialized."""
+  model = _SampleToolResult(query='direct', total=1, items=['x'])
+  result = safe_json_serialize(model)
+  parsed = json.loads(result)
+  assert parsed == {'query': 'direct', 'total': 1, 'items': ['x']}
+
+
+def test_safe_json_serialize_non_serializable_fallback():
+  """Objects that are neither JSON-native nor Pydantic fall back gracefully."""
+  result = safe_json_serialize({'value': object()})
+  assert '<not serializable>' in result

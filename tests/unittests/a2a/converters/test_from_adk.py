@@ -179,3 +179,37 @@ class TestSerializeValue:
     dt = datetime(2025, 1, 1)
     result = self.serialize(dt)
     assert isinstance(result, str)
+
+  def test_nested_non_json_value_in_dict_stringified(self) -> None:
+    """A non-JSON-native value nested in a dict is stringified."""
+    from datetime import datetime
+
+    dt = datetime(2025, 1, 1)
+    value = {"when": dt, "count": 1, "label": "x"}
+    result = self.serialize(value)
+    assert result == {"when": str(dt), "count": 1, "label": "x"}
+    assert isinstance(result["when"], str)
+    assert isinstance(result["count"], int)
+    assert isinstance(result["label"], str)
+
+  def test_nested_non_json_value_in_list_stringified(self) -> None:
+    """A non-JSON-native value nested in a list is stringified."""
+    from datetime import datetime
+
+    dt = datetime(2025, 1, 1)
+    value = [dt, 1, "x"]
+    result = self.serialize(value)
+    assert result == [str(dt), 1, "x"]
+    assert isinstance(result[0], str)
+    assert isinstance(result[1], int)
+    assert isinstance(result[2], str)
+
+  def test_non_string_dict_key_stringified(self) -> None:
+    """Non-string dict keys are stringified so the result is JSON-encodable."""
+    from datetime import datetime
+
+    dt = datetime(2025, 1, 1)
+    value = {dt: "when", 1: "one", "label": "x"}
+    result = self.serialize(value)
+    assert result == {str(dt): "when", "1": "one", "label": "x"}
+    assert all(isinstance(k, str) for k in result)
