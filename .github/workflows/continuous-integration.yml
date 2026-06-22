@@ -1,0 +1,276 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+name: Continuous Integration
+
+on:
+  push:
+    branches: [main, v1]
+    paths:
+      - '**.py'
+      - '.pre-commit-config.yaml'
+      - 'pyproject.toml'
+      - 'tests/**'
+  pull_request:
+    branches: [main, v1]
+    paths:
+      - '**.py'
+      - '.pre-commit-config.yaml'
+      - 'pyproject.toml'
+      - 'tests/**'
+
+permissions:
+  contents: read
+
+jobs:
+  # 1. Code format and linting (Linter)
+  lint:
+    name: Pre-commit Linter
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v6
+
+      - name: Run pre-commit checks
+        uses: pre-commit/action@v3.0.1
+
+  # 2. Static type analysis (Mypy Check with Matrix)
+  # Compares new changes against the target base branch dynamically to support v1.
+  type-check:
+    name: Mypy Check (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ['3.10', '3.11', '3.12', '3.13']
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+
+      - name: Generate Baseline
+        env:
+          TARGET_BRANCH: ${{ github.base_ref || github.ref_name }}
+        run: |
+          # Switch to target base branch to generate baseline
+          git checkout origin/$TARGET_BRANCH
+
+          git checkout ${{ github.sha }} -- pyproject.toml
+
+          # Install dependencies for target branch
+          uv venv .venv
+          source .venv/bin/activate
+          uv sync --all-extras
+
+          # Run mypy, filter for errors only, remove line numbers, and sort
+          # We ignore exit code (|| true) because we expect errors on baseline
+          uv run mypy . | grep "error:" | sed 's/:\([0-9]\+\):/::/g' | sort > baseline_errors.txt || true
+          echo "Found $(wc -l < baseline_errors.txt) errors on $TARGET_BRANCH."
+
+      - name: Check PR Branch
+        run: |
+          # Switch back to the PR commit
+          git checkout ${{ github.sha }}
+
+          # Re-sync dependencies in case the PR changed them
+          source .venv/bin/activate
+          uv sync --all-extras
+
+          # Run mypy on PR code, apply same processing
+          uv run mypy . | grep "error:" | sed 's/:\([0-9]\+\):/::/g' | sort > pr_errors.txt || true
+          echo "Found $(wc -l < pr_errors.txt) errors on PR branch."
+
+      - name: Compare and Fail on New Errors
+        run: |
+          # 'comm -13' suppresses unique lines in file1 (baseline) and common lines,
+          # leaving only lines unique to file2 (PR) -> The new errors.
+          comm -13 baseline_errors.txt pr_errors.txt > new_errors.txt
+
+          if [ -s new_errors.txt ]; then
+            echo "::error::The following NEW mypy errors were introduced:"
+            cat new_errors.txt
+            exit 1
+          else
+            echo "Great job! No new mypy errors introduced."
+          fi
+
+  # 3. Unit testing (Unit Tests with Matrix)
+  unit-test:
+    name: Unit Tests (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.11", "3.12", "3.13", "3.14"]
+    timeout-minutes: 10
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v6
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install the latest version of uv
+        uses: astral-sh/setup-uv@v7
+
+      - name: Install dependencies
+        run: |
+          uv venv .venv
+          source .venv/bin/activate
+          uv sync --extra test
+
+      - name: Run unit tests with pytest
+        run: |
+          source .venv/bin/activate
+          pytest tests/unittests \
+            -n auto \
+            --ignore=tests/unittests/artifacts/test_artifact_service.py \
+            --ignore=tests/unittests/tools/google_api_tool/test_googleapi_to_openapi_converter.py
+
+  # 4. Custom file content compliance checks (PR only)
+  compliance-check:
+    name: File Content Compliance
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v6
+        with:
+          # Fetch full history (depth: 0) instead of shallow clone (depth: 2) to ensure
+          # git diff origin/${base_ref}...HEAD can reliably find the merge base,
+          # preventing fatal git errors on deep PRs or when the target branch has progressed.
+          fetch-depth: 0
+
+      - name: Check for logger pattern in all changed Python files
+        run: |
+          git fetch origin ${GITHUB_BASE_REF}
+          CHANGED_FILES=$(git diff --diff-filter=ACMR --name-only origin/${GITHUB_BASE_REF}...HEAD | grep -E '\.py$' || true)
+          if [ -n "$CHANGED_FILES" ]; then
+            echo "Changed Python files to check:"
+            echo "$CHANGED_FILES"
+            echo ""
+
+            # Check for 'logger = logging.getLogger(__name__)' in changed .py files.
+            set +e
+            FILES_WITH_FORBIDDEN_LOGGER=$(grep -lE 'logger = logging\.getLogger\(__name__\)' $CHANGED_FILES)
+            GREP_EXIT_CODE=$?
+            set -e
+
+            if [ $GREP_EXIT_CODE -eq 0 ]; then
+              echo "❌ Found forbidden use of 'logger = logging.getLogger(__name__)'. Please use 'logger = logging.getLogger('google_adk.' + __name__)' instead."
+              echo "The following files contain the forbidden pattern:"
+              echo "$FILES_WITH_FORBIDDEN_LOGGER"
+              exit 1
+            elif [ $GREP_EXIT_CODE -eq 1 ]; then
+              echo "✅ No instances of 'logger = logging.getLogger(__name__)' found in changed Python files."
+            fi
+          else
+            echo "✅ No relevant Python files found."
+          fi
+
+      - name: Check for import pattern in certain changed Python files
+        run: |
+          git fetch origin ${GITHUB_BASE_REF}
+          CHANGED_FILES=$(git diff --diff-filter=ACMR --name-only origin/${GITHUB_BASE_REF}...HEAD | grep -E '\.py$' | grep -v -E '__init__.py$|version.py$|tests/.*|contributing/samples/' || true)
+          if [ -n "$CHANGED_FILES" ]; then
+            echo "Changed Python files to check:"
+            echo "$CHANGED_FILES"
+            echo ""
+
+            # Use grep -L to find files that DO NOT contain the pattern.
+            FILES_MISSING_IMPORT=$(grep -L 'from __future__ import annotations' $CHANGED_FILES || true)
+
+            if [ -z "$FILES_MISSING_IMPORT" ]; then
+              echo "✅ All modified Python files include 'from __future__ import annotations'."
+              exit 0
+            else
+              echo "❌ The following files are missing 'from __future__ import annotations':"
+              echo "$FILES_MISSING_IMPORT"
+              echo "This import is required to allow forward references in type annotations without quotes."
+              exit 1
+            fi
+          else
+            echo "✅ No relevant Python files found."
+          fi
+
+      - name: Check for import from cli package in certain changed Python files
+        run: |
+          git fetch origin ${GITHUB_BASE_REF}
+          CHANGED_FILES=$(git diff --diff-filter=ACMR --name-only origin/${GITHUB_BASE_REF}...HEAD | grep -E '\.py$' | grep -v -E 'cli/.*|src/google/adk/tools/apihub_tool/apihub_toolset.py|tests/.*|contributing/samples/' || true)
+          if [ -n "$CHANGED_FILES" ]; then
+            echo "Changed Python files to check:"
+            echo "$CHANGED_FILES"
+            echo ""
+
+            set +e
+            FILES_WITH_FORBIDDEN_IMPORT=$(grep -lE '^from.*\bcli\b.*import.*$' $CHANGED_FILES)
+            GREP_EXIT_CODE=$?
+            set -e
+
+            if [[ $GREP_EXIT_CODE -eq 0 ]]; then
+              echo "❌ Do not import from the cli package outside of the cli package. If you need to reuse the code elsewhere, please move the code outside of the cli package."
+              echo "The following files contain the forbidden pattern:"
+              echo "$FILES_WITH_FORBIDDEN_IMPORT"
+              exit 1
+            else
+              echo "✅ No instances of importing from the cli package found in relevant changed Python files."
+            fi
+          else
+            echo "✅ No relevant Python files found."
+          fi
+
+      - name: Check for hardcoded googleapis.com endpoints
+        run: |
+          git fetch origin ${GITHUB_BASE_REF}
+          CHANGED_FILES=$(git diff --diff-filter=ACMR --name-only origin/${GITHUB_BASE_REF}...HEAD | grep -E '\.py$' || true)
+          if [ -n "$CHANGED_FILES" ]; then
+            echo "Checking for hardcoded endpoints in: $CHANGED_FILES"
+
+            # 1. Identify files containing any googleapis.com URL.
+            set +e
+            FILES_WITH_ENDPOINTS=$(grep -lE 'https?://[a-zA-Z0-9.-]+\.googleapis\.com' $CHANGED_FILES)
+
+            # 2. From those, identify files that are MISSING the required mTLS version.
+            if [ -n "$FILES_WITH_ENDPOINTS" ]; then
+              FILES_MISSING_MTLS=$(grep -L '.mtls.googleapis.com' $FILES_WITH_ENDPOINTS)
+            fi
+            set -e
+
+            if [ -n "$FILES_MISSING_MTLS" ]; then
+              echo "❌ Found hardcoded googleapis.com endpoints without mTLS support."
+              echo "The following files must define both standard and mTLS (.mtls.googleapis.com) endpoints"
+              echo "to support dynamic endpoint selection as required by security policy:"
+              echo "$FILES_MISSING_MTLS"
+              echo ""
+              echo "To fix this, please follow these steps:"
+              echo "1. Initialize an AuthorizedSession with your credentials."
+              echo "2. Use 'mtls.has_default_client_cert_source() from google-auth' to check for available client certificates."
+              echo "3. If certificates are present, use 'session.configure_mtls_channel()'."
+              echo "4. Dynamically select the '.mtls.' variant of the endpoint when mTLS is active."
+              exit 1
+            else
+              echo "✅ All hardcoded endpoints have corresponding mTLS definitions or no endpoints found."
+            fi
+          fi
