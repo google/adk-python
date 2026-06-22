@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.36.0](https://github.com/google/adk-python/compare/v1.35.2...v1.36.0) (2026-06-22)
+
+
+### Features
+
+* **interactions:** support for GenAI SDK upgraded to 2.9+ ([#6191](https://github.com/google/adk-python/issues/6191)) ([7a9152a](https://github.com/google/adk-python/commit/7a9152a382b05a2a733adbc9bde25dacb02893a2))
+
 ## [1.35.2](https://github.com/google/adk-python/compare/v1.35.1...v1.35.2) (2026-06-17)
 
 
