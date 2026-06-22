@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from contextlib import asynccontextmanager
 import importlib
 import json
@@ -49,10 +50,14 @@ from starlette.concurrency import run_in_threadpool
 from starlette.types import Lifespan
 from watchdog.observers import Observer
 
+from ..a2a.utils.agent_card_builder import AgentCardBuilder
+from ..agents.base_agent import BaseAgent
+from ..apps.app import App
 from ..auth.credential_service.in_memory_credential_service import InMemoryCredentialService
 from ..runners import Runner
 from ..telemetry._agent_engine import get_propagated_context
 from ..telemetry._agent_engine import TopSpanProcessor
+from ..workflow._workflow import Workflow
 from .api_server import ApiServer
 from .cli_deploy import _AGENT_ENGINE_CLASS_METHODS
 from .dev_server import DevServer
@@ -94,6 +99,21 @@ def __getattr__(name: str):
   attr = getattr(module, name)
   globals()[name] = attr
   return attr
+
+
+def _get_a2a_agent(agent_or_app: BaseAgent | App) -> BaseAgent | Workflow:
+  if isinstance(agent_or_app, App):
+    agent = agent_or_app.root_agent
+  else:
+    agent = agent_or_app
+
+  if isinstance(agent, (BaseAgent, Workflow)):
+    return agent
+
+  raise TypeError(
+      "AgentCardBuilder requires a BaseAgent or Workflow, got "
+      f"{type(agent).__name__}."
+  )
 
 
 def _register_builder_endpoints(app: FastAPI, web: bool, agents_dir: str):
@@ -691,12 +711,14 @@ def get_fast_api_app(
         return _get_a2a_runner_async
 
       for p in base_path.iterdir():
-        # only folders with an agent.json file representing agent card are valid
-        # a2a agents
+        has_agent_card = (p / "agent.json").is_file()
+        has_agent_definition = (
+            is_single_agent_directory(p) or (p / "__init__.py").is_file()
+        )
         if (
             p.is_file()
             or p.name.startswith((".", "__pycache__"))
-            or not (p / "agent.json").is_file()
+            or not (has_agent_card or has_agent_definition)
         ):
           continue
 
@@ -716,9 +738,19 @@ def get_fast_api_app(
               push_config_store=push_config_store,
           )
 
-          with (p / "agent.json").open("r", encoding="utf-8") as f:
-            data = json.load(f)
-            agent_card = AgentCard(**data)
+          if has_agent_card:
+            with (p / "agent.json").open("r", encoding="utf-8") as f:
+              data = json.load(f)
+              agent_card = AgentCard(**data)
+          else:
+            loaded_agent = agent_loader.load_agent(app_name)
+            agent = _get_a2a_agent(loaded_agent)
+            agent_card = asyncio.run(
+                AgentCardBuilder(
+                    agent=agent,
+                    rpc_url=f"http://{host}:{port}/a2a/{app_name}",
+                ).build()
+            )
 
           a2a_app = A2AStarletteApplication(
               agent_card=agent_card,
