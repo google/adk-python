@@ -19,6 +19,8 @@ if TYPE_CHECKING:
     from .agents.context import Context
     from .agents.llm_agent import Agent
     from .runners import Runner
+    from .events.event import Event
+    from .workflow import Workflow
 else:
     import importlib
 
@@ -26,6 +28,8 @@ else:
         "Agent": ".agents.llm_agent",
         "Context": ".agents.context",
         "Runner": ".runners",
+        "Event": ".events.event",
+        "Workflow": ".workflow",
     }
 
     def __getattr__(name: str):
@@ -35,11 +39,6 @@ else:
         raise AttributeError(f"module {__name__} has no attribute {name}")
 
 from . import version
-from .agents.context import Context
-from .agents.llm_agent import Agent
-from .events.event import Event
-from .runners import Runner
-from .workflow import Workflow
 
 __version__ = version.__version__
 __all__ = ["Agent", "Context", "Event", "Runner", "Workflow"]

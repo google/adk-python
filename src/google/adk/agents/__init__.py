@@ -8,63 +8,55 @@
 #
 # Unless required by applicable law or agreed to in writing, software
 # distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.\n# See the License for the specific language governing permissions and
+# limitations under the License.\n
 from __future__ import annotations
 import importlib
 from typing import Any
 from typing import TYPE_CHECKING
 
-from .base_agent import BaseAgent
-from .base_agent_config import BaseAgentConfig
-from .context import Context
-from .invocation_context import InvocationContext
-from .live_request_queue import LiveRequest
-from .live_request_queue import LiveRequestQueue
-from .llm_agent import Agent
-from .llm_agent import LlmAgent
-from .llm_agent_config import LlmAgentConfig
-from .loop_agent import LoopAgent
-from .loop_agent_config import LoopAgentConfig
-from .parallel_agent import ParallelAgent
-from .parallel_agent_config import ParallelAgentConfig
-from .run_config import RunConfig
-from .sequential_agent import SequentialAgent
-from .sequential_agent_config import SequentialAgentConfig
 if TYPE_CHECKING:
     from .base_agent import BaseAgent
+    from .base_agent_config import BaseAgentConfig
     from .context import Context
     from .invocation_context import InvocationContext
     from .live_request_queue import LiveRequest
     from .live_request_queue import LiveRequestQueue
     from .llm_agent import Agent
     from .llm_agent import LlmAgent
+    from .llm_agent_config import LlmAgentConfig
     from .loop_agent import LoopAgent
-    from .mcp_instruction_provider import McpInstructionProvider
+    from .loop_agent_config import LoopAgentConfig
     from .parallel_agent import ParallelAgent
+    from .parallel_agent_config import ParallelAgentConfig
     from .run_config import RunConfig
     from .sequential_agent import SequentialAgent
+    from .sequential_agent_config import SequentialAgentConfig
+    from .mcp_instruction_provider import McpInstructionProvider
 else:
     import importlib
 
     _LAZY_IMPORTS = {
         "Agent": ".llm_agent",
         "BaseAgent": ".base_agent",
+        "BaseAgentConfig": ".base_agent_config",
         "Context": ".context",
         "InvocationContext": ".invocation_context",
         "LiveRequest": ".live_request_queue",
         "LiveRequestQueue": ".live_request_queue",
         "LlmAgent": ".llm_agent",
+        "LlmAgentConfig": ".llm_agent_config",
         "LoopAgent": ".loop_agent",
+        "LoopAgentConfig": ".loop_agent_config",
         "McpInstructionProvider": ".mcp_instruction_provider",
         "ParallelAgent": ".parallel_agent",
+        "ParallelAgentConfig": ".parallel_agent_config",
         "RunConfig": ".run_config",
         "SequentialAgent": ".sequential_agent",
+        "SequentialAgentConfig": ".sequential_agent_config",
     }
 
-    def __getattr__(name: str):
+    def __getattr__(name: str) -> Any:
         if name in _LAZY_IMPORTS:
             if name == "McpInstructionProvider":
                 try:
@@ -81,6 +73,10 @@ else:
                 module = importlib.import_module(_LAZY_IMPORTS[name], __name__)
                 return getattr(module, name)
         raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
+    def __dir__() -> list[str]:
+        return list(globals().keys()) + list(_LAZY_IMPORTS.keys())
 
 
 __all__ = [
@@ -102,16 +98,3 @@ __all__ = [
     'ParallelAgentConfig',
     'SequentialAgentConfig',
 ]
-
-
-def __getattr__(name: str) -> Any:
-  if name == 'McpInstructionProvider':
-    module = importlib.import_module('.mcp_instruction_provider', __name__)
-    attr = getattr(module, 'McpInstructionProvider')
-    globals()[name] = attr
-    return attr
-  raise AttributeError(f'module {__name__!r} has no attribute {name!r}')
-
-
-def __dir__() -> list[str]:
-  return list(globals().keys()) + __all__
