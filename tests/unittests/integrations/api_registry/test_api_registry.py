@@ -91,7 +91,7 @@ class TestApiRegistry(unittest.IsolatedAsyncioTestCase):
             "Authorization": "Bearer mock_token",
             "Content-Type": "application/json",
         },
-        params={},
+        params={"filter": "enabled=false"},
     )
 
   @patch("httpx.Client", autospec=True)
@@ -120,7 +120,7 @@ class TestApiRegistry(unittest.IsolatedAsyncioTestCase):
             "Content-Type": "application/json",
             "x-goog-user-project": "quota-project",
         },
-        params={},
+        params={"filter": "enabled=false"},
     )
 
   @patch("httpx.Client", autospec=True)
@@ -176,7 +176,7 @@ class TestApiRegistry(unittest.IsolatedAsyncioTestCase):
             "Authorization": "Bearer mock_token",
             "Content-Type": "application/json",
         },
-        params={},
+        params={"filter": "enabled=false"},
     )
     mock_client_instance.get.assert_called_with(
         f"https://cloudapiregistry.googleapis.com/v1beta/projects/{self.project_id}/locations/{self.location}/mcpServers",
@@ -184,7 +184,7 @@ class TestApiRegistry(unittest.IsolatedAsyncioTestCase):
             "Authorization": "Bearer mock_token",
             "Content-Type": "application/json",
         },
-        params={"pageToken": "next_page_token"},
+        params={"filter": "enabled=false", "pageToken": "next_page_token"},
     )
 
   @patch("httpx.Client", autospec=True)

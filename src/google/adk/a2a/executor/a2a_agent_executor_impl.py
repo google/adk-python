@@ -26,9 +26,7 @@ import uuid
 from a2a.server.agent_execution import AgentExecutor
 from a2a.server.agent_execution.context import RequestContext
 from a2a.server.events.event_queue import EventQueue
-from a2a.types import Artifact
 from a2a.types import Message
-from a2a.types import Part
 from a2a.types import Role
 from a2a.types import Task
 from a2a.types import TaskState
@@ -49,7 +47,6 @@ from ..converters.utils import _get_adk_metadata_key
 from ..experimental import a2a_experimental
 from .config import A2aAgentExecutorConfig
 from .executor_context import ExecutorContext
-from .interceptors.include_artifacts_in_a2a_event import include_artifacts_in_a2a_event_interceptor
 from .utils import execute_after_agent_interceptors
 from .utils import execute_after_event_interceptors
 from .utils import execute_before_agent_interceptors

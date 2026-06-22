@@ -911,6 +911,29 @@ class TestRemoteA2aAgentMessageHandling:
       assert A2A_METADATA_PREFIX + "context_id" in result.custom_metadata
 
   @pytest.mark.asyncio
+  async def test_handle_a2a_response_message_converter_returns_none(self):
+    """Test _handle_a2a_response returns None when message converter returns None."""
+    mock_a2a_message = Mock(spec=A2AMessage)
+    mock_a2a_message.context_id = "context-123"
+
+    with patch(
+        "google.adk.agents.remote_a2a_agent.convert_a2a_message_to_event"
+    ) as mock_convert:
+      mock_convert.return_value = None
+
+      result = await self.agent._handle_a2a_response(
+          mock_a2a_message, self.mock_context
+      )
+
+      assert result is None
+      mock_convert.assert_called_once_with(
+          mock_a2a_message,
+          self.agent.name,
+          self.mock_context,
+          self.mock_a2a_part_converter,
+      )
+
+  @pytest.mark.asyncio
   async def test_handle_a2a_response_with_task_completed_and_no_update(self):
     """Test successful A2A response handling with non-streaming task and no update."""
     mock_a2a_task = Mock(spec=A2ATask)
@@ -1926,6 +1949,27 @@ class TestRemoteA2aAgentMessageHandlingV2:
     )
 
   @pytest.mark.asyncio
+  async def test_handle_a2a_response_impl_message_converter_returns_none(self):
+    """Test _handle_a2a_response_v2 returns None when message converter returns None."""
+    mock_a2a_message = Mock(spec=A2AMessage)
+    mock_a2a_message.metadata = {}
+    mock_a2a_message.context_id = "context-123"
+
+    self.mock_config.a2a_message_converter.return_value = None
+
+    result = await self.agent._handle_a2a_response_v2(
+        mock_a2a_message, self.mock_context
+    )
+
+    assert result is None
+    self.mock_config.a2a_message_converter.assert_called_once_with(
+        mock_a2a_message,
+        self.agent.name,
+        self.mock_context,
+        self.mock_config.a2a_part_converter,
+    )
+
+  @pytest.mark.asyncio
   async def test_handle_a2a_response_impl_unknown_response_type(self):
     """Test _handle_a2a_response_impl with unknown response type."""
     unknown_response = object()
@@ -2539,6 +2583,7 @@ class TestRemoteA2aAgentIntegration:
     # Mock session with text event
     mock_part = Mock()
     mock_part.text = "Hello world"
+    mock_part.part_metadata = None
 
     mock_content = Mock()
     mock_content.parts = [mock_part]
@@ -2636,6 +2681,7 @@ class TestRemoteA2aAgentIntegration:
     # Mock session with text event
     mock_part = Mock()
     mock_part.text = "Hello world"
+    mock_part.part_metadata = {"test": "part_metadata"}
 
     mock_content = Mock()
     mock_content.parts = [mock_part]

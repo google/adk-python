@@ -266,13 +266,7 @@ def _events_to_compact_for_token_threshold(
         event_retention_size=event_retention_size,
     )
     events_to_compact = candidate_events[:split_index]
-  pending_ids = _pending_function_call_ids(events)
-  events_to_compact = _truncate_events_before_pending_function_call(
-      events_to_compact, pending_ids
-  )
-  events_to_compact = _truncate_events_before_hitl_signal(
-      events_to_compact, _resolved_hitl_call_ids(events)
-  )
+  events_to_compact = _longest_self_contained_prefix(events_to_compact)
   if not events_to_compact:
     return []
 
@@ -313,76 +307,28 @@ def _event_function_response_ids(event: Event) -> set[str]:
   return function_response_ids
 
 
-def _pending_function_call_ids(events: list[Event]) -> set[str]:
-  """Returns function call IDs that have no matching response in the session.
+def _longest_self_contained_prefix(events: list[Event]) -> list[Event]:
+  """Returns the longest prefix of `events` that is safe to compact.
 
-  Scans the session once, collecting function call IDs and response IDs, then
-  returns the call IDs that are not covered by any response. Events containing
-  these IDs represent pending (unanswered) function calls that must not be
-  compacted.
+  Performs a single left-to-right pass tracking "open" obligations keyed by call
+  id: a function call or a tool-confirmation / auth request opens one, and a
+  function response with the same id closes it. Responses are applied before
+  opens within each event so a response only closes an obligation opened by an
+  earlier event. The prefix is safe to summarize only at points where no
+  obligation is open, so the longest prefix ending at such a balanced point is
+  returned (empty if the window never reaches a balanced point).
   """
-  all_call_ids: set[str] = set()
-  all_response_ids: set[str] = set()
-  for event in events:
-    all_call_ids.update(_event_function_call_ids(event))
-    all_response_ids.update(_event_function_response_ids(event))
-
-  return all_call_ids - all_response_ids
-
-
-def _has_pending_function_call(event: Event, pending_ids: set[str]) -> bool:
-  """Returns True if the event contains any pending function call."""
-  call_ids = _event_function_call_ids(event)
-  return bool(call_ids and not call_ids.isdisjoint(pending_ids))
-
-
-def _truncate_events_before_pending_function_call(
-    events: list[Event], pending_ids: set[str]
-) -> list[Event]:
-  """Returns the leading contiguous events that avoid pending function calls."""
+  open_ids: set[str] = set()
+  safe_length = 0
   for index, event in enumerate(events):
-    if _has_pending_function_call(event, pending_ids):
-      return events[:index]
-  return events
-
-
-def _resolved_hitl_call_ids(events: list[Event]) -> set[str]:
-  """Returns HITL call ids resolved by a later function_response in `events`."""
-  hitl_position: dict[str, int] = {}
-  resolved: set[str] = set()
-  for index, event in enumerate(events):
+    open_ids -= _event_function_response_ids(event)
+    open_ids |= _event_function_call_ids(event)
     if event.actions:
-      for call_id in event.actions.requested_tool_confirmations:
-        hitl_position.setdefault(call_id, index)
-      for call_id in event.actions.requested_auth_configs:
-        hitl_position.setdefault(call_id, index)
-    for resp_id in _event_function_response_ids(event):
-      hitl_pos = hitl_position.get(resp_id)
-      if hitl_pos is not None and index > hitl_pos:
-        resolved.add(resp_id)
-  return resolved
-
-
-def _is_pending_hitl(event: Event, resolved_call_ids: set[str]) -> bool:
-  """Returns True if the event has an HITL request not in `resolved_call_ids`."""
-  if not event.actions:
-    return False
-  requested = set(event.actions.requested_tool_confirmations) | set(
-      event.actions.requested_auth_configs
-  )
-  if not requested:
-    return False
-  return bool(requested - resolved_call_ids)
-
-
-def _truncate_events_before_hitl_signal(
-    events: list[Event], resolved_call_ids: set[str]
-) -> list[Event]:
-  """Returns the leading contiguous events before any pending HITL request."""
-  for index, event in enumerate(events):
-    if _is_pending_hitl(event, resolved_call_ids):
-      return events[:index]
-  return events
+      open_ids |= set(event.actions.requested_tool_confirmations)
+      open_ids |= set(event.actions.requested_auth_configs)
+    if not open_ids:
+      safe_length = index + 1
+  return events[:safe_length]
 
 
 def _safe_token_compaction_split_index(
@@ -664,13 +610,7 @@ async def _run_compaction_for_sliding_window(
       events_to_compact = [
           e for e in events_to_compact if not e.actions.compaction
       ]
-      pending_ids = _pending_function_call_ids(events)
-      events_to_compact = _truncate_events_before_pending_function_call(
-          events_to_compact, pending_ids
-      )
-      events_to_compact = _truncate_events_before_hitl_signal(
-          events_to_compact, _resolved_hitl_call_ids(events)
-      )
+      events_to_compact = _longest_self_contained_prefix(events_to_compact)
 
   if not events_to_compact:
     return None

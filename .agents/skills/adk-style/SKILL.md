@@ -1,6 +1,6 @@
 ---
 name: adk-style
-description: ADK development style guide for routine nits — Python idioms, codebase conventions, imports, typing, Pydantic patterns, formatting, logging, and file organization. Use this skill whenever writing code, tests, or reviewing PRs for the ADK project to ensure compliance with styling and coding conventions. Triggers on "code style", "how should I format", "naming convention", "lint", "nit", "imports", "typing", "Pydantic patterns", "testing rules".
+description: ADK development style guide for routine nits — Python idioms, codebase conventions, imports, typing, Pydantic patterns, formatting, logging, async/concurrency, and file organization. Use this skill whenever writing code, tests, or reviewing PRs for the ADK project to ensure compliance with styling and coding conventions. Triggers on "code style", "how should I format", "naming convention", "lint", "nit", "imports", "typing", "Pydantic patterns", "testing rules", "async", "io".
 ---
 
 # ADK Style Guide
@@ -13,6 +13,7 @@ description: ADK development style guide for routine nits — Python idioms, cod
 - [Formatting](references/formatting.md) — indentation, line limits, and running pre-commit hooks.
 - [Documentation](references/documentation.md) — comments and docstrings.
 - [Logging](references/logging.md) — lazy evaluation and log levels.
+- [Async and Concurrency](references/async.md) — async I/O requirements, avoiding blocking the event loop.
 - [File Organization](references/file-organization.md) — file headers and class organization.
 
 ## Testing

@@ -146,7 +146,7 @@ class TestGoogleApiToolset:
     assert tool_set._additional_headers == additional_headers
 
     mock_converter_class.assert_called_once_with(
-        TEST_API_NAME, TEST_API_VERSION
+        TEST_API_NAME, TEST_API_VERSION, discovery_url=None
     )
     mock_converter_instance.convert.assert_called_once()
     spec_dict = mock_converter_instance.convert.return_value
@@ -157,6 +157,69 @@ class TestGoogleApiToolset:
     assert kwargs["spec_str_type"] == "yaml"
     assert isinstance(kwargs["auth_scheme"], OpenIdConnectWithConfig)
     assert kwargs["auth_scheme"].scopes == [DEFAULT_SCOPE]
+
+  @mock.patch(
+      "google.adk.tools.google_api_tool.google_api_toolset.OpenAPIToolset"
+  )
+  @mock.patch(
+      "google.adk.tools.google_api_tool.google_api_toolset.GoogleApiToOpenApiConverter"
+  )
+  def test_init_with_additional_scopes(
+      self,
+      mock_converter_class,
+      mock_openapi_toolset_class,
+      mock_converter_instance,
+      mock_openapi_toolset_instance,
+  ):
+    """Test GoogleApiToolset initialization with additional scopes."""
+    mock_converter_class.return_value = mock_converter_instance
+    mock_openapi_toolset_class.return_value = mock_openapi_toolset_instance
+
+    extra_scopes = [
+        DEFAULT_SCOPE,
+        "https://www.googleapis.com/auth/calendar.readonly",
+    ]
+    tool_set = GoogleApiToolset(
+        api_name=TEST_API_NAME,
+        api_version=TEST_API_VERSION,
+        additional_scopes=extra_scopes,
+    )
+
+    mock_openapi_toolset_class.assert_called_once()
+    _, kwargs = mock_openapi_toolset_class.call_args
+    assert isinstance(kwargs["auth_scheme"], OpenIdConnectWithConfig)
+    assert kwargs["auth_scheme"].scopes == [
+        DEFAULT_SCOPE,
+        "https://www.googleapis.com/auth/calendar.readonly",
+    ]
+
+  @mock.patch(
+      "google.adk.tools.google_api_tool.google_api_toolset.OpenAPIToolset"
+  )
+  @mock.patch(
+      "google.adk.tools.google_api_tool.google_api_toolset.GoogleApiToOpenApiConverter"
+  )
+  def test_init_with_discovery_url(
+      self,
+      mock_converter_class,
+      mock_openapi_toolset_class,
+      mock_converter_instance,
+      mock_openapi_toolset_instance,
+  ):
+    """Test GoogleApiToolset initialization with custom discovery URL."""
+    mock_converter_class.return_value = mock_converter_instance
+    mock_openapi_toolset_class.return_value = mock_openapi_toolset_instance
+
+    discovery_url = "https://example.com/discovery"
+    tool_set = GoogleApiToolset(
+        api_name=TEST_API_NAME,
+        api_version=TEST_API_VERSION,
+        discovery_url=discovery_url,
+    )
+
+    mock_converter_class.assert_called_once_with(
+        TEST_API_NAME, TEST_API_VERSION, discovery_url=discovery_url
+    )
 
   @mock.patch(
       "google.adk.tools.google_api_tool.google_api_toolset.GoogleApiTool"

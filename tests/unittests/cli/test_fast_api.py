@@ -22,8 +22,10 @@ import tempfile
 from typing import Any
 from typing import Optional
 from unittest.mock import AsyncMock
+from unittest.mock import call
 from unittest.mock import MagicMock
 from unittest.mock import patch
+from urllib.parse import quote
 
 from fastapi.testclient import TestClient
 from google.adk.agents.base_agent import BaseAgent
@@ -644,6 +646,39 @@ bigquery_agent_analytics:
     assert getattr(runner.app, "_is_visual_builder_app", False) is True
 
 
+def test_get_runner_async_accepts_internal_special_agent_name(
+    tmp_path,
+    mock_session_service,
+    mock_artifact_service,
+    mock_memory_service,
+    mock_agent_loader,
+    mock_eval_sets_manager,
+    mock_eval_set_results_manager,
+):
+  from google.adk.cli.adk_web_server import AdkWebServer
+
+  special_app_name = "__adk_agent_builder_assistant"
+  special_agent = DummyAgent(name="agent_builder_assistant")
+  mock_agent_loader.load_agent = MagicMock(return_value=special_agent)
+
+  adk_web_server = AdkWebServer(
+      agent_loader=mock_agent_loader,
+      session_service=mock_session_service,
+      memory_service=mock_memory_service,
+      artifact_service=mock_artifact_service,
+      credential_service=MagicMock(),
+      eval_sets_manager=mock_eval_sets_manager,
+      eval_set_results_manager=mock_eval_set_results_manager,
+      agents_dir=str(tmp_path),
+  )
+
+  runner = asyncio.run(adk_web_server.get_runner_async(special_app_name))
+
+  assert runner.app.name == special_app_name
+  assert runner.app.root_agent is special_agent
+  mock_agent_loader.load_agent.assert_called_once_with(special_app_name)
+
+
 @pytest.fixture
 def test_app(
     mock_session_service,
@@ -888,6 +923,68 @@ def test_app_with_a2a(
     )
 
     client = TestClient(app)
+    yield client
+
+
+@pytest.fixture
+def test_app_with_gemini_enterprise(
+    mock_session_service,
+    mock_artifact_service,
+    mock_memory_service,
+    mock_agent_loader,
+    mock_eval_sets_manager,
+    mock_eval_set_results_manager,
+    monkeypatch,
+):
+  """Create a TestClient with gemini_enterprise_app_name set."""
+  monkeypatch.setenv("GOOGLE_CLOUD_PROJECT", "test-project")
+  mock_agent_loader.list_agents = MagicMock(
+      return_value=["test_app", "gemini_app"]
+  )
+
+  mock_adk_app_instance = MagicMock()
+  mock_adk_app_instance._tmpl_attrs = {}
+
+  async def get_session_impl(**kwargs):
+    return {"result": "success", "kwargs": kwargs}
+
+  mock_adk_app_instance.get_session = get_session_impl
+
+  async def stream_query_impl(**kwargs):
+    yield {"chunk": 1, "kwargs": kwargs}
+    await asyncio.sleep(0)
+    yield {"chunk": 2, "kwargs": kwargs}
+
+  mock_adk_app_instance.stream_query = stream_query_impl
+
+  with (
+      patch("google.auth.default", return_value=(MagicMock(), "test-project")),
+      patch("vertexai.init", new_callable=MagicMock) as mock_vertexai_init,
+      patch(
+          "vertexai.agent_engines.AdkApp", return_value=mock_adk_app_instance
+      ) as mock_adk_app_cls,
+      patch("google.adk.agents.Agent", new_callable=MagicMock),
+      patch(
+          "google.adk.telemetry._agent_engine.TopSpanProcessor",
+          new_callable=MagicMock,
+      ),
+      patch(
+          "google.adk.telemetry._agent_engine.get_propagated_context",
+          new_callable=MagicMock,
+      ),
+  ):
+    client = _create_test_client(
+        mock_session_service,
+        mock_artifact_service,
+        mock_memory_service,
+        mock_agent_loader,
+        mock_eval_sets_manager,
+        mock_eval_set_results_manager,
+        gemini_enterprise_app_name="gemini_app",
+    )
+    client.mock_vertexai_init = mock_vertexai_init
+    client.mock_adk_app_cls = mock_adk_app_cls
+    client.mock_adk_app_instance = mock_adk_app_instance
     yield client
 
 
@@ -1602,6 +1699,98 @@ def test_save_artifact(test_app, create_test_session, mock_artifact_service):
   )
   stored = mock_artifact_service._artifacts[key][0]
   assert stored["artifact"].text == "hello world"
+
+
+def test_artifact_endpoints_support_nested_names(
+    test_app, create_test_session, mock_artifact_service
+):
+  """Test artifact endpoints support names containing path separators."""
+  info = create_test_session
+  filename = "reports/summary.txt"
+  encoded_filename = quote(filename, safe="")
+  base_url = (
+      f"/apps/{info['app_name']}/users/{info['user_id']}/sessions/"
+      f"{info['session_id']}/artifacts"
+  )
+
+  mock_artifact_service.add_artifact(
+      app_name=info["app_name"],
+      user_id=info["user_id"],
+      session_id=info["session_id"],
+      filename=filename,
+      artifact=types.Part(text="v0"),
+  )
+  mock_artifact_service.add_artifact(
+      app_name=info["app_name"],
+      user_id=info["user_id"],
+      session_id=info["session_id"],
+      filename=filename,
+      artifact=types.Part(text="v1"),
+      custom_metadata={"rev": "one"},
+      mime_type="text/plain",
+  )
+
+  response = test_app.get(base_url)
+  assert response.status_code == 200
+  assert filename in response.json()
+
+  for artifact_path in (filename, encoded_filename):
+    response = test_app.get(f"{base_url}/{artifact_path}")
+    assert response.status_code == 200
+    assert response.json()["text"] == "v1"
+
+  response = test_app.get(f"{base_url}/{encoded_filename}?version=0")
+  assert response.status_code == 200
+  assert response.json()["text"] == "v0"
+
+  response = test_app.get(f"{base_url}/{filename}/versions/0")
+  assert response.status_code == 200
+  assert response.json()["text"] == "v0"
+
+  response = test_app.get(f"{base_url}/{encoded_filename}/versions/1")
+  assert response.status_code == 200
+  assert response.json()["text"] == "v1"
+
+  response = test_app.get(f"{base_url}/{filename}/versions")
+  assert response.status_code == 200
+  assert response.json() == [0, 1]
+
+  response = test_app.get(f"{base_url}/{encoded_filename}/versions/metadata")
+  assert response.status_code == 200
+  versions_metadata = response.json()
+  assert len(versions_metadata) == 2
+  assert versions_metadata[1]["customMetadata"] == {"rev": "one"}
+
+  response = test_app.get(f"{base_url}/{filename}/versions/1/metadata")
+  assert response.status_code == 200
+  version_metadata = response.json()
+  assert version_metadata["version"] == 1
+  assert version_metadata["customMetadata"] == {"rev": "one"}
+
+  # Test loading latest version via path
+  for path in (filename, encoded_filename):
+    response = test_app.get(f"{base_url}/{path}/versions/latest")
+    assert response.status_code == 200
+    assert response.json()["text"] == "v1"
+
+    response = test_app.get(f"{base_url}/{path}/versions/latest/metadata")
+    assert response.status_code == 200
+    assert response.json()["version"] == 1
+
+  # Test invalid version ID
+  response = test_app.get(f"{base_url}/{filename}/versions/invalid")
+  assert response.status_code == 422
+  assert "Invalid version ID" in response.json()["detail"]
+
+  response = test_app.get(f"{base_url}/{filename}/versions/invalid/metadata")
+  assert response.status_code == 422
+  assert "Invalid version ID" in response.json()["detail"]
+
+  response = test_app.delete(f"{base_url}/{encoded_filename}")
+  assert response.status_code == 200
+
+  response = test_app.get(f"{base_url}/{encoded_filename}")
+  assert response.status_code == 404
 
 
 def test_save_artifact_returns_400_on_validation_error(
@@ -3062,6 +3251,84 @@ def test_agent_run_disconnect_aborts_run(
   # Then the response status should be 499 and the running generator was cancelled
   assert response.status_code == 499
   assert was_cancelled["value"] is True
+
+
+#################################################
+# Gemini Enterprise Tests
+#################################################
+
+
+def test_gemini_app_not_found_raises(
+    mock_session_service,
+    mock_artifact_service,
+    mock_memory_service,
+    mock_agent_loader,
+    mock_eval_sets_manager,
+    mock_eval_set_results_manager,
+    monkeypatch,
+):
+  """Test get_fast_api_app raises ValueError if gemini_enterprise_app_name not found."""
+  monkeypatch.setenv("GOOGLE_CLOUD_PROJECT", "test-project")
+  mock_agent_loader.list_agents = MagicMock(return_value=["test_app"])
+  with pytest.raises(ValueError, match="not found in dir"):
+    _create_test_client(
+        mock_session_service,
+        mock_artifact_service,
+        mock_memory_service,
+        mock_agent_loader,
+        mock_eval_sets_manager,
+        mock_eval_set_results_manager,
+        gemini_enterprise_app_name="nonexistent_app",
+    )
+
+
+def test_gemini_reasoning_engine_success(test_app_with_gemini_enterprise):
+  """Test POST /api/reasoning_engine success case."""
+  response = test_app_with_gemini_enterprise.post(
+      "/api/reasoning_engine",
+      json={"class_method": "get_session", "input": {"arg1": 1}},
+  )
+  assert response.status_code == 200
+  assert response.json() == {
+      "output": {"result": "success", "kwargs": {"arg1": 1}}
+  }
+
+
+def test_gemini_reasoning_engine_missing_class_method(
+    test_app_with_gemini_enterprise,
+):
+  """Test POST /api/reasoning_engine with missing class_method."""
+  response = test_app_with_gemini_enterprise.post(
+      "/api/reasoning_engine",
+      json={"input": {"arg1": 1}},
+  )
+  assert response.status_code == 400
+
+
+def test_gemini_stream_reasoning_engine_success(
+    test_app_with_gemini_enterprise,
+):
+  """Test POST /api/stream_reasoning_engine success case."""
+  response = test_app_with_gemini_enterprise.post(
+      "/api/stream_reasoning_engine",
+      json={"class_method": "stream_query", "input": {"arg1": 1}},
+  )
+  assert response.status_code == 200
+  lines = response.text.strip().split("\n")
+  assert len(lines) == 2
+  assert json.loads(lines[0]) == {"chunk": 1, "kwargs": {"arg1": 1}}
+  assert json.loads(lines[1]) == {"chunk": 2, "kwargs": {"arg1": 1}}
+
+
+def test_gemini_stream_reasoning_engine_missing_class_method(
+    test_app_with_gemini_enterprise,
+):
+  """Test POST /api/stream_reasoning_engine with missing class_method."""
+  response = test_app_with_gemini_enterprise.post(
+      "/api/stream_reasoning_engine",
+      json={"input": {"arg1": 1}},
+  )
+  assert response.status_code == 400
 
 
 if __name__ == "__main__":

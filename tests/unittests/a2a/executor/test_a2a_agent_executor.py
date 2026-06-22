@@ -1072,3 +1072,79 @@ class TestA2aAgentExecutor:
     assert (
         modified_a2a_event in enqueued_events
     ), "The modified event should have been enqueued"
+
+  @pytest.mark.asyncio
+  async def test_handle_request_preserves_metadata_in_final_events(
+      self,
+  ) -> None:
+    """Test that final events preserve invocation_id, author, and event_id in metadata."""
+    # Setup context with task_id
+    self.mock_context.task_id = "test-task-id"
+    self.mock_context.context_id = "test-context-id"
+
+    # Setup detailed mocks
+    self.mock_request_converter.return_value = AgentRunRequest(
+        user_id="test-user",
+        session_id="test-session",
+        new_message=Mock(spec=Content),
+        run_config=Mock(spec=RunConfig),
+    )
+
+    # Mock session service
+    mock_session = Mock()
+    mock_session.id = "test-session"
+    self.mock_runner.session_service.get_session = AsyncMock(
+        return_value=mock_session
+    )
+
+    # Mock invocation context
+    mock_invocation_context = Mock()
+    self.mock_runner._new_invocation_context.return_value = (
+        mock_invocation_context
+    )
+
+    # Mock ADK event with specific metadata to preserve
+    mock_adk_event = Mock(spec=Event)
+    mock_adk_event.invocation_id = "test-invocation-id"
+    mock_adk_event.author = "test-author"
+    mock_adk_event.id = "test-event-id"
+
+    # Configure run_async to yield our mock ADK event
+    async def mock_run_async(**kwargs):
+      async for item in self._create_async_generator([mock_adk_event]):
+        yield item
+
+    self.mock_runner.run_async = mock_run_async
+    self.mock_event_converter.return_value = [Mock()]
+
+    with patch(
+        "google.adk.a2a.executor.a2a_agent_executor.TaskResultAggregator"
+    ) as mock_aggregator_class:
+      mock_aggregator = Mock()
+      mock_aggregator.task_state = TaskState.completed
+      mock_aggregator.task_status_message = Mock(spec=Message)
+      mock_aggregator_class.return_value = mock_aggregator
+
+      # Execute
+      await self.executor._handle_request(
+          self.mock_context, self.mock_event_queue
+      )
+
+      # Verify final status event was published and has correct metadata
+      final_events = [
+          call[0][0]
+          for call in self.mock_event_queue.enqueue_event.call_args_list
+          if hasattr(call[0][0], "final") and call[0][0].final == True
+      ]
+      assert len(final_events) >= 1
+      final_event = final_events[-1]
+
+      assert final_event.metadata is not None
+      assert (
+          final_event.metadata.get("adk_invocation_id") == "test-invocation-id"
+      )
+      assert final_event.metadata.get("adk_author") == "test-author"
+      assert final_event.metadata.get("adk_event_id") == "test-event-id"
+      assert final_event.metadata.get("adk_app_name") == "test-app"
+      assert final_event.metadata.get("adk_user_id") == "test-user"
+      assert final_event.metadata.get("adk_session_id") == "test-session"

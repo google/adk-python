@@ -18,6 +18,7 @@ from __future__ import annotations
 
 from typing import Any
 from typing import cast
+from typing import Literal
 
 from ...tools.base_tool import BaseTool
 from .._base_node import BaseNode
@@ -45,6 +46,7 @@ def build_node(
     retry_config: RetryConfig | None = None,
     timeout: float | None = None,
     auth_config: Any = None,
+    parameter_binding: Literal['state', 'node_input'] = 'state',
 ) -> BaseNode:
   """Converts a NodeLike to a BaseNode, wrapping async funcs in FunctionNode.
 
@@ -57,6 +59,11 @@ def build_node(
       wrapped node.
     timeout: If provided, overrides the timeout property of the wrapped node.
     auth_config: If provided, passed to FunctionNode for authentication.
+    parameter_binding: How function parameters are bound. ``'state'``
+      (default) binds parameters from ``ctx.state``. ``'node_input'``
+      binds parameters from ``node_input`` dict and infers
+      ``input_schema`` / ``output_schema`` from the function signature
+      (used when the node acts as an agent's tool).
 
   Returns:
     A BaseNode instance.
@@ -92,7 +99,13 @@ def build_node(
       agent.parent_agent = node_like.parent_agent
 
       if agent.mode is None:
-        agent.mode = 'single_turn'
+        # Sub-agents dynamically attached to a parent agent default to 'chat'
+        # mode to enable agent transfer.
+        # Standalone agents in a workflow graph default to 'single_turn'.
+        if agent.parent_agent is not None:
+          agent.mode = 'chat'
+        else:
+          agent.mode = 'single_turn'
 
       if agent.mode in ('task', 'chat'):
         agent.wait_for_output = True
@@ -122,6 +135,7 @@ def build_node(
         retry_config=retry_config,
         timeout=timeout,
         auth_config=auth_config,
+        parameter_binding=parameter_binding,
     )
   else:
     raise ValueError(

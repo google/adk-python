@@ -20,7 +20,6 @@ import json
 import logging
 import sqlite3
 import threading
-from typing import Any
 from typing import Iterable
 from typing import Optional
 from typing import Sequence
@@ -104,7 +103,7 @@ class SqliteSpanExporter(SpanExporter):
       conn.execute(_CREATE_TRACE_INDEX)
       conn.commit()
 
-  def _serialize_attributes(self, attributes: dict[str, Any]) -> str:
+  def _serialize_attributes(self, attributes: dict[str, object]) -> str:
     try:
       return json.dumps(
           attributes,
@@ -115,7 +114,9 @@ class SqliteSpanExporter(SpanExporter):
       logger.debug("Failed to serialize span attributes: %r", e)
       return "{}"
 
-  def _deserialize_attributes(self, attributes_json: Any) -> dict[str, Any]:
+  def _deserialize_attributes(
+      self, attributes_json: object
+  ) -> dict[str, object]:
     if not attributes_json:
       return {}
     try:
@@ -129,7 +130,7 @@ class SqliteSpanExporter(SpanExporter):
     try:
       with self._lock:
         conn = self._get_connection()
-        rows: list[tuple[Any, ...]] = []
+        rows: list[tuple[object, ...]] = []
         for span in spans:
           attributes = dict(span.attributes) if span.attributes else {}
           session_id = attributes.get(
@@ -168,7 +169,7 @@ class SqliteSpanExporter(SpanExporter):
   def force_flush(self, timeout_millis: int = 30000) -> bool:
     return True
 
-  def _query(self, sql: str, params: Iterable[Any]) -> list[sqlite3.Row]:
+  def _query(self, sql: str, params: Iterable[object]) -> list[sqlite3.Row]:
     with self._lock:
       conn = self._get_connection()
       cur = conn.execute(sql, tuple(params))
