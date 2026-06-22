@@ -179,6 +179,9 @@ optional-dependencies.gcp = [
   "pyarrow>=14",
   "python-dateutil>=2.9.0.post0,<3",
 ]
+optional-dependencies.jinja = [
+  "jinja2>=3.1.4,<4", # For Jinja2-based instruction templating (inject_session_state(use_jinja2=True)).
+]
 optional-dependencies.mcp = [
   "anyio>=4.9,<5",
   "mcp>=1.24,<2",
