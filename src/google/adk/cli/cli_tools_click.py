@@ -1805,9 +1805,11 @@ def cli_web(
 ):
   """Starts a FastAPI server with Web UI for agents.
 
-  AGENTS_DIR: The directory of agents (where each subdirectory is a single
-  agent containing `agent.py` or `root_agent.yaml` files) or a path pointing
-  directly to a single agent folder.
+  AGENTS_DIR: The directory containing your agents, or a path pointing directly
+  to a single agent folder. Each subdirectory is treated as a candidate agent
+  and is expected to contain an `agent.py` (or `__init__.py`) or a
+  `root_agent.yaml` file. All non-hidden subdirectories are listed; any that are
+  not valid agents are skipped when they fail to load.
 
   Example:
 
@@ -1876,7 +1878,7 @@ def cli_web(
 
 @main.command("api_server")
 @feature_options()
-# The directory of agents, where each subdirectory is a single agent.
+# The directory containing your agents; each subdirectory is a candidate agent.
 # By default, it is the current working directory
 @click.argument(
     "agents_dir",
@@ -1946,9 +1948,11 @@ def cli_api_server(
 ):
   """Starts a FastAPI server for agents.
 
-  AGENTS_DIR: The directory of agents (where each subdirectory is a single
-  agent containing `agent.py` or `root_agent.yaml` files) or a path pointing
-  directly to a single agent folder.
+  AGENTS_DIR: The directory containing your agents, or a path pointing directly
+  to a single agent folder. Each subdirectory is treated as a candidate agent
+  and is expected to contain an `agent.py` (or `__init__.py`) or a
+  `root_agent.yaml` file. All non-hidden subdirectories are listed; any that are
+  not valid agents are skipped when they fail to load.
 
   Example:
 
