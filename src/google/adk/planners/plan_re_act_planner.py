@@ -24,6 +24,8 @@ from ..agents.callback_context import CallbackContext
 from ..agents.readonly_context import ReadonlyContext
 from ..models.llm_request import LlmRequest
 from .base_planner import BasePlanner
+from .planner_content_blocks import ContentBlock
+from .planner_content_blocks import parts_to_content_blocks
 
 PLANNING_TAG = '/*PLANNING*/'
 REPLANNING_TAG = '/*REPLANNING*/'
@@ -81,6 +83,34 @@ class PlanReActPlanner(BasePlanner):
           break
 
     return preserved_parts
+
+  def to_content_blocks(
+      self,
+      response_parts: List[types.Part],
+  ) -> List[ContentBlock]:
+    """Returns a standardized, structured view of the planner output.
+
+    Converts the parts produced by this planner (the output of
+    ``process_planning_response``, or any equivalent list of parts) into a
+    provider-agnostic list of content blocks modelled after LangChain v1's
+    standard content blocks, e.g.::
+
+        [{'type': 'reasoning', 'reasoning': '...', 'reasoning_kind': 'planning'},
+         {'type': 'tool_call', 'name': '...', 'args': {...}, 'id': None},
+         {'type': 'text', 'text': '...'}]
+
+    This lets consumers branch on a typed ``type`` discriminator instead of
+    re-parsing the raw text and inline ``/*PLANNING*/`` style tags. The
+    conversion is read-only and does not mutate ``response_parts``.
+
+    Args:
+      response_parts: The planner-produced parts.
+
+    Returns:
+      A list of standardized content blocks. See
+      :mod:`google.adk.planners.planner_content_blocks`.
+    """
+    return parts_to_content_blocks(response_parts)
 
   def _split_by_last_pattern(self, text, separator):
     """Splits the text by the last occurrence of the separator.

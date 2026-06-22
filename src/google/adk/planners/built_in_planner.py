@@ -25,6 +25,8 @@ from ..agents.callback_context import CallbackContext
 from ..agents.readonly_context import ReadonlyContext
 from ..models.llm_request import LlmRequest
 from .base_planner import BasePlanner
+from .planner_content_blocks import ContentBlock
+from .planner_content_blocks import parts_to_content_blocks
 
 logger = logging.getLogger('google_adk.' + __name__)
 
@@ -84,3 +86,30 @@ class BuiltInPlanner(BasePlanner):
       response_parts: List[types.Part],
   ) -> Optional[List[types.Part]]:
     return
+
+  def to_content_blocks(
+      self,
+      response_parts: List[types.Part],
+  ) -> List[ContentBlock]:
+    """Returns a standardized, structured view of the model response.
+
+    The built-in planner relies on the model's native thinking, which surfaces
+    as parts with ``thought=True``. This converts the response parts into a
+    provider-agnostic list of content blocks modelled after LangChain v1's
+    standard content blocks, e.g.::
+
+        [{'type': 'reasoning', 'reasoning': '...', 'reasoning_kind': None},
+         {'type': 'text', 'text': '...'}]
+
+    This lets consumers branch on a typed ``type`` discriminator instead of
+    inspecting ``part.thought`` and the raw text. The conversion is read-only
+    and does not mutate ``response_parts``.
+
+    Args:
+      response_parts: The model response parts.
+
+    Returns:
+      A list of standardized content blocks. See
+      :mod:`google.adk.planners.planner_content_blocks`.
+    """
+    return parts_to_content_blocks(response_parts)
