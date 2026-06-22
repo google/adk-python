@@ -341,6 +341,61 @@ def test_api_client_preserves_custom_base_url_path():
   assert client._api_client._http_options.api_version == "v1beta"
 
 
+def test_api_client_default_api_version_unchanged(monkeypatch):
+  """Without configuration, ADK does not force an api_version (SDK default)."""
+  monkeypatch.delenv("GOOGLE_GENAI_API_VERSION", raising=False)
+  model = Gemini(model="gemini-2.5-flash")
+
+  # ADK leaves api_version unset so the google-genai SDK applies its own
+  # default (v1beta1 for Vertex AI), preserving existing behavior.
+  assert model._base_url_and_api_version == (None, None)
+
+
+def test_api_client_uses_api_version_field():
+  """The api_version field flows into the constructed client's http_options."""
+  model = Gemini(model="gemini-2.5-flash", api_version="v1")
+
+  client = model.api_client
+
+  assert client._api_client._http_options.api_version == "v1"
+
+
+def test_api_client_uses_api_version_env_var(monkeypatch):
+  """The GOOGLE_GENAI_API_VERSION env var flows into http_options."""
+  monkeypatch.setenv("GOOGLE_GENAI_API_VERSION", "v1")
+  model = Gemini(model="gemini-2.5-flash")
+
+  client = model.api_client
+
+  assert client._api_client._http_options.api_version == "v1"
+
+
+def test_api_version_field_overrides_env_var(monkeypatch):
+  """The explicit api_version field takes precedence over the env var."""
+  monkeypatch.setenv("GOOGLE_GENAI_API_VERSION", "v1beta1")
+  model = Gemini(model="gemini-2.5-flash", api_version="v1")
+
+  client = model.api_client
+
+  assert client._api_client._http_options.api_version == "v1"
+
+
+def test_base_url_api_version_overrides_field():
+  """A version embedded in base_url wins over the api_version field."""
+  model = Gemini(
+      model="gemini-2.5-flash",
+      base_url="https://generativelanguage.googleapis.com/v1alpha",
+      api_version="v1",
+  )
+
+  client = model.api_client
+
+  assert client._api_client._http_options.base_url == (
+      "https://generativelanguage.googleapis.com/"
+  )
+  assert client._api_client._http_options.api_version == "v1alpha"
+
+
 def test_maybe_append_user_content(gemini_llm, llm_request):
   # Test with user content already present
   gemini_llm._maybe_append_user_content(llm_request)
@@ -766,12 +821,63 @@ async def test_generate_content_async_patches_api_version(
     assert len(responses) == 2 if stream else 1
 
 
+@pytest.mark.asyncio
+async def test_generate_content_async_patches_api_version_from_field(
+    llm_request, generate_content_response
+):
+  """The configured api_version field is patched onto the request config."""
+  gemini_llm = Gemini(model="gemini-2.5-flash", api_version="v1")
+  llm_request.config.http_options = types.HttpOptions(
+      headers={"custom-header": "custom-value"}
+  )
+
+  with mock.patch.object(gemini_llm, "api_client") as mock_client:
+
+    async def mock_coro():
+      return generate_content_response
+
+    mock_client.aio.models.generate_content.return_value = mock_coro()
+
+    _ = [
+        resp
+        async for resp in gemini_llm.generate_content_async(
+            llm_request, stream=False
+        )
+    ]
+
+    call_args = mock_client.aio.models.generate_content.call_args
+    final_config = call_args.kwargs["config"]
+    assert final_config.http_options.api_version == "v1"
+
+
 def test_live_api_version_vertex_ai(gemini_llm):
   """Test that _live_api_version returns 'v1beta1' for Vertex AI backend."""
   with mock.patch.object(
       gemini_llm, "_api_backend", GoogleLLMVariant.VERTEX_AI
   ):
     assert gemini_llm._live_api_version == "v1beta1"
+
+
+def test_live_api_version_uses_configured_field():
+  """Test that _live_api_version honors the configured api_version field."""
+  gemini_llm = Gemini(model="gemini-2.5-flash", api_version="v1")
+
+  with mock.patch.object(
+      gemini_llm, "_api_backend", GoogleLLMVariant.VERTEX_AI
+  ):
+    assert gemini_llm._live_api_version == "v1"
+
+
+def test_live_api_client_uses_configured_field():
+  """Test that _live_api_client http_options honors the api_version field."""
+  gemini_llm = Gemini(model="gemini-2.5-flash", api_version="v1")
+
+  with mock.patch.object(
+      gemini_llm, "_api_backend", GoogleLLMVariant.VERTEX_AI
+  ):
+    client = gemini_llm._live_api_client
+
+    assert client._api_client._http_options.api_version == "v1"
 
 
 def test_live_api_version_uses_google_base_url_version():
