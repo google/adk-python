@@ -259,8 +259,19 @@ def _serialize_value(value: Any) -> Optional[Any]:
       logger.warning("Failed to serialize Pydantic model, falling back: %s", e)
       return str(value)
 
-  # Pass through JSON-native types as-is
-  if isinstance(value, (dict, list, int, float, bool, str)):
+  # Recurse into JSON-native containers so nested non-JSON-serializable
+  # values (e.g. datetime) are still stringified, then pass through other
+  # JSON-native scalars as-is.
+  if isinstance(value, dict):
+    # JSON object keys must be strings, so stringify any non-string key to
+    # avoid a downstream TypeError when the metadata is JSON-encoded.
+    return {
+        (k if isinstance(k, str) else str(k)): _serialize_value(v)
+        for k, v in value.items()
+    }
+  if isinstance(value, list):
+    return [_serialize_value(item) for item in value]
+  if isinstance(value, (int, float, bool, str)):
     return value
 
   return str(value)

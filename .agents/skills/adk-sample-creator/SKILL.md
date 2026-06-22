@@ -30,11 +30,6 @@ The `agent.py` should focus on demonstrating a specific feature or agent pattern
 > [!IMPORTANT]
 > **Model Selection**: Do not set the `model` parameter explicitly (e.g., `model="gemini-2.5-flash"`) on `Agent` instances in sample agents. Instead, let them default to the system-configured model, unless a specific model is explicitly requested by the user.
 
-> [!IMPORTANT]
-> **Context Usage**: Prefer using the unified `Context` class (imported from
-> `google.adk`) instead of the legacy `ToolContext` or `CallbackContext`
-> aliases in callbacks and tool definitions.
-
 Choose one of the following patterns:
 
 #### Pattern A: Workflows (for complex graphs)

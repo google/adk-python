@@ -22,6 +22,7 @@ from google.adk.tools import _automatic_function_calling_util
 from google.adk.utils.variant_utils import GoogleLLMVariant
 from google.genai import types
 import pydantic
+import pytest
 
 
 def test_from_function_with_options_no_return_annotation_gemini():
@@ -229,6 +230,72 @@ def test_from_function_with_collections_type_parameter():
   assert declaration.response.type == types.Type.STRING
 
 
+def test_from_function_with_tuple_type_parameter():
+  """Test from_function_with_options with fixed-size homogeneous tuple."""
+
+  def test_function(
+      coordinate: tuple[float, float],
+  ) -> str:
+    """Formats a coordinate pair."""
+    return f'{coordinate[0]}, {coordinate[1]}'
+
+  declaration = _automatic_function_calling_util.from_function_with_options(
+      test_function, GoogleLLMVariant.VERTEX_AI
+  )
+
+  assert declaration.name == 'test_function'
+  assert declaration.parameters.type == types.Type.OBJECT
+  coordinate_schema = declaration.parameters.properties['coordinate']
+  assert coordinate_schema.type == types.Type.ARRAY
+  assert coordinate_schema.items.type == types.Type.NUMBER
+  # Fixed-size tuples pin the array length so the model emits exactly the
+  # expected number of items.
+  assert coordinate_schema.min_items == 2
+  assert coordinate_schema.max_items == 2
+  assert declaration.response.type == types.Type.STRING
+
+
+def test_from_function_with_variadic_tuple_type_parameter():
+  """Test from_function_with_options with variable-length homogeneous tuple."""
+
+  def test_function(
+      tags: tuple[str, ...],
+  ) -> str:
+    """Joins tags."""
+    return ', '.join(tags)
+
+  declaration = _automatic_function_calling_util.from_function_with_options(
+      test_function, GoogleLLMVariant.VERTEX_AI
+  )
+
+  tags_schema = declaration.parameters.properties['tags']
+  assert tags_schema.type == types.Type.ARRAY
+  assert tags_schema.items.type == types.Type.STRING
+  # Variadic tuples are unbounded, so no size constraints are set.
+  assert tags_schema.min_items is None
+  assert tags_schema.max_items is None
+
+
+def test_from_function_with_heterogeneous_tuple_raises():
+  """Heterogeneous tuples can't map to a single-`items` array schema.
+
+  `google.genai.types.Schema` arrays carry a single `items` type (no
+  positional `prefixItems`), so a tuple like `tuple[str, int]` cannot be
+  represented. It must surface a clear error rather than be silently coerced
+  into an incorrect homogeneous array.
+  """
+
+  def test_function(
+      pair: tuple[str, int],
+  ) -> str:
+    return f'{pair[0]}: {pair[1]}'
+
+  with pytest.raises(ValueError):
+    _automatic_function_calling_util.from_function_with_options(
+        test_function, GoogleLLMVariant.VERTEX_AI
+    )
+
+
 def test_from_function_with_collections_return_type():
   """Test from_function_with_options with collections return type."""
 
@@ -322,14 +389,8 @@ def test_from_function_with_async_generator_complex_yield_type_vertex():
   assert declaration.response.type == types.Type.OBJECT
 
 
-def test_required_fields_set_in_json_schema_fallback():
-  """Test that required fields are populated when the json_schema fallback path is used.
-
-  When a parameter has a complex type (e.g. tuple[str, ...] | None) that
-  _parse_schema_from_parameter can't handle, from_function_with_options falls
-  back to the parameters_json_schema branch. This test verifies that the
-  required fields are correctly populated in that fallback branch.
-  """
+def test_required_fields_set_with_optional_tuple_parameter():
+  """Test that required fields are populated with optional tuple parameters."""
 
   def complex_tool(
       query: str,
@@ -351,17 +412,41 @@ def test_required_fields_set_in_json_schema_fallback():
           'query': types.Schema(type=types.Type.STRING),
           'mode': types.Schema(type=types.Type.STRING, default='default'),
           'tags': types.Schema(
-              any_of=[
-                  types.Schema(
-                      items=types.Schema(type=types.Type.STRING),
-                      type=types.Type.ARRAY,
-                  ),
-                  types.Schema(type=types.Type.NULL),
-              ],
+              items=types.Schema(type=types.Type.STRING),
               nullable=True,
+              type=types.Type.ARRAY,
           ),
       },
   )
+
+
+def test_required_fields_set_in_json_schema_fallback():
+  """Required fields are populated when the json_schema fallback path is used.
+
+  A parameter whose type `_parse_schema_from_parameter` cannot handle (here
+  `Sequence[str]`) forces from_function_with_options onto the pydantic
+  json_schema fallback branch. This verifies that branch still derives required
+  fields correctly: parameters without defaults are required, parameters with
+  defaults are not.
+  """
+
+  def complex_tool(
+      query: str,
+      items: Sequence[str],
+      mode: str = 'default',
+  ) -> str:
+    return query
+
+  declaration = _automatic_function_calling_util.from_function_with_options(
+      complex_tool, GoogleLLMVariant.VERTEX_AI
+  )
+
+  assert declaration.name == 'complex_tool'
+  assert declaration.parameters.type == types.Type.OBJECT
+  # query and items have no defaults -> required; mode has a default -> not.
+  assert set(declaration.parameters.required) == {'query', 'items'}
+  assert declaration.parameters.properties['items'].type == types.Type.ARRAY
+  assert declaration.parameters.properties['mode'].default == 'default'
 
 
 def test_schema_sanitization_for_complex_union_type():
@@ -390,8 +475,9 @@ def test_format_preservation_for_vertex_fallback():
   class ComplexModel(pydantic.BaseModel):
     # Field with format that would be stripped by Gemini sanitization
     email: str = pydantic.Field(json_schema_extra={'format': 'email'})
-    # Complex field to trigger fallback (tuple is not handled by _parse_schema_from_parameter)
-    complex_field: tuple[str, ...]
+    # Complex field to trigger fallback (Sequence is not handled by
+    # _parse_schema_from_parameter)
+    complex_field: Sequence[str]
 
   def my_tool(param: ComplexModel) -> str:
     return f'ok {param}'
