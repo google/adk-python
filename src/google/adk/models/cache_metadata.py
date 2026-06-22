@@ -48,7 +48,7 @@ class CacheMetadata(BaseModel):
           None when no active cache exists.
       contents_count: Number of contents. When active cache exists, this is
           the count of cached contents. When no active cache exists, this is
-          the total count of contents in the request.
+          the count of the cacheable content prefix used for fingerprinting.
       created_at: Unix timestamp when the cache was created. None when
           no active cache exists.
   """
@@ -87,7 +87,7 @@ class CacheMetadata(BaseModel):
       ge=0,
       description=(
           "Number of contents (cached contents when active cache exists, "
-          "total contents in request when no active cache)"
+          "cacheable content prefix when no active cache)"
       ),
   )
 
