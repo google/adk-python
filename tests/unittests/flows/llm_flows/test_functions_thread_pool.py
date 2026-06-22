@@ -196,6 +196,53 @@ class TestCallToolInThreadPool:
     assert result == {'sum': 42, 'text': 'hello'}
 
   @pytest.mark.asyncio
+  async def test_sync_tool_missing_mandatory_args(self):
+    """Test sync tools return error dict when mandatory args are missing."""
+
+    def sync_func(x: int, y: str) -> dict:
+      return {'sum': x, 'text': y}
+
+    tool = FunctionTool(sync_func)
+    model = testing_utils.MockModel.create(responses=[])
+    agent = Agent(name='test_agent', model=model, tools=[tool])
+    invocation_context = await testing_utils.create_invocation_context(
+        agent=agent, user_content=''
+    )
+    tool_context = ToolContext(
+        invocation_context=invocation_context,
+        function_call_id='test_id',
+    )
+
+    result = await _call_tool_in_thread_pool(tool, {'x': 42}, tool_context)
+
+    assert 'error' in result
+    assert 'mandatory input parameters are not present' in result['error']
+
+  @pytest.mark.asyncio
+  async def test_sync_tool_calling_asyncio_run(self):
+    """Test that sync tools can call asyncio.run internally."""
+
+    def sync_func_with_loop(x: int) -> dict:
+      async def inner_async():
+        return {'result': x * 2}
+
+      return asyncio.run(inner_async())
+
+    tool = FunctionTool(sync_func_with_loop)
+    model = testing_utils.MockModel.create(responses=[])
+    agent = Agent(name='test_agent', model=model, tools=[tool])
+    invocation_context = await testing_utils.create_invocation_context(
+        agent=agent, user_content=''
+    )
+    tool_context = ToolContext(
+        invocation_context=invocation_context,
+        function_call_id='test_id',
+    )
+
+    result = await _call_tool_in_thread_pool(tool, {'x': 21}, tool_context)
+    assert result == {'result': 42}
+
+  @pytest.mark.asyncio
   async def test_async_tool_with_args(self):
     """Test that async tools receive arguments correctly."""
 

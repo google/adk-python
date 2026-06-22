@@ -38,6 +38,7 @@ def _mock_skill1_frontmatter():
   frontmatter.name = "skill1"
   frontmatter.description = "Skill 1 description"
   frontmatter.allowed_tools = ["test_tool"]
+  frontmatter.metadata = {}
   frontmatter.model_dump.return_value = {
       "name": "skill1",
       "description": "Skill 1 description",
@@ -107,6 +108,7 @@ def _mock_skill2_frontmatter():
   frontmatter.name = "skill2"
   frontmatter.description = "Skill 2 description"
   frontmatter.allowed_tools = []
+  frontmatter.metadata = {}
   frontmatter.model_dump.return_value = {
       "name": "skill2",
       "description": "Skill 2 description",
@@ -308,6 +310,74 @@ async def test_load_skill_run_async_state_none(
   tool_context_instance.state.__setitem__.assert_called_with(
       state_key, ["skill1"]
   )
+
+
+@pytest.mark.asyncio
+async def test_load_skill_run_async_injects_state_when_opt_in(
+    mock_skill1, mock_skill1_frontmatter, tool_context_instance
+):
+  mock_skill1.instructions = "Hello {user_name}!"
+  mock_skill1_frontmatter.metadata = {"adk_inject_state": True}
+  toolset = skill_toolset.SkillToolset([mock_skill1])
+  tool = skill_toolset.LoadSkillTool(toolset)
+
+  with mock.patch.object(
+      skill_toolset.instructions_utils,
+      "inject_session_state",
+      autospec=True,
+  ) as mock_inject:
+    mock_inject.return_value = "Hello Alice!"
+    result = await tool.run_async(
+        args={"skill_name": "skill1"}, tool_context=tool_context_instance
+    )
+
+  mock_inject.assert_awaited_once()
+  call_args = mock_inject.await_args
+  assert call_args.args[0] == "Hello {user_name}!"
+  assert result["instructions"] == "Hello Alice!"
+
+
+@pytest.mark.asyncio
+async def test_load_skill_run_async_skips_injection_when_opt_out(
+    mock_skill1, mock_skill1_frontmatter, tool_context_instance
+):
+  mock_skill1.instructions = "Hello {user_name}!"
+  mock_skill1_frontmatter.metadata = {"adk_inject_state": False}
+  toolset = skill_toolset.SkillToolset([mock_skill1])
+  tool = skill_toolset.LoadSkillTool(toolset)
+
+  with mock.patch.object(
+      skill_toolset.instructions_utils,
+      "inject_session_state",
+      autospec=True,
+  ) as mock_inject:
+    result = await tool.run_async(
+        args={"skill_name": "skill1"}, tool_context=tool_context_instance
+    )
+
+  mock_inject.assert_not_called()
+  assert result["instructions"] == "Hello {user_name}!"
+
+
+@pytest.mark.asyncio
+async def test_load_skill_run_async_skips_injection_when_metadata_absent(
+    mock_skill1, tool_context_instance
+):
+  mock_skill1.instructions = "Hello {user_name}!"
+  toolset = skill_toolset.SkillToolset([mock_skill1])
+  tool = skill_toolset.LoadSkillTool(toolset)
+
+  with mock.patch.object(
+      skill_toolset.instructions_utils,
+      "inject_session_state",
+      autospec=True,
+  ) as mock_inject:
+    result = await tool.run_async(
+        args={"skill_name": "skill1"}, tool_context=tool_context_instance
+    )
+
+  mock_inject.assert_not_called()
+  assert result["instructions"] == "Hello {user_name}!"
 
 
 @pytest.mark.asyncio
