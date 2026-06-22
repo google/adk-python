@@ -36,13 +36,13 @@ import logging
 from pathlib import Path
 import time
 
-import httpx
 from dotenv import load_dotenv
 from google.adk.agents.run_config import RunConfig
 from google.adk.cli.utils import logs
 from google.adk.runners import InMemoryRunner
 from google.adk.runners import Runner
 from google.genai import types
+import httpx
 
 from .agent import root_agent
 
@@ -81,9 +81,7 @@ async def call_agent_async(
   if additional_parts:
     parts.extend(additional_parts)
 
-  content = types.Content(
-      role="user", parts=parts
-  )
+  content = types.Content(role="user", parts=parts)
 
   final_response_text = ""
   last_interaction_id = None
@@ -273,7 +271,9 @@ async def test_pdf_summarization(runner: Runner, session_id: str) -> str | None:
   url = "https://storage.googleapis.com/cloud-samples-data/generative-ai/pdf/2403.05530.pdf"
   print(f"Downloading {url}...")
   async with httpx.AsyncClient() as client:
-    response = await client.get(url, headers={'User-Agent': 'Mozilla/5.0'}, follow_redirects=True)
+    response = await client.get(
+        url, headers={"User-Agent": "Mozilla/5.0"}, follow_redirects=True
+    )
     response.raise_for_status()
     pdf_bytes = response.content
 
@@ -288,7 +288,9 @@ async def test_pdf_summarization(runner: Runner, session_id: str) -> str | None:
 
   assert response, "Expected a non-empty response"
   assert len(response) > 0, f"Expected summary in response: {response}"
-  assert "gemini" in response.lower() or "multimodal" in response.lower(), f"Expected summary of PDF in response: {response}"
+  assert (
+      "gemini" in response.lower() or "multimodal" in response.lower()
+  ), f"Expected summary of PDF in response: {response}"
   print("PASSED: PDF Summarization works")
   return interaction_id
 
