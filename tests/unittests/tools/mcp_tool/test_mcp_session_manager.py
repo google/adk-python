@@ -1298,6 +1298,25 @@ class TestRefreshableAsyncCredentials:
 
     assert headers["Authorization"] == "Bearer refreshed_token"
 
+  @pytest.mark.skipif(not AIO_SUPPORTED, reason="google.auth.aio not supported")
+  @pytest.mark.asyncio
+  async def test_before_request_preserves_lowercase_authorization_header(self):
+    """An existing lowercase authorization header prevents token injection."""
+    from google.adk.tools.mcp_tool.mcp_session_manager import _RefreshableAsyncCredentials
+
+    mock_creds = Mock()
+    mock_creds.expired = True
+    mock_creds.token = "service_account_token"
+    mock_creds.refresh = Mock()
+
+    credentials = _RefreshableAsyncCredentials(mock_creds)
+    headers = {"authorization": "Bearer user_token"}
+
+    await credentials.before_request(None, "GET", "http://example.com", headers)
+
+    assert headers == {"authorization": "Bearer user_token"}
+    mock_creds.refresh.assert_not_called()
+
 
 class TestGoogleAuthAsyncByteStream:
 

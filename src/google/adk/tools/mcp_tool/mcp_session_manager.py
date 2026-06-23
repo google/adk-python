@@ -261,7 +261,7 @@ class _RefreshableAsyncCredentials(AsyncCredentials):
         )
         return
 
-    if 'Authorization' in headers:
+    if any(key.lower() == 'authorization' for key in headers):
       logger.debug('Authorization header already present, not overwriting')
       return
 
