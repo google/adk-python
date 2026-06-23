@@ -808,3 +808,11 @@ class TestSubstringFallbackUniquenessGuard:
         judge_property_text="Uses tools",
     )
     assert len(result.rubric_scores) == 0
+
+  def test_empty_property_text_does_not_match(self):
+    """Empty judge Property: line must not match via substring fallback."""
+    result = self._build_evaluator_and_score(
+        rubric_texts=["Uses tools correctly"],
+        judge_property_text="",
+    )
+    assert len(result.rubric_scores) == 0

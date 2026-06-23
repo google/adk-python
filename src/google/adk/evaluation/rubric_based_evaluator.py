@@ -431,14 +431,19 @@ class RubricBasedEvaluator(LlmAsJudge):
       normalized_rubric_text = _normalize_text(rubric_response.property_text)
       rubric = normalized_rubric_to_rubric_map.get(normalized_rubric_text, None)
 
-      if not rubric:
+      if not rubric and normalized_rubric_text:
         candidates = [
             r
             for ct, r in normalized_rubric_to_rubric_map.items()
-            if ct in normalized_rubric_text or normalized_rubric_text in ct
+            if ct and (ct in normalized_rubric_text or normalized_rubric_text in ct)
         ]
         if len(candidates) == 1:
           rubric = candidates[0]
+          logger.debug(
+              "Rubric substring fallback: '%s' → '%s'",
+              rubric_response.property_text[:60],
+              rubric.rubric_id,
+          )
 
       if rubric:
         rubric_scores.append(
