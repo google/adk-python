@@ -79,6 +79,27 @@ def _get_input_schema(agent: BaseAgent) -> Optional[type[BaseModel]]:
   return None
 
 
+def _ensure_load_artifacts_tool(agent: BaseAgent) -> None:
+  """Recursively attaches `load_artifacts_tool` to `agent` and its sub-agents.
+
+  Only `LlmAgent` instances can hold tools, so non-LLM agents (e.g.
+  `ParallelAgent`, `SequentialAgent`) are skipped but their sub-agents are
+  still visited. This is a no-op if the tool is already present, so it is
+  safe to call on every `AgentTool.run_async()`.
+  """
+  from ..agents.llm_agent import LlmAgent
+  from .load_artifacts_tool import load_artifacts_tool
+
+  if isinstance(agent, LlmAgent) and not any(
+      getattr(tool, 'name', None) == load_artifacts_tool.name
+      for tool in agent.tools
+  ):
+    agent.tools.append(load_artifacts_tool)
+
+  for sub_agent in agent.sub_agents:
+    _ensure_load_artifacts_tool(sub_agent)
+
+
 def _get_output_schema(agent: BaseAgent) -> Optional[SchemaType]:
   """Extracts the output_schema from an agent.
 
@@ -118,6 +139,14 @@ class AgentTool(BaseTool):
       to the agent's runner. When True (default), the agent will inherit all
       plugins from its parent. Set to False to run the agent with an isolated
       plugin environment.
+    include_load_artifacts_tool: Whether to automatically attach the
+      `load_artifacts` tool to the wrapped agent and all of its sub-agents
+      (recursively). Artifacts saved by the parent agent are always
+      forwarded to sub-agents via `ForwardingArtifactService`, but the
+      bytes are only injected into an LLM agent's request when it calls
+      `load_artifacts`. Defaults to False to avoid sending large payloads
+      on every turn; set to True so sub-agents can see artifacts without
+      having to add the tool to each agent manually.
   """
 
   def __init__(
@@ -127,11 +156,13 @@ class AgentTool(BaseTool):
       *,
       include_plugins: bool = True,
       propagate_grounding_metadata: bool = False,
+      include_load_artifacts_tool: bool = False,
   ):
     self.agent = agent
     self.skip_summarization: bool = skip_summarization
     self.include_plugins = include_plugins
     self.propagate_grounding_metadata = propagate_grounding_metadata
+    self.include_load_artifacts_tool = include_load_artifacts_tool
 
     super().__init__(name=agent.name, description=agent.description)
 
@@ -213,6 +244,9 @@ class AgentTool(BaseTool):
 
     if self.skip_summarization:
       tool_context.actions.skip_summarization = True
+
+    if self.include_load_artifacts_tool:
+      _ensure_load_artifacts_tool(self.agent)
 
     input_schema = _get_input_schema(self.agent)
     if input_schema:

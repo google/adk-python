@@ -21,6 +21,7 @@ from google.adk.agents.base_agent import BaseAgent
 from google.adk.agents.callback_context import CallbackContext
 from google.adk.agents.invocation_context import InvocationContext
 from google.adk.agents.llm_agent import Agent
+from google.adk.agents.parallel_agent import ParallelAgent
 from google.adk.agents.run_config import RunConfig
 from google.adk.agents.sequential_agent import SequentialAgent
 from google.adk.artifacts.in_memory_artifact_service import InMemoryArtifactService
@@ -35,6 +36,7 @@ from google.adk.plugins.plugin_manager import PluginManager
 from google.adk.runners import Runner
 from google.adk.sessions.in_memory_session_service import InMemorySessionService
 from google.adk.tools.agent_tool import AgentTool
+from google.adk.tools.load_artifacts_tool import load_artifacts_tool
 from google.adk.tools.tool_context import ToolContext
 from google.adk.utils.variant_utils import GoogleLLMVariant
 from google.genai import types
@@ -1146,6 +1148,97 @@ async def test_run_async_skips_thought_parts():
       ),
   ])
   assert result == '42'
+
+
+def test_include_load_artifacts_tool_default_false():
+  """By default, load_artifacts is not added to the wrapped agent."""
+  mock_model = testing_utils.MockModel.create(
+      responses=[function_call_no_schema, 'response1', 'response2']
+  )
+  tool_agent = Agent(name='tool_agent', model=mock_model)
+  root_agent = Agent(
+      name='root_agent',
+      model=mock_model,
+      tools=[AgentTool(agent=tool_agent)],
+  )
+
+  runner = testing_utils.InMemoryRunner(root_agent)
+  runner.run('test1')
+
+  assert all(tool.name != 'load_artifacts' for tool in tool_agent.tools)
+
+
+def test_include_load_artifacts_tool_true_adds_to_wrapped_agent():
+  """When enabled, load_artifacts is attached to the wrapped LlmAgent."""
+  mock_model = testing_utils.MockModel.create(
+      responses=[function_call_no_schema, 'response1', 'response2']
+  )
+  tool_agent = Agent(name='tool_agent', model=mock_model)
+  root_agent = Agent(
+      name='root_agent',
+      model=mock_model,
+      tools=[AgentTool(agent=tool_agent, include_load_artifacts_tool=True)],
+  )
+
+  runner = testing_utils.InMemoryRunner(root_agent)
+  runner.run('test1')
+
+  assert any(tool.name == 'load_artifacts' for tool in tool_agent.tools)
+
+
+def test_include_load_artifacts_tool_true_adds_to_sub_agents_recursively():
+  """When enabled, load_artifacts is attached to sub-agents of a composite
+  wrapped agent (e.g. ParallelAgent), not just the top-level agent.
+  """
+  sub_agent_1 = Agent(
+      name='sub_agent_1',
+      model=testing_utils.MockModel.create(responses=['sub_response_1']),
+  )
+  sub_agent_2 = Agent(
+      name='sub_agent_2',
+      model=testing_utils.MockModel.create(responses=['sub_response_2']),
+  )
+  parallel_agent = ParallelAgent(
+      name='parallel_tool_agent', sub_agents=[sub_agent_1, sub_agent_2]
+  )
+
+  function_call_for_parallel = Part.from_function_call(
+      name='parallel_tool_agent', args={'request': 'test1'}
+  )
+  mock_model_root = testing_utils.MockModel.create(
+      responses=[function_call_for_parallel, 'response2']
+  )
+  root_agent = Agent(
+      name='root_agent',
+      model=mock_model_root,
+      tools=[AgentTool(agent=parallel_agent, include_load_artifacts_tool=True)],
+  )
+
+  runner = testing_utils.InMemoryRunner(root_agent)
+  runner.run('test1')
+
+  assert any(tool.name == 'load_artifacts' for tool in sub_agent_1.tools)
+  assert any(tool.name == 'load_artifacts' for tool in sub_agent_2.tools)
+
+
+def test_include_load_artifacts_tool_does_not_duplicate_existing_tool():
+  """If the wrapped agent already has load_artifacts, it is not duplicated."""
+  mock_model = testing_utils.MockModel.create(
+      responses=[function_call_no_schema, 'response1', 'response2']
+  )
+  tool_agent = Agent(
+      name='tool_agent', model=mock_model, tools=[load_artifacts_tool]
+  )
+  root_agent = Agent(
+      name='root_agent',
+      model=mock_model,
+      tools=[AgentTool(agent=tool_agent, include_load_artifacts_tool=True)],
+  )
+
+  runner = testing_utils.InMemoryRunner(root_agent)
+  runner.run('test1')
+
+  assert sum(tool.name == 'load_artifacts' for tool in tool_agent.tools) == 1
 
 
 class TestAgentToolWithCompositeAgents:
