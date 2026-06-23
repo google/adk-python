@@ -2413,6 +2413,16 @@ class LiteLlm(BaseLlm):
       usage_metadata = None
       grounding_metadata = None
       fallback_index = 0
+      # Track the latest finish_reason + model so we can surface an
+      # explicit error event when the stream completes with neither text
+      # nor tool calls (silent-empty pattern). Without this guard the
+      # aggregator simply yields nothing and the downstream Runner sees
+      # zero events — the user-visible "empty turn that succeeded" bug
+      # tracked across #5394 / #5006 / #3618 / user reports against
+      # anthropic, gemini, and other providers under content_filter,
+      # safety, model_not_found, and 0-token-completion conditions.
+      last_finish_reason: str | None = None
+      last_model_version: str | None = None
 
       def _finalize_tool_call_response(
           *, model_version: str, finish_reason: str
@@ -2502,7 +2512,11 @@ class LiteLlm(BaseLlm):
         part_grounding = _extract_grounding_metadata(part)
         if part_grounding:
           grounding_metadata = part_grounding
+        if getattr(part, "model", None):
+          last_model_version = part.model
         for chunk, finish_reason in _model_response_to_chunk(part):
+          if finish_reason:
+            last_finish_reason = finish_reason
           if isinstance(chunk, FunctionChunk):
             index = chunk.index or fallback_index
             if index not in function_calls:
@@ -2615,6 +2629,41 @@ class LiteLlm(BaseLlm):
               grounding_metadata
           )
         yield aggregated_llm_response_with_tool_call
+
+      # If we observed a finish_reason but produced no aggregated response
+      # (no text, no tool calls), surface it as an explicit error event so
+      # downstream consumers see actionable signal instead of a silent
+      # zero-yield stream. This is the "empty completion" pattern:
+      # provider returns 200 OK with a finish_reason (content_filter,
+      # safety, length-without-content, model_not_found, 0-token
+      # response, ...) but no text or tool deltas. Tracked across:
+      #   #5394 — AnthropicLlm never populates finish_reason
+      #   #5006 — retry with resume message when model returns empty
+      #   #5636 — surface error when model returns STOP with empty content
+      #   #3618 — Handle empty message in LiteLLM response
+      # Multiple stalled PRs (#5512, #5636, #3699) attempted variants of
+      # this fix. This guard keeps the change minimal: ONLY fires when
+      # the entire stream produced nothing meaningful AND the provider
+      # told us why via finish_reason. Mapped error_code lets the
+      # downstream agent loop react (retry, surface, escalate) without
+      # losing the provider's actual signal.
+      if (
+          last_finish_reason
+          and aggregated_llm_response is None
+          and aggregated_llm_response_with_tool_call is None
+      ):
+        mapped_empty_finish = _map_finish_reason(last_finish_reason)
+        empty_response = LlmResponse(
+            error_code=mapped_empty_finish,
+            error_message=_finish_reason_to_error_message(mapped_empty_finish),
+            finish_reason=mapped_empty_finish,
+            model_version=last_model_version,
+        )
+        if usage_metadata:
+          empty_response.usage_metadata = usage_metadata
+        if grounding_metadata:
+          empty_response.grounding_metadata = grounding_metadata
+        yield empty_response
 
     else:
       response = await self.llm_client.acompletion(**completion_args)
