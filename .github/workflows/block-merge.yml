@@ -12,35 +12,18 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-name: Mypy Type Check
+name: Do Not Merge on GitHub
 
 on:
-  workflow_dispatch:
-
-permissions:
-  contents: read
+  pull_request:
+    types: [opened, reopened, synchronize]
 
 jobs:
-  mypy:
+  block-merge:
+    name: maintainers will submit via Copybara
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        python-version: ['3.10', '3.11', '3.12', '3.13',]
-
     steps:
-      - uses: actions/checkout@v6
-
-      - name: Install uv
-        uses: astral-sh/setup-uv@v7
-
-      - name: Set up Python
-        uses: actions/setup-python@v6
-        with:
-          python-version: ${{ matrix.python-version }}
-
-      - name: Install dependencies
-        run: uv sync --all-extras
-
-      - name: Run mypy
-
-        run: uv run mypy . --strict
+      - name: Explain why merging is blocked
+        run: |
+          echo "::error title=GitHub merge is disabled::Do NOT merge this pull request on GitHub. A maintainer will land the change internally, and Copybara will sync it back to this repository automatically."
+          exit 1
