@@ -33,6 +33,7 @@ from google.genai.interactions import ImageContent
 from google.genai.interactions import Interaction
 from google.genai.interactions import InteractionCompletedEvent
 from google.genai.interactions import InteractionCreatedEvent
+from google.genai.interactions import InteractionSseEventInteraction
 from google.genai.interactions import ModelOutputStep
 from google.genai.interactions import StepDelta
 from google.genai.interactions import StepStart
@@ -110,9 +111,9 @@ def fc_step() -> FunctionCallStep:
 
 def _build_lifecycle_streamed_events(fc_step: FunctionCallStep) -> list[object]:
   """Build streamed events with lifecycle updates carrying the ID."""
-  now = datetime.now(timezone.utc)
+  now = datetime.now(timezone.utc).isoformat()
 
-  interaction = Interaction(
+  interaction = InteractionSseEventInteraction(
       id='interaction_123',
       created=now,
       updated=now,
@@ -134,9 +135,9 @@ def _build_lifecycle_streamed_events(fc_step: FunctionCallStep) -> list[object]:
 
 def _build_complete_streamed_events(fc_step: FunctionCallStep) -> list[object]:
   """Build streamed events with the ID on an interaction.complete event."""
-  now = datetime.now(timezone.utc)
+  now = datetime.now(timezone.utc).isoformat()
 
-  interaction = Interaction(
+  interaction = InteractionSseEventInteraction(
       id='interaction_complete_123',
       created=now,
       updated=now,
@@ -154,7 +155,7 @@ def _build_complete_streamed_events(fc_step: FunctionCallStep) -> list[object]:
 
 def _build_legacy_streamed_events(fc_step: FunctionCallStep) -> list[object]:
   """Build streamed events with the ID on the legacy interaction event."""
-  now = datetime.now(timezone.utc)
+  now = datetime.now(timezone.utc).isoformat()
 
   interaction = Interaction(
       id='interaction_legacy_123',
@@ -246,8 +247,8 @@ class TestConvertPartToInteractionContent:
     assert result['id'] == ''
     assert result['name'] == 'get_weather'
 
-  def test_function_call_part_with_thought_signature(self):
-    """Test converting a function call Part with thought_signature."""
+  def test_function_call_part_thought_signature_dropped(self):
+    """Thought signatures are not sent on interactions function call steps."""
     part = types.Part(
         function_call=types.FunctionCall(
             id='call_456',
@@ -257,14 +258,13 @@ class TestConvertPartToInteractionContent:
         thought_signature=b'test_signature_bytes',
     )
     result = interactions_utils._convert_part_to_interaction_content(part)
-    assert result['type'] == 'function_call'
-    assert result['id'] == 'call_456'
-    assert result['name'] == 'my_tool'
-    assert result['arguments'] == {'doc': 'content'}
-    # signature should be base64 encoded
-    assert 'signature' in result
-
-    assert base64.b64decode(result['signature']) == b'test_signature_bytes'
+    assert result == {
+        'type': 'function_call',
+        'id': 'call_456',
+        'name': 'my_tool',
+        'arguments': {'doc': 'content'},
+    }
+    assert 'signature' not in result
 
   def test_function_call_part_without_thought_signature(self):
     """Test converting a function call Part without thought_signature."""
@@ -765,23 +765,6 @@ class TestConvertInteractionOutputToParts:
     assert result.function_call.name == 'get_weather'
     assert result.function_call.args == {'city': 'London'}
 
-  def test_function_call_output_with_thought_signature(self):
-    """Test converting function call output with thought_signature."""
-    output = FunctionCallStep(
-        type='function_call',
-        id='call_sig_123',
-        name='gemini3_tool',
-        arguments={'content': 'hello'},
-        signature=base64.b64encode(b'gemini3_signature').decode('utf-8'),
-    )
-    result_list = interactions_utils._convert_interaction_step_to_parts(output)
-    result = result_list[0] if result_list else None
-    assert result.function_call.id == 'call_sig_123'
-    assert result.function_call.name == 'gemini3_tool'
-    assert result.function_call.args == {'content': 'hello'}
-    # thought_signature should be decoded back to bytes
-    assert result.thought_signature == b'gemini3_signature'
-
   def test_function_call_output_without_thought_signature(self):
     """Test converting function call output without thought_signature."""
     output = FunctionCallStep(
@@ -808,6 +791,41 @@ class TestConvertInteractionOutputToParts:
     result = result_list[0] if result_list else None
     assert result.function_response.id == 'call_123'
     assert result.function_response.response == {'weather': 'Sunny'}
+
+  def test_function_result_output_preserves_none_values(self):
+    """None values in a dict result must not be dropped."""
+    output = FunctionResultStep(
+        type='function_result',
+        call_id='call_none',
+        result={'data': None, 'ok': True},
+    )
+    result_list = interactions_utils._convert_interaction_step_to_parts(output)
+    result = result_list[0] if result_list else None
+    assert result.function_response.response == {'data': None, 'ok': True}
+
+  def test_function_result_output_string(self):
+    """A plain string result is wrapped under a 'result' key."""
+    output = FunctionResultStep(
+        type='function_result',
+        call_id='call_str',
+        result='plain text',
+    )
+    result_list = interactions_utils._convert_interaction_step_to_parts(output)
+    result = result_list[0] if result_list else None
+    assert result.function_response.response == {'result': 'plain text'}
+
+  def test_function_result_output_list(self):
+    """A list result of content blocks is wrapped under a 'result' key."""
+    output = FunctionResultStep(
+        type='function_result',
+        call_id='call_list',
+        result=[{'type': 'text', 'text': 'hi'}],
+    )
+    result_list = interactions_utils._convert_interaction_step_to_parts(output)
+    result = result_list[0] if result_list else None
+    wrapped = result.function_response.response['result']
+    assert wrapped[0]['type'] == 'text'
+    assert wrapped[0]['text'] == 'hi'
 
   def test_image_output_with_data(self):
     """Test converting image output with inline data."""
@@ -909,8 +927,8 @@ class TestConvertInteractionToLlmResponse:
     interaction = Interaction(
         id='interaction_123',
         status='completed',
-        created=datetime.now(timezone.utc),
-        updated=datetime.now(timezone.utc),
+        created=datetime.now(timezone.utc).isoformat(),
+        updated=datetime.now(timezone.utc).isoformat(),
         steps=[
             ModelOutputStep(
                 type='model_output',
@@ -933,8 +951,8 @@ class TestConvertInteractionToLlmResponse:
     interaction = Interaction(
         id='interaction_123',
         status='failed',
-        created=datetime.now(timezone.utc),
-        updated=datetime.now(timezone.utc),
+        created=datetime.now(timezone.utc).isoformat(),
+        updated=datetime.now(timezone.utc).isoformat(),
         steps=[],
     )
     interaction.error = MagicMock(code='INVALID_REQUEST', message='Bad request')
@@ -950,8 +968,8 @@ class TestConvertInteractionToLlmResponse:
     interaction = Interaction(
         id='interaction_123',
         status='requires_action',
-        created=datetime.now(timezone.utc),
-        updated=datetime.now(timezone.utc),
+        created=datetime.now(timezone.utc).isoformat(),
+        updated=datetime.now(timezone.utc).isoformat(),
         steps=[
             FunctionCallStep(
                 type='function_call',
@@ -1204,6 +1222,23 @@ class TestConvertInteractionEventToLlmResponse:
 
     assert result is None
     assert not aggregated_parts
+
+  def test_completed_event_failed_partial_interaction(self):
+    """A failed lifecycle event with a partial interaction does not crash."""
+    event = InteractionCompletedEvent(
+        event_type='interaction.completed',
+        interaction=InteractionSseEventInteraction(
+            id='int_failed',
+            status='failed',
+            steps=[],
+        ),
+    )
+    result = interactions_utils.convert_interaction_event_to_llm_response(
+        event, aggregated_parts=[], interaction_id='int_failed'
+    )
+    assert result is not None
+    assert result.error_code == 'UNKNOWN_ERROR'
+    assert result.interaction_id == 'int_failed'
 
   def test_function_call_streaming_flow(self):
     """Test the complete streaming flow for function calls (Start, Delta, Stop)."""

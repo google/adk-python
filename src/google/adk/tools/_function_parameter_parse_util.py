@@ -21,6 +21,7 @@ import logging
 import types as typing_types
 from typing import _GenericAlias
 from typing import Any
+from typing import cast
 from typing import get_args
 from typing import get_origin
 from typing import Literal
@@ -93,6 +94,50 @@ def _add_unevaluated_items_to_fixed_len_tuple_schema(
   return json_schema
 
 
+def _normalize_tuple_schema_for_genai_schema(
+    json_schema: Any,
+) -> Any:
+  """Normalizes tuple schema keywords unsupported by `types.Schema`.
+
+  Pydantic emits `prefixItems` for fixed-length tuples. `types.Schema` does not
+  support `prefixItems`, so we convert tuple item definitions into
+  `items.anyOf`. We also drop `unevaluatedItems`, which is unsupported by
+  `types.Schema`.
+
+  Args:
+    json_schema: The JSON schema to normalize.
+
+  Returns:
+    The normalized JSON schema.
+  """
+  if isinstance(json_schema, list):
+    return [
+        _normalize_tuple_schema_for_genai_schema(item) for item in json_schema
+    ]
+  if not isinstance(json_schema, dict):
+    return json_schema
+
+  normalized_schema = {
+      key: _normalize_tuple_schema_for_genai_schema(value)
+      for key, value in json_schema.items()
+      if key != 'unevaluatedItems'
+  }
+
+  prefix_items = normalized_schema.pop('prefixItems', None)
+  if isinstance(prefix_items, list):
+    if len(prefix_items) == 1:
+      normalized_schema['items'] = prefix_items[0]
+    elif prefix_items:
+      normalized_schema['items'] = {'anyOf': prefix_items}
+
+  # Pydantic can emit `items: false` for tuple schemas, which is unsupported by
+  # `types.Schema`.
+  if normalized_schema.get('items') is False:  # pylint: disable=g-bool-id-comparison
+    normalized_schema.pop('items')
+
+  return normalized_schema
+
+
 def _raise_for_unsupported_param(
     param: inspect.Parameter,
     func_name: str,
@@ -136,7 +181,10 @@ def _generate_json_schema_for_parameter(
   json_schema_dict = _add_unevaluated_items_to_fixed_len_tuple_schema(
       json_schema_dict
   )
-  return json_schema_dict
+  return cast(
+      dict[str, Any],
+      _normalize_tuple_schema_for_genai_schema(json_schema_dict),
+  )
 
 
 def _is_builtin_primitive_or_compound(
