@@ -1080,11 +1080,26 @@ class SkillToolset(BaseToolset):
     # Collect all candidate tools from both individual tools and toolsets
     candidate_tools = self._provided_tools_by_name.copy()
     if self._provided_toolsets:
-      ts_results = await asyncio.gather(*(
-          ts.get_tools_with_prefix(readonly_context)
-          for ts in self._provided_toolsets
-      ))
-      for ts_tools in ts_results:
+      # Isolate per-toolset failures: a single toolset that raises while listing
+      # its tools (e.g. an unreachable MCP server) must not abort resolution of
+      # the remaining toolsets and individual tools.
+      ts_results = await asyncio.gather(
+          *(
+              ts.get_tools_with_prefix(readonly_context)
+              for ts in self._provided_toolsets
+          ),
+          return_exceptions=True,
+      )
+      for toolset, ts_tools in zip(self._provided_toolsets, ts_results):
+        if isinstance(ts_tools, asyncio.CancelledError):
+          raise ts_tools
+        if isinstance(ts_tools, BaseException):
+          logger.warning(
+              "Skipping toolset %s while resolving skill additional tools: %s",
+              type(toolset).__name__,
+              ts_tools,
+          )
+          continue
         for t in ts_tools:
           candidate_tools[t.name] = t
 
