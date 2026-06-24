@@ -541,18 +541,36 @@ class VertexAiMemoryBankService(BaseMemoryService):
     logger.info('Search memory response received.')
 
     memory_events: list[MemoryEntry] = []
-    async for retrieved_memory in retrieved_memories_iterator:
-      # TODO: add more complex error handling
-      logger.debug('Retrieved memory: %s', retrieved_memory)
-      memory_events.append(
-          MemoryEntry(
-              author='user',
-              content=types.Content(
-                  parts=[types.Part(text=retrieved_memory.memory.fact)],
-                  role='user',
-              ),
-              timestamp=retrieved_memory.memory.update_time.isoformat(),
+    try:
+      async for retrieved_memory in retrieved_memories_iterator:
+        try:
+          memory = retrieved_memory.memory
+          if memory is None:
+            logger.warning('Skipping memory entry with missing memory object.')
+            continue
+          fact = memory.fact
+          if not fact:
+            logger.warning('Skipping memory entry with empty or missing fact.')
+            continue
+          update_time = memory.update_time
+          memory_events.append(
+              MemoryEntry(
+                  author='user',
+                  content=types.Content(
+                      parts=[types.Part(text=fact)],
+                      role='user',
+                  ),
+                  timestamp=update_time.isoformat() if update_time else None,
+              )
           )
+        except AttributeError:
+          logger.warning(
+              'Skipping malformed memory entry: %s', retrieved_memory
+          )
+    except Exception:
+      logger.exception(
+          'Error while iterating memory results. Returning %d partial results.',
+          len(memory_events),
       )
     return SearchMemoryResponse(memories=memory_events)
 
