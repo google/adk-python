@@ -274,7 +274,7 @@ class LocalEvalService(BaseEvalService):
     user_id = (
         eval_case.session_input.user_id
         if eval_case.session_input and eval_case.session_input.user_id
-        else 'test_user_id'
+        else 'user'
     )
 
     if inference_result.inferences is None:

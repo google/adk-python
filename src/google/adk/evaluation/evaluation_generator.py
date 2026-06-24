@@ -564,7 +564,7 @@ class EvaluationGenerator:
     app_name = (
         initial_session.app_name if initial_session else "EvaluationGenerator"
     )
-    user_id = initial_session.user_id if initial_session else "test_user_id"
+    user_id = initial_session.user_id if initial_session else "user"
     session_id = session_id if session_id else str(uuid.uuid4())
 
     _ = await session_service.create_session(
