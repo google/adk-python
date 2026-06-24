@@ -236,7 +236,7 @@ def list_untriaged_pull_requests(pr_count: int) -> dict[str, Any]:
   query = f"repo:{OWNER}/{REPO} is:open is:pr"
   params = {
       "q": query,
-      "sort": "created",
+      "sort": "updated",
       "order": "desc",
       "per_page": 100,
       "page": 1,
