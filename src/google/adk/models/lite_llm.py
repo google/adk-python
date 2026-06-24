@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+import ast
 import base64
 import binascii
 import copy
@@ -98,6 +99,7 @@ _NEW_LINE = "\n"
 _EXCLUDED_PART_FIELD = {"inline_data": {"data"}}
 _LITELLM_STRUCTURED_TYPES = {"json_object", "json_schema"}
 _JSON_DECODER = json.JSONDecoder()
+_UNQUOTED_KEY_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 
 # Mapping of major MIME type prefixes to LiteLLM content types for URL blocks.
 # Audio is handled separately as `input_audio` content blocks because LiteLLM
@@ -121,6 +123,100 @@ _FINISH_REASON_MAPPING = {
     "function_call": types.FinishReason.STOP,  # Legacy function call variant
     "content_filter": types.FinishReason.SAFETY,
 }
+
+
+def _quote_unquoted_json_object_keys(value: str) -> str:
+  """Quotes simple unquoted object keys without touching string contents."""
+  result = []
+  i = 0
+  in_string = False
+  string_quote = ""
+  escaped = False
+
+  while i < len(value):
+    char = value[i]
+    if in_string:
+      result.append(char)
+      if escaped:
+        escaped = False
+      elif char == "\\":
+        escaped = True
+      elif char == string_quote:
+        in_string = False
+        string_quote = ""
+      i += 1
+      continue
+
+    if char in {'"', "'"}:
+      in_string = True
+      string_quote = char
+      result.append(char)
+      i += 1
+      continue
+
+    if char in "{,":
+      result.append(char)
+      i += 1
+      whitespace_start = i
+      while i < len(value) and value[i].isspace():
+        i += 1
+      result.append(value[whitespace_start:i])
+
+      key_match = _UNQUOTED_KEY_RE.match(value, i)
+      if key_match:
+        key_end = key_match.end()
+        colon_index = key_end
+        while colon_index < len(value) and value[colon_index].isspace():
+          colon_index += 1
+        if colon_index < len(value) and value[colon_index] == ":":
+          result.append(f'"{key_match.group(0)}"')
+          result.append(value[key_end:colon_index])
+          i = colon_index
+          continue
+      continue
+
+    result.append(char)
+    i += 1
+
+  return "".join(result)
+
+
+def _parse_tool_call_arguments(arguments: Any) -> Any:
+  """Parses LiteLLM tool call arguments.
+
+  LiteLLM normally returns OpenAI-compatible tool call arguments as JSON
+  strings, but some providers can stream a complete tool call whose finalized
+  argument payload is a Python dict literal or has unquoted object keys. Keep
+  strict JSON as the primary path, then repair only those complete
+  object-literal shapes so ADK can still surface the intended function call.
+  """
+  if not arguments:
+    return {}
+  if not isinstance(arguments, str):
+    return arguments
+
+  try:
+    return json.loads(arguments)
+  except json.JSONDecodeError as exc:
+    json_error = exc
+
+  try:
+    return ast.literal_eval(arguments)
+  except (SyntaxError, ValueError):
+    pass
+
+  repaired_arguments = _quote_unquoted_json_object_keys(arguments)
+  if repaired_arguments != arguments:
+    try:
+      return json.loads(repaired_arguments)
+    except json.JSONDecodeError:
+      try:
+        return ast.literal_eval(repaired_arguments)
+      except (SyntaxError, ValueError):
+        pass
+
+  raise json_error
+
 
 # File MIME types supported for upload as file content (not decoded as text).
 # Note: text/* types are handled separately and decoded as text content.
@@ -281,7 +377,7 @@ def _infer_mime_type_from_uri(uri: str) -> Optional[str]:
 
 def _looks_like_openai_file_id(file_uri: str) -> bool:
   """Returns True when file_uri resembles an OpenAI/Azure file id."""
-  return file_uri.startswith("file-")
+  return file_uri.startswith(("file-", "assistant-"))
 
 
 def _is_http_url(uri: str) -> bool:
@@ -299,8 +395,11 @@ def _redact_file_uri_for_log(
   """Returns a privacy-preserving identifier for logs."""
   if display_name:
     return display_name
+  if file_uri.startswith("assistant-"):
+    return "assistant-<redacted>"
   if _looks_like_openai_file_id(file_uri):
-    return "file-<redacted>"
+    prefix = file_uri.split("-", 1)[0]
+    return f"{prefix}-<redacted>"
   try:
     parsed = urlparse(file_uri)
   except ValueError:
@@ -314,17 +413,15 @@ def _redact_file_uri_for_log(
   return f"{parsed.scheme}://<redacted>"
 
 
-def _requires_file_uri_fallback(
-    provider: str, model: str, file_uri: str
-) -> bool:
-  """Returns True when `file_uri` should not be sent as a file content block."""
+def _is_file_uri_supported(provider: str, model: str, file_uri: str) -> bool:
+  """Returns True when `file_uri` can be sent as a file content block."""
   if provider in _FILE_ID_REQUIRED_PROVIDERS:
-    return not _looks_like_openai_file_id(file_uri)
+    return _looks_like_openai_file_id(file_uri)
   if provider == "anthropic":
-    return True
+    return False
   if provider == "vertex_ai" and not _is_litellm_gemini_model(model):
-    return True
-  return False
+    return False
+  return True
 
 
 def _decode_inline_text_data(raw_bytes: bytes) -> str:
@@ -398,15 +495,17 @@ def _iter_reasoning_texts(reasoning_value: Any) -> Iterable[str]:
 
 
 def _is_thinking_blocks_format(reasoning_value: Any) -> bool:
-  """Returns True if reasoning_value is Anthropic thinking_blocks format.
+  """Returns True if reasoning_value is thinking_blocks format.
 
-  Anthropic thinking_blocks is a list of dicts, each with 'type', 'thinking',
-  and 'signature' keys.
+  Anthropic blocks carry a 'signature'; Gemini blocks carry 'thinking'/'type'
+  without one. Match either so Gemini thought text is not dropped.
   """
   if not isinstance(reasoning_value, list) or not reasoning_value:
     return False
   first = reasoning_value[0]
-  return isinstance(first, dict) and "signature" in first
+  return isinstance(first, dict) and (
+      "thinking" in first or "signature" in first
+  )
 
 
 def _convert_reasoning_value_to_parts(reasoning_value: Any) -> List[types.Part]:
@@ -426,7 +525,7 @@ def _convert_reasoning_value_to_parts(reasoning_value: Any) -> List[types.Part]:
         continue
       thinking_text = block.get("thinking", "")
       signature = block.get("signature", "")
-      if not thinking_text:
+      if not thinking_text and not signature:
         continue
       part = types.Part(text=thinking_text, thought=True)
       if signature:
@@ -556,7 +655,7 @@ def _safe_json_serialize(obj) -> str:
   try:
     # Try direct JSON serialization first
     return json.dumps(obj, ensure_ascii=False)
-  except (TypeError, ValueError, OverflowError):
+  except (TypeError, ValueError, OverflowError, RecursionError):
     return str(obj)
 
 
@@ -1144,21 +1243,15 @@ async def _get_content(
           })
           continue
 
-      if _requires_file_uri_fallback(provider, model, part.file_data.file_uri):
-        logger.debug(
-            "File URI %s not supported for provider %s, using text fallback",
-            _redact_file_uri_for_log(
-                part.file_data.file_uri,
-                display_name=part.file_data.display_name,
-            ),
-            provider,
+      if not _is_file_uri_supported(provider, model, part.file_data.file_uri):
+        redacted_file_uri = _redact_file_uri_for_log(
+            part.file_data.file_uri,
+            display_name=part.file_data.display_name,
         )
-        identifier = part.file_data.display_name or part.file_data.file_uri
-        content_objects.append({
-            "type": "text",
-            "text": f'[File reference: "{identifier}"]',
-        })
-        continue
+        raise ValueError(
+            f"File URI `{redacted_file_uri}` not supported for provider:"
+            f" {provider}."
+        )
 
       file_object: ChatCompletionFileUrlObject = {
           "file_id": part.file_data.file_uri,
@@ -1186,14 +1279,19 @@ def _is_ollama_chat_provider(
   return False
 
 
+_MEDIA_BLOCK_TYPES = frozenset({"image_url", "video_url", "audio_url"})
+
+
 def _flatten_ollama_content(
     content: OpenAIMessageContent | str | None,
-) -> str | None:
+) -> OpenAIMessageContent | str | None:
   """Flattens multipart content to text for ollama_chat compatibility.
 
-  Ollama's chat endpoint rejects arrays for `content`. We keep textual parts,
-  join them with newlines, and fall back to a JSON string for non-text content.
-  If both text and non-text parts are present, only the text parts are kept.
+  Ollama's chat endpoint rejects arrays for `content` when it is text-only, so
+  text parts are joined with newlines and other non-media content falls back to
+  a JSON string. Multipart content with media blocks (image_url, video_url,
+  audio_url) is returned unchanged so LiteLLM's Ollama handler can convert it
+  to the native `images` field instead of silently dropping the media.
   """
   if content is None or isinstance(content, str):
     return content
@@ -1210,6 +1308,12 @@ def _flatten_ollama_content(
     blocks = list(content)
   except TypeError:
     return str(content)
+
+  if any(
+      isinstance(block, dict) and block.get("type") in _MEDIA_BLOCK_TYPES
+      for block in blocks
+  ):
+    return blocks
 
   text_parts = []
   for block in blocks:
@@ -1637,6 +1741,38 @@ def _model_response_to_chunk(
       ) from e
 
 
+def _extract_grounding_metadata(
+    response: ModelResponse | ModelResponseStream,
+) -> types.GroundingMetadata | None:
+  """Pulls Gemini grounding metadata off a LiteLLM response or stream chunk.
+
+  LiteLLM exposes Gemini's grounding metadata on the response/chunk object
+  rather than inside the message, so the native Gemini path
+  (`candidate.grounding_metadata`) misses it. Mirroring it here lets downstream
+  consumers (event.grounding_metadata, after_model_callback, citation
+  pipelines, ...) rely on it for both model paths.
+
+  Returns the parsed metadata, or None when it is absent or malformed.
+  """
+  raw_grounding = getattr(response, "vertex_ai_grounding_metadata", None)
+  if not raw_grounding:
+    return None
+  # LiteLLM may emit a list (one entry per candidate) or a single value.
+  if isinstance(raw_grounding, list):
+    raw_grounding = raw_grounding[0] if raw_grounding else None
+  if isinstance(raw_grounding, types.GroundingMetadata):
+    return raw_grounding
+  if isinstance(raw_grounding, dict):
+    try:
+      return types.GroundingMetadata.model_validate(raw_grounding)
+    except Exception:  # pragma: no cover
+      logger.warning(
+          "LiteLlm: vertex_ai_grounding_metadata did not match the"
+          " GroundingMetadata schema and was dropped."
+      )
+  return None
+
+
 def _model_response_to_generate_content_response(
     response: ModelResponse,
 ) -> LlmResponse:
@@ -1688,6 +1824,11 @@ def _model_response_to_generate_content_response(
         cached_content_token_count=_extract_cached_prompt_tokens(usage_dict),
         thoughts_token_count=reasoning_tokens if reasoning_tokens else None,
     )
+
+  grounding_metadata = _extract_grounding_metadata(response)
+  if grounding_metadata:
+    llm_response.grounding_metadata = grounding_metadata
+
   return llm_response
 
 
@@ -1727,7 +1868,7 @@ def _message_to_generate_content_response(
         thought_signature = _extract_thought_signature_from_tool_call(tool_call)
         part = types.Part.from_function_call(
             name=tool_call.function.name,
-            args=json.loads(tool_call.function.arguments or "{}"),
+            args=_parse_tool_call_arguments(tool_call.function.arguments),
         )
         part.function_call.id = tool_call.id
         if thought_signature:
@@ -2270,6 +2411,7 @@ class LiteLlm(BaseLlm):
       aggregated_llm_response = None
       aggregated_llm_response_with_tool_call = None
       usage_metadata = None
+      grounding_metadata = None
       fallback_index = 0
 
       def _finalize_tool_call_response(
@@ -2281,7 +2423,7 @@ class LiteLlm(BaseLlm):
           if func_data["id"]:
             if finish_reason == "length":
               try:
-                json.loads(func_data["args"] or "{}")
+                _parse_tool_call_arguments(func_data["args"])
               except json.JSONDecodeError:
                 has_incomplete_tool_call_args = True
                 continue
@@ -2355,6 +2497,11 @@ class LiteLlm(BaseLlm):
         function_calls.clear()
 
       async for part in await self.llm_client.acompletion(**completion_args):
+        # Grounding metadata can arrive on the first chunk (search queries) or
+        # the final chunk (supports); keep the latest non-empty one.
+        part_grounding = _extract_grounding_metadata(part)
+        if part_grounding:
+          grounding_metadata = part_grounding
         for chunk, finish_reason in _model_response_to_chunk(part):
           if isinstance(chunk, FunctionChunk):
             index = chunk.index or fallback_index
@@ -2456,11 +2603,17 @@ class LiteLlm(BaseLlm):
         if usage_metadata:
           aggregated_llm_response.usage_metadata = usage_metadata
           usage_metadata = None
+        if grounding_metadata:
+          aggregated_llm_response.grounding_metadata = grounding_metadata
         yield aggregated_llm_response
 
       if aggregated_llm_response_with_tool_call:
         if usage_metadata:
           aggregated_llm_response_with_tool_call.usage_metadata = usage_metadata
+        if grounding_metadata:
+          aggregated_llm_response_with_tool_call.grounding_metadata = (
+              grounding_metadata
+          )
         yield aggregated_llm_response_with_tool_call
 
     else:

@@ -27,6 +27,7 @@ from google.adk.evaluation.metric_evaluator_registry import MetricEvaluatorRegis
 from google.adk.evaluation.metric_evaluator_registry import PerTurnUserSimulatorQualityV1MetricInfoProvider
 from google.adk.evaluation.metric_evaluator_registry import ResponseEvaluatorMetricInfoProvider
 from google.adk.evaluation.metric_evaluator_registry import RubricBasedFinalResponseQualityV1EvaluatorMetricInfoProvider
+from google.adk.evaluation.metric_evaluator_registry import RubricBasedMultiTurnTrajectoryMetricInfoProvider
 from google.adk.evaluation.metric_evaluator_registry import RubricBasedToolUseV1EvaluatorMetricInfoProvider
 from google.adk.evaluation.metric_evaluator_registry import SafetyEvaluatorV1MetricInfoProvider
 from google.adk.evaluation.metric_evaluator_registry import TrajectoryEvaluatorMetricInfoProvider
@@ -205,6 +206,17 @@ class TestMetricInfoProviders:
     assert (
         metric_info.metric_name
         == PrebuiltMetrics.PER_TURN_USER_SIMULATOR_QUALITY_V1.value
+    )
+    assert metric_info.metric_value_info.interval.min_value == 0.0
+    assert metric_info.metric_value_info.interval.max_value == 1.0
+
+  def test_rubric_based_multi_turn_trajectory_metric_info_provider(self):
+    metric_info = (
+        RubricBasedMultiTurnTrajectoryMetricInfoProvider().get_metric_info()
+    )
+    assert (
+        metric_info.metric_name
+        == PrebuiltMetrics.RUBRIC_BASED_MULTI_TURN_TRAJECTORY_QUALITY_V1.value
     )
     assert metric_info.metric_value_info.interval.min_value == 0.0
     assert metric_info.metric_value_info.interval.max_value == 1.0

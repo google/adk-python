@@ -194,7 +194,7 @@ class VertexAiMemoryBankService(BaseMemoryService):
         ``agent_engine.api_resource.name.split('/')[-1]``
       express_mode_api_key: The API key to use for Express Mode. If not
         provided, the API key from the GOOGLE_API_KEY environment variable will
-        be used. It will only be used if GOOGLE_GENAI_USE_VERTEXAI is true. Do
+        be used. It will only be used if GOOGLE_GENAI_USE_ENTERPRISE is true. Do
         not use Google AI Studio API key for this field. For more details, visit
         https://cloud.google.com/vertex-ai/generative-ai/docs/start/express-mode/overview
     """
@@ -204,7 +204,7 @@ class VertexAiMemoryBankService(BaseMemoryService):
       )
 
     try:
-      import vertexai
+      import vertexai  # noqa: F401
     except ImportError as e:
       from ..utils._dependency import missing_extra
 
@@ -541,18 +541,36 @@ class VertexAiMemoryBankService(BaseMemoryService):
     logger.info('Search memory response received.')
 
     memory_events: list[MemoryEntry] = []
-    async for retrieved_memory in retrieved_memories_iterator:
-      # TODO: add more complex error handling
-      logger.debug('Retrieved memory: %s', retrieved_memory)
-      memory_events.append(
-          MemoryEntry(
-              author='user',
-              content=types.Content(
-                  parts=[types.Part(text=retrieved_memory.memory.fact)],
-                  role='user',
-              ),
-              timestamp=retrieved_memory.memory.update_time.isoformat(),
+    try:
+      async for retrieved_memory in retrieved_memories_iterator:
+        try:
+          memory = retrieved_memory.memory
+          if memory is None:
+            logger.warning('Skipping memory entry with missing memory object.')
+            continue
+          fact = memory.fact
+          if not fact:
+            logger.warning('Skipping memory entry with empty or missing fact.')
+            continue
+          update_time = memory.update_time
+          memory_events.append(
+              MemoryEntry(
+                  author='user',
+                  content=types.Content(
+                      parts=[types.Part(text=fact)],
+                      role='user',
+                  ),
+                  timestamp=update_time.isoformat() if update_time else None,
+              )
           )
+        except AttributeError:
+          logger.warning(
+              'Skipping malformed memory entry: %s', retrieved_memory
+          )
+    except Exception:
+      logger.exception(
+          'Error while iterating memory results. Returning %d partial results.',
+          len(memory_events),
       )
     return SearchMemoryResponse(memories=memory_events)
 

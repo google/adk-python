@@ -106,7 +106,12 @@ def _sanitize_schema_type(
 def _dereference_schema(schema: dict[str, Any]) -> dict[str, Any]:
   """Resolves $ref pointers in a JSON schema."""
 
-  defs = schema.get("$defs", {})
+  # Support both the draft 2019-09+/2020-12 keyword (`$defs`) and the
+  # draft-07 keyword (`definitions`). The MCP specification allows tool
+  # `inputSchema`s to use either, so a server sending draft-07 schemas with
+  # `definitions` + `$ref: "#/definitions/..."` must dereference correctly.
+  # `$defs` takes precedence on the (pathological) key collision.
+  defs = {**schema.get("definitions", {}), **schema.get("$defs", {})}
 
   def _resolve_refs(sub_schema: Any, path_refs: frozenset[str]) -> Any:
     if isinstance(sub_schema, dict):
@@ -148,9 +153,11 @@ def _dereference_schema(schema: dict[str, Any]) -> dict[str, Any]:
       return sub_schema
 
   dereferenced_schema = _resolve_refs(schema, frozenset())
-  # Remove the definitions block after resolving.
-  if "$defs" in dereferenced_schema:
-    del dereferenced_schema["$defs"]
+  # Remove the definition blocks after resolving so the leftover keywords do
+  # not leak into the Gemini schema (which would otherwise raise a KeyError).
+  for defs_keyword in ("$defs", "definitions"):
+    if defs_keyword in dereferenced_schema:
+      del dereferenced_schema[defs_keyword]
   return dereferenced_schema
 
 

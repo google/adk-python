@@ -29,7 +29,6 @@ from ...auth.auth_credential import AuthCredentialTypes as _AuthCredentialTypes
 from ...auth.auth_handler import AuthHandler
 from ...auth.auth_tool import AuthConfig
 from ...auth.auth_tool import AuthToolArguments
-from ...events._node_path_builder import _NodePathBuilder
 from ...events.event import Event
 from ...events.request_input import RequestInput
 from ...utils._schema_utils import schema_to_json_schema
@@ -55,6 +54,7 @@ def create_request_input_event(request_input: RequestInput) -> Event:
   )
   return Event(
       content=types.Content(
+          role='model',
           parts=[
               types.Part(
                   function_call=types.FunctionCall(
@@ -63,7 +63,7 @@ def create_request_input_event(request_input: RequestInput) -> Event:
                       id=request_input.interrupt_id,
                   )
               )
-          ]
+          ],
       ),
       long_running_tool_ids=[request_input.interrupt_id],
   )
@@ -172,13 +172,14 @@ def create_auth_request_event(
   args = AuthToolArguments(
       function_call_id=interrupt_id,
       auth_config=auth_request,
-  ).model_dump(exclude_none=True, by_alias=True)
+  ).model_dump(mode='json', exclude_none=True, by_alias=True)
 
   # Add message so the UI / CLI knows what to display.
   args['message'] = _build_auth_message(auth_config)
 
   return Event(
       content=types.Content(
+          role='model',
           parts=[
               types.Part(
                   function_call=types.FunctionCall(
@@ -187,7 +188,7 @@ def create_auth_request_event(
                       args=args,
                   )
               )
-          ]
+          ],
       ),
       long_running_tool_ids=[interrupt_id],
   )

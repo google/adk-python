@@ -22,13 +22,11 @@ from typing import Any
 from typing import Dict
 from typing import List
 from typing import Optional
-from typing import Tuple
 from typing import Union
 import uuid
 
 from a2a.server.events import Event as A2AEvent
 from a2a.types import Artifact
-from a2a.types import DataPart
 from a2a.types import Message
 from a2a.types import Part as A2APart
 from a2a.types import Role
@@ -39,11 +37,7 @@ from a2a.types import TaskStatusUpdateEvent
 from a2a.types import TextPart
 
 from ...events.event import Event
-from ...flows.llm_flows.functions import REQUEST_EUC_FUNCTION_CALL_NAME
 from ..experimental import a2a_experimental
-from .part_converter import A2A_DATA_PART_METADATA_IS_LONG_RUNNING_KEY
-from .part_converter import A2A_DATA_PART_METADATA_TYPE_FUNCTION_CALL
-from .part_converter import A2A_DATA_PART_METADATA_TYPE_KEY
 from .part_converter import convert_genai_part_to_a2a_part
 from .part_converter import GenAIPartToA2APartConverter
 from .utils import _get_adk_metadata_key
@@ -264,6 +258,21 @@ def _serialize_value(value: Any) -> Optional[Any]:
     except Exception as e:
       logger.warning("Failed to serialize Pydantic model, falling back: %s", e)
       return str(value)
+
+  # Recurse into JSON-native containers so nested non-JSON-serializable
+  # values (e.g. datetime) are still stringified, then pass through other
+  # JSON-native scalars as-is.
+  if isinstance(value, dict):
+    # JSON object keys must be strings, so stringify any non-string key to
+    # avoid a downstream TypeError when the metadata is JSON-encoded.
+    return {
+        (k if isinstance(k, str) else str(k)): _serialize_value(v)
+        for k, v in value.items()
+    }
+  if isinstance(value, list):
+    return [_serialize_value(item) for item in value]
+  if isinstance(value, (int, float, bool, str)):
+    return value
 
   return str(value)
 

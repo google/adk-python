@@ -33,6 +33,7 @@ from google.adk.artifacts.file_artifact_service import FileArtifactService
 from google.adk.artifacts.in_memory_artifact_service import InMemoryArtifactService
 from google.adk.auth.credential_service.in_memory_credential_service import InMemoryCredentialService
 import google.adk.cli.cli as cli
+from google.adk.cli.utils.local_storage import PerAgentFileArtifactService
 from google.adk.cli.utils.service_factory import create_artifact_service_from_options
 from google.adk.sessions.in_memory_session_service import InMemorySessionService
 import pytest
@@ -298,30 +299,28 @@ async def test_run_cli_save_session(
   assert "id" in data and "events" in data
 
 
-def test_create_artifact_service_defaults_to_file(tmp_path: Path) -> None:
-  """Service factory should default to FileArtifactService when URI is unset."""
-  service = create_artifact_service_from_options(
-      base_dir=tmp_path,
-      use_local_storage=True,
-  )
-  assert isinstance(service, FileArtifactService)
-  expected_root = Path(tmp_path) / ".adk" / "artifacts"
-  assert service.root_dir == expected_root
-  assert expected_root.exists()
-
-
-def test_create_artifact_service_uses_shared_root(
+@pytest.mark.asyncio
+async def test_create_artifact_service_isolates_artifacts_per_agent(
     tmp_path: Path,
 ) -> None:
-  """Artifact service should use a single file artifact service."""
+  """Each agent's artifacts should land in its own .adk/artifacts folder."""
+  (tmp_path / "agent_a").mkdir()
+  (tmp_path / "agent_b").mkdir()
   service = create_artifact_service_from_options(
       base_dir=tmp_path,
       use_local_storage=True,
   )
-  assert isinstance(service, FileArtifactService)
-  expected_root = Path(tmp_path) / ".adk" / "artifacts"
-  assert service.root_dir == expected_root
-  assert expected_root.exists()
+  assert isinstance(service, PerAgentFileArtifactService)
+
+  # Touching each agent provisions its own per-agent .adk/artifacts folder.
+  for app_name in ("agent_a", "agent_b"):
+    await service.list_artifact_keys(
+        app_name=app_name, user_id="user", session_id="session"
+    )
+
+  assert (tmp_path / "agent_a" / ".adk" / "artifacts").exists()
+  assert (tmp_path / "agent_b" / ".adk" / "artifacts").exists()
+  assert not (tmp_path / ".adk").exists()
 
 
 def test_create_artifact_service_respects_memory_uri(tmp_path: Path) -> None:

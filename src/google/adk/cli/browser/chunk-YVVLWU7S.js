@@ -1,3 +1,17 @@
+// Copyright 2026 Google LLC
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 function Bs(r,e){(e==null||e>r.length)&&(e=r.length);for(var t=0,a=Array(e);t<e;t++)a[t]=r[t];return a}function ec(r){if(Array.isArray(r))return r}function rc(r){if(Array.isArray(r))return Bs(r)}function ht(r,e){if(!(r instanceof e))throw new TypeError("Cannot call a class as a function")}function tc(r,e){for(var t=0;t<e.length;t++){var a=e[t];a.enumerable=a.enumerable||!1,a.configurable=!0,"value"in a&&(a.writable=!0),Object.defineProperty(r,jl(a.key),a)}}function gt(r,e,t){return e&&tc(r.prototype,e),Object.defineProperty(r,"prototype",{writable:!1}),r}function kr(r,e){var t=typeof Symbol<"u"&&r[Symbol.iterator]||r["@@iterator"];if(!t){if(Array.isArray(r)||(t=Xs(r))||e){t&&(r=t);var a=0,n=function(){};return{s:n,n:function(){return a>=r.length?{done:!0}:{done:!1,value:r[a++]}},e:function(l){throw l},f:n}}throw new TypeError(`Invalid attempt to iterate non-iterable instance.
 In order to be iterable, non-array objects must have a [Symbol.iterator]() method.`)}var i,s=!0,o=!1;return{s:function(){t=t.call(r)},n:function(){var l=t.next();return s=l.done,l},e:function(l){o=!0,i=l},f:function(){try{s||t.return==null||t.return()}finally{if(o)throw i}}}}function Jl(r,e,t){return(e=jl(e))in r?Object.defineProperty(r,e,{value:t,enumerable:!0,configurable:!0,writable:!0}):r[e]=t,r}function ac(r){if(typeof Symbol<"u"&&r[Symbol.iterator]!=null||r["@@iterator"]!=null)return Array.from(r)}function nc(r,e){var t=r==null?null:typeof Symbol<"u"&&r[Symbol.iterator]||r["@@iterator"];if(t!=null){var a,n,i,s,o=[],l=!0,u=!1;try{if(i=(t=t.call(r)).next,e===0){if(Object(t)!==t)return;l=!1}else for(;!(l=(a=i.call(t)).done)&&(o.push(a.value),o.length!==e);l=!0);}catch(v){u=!0,n=v}finally{try{if(!l&&t.return!=null&&(s=t.return(),Object(s)!==s))return}finally{if(u)throw n}}return o}}function ic(){throw new TypeError(`Invalid attempt to destructure non-iterable instance.
 In order to be iterable, non-array objects must have a [Symbol.iterator]() method.`)}function sc(){throw new TypeError(`Invalid attempt to spread non-iterable instance.
@@ -33,10 +47,10 @@ In order to be iterable, non-array objects must have a [Symbol.iterator]() metho
       vec2 v = ab*vec2(-cs.y,cs.x);
       w = w + dot(p-u,v)/(dot(p-u,u)+dot(v,v));
     }
-
+    
     // compute final point and distance
     float d = length(p-ab*vec2(cos(w),sin(w)));
-
+    
     // return signed distance
     return (dot(p/ab,p/ab)>1.0) ? d : -d;
   }
@@ -45,16 +59,16 @@ In order to be iterable, non-array objects must have a [Symbol.iterator]() metho
 
       uniform mat3 uPanZoomMatrix;
       uniform int  uAtlasSize;
-
+      
       // instanced
       in vec2 aPosition; // a vertex from the unit square
-
+      
       in mat3 aTransform; // used to transform verticies, eg into a bounding box
       in int aVertType; // the type of thing we are rendering
 
       // the z-index that is output when using picking mode
       in vec4 aIndex;
-
+      
       // For textures
       in int aAtlasId; // which shader unit/atlas to use
       in vec4 aTex; // x/y/w/h of texture in atlas
@@ -74,7 +88,7 @@ In order to be iterable, non-array objects must have a [Symbol.iterator]() metho
       out vec4 vColor;
       out vec2 vPosition;
       // flat values are not interpolated
-      flat out int vAtlasId;
+      flat out int vAtlasId; 
       flat out int vVertType;
       flat out vec2 vTopRight;
       flat out vec2 vBotLeft;
@@ -82,7 +96,7 @@ In order to be iterable, non-array objects must have a [Symbol.iterator]() metho
       flat out vec4 vBorderColor;
       flat out vec2 vBorderWidth;
       flat out vec4 vIndex;
-
+      
       void main(void) {
         int vid = gl_VertexID;
         vec2 position = aPosition; // TODO make this a vec3, simplifies some code below
@@ -105,7 +119,7 @@ In order to be iterable, non-array objects must have a [Symbol.iterator]() metho
 
           gl_Position = vec4(uPanZoomMatrix * aTransform * vec3(position, 1.0), 1.0);
         }
-        else if(aVertType == `).concat(Gt," || aVertType == ").concat(pa,`
+        else if(aVertType == `).concat(Gt," || aVertType == ").concat(pa,` 
              || aVertType == `).concat(sn," || aVertType == ").concat(ga,`) { // simple shapes
 
           // the bounding box is needed by the fragment shader
@@ -135,7 +149,7 @@ In order to be iterable, non-array objects must have a [Symbol.iterator]() metho
 
           gl_Position = vec4(uPanZoomMatrix * vec3(point, 1.0), 1.0);
           vColor = aColor;
-        }
+        } 
         else if(aVertType == `).concat(Xl,`) {
           vec2 pointA = aPointAPointB.xy;
           vec2 pointB = aPointAPointB.zw;
@@ -184,7 +198,7 @@ In order to be iterable, non-array objects must have a [Symbol.iterator]() metho
           }
 
           vColor = aColor;
-        }
+        } 
         else if(aVertType == `).concat(Ts,` && vid < 3) {
           // massage the first triangle into an edge arrow
           if(vid == 0)
@@ -236,16 +250,16 @@ In order to be iterable, non-array objects must have a [Symbol.iterator]() metho
       `).concat(vm,`
 
       vec4 blend(vec4 top, vec4 bot) { // blend colors with premultiplied alpha
-        return vec4(
+        return vec4( 
           top.rgb + (bot.rgb * (1.0 - top.a)),
-          top.a   + (bot.a   * (1.0 - top.a))
+          top.a   + (bot.a   * (1.0 - top.a)) 
         );
       }
 
       vec4 distInterp(vec4 cA, vec4 cB, float d) { // interpolate color using Signed Distance
         // scale to the zoom level so that borders don't look blurry when zoomed in
         // note 1.5 is an aribitrary value chosen because it looks good
-        return mix(cA, cB, 1.0 - smoothstep(0.0, 1.5 / uZoom, abs(d)));
+        return mix(cA, cB, 1.0 - smoothstep(0.0, 1.5 / uZoom, abs(d))); 
       }
 
       void main(void) {
@@ -253,7 +267,7 @@ In order to be iterable, non-array objects must have a [Symbol.iterator]() metho
           // look up the texel from the texture unit
           `).concat(i.map(function(u){return"if(vAtlasId == ".concat(u,") outColor = texture(uTexture").concat(u,", vTexCoord);")}).join(`
 	else `),`
-        }
+        } 
         else if(vVertType == `).concat(Ts,`) {
           // mimics how canvas renderer uses context.globalCompositeOperation = 'destination-out';
           outColor = blend(vColor, uBGColor);
@@ -262,7 +276,7 @@ In order to be iterable, non-array objects must have a [Symbol.iterator]() metho
         else if(vVertType == `).concat(Gt,` && vBorderWidth == vec2(0.0)) { // simple rectangle with no border
           outColor = vColor; // unit square is already transformed to the rectangle, nothing else needs to be done
         }
-        else if(vVertType == `).concat(Gt," || vVertType == ").concat(pa,`
+        else if(vVertType == `).concat(Gt," || vVertType == ").concat(pa,` 
           || vVertType == `).concat(sn," || vVertType == ").concat(ga,`) { // use SDF
 
           float outerBorder = vBorderWidth[0];
@@ -297,7 +311,7 @@ In order to be iterable, non-array objects must have a [Symbol.iterator]() metho
               vec4 outerColor = outerBorder == 0.0 ? vec4(0) : vBorderColor;
               vec4 innerBorderColor = blend(vBorderColor, vColor);
               outColor = distInterp(innerBorderColor, outerColor, d);
-            }
+            } 
             else {
               vec4 outerColor;
               if(innerBorder == 0.0 && outerBorder == 0.0) {

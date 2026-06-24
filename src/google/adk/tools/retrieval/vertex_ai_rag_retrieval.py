@@ -16,6 +16,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Any
 from typing import TYPE_CHECKING
@@ -94,7 +95,8 @@ class VertexAiRagRetrieval(BaseRetrievalTool):
   ) -> Any:
     from ...dependencies.vertexai import rag
 
-    response = rag.retrieval_query(
+    response = await asyncio.to_thread(
+        rag.retrieval_query,
         text=args['query'],
         rag_resources=self.vertex_rag_store.rag_resources,
         rag_corpora=self.vertex_rag_store.rag_corpora,

@@ -11,6 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+from __future__ import annotations
 
 import asyncio
 import collections
@@ -37,6 +38,7 @@ def _mock_skill1_frontmatter():
   frontmatter.name = "skill1"
   frontmatter.description = "Skill 1 description"
   frontmatter.allowed_tools = ["test_tool"]
+  frontmatter.metadata = {}
   frontmatter.model_dump.return_value = {
       "name": "skill1",
       "description": "Skill 1 description",
@@ -106,6 +108,7 @@ def _mock_skill2_frontmatter():
   frontmatter.name = "skill2"
   frontmatter.description = "Skill 2 description"
   frontmatter.allowed_tools = []
+  frontmatter.metadata = {}
   frontmatter.model_dump.return_value = {
       "name": "skill2",
       "description": "Skill 2 description",
@@ -175,6 +178,40 @@ def test_list_skills(mock_skill1, mock_skill2):
   assert len(skills) == 2
   assert mock_skill1 in skills
   assert mock_skill2 in skills
+
+
+def test_clone_with_updated_skills(mock_skill1, mock_skill2):
+  """Tests that the skills are updated but other properties are retained."""
+  mock_skill3 = mock.create_autospec(models.Skill, instance=True)
+  mock_skill3.name = "skill3"
+
+  mock_tool = mock.create_autospec(skill_toolset.BaseTool, instance=True)
+  mock_tool.name = "my_tool"
+
+  registry = mock.create_autospec(skill_toolset.SkillRegistry, instance=True)
+
+  executor = _make_mock_executor()
+
+  toolset = skill_toolset.SkillToolset(
+      [mock_skill1, mock_skill2],
+      registry=registry,
+      code_executor=executor,
+      script_timeout=42,
+      additional_tools=[mock_tool],
+  )
+
+  new_toolset = toolset.clone_with_updated_skills([mock_skill3])
+
+  # Verify new skill is present and old ones are gone
+  skills = new_toolset._list_skills()
+  assert len(skills) == 1
+  assert skills[0] == mock_skill3
+
+  # Verify properties are retained
+  assert new_toolset._registry is registry
+  assert new_toolset._code_executor is executor
+  assert new_toolset._script_timeout == 42
+  assert "my_tool" in new_toolset._provided_tools_by_name
 
 
 @pytest.mark.asyncio
@@ -276,6 +313,74 @@ async def test_load_skill_run_async_state_none(
 
 
 @pytest.mark.asyncio
+async def test_load_skill_run_async_injects_state_when_opt_in(
+    mock_skill1, mock_skill1_frontmatter, tool_context_instance
+):
+  mock_skill1.instructions = "Hello {user_name}!"
+  mock_skill1_frontmatter.metadata = {"adk_inject_state": True}
+  toolset = skill_toolset.SkillToolset([mock_skill1])
+  tool = skill_toolset.LoadSkillTool(toolset)
+
+  with mock.patch.object(
+      skill_toolset.instructions_utils,
+      "inject_session_state",
+      autospec=True,
+  ) as mock_inject:
+    mock_inject.return_value = "Hello Alice!"
+    result = await tool.run_async(
+        args={"skill_name": "skill1"}, tool_context=tool_context_instance
+    )
+
+  mock_inject.assert_awaited_once()
+  call_args = mock_inject.await_args
+  assert call_args.args[0] == "Hello {user_name}!"
+  assert result["instructions"] == "Hello Alice!"
+
+
+@pytest.mark.asyncio
+async def test_load_skill_run_async_skips_injection_when_opt_out(
+    mock_skill1, mock_skill1_frontmatter, tool_context_instance
+):
+  mock_skill1.instructions = "Hello {user_name}!"
+  mock_skill1_frontmatter.metadata = {"adk_inject_state": False}
+  toolset = skill_toolset.SkillToolset([mock_skill1])
+  tool = skill_toolset.LoadSkillTool(toolset)
+
+  with mock.patch.object(
+      skill_toolset.instructions_utils,
+      "inject_session_state",
+      autospec=True,
+  ) as mock_inject:
+    result = await tool.run_async(
+        args={"skill_name": "skill1"}, tool_context=tool_context_instance
+    )
+
+  mock_inject.assert_not_called()
+  assert result["instructions"] == "Hello {user_name}!"
+
+
+@pytest.mark.asyncio
+async def test_load_skill_run_async_skips_injection_when_metadata_absent(
+    mock_skill1, tool_context_instance
+):
+  mock_skill1.instructions = "Hello {user_name}!"
+  toolset = skill_toolset.SkillToolset([mock_skill1])
+  tool = skill_toolset.LoadSkillTool(toolset)
+
+  with mock.patch.object(
+      skill_toolset.instructions_utils,
+      "inject_session_state",
+      autospec=True,
+  ) as mock_inject:
+    result = await tool.run_async(
+        args={"skill_name": "skill1"}, tool_context=tool_context_instance
+    )
+
+  mock_inject.assert_not_called()
+  assert result["instructions"] == "Hello {user_name}!"
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "args, expected_result",
     [
@@ -332,16 +437,10 @@ async def test_load_skill_run_async_state_none(
                 "error_code": "SKILL_NOT_FOUND",
             },
         ),
-        (
-            {"skill_name": "skill1", "file_path": "references/other.md"},
-            {
-                "error": (
-                    "Resource 'references/other.md' not found in skill"
-                    " 'skill1'."
-                ),
-                "error_code": "RESOURCE_NOT_FOUND",
-            },
-        ),
+        # RESOURCE_NOT_FOUND is tested separately in
+        # test_load_resource_first_missing_returns_soft_error because the
+        # counter guard requires a real state dict (mock state.get() returns a
+        # truthy MagicMock that int() coerces to 1, skipping the soft path).
         (
             {"skill_name": "skill1", "file_path": "invalid/path.txt"},
             {
@@ -479,20 +578,141 @@ def test_duplicate_skill_name_raises(mock_skill1):
 
 
 @pytest.mark.asyncio
-async def test_scripts_resource_not_found(mock_skill1, tool_context_instance):
+async def test_scripts_resource_not_found(mock_skill1):
   toolset = skill_toolset.SkillToolset([mock_skill1])
   tool = skill_toolset.LoadSkillResourceTool(toolset)
+  ctx = _make_tool_context_with_agent()
   result = await tool.run_async(
       args={"skill_name": "skill1", "file_path": "scripts/nonexistent.sh"},
-      tool_context=tool_context_instance,
+      tool_context=ctx,
   )
   assert result["error_code"] == "RESOURCE_NOT_FOUND"
+
+
+@pytest.mark.asyncio
+async def test_load_resource_first_missing_returns_soft_error(mock_skill1):
+  """First RESOURCE_NOT_FOUND in an invocation returns the soft error code."""
+  toolset = skill_toolset.SkillToolset([mock_skill1])
+  tool = skill_toolset.LoadSkillResourceTool(toolset)
+  ctx = _make_tool_context_with_agent()
+  result = await tool.run_async(
+      args={"skill_name": "skill1", "file_path": "references/other.md"},
+      tool_context=ctx,
+  )
+  assert result["error_code"] == "RESOURCE_NOT_FOUND"
+  assert result["error"] == (
+      "Resource 'references/other.md' not found in skill 'skill1'."
+  )
+
+
+@pytest.mark.asyncio
+async def test_load_resource_repeated_failure_escalates_to_fatal(mock_skill1):
+  """Any second RESOURCE_NOT_FOUND within an invocation returns RESOURCE_NOT_FOUND_FATAL."""
+  toolset = skill_toolset.SkillToolset([mock_skill1])
+  tool = skill_toolset.LoadSkillResourceTool(toolset)
+  ctx = _make_tool_context_with_agent()
+
+  args = {"skill_name": "skill1", "file_path": "references/nonexistent.md"}
+
+  result1 = await tool.run_async(args=args, tool_context=ctx)
+  assert result1["error_code"] == "RESOURCE_NOT_FOUND"
+
+  result2 = await tool.run_async(args=args, tool_context=ctx)
+  assert result2["error_code"] == "RESOURCE_NOT_FOUND_FATAL"
+  assert "Do not retry" in result2["error"]
+  assert "stop" in result2["error"].lower()
+  assert "failure #2" in result2["error"]
+
+
+@pytest.mark.asyncio
+async def test_load_resource_different_path_also_escalates_to_fatal(
+    mock_skill1,
+):
+  """A different missing path on the second call still escalates to RESOURCE_NOT_FOUND_FATAL.
+
+  The counter is path-agnostic: any second not-found within the same invocation
+  is fatal, even when the LLM hallucinates a different path on each retry.
+  """
+  toolset = skill_toolset.SkillToolset([mock_skill1])
+  tool = skill_toolset.LoadSkillResourceTool(toolset)
+  ctx = _make_tool_context_with_agent()
+
+  result1 = await tool.run_async(
+      args={"skill_name": "skill1", "file_path": "references/missing_a.md"},
+      tool_context=ctx,
+  )
+  assert result1["error_code"] == "RESOURCE_NOT_FOUND"
+
+  result2 = await tool.run_async(
+      args={"skill_name": "skill1", "file_path": "references/missing_b.md"},
+      tool_context=ctx,
+  )
+  assert result2["error_code"] == "RESOURCE_NOT_FOUND_FATAL"
+  assert "Do not retry" in result2["error"]
+
+
+@pytest.mark.asyncio
+async def test_load_resource_failures_isolated_per_invocation(mock_skill1):
+  """Failure counter does not leak across invocations.
+
+  A RESOURCE_NOT_FOUND in invocation A must not increment invocation B's
+  counter; invocation B's first missing-resource call must still return the
+  soft error, even when both invocations share the same session state dict.
+  """
+  toolset = skill_toolset.SkillToolset([mock_skill1])
+  tool = skill_toolset.LoadSkillResourceTool(toolset)
+
+  shared_state = {}
+  ctx_a = _make_tool_context_with_agent(invocation_id="inv_a")
+  ctx_a.state = shared_state
+  ctx_b = _make_tool_context_with_agent(invocation_id="inv_b")
+  ctx_b.state = shared_state
+
+  # invocation A: one failure — counter for inv_a reaches 1 (soft).
+  result_a = await tool.run_async(
+      args={"skill_name": "skill1", "file_path": "references/typo.md"},
+      tool_context=ctx_a,
+  )
+  assert result_a["error_code"] == "RESOURCE_NOT_FOUND"
+
+  # invocation B, first attempt (different path) — counter for inv_b = 1 (soft).
+  result_b1 = await tool.run_async(
+      args={"skill_name": "skill1", "file_path": "references/typo.md"},
+      tool_context=ctx_b,
+  )
+  assert result_b1["error_code"] == "RESOURCE_NOT_FOUND"
+
+  # invocation B, second attempt (different path) — counter for inv_b = 2 (fatal).
+  result_b2 = await tool.run_async(
+      args={"skill_name": "skill1", "file_path": "references/other.md"},
+      tool_context=ctx_b,
+  )
+  assert result_b2["error_code"] == "RESOURCE_NOT_FOUND_FATAL"
+
+
+@pytest.mark.asyncio
+async def test_load_resource_counter_uses_temp_prefix(mock_skill1):
+  """Failure-counter key uses the `temp:` prefix so it is not persisted."""
+  toolset = skill_toolset.SkillToolset([mock_skill1])
+  tool = skill_toolset.LoadSkillResourceTool(toolset)
+  ctx = _make_tool_context_with_agent()
+
+  await tool.run_async(
+      args={"skill_name": "skill1", "file_path": "references/missing.md"},
+      tool_context=ctx,
+  )
+
+  # The counter key must start with `temp:` so it is trimmed from the event
+  # delta and never reaches durable storage.
+  guard_keys = [k for k in ctx.state if "skill_resource_not_found_count" in k]
+  assert guard_keys, "Failure counter did not write a tracking key."
+  assert all(k.startswith("temp:") for k in guard_keys)
 
 
 # RunSkillScriptTool tests
 
 
-def _make_tool_context_with_agent(agent=None):
+def _make_tool_context_with_agent(agent=None, invocation_id="test_invocation"):
   """Creates a mock ToolContext with _invocation_context.agent."""
   ctx = mock.MagicMock(spec=tool_context.ToolContext)
   ctx._invocation_context = mock.MagicMock()
@@ -500,6 +720,7 @@ def _make_tool_context_with_agent(agent=None):
   ctx._invocation_context.agent.name = "test_agent"
   ctx._invocation_context.agent_states = {}
   ctx.agent_name = "test_agent"
+  ctx.invocation_id = invocation_id
   ctx.state = {}
   return ctx
 
@@ -570,6 +791,118 @@ async def test_execute_script_script_not_found(mock_skill1):
       tool_context=ctx,
   )
   assert result["error_code"] == "SCRIPT_NOT_FOUND"
+  assert result["error"] == (
+      "Script 'nonexistent.py' not found in skill 'skill1'."
+  )
+
+
+@pytest.mark.asyncio
+async def test_execute_script_repeated_failure_escalates_to_fatal(mock_skill1):
+  """Any second SCRIPT_NOT_FOUND within an invocation returns SCRIPT_NOT_FOUND_FATAL."""
+  executor = _make_mock_executor()
+  toolset = skill_toolset.SkillToolset([mock_skill1], code_executor=executor)
+  tool = skill_toolset.RunSkillScriptTool(toolset)
+  ctx = _make_tool_context_with_agent()
+
+  args = {"skill_name": "skill1", "file_path": "scripts/nonexistent.py"}
+
+  result1 = await tool.run_async(args=args, tool_context=ctx)
+  assert result1["error_code"] == "SCRIPT_NOT_FOUND"
+
+  result2 = await tool.run_async(args=args, tool_context=ctx)
+  assert result2["error_code"] == "SCRIPT_NOT_FOUND_FATAL"
+  assert "Do not retry" in result2["error"]
+  assert "stop" in result2["error"].lower()
+  assert "failure #2" in result2["error"]
+
+
+@pytest.mark.asyncio
+async def test_execute_script_different_path_also_escalates_to_fatal(
+    mock_skill1,
+):
+  """A different missing script on the second call still escalates to SCRIPT_NOT_FOUND_FATAL.
+
+  The counter is path-agnostic: any second not-found within the same invocation
+  is fatal, even when the LLM hallucinates a different script path on each
+  retry.
+  """
+  executor = _make_mock_executor()
+  toolset = skill_toolset.SkillToolset([mock_skill1], code_executor=executor)
+  tool = skill_toolset.RunSkillScriptTool(toolset)
+  ctx = _make_tool_context_with_agent()
+
+  result1 = await tool.run_async(
+      args={"skill_name": "skill1", "file_path": "scripts/missing_a.py"},
+      tool_context=ctx,
+  )
+  assert result1["error_code"] == "SCRIPT_NOT_FOUND"
+
+  result2 = await tool.run_async(
+      args={"skill_name": "skill1", "file_path": "scripts/missing_b.py"},
+      tool_context=ctx,
+  )
+  assert result2["error_code"] == "SCRIPT_NOT_FOUND_FATAL"
+  assert "Do not retry" in result2["error"]
+
+
+@pytest.mark.asyncio
+async def test_execute_script_failures_isolated_per_invocation(mock_skill1):
+  """Failure counter does not leak across invocations.
+
+  A SCRIPT_NOT_FOUND in invocation A must not increment invocation B's
+  counter; invocation B's first missing-script call must still return the
+  soft error, even when both invocations share the same session state dict.
+  """
+  executor = _make_mock_executor()
+  toolset = skill_toolset.SkillToolset([mock_skill1], code_executor=executor)
+  tool = skill_toolset.RunSkillScriptTool(toolset)
+
+  shared_state = {}
+  ctx_a = _make_tool_context_with_agent(invocation_id="inv_a")
+  ctx_a.state = shared_state
+  ctx_b = _make_tool_context_with_agent(invocation_id="inv_b")
+  ctx_b.state = shared_state
+
+  # invocation A: one failure — counter for inv_a reaches 1 (soft).
+  result_a = await tool.run_async(
+      args={"skill_name": "skill1", "file_path": "scripts/typo.py"},
+      tool_context=ctx_a,
+  )
+  assert result_a["error_code"] == "SCRIPT_NOT_FOUND"
+
+  # invocation B, first attempt (same path) — counter for inv_b = 1 (soft).
+  result_b1 = await tool.run_async(
+      args={"skill_name": "skill1", "file_path": "scripts/typo.py"},
+      tool_context=ctx_b,
+  )
+  assert result_b1["error_code"] == "SCRIPT_NOT_FOUND"
+
+  # invocation B, second attempt (different path) — counter for inv_b = 2 (fatal).
+  result_b2 = await tool.run_async(
+      args={"skill_name": "skill1", "file_path": "scripts/other.py"},
+      tool_context=ctx_b,
+  )
+  assert result_b2["error_code"] == "SCRIPT_NOT_FOUND_FATAL"
+
+
+@pytest.mark.asyncio
+async def test_execute_script_counter_uses_temp_prefix(mock_skill1):
+  """Failure-counter key uses the `temp:` prefix so it is not persisted."""
+  executor = _make_mock_executor()
+  toolset = skill_toolset.SkillToolset([mock_skill1], code_executor=executor)
+  tool = skill_toolset.RunSkillScriptTool(toolset)
+  ctx = _make_tool_context_with_agent()
+
+  await tool.run_async(
+      args={"skill_name": "skill1", "file_path": "scripts/missing.py"},
+      tool_context=ctx,
+  )
+
+  # The counter key must start with `temp:` so it is trimmed from the event
+  # delta and never reaches durable storage.
+  guard_keys = [k for k in ctx.state if "skill_script_not_found_count" in k]
+  assert guard_keys, "Failure counter did not write a tracking key."
+  assert all(k.startswith("temp:") for k in guard_keys)
 
 
 @pytest.mark.asyncio
@@ -637,6 +970,10 @@ async def test_execute_script_python_success(mock_skill1):
   assert "import runpy" in code_input.code
   assert "sys.argv = ['scripts/run.py']" in code_input.code
   assert (
+      "sys.path.insert(0, os.path.dirname(os.path.abspath('scripts/run.py')))"
+      in code_input.code
+  )
+  assert (
       "runpy.run_path('scripts/run.py', run_name='__main__')" in code_input.code
   )
 
@@ -660,6 +997,31 @@ async def test_execute_script_shell_success(mock_skill1):
   assert "subprocess.run" in code_input.code
   assert "bash" in code_input.code
   assert "__shell_result__" in code_input.code
+
+
+@pytest.mark.asyncio
+async def test_build_wrapper_code_with_unicode(mock_skill1):
+  """Verify that generated code uses utf-8 encoding for materializing files."""
+  # Add unicode content to mock_skill1 resources
+  unicode_content = "你好"
+  mock_skill1.resources.list_references.return_value = ["unicode.txt"]
+  mock_skill1.resources.get_reference.side_effect = lambda name: (
+      unicode_content if name == "unicode.txt" else None
+  )
+
+  executor = _make_mock_executor()
+  toolset = skill_toolset.SkillToolset([mock_skill1], code_executor=executor)
+  tool = skill_toolset.RunSkillScriptTool(toolset)
+  ctx = _make_tool_context_with_agent()
+  await tool.run_async(
+      args={"skill_name": "skill1", "file_path": "run.py"},
+      tool_context=ctx,
+  )
+
+  call_args = executor.execute_code.call_args
+  code_input = call_args[0][1]
+  assert "encoding='utf-8' if mode == 'w' else None" in code_input.code
+  assert unicode_content in code_input.code
 
 
 @pytest.mark.asyncio
@@ -1023,8 +1385,17 @@ async def test_execute_script_extensionless_unsupported(mock_skill1):
 # ── Integration tests using real UnsafeLocalCodeExecutor ──
 
 
-def _make_skill_with_script(skill_name, script_name, script):
+def _make_skill_with_script(
+    skill_name: str, script_name: str, script: models.Script
+) -> models.Skill:
   """Creates a minimal mock Skill with a single script."""
+  return _make_skill_with_scripts(skill_name, {script_name: script})
+
+
+def _make_skill_with_scripts(
+    skill_name: str, scripts: dict[str, models.Script]
+) -> models.Skill:
+  """Creates a minimal mock Skill with scripts."""
   skill = mock.create_autospec(models.Skill, instance=True)
   skill.name = skill_name
   skill.description = f"Test skill {skill_name}"
@@ -1045,16 +1416,14 @@ def _make_skill_with_script(skill_name, script_name, script):
   )
 
   def get_script(name):
-    if name == script_name:
-      return script
-    return None
+    return scripts.get(name)
 
   skill.resources.get_script.side_effect = get_script
   skill.resources.get_reference.return_value = None
   skill.resources.get_asset.return_value = None
   skill.resources.list_references.return_value = []
   skill.resources.list_assets.return_value = []
-  skill.resources.list_scripts.return_value = [script_name]
+  skill.resources.list_scripts.return_value = list(scripts)
   return skill
 
 
@@ -1064,7 +1433,7 @@ def _make_real_executor_toolset(skills, **kwargs):
   if sys.executable is None:
     sys.executable = "/usr/bin/python3"
 
-  executor = UnsafeLocalCodeExecutor(timeout_seconds=10)
+  executor = UnsafeLocalCodeExecutor(timeout_seconds=60)
   return skill_toolset.SkillToolset(skills, code_executor=executor, **kwargs)
 
 
@@ -1086,6 +1455,65 @@ async def test_integration_python_stdout():
   assert "status" in result, f"Result missing status: {result}"
   assert result["status"] == "success"
   assert result["stdout"] == "hello world\n"
+  assert result["stderr"] == ""
+
+
+@pytest.mark.asyncio
+async def test_integration_python_unicode_materialization():
+  """Real executor: Python script with unicode resources."""
+  script = models.Script(
+      src=(
+          "with open('references/unicode.txt', 'r', encoding='utf-8') as f:"
+          " print(f.read())"
+      )
+  )
+  skill = _make_skill_with_script("test_skill", "unicode.py", script)
+  skill.resources.get_reference.side_effect = lambda n: (
+      "你好，世界" if n == "unicode.txt" else None
+  )
+  skill.resources.list_references.return_value = ["unicode.txt"]
+  toolset = _make_real_executor_toolset([skill])
+  tool = skill_toolset.RunSkillScriptTool(toolset)
+  ctx = _make_tool_context_with_agent()
+  result = await tool.run_async(
+      args={
+          "skill_name": "test_skill",
+          "file_path": "unicode.py",
+      },
+      tool_context=ctx,
+  )
+  assert "status" in result, f"Result missing status: {result}"
+  assert result["status"] == "success"
+  assert "你好，世界" in result["stdout"]
+
+
+@pytest.mark.asyncio
+async def test_integration_python_imports_sibling_script_module():
+  """Real executor: Python scripts can import helpers from scripts/."""
+  skill = _make_skill_with_scripts(
+      "test_skill",
+      {
+          "run.py": models.Script(
+              src="from helper import message\nprint(message())"
+          ),
+          "helper.py": models.Script(
+              src="def message():\n  return 'hello from helper'"
+          ),
+      },
+  )
+  toolset = _make_real_executor_toolset([skill])
+  tool = skill_toolset.RunSkillScriptTool(toolset)
+  ctx = _make_tool_context_with_agent()
+  result = await tool.run_async(
+      args={
+          "skill_name": "test_skill",
+          "file_path": "run.py",
+      },
+      tool_context=ctx,
+  )
+  assert "status" in result, f"Result missing status: {result}"
+  assert result["status"] == "success"
+  assert result["stdout"] == "hello from helper\n"
   assert result["stderr"] == ""
 
 
@@ -1917,3 +2345,90 @@ async def test_close_cancels_futures_and_clears_cache():
   assert fut1.cancelled()
   assert not fut2.cancelled()  # Done futures shouldn't/can't be cancelled
   assert not toolset._fetched_skill_cache
+
+
+@pytest.mark.asyncio
+async def test_process_llm_request_with_tool_name_prefix(
+    mock_skill1, mock_skill2, tool_context_instance, mock_registry
+):
+  toolset = skill_toolset.SkillToolset(
+      [mock_skill1, mock_skill2],
+      registry=mock_registry,
+      tool_name_prefix="my_prefix",
+  )
+
+  # Manually remove ListSkillsTool from self._tools to simulate it not being available
+  # so that instructions[1] is generated with available_skills
+  toolset._tools = [
+      t
+      for t in toolset._tools
+      if not isinstance(t, skill_toolset.ListSkillsTool)
+  ]
+
+  llm_req = mock.create_autospec(llm_request_model.LlmRequest, instance=True)
+
+  await toolset.process_llm_request(
+      tool_context=tool_context_instance, llm_request=llm_req
+  )
+
+  llm_req.append_instructions.assert_called_once()
+  args, _ = llm_req.append_instructions.call_args
+  instructions = args[0]
+  assert len(instructions) == 3
+  assert "`my_prefix_load_skill`" in instructions[0]
+  assert "`my_prefix_load_skill_resource`" in instructions[0]
+  assert "`my_prefix_run_skill_script`" in instructions[0]
+  assert "my_prefix_search_skills" in instructions[2]
+
+
+@pytest.mark.asyncio
+async def test_skill_toolset_with_list_tool_filter():
+  toolset = skill_toolset.SkillToolset(
+      tool_filter=["list_skills", "load_skill"]
+  )
+  tools = await toolset.get_tools()
+  tool_names = [t.name for t in tools]
+  assert "list_skills" in tool_names
+  assert "load_skill" in tool_names
+  assert "load_skill_resource" not in tool_names
+  assert "run_skill_script" not in tool_names
+
+
+@pytest.mark.asyncio
+async def test_skill_toolset_with_predicate_tool_filter():
+  # Filter to only tools containing 'resource' in their name
+  toolset = skill_toolset.SkillToolset(
+      tool_filter=lambda tool, ctx=None: "resource" in tool.name
+  )
+  tools = await toolset.get_tools()
+  tool_names = [t.name for t in tools]
+  assert tool_names == ["load_skill_resource"]
+
+
+@pytest.mark.asyncio
+async def test_skill_toolset_with_dynamic_tools_filter(
+    mock_skill1, tool_context_instance
+):
+  mock_skill1.frontmatter.metadata = {
+      "adk_additional_tools": ["my_custom_tool"]
+  }
+
+  custom_tool = mock.create_autospec(skill_toolset.BaseTool, instance=True)
+  custom_tool.name = "my_custom_tool"
+
+  toolset = skill_toolset.SkillToolset(
+      skills=[mock_skill1],
+      additional_tools=[custom_tool],
+      tool_filter=["list_skills", "my_custom_tool"],
+  )
+
+  state_key = "_adk_activated_skill_test_agent"
+  tool_context_instance.state.get.side_effect = lambda key, default=None: (
+      ["skill1"] if key == state_key else default
+  )
+
+  tools = await toolset.get_tools(readonly_context=tool_context_instance)
+  tool_names = [t.name for t in tools]
+  assert "list_skills" in tool_names
+  assert "my_custom_tool" in tool_names
+  assert "load_skill" not in tool_names

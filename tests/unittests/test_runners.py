@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from contextlib import aclosing
 import importlib
 from pathlib import Path
 import sys
@@ -220,277 +221,6 @@ class TestRunnerFindAgentToRun:
         artifact_service=self.artifact_service,
     )
 
-
-@pytest.mark.asyncio
-async def test_session_not_found_message_includes_alignment_hint():
-
-  class RunnerWithMismatch(Runner):
-
-    def _infer_agent_origin(
-        self, agent: BaseAgent
-    ) -> tuple[Optional[str], Optional[Path]]:
-      del agent
-      return "expected_app", Path("/workspace/agents/expected_app")
-
-  session_service = InMemorySessionService()
-  runner = RunnerWithMismatch(
-      app_name="configured_app",
-      agent=MockLlmAgent("root_agent"),
-      session_service=session_service,
-      artifact_service=InMemoryArtifactService(),
-  )
-
-  agen = runner.run_async(
-      user_id="user",
-      session_id="missing",
-      new_message=types.Content(role="user", parts=[]),
-  )
-
-  with pytest.raises(SessionNotFoundError) as excinfo:
-    await agen.__anext__()
-
-  await agen.aclose()
-
-  message = str(excinfo.value)
-  assert "Session not found" in message
-  assert "configured_app" in message
-  assert "expected_app" in message
-  assert "Ensure the runner app_name matches" in message
-
-
-@pytest.mark.asyncio
-async def test_session_auto_creation():
-
-  class RunnerWithMismatch(Runner):
-
-    def _infer_agent_origin(
-        self, agent: BaseAgent
-    ) -> tuple[Optional[str], Optional[Path]]:
-      del agent
-      return "expected_app", Path("/workspace/agents/expected_app")
-
-  session_service = InMemorySessionService()
-  runner = RunnerWithMismatch(
-      app_name="expected_app",
-      agent=MockLlmAgent("test_agent"),
-      session_service=session_service,
-      artifact_service=InMemoryArtifactService(),
-      auto_create_session=True,
-  )
-
-  agen = runner.run_async(
-      user_id="user",
-      session_id="missing",
-      new_message=types.Content(role="user", parts=[types.Part(text="hi")]),
-  )
-
-  event = await agen.__anext__()
-  await agen.aclose()
-
-  # Verify that session_id="missing" doesn't error out - session is auto-created
-  assert event.author == "test_agent"
-  assert event.content.parts[0].text == "Test LLM response"
-
-
-@pytest.mark.asyncio
-async def test_rewind_auto_create_session_on_missing_session():
-  """When auto_create_session=True, rewind should create session if missing.
-
-  The newly created session won't contain the target invocation, so
-  `rewind_async` should raise an Invocation ID not found error (rather than
-  a session not found error), demonstrating auto-creation occurred.
-  """
-  session_service = InMemorySessionService()
-  runner = Runner(
-      app_name="auto_create_app",
-      agent=MockLlmAgent("agent_for_rewind"),
-      session_service=session_service,
-      artifact_service=InMemoryArtifactService(),
-      auto_create_session=True,
-  )
-
-  with pytest.raises(ValueError, match=r"Invocation ID not found: inv_missing"):
-    await runner.rewind_async(
-        user_id="user",
-        session_id="missing",
-        rewind_before_invocation_id="inv_missing",
-    )
-
-  # Verify the session actually exists now due to auto-creation.
-  session = await session_service.get_session(
-      app_name="auto_create_app", user_id="user", session_id="missing"
-  )
-  assert session is not None
-  assert session.app_name == "auto_create_app"
-
-
-@pytest.mark.asyncio
-async def test_run_live_auto_create_session():
-  """run_live should auto-create session when missing and yield events."""
-  session_service = InMemorySessionService()
-  artifact_service = InMemoryArtifactService()
-  runner = Runner(
-      app_name="live_app",
-      agent=MockLiveAgent("live_agent"),
-      session_service=session_service,
-      artifact_service=artifact_service,
-      auto_create_session=True,
-  )
-
-  # An empty LiveRequestQueue is sufficient for our mock agent.
-  from google.adk.agents.live_request_queue import LiveRequestQueue
-
-  live_queue = LiveRequestQueue()
-
-  agen = runner.run_live(
-      user_id="user",
-      session_id="missing",
-      live_request_queue=live_queue,
-  )
-
-  event = await agen.__anext__()
-  await agen.aclose()
-
-  assert event.author == "live_agent"
-  assert event.content.parts[0].text == "live hello"
-
-  # Session should have been created automatically.
-  session = await session_service.get_session(
-      app_name="live_app", user_id="user", session_id="missing"
-  )
-  assert session is not None
-
-
-@pytest.mark.asyncio
-async def test_run_live_persists_event_callback_modifications():
-  """run_live should persist the same event it streams after callback changes."""
-  session_service = InMemorySessionService()
-  artifact_service = InMemoryArtifactService()
-  plugin = MockPlugin()
-  plugin.enable_event_callback = True
-  runner = Runner(
-      app_name="live_app",
-      agent=MockLiveAgent("live_agent"),
-      session_service=session_service,
-      artifact_service=artifact_service,
-      plugins=[plugin],
-  )
-  await session_service.create_session(
-      app_name="live_app", user_id="user", session_id="live_session"
-  )
-
-  from google.adk.agents.live_request_queue import LiveRequestQueue
-
-  live_queue = LiveRequestQueue()
-  agen = runner.run_live(
-      user_id="user",
-      session_id="live_session",
-      live_request_queue=live_queue,
-  )
-
-  streamed_event = await agen.__anext__()
-  await agen.aclose()
-
-  session = await session_service.get_session(
-      app_name="live_app", user_id="user", session_id="live_session"
-  )
-  persisted_event = session.events[0]
-
-  assert streamed_event.author == "live_agent"
-  assert streamed_event.invocation_id
-  assert streamed_event.content.parts[0].text == (
-      MockPlugin.ON_EVENT_CALLBACK_MSG
-  )
-  assert streamed_event.custom_metadata == MockPlugin.ON_EVENT_CALLBACK_METADATA
-
-  assert persisted_event.id == streamed_event.id
-  assert persisted_event.timestamp == streamed_event.timestamp
-  assert persisted_event.author == streamed_event.author
-  assert persisted_event.invocation_id == streamed_event.invocation_id
-  assert persisted_event.content.parts[0].text == (
-      MockPlugin.ON_EVENT_CALLBACK_MSG
-  )
-  assert (
-      persisted_event.custom_metadata == MockPlugin.ON_EVENT_CALLBACK_METADATA
-  )
-
-
-@pytest.mark.asyncio
-async def test_runner_allows_nested_agent_directories(tmp_path, monkeypatch):
-  project_root = tmp_path / "workspace"
-  agent_dir = project_root / "agents" / "examples" / "hello_world"
-  agent_dir.mkdir(parents=True)
-  # Make package structure importable.
-  for pkg_dir in [
-      project_root / "agents",
-      project_root / "agents" / "examples",
-      agent_dir,
-  ]:
-    (pkg_dir / "__init__.py").write_text("", encoding="utf-8")
-  # Extra directories that previously confused origin inference, e.g. virtualenv.
-  (project_root / "agents" / ".venv").mkdir()
-
-  agent_source = textwrap.dedent("""\
-      from google.adk.events.event import Event
-      from google.adk.agents.base_agent import BaseAgent
-      from google.genai import types
-
-
-      class SimpleAgent(BaseAgent):
-
-        def __init__(self):
-          super().__init__(name='simplest_agent', sub_agents=[])
-
-        async def _run_async_impl(self, invocation_context):
-          yield Event(
-              invocation_id=invocation_context.invocation_id,
-              author=self.name,
-              content=types.Content(
-                  role='model',
-                  parts=[types.Part(text='hello from nested')],
-              ),
-          )
-
-
-      root_agent = SimpleAgent()
-      """)
-  (agent_dir / "agent.py").write_text(agent_source, encoding="utf-8")
-
-  monkeypatch.chdir(project_root)
-  loader = AgentLoader(agents_dir="agents/examples")
-  loaded_agent = loader.load_agent("hello_world")
-
-  assert isinstance(loaded_agent, BaseAgent)
-  session_service = InMemorySessionService()
-  artifact_service = InMemoryArtifactService()
-  runner = Runner(
-      app_name="hello_world",
-      agent=loaded_agent,
-      session_service=session_service,
-      artifact_service=artifact_service,
-  )
-  assert runner._app_name_alignment_hint is None
-
-  session = await session_service.create_session(
-      app_name="hello_world",
-      user_id="user",
-  )
-  agen = runner.run_async(
-      user_id=session.user_id,
-      session_id=session.id,
-      new_message=types.Content(
-          role="user",
-          parts=[types.Part(text="hi")],
-      ),
-  )
-  event = await agen.__anext__()
-  await agen.aclose()
-
-  assert event.author == "simplest_agent"
-  assert event.content
-  assert event.content.parts
-  assert event.content.parts[0].text == "hello from nested"
-
   def test_find_agent_to_run_with_function_response_scenario(self):
     """Test finding agent when last event is function response."""
     # Create a function call from sub_agent1
@@ -674,6 +404,9 @@ async def test_runner_allows_nested_agent_directories(tmp_path, monkeypatch):
         events=[call_event, root_event, response_event],
     )
 
+    # Function-response routing only applies when resumability is enabled.
+    self.runner.resumability_config = ResumabilityConfig(is_resumable=True)
+
     # Should return sub_agent2 due to function response, not root_agent
     result = self.runner._find_agent_to_run(session, self.root_agent)
     assert result == self.sub_agent2
@@ -748,6 +481,90 @@ async def test_runner_allows_nested_agent_directories(tmp_path, monkeypatch):
     result = self.runner._find_agent_to_run(session, self.root_agent)
     assert result == self.non_transferable_agent
 
+  def test_find_agent_to_run_resumable_unknown_function_call_author_falls_back(
+      self,
+  ):
+    """Resumable routing must not return None for an unknown call author.
+
+    When the matching function-call event is authored by something that is not
+    an agent in the current hierarchy (e.g. "user", or a stale/foreign agent
+    name carried over from a previous turn/session), `find_agent` returns None.
+    Previously this None propagated to `build_node`, raising a confusing
+    "Invalid node type: <class 'NoneType'>" error. We now fall through to the
+    root agent instead.
+    """
+    function_call = types.FunctionCall(id="func_456", name="test_func", args={})
+    function_response = types.FunctionResponse(
+        id="func_456", name="test_func", response={}
+    )
+
+    # The function call is authored by "user", which is not an agent name.
+    call_event = Event(
+        invocation_id="inv1",
+        author="user",
+        content=types.Content(
+            role="model", parts=[types.Part(function_call=function_call)]
+        ),
+    )
+
+    response_event = Event(
+        invocation_id="inv2",
+        author="user",
+        content=types.Content(
+            role="user", parts=[types.Part(function_response=function_response)]
+        ),
+    )
+
+    session = Session(
+        id="test_session",
+        user_id="test_user",
+        app_name="test_app",
+        events=[call_event, response_event],
+    )
+
+    self.runner.resumability_config = ResumabilityConfig(is_resumable=True)
+
+    result = self.runner._find_agent_to_run(session, self.root_agent)
+    assert result == self.root_agent
+
+  def test_find_agent_to_run_resumable_stale_function_call_author_falls_back(
+      self,
+  ):
+    """Resumable routing falls back to root for a stale/foreign call author."""
+    function_call = types.FunctionCall(id="func_789", name="test_func", args={})
+    function_response = types.FunctionResponse(
+        id="func_789", name="test_func", response={}
+    )
+
+    # The function call is authored by an agent that is not in the hierarchy.
+    call_event = Event(
+        invocation_id="inv1",
+        author="agent_from_a_previous_session",
+        content=types.Content(
+            role="model", parts=[types.Part(function_call=function_call)]
+        ),
+    )
+
+    response_event = Event(
+        invocation_id="inv2",
+        author="user",
+        content=types.Content(
+            role="user", parts=[types.Part(function_response=function_response)]
+        ),
+    )
+
+    session = Session(
+        id="test_session",
+        user_id="test_user",
+        app_name="test_app",
+        events=[call_event, response_event],
+    )
+
+    self.runner.resumability_config = ResumabilityConfig(is_resumable=True)
+
+    result = self.runner._find_agent_to_run(session, self.root_agent)
+    assert result == self.root_agent
+
   def test_is_transferable_across_agent_tree_with_llm_agent(self):
     """Test _is_transferable_across_agent_tree with LLM agent."""
     result = self.runner._is_transferable_across_agent_tree(self.sub_agent1)
@@ -766,6 +583,358 @@ async def test_runner_allows_nested_agent_directories(tmp_path, monkeypatch):
     # MockAgent inherits from BaseAgent, not LlmAgent, so it should return False
     result = self.runner._is_transferable_across_agent_tree(non_llm_agent)
     assert result is False
+
+
+@pytest.mark.asyncio
+async def test_session_not_found_message_includes_alignment_hint():
+
+  class RunnerWithMismatch(Runner):
+
+    def _infer_agent_origin(
+        self, agent: BaseAgent
+    ) -> tuple[Optional[str], Optional[Path]]:
+      del agent
+      return "expected_app", Path("/workspace/agents/expected_app")
+
+  session_service = InMemorySessionService()
+  runner = RunnerWithMismatch(
+      app_name="configured_app",
+      agent=MockLlmAgent("root_agent"),
+      session_service=session_service,
+      artifact_service=InMemoryArtifactService(),
+  )
+
+  agen = runner.run_async(
+      user_id="user",
+      session_id="missing",
+      new_message=types.Content(role="user", parts=[]),
+  )
+
+  with pytest.raises(SessionNotFoundError) as excinfo:
+    await agen.__anext__()
+
+  await agen.aclose()
+
+  message = str(excinfo.value)
+  assert "Session not found" in message
+  assert "configured_app" in message
+  assert "expected_app" in message
+  assert "Ensure the runner app_name matches" in message
+
+
+@pytest.mark.asyncio
+async def test_session_auto_creation():
+
+  class RunnerWithMismatch(Runner):
+
+    def _infer_agent_origin(
+        self, agent: BaseAgent
+    ) -> tuple[Optional[str], Optional[Path]]:
+      del agent
+      return "expected_app", Path("/workspace/agents/expected_app")
+
+  session_service = InMemorySessionService()
+  runner = RunnerWithMismatch(
+      app_name="expected_app",
+      agent=MockLlmAgent("test_agent"),
+      session_service=session_service,
+      artifact_service=InMemoryArtifactService(),
+      auto_create_session=True,
+  )
+
+  agen = runner.run_async(
+      user_id="user",
+      session_id="missing",
+      new_message=types.Content(role="user", parts=[types.Part(text="hi")]),
+  )
+
+  event = await agen.__anext__()
+  await agen.aclose()
+
+  # Verify that session_id="missing" doesn't error out - session is auto-created
+  assert event.author == "test_agent"
+  assert event.content.parts[0].text == "Test LLM response"
+
+
+@pytest.mark.asyncio
+async def test_rewind_auto_create_session_on_missing_session():
+  """When auto_create_session=True, rewind should create session if missing.
+
+  The newly created session won't contain the target invocation, so
+  `rewind_async` should raise an Invocation ID not found error (rather than
+  a session not found error), demonstrating auto-creation occurred.
+  """
+  session_service = InMemorySessionService()
+  runner = Runner(
+      app_name="auto_create_app",
+      agent=MockLlmAgent("agent_for_rewind"),
+      session_service=session_service,
+      artifact_service=InMemoryArtifactService(),
+      auto_create_session=True,
+  )
+
+  with pytest.raises(ValueError, match=r"Invocation ID not found: inv_missing"):
+    await runner.rewind_async(
+        user_id="user",
+        session_id="missing",
+        rewind_before_invocation_id="inv_missing",
+    )
+
+  # Verify the session actually exists now due to auto-creation.
+  session = await session_service.get_session(
+      app_name="auto_create_app", user_id="user", session_id="missing"
+  )
+  assert session is not None
+  assert session.app_name == "auto_create_app"
+
+
+@pytest.mark.asyncio
+async def test_run_live_auto_create_session():
+  """run_live should auto-create session when missing and yield events."""
+  session_service = InMemorySessionService()
+  artifact_service = InMemoryArtifactService()
+  runner = Runner(
+      app_name="live_app",
+      agent=MockLiveAgent("live_agent"),
+      session_service=session_service,
+      artifact_service=artifact_service,
+      auto_create_session=True,
+  )
+
+  # An empty LiveRequestQueue is sufficient for our mock agent.
+  from google.adk.agents.live_request_queue import LiveRequestQueue
+
+  live_queue = LiveRequestQueue()
+
+  agen = runner.run_live(
+      user_id="user",
+      session_id="missing",
+      live_request_queue=live_queue,
+  )
+
+  event = await agen.__anext__()
+  await agen.aclose()
+
+  assert event.author == "live_agent"
+  assert event.content.parts[0].text == "live hello"
+
+  # Session should have been created automatically.
+  session = await session_service.get_session(
+      app_name="live_app", user_id="user", session_id="missing"
+  )
+  assert session is not None
+
+
+def test_run_passes_state_delta():
+  """run should forward state_delta down to run_async."""
+  import asyncio
+
+  session_service = InMemorySessionService()
+  runner = Runner(
+      app_name=TEST_APP_ID,
+      agent=MockAgent("test_agent"),
+      session_service=session_service,
+      artifact_service=InMemoryArtifactService(),
+      auto_create_session=True,
+  )
+
+  state_delta = {"test_key": "test_value"}
+
+  events = list(
+      runner.run(
+          user_id=TEST_USER_ID,
+          session_id=TEST_SESSION_ID,
+          new_message=types.Content(
+              role="user", parts=[types.Part(text="hello")]
+          ),
+          state_delta=state_delta,
+      )
+  )
+
+  assert len(events) >= 1
+
+  session = asyncio.run(
+      session_service.get_session(
+          app_name=TEST_APP_ID, user_id=TEST_USER_ID, session_id=TEST_SESSION_ID
+      )
+  )
+  session_events = session.events
+
+  user_event = next(e for e in session_events if e.author == "user")
+  assert user_event.actions.state_delta == state_delta
+
+
+@pytest.mark.asyncio
+async def test_run_async_propagates_invocation_id():
+  """run_async should propagate invocation_id to the invocation context and events."""
+
+  session_service = InMemorySessionService()
+  runner = Runner(
+      app_name=TEST_APP_ID,
+      agent=MockAgent("test_agent"),
+      session_service=session_service,
+      artifact_service=InMemoryArtifactService(),
+      auto_create_session=True,
+  )
+
+  custom_invocation_id = "my_custom_invocation_id"
+
+  agen = runner.run_async(
+      user_id=TEST_USER_ID,
+      session_id=TEST_SESSION_ID,
+      new_message=types.Content(role="user", parts=[types.Part(text="hello")]),
+      invocation_id=custom_invocation_id,
+  )
+
+  events = []
+  async with aclosing(agen) as a:
+    async for event in a:
+      events.append(event)
+
+  assert len(events) >= 1
+  # Verify yielded events have the custom invocation ID
+  for event in events:
+    assert event.invocation_id == custom_invocation_id
+
+  # Verify the session has the custom invocation ID in its events
+  session = await session_service.get_session(
+      app_name=TEST_APP_ID, user_id=TEST_USER_ID, session_id=TEST_SESSION_ID
+  )
+  assert session is not None
+  assert len(session.events) == 2
+  for event in session.events:
+    assert event.invocation_id == custom_invocation_id
+
+
+@pytest.mark.asyncio
+async def test_run_live_persists_event_callback_modifications():
+  """run_live should persist the same event it streams after callback changes."""
+  session_service = InMemorySessionService()
+  artifact_service = InMemoryArtifactService()
+  plugin = MockPlugin()
+  plugin.enable_event_callback = True
+  runner = Runner(
+      app_name="live_app",
+      agent=MockLiveAgent("live_agent"),
+      session_service=session_service,
+      artifact_service=artifact_service,
+      plugins=[plugin],
+  )
+  await session_service.create_session(
+      app_name="live_app", user_id="user", session_id="live_session"
+  )
+
+  from google.adk.agents.live_request_queue import LiveRequestQueue
+
+  live_queue = LiveRequestQueue()
+  agen = runner.run_live(
+      user_id="user",
+      session_id="live_session",
+      live_request_queue=live_queue,
+  )
+
+  streamed_event = await agen.__anext__()
+  await agen.aclose()
+
+  session = await session_service.get_session(
+      app_name="live_app", user_id="user", session_id="live_session"
+  )
+  persisted_event = session.events[0]
+
+  assert streamed_event.author == "live_agent"
+  assert streamed_event.invocation_id
+  assert streamed_event.content.parts[0].text == (
+      MockPlugin.ON_EVENT_CALLBACK_MSG
+  )
+  assert streamed_event.custom_metadata == MockPlugin.ON_EVENT_CALLBACK_METADATA
+
+  assert persisted_event.id == streamed_event.id
+  assert persisted_event.timestamp == streamed_event.timestamp
+  assert persisted_event.author == streamed_event.author
+  assert persisted_event.invocation_id == streamed_event.invocation_id
+  assert persisted_event.content.parts[0].text == (
+      MockPlugin.ON_EVENT_CALLBACK_MSG
+  )
+  assert (
+      persisted_event.custom_metadata == MockPlugin.ON_EVENT_CALLBACK_METADATA
+  )
+
+
+@pytest.mark.asyncio
+async def test_runner_allows_nested_agent_directories(tmp_path, monkeypatch):
+  project_root = tmp_path / "workspace"
+  agent_dir = project_root / "agents" / "examples" / "hello_world"
+  agent_dir.mkdir(parents=True)
+  # Make package structure importable.
+  for pkg_dir in [
+      project_root / "agents",
+      project_root / "agents" / "examples",
+      agent_dir,
+  ]:
+    (pkg_dir / "__init__.py").write_text("", encoding="utf-8")
+  # Extra directories that previously confused origin inference, e.g. virtualenv.
+  (project_root / "agents" / ".venv").mkdir()
+
+  agent_source = textwrap.dedent("""\
+      from google.adk.events.event import Event
+      from google.adk.agents.base_agent import BaseAgent
+      from google.genai import types
+
+
+      class SimpleAgent(BaseAgent):
+
+        def __init__(self):
+          super().__init__(name='simplest_agent', sub_agents=[])
+
+        async def _run_async_impl(self, invocation_context):
+          yield Event(
+              invocation_id=invocation_context.invocation_id,
+              author=self.name,
+              content=types.Content(
+                  role='model',
+                  parts=[types.Part(text='hello from nested')],
+              ),
+          )
+
+
+      root_agent = SimpleAgent()
+      """)
+  (agent_dir / "agent.py").write_text(agent_source, encoding="utf-8")
+
+  monkeypatch.chdir(project_root)
+  loader = AgentLoader(agents_dir="agents/examples")
+  loaded_agent = loader.load_agent("hello_world")
+
+  assert isinstance(loaded_agent, BaseAgent)
+  session_service = InMemorySessionService()
+  artifact_service = InMemoryArtifactService()
+  runner = Runner(
+      app_name="hello_world",
+      agent=loaded_agent,
+      session_service=session_service,
+      artifact_service=artifact_service,
+  )
+  assert runner._app_name_alignment_hint is None
+
+  session = await session_service.create_session(
+      app_name="hello_world",
+      user_id="user",
+  )
+  agen = runner.run_async(
+      user_id=session.user_id,
+      session_id=session.id,
+      new_message=types.Content(
+          role="user",
+          parts=[types.Part(text="hi")],
+      ),
+  )
+  event = await agen.__anext__()
+  await agen.aclose()
+
+  assert event.author == "simplest_agent"
+  assert event.content
+  assert event.content.parts
+  assert event.content.parts[0].text == "hello from nested"
 
 
 @pytest.mark.asyncio
@@ -801,6 +970,41 @@ async def test_run_config_custom_metadata_propagates_to_events():
   )
   user_event = next(event for event in session.events if event.author == "user")
   assert user_event.custom_metadata == {"request_id": "req-1"}
+
+
+@pytest.mark.asyncio
+async def test_run_config_custom_metadata_stamps_user_event_in_chat_mode():
+  """LlmAgent chat path stamps the user event with run-level custom_metadata."""
+  session_service = InMemorySessionService()
+
+  def _before_agent_callback(callback_context) -> types.Content:
+    del callback_context  # Unused; short-circuits the model call.
+    return types.Content(role="model", parts=[types.Part(text="hi back")])
+
+  agent = LlmAgent(
+      name="chat_agent", before_agent_callback=_before_agent_callback
+  )
+  runner = Runner(
+      app_name=TEST_APP_ID, agent=agent, session_service=session_service
+  )
+  await session_service.create_session(
+      app_name=TEST_APP_ID, user_id=TEST_USER_ID, session_id=TEST_SESSION_ID
+  )
+
+  run_config = RunConfig(custom_metadata={"turn_id": "t-1"})
+  async for _ in runner.run_async(
+      user_id=TEST_USER_ID,
+      session_id=TEST_SESSION_ID,
+      new_message=types.Content(role="user", parts=[types.Part(text="hi")]),
+      run_config=run_config,
+  ):
+    pass
+
+  session = await session_service.get_session(
+      app_name=TEST_APP_ID, user_id=TEST_USER_ID, session_id=TEST_SESSION_ID
+  )
+  user_event = next(event for event in session.events if event.author == "user")
+  assert user_event.custom_metadata == {"turn_id": "t-1"}
 
 
 class TestRunnerWithPlugins:
@@ -1153,7 +1357,9 @@ class TestRunnerCacheConfig:
     """Test realistic scenario with production-like cache config."""
     # Production cache config
     production_cache_config = ContextCacheConfig(
-        cache_intervals=30, ttl_seconds=14400, min_tokens=4096  # 4 hours
+        cache_intervals=30,
+        ttl_seconds=14400,
+        min_tokens=4096,  # 4 hours
     )
 
     app = App(
@@ -1176,7 +1382,8 @@ class TestRunnerCacheConfig:
 
     # Verify string representation
     expected_str = (
-        "ContextCacheConfig(cache_intervals=30, ttl=14400s, min_tokens=4096)"
+        "ContextCacheConfig(cache_intervals=30, ttl=14400s, min_tokens=4096, "
+        "create_http_options=None)"
     )
     assert str(runner.context_cache_config) == expected_str
 
@@ -1590,6 +1797,70 @@ async def test_run_async_passes_get_session_config():
   # Agent should still produce output (session was found).
   assert len(events) >= 1
   assert events[0].author == "test_agent"
+
+
+@pytest.mark.asyncio
+async def test_run_async_teardown_on_aclose():
+  """Closing run_async generator using aclose() should abort and cancel the running agent task."""
+  import asyncio
+
+  session_service = InMemorySessionService()
+  artifact_service = InMemoryArtifactService()
+
+  was_cancelled = {"value": False}
+
+  class CancellingAgent(BaseAgent):
+
+    def __init__(self, name: str):
+      super().__init__(name=name, sub_agents=[])
+
+    async def _run_async_impl(
+        self, invocation_context: InvocationContext
+    ) -> AsyncGenerator[Event, None]:
+      try:
+        yield Event(
+            invocation_id=invocation_context.invocation_id,
+            author=self.name,
+            content=types.Content(
+                role="model", parts=[types.Part(text="First response")]
+            ),
+        )
+        # Block simulating slow ongoing task
+        await asyncio.sleep(5.0)
+        yield Event(
+            invocation_id=invocation_context.invocation_id,
+            author=self.name,
+            content=types.Content(
+                role="model", parts=[types.Part(text="Second response")]
+            ),
+        )
+      except (asyncio.CancelledError, GeneratorExit):
+        was_cancelled["value"] = True
+        raise
+
+  runner = Runner(
+      app_name=TEST_APP_ID,
+      agent=CancellingAgent("cancel_agent"),
+      session_service=session_service,
+      artifact_service=artifact_service,
+      auto_create_session=True,
+  )
+
+  # Given a run session
+  agen = runner.run_async(
+      user_id=TEST_USER_ID,
+      session_id=TEST_SESSION_ID,
+      new_message=types.Content(role="user", parts=[types.Part(text="hello")]),
+  )
+
+  # When the client reads the first event and then calls aclose()
+  event = await agen.__anext__()
+  assert event.content.parts[0].text == "First response"
+
+  await agen.aclose()
+
+  # Then the running agent was immediately aborted and cancelled
+  assert was_cancelled["value"] is True
 
 
 @pytest.mark.asyncio

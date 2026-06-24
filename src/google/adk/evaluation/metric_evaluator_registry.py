@@ -33,6 +33,7 @@ from .metric_info_providers import MultiTurnTrajectoryQualityV1MetricInfoProvide
 from .metric_info_providers import PerTurnUserSimulatorQualityV1MetricInfoProvider
 from .metric_info_providers import ResponseEvaluatorMetricInfoProvider
 from .metric_info_providers import RubricBasedFinalResponseQualityV1EvaluatorMetricInfoProvider
+from .metric_info_providers import RubricBasedMultiTurnTrajectoryMetricInfoProvider
 from .metric_info_providers import RubricBasedToolUseV1EvaluatorMetricInfoProvider
 from .metric_info_providers import SafetyEvaluatorV1MetricInfoProvider
 from .metric_info_providers import TrajectoryEvaluatorMetricInfoProvider
@@ -41,6 +42,7 @@ from .multi_turn_tool_use_quality_evaluator import MultiTurnToolUseQualityV1Eval
 from .multi_turn_trajectory_quality_evaluator import MultiTurnTrajectoryQualityV1Evaluator
 from .response_evaluator import ResponseEvaluator
 from .rubric_based_final_response_quality_v1 import RubricBasedFinalResponseQualityV1Evaluator
+from .rubric_based_multi_turn_trajectory_evaluator import RubricBasedMultiTurnTrajectoryEvaluator
 from .rubric_based_tool_use_quality_v1 import RubricBasedToolUseV1Evaluator
 from .safety_evaluator import SafetyEvaluatorV1
 from .simulation.per_turn_user_simulator_quality_v1 import PerTurnUserSimulatorQualityV1
@@ -163,6 +165,10 @@ def _get_default_metric_evaluator_registry() -> MetricEvaluatorRegistry:
   metric_evaluator_registry.register_evaluator(
       metric_info=PerTurnUserSimulatorQualityV1MetricInfoProvider().get_metric_info(),
       evaluator=PerTurnUserSimulatorQualityV1,
+  )
+  metric_evaluator_registry.register_evaluator(
+      metric_info=RubricBasedMultiTurnTrajectoryMetricInfoProvider().get_metric_info(),
+      evaluator=RubricBasedMultiTurnTrajectoryEvaluator,
   )
 
   return metric_evaluator_registry

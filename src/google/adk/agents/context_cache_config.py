@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+from google.genai import types
 from pydantic import BaseModel
 from pydantic import ConfigDict
 from pydantic import Field
@@ -34,10 +35,14 @@ class ContextCacheConfig(BaseModel):
   Context caching can significantly reduce costs and improve response times
   by reusing previously processed context across multiple requests.
 
+  Caching begins on the second turn of a session at the earliest and requires
+  the prior request to reach Gemini's hard 4096-token minimum, so short or
+  single-turn sessions are never cached.
+
   Attributes:
       cache_intervals: Maximum number of invocations to reuse the same cache before refreshing it
       ttl_seconds: Time-to-live for cache in seconds
-      min_tokens: Minimum tokens required to enable caching
+      min_tokens: Minimum prior-request tokens required to enable caching
   """
 
   model_config = ConfigDict(
@@ -64,11 +69,26 @@ class ContextCacheConfig(BaseModel):
       default=0,
       ge=0,
       description=(
-          "Minimum estimated request tokens required to enable caching. This"
-          " compares against the estimated total tokens of the request (system"
-          " instruction + tools + contents). Context cache storage may have"
-          " cost. Set higher to avoid caching small requests where overhead may"
-          " exceed benefits."
+          "Minimum prior-request tokens required to enable caching. This gates"
+          " on the previous request's actual prompt token count, not an"
+          " estimate of the current request. Gemini enforces a hard 4096-token"
+          " minimum that always applies, so values below 4096 have no"
+          " additional effect. No cache is created on the first request of a"
+          " session; caching begins on the second turn once a previous token"
+          " count is known. Set higher to avoid caching small requests where"
+          " storage overhead may exceed benefits."
+      ),
+  )
+
+  create_http_options: types.HttpOptions | None = Field(
+      default=None,
+      description=(
+          "Optional HTTP options to pass to the GenAI client. Set this to add a"
+          " timeout on CachedContent.create() calls (e.g."
+          " types.HttpOptions(timeout=10000) for a 10-second timeout in"
+          " milliseconds). When the cache creation call exceeds the timeout,"
+          " it fails and the request proceeds without caching. None uses the"
+          " client's default HTTP options."
       ),
   )
 
@@ -81,5 +101,6 @@ class ContextCacheConfig(BaseModel):
     """String representation for logging."""
     return (
         f"ContextCacheConfig(cache_intervals={self.cache_intervals}, "
-        f"ttl={self.ttl_seconds}s, min_tokens={self.min_tokens})"
+        f"ttl={self.ttl_seconds}s, min_tokens={self.min_tokens}, "
+        f"create_http_options={self.create_http_options})"
     )

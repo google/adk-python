@@ -47,6 +47,42 @@ logger = logging.getLogger('google_adk.' + __name__)
 _COMPACTION_CUSTOM_METADATA_KEY = '_compaction'
 _USAGE_METADATA_CUSTOM_METADATA_KEY = '_usage_metadata'
 
+_SESSION_ID_PATTERN = re.compile(r'^[A-Za-z0-9_-]+$')
+
+
+def _extract_short_session_id(
+    session_id: str, expected_engine_id: str | None = None
+) -> str:
+  """Extracts the short session ID if a full resource name is provided."""
+  if isinstance(session_id, str) and '/' in session_id:
+    parts = session_id.split('/')
+    if len(parts) >= 2 and parts[-2] == 'sessions':
+      if (
+          len(parts) >= 4
+          and parts[-4] == 'reasoningEngines'
+          and expected_engine_id
+      ):
+        passed_engine_id = parts[-3]
+        if passed_engine_id != expected_engine_id:
+          raise ValueError(
+              'Session resource name mismatch: session belongs to '
+              f'reasoningEngine {passed_engine_id!r}, but service is '
+              f'configured for {expected_engine_id!r}.'
+          )
+      return parts[-1]
+  return session_id
+
+
+def _validate_session_id(session_id: str) -> None:
+  """Rejects session IDs that could escape the URL path segment."""
+  if not isinstance(session_id, str) or not _SESSION_ID_PATTERN.fullmatch(
+      session_id
+  ):
+    raise ValueError(
+        f'Invalid session_id {session_id!r}: must match'
+        f' {_SESSION_ID_PATTERN.pattern}.'
+    )
+
 
 def _quote_filter_literal(value: str) -> str:
   """Quotes filter values so embedded metacharacters stay inside the literal."""
@@ -87,13 +123,12 @@ class VertexAiSessionService(BaseSessionService):
       agent_engine_id: The resource ID of the agent engine to use.
       express_mode_api_key: The API key to use for Express Mode. If not
         provided, the API key from the GOOGLE_API_KEY environment variable will
-        be used. It will only be used if GOOGLE_GENAI_USE_VERTEXAI is true.
-        Do not use Google AI Studio API key for this field. For more details,
-        visit
+        be used. It will only be used if GOOGLE_GENAI_USE_ENTERPRISE is true. Do
+        not use Google AI Studio API key for this field. For more details, visit
         https://cloud.google.com/vertex-ai/generative-ai/docs/start/express-mode/overview
     """
     try:
-      import vertexai
+      import vertexai  # noqa: F401
     except ImportError as e:
       from ..utils._dependency import missing_extra
 
@@ -124,16 +159,26 @@ class VertexAiSessionService(BaseSessionService):
       state: The initial state of the session.
       session_id: The ID of the session.
       **kwargs: Additional arguments to pass to the session creation. E.g. set
+        ttl='7200s' to set the session time-to-live or
         expire_time='2025-10-01T00:00:00Z' to set the session expiration time.
         See https://cloud.google.com/vertex-ai/generative-ai/docs/reference/rest/v1beta1/projects.locations.reasoningEngines.sessions
         for more details.
+
     Returns:
       The created session.
     """
+    if kwargs.get('ttl') is not None and kwargs.get('expire_time') is not None:
+      raise ValueError(
+          "Cannot specify both 'ttl' and 'expire_time' simultaneously."
+      )
     reasoning_engine_id = self._get_reasoning_engine_id(app_name)
 
     config = {'session_state': state} if state else {}
     if session_id:
+      session_id = _extract_short_session_id(
+          session_id, expected_engine_id=reasoning_engine_id
+      )
+      _validate_session_id(session_id)
       config['session_id'] = session_id
     config.update(kwargs)
     async with self._get_api_client() as api_client:
@@ -165,6 +210,10 @@ class VertexAiSessionService(BaseSessionService):
       config: Optional[GetSessionConfig] = None,
   ) -> Optional[Session]:
     reasoning_engine_id = self._get_reasoning_engine_id(app_name)
+    session_id = _extract_short_session_id(
+        session_id, expected_engine_id=reasoning_engine_id
+    )
+    _validate_session_id(session_id)
     session_resource_name = (
         f'reasoningEngines/{reasoning_engine_id}/sessions/{session_id}'
     )
@@ -264,23 +313,64 @@ class VertexAiSessionService(BaseSessionService):
       self, *, app_name: str, user_id: str, session_id: str
   ) -> None:
     reasoning_engine_id = self._get_reasoning_engine_id(app_name)
+    session_id = _extract_short_session_id(
+        session_id, expected_engine_id=reasoning_engine_id
+    )
+    _validate_session_id(session_id)
+    session_resource_name = (
+        f'reasoningEngines/{reasoning_engine_id}/sessions/{session_id}'
+    )
 
     async with self._get_api_client() as api_client:
+      # Enforce ownership: delete_session otherwise ignores user_id entirely.
+      try:
+        existing = await api_client.agent_engines.sessions.get(
+            name=session_resource_name
+        )
+      except ClientError as e:
+        if e.code == 404:
+          return
+        raise
+      if existing.user_id != user_id:
+        raise ValueError(
+            f'Session {session_id} does not belong to user {user_id}.'
+        )
+
       try:
         await api_client.agent_engines.sessions.delete(
-            name=(
-                f'reasoningEngines/{reasoning_engine_id}/sessions/{session_id}'
-            ),
+            name=session_resource_name,
         )
       except Exception as e:
         logger.error('Error deleting session %s: %s', session_id, e)
         raise
 
   @override
+  async def get_user_state(
+      self, *, app_name: str, user_id: str
+  ) -> dict[str, Any]:
+    """Not supported by the Vertex AI Agent Engine backend.
+
+    The Vertex AI Agent Engine API does not expose user state independently of
+    a session.  To read user state, enumerate sessions via ``list_sessions``
+    and call ``get_session`` on each result to access the merged state.
+
+    Raises:
+      NotImplementedError: Always, because the Vertex AI Agent Engine API does
+        not provide a way to query user state without a session.
+    """
+    raise NotImplementedError(
+        'VertexAiSessionService does not support get_user_state. '
+        'The Vertex AI Agent Engine API does not expose user state '
+        'independently of a session. To read user state, enumerate sessions '
+        'via list_sessions and call get_session on each result.'
+    )
+
+  @override
   async def append_event(self, session: Session, event: Event) -> Event:
     # Update the in-memory session.
     await super().append_event(session=session, event=event)
 
+    _validate_session_id(session.id)
     reasoning_engine_id = self._get_reasoning_engine_id(session.app_name)
 
     # Build config (Monolithic approach)

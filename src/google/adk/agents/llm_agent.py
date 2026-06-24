@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+import abc
 import asyncio
 import importlib
 import inspect
@@ -61,8 +62,10 @@ from ..utils._schema_utils import validate_schema
 from ..utils.context_utils import Aclosing
 from .base_agent import BaseAgent
 from .base_agent import BaseAgentState
+from .base_agent_config import BaseAgentConfig as BaseAgentConfig
 from .callback_context import CallbackContext
 from .invocation_context import InvocationContext
+from .llm_agent_config import LlmAgentConfig as LlmAgentConfig
 from .readonly_context import ReadonlyContext
 
 logger = logging.getLogger('google_adk.' + __name__)
@@ -190,10 +193,12 @@ async def _convert_tool_union_to_tools(
     return []
 
 
-class LlmAgent(BaseAgent):
+# TODO: drop the explicit abc.ABC base once BaseNode surfaces ABCMeta to
+# static type checkers.
+class LlmAgent(BaseAgent, abc.ABC):
   """LLM-based Agent."""
 
-  DEFAULT_MODEL: ClassVar[str] = 'gemini-3-flash-preview'
+  DEFAULT_MODEL: ClassVar[str] = 'gemini-3.5-flash'
   """System default model used when no model is set on an agent."""
 
   DEFAULT_LIVE_MODEL: ClassVar[str] = 'gemini-live-2.5-flash-native-audio'
@@ -210,7 +215,14 @@ class LlmAgent(BaseAgent):
 
   When not set, the agent will inherit the model from its ancestor. If no
   ancestor provides a model, the agent uses the default model configured via
-  LlmAgent.set_default_model. The built-in default is gemini-3-flash-preview.
+  LlmAgent.set_default_model. The built-in default is gemini-3.5-flash.
+  """
+
+  config_type: ClassVar[Type[BaseAgentConfig]] = LlmAgentConfig
+  """The config type for this agent.
+
+  DEPRECATED: This attribute is deprecated and will be removed in a future
+  version, along with the AgentConfig YAML loader.
   """
 
   instruction: Union[str, InstructionProvider] = ''
@@ -480,6 +492,15 @@ class LlmAgent(BaseAgent):
   # Callbacks - End
 
   @override
+  async def _handle_before_agent_callback(
+      self, ctx: InvocationContext
+  ) -> Optional[Event]:
+    event = await super()._handle_before_agent_callback(ctx)
+    if event is not None:
+      self.__maybe_save_output_to_state(event)
+    return event
+
+  @override
   async def _run_async_impl(
       self, ctx: InvocationContext
   ) -> AsyncGenerator[Event, None]:
@@ -499,9 +520,13 @@ class LlmAgent(BaseAgent):
       return
 
     should_pause = False
+    output_accumulator = ''
     async with Aclosing(self._llm_flow.run_async(ctx)) as agen:
       async for event in agen:
         self.__maybe_save_output_to_state(event)
+        output_accumulator = self.__maybe_accumulate_streaming_output(
+            event, output_accumulator
+        )
         yield event
         if ctx.should_pause_invocation(event):
           # Do not pause immediately, wait until the long-running tool call is
@@ -523,9 +548,13 @@ class LlmAgent(BaseAgent):
   async def _run_live_impl(
       self, ctx: InvocationContext
   ) -> AsyncGenerator[Event, None]:
+    output_accumulator = ''
     async with Aclosing(self._llm_flow.run_live(ctx)) as agen:
       async for event in agen:
         self.__maybe_save_output_to_state(event)
+        output_accumulator = self.__maybe_accumulate_streaming_output(
+            event, output_accumulator
+        )
         yield event
       if ctx.end_invocation:
         return
@@ -941,6 +970,47 @@ class LlmAgent(BaseAgent):
         result = validate_schema(self.output_schema, result)
       event.actions.state_delta[self.output_key] = result
 
+  def __maybe_accumulate_streaming_output(
+      self, event: Event, accumulator: str
+  ) -> str:
+    """Accumulates output_key text across a streaming model turn.
+
+    Streaming with tool calls produces non-partial events that carry text
+    alongside a function_call. is_final_response() rejects those, so
+    __maybe_save_output_to_state skips them and the text on those events
+    is dropped from output_key. Accumulate every non-partial text-bearing
+    event from this agent across the model turn so the segments survive
+    in session state. See issue #5590.
+
+    No-op when accumulation doesn't apply (different author, no
+    output_key, output_schema set, partial event, no content, no text).
+    For applicable events, appends the event's text to ``accumulator``
+    and writes the running value to state_delta[output_key], overwriting
+    any value __maybe_save_output_to_state set on the same event.
+    Returns the new accumulator value.
+    """
+    if (
+        not self.output_key
+        or self.output_schema
+        or event.author != self.name
+        or event.partial
+        or not event.content
+        or not event.content.parts
+    ):
+      return accumulator
+
+    text = ''.join(
+        part.text
+        for part in event.content.parts
+        if part.text and not part.thought
+    )
+    if not text:
+      return accumulator
+
+    accumulator += text
+    event.actions.state_delta[self.output_key] = accumulator
+    return accumulator
+
   @model_validator(mode='after')
   def __model_validator_after(self) -> LlmAgent:
     return self
@@ -997,12 +1067,130 @@ class LlmAgent(BaseAgent):
     if self.sub_agents:
       for sub_agent in self.sub_agents:
         if isinstance(sub_agent, LlmAgent):
-          if sub_agent.mode is None:
-            sub_agent.mode = 'chat'
-          if sub_agent.mode == 'single_turn':
+          mode = getattr(sub_agent, 'mode', None)
+          if mode is None:
+            try:
+              sub_agent.mode = 'chat'
+              mode = 'chat'
+            except (AttributeError, TypeError):
+              continue
+          if mode == 'single_turn':
             self.tools.append(_SingleTurnAgentTool(sub_agent))
-          elif sub_agent.mode == 'task':
+          elif mode == 'task':
             self.tools.append(_TaskAgentTool(sub_agent))
+
+  @classmethod
+  @experimental(FeatureName.AGENT_CONFIG)
+  def _resolve_tools(
+      cls, tool_configs: list[ToolConfig], config_abs_path: str
+  ) -> list[Any]:
+    """Resolve tools from configuration.
+
+    Args:
+      tool_configs: List of tool configurations (ToolConfig objects).
+      config_abs_path: The absolute path to the agent config file.
+
+    Returns:
+      List of resolved tool objects.
+    """
+
+    resolved_tools = []
+    for tool_config in tool_configs:
+      if '.' not in tool_config.name:
+        # ADK built-in tools
+        module = importlib.import_module('google.adk.tools')
+        obj = getattr(module, tool_config.name)
+      else:
+        # User-defined tools
+        module_path, obj_name = tool_config.name.rsplit('.', 1)
+        module = importlib.import_module(module_path)
+        obj = getattr(module, obj_name)
+
+      if isinstance(obj, BaseTool) or isinstance(obj, BaseToolset):
+        logger.debug(
+            'Tool %s is an instance of BaseTool/BaseToolset.', tool_config.name
+        )
+        resolved_tools.append(obj)
+      elif inspect.isclass(obj) and (
+          issubclass(obj, BaseTool) or issubclass(obj, BaseToolset)
+      ):
+        logger.debug(
+            'Tool %s is a sub-class of BaseTool/BaseToolset.', tool_config.name
+        )
+        resolved_tools.append(
+            obj.from_config(tool_config.args, config_abs_path)
+        )
+      elif callable(obj):
+        if tool_config.args:
+          logger.debug(
+              'Tool %s is a user-defined tool-generating function.',
+              tool_config.name,
+          )
+          resolved_tools.append(obj(tool_config.args))
+        else:
+          logger.debug(
+              'Tool %s is a user-defined function tool.', tool_config.name
+          )
+          resolved_tools.append(obj)
+      else:
+        raise ValueError(f'Invalid tool YAML config: {tool_config}.')
+
+    return resolved_tools
+
+  @override
+  @classmethod
+  @experimental(FeatureName.AGENT_CONFIG)
+  def _parse_config(
+      cls: Type[LlmAgent],
+      config: LlmAgentConfig,
+      config_abs_path: str,
+      kwargs: Dict[str, Any],
+  ) -> Dict[str, Any]:
+    from .config_agent_utils import resolve_callbacks
+    from .config_agent_utils import resolve_code_reference
+
+    if config.model_code:
+      kwargs['model'] = resolve_code_reference(config.model_code)
+    elif config.model:
+      kwargs['model'] = config.model
+    if config.instruction:
+      kwargs['instruction'] = config.instruction
+    if config.static_instruction:
+      kwargs['static_instruction'] = config.static_instruction
+    if config.disallow_transfer_to_parent:
+      kwargs['disallow_transfer_to_parent'] = config.disallow_transfer_to_parent
+    if config.disallow_transfer_to_peers:
+      kwargs['disallow_transfer_to_peers'] = config.disallow_transfer_to_peers
+    if config.include_contents != 'default':
+      kwargs['include_contents'] = config.include_contents
+    if config.input_schema:
+      kwargs['input_schema'] = resolve_code_reference(config.input_schema)
+    if config.output_schema:
+      kwargs['output_schema'] = resolve_code_reference(config.output_schema)
+    if config.output_key:
+      kwargs['output_key'] = config.output_key
+    if config.tools:
+      kwargs['tools'] = cls._resolve_tools(config.tools, config_abs_path)
+    if config.before_model_callbacks:
+      kwargs['before_model_callback'] = resolve_callbacks(
+          config.before_model_callbacks
+      )
+    if config.after_model_callbacks:
+      kwargs['after_model_callback'] = resolve_callbacks(
+          config.after_model_callbacks
+      )
+    if config.before_tool_callbacks:
+      kwargs['before_tool_callback'] = resolve_callbacks(
+          config.before_tool_callbacks
+      )
+    if config.after_tool_callbacks:
+      kwargs['after_tool_callback'] = resolve_callbacks(
+          config.after_tool_callbacks
+      )
+    if config.generate_content_config:
+      kwargs['generate_content_config'] = config.generate_content_config
+
+    return kwargs
 
 
 Agent: TypeAlias = LlmAgent

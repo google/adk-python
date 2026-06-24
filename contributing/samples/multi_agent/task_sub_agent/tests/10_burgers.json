@@ -176,7 +176,7 @@
             }
           }
         ],
-        "role": "user"
+        "role": "model"
       },
       "id": "e-9",
       "invocationId": "i-3",

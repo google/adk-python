@@ -20,7 +20,6 @@ from typing import Optional
 from google.genai import types
 from pydantic import BaseModel
 from pydantic import ConfigDict
-from pydantic import field_validator
 
 
 class LiveRequest(BaseModel):
