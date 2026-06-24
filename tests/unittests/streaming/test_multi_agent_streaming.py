@@ -94,10 +94,13 @@ def test_live_streaming_multi_agent_single_tool():
             live_request_queue=live_request_queue,
             run_config=run_config or testing_utils.RunConfig(),
         )
-        async for response in run_res:
-          collected_responses.append(response)
-          if len(collected_responses) >= 5:
-            return
+        from contextlib import aclosing
+
+        async with aclosing(run_res) as agen:
+          async for response in agen:
+            collected_responses.append(response)
+            if len(collected_responses) >= 5:
+              return
 
       try:
         session = self.session
