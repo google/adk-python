@@ -1,3 +1,17 @@
+// Copyright 2026 Google LLC
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 import{g as f}from"./chunk-JRNAXTJ7.js";function Ae(e){return typeof e>"u"||e===null}f(Ae,"isNothing");function Oe(e){return typeof e=="object"&&e!==null}f(Oe,"isObject");function Ie(e){return Array.isArray(e)?e:Ae(e)?[]:[e]}f(Ie,"toArray");function ke(e,n){var i,l,r,u;if(n)for(u=Object.keys(n),i=0,l=u.length;i<l;i+=1)r=u[i],e[r]=n[r];return e}f(ke,"extend");function Le(e,n){var i="",l;for(l=0;l<n;l+=1)i+=e;return i}f(Le,"repeat");function Ne(e){return e===0&&Number.NEGATIVE_INFINITY===1/e}f(Ne,"isNegativeZero");var di=Ae,si=Oe,mi=Ie,gi=Le,vi=Ne,Ai=ke,w={isNothing:di,isObject:si,toArray:mi,repeat:gi,isNegativeZero:vi,extend:Ai};function ye(e,n){var i="",l=e.reason||"(unknown reason)";return e.mark?(e.mark.name&&(i+='in "'+e.mark.name+'" '),i+="("+(e.mark.line+1)+":"+(e.mark.column+1)+")",!n&&e.mark.snippet&&(i+=`
 
 `+e.mark.snippet),l+" "+i):l}f(ye,"formatError");function B(e,n){Error.call(this),this.name="YAMLException",this.reason=e,this.mark=n,this.message=ye(this,!1),Error.captureStackTrace?Error.captureStackTrace(this,this.constructor):this.stack=new Error().stack||""}f(B,"YAMLException$1");B.prototype=Object.create(Error.prototype);B.prototype.constructor=B;B.prototype.toString=f(function(n){return this.name+": "+ye(this,n)},"toString");var x=B;function W(e,n,i,l,r){var u="",o="",c=Math.floor(r/2)-1;return l-n>c&&(u=" ... ",n=l-c+u.length),i-l>c&&(o=" ...",i=l+c-o.length),{str:u+e.slice(n,i).replace(/\t/g,"\u2192")+o,pos:l-n+u.length}}f(W,"getLine");function G(e,n){return w.repeat(" ",n-e.length)+e}f(G,"padStart");function Re(e,n){if(n=Object.create(n||null),!e.buffer)return null;n.maxLength||(n.maxLength=79),typeof n.indent!="number"&&(n.indent=1),typeof n.linesBefore!="number"&&(n.linesBefore=3),typeof n.linesAfter!="number"&&(n.linesAfter=2);for(var i=/\r?\n|\r|\0/g,l=[0],r=[],u,o=-1;u=i.exec(e.buffer);)r.push(u.index),l.push(u.index+u[0].length),e.position<=u.index&&o<0&&(o=l.length-2);o<0&&(o=l.length-1);var c="",a,t,d=Math.min(e.line+n.linesAfter,r.length).toString().length,p=n.maxLength-(n.indent+d+3);for(a=1;a<=n.linesBefore&&!(o-a<0);a++)t=W(e.buffer,l[o-a],r[o-a],e.position-(l[o]-l[o-a]),p),c=w.repeat(" ",n.indent)+G((e.line-a+1).toString(),d)+" | "+t.str+`
