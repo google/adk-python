@@ -1,0 +1,100 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+name: "ADK Issue Tracker Maintenance"
+
+on:
+  # Daily background cleanup at 6:00 AM UTC (10 PM PST)
+  schedule:
+    - cron: '0 6 * * *'
+
+  # Allows manual triggering from the Actions console
+  workflow_dispatch:
+    inputs:
+      run_spam_monitor:
+        description: 'Run Issue Monitoring Agent (Spam Sweep)'
+        type: boolean
+        default: true
+      full_scan:
+        description: 'For Issue Monitoring: Run an Initial Full Scan of ALL open issues'
+        type: boolean
+        default: false
+      run_stale_auditor:
+        description: 'Run Stale Issue Auditor Agent'
+        type: boolean
+        default: true
+
+permissions:
+  issues: write
+  contents: read
+
+env:
+  GITHUB_TOKEN: ${{ secrets.ADK_TRIAGE_AGENT }}
+  GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
+  OWNER: ${{ github.repository_owner }}
+  REPO: adk-python
+  CONCURRENCY_LIMIT: 3
+  LLM_MODEL_NAME: "gemini-3.5-flash"
+  PYTHONPATH: contributing/samples/adk_team
+
+jobs:
+  # 1. Sweep for spam, advertising, and invalid issues
+  sweep-spam:
+    if: |
+      github.repository == 'google/adk-python' &&
+      (github.event_name == 'schedule' || github.event.inputs.run_spam_monitor == 'true')
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install requests google-adk python-dotenv
+
+      - name: Run Issue Monitoring Agent (Spam Sweep)
+        env:
+          INITIAL_FULL_SCAN: ${{ github.event.inputs.full_scan == 'true' }}
+        run: python -m adk_issue_monitoring_agent.main
+
+  # 2. Audit inactive issues and nudge/close them
+  audit-stale:
+    if: |
+      github.repository == 'google/adk-python' &&
+      (github.event_name == 'schedule' || github.event.inputs.run_stale_auditor == 'true')
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install requests google-adk python-dateutil
+
+      - name: Run Stale Auditor Agent
+        run: python -m adk_stale_agent.main

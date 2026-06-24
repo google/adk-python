@@ -147,6 +147,8 @@ _AGENT_ENGINE_CLASS_METHODS = [
                 'user_id': {'type': 'string'},
                 'session_id': {'type': 'string', 'nullable': True},
                 'state': {'type': 'object', 'nullable': True},
+                'ttl': {'type': 'string', 'nullable': True},
+                'expire_time': {'type': 'string', 'nullable': True},
             },
             'required': ['user_id'],
             'type': 'object',
@@ -215,19 +217,24 @@ _AGENT_ENGINE_CLASS_METHODS = [
             'Creates a new session.\n\n        Args:\n            user_id'
             ' (str):\n                Required. The ID of the user.\n          '
             '  session_id (str):\n                Optional. The ID of the'
-            ' session. If not provided, an ID\n                will be be'
+            ' session. If not provided, an ID\n                will be'
             ' generated for the session.\n            state (dict[str, Any]):\n'
             '                Optional. The initial state of the session.\n     '
-            '       **kwargs (dict[str, Any]):\n                Optional.'
-            ' Additional keyword arguments to pass to the\n               '
-            ' session service.\n\n        Returns:\n            Session: The'
-            ' newly created session instance.\n        '
+            '       ttl (str):\n                Optional. The time-to-live for'
+            ' the session.\n            expire_time (str):\n               '
+            ' Optional. The expiration time for the session.\n           '
+            ' **kwargs (dict[str, Any]):\n                Optional. Additional'
+            ' keyword arguments to pass to the\n                session'
+            ' service.\n\n        Returns:\n            Session: The newly'
+            ' created session instance.\n        '
         ),
         'parameters': {
             'properties': {
                 'user_id': {'type': 'string'},
                 'session_id': {'type': 'string', 'nullable': True},
                 'state': {'type': 'object', 'nullable': True},
+                'ttl': {'type': 'string', 'nullable': True},
+                'expire_time': {'type': 'string', 'nullable': True},
             },
             'required': ['user_id'],
             'type': 'object',

@@ -107,6 +107,7 @@ class ContextFilterPlugin(BasePlugin):
           Callable[[list[types.Content]], list[types.Content]]
       ] = None,
       name: str = "context_filter_plugin",
+      remove_amount: int = 1,
   ):
     """Initializes the context management plugin.
 
@@ -117,10 +118,15 @@ class ContextFilterPlugin(BasePlugin):
         message starts a new invocation.
       custom_filter: A function to filter the context.
       name: The name of the plugin instance.
+      remove_amount: The number of invocations to remove when the context
+        exceeds the limit.
     """
+    if remove_amount < 1:
+      raise ValueError("remove_amount must be at least 1")
     super().__init__(name)
     self._num_invocations_to_keep = num_invocations_to_keep
     self._custom_filter = custom_filter
+    self._remove_amount = remove_amount
 
   async def before_model_callback(
       self, *, callback_context: CallbackContext, llm_request: LlmRequest
@@ -134,7 +140,10 @@ class ContextFilterPlugin(BasePlugin):
           and self._num_invocations_to_keep > 0
       ):
         invocation_start_indices = _get_invocation_start_indices(contents)
-        if len(invocation_start_indices) > self._num_invocations_to_keep:
+        if (
+            len(invocation_start_indices)
+            >= self._num_invocations_to_keep + self._remove_amount
+        ):
           split_index = invocation_start_indices[-self._num_invocations_to_keep]
 
           # Adjust split_index to avoid orphaned function_responses.
