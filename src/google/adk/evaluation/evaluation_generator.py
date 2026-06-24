@@ -653,8 +653,9 @@ class EvaluationGenerator:
         if current_author == _USER_AUTHOR:
           # If the author is the user, then we just identify it and move on
           # to the next event.
-          user_content = event.content
-          invocation_timestamp = event.timestamp
+          if event.content is not None:
+            user_content = event.content
+            invocation_timestamp = event.timestamp
           continue
 
         if event.content and event.content.parts:

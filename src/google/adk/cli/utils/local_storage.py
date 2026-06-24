@@ -236,6 +236,21 @@ class PerAgentDatabaseSessionService(BaseSessionService):
     service = await self._get_service(session.app_name)
     return await service.append_event(session, event)
 
+  async def close(self) -> None:
+    """Closes all underlying session services."""
+    for service in self._services.values():
+      if hasattr(service, "close"):
+        await service.close()
+    self._services.clear()
+
+  async def __aenter__(self) -> PerAgentDatabaseSessionService:
+    """Enters the async context manager."""
+    return self
+
+  async def __aexit__(self, exc_type, exc_val, exc_tb) -> None:
+    """Exits the async context manager and closes the service."""
+    await self.close()
+
 
 class PerAgentFileArtifactService(BaseArtifactService):
   """Routes artifact storage to per-agent `.adk/artifacts` folders."""
