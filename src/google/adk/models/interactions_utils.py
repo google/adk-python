@@ -31,9 +31,9 @@ conversation history.
 from __future__ import annotations
 
 import base64
-import binascii
 import json
 import logging
+from typing import Any
 from typing import AsyncGenerator
 from typing import TYPE_CHECKING
 
@@ -72,6 +72,7 @@ from google.genai.interactions import ThoughtStepParam
 from google.genai.interactions import ToolParam
 from google.genai.interactions import UserInputStepParam
 from google.genai.interactions import VideoContentParam
+from pydantic import BaseModel
 from typing_extensions import deprecated
 
 if TYPE_CHECKING:
@@ -106,18 +107,6 @@ def _extract_stream_interaction_id(
     return event.id
 
   return None
-
-
-def _decode_base64_string(signature: str | None) -> bytes | None:
-  """Decode a base64 encoded string."""
-  if not signature or not isinstance(signature, str):
-    return None
-
-  try:
-    return base64.b64decode(signature)
-  except binascii.Error as e:
-    logger.error('Failed to decode base64 string: %s', e)
-    return None
 
 
 def _encode_base64_string(data: bytes) -> str:
@@ -284,17 +273,12 @@ def _convert_part_to_interaction_content(
         TextContentParam(type='text', text=part.text), role
     )
   elif part.function_call is not None:
-    func_call_step = FunctionCallStepParam(
+    return FunctionCallStepParam(
         type='function_call',
         id=part.function_call.id or '',
         name=part.function_call.name or '',
         arguments=part.function_call.args or {},
     )
-    if part.thought_signature is not None:
-      func_call_step['signature'] = _encode_base64_string(
-          part.thought_signature
-      )
-    return func_call_step
   elif part.function_response is not None:
 
     # genai.types.FunctionResponse specifies that
@@ -511,6 +495,31 @@ def convert_tools_config_to_interactions_format(
   return interaction_tools
 
 
+def _function_result_to_response(
+    result: BaseModel | dict[str, Any] | list[Any] | str,
+) -> dict[str, Any]:
+  """Convert a FunctionResultStep result into a FunctionResponse dict.
+
+  The Interactions API types the result as a model, a list of content blocks,
+  or a plain string, but types.FunctionResponse.response requires a dict. A
+  dict is returned as-is; other non-dict shapes are wrapped under a 'result'
+  key.
+  """
+  if isinstance(result, dict):
+    return result
+  if isinstance(result, BaseModel):
+    return result.model_dump()
+  if isinstance(result, list):
+    items: list[Any] = []
+    for item in result:
+      if isinstance(item, BaseModel):
+        items.append(item.model_dump())
+      else:
+        items.append(item)
+    return {'result': items}
+  return {'result': result}
+
+
 def _convert_interaction_step_to_parts(step: Step) -> list[types.Part]:
   """Convert an interaction output content to a list of types.Part.
 
@@ -554,7 +563,6 @@ def _convert_interaction_step_to_parts(step: Step) -> list[types.Part]:
         step.name,
         step.id,
     )
-    thought_signature = _decode_base64_string(step.signature)
     return [
         types.Part(
             function_call=types.FunctionCall(
@@ -562,7 +570,6 @@ def _convert_interaction_step_to_parts(step: Step) -> list[types.Part]:
                 name=step.name,
                 args=step.arguments or {},
             ),
-            thought_signature=thought_signature,
         )
     ]
   elif isinstance(step, FunctionResultStep):
@@ -570,7 +577,7 @@ def _convert_interaction_step_to_parts(step: Step) -> list[types.Part]:
         types.Part(
             function_response=types.FunctionResponse(
                 id=step.call_id or '',
-                response=step.result,
+                response=_function_result_to_response(step.result),
             )
         )
     ]
@@ -624,13 +631,15 @@ def convert_interaction_to_llm_response(
   """
   from .llm_response import LlmResponse
 
-  # Check for errors
+  # Check for errors. Lifecycle SSE events carry a partial interaction
+  # (InteractionSseEventInteraction) that has no 'error' attribute.
   if interaction.status == 'failed':
     error_msg = 'Unknown error'
     error_code = 'UNKNOWN_ERROR'
-    if interaction.error:
-      error_msg = interaction.error.message or error_msg
-      error_code = interaction.error.code or error_code
+    error = getattr(interaction, 'error', None)
+    if error:
+      error_msg = error.message or error_msg
+      error_code = error.code or error_code
     return LlmResponse(
         error_code=error_code,
         error_message=error_msg,
@@ -703,14 +712,12 @@ def convert_interaction_event_to_llm_response(
     # 2. StepDelta (multiple): Streams arguments as raw JSON strings via arguments.
     # 3. StepStop: Signals the end of the step, where arguments are finalized and parsed.
     if isinstance(event.step, FunctionCallStep):
-      thought_signature = _decode_base64_string(event.step.signature)
-
       fc = types.FunctionCall(
           id=event.step.id,
           name=event.step.name,
           partial_args=[],
       )
-      part = types.Part(function_call=fc, thought_signature=thought_signature)
+      part = types.Part(function_call=fc)
       aggregated_parts.append(part)
 
       return LlmResponse(
@@ -1159,6 +1166,53 @@ def _get_latest_user_contents(
   return latest_user_contents
 
 
+async def _create_interactions(
+    api_client: Client,
+    *,
+    create_kwargs: dict[str, Any],
+    stream: bool,
+) -> AsyncGenerator[LlmResponse, None]:
+  """Issue ``interactions.create`` and convert the response(s) to LlmResponses.
+
+  This is the shared transport + conversion loop. The caller assembles
+  ``create_kwargs`` (``model`` or ``agent``, ``input``, ``tools``, etc.); this
+  helper owns issuing the call and mapping the stream to ``LlmResponse``s.
+
+  Args:
+    api_client: The Google GenAI client.
+    create_kwargs: Keyword arguments passed verbatim to
+      ``api_client.aio.interactions.create`` (excluding ``stream``).
+    stream: Whether to stream the response.
+
+  Yields:
+    LlmResponse objects converted from interaction responses.
+  """
+  current_interaction_id: str | None = None
+
+  if stream:
+    responses = await api_client.aio.interactions.create(
+        **create_kwargs, stream=True
+    )
+    aggregated_parts: list[types.Part] = []
+    async for event in responses:
+      logger.debug(build_interactions_event_log(event))
+      interaction_id = _extract_stream_interaction_id(event)
+      if interaction_id:
+        current_interaction_id = interaction_id
+      llm_response = convert_interaction_event_to_llm_response(
+          event, aggregated_parts, current_interaction_id
+      )
+      if llm_response:
+        yield llm_response
+  else:
+    interaction = await api_client.aio.interactions.create(
+        **create_kwargs, stream=False
+    )
+    logger.info('Interaction response received.')
+    logger.debug(build_interactions_response_log(interaction))
+    yield convert_interaction_to_llm_response(interaction)
+
+
 async def generate_content_via_interactions(
     api_client: Client,
     llm_request: LlmRequest,
@@ -1220,49 +1274,18 @@ async def generate_content_via_interactions(
       )
   )
 
-  # Track the current interaction ID from responses
-  current_interaction_id: str | None = None
+  # Assemble the create() kwargs for the model path and delegate the
+  # transport + conversion loop to the shared helper.
+  create_kwargs: dict[str, Any] = {
+      'model': llm_request.model,
+      'input': input_steps,
+      'system_instruction': system_instruction,
+      'tools': interaction_tools if interaction_tools else None,
+      'generation_config': generation_config if generation_config else None,
+      'previous_interaction_id': previous_interaction_id,
+  }
 
-  if stream:
-    # Streaming mode
-    responses = await api_client.aio.interactions.create(
-        model=llm_request.model,
-        input=input_steps,
-        stream=True,
-        system_instruction=system_instruction,
-        tools=interaction_tools if interaction_tools else None,
-        generation_config=generation_config if generation_config else None,
-        previous_interaction_id=previous_interaction_id,
-    )
-
-    aggregated_parts: list[types.Part] = []
-    async for event in responses:
-      # Log the streaming event
-      logger.debug(build_interactions_event_log(event))
-
-      interaction_id = _extract_stream_interaction_id(event)
-      if interaction_id:
-        current_interaction_id = interaction_id
-      llm_response = convert_interaction_event_to_llm_response(
-          event, aggregated_parts, current_interaction_id
-      )
-      if llm_response:
-        yield llm_response
-
-  else:
-    # Non-streaming mode
-    interaction = await api_client.aio.interactions.create(
-        model=llm_request.model,
-        input=input_steps,
-        stream=False,
-        system_instruction=system_instruction,
-        tools=interaction_tools if interaction_tools else None,
-        generation_config=generation_config if generation_config else None,
-        previous_interaction_id=previous_interaction_id,
-    )
-
-    # Log the response
-    logger.info('Interaction response received from the model.')
-    logger.debug(build_interactions_response_log(interaction))
-
-    yield convert_interaction_to_llm_response(interaction)
+  async for llm_response in _create_interactions(
+      api_client, create_kwargs=create_kwargs, stream=stream
+  ):
+    yield llm_response

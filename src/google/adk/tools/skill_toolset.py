@@ -36,6 +36,7 @@ from ..code_executors.code_execution_utils import CodeExecutionInput
 from ..skills import models
 from ..skills import prompt
 from ..skills import SkillRegistry
+from ..utils import instructions_utils
 from .base_tool import BaseTool
 from .base_toolset import BaseToolset
 from .base_toolset import ToolPredicate
@@ -251,9 +252,16 @@ class LoadSkillTool(BaseTool):
       activated_skills.append(skill_name)
       tool_context.state[state_key] = activated_skills
 
+    instructions = skill.instructions
+    if skill.frontmatter.metadata.get("adk_inject_state"):
+      instructions = await instructions_utils.inject_session_state(
+          instructions,
+          tool_context,
+      )
+
     return {
         "skill_name": skill_name,
-        "instructions": skill.instructions,
+        "instructions": instructions,
         "frontmatter": skill.frontmatter.model_dump(),
     }
 

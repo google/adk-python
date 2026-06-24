@@ -21,6 +21,7 @@ from adk_pr_triaging_agent.settings import OWNER
 from adk_pr_triaging_agent.settings import REPO
 from adk_pr_triaging_agent.utils import error_response
 from adk_pr_triaging_agent.utils import get_diff
+from adk_pr_triaging_agent.utils import get_request
 from adk_pr_triaging_agent.utils import post_request
 from adk_pr_triaging_agent.utils import read_file
 from adk_pr_triaging_agent.utils import run_graphql_query
@@ -219,6 +220,56 @@ def add_comment_to_pr(pr_number: int, comment: str) -> dict[str, Any]:
   }
 
 
+def list_untriaged_pull_requests(pr_count: int) -> dict[str, Any]:
+  """List open pull requests that need triaging.
+
+  Returns pull requests that need triaging (i.e. do not have google-contributor
+  label and do not have any allowed triage category labels).
+
+  Args:
+    pr_count: number of pull requests to return
+
+  Returns:
+    The status of this request, with a list of pull requests when successful.
+  """
+  url = f"{GITHUB_BASE_URL}/search/issues"
+  query = f"repo:{OWNER}/{REPO} is:open is:pr"
+  params = {
+      "q": query,
+      "sort": "updated",
+      "order": "desc",
+      "per_page": 100,
+      "page": 1,
+  }
+
+  try:
+    response = get_request(url, params)
+  except requests.exceptions.RequestException as e:
+    return error_response(f"Error: {e}")
+
+  issues = response.get("items", [])
+  triage_labels = set(ALLOWED_LABELS)
+  untriaged_prs = []
+
+  for pr in issues:
+    pr_labels = {label["name"] for label in pr.get("labels", [])}
+    if "google-contributor" in pr_labels:
+      continue
+    # If it already has any of the ALLOWED_LABELS, skip it.
+    if pr_labels & triage_labels:
+      continue
+
+    untriaged_prs.append({
+        "number": pr["number"],
+        "title": pr["title"],
+    })
+
+    if len(untriaged_prs) >= pr_count:
+      break
+
+  return {"status": "success", "pull_requests": untriaged_prs}
+
+
 root_agent = Agent(
     model="gemini-3.5-flash",
     name="adk_pr_triaging_assistant",
@@ -276,15 +327,16 @@ root_agent = Agent(
       > This information will help reviewers to review your PR more efficiently. Thanks!
 
       # 4. Steps
-      When you are given a PR, here are the steps you should take:
-      - Call the `get_pull_request_details` tool to get the details of the PR.
-      - Skip the PR (i.e. do not label or comment) if any of the following is true:
-        - the PR is closed
-        - the PR is labeled with "google-contributor"
-        - the PR is already labelled with the above labels (e.g. "documentation", "services", "tools", etc.).
-      - Check if the PR is following the contribution guidelines.
-        - If it's not following the guidelines, recommend or add a comment to the PR that points to the contribution guidelines (https://github.com/google/adk-python/blob/main/CONTRIBUTING.md).
-        - If it's following the guidelines, recommend or add a label to the PR.
+      - If you are asked to find pull requests that need triaging, use `list_untriaged_pull_requests` first.
+      - For each pull request to be triaged:
+        - Call the `get_pull_request_details` tool to get the details of the PR.
+        - Skip the PR (i.e. do not label or comment) if any of the following is true:
+          - the PR is closed
+          - the PR is labeled with "google-contributor"
+          - the PR is already labelled with the above labels (e.g. "documentation", "services", "tools", etc.).
+        - Check if the PR is following the contribution guidelines.
+          - If it's not following the guidelines, recommend or add a comment to the PR that points to the contribution guidelines (https://github.com/google/adk-python/blob/main/CONTRIBUTING.md).
+          - If it's following the guidelines, recommend or add a label to the PR.
 
       # 5. Output
       Present the following in an easy to read format highlighting PR number and your label.
@@ -293,6 +345,7 @@ root_agent = Agent(
       - The comment you recommended or added to the PR with the justification
     """,
     tools=[
+        list_untriaged_pull_requests,
         get_pull_request_details,
         add_label_to_pr,
         add_comment_to_pr,

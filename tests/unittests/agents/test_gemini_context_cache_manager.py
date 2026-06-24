@@ -124,7 +124,7 @@ class TestGeminiContextCacheManager:
     assert result.invocations_used is None
     assert result.created_at is None
     assert result.fingerprint == "test_fp"
-    assert result.contents_count == 5  # Total contents count
+    assert result.contents_count == 0
 
     # No cache should be created
     self.manager.genai_client.aio.caches.create.assert_not_called()
@@ -233,7 +233,7 @@ class TestGeminiContextCacheManager:
     assert result.invocations_used is None
     assert result.created_at is None
     assert result.fingerprint == "new_fp"
-    assert result.contents_count == 5  # Total contents count
+    assert result.contents_count == 0
     mock_cleanup.assert_called_once_with(existing_cache.cache_name)
     self.manager.genai_client.aio.caches.create.assert_not_called()
 
@@ -584,7 +584,7 @@ class TestGeminiContextCacheManager:
     assert result is not None
     assert result.cache_name is None  # Fingerprint-only state
     assert result.fingerprint == "test_fp"
-    assert result.contents_count == 3
+    assert result.contents_count == 0
     self.manager.genai_client.aio.caches.create.assert_not_called()
 
   async def test_cache_creation_with_insufficient_token_count(self):
@@ -752,12 +752,10 @@ class TestGeminiContextCacheManager:
       contents_counts_seen.append(result.contents_count)
       metadata = result
 
-    # First turn has no metadata, so uses total (1).
-    # Subsequent turns preserve contents_count=1 from the prefix.
-    # Fingerprint stays stable because contents[:1] is always the
-    # same user message.
+    # All contents in this helper are user-role messages, so there is no
+    # cacheable content prefix before the final user batch.
     assert len(set(fingerprints_seen)) == 1
-    assert contents_counts_seen == [1, 1, 1]
+    assert contents_counts_seen == [0, 0, 0]
 
   async def test_contents_count_should_remain_stable_after_cache_creation_failure(
       self,
@@ -911,7 +909,7 @@ class TestGeminiContextCacheManager:
 
     assert result_1 is not None
     assert result_1.cache_name is None
-    assert result_1.contents_count == 3
+    assert result_1.contents_count == 0
 
     # --- Second LLM call: carry forward fingerprint-only metadata ---
     # Contents grew but we still have same prefix
@@ -948,7 +946,74 @@ class TestGeminiContextCacheManager:
     assert result_2.cache_name == (
         "projects/test/locations/us-central1/cachedContents/new789"
     )
-    assert result_2.contents_count == 3  # Preserved from prefix
+    assert result_2.contents_count == 0  # Preserved from prefix
+    assert result_2.invocations_used == 1
+    self.manager.genai_client.aio.caches.create.assert_called_once()
+
+  async def test_dynamic_instruction_does_not_break_initial_cache_fingerprint(
+      self,
+  ):
+    """Request-scoped dynamic instructions stay out of the cache prefix."""
+    dynamic_instruction = types.Content(
+        role="user", parts=[types.Part(text="Turn context: locale=en-US")]
+    )
+    user_msg = types.Content(
+        role="user", parts=[types.Part(text="what time is it?")]
+    )
+    model_tool_call = types.Content(
+        role="model",
+        parts=[
+            types.Part(
+                function_call=types.FunctionCall(name="get_time", args={})
+            )
+        ],
+    )
+    tool_response = types.Content(
+        role="user",
+        parts=[
+            types.Part(
+                function_response=types.FunctionResponse(
+                    name="get_time", response={"time": "12:00"}
+                )
+            )
+        ],
+    )
+
+    request_1 = self.create_llm_request(contents_count=0)
+    request_1.contents = [dynamic_instruction, user_msg]
+
+    result_1 = await self.manager.handle_context_caching(request_1)
+
+    assert result_1 is not None
+    assert result_1.cache_name is None
+    assert result_1.contents_count == 0
+
+    request_2 = self.create_llm_request(
+        cache_metadata=result_1, contents_count=0
+    )
+    request_2.contents = [
+        user_msg,
+        model_tool_call,
+        dynamic_instruction,
+        tool_response,
+    ]
+    request_2.cacheable_contents_token_count = 4096
+
+    mock_cached_content = AsyncMock()
+    mock_cached_content.name = (
+        "projects/test/locations/us-central1/cachedContents/new789"
+    )
+    self.manager.genai_client.aio.caches.create = AsyncMock(
+        return_value=mock_cached_content
+    )
+
+    result_2 = await self.manager.handle_context_caching(request_2)
+
+    assert result_2 is not None
+    assert result_2.cache_name == (
+        "projects/test/locations/us-central1/cachedContents/new789"
+    )
+    assert result_2.contents_count == 0
     assert result_2.invocations_used == 1
     self.manager.genai_client.aio.caches.create.assert_called_once()
 
