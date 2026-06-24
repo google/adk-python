@@ -16,6 +16,7 @@
 
 import asyncio
 import base64
+from collections.abc import AsyncGenerator
 from collections.abc import Callable
 from datetime import datetime
 from datetime import timezone
@@ -24,6 +25,7 @@ from unittest.mock import MagicMock
 
 from google.adk.models import interactions_utils
 from google.adk.models.llm_request import LlmRequest
+from google.adk.models.llm_response import LlmResponse
 from google.genai import interactions
 from google.genai import types
 from google.genai.interactions import CodeExecutionResultStep
@@ -61,27 +63,63 @@ class _MockAsyncIterator:
 
 
 class _FakeInteractions:
-  """Minimal fake interactions resource for streaming tests."""
+  """Fake interactions resource for create() tests.
 
-  def __init__(self, events: list[object]):
-    self._events = events
+  Records each create() call's kwargs (including the ``stream`` flag) so tests
+  can assert verbatim forwarding. Streaming calls (``stream`` truthy) return an
+  async iterator over the configured events; non-streaming calls return the
+  configured Interaction. ``_create_interactions`` always passes ``stream``
+  explicitly, so there is no need to distinguish "unset" from ``stream=False``.
+  """
 
-  async def create(self, **_kwargs):
-    return _MockAsyncIterator(self._events)
+  def __init__(
+      self,
+      events: list[object] | None = None,
+      *,
+      interaction: Interaction | None = None,
+  ):
+    self._events = events or []
+    self._interaction = interaction
+    self.create_calls: list[dict[str, object]] = []
+
+  async def create(self, **kwargs):
+    self.create_calls.append(kwargs)
+    if kwargs.get('stream'):
+      return _MockAsyncIterator(self._events)
+    return self._interaction
 
 
 class _FakeAio:
   """Namespace matching the expected api_client.aio shape."""
 
-  def __init__(self, events: list[object]):
-    self.interactions = _FakeInteractions(events)
+  def __init__(
+      self,
+      events: list[object] | None = None,
+      *,
+      interaction: Interaction | None = None,
+  ):
+    self.interactions = _FakeInteractions(events, interaction=interaction)
 
 
 class _FakeApiClient:
-  """Minimal fake API client for generate_content_via_interactions tests."""
+  """Minimal fake API client for interactions create() tests.
 
-  def __init__(self, events: list[object]):
-    self.aio = _FakeAio(events)
+  Streaming calls return an async iterator over the configured events;
+  non-streaming calls return the configured Interaction. ``create_calls``
+  exposes the recorded kwargs of each ``interactions.create`` call.
+  """
+
+  def __init__(
+      self,
+      events: list[object] | None = None,
+      *,
+      interaction: Interaction | None = None,
+  ):
+    self.aio = _FakeAio(events, interaction=interaction)
+
+  @property
+  def create_calls(self) -> list[dict[str, object]]:
+    return self.aio.interactions.create_calls
 
 
 def _build_llm_request() -> LlmRequest:
@@ -1389,3 +1427,182 @@ def test_generate_content_via_interactions_stream_extracts_interaction_id(
       asyncio.run(_collect_function_call_interaction_ids(streamed_events))
       == expected_ids
   )
+
+
+def _build_simple_text_stream() -> list[object]:
+  """A minimal streamed interaction: created -> text delta -> completed."""
+  now = datetime.now(timezone.utc).isoformat()
+  created = InteractionCreatedEvent(
+      event_type='interaction.created',
+      interaction=InteractionSseEventInteraction(
+          id='interaction_xyz',
+          created=now,
+          updated=now,
+          status='requires_action',
+          steps=[],
+      ),
+  )
+  step_start = StepStart(
+      event_type='step.start',
+      index=0,
+      step=ModelOutputStep(type='model_output'),
+  )
+  step_delta = StepDelta(
+      event_type='step.delta',
+      index=0,
+      delta={'type': 'text', 'text': 'Sunny in Tokyo.'},
+  )
+  step_stop = StepStop(event_type='step.stop', index=0)
+  completed = InteractionCompletedEvent(
+      event_type='interaction.completed',
+      interaction=InteractionSseEventInteraction(
+          id='interaction_xyz',
+          created=now,
+          updated=now,
+          status='completed',
+          steps=[
+              ModelOutputStep(
+                  type='model_output',
+                  content=[TextContent(type='text', text='Sunny in Tokyo.')],
+              )
+          ],
+      ),
+  )
+  return [created, step_start, step_delta, step_stop, completed]
+
+
+async def _collect_stream_responses(events: list[object]):
+  api_client = _FakeApiClient(events)
+  llm_request = _build_llm_request()
+  responses = []
+  async for resp in interactions_utils.generate_content_via_interactions(
+      api_client, llm_request, stream=True
+  ):
+    responses.append(resp)
+  return responses
+
+
+async def test_generate_content_via_interactions_stream_characterization():
+  """Streaming yields text responses carrying the interaction id."""
+  responses = await _collect_stream_responses(_build_simple_text_stream())
+
+  assert responses, 'expected at least one streamed LlmResponse'
+  assert all(r.interaction_id == 'interaction_xyz' for r in responses)
+  joined = ''.join(
+      part.text
+      for r in responses
+      if r.content and r.content.parts
+      for part in r.content.parts
+      if part.text
+  )
+  assert 'Sunny in Tokyo.' in joined
+
+
+def _build_non_streaming_interaction() -> Interaction:
+  """A completed non-streaming Interaction with a single text output."""
+  now = datetime.now(timezone.utc).isoformat()
+  return Interaction(
+      id='interaction_ns',
+      status='completed',
+      created=now,
+      updated=now,
+      steps=[
+          ModelOutputStep(
+              type='model_output',
+              content=[TextContent(type='text', text='Sunny in Tokyo.')],
+          )
+      ],
+  )
+
+
+async def _drain(
+    responses: AsyncGenerator[LlmResponse, None],
+) -> list[LlmResponse]:
+  """Collect all responses yielded by an async generator."""
+  return [resp async for resp in responses]
+
+
+async def test_create_interactions_streaming_forwards_kwargs_and_converts():
+  """Streaming forwards create_kwargs verbatim (plus stream) and converts."""
+  # Arrange.
+  api_client = _FakeApiClient(_build_simple_text_stream())
+  create_kwargs = {
+      'model': 'gemini-2.5-flash',
+      'input': [{
+          'type': 'user_input',
+          'content': [{'type': 'text', 'text': 'Weather in Tokyo?'}],
+      }],
+      'previous_interaction_id': None,
+  }
+
+  # Act.
+  responses = await _drain(
+      interactions_utils._create_interactions(
+          api_client, create_kwargs=create_kwargs, stream=True
+      )
+  )
+
+  # Assert: exactly one create() call forwarding kwargs plus the stream flag.
+  assert len(api_client.create_calls) == 1
+  assert api_client.create_calls[0] == {**create_kwargs, 'stream': True}
+
+  # Assert: the streamed events are converted into text responses.
+  assert responses, 'expected at least one streamed LlmResponse'
+  assert all(r.interaction_id == 'interaction_xyz' for r in responses)
+  joined = ''.join(
+      part.text
+      for r in responses
+      if r.content and r.content.parts
+      for part in r.content.parts
+      if part.text
+  )
+  assert 'Sunny in Tokyo.' in joined
+
+
+async def test_create_interactions_non_streaming_forwards_kwargs_and_yields_single_response():
+  """Non-streaming forwards kwargs verbatim and yields a single response."""
+  # Arrange.
+  interaction = _build_non_streaming_interaction()
+  api_client = _FakeApiClient(interaction=interaction)
+  create_kwargs = {
+      'model': 'gemini-2.5-flash',
+      'input': [{
+          'type': 'user_input',
+          'content': [{'type': 'text', 'text': 'Weather in Tokyo?'}],
+      }],
+      'previous_interaction_id': None,
+  }
+
+  # Act.
+  responses = await _drain(
+      interactions_utils._create_interactions(
+          api_client, create_kwargs=create_kwargs, stream=False
+      )
+  )
+
+  # Assert: exactly one create() call forwarding kwargs plus the stream flag.
+  assert len(api_client.create_calls) == 1
+  assert api_client.create_calls[0] == {**create_kwargs, 'stream': False}
+
+  # Assert: a single converted LlmResponse carrying the interaction output.
+  assert len(responses) == 1
+  assert responses[0].interaction_id == 'interaction_ns'
+  assert responses[0].content.parts[0].text == 'Sunny in Tokyo.'
+
+
+async def test_generate_content_via_interactions_non_streaming_yields_single_response():
+  """The public function yields a single response on the non-streaming path."""
+  # Arrange.
+  api_client = _FakeApiClient(interaction=_build_non_streaming_interaction())
+
+  # Act.
+  responses = await _drain(
+      interactions_utils.generate_content_via_interactions(
+          api_client, _build_llm_request(), stream=False
+      )
+  )
+
+  # Assert: a single end-to-end converted LlmResponse with the expected text.
+  assert len(responses) == 1
+  assert responses[0].interaction_id == 'interaction_ns'
+  assert responses[0].content.parts[0].text == 'Sunny in Tokyo.'

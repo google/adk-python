@@ -1166,6 +1166,53 @@ def _get_latest_user_contents(
   return latest_user_contents
 
 
+async def _create_interactions(
+    api_client: Client,
+    *,
+    create_kwargs: dict[str, Any],
+    stream: bool,
+) -> AsyncGenerator[LlmResponse, None]:
+  """Issue ``interactions.create`` and convert the response(s) to LlmResponses.
+
+  This is the shared transport + conversion loop. The caller assembles
+  ``create_kwargs`` (``model`` or ``agent``, ``input``, ``tools``, etc.); this
+  helper owns issuing the call and mapping the stream to ``LlmResponse``s.
+
+  Args:
+    api_client: The Google GenAI client.
+    create_kwargs: Keyword arguments passed verbatim to
+      ``api_client.aio.interactions.create`` (excluding ``stream``).
+    stream: Whether to stream the response.
+
+  Yields:
+    LlmResponse objects converted from interaction responses.
+  """
+  current_interaction_id: str | None = None
+
+  if stream:
+    responses = await api_client.aio.interactions.create(
+        **create_kwargs, stream=True
+    )
+    aggregated_parts: list[types.Part] = []
+    async for event in responses:
+      logger.debug(build_interactions_event_log(event))
+      interaction_id = _extract_stream_interaction_id(event)
+      if interaction_id:
+        current_interaction_id = interaction_id
+      llm_response = convert_interaction_event_to_llm_response(
+          event, aggregated_parts, current_interaction_id
+      )
+      if llm_response:
+        yield llm_response
+  else:
+    interaction = await api_client.aio.interactions.create(
+        **create_kwargs, stream=False
+    )
+    logger.info('Interaction response received.')
+    logger.debug(build_interactions_response_log(interaction))
+    yield convert_interaction_to_llm_response(interaction)
+
+
 async def generate_content_via_interactions(
     api_client: Client,
     llm_request: LlmRequest,
@@ -1227,49 +1274,18 @@ async def generate_content_via_interactions(
       )
   )
 
-  # Track the current interaction ID from responses
-  current_interaction_id: str | None = None
+  # Assemble the create() kwargs for the model path and delegate the
+  # transport + conversion loop to the shared helper.
+  create_kwargs: dict[str, Any] = {
+      'model': llm_request.model,
+      'input': input_steps,
+      'system_instruction': system_instruction,
+      'tools': interaction_tools if interaction_tools else None,
+      'generation_config': generation_config if generation_config else None,
+      'previous_interaction_id': previous_interaction_id,
+  }
 
-  if stream:
-    # Streaming mode
-    responses = await api_client.aio.interactions.create(
-        model=llm_request.model,
-        input=input_steps,
-        stream=True,
-        system_instruction=system_instruction,
-        tools=interaction_tools if interaction_tools else None,
-        generation_config=generation_config if generation_config else None,
-        previous_interaction_id=previous_interaction_id,
-    )
-
-    aggregated_parts: list[types.Part] = []
-    async for event in responses:
-      # Log the streaming event
-      logger.debug(build_interactions_event_log(event))
-
-      interaction_id = _extract_stream_interaction_id(event)
-      if interaction_id:
-        current_interaction_id = interaction_id
-      llm_response = convert_interaction_event_to_llm_response(
-          event, aggregated_parts, current_interaction_id
-      )
-      if llm_response:
-        yield llm_response
-
-  else:
-    # Non-streaming mode
-    interaction = await api_client.aio.interactions.create(
-        model=llm_request.model,
-        input=input_steps,
-        stream=False,
-        system_instruction=system_instruction,
-        tools=interaction_tools if interaction_tools else None,
-        generation_config=generation_config if generation_config else None,
-        previous_interaction_id=previous_interaction_id,
-    )
-
-    # Log the response
-    logger.info('Interaction response received from the model.')
-    logger.debug(build_interactions_response_log(interaction))
-
-    yield convert_interaction_to_llm_response(interaction)
+  async for llm_response in _create_interactions(
+      api_client, create_kwargs=create_kwargs, stream=stream
+  ):
+    yield llm_response
