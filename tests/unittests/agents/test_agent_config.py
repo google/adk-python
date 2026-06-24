@@ -465,3 +465,24 @@ def test_resolve_agent_reference_uses_windows_dirname():
   )
   assert result == "sentinel"
   assert recorded["path"] == expected_path
+
+
+def test_resolve_agent_reference_blocks_absolute_path():
+  """Verify resolve_agent_reference raises ValueError for absolute paths."""
+  ref_config = AgentRefConfig(config_path="/etc/passwd")
+  with pytest.raises(
+      ValueError,
+      match="Absolute paths are not allowed in AgentRefConfig config_path",
+  ):
+    config_agent_utils.resolve_agent_reference(
+        ref_config, "/workspace/main.yaml"
+    )
+
+
+def test_resolve_agent_reference_blocks_path_traversal():
+  """Verify resolve_agent_reference raises ValueError for path traversal."""
+  ref_config = AgentRefConfig(config_path="../outside.yaml")
+  with pytest.raises(ValueError, match="Path traversal detected"):
+    config_agent_utils.resolve_agent_reference(
+        ref_config, "/workspace/agents/main.yaml"
+    )

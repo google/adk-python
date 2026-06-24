@@ -15,22 +15,24 @@
 name: ADK Pull Request Triaging Agent
 
 on:
-  pull_request_target:
-    types: [opened, reopened, edited]
+  schedule:
+    # Run every 6 hours
+    - cron: '0 */6 * * *'
   workflow_dispatch:
     inputs:
       pr_number:
-        description: 'The Pull Request number to triage'
-        required: true
+        description: 'The Pull Request number to triage (leave empty for batch mode)'
+        required: false
+        type: 'string'
+      pr_count:
+        description: 'Number of PRs to process in batch mode (default: 10)'
+        required: false
+        default: '10'
         type: 'string'
 
 jobs:
   agent-triage-pull-request:
-    if: >-
-      github.event_name == 'workflow_dispatch' || (
-        github.event.pull_request.head.repo.full_name == github.repository &&
-        !contains(github.event.pull_request.labels.*.name, 'google-contributor')
-      )
+    if: github.repository == 'google/adk-python'
     runs-on: ubuntu-latest
     permissions:
       pull-requests: write
@@ -57,7 +59,8 @@ jobs:
           GOOGLE_GENAI_USE_VERTEXAI: 0
           OWNER: 'google'
           REPO: 'adk-python'
-          PULL_REQUEST_NUMBER: ${{ github.event.pull_request.number || github.event.inputs.pr_number }}
+          PULL_REQUEST_NUMBER: ${{ github.event.pull_request.number || github.event.inputs.pr_number || '' }}
+          PR_COUNT_TO_PROCESS: ${{ github.event.inputs.pr_count || '10' }}
           INTERACTIVE: ${{ vars.PR_TRIAGE_INTERACTIVE }}
           PYTHONPATH: contributing/samples/adk_team
         run: python -m adk_pr_triaging_agent.main

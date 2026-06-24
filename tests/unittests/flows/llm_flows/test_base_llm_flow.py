@@ -1487,8 +1487,15 @@ async def test_run_live_reconnect_sets_transparent_for_vertex():
 
 
 @pytest.mark.asyncio
-async def test_run_live_history_config_set_for_gemini_api_backend():
-  """history_config is auto-set when seeding history on the Gemini API backend."""
+@pytest.mark.parametrize(
+    'api_backend',
+    [
+        GoogleLLMVariant.GEMINI_API,
+        GoogleLLMVariant.VERTEX_AI,
+    ],
+)
+async def test_run_live_history_config_set_for_all_backends(api_backend):
+  """Test that run_live sets history_config for all backends."""
 
   real_model = Gemini(model='gemini-3.1-flash-live-preview')
   mock_connection = mock.AsyncMock()
@@ -1535,7 +1542,7 @@ async def test_run_live_history_config_set_for_gemini_api_backend():
             Gemini,
             '_api_backend',
             new_callable=mock.PropertyMock,
-            return_value=GoogleLLMVariant.GEMINI_API,
+            return_value=api_backend,
         ):
           try:
             async for _ in flow.run_live(invocation_context):
@@ -1551,75 +1558,6 @@ async def test_run_live_history_config_set_for_gemini_api_backend():
               called_req.live_connect_config.history_config.initial_history_in_client_content
               is True
           )
-
-
-@pytest.mark.asyncio
-async def test_run_live_history_config_not_set_for_vertex_backend():
-  """history_config is NOT auto-set on the Vertex backend (it rejects it).
-
-  The Vertex AI / Gemini Enterprise Agent Platform live setup message has no
-  ``history``/``history_config`` field. ADK seeds Vertex history via
-  ``send_history`` (``send_client_content``) instead, so the auto-injection of
-  ``history_config`` must be skipped for this backend.
-  """
-
-  real_model = Gemini(model='gemini-3.1-flash-live-preview')
-  mock_connection = mock.AsyncMock()
-
-  class StopTestError(Exception):
-    pass
-
-  async def mock_receive():
-    yield LlmResponse(
-        content=types.Content(parts=[types.Part.from_text(text='hi')])
-    )
-    raise StopTestError('stop')
-
-  mock_connection.receive = mock.Mock(side_effect=mock_receive)
-
-  agent = Agent(name='test_agent', model=real_model)
-  invocation_context = await testing_utils.create_invocation_context(
-      agent=agent
-  )
-  invocation_context.live_request_queue = LiveRequestQueue()
-
-  flow = BaseLlmFlowForTesting()
-
-  with mock.patch.object(flow, '_send_to_model', new_callable=AsyncMock):
-
-    async def mock_preprocess(ctx, req):
-      req.contents = [
-          types.Content(parts=[types.Part.from_text(text='history')])
-      ]
-      yield Event(id=Event.new_id(), author='test')
-
-    with mock.patch.object(
-        flow, '_preprocess_async', side_effect=mock_preprocess
-    ):
-      with mock.patch.object(
-          Gemini, '_api_backend', new_callable=mock.PropertyMock
-      ) as mock_backend:
-        mock_backend.return_value = GoogleLLMVariant.VERTEX_AI
-        with mock.patch(
-            'google.adk.models.google_llm.Gemini.connect'
-        ) as mock_connect:
-          mock_connect.return_value.__aenter__.return_value = mock_connection
-
-          try:
-            async for _ in flow.run_live(invocation_context):
-              pass
-          except StopTestError:
-            pass
-
-          assert mock_connect.call_count == 1
-          called_req = mock_connect.call_args[0][0]
-          # history_config must NOT be auto-injected on Vertex.
-          assert (
-              called_req.live_connect_config is None
-              or called_req.live_connect_config.history_config is None
-          )
-          # History is still seeded via send_history (send_client_content).
-          mock_connection.send_history.assert_awaited_once()
 
 
 @pytest.mark.asyncio
