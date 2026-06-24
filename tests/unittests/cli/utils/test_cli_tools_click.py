@@ -886,70 +886,6 @@ def test_cli_deploy_cloud_run_passthrough_args(
   assert "--cpu=1" in extra_args
 
 
-def test_cli_deploy_cloud_run_rejects_args_without_separator(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-  """Args without '--' separator should be rejected with helpful error message."""
-  rec = _Recorder()
-  monkeypatch.setattr("google.adk.cli.cli_deploy.to_cloud_run", rec)
-
-  agent_dir = tmp_path / "agent_no_sep"
-  agent_dir.mkdir()
-  runner = CliRunner()
-  result = runner.invoke(
-      cli_tools_click.main,
-      [
-          "deploy",
-          "cloud_run",
-          "--project",
-          "test-project",
-          "--region",
-          "us-central1",
-          str(agent_dir),
-          "--labels=test-label=test",  # This should be rejected
-      ],
-  )
-
-  assert result.exit_code == 2
-  assert "Unexpected arguments:" in result.output
-  assert "Use '--' to separate gcloud arguments" in result.output
-  assert not rec.calls, "cli_deploy.to_cloud_run should not be called"
-
-
-def test_cli_deploy_cloud_run_rejects_args_before_separator(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-  """Args before '--' separator should be rejected."""
-  rec = _Recorder()
-  monkeypatch.setattr("google.adk.cli.cli_deploy.to_cloud_run", rec)
-
-  agent_dir = tmp_path / "agent_before_sep"
-  agent_dir.mkdir()
-  runner = CliRunner()
-  result = runner.invoke(
-      cli_tools_click.main,
-      [
-          "deploy",
-          "cloud_run",
-          "--project",
-          "test-project",
-          "--region",
-          "us-central1",
-          str(agent_dir),
-          "unexpected_arg",  # This should be rejected
-          "--",
-          "--labels=test-label=test",
-      ],
-  )
-
-  assert result.exit_code == 2
-  assert (
-      "Unexpected arguments after agent path and before '--':" in result.output
-  )
-  assert "unexpected_arg" in result.output
-  assert not rec.calls, "cli_deploy.to_cloud_run should not be called"
-
-
 def test_cli_deploy_cloud_run_allows_empty_gcloud_args(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -982,6 +918,94 @@ def test_cli_deploy_cloud_run_allows_empty_gcloud_args(
   called_kwargs = rec.calls[0][1]
   extra_args = called_kwargs.get("extra_gcloud_args")
   assert extra_args == ()
+
+
+def test_cli_deploy_cloud_run_interspersed_options(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+  """Options placed after the positional argument should be parsed correctly."""
+  rec = _Recorder()
+  monkeypatch.setattr("google.adk.cli.cli_deploy.to_cloud_run", rec)
+
+  agent_dir = tmp_path / "agent_interspersed"
+  agent_dir.mkdir()
+  runner = CliRunner()
+  result = runner.invoke(
+      cli_tools_click.main,
+      [
+          "deploy",
+          "cloud_run",
+          str(agent_dir),
+          "--project",
+          "test-project",
+          "--region",
+          "us-central1",
+      ],
+  )
+
+  assert result.exit_code == 0
+  assert rec.calls, "cli_deploy.to_cloud_run must be invoked"
+
+  called_kwargs = rec.calls[0][1]
+  assert called_kwargs.get("project") == "test-project"
+  assert called_kwargs.get("region") == "us-central1"
+
+
+def test_cli_deploy_cloud_run_rejects_unknown_option_before_separator(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+  """Unknown option placed before '--' separator should be rejected by Click."""
+  rec = _Recorder()
+  monkeypatch.setattr("google.adk.cli.cli_deploy.to_cloud_run", rec)
+
+  agent_dir = tmp_path / "agent_bad_order"
+  agent_dir.mkdir()
+  runner = CliRunner()
+  result = runner.invoke(
+      cli_tools_click.main,
+      [
+          "deploy",
+          "cloud_run",
+          "--project",
+          "test-project",
+          str(agent_dir),
+          "--labels=test-label=test",
+          "--",
+      ],
+  )
+
+  assert result.exit_code == 2
+  assert "No such option" in result.output
+  assert not rec.calls, "cli_deploy.to_cloud_run should not be called"
+
+
+def test_cli_deploy_cloud_run_forwards_extra_positional_arg(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+  """Extra positional argument before '--' is forwarded to the deployment runner."""
+  rec = _Recorder()
+  monkeypatch.setattr("google.adk.cli.cli_deploy.to_cloud_run", rec)
+
+  agent_dir = tmp_path / "agent_extra_pos"
+  agent_dir.mkdir()
+  runner = CliRunner()
+  result = runner.invoke(
+      cli_tools_click.main,
+      [
+          "deploy",
+          "cloud_run",
+          "--project",
+          "test-project",
+          str(agent_dir),
+          "unexpected_arg",
+          "--",
+          "--labels=test-label=test",
+      ],
+  )
+
+  assert result.exit_code == 0
+  extra_args = rec.calls[0][1].get("extra_gcloud_args")
+  assert extra_args == ("unexpected_arg", "--labels=test-label=test")
 
 
 # cli deploy agent_engine
