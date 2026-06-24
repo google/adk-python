@@ -1,4 +1,9 @@
-# Agent Development Kit (ADK) 2.0 Beta
+# Agent Development Kit (ADK) 2.0 Beta (DEPRECATED)
+
+> [!WARNING]
+> **This branch (`v2`) is DEPRECATED and no longer maintained.**
+>
+> Please do **NOT** use this branch. If you want to use workflows or other ADK features, please use the [main](https://github.com/google/adk-python) branch.
 
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
 
@@ -14,23 +19,6 @@
   <a href="https://github.com/google/adk-samples">Samples</a> &
   <a href="https://github.com/google/adk-web">ADK Web</a>.
 </h3>
-
-______________________________________________________________________
-
-> **⚠️ BETA RELEASE — BREAKING CHANGES FROM 1.x**
->
-> This is an early beta of ADK 2.0. It includes breaking changes to the
-> agent API, event model, and session schema. **Do NOT use with ADK 1.x
-> databases or sessions** — they are incompatible. APIs are subject to
-> change without notice.
->
-> Install only with an explicit version pin:
->
-> ```bash
-> pip install google-adk==2.0.0b1
-> ```
->
-> `pip install google-adk` will NOT install this version.
 
 ______________________________________________________________________
 
