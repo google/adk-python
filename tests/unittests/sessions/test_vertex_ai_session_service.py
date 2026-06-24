@@ -1010,6 +1010,46 @@ async def test_create_session_with_custom_config(mock_api_client_instance):
 
 @pytest.mark.asyncio
 @pytest.mark.usefixtures('mock_get_api_client')
+async def test_create_session_with_ttl(mock_api_client_instance):
+  session_service = mock_vertex_ai_session_service()
+
+  ttl = '7200s'
+  await session_service.create_session(app_name='123', user_id='user', ttl=ttl)
+  assert mock_api_client_instance.last_create_session_config['ttl'] == ttl
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures('mock_get_api_client')
+async def test_create_session_with_ttl_and_expire_time_raises_value_error(
+    mock_api_client_instance,
+):
+  session_service = mock_vertex_ai_session_service()
+  with pytest.raises(
+      ValueError,
+      match="Cannot specify both 'ttl' and 'expire_time' simultaneously.",
+  ):
+    await session_service.create_session(
+        app_name='123',
+        user_id='user',
+        ttl='7200s',
+        expire_time='2025-12-12T12:12:12.123456Z',
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures('mock_get_api_client')
+async def test_create_session_with_ttl_none_and_expire_time_none_does_not_raise(
+    mock_api_client_instance,
+):
+  session_service = mock_vertex_ai_session_service()
+  # None means "not set"; passing both as None must not raise.
+  await session_service.create_session(
+      app_name='123', user_id='user', ttl=None, expire_time=None
+  )
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures('mock_get_api_client')
 async def test_append_event():
   session_service = mock_vertex_ai_session_service()
   session_before_append = await session_service.get_session(

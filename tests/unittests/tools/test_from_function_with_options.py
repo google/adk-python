@@ -276,26 +276,6 @@ def test_from_function_with_variadic_tuple_type_parameter():
   assert tags_schema.max_items is None
 
 
-def test_from_function_with_heterogeneous_tuple_raises():
-  """Heterogeneous tuples can't map to a single-`items` array schema.
-
-  `google.genai.types.Schema` arrays carry a single `items` type (no
-  positional `prefixItems`), so a tuple like `tuple[str, int]` cannot be
-  represented. It must surface a clear error rather than be silently coerced
-  into an incorrect homogeneous array.
-  """
-
-  def test_function(
-      pair: tuple[str, int],
-  ) -> str:
-    return f'{pair[0]}: {pair[1]}'
-
-  with pytest.raises(ValueError):
-    _automatic_function_calling_util.from_function_with_options(
-        test_function, GoogleLLMVariant.VERTEX_AI
-    )
-
-
 def test_from_function_with_collections_return_type():
   """Test from_function_with_options with collections return type."""
 
@@ -501,3 +481,41 @@ def test_format_preservation_for_vertex_fallback():
   )
   param_schema_gemini = declaration_gemini.parameters.properties['param']
   assert param_schema_gemini.properties['email'].format is None
+
+
+def test_tuple_types_work_in_json_schema_fallback() -> None:
+  """Test that tuple schemas work in json schema fallback."""
+
+  def generate_image(
+      prompt: str,
+      input_bytes: list[tuple[bytes, str]] | None = None,
+  ) -> dict[str, str]:
+    """Generate an image from a prompt."""
+    del input_bytes
+    return {'status': prompt}
+
+  declaration = _automatic_function_calling_util.from_function_with_options(
+      generate_image, GoogleLLMVariant.GEMINI_API
+  )
+
+  assert declaration.parameters is not None
+  assert declaration.parameters.required == ['prompt']
+  input_bytes_schema = declaration.parameters.properties['input_bytes']
+  assert input_bytes_schema.nullable
+  assert input_bytes_schema.any_of is not None
+
+  array_schema = next(
+      schema
+      for schema in input_bytes_schema.any_of
+      if schema.type == types.Type.ARRAY
+  )
+  assert array_schema.items is not None
+  assert array_schema.items.type == types.Type.ARRAY
+  assert array_schema.items.max_items == 2
+  assert array_schema.items.min_items == 2
+  assert array_schema.items.items is not None
+  assert array_schema.items.items.any_of is not None
+  assert len(array_schema.items.items.any_of) == 2
+  assert array_schema.items.items.any_of[0].type == types.Type.STRING
+  assert array_schema.items.items.any_of[0].format is None
+  assert array_schema.items.items.any_of[1].type == types.Type.STRING
