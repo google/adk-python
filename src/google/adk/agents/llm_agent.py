@@ -520,9 +520,13 @@ class LlmAgent(BaseAgent, abc.ABC):
       return
 
     should_pause = False
+    output_accumulator = ''
     async with Aclosing(self._llm_flow.run_async(ctx)) as agen:
       async for event in agen:
         self.__maybe_save_output_to_state(event)
+        output_accumulator = self.__maybe_accumulate_streaming_output(
+            event, output_accumulator
+        )
         yield event
         if ctx.should_pause_invocation(event):
           # Do not pause immediately, wait until the long-running tool call is
@@ -544,9 +548,13 @@ class LlmAgent(BaseAgent, abc.ABC):
   async def _run_live_impl(
       self, ctx: InvocationContext
   ) -> AsyncGenerator[Event, None]:
+    output_accumulator = ''
     async with Aclosing(self._llm_flow.run_live(ctx)) as agen:
       async for event in agen:
         self.__maybe_save_output_to_state(event)
+        output_accumulator = self.__maybe_accumulate_streaming_output(
+            event, output_accumulator
+        )
         yield event
       if ctx.end_invocation:
         return
@@ -961,6 +969,47 @@ class LlmAgent(BaseAgent, abc.ABC):
           return
         result = validate_schema(self.output_schema, result)
       event.actions.state_delta[self.output_key] = result
+
+  def __maybe_accumulate_streaming_output(
+      self, event: Event, accumulator: str
+  ) -> str:
+    """Accumulates output_key text across a streaming model turn.
+
+    Streaming with tool calls produces non-partial events that carry text
+    alongside a function_call. is_final_response() rejects those, so
+    __maybe_save_output_to_state skips them and the text on those events
+    is dropped from output_key. Accumulate every non-partial text-bearing
+    event from this agent across the model turn so the segments survive
+    in session state. See issue #5590.
+
+    No-op when accumulation doesn't apply (different author, no
+    output_key, output_schema set, partial event, no content, no text).
+    For applicable events, appends the event's text to ``accumulator``
+    and writes the running value to state_delta[output_key], overwriting
+    any value __maybe_save_output_to_state set on the same event.
+    Returns the new accumulator value.
+    """
+    if (
+        not self.output_key
+        or self.output_schema
+        or event.author != self.name
+        or event.partial
+        or not event.content
+        or not event.content.parts
+    ):
+      return accumulator
+
+    text = ''.join(
+        part.text
+        for part in event.content.parts
+        if part.text and not part.thought
+    )
+    if not text:
+      return accumulator
+
+    accumulator += text
+    event.actions.state_delta[self.output_key] = accumulator
+    return accumulator
 
   @model_validator(mode='after')
   def __model_validator_after(self) -> LlmAgent:

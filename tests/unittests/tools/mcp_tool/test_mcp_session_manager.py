@@ -25,6 +25,7 @@ from unittest.mock import patch
 
 from google.adk.platform import thread as platform_thread
 from google.adk.tools.mcp_tool.mcp_session_manager import _SharedAsyncTransport
+from google.adk.tools.mcp_tool.mcp_session_manager import create_mcp_http_client
 from google.adk.tools.mcp_tool.mcp_session_manager import MCPSessionManager
 from google.adk.tools.mcp_tool.mcp_session_manager import retry_on_errors
 from google.adk.tools.mcp_tool.mcp_session_manager import SseConnectionParams
@@ -242,6 +243,47 @@ class TestMCPSessionManager:
             "httpx_client_factory"
         ].get_default(),
     )
+
+  @patch(
+      "google.adk.tools.mcp_tool.mcp_session_manager.HTTPXClientInstrumentor",
+      create=True,
+  )
+  @patch(
+      "google.adk.tools.mcp_tool.mcp_session_manager._create_mcp_http_client"
+  )
+  @patch(
+      "google.adk.tools.mcp_tool.mcp_session_manager._HAS_HTTPX_INSTRUMENTOR",
+      True,
+  )
+  def test_default_httpx_factory_instruments_client_when_available(
+      self, mock_base_factory, mock_instrumentor
+  ):
+    """Test default MCP HTTP factory instruments HTTPX client when available."""
+    client = Mock()
+    mock_base_factory.return_value = client
+
+    result = create_mcp_http_client()
+
+    assert result is client
+    mock_instrumentor.instrument_client.assert_called_once_with(client)
+
+  @patch(
+      "google.adk.tools.mcp_tool.mcp_session_manager._create_mcp_http_client"
+  )
+  @patch(
+      "google.adk.tools.mcp_tool.mcp_session_manager._HAS_HTTPX_INSTRUMENTOR",
+      False,
+  )
+  def test_default_httpx_factory_handles_missing_opentelemetry(
+      self, mock_base_factory
+  ):
+    """Test default MCP HTTP factory works without OTel instrumentation."""
+    client = Mock()
+    mock_base_factory.return_value = client
+
+    result = create_mcp_http_client()
+
+    assert result is client
 
   def test_generate_session_key_stdio(self):
     """Test session key generation for stdio connections."""

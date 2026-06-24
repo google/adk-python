@@ -316,11 +316,12 @@ class InMemoryRunner:
           run_config=run_config or RunConfig(),
       )
 
-      async for response in run_res:
-        collected_responses.append(response)
-        # When we have enough response, we should return
-        if len(collected_responses) >= 1:
-          return
+      async with Aclosing(run_res) as agen:
+        async for response in agen:
+          collected_responses.append(response)
+          # When we have enough response, we should return
+          if len(collected_responses) >= 1:
+            return
 
     try:
       session = self.session
