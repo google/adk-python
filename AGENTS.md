@@ -1,33 +1,3 @@
-# AI Coding Assistant Context
-
-This document provides context for AI coding assistants (Antigravity, Gemini CLI, etc.) to understand the ADK Python project and assist with development.
-
-## ADK Knowledge, Architecture, and Style
-
-For all matters regarding ADK development, please use the appropriate skill:
-
-- **`adk-architecture`**: Use this skill whenever you need to understand the architecture, event flow, or state management of the ADK system, or when designing or modifying core components and public APIs.
-  - Read `.agents/skills/adk-architecture/SKILL.md` for full instructions.
-- **`adk-style`**: Use this skill whenever writing code, tests, or reviewing PRs for the ADK project to ensure compliance with styling and coding conventions. Also use it for committing, bug fixing, and testing rules.
-  - Read `.agents/skills/adk-style/SKILL.md` for full instructions.
-- **`adk-git`**: Use this skill for any git operation (commit, push, pull, rebase, etc.). It provides guidelines for Conventional Commits and branch naming.
-  - Read `.agents/skills/adk-git/SKILL.md` for full instructions.
-- **`adk-sample-creator`**: Use this skill when creating new samples demonstrating features or agent patterns, or when adding examples to subdirectories under `contributing/`.
-  - Read `.agents/skills/adk-sample-creator/SKILL.md` for full instructions.
-- **`adk-review`**: Use this skill to review local changes for errors, style compliance, unintended outcomes, and to check if associated design docs, guides, samples, or tests need updates.
-  - Read `.agents/skills/adk-review/SKILL.md` for full instructions.
-- **`adk-issue`**: Use this skill when analyzing, triaging, and resolving GitHub issues for the adk-python repository (orchestrating both triage and fix implementation). Do NOT use this skill if the "/adk-issue-analyze" command is explicitly requested.
-  - Read `.agents/skills/adk-issue/SKILL.md` for full instructions.
-- **`adk-issue-analyze`**: Use this skill to fetch, inspect, and analyze a GitHub issue in a strictly read-only manner. Use this skill when the "/adk-issue-analyze" command is explicitly called.
-  - Read `.agents/skills/adk-issue-analyze/SKILL.md` for full instructions.
-- **`adk-issue-fix`**: Use this skill to implement the code changes, unit tests, and documentation updates for an approved GitHub issue fix. Use this skill when the "/adk-issue-fix" command is explicitly called.
-  - Read `.agents/skills/adk-issue-fix/SKILL.md` for full instructions.
-- **`adk-pr-analyze`**: Use this skill to fetch, inspect, and analyze a GitHub pull request in a strictly read-only manner. Use this skill when the "/adk-pr-analyze" command is explicitly called.
-  - Read `.agents/skills/adk-pr-analyze/SKILL.md` for full instructions.
-- **`adk-pr-triage`**: Use this skill to orchestrate triaging and reviewing GitHub pull requests (PRs) (orchestrating both analysis and user review/checkout). Do NOT use this skill if the "/adk-pr-analyze" command is explicitly requested.
-  - Read `.agents/skills/adk-pr-triage/SKILL.md` for full instructions.
-
-
 ## Project Overview
 
 The Agent Development Kit (ADK) is an open-source, code-first Python toolkit for building, evaluating, and deploying sophisticated AI agents.
@@ -44,6 +14,10 @@ The Agent Development Kit (ADK) is an open-source, code-first Python toolkit for
 - **Context** (ADK 2.0): Holds execution state and telemetry context mapped 1:1 to nodes.
 
 For details on how the Runner works and the invocation lifecycle, please refer to the `adk-architecture` skill and the referenced documentation therein.
+
+## ADK Knowledge, Architecture, and Style
+
+Skills related to ADK development are in `.agents/skills/`.
 
 ## Project Architecture
 

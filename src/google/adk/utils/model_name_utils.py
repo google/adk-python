@@ -41,7 +41,8 @@ def extract_model_name(model_string: str) -> str:
 
   Args:
     model_string: Either a simple model name like "gemini-2.5-pro" or a
-      path-based model name like "projects/.../models/gemini-2.5-flash"
+      path-based model name like "projects/.../models/gemini-2.5-flash",
+      or a provider-prefixed model name like "gemini/gemini-2.5-flash".
 
   Returns:
     The extracted model name (e.g., "gemini-2.5-pro")
@@ -62,6 +63,19 @@ def extract_model_name(model_string: str) -> str:
   # Handle 'models/' prefixed names like "models/gemini-2.5-pro"
   if model_string.startswith('models/'):
     return model_string[len('models/') :]
+
+  # Malformed 'projects/' path (didn't match the Vertex pattern above); return
+  # as-is so the provider-prefix block below doesn't misread it as a Gemini id.
+  if model_string.startswith('projects/'):
+    return model_string
+
+  # Handle provider-prefixed LiteLLM-compatible names like
+  # "gemini/gemini-2.5-flash" or "openrouter/google/gemini-2.5-pro:online".
+  # Only Gemini names are extracted; other providers fall through unchanged.
+  if '/' in model_string:
+    model_name = model_string.rsplit('/', 1)[1]
+    if model_name.startswith('gemini-'):
+      return model_name
 
   # If it's not a path-based model, return as-is (simple model name)
   return model_string

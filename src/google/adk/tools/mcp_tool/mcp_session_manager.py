@@ -61,17 +61,40 @@ from mcp import StdioServerParameters
 from mcp.client.session import SamplingFnT
 from mcp.client.sse import sse_client
 from mcp.client.stdio import stdio_client
-from mcp.client.streamable_http import create_mcp_http_client
+from mcp.client.streamable_http import create_mcp_http_client as _create_mcp_http_client
 from mcp.client.streamable_http import McpHttpClientFactory
 from mcp.client.streamable_http import streamablehttp_client
 from pydantic import BaseModel
 from pydantic import ConfigDict
+
+try:
+  from opentelemetry.instrumentation.httpx import HTTPXClientInstrumentor
+
+  _HAS_HTTPX_INSTRUMENTOR = True
+except (ImportError, AttributeError):
+  _HAS_HTTPX_INSTRUMENTOR = False
 
 from ...features import FeatureName
 from ...features import is_feature_enabled
 from .session_context import SessionContext
 
 logger = logging.getLogger('google_adk.' + __name__)
+
+
+def create_mcp_http_client(
+    headers: dict[str, str] | None = None,
+    timeout: httpx.Timeout | None = None,
+    auth: httpx.Auth | None = None,
+) -> httpx.AsyncClient:
+  """Creates MCP HTTP client and instruments it when OTel is available."""
+  client = _create_mcp_http_client(
+      headers=headers,
+      timeout=timeout,
+      auth=auth,
+  )
+  if _HAS_HTTPX_INSTRUMENTOR:
+    HTTPXClientInstrumentor.instrument_client(client)
+  return client
 
 
 def _has_cancelled_error_context(exc: BaseException) -> bool:

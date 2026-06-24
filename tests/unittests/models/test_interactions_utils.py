@@ -16,6 +16,7 @@
 
 import asyncio
 import base64
+from collections.abc import AsyncGenerator
 from collections.abc import Callable
 from datetime import datetime
 from datetime import timezone
@@ -24,6 +25,7 @@ from unittest.mock import MagicMock
 
 from google.adk.models import interactions_utils
 from google.adk.models.llm_request import LlmRequest
+from google.adk.models.llm_response import LlmResponse
 from google.genai import interactions
 from google.genai import types
 from google.genai.interactions import CodeExecutionResultStep
@@ -33,6 +35,7 @@ from google.genai.interactions import ImageContent
 from google.genai.interactions import Interaction
 from google.genai.interactions import InteractionCompletedEvent
 from google.genai.interactions import InteractionCreatedEvent
+from google.genai.interactions import InteractionSseEventInteraction
 from google.genai.interactions import ModelOutputStep
 from google.genai.interactions import StepDelta
 from google.genai.interactions import StepStart
@@ -60,27 +63,63 @@ class _MockAsyncIterator:
 
 
 class _FakeInteractions:
-  """Minimal fake interactions resource for streaming tests."""
+  """Fake interactions resource for create() tests.
 
-  def __init__(self, events: list[object]):
-    self._events = events
+  Records each create() call's kwargs (including the ``stream`` flag) so tests
+  can assert verbatim forwarding. Streaming calls (``stream`` truthy) return an
+  async iterator over the configured events; non-streaming calls return the
+  configured Interaction. ``_create_interactions`` always passes ``stream``
+  explicitly, so there is no need to distinguish "unset" from ``stream=False``.
+  """
 
-  async def create(self, **_kwargs):
-    return _MockAsyncIterator(self._events)
+  def __init__(
+      self,
+      events: list[object] | None = None,
+      *,
+      interaction: Interaction | None = None,
+  ):
+    self._events = events or []
+    self._interaction = interaction
+    self.create_calls: list[dict[str, object]] = []
+
+  async def create(self, **kwargs):
+    self.create_calls.append(kwargs)
+    if kwargs.get('stream'):
+      return _MockAsyncIterator(self._events)
+    return self._interaction
 
 
 class _FakeAio:
   """Namespace matching the expected api_client.aio shape."""
 
-  def __init__(self, events: list[object]):
-    self.interactions = _FakeInteractions(events)
+  def __init__(
+      self,
+      events: list[object] | None = None,
+      *,
+      interaction: Interaction | None = None,
+  ):
+    self.interactions = _FakeInteractions(events, interaction=interaction)
 
 
 class _FakeApiClient:
-  """Minimal fake API client for generate_content_via_interactions tests."""
+  """Minimal fake API client for interactions create() tests.
 
-  def __init__(self, events: list[object]):
-    self.aio = _FakeAio(events)
+  Streaming calls return an async iterator over the configured events;
+  non-streaming calls return the configured Interaction. ``create_calls``
+  exposes the recorded kwargs of each ``interactions.create`` call.
+  """
+
+  def __init__(
+      self,
+      events: list[object] | None = None,
+      *,
+      interaction: Interaction | None = None,
+  ):
+    self.aio = _FakeAio(events, interaction=interaction)
+
+  @property
+  def create_calls(self) -> list[dict[str, object]]:
+    return self.aio.interactions.create_calls
 
 
 def _build_llm_request() -> LlmRequest:
@@ -110,9 +149,9 @@ def fc_step() -> FunctionCallStep:
 
 def _build_lifecycle_streamed_events(fc_step: FunctionCallStep) -> list[object]:
   """Build streamed events with lifecycle updates carrying the ID."""
-  now = datetime.now(timezone.utc)
+  now = datetime.now(timezone.utc).isoformat()
 
-  interaction = Interaction(
+  interaction = InteractionSseEventInteraction(
       id='interaction_123',
       created=now,
       updated=now,
@@ -134,9 +173,9 @@ def _build_lifecycle_streamed_events(fc_step: FunctionCallStep) -> list[object]:
 
 def _build_complete_streamed_events(fc_step: FunctionCallStep) -> list[object]:
   """Build streamed events with the ID on an interaction.complete event."""
-  now = datetime.now(timezone.utc)
+  now = datetime.now(timezone.utc).isoformat()
 
-  interaction = Interaction(
+  interaction = InteractionSseEventInteraction(
       id='interaction_complete_123',
       created=now,
       updated=now,
@@ -154,7 +193,7 @@ def _build_complete_streamed_events(fc_step: FunctionCallStep) -> list[object]:
 
 def _build_legacy_streamed_events(fc_step: FunctionCallStep) -> list[object]:
   """Build streamed events with the ID on the legacy interaction event."""
-  now = datetime.now(timezone.utc)
+  now = datetime.now(timezone.utc).isoformat()
 
   interaction = Interaction(
       id='interaction_legacy_123',
@@ -246,8 +285,8 @@ class TestConvertPartToInteractionContent:
     assert result['id'] == ''
     assert result['name'] == 'get_weather'
 
-  def test_function_call_part_with_thought_signature(self):
-    """Test converting a function call Part with thought_signature."""
+  def test_function_call_part_thought_signature_dropped(self):
+    """Thought signatures are not sent on interactions function call steps."""
     part = types.Part(
         function_call=types.FunctionCall(
             id='call_456',
@@ -257,14 +296,13 @@ class TestConvertPartToInteractionContent:
         thought_signature=b'test_signature_bytes',
     )
     result = interactions_utils._convert_part_to_interaction_content(part)
-    assert result['type'] == 'function_call'
-    assert result['id'] == 'call_456'
-    assert result['name'] == 'my_tool'
-    assert result['arguments'] == {'doc': 'content'}
-    # signature should be base64 encoded
-    assert 'signature' in result
-
-    assert base64.b64decode(result['signature']) == b'test_signature_bytes'
+    assert result == {
+        'type': 'function_call',
+        'id': 'call_456',
+        'name': 'my_tool',
+        'arguments': {'doc': 'content'},
+    }
+    assert 'signature' not in result
 
   def test_function_call_part_without_thought_signature(self):
     """Test converting a function call Part without thought_signature."""
@@ -765,23 +803,6 @@ class TestConvertInteractionOutputToParts:
     assert result.function_call.name == 'get_weather'
     assert result.function_call.args == {'city': 'London'}
 
-  def test_function_call_output_with_thought_signature(self):
-    """Test converting function call output with thought_signature."""
-    output = FunctionCallStep(
-        type='function_call',
-        id='call_sig_123',
-        name='gemini3_tool',
-        arguments={'content': 'hello'},
-        signature=base64.b64encode(b'gemini3_signature').decode('utf-8'),
-    )
-    result_list = interactions_utils._convert_interaction_step_to_parts(output)
-    result = result_list[0] if result_list else None
-    assert result.function_call.id == 'call_sig_123'
-    assert result.function_call.name == 'gemini3_tool'
-    assert result.function_call.args == {'content': 'hello'}
-    # thought_signature should be decoded back to bytes
-    assert result.thought_signature == b'gemini3_signature'
-
   def test_function_call_output_without_thought_signature(self):
     """Test converting function call output without thought_signature."""
     output = FunctionCallStep(
@@ -808,6 +829,41 @@ class TestConvertInteractionOutputToParts:
     result = result_list[0] if result_list else None
     assert result.function_response.id == 'call_123'
     assert result.function_response.response == {'weather': 'Sunny'}
+
+  def test_function_result_output_preserves_none_values(self):
+    """None values in a dict result must not be dropped."""
+    output = FunctionResultStep(
+        type='function_result',
+        call_id='call_none',
+        result={'data': None, 'ok': True},
+    )
+    result_list = interactions_utils._convert_interaction_step_to_parts(output)
+    result = result_list[0] if result_list else None
+    assert result.function_response.response == {'data': None, 'ok': True}
+
+  def test_function_result_output_string(self):
+    """A plain string result is wrapped under a 'result' key."""
+    output = FunctionResultStep(
+        type='function_result',
+        call_id='call_str',
+        result='plain text',
+    )
+    result_list = interactions_utils._convert_interaction_step_to_parts(output)
+    result = result_list[0] if result_list else None
+    assert result.function_response.response == {'result': 'plain text'}
+
+  def test_function_result_output_list(self):
+    """A list result of content blocks is wrapped under a 'result' key."""
+    output = FunctionResultStep(
+        type='function_result',
+        call_id='call_list',
+        result=[{'type': 'text', 'text': 'hi'}],
+    )
+    result_list = interactions_utils._convert_interaction_step_to_parts(output)
+    result = result_list[0] if result_list else None
+    wrapped = result.function_response.response['result']
+    assert wrapped[0]['type'] == 'text'
+    assert wrapped[0]['text'] == 'hi'
 
   def test_image_output_with_data(self):
     """Test converting image output with inline data."""
@@ -909,8 +965,8 @@ class TestConvertInteractionToLlmResponse:
     interaction = Interaction(
         id='interaction_123',
         status='completed',
-        created=datetime.now(timezone.utc),
-        updated=datetime.now(timezone.utc),
+        created=datetime.now(timezone.utc).isoformat(),
+        updated=datetime.now(timezone.utc).isoformat(),
         steps=[
             ModelOutputStep(
                 type='model_output',
@@ -933,8 +989,8 @@ class TestConvertInteractionToLlmResponse:
     interaction = Interaction(
         id='interaction_123',
         status='failed',
-        created=datetime.now(timezone.utc),
-        updated=datetime.now(timezone.utc),
+        created=datetime.now(timezone.utc).isoformat(),
+        updated=datetime.now(timezone.utc).isoformat(),
         steps=[],
     )
     interaction.error = MagicMock(code='INVALID_REQUEST', message='Bad request')
@@ -950,8 +1006,8 @@ class TestConvertInteractionToLlmResponse:
     interaction = Interaction(
         id='interaction_123',
         status='requires_action',
-        created=datetime.now(timezone.utc),
-        updated=datetime.now(timezone.utc),
+        created=datetime.now(timezone.utc).isoformat(),
+        updated=datetime.now(timezone.utc).isoformat(),
         steps=[
             FunctionCallStep(
                 type='function_call',
@@ -1205,6 +1261,23 @@ class TestConvertInteractionEventToLlmResponse:
     assert result is None
     assert not aggregated_parts
 
+  def test_completed_event_failed_partial_interaction(self):
+    """A failed lifecycle event with a partial interaction does not crash."""
+    event = InteractionCompletedEvent(
+        event_type='interaction.completed',
+        interaction=InteractionSseEventInteraction(
+            id='int_failed',
+            status='failed',
+            steps=[],
+        ),
+    )
+    result = interactions_utils.convert_interaction_event_to_llm_response(
+        event, aggregated_parts=[], interaction_id='int_failed'
+    )
+    assert result is not None
+    assert result.error_code == 'UNKNOWN_ERROR'
+    assert result.interaction_id == 'int_failed'
+
   def test_function_call_streaming_flow(self):
     """Test the complete streaming flow for function calls (Start, Delta, Stop)."""
     # 1. StepStart
@@ -1354,3 +1427,182 @@ def test_generate_content_via_interactions_stream_extracts_interaction_id(
       asyncio.run(_collect_function_call_interaction_ids(streamed_events))
       == expected_ids
   )
+
+
+def _build_simple_text_stream() -> list[object]:
+  """A minimal streamed interaction: created -> text delta -> completed."""
+  now = datetime.now(timezone.utc).isoformat()
+  created = InteractionCreatedEvent(
+      event_type='interaction.created',
+      interaction=InteractionSseEventInteraction(
+          id='interaction_xyz',
+          created=now,
+          updated=now,
+          status='requires_action',
+          steps=[],
+      ),
+  )
+  step_start = StepStart(
+      event_type='step.start',
+      index=0,
+      step=ModelOutputStep(type='model_output'),
+  )
+  step_delta = StepDelta(
+      event_type='step.delta',
+      index=0,
+      delta={'type': 'text', 'text': 'Sunny in Tokyo.'},
+  )
+  step_stop = StepStop(event_type='step.stop', index=0)
+  completed = InteractionCompletedEvent(
+      event_type='interaction.completed',
+      interaction=InteractionSseEventInteraction(
+          id='interaction_xyz',
+          created=now,
+          updated=now,
+          status='completed',
+          steps=[
+              ModelOutputStep(
+                  type='model_output',
+                  content=[TextContent(type='text', text='Sunny in Tokyo.')],
+              )
+          ],
+      ),
+  )
+  return [created, step_start, step_delta, step_stop, completed]
+
+
+async def _collect_stream_responses(events: list[object]):
+  api_client = _FakeApiClient(events)
+  llm_request = _build_llm_request()
+  responses = []
+  async for resp in interactions_utils.generate_content_via_interactions(
+      api_client, llm_request, stream=True
+  ):
+    responses.append(resp)
+  return responses
+
+
+async def test_generate_content_via_interactions_stream_characterization():
+  """Streaming yields text responses carrying the interaction id."""
+  responses = await _collect_stream_responses(_build_simple_text_stream())
+
+  assert responses, 'expected at least one streamed LlmResponse'
+  assert all(r.interaction_id == 'interaction_xyz' for r in responses)
+  joined = ''.join(
+      part.text
+      for r in responses
+      if r.content and r.content.parts
+      for part in r.content.parts
+      if part.text
+  )
+  assert 'Sunny in Tokyo.' in joined
+
+
+def _build_non_streaming_interaction() -> Interaction:
+  """A completed non-streaming Interaction with a single text output."""
+  now = datetime.now(timezone.utc).isoformat()
+  return Interaction(
+      id='interaction_ns',
+      status='completed',
+      created=now,
+      updated=now,
+      steps=[
+          ModelOutputStep(
+              type='model_output',
+              content=[TextContent(type='text', text='Sunny in Tokyo.')],
+          )
+      ],
+  )
+
+
+async def _drain(
+    responses: AsyncGenerator[LlmResponse, None],
+) -> list[LlmResponse]:
+  """Collect all responses yielded by an async generator."""
+  return [resp async for resp in responses]
+
+
+async def test_create_interactions_streaming_forwards_kwargs_and_converts():
+  """Streaming forwards create_kwargs verbatim (plus stream) and converts."""
+  # Arrange.
+  api_client = _FakeApiClient(_build_simple_text_stream())
+  create_kwargs = {
+      'model': 'gemini-2.5-flash',
+      'input': [{
+          'type': 'user_input',
+          'content': [{'type': 'text', 'text': 'Weather in Tokyo?'}],
+      }],
+      'previous_interaction_id': None,
+  }
+
+  # Act.
+  responses = await _drain(
+      interactions_utils._create_interactions(
+          api_client, create_kwargs=create_kwargs, stream=True
+      )
+  )
+
+  # Assert: exactly one create() call forwarding kwargs plus the stream flag.
+  assert len(api_client.create_calls) == 1
+  assert api_client.create_calls[0] == {**create_kwargs, 'stream': True}
+
+  # Assert: the streamed events are converted into text responses.
+  assert responses, 'expected at least one streamed LlmResponse'
+  assert all(r.interaction_id == 'interaction_xyz' for r in responses)
+  joined = ''.join(
+      part.text
+      for r in responses
+      if r.content and r.content.parts
+      for part in r.content.parts
+      if part.text
+  )
+  assert 'Sunny in Tokyo.' in joined
+
+
+async def test_create_interactions_non_streaming_forwards_kwargs_and_yields_single_response():
+  """Non-streaming forwards kwargs verbatim and yields a single response."""
+  # Arrange.
+  interaction = _build_non_streaming_interaction()
+  api_client = _FakeApiClient(interaction=interaction)
+  create_kwargs = {
+      'model': 'gemini-2.5-flash',
+      'input': [{
+          'type': 'user_input',
+          'content': [{'type': 'text', 'text': 'Weather in Tokyo?'}],
+      }],
+      'previous_interaction_id': None,
+  }
+
+  # Act.
+  responses = await _drain(
+      interactions_utils._create_interactions(
+          api_client, create_kwargs=create_kwargs, stream=False
+      )
+  )
+
+  # Assert: exactly one create() call forwarding kwargs plus the stream flag.
+  assert len(api_client.create_calls) == 1
+  assert api_client.create_calls[0] == {**create_kwargs, 'stream': False}
+
+  # Assert: a single converted LlmResponse carrying the interaction output.
+  assert len(responses) == 1
+  assert responses[0].interaction_id == 'interaction_ns'
+  assert responses[0].content.parts[0].text == 'Sunny in Tokyo.'
+
+
+async def test_generate_content_via_interactions_non_streaming_yields_single_response():
+  """The public function yields a single response on the non-streaming path."""
+  # Arrange.
+  api_client = _FakeApiClient(interaction=_build_non_streaming_interaction())
+
+  # Act.
+  responses = await _drain(
+      interactions_utils.generate_content_via_interactions(
+          api_client, _build_llm_request(), stream=False
+      )
+  )
+
+  # Assert: a single end-to-end converted LlmResponse with the expected text.
+  assert len(responses) == 1
+  assert responses[0].interaction_id == 'interaction_ns'
+  assert responses[0].content.parts[0].text == 'Sunny in Tokyo.'

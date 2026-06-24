@@ -1,3 +1,17 @@
+// Copyright 2026 Google LLC
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 import{a as K}from"./chunk-DMWOYWYQ.js";import{a as Q}from"./chunk-T3Q3QCCV.js";import"./chunk-NQKWI5EB.js";import"./chunk-WR6HISGZ.js";import"./chunk-I4UDKKN5.js";import"./chunk-2DLZXFEQ.js";import"./chunk-JNY2YWG7.js";import"./chunk-XULIXUQL.js";import"./chunk-3NJNOY56.js";import"./chunk-NALL4A3P.js";import{a as q}from"./chunk-TPDTRWWV.js";import{k as H,l as J}from"./chunk-WBLSVR3V.js";import"./chunk-GP6TCC26.js";import{N as M,R as P,S as R,T as I,U as L,V as N,W as B,X as U,Y as V,r as W}from"./chunk-QFMJV7VH.js";import{K as C,N as j,g as o,i as g,r as Z}from"./chunk-JRNAXTJ7.js";import"./chunk-ASJUXEUE.js";import"./chunk-EGBSMT36.js";import{j as O}from"./chunk-RMXJBC7V.js";var X=W.pie,D={sections:new Map,showData:!1,config:X},f=D.sections,y=D.showData,se=structuredClone(X),ce=o(()=>structuredClone(se),"getConfig"),de=o(()=>{f=new Map,y=D.showData,P()},"clear"),pe=o(({label:e,value:a})=>{if(a<0)throw new Error(`"${e}" has invalid value: ${a}. Negative values are not allowed in pie charts. All slice values must be >= 0.`);f.has(e)||(f.set(e,a),g.debug(`added new section: ${e}, with value: ${a}`))},"addSection"),ge=o(()=>f,"getSections"),fe=o(e=>{y=e},"setShowData"),ue=o(()=>y,"getShowData"),Y={getConfig:ce,clear:de,setDiagramTitle:B,getDiagramTitle:U,setAccTitle:R,getAccTitle:I,setAccDescription:L,getAccDescription:N,addSection:pe,getSections:ge,setShowData:fe,getShowData:ue},me=o((e,a)=>{K(e,a),a.setShowData(e.showData),e.sections.map(a.addSection)},"populateDb"),he={parse:o(e=>O(null,null,function*(){let a=yield Q("pie",e);g.debug(a),me(a,Y)}),"parse")},ve=o(e=>`
   .pieCircle{
     stroke: ${e.pieStrokeColor};
