@@ -1,1 +1,15 @@
+// Copyright 2026 Google LLC
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 import{a as n,b as s,c as i,d as l,e as f,f as o,g as d,n as m,o as c,q as p}from"./chunk-NALL4A3P.js";var u=class extends p{static{o(this,"TreemapTokenBuilder")}constructor(){super(["treemap"])}},v=/classDef\s+([A-Z_a-z]\w+)(?:\s+([^\n\r;]*))?;?/,g=class extends c{static{o(this,"TreemapValueConverter")}runCustomConverter(r,e,t){if(r.name==="NUMBER2")return parseFloat(e.replace(/,/g,""));if(r.name==="SEPARATOR")return e.substring(1,e.length-1);if(r.name==="STRING2")return e.substring(1,e.length-1);if(r.name==="INDENTATION")return e.length;if(r.name==="ClassDef"){if(typeof e!="string")return e;let a=v.exec(e);if(a)return{$type:"ClassDefStatement",className:a[1],styleText:a[2]||void 0}}}};function T(r){let e=r.validation.TreemapValidator,t=r.validation.ValidationRegistry;if(t){let a={Treemap:e.checkSingleRoot.bind(e)};t.register(a,e)}}o(T,"registerValidationChecks");var h=class{static{o(this,"TreemapValidator")}checkSingleRoot(r,e){let t;for(let a of r.TreemapRows)a.item&&(t===void 0&&a.indent===void 0?t=0:a.indent===void 0?e("error","Multiple root nodes are not allowed in a treemap.",{node:a,property:"item"}):t!==void 0&&t>=parseInt(a.indent,10)&&e("error","Multiple root nodes are not allowed in a treemap.",{node:a,property:"item"}))}},C={parser:{TokenBuilder:o(()=>new u,"TokenBuilder"),ValueConverter:o(()=>new g,"ValueConverter")},validation:{TreemapValidator:o(()=>new h,"TreemapValidator")}};function V(r=l){let e=i(s(r),d),t=i(n({shared:e}),m,C);return e.ServiceRegistry.register(t),T(t),{shared:e,Treemap:t}}o(V,"createTreemapServices");export{C as a,V as b};
