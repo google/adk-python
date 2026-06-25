@@ -56,6 +56,11 @@ from .functions import build_auth_request_event
 # Prefix used by toolset auth credential IDs
 TOOLSET_AUTH_CREDENTIAL_ID_PREFIX = '_adk_toolset_auth_'
 
+
+class _ReconnectSentinel(Event):
+  """Internal sentinel event to signal a silent reconnection request."""
+
+
 if TYPE_CHECKING:
   from ...agents.llm_agent import LlmAgent
   from ...models.base_llm import BaseLlm
@@ -623,6 +628,7 @@ class BaseLlmFlow(ABC):
               self._send_to_model(llm_connection, invocation_context)
           )
 
+          should_reconnect = False
           try:
             async with Aclosing(
                 self._receive_from_model(
@@ -633,6 +639,9 @@ class BaseLlmFlow(ABC):
                 )
             ) as agen:
               async for event in agen:
+                if isinstance(event, _ReconnectSentinel):
+                  should_reconnect = True
+                  break
                 # Empty event means the queue is closed.
                 if not event:
                   break
@@ -713,6 +722,9 @@ class BaseLlmFlow(ABC):
               await send_task
             except asyncio.CancelledError:
               pass
+        if should_reconnect:
+          continue
+        break
       except (ConnectionClosed, ConnectionClosedOK) as e:
         # If we have a session resumption handle, we attempt to reconnect.
         # This handle is updated dynamically during the session.
@@ -852,9 +864,9 @@ class BaseLlmFlow(ABC):
           if llm_response.go_away:
             logger.info(f'Received go away signal: {llm_response.go_away}')
             # The server signals that it will close the connection soon.
-            # We proactively raise ConnectionClosed to trigger the reconnection
-            # logic in run_live, which will use the latest session handle.
-            raise ConnectionClosed(None, None)
+            # We yield a sentinel event to request reconnection internally.
+            yield _ReconnectSentinel()
+            return
 
           model_response_event = Event(
               id=Event.new_id(),

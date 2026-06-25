@@ -12,8 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# Step 4: Triggers when the changelog PR is merged to release/candidate.
-# Records last-release-sha and renames release/candidate to release/v{version}.
+# Triggers automatically when the changelog PR is merged to a candidate branch.
+# Records the last-release-sha for Release Please and renames the branch to release/v{version}.
 name: "Release: Finalize"
 
 on:
@@ -21,6 +21,7 @@ on:
     types: [closed]
     branches:
       - release/candidate
+      - release/v1-candidate
 
 permissions:
   contents: write
@@ -43,10 +44,25 @@ jobs:
             echo "is_release_pr=false" >> $GITHUB_OUTPUT
           fi
 
+      - name: Determine Branch Configurations
+        if: steps.check.outputs.is_release_pr == 'true'
+        id: config
+        run: |
+          CANDIDATE_BRANCH="${{ github.event.pull_request.base.ref }}"
+          if [ "$CANDIDATE_BRANCH" = "release/v1-candidate" ]; then
+            echo "base_branch=v1" >> $GITHUB_OUTPUT
+            echo "config_file=.github/release-please-config-v1.json" >> $GITHUB_OUTPUT
+            echo "manifest_file=.github/.release-please-manifest-v1.json" >> $GITHUB_OUTPUT
+          else
+            echo "base_branch=main" >> $GITHUB_OUTPUT
+            echo "config_file=.github/release-please-config.json" >> $GITHUB_OUTPUT
+            echo "manifest_file=.github/.release-please-manifest.json" >> $GITHUB_OUTPUT
+          fi
+
       - uses: actions/checkout@v6
         if: steps.check.outputs.is_release_pr == 'true'
         with:
-          ref: release/candidate
+          ref: ${{ github.event.pull_request.base.ref }}
           token: ${{ secrets.RELEASE_PAT }}
           fetch-depth: 0
 
@@ -54,7 +70,7 @@ jobs:
         if: steps.check.outputs.is_release_pr == 'true'
         id: version
         run: |
-          VERSION=$(jq -r '.["."]' .github/.release-please-manifest.json)
+          VERSION=$(jq -r '.["."]' "${{ steps.config.outputs.manifest_file }}")
           echo "version=$VERSION" >> $GITHUB_OUTPUT
           echo "Extracted version: $VERSION"
 
@@ -70,21 +86,28 @@ jobs:
       - name: Record last-release-sha for release-please
         if: steps.check.outputs.is_release_pr == 'true'
         run: |
-          git fetch origin main
-          CUT_SHA=$(git merge-base origin/main HEAD)
-          echo "Release was cut from main at: $CUT_SHA"
-          jq --arg sha "$CUT_SHA" '. + {"last-release-sha": $sha}' \
-            .github/release-please-config.json > tmp.json && mv tmp.json .github/release-please-config.json
-          git add .github/release-please-config.json
-          git commit -m "chore: update last-release-sha for next release"
-          git push origin release/candidate
+          BASE_BRANCH="${{ steps.config.outputs.base_branch }}"
+          CONFIG_FILE="${{ steps.config.outputs.config_file }}"
+          CANDIDATE_BRANCH="${{ github.event.pull_request.base.ref }}"
 
-      - name: Rename release/candidate to release/v{version}
+          git fetch origin "$BASE_BRANCH"
+          CUT_SHA=$(git merge-base "origin/$BASE_BRANCH" HEAD)
+          echo "Release was cut from $BASE_BRANCH at: $CUT_SHA"
+
+          jq --arg sha "$CUT_SHA" '. + {"last-release-sha": $sha}' \
+            "$CONFIG_FILE" > tmp.json && mv tmp.json "$CONFIG_FILE"
+
+          git add "$CONFIG_FILE"
+          git commit -m "chore: update last-release-sha for next $BASE_BRANCH release"
+          git push origin "$CANDIDATE_BRANCH"
+
+      - name: Rename candidate to release/v{version}
         if: steps.check.outputs.is_release_pr == 'true'
         run: |
           VERSION="v${STEPS_VERSION_OUTPUTS_VERSION}"
-          git push origin "release/candidate:refs/heads/release/$VERSION" ":release/candidate"
-          echo "Renamed release/candidate to release/$VERSION"
+          CANDIDATE_BRANCH="${{ github.event.pull_request.base.ref }}"
+          git push origin "$CANDIDATE_BRANCH:refs/heads/release/$VERSION" ":$CANDIDATE_BRANCH"
+          echo "Renamed $CANDIDATE_BRANCH to release/$VERSION"
         env:
           STEPS_VERSION_OUTPUTS_VERSION: ${{ steps.version.outputs.version }}
 
