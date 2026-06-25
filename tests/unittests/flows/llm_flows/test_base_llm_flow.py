@@ -24,6 +24,7 @@ from google.adk.agents.loop_agent import LoopAgent
 from google.adk.agents.run_config import RunConfig
 from google.adk.events.event import Event
 from google.adk.flows.llm_flows.base_llm_flow import _handle_after_model_callback
+from google.adk.flows.llm_flows.base_llm_flow import _ReconnectSentinel
 from google.adk.flows.llm_flows.base_llm_flow import BaseLlmFlow
 from google.adk.models.base_llm_connection import BaseLlmConnection
 from google.adk.models.google_llm import Gemini
@@ -939,14 +940,22 @@ async def test_live_session_resumption_go_away():
     ) as mock_connect:
       mock_connect.return_value.__aenter__ = mock_aenter
 
+      yielded_events = []
       try:
-        async for _ in flow.run_live(invocation_context):
-          pass
+        async for event in flow.run_live(invocation_context):
+          yielded_events.append(event)
       except StopError:
         pass
 
       # Verify that we attempted to connect twice (initial + reconnect after go_away).
       assert mock_connect.call_count == 2
+
+      # Verify that the internal _ReconnectSentinel is not leaked/yielded to the caller.
+      assert not any(isinstance(e, _ReconnectSentinel) for e in yielded_events)
+
+      # Verify we yielded the expected response after reconnection.
+      assert len(yielded_events) == 1
+      assert yielded_events[0].content.parts[0].text == 'hi'
 
 
 @pytest.mark.asyncio

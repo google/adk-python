@@ -12,13 +12,13 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Unit tests for mtls_utils."""
+"""Unit tests for _mtls_utils."""
 
 import os
 from unittest.mock import MagicMock
 from unittest.mock import patch
 
-from google.adk.utils import mtls_utils
+from google.adk.utils import _mtls_utils
 import pytest
 
 _DEFAULT_TEMPLATE = "service.{location}.rep.googleapis.com"
@@ -27,14 +27,14 @@ _LOCATION = "us-central1"
 
 
 class TestMtlsUtils:
-  """Tests for mtls_utils functions."""
+  """Tests for _mtls_utils functions."""
 
   @patch("google.auth.transport.mtls.should_use_client_cert")
   def test_use_client_cert_effective_with_mtls_cert_true(
       self, mock_should_use_client_cert
   ):
     mock_should_use_client_cert.return_value = True
-    assert mtls_utils.use_client_cert_effective() is True
+    assert _mtls_utils.use_client_cert_effective() is True
     mock_should_use_client_cert.assert_called_once()
 
   @patch("google.auth.transport.mtls.should_use_client_cert")
@@ -42,7 +42,7 @@ class TestMtlsUtils:
       self, mock_should_use_client_cert
   ):
     mock_should_use_client_cert.return_value = False
-    assert mtls_utils.use_client_cert_effective() is False
+    assert _mtls_utils.use_client_cert_effective() is False
     mock_should_use_client_cert.assert_called_once()
 
   @patch("google.auth.transport.mtls.should_use_client_cert")
@@ -51,7 +51,7 @@ class TestMtlsUtils:
       self, mock_should_use_client_cert
   ):
     mock_should_use_client_cert.side_effect = AttributeError
-    assert mtls_utils.use_client_cert_effective() is True
+    assert _mtls_utils.use_client_cert_effective() is True
 
   @patch("google.auth.transport.mtls.should_use_client_cert")
   @patch.dict("os.environ", {"GOOGLE_API_USE_CLIENT_CERTIFICATE": "false"})
@@ -59,7 +59,7 @@ class TestMtlsUtils:
       self, mock_should_use_client_cert
   ):
     mock_should_use_client_cert.side_effect = AttributeError
-    assert mtls_utils.use_client_cert_effective() is False
+    assert _mtls_utils.use_client_cert_effective() is False
 
   @patch("google.auth.transport.mtls.should_use_client_cert")
   @patch.dict("os.environ", {}, clear=True)
@@ -67,53 +67,53 @@ class TestMtlsUtils:
       self, mock_should_use_client_cert
   ):
     mock_should_use_client_cert.side_effect = AttributeError
-    assert mtls_utils.use_client_cert_effective() is False
+    assert _mtls_utils.use_client_cert_effective() is False
 
-  @patch("google.adk.utils.mtls_utils.use_client_cert_effective")
+  @patch("google.adk.utils._mtls_utils.use_client_cert_effective")
   @patch.dict("os.environ", {"GOOGLE_API_USE_MTLS_ENDPOINT": "always"})
   def test_get_api_endpoint_always(self, mock_use_client_cert):
-    endpoint = mtls_utils.get_api_endpoint(
+    endpoint = _mtls_utils.get_api_endpoint(
         _LOCATION, _DEFAULT_TEMPLATE, _MTLS_TEMPLATE
     )
     assert endpoint == _MTLS_TEMPLATE.format(location=_LOCATION)
     mock_use_client_cert.assert_not_called()
 
-  @patch("google.adk.utils.mtls_utils.use_client_cert_effective")
+  @patch("google.adk.utils._mtls_utils.use_client_cert_effective")
   @patch.dict("os.environ", {"GOOGLE_API_USE_MTLS_ENDPOINT": "never"})
   def test_get_api_endpoint_never(self, mock_use_client_cert):
-    endpoint = mtls_utils.get_api_endpoint(
+    endpoint = _mtls_utils.get_api_endpoint(
         _LOCATION, _DEFAULT_TEMPLATE, _MTLS_TEMPLATE
     )
     assert endpoint == _DEFAULT_TEMPLATE.format(location=_LOCATION)
     mock_use_client_cert.assert_not_called()
 
-  @patch("google.adk.utils.mtls_utils.use_client_cert_effective")
+  @patch("google.adk.utils._mtls_utils.use_client_cert_effective")
   @patch.dict("os.environ", {"GOOGLE_API_USE_MTLS_ENDPOINT": "auto"})
   def test_get_api_endpoint_auto_with_cert(self, mock_use_client_cert):
     mock_use_client_cert.return_value = True
-    endpoint = mtls_utils.get_api_endpoint(
+    endpoint = _mtls_utils.get_api_endpoint(
         _LOCATION, _DEFAULT_TEMPLATE, _MTLS_TEMPLATE
     )
     assert endpoint == _MTLS_TEMPLATE.format(location=_LOCATION)
     mock_use_client_cert.assert_called_once()
 
-  @patch("google.adk.utils.mtls_utils.use_client_cert_effective")
+  @patch("google.adk.utils._mtls_utils.use_client_cert_effective")
   @patch.dict("os.environ", {"GOOGLE_API_USE_MTLS_ENDPOINT": "auto"})
   def test_get_api_endpoint_auto_without_cert(self, mock_use_client_cert):
     mock_use_client_cert.return_value = False
-    endpoint = mtls_utils.get_api_endpoint(
+    endpoint = _mtls_utils.get_api_endpoint(
         _LOCATION, _DEFAULT_TEMPLATE, _MTLS_TEMPLATE
     )
     assert endpoint == _DEFAULT_TEMPLATE.format(location=_LOCATION)
     mock_use_client_cert.assert_called_once()
 
-  @patch("google.adk.utils.mtls_utils.use_client_cert_effective")
+  @patch("google.adk.utils._mtls_utils.use_client_cert_effective")
   @patch.dict("os.environ", {"GOOGLE_API_USE_MTLS_ENDPOINT": "invalid_value"})
   def test_get_api_endpoint_invalid_fallback_to_auto(
       self, mock_use_client_cert
   ):
     mock_use_client_cert.return_value = True
-    endpoint = mtls_utils.get_api_endpoint(
+    endpoint = _mtls_utils.get_api_endpoint(
         _LOCATION, _DEFAULT_TEMPLATE, _MTLS_TEMPLATE
     )
     assert endpoint == _MTLS_TEMPLATE.format(location=_LOCATION)
