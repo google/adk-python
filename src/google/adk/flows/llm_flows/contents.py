@@ -23,6 +23,7 @@ from google.genai import types
 from typing_extensions import override
 
 from ...agents.invocation_context import InvocationContext
+from ...events._branch_path import _BranchPath
 from ...events.event import Event
 from ...models.llm_request import LlmRequest
 from ._base_llm_processor import BaseLlmRequestProcessor
@@ -900,12 +901,10 @@ def _is_event_belongs_to_branch(
   """
   if not invocation_branch or not event.branch:
     return True
-  # We use dot to delimit branch nodes. To avoid simple prefix match
-  # (e.g. agent_0 unexpectedly matching agent_00), require either perfect branch
-  # match, or match prefix with an additional explicit '.'
-  return invocation_branch == event.branch or invocation_branch.startswith(
-      f'{event.branch}.'
-  )
+
+  inv_path = _BranchPath.from_string(invocation_branch)
+  evt_path = _BranchPath.from_string(event.branch)
+  return inv_path == evt_path or inv_path.is_descendant_of(evt_path)
 
 
 def _is_function_call_event(event: Event, function_name: str) -> bool:

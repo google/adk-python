@@ -1793,26 +1793,31 @@ def _model_response_to_generate_content_response(
     message = first_choice.get("message", None)
     finish_reason = first_choice.get("finish_reason", None)
 
-  if not message:
-    raise ValueError("No message in response")
+  # Handle case where message is None or empty (e.g., when the response contains
+  # no text content or tool calls). Create empty LlmResponse instead of raising error.
+  if message:
+    thought_parts = _convert_reasoning_value_to_parts(
+        _extract_reasoning_value(message)
+    )
+    llm_response = _message_to_generate_content_response(
+        message,
+        model_version=response.model,
+        thought_parts=thought_parts or None,
+    )
+  else:
+    # Create empty LlmResponse when message is None or empty
+    llm_response = LlmResponse(
+        content=types.Content(role="model", parts=[]),
+        model_version=response.model,
+    )
 
-  thought_parts = _convert_reasoning_value_to_parts(
-      _extract_reasoning_value(message)
-  )
-  llm_response = _message_to_generate_content_response(
-      message,
-      model_version=response.model,
-      thought_parts=thought_parts or None,
-  )
-  if finish_reason:
-    # If LiteLLM already provides a FinishReason enum (e.g., for Gemini), use
-    # it directly. Otherwise, map the finish_reason string to the enum.
-    if isinstance(finish_reason, types.FinishReason):
-      llm_response.finish_reason = finish_reason
-    else:
-      finish_reason_str = str(finish_reason).lower()
-      llm_response.finish_reason = _FINISH_REASON_MAPPING.get(
-          finish_reason_str, types.FinishReason.OTHER
+  mapped_finish_reason = _map_finish_reason(finish_reason)
+  if mapped_finish_reason:
+    llm_response.finish_reason = mapped_finish_reason
+    if mapped_finish_reason != types.FinishReason.STOP:
+      llm_response.error_code = mapped_finish_reason
+      llm_response.error_message = _finish_reason_to_error_message(
+          mapped_finish_reason
       )
   if response.get("usage", None):
     usage_dict = response["usage"]
@@ -1888,7 +1893,7 @@ def _finish_reason_to_error_message(
   """Returns an error message for non-stop finish reasons."""
   if finish_reason == types.FinishReason.MAX_TOKENS:
     return "Maximum tokens reached"
-  return f"Finished with {finish_reason}"
+  return f"Finished with {finish_reason.name}"
 
 
 def _enforce_strict_openai_schema(schema: dict[str, Any]) -> None:

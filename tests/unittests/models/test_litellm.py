@@ -4691,6 +4691,107 @@ async def test_finish_reason_propagation(
   mock_acompletion.assert_called_once()
 
 
+def test_model_response_to_generate_content_response_no_message_with_finish_reason():
+  """Test response with no message but finish_reason returns empty LlmResponse.
+
+  This test covers issue #3618: when a turn ends with tool calls and no final
+  message, we should return an empty LlmResponse instead of raising ValueError.
+  """
+  response = ModelResponse(
+      model="test_model",
+      choices=[{
+          "finish_reason": "tool_calls",
+          # message is missing/None
+      }],
+      usage={
+          "prompt_tokens": 10,
+          "completion_tokens": 5,
+          "total_tokens": 15,
+      },
+  )
+  # Force message to be None to guarantee hitting the else branch
+  response.choices[0].message = None
+
+  llm_response = _model_response_to_generate_content_response(response)
+
+  # Should return empty LlmResponse, not raise ValueError
+  assert llm_response.content is not None
+  assert llm_response.content.role == "model"
+  assert len(llm_response.content.parts) == 0
+  # tool_calls maps to STOP
+  assert llm_response.finish_reason == types.FinishReason.STOP
+  assert llm_response.usage_metadata is not None
+  assert llm_response.usage_metadata.prompt_token_count == 10
+  assert llm_response.usage_metadata.candidates_token_count == 5
+  assert llm_response.model_version == "test_model"
+
+
+def test_model_response_to_generate_content_response_no_message_no_finish_reason():
+  """Test response with no message and no finish_reason returns empty LlmResponse."""
+  response = ModelResponse(
+      model="test_model",
+      choices=[{
+          # Both message and finish_reason are missing
+      }],
+  )
+  # Force message to be None to guarantee hitting the else branch
+  response.choices[0].message = None
+
+  llm_response = _model_response_to_generate_content_response(response)
+
+  # Should return empty LlmResponse, not raise ValueError
+  assert llm_response.content is not None
+  assert llm_response.content.role == "model"
+  assert len(llm_response.content.parts) == 0
+  # finish_reason may be None or have a default value - the important thing
+  # is that we don't raise ValueError
+  assert llm_response.model_version == "test_model"
+
+
+def test_model_response_to_generate_content_response_empty_message_dict():
+  """Test response with empty message dict returns empty LlmResponse."""
+  response = ModelResponse(
+      model="test_model",
+      choices=[{
+          "message": {},  # Empty dict is falsy
+          "finish_reason": "stop",
+      }],
+      usage={
+          "prompt_tokens": 5,
+          "completion_tokens": 3,
+          "total_tokens": 8,
+      },
+  )
+  # Ensure we test the parsing of an empty message dictionary rather than None.
+
+  llm_response = _model_response_to_generate_content_response(response)
+
+  # Should return empty LlmResponse, not raise ValueError
+  assert llm_response.content is not None
+  assert llm_response.content.role == "model"
+  assert len(llm_response.content.parts) == 0
+  assert llm_response.finish_reason == types.FinishReason.STOP
+  assert llm_response.usage_metadata is not None
+
+
+def test_model_response_to_generate_content_response_safety_finish_reason():
+  """Test that SAFETY finish reason sets error_code and error_message."""
+  response = ModelResponse(
+      model="test_model",
+      choices=[{
+          "finish_reason": "content_filter",
+      }],
+  )
+  # Force message to be None to guarantee hitting the else branch
+  response.choices[0].message = None
+
+  llm_response = _model_response_to_generate_content_response(response)
+
+  assert llm_response.finish_reason == types.FinishReason.SAFETY
+  assert llm_response.error_code == types.FinishReason.SAFETY
+  assert llm_response.error_message == "Finished with SAFETY"
+
+
 @pytest.mark.skip(reason="LiteLLM finish_reason mapping behaviour changed")
 @pytest.mark.asyncio
 async def test_finish_reason_unknown_maps_to_other(

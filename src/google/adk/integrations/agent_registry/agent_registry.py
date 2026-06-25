@@ -62,10 +62,8 @@ except ImportError as e:
 
 logger = logging.getLogger("google_adk." + __name__)
 
-AGENT_REGISTRY_BASE_URL = "https://agentregistry.googleapis.com/v1alpha"
-AGENT_REGISTRY_MTLS_BASE_URL = (
-    "https://agentregistry.mtls.googleapis.com/v1alpha"
-)
+AGENT_REGISTRY_BASE_URL = "https://agentregistry.googleapis.com/v1"
+AGENT_REGISTRY_MTLS_BASE_URL = "https://agentregistry.mtls.googleapis.com/v1"
 
 _TRANSPORT_MAPPING = {
     "HTTP_JSON": A2ATransport.http_json,
