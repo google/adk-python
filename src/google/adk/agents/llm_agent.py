@@ -1102,6 +1102,9 @@ class LlmAgent(BaseAgent, abc.ABC):
         obj = getattr(module, tool_config.name)
       else:
         # User-defined tools
+        from .config_agent_utils import _validate_module_reference
+
+        _validate_module_reference(tool_config.name)
         module_path, obj_name = tool_config.name.rsplit('.', 1)
         module = importlib.import_module(module_path)
         obj = getattr(module, obj_name)
