@@ -1507,7 +1507,7 @@ async def test_receive_multiplexed_parts(
 
 @pytest.mark.asyncio
 async def test_send_history_gemini_31_turn_complete(mock_gemini_session):
-  """Verify Gemini 3.1 Live history seeding explicitly appends turn_complete=True."""
+  """Verify Gemini 3.1 Live history seeding turn_complete logic based on last turn role."""
   from google.adk.models.google_llm import GoogleLLMVariant
 
   conn = GeminiLlmConnection(
@@ -1515,23 +1515,34 @@ async def test_send_history_gemini_31_turn_complete(mock_gemini_session):
       api_backend=GoogleLLMVariant.GEMINI_API,
       model_version='gemini-3.1-flash-live-preview',
   )
-  mock_gemini_session.send_client_content = mock.AsyncMock()
 
-  mock_contents = [
+  # Case 1: Last turn is from model (turn_complete should be False)
+  mock_gemini_session.send_client_content = mock.AsyncMock()
+  mock_contents_model_last = [
       types.Content(role='user', parts=[types.Part.from_text(text='hi')]),
       types.Content(role='model', parts=[types.Part.from_text(text='hello')]),
   ]
-  await conn.send_history(mock_contents)
-
+  await conn.send_history(mock_contents_model_last)
   mock_gemini_session.send_client_content.assert_called_once_with(
-      turns=mock_contents,
+      turns=mock_contents_model_last,
+      turn_complete=False,
+  )
+
+  # Case 2: Last turn is from user (turn_complete should be True)
+  mock_gemini_session.send_client_content = mock.AsyncMock()
+  mock_contents_user_last = [
+      types.Content(role='user', parts=[types.Part.from_text(text='hi')]),
+  ]
+  await conn.send_history(mock_contents_user_last)
+  mock_gemini_session.send_client_content.assert_called_once_with(
+      turns=mock_contents_user_last,
       turn_complete=True,
   )
 
 
 @pytest.mark.asyncio
-async def test_send_history_collapse_vertex_ai(mock_gemini_session):
-  """Verify history prompt collapse when seeding Gemini 3.1 Live on Vertex AI backend."""
+async def test_send_history_no_collapse_vertex_ai(mock_gemini_session):
+  """Verify history is not collapsed when seeding Gemini 3.1 Live on Vertex AI backend."""
   from google.adk.models.google_llm import GoogleLLMVariant
 
   conn = GeminiLlmConnection(
@@ -1547,18 +1558,9 @@ async def test_send_history_collapse_vertex_ai(mock_gemini_session):
   ]
   await conn.send_history(mock_contents)
 
-  assert mock_gemini_session.send_client_content.call_count == 1
-  called_turns = mock_gemini_session.send_client_content.call_args.kwargs[
-      'turns'
-  ]
-  assert len(called_turns) == 1
-  assert called_turns[0].role == 'user'
-  assert 'Previous conversation history:' in called_turns[0].parts[0].text
-  assert '[user]: hi' in called_turns[0].parts[0].text
-  assert '[model]: hello' in called_turns[0].parts[0].text
-  assert (
-      mock_gemini_session.send_client_content.call_args.kwargs['turn_complete']
-      is True
+  mock_gemini_session.send_client_content.assert_called_once_with(
+      turns=mock_contents,
+      turn_complete=False,
   )
 
 
