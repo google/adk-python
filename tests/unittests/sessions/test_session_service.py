@@ -281,29 +281,29 @@ async def test_get_empty_session(session_service):
 
 @pytest.mark.asyncio
 async def test_database_session_service_get_session_uses_read_only_factory():
-  service = DatabaseSessionService('sqlite+aiosqlite:///:memory:')
-  service.prepare_tables = mock.AsyncMock()
+  async with DatabaseSessionService('sqlite+aiosqlite:///:memory:') as service:
+    service.prepare_tables = mock.AsyncMock()
 
-  read_only_session = mock.AsyncMock()
-  read_only_session.get = mock.AsyncMock(return_value=None)
+    read_only_session = mock.AsyncMock()
+    read_only_session.get = mock.AsyncMock(return_value=None)
 
-  @asynccontextmanager
-  async def fake_read_only_session():
-    yield read_only_session
+    @asynccontextmanager
+    async def fake_read_only_session():
+      yield read_only_session
 
-  service.database_session_factory = mock.Mock(
-      side_effect=AssertionError('write session factory should not be used')
-  )
-  service._read_only_database_session_factory = mock.Mock(
-      return_value=fake_read_only_session()
-  )
+    service.database_session_factory = mock.Mock(
+        side_effect=AssertionError('write session factory should not be used')
+    )
+    service._read_only_database_session_factory = mock.Mock(
+        return_value=fake_read_only_session()
+    )
 
-  session = await service.get_session(
-      app_name='my_app', user_id='test_user', session_id='123'
-  )
+    session = await service.get_session(
+        app_name='my_app', user_id='test_user', session_id='123'
+    )
 
-  assert session is None
-  service._read_only_database_session_factory.assert_called_once_with()
+    assert session is None
+    service._read_only_database_session_factory.assert_called_once_with()
   service.database_session_factory.assert_not_called()
 
   await service.close()

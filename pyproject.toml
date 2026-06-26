@@ -195,6 +195,7 @@ optional-dependencies.test = [
   "anyio>=4.9,<5",
   "beautifulsoup4>=3.2.2",
   "crewai[tools]; python_version>='3.11' and python_version<'3.12'", # For CrewaiTool tests; chromadb/pypika fail on 3.12+
+  "docker>=7",                                                       # For ContainerCodeExecutor tests
   "e2b>=2,<3",
   "gepa>=0.1",
   "google-antigravity>=0.1,<0.2",
