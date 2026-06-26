@@ -1145,10 +1145,7 @@ async def test_gcs_load_artifact_file_data_fallback_compatibility() -> None:
 async def test_save_artifact_with_camel_case_dict(
     service_type, artifact_service_factory
 ):
-  """Artifact services accept camelCase dicts (Agentspace format).
-
-  Regression test for https://github.com/google/adk-python/issues/2886
-  """
+  """Artifact services accept camelCase dicts (Agentspace format)."""
   artifact_service = artifact_service_factory(service_type)
   app_name = "app0"
   user_id = "user0"
