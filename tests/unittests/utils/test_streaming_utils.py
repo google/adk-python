@@ -485,10 +485,7 @@ class TestStreamingResponseAggregator:
 
 
 class TestFunctionCallIdGeneration:
-  """Tests for function call ID generation in streaming mode.
-
-  Regression tests for https://github.com/google/adk-python/issues/4609.
-  """
+  """Tests for function call ID generation in streaming mode."""
 
   @pytest.mark.asyncio
   async def test_non_streaming_fc_generates_id_when_empty(self):

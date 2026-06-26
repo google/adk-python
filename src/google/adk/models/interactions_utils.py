@@ -706,13 +706,23 @@ def convert_interaction_to_llm_response(
 
 @dataclasses.dataclass
 class _StreamState:
-  """Accumulates streamed parts across SSE events.
+  """Accumulates streamed parts and grounding data across SSE events.
 
   ``parts`` collects ``types.Part``s in arrival order to assemble the final
-  ``Content``.
+  ``Content``. The grounding fields accumulate google_search / citation data
+  that maps to ``grounding_metadata`` (a top-level ``LlmResponse`` field, not a
+  part) so it can be reattached to the final, persisted event.
   """
 
   parts: list[types.Part] = dataclasses.field(default_factory=list)
+  web_search_queries: list[str] = dataclasses.field(default_factory=list)
+  grounding_chunks: list[types.GroundingChunk] = dataclasses.field(
+      default_factory=list
+  )
+  grounding_supports: list[types.GroundingSupport] = dataclasses.field(
+      default_factory=list
+  )
+  search_entry_point: types.SearchEntryPoint | None = None
 
 
 def _partial_part_response(
@@ -721,6 +731,18 @@ def _partial_part_response(
   """Build a partial streaming LlmResponse carrying a single content part."""
   return LlmResponse(
       content=types.Content(role='model', parts=[part]),
+      partial=True,
+      turn_complete=False,
+      interaction_id=interaction_id,
+  )
+
+
+def _partial_grounding_response(
+    grounding_metadata: types.GroundingMetadata, interaction_id: str | None
+) -> LlmResponse:
+  """Build a partial streaming LlmResponse carrying incremental grounding."""
+  return LlmResponse(
+      grounding_metadata=grounding_metadata,
       partial=True,
       turn_complete=False,
       interaction_id=interaction_id,
@@ -862,6 +884,69 @@ def _handle_code_execution_result(
   return _partial_part_response(part, interaction_id)
 
 
+def _handle_google_search_call(
+    delta: StepDeltaData, state: _StreamState, interaction_id: str | None
+) -> LlmResponse | None:
+  queries = delta.arguments.queries if delta.arguments else None
+  if not queries:
+    return None
+  state.web_search_queries.extend(queries)
+  grounding_metadata = types.GroundingMetadata(web_search_queries=list(queries))
+  return _partial_grounding_response(grounding_metadata, interaction_id)
+
+
+def _handle_google_search_result(
+    delta: StepDeltaData, state: _StreamState, interaction_id: str | None
+) -> LlmResponse | None:
+  rendered = None
+  for search_result in delta.result or []:
+    if search_result.search_suggestions:
+      rendered = search_result.search_suggestions
+      break
+  if not rendered:
+    return None
+  entry_point = types.SearchEntryPoint(rendered_content=rendered)
+  state.search_entry_point = entry_point
+  grounding_metadata = types.GroundingMetadata(search_entry_point=entry_point)
+  return _partial_grounding_response(grounding_metadata, interaction_id)
+
+
+def _handle_text_annotation(
+    delta: StepDeltaData, state: _StreamState, interaction_id: str | None
+) -> LlmResponse | None:
+  new_chunks: list[types.GroundingChunk] = []
+  new_supports: list[types.GroundingSupport] = []
+  for annotation in delta.annotations or []:
+    if getattr(annotation, 'type', None) != 'url_citation':
+      continue
+    chunk_index = len(state.grounding_chunks) + len(new_chunks)
+    new_chunks.append(
+        types.GroundingChunk(
+            web=types.GroundingChunkWeb(
+                uri=annotation.url, title=annotation.title
+            )
+        )
+    )
+    new_supports.append(
+        types.GroundingSupport(
+            segment=types.Segment(
+                start_index=annotation.start_index,
+                end_index=annotation.end_index,
+            ),
+            grounding_chunk_indices=[chunk_index],
+        )
+    )
+  if not new_chunks:
+    return None
+  state.grounding_chunks.extend(new_chunks)
+  state.grounding_supports.extend(new_supports)
+  grounding_metadata = types.GroundingMetadata(
+      grounding_chunks=new_chunks,
+      grounding_supports=new_supports,
+  )
+  return _partial_grounding_response(grounding_metadata, interaction_id)
+
+
 def _handle_function_result(
     delta: StepDeltaData, state: _StreamState, interaction_id: str | None
 ) -> LlmResponse | None:
@@ -873,6 +958,24 @@ def _handle_function_result(
   )
   state.parts.append(part)
   return _partial_part_response(part, interaction_id)
+
+
+def _build_grounding_metadata(
+    state: _StreamState,
+) -> types.GroundingMetadata | None:
+  if not (
+      state.web_search_queries
+      or state.grounding_chunks
+      or state.grounding_supports
+      or state.search_entry_point
+  ):
+    return None
+  return types.GroundingMetadata(
+      web_search_queries=state.web_search_queries or None,
+      grounding_chunks=state.grounding_chunks or None,
+      grounding_supports=state.grounding_supports or None,
+      search_entry_point=state.search_entry_point,
+  )
 
 
 def convert_interaction_event_to_llm_response(
@@ -931,6 +1034,12 @@ def convert_interaction_event_to_llm_response(
       return _handle_code_execution_call(delta, state, interaction_id)
     elif delta_type == 'code_execution_result':
       return _handle_code_execution_result(delta, state, interaction_id)
+    elif delta_type == 'google_search_call':
+      return _handle_google_search_call(delta, state, interaction_id)
+    elif delta_type == 'google_search_result':
+      return _handle_google_search_result(delta, state, interaction_id)
+    elif delta_type == 'text_annotation_delta':
+      return _handle_text_annotation(delta, state, interaction_id)
     elif delta_type == 'function_result':
       return _handle_function_result(delta, state, interaction_id)
     else:
@@ -968,16 +1077,23 @@ def convert_interaction_event_to_llm_response(
     return None
 
   elif isinstance(event, InteractionCompletedEvent):
-    # Final aggregated response
-    if state.parts:
+    grounding_metadata = _build_grounding_metadata(state)
+    if state.parts or grounding_metadata is not None:
+      content = (
+          types.Content(role='model', parts=state.parts)
+          if state.parts
+          else None
+      )
       return LlmResponse(
-          content=types.Content(role='model', parts=state.parts),
+          content=content,
+          grounding_metadata=grounding_metadata,
+          usage_metadata=_usage_metadata_from_interaction(event.interaction),
           partial=False,
           turn_complete=True,
           finish_reason=types.FinishReason.STOP,
           interaction_id=interaction_id,
       )
-    # If no streaming parts were collected, convert the final interaction directly
+    # No streaming parts or grounding collected: convert the final interaction.
     return convert_interaction_to_llm_response(event.interaction)
 
   elif isinstance(event, Interaction):
