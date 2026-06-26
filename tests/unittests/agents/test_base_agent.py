@@ -171,6 +171,18 @@ def test_invalid_agent_name():
     _ = _TestingAgent(name='not an identifier')
 
 
+def test_user_agent_name_validation():
+  """Verifies that 'user' is rejected but capitalized variations are allowed."""
+  with pytest.raises(ValueError, match='Agent name cannot be `user`'):
+    _ = _TestingAgent(name='user')
+
+  agent_capitalized = _TestingAgent(name='User')
+  assert agent_capitalized.name == 'User'
+
+  agent_all_caps = _TestingAgent(name='USER')
+  assert agent_all_caps.name == 'USER'
+
+
 @pytest.mark.asyncio
 async def test_run_async(request: pytest.FixtureRequest):
   agent = _TestingAgent(name=f'{request.function.__name__}_test_agent')

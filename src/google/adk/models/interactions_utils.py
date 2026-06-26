@@ -31,6 +31,7 @@ conversation history.
 from __future__ import annotations
 
 import base64
+import dataclasses
 import json
 import logging
 from typing import Any
@@ -63,6 +64,7 @@ from google.genai.interactions import ModelOutputStep
 from google.genai.interactions import ModelOutputStepParam
 from google.genai.interactions import Step
 from google.genai.interactions import StepDelta
+from google.genai.interactions import StepDeltaData
 from google.genai.interactions import StepParam
 from google.genai.interactions import StepStart
 from google.genai.interactions import StepStop
@@ -70,6 +72,7 @@ from google.genai.interactions import TextContentParam
 from google.genai.interactions import ThoughtStep
 from google.genai.interactions import ThoughtStepParam
 from google.genai.interactions import ToolParam
+from google.genai.interactions import UnknownStepDeltaData
 from google.genai.interactions import UserInputStepParam
 from google.genai.interactions import VideoContentParam
 from pydantic import BaseModel
@@ -618,6 +621,28 @@ def _convert_interaction_step_to_parts(step: Step) -> list[types.Part]:
   return []
 
 
+def _usage_metadata_from_interaction(
+    interaction: Interaction,
+) -> types.GenerateContentResponseUsageMetadata | None:
+  """Build usage metadata from an interaction's usage, if present.
+
+  Shared by the non-streaming converter and the streaming final-event branch so
+  both surface token counts identically. ``InteractionSseEventInteraction`` (the
+  type carried by ``InteractionCompletedEvent``) also exposes ``usage``, so this
+  accepts either interaction type.
+  """
+  if not interaction.usage:
+    return None
+  return types.GenerateContentResponseUsageMetadata(
+      prompt_token_count=interaction.usage.total_input_tokens,
+      candidates_token_count=interaction.usage.total_output_tokens,
+      total_token_count=(
+          (interaction.usage.total_input_tokens or 0)
+          + (interaction.usage.total_output_tokens or 0)
+      ),
+  )
+
+
 def convert_interaction_to_llm_response(
     interaction: Interaction,
 ) -> LlmResponse:
@@ -658,17 +683,7 @@ def convert_interaction_to_llm_response(
   if parts:
     content = types.Content(role='model', parts=parts)
 
-  # Convert usage metadata if available
-  usage_metadata = None
-  if interaction.usage:
-    usage_metadata = types.GenerateContentResponseUsageMetadata(
-        prompt_token_count=interaction.usage.total_input_tokens,
-        candidates_token_count=interaction.usage.total_output_tokens,
-        total_token_count=(
-            (interaction.usage.total_input_tokens or 0)
-            + (interaction.usage.total_output_tokens or 0)
-        ),
-    )
+  usage_metadata = _usage_metadata_from_interaction(interaction)
 
   # Determine finish reason based on status.
   # Interaction status can be: 'completed', 'requires_action', 'failed', or
@@ -689,16 +704,290 @@ def convert_interaction_to_llm_response(
   )
 
 
+@dataclasses.dataclass
+class _StreamState:
+  """Accumulates streamed parts and grounding data across SSE events.
+
+  ``parts`` collects ``types.Part``s in arrival order to assemble the final
+  ``Content``. The grounding fields accumulate google_search / citation data
+  that maps to ``grounding_metadata`` (a top-level ``LlmResponse`` field, not a
+  part) so it can be reattached to the final, persisted event.
+  """
+
+  parts: list[types.Part] = dataclasses.field(default_factory=list)
+  web_search_queries: list[str] = dataclasses.field(default_factory=list)
+  grounding_chunks: list[types.GroundingChunk] = dataclasses.field(
+      default_factory=list
+  )
+  grounding_supports: list[types.GroundingSupport] = dataclasses.field(
+      default_factory=list
+  )
+  search_entry_point: types.SearchEntryPoint | None = None
+
+
+def _partial_part_response(
+    part: types.Part, interaction_id: str | None
+) -> LlmResponse:
+  """Build a partial streaming LlmResponse carrying a single content part."""
+  return LlmResponse(
+      content=types.Content(role='model', parts=[part]),
+      partial=True,
+      turn_complete=False,
+      interaction_id=interaction_id,
+  )
+
+
+def _partial_grounding_response(
+    grounding_metadata: types.GroundingMetadata, interaction_id: str | None
+) -> LlmResponse:
+  """Build a partial streaming LlmResponse carrying incremental grounding."""
+  return LlmResponse(
+      grounding_metadata=grounding_metadata,
+      partial=True,
+      turn_complete=False,
+      interaction_id=interaction_id,
+  )
+
+
+def _handle_text(
+    delta: StepDeltaData, state: _StreamState, interaction_id: str | None
+) -> LlmResponse | None:
+  text = delta.text
+  if not text:
+    return None
+  part = types.Part.from_text(text=text)
+  state.parts.append(part)
+  return _partial_part_response(part, interaction_id)
+
+
+def _handle_media(
+    delta: StepDeltaData, state: _StreamState, interaction_id: str | None
+) -> LlmResponse | None:
+  """Handle image/audio/video/document deltas (shared data/uri/mime_type)."""
+  data = delta.data
+  uri = delta.uri
+  mime_type = delta.mime_type
+  if not data and not uri:
+    return None
+  if data:
+    part = types.Part(inline_data=types.Blob(data=data, mime_type=mime_type))
+  else:
+    part = types.Part(
+        file_data=types.FileData(file_uri=uri, mime_type=mime_type)
+    )
+  state.parts.append(part)
+  return _partial_part_response(part, interaction_id)
+
+
+def _handle_arguments_delta(
+    delta: StepDeltaData, state: _StreamState, interaction_id: str | None
+) -> LlmResponse | None:
+  if not state.parts:
+    return None
+  last_part = state.parts[-1]
+  if not last_part.function_call:
+    return None
+  delta_args = delta.arguments
+  if delta_args is None or last_part.function_call.partial_args is None:
+    return None
+  last_part.function_call.partial_args.append(
+      types.PartialArg(string_value=delta_args)
+  )
+  chunk_part = types.Part(
+      function_call=types.FunctionCall(
+          name=last_part.function_call.name,
+          partial_args=[types.PartialArg(string_value=delta_args)],
+      )
+  )
+  return _partial_part_response(chunk_part, interaction_id)
+
+
+def _handle_unknown_delta(
+    delta: StepDeltaData, state: _StreamState, interaction_id: str | None
+) -> LlmResponse | None:
+  """Generic fallback: log the unhandled delta, emit nothing."""
+  if isinstance(delta, UnknownStepDeltaData):
+    # Forward-compat surprise: preserve the raw payload so it isn't lost.
+    logger.warning(
+        'Interactions streaming converter received unrecognized step delta;'
+        ' skipping (no event emitted). raw=%r',
+        delta.raw,
+    )
+  else:
+    # Known delta type we deliberately don't handle yet: keep log noise low.
+    logger.debug(
+        'Interactions streaming converter received unhandled step delta type'
+        ' %r; skipping (no event emitted).',
+        delta.type,
+    )
+  return None
+
+
+def _handle_thought_summary(
+    delta: StepDeltaData, state: _StreamState, interaction_id: str | None
+) -> LlmResponse | None:
+  content = delta.content
+  text = None
+  if content is not None and getattr(content, 'type', None) == 'text':
+    text = content.text
+  if not text:
+    return None
+  part = types.Part(text=text, thought=True)
+  state.parts.append(part)
+  return _partial_part_response(part, interaction_id)
+
+
+def _handle_thought_signature(
+    delta: StepDeltaData, state: _StreamState, interaction_id: str | None
+) -> LlmResponse | None:
+  signature = delta.signature
+  if not signature:
+    return None
+  for part in reversed(state.parts):
+    if part.thought:
+      part.thought_signature = base64.b64decode(signature)
+      break
+  return None
+
+
+def _handle_code_execution_call(
+    delta: StepDeltaData, state: _StreamState, interaction_id: str | None
+) -> LlmResponse | None:
+  args = delta.arguments
+  code = args.code if args else None
+  if not code:
+    return None
+  language = (
+      types.Language.PYTHON
+      if args.language and args.language.lower() == 'python'
+      else types.Language.LANGUAGE_UNSPECIFIED
+  )
+  part = types.Part(
+      executable_code=types.ExecutableCode(code=code, language=language)
+  )
+  state.parts.append(part)
+  return _partial_part_response(part, interaction_id)
+
+
+def _handle_code_execution_result(
+    delta: StepDeltaData, state: _StreamState, interaction_id: str | None
+) -> LlmResponse | None:
+  part = types.Part(
+      code_execution_result=types.CodeExecutionResult(
+          output=delta.result or '',
+          outcome=types.Outcome.OUTCOME_FAILED
+          if delta.is_error
+          else types.Outcome.OUTCOME_OK,
+      )
+  )
+  state.parts.append(part)
+  return _partial_part_response(part, interaction_id)
+
+
+def _handle_google_search_call(
+    delta: StepDeltaData, state: _StreamState, interaction_id: str | None
+) -> LlmResponse | None:
+  queries = delta.arguments.queries if delta.arguments else None
+  if not queries:
+    return None
+  state.web_search_queries.extend(queries)
+  grounding_metadata = types.GroundingMetadata(web_search_queries=list(queries))
+  return _partial_grounding_response(grounding_metadata, interaction_id)
+
+
+def _handle_google_search_result(
+    delta: StepDeltaData, state: _StreamState, interaction_id: str | None
+) -> LlmResponse | None:
+  rendered = None
+  for search_result in delta.result or []:
+    if search_result.search_suggestions:
+      rendered = search_result.search_suggestions
+      break
+  if not rendered:
+    return None
+  entry_point = types.SearchEntryPoint(rendered_content=rendered)
+  state.search_entry_point = entry_point
+  grounding_metadata = types.GroundingMetadata(search_entry_point=entry_point)
+  return _partial_grounding_response(grounding_metadata, interaction_id)
+
+
+def _handle_text_annotation(
+    delta: StepDeltaData, state: _StreamState, interaction_id: str | None
+) -> LlmResponse | None:
+  new_chunks: list[types.GroundingChunk] = []
+  new_supports: list[types.GroundingSupport] = []
+  for annotation in delta.annotations or []:
+    if getattr(annotation, 'type', None) != 'url_citation':
+      continue
+    chunk_index = len(state.grounding_chunks) + len(new_chunks)
+    new_chunks.append(
+        types.GroundingChunk(
+            web=types.GroundingChunkWeb(
+                uri=annotation.url, title=annotation.title
+            )
+        )
+    )
+    new_supports.append(
+        types.GroundingSupport(
+            segment=types.Segment(
+                start_index=annotation.start_index,
+                end_index=annotation.end_index,
+            ),
+            grounding_chunk_indices=[chunk_index],
+        )
+    )
+  if not new_chunks:
+    return None
+  state.grounding_chunks.extend(new_chunks)
+  state.grounding_supports.extend(new_supports)
+  grounding_metadata = types.GroundingMetadata(
+      grounding_chunks=new_chunks,
+      grounding_supports=new_supports,
+  )
+  return _partial_grounding_response(grounding_metadata, interaction_id)
+
+
+def _handle_function_result(
+    delta: StepDeltaData, state: _StreamState, interaction_id: str | None
+) -> LlmResponse | None:
+  part = types.Part(
+      function_response=types.FunctionResponse(
+          id=delta.call_id or '',
+          response=_function_result_to_response(delta.result),
+      )
+  )
+  state.parts.append(part)
+  return _partial_part_response(part, interaction_id)
+
+
+def _build_grounding_metadata(
+    state: _StreamState,
+) -> types.GroundingMetadata | None:
+  if not (
+      state.web_search_queries
+      or state.grounding_chunks
+      or state.grounding_supports
+      or state.search_entry_point
+  ):
+    return None
+  return types.GroundingMetadata(
+      web_search_queries=state.web_search_queries or None,
+      grounding_chunks=state.grounding_chunks or None,
+      grounding_supports=state.grounding_supports or None,
+      search_entry_point=state.search_entry_point,
+  )
+
+
 def convert_interaction_event_to_llm_response(
     event: InteractionSSEEvent,
-    aggregated_parts: list[types.Part],
+    state: _StreamState,
     interaction_id: str | None = None,
 ) -> LlmResponse | None:
   """Convert an InteractionSSEEvent to an LlmResponse for streaming.
 
   Args:
     event: The streaming event from interactions API.
-    aggregated_parts: List to accumulate parts across events.
+    state: Accumulates parts and grounding data across streamed events.
     interaction_id: The interaction ID to include in responses.
 
   Returns:
@@ -718,7 +1007,7 @@ def convert_interaction_event_to_llm_response(
           partial_args=[],
       )
       part = types.Part(function_call=fc)
-      aggregated_parts.append(part)
+      state.parts.append(part)
 
       return LlmResponse(
           content=types.Content(role='model', parts=[part]),
@@ -729,75 +1018,36 @@ def convert_interaction_event_to_llm_response(
 
   elif isinstance(event, StepDelta):
     delta = event.delta
+    delta_type = delta.type
 
-    if delta.type == 'text':
-      text = delta.text
-      if text:
-        part = types.Part.from_text(text=text)
-        aggregated_parts.append(part)
-        return LlmResponse(
-            content=types.Content(role='model', parts=[part]),
-            partial=True,
-            turn_complete=False,
-            interaction_id=interaction_id,
-        )
-
-    elif delta.type == 'image':
-      data = delta.data
-      uri = delta.uri
-      mime_type = delta.mime_type
-      if data or uri:
-        if data:
-          part = types.Part(
-              inline_data=types.Blob(
-                  data=data,
-                  mime_type=mime_type,
-              )
-          )
-        else:
-          part = types.Part(
-              file_data=types.FileData(
-                  file_uri=uri,
-                  mime_type=mime_type,
-              )
-          )
-        aggregated_parts.append(part)
-        return LlmResponse(
-            content=types.Content(role='model', parts=[part]),
-            partial=True,
-            turn_complete=False,
-            interaction_id=interaction_id,
-        )
-
-    elif delta.type == 'arguments_delta':
-      if aggregated_parts:
-        last_part = aggregated_parts[-1]
-        if last_part.function_call:
-          delta_args = delta.arguments
-          if (
-              delta_args is not None
-              and last_part.function_call.partial_args is not None
-          ):
-            last_part.function_call.partial_args.append(
-                types.PartialArg(string_value=delta_args)
-            )
-
-            chunk_part = types.Part(
-                function_call=types.FunctionCall(
-                    name=last_part.function_call.name,
-                    partial_args=[types.PartialArg(string_value=delta_args)],
-                )
-            )
-            return LlmResponse(
-                content=types.Content(role='model', parts=[chunk_part]),
-                partial=True,
-                turn_complete=False,
-                interaction_id=interaction_id,
-            )
+    if delta_type == 'text':
+      return _handle_text(delta, state, interaction_id)
+    elif delta_type == 'thought_summary':
+      return _handle_thought_summary(delta, state, interaction_id)
+    elif delta_type == 'thought_signature':
+      return _handle_thought_signature(delta, state, interaction_id)
+    elif delta_type in ('image', 'audio', 'video', 'document'):
+      return _handle_media(delta, state, interaction_id)
+    elif delta_type == 'arguments_delta':
+      return _handle_arguments_delta(delta, state, interaction_id)
+    elif delta_type == 'code_execution_call':
+      return _handle_code_execution_call(delta, state, interaction_id)
+    elif delta_type == 'code_execution_result':
+      return _handle_code_execution_result(delta, state, interaction_id)
+    elif delta_type == 'google_search_call':
+      return _handle_google_search_call(delta, state, interaction_id)
+    elif delta_type == 'google_search_result':
+      return _handle_google_search_result(delta, state, interaction_id)
+    elif delta_type == 'text_annotation_delta':
+      return _handle_text_annotation(delta, state, interaction_id)
+    elif delta_type == 'function_result':
+      return _handle_function_result(delta, state, interaction_id)
+    else:
+      return _handle_unknown_delta(delta, state, interaction_id)
 
   elif isinstance(event, StepStop):
-    if aggregated_parts and aggregated_parts[-1].function_call:
-      fc = aggregated_parts[-1].function_call
+    if state.parts and state.parts[-1].function_call:
+      fc = state.parts[-1].function_call
       if fc.partial_args is not None:
         arg_str = ''.join(pa.string_value or '' for pa in fc.partial_args)
 
@@ -827,16 +1077,23 @@ def convert_interaction_event_to_llm_response(
     return None
 
   elif isinstance(event, InteractionCompletedEvent):
-    # Final aggregated response
-    if aggregated_parts:
+    grounding_metadata = _build_grounding_metadata(state)
+    if state.parts or grounding_metadata is not None:
+      content = (
+          types.Content(role='model', parts=state.parts)
+          if state.parts
+          else None
+      )
       return LlmResponse(
-          content=types.Content(role='model', parts=aggregated_parts),
+          content=content,
+          grounding_metadata=grounding_metadata,
+          usage_metadata=_usage_metadata_from_interaction(event.interaction),
           partial=False,
           turn_complete=True,
           finish_reason=types.FinishReason.STOP,
           interaction_id=interaction_id,
       )
-    # If no streaming parts were collected, convert the final interaction directly
+    # No streaming parts or grounding collected: convert the final interaction.
     return convert_interaction_to_llm_response(event.interaction)
 
   elif isinstance(event, Interaction):
@@ -1193,14 +1450,14 @@ async def _create_interactions(
     responses = await api_client.aio.interactions.create(
         **create_kwargs, stream=True
     )
-    aggregated_parts: list[types.Part] = []
+    state = _StreamState()
     async for event in responses:
       logger.debug(build_interactions_event_log(event))
       interaction_id = _extract_stream_interaction_id(event)
       if interaction_id:
         current_interaction_id = interaction_id
       llm_response = convert_interaction_event_to_llm_response(
-          event, aggregated_parts, current_interaction_id
+          event, state, current_interaction_id
       )
       if llm_response:
         yield llm_response

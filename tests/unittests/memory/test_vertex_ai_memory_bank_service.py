@@ -14,6 +14,7 @@
 
 import asyncio
 import datetime
+import logging
 from typing import Any
 from typing import Iterable
 from typing import Optional
@@ -26,7 +27,7 @@ from google.adk.memory.vertex_ai_memory_bank_service import VertexAiMemoryBankSe
 from google.adk.sessions.session import Session
 from google.genai import types
 import pytest
-from vertexai._genai.types import common as vertex_common_types
+from vertexai import types as vertex_types
 
 MOCK_APP_NAME = 'test-app'
 MOCK_USER_ID = 'test-user'
@@ -34,20 +35,16 @@ MOCK_USER_ID = 'test-user'
 
 def _supports_generate_memories_metadata() -> bool:
   return (
-      'metadata'
-      in vertex_common_types.GenerateAgentEngineMemoriesConfig.model_fields
+      'metadata' in vertex_types.GenerateAgentEngineMemoriesConfig.model_fields
   )
 
 
 def _supports_create_memory_metadata() -> bool:
-  return 'metadata' in vertex_common_types.AgentEngineMemoryConfig.model_fields
+  return 'metadata' in vertex_types.AgentEngineMemoryConfig.model_fields
 
 
 def _supports_create_memory_revision_labels() -> bool:
-  return (
-      'revision_labels'
-      in vertex_common_types.AgentEngineMemoryConfig.model_fields
-  )
+  return 'revision_labels' in vertex_types.AgentEngineMemoryConfig.model_fields
 
 
 class _AsyncListIterator:
@@ -208,6 +205,9 @@ def mock_vertexai_client():
     mock_async_client.agent_engines.memories.generate = mock.AsyncMock()
     mock_async_client.agent_engines.memories.create = mock.AsyncMock()
     mock_async_client.agent_engines.memories.retrieve = mock.AsyncMock()
+    mock_async_client.agent_engines.memories.retrieve_profiles = (
+        mock.AsyncMock()
+    )
     mock_async_client.agent_engines.memories.ingest_events = mock.AsyncMock()
 
     mock_client = mock.MagicMock()
@@ -305,7 +305,7 @@ async def test_add_events_to_memory_with_explicit_events_and_metadata(
   source = call_kwargs['direct_contents_source']
   assert len(source.events) == 1
   assert source.events[0].content.parts[0].text == 'test_content'
-  vertex_common_types.GenerateAgentEngineMemoriesConfig(**call_kwargs['config'])
+  vertex_types.GenerateAgentEngineMemoriesConfig(**call_kwargs['config'])
 
 
 @pytest.mark.asyncio
@@ -336,7 +336,7 @@ async def test_add_events_to_memory_without_session_id(
   source = call_kwargs['direct_contents_source']
   assert len(source.events) == 1
   assert source.events[0].content.parts[0].text == 'test_content'
-  vertex_common_types.GenerateAgentEngineMemoriesConfig(**call_kwargs['config'])
+  vertex_types.GenerateAgentEngineMemoriesConfig(**call_kwargs['config'])
   mock_vertexai_client.agent_engines.memories.create.assert_not_called()
 
 
@@ -376,7 +376,7 @@ async def test_add_events_to_memory_merges_metadata_field_and_unknown_keys(
   source = call_kwargs['direct_contents_source']
   assert len(source.events) == 1
   assert source.events[0].content.parts[0].text == 'test_content'
-  vertex_common_types.GenerateAgentEngineMemoriesConfig(**call_kwargs['config'])
+  vertex_types.GenerateAgentEngineMemoriesConfig(**call_kwargs['config'])
 
 
 @pytest.mark.asyncio
@@ -407,7 +407,7 @@ async def test_add_events_to_memory_none_wait_for_completion_keeps_default(
   source = call_kwargs['direct_contents_source']
   assert len(source.events) == 1
   assert source.events[0].content.parts[0].text == 'test_content'
-  vertex_common_types.GenerateAgentEngineMemoriesConfig(**call_kwargs['config'])
+  vertex_types.GenerateAgentEngineMemoriesConfig(**call_kwargs['config'])
 
 
 @pytest.mark.asyncio
@@ -442,7 +442,7 @@ async def test_add_events_to_memory_ttl_used_when_revision_ttl_is_none(
   source = call_kwargs['direct_contents_source']
   assert len(source.events) == 1
   assert source.events[0].content.parts[0].text == 'test_content'
-  vertex_common_types.GenerateAgentEngineMemoriesConfig(**call_kwargs['config'])
+  vertex_types.GenerateAgentEngineMemoriesConfig(**call_kwargs['config'])
 
 
 @pytest.mark.asyncio
@@ -587,7 +587,7 @@ async def test_add_memory_calls_create(
           'config'
       ]
   )
-  vertex_common_types.AgentEngineMemoryConfig(**create_config)
+  vertex_types.AgentEngineMemoryConfig(**create_config)
 
 
 @pytest.mark.asyncio
@@ -634,7 +634,7 @@ async def test_add_memory_enable_consolidation_calls_generate_direct_source(
           'config'
       ]
   )
-  vertex_common_types.GenerateAgentEngineMemoriesConfig(**generate_config)
+  vertex_types.GenerateAgentEngineMemoriesConfig(**generate_config)
 
 
 @pytest.mark.asyncio
@@ -768,7 +768,7 @@ async def test_add_memory_calls_create_with_memory_entry_metadata(
           'config'
       ]
   )
-  vertex_common_types.AgentEngineMemoryConfig(**create_config)
+  vertex_types.AgentEngineMemoryConfig(**create_config)
 
 
 @pytest.mark.asyncio
@@ -1007,6 +1007,66 @@ async def test_search_memory_empty_results(mock_vertexai_client):
   )
 
   assert len(result.memories) == 0
+
+
+@pytest.mark.asyncio
+async def test_retrieve_profiles(mock_vertexai_client, caplog):
+  """Returns the structured profiles for the scope as a list."""
+  retrieve_profiles_response = vertex_types.RetrieveProfilesResponse(
+      profiles={
+          'user-profile': vertex_types.MemoryProfile(
+              schema_id='user-profile',
+              profile={'name': 'Kim'},
+          )
+      }
+  )
+  mock_vertexai_client.agent_engines.memories.retrieve_profiles.return_value = (
+      retrieve_profiles_response
+  )
+  memory_service = mock_vertex_ai_memory_bank_service()
+
+  with caplog.at_level(logging.INFO):
+    result = await memory_service.retrieve_profiles(
+        app_name=MOCK_APP_NAME,
+        user_id=MOCK_USER_ID,
+    )
+
+  mock_vertexai_client.agent_engines.memories.retrieve_profiles.assert_awaited_once_with(
+      name='reasoningEngines/123',
+      scope={'app_name': MOCK_APP_NAME, 'user_id': MOCK_USER_ID},
+  )
+  assert 'Retrieved 1 memory profiles.' in caplog.text
+  assert result == [
+      vertex_types.MemoryProfile(
+          schema_id='user-profile',
+          profile={'name': 'Kim'},
+      )
+  ]
+
+
+@pytest.mark.asyncio
+async def test_retrieve_profiles_empty_results(mock_vertexai_client, caplog):
+  """Returns an empty list when the scope has no profiles."""
+  retrieve_profiles_response = vertex_types.RetrieveProfilesResponse(
+      profiles=None
+  )
+  mock_vertexai_client.agent_engines.memories.retrieve_profiles.return_value = (
+      retrieve_profiles_response
+  )
+  memory_service = mock_vertex_ai_memory_bank_service()
+
+  with caplog.at_level(logging.INFO):
+    result = await memory_service.retrieve_profiles(
+        app_name=MOCK_APP_NAME,
+        user_id=MOCK_USER_ID,
+    )
+
+  mock_vertexai_client.agent_engines.memories.retrieve_profiles.assert_awaited_once_with(
+      name='reasoningEngines/123',
+      scope={'app_name': MOCK_APP_NAME, 'user_id': MOCK_USER_ID},
+  )
+  assert 'Retrieved no memory profiles.' in caplog.text
+  assert not result
 
 
 async def test_search_memory_uses_async_client_path():

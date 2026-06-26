@@ -80,6 +80,7 @@ logger = logging.getLogger("google_adk." + __name__)
 
 _LAZY_SERVICE_IMPORTS: dict[str, str] = {
     "AgentLoader": ".utils.agent_loader",
+    "NestedAgentLoader": ".utils._nested_agent_loader",
     "LocalEvalSetResultsManager": "..evaluation.local_eval_set_results_manager",
     "LocalEvalSetsManager": "..evaluation.local_eval_sets_manager",
 }
@@ -485,6 +486,12 @@ def get_fast_api_app(
     The configured FastAPI application instance.
   """
 
+  # Enable the YAML key denylist for config loads if the web UI is enabled.
+  if web:
+    from ..agents import config_agent_utils
+
+    config_agent_utils._set_enforce_yaml_key_denylist(True)
+
   # Detect single agent mode
   agents_path = Path(agents_dir).resolve()
   is_single_agent = is_single_agent_directory(agents_path)
@@ -514,7 +521,10 @@ def get_fast_api_app(
   # initialize Agent Loader if not passed as argument
   this_module = sys.modules[__name__]
   if agent_loader is None:
-    agent_loader = this_module.AgentLoader(original_agents_dir)
+    if web:
+      agent_loader = this_module.NestedAgentLoader(original_agents_dir)
+    else:
+      agent_loader = this_module.AgentLoader(original_agents_dir)
   elif is_single_agent and isinstance(agent_loader, this_module.AgentLoader):
     agent_loader._set_single_agent_mode(single_agent_name, agents_dir)
 

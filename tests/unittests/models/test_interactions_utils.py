@@ -21,6 +21,7 @@ from collections.abc import Callable
 from datetime import datetime
 from datetime import timezone
 import json
+import logging
 from unittest.mock import MagicMock
 
 from google.adk.models import interactions_utils
@@ -1216,16 +1217,16 @@ class TestConvertInteractionEventToLlmResponse:
         index=0,
         delta={'type': 'text', 'text': 'Hello world'},
     )
-    aggregated_parts = []
+    state = interactions_utils._StreamState()
     result = interactions_utils.convert_interaction_event_to_llm_response(
-        event, aggregated_parts, interaction_id='int_123'
+        event, state, interaction_id='int_123'
     )
 
     assert result is not None
     assert result.partial
     assert result.content.parts[0].text == 'Hello world'
     assert result.interaction_id == 'int_123'
-    assert len(aggregated_parts) == 1
+    assert len(state.parts) == 1
 
   def test_image_delta_with_data(self):
     """Test converting an image delta with inline data."""
@@ -1238,28 +1239,447 @@ class TestConvertInteractionEventToLlmResponse:
             'mime_type': 'image/png',
         },
     )
-    aggregated_parts = []
+    state = interactions_utils._StreamState()
     result = interactions_utils.convert_interaction_event_to_llm_response(
-        event, aggregated_parts, interaction_id='int_img'
+        event, state, interaction_id='int_img'
     )
 
     assert result is not None
     assert result.partial
     assert result.content.parts[0].inline_data.data == b'image_bytes'
-    assert len(aggregated_parts) == 1
+    assert len(state.parts) == 1
+
+  def test_thought_summary_delta(self):
+    """thought_summary delta becomes a thought part."""
+    event = StepDelta(
+        event_type='step.delta',
+        index=0,
+        delta={
+            'type': 'thought_summary',
+            'content': {'type': 'text', 'text': 'Let me think...'},
+        },
+    )
+    state = interactions_utils._StreamState()
+    result = interactions_utils.convert_interaction_event_to_llm_response(
+        event, state, interaction_id='int_t'
+    )
+    assert result is not None
+    assert result.partial is True
+    part = result.content.parts[0]
+    assert part.text == 'Let me think...'
+    assert part.thought is True
+    assert len(state.parts) == 1
+
+  def test_thought_signature_delta_attaches_to_last_thought(self):
+    """thought_signature mutates the last thought part and emits no event."""
+    state = interactions_utils._StreamState()
+    interactions_utils.convert_interaction_event_to_llm_response(
+        StepDelta(
+            event_type='step.delta',
+            index=0,
+            delta={
+                'type': 'thought_summary',
+                'content': {'type': 'text', 'text': 'reasoning'},
+            },
+        ),
+        state,
+        interaction_id='int_ts',
+    )
+    sig_b64 = base64.b64encode(b'sig-bytes').decode('utf-8')
+    result = interactions_utils.convert_interaction_event_to_llm_response(
+        StepDelta(
+            event_type='step.delta',
+            index=0,
+            delta={'type': 'thought_signature', 'signature': sig_b64},
+        ),
+        state,
+        interaction_id='int_ts',
+    )
+    assert result is None
+    assert state.parts[-1].thought_signature == b'sig-bytes'
+
+  def test_audio_delta_with_data(self):
+    """audio delta becomes an inline_data part via the shared media handler."""
+    event = StepDelta(
+        event_type='step.delta',
+        index=0,
+        delta={
+            'type': 'audio',
+            'data': base64.b64encode(b'audio_bytes').decode('utf-8'),
+            'mime_type': 'audio/wav',
+        },
+    )
+    state = interactions_utils._StreamState()
+    result = interactions_utils.convert_interaction_event_to_llm_response(
+        event, state, interaction_id='int_a'
+    )
+    assert result is not None
+    assert result.partial is True
+    assert result.content.parts[0].inline_data.data == b'audio_bytes'
+    assert result.content.parts[0].inline_data.mime_type == 'audio/wav'
+    assert len(state.parts) == 1
+
+  def test_code_execution_call_delta(self):
+    """code_execution_call delta becomes an executable_code part."""
+    event = StepDelta(
+        event_type='step.delta',
+        index=0,
+        delta={
+            'type': 'code_execution_call',
+            'arguments': {'code': 'print(1)', 'language': 'python'},
+        },
+    )
+    state = interactions_utils._StreamState()
+    result = interactions_utils.convert_interaction_event_to_llm_response(
+        event, state, interaction_id='int_c'
+    )
+    assert result is not None
+    part = result.content.parts[0]
+    assert part.executable_code.code == 'print(1)'
+    assert part.executable_code.language == types.Language.PYTHON
+    assert len(state.parts) == 1
+
+  def test_code_execution_result_delta(self):
+    """code_execution_result delta becomes a code_execution_result part."""
+    event = StepDelta(
+        event_type='step.delta',
+        index=0,
+        delta={
+            'type': 'code_execution_result',
+            'result': '1\n',
+            'is_error': False,
+        },
+    )
+    state = interactions_utils._StreamState()
+    result = interactions_utils.convert_interaction_event_to_llm_response(
+        event, state, interaction_id='int_cr'
+    )
+    assert result is not None
+    part = result.content.parts[0]
+    assert part.code_execution_result.output == '1\n'
+    assert part.code_execution_result.outcome == types.Outcome.OUTCOME_OK
+    assert len(state.parts) == 1
+
+  def test_code_execution_result_error_delta(self):
+    """code_execution_result with is_error maps to OUTCOME_FAILED."""
+    event = StepDelta(
+        event_type='step.delta',
+        index=0,
+        delta={
+            'type': 'code_execution_result',
+            'result': 'Traceback (most recent call last): ...',
+            'is_error': True,
+        },
+    )
+    state = interactions_utils._StreamState()
+    result = interactions_utils.convert_interaction_event_to_llm_response(
+        event, state, interaction_id='int_cr_err'
+    )
+    assert result is not None
+    part = result.content.parts[0]
+    assert (
+        part.code_execution_result.output
+        == 'Traceback (most recent call last): ...'
+    )
+    assert part.code_execution_result.outcome == types.Outcome.OUTCOME_FAILED
+    assert len(state.parts) == 1
+
+  def test_google_search_call_delta(self):
+    """google_search_call delta emits partial grounding web_search_queries."""
+    event = StepDelta(
+        event_type='step.delta',
+        index=0,
+        delta={
+            'type': 'google_search_call',
+            'arguments': {'queries': ['rocky project hail mary']},
+        },
+    )
+    state = interactions_utils._StreamState()
+    result = interactions_utils.convert_interaction_event_to_llm_response(
+        event, state, interaction_id='int_s'
+    )
+    assert result is not None
+    assert result.partial is True
+    assert result.content is None
+    assert result.grounding_metadata.web_search_queries == [
+        'rocky project hail mary'
+    ]
+    assert state.web_search_queries == ['rocky project hail mary']
+
+  def test_google_search_result_delta(self):
+    """google_search_result delta emits a partial search_entry_point."""
+    event = StepDelta(
+        event_type='step.delta',
+        index=0,
+        delta={
+            'type': 'google_search_result',
+            'result': [{'search_suggestions': '<div>suggestions</div>'}],
+        },
+    )
+    state = interactions_utils._StreamState()
+    result = interactions_utils.convert_interaction_event_to_llm_response(
+        event, state, interaction_id='int_sr'
+    )
+    assert result is not None
+    assert result.partial is True
+    assert (
+        result.grounding_metadata.search_entry_point.rendered_content
+        == '<div>suggestions</div>'
+    )
+    assert state.search_entry_point is not None
+
+  def test_text_annotation_delta(self):
+    """url_citation annotations become grounding chunks + supports."""
+    event = StepDelta(
+        event_type='step.delta',
+        index=0,
+        delta={
+            'type': 'text_annotation_delta',
+            'annotations': [{
+                'type': 'url_citation',
+                'url': 'https://example.com',
+                'title': 'Example',
+                'start_index': 0,
+                'end_index': 5,
+            }],
+        },
+    )
+    state = interactions_utils._StreamState()
+    result = interactions_utils.convert_interaction_event_to_llm_response(
+        event, state, interaction_id='int_an'
+    )
+    assert result is not None
+    assert result.partial is True
+    chunk = result.grounding_metadata.grounding_chunks[0]
+    assert chunk.web.uri == 'https://example.com'
+    assert chunk.web.title == 'Example'
+    support = result.grounding_metadata.grounding_supports[0]
+    assert support.grounding_chunk_indices == [0]
+    assert support.segment.start_index == 0
+    assert support.segment.end_index == 5
+    assert len(state.grounding_chunks) == 1
+    assert len(state.grounding_supports) == 1
+
+  def test_function_result_delta(self):
+    """function_result delta becomes a function_response part."""
+    event = StepDelta(
+        event_type='step.delta',
+        index=0,
+        delta={
+            'type': 'function_result',
+            'call_id': 'call_9',
+            'result': {'temp': 72},
+        },
+    )
+    state = interactions_utils._StreamState()
+    result = interactions_utils.convert_interaction_event_to_llm_response(
+        event, state, interaction_id='int_fr'
+    )
+    assert result is not None
+    part = result.content.parts[0]
+    assert part.function_response.id == 'call_9'
+    assert part.function_response.response == {'temp': 72}
+    assert len(state.parts) == 1
+
+  def test_grounding_accumulated_into_final_event(self):
+    """Grounding from partial deltas is reattached to the final event."""
+    state = interactions_utils._StreamState()
+    conv = interactions_utils.convert_interaction_event_to_llm_response
+    conv(
+        StepDelta(
+            event_type='step.delta',
+            index=0,
+            delta={
+                'type': 'google_search_call',
+                'arguments': {'queries': ['q1']},
+            },
+        ),
+        state,
+        interaction_id='int_f',
+    )
+    conv(
+        StepDelta(
+            event_type='step.delta',
+            index=0,
+            delta={
+                'type': 'google_search_result',
+                'result': [{'search_suggestions': '<div>s</div>'}],
+            },
+        ),
+        state,
+        interaction_id='int_f',
+    )
+    conv(
+        StepDelta(
+            event_type='step.delta',
+            index=0,
+            delta={'type': 'text', 'text': 'Mark Watney.'},
+        ),
+        state,
+        interaction_id='int_f',
+    )
+    conv(
+        StepDelta(
+            event_type='step.delta',
+            index=0,
+            delta={
+                'type': 'text_annotation_delta',
+                'annotations': [{
+                    'type': 'url_citation',
+                    'url': 'https://e.com',
+                    'title': 'E',
+                    'start_index': 0,
+                    'end_index': 4,
+                }],
+            },
+        ),
+        state,
+        interaction_id='int_f',
+    )
+    final = conv(
+        InteractionCompletedEvent(
+            event_type='interaction.completed',
+            interaction=InteractionSseEventInteraction(
+                id='int_f', status='completed', steps=[]
+            ),
+        ),
+        state,
+        interaction_id='int_f',
+    )
+    assert final is not None
+    assert final.partial is False
+    assert final.turn_complete is True
+    assert final.content.parts[0].text == 'Mark Watney.'
+    gm = final.grounding_metadata
+    assert gm.web_search_queries == ['q1']
+    assert gm.search_entry_point.rendered_content == '<div>s</div>'
+    assert gm.grounding_chunks[0].web.uri == 'https://e.com'
+    assert gm.grounding_supports[0].grounding_chunk_indices == [0]
+
+  def test_final_event_includes_usage_metadata(self):
+    """The streaming final event carries usage_metadata from the interaction."""
+    state = interactions_utils._StreamState()
+    conv = interactions_utils.convert_interaction_event_to_llm_response
+    conv(
+        StepDelta(
+            event_type='step.delta',
+            index=0,
+            delta={'type': 'text', 'text': 'Answer.'},
+        ),
+        state,
+        interaction_id='int_u1',
+    )
+    final = conv(
+        InteractionCompletedEvent(
+            event_type='interaction.completed',
+            interaction=InteractionSseEventInteraction(
+                id='int_u1',
+                status='completed',
+                steps=[],
+                usage=Usage(total_input_tokens=12, total_output_tokens=7),
+            ),
+        ),
+        state,
+        interaction_id='int_u1',
+    )
+    assert final is not None
+    assert final.partial is False
+    assert final.usage_metadata is not None
+    assert final.usage_metadata.prompt_token_count == 12
+    assert final.usage_metadata.candidates_token_count == 7
+    assert final.usage_metadata.total_token_count == 19
+
+  def test_final_event_without_usage_has_no_usage_metadata(self):
+    """No interaction.usage -> final event has usage_metadata None."""
+    state = interactions_utils._StreamState()
+    conv = interactions_utils.convert_interaction_event_to_llm_response
+    conv(
+        StepDelta(
+            event_type='step.delta',
+            index=0,
+            delta={'type': 'text', 'text': 'Answer.'},
+        ),
+        state,
+        interaction_id='int_u2',
+    )
+    final = conv(
+        InteractionCompletedEvent(
+            event_type='interaction.completed',
+            interaction=InteractionSseEventInteraction(
+                id='int_u2', status='completed', steps=[]
+            ),
+        ),
+        state,
+        interaction_id='int_u2',
+    )
+    assert final is not None
+    assert final.partial is False
+    assert final.usage_metadata is None
+
+  def test_known_unhandled_delta_type_logs_debug_and_drops(self, caplog):
+    """A known but unhandled delta type logs at debug and emits no event."""
+    # 'url_context_call' is a recognized genai delta variant that ADK does not
+    # handle yet, so it must fall through to the debug branch (not a warning).
+    event = StepDelta(
+        event_type='step.delta',
+        index=0,
+        delta={'type': 'url_context_call', 'arguments': {}},
+    )
+    state = interactions_utils._StreamState()
+    with caplog.at_level(logging.DEBUG, logger=interactions_utils.logger.name):
+      result = interactions_utils.convert_interaction_event_to_llm_response(
+          event, state, interaction_id='int_u'
+      )
+    assert result is None
+    assert not state.parts
+    debug_records = [
+        r
+        for r in caplog.records
+        if r.levelno == logging.DEBUG
+        and 'unhandled step delta type' in r.message
+    ]
+    assert len(debug_records) == 1
+    assert not [r for r in caplog.records if r.levelno >= logging.WARNING]
+
+  def test_unrecognized_delta_logs_raw_warning_and_drops(self, caplog):
+    """A truly-unrecognized delta logs a warning preserving its raw payload."""
+    event = StepDelta(
+        event_type='step.delta',
+        index=0,
+        delta={'type': 'totally_made_up_xyz', 'foo': 'bar'},
+    )
+    state = interactions_utils._StreamState()
+    with caplog.at_level(
+        logging.WARNING, logger=interactions_utils.logger.name
+    ):
+      result = interactions_utils.convert_interaction_event_to_llm_response(
+          event, state, interaction_id='int_u2'
+      )
+    assert result is None
+    assert not state.parts
+    warnings = [
+        r
+        for r in caplog.records
+        if r.levelno == logging.WARNING
+        and 'unrecognized step delta' in r.message
+    ]
+    assert len(warnings) == 1
+    assert 'foo' in warnings[0].message
+    # The full raw payload (not just delta.type='UNKNOWN') is preserved.
+    assert warnings[0].args == {'type': 'totally_made_up_xyz', 'foo': 'bar'}
 
   def test_unknown_event_type_returns_none(self):
     """Test that unknown event types return None."""
     event = MagicMock()
     event.event_type = 'some_unknown_event'  # Unknown event type
 
-    aggregated_parts = []
+    state = interactions_utils._StreamState()
     result = interactions_utils.convert_interaction_event_to_llm_response(
-        event, aggregated_parts, interaction_id='int_other'
+        event, state, interaction_id='int_other'
     )
 
     assert result is None
-    assert not aggregated_parts
+    assert not state.parts
 
   def test_completed_event_failed_partial_interaction(self):
     """A failed lifecycle event with a partial interaction does not crash."""
@@ -1272,7 +1692,9 @@ class TestConvertInteractionEventToLlmResponse:
         ),
     )
     result = interactions_utils.convert_interaction_event_to_llm_response(
-        event, aggregated_parts=[], interaction_id='int_failed'
+        event,
+        state=interactions_utils._StreamState(),
+        interaction_id='int_failed',
     )
     assert result is not None
     assert result.error_code == 'UNKNOWN_ERROR'
@@ -1291,15 +1713,15 @@ class TestConvertInteractionEventToLlmResponse:
             arguments={},
         ),
     )
-    aggregated_parts: list[types.Part] = []
+    state = interactions_utils._StreamState()
     result1 = interactions_utils.convert_interaction_event_to_llm_response(
-        start_event, aggregated_parts, interaction_id='int_123'
+        start_event, state, interaction_id='int_123'
     )
 
     assert result1 is not None
     assert result1.partial is True
-    assert len(aggregated_parts) == 1
-    fc = aggregated_parts[-1].function_call
+    assert len(state.parts) == 1
+    fc = state.parts[-1].function_call
     assert fc
     assert fc.name == 'get_weather'
     assert fc.id == 'call_1'
@@ -1312,7 +1734,7 @@ class TestConvertInteractionEventToLlmResponse:
         delta={'type': 'arguments_delta', 'arguments': '{"city": '},
     )
     result2 = interactions_utils.convert_interaction_event_to_llm_response(
-        delta_event1, aggregated_parts, interaction_id='int_123'
+        delta_event1, state, interaction_id='int_123'
     )
 
     assert result2 is not None
@@ -1328,11 +1750,11 @@ class TestConvertInteractionEventToLlmResponse:
         delta={'type': 'arguments_delta', 'arguments': '"Paris"}'},
     )
     result3 = interactions_utils.convert_interaction_event_to_llm_response(
-        delta_event2, aggregated_parts, interaction_id='int_123'
+        delta_event2, state, interaction_id='int_123'
     )
 
     assert result3 is not None
-    assert len(aggregated_parts[0].function_call.partial_args) == 2
+    assert len(state.parts[0].function_call.partial_args) == 2
 
     # 3. StepStop
     stop_event = StepStop(
@@ -1340,12 +1762,12 @@ class TestConvertInteractionEventToLlmResponse:
         index=0,
     )
     result4 = interactions_utils.convert_interaction_event_to_llm_response(
-        stop_event, aggregated_parts, interaction_id='int_123'
+        stop_event, state, interaction_id='int_123'
     )
 
     assert result4 is None
-    assert aggregated_parts[0].function_call.args == {'city': 'Paris'}
-    assert aggregated_parts[0].function_call.partial_args is None
+    assert state.parts[0].function_call.args == {'city': 'Paris'}
+    assert state.parts[0].function_call.partial_args is None
 
   def test_function_call_streaming_json_parse_error(self, caplog):
     """Test function call streaming returns an error response on JSON parse error."""
@@ -1360,9 +1782,9 @@ class TestConvertInteractionEventToLlmResponse:
             arguments={},
         ),
     )
-    aggregated_parts = []
+    state = interactions_utils._StreamState()
     interactions_utils.convert_interaction_event_to_llm_response(
-        start_event, aggregated_parts, interaction_id='int_err'
+        start_event, state, interaction_id='int_err'
     )
 
     # 2. StepDelta (invalid JSON)
@@ -1372,7 +1794,7 @@ class TestConvertInteractionEventToLlmResponse:
         delta={'type': 'arguments_delta', 'arguments': '{"broken": "json'},
     )
     interactions_utils.convert_interaction_event_to_llm_response(
-        delta_event, aggregated_parts, interaction_id='int_err'
+        delta_event, state, interaction_id='int_err'
     )
 
     # 3. StepStop
@@ -1381,7 +1803,7 @@ class TestConvertInteractionEventToLlmResponse:
         index=0,
     )
     result = interactions_utils.convert_interaction_event_to_llm_response(
-        stop_event, aggregated_parts, interaction_id='int_err'
+        stop_event, state, interaction_id='int_err'
     )
 
     # Assert an error LlmResponse is returned

@@ -299,6 +299,7 @@ async def test_metrics(monkeypatch):
           attributes={
               "gen_ai.agent.name": "complex_agent",
               "gen_ai.tool.name": "generate_random_number",
+              "gen_ai.tool.type": "FunctionTool",
           },
           value=None,
       ),
@@ -306,6 +307,7 @@ async def test_metrics(monkeypatch):
           attributes={
               "gen_ai.agent.name": "complex_agent",
               "gen_ai.tool.name": "get_current_time",
+              "gen_ai.tool.type": "FunctionTool",
           },
           value=None,
       ),
@@ -423,6 +425,7 @@ async def test_metrics_tool_error(monkeypatch):
           attributes={
               "gen_ai.agent.name": "error_agent",
               "gen_ai.tool.name": "failing_tool",
+              "gen_ai.tool.type": "FunctionTool",
               "error.type": "ValueError",
           },
           value=None,
@@ -431,6 +434,7 @@ async def test_metrics_tool_error(monkeypatch):
           attributes={
               "gen_ai.agent.name": "error_agent",
               "gen_ai.tool.name": "get_current_time",
+              "gen_ai.tool.type": "FunctionTool",
           },
           value=None,
       ),

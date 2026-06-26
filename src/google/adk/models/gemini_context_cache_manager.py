@@ -326,11 +326,21 @@ class GeminiContextCacheManager:
       )
       return None
 
-    # Check client-side to avoid unnecessary API round-trips.
-    if llm_request.cacheable_contents_token_count < _GEMINI_MIN_CACHE_TOKENS:
+    # `cacheable_contents_token_count` is the token count of the whole previous
+    # prompt (system instruction + tools + every content). The cache, however,
+    # only stores the prefix `contents[:cache_contents_count]` plus the system
+    # instruction and tools (see `_create_gemini_cache`). On a long conversation
+    # the full-prompt count can clear Gemini's minimum while the cached prefix
+    # is far smaller, which makes `caches.create` fail with 400
+    # INVALID_ARGUMENT.
+    # Gate on the estimated prefix size so we never send a sub-minimum payload.
+    cacheable_prefix_tokens = self._estimate_cacheable_prefix_tokens(
+        llm_request, cache_contents_count
+    )
+    if cacheable_prefix_tokens < _GEMINI_MIN_CACHE_TOKENS:
       logger.info(
-          "Request below Gemini minimum cache size (%d < %d tokens)",
-          llm_request.cacheable_contents_token_count,
+          "Cacheable prefix below Gemini minimum cache size (%d < %d tokens)",
+          cacheable_prefix_tokens,
           _GEMINI_MIN_CACHE_TOKENS,
       )
       return None
@@ -342,13 +352,20 @@ class GeminiContextCacheManager:
       logger.warning("Failed to create cache: %s", e)
       return None
 
-  def _estimate_request_tokens(self, llm_request: LlmRequest) -> int:
-    """Estimate token count for the request.
+  def _estimate_request_tokens(
+      self,
+      llm_request: LlmRequest,
+      cache_contents_count: Optional[int] = None,
+  ) -> int:
+    """Estimate token count for the request (or its cacheable prefix).
 
     This is a rough estimation based on content text length.
 
     Args:
         llm_request: Request to estimate tokens for
+        cache_contents_count: When provided, only the first
+            ``cache_contents_count`` contents are counted (the prefix that gets
+            cached); the system instruction and tools are always included.
 
     Returns:
         Estimated token count
@@ -366,14 +383,53 @@ class GeminiContextCacheManager:
           tool_str = json.dumps(tool.model_dump())
           total_chars += len(tool_str)
 
-    # Contents
-    for content in llm_request.contents:
+    # Contents (optionally limited to the cacheable prefix)
+    contents = llm_request.contents
+    if cache_contents_count is not None:
+      contents = contents[:cache_contents_count]
+    for content in contents:
       for part in content.parts:
         if part.text:
           total_chars += len(part.text)
 
     # Rough estimate: 4 characters per token
     return total_chars // 4
+
+  def _estimate_cacheable_prefix_tokens(
+      self, llm_request: LlmRequest, cache_contents_count: int
+  ) -> int:
+    """Estimate the token count of the prefix that will actually be cached.
+
+    The only accurate token count available is
+    ``cacheable_contents_token_count``, which covers the entire previous prompt.
+    Since the cache stores just the prefix ``contents[:cache_contents_count]``
+    (plus system instruction and tools), we scale that accurate count by the
+    prefix's estimated share of the request. When the prefix already spans the
+    whole request the scale factor is 1 and the accurate count is returned
+    unchanged.
+
+    Args:
+        llm_request: Request to estimate the cacheable prefix tokens for
+        cache_contents_count: Number of leading contents that get cached
+
+    Returns:
+        Estimated token count of the cacheable prefix
+    """
+    full_tokens = llm_request.cacheable_contents_token_count
+    if not full_tokens:
+      return 0
+
+    full_estimate = self._estimate_request_tokens(llm_request)
+    if full_estimate <= 0:
+      # No text to estimate from (e.g. non-text parts); fall back to the
+      # accurate full count rather than incorrectly skipping the cache.
+      return full_tokens
+
+    prefix_estimate = self._estimate_request_tokens(
+        llm_request, cache_contents_count
+    )
+    ratio = min(1.0, prefix_estimate / full_estimate)
+    return int(full_tokens * ratio)
 
   async def _create_gemini_cache(
       self, llm_request: LlmRequest, cache_contents_count: int
