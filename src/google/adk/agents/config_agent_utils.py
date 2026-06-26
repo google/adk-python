@@ -82,6 +82,31 @@ def _resolve_agent_class(agent_class: str) -> type[BaseAgent]:
   )
 
 
+_BLOCKED_YAML_KEYS = frozenset({"args"})
+_ENFORCE_YAML_KEY_DENYLIST = False
+
+
+def _set_enforce_yaml_key_denylist(value: bool) -> None:
+  global _ENFORCE_YAML_KEY_DENYLIST
+  _ENFORCE_YAML_KEY_DENYLIST = value
+
+
+def _check_config_for_blocked_keys(node: Any, filename: str) -> None:
+  """Recursively check if the configuration contains any blocked keys."""
+  if isinstance(node, dict):
+    for key, value in node.items():
+      if key in _BLOCKED_YAML_KEYS:
+        raise ValueError(
+            f"Blocked key {key!r} found in {filename!r}. "
+            f"The '{key}' field is not allowed in agent configurations "
+            "because it can execute arbitrary code."
+        )
+      _check_config_for_blocked_keys(value, filename)
+  elif isinstance(node, list):
+    for item in node:
+      _check_config_for_blocked_keys(item, filename)
+
+
 def _load_config_from_path(config_path: str) -> AgentConfig:
   """Load an agent's configuration from a YAML file.
 
@@ -102,13 +127,97 @@ def _load_config_from_path(config_path: str) -> AgentConfig:
   with open(config_path, "r", encoding="utf-8") as f:
     config_data = yaml.safe_load(f)
 
+  if _ENFORCE_YAML_KEY_DENYLIST:
+    _check_config_for_blocked_keys(config_data, config_path)
+
   return AgentConfig.model_validate(config_data)
+
+
+_ENFORCE_DENYLIST = True
+
+# Modules that must never be imported via YAML agent configuration.
+# These provide direct access to the operating system, process execution,
+# or dynamic code evaluation and could be abused to achieve arbitrary
+# code execution when referenced in callback, tool, schema, or model
+# code-reference fields.
+_BLOCKED_MODULES = frozenset({
+    # Process / OS execution
+    "os",
+    "subprocess",
+    "sys",
+    "builtins",
+    "importlib",
+    "shutil",
+    "signal",
+    "multiprocessing",
+    "threading",
+    # Dynamic code evaluation
+    "code",
+    "codeop",
+    "compileall",
+    "runpy",
+    # Native / unsafe extensions
+    "ctypes",
+    # Network access
+    "socket",
+    "http",
+    "urllib",
+    "ftplib",
+    "smtplib",
+    "poplib",
+    "imaplib",
+    "nntplib",
+    "telnetlib",
+    "xmlrpc",
+    "asyncio",
+    # Filesystem / serialisation
+    "tempfile",
+    "pathlib",
+    "shelve",
+    "pickle",
+    "marshal",
+    # Interactive / side-effect modules
+    "webbrowser",
+    "antigravity",
+    "pty",
+    "commands",
+    "pdb",
+    "profile",
+})
+
+
+def _validate_module_reference(fully_qualified_name: str) -> None:
+  """Validate that a module reference does not target a blocked module.
+
+  Args:
+    fully_qualified_name: The fully-qualified Python name to validate
+        (e.g. ``"my_package.my_module.my_func"``).
+
+  Raises:
+    ValueError: If the top-level module is in ``_BLOCKED_MODULES``.
+  """
+  if not _ENFORCE_DENYLIST:
+    return
+  # Extract the top-level package from the fully-qualified name.
+  top_module = fully_qualified_name.split(".")[0]
+  if top_module in _BLOCKED_MODULES:
+    raise ValueError(
+        f"Blocked module reference: {fully_qualified_name!r}. "
+        f"Importing from the '{top_module}' module is not allowed in "
+        "agent configurations because it can execute arbitrary code."
+    )
+
+
+def _set_enforce_denylist(value: bool) -> None:
+  global _ENFORCE_DENYLIST
+  _ENFORCE_DENYLIST = value
 
 
 @experimental(FeatureName.AGENT_CONFIG)
 def resolve_fully_qualified_name(name: str) -> Any:
   try:
     module_path, obj_name = name.rsplit(".", 1)
+    _validate_module_reference(name)
     module = importlib.import_module(module_path)
     return getattr(module, obj_name)
   except Exception as e:
@@ -170,6 +279,7 @@ def _resolve_agent_code_reference(code: str) -> Any:
   if "." not in code:
     raise ValueError(f"Invalid code reference: {code}")
 
+  _validate_module_reference(code)
   module_path, obj_name = code.rsplit(".", 1)
   module = importlib.import_module(module_path)
   obj = getattr(module, obj_name)
@@ -199,6 +309,7 @@ def resolve_code_reference(code_config: CodeConfig) -> Any:
   if not code_config or not code_config.name:
     raise ValueError("Invalid CodeConfig.")
 
+  _validate_module_reference(code_config.name)
   module_path, obj_name = code_config.name.rsplit(".", 1)
   module = importlib.import_module(module_path)
   return getattr(module, obj_name)
