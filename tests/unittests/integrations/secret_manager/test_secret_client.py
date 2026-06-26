@@ -123,8 +123,14 @@ class TestSecretManagerClient:
   @patch(
       "google.adk.integrations.secret_manager.secret_client.default_service_credential"
   )
+  @patch(
+      "google.adk.integrations.secret_manager.secret_client._mtls_utils.get_api_endpoint"
+  )
   def test_init_with_location(
-      self, mock_default_service_credential, mock_secret_manager_client
+      self,
+      mock_get_api_endpoint,
+      mock_default_service_credential,
+      mock_secret_manager_client,
   ):
     """Test initialization with a specific location."""
     # Setup
@@ -134,6 +140,7 @@ class TestSecretManagerClient:
         "test-project",
     )
     location = "us-central1"
+    mock_get_api_endpoint.return_value = "resolved-endpoint"
 
     # Execute
     SecretManagerClient(location=location)
@@ -143,9 +150,14 @@ class TestSecretManagerClient:
     call_kwargs = mock_secret_manager_client.call_args.kwargs
     assert call_kwargs["credentials"] == mock_credentials
     assert call_kwargs["client_options"] == {
-        "api_endpoint": f"secretmanager.{location}.rep.googleapis.com"
+        "api_endpoint": "resolved-endpoint"
     }
     assert call_kwargs["client_info"].user_agent == USER_AGENT
+    mock_get_api_endpoint.assert_called_once_with(
+        location,
+        "secretmanager.{location}.rep.googleapis.com",
+        "secretmanager.{location}.rep.mtls.googleapis.com",
+    )
 
   @patch(
       "google.adk.integrations.secret_manager.secret_client.default_service_credential"

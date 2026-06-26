@@ -28,6 +28,7 @@ import google.auth
 from google.cloud import discoveryengine_v1beta as discoveryengine
 from google.genai import types
 
+from ..utils._mtls_utils import get_api_endpoint
 from .function_tool import FunctionTool
 
 logger = logging.getLogger('google_adk.' + __name__)
@@ -37,6 +38,7 @@ _STRUCTURED_STORE_ERROR_PATTERN = re.compile(
 )
 
 _DEFAULT_ENDPOINT = 'discoveryengine.googleapis.com'
+_DEFAULT_MTLS_ENDPOINT = 'discoveryengine.mtls.googleapis.com'
 _GLOBAL_LOCATION = 'global'
 _LOCATION_PATTERN = re.compile(
     r'/locations/([a-z0-9-]+)(?:/|$)', flags=re.IGNORECASE
@@ -85,6 +87,18 @@ def _resolve_location(resource_id: str, location: Optional[str]) -> str:
   return _GLOBAL_LOCATION
 
 
+def _get_api_endpoint(location: str) -> str:
+  """Returns API endpoint based on mTLS configuration and cert availability."""
+  default_template = '{location}-' + _DEFAULT_ENDPOINT
+  mtls_template = '{location}-' + _DEFAULT_MTLS_ENDPOINT
+
+  return get_api_endpoint(
+      location=location,
+      default_template=default_template,
+      mtls_template=mtls_template,
+  )
+
+
 def _build_client_options(
     resource_id: str,
     quota_project_id: Optional[str],
@@ -95,9 +109,7 @@ def _build_client_options(
   resolved_location = _resolve_location(resource_id, location)
 
   if resolved_location != _GLOBAL_LOCATION:
-    client_options_kwargs['api_endpoint'] = (
-        f'{resolved_location}-{_DEFAULT_ENDPOINT}'
-    )
+    client_options_kwargs['api_endpoint'] = _get_api_endpoint(resolved_location)
   if quota_project_id:
     client_options_kwargs['quota_project_id'] = quota_project_id
 

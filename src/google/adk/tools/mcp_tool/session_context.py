@@ -36,6 +36,34 @@ logger = logging.getLogger('google_adk.' + __name__)
 _T = TypeVar('_T')
 
 
+def _format_exception(exc: BaseException | None) -> str:
+  """Formats an exception into a readable string representation.
+
+  This handles `ExceptionGroup` (by flattening inner exceptions) and optionally
+  extracts HTTP response bodies for network-related errors, truncating them
+  to 1000 characters to prevent log/context overflow.
+
+  Args:
+    exc: The exception to format.
+
+  Returns:
+    A formatted string representing the exception and its pertinent details.
+  """
+  if exc is None:
+    return 'None'
+  if hasattr(exc, 'exceptions') and getattr(exc, 'exceptions'):
+    return ' | '.join(_format_exception(e) for e in exc.exceptions)
+  if hasattr(exc, 'response') and exc.response is not None:
+    try:
+      response_text = exc.response.text
+      if len(response_text) > 1000:
+        response_text = response_text[:1000] + '... [truncated]'
+      return f'{exc} (Response: {response_text})'
+    except Exception:
+      pass
+  return str(exc)
+
+
 class SessionContext:
   """Represents the context of a single MCP session within a dedicated task.
 
@@ -143,7 +171,8 @@ class SessionContext:
 
     if self._task.done() and self._task.exception():
       raise ConnectionError(
-          f'Failed to create MCP session: {self._task.exception()}'
+          'Failed to create MCP session:'
+          f' {_format_exception(self._task.exception())}'
       ) from self._task.exception()
 
     # Pre-fix code returned `self._session` here directly (typed as
@@ -186,7 +215,7 @@ class SessionContext:
       # Close the coroutine to avoid "was never awaited" warnings.
       coro.close()
       raise ConnectionError(
-          f'MCP session task has already terminated: {exc}'
+          f'MCP session task has already terminated: {_format_exception(exc)}'
       ) from exc
 
     coro_task = asyncio.ensure_future(coro)
@@ -212,7 +241,9 @@ class SessionContext:
       pass
 
     exc = self._task.exception() if not self._task.cancelled() else None
-    raise ConnectionError(f'MCP session connection lost: {exc}') from exc
+    raise ConnectionError(
+        f'MCP session connection lost: {_format_exception(exc)}'
+    ) from exc
 
   async def close(self):
     """Signal the context task to close and wait for cleanup."""

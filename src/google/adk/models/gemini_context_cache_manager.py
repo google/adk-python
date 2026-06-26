@@ -135,17 +135,21 @@ class GeminiContextCacheManager:
               contents_count=cache_contents_count,
           )
 
-        # Fingerprints don't match - recalculate with total contents
+        # Fingerprints don't match - recalculate with the current cacheable
+        # prefix. Request-scoped user contents, such as dynamic instructions,
+        # should not become part of the fingerprint-only chain.
         logger.debug(
             "Fingerprints don't match, returning fingerprint-only metadata"
         )
-        total_contents_count = len(llm_request.contents)
-        fingerprint_for_all = self._generate_cache_fingerprint(
-            llm_request, total_contents_count
+        cache_contents_count = self._find_count_of_contents_to_cache(
+            llm_request.contents
+        )
+        fingerprint = self._generate_cache_fingerprint(
+            llm_request, cache_contents_count
         )
         return CacheMetadata(
-            fingerprint=fingerprint_for_all,
-            contents_count=total_contents_count,
+            fingerprint=fingerprint,
+            contents_count=cache_contents_count,
         )
 
     # No existing cache metadata - return fingerprint-only metadata
@@ -153,13 +157,15 @@ class GeminiContextCacheManager:
     logger.debug(
         "No existing cache metadata, creating fingerprint-only metadata"
     )
-    total_contents_count = len(llm_request.contents)
+    cache_contents_count = self._find_count_of_contents_to_cache(
+        llm_request.contents
+    )
     fingerprint = self._generate_cache_fingerprint(
-        llm_request, total_contents_count
+        llm_request, cache_contents_count
     )
     return CacheMetadata(
         fingerprint=fingerprint,
-        contents_count=total_contents_count,
+        contents_count=cache_contents_count,
     )
 
   def _find_count_of_contents_to_cache(

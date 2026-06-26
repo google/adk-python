@@ -1,3 +1,17 @@
+// Copyright 2026 Google LLC
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 import{a as lt}from"./chunk-B2DSW4QB.js";import{h as ot}from"./chunk-NMKTPNXE.js";import{a as ct}from"./chunk-APNCZOFE.js";import{a as ht}from"./chunk-ST54LLJ3.js";import{a as it,b as rt}from"./chunk-ZMOC4H7T.js";import{b as nt,c as ut}from"./chunk-F57TI45K.js";import"./chunk-TNJPXCAB.js";import"./chunk-JHZIBEJC.js";import{f as at}from"./chunk-W7PRDKNL.js";import"./chunk-DRBE27N3.js";import"./chunk-PRKFGJVH.js";import"./chunk-VDPKVNDJ.js";import"./chunk-WXI2IBAH.js";import{m as Qe,p as Je}from"./chunk-WBLSVR3V.js";import"./chunk-GP6TCC26.js";import{M as q1,R as X1,S as Q1,T as J1,U as Z1,V as $1,W as et,X as tt,Y as de,Z as u1,_ as st,a as K1,b as Y1,g as H1}from"./chunk-QFMJV7VH.js";import{a as Ee,g,i as Z}from"./chunk-JRNAXTJ7.js";import"./chunk-EGBSMT36.js";import{a as a1,b as n1,j as j1}from"./chunk-RMXJBC7V.js";var mt="flowchart-",Ct=class{constructor(){this.vertexCounter=0,this.config=de(),this.vertices=new Map,this.edges=[],this.classes=new Map,this.subGraphs=[],this.subGraphLookup=new Map,this.tooltips=new Map,this.subCount=0,this.firstGraphFlag=!0,this.secCount=-1,this.posCrossRef=[],this.funs=[],this.setAccTitle=Q1,this.setAccDescription=Z1,this.setDiagramTitle=et,this.getAccTitle=J1,this.getAccDescription=$1,this.getDiagramTitle=tt,this.funs.push(this.setupToolTips.bind(this)),this.addVertex=this.addVertex.bind(this),this.firstGraph=this.firstGraph.bind(this),this.setDirection=this.setDirection.bind(this),this.addSubGraph=this.addSubGraph.bind(this),this.addLink=this.addLink.bind(this),this.setLink=this.setLink.bind(this),this.updateLink=this.updateLink.bind(this),this.addClass=this.addClass.bind(this),this.setClass=this.setClass.bind(this),this.destructLink=this.destructLink.bind(this),this.setClickEvent=this.setClickEvent.bind(this),this.setTooltip=this.setTooltip.bind(this),this.updateLinkInterpolate=this.updateLinkInterpolate.bind(this),this.setClickFun=this.setClickFun.bind(this),this.bindFunctions=this.bindFunctions.bind(this),this.lex={firstGraph:this.firstGraph.bind(this)},this.clear(),this.setGen("gen-2")}static{g(this,"FlowDB")}sanitizeText(e){return q1.sanitizeText(e,this.config)}sanitizeNodeLabelType(e){switch(e){case"markdown":case"string":case"text":return e;default:return"markdown"}}lookUpDomId(e){for(let i of this.vertices.values())if(i.id===e)return i.domId;return e}addVertex(e,i,r,a,o,d,l={},k){if(!e||e.trim().length===0)return;let n;if(k!==void 0){let D;k.includes(`
 `)?D=k+`
 `:D=`{

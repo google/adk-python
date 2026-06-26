@@ -271,6 +271,9 @@ class InvocationContext(BaseModel):
   Supported entry points: run(), run_async(), run_live(), run_debug().
   """
 
+  _custom_metadata: dict[str, Any] = PrivateAttr(default_factory=dict)
+  """Custom metadata for attaching low-level execution telemetry."""
+
   _invocation_cost_manager: _InvocationCostManager = PrivateAttr(
       default_factory=_InvocationCostManager
   )

@@ -70,7 +70,9 @@ class DataFileUtil:
 _DATA_FILE_UTIL_MAP = {
     'text/csv': DataFileUtil(
         extension='.csv',
-        loader_code_template="pd.read_csv('{filename}')",
+        # Note: The template does not quote {filename} because repr() in
+        # _get_data_file_preprocessing_code supplies quotes and escaping.
+        loader_code_template='pd.read_csv({filename})',
     ),
 }
 
@@ -529,7 +531,7 @@ def _get_data_file_preprocessing_code(file: File) -> Optional[str]:
 
   var_name = _get_normalized_file_name(file.name)
   loader_code = _DATA_FILE_UTIL_MAP[file.mime_type].loader_code_template.format(
-      filename=file.name
+      filename=repr(file.name)
   )
   return f"""
 {_DATA_FILE_HELPER_LIB}
