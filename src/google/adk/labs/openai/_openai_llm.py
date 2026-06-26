@@ -46,6 +46,7 @@ from typing_extensions import override
 from ...models.base_llm import BaseLlm
 from ...models.llm_request import LlmRequest
 from ...models.llm_response import LlmResponse
+from ._openai_schema import enforce_strict_openai_schema
 
 logger = logging.getLogger("google_adk." + __name__)
 
@@ -178,29 +179,6 @@ def _content_to_openai_messages(
       })
 
   return messages
-
-
-def _enforce_strict_openai_schema(schema: dict[str, Any]) -> None:
-  """Recursively transforms a JSON schema for OpenAI strict structured outputs."""
-  if not isinstance(schema, dict):
-    return
-  if "$ref" in schema:
-    for key in list(schema.keys()):
-      if key != "$ref":
-        del schema[key]
-    return
-  if schema.get("type") == "object" and "properties" in schema:
-    schema["additionalProperties"] = False
-    schema["required"] = sorted(schema["properties"].keys())
-  for defn in schema.get("$defs", {}).values():
-    _enforce_strict_openai_schema(defn)
-  for prop in schema.get("properties", {}).values():
-    _enforce_strict_openai_schema(prop)
-  for key in ("anyOf", "oneOf", "allOf"):
-    for item in schema.get(key, []):
-      _enforce_strict_openai_schema(item)
-  if "items" in schema and isinstance(schema["items"], dict):
-    _enforce_strict_openai_schema(schema["items"])
 
 
 def _update_type_string(value: Any):
@@ -406,7 +384,7 @@ class OpenAILlm(BaseLlm):
           schema_name = str(schema_dict["title"])
 
       if schema_dict:
-        _enforce_strict_openai_schema(schema_dict)
+        enforce_strict_openai_schema(schema_dict)
         response_format = {
             "type": "json_schema",
             "json_schema": {

@@ -603,3 +603,16 @@ def test_denylist_can_be_disabled():
     assert callable(result)
   finally:
     config_agent_utils._set_enforce_denylist(True)
+
+
+def test_load_config_from_path_blocks_args_when_enforced(tmp_path: Path):
+  """_load_config_from_path blocks the 'args' key when enforcement is on."""
+  config_file = tmp_path / "agent.yaml"
+  config_file.write_text("name: my_agent\nargs:\n  key: value\n")
+  config_agent_utils._set_enforce_yaml_key_denylist(True)
+  try:
+    with pytest.raises(ValueError) as exc_info:
+      config_agent_utils._load_config_from_path(str(config_file))
+    assert "Blocked key 'args' found" in str(exc_info.value)
+  finally:
+    config_agent_utils._set_enforce_yaml_key_denylist(False)
