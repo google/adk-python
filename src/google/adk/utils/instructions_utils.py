@@ -216,7 +216,7 @@ async def _render_with_jinja2(
   invocation_context = readonly_context._invocation_context
   session_state = invocation_context.session.state
 
-  async def _artifact(name: str):
+  async def _artifact(name: str) -> str:
     if invocation_context.artifact_service is None:
       raise ValueError('Artifact service is not initialized.')
     artifact = await invocation_context.artifact_service.load_artifact(
@@ -229,10 +229,11 @@ async def _render_with_jinja2(
 
   env = SandboxedEnvironment(enable_async=True)
   jinja_template = env.from_string(template)
-  return await jinja_template.render_async(
+  rendered: str = await jinja_template.render_async(
       state=session_state,
       artifact=_artifact,
   )
+  return rendered
 
 
 def _is_valid_state_name(var_name):

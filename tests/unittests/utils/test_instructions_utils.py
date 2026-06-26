@@ -285,8 +285,7 @@ async def test_inject_session_state_jinja2_basic_substitution():
 @pytest.mark.asyncio
 async def test_inject_session_state_jinja2_conditional():
   instruction_template = (
-      "{% if state['is_premium'] %}Premium user.{% else %}Free user."
-      "{% endif %}"
+      "{% if state['is_premium'] %}Premium user.{% else %}Free user.{% endif %}"
   )
   premium_context = await _create_test_readonly_context(
       state={"is_premium": True}
