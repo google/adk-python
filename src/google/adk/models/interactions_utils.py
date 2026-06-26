@@ -72,6 +72,7 @@ from google.genai.interactions import TextContentParam
 from google.genai.interactions import ThoughtStep
 from google.genai.interactions import ThoughtStepParam
 from google.genai.interactions import ToolParam
+from google.genai.interactions import UnknownStepDeltaData
 from google.genai.interactions import UserInputStepParam
 from google.genai.interactions import VideoContentParam
 from pydantic import BaseModel
@@ -779,6 +780,101 @@ def _handle_arguments_delta(
   return _partial_part_response(chunk_part, interaction_id)
 
 
+def _handle_unknown_delta(
+    delta: StepDeltaData, state: _StreamState, interaction_id: str | None
+) -> LlmResponse | None:
+  """Generic fallback: log the unhandled delta, emit nothing."""
+  if isinstance(delta, UnknownStepDeltaData):
+    # Forward-compat surprise: preserve the raw payload so it isn't lost.
+    logger.warning(
+        'Interactions streaming converter received unrecognized step delta;'
+        ' skipping (no event emitted). raw=%r',
+        delta.raw,
+    )
+  else:
+    # Known delta type we deliberately don't handle yet: keep log noise low.
+    logger.debug(
+        'Interactions streaming converter received unhandled step delta type'
+        ' %r; skipping (no event emitted).',
+        delta.type,
+    )
+  return None
+
+
+def _handle_thought_summary(
+    delta: StepDeltaData, state: _StreamState, interaction_id: str | None
+) -> LlmResponse | None:
+  content = delta.content
+  text = None
+  if content is not None and getattr(content, 'type', None) == 'text':
+    text = content.text
+  if not text:
+    return None
+  part = types.Part(text=text, thought=True)
+  state.parts.append(part)
+  return _partial_part_response(part, interaction_id)
+
+
+def _handle_thought_signature(
+    delta: StepDeltaData, state: _StreamState, interaction_id: str | None
+) -> LlmResponse | None:
+  signature = delta.signature
+  if not signature:
+    return None
+  for part in reversed(state.parts):
+    if part.thought:
+      part.thought_signature = base64.b64decode(signature)
+      break
+  return None
+
+
+def _handle_code_execution_call(
+    delta: StepDeltaData, state: _StreamState, interaction_id: str | None
+) -> LlmResponse | None:
+  args = delta.arguments
+  code = args.code if args else None
+  if not code:
+    return None
+  language = (
+      types.Language.PYTHON
+      if args.language and args.language.lower() == 'python'
+      else types.Language.LANGUAGE_UNSPECIFIED
+  )
+  part = types.Part(
+      executable_code=types.ExecutableCode(code=code, language=language)
+  )
+  state.parts.append(part)
+  return _partial_part_response(part, interaction_id)
+
+
+def _handle_code_execution_result(
+    delta: StepDeltaData, state: _StreamState, interaction_id: str | None
+) -> LlmResponse | None:
+  part = types.Part(
+      code_execution_result=types.CodeExecutionResult(
+          output=delta.result or '',
+          outcome=types.Outcome.OUTCOME_FAILED
+          if delta.is_error
+          else types.Outcome.OUTCOME_OK,
+      )
+  )
+  state.parts.append(part)
+  return _partial_part_response(part, interaction_id)
+
+
+def _handle_function_result(
+    delta: StepDeltaData, state: _StreamState, interaction_id: str | None
+) -> LlmResponse | None:
+  part = types.Part(
+      function_response=types.FunctionResponse(
+          id=delta.call_id or '',
+          response=_function_result_to_response(delta.result),
+      )
+  )
+  state.parts.append(part)
+  return _partial_part_response(part, interaction_id)
+
+
 def convert_interaction_event_to_llm_response(
     event: InteractionSSEEvent,
     state: _StreamState,
@@ -823,10 +919,22 @@ def convert_interaction_event_to_llm_response(
 
     if delta_type == 'text':
       return _handle_text(delta, state, interaction_id)
-    elif delta_type == 'image':
+    elif delta_type == 'thought_summary':
+      return _handle_thought_summary(delta, state, interaction_id)
+    elif delta_type == 'thought_signature':
+      return _handle_thought_signature(delta, state, interaction_id)
+    elif delta_type in ('image', 'audio', 'video', 'document'):
       return _handle_media(delta, state, interaction_id)
     elif delta_type == 'arguments_delta':
       return _handle_arguments_delta(delta, state, interaction_id)
+    elif delta_type == 'code_execution_call':
+      return _handle_code_execution_call(delta, state, interaction_id)
+    elif delta_type == 'code_execution_result':
+      return _handle_code_execution_result(delta, state, interaction_id)
+    elif delta_type == 'function_result':
+      return _handle_function_result(delta, state, interaction_id)
+    else:
+      return _handle_unknown_delta(delta, state, interaction_id)
 
   elif isinstance(event, StepStop):
     if state.parts and state.parts[-1].function_call:
