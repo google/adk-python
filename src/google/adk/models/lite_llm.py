@@ -330,6 +330,30 @@ def _get_provider_from_model(model: str) -> str:
   return ""
 
 
+# Providers that can route to Anthropic. bedrock and vertex_ai are multi-model
+# platforms, so _is_anthropic_route also checks the model name for them.
+_ANTHROPIC_PROVIDERS = frozenset({"anthropic", "bedrock", "vertex_ai"})
+
+
+def _is_anthropic_provider(provider: str) -> bool:
+  """Returns True if the provider can route to an Anthropic model endpoint."""
+  return provider.lower() in _ANTHROPIC_PROVIDERS if provider else False
+
+
+def _is_anthropic_route(provider: str, model: str) -> bool:
+  """Returns True only when requests actually reach an Anthropic Claude model.
+
+  bedrock and vertex_ai also host non-Anthropic models (Llama, Gemini), so for
+  those platforms the model name must identify a Claude model too. Formatting
+  thinking blocks for a non-Claude model triggers API validation (400) errors.
+  """
+  if not _is_anthropic_provider(provider):
+    return False
+  if provider.lower() in ("bedrock", "vertex_ai"):
+    return _is_anthropic_model(model)
+  return True
+
+
 def _infer_mime_type_from_uri(uri: str) -> Optional[str]:
   """Attempts to infer MIME type from a URI's path extension.
 
@@ -491,42 +515,48 @@ def _iter_reasoning_texts(reasoning_value: Any) -> Iterable[str]:
 
 
 def _is_thinking_blocks_format(reasoning_value: Any) -> bool:
-  """Returns True if reasoning_value is thinking_blocks format.
+  """Returns True if reasoning_value is Anthropic thinking_blocks format.
 
-  Anthropic blocks carry a 'signature'; Gemini blocks carry 'thinking'/'type'
-  without one. Match either so Gemini thought text is not dropped.
+  Anthropic thinking_blocks is a list of dicts, each with 'type', 'thinking',
+  and 'signature' keys.
   """
   if not isinstance(reasoning_value, list) or not reasoning_value:
     return False
   first = reasoning_value[0]
-  return isinstance(first, dict) and (
-      "thinking" in first or "signature" in first
-  )
+  return isinstance(first, dict) and "signature" in first
 
 
 def _convert_reasoning_value_to_parts(reasoning_value: Any) -> List[types.Part]:
   """Converts provider reasoning payloads into Gemini thought parts.
 
-  Handles Anthropic thinking_blocks (list of dicts with type/thinking/signature)
-  by preserving the signature on each part's thought_signature field. This is
-  required for Anthropic to maintain thinking across tool call boundaries.
+  Handles two formats:
+  - Anthropic thinking_blocks with 'thinking' and optional 'signature' fields.
+  - A plain string or nested structure (OpenAI/Azure/Ollama) via
+    _iter_reasoning_texts.
   """
-  if _is_thinking_blocks_format(reasoning_value):
+  if isinstance(reasoning_value, list):
     parts: List[types.Part] = []
     for block in reasoning_value:
-      if not isinstance(block, dict):
-        continue
-      block_type = block.get("type", "")
-      if block_type == "redacted":
-        continue
-      thinking_text = block.get("thinking", "")
-      signature = block.get("signature", "")
-      if not thinking_text and not signature:
-        continue
-      part = types.Part(text=thinking_text, thought=True)
-      if signature:
-        part.thought_signature = signature.encode("utf-8")
-      parts.append(part)
+      if isinstance(block, dict):
+        block_type = block.get("type", "")
+        if block_type == "redacted":
+          continue
+        if block_type == "thinking":
+          thinking_text = block.get("thinking", "")
+          if thinking_text:
+            part = types.Part(text=thinking_text, thought=True)
+            signature = block.get("signature")
+            if signature:
+              decoded_signature = _decode_thought_signature(signature)
+              part.thought_signature = decoded_signature or str(
+                  signature
+              ).encode("utf-8")
+            parts.append(part)
+          continue
+      # Fall back to text extraction for non-thinking-block items.
+      for text in _iter_reasoning_texts(block):
+        if text:
+          parts.append(types.Part(text=text, thought=True))
     return parts
   return [
       types.Part(text=text, thought=True)
@@ -538,16 +568,16 @@ def _convert_reasoning_value_to_parts(reasoning_value: Any) -> List[types.Part]:
 def _extract_reasoning_value(message: Message | Delta | None) -> Any:
   """Fetches the reasoning payload from a LiteLLM message.
 
-  Checks for 'thinking_blocks' (Anthropic structured format with signatures),
-  'reasoning_content' (LiteLLM standard, used by Azure/Foundry, Ollama via
-  LiteLLM) and 'reasoning' (used by LM Studio, vLLM).
-  Prioritizes 'thinking_blocks' when present (Anthropic models), then
-  'reasoning_content', then 'reasoning'.
+  Checks for 'thinking_blocks' (Anthropic thinking with signatures),
+  'reasoning_content' (LiteLLM standard, used by Azure/Foundry,
+  Ollama via LiteLLM), and 'reasoning' (used by LM Studio, vLLM).
+  Prioritizes 'thinking_blocks' when the key is present, as they contain
+  the signature required for Anthropic's extended thinking API.
   """
   if message is None:
     return None
-  # Anthropic models return thinking_blocks with type/thinking/signature fields.
-  # This must be preserved to maintain thinking across tool call boundaries.
+  # Prefer thinking_blocks (Anthropic) — they carry per-block signatures
+  # needed for multi-turn conversations with extended thinking.
   thinking_blocks = message.get("thinking_blocks")
   if thinking_blocks is not None:
     return thinking_blocks
@@ -999,7 +1029,7 @@ async def _content_to_message_param(
         if part.text and part.thought_signature:
           sig = part.thought_signature
           if isinstance(sig, bytes):
-            sig = sig.decode("utf-8")
+            sig = base64.b64encode(sig).decode("utf-8")
           thinking_blocks.append({
               "type": "thinking",
               "thinking": part.text,
@@ -1025,6 +1055,34 @@ async def _content_to_message_param(
           and part.inline_data.mime_type.startswith("text/")
       ):
         reasoning_texts.append(_decode_inline_text_data(part.inline_data.data))
+
+    # Anthropic routes require thinking blocks to be embedded directly in the
+    # message content list. LiteLLM's prompt template for Anthropic drops the
+    # top-level reasoning_content field, so thinking blocks disappear from
+    # multi-turn histories and the model stops producing them after the first
+    # turn. Signatures are required by the Anthropic API for thinking blocks in
+    # multi-turn conversations. On multi-model platforms (bedrock, vertex_ai)
+    # this must only apply to actual Claude models, not Gemini/Llama/etc.
+    if reasoning_parts and _is_anthropic_route(provider, model):
+      content_list = []
+      for part in reasoning_parts:
+        if part.text:
+          block = {"type": "thinking", "thinking": part.text}
+          if part.thought_signature:
+            sig = part.thought_signature
+            if isinstance(sig, bytes):
+              sig = base64.b64encode(sig).decode("utf-8")
+            block["signature"] = sig
+          content_list.append(block)
+      if isinstance(final_content, list):
+        content_list.extend(final_content)
+      elif final_content:
+        content_list.append({"type": "text", "text": final_content})
+      return ChatCompletionAssistantMessage(
+          role=role,
+          content=content_list or None,
+          tool_calls=tool_calls or None,
+      )
 
     # Preserve reasoning deltas exactly as received. Injecting separators
     # between fragments can corrupt provider-streamed thinking text.
