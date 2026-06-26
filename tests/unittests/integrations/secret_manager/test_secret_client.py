@@ -124,7 +124,7 @@ class TestSecretManagerClient:
       "google.adk.integrations.secret_manager.secret_client.default_service_credential"
   )
   @patch(
-      "google.adk.integrations.secret_manager.secret_client.mtls_utils.get_api_endpoint"
+      "google.adk.integrations.secret_manager.secret_client._mtls_utils.get_api_endpoint"
   )
   def test_init_with_location(
       self,

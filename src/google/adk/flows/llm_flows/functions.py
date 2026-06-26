@@ -23,6 +23,7 @@ from concurrent.futures import ThreadPoolExecutor
 import contextvars
 import copy
 import inspect
+import json
 import logging
 import threading
 from typing import Any
@@ -1181,6 +1182,9 @@ def __build_response_event(
     tool_context: ToolContext,
     invocation_context: InvocationContext,
 ) -> Event:
+  # Capture the raw result for display purposes before any normalization.
+  display_result = function_result
+
   # Specs requires the result to be a dict.
   if not isinstance(function_result, dict):
     function_result = {'result': function_result}
@@ -1197,6 +1201,25 @@ def __build_response_event(
       tool_context.function_call_id,
       function_response_parts,
   )
+
+  # When summarization is skipped, ensure a displayable text part is added so
+  # the tool's output is not lost in UIs that don't render function responses.
+  # Control-flow tools (e.g. exit_loop) set skip_summarization but return no
+  # meaningful output; their None result is normalized to {'result': None}, so
+  # skip those to avoid emitting a noisy "null" text part.
+  has_displayable_result = display_result is not None and display_result != {
+      'result': None
+  }
+  if (
+      tool_context.actions.skip_summarization
+      and 'error' not in function_result
+      and has_displayable_result
+  ):
+    if isinstance(display_result, str):
+      result_text = display_result
+    else:
+      result_text = json.dumps(display_result, ensure_ascii=False, default=str)
+    content.parts.append(types.Part.from_text(text=result_text))
 
   function_response_event = Event(
       invocation_id=invocation_context.invocation_id,

@@ -42,6 +42,7 @@ if TYPE_CHECKING:
   from .transfer_to_agent_tool import transfer_to_agent
   from .transfer_to_agent_tool import TransferToAgentTool
   from .url_context_tool import url_context
+  from .vertex_ai_load_profiles_tool import VertexAiLoadProfilesTool
   from .vertex_ai_search_tool import VertexAiSearchTool
 
 # If you are adding a new tool to this file, please make sure you add it to the
@@ -89,6 +90,10 @@ _LAZY_MAPPING = {
         'TransferToAgentTool',
     ),
     'url_context': ('.url_context_tool', 'url_context'),
+    'VertexAiLoadProfilesTool': (
+        '.vertex_ai_load_profiles_tool',
+        'VertexAiLoadProfilesTool',
+    ),
     'VertexAiSearchTool': ('.vertex_ai_search_tool', 'VertexAiSearchTool'),
     'MCPToolset': ('.mcp_tool.mcp_toolset', 'MCPToolset'),
     'McpToolset': ('.mcp_tool.mcp_toolset', 'McpToolset'),
