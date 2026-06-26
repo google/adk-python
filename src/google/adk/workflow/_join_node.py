@@ -23,6 +23,7 @@ from typing import Any
 from typing_extensions import override
 
 from ..agents.context import Context
+from ..events._branch_path import _BranchPath
 from ..events.event import Event
 from ._base_node import BaseNode
 
@@ -33,15 +34,8 @@ def _get_common_branch_prefix(branches: list[str]) -> str:
   """Find the common prefix of dot-separated branch strings."""
   if not branches:
     return ''
-  split_branches = [b.split('.') if b else [] for b in branches]
-
-  common = []
-  for segments in zip(*split_branches):
-    if len(set(segments)) == 1:
-      common.append(segments[0])
-    else:
-      break
-  return '.'.join(common)
+  paths = [_BranchPath.from_string(b) for b in branches]
+  return str(_BranchPath.common_prefix(paths))
 
 
 class JoinNode(BaseNode):
