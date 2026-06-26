@@ -1216,16 +1216,16 @@ class TestConvertInteractionEventToLlmResponse:
         index=0,
         delta={'type': 'text', 'text': 'Hello world'},
     )
-    aggregated_parts = []
+    state = interactions_utils._StreamState()
     result = interactions_utils.convert_interaction_event_to_llm_response(
-        event, aggregated_parts, interaction_id='int_123'
+        event, state, interaction_id='int_123'
     )
 
     assert result is not None
     assert result.partial
     assert result.content.parts[0].text == 'Hello world'
     assert result.interaction_id == 'int_123'
-    assert len(aggregated_parts) == 1
+    assert len(state.parts) == 1
 
   def test_image_delta_with_data(self):
     """Test converting an image delta with inline data."""
@@ -1238,28 +1238,28 @@ class TestConvertInteractionEventToLlmResponse:
             'mime_type': 'image/png',
         },
     )
-    aggregated_parts = []
+    state = interactions_utils._StreamState()
     result = interactions_utils.convert_interaction_event_to_llm_response(
-        event, aggregated_parts, interaction_id='int_img'
+        event, state, interaction_id='int_img'
     )
 
     assert result is not None
     assert result.partial
     assert result.content.parts[0].inline_data.data == b'image_bytes'
-    assert len(aggregated_parts) == 1
+    assert len(state.parts) == 1
 
   def test_unknown_event_type_returns_none(self):
     """Test that unknown event types return None."""
     event = MagicMock()
     event.event_type = 'some_unknown_event'  # Unknown event type
 
-    aggregated_parts = []
+    state = interactions_utils._StreamState()
     result = interactions_utils.convert_interaction_event_to_llm_response(
-        event, aggregated_parts, interaction_id='int_other'
+        event, state, interaction_id='int_other'
     )
 
     assert result is None
-    assert not aggregated_parts
+    assert not state.parts
 
   def test_completed_event_failed_partial_interaction(self):
     """A failed lifecycle event with a partial interaction does not crash."""
@@ -1272,7 +1272,9 @@ class TestConvertInteractionEventToLlmResponse:
         ),
     )
     result = interactions_utils.convert_interaction_event_to_llm_response(
-        event, aggregated_parts=[], interaction_id='int_failed'
+        event,
+        state=interactions_utils._StreamState(),
+        interaction_id='int_failed',
     )
     assert result is not None
     assert result.error_code == 'UNKNOWN_ERROR'
@@ -1291,15 +1293,15 @@ class TestConvertInteractionEventToLlmResponse:
             arguments={},
         ),
     )
-    aggregated_parts: list[types.Part] = []
+    state = interactions_utils._StreamState()
     result1 = interactions_utils.convert_interaction_event_to_llm_response(
-        start_event, aggregated_parts, interaction_id='int_123'
+        start_event, state, interaction_id='int_123'
     )
 
     assert result1 is not None
     assert result1.partial is True
-    assert len(aggregated_parts) == 1
-    fc = aggregated_parts[-1].function_call
+    assert len(state.parts) == 1
+    fc = state.parts[-1].function_call
     assert fc
     assert fc.name == 'get_weather'
     assert fc.id == 'call_1'
@@ -1312,7 +1314,7 @@ class TestConvertInteractionEventToLlmResponse:
         delta={'type': 'arguments_delta', 'arguments': '{"city": '},
     )
     result2 = interactions_utils.convert_interaction_event_to_llm_response(
-        delta_event1, aggregated_parts, interaction_id='int_123'
+        delta_event1, state, interaction_id='int_123'
     )
 
     assert result2 is not None
@@ -1328,11 +1330,11 @@ class TestConvertInteractionEventToLlmResponse:
         delta={'type': 'arguments_delta', 'arguments': '"Paris"}'},
     )
     result3 = interactions_utils.convert_interaction_event_to_llm_response(
-        delta_event2, aggregated_parts, interaction_id='int_123'
+        delta_event2, state, interaction_id='int_123'
     )
 
     assert result3 is not None
-    assert len(aggregated_parts[0].function_call.partial_args) == 2
+    assert len(state.parts[0].function_call.partial_args) == 2
 
     # 3. StepStop
     stop_event = StepStop(
@@ -1340,12 +1342,12 @@ class TestConvertInteractionEventToLlmResponse:
         index=0,
     )
     result4 = interactions_utils.convert_interaction_event_to_llm_response(
-        stop_event, aggregated_parts, interaction_id='int_123'
+        stop_event, state, interaction_id='int_123'
     )
 
     assert result4 is None
-    assert aggregated_parts[0].function_call.args == {'city': 'Paris'}
-    assert aggregated_parts[0].function_call.partial_args is None
+    assert state.parts[0].function_call.args == {'city': 'Paris'}
+    assert state.parts[0].function_call.partial_args is None
 
   def test_function_call_streaming_json_parse_error(self, caplog):
     """Test function call streaming returns an error response on JSON parse error."""
@@ -1360,9 +1362,9 @@ class TestConvertInteractionEventToLlmResponse:
             arguments={},
         ),
     )
-    aggregated_parts = []
+    state = interactions_utils._StreamState()
     interactions_utils.convert_interaction_event_to_llm_response(
-        start_event, aggregated_parts, interaction_id='int_err'
+        start_event, state, interaction_id='int_err'
     )
 
     # 2. StepDelta (invalid JSON)
@@ -1372,7 +1374,7 @@ class TestConvertInteractionEventToLlmResponse:
         delta={'type': 'arguments_delta', 'arguments': '{"broken": "json'},
     )
     interactions_utils.convert_interaction_event_to_llm_response(
-        delta_event, aggregated_parts, interaction_id='int_err'
+        delta_event, state, interaction_id='int_err'
     )
 
     # 3. StepStop
@@ -1381,7 +1383,7 @@ class TestConvertInteractionEventToLlmResponse:
         index=0,
     )
     result = interactions_utils.convert_interaction_event_to_llm_response(
-        stop_event, aggregated_parts, interaction_id='int_err'
+        stop_event, state, interaction_id='int_err'
     )
 
     # Assert an error LlmResponse is returned

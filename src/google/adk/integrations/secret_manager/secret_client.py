@@ -26,8 +26,16 @@ from google.cloud import secretmanager
 from google.oauth2 import service_account
 
 from ... import version
+from ...utils import _mtls_utils
 
 USER_AGENT = f"google-adk/{version.__version__}"
+
+_DEFAULT_REGIONAL_ENDPOINT_TEMPLATE = (
+    "secretmanager.{location}.rep.googleapis.com"
+)
+_DEFAULT_MTLS_REGIONAL_ENDPOINT_TEMPLATE = (
+    "secretmanager.{location}.rep.mtls.googleapis.com"
+)
 
 
 class SecretManagerClient:
@@ -104,7 +112,11 @@ class SecretManagerClient:
     client_options = None
     if location:
       client_options = {
-          "api_endpoint": f"secretmanager.{location}.rep.googleapis.com"
+          "api_endpoint": _mtls_utils.get_api_endpoint(
+              location,
+              _DEFAULT_REGIONAL_ENDPOINT_TEMPLATE,
+              _DEFAULT_MTLS_REGIONAL_ENDPOINT_TEMPLATE,
+          )
       }
 
     self._client = secretmanager.SecretManagerServiceClient(

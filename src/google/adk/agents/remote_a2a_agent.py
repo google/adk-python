@@ -508,6 +508,8 @@ class RemoteA2aAgent(BaseAgent):
           event = convert_a2a_task_to_event(
               task, self.name, ctx, self._a2a_part_converter
           )
+          if not event:
+            return None
           # for streaming task, we update the event with the task status.
           # We update the event as Thought updates.
           if (
@@ -555,6 +557,8 @@ class RemoteA2aAgent(BaseAgent):
           event = convert_a2a_task_to_event(
               task, self.name, ctx, self._a2a_part_converter
           )
+          if not event:
+            return None
         else:
           # This is a streaming update without a message (e.g. status change)
           # or a partial artifact update. We don't emit an event for these
