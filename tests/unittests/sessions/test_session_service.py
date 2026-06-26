@@ -106,29 +106,39 @@ def test_database_session_service_enables_pool_pre_ping_by_default():
   assert captured_kwargs.get('pool_pre_ping') is True
 
 
-@pytest.mark.parametrize('dialect_name', ['sqlite', 'postgresql', 'mysql'])
-def test_database_session_service_strips_timezone_for_dialect(dialect_name):
-  """Verifies that timezone-aware datetimes are converted to naive datetimes
-  for SQLite, PostgreSQL, and MySQL.
+@pytest.mark.parametrize(
+    'dialect_name', ['sqlite', 'postgresql', 'mysql', 'mariadb']
+)
+def test_database_session_service_uses_naive_datetime_for_dialect(dialect_name):
+  """Verifies dialects that store DATETIME WITHOUT TIME ZONE are treated as naive.
 
-  These databases store DATETIME/TIMESTAMP WITHOUT TIME ZONE, so keeping
-  tzinfo on the Python datetime causes a mismatch between the marker
-  produced by create_session (with +00:00) and the marker read back by
-  get_session (without +00:00), triggering a false stale-writer error
-  on the first append_event after create_session.
+  SQLite, PostgreSQL, MySQL, and MariaDB all store DATETIME/TIMESTAMP WITHOUT
+  TIME ZONE, so create_session must strip tzinfo before storing. Otherwise the
+  marker produced by create_session (with +00:00) mismatches the marker read
+  back from storage (without +00:00), triggering a false stale-writer error on
+  the first append_event after create_session.
+
+  This exercises the production decision (_uses_naive_datetime) directly rather
+  than re-implementing the strip logic, so it actually guards create_session.
   """
-  # Simulate the logic in create_session
-  is_sqlite = dialect_name == 'sqlite'
-  is_postgres = dialect_name == 'postgresql'
-  is_mysql = dialect_name == 'mysql'
+  fake_engine = mock.Mock()
+  fake_engine.dialect.name = dialect_name
+  fake_engine.sync_engine = mock.Mock()
 
-  now = datetime.now(timezone.utc)
-  assert now.tzinfo is not None  # Starts with timezone
+  service = DatabaseSessionService(db_engine=fake_engine)
 
-  if is_sqlite or is_postgres or is_mysql:
-    now = now.replace(tzinfo=None)
+  assert service._uses_naive_datetime() is True
 
-  assert now.tzinfo is None
+
+def test_database_session_service_keeps_timezone_for_spanner():
+  """Spanner's TIMESTAMP is timezone-aware, so tzinfo must be preserved."""
+  fake_engine = mock.Mock()
+  fake_engine.dialect.name = 'spanner+spanner'
+  fake_engine.sync_engine = mock.Mock()
+
+  service = DatabaseSessionService(db_engine=fake_engine)
+
+  assert service._uses_naive_datetime() is False
 
 
 def test_database_session_service_respects_pool_pre_ping_override():
@@ -271,29 +281,29 @@ async def test_get_empty_session(session_service):
 
 @pytest.mark.asyncio
 async def test_database_session_service_get_session_uses_read_only_factory():
-  service = DatabaseSessionService('sqlite+aiosqlite:///:memory:')
-  service.prepare_tables = mock.AsyncMock()
+  async with DatabaseSessionService('sqlite+aiosqlite:///:memory:') as service:
+    service.prepare_tables = mock.AsyncMock()
 
-  read_only_session = mock.AsyncMock()
-  read_only_session.get = mock.AsyncMock(return_value=None)
+    read_only_session = mock.AsyncMock()
+    read_only_session.get = mock.AsyncMock(return_value=None)
 
-  @asynccontextmanager
-  async def fake_read_only_session():
-    yield read_only_session
+    @asynccontextmanager
+    async def fake_read_only_session():
+      yield read_only_session
 
-  service.database_session_factory = mock.Mock(
-      side_effect=AssertionError('write session factory should not be used')
-  )
-  service._read_only_database_session_factory = mock.Mock(
-      return_value=fake_read_only_session()
-  )
+    service.database_session_factory = mock.Mock(
+        side_effect=AssertionError('write session factory should not be used')
+    )
+    service._read_only_database_session_factory = mock.Mock(
+        return_value=fake_read_only_session()
+    )
 
-  session = await service.get_session(
-      app_name='my_app', user_id='test_user', session_id='123'
-  )
+    session = await service.get_session(
+        app_name='my_app', user_id='test_user', session_id='123'
+    )
 
-  assert session is None
-  service._read_only_database_session_factory.assert_called_once_with()
+    assert session is None
+    service._read_only_database_session_factory.assert_called_once_with()
   service.database_session_factory.assert_not_called()
 
   await service.close()

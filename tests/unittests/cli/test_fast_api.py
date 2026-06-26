@@ -527,6 +527,12 @@ def _create_test_client(
       ),
       patch.object(
           fast_api_module,
+          "NestedAgentLoader",
+          autospec=True,
+          return_value=mock_agent_loader,
+      ),
+      patch.object(
+          fast_api_module,
           "LocalEvalSetsManager",
           autospec=True,
           return_value=mock_eval_sets_manager,
@@ -588,6 +594,12 @@ bigquery_agent_analytics:
       patch.object(
           fast_api_module,
           "AgentLoader",
+          autospec=True,
+          return_value=mock_agent_loader,
+      ),
+      patch.object(
+          fast_api_module,
+          "NestedAgentLoader",
           autospec=True,
           return_value=mock_agent_loader,
       ),
@@ -733,6 +745,12 @@ def builder_test_client(
       patch.object(
           fast_api_module,
           "AgentLoader",
+          autospec=True,
+          return_value=mock_agent_loader,
+      ),
+      patch.object(
+          fast_api_module,
+          "NestedAgentLoader",
           autospec=True,
           return_value=mock_agent_loader,
       ),
@@ -2790,6 +2808,12 @@ async def test_independent_telemetry_context(
       patch.object(
           fast_api_module,
           "AgentLoader",
+          autospec=True,
+          return_value=mock_agent_loader,
+      ),
+      patch.object(
+          fast_api_module,
+          "NestedAgentLoader",
           autospec=True,
           return_value=mock_agent_loader,
       ),

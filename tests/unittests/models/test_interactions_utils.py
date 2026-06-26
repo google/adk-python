@@ -16,14 +16,17 @@
 
 import asyncio
 import base64
+from collections.abc import AsyncGenerator
 from collections.abc import Callable
 from datetime import datetime
 from datetime import timezone
 import json
+import logging
 from unittest.mock import MagicMock
 
 from google.adk.models import interactions_utils
 from google.adk.models.llm_request import LlmRequest
+from google.adk.models.llm_response import LlmResponse
 from google.genai import interactions
 from google.genai import types
 from google.genai.interactions import CodeExecutionResultStep
@@ -61,27 +64,63 @@ class _MockAsyncIterator:
 
 
 class _FakeInteractions:
-  """Minimal fake interactions resource for streaming tests."""
+  """Fake interactions resource for create() tests.
 
-  def __init__(self, events: list[object]):
-    self._events = events
+  Records each create() call's kwargs (including the ``stream`` flag) so tests
+  can assert verbatim forwarding. Streaming calls (``stream`` truthy) return an
+  async iterator over the configured events; non-streaming calls return the
+  configured Interaction. ``_create_interactions`` always passes ``stream``
+  explicitly, so there is no need to distinguish "unset" from ``stream=False``.
+  """
 
-  async def create(self, **_kwargs):
-    return _MockAsyncIterator(self._events)
+  def __init__(
+      self,
+      events: list[object] | None = None,
+      *,
+      interaction: Interaction | None = None,
+  ):
+    self._events = events or []
+    self._interaction = interaction
+    self.create_calls: list[dict[str, object]] = []
+
+  async def create(self, **kwargs):
+    self.create_calls.append(kwargs)
+    if kwargs.get('stream'):
+      return _MockAsyncIterator(self._events)
+    return self._interaction
 
 
 class _FakeAio:
   """Namespace matching the expected api_client.aio shape."""
 
-  def __init__(self, events: list[object]):
-    self.interactions = _FakeInteractions(events)
+  def __init__(
+      self,
+      events: list[object] | None = None,
+      *,
+      interaction: Interaction | None = None,
+  ):
+    self.interactions = _FakeInteractions(events, interaction=interaction)
 
 
 class _FakeApiClient:
-  """Minimal fake API client for generate_content_via_interactions tests."""
+  """Minimal fake API client for interactions create() tests.
 
-  def __init__(self, events: list[object]):
-    self.aio = _FakeAio(events)
+  Streaming calls return an async iterator over the configured events;
+  non-streaming calls return the configured Interaction. ``create_calls``
+  exposes the recorded kwargs of each ``interactions.create`` call.
+  """
+
+  def __init__(
+      self,
+      events: list[object] | None = None,
+      *,
+      interaction: Interaction | None = None,
+  ):
+    self.aio = _FakeAio(events, interaction=interaction)
+
+  @property
+  def create_calls(self) -> list[dict[str, object]]:
+    return self.aio.interactions.create_calls
 
 
 def _build_llm_request() -> LlmRequest:
@@ -1178,16 +1217,16 @@ class TestConvertInteractionEventToLlmResponse:
         index=0,
         delta={'type': 'text', 'text': 'Hello world'},
     )
-    aggregated_parts = []
+    state = interactions_utils._StreamState()
     result = interactions_utils.convert_interaction_event_to_llm_response(
-        event, aggregated_parts, interaction_id='int_123'
+        event, state, interaction_id='int_123'
     )
 
     assert result is not None
     assert result.partial
     assert result.content.parts[0].text == 'Hello world'
     assert result.interaction_id == 'int_123'
-    assert len(aggregated_parts) == 1
+    assert len(state.parts) == 1
 
   def test_image_delta_with_data(self):
     """Test converting an image delta with inline data."""
@@ -1200,28 +1239,236 @@ class TestConvertInteractionEventToLlmResponse:
             'mime_type': 'image/png',
         },
     )
-    aggregated_parts = []
+    state = interactions_utils._StreamState()
     result = interactions_utils.convert_interaction_event_to_llm_response(
-        event, aggregated_parts, interaction_id='int_img'
+        event, state, interaction_id='int_img'
     )
 
     assert result is not None
     assert result.partial
     assert result.content.parts[0].inline_data.data == b'image_bytes'
-    assert len(aggregated_parts) == 1
+    assert len(state.parts) == 1
+
+  def test_thought_summary_delta(self):
+    """thought_summary delta becomes a thought part."""
+    event = StepDelta(
+        event_type='step.delta',
+        index=0,
+        delta={
+            'type': 'thought_summary',
+            'content': {'type': 'text', 'text': 'Let me think...'},
+        },
+    )
+    state = interactions_utils._StreamState()
+    result = interactions_utils.convert_interaction_event_to_llm_response(
+        event, state, interaction_id='int_t'
+    )
+    assert result is not None
+    assert result.partial is True
+    part = result.content.parts[0]
+    assert part.text == 'Let me think...'
+    assert part.thought is True
+    assert len(state.parts) == 1
+
+  def test_thought_signature_delta_attaches_to_last_thought(self):
+    """thought_signature mutates the last thought part and emits no event."""
+    state = interactions_utils._StreamState()
+    interactions_utils.convert_interaction_event_to_llm_response(
+        StepDelta(
+            event_type='step.delta',
+            index=0,
+            delta={
+                'type': 'thought_summary',
+                'content': {'type': 'text', 'text': 'reasoning'},
+            },
+        ),
+        state,
+        interaction_id='int_ts',
+    )
+    sig_b64 = base64.b64encode(b'sig-bytes').decode('utf-8')
+    result = interactions_utils.convert_interaction_event_to_llm_response(
+        StepDelta(
+            event_type='step.delta',
+            index=0,
+            delta={'type': 'thought_signature', 'signature': sig_b64},
+        ),
+        state,
+        interaction_id='int_ts',
+    )
+    assert result is None
+    assert state.parts[-1].thought_signature == b'sig-bytes'
+
+  def test_audio_delta_with_data(self):
+    """audio delta becomes an inline_data part via the shared media handler."""
+    event = StepDelta(
+        event_type='step.delta',
+        index=0,
+        delta={
+            'type': 'audio',
+            'data': base64.b64encode(b'audio_bytes').decode('utf-8'),
+            'mime_type': 'audio/wav',
+        },
+    )
+    state = interactions_utils._StreamState()
+    result = interactions_utils.convert_interaction_event_to_llm_response(
+        event, state, interaction_id='int_a'
+    )
+    assert result is not None
+    assert result.partial is True
+    assert result.content.parts[0].inline_data.data == b'audio_bytes'
+    assert result.content.parts[0].inline_data.mime_type == 'audio/wav'
+    assert len(state.parts) == 1
+
+  def test_code_execution_call_delta(self):
+    """code_execution_call delta becomes an executable_code part."""
+    event = StepDelta(
+        event_type='step.delta',
+        index=0,
+        delta={
+            'type': 'code_execution_call',
+            'arguments': {'code': 'print(1)', 'language': 'python'},
+        },
+    )
+    state = interactions_utils._StreamState()
+    result = interactions_utils.convert_interaction_event_to_llm_response(
+        event, state, interaction_id='int_c'
+    )
+    assert result is not None
+    part = result.content.parts[0]
+    assert part.executable_code.code == 'print(1)'
+    assert part.executable_code.language == types.Language.PYTHON
+    assert len(state.parts) == 1
+
+  def test_code_execution_result_delta(self):
+    """code_execution_result delta becomes a code_execution_result part."""
+    event = StepDelta(
+        event_type='step.delta',
+        index=0,
+        delta={
+            'type': 'code_execution_result',
+            'result': '1\n',
+            'is_error': False,
+        },
+    )
+    state = interactions_utils._StreamState()
+    result = interactions_utils.convert_interaction_event_to_llm_response(
+        event, state, interaction_id='int_cr'
+    )
+    assert result is not None
+    part = result.content.parts[0]
+    assert part.code_execution_result.output == '1\n'
+    assert part.code_execution_result.outcome == types.Outcome.OUTCOME_OK
+    assert len(state.parts) == 1
+
+  def test_code_execution_result_error_delta(self):
+    """code_execution_result with is_error maps to OUTCOME_FAILED."""
+    event = StepDelta(
+        event_type='step.delta',
+        index=0,
+        delta={
+            'type': 'code_execution_result',
+            'result': 'Traceback (most recent call last): ...',
+            'is_error': True,
+        },
+    )
+    state = interactions_utils._StreamState()
+    result = interactions_utils.convert_interaction_event_to_llm_response(
+        event, state, interaction_id='int_cr_err'
+    )
+    assert result is not None
+    part = result.content.parts[0]
+    assert (
+        part.code_execution_result.output
+        == 'Traceback (most recent call last): ...'
+    )
+    assert part.code_execution_result.outcome == types.Outcome.OUTCOME_FAILED
+    assert len(state.parts) == 1
+
+  def test_function_result_delta(self):
+    """function_result delta becomes a function_response part."""
+    event = StepDelta(
+        event_type='step.delta',
+        index=0,
+        delta={
+            'type': 'function_result',
+            'call_id': 'call_9',
+            'result': {'temp': 72},
+        },
+    )
+    state = interactions_utils._StreamState()
+    result = interactions_utils.convert_interaction_event_to_llm_response(
+        event, state, interaction_id='int_fr'
+    )
+    assert result is not None
+    part = result.content.parts[0]
+    assert part.function_response.id == 'call_9'
+    assert part.function_response.response == {'temp': 72}
+    assert len(state.parts) == 1
+
+  def test_known_unhandled_delta_type_logs_debug_and_drops(self, caplog):
+    """A known but unhandled delta type logs at debug and emits no event."""
+    # 'url_context_call' is a recognized genai delta variant that ADK does not
+    # handle yet, so it must fall through to the debug branch (not a warning).
+    event = StepDelta(
+        event_type='step.delta',
+        index=0,
+        delta={'type': 'url_context_call', 'arguments': {}},
+    )
+    state = interactions_utils._StreamState()
+    with caplog.at_level(logging.DEBUG, logger=interactions_utils.logger.name):
+      result = interactions_utils.convert_interaction_event_to_llm_response(
+          event, state, interaction_id='int_u'
+      )
+    assert result is None
+    assert not state.parts
+    debug_records = [
+        r
+        for r in caplog.records
+        if r.levelno == logging.DEBUG
+        and 'unhandled step delta type' in r.message
+    ]
+    assert len(debug_records) == 1
+    assert not [r for r in caplog.records if r.levelno >= logging.WARNING]
+
+  def test_unrecognized_delta_logs_raw_warning_and_drops(self, caplog):
+    """A truly-unrecognized delta logs a warning preserving its raw payload."""
+    event = StepDelta(
+        event_type='step.delta',
+        index=0,
+        delta={'type': 'totally_made_up_xyz', 'foo': 'bar'},
+    )
+    state = interactions_utils._StreamState()
+    with caplog.at_level(
+        logging.WARNING, logger=interactions_utils.logger.name
+    ):
+      result = interactions_utils.convert_interaction_event_to_llm_response(
+          event, state, interaction_id='int_u2'
+      )
+    assert result is None
+    assert not state.parts
+    warnings = [
+        r
+        for r in caplog.records
+        if r.levelno == logging.WARNING
+        and 'unrecognized step delta' in r.message
+    ]
+    assert len(warnings) == 1
+    assert 'foo' in warnings[0].message
+    # The full raw payload (not just delta.type='UNKNOWN') is preserved.
+    assert warnings[0].args == {'type': 'totally_made_up_xyz', 'foo': 'bar'}
 
   def test_unknown_event_type_returns_none(self):
     """Test that unknown event types return None."""
     event = MagicMock()
     event.event_type = 'some_unknown_event'  # Unknown event type
 
-    aggregated_parts = []
+    state = interactions_utils._StreamState()
     result = interactions_utils.convert_interaction_event_to_llm_response(
-        event, aggregated_parts, interaction_id='int_other'
+        event, state, interaction_id='int_other'
     )
 
     assert result is None
-    assert not aggregated_parts
+    assert not state.parts
 
   def test_completed_event_failed_partial_interaction(self):
     """A failed lifecycle event with a partial interaction does not crash."""
@@ -1234,7 +1481,9 @@ class TestConvertInteractionEventToLlmResponse:
         ),
     )
     result = interactions_utils.convert_interaction_event_to_llm_response(
-        event, aggregated_parts=[], interaction_id='int_failed'
+        event,
+        state=interactions_utils._StreamState(),
+        interaction_id='int_failed',
     )
     assert result is not None
     assert result.error_code == 'UNKNOWN_ERROR'
@@ -1253,15 +1502,15 @@ class TestConvertInteractionEventToLlmResponse:
             arguments={},
         ),
     )
-    aggregated_parts: list[types.Part] = []
+    state = interactions_utils._StreamState()
     result1 = interactions_utils.convert_interaction_event_to_llm_response(
-        start_event, aggregated_parts, interaction_id='int_123'
+        start_event, state, interaction_id='int_123'
     )
 
     assert result1 is not None
     assert result1.partial is True
-    assert len(aggregated_parts) == 1
-    fc = aggregated_parts[-1].function_call
+    assert len(state.parts) == 1
+    fc = state.parts[-1].function_call
     assert fc
     assert fc.name == 'get_weather'
     assert fc.id == 'call_1'
@@ -1274,7 +1523,7 @@ class TestConvertInteractionEventToLlmResponse:
         delta={'type': 'arguments_delta', 'arguments': '{"city": '},
     )
     result2 = interactions_utils.convert_interaction_event_to_llm_response(
-        delta_event1, aggregated_parts, interaction_id='int_123'
+        delta_event1, state, interaction_id='int_123'
     )
 
     assert result2 is not None
@@ -1290,11 +1539,11 @@ class TestConvertInteractionEventToLlmResponse:
         delta={'type': 'arguments_delta', 'arguments': '"Paris"}'},
     )
     result3 = interactions_utils.convert_interaction_event_to_llm_response(
-        delta_event2, aggregated_parts, interaction_id='int_123'
+        delta_event2, state, interaction_id='int_123'
     )
 
     assert result3 is not None
-    assert len(aggregated_parts[0].function_call.partial_args) == 2
+    assert len(state.parts[0].function_call.partial_args) == 2
 
     # 3. StepStop
     stop_event = StepStop(
@@ -1302,12 +1551,12 @@ class TestConvertInteractionEventToLlmResponse:
         index=0,
     )
     result4 = interactions_utils.convert_interaction_event_to_llm_response(
-        stop_event, aggregated_parts, interaction_id='int_123'
+        stop_event, state, interaction_id='int_123'
     )
 
     assert result4 is None
-    assert aggregated_parts[0].function_call.args == {'city': 'Paris'}
-    assert aggregated_parts[0].function_call.partial_args is None
+    assert state.parts[0].function_call.args == {'city': 'Paris'}
+    assert state.parts[0].function_call.partial_args is None
 
   def test_function_call_streaming_json_parse_error(self, caplog):
     """Test function call streaming returns an error response on JSON parse error."""
@@ -1322,9 +1571,9 @@ class TestConvertInteractionEventToLlmResponse:
             arguments={},
         ),
     )
-    aggregated_parts = []
+    state = interactions_utils._StreamState()
     interactions_utils.convert_interaction_event_to_llm_response(
-        start_event, aggregated_parts, interaction_id='int_err'
+        start_event, state, interaction_id='int_err'
     )
 
     # 2. StepDelta (invalid JSON)
@@ -1334,7 +1583,7 @@ class TestConvertInteractionEventToLlmResponse:
         delta={'type': 'arguments_delta', 'arguments': '{"broken": "json'},
     )
     interactions_utils.convert_interaction_event_to_llm_response(
-        delta_event, aggregated_parts, interaction_id='int_err'
+        delta_event, state, interaction_id='int_err'
     )
 
     # 3. StepStop
@@ -1343,7 +1592,7 @@ class TestConvertInteractionEventToLlmResponse:
         index=0,
     )
     result = interactions_utils.convert_interaction_event_to_llm_response(
-        stop_event, aggregated_parts, interaction_id='int_err'
+        stop_event, state, interaction_id='int_err'
     )
 
     # Assert an error LlmResponse is returned
@@ -1389,3 +1638,182 @@ def test_generate_content_via_interactions_stream_extracts_interaction_id(
       asyncio.run(_collect_function_call_interaction_ids(streamed_events))
       == expected_ids
   )
+
+
+def _build_simple_text_stream() -> list[object]:
+  """A minimal streamed interaction: created -> text delta -> completed."""
+  now = datetime.now(timezone.utc).isoformat()
+  created = InteractionCreatedEvent(
+      event_type='interaction.created',
+      interaction=InteractionSseEventInteraction(
+          id='interaction_xyz',
+          created=now,
+          updated=now,
+          status='requires_action',
+          steps=[],
+      ),
+  )
+  step_start = StepStart(
+      event_type='step.start',
+      index=0,
+      step=ModelOutputStep(type='model_output'),
+  )
+  step_delta = StepDelta(
+      event_type='step.delta',
+      index=0,
+      delta={'type': 'text', 'text': 'Sunny in Tokyo.'},
+  )
+  step_stop = StepStop(event_type='step.stop', index=0)
+  completed = InteractionCompletedEvent(
+      event_type='interaction.completed',
+      interaction=InteractionSseEventInteraction(
+          id='interaction_xyz',
+          created=now,
+          updated=now,
+          status='completed',
+          steps=[
+              ModelOutputStep(
+                  type='model_output',
+                  content=[TextContent(type='text', text='Sunny in Tokyo.')],
+              )
+          ],
+      ),
+  )
+  return [created, step_start, step_delta, step_stop, completed]
+
+
+async def _collect_stream_responses(events: list[object]):
+  api_client = _FakeApiClient(events)
+  llm_request = _build_llm_request()
+  responses = []
+  async for resp in interactions_utils.generate_content_via_interactions(
+      api_client, llm_request, stream=True
+  ):
+    responses.append(resp)
+  return responses
+
+
+async def test_generate_content_via_interactions_stream_characterization():
+  """Streaming yields text responses carrying the interaction id."""
+  responses = await _collect_stream_responses(_build_simple_text_stream())
+
+  assert responses, 'expected at least one streamed LlmResponse'
+  assert all(r.interaction_id == 'interaction_xyz' for r in responses)
+  joined = ''.join(
+      part.text
+      for r in responses
+      if r.content and r.content.parts
+      for part in r.content.parts
+      if part.text
+  )
+  assert 'Sunny in Tokyo.' in joined
+
+
+def _build_non_streaming_interaction() -> Interaction:
+  """A completed non-streaming Interaction with a single text output."""
+  now = datetime.now(timezone.utc).isoformat()
+  return Interaction(
+      id='interaction_ns',
+      status='completed',
+      created=now,
+      updated=now,
+      steps=[
+          ModelOutputStep(
+              type='model_output',
+              content=[TextContent(type='text', text='Sunny in Tokyo.')],
+          )
+      ],
+  )
+
+
+async def _drain(
+    responses: AsyncGenerator[LlmResponse, None],
+) -> list[LlmResponse]:
+  """Collect all responses yielded by an async generator."""
+  return [resp async for resp in responses]
+
+
+async def test_create_interactions_streaming_forwards_kwargs_and_converts():
+  """Streaming forwards create_kwargs verbatim (plus stream) and converts."""
+  # Arrange.
+  api_client = _FakeApiClient(_build_simple_text_stream())
+  create_kwargs = {
+      'model': 'gemini-2.5-flash',
+      'input': [{
+          'type': 'user_input',
+          'content': [{'type': 'text', 'text': 'Weather in Tokyo?'}],
+      }],
+      'previous_interaction_id': None,
+  }
+
+  # Act.
+  responses = await _drain(
+      interactions_utils._create_interactions(
+          api_client, create_kwargs=create_kwargs, stream=True
+      )
+  )
+
+  # Assert: exactly one create() call forwarding kwargs plus the stream flag.
+  assert len(api_client.create_calls) == 1
+  assert api_client.create_calls[0] == {**create_kwargs, 'stream': True}
+
+  # Assert: the streamed events are converted into text responses.
+  assert responses, 'expected at least one streamed LlmResponse'
+  assert all(r.interaction_id == 'interaction_xyz' for r in responses)
+  joined = ''.join(
+      part.text
+      for r in responses
+      if r.content and r.content.parts
+      for part in r.content.parts
+      if part.text
+  )
+  assert 'Sunny in Tokyo.' in joined
+
+
+async def test_create_interactions_non_streaming_forwards_kwargs_and_yields_single_response():
+  """Non-streaming forwards kwargs verbatim and yields a single response."""
+  # Arrange.
+  interaction = _build_non_streaming_interaction()
+  api_client = _FakeApiClient(interaction=interaction)
+  create_kwargs = {
+      'model': 'gemini-2.5-flash',
+      'input': [{
+          'type': 'user_input',
+          'content': [{'type': 'text', 'text': 'Weather in Tokyo?'}],
+      }],
+      'previous_interaction_id': None,
+  }
+
+  # Act.
+  responses = await _drain(
+      interactions_utils._create_interactions(
+          api_client, create_kwargs=create_kwargs, stream=False
+      )
+  )
+
+  # Assert: exactly one create() call forwarding kwargs plus the stream flag.
+  assert len(api_client.create_calls) == 1
+  assert api_client.create_calls[0] == {**create_kwargs, 'stream': False}
+
+  # Assert: a single converted LlmResponse carrying the interaction output.
+  assert len(responses) == 1
+  assert responses[0].interaction_id == 'interaction_ns'
+  assert responses[0].content.parts[0].text == 'Sunny in Tokyo.'
+
+
+async def test_generate_content_via_interactions_non_streaming_yields_single_response():
+  """The public function yields a single response on the non-streaming path."""
+  # Arrange.
+  api_client = _FakeApiClient(interaction=_build_non_streaming_interaction())
+
+  # Act.
+  responses = await _drain(
+      interactions_utils.generate_content_via_interactions(
+          api_client, _build_llm_request(), stream=False
+      )
+  )
+
+  # Assert: a single end-to-end converted LlmResponse with the expected text.
+  assert len(responses) == 1
+  assert responses[0].interaction_id == 'interaction_ns'
+  assert responses[0].content.parts[0].text == 'Sunny in Tokyo.'

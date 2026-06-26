@@ -122,8 +122,14 @@ class TestParameterManagerClient:
   @patch(
       "google.adk.integrations.parameter_manager.parameter_client.default_service_credential"
   )
+  @patch(
+      "google.adk.integrations.parameter_manager.parameter_client._mtls_utils.get_api_endpoint"
+  )
   def test_init_with_location(
-      self, mock_default_service_credential, mock_pm_client_class
+      self,
+      mock_get_api_endpoint,
+      mock_default_service_credential,
+      mock_pm_client_class,
   ):
     """Test initialization with a specific location."""
     # Setup
@@ -133,6 +139,7 @@ class TestParameterManagerClient:
         "test-project",
     )
     location = "us-central1"
+    mock_get_api_endpoint.return_value = "resolved-endpoint"
 
     # Execute
     ParameterManagerClient(location=location)
@@ -142,9 +149,14 @@ class TestParameterManagerClient:
     call_kwargs = mock_pm_client_class.call_args.kwargs
     assert call_kwargs["credentials"] == mock_credentials
     assert call_kwargs["client_options"] == {
-        "api_endpoint": f"parametermanager.{location}.rep.googleapis.com"
+        "api_endpoint": "resolved-endpoint"
     }
     assert call_kwargs["client_info"].user_agent == USER_AGENT
+    mock_get_api_endpoint.assert_called_once_with(
+        location,
+        "parametermanager.{location}.rep.googleapis.com",
+        "parametermanager.{location}.rep.mtls.googleapis.com",
+    )
 
   @patch(
       "google.adk.integrations.parameter_manager.parameter_client.default_service_credential"
