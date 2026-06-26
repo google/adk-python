@@ -21,6 +21,7 @@ from collections.abc import Callable
 from datetime import datetime
 from datetime import timezone
 import json
+import logging
 from unittest.mock import MagicMock
 
 from google.adk.models import interactions_utils
@@ -1247,6 +1248,214 @@ class TestConvertInteractionEventToLlmResponse:
     assert result.partial
     assert result.content.parts[0].inline_data.data == b'image_bytes'
     assert len(state.parts) == 1
+
+  def test_thought_summary_delta(self):
+    """thought_summary delta becomes a thought part."""
+    event = StepDelta(
+        event_type='step.delta',
+        index=0,
+        delta={
+            'type': 'thought_summary',
+            'content': {'type': 'text', 'text': 'Let me think...'},
+        },
+    )
+    state = interactions_utils._StreamState()
+    result = interactions_utils.convert_interaction_event_to_llm_response(
+        event, state, interaction_id='int_t'
+    )
+    assert result is not None
+    assert result.partial is True
+    part = result.content.parts[0]
+    assert part.text == 'Let me think...'
+    assert part.thought is True
+    assert len(state.parts) == 1
+
+  def test_thought_signature_delta_attaches_to_last_thought(self):
+    """thought_signature mutates the last thought part and emits no event."""
+    state = interactions_utils._StreamState()
+    interactions_utils.convert_interaction_event_to_llm_response(
+        StepDelta(
+            event_type='step.delta',
+            index=0,
+            delta={
+                'type': 'thought_summary',
+                'content': {'type': 'text', 'text': 'reasoning'},
+            },
+        ),
+        state,
+        interaction_id='int_ts',
+    )
+    sig_b64 = base64.b64encode(b'sig-bytes').decode('utf-8')
+    result = interactions_utils.convert_interaction_event_to_llm_response(
+        StepDelta(
+            event_type='step.delta',
+            index=0,
+            delta={'type': 'thought_signature', 'signature': sig_b64},
+        ),
+        state,
+        interaction_id='int_ts',
+    )
+    assert result is None
+    assert state.parts[-1].thought_signature == b'sig-bytes'
+
+  def test_audio_delta_with_data(self):
+    """audio delta becomes an inline_data part via the shared media handler."""
+    event = StepDelta(
+        event_type='step.delta',
+        index=0,
+        delta={
+            'type': 'audio',
+            'data': base64.b64encode(b'audio_bytes').decode('utf-8'),
+            'mime_type': 'audio/wav',
+        },
+    )
+    state = interactions_utils._StreamState()
+    result = interactions_utils.convert_interaction_event_to_llm_response(
+        event, state, interaction_id='int_a'
+    )
+    assert result is not None
+    assert result.partial is True
+    assert result.content.parts[0].inline_data.data == b'audio_bytes'
+    assert result.content.parts[0].inline_data.mime_type == 'audio/wav'
+    assert len(state.parts) == 1
+
+  def test_code_execution_call_delta(self):
+    """code_execution_call delta becomes an executable_code part."""
+    event = StepDelta(
+        event_type='step.delta',
+        index=0,
+        delta={
+            'type': 'code_execution_call',
+            'arguments': {'code': 'print(1)', 'language': 'python'},
+        },
+    )
+    state = interactions_utils._StreamState()
+    result = interactions_utils.convert_interaction_event_to_llm_response(
+        event, state, interaction_id='int_c'
+    )
+    assert result is not None
+    part = result.content.parts[0]
+    assert part.executable_code.code == 'print(1)'
+    assert part.executable_code.language == types.Language.PYTHON
+    assert len(state.parts) == 1
+
+  def test_code_execution_result_delta(self):
+    """code_execution_result delta becomes a code_execution_result part."""
+    event = StepDelta(
+        event_type='step.delta',
+        index=0,
+        delta={
+            'type': 'code_execution_result',
+            'result': '1\n',
+            'is_error': False,
+        },
+    )
+    state = interactions_utils._StreamState()
+    result = interactions_utils.convert_interaction_event_to_llm_response(
+        event, state, interaction_id='int_cr'
+    )
+    assert result is not None
+    part = result.content.parts[0]
+    assert part.code_execution_result.output == '1\n'
+    assert part.code_execution_result.outcome == types.Outcome.OUTCOME_OK
+    assert len(state.parts) == 1
+
+  def test_code_execution_result_error_delta(self):
+    """code_execution_result with is_error maps to OUTCOME_FAILED."""
+    event = StepDelta(
+        event_type='step.delta',
+        index=0,
+        delta={
+            'type': 'code_execution_result',
+            'result': 'Traceback (most recent call last): ...',
+            'is_error': True,
+        },
+    )
+    state = interactions_utils._StreamState()
+    result = interactions_utils.convert_interaction_event_to_llm_response(
+        event, state, interaction_id='int_cr_err'
+    )
+    assert result is not None
+    part = result.content.parts[0]
+    assert (
+        part.code_execution_result.output
+        == 'Traceback (most recent call last): ...'
+    )
+    assert part.code_execution_result.outcome == types.Outcome.OUTCOME_FAILED
+    assert len(state.parts) == 1
+
+  def test_function_result_delta(self):
+    """function_result delta becomes a function_response part."""
+    event = StepDelta(
+        event_type='step.delta',
+        index=0,
+        delta={
+            'type': 'function_result',
+            'call_id': 'call_9',
+            'result': {'temp': 72},
+        },
+    )
+    state = interactions_utils._StreamState()
+    result = interactions_utils.convert_interaction_event_to_llm_response(
+        event, state, interaction_id='int_fr'
+    )
+    assert result is not None
+    part = result.content.parts[0]
+    assert part.function_response.id == 'call_9'
+    assert part.function_response.response == {'temp': 72}
+    assert len(state.parts) == 1
+
+  def test_known_unhandled_delta_type_logs_debug_and_drops(self, caplog):
+    """A known but unhandled delta type logs at debug and emits no event."""
+    # 'url_context_call' is a recognized genai delta variant that ADK does not
+    # handle yet, so it must fall through to the debug branch (not a warning).
+    event = StepDelta(
+        event_type='step.delta',
+        index=0,
+        delta={'type': 'url_context_call', 'arguments': {}},
+    )
+    state = interactions_utils._StreamState()
+    with caplog.at_level(logging.DEBUG, logger=interactions_utils.logger.name):
+      result = interactions_utils.convert_interaction_event_to_llm_response(
+          event, state, interaction_id='int_u'
+      )
+    assert result is None
+    assert not state.parts
+    debug_records = [
+        r
+        for r in caplog.records
+        if r.levelno == logging.DEBUG
+        and 'unhandled step delta type' in r.message
+    ]
+    assert len(debug_records) == 1
+    assert not [r for r in caplog.records if r.levelno >= logging.WARNING]
+
+  def test_unrecognized_delta_logs_raw_warning_and_drops(self, caplog):
+    """A truly-unrecognized delta logs a warning preserving its raw payload."""
+    event = StepDelta(
+        event_type='step.delta',
+        index=0,
+        delta={'type': 'totally_made_up_xyz', 'foo': 'bar'},
+    )
+    state = interactions_utils._StreamState()
+    with caplog.at_level(
+        logging.WARNING, logger=interactions_utils.logger.name
+    ):
+      result = interactions_utils.convert_interaction_event_to_llm_response(
+          event, state, interaction_id='int_u2'
+      )
+    assert result is None
+    assert not state.parts
+    warnings = [
+        r
+        for r in caplog.records
+        if r.levelno == logging.WARNING
+        and 'unrecognized step delta' in r.message
+    ]
+    assert len(warnings) == 1
+    assert 'foo' in warnings[0].message
+    # The full raw payload (not just delta.type='UNKNOWN') is preserved.
+    assert warnings[0].args == {'type': 'totally_made_up_xyz', 'foo': 'bar'}
 
   def test_unknown_event_type_returns_none(self):
     """Test that unknown event types return None."""

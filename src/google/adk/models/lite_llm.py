@@ -330,10 +330,6 @@ def _get_provider_from_model(model: str) -> str:
   return ""
 
 
-# Default MIME type when none can be inferred
-_DEFAULT_MIME_TYPE = "application/octet-stream"
-
-
 def _infer_mime_type_from_uri(uri: str) -> Optional[str]:
   """Attempts to infer MIME type from a URI's path extension.
 
@@ -1217,33 +1213,33 @@ async def _get_content(
         })
         continue
 
-      # Determine MIME type: use explicit value, infer from URI, or use default.
+      # Resolve MIME type early: needed before the media-URL shortcut below,
+      # which must run before the generic text-fallback check. The raise is
+      # deferred until after all early-continue paths so that providers which
+      # always fall back to text (anthropic, non-Gemini Vertex AI) are never
+      # asked for a MIME type they cannot supply.
       mime_type = part.file_data.mime_type
       if not mime_type:
         mime_type = _infer_mime_type_from_uri(part.file_data.file_uri)
       if not mime_type and part.file_data.display_name:
         guessed_mime_type, _ = mimetypes.guess_type(part.file_data.display_name)
         mime_type = guessed_mime_type
-      if not mime_type:
-        # LiteLLM's Vertex AI backend requires format for GCS URIs.
-        mime_type = _DEFAULT_MIME_TYPE
-        logger.debug(
-            "Could not determine MIME type for file_uri %s, using default: %s",
-            part.file_data.file_uri,
-            mime_type,
-        )
-      mime_type = _normalize_mime_type(mime_type)
+      if mime_type:
+        mime_type = _normalize_mime_type(mime_type)
 
+      # For OpenAI/Azure: HTTP media URLs (image, video, audio) are sent as
+      # typed URL blocks and must be handled before the generic text fallback.
       if provider in _FILE_ID_REQUIRED_PROVIDERS and _is_http_url(
           part.file_data.file_uri
       ):
-        url_content_type = _media_url_content_type(mime_type)
-        if url_content_type:
-          content_objects.append({
-              "type": url_content_type,
-              url_content_type: {"url": part.file_data.file_uri},
-          })
-          continue
+        if mime_type:
+          url_content_type = _media_url_content_type(mime_type)
+          if url_content_type:
+            content_objects.append({
+                "type": url_content_type,
+                url_content_type: {"url": part.file_data.file_uri},
+            })
+            continue
 
       if not _is_file_uri_supported(provider, model, part.file_data.file_uri):
         redacted_file_uri = _redact_file_uri_for_log(
@@ -1253,6 +1249,19 @@ async def _get_content(
         raise ValueError(
             f"File URI `{redacted_file_uri}` not supported for provider:"
             f" {provider}."
+        )
+
+      # All remaining providers (e.g. Vertex AI + Gemini) require a specific
+      # MIME type in the file object. Both a missing type and
+      # 'application/octet-stream' cause a downstream ValueError from LiteLLM
+      # regardless of whether the value was set explicitly by the caller or
+      # arrived via a default fallback; raise early with an actionable message.
+      if not mime_type or mime_type == "application/octet-stream":
+        type_label = mime_type or "(unknown)"
+        raise ValueError(
+            f"Cannot process file_uri {part.file_data.file_uri!r}: MIME type"
+            f" {type_label!r} is not supported. Please set a specific MIME"
+            " type on `file_data.mime_type`."
         )
 
       file_object: ChatCompletionFileUrlObject = {

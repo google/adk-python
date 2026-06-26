@@ -169,6 +169,7 @@ def test_record_tool_execution_duration(mock_meter_setup):
   """Tests record_tool_execution_duration records correctly."""
   _metrics.record_tool_execution_duration(
       "test_tool",
+      "test_tool_type",
       "test_agent",
       0.5,
   )
@@ -179,6 +180,7 @@ def test_record_tool_execution_duration(mock_meter_setup):
   want_attributes = {
       "gen_ai.agent.name": "test_agent",
       "gen_ai.tool.name": "test_tool",
+      "gen_ai.tool.type": "test_tool_type",
   }
   assert kwargs["attributes"] == want_attributes
 
@@ -188,6 +190,7 @@ def test_record_tool_execution_duration_with_error(mock_meter_setup):
   test_error = ValueError("tool failed")
   _metrics.record_tool_execution_duration(
       "test_tool",
+      "test_tool_type",
       "test_agent",
       0.5,
       error=test_error,
