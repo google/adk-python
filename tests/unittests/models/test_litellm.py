@@ -1972,14 +1972,12 @@ async def test_content_to_message_param_user_message_file_uri_only(
 
 @pytest.mark.asyncio
 async def test_content_to_message_param_user_message_file_uri_without_mime_type():
-  """Test handling of file_data without mime_type (GcsArtifactService scenario).
+  """Test that file_data without an inferable mime_type raises ValueError.
 
   When using GcsArtifactService, artifacts may have file_uri (gs://...) but
-  without mime_type set. LiteLLM's Vertex AI backend requires the format
-  field to be present, so we infer MIME type from the URI extension or use
-  a default fallback to ensure compatibility.
-
-  See: https://github.com/google/adk-python/issues/3787
+  without mime_type set. When the MIME type cannot be determined from the URI
+  extension or display_name, ADK raises a clear ValueError rather than
+  forwarding an unsupported 'application/octet-stream' to LiteLLM.
   """
   file_part = types.Part(
       file_data=types.FileData(
@@ -1994,22 +1992,34 @@ async def test_content_to_message_param_user_message_file_uri_without_mime_type(
       ],
   )
 
-  message = await _content_to_message_param(content)
-  assert message == {
-      "role": "user",
-      "content": [
-          {"type": "text", "text": "Analyze this file."},
-          {
-              "type": "file",
-              "file": {
-                  "file_id": (
-                      "gs://agent-artifact-bucket/app/user/session/artifact/0"
-                  ),
-                  "format": "application/octet-stream",
-              },
-          },
+  with pytest.raises(ValueError, match="Cannot process file_uri"):
+    await _content_to_message_param(content)
+
+
+@pytest.mark.asyncio
+async def test_content_to_message_param_user_message_file_uri_explicit_octet_stream():
+  """Test that an explicit application/octet-stream MIME type raises ValueError.
+
+  Upstream callers may explicitly set mime_type to 'application/octet-stream'
+  when the true type is unknown. ADK treats this identically to a missing MIME
+  type and raises early rather than forwarding the unsupported type to LiteLLM.
+  """
+  file_part = types.Part(
+      file_data=types.FileData(
+          file_uri="gs://agent-artifact-bucket/app/user/session/artifact/0",
+          mime_type="application/octet-stream",
+      )
+  )
+  content = types.Content(
+      role="user",
+      parts=[
+          types.Part.from_text(text="Analyze this file."),
+          file_part,
       ],
-  }
+  )
+
+  with pytest.raises(ValueError, match="application/octet-stream"):
+    await _content_to_message_param(content)
 
 
 @pytest.mark.asyncio
@@ -2018,8 +2028,6 @@ async def test_content_to_message_param_user_message_file_uri_infer_mime_type():
 
   When file_data has a file_uri with a recognizable extension but no explicit
   mime_type, the MIME type should be inferred from the extension.
-
-  See: https://github.com/google/adk-python/issues/3787
   """
   file_part = types.Part(
       file_data=types.FileData(
@@ -3293,8 +3301,6 @@ async def test_get_content_file_uri_infer_mime_type():
 
   When file_data has a file_uri with a recognizable extension but no explicit
   mime_type, the MIME type should be inferred from the extension.
-
-  See: https://github.com/google/adk-python/issues/3787
   """
   # Use Part constructor directly to test MIME type inference in _get_content
   # (types.Part.from_uri does its own inference, so we bypass it)
@@ -3344,27 +3350,38 @@ async def test_get_content_file_uri_infers_from_display_name():
 
 @pytest.mark.asyncio
 async def test_get_content_file_uri_default_mime_type():
-  """Test that file_uri without extension uses default MIME type.
+  """Test that file_uri without an inferable extension raises ValueError.
 
   When file_data has a file_uri without a recognizable extension and no explicit
-  mime_type, a default MIME type should be used to ensure compatibility with
-  LiteLLM backends.
-
-  See: https://github.com/google/adk-python/issues/3787
+  mime_type, ADK raises a clear ValueError instead of forwarding the unsupported
+  'application/octet-stream' MIME type to LiteLLM.
   """
-  # Use Part constructor directly to create file_data without mime_type
-  # (types.Part.from_uri requires a valid mime_type when it can't infer)
   parts = [
       types.Part(file_data=types.FileData(file_uri="gs://bucket/artifact/0"))
   ]
-  content = await _get_content(parts)
-  assert content[0] == {
-      "type": "file",
-      "file": {
-          "file_id": "gs://bucket/artifact/0",
-          "format": "application/octet-stream",
-      },
-  }
+  with pytest.raises(ValueError, match="Cannot process file_uri"):
+    await _get_content(parts)
+
+
+@pytest.mark.asyncio
+async def test_get_content_file_uri_explicit_octet_stream_raises():
+  """Test that an explicit application/octet-stream MIME type raises ValueError.
+
+  'application/octet-stream' is semantically equivalent to an unknown type and
+  causes the same downstream ValueError from LiteLLM whether it arrives as a
+  default fallback or is set explicitly by the caller. ADK raises early with
+  an actionable message in both cases.
+  """
+  parts = [
+      types.Part(
+          file_data=types.FileData(
+              file_uri="gs://bucket/artifact/0",
+              mime_type="application/octet-stream",
+          )
+      )
+  ]
+  with pytest.raises(ValueError, match="application/octet-stream"):
+    await _get_content(parts)
 
 
 @pytest.mark.asyncio
