@@ -40,7 +40,6 @@ from .agents.live_request_queue import LiveRequestQueue
 from .agents.llm.task._finish_task_tool import FINISH_TASK_SUCCESS_RESULT
 from .agents.llm.task._finish_task_tool import FINISH_TASK_TOOL_NAME
 from .agents.run_config import RunConfig
-from .apps.app import App
 from .artifacts.base_artifact_service import BaseArtifactService
 from .auth.credential_service.base_credential_service import BaseCredentialService
 from .code_executors.built_in_code_executor import BuiltInCodeExecutor
@@ -62,6 +61,7 @@ from .tools.base_toolset import BaseToolset
 from .utils._debug_output import print_event
 
 if TYPE_CHECKING:
+  from .apps.app import App
   from .apps.app import ResumabilityConfig
 
 logger = logging.getLogger('google_adk.' + __name__)
@@ -276,6 +276,9 @@ class Runner:
           ' to provide plugins instead.',
           DeprecationWarning,
       )
+
+    # Lazy import keeps apps.app off the `import google.adk` cold-start path.
+    from .apps.app import App
 
     # Normalize to App — wrap bare agent or node. Uses model_construct to
     # bypass App._validate for the legacy (app_name, agent) API, which v1

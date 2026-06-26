@@ -40,6 +40,8 @@ from google.adk.models.lite_llm import _get_completion_inputs
 from google.adk.models.lite_llm import _get_content
 from google.adk.models.lite_llm import _get_provider_from_model
 from google.adk.models.lite_llm import _is_anthropic_model
+from google.adk.models.lite_llm import _is_anthropic_provider
+from google.adk.models.lite_llm import _is_anthropic_route
 from google.adk.models.lite_llm import _looks_like_openai_file_id
 from google.adk.models.lite_llm import _message_to_generate_content_response
 from google.adk.models.lite_llm import _MISSING_TOOL_RESULT_MESSAGE
@@ -5145,6 +5147,17 @@ def test_handles_litellm_logger_names(logger_name):
 # ── Anthropic thinking_blocks tests ─────────────────────────────
 
 
+def test_is_anthropic_provider():
+  """Verify _is_anthropic_provider matches known Claude provider prefixes."""
+  assert _is_anthropic_provider("anthropic")
+  assert _is_anthropic_provider("bedrock")
+  assert _is_anthropic_provider("vertex_ai")
+  assert _is_anthropic_provider("ANTHROPIC")  # case-insensitive
+  assert not _is_anthropic_provider("openai")
+  assert not _is_anthropic_provider("")
+  assert not _is_anthropic_provider(None)
+
+
 @pytest.mark.parametrize(
     "model_string,expected",
     [
@@ -5179,9 +5192,10 @@ def test_is_anthropic_model(model_string, expected):
 
 
 def test_extract_reasoning_value_prefers_thinking_blocks():
-  """thinking_blocks takes precedence over reasoning_content."""
+  """thinking_blocks (Anthropic format with signatures) take priority."""
   thinking_blocks = [
-      {"type": "thinking", "thinking": "deep thought", "signature": "sig123"},
+      {"type": "thinking", "thinking": "step 1", "signature": "c2lnX2E="},
+      {"type": "thinking", "thinking": "step 2", "signature": "c2lnX2I="},
   ]
   message = {
       "role": "assistant",
@@ -5204,44 +5218,52 @@ def test_extract_reasoning_value_falls_back_without_thinking_blocks():
   assert result == "flat reasoning"
 
 
-def test_convert_reasoning_value_to_parts_thinking_blocks_preserves_signature():
-  """thinking_blocks format produces parts with thought_signature."""
+def test_convert_reasoning_value_to_parts_preserves_base64_signature():
+  """Base64 signatures are decoded to raw bytes on thought parts."""
   thinking_blocks = [
-      {"type": "thinking", "thinking": "step 1", "signature": "sig_abc"},
-      {"type": "thinking", "thinking": "step 2", "signature": "sig_def"},
+      {"type": "thinking", "thinking": "step 1", "signature": "c2lnX2E="},
+      {"type": "thinking", "thinking": "step 2", "signature": "c2lnX2I="},
   ]
   parts = _convert_reasoning_value_to_parts(thinking_blocks)
   assert len(parts) == 2
   assert parts[0].text == "step 1"
   assert parts[0].thought is True
-  assert parts[0].thought_signature == b"sig_abc"
+  assert parts[0].thought_signature == b"sig_a"
   assert parts[1].text == "step 2"
-  assert parts[1].thought_signature == b"sig_def"
+  assert parts[1].thought_signature == b"sig_b"
 
 
-def test_convert_reasoning_value_to_parts_gemini_thinking_blocks_no_signature():
-  """Gemini thinking_blocks (no signature) still produce thought parts."""
+def test_convert_reasoning_value_to_parts_raw_signature_falls_back_to_utf8():
+  """Non-base64 signatures are preserved as utf-8 bytes."""
   thinking_blocks = [
-      {"type": "thinking", "thinking": "gemini step 1"},
-      {"type": "thinking", "thinking": "gemini step 2"},
+      {"type": "thinking", "thinking": "step 1", "signature": "sig_raw"},
   ]
   parts = _convert_reasoning_value_to_parts(thinking_blocks)
-  assert len(parts) == 2
-  assert parts[0].text == "gemini step 1"
-  assert parts[0].thought is True
-  assert parts[0].thought_signature is None
-  assert parts[1].text == "gemini step 2"
+  assert len(parts) == 1
+  assert parts[0].text == "step 1"
+  assert parts[0].thought_signature == b"sig_raw"
 
 
 def test_convert_reasoning_value_to_parts_skips_redacted_blocks():
   """Redacted thinking blocks are excluded from parts."""
   thinking_blocks = [
-      {"type": "thinking", "thinking": "visible", "signature": "sig1"},
+      {"type": "thinking", "thinking": "visible", "signature": "c2lnMQ=="},
       {"type": "redacted", "data": "hidden"},
   ]
   parts = _convert_reasoning_value_to_parts(thinking_blocks)
   assert len(parts) == 1
   assert parts[0].text == "visible"
+
+
+def test_convert_reasoning_value_to_parts_skips_empty_thinking():
+  """Blocks with empty thinking text are excluded."""
+  thinking_blocks = [
+      {"type": "thinking", "thinking": "", "signature": "c2lnMQ=="},
+      {"type": "thinking", "thinking": "real thought", "signature": "c2lnMg=="},
+  ]
+  parts = _convert_reasoning_value_to_parts(thinking_blocks)
+  assert len(parts) == 1
+  assert parts[0].text == "real thought"
 
 
 def test_convert_reasoning_value_to_parts_flat_string_unchanged():
@@ -5255,7 +5277,7 @@ def test_convert_reasoning_value_to_parts_flat_string_unchanged():
 
 @pytest.mark.asyncio
 async def test_content_to_message_param_anthropic_outputs_thinking_blocks():
-  """For Anthropic models, thinking_blocks are output instead of reasoning_content."""
+  """Anthropic model messages base64-encode thought signatures."""
   content = types.Content(
       role="model",
       parts=[
@@ -5271,14 +5293,48 @@ async def test_content_to_message_param_anthropic_outputs_thinking_blocks():
       content, model="anthropic/claude-4-sonnet"
   )
   assert result["role"] == "assistant"
-  assert "thinking_blocks" in result
+  assert result["thinking_blocks"] == [{
+      "type": "thinking",
+      "thinking": "deep thought",
+      "signature": "c2lnX3JvdW5kX3RyaXA=",
+  }]
   assert result.get("reasoning_content") is None
-  blocks = result["thinking_blocks"]
-  assert len(blocks) == 1
-  assert blocks[0]["type"] == "thinking"
-  assert blocks[0]["thinking"] == "deep thought"
-  assert blocks[0]["signature"] == "sig_round_trip"
   assert result["content"] == "Hello!"
+
+
+@pytest.mark.asyncio
+async def test_content_to_message_param_anthropic_model_round_trip_preserves_signature():
+  """Decoded signatures are re-encoded when rebuilding Anthropic messages."""
+  response_message = {
+      "role": "assistant",
+      "content": "Final answer",
+      "thinking_blocks": [{
+          "type": "thinking",
+          "thinking": "Let me reason...",
+          "signature": "c2lnX2E=",
+      }],
+  }
+
+  parts = _convert_reasoning_value_to_parts(
+      _extract_reasoning_value(response_message)
+  )
+  content = types.Content(
+      role="model",
+      parts=parts + [types.Part(text="Final answer")],
+  )
+
+  result = await _content_to_message_param(
+      content,
+      provider="anthropic",
+      model="anthropic/claude-4-sonnet",
+  )
+
+  assert result["thinking_blocks"] == [{
+      "type": "thinking",
+      "thinking": "Let me reason...",
+      "signature": "c2lnX2E=",
+  }]
+  assert result.get("reasoning_content") is None
 
 
 @pytest.mark.asyncio
@@ -5298,9 +5354,8 @@ async def test_content_to_message_param_non_anthropic_uses_reasoning_content():
 
 
 @pytest.mark.asyncio
-async def test_anthropic_thinking_blocks_round_trip():
-  """End-to-end: thinking_blocks in response → Part → thinking_blocks out."""
-  # Simulate LiteLLM response with thinking_blocks
+async def test_anthropic_provider_thinking_blocks_round_trip():
+  """End-to-end: thinking_blocks in response stay intact for Anthropic provider."""
   response_message = {
       "role": "assistant",
       "content": "Final answer",
@@ -5308,33 +5363,36 @@ async def test_anthropic_thinking_blocks_round_trip():
           {
               "type": "thinking",
               "thinking": "Let me reason...",
-              "signature": "abc123signature",
+              "signature": "c2lnX2E=",
           },
       ],
   }
 
-  # Step 1: Extract reasoning value
   reasoning_value = _extract_reasoning_value(response_message)
   assert isinstance(reasoning_value, list)
 
-  # Step 2: Convert to parts (preserves signature)
   parts = _convert_reasoning_value_to_parts(reasoning_value)
   assert len(parts) == 1
-  assert parts[0].thought_signature == b"abc123signature"
+  assert parts[0].thought_signature == b"sig_a"
 
-  # Step 3: Build Content for history
-  all_parts = parts + [types.Part(text="Final answer")]
+  all_parts = parts + [
+      types.Part(text="Final answer"),
+      types.Part.from_function_call(name="add", args={"a": 1, "b": 2}),
+  ]
   content = types.Content(role="model", parts=all_parts)
 
-  # Step 4: Convert back to message param for Anthropic
-  result = await _content_to_message_param(
-      content, model="anthropic/claude-4-sonnet"
-  )
-  blocks = result["thinking_blocks"]
-  assert len(blocks) == 1
-  assert blocks[0]["type"] == "thinking"
-  assert blocks[0]["thinking"] == "Let me reason..."
-  assert blocks[0]["signature"] == "abc123signature"
+  msg = await _content_to_message_param(content, provider="anthropic")
+  assert isinstance(msg["content"], list)
+  assert msg["content"][0] == {
+      "type": "thinking",
+      "thinking": "Let me reason...",
+      "signature": "c2lnX2E=",
+  }
+  assert msg["content"][1] == {"type": "text", "text": "Final answer"}
+  assert msg["tool_calls"] is not None
+  assert len(msg["tool_calls"]) == 1
+  assert msg["tool_calls"][0]["function"]["name"] == "add"
+  assert msg.get("reasoning_content") is None
 
 
 @pytest.mark.asyncio
@@ -5350,9 +5408,133 @@ async def test_content_to_message_param_anthropic_no_signature_falls_back():
   result = await _content_to_message_param(
       content, model="anthropic/claude-4-sonnet"
   )
-  # Falls back to reasoning_content when no signatures present
   assert result.get("reasoning_content") == "thinking without sig"
   assert "thinking_blocks" not in result
+
+
+@pytest.mark.parametrize(
+    "provider,model,expected",
+    [
+        ("anthropic", "anthropic/claude-3-5-sonnet", True),
+        ("anthropic", "", True),  # anthropic always routes to Claude
+        ("bedrock", "bedrock/anthropic.claude-3-5-sonnet", True),
+        ("bedrock", "bedrock/meta.llama3-70b-instruct-v1:0", False),
+        ("vertex_ai", "vertex_ai/claude-3-5-sonnet@20241022", True),
+        ("vertex_ai", "vertex_ai/gemini-2.5-flash", False),
+        ("openai", "openai/gpt-4o", False),
+        ("", "", False),
+    ],
+)
+def test_is_anthropic_route(provider, model, expected):
+  assert _is_anthropic_route(provider, model) is expected
+
+
+def test_convert_reasoning_value_to_parts_empty_thinking_does_not_fall_through():
+  """An empty thinking block is skipped, not parsed via the text fallback."""
+  thinking_blocks = [
+      {
+          "type": "thinking",
+          "thinking": "",
+          "text": "leaked",
+          "signature": "c2ln",
+      },
+  ]
+  parts = _convert_reasoning_value_to_parts(thinking_blocks)
+  assert parts == []
+
+
+@pytest.mark.asyncio
+async def test_content_to_message_param_bedrock_non_claude_no_thinking_blocks():
+  """bedrock + non-Claude model must not get Anthropic thinking-block formatting."""
+  content = types.Content(
+      role="model",
+      parts=[
+          types.Part(text="thinking text", thought=True),
+          types.Part(text="Answer"),
+      ],
+  )
+  result = await _content_to_message_param(
+      content,
+      provider="bedrock",
+      model="bedrock/meta.llama3-70b-instruct-v1:0",
+  )
+  assert result.get("reasoning_content") == "thinking text"
+  assert "thinking_blocks" not in result
+  body = result.get("content")
+  assert not (
+      isinstance(body, list)
+      and any(isinstance(b, dict) and b.get("type") == "thinking" for b in body)
+  )
+
+
+@pytest.mark.asyncio
+async def test_content_to_message_param_bedrock_claude_embeds_thinking_blocks():
+  """bedrock + Claude model embeds thinking blocks in the content list."""
+  content = types.Content(
+      role="model",
+      parts=[
+          types.Part(text="thinking text", thought=True),
+          types.Part(text="Answer"),
+      ],
+  )
+  result = await _content_to_message_param(
+      content,
+      provider="bedrock",
+      model="bedrock/anthropic.claude-3-5-sonnet-20241022-v2:0",
+  )
+  assert isinstance(result["content"], list)
+  assert result["content"][0] == {
+      "type": "thinking",
+      "thinking": "thinking text",
+  }
+  assert result.get("reasoning_content") is None
+
+
+@pytest.mark.asyncio
+async def test_content_to_message_param_vertex_gemini_no_thinking_blocks():
+  """vertex_ai + Gemini model must not get Anthropic thinking-block formatting."""
+  content = types.Content(
+      role="model",
+      parts=[
+          types.Part(text="thinking text", thought=True),
+          types.Part(text="Answer"),
+      ],
+  )
+  result = await _content_to_message_param(
+      content,
+      provider="vertex_ai",
+      model="vertex_ai/gemini-2.5-flash",
+  )
+  assert result.get("reasoning_content") == "thinking text"
+  assert "thinking_blocks" not in result
+  body = result.get("content")
+  assert not (
+      isinstance(body, list)
+      and any(isinstance(b, dict) and b.get("type") == "thinking" for b in body)
+  )
+
+
+@pytest.mark.asyncio
+async def test_content_to_message_param_anthropic_provider_embeds_thinking_blocks():
+  """provider 'anthropic' always embeds thinking blocks in the content list."""
+  content = types.Content(
+      role="model",
+      parts=[
+          types.Part(text="thinking text", thought=True),
+          types.Part(text="Answer"),
+      ],
+  )
+  result = await _content_to_message_param(
+      content,
+      provider="anthropic",
+      model="anthropic/claude-3-5-sonnet",
+  )
+  assert isinstance(result["content"], list)
+  assert result["content"][0] == {
+      "type": "thinking",
+      "thinking": "thinking text",
+  }
+  assert result.get("reasoning_content") is None
 
 
 @pytest.mark.asyncio
