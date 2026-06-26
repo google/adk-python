@@ -54,6 +54,7 @@ from ...utils.context_utils import find_context_parameter
 from .._gemini_schema_util import _to_gemini_schema
 from ..base_authenticated_tool import BaseAuthenticatedTool
 from ..tool_context import ToolContext
+from .mcp_session_manager import _http_debug_var
 from .mcp_session_manager import MCPSessionManager
 from .mcp_session_manager import retry_on_errors
 from .session_context import SessionContext
@@ -286,77 +287,93 @@ class McpTool(BaseAuthenticatedTool):
   async def run_async(
       self, *, args: dict[str, Any], tool_context: ToolContext
   ) -> Any:
-    if isinstance(self._require_confirmation, Callable):
-      args_to_call = args.copy()
-      try:
-        signature = inspect.signature(self._require_confirmation)
-        valid_params = set(signature.parameters.keys())
-        has_kwargs = any(
-            param.kind == inspect.Parameter.VAR_KEYWORD
-            for param in signature.parameters.values()
-        )
-
-        # Detect context parameter by type or fallback to 'tool_context' name
-        context_param = (
-            find_context_parameter(self._require_confirmation) or "tool_context"
-        )
-        if context_param in valid_params or has_kwargs:
-          args_to_call[context_param] = tool_context
-
-        # Filter args_to_call only if there's no **kwargs
-        if not has_kwargs:
-          # Add context param to valid_params if it was added to args_to_call
-          if context_param in args_to_call:
-            valid_params.add(context_param)
-          args_to_call = {
-              k: v for k, v in args_to_call.items() if k in valid_params
-          }
-      except ValueError:
-        args_to_call = args
-
-      require_confirmation = await self._invoke_callable(
-          self._require_confirmation, args_to_call
-      )
-    else:
-      require_confirmation = bool(self._require_confirmation)
-
-    if require_confirmation:
-      if not tool_context.tool_confirmation:
-        tool_context.request_confirmation(
-            hint=(
-                f"Please approve or reject the tool call {self.name}() by"
-                " responding with a FunctionResponse with an expected"
-                " ToolConfirmation payload."
-            ),
-        )
-        return {
-            "error": (
-                "This tool call requires confirmation, please approve or"
-                " reject."
-            )
-        }
-      elif not tool_context.tool_confirmation.confirmed:
-        return {"error": "This tool call is rejected."}
-
-    if not is_feature_enabled(FeatureName._MCP_GRACEFUL_ERROR_HANDLING):  # pylint: disable=protected-access
-      # Pre-fix behavior: exceptions bubble up to the agent runner.
-      return await super().run_async(args=args, tool_context=tool_context)
-
-    # New behavior: convert MCP-level and unexpected errors into a
-    # structured `{"error": "..."}` dict so the agent loop can continue
-    # gracefully instead of being killed by an unhandled exception. This
-    # is the primary fix for the 5-minute hang seen when Model Armor (or
-    # any AGW policy) returns a 403 mid-tool-call.
+    current_debug: list[dict[str, Any]] = []
+    debug_token = (
+        _http_debug_var.set(current_debug)
+        if logger.isEnabledFor(logging.DEBUG)
+        else None
+    )
     try:
-      return await super().run_async(args=args, tool_context=tool_context)
-    except McpError as e:
-      logger.warning("MCP tool execution failed with McpError: %s", e)
-      return {"error": f"MCP tool execution failed: {e}"}
-    except Exception as e:  # pylint: disable=broad-exception-caught
-      logger.warning(
-          "Unexpected error during MCP tool execution: %s", e, exc_info=True
-      )
-      return {"error": f"Unexpected error during MCP tool execution: {e}"}
+      if isinstance(self._require_confirmation, Callable):
+        args_to_call = args.copy()
+        try:
+          signature = inspect.signature(self._require_confirmation)
+          valid_params = set(signature.parameters.keys())
+          has_kwargs = any(
+              param.kind == inspect.Parameter.VAR_KEYWORD
+              for param in signature.parameters.values()
+          )
+
+          # Detect context parameter by type or fallback to 'tool_context' name
+          context_param = (
+              find_context_parameter(self._require_confirmation)
+              or "tool_context"
+          )
+          if context_param in valid_params or has_kwargs:
+            args_to_call[context_param] = tool_context
+
+          # Filter args_to_call only if there's no **kwargs
+          if not has_kwargs:
+            # Add context param to valid_params if it was added to args_to_call
+            if context_param in args_to_call:
+              valid_params.add(context_param)
+            args_to_call = {
+                k: v for k, v in args_to_call.items() if k in valid_params
+            }
+        except ValueError:
+          args_to_call = args
+
+        require_confirmation = await self._invoke_callable(
+            self._require_confirmation, args_to_call
+        )
+      else:
+        require_confirmation = bool(self._require_confirmation)
+
+      if require_confirmation:
+        if not tool_context.tool_confirmation:
+          tool_context.request_confirmation(
+              hint=(
+                  f"Please approve or reject the tool call {self.name}() by"
+                  " responding with a FunctionResponse with an expected"
+                  " ToolConfirmation payload."
+              ),
+          )
+          return {
+              "error": (
+                  "This tool call requires confirmation, please approve or"
+                  " reject."
+              )
+          }
+        elif not tool_context.tool_confirmation.confirmed:
+          return {"error": "This tool call is rejected."}
+
+      if not is_feature_enabled(FeatureName._MCP_GRACEFUL_ERROR_HANDLING):  # pylint: disable=protected-access
+        # Pre-fix behavior: exceptions bubble up to the agent runner.
+        return await super().run_async(args=args, tool_context=tool_context)
+
+      # New behavior: convert MCP-level and unexpected errors into a
+      # structured `{"error": "..."}` dict so the agent loop can continue
+      # gracefully instead of being killed by an unhandled exception. This
+      # is the primary fix for the 5-minute hang seen when Model Armor (or
+      # any AGW policy) returns a 403 mid-tool-call.
+      try:
+        return await super().run_async(args=args, tool_context=tool_context)
+      except McpError as e:
+        logger.warning("MCP tool execution failed with McpError: %s", e)
+        return {"error": f"MCP tool execution failed: {e}"}
+      except Exception as e:  # pylint: disable=broad-exception-caught
+        logger.warning(
+            "Unexpected error during MCP tool execution: %s", e, exc_info=True
+        )
+        return {"error": f"Unexpected error during MCP tool execution: {e}"}
+    finally:
+      if debug_token is not None:
+        _http_debug_var.reset(debug_token)
+        if current_debug and hasattr(tool_context, "custom_metadata"):
+          debug_list = tool_context.custom_metadata.setdefault(
+              "http_debug_info", []
+          )
+          debug_list.extend(current_debug)
 
   @retry_on_errors
   @override
@@ -377,7 +394,7 @@ class McpTool(BaseAuthenticatedTool):
     dynamic_headers = None
     if self._header_provider:
       dynamic_headers = self._header_provider(
-          ReadonlyContext(tool_context._invocation_context)
+          ReadonlyContext(tool_context._invocation_context)  # pylint: disable=protected-access
       )
 
     headers: Dict[str, str] = {}

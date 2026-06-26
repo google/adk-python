@@ -673,3 +673,55 @@ class TestContextGetInvocationContext:
         }
     )
     assert result is mock_copy
+
+
+class TestContextRunNodeInternal:
+  """Tests for the internal Context._run_node_internal orchestration method."""
+
+  @pytest.mark.asyncio
+  async def test_run_node_internal_returns_ctx_and_handles_resume_inputs(
+      self, mock_invocation_context, mocker
+  ):
+    """Test that _run_node_internal correctly handles return_ctx and resume_inputs."""
+    # Arrange
+    from google.adk.agents.llm_agent import LlmAgent
+    from google.adk.events.event_actions import EventActions
+
+    agent_a = LlmAgent(name="agent_a", rerun_on_resume=True)
+    root = LlmAgent(name="root", sub_agents=[agent_a], rerun_on_resume=True)
+    agent_a.parent_agent = root
+
+    root_ctx = Context(mock_invocation_context, node=root, run_id="1")
+
+    child_ctx_a = Context(
+        mock_invocation_context,
+        parent_ctx=root_ctx,
+        node=agent_a,
+        run_id="1",
+        event_actions=EventActions(),
+    )
+    child_ctx_a.output = "a_output"
+
+    # Mock the standalone execution boundary
+    mock_run_standalone = mocker.patch.object(
+        Context,
+        "_run_node_standalone",
+        return_value=child_ctx_a,
+    )
+
+    # Act 1: Call _run_node_internal with return_ctx=True
+    result_ctx = await root_ctx._run_node_internal(
+        agent_a,
+        node_input="a_input",
+        return_ctx=True,
+        resume_inputs={"some_key": "some_val"},
+    )
+
+    # Assert 1: It returns the child context object itself, not the output!
+    assert result_ctx is child_ctx_a
+    assert result_ctx.output == "a_output"
+
+    # Assert 2: resume_inputs was correctly passed to _run_node_standalone
+    mock_run_standalone.assert_called_once()
+    _, kwargs = mock_run_standalone.call_args
+    assert kwargs.get("resume_inputs") == {"some_key": "some_val"}

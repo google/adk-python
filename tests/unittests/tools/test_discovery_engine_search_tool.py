@@ -112,16 +112,19 @@ class TestDiscoveryEngineSearchTool:
           ),
       ],
   )
+  @mock.patch.object(discovery_engine_search_tool, "_get_api_endpoint")
   @mock.patch.object(discovery_engine_search_tool, "client_options")
   @mock.patch.object(discoveryengine, "SearchServiceClient")
   def test_init_with_regional_location_uses_regional_endpoint(
       self,
       mock_search_client,
       mock_client_options,
+      mock_get_api_endpoint,
       tool_kwargs,
       expected_endpoint,
   ):
     """Test initialization uses the expected regional API endpoint."""
+    mock_get_api_endpoint.return_value = expected_endpoint
     DiscoveryEngineSearchTool(**tool_kwargs)
 
     mock_client_options.ClientOptions.assert_called_once_with(
@@ -132,12 +135,14 @@ class TestDiscoveryEngineSearchTool:
         client_options=mock_client_options.ClientOptions.return_value,
     )
 
+  @mock.patch.object(discovery_engine_search_tool, "_get_api_endpoint")
   @mock.patch.object(discovery_engine_search_tool, "client_options")
   @mock.patch.object(discoveryengine, "SearchServiceClient")
   def test_init_with_explicit_location_override_uses_input_location(
-      self, mock_search_client, mock_client_options
+      self, mock_search_client, mock_client_options, mock_get_api_endpoint
   ):
     """Test initialization uses explicit location when resource has none."""
+    mock_get_api_endpoint.return_value = "eu-discoveryengine.googleapis.com"
     DiscoveryEngineSearchTool(
         data_store_id="test_data_store",
         location="eu",
@@ -239,12 +244,14 @@ class TestDiscoveryEngineSearchTool:
         credentials="credentials", client_options=None
     )
 
+  @mock.patch.object(discovery_engine_search_tool, "_get_api_endpoint")
   @mock.patch.object(discovery_engine_search_tool, "client_options")
   @mock.patch.object(discoveryengine, "SearchServiceClient")
   def test_init_with_regional_location_and_quota_project_id(
-      self, mock_search_client, mock_client_options
+      self, mock_search_client, mock_client_options, mock_get_api_endpoint
   ):
     """Test initialization uses endpoint and quota project id together."""
+    mock_get_api_endpoint.return_value = "eu-discoveryengine.googleapis.com"
     mock_credentials = mock.MagicMock()
     mock_credentials.quota_project_id = "test-quota-project"
 
