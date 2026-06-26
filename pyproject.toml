@@ -154,6 +154,7 @@ optional-dependencies.extensions = [
   "llama-index-embeddings-google-genai>=0.3",
   "llama-index-readers-file>=0.4",
   "lxml>=5.3",
+  "openai>=2.20,<3",
   "pypika>=0.50",
   "toolbox-adk>=1,<2",
 ]
@@ -224,7 +225,7 @@ optional-dependencies.test = [
   "llama-index-readers-file>=0.4",
   "lxml>=5.3",
   "mcp>=1.24,<2",
-  "openai>=1.100.2",
+  "openai>=2.20,<3",
   "opentelemetry-exporter-gcp-logging>=1.9.0a0,<=1.12.0a0",
   "opentelemetry-exporter-gcp-monitoring>=1.9.0a0,<2",
   "opentelemetry-exporter-gcp-trace>=1.9,<2",

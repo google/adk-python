@@ -26,6 +26,7 @@ from typing import TYPE_CHECKING
 from google.genai import types
 from typing_extensions import override
 
+from ..utils._google_client_headers import get_tracking_headers
 from ..utils.vertex_ai_utils import get_express_mode_api_key
 from .base_memory_service import BaseMemoryService
 from .base_memory_service import SearchMemoryResponse
@@ -616,9 +617,17 @@ class VertexAiMemoryBankService(BaseMemoryService):
     """
     import vertexai
 
+    http_options = types.HttpOptions(headers=get_tracking_headers())
     if self._express_mode_api_key:
-      return vertexai.Client(api_key=self._express_mode_api_key).aio
-    return vertexai.Client(project=self._project, location=self._location).aio
+      return vertexai.Client(
+          http_options=http_options,
+          api_key=self._express_mode_api_key,
+      ).aio
+    return vertexai.Client(
+        project=self._project,
+        location=self._location,
+        http_options=http_options,
+    ).aio
 
 
 def _log_ingest_task_error(task: asyncio.Task) -> None:

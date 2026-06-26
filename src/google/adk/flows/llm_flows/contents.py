@@ -69,6 +69,12 @@ class _ContentLlmRequestProcessor(BaseLlmRequestProcessor):
           id_pairing_model_types.append(LiteLlm)
         except (ImportError, OSError):
           pass
+        try:
+          from ...labs.openai import OpenAIResponsesLlm
+
+          id_pairing_model_types.append(OpenAIResponsesLlm)
+        except (ImportError, OSError):
+          pass
         if isinstance(canonical_model, tuple(id_pairing_model_types)):
           preserve_function_call_ids = True
 
