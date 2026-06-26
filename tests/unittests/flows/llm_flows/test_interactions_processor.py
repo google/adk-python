@@ -168,15 +168,13 @@ class TestInteractionsRequestProcessor:
 
   def test_is_event_in_branch_no_branch(self):
     """Test branch filtering with no current branch."""
-    processor = interactions_processor.InteractionsRequestProcessor()
-
     # Event without branch should be included when no current branch
     event = Event(
         invocation_id="inv1",
         author="test",
         content=types.ModelContent("test"),
     )
-    assert processor._is_event_in_branch(None, event) is True
+    assert interactions_processor._is_event_in_branch(None, event) is True
 
     # Event with branch should be excluded when no current branch
     event_with_branch = Event(
@@ -185,39 +183,84 @@ class TestInteractionsRequestProcessor:
         content=types.ModelContent("test"),
         branch="some_branch",
     )
-    assert processor._is_event_in_branch(None, event_with_branch) is False
+    assert (
+        interactions_processor._is_event_in_branch(None, event_with_branch)
+        is False
+    )
 
   def test_is_event_in_branch_same_branch(self):
     """Test that events in the same branch are included."""
-    processor = interactions_processor.InteractionsRequestProcessor()
-
     event = Event(
         invocation_id="inv1",
         author="test",
         content=types.ModelContent("test"),
         branch="root.child",
     )
-    assert processor._is_event_in_branch("root.child", event) is True
+    assert (
+        interactions_processor._is_event_in_branch("root.child", event) is True
+    )
 
   def test_is_event_in_branch_different_branch(self):
     """Test that events in different branches are excluded."""
-    processor = interactions_processor.InteractionsRequestProcessor()
-
     event = Event(
         invocation_id="inv1",
         author="test",
         content=types.ModelContent("test"),
         branch="root.other",
     )
-    assert processor._is_event_in_branch("root.child", event) is False
+    assert (
+        interactions_processor._is_event_in_branch("root.child", event) is False
+    )
 
   def test_is_event_in_branch_root_events_included(self):
     """Test that root events (no branch) are included in child branches."""
-    processor = interactions_processor.InteractionsRequestProcessor()
-
     event = Event(
         invocation_id="inv1",
         author="test",
         content=types.ModelContent("test"),
     )
-    assert processor._is_event_in_branch("root.child", event) is True
+    assert (
+        interactions_processor._is_event_in_branch("root.child", event) is True
+    )
+
+
+def _evt(author: str, interaction_id: str | None, branch: str | None) -> Event:
+  return Event(author=author, interaction_id=interaction_id, branch=branch)
+
+
+def test_find_previous_interaction_id_returns_latest_for_agent():
+  events = [
+      _evt("my_agent", "int_1", None),
+      _evt("user", None, None),
+      _evt("my_agent", "int_2", None),
+      _evt("other_agent", "int_3", None),
+  ]
+
+  result = interactions_processor._find_previous_interaction_id(
+      events, agent_name="my_agent", current_branch=None
+  )
+
+  assert result == "int_2"
+
+
+def test_find_previous_interaction_id_respects_branch():
+  events = [
+      _evt("my_agent", "int_main", None),
+      _evt("my_agent", "int_other_branch", "branch_b"),
+  ]
+
+  result = interactions_processor._find_previous_interaction_id(
+      events, agent_name="my_agent", current_branch="branch_a"
+  )
+
+  assert result == "int_main"
+
+
+def test_find_previous_interaction_id_none_when_absent():
+  events = [_evt("user", None, None)]
+
+  result = interactions_processor._find_previous_interaction_id(
+      events, agent_name="my_agent", current_branch=None
+  )
+
+  assert result is None

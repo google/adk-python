@@ -1132,6 +1132,86 @@ async def test_append_event():
 
 @pytest.mark.asyncio
 @pytest.mark.usefixtures('mock_get_api_client')
+async def test_append_event_strips_unsupported_part_metadata(
+    mock_api_client_instance: MockAsyncClient,
+) -> None:
+  """part_metadata must not reach the Sessions API (#6014).
+
+  ``Part.part_metadata`` is a Gemini Developer API-only field; the Vertex AI
+  Agent Engine Sessions ``appendEvent`` API rejects it with 400 INVALID_ARGUMENT
+  ("Unknown name \"part_metadata\""). It must be dropped from both the
+  ``content`` and ``raw_event`` payloads, while the part text is preserved.
+  """
+  session_service = mock_vertex_ai_session_service()
+  session = await session_service.get_session(
+      app_name='123', user_id='user', session_id='1'
+  )
+  event_to_append = Event(
+      invocation_id='inv_part_metadata',
+      author='user',
+      timestamp=1734005533.0,
+      content=genai_types.Content(
+          parts=[
+              genai_types.Part(
+                  text='hello', part_metadata={'source': 'portal'}
+              ),
+              genai_types.Part(text='world', part_metadata={'n': 1}),
+          ],
+      ),
+  )
+
+  await session_service.append_event(session, event_to_append)
+
+  appended = mock_api_client_instance.event_dict['1'][0][-1]
+  for part in appended['content']['parts']:
+    assert 'part_metadata' not in part
+    assert 'partMetadata' not in part
+  for part in appended['raw_event']['content']['parts']:
+    assert 'part_metadata' not in part
+    assert 'partMetadata' not in part
+  assert [p['text'] for p in appended['content']['parts']] == ['hello', 'world']
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures('mock_get_api_client')
+async def test_append_event_with_part_metadata_round_trips(
+    mock_api_client_instance: MockAsyncClient,
+) -> None:
+  """Reconstruction side of #6014: an event carrying part_metadata appends and
+  reads back without error. part_metadata is dropped (unsupported on Vertex),
+  but the session round-trips and the part text is preserved.
+  """
+  session_service = mock_vertex_ai_session_service()
+  session = await session_service.get_session(
+      app_name='123', user_id='user', session_id='1'
+  )
+  event_to_append = Event(
+      invocation_id='inv_part_metadata_rt',
+      author='user',
+      timestamp=1734005533.0,
+      content=genai_types.Content(
+          role='user',
+          parts=[
+              genai_types.Part(text='hello', part_metadata={'source': 'portal'})
+          ],
+      ),
+  )
+
+  await session_service.append_event(session, event_to_append)
+  retrieved = await session_service.get_session(
+      app_name='123', user_id='user', session_id='1'
+  )
+
+  appended = next(
+      e for e in retrieved.events if e.invocation_id == 'inv_part_metadata_rt'
+  )
+  assert appended.content is not None
+  assert appended.content.parts[0].text == 'hello'
+  assert appended.content.parts[0].part_metadata is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures('mock_get_api_client')
 async def test_append_event_with_compaction():
   """Compaction data round-trips through append_event and get_session."""
   session_service = mock_vertex_ai_session_service()
@@ -1442,3 +1522,15 @@ async def test_get_session_strips_full_resource_name(
   mock_api_client_instance.agent_engines.sessions.get.assert_called_once_with(
       name='reasoningEngines/123/sessions/session-123'
   )
+
+
+def test_get_api_client_attaches_tracking_headers():
+  session_service = mock_vertex_ai_session_service()
+  with mock.patch('vertexai.Client') as mock_client:
+    _ = session_service._get_api_client()
+    mock_client.assert_called_once()
+    _, kwargs = mock_client.call_args
+    assert 'http_options' in kwargs
+    http_options = kwargs['http_options']
+    assert 'x-goog-api-client' in http_options.headers
+    assert 'google-adk/' in http_options.headers['x-goog-api-client']

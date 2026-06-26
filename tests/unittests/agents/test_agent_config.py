@@ -486,3 +486,133 @@ def test_resolve_agent_reference_blocks_path_traversal():
     config_agent_utils.resolve_agent_reference(
         ref_config, "/workspace/agents/main.yaml"
     )
+
+
+# --- Security tests: module blocklist for YAML agent config code references ---
+
+
+def test_resolve_code_reference_blocks_os_when_enforced():
+  """Verify resolve_code_reference blocks os module directly."""
+  from google.adk.agents.common_configs import CodeConfig
+
+  with pytest.raises(ValueError, match="Blocked module reference"):
+    config_agent_utils.resolve_code_reference(CodeConfig(name="os.system"))
+
+
+def test_resolve_fully_qualified_name_blocks_subprocess_when_enforced():
+  """Verify resolve_fully_qualified_name blocks subprocess module.
+
+  resolve_fully_qualified_name wraps all exceptions in
+  ValueError("Invalid fully qualified name: ..."), so we check the wrapper
+  and verify the __cause__ carries the blocklist message.
+  """
+  with pytest.raises(
+      ValueError, match="Invalid fully qualified name"
+  ) as exc_info:
+    config_agent_utils.resolve_fully_qualified_name("subprocess.Popen")
+  assert "Blocked module reference" in str(exc_info.value.__cause__)
+
+
+def test_allowed_module_passes_when_enforced(tmp_path: Path):
+  """Verify that google.adk modules are NOT blocked by the module denylist."""
+  # This should NOT raise — google.adk modules must remain allowed
+  result = config_agent_utils.resolve_fully_qualified_name(
+      "google.adk.agents.llm_agent.LlmAgent"
+  )
+  assert result is LlmAgent
+
+
+@pytest.mark.parametrize(
+    "blocked_module",
+    [
+        "os.system",
+        "subprocess.call",
+        "builtins.exec",
+    ],
+)
+def test_resolve_agent_code_reference_blocks_when_enforced(
+    blocked_module: str,
+):
+  """Verify _resolve_agent_code_reference blocks dangerous modules."""
+  with pytest.raises(ValueError, match="Blocked module reference"):
+    config_agent_utils._resolve_agent_code_reference(blocked_module)
+
+
+@pytest.mark.parametrize(
+    "blocked_ref",
+    [
+        "os.system",
+        "subprocess.call",
+        "builtins.exec",
+        "pickle.loads",
+    ],
+)
+def test_resolve_tools_blocks_dangerous_modules(blocked_ref: str):
+  """Verify _resolve_tools blocks dangerous modules for user-defined tools."""
+  from google.adk.agents.llm_agent import LlmAgent
+  from google.adk.tools.tool_configs import ToolConfig
+
+  tool_config = ToolConfig(name=blocked_ref)
+  with pytest.raises(ValueError, match="Blocked module reference"):
+    LlmAgent._resolve_tools([tool_config], "/fake/path.yaml")
+
+
+def test_resolve_tools_allows_builtin_adk_tools():
+  """Verify _resolve_tools allows ADK built-in tools (no dot in name)."""
+  from google.adk.agents.llm_agent import LlmAgent
+  from google.adk.tools.tool_configs import ToolConfig
+
+  # Built-in tools have no dot — they import from google.adk.tools
+  tool_config = ToolConfig(name="google_search")
+  # Should NOT raise — this is a safe, hardcoded import path
+  resolved = LlmAgent._resolve_tools([tool_config], "/fake/path.yaml")
+  assert len(resolved) == 1
+
+
+@pytest.mark.parametrize(
+    "blocked_ref",
+    [
+        "ftplib.FTP",
+        "smtplib.SMTP",
+        "xmlrpc.client",
+        "telnetlib.Telnet",
+        "poplib.POP3",
+        "imaplib.IMAP4",
+        "asyncio.run",
+        "pathlib.Path",
+    ],
+)
+def test_newly_blocked_network_modules_are_rejected(blocked_ref: str):
+  """Verify newly added network-capable modules are blocked.
+
+  resolve_fully_qualified_name wraps errors, so we check the cause.
+  """
+  with pytest.raises(
+      ValueError, match="Invalid fully qualified name"
+  ) as exc_info:
+    config_agent_utils.resolve_fully_qualified_name(blocked_ref)
+  assert "Blocked module reference" in str(exc_info.value.__cause__)
+
+
+def test_denylist_can_be_disabled():
+  """Verify _set_enforce_denylist(False) disables module blocking."""
+  config_agent_utils._set_enforce_denylist(False)
+  try:
+    # os.getcwd is a real, importable reference — should succeed
+    result = config_agent_utils.resolve_fully_qualified_name("os.getcwd")
+    assert callable(result)
+  finally:
+    config_agent_utils._set_enforce_denylist(True)
+
+
+def test_load_config_from_path_blocks_args_when_enforced(tmp_path: Path):
+  """_load_config_from_path blocks the 'args' key when enforcement is on."""
+  config_file = tmp_path / "agent.yaml"
+  config_file.write_text("name: my_agent\nargs:\n  key: value\n")
+  config_agent_utils._set_enforce_yaml_key_denylist(True)
+  try:
+    with pytest.raises(ValueError) as exc_info:
+      config_agent_utils._load_config_from_path(str(config_file))
+    assert "Blocked key 'args' found" in str(exc_info.value)
+  finally:
+    config_agent_utils._set_enforce_yaml_key_denylist(False)
