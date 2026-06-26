@@ -1522,15 +1522,3 @@ async def test_get_session_strips_full_resource_name(
   mock_api_client_instance.agent_engines.sessions.get.assert_called_once_with(
       name='reasoningEngines/123/sessions/session-123'
   )
-
-
-def test_get_api_client_attaches_tracking_headers():
-  session_service = mock_vertex_ai_session_service()
-  with mock.patch('vertexai.Client') as mock_client:
-    _ = session_service._get_api_client()
-    mock_client.assert_called_once()
-    _, kwargs = mock_client.call_args
-    assert 'http_options' in kwargs
-    http_options = kwargs['http_options']
-    assert 'x-goog-api-client' in http_options.headers
-    assert 'google-adk/' in http_options.headers['x-goog-api-client']

@@ -235,8 +235,8 @@ def prepare_llm_agent_input(agent: Any, ctx: Context, node_input: Any) -> None:
   overrides ``ic.user_content`` so the content-builder can fall back
   to that as the first user turn.
 
-  No branch is set — task and single_turn agents scope via
-  ``isolation_scope`` rather than branch.
+  For workflow nodes running in a sub-branch, stamp the input event with that
+  branch. A private node input should not look like the shared root user turn.
   """
   if node_input is None or agent.mode != 'single_turn':
     return
@@ -247,6 +247,9 @@ def prepare_llm_agent_input(agent: Any, ctx: Context, node_input: Any) -> None:
   iso = getattr(ctx, 'isolation_scope', None)
   if iso:
     user_event.isolation_scope = iso
+  branch = ctx._invocation_context.branch
+  if branch:
+    user_event.branch = branch
   ctx.session.events.append(user_event)
 
 
