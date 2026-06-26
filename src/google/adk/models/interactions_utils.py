@@ -31,6 +31,7 @@ conversation history.
 from __future__ import annotations
 
 import base64
+import dataclasses
 import json
 import logging
 from typing import Any
@@ -63,6 +64,7 @@ from google.genai.interactions import ModelOutputStep
 from google.genai.interactions import ModelOutputStepParam
 from google.genai.interactions import Step
 from google.genai.interactions import StepDelta
+from google.genai.interactions import StepDeltaData
 from google.genai.interactions import StepParam
 from google.genai.interactions import StepStart
 from google.genai.interactions import StepStop
@@ -618,6 +620,28 @@ def _convert_interaction_step_to_parts(step: Step) -> list[types.Part]:
   return []
 
 
+def _usage_metadata_from_interaction(
+    interaction: Interaction,
+) -> types.GenerateContentResponseUsageMetadata | None:
+  """Build usage metadata from an interaction's usage, if present.
+
+  Shared by the non-streaming converter and the streaming final-event branch so
+  both surface token counts identically. ``InteractionSseEventInteraction`` (the
+  type carried by ``InteractionCompletedEvent``) also exposes ``usage``, so this
+  accepts either interaction type.
+  """
+  if not interaction.usage:
+    return None
+  return types.GenerateContentResponseUsageMetadata(
+      prompt_token_count=interaction.usage.total_input_tokens,
+      candidates_token_count=interaction.usage.total_output_tokens,
+      total_token_count=(
+          (interaction.usage.total_input_tokens or 0)
+          + (interaction.usage.total_output_tokens or 0)
+      ),
+  )
+
+
 def convert_interaction_to_llm_response(
     interaction: Interaction,
 ) -> LlmResponse:
@@ -658,17 +682,7 @@ def convert_interaction_to_llm_response(
   if parts:
     content = types.Content(role='model', parts=parts)
 
-  # Convert usage metadata if available
-  usage_metadata = None
-  if interaction.usage:
-    usage_metadata = types.GenerateContentResponseUsageMetadata(
-        prompt_token_count=interaction.usage.total_input_tokens,
-        candidates_token_count=interaction.usage.total_output_tokens,
-        total_token_count=(
-            (interaction.usage.total_input_tokens or 0)
-            + (interaction.usage.total_output_tokens or 0)
-        ),
-    )
+  usage_metadata = _usage_metadata_from_interaction(interaction)
 
   # Determine finish reason based on status.
   # Interaction status can be: 'completed', 'requires_action', 'failed', or
@@ -689,16 +703,92 @@ def convert_interaction_to_llm_response(
   )
 
 
+@dataclasses.dataclass
+class _StreamState:
+  """Accumulates streamed parts across SSE events.
+
+  ``parts`` collects ``types.Part``s in arrival order to assemble the final
+  ``Content``.
+  """
+
+  parts: list[types.Part] = dataclasses.field(default_factory=list)
+
+
+def _partial_part_response(
+    part: types.Part, interaction_id: str | None
+) -> LlmResponse:
+  """Build a partial streaming LlmResponse carrying a single content part."""
+  return LlmResponse(
+      content=types.Content(role='model', parts=[part]),
+      partial=True,
+      turn_complete=False,
+      interaction_id=interaction_id,
+  )
+
+
+def _handle_text(
+    delta: StepDeltaData, state: _StreamState, interaction_id: str | None
+) -> LlmResponse | None:
+  text = delta.text
+  if not text:
+    return None
+  part = types.Part.from_text(text=text)
+  state.parts.append(part)
+  return _partial_part_response(part, interaction_id)
+
+
+def _handle_media(
+    delta: StepDeltaData, state: _StreamState, interaction_id: str | None
+) -> LlmResponse | None:
+  """Handle image/audio/video/document deltas (shared data/uri/mime_type)."""
+  data = delta.data
+  uri = delta.uri
+  mime_type = delta.mime_type
+  if not data and not uri:
+    return None
+  if data:
+    part = types.Part(inline_data=types.Blob(data=data, mime_type=mime_type))
+  else:
+    part = types.Part(
+        file_data=types.FileData(file_uri=uri, mime_type=mime_type)
+    )
+  state.parts.append(part)
+  return _partial_part_response(part, interaction_id)
+
+
+def _handle_arguments_delta(
+    delta: StepDeltaData, state: _StreamState, interaction_id: str | None
+) -> LlmResponse | None:
+  if not state.parts:
+    return None
+  last_part = state.parts[-1]
+  if not last_part.function_call:
+    return None
+  delta_args = delta.arguments
+  if delta_args is None or last_part.function_call.partial_args is None:
+    return None
+  last_part.function_call.partial_args.append(
+      types.PartialArg(string_value=delta_args)
+  )
+  chunk_part = types.Part(
+      function_call=types.FunctionCall(
+          name=last_part.function_call.name,
+          partial_args=[types.PartialArg(string_value=delta_args)],
+      )
+  )
+  return _partial_part_response(chunk_part, interaction_id)
+
+
 def convert_interaction_event_to_llm_response(
     event: InteractionSSEEvent,
-    aggregated_parts: list[types.Part],
+    state: _StreamState,
     interaction_id: str | None = None,
 ) -> LlmResponse | None:
   """Convert an InteractionSSEEvent to an LlmResponse for streaming.
 
   Args:
     event: The streaming event from interactions API.
-    aggregated_parts: List to accumulate parts across events.
+    state: Accumulates parts and grounding data across streamed events.
     interaction_id: The interaction ID to include in responses.
 
   Returns:
@@ -718,7 +808,7 @@ def convert_interaction_event_to_llm_response(
           partial_args=[],
       )
       part = types.Part(function_call=fc)
-      aggregated_parts.append(part)
+      state.parts.append(part)
 
       return LlmResponse(
           content=types.Content(role='model', parts=[part]),
@@ -729,75 +819,18 @@ def convert_interaction_event_to_llm_response(
 
   elif isinstance(event, StepDelta):
     delta = event.delta
+    delta_type = delta.type
 
-    if delta.type == 'text':
-      text = delta.text
-      if text:
-        part = types.Part.from_text(text=text)
-        aggregated_parts.append(part)
-        return LlmResponse(
-            content=types.Content(role='model', parts=[part]),
-            partial=True,
-            turn_complete=False,
-            interaction_id=interaction_id,
-        )
-
-    elif delta.type == 'image':
-      data = delta.data
-      uri = delta.uri
-      mime_type = delta.mime_type
-      if data or uri:
-        if data:
-          part = types.Part(
-              inline_data=types.Blob(
-                  data=data,
-                  mime_type=mime_type,
-              )
-          )
-        else:
-          part = types.Part(
-              file_data=types.FileData(
-                  file_uri=uri,
-                  mime_type=mime_type,
-              )
-          )
-        aggregated_parts.append(part)
-        return LlmResponse(
-            content=types.Content(role='model', parts=[part]),
-            partial=True,
-            turn_complete=False,
-            interaction_id=interaction_id,
-        )
-
-    elif delta.type == 'arguments_delta':
-      if aggregated_parts:
-        last_part = aggregated_parts[-1]
-        if last_part.function_call:
-          delta_args = delta.arguments
-          if (
-              delta_args is not None
-              and last_part.function_call.partial_args is not None
-          ):
-            last_part.function_call.partial_args.append(
-                types.PartialArg(string_value=delta_args)
-            )
-
-            chunk_part = types.Part(
-                function_call=types.FunctionCall(
-                    name=last_part.function_call.name,
-                    partial_args=[types.PartialArg(string_value=delta_args)],
-                )
-            )
-            return LlmResponse(
-                content=types.Content(role='model', parts=[chunk_part]),
-                partial=True,
-                turn_complete=False,
-                interaction_id=interaction_id,
-            )
+    if delta_type == 'text':
+      return _handle_text(delta, state, interaction_id)
+    elif delta_type == 'image':
+      return _handle_media(delta, state, interaction_id)
+    elif delta_type == 'arguments_delta':
+      return _handle_arguments_delta(delta, state, interaction_id)
 
   elif isinstance(event, StepStop):
-    if aggregated_parts and aggregated_parts[-1].function_call:
-      fc = aggregated_parts[-1].function_call
+    if state.parts and state.parts[-1].function_call:
+      fc = state.parts[-1].function_call
       if fc.partial_args is not None:
         arg_str = ''.join(pa.string_value or '' for pa in fc.partial_args)
 
@@ -828,9 +861,9 @@ def convert_interaction_event_to_llm_response(
 
   elif isinstance(event, InteractionCompletedEvent):
     # Final aggregated response
-    if aggregated_parts:
+    if state.parts:
       return LlmResponse(
-          content=types.Content(role='model', parts=aggregated_parts),
+          content=types.Content(role='model', parts=state.parts),
           partial=False,
           turn_complete=True,
           finish_reason=types.FinishReason.STOP,
@@ -1193,14 +1226,14 @@ async def _create_interactions(
     responses = await api_client.aio.interactions.create(
         **create_kwargs, stream=True
     )
-    aggregated_parts: list[types.Part] = []
+    state = _StreamState()
     async for event in responses:
       logger.debug(build_interactions_event_log(event))
       interaction_id = _extract_stream_interaction_id(event)
       if interaction_id:
         current_interaction_id = interaction_id
       llm_response = convert_interaction_event_to_llm_response(
-          event, aggregated_parts, current_interaction_id
+          event, state, current_interaction_id
       )
       if llm_response:
         yield llm_response

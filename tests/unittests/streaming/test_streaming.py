@@ -27,6 +27,15 @@ import pytest
 from .. import testing_utils
 
 
+async def _wait_for_queue_empty(queue: LiveRequestQueue):
+  """Wait until the queue is empty and the background consumer has finished."""
+  while not queue._queue.empty():
+    await asyncio.sleep(0)
+  # Give opportunity for _send_to_model to finish processing (e.g. append_event)
+  for _ in range(10):
+    await asyncio.sleep(0)
+
+
 class StreamingTestRunner(testing_utils.InMemoryRunner):
   """A robust runner for streaming tests that avoids resource leaks."""
 
@@ -47,6 +56,17 @@ class StreamingTestRunner(testing_utils.InMemoryRunner):
     except (asyncio.TimeoutError, asyncio.CancelledError):
       pass
     finally:
+      # Cancel all pending tasks to prevent leaks and warnings
+      pending = asyncio.all_tasks(loop)
+      for task in pending:
+        task.cancel()
+      if pending:
+        try:
+          loop.run_until_complete(
+              asyncio.gather(*pending, return_exceptions=True)
+          )
+        except Exception:  # pylint: disable=broad-except
+          pass
       loop.close()
       asyncio.set_event_loop(old_loop)
 
@@ -68,7 +88,7 @@ class StreamingTestRunner(testing_utils.InMemoryRunner):
         async for response in agen:
           collected_responses.append(response)
           if len(collected_responses) >= self.max_responses:
-            await asyncio.sleep(0.1)
+            await _wait_for_queue_empty(live_request_queue)
             return
 
     self._run_with_loop(
@@ -887,6 +907,17 @@ class _LiveTestRunner(testing_utils.InMemoryRunner):
     except (asyncio.TimeoutError, asyncio.CancelledError):
       pass
     finally:
+      # Cancel all pending tasks to prevent leaks and warnings
+      pending = asyncio.all_tasks(loop)
+      for task in pending:
+        task.cancel()
+      if pending:
+        try:
+          loop.run_until_complete(
+              asyncio.gather(*pending, return_exceptions=True)
+          )
+        except Exception:  # pylint: disable=broad-except
+          pass
       loop.close()
       asyncio.set_event_loop(old_loop)
 
@@ -899,13 +930,16 @@ class _LiveTestRunner(testing_utils.InMemoryRunner):
     collected = []
 
     async def consume(session: testing_utils.Session):
-      async for response in self.runner.run_live(
+      run_res = self.runner.run_live(
           session=session,
           live_request_queue=live_request_queue,
-      ):
-        collected.append(response)
-        if len(collected) >= max_responses:
-          return
+      )
+      async with aclosing(run_res) as agen:
+        async for response in agen:
+          collected.append(response)
+          if len(collected) >= max_responses:
+            await _wait_for_queue_empty(live_request_queue)
+            return
 
     self._run_with_loop(asyncio.wait_for(consume(self.session), timeout=5.0))
     return collected
@@ -977,25 +1011,30 @@ def test_input_streaming_tool_registered_lazily_with_stream():
 
   async def consume(session: testing_utils.Session):
     nonlocal not_registered_before_call
-    async for response in runner.runner.run_live(
+    run_res = runner.runner.run_live(
         session=session,
         live_request_queue=live_request_queue,
-    ):
-      collected.append(response)
-      # On the first non-function-call event, verify the tool is not
-      # yet registered (lazy registration).
-      active = (
-          captured_context.active_streaming_tools if captured_context else None
-      )
-      if (
-          not_registered_before_call is None
-          and not response.get_function_calls()
-      ):
-        not_registered_before_call = (
-            active is None or "monitor_video_stream" not in active
+    )
+    async with aclosing(run_res) as agen:
+      async for response in agen:
+        collected.append(response)
+        # On the first non-function-call event, verify the tool is not
+        # yet registered (lazy registration).
+        active = (
+            captured_context.active_streaming_tools
+            if captured_context
+            else None
         )
-      if len(collected) >= 4:
-        return
+        if (
+            not_registered_before_call is None
+            and not response.get_function_calls()
+        ):
+          not_registered_before_call = (
+              active is None or "monitor_video_stream" not in active
+          )
+        if len(collected) >= 4:
+          await _wait_for_queue_empty(live_request_queue)
+          return
 
   runner._run_with_loop(asyncio.wait_for(consume(runner.session), timeout=5.0))
 
