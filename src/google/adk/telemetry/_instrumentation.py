@@ -175,6 +175,7 @@ async def record_tool_execution(
     try:
       _metrics.record_tool_execution_duration(
           tool_name=tool.name,
+          tool_type=tool.__class__.__name__,
           agent_name=agent.name,
           elapsed_s=_get_elapsed_s(span, start_time),
           error=caught_error,
