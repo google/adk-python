@@ -19,6 +19,7 @@ from unittest.mock import Mock
 from unittest.mock import patch
 
 from google.adk.agents.context import Context
+from google.adk.agents.invocation_context import InvocationContext
 from google.adk.auth.auth_credential import AuthCredential
 from google.adk.auth.auth_credential import AuthCredentialTypes
 from google.adk.auth.auth_credential import HttpAuth
@@ -27,7 +28,9 @@ from google.adk.auth.auth_credential import OAuth2Auth
 from google.adk.auth.auth_credential import ServiceAccount
 from google.adk.features import FeatureName
 from google.adk.features._feature_registry import temporary_feature_override
+from google.adk.sessions.session import Session
 from google.adk.tools.mcp_tool import mcp_tool
+from google.adk.tools.mcp_tool.mcp_session_manager import _http_debug_var
 from google.adk.tools.mcp_tool.mcp_session_manager import MCPSessionManager
 from google.adk.tools.mcp_tool.mcp_tool import MCPTool
 from google.adk.tools.tool_context import ToolContext
@@ -1204,6 +1207,188 @@ class TestMCPTool:
         mcp_session_manager=self.mock_session_manager,
     )
     assert tool2.mcp_app_resource_uri is None
+
+  @pytest.mark.asyncio
+  @patch(
+      "google.adk.tools.mcp_tool.mcp_tool.logger.isEnabledFor",
+      return_value=True,
+  )
+  async def test_run_async_captures_http_debug_info(self, mock_is_enabled):
+    """Test that run_async captures HTTP debug info into context.custom_metadata."""
+    from google.adk.tools.mcp_tool.mcp_session_manager import _http_debug_var
+
+    tool = MCPTool(
+        mcp_tool=self.mock_mcp_tool,
+        mcp_session_manager=self.mock_session_manager,
+    )
+
+    mcp_response = CallToolResult(
+        content=[TextContent(type="text", text="success")]
+    )
+
+    async def mock_call_tool(*args, **kwargs):
+      debug_list = _http_debug_var.get(None)
+      if debug_list is not None:
+        debug_list.append(
+            {"url": "https://example.com/api", "status_code": 200}
+        )
+      return mcp_response
+
+    self.mock_session.call_tool = mock_call_tool
+
+    tool_context = Mock(spec=ToolContext)
+    metadata_dict = {}
+    tool_context.custom_metadata = metadata_dict
+
+    args = {"param1": "test_value"}
+
+    result = await tool.run_async(args=args, tool_context=tool_context)
+
+    assert result == mcp_response.model_dump(exclude_none=True, mode="json")
+
+    assert "http_debug_info" in metadata_dict
+    debug_info = metadata_dict["http_debug_info"]
+    assert len(debug_info) == 1
+    assert debug_info[0]["url"] == "https://example.com/api"
+    assert debug_info[0]["status_code"] == 200
+
+  @pytest.mark.asyncio
+  @patch(
+      "google.adk.tools.mcp_tool.mcp_tool.logger.isEnabledFor",
+      return_value=False,
+  )
+  async def test_run_async_skips_http_debug_info_when_debug_disabled(
+      self, mock_is_enabled
+  ):
+    """Test that run_async does not capture HTTP debug info when debug logging is disabled."""
+    from google.adk.tools.mcp_tool.mcp_session_manager import _http_debug_var
+
+    tool = MCPTool(
+        mcp_tool=self.mock_mcp_tool,
+        mcp_session_manager=self.mock_session_manager,
+    )
+
+    mcp_response = CallToolResult(
+        content=[TextContent(type="text", text="success")]
+    )
+
+    async def mock_call_tool(*args, **kwargs):
+      debug_list = _http_debug_var.get(None)
+      if debug_list is not None:
+        debug_list.append(
+            {"url": "https://example.com/api", "status_code": 200}
+        )
+      return mcp_response
+
+    self.mock_session.call_tool = mock_call_tool
+
+    tool_context = Mock(spec=ToolContext)
+    metadata_dict = {}
+    tool_context.custom_metadata = metadata_dict
+
+    args = {"param1": "test_value"}
+
+    result = await tool.run_async(args=args, tool_context=tool_context)
+
+    assert result == mcp_response.model_dump(exclude_none=True, mode="json")
+    assert "http_debug_info" not in metadata_dict
+
+  @pytest.mark.asyncio
+  @patch(
+      "google.adk.tools.mcp_tool.mcp_tool.logger.isEnabledFor",
+      return_value=True,
+  )
+  async def test_run_async_captures_http_debug_info_on_error(
+      self, mock_is_enabled
+  ):
+    """Test that run_async captures HTTP debug info even when the tool call fails/raises."""
+    from google.adk.tools.mcp_tool.mcp_session_manager import _http_debug_var
+
+    tool = MCPTool(
+        mcp_tool=self.mock_mcp_tool,
+        mcp_session_manager=self.mock_session_manager,
+    )
+
+    async def mock_call_tool(*args, **kwargs):
+      debug_list = _http_debug_var.get(None)
+      if debug_list is not None:
+        debug_list.append(
+            {"url": "https://example.com/api", "status_code": 500}
+        )
+      raise RuntimeError("Tool execution failed")
+
+    self.mock_session.call_tool = mock_call_tool
+
+    tool_context = Mock(spec=ToolContext)
+    metadata_dict = {}
+    tool_context.custom_metadata = metadata_dict
+
+    args = {"param1": "test_value"}
+
+    with pytest.raises(RuntimeError, match="Tool execution failed"):
+      # Under flag=False, the error bubbles up
+      with temporary_feature_override(
+          FeatureName._MCP_GRACEFUL_ERROR_HANDLING, False
+      ):
+        await tool.run_async(args=args, tool_context=tool_context)
+
+    assert "http_debug_info" in metadata_dict
+    debug_info = metadata_dict["http_debug_info"]
+    # Retries once on error, so we expect 2 debug entries
+    assert len(debug_info) == 2
+    assert debug_info[0]["url"] == "https://example.com/api"
+    assert debug_info[0]["status_code"] == 500
+    assert debug_info[1]["url"] == "https://example.com/api"
+    assert debug_info[1]["status_code"] == 500
+
+  @pytest.mark.asyncio
+  @patch(
+      "google.adk.tools.mcp_tool.mcp_tool.logger.isEnabledFor",
+      return_value=True,
+  )
+  async def test_run_async_captures_http_debug_info_on_graceful_error(
+      self, mock_is_enabled
+  ):
+    """Test that run_async captures HTTP debug info when tool call fails gracefully with McpError."""
+    from google.adk.tools.mcp_tool.mcp_session_manager import _http_debug_var
+    from mcp.shared.exceptions import McpError
+    from mcp.types import ErrorData
+
+    tool = MCPTool(
+        mcp_tool=self.mock_mcp_tool,
+        mcp_session_manager=self.mock_session_manager,
+    )
+
+    async def mock_call_tool(*args, **kwargs):
+      debug_list = _http_debug_var.get(None)
+      if debug_list is not None:
+        debug_list.append(
+            {"url": "https://example.com/api", "status_code": 403}
+        )
+      raise McpError(ErrorData(code=-32000, message="Forbidden"))
+
+    self.mock_session.call_tool = mock_call_tool
+
+    tool_context = Mock(spec=ToolContext)
+    metadata_dict = {}
+    tool_context.custom_metadata = metadata_dict
+
+    args = {"param1": "test_value"}
+
+    with temporary_feature_override(
+        FeatureName._MCP_GRACEFUL_ERROR_HANDLING, True
+    ):
+      result = await tool.run_async(args=args, tool_context=tool_context)
+
+    assert result == {"error": "MCP tool execution failed: Forbidden"}
+    assert "http_debug_info" in metadata_dict
+    debug_info = metadata_dict["http_debug_info"]
+    # Retries once on error, so we expect 2 debug entries
+    assert len(debug_info) == 2
+    assert debug_info[0]["url"] == "https://example.com/api"
+    assert debug_info[0]["status_code"] == 403
+    assert debug_info[1]["url"] == "https://example.com/api"
+    assert debug_info[1]["status_code"] == 403
 
 
 class TestMCPToolGracefulErrorHandling:

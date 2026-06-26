@@ -230,6 +230,12 @@ class Context(ReadonlyContext):
     self._error_node_path: str = ''
 
   @property
+  def custom_metadata(self) -> dict[str, Any]:
+    """Returns the custom metadata dictionary."""
+    # pylint: disable=protected-access
+    return self._invocation_context._custom_metadata
+
+  @property
   def function_call_id(self) -> str | None:
     """The function call id of the current tool call."""
     return self._function_call_id
@@ -446,9 +452,46 @@ class Context(ReadonlyContext):
       use_sub_branch: If True, the dynamic node will be executed in a sub-branch
         to isolate its state and events from the main branch.
       override_branch: An optional branch to use instead of parent's branch.
+      override_isolation_scope: An optional isolation scope to use instead of
+        the parent's scope.
+      raise_on_wait: If True, raises NodeInterruptedError when the child node
+        is WAITING instead of returning None.
 
     Returns:
       The output of the dynamically executed node, once it finishes executing.
+    """
+    return await self._run_node_internal(
+        node,
+        node_input,
+        use_as_output=use_as_output,
+        run_id=run_id,
+        use_sub_branch=use_sub_branch,
+        override_branch=override_branch,
+        override_isolation_scope=override_isolation_scope,
+        raise_on_wait=raise_on_wait,
+        resume_inputs=None,
+        return_ctx=False,
+    )
+
+  async def _run_node_internal(
+      self,
+      node: NodeLike,
+      node_input: Any = None,
+      *,
+      use_as_output: bool = False,
+      run_id: str | None = None,
+      use_sub_branch: bool = False,
+      override_branch: str | None = None,
+      override_isolation_scope: str | None = None,
+      raise_on_wait: bool = False,
+      return_ctx: bool = False,
+      resume_inputs: dict[str, Any] | None = None,
+  ) -> Any:
+    """Executes a node dynamically (Internal Orchestration API).
+
+    See public ``run_node`` for public argument details.
+    Additional internal args:
+      return_ctx: If True, returns the child's Context instead of its output.
     """
 
     if not self._node_rerun_on_resume:
@@ -532,7 +575,7 @@ class Context(ReadonlyContext):
           and not child_ctx.actions.transfer_to_agent
       ):
         raise NodeInterruptedError()
-      return child_ctx.output
+      return child_ctx if return_ctx else child_ctx.output
 
     # Mode 2: Standalone execution (outside of workflow).
     # Run the node directly via NodeRunner.
@@ -544,6 +587,7 @@ class Context(ReadonlyContext):
         override_branch=override_branch,
         override_isolation_scope=override_isolation_scope,
         run_id=run_id,
+        resume_inputs=resume_inputs,
     )
     if result.error:
       from ..workflow import _errors
@@ -562,7 +606,7 @@ class Context(ReadonlyContext):
       from ..workflow._errors import NodeInterruptedError
 
       raise NodeInterruptedError()
-    return result.output
+    return result if return_ctx else result.output
 
   # ============================================================================
   # Artifact methods
