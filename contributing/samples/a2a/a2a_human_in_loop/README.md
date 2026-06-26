@@ -57,7 +57,7 @@ The A2A Human-in-the-Loop sample consists of:
    adk api_server --a2a --port 8001 contributing/samples/a2a/a2a_human_in_loop/remote_a2a
    ```
 
-2. **Run the Main Agent**:
+1. **Run the Main Agent**:
 
    ```bash
    # In a separate terminal, run the adk web server
