@@ -135,8 +135,8 @@ class Gemini(BaseLlm):
   consulted, and finally the SDK's own default is used so existing behavior is
   unchanged.
 
-  An API version embedded in ``base_url`` (e.g.
-  ``https://...googleapis.com/v1``) takes precedence over this field.
+  An API version embedded in the ``base_url`` path (e.g. a trailing ``/v1``)
+  takes precedence over this field.
 
   Sample:
   ```python
