@@ -22,6 +22,7 @@ import re
 from typing import Any
 from typing import Optional
 from typing import TYPE_CHECKING
+from typing import Union
 
 from google.genai import types
 from google.genai.errors import ClientError
@@ -35,7 +36,6 @@ from . import _session_util
 from ..events.event import Event
 from ..events.event_actions import EventActions
 from ..events.event_actions import EventCompaction
-from ..utils._google_client_headers import get_tracking_headers
 from ..utils.vertex_ai_utils import get_express_mode_api_key
 from .base_session_service import BaseSessionService
 from .base_session_service import GetSessionConfig
@@ -506,6 +506,11 @@ class VertexAiSessionService(BaseSessionService):
 
     return match.groups()[-1]
 
+  def _api_client_http_options_override(
+      self,
+  ) -> Optional[Union[types.HttpOptions, types.HttpOptionsDict]]:
+    return None
+
   def _get_api_client(self) -> vertexai.AsyncClient:
     """Instantiates an API client for the given project and location.
 
@@ -514,16 +519,15 @@ class VertexAiSessionService(BaseSessionService):
     """
     import vertexai
 
-    http_options = types.HttpOptions(headers=get_tracking_headers())
     if self._express_mode_api_key:
       return vertexai.Client(
-          http_options=http_options,
+          http_options=self._api_client_http_options_override(),
           api_key=self._express_mode_api_key,
       ).aio
     return vertexai.Client(
         project=self._project,
         location=self._location,
-        http_options=http_options,
+        http_options=self._api_client_http_options_override(),
     ).aio
 
 
