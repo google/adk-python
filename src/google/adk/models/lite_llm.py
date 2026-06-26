@@ -330,8 +330,28 @@ def _get_provider_from_model(model: str) -> str:
   return ""
 
 
-# Default MIME type when none can be inferred
-_DEFAULT_MIME_TYPE = "application/octet-stream"
+# Providers that can route to Anthropic. bedrock and vertex_ai are multi-model
+# platforms, so _is_anthropic_route also checks the model name for them.
+_ANTHROPIC_PROVIDERS = frozenset({"anthropic", "bedrock", "vertex_ai"})
+
+
+def _is_anthropic_provider(provider: str) -> bool:
+  """Returns True if the provider can route to an Anthropic model endpoint."""
+  return provider.lower() in _ANTHROPIC_PROVIDERS if provider else False
+
+
+def _is_anthropic_route(provider: str, model: str) -> bool:
+  """Returns True only when requests actually reach an Anthropic Claude model.
+
+  bedrock and vertex_ai also host non-Anthropic models (Llama, Gemini), so for
+  those platforms the model name must identify a Claude model too. Formatting
+  thinking blocks for a non-Claude model triggers API validation (400) errors.
+  """
+  if not _is_anthropic_provider(provider):
+    return False
+  if provider.lower() in ("bedrock", "vertex_ai"):
+    return _is_anthropic_model(model)
+  return True
 
 
 def _infer_mime_type_from_uri(uri: str) -> Optional[str]:
@@ -495,42 +515,48 @@ def _iter_reasoning_texts(reasoning_value: Any) -> Iterable[str]:
 
 
 def _is_thinking_blocks_format(reasoning_value: Any) -> bool:
-  """Returns True if reasoning_value is thinking_blocks format.
+  """Returns True if reasoning_value is Anthropic thinking_blocks format.
 
-  Anthropic blocks carry a 'signature'; Gemini blocks carry 'thinking'/'type'
-  without one. Match either so Gemini thought text is not dropped.
+  Anthropic thinking_blocks is a list of dicts, each with 'type', 'thinking',
+  and 'signature' keys.
   """
   if not isinstance(reasoning_value, list) or not reasoning_value:
     return False
   first = reasoning_value[0]
-  return isinstance(first, dict) and (
-      "thinking" in first or "signature" in first
-  )
+  return isinstance(first, dict) and "signature" in first
 
 
 def _convert_reasoning_value_to_parts(reasoning_value: Any) -> List[types.Part]:
   """Converts provider reasoning payloads into Gemini thought parts.
 
-  Handles Anthropic thinking_blocks (list of dicts with type/thinking/signature)
-  by preserving the signature on each part's thought_signature field. This is
-  required for Anthropic to maintain thinking across tool call boundaries.
+  Handles two formats:
+  - Anthropic thinking_blocks with 'thinking' and optional 'signature' fields.
+  - A plain string or nested structure (OpenAI/Azure/Ollama) via
+    _iter_reasoning_texts.
   """
-  if _is_thinking_blocks_format(reasoning_value):
+  if isinstance(reasoning_value, list):
     parts: List[types.Part] = []
     for block in reasoning_value:
-      if not isinstance(block, dict):
-        continue
-      block_type = block.get("type", "")
-      if block_type == "redacted":
-        continue
-      thinking_text = block.get("thinking", "")
-      signature = block.get("signature", "")
-      if not thinking_text and not signature:
-        continue
-      part = types.Part(text=thinking_text, thought=True)
-      if signature:
-        part.thought_signature = signature.encode("utf-8")
-      parts.append(part)
+      if isinstance(block, dict):
+        block_type = block.get("type", "")
+        if block_type == "redacted":
+          continue
+        if block_type == "thinking":
+          thinking_text = block.get("thinking", "")
+          if thinking_text:
+            part = types.Part(text=thinking_text, thought=True)
+            signature = block.get("signature")
+            if signature:
+              decoded_signature = _decode_thought_signature(signature)
+              part.thought_signature = decoded_signature or str(
+                  signature
+              ).encode("utf-8")
+            parts.append(part)
+          continue
+      # Fall back to text extraction for non-thinking-block items.
+      for text in _iter_reasoning_texts(block):
+        if text:
+          parts.append(types.Part(text=text, thought=True))
     return parts
   return [
       types.Part(text=text, thought=True)
@@ -542,16 +568,16 @@ def _convert_reasoning_value_to_parts(reasoning_value: Any) -> List[types.Part]:
 def _extract_reasoning_value(message: Message | Delta | None) -> Any:
   """Fetches the reasoning payload from a LiteLLM message.
 
-  Checks for 'thinking_blocks' (Anthropic structured format with signatures),
-  'reasoning_content' (LiteLLM standard, used by Azure/Foundry, Ollama via
-  LiteLLM) and 'reasoning' (used by LM Studio, vLLM).
-  Prioritizes 'thinking_blocks' when present (Anthropic models), then
-  'reasoning_content', then 'reasoning'.
+  Checks for 'thinking_blocks' (Anthropic thinking with signatures),
+  'reasoning_content' (LiteLLM standard, used by Azure/Foundry,
+  Ollama via LiteLLM), and 'reasoning' (used by LM Studio, vLLM).
+  Prioritizes 'thinking_blocks' when the key is present, as they contain
+  the signature required for Anthropic's extended thinking API.
   """
   if message is None:
     return None
-  # Anthropic models return thinking_blocks with type/thinking/signature fields.
-  # This must be preserved to maintain thinking across tool call boundaries.
+  # Prefer thinking_blocks (Anthropic) — they carry per-block signatures
+  # needed for multi-turn conversations with extended thinking.
   thinking_blocks = message.get("thinking_blocks")
   if thinking_blocks is not None:
     return thinking_blocks
@@ -1003,7 +1029,7 @@ async def _content_to_message_param(
         if part.text and part.thought_signature:
           sig = part.thought_signature
           if isinstance(sig, bytes):
-            sig = sig.decode("utf-8")
+            sig = base64.b64encode(sig).decode("utf-8")
           thinking_blocks.append({
               "type": "thinking",
               "thinking": part.text,
@@ -1029,6 +1055,34 @@ async def _content_to_message_param(
           and part.inline_data.mime_type.startswith("text/")
       ):
         reasoning_texts.append(_decode_inline_text_data(part.inline_data.data))
+
+    # Anthropic routes require thinking blocks to be embedded directly in the
+    # message content list. LiteLLM's prompt template for Anthropic drops the
+    # top-level reasoning_content field, so thinking blocks disappear from
+    # multi-turn histories and the model stops producing them after the first
+    # turn. Signatures are required by the Anthropic API for thinking blocks in
+    # multi-turn conversations. On multi-model platforms (bedrock, vertex_ai)
+    # this must only apply to actual Claude models, not Gemini/Llama/etc.
+    if reasoning_parts and _is_anthropic_route(provider, model):
+      content_list = []
+      for part in reasoning_parts:
+        if part.text:
+          block = {"type": "thinking", "thinking": part.text}
+          if part.thought_signature:
+            sig = part.thought_signature
+            if isinstance(sig, bytes):
+              sig = base64.b64encode(sig).decode("utf-8")
+            block["signature"] = sig
+          content_list.append(block)
+      if isinstance(final_content, list):
+        content_list.extend(final_content)
+      elif final_content:
+        content_list.append({"type": "text", "text": final_content})
+      return ChatCompletionAssistantMessage(
+          role=role,
+          content=content_list or None,
+          tool_calls=tool_calls or None,
+      )
 
     # Preserve reasoning deltas exactly as received. Injecting separators
     # between fragments can corrupt provider-streamed thinking text.
@@ -1217,33 +1271,33 @@ async def _get_content(
         })
         continue
 
-      # Determine MIME type: use explicit value, infer from URI, or use default.
+      # Resolve MIME type early: needed before the media-URL shortcut below,
+      # which must run before the generic text-fallback check. The raise is
+      # deferred until after all early-continue paths so that providers which
+      # always fall back to text (anthropic, non-Gemini Vertex AI) are never
+      # asked for a MIME type they cannot supply.
       mime_type = part.file_data.mime_type
       if not mime_type:
         mime_type = _infer_mime_type_from_uri(part.file_data.file_uri)
       if not mime_type and part.file_data.display_name:
         guessed_mime_type, _ = mimetypes.guess_type(part.file_data.display_name)
         mime_type = guessed_mime_type
-      if not mime_type:
-        # LiteLLM's Vertex AI backend requires format for GCS URIs.
-        mime_type = _DEFAULT_MIME_TYPE
-        logger.debug(
-            "Could not determine MIME type for file_uri %s, using default: %s",
-            part.file_data.file_uri,
-            mime_type,
-        )
-      mime_type = _normalize_mime_type(mime_type)
+      if mime_type:
+        mime_type = _normalize_mime_type(mime_type)
 
+      # For OpenAI/Azure: HTTP media URLs (image, video, audio) are sent as
+      # typed URL blocks and must be handled before the generic text fallback.
       if provider in _FILE_ID_REQUIRED_PROVIDERS and _is_http_url(
           part.file_data.file_uri
       ):
-        url_content_type = _media_url_content_type(mime_type)
-        if url_content_type:
-          content_objects.append({
-              "type": url_content_type,
-              url_content_type: {"url": part.file_data.file_uri},
-          })
-          continue
+        if mime_type:
+          url_content_type = _media_url_content_type(mime_type)
+          if url_content_type:
+            content_objects.append({
+                "type": url_content_type,
+                url_content_type: {"url": part.file_data.file_uri},
+            })
+            continue
 
       if not _is_file_uri_supported(provider, model, part.file_data.file_uri):
         redacted_file_uri = _redact_file_uri_for_log(
@@ -1253,6 +1307,19 @@ async def _get_content(
         raise ValueError(
             f"File URI `{redacted_file_uri}` not supported for provider:"
             f" {provider}."
+        )
+
+      # All remaining providers (e.g. Vertex AI + Gemini) require a specific
+      # MIME type in the file object. Both a missing type and
+      # 'application/octet-stream' cause a downstream ValueError from LiteLLM
+      # regardless of whether the value was set explicitly by the caller or
+      # arrived via a default fallback; raise early with an actionable message.
+      if not mime_type or mime_type == "application/octet-stream":
+        type_label = mime_type or "(unknown)"
+        raise ValueError(
+            f"Cannot process file_uri {part.file_data.file_uri!r}: MIME type"
+            f" {type_label!r} is not supported. Please set a specific MIME"
+            " type on `file_data.mime_type`."
         )
 
       file_object: ChatCompletionFileUrlObject = {
