@@ -740,6 +740,7 @@ class Runner:
       if iso is not None:
         event.isolation_scope = iso
     _apply_run_config_custom_metadata(event, ic.run_config)
+    ic.stamp_event_branch_context(event)
     return await self.session_service.append_event(
         session=ic.session, event=event
     )
@@ -1482,10 +1483,7 @@ class Runner:
           content=new_message,
       )
     _apply_run_config_custom_metadata(event, invocation_context.run_config)
-    # If new_message is a function response, find the matching function call
-    # and use its branch as the new event's branch.
-    if function_call := invocation_context._find_matching_function_call(event):
-      event.branch = function_call.branch
+    invocation_context.stamp_event_branch_context(event)
 
     await self.session_service.append_event(
         session=invocation_context.session, event=event
