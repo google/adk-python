@@ -85,6 +85,9 @@ class TestPlugin(BasePlugin):
   async def before_model_callback(self, **kwargs):
     return await self._handle_callback("before_model_callback")
 
+  async def on_model_request_callback(self, **kwargs):
+    return await self._handle_callback("on_model_request_callback")
+
   async def after_model_callback(self, **kwargs):
     return await self._handle_callback("after_model_callback")
 
@@ -244,6 +247,9 @@ async def test_all_callbacks_are_supported(
   await service.run_before_model_callback(
       callback_context=mock_context, llm_request=mock_context
   )
+  await service.run_on_model_request_callback(
+      callback_context=mock_context, llm_request=mock_context
+  )
   await service.run_after_model_callback(
       callback_context=mock_context, llm_response=mock_context
   )
@@ -265,6 +271,7 @@ async def test_all_callbacks_are_supported(
       "after_tool_callback",
       "on_tool_error_callback",
       "before_model_callback",
+      "on_model_request_callback",
       "after_model_callback",
       "on_model_error_callback",
   ]

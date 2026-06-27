@@ -41,12 +41,14 @@ class MockPlugin(BasePlugin):
   before_model_text = 'before_model_text from MockPlugin'
   after_model_text = 'after_model_text from MockPlugin'
   on_model_error_text = 'on_model_error_text from MockPlugin'
+  on_model_request_text = 'on_model_request_text from MockPlugin'
 
   def __init__(self, name='mock_plugin'):
     self.name = name
     self.enable_before_model_callback = False
     self.enable_after_model_callback = False
     self.enable_on_model_error_callback = False
+    self.enable_on_model_request_callback = False
     self.before_model_response = LlmResponse(
         content=testing_utils.ModelContent(
             [types.Part.from_text(text=self.before_model_text)]
@@ -60,6 +62,11 @@ class MockPlugin(BasePlugin):
     self.on_model_error_response = LlmResponse(
         content=testing_utils.ModelContent(
             [types.Part.from_text(text=self.on_model_error_text)]
+        )
+    )
+    self.on_model_request_response = LlmResponse(
+        content=testing_utils.ModelContent(
+            [types.Part.from_text(text=self.on_model_request_text)]
         )
     )
 
@@ -87,6 +94,13 @@ class MockPlugin(BasePlugin):
     if not self.enable_on_model_error_callback:
       return None
     return self.on_model_error_response
+
+  async def on_model_request_callback(
+      self, *, callback_context: CallbackContext, llm_request: LlmRequest
+  ) -> Optional[LlmResponse]:
+    if not self.enable_on_model_request_callback:
+      return None
+    return self.on_model_request_response
 
 
 CANONICAL_MODEL_CALLBACK_CONTENT = 'canonical_model_callback_content'
@@ -135,6 +149,22 @@ def test_before_model_fallback_canonical_callback(mock_plugin):
   runner = testing_utils.InMemoryRunner(agent)
   assert testing_utils.simplify_events(runner.run('test')) == [
       ('root_agent', CANONICAL_MODEL_CALLBACK_CONTENT),
+  ]
+
+
+def test_on_model_request_callback_with_plugin(mock_plugin):
+  """Tests that the model response is overridden by on_model_request_callback from the plugin."""
+  responses = ['model_response']
+  mock_model = testing_utils.MockModel.create(responses=responses)
+  mock_plugin.enable_on_model_request_callback = True
+  agent = Agent(
+      name='root_agent',
+      model=mock_model,
+  )
+
+  runner = testing_utils.InMemoryRunner(agent, plugins=[mock_plugin])
+  assert testing_utils.simplify_events(runner.run('test')) == [
+      ('root_agent', mock_plugin.on_model_request_text),
   ]
 
 

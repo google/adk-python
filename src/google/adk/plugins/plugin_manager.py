@@ -49,6 +49,7 @@ PluginCallbackName = Literal[
     "before_tool_callback",
     "after_tool_callback",
     "before_model_callback",
+    "on_model_request_callback",
     "after_model_callback",
     "on_tool_error_callback",
     "on_model_error_callback",
@@ -241,6 +242,16 @@ class PluginManager:
     """Runs the `before_model_callback` for all plugins."""
     return await self._run_callbacks(
         "before_model_callback",
+        callback_context=callback_context,
+        llm_request=llm_request,
+    )
+
+  async def run_on_model_request_callback(
+      self, *, callback_context: CallbackContext, llm_request: LlmRequest
+  ) -> Optional[LlmResponse]:
+    """Runs the `on_model_request_callback` for all plugins."""
+    return await self._run_callbacks(
+        "on_model_request_callback",
         callback_context=callback_context,
         llm_request=llm_request,
     )

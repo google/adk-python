@@ -250,6 +250,26 @@ class BasePlugin(ABC):
     """
     pass
 
+  async def on_model_request_callback(
+      self, *, callback_context: CallbackContext, llm_request: LlmRequest
+  ) -> Optional[LlmResponse]:
+    """Callback executed immediately before a request is sent to the model.
+
+    This hook is fired after all `before_model_callback`s have completed and
+    the request has been finalized (e.g. labels injected). It is the correct
+    place to observe the exact `LlmRequest` that will be sent to the model.
+
+    Args:
+      callback_context: The context for the current agent call.
+      llm_request: The final request object to be sent to the model.
+
+    Returns:
+      An optional LlmResponse. If an LlmResponse is returned, it will be used
+      instead of calling the model. Returning `None` allows the model call
+      to proceed normally.
+    """
+    pass
+
   async def after_model_callback(
       self, *, callback_context: CallbackContext, llm_response: LlmResponse
   ) -> Optional[LlmResponse]:

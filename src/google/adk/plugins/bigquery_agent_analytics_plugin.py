@@ -3726,13 +3726,13 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
     )
 
   @_safe_callback
-  async def before_model_callback(
+  async def on_model_request_callback(
       self,
       *,
       callback_context: CallbackContext,
       llm_request: LlmRequest,
   ) -> None:
-    """Callback before LLM call.
+    """Callback immediately before LLM call.
 
     Logs the LLM request details including:
     1. Prompt content

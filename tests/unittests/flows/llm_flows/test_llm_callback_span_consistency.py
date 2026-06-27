@@ -63,6 +63,7 @@ class SpanCapturingPlugin(BasePlugin):
   def __init__(self):
     self.name = 'span_capturing_plugin'
     self.before_capture = _SpanCapture()
+    self.request_capture = _SpanCapture()
     self.after_capture = _SpanCapture()
     self.error_capture = _SpanCapture()
 
@@ -78,6 +79,15 @@ class SpanCapturingPlugin(BasePlugin):
     self.before_capture.capture()
     if self._short_circuit_before:
       return self._short_circuit_response
+    return None
+
+  async def on_model_request_callback(
+      self,
+      *,
+      callback_context: CallbackContext,
+      llm_request: LlmRequest,
+  ) -> Optional[LlmResponse]:
+    self.request_capture.capture()
     return None
 
   async def after_model_callback(
@@ -148,6 +158,11 @@ def test_before_and_after_callbacks_share_same_span():
       'before_model_callback and after_model_callback saw different spans:'
       f' before={plugin.before_capture.span_id:#x},'
       f' after={plugin.after_capture.span_id:#x}'
+  )
+  assert plugin.before_capture.span_id == plugin.request_capture.span_id, (
+      'before_model_callback and on_model_request_callback saw different spans:'
+      f' before={plugin.before_capture.span_id:#x},'
+      f' request={plugin.request_capture.span_id:#x}'
   )
 
 

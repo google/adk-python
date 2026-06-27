@@ -73,6 +73,9 @@ class FullOverridePlugin(BasePlugin):
   async def before_model_callback(self, **kwargs) -> str:
     return "overridden_before_model"
 
+  async def on_model_request_callback(self, **kwargs) -> str:
+    return "overridden_on_model_request"
+
   async def after_model_callback(self, **kwargs) -> str:
     return "overridden_after_model"
 
@@ -159,6 +162,12 @@ async def test_base_plugin_default_callbacks_return_none():
       is None
   )
   assert (
+      await plugin.on_model_request_callback(
+          callback_context=mock_context, llm_request=mock_context
+      )
+      is None
+  )
+  assert (
       await plugin.after_model_callback(
           callback_context=mock_context, llm_response=mock_context
       )
@@ -239,6 +248,12 @@ async def test_base_plugin_all_callbacks_can_be_overridden():
           callback_context=mock_callback_context, llm_request=mock_llm_request
       )
       == "overridden_before_model"
+  )
+  assert (
+      await plugin.on_model_request_callback(
+          callback_context=mock_callback_context, llm_request=mock_llm_request
+      )
+      == "overridden_on_model_request"
   )
   assert (
       await plugin.after_model_callback(

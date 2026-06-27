@@ -1320,6 +1320,16 @@ class BaseLlmFlow(ABC):
               invocation_context.agent.name
           )
 
+        callback_context = CallbackContext(
+            invocation_context, event_actions=model_response_event.actions
+        )
+        if response := await invocation_context.plugin_manager.run_on_model_request_callback(
+            callback_context=callback_context,
+            llm_request=llm_request,
+        ):
+          yield response
+          return
+
         # Calls the LLM.
         llm = self.__get_llm(invocation_context)
 
