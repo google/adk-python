@@ -31,6 +31,8 @@ from google.adk.events.event_actions import EventCompaction
 from google.adk.models.cache_metadata import CacheMetadata
 from google.adk.sessions.base_session_service import GetSessionConfig
 from google.adk.sessions.session import Session
+from google.adk.sessions.vertex_ai_session_service import _extract_short_session_id
+from google.adk.sessions.vertex_ai_session_service import _validate_session_id
 from google.adk.sessions.vertex_ai_session_service import VertexAiSessionService
 from google.api_core import exceptions as api_core_exceptions
 from google.genai import types as genai_types
@@ -1008,6 +1010,46 @@ async def test_create_session_with_custom_config(mock_api_client_instance):
 
 @pytest.mark.asyncio
 @pytest.mark.usefixtures('mock_get_api_client')
+async def test_create_session_with_ttl(mock_api_client_instance):
+  session_service = mock_vertex_ai_session_service()
+
+  ttl = '7200s'
+  await session_service.create_session(app_name='123', user_id='user', ttl=ttl)
+  assert mock_api_client_instance.last_create_session_config['ttl'] == ttl
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures('mock_get_api_client')
+async def test_create_session_with_ttl_and_expire_time_raises_value_error(
+    mock_api_client_instance,
+):
+  session_service = mock_vertex_ai_session_service()
+  with pytest.raises(
+      ValueError,
+      match="Cannot specify both 'ttl' and 'expire_time' simultaneously.",
+  ):
+    await session_service.create_session(
+        app_name='123',
+        user_id='user',
+        ttl='7200s',
+        expire_time='2025-12-12T12:12:12.123456Z',
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures('mock_get_api_client')
+async def test_create_session_with_ttl_none_and_expire_time_none_does_not_raise(
+    mock_api_client_instance,
+):
+  session_service = mock_vertex_ai_session_service()
+  # None means "not set"; passing both as None must not raise.
+  await session_service.create_session(
+      app_name='123', user_id='user', ttl=None, expire_time=None
+  )
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures('mock_get_api_client')
 async def test_append_event():
   session_service = mock_vertex_ai_session_service()
   session_before_append = await session_service.get_session(
@@ -1086,6 +1128,86 @@ async def test_append_event():
   assert len(retrieved_session.events) == 2
   event_to_append.id = retrieved_session.events[1].id
   assert retrieved_session.events[1] == event_to_append
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures('mock_get_api_client')
+async def test_append_event_strips_unsupported_part_metadata(
+    mock_api_client_instance: MockAsyncClient,
+) -> None:
+  """part_metadata must not reach the Sessions API (#6014).
+
+  ``Part.part_metadata`` is a Gemini Developer API-only field; the Vertex AI
+  Agent Engine Sessions ``appendEvent`` API rejects it with 400 INVALID_ARGUMENT
+  ("Unknown name \"part_metadata\""). It must be dropped from both the
+  ``content`` and ``raw_event`` payloads, while the part text is preserved.
+  """
+  session_service = mock_vertex_ai_session_service()
+  session = await session_service.get_session(
+      app_name='123', user_id='user', session_id='1'
+  )
+  event_to_append = Event(
+      invocation_id='inv_part_metadata',
+      author='user',
+      timestamp=1734005533.0,
+      content=genai_types.Content(
+          parts=[
+              genai_types.Part(
+                  text='hello', part_metadata={'source': 'portal'}
+              ),
+              genai_types.Part(text='world', part_metadata={'n': 1}),
+          ],
+      ),
+  )
+
+  await session_service.append_event(session, event_to_append)
+
+  appended = mock_api_client_instance.event_dict['1'][0][-1]
+  for part in appended['content']['parts']:
+    assert 'part_metadata' not in part
+    assert 'partMetadata' not in part
+  for part in appended['raw_event']['content']['parts']:
+    assert 'part_metadata' not in part
+    assert 'partMetadata' not in part
+  assert [p['text'] for p in appended['content']['parts']] == ['hello', 'world']
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures('mock_get_api_client')
+async def test_append_event_with_part_metadata_round_trips(
+    mock_api_client_instance: MockAsyncClient,
+) -> None:
+  """Reconstruction side of #6014: an event carrying part_metadata appends and
+  reads back without error. part_metadata is dropped (unsupported on Vertex),
+  but the session round-trips and the part text is preserved.
+  """
+  session_service = mock_vertex_ai_session_service()
+  session = await session_service.get_session(
+      app_name='123', user_id='user', session_id='1'
+  )
+  event_to_append = Event(
+      invocation_id='inv_part_metadata_rt',
+      author='user',
+      timestamp=1734005533.0,
+      content=genai_types.Content(
+          role='user',
+          parts=[
+              genai_types.Part(text='hello', part_metadata={'source': 'portal'})
+          ],
+      ),
+  )
+
+  await session_service.append_event(session, event_to_append)
+  retrieved = await session_service.get_session(
+      app_name='123', user_id='user', session_id='1'
+  )
+
+  appended = next(
+      e for e in retrieved.events if e.invocation_id == 'inv_part_metadata_rt'
+  )
+  assert appended.content is not None
+  assert appended.content.parts[0].text == 'hello'
+  assert appended.content.parts[0].part_metadata is None
 
 
 @pytest.mark.asyncio
@@ -1350,3 +1472,53 @@ async def test_append_event_fallback_for_older_sdk(mock_api_client_instance):
 
   assert appended_event.actions.compaction is not None
   assert appended_event.actions.compaction.start_timestamp == 1000.0
+
+
+def test_extract_short_session_id_short_id():
+  assert _extract_short_session_id('123') == '123'
+  assert _extract_short_session_id('session-123_abc') == 'session-123_abc'
+
+
+def test_extract_short_session_id_strips_full_resource_name():
+  resource_name = 'projects/123/locations/us-east4/reasoningEngines/456/sessions/session-123'
+  assert _extract_short_session_id(resource_name) == 'session-123'
+  assert (
+      _extract_short_session_id(resource_name, expected_engine_id='456')
+      == 'session-123'
+  )
+
+
+def test_extract_short_session_id_mismatch():
+  resource_name = 'projects/123/locations/us-east4/reasoningEngines/wrong/sessions/session-123'
+  with pytest.raises(ValueError, match='Session resource name mismatch'):
+    _extract_short_session_id(resource_name, expected_engine_id='right')
+
+
+def test_validate_session_id_rejects_invalid_chars():
+  with pytest.raises(ValueError, match='Invalid session_id'):
+    _validate_session_id('invalid@id')
+  with pytest.raises(ValueError, match='Invalid session_id'):
+    _validate_session_id('invalid/id')
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures('mock_get_api_client')
+async def test_get_session_strips_full_resource_name(
+    mock_api_client_instance,
+):
+  session_service = mock_vertex_ai_session_service()
+  mock_api_client_instance.session_dict['session-123'] = {
+      'name': (
+          'projects/123/locations/us-east4/reasoningEngines/123/sessions/session-123'
+      ),
+      'update_time': '2023-01-01T00:00:00Z',
+      'user_id': 'user',
+  }
+  resource_name = 'projects/123/locations/us-east4/reasoningEngines/123/sessions/session-123'
+  session = await session_service.get_session(
+      app_name='123', user_id='user', session_id=resource_name
+  )
+  assert session.id == 'session-123'
+  mock_api_client_instance.agent_engines.sessions.get.assert_called_once_with(
+      name='reasoningEngines/123/sessions/session-123'
+  )

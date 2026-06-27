@@ -36,6 +36,7 @@ from ..code_executors.code_execution_utils import CodeExecutionInput
 from ..skills import models
 from ..skills import prompt
 from ..skills import SkillRegistry
+from ..utils import instructions_utils
 from .base_tool import BaseTool
 from .base_toolset import BaseToolset
 from .base_toolset import ToolPredicate
@@ -93,6 +94,9 @@ def _build_skill_system_instruction(prefix: str | None = None) -> str:
       "needed.\n"
       f"5. If `{p}load_skill_resource` returns any error, do not retry any "
       "path. Report the error to the user and stop.\n"
+      f"6. If `{p}run_skill_script` returns an error (for example "
+      f"`SCRIPT_NOT_FOUND`), do not retry the same script or guess a "
+      "different script path. Report the error to the user and stop.\n"
   )
 
 
@@ -248,9 +252,16 @@ class LoadSkillTool(BaseTool):
       activated_skills.append(skill_name)
       tool_context.state[state_key] = activated_skills
 
+    instructions = skill.instructions
+    if skill.frontmatter.metadata.get("adk_inject_state"):
+      instructions = await instructions_utils.inject_session_state(
+          instructions,
+          tool_context,
+      )
+
     return {
         "skill_name": skill_name,
-        "instructions": skill.instructions,
+        "instructions": instructions,
         "frontmatter": skill.frontmatter.model_dump(),
     }
 
@@ -669,7 +680,10 @@ class _SkillScriptCodeExecutor:
         "      full_path = os.path.join(os.path.abspath(td), norm_rel)",
         "      os.makedirs(os.path.dirname(full_path), exist_ok=True)",
         "      mode = 'wb' if isinstance(content, bytes) else 'w'",
-        "      with open(full_path, mode) as f:",
+        (
+            "      with open(full_path, mode, encoding='utf-8' if mode == 'w'"
+            " else None) as f:"
+        ),
         "        f.write(content)",
         "    os.chdir(td)",
         "    try:",
@@ -891,6 +905,25 @@ class RunSkillScriptTool(BaseTool):
       script = skill.resources.get_script(file_path)
 
     if script is None:
+      # Invocation-scoped failure counter. Counts SCRIPT_NOT_FOUND across ALL
+      # paths so the guard fires even when the LLM hallucinates a different
+      # script path on each retry. The `temp:` prefix prevents persistence to
+      # durable session storage; invocation_id isolates in-memory backends.
+      counter_key = (
+          f"temp:_adk_skill_script_not_found_count_{tool_context.invocation_id}"
+      )
+      fail_count = int(tool_context.state.get(counter_key) or 0) + 1
+      tool_context.state[counter_key] = fail_count
+      if fail_count > 1:
+        return {
+            "error": (
+                f"Script '{file_path}' not found in skill '{skill_name}'."
+                f" This is script lookup failure #{fail_count} this"
+                " invocation. Do not retry any script path — report the"
+                " error to the user and stop."
+            ),
+            "error_code": "SCRIPT_NOT_FOUND_FATAL",
+        }
       return {
           "error": f"Script '{file_path}' not found in skill '{skill_name}'.",
           "error_code": "SCRIPT_NOT_FOUND",

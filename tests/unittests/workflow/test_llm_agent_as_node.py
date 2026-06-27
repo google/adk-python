@@ -212,6 +212,28 @@ class TestValidation:
     assert wrapper.rerun_on_resume is True
 
 
+@pytest.mark.asyncio
+async def test_single_turn_input_event_inherits_branch_and_scope(
+    request: pytest.FixtureRequest,
+):
+  """Private single-turn node input is scoped to the node branch."""
+  from google.adk.workflow._llm_agent_wrapper import prepare_llm_agent_input
+
+  agent = _make_agent(mode='single_turn')
+  ic = await create_parent_invocation_context(request.function.__name__, agent)
+  ic.branch = 'parent.worker@1'
+  ctx = Context(invocation_context=ic)
+  ctx.isolation_scope = 'scope-1'
+
+  prepare_llm_agent_input(agent, ctx, 'hello')
+
+  event = ic.session.events[-1]
+  assert event.author == 'user'
+  assert event.content and event.content.role == 'user'
+  assert event.branch == 'parent.worker@1'
+  assert event.isolation_scope == 'scope-1'
+
+
 # --- build_node auto-wrapping ---
 
 
@@ -245,6 +267,71 @@ class TestBuildNode:
     node = build_node(agent)
 
     assert node.mode == 'single_turn'
+
+  @pytest.mark.parametrize(
+      ('agent_kwargs', 'expected_include_contents'),
+      [
+          ({}, 'none'),
+          ({'mode': 'single_turn'}, 'none'),
+          (
+              {'mode': 'single_turn', 'include_contents': 'default'},
+              'default',
+          ),
+          ({'mode': 'single_turn', 'include_contents': 'none'}, 'none'),
+      ],
+  )
+  @pytest.mark.asyncio
+  async def test_single_turn_defaults_include_contents_only_when_unset(
+      self,
+      monkeypatch: pytest.MonkeyPatch,
+      agent_kwargs: dict[str, Any],
+      expected_include_contents: str,
+  ):
+    """Single-turn workflow nodes preserve explicit content inclusion."""
+    from unittest.mock import MagicMock
+
+    from google.adk.workflow import _llm_agent_wrapper
+
+    agent = LlmAgent(
+        name='test_agent',
+        model='gemini-2.5-flash',
+        instruction='Test.',
+        **agent_kwargs,
+    )
+    wrapper = build_node(agent)
+    seen_include_contents = []
+
+    async def mock_run_async(*args, **kwargs):
+      seen_include_contents.append(wrapper.include_contents)
+      yield Event(
+          invocation_id='inv',
+          author=wrapper.name,
+          content=types.Content(parts=[types.Part(text='ok')]),
+      )
+
+    object.__setattr__(wrapper, 'run_async', mock_run_async)
+    monkeypatch.setattr(
+        _llm_agent_wrapper,
+        'prepare_llm_agent_context',
+        lambda agent, ctx: ctx,
+    )
+    monkeypatch.setattr(
+        _llm_agent_wrapper,
+        'prepare_llm_agent_input',
+        lambda agent, ctx, node_input: None,
+    )
+    ctx = MagicMock(spec=Context)
+    ic = MagicMock()
+    ctx.get_invocation_context.return_value = ic
+    ic.model_copy.return_value = ic
+
+    events = [
+        event async for event in wrapper._run_impl(ctx=ctx, node_input='hi')
+    ]
+
+    assert seen_include_contents == [expected_include_contents]
+    assert wrapper.include_contents == expected_include_contents
+    assert events[0].content.parts[0].text == 'ok'
 
   def test_name_override(self):
     """build_node respects explicit name override."""
@@ -433,6 +520,44 @@ async def test_single_turn_isolates_content_via_branch(
 
   assert len(captured_branches) == 1
   assert captured_branches[0] is None
+
+
+@pytest.mark.asyncio
+async def test_single_turn_propagates_isolation_scope(
+    request: pytest.FixtureRequest,
+):
+  """Single-turn workflow node propagates isolation_scope to the agent."""
+  agent = _make_agent(mode='single_turn')
+  wrapper = build_node(agent)
+  captured_isolation_scopes = []
+
+  async def fake_run_async(invocation_context):
+    captured_isolation_scopes.append(invocation_context.isolation_scope)
+    yield Event(
+        invocation_id='inv',
+        author=wrapper.name,
+        content=types.Content(parts=[types.Part(text='ok')]),
+    )
+
+  object.__setattr__(wrapper, 'run_async', fake_run_async)
+
+  # Use the helper to create a real InvocationContext
+  ic = await create_parent_invocation_context(
+      request.function.__name__, wrapper
+  )
+
+  # Create the parent context with isolation_scope
+  ctx = Context(invocation_context=ic)
+  ctx.isolation_scope = 'test-scope-123'
+
+  # Run the node
+  events = [
+      event async for event in wrapper._run_impl(ctx=ctx, node_input='hi')
+  ]
+
+  assert len(events) == 1
+  assert events[0].content.parts[0].text == 'ok'
+  assert captured_isolation_scopes == ['test-scope-123']
 
 
 @pytest.mark.xfail(

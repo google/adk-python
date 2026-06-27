@@ -23,6 +23,7 @@ from concurrent.futures import ThreadPoolExecutor
 import contextvars
 import copy
 import inspect
+import json
 import logging
 import threading
 from typing import Any
@@ -198,6 +199,20 @@ async def _call_tool_in_thread_pool(
         args_to_call = {
             k: v for k, v in args_to_call.items() if k in valid_params
         }
+        mandatory_args = tool._get_mandatory_args()
+        missing_mandatory_args = [
+            arg for arg in mandatory_args if arg not in args_to_call
+        ]
+        if missing_mandatory_args:
+          missing_mandatory_args_str = '\n'.join(missing_mandatory_args)
+          error_str = (
+              f'Invoking `{tool.name}()` failed as the following mandatory'
+              ' input parameters are not present:\n'
+              f'{missing_mandatory_args_str}\n'
+              'You could retry calling this tool, but it is IMPORTANT for you'
+              ' to provide all the mandatory parameters.'
+          )
+          return {'error': error_str}
         return tool.func(**args_to_call)
 
       return await loop.run_in_executor(
@@ -302,7 +317,7 @@ def build_auth_request_event(
         args=AuthToolArguments(
             function_call_id=function_call_id,
             auth_config=auth_config,
-        ).model_dump(exclude_none=True, by_alias=True),
+        ).model_dump(mode='json', exclude_none=True, by_alias=True),
     )
     long_running_tool_ids.add(request_euc_function_call.id)
     parts.append(types.Part(function_call=request_euc_function_call))
@@ -412,7 +427,6 @@ async def handle_function_call_list_async(
     tool_confirmation_dict: Optional[dict[str, ToolConfirmation]] = None,
 ) -> Optional[Event]:
   """Calls the functions and returns the function response event."""
-  from ...agents.llm_agent import LlmAgent
 
   agent = invocation_context.agent
 
@@ -978,13 +992,8 @@ async def _process_function_live_helper(
             )
         ) as agen:
           async for result in agen:
-            updated_content = types.Content(
-                role='user',
-                parts=[
-                    types.Part.from_text(
-                        text=f'Function {tool.name} returned: {result}'
-                    )
-                ],
+            updated_content = _build_function_response_content(
+                tool, result, tool_context.function_call_id
             )
             invocation_context.live_request_queue.send_content(updated_content)
       except asyncio.CancelledError:
@@ -1173,6 +1182,9 @@ def __build_response_event(
     tool_context: ToolContext,
     invocation_context: InvocationContext,
 ) -> Event:
+  # Capture the raw result for display purposes before any normalization.
+  display_result = function_result
+
   # Specs requires the result to be a dict.
   if not isinstance(function_result, dict):
     function_result = {'result': function_result}
@@ -1183,17 +1195,31 @@ def __build_response_event(
         tool, function_result
     )
 
-  part_function_response = types.Part.from_function_response(
-      name=tool.name,
-      response=function_result,
-      parts=function_response_parts,
+  content = _build_function_response_content(
+      tool,
+      function_result,
+      tool_context.function_call_id,
+      function_response_parts,
   )
-  part_function_response.function_response.id = tool_context.function_call_id
 
-  content = types.Content(
-      role='user',
-      parts=[part_function_response],
-  )
+  # When summarization is skipped, ensure a displayable text part is added so
+  # the tool's output is not lost in UIs that don't render function responses.
+  # Control-flow tools (e.g. exit_loop) set skip_summarization but return no
+  # meaningful output; their None result is normalized to {'result': None}, so
+  # skip those to avoid emitting a noisy "null" text part.
+  has_displayable_result = display_result is not None and display_result != {
+      'result': None
+  }
+  if (
+      tool_context.actions.skip_summarization
+      and 'error' not in function_result
+      and has_displayable_result
+  ):
+    if isinstance(display_result, str):
+      result_text = display_result
+    else:
+      result_text = json.dumps(display_result, ensure_ascii=False, default=str)
+    content.parts.append(types.Part.from_text(text=result_text))
 
   function_response_event = Event(
       invocation_id=invocation_context.invocation_id,
@@ -1204,6 +1230,31 @@ def __build_response_event(
   )
 
   return function_response_event
+
+
+def _build_function_response_content(
+    tool: BaseTool,
+    function_result: object,
+    function_call_id: Optional[str],
+    function_response_parts: Optional[list[types.FunctionResponsePart]] = None,
+) -> types.Content:
+  """Builds the content carrying a tool result as a FunctionResponse."""
+  # Specs requires the result to be a dict.
+  if not isinstance(function_result, dict):
+    function_result = {'result': function_result}
+
+  part_function_response = types.Part.from_function_response(
+      name=tool.name,
+      response=function_result,
+      parts=function_response_parts,
+  )
+  part_function_response.function_response.id = function_call_id
+  if tool.response_scheduling is not None:
+    part_function_response.function_response.scheduling = (
+        tool.response_scheduling
+    )
+
+  return types.Content(role='user', parts=[part_function_response])
 
 
 def deep_merge_dicts(d1: dict, d2: dict) -> dict:

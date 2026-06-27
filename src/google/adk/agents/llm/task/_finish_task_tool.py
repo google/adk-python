@@ -28,7 +28,6 @@ from typing_extensions import override
 from ....tools.base_tool import BaseTool
 from ....utils._schema_utils import SchemaType
 from ._task_models import _DefaultTaskOutput
-from ._task_models import TaskResult
 
 if TYPE_CHECKING:
   from ....models.llm_request import LlmRequest

@@ -23,6 +23,7 @@ from textwrap import dedent
 from unittest import mock
 
 from google.adk.cli.utils import agent_loader as agent_loader_module
+from google.adk.cli.utils._nested_agent_loader import NestedAgentLoader
 from google.adk.cli.utils.agent_loader import AgentLoader
 from pydantic import ValidationError
 import pytest
@@ -475,17 +476,22 @@ class TestAgentLoader:
 
       # Check sys.path before
       assert str(temp_path) not in sys.path
+      assert str(temp_path.resolve()) not in sys.path
 
       loader = AgentLoader(str(temp_path))
 
       # Path should not be added yet - only added during load
       assert str(temp_path) not in sys.path
+      assert str(temp_path.resolve()) not in sys.path
 
       # Load agent - this should add the path
       agent = loader.load_agent("path_agent")
 
       # Now assert path was added
-      assert str(temp_path) in sys.path
+      assert any(
+          os.path.realpath(p) == os.path.realpath(str(temp_path))
+          for p in sys.path
+      )
       assert agent.name == "path_agent"
 
   def create_yaml_agent_structure(
@@ -971,11 +977,19 @@ class TestAgentLoader:
       assert not detailed_list[0]["is_computer_use"]
 
   def test_validate_agent_name_rejects_dotted_paths(self):
-    """Agent names with dots are rejected to prevent arbitrary module imports."""
+    """Agent names with dots are rejected in flat mode because they are invalid names."""
     with tempfile.TemporaryDirectory() as temp_dir:
       loader = AgentLoader(temp_dir)
       for name in ["os.path", "sys.modules", "subprocess.call"]:
         with pytest.raises(ValueError, match="Invalid agent name"):
+          loader.load_agent(name)
+
+  def test_validate_agent_name_allows_nested_slash_paths_in_nested_mode(self):
+    """Agent names with slashes are valid formats in nested mode, but fail if the directory/module doesn't exist on disk."""
+    with tempfile.TemporaryDirectory() as temp_dir:
+      loader = NestedAgentLoader(temp_dir)
+      for name in ["os/path", "sys/modules", "subprocess/call"]:
+        with pytest.raises(ValueError, match="Agent not found"):
           loader.load_agent(name)
 
   def test_validate_agent_name_rejects_relative_imports(self):
@@ -990,9 +1004,18 @@ class TestAgentLoader:
     """Agent names with slashes or special characters are rejected."""
     with tempfile.TemporaryDirectory() as temp_dir:
       loader = AgentLoader(temp_dir)
-      for name in ["foo/bar", "foo\\bar", "foo-bar", "foo bar"]:
+      for name in ["foo\\bar", "foo-bar", "foo bar"]:
         with pytest.raises(ValueError, match="Invalid agent name"):
           loader.load_agent(name)
+
+      # In flat mode, foo/bar is rejected as invalid name
+      with pytest.raises(ValueError, match="Invalid agent name"):
+        loader.load_agent("foo/bar")
+
+      # foo/bar is structurally valid for nested apps, but nonexistent on disk
+      nested_loader = NestedAgentLoader(temp_dir)
+      with pytest.raises(ValueError, match="Agent not found"):
+        nested_loader.load_agent("foo/bar")
 
   def test_validate_agent_name_allows_valid_names(self):
     """Valid Python identifiers that exist on disk pass validation."""

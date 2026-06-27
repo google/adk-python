@@ -27,10 +27,10 @@ from google.adk.models.llm_request import LlmRequest
 from google.adk.models.llm_response import LlmResponse
 from google.adk.sessions.in_memory_session_service import InMemorySessionService
 from google.adk.telemetry._experimental_semconv import _safe_json_serialize_no_whitespaces
-from google.adk.telemetry.tracing import _safe_json_serialize
 from google.adk.telemetry.tracing import _use_extra_generate_content_attributes
 from google.adk.telemetry.tracing import ADK_CAPTURE_MESSAGE_CONTENT_IN_SPANS
 from google.adk.telemetry.tracing import GCP_MCP_SERVER_DESTINATION_ID
+from google.adk.telemetry.tracing import safe_json_serialize
 from google.adk.telemetry.tracing import trace_agent_invocation
 from google.adk.telemetry.tracing import trace_call_llm
 from google.adk.telemetry.tracing import trace_inference_result
@@ -57,6 +57,7 @@ from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GEN_A
 from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GEN_AI_USAGE_INPUT_TOKENS
 from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GEN_AI_USAGE_OUTPUT_TOKENS
 from opentelemetry.semconv._incubating.attributes.user_attributes import USER_ID
+from pydantic import BaseModel
 import pytest
 
 try:
@@ -67,7 +68,7 @@ except ImportError:
 
 class Event:
 
-  def __init__(self, event_id: str, event_content: Any):
+  def __init__(self, event_id: str, event_content: object):
     self.id = event_id
     self.content = event_content
 
@@ -80,8 +81,8 @@ class Event:
 class SimpleTestTool(BaseTool):
 
   async def run_async(
-      self, *, args: dict[str, Any], tool_context: ToolContext
-  ) -> Any:
+      self, *, args: dict[str, object], tool_context: ToolContext
+  ) -> object:
     return 'SimpleTestTool result'
 
 
@@ -111,7 +112,7 @@ def mock_event_fixture():
 
 
 async def _create_invocation_context(
-    agent: LlmAgent, state: Optional[dict[str, Any]] = None
+    agent: LlmAgent, state: Optional[dict[str, object]] = None
 ) -> InvocationContext:
   session_service = InMemorySessionService()
   session = await session_service.create_session(
@@ -492,10 +493,10 @@ def test_trace_tool_call_with_scalar_response(
       'opentelemetry.trace.get_current_span', lambda: mock_span_fixture
   )
 
-  test_args: Dict[str, Any] = {'param_a': 'value_a', 'param_b': 100}
+  test_args: Dict[str, object] = {'param_a': 'value_a', 'param_b': 100}
   test_tool_call_id: str = 'tool_call_id_001'
   test_event_id: str = 'event_id_001'
-  scalar_function_response: Any = 'Scalar result'
+  scalar_function_response: object = 'Scalar result'
 
   expected_processed_response = {'result': scalar_function_response}
 
@@ -551,10 +552,10 @@ def test_trace_tool_call_with_dict_response(
       'opentelemetry.trace.get_current_span', lambda: mock_span_fixture
   )
 
-  test_args: Dict[str, Any] = {'query': 'details', 'id_list': [1, 2, 3]}
+  test_args: Dict[str, object] = {'query': 'details', 'id_list': [1, 2, 3]}
   test_tool_call_id: str = 'tool_call_id_002'
   test_event_id: str = 'event_id_dict_002'
-  dict_function_response: Dict[str, Any] = {
+  dict_function_response: Dict[str, object] = {
       'data': 'structured_data',
       'count': 5,
   }
@@ -699,10 +700,10 @@ def test_trace_tool_call_disabling_request_response_content(
       'opentelemetry.trace.get_current_span', lambda: mock_span_fixture
   )
 
-  test_args: Dict[str, Any] = {'query': 'details', 'id_list': [1, 2, 3]}
+  test_args: Dict[str, object] = {'query': 'details', 'id_list': [1, 2, 3]}
   test_tool_call_id: str = 'tool_call_id_002'
   test_event_id: str = 'event_id_dict_002'
-  dict_function_response: Dict[str, Any] = {
+  dict_function_response: Dict[str, object] = {
       'data': 'structured_data',
       'count': 5,
   }
@@ -1026,25 +1027,6 @@ def _mock_callable_tool():
   return 'result'
 
 
-def _mock_mcp_client_session() -> McpClientSession:
-  mock_session = mock.create_autospec(spec=McpClientSession, instance=True)
-
-  mock_tool_obj = McpTool(
-      name='mcp_tool',
-      description='Tool from session',
-      inputSchema={
-          'type': 'object',
-          'properties': {'query': {'type': 'string'}},
-      },
-  )
-  mock_result = mock.create_autospec(McpListToolsResult, instance=True)
-  mock_result.tools = [mock_tool_obj]
-
-  mock_session.list_tools = mock.AsyncMock(return_value=mock_result)
-
-  return mock_session
-
-
 def _mock_mcp_tool():
   return McpTool(
       name='mcp_tool',
@@ -1120,7 +1102,6 @@ async def test_generate_content_span_with_experimental_semconv(
   tools = [
       _mock_callable_tool,
       _mock_tool_dict(),
-      _mock_mcp_client_session(),
       _mock_mcp_tool(),
   ]
 
@@ -1204,15 +1185,6 @@ async def test_generate_content_span_with_experimental_semconv(
       },
       {
           'name': 'mcp_tool',
-          'description': 'Tool from session',
-          'parameters': {
-              'type': 'object',
-              'properties': {'query': {'type': 'string'}},
-          },
-          'type': 'function',
-      },
-      {
-          'name': 'mcp_tool',
           'description': 'A standalone mcp tool',
           'parameters': {
               'type': 'object',
@@ -1240,12 +1212,6 @@ async def test_generate_content_span_with_experimental_semconv(
       },
       {
           'name': 'mcp_tool',
-          'description': 'Tool from session',
-          'parameters': None,
-          'type': 'function',
-      },
-      {
-          'name': 'mcp_tool',
           'description': 'A standalone mcp tool',
           'parameters': None,
           'type': 'function',
@@ -1255,9 +1221,7 @@ async def test_generate_content_span_with_experimental_semconv(
       '[{"name":"_mock_callable_tool","description":"Description of some'
       ' tool.","parameters":null,"type":"function"},{"name":"mock_tool","description":"Description'
       ' of mock'
-      ' tool.","parameters":null,"type":"function"},{"name":"google_maps","type":"google_maps"},{"name":"mcp_tool","description":"Tool'
-      ' from'
-      ' session","parameters":{"type":"object","properties":{"query":{"type":"string"}}},"type":"function"},{"name":"mcp_tool","description":"A'
+      ' tool.","parameters":null,"type":"function"},{"name":"google_maps","type":"google_maps"},{"name":"mcp_tool","description":"A'
       ' standalone mcp'
       ' tool","parameters":{"type":"object","properties":{"id":{"type":"integer"}}},"type":"function"}]'
   )
@@ -1266,9 +1230,7 @@ async def test_generate_content_span_with_experimental_semconv(
       '[{"name":"_mock_callable_tool","description":"Description of some'
       ' tool.","parameters":null,"type":"function"},{"name":"mock_tool","description":"Description'
       ' of mock'
-      ' tool.","parameters":null,"type":"function"},{"name":"google_maps","type":"google_maps"},{"name":"mcp_tool","description":"Tool'
-      ' from'
-      ' session","parameters":null,"type":"function"},{"name":"mcp_tool","description":"A'
+      ' tool.","parameters":null,"type":"function"},{"name":"google_maps","type":"google_maps"},{"name":"mcp_tool","description":"A'
       ' standalone mcp tool","parameters":null,"type":"function"}]'
   )
   # Assert Span
@@ -1400,7 +1362,7 @@ def test_trace_tool_call_with_tool_execution_error(
       'opentelemetry.trace.get_current_span', lambda: mock_span_fixture
   )
 
-  test_args: Dict[str, Any] = {'param_a': 'value_a'}
+  test_args: Dict[str, object] = {'param_a': 'value_a'}
   test_error = ToolExecutionError(
       message='Internal server error',
       error_type=ToolErrorType.INTERNAL_SERVER_ERROR,
@@ -1440,7 +1402,7 @@ def test_trace_tool_call_with_timeout_error(
       'opentelemetry.trace.get_current_span', lambda: mock_span_fixture
   )
 
-  test_args: Dict[str, Any] = {'param_a': 'value_a'}
+  test_args: Dict[str, object] = {'param_a': 'value_a'}
   test_error = ToolExecutionError(
       message='Request timed out',
       error_type=ToolErrorType.REQUEST_TIMEOUT,
@@ -1466,7 +1428,7 @@ def test_trace_tool_call_with_standard_error(
       'opentelemetry.trace.get_current_span', lambda: mock_span_fixture
   )
 
-  test_args: Dict[str, Any] = {'param': 1}
+  test_args: Dict[str, object] = {'param': 1}
   test_error = ValueError('Invalid arguments')
 
   trace_tool_call(
@@ -1485,13 +1447,27 @@ def test_trace_tool_call_with_standard_error(
 def test_safe_json_serialize_circular_dict_returns_not_serializable():
   obj = {}
   obj['self'] = obj
-  assert _safe_json_serialize(obj) == '<not serializable>'
+  assert safe_json_serialize(obj) == '<not serializable>'
 
 
 def test_safe_json_serialize_no_whitespaces_circular_dict_returns_not_serializable():
   obj = {}
   obj['self'] = obj
   assert _safe_json_serialize_no_whitespaces(obj) == '<not serializable>'
+
+
+def test_safe_json_serialize_recursion_error_returns_not_serializable():
+  with mock.patch.object(
+      json, 'dumps', side_effect=RecursionError('maximum recursion depth')
+  ):
+    assert safe_json_serialize({'a': 1}) == '<not serializable>'
+
+
+def test_safe_json_serialize_no_whitespaces_recursion_error_returns_not_serializable():
+  with mock.patch.object(
+      json, 'dumps', side_effect=RecursionError('maximum recursion depth')
+  ):
+    assert _safe_json_serialize_no_whitespaces({'a': 1}) == '<not serializable>'
 
 
 def test_use_extra_generate_content_attributes_upgraded_version(monkeypatch):
@@ -1784,3 +1760,85 @@ def test_trace_tool_call_no_error_no_error_type(
       if c == mock.call('error.type', mock.ANY)
   ]
   assert len(error_type_calls) == 0
+
+
+def test_build_llm_request_for_trace_excludes_live_http_clients():
+  """Tracing must not crash when config.http_options holds live SDK clients.
+
+  HttpOptions.{httpx_client, httpx_async_client, aiohttp_client} are live
+  transport objects that pydantic cannot serialize; they must be excluded so
+  the trace serialization does not raise PydanticSerializationError.
+  """
+  from google.adk.telemetry.tracing import _build_llm_request_for_trace
+  import httpx
+
+  llm_request = LlmRequest(
+      model='gemini-2.0-flash',
+      config=types.GenerateContentConfig(
+          temperature=0.1,
+          http_options=types.HttpOptions(
+              httpx_async_client=httpx.AsyncClient()
+          ),
+      ),
+  )
+
+  result = _build_llm_request_for_trace(llm_request)
+
+  # Must be JSON-serializable (raised PydanticSerializationError before the fix).
+  json.dumps(result)
+  assert 'httpx_async_client' not in result['config'].get('http_options', {})
+  assert result['config']['temperature'] == 0.1
+
+
+# ---------------------------------------------------------------------------
+# safe_json_serialize tests
+# ---------------------------------------------------------------------------
+
+
+class _SampleToolResult(BaseModel):
+  query: str
+  total: int
+  items: list[str] = []
+
+
+class _NestedModel(BaseModel):
+  inner: _SampleToolResult
+
+
+def test_safe_json_serialize_plain_dict():
+  """Plain dicts serialize normally."""
+  result = safe_json_serialize({'key': 'value', 'num': 42})
+  assert json.loads(result) == {'key': 'value', 'num': 42}
+
+
+def test_safe_json_serialize_pydantic_model_in_dict():
+  """Pydantic models nested in a dict are serialized via model_dump."""
+  model = _SampleToolResult(query='test', total=2, items=['a', 'b'])
+  result = safe_json_serialize({'result': model})
+  parsed = json.loads(result)
+  assert parsed == {
+      'result': {'query': 'test', 'total': 2, 'items': ['a', 'b']}
+  }
+
+
+def test_safe_json_serialize_nested_pydantic_model():
+  """Nested Pydantic models are fully serialized."""
+  inner = _SampleToolResult(query='q', total=0, items=[])
+  outer = _NestedModel(inner=inner)
+  result = safe_json_serialize({'result': outer})
+  parsed = json.loads(result)
+  assert parsed['result']['inner'] == {'query': 'q', 'total': 0, 'items': []}
+
+
+def test_safe_json_serialize_top_level_pydantic_model():
+  """A top-level Pydantic model (not wrapped in a dict) is serialized."""
+  model = _SampleToolResult(query='direct', total=1, items=['x'])
+  result = safe_json_serialize(model)
+  parsed = json.loads(result)
+  assert parsed == {'query': 'direct', 'total': 1, 'items': ['x']}
+
+
+def test_safe_json_serialize_non_serializable_fallback():
+  """Objects that are neither JSON-native nor Pydantic fall back gracefully."""
+  result = safe_json_serialize({'value': object()})
+  assert '<not serializable>' in result

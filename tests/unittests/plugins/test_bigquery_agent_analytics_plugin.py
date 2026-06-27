@@ -5301,7 +5301,7 @@ class TestHITLTracing:
 
 
 class TestSpanHierarchyIsolation:
-  """Regression tests for https://github.com/google/adk-python/issues/4561.
+  """Regression tests for span hierarchy isolation.
 
   ``push_span()`` must NOT attach its span to the ambient OTel context.
   If it does, any subsequent ``tracer.start_as_current_span()`` in the
@@ -6118,8 +6118,6 @@ class TestAnalyticsViews:
 # ==============================================================================
 class TestTraceIdContinuity:
   """Tests for trace_id continuity across all events in an invocation.
-
-  Regression tests for https://github.com/google/adk-python/issues/4645.
 
   When there is no ambient OTel span (e.g. Agent Engine, custom runners),
   early events (USER_MESSAGE_RECEIVED, INVOCATION_STARTING) used to fall
@@ -8564,7 +8562,7 @@ class TestC7ToolPauseAndComplete:
     await bq_plugin_inst.on_event_callback(
         invocation_context=invocation_context, event=event
     )
-    await asyncio.sleep(0.01)
+    await bq_plugin_inst.flush()
     rows = await _get_captured_rows_async(mock_write_client, dummy_arrow_schema)
     pauses = [r for r in rows if r["event_type"] == "TOOL_PAUSED"]
     assert len(pauses) == 1
@@ -8598,7 +8596,7 @@ class TestC7ToolPauseAndComplete:
     await bq_plugin_inst.on_event_callback(
         invocation_context=invocation_context, event=event
     )
-    await asyncio.sleep(0.01)
+    await bq_plugin_inst.flush()
     rows = await _get_captured_rows_async(mock_write_client, dummy_arrow_schema)
     pauses = [r for r in rows if r["event_type"] == "TOOL_PAUSED"]
     assert len(pauses) == 1
@@ -8626,7 +8624,7 @@ class TestC7ToolPauseAndComplete:
             role="user", parts=[types.Part(function_response=fr)]
         ),
     )
-    await asyncio.sleep(0.01)
+    await bq_plugin_inst.flush()
     rows = await _get_captured_rows_async(mock_write_client, dummy_arrow_schema)
     completed = [r for r in rows if r["event_type"] == "TOOL_COMPLETED"]
     assert len(completed) == 1
@@ -8657,7 +8655,7 @@ class TestC7ToolPauseAndComplete:
             role="user", parts=[types.Part(function_response=fr)]
         ),
     )
-    await asyncio.sleep(0.01)
+    await bq_plugin_inst.flush()
     rows = await _get_captured_rows_async(mock_write_client, dummy_arrow_schema)
     types_emitted = {r["event_type"] for r in rows}
     assert "HITL_CONFIRMATION_REQUEST_COMPLETED" in types_emitted
@@ -8777,7 +8775,7 @@ class TestUnmatchedLongRunningIdFallback:
       await bq_plugin_inst.on_event_callback(
           invocation_context=invocation_context, event=event
       )
-    await asyncio.sleep(0.01)
+    await bq_plugin_inst.flush()
     rows = await _get_captured_rows_async(mock_write_client, dummy_arrow_schema)
     pauses = [r for r in rows if r["event_type"] == "TOOL_PAUSED"]
     assert len(pauses) == 1
@@ -8811,7 +8809,7 @@ class TestUnmatchedLongRunningIdFallback:
     await bq_plugin_inst.on_event_callback(
         invocation_context=invocation_context, event=event
     )
-    await asyncio.sleep(0.01)
+    await bq_plugin_inst.flush()
     rows = await _get_captured_rows_async(mock_write_client, dummy_arrow_schema)
     pauses = [r for r in rows if r["event_type"] == "TOOL_PAUSED"]
     assert len(pauses) == 1

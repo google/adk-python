@@ -36,12 +36,10 @@ from typing import Optional
 
 from fastapi import FastAPI
 from fastapi import HTTPException
-from fastapi import Response
 from fastapi import UploadFile
 from fastapi.responses import FileResponse
 from fastapi.responses import PlainTextResponse
 from fastapi.responses import StreamingResponse
-from fastapi.staticfiles import StaticFiles
 import graphviz
 from pydantic import Field
 from pydantic import ValidationError
@@ -49,7 +47,6 @@ from typing_extensions import deprecated
 import yaml
 
 from . import agent_graph
-from ..agents.base_agent import BaseAgent
 from ..errors.not_found_error import NotFoundError
 from ..evaluation.base_eval_service import InferenceConfig
 from ..evaluation.base_eval_service import InferenceRequest
@@ -62,9 +59,9 @@ from ..evaluation.eval_metrics import EvalStatus
 from ..evaluation.eval_metrics import MetricInfo
 from ..evaluation.eval_result import EvalSetResult
 from ..evaluation.eval_set import EvalSet
-from ..events.event import Event
 from .api_server import ApiServer
-from .cli_eval import EVAL_SESSION_ID_PREFIX
+
+NESTED_APP_SEPARATOR = "."
 from .utils import common
 from .utils import evals
 from .utils.graph_serialization import serialize_app_info
@@ -161,6 +158,40 @@ class DevServer(ApiServer):
   Inherits all production endpoints from ApiServer and adds development-specific
   endpoints for evaluation, debugging, and developer UI features.
   """
+
+  def _get_agent_dir(self, app_name: str) -> str:
+    """Resolves the agent directory and validates the app name to prevent path traversal."""
+    if not self.agents_dir:
+      raise HTTPException(
+          status_code=500, detail="Agents directory is not configured"
+      )
+    if not app_name:
+      raise HTTPException(status_code=400, detail="App name cannot be empty")
+
+    # Validate app_name structure (must be dot-separated identifiers)
+    parts = app_name.split(NESTED_APP_SEPARATOR)
+    for part in parts:
+      if not part or not part.isidentifier():
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Invalid app name: {app_name!r}. App names must be valid "
+                "Python identifiers or paths separated by dots."
+            ),
+        )
+
+    # Resolve path
+    app_path = app_name.replace(NESTED_APP_SEPARATOR, "/")
+    agents_base = Path(self.agents_dir).resolve()
+    resolved_path = (agents_base / app_path).resolve()
+
+    if not resolved_path.is_relative_to(agents_base):
+      raise HTTPException(
+          status_code=400,
+          detail=f"Access denied: {app_name!r} is outside the agents directory",
+      )
+
+    return str(resolved_path)
 
   def _register_dev_endpoints(
       self,
@@ -507,7 +538,8 @@ class DevServer(ApiServer):
         if self.agents_dir:
           import os
 
-          readme_path = os.path.join(self.agents_dir, app_name, "README.md")
+          agent_dir = self._get_agent_dir(app_name)
+          readme_path = os.path.join(agent_dir, "README.md")
           if os.path.exists(readme_path):
             try:
               with open(readme_path, "r", encoding="utf-8") as f:
@@ -562,7 +594,7 @@ class DevServer(ApiServer):
     @app.get("/dev/apps/{app_name}/tests")
     async def list_tests(app_name: str) -> list[str]:
       """Lists all test JSON files for the given app."""
-      agent_dir = os.path.join(self.agents_dir, app_name)
+      agent_dir = self._get_agent_dir(app_name)
       tests_dir = os.path.join(agent_dir, "tests")
       if not os.path.exists(tests_dir):
         return []
@@ -578,7 +610,7 @@ class DevServer(ApiServer):
         app_name: str, test_name: Optional[str] = None
     ) -> dict[str, str]:
       """Rebuilds tests for the app."""
-      agent_dir = os.path.join(self.agents_dir, app_name)
+      agent_dir = self._get_agent_dir(app_name)
 
       if test_name:
         if not test_name.endswith(".json"):
@@ -597,7 +629,7 @@ class DevServer(ApiServer):
         app_name: str, test_name: Optional[str] = None
     ) -> StreamingResponse:
       """Runs tests and streams pytest output."""
-      agent_dir = os.path.join(self.agents_dir, app_name)
+      agent_dir = self._get_agent_dir(app_name)
 
       import subprocess
       import sys
@@ -661,7 +693,7 @@ class DevServer(ApiServer):
       """Creates or updates a test file from session data."""
       # Sanitize test_name to prevent directory traversal
       test_name = os.path.basename(test_name)
-      agent_dir = os.path.join(self.agents_dir, app_name)
+      agent_dir = self._get_agent_dir(app_name)
       tests_dir = os.path.join(agent_dir, "tests")
       os.makedirs(tests_dir, exist_ok=True)
 
@@ -678,7 +710,7 @@ class DevServer(ApiServer):
     @app.delete("/dev/apps/{app_name}/tests/{test_name}")
     async def delete_test(app_name: str, test_name: str) -> dict[str, str]:
       """Deletes a specific test file."""
-      agent_dir = os.path.join(self.agents_dir, app_name)
+      agent_dir = self._get_agent_dir(app_name)
       tests_dir = os.path.join(agent_dir, "tests")
 
       if not test_name.endswith(".json"):
@@ -695,7 +727,7 @@ class DevServer(ApiServer):
     @app.get("/dev/apps/{app_name}/tests/{test_name}")
     async def get_test_content(app_name: str, test_name: str) -> dict[str, Any]:
       """Fetches the content of a specific test file."""
-      agent_dir = os.path.join(self.agents_dir, app_name)
+      agent_dir = self._get_agent_dir(app_name)
       tests_dir = os.path.join(agent_dir, "tests")
 
       if not test_name.endswith(".json"):

@@ -1,3 +1,17 @@
+# Copyright 2025 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 name: Copybara PR Handler
 
 on:
@@ -17,6 +31,7 @@ on:
 
 jobs:
   close-imported-pr:
+    if: github.repository == 'google/adk-python'
     runs-on: ubuntu-latest
     permissions:
       pull-requests: write
@@ -58,11 +73,12 @@ jobs:
                 console.log(`Committer: ${committer}`);
 
                 // Check if this is a Copybara commit or has a pull request reference
+                const prRegex = /Merges?:?\s+(?:https:\/\/github\.com\/google\/adk-python\/pull\/|#)(\d+)/i;
                 const isCopybara = committer === 'Copybara-Service' ||
                                    commit.author?.email === 'genai-sdk-bot@google.com' ||
                                    message.includes('GitOrigin-RevId:') ||
                                    message.includes('PiperOrigin-RevId:') ||
-                                   /Merge:?\s+https:\/\/github\.com\/google\/adk-python\/pull\/(\d+)/.test(message);
+                                   prRegex.test(message);
 
                 if (!isCopybara) {
                   console.log('Not a Copybara commit, skipping');
@@ -70,8 +86,7 @@ jobs:
                 }
 
                 // Extract PR number from commit message
-                // Pattern matches both "Merge https://..." and "Merge: https://..."
-                const prMatch = message.match(/Merge:?\s+https:\/\/github\.com\/google\/adk-python\/pull\/(\d+)/);
+                const prMatch = message.match(prRegex);
 
                 if (!prMatch) {
                   console.log('No PR number found in Copybara commit message');

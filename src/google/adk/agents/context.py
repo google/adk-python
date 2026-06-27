@@ -28,7 +28,6 @@ from .readonly_context import ReadonlyContext
 
 if TYPE_CHECKING:
   from google.genai import types
-  from pydantic import BaseModel
 
   from ..artifacts.base_artifact_service import ArtifactVersion
   from ..auth.auth_credential import AuthCredential
@@ -220,14 +219,21 @@ class Context(ReadonlyContext):
         parent_ctx.isolation_scope if parent_ctx else None
     )
 
+    self._output_for_ancestors: list[str]
     if use_as_output and parent_ctx:
-      self._output_for_ancestors: list[str] = [parent_ctx.node_path] + list(
+      self._output_for_ancestors = [parent_ctx.node_path] + list(
           parent_ctx._output_for_ancestors or []
       )
     else:
-      self._output_for_ancestors: list[str] = []
+      self._output_for_ancestors = []
     self._error: Exception | None = None
     self._error_node_path: str = ''
+
+  @property
+  def custom_metadata(self) -> dict[str, Any]:
+    """Returns the custom metadata dictionary."""
+    # pylint: disable=protected-access
+    return self._invocation_context._custom_metadata
 
   @property
   def function_call_id(self) -> str | None:
@@ -403,6 +409,7 @@ class Context(ReadonlyContext):
     ctx_with_proxy = ctx.model_copy(
         update={
             'session': self.session,
+            'isolation_scope': self.isolation_scope,
         }
     )
     return ctx_with_proxy
@@ -445,9 +452,46 @@ class Context(ReadonlyContext):
       use_sub_branch: If True, the dynamic node will be executed in a sub-branch
         to isolate its state and events from the main branch.
       override_branch: An optional branch to use instead of parent's branch.
+      override_isolation_scope: An optional isolation scope to use instead of
+        the parent's scope.
+      raise_on_wait: If True, raises NodeInterruptedError when the child node
+        is WAITING instead of returning None.
 
     Returns:
       The output of the dynamically executed node, once it finishes executing.
+    """
+    return await self._run_node_internal(
+        node,
+        node_input,
+        use_as_output=use_as_output,
+        run_id=run_id,
+        use_sub_branch=use_sub_branch,
+        override_branch=override_branch,
+        override_isolation_scope=override_isolation_scope,
+        raise_on_wait=raise_on_wait,
+        resume_inputs=None,
+        return_ctx=False,
+    )
+
+  async def _run_node_internal(
+      self,
+      node: NodeLike,
+      node_input: Any = None,
+      *,
+      use_as_output: bool = False,
+      run_id: str | None = None,
+      use_sub_branch: bool = False,
+      override_branch: str | None = None,
+      override_isolation_scope: str | None = None,
+      raise_on_wait: bool = False,
+      return_ctx: bool = False,
+      resume_inputs: dict[str, Any] | None = None,
+  ) -> Any:
+    """Executes a node dynamically (Internal Orchestration API).
+
+    See public ``run_node`` for public argument details.
+    Additional internal args:
+      return_ctx: If True, returns the child's Context instead of its output.
     """
 
     if not self._node_rerun_on_resume:
@@ -531,7 +575,7 @@ class Context(ReadonlyContext):
           and not child_ctx.actions.transfer_to_agent
       ):
         raise NodeInterruptedError()
-      return child_ctx.output
+      return child_ctx if return_ctx else child_ctx.output
 
     # Mode 2: Standalone execution (outside of workflow).
     # Run the node directly via NodeRunner.
@@ -543,7 +587,16 @@ class Context(ReadonlyContext):
         override_branch=override_branch,
         override_isolation_scope=override_isolation_scope,
         run_id=run_id,
+        resume_inputs=resume_inputs,
     )
+    if result.error:
+      from ..workflow import _errors
+
+      raise _errors.DynamicNodeFailError(
+          message=f'Dynamic node {built_node.name} failed',
+          error=result.error,
+          error_node_path=result.error_node_path,
+      )
     if (
         raise_on_wait
         and built_node.wait_for_output
@@ -553,7 +606,7 @@ class Context(ReadonlyContext):
       from ..workflow._errors import NodeInterruptedError
 
       raise NodeInterruptedError()
-    return result.output
+    return result if return_ctx else result.output
 
   # ============================================================================
   # Artifact methods

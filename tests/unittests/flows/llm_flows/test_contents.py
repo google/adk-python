@@ -19,6 +19,7 @@ from google.adk.flows.llm_flows import contents
 from google.adk.flows.llm_flows.contents import request_processor
 from google.adk.flows.llm_flows.functions import REQUEST_CONFIRMATION_FUNCTION_CALL_NAME
 from google.adk.flows.llm_flows.functions import REQUEST_EUC_FUNCTION_CALL_NAME
+from google.adk.labs.openai import OpenAIResponsesLlm
 from google.adk.models.anthropic_llm import AnthropicLlm
 from google.adk.models.google_llm import Gemini
 from google.adk.models.llm_request import LlmRequest
@@ -1145,6 +1146,78 @@ async def test_adk_function_call_ids_preserved_for_anthropic_model():
   assert user_fr_part.function_response.id == function_call_id
 
 
+@pytest.mark.asyncio
+async def test_adk_function_call_ids_preserved_for_lite_llm_model():
+  """LiteLLM-backed providers (e.g. OpenAI) pair tool calls with their
+  results by id, so `adk-*` fallback ids must survive replay.
+  """
+  from google.adk.models.lite_llm import LiteLlm
+
+  agent = Agent(
+      model=LiteLlm(model="openai/gpt-4o-mini"),
+      name="test_agent",
+  )
+  llm_request = LlmRequest(model="openai/gpt-4o-mini")
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent
+  )
+
+  function_call_id = "adk-test-call-id"
+  events = [
+      Event(
+          invocation_id="inv1",
+          author="user",
+          content=types.UserContent("Call the tool"),
+      ),
+      Event(
+          invocation_id="inv2",
+          author="test_agent",
+          content=types.Content(
+              role="model",
+              parts=[
+                  types.Part(
+                      function_call=types.FunctionCall(
+                          id=function_call_id,
+                          name="test_tool",
+                          args={"x": 1},
+                      )
+                  )
+              ],
+          ),
+      ),
+      Event(
+          invocation_id="inv3",
+          author="test_agent",
+          content=types.Content(
+              role="user",
+              parts=[
+                  types.Part(
+                      function_response=types.FunctionResponse(
+                          id=function_call_id,
+                          name="test_tool",
+                          response={"result": 2},
+                      )
+                  )
+              ],
+          ),
+      ),
+  ]
+  invocation_context.session.events = events
+
+  async for _ in contents.request_processor.run_async(
+      invocation_context, llm_request
+  ):
+    pass
+
+  model_fc_part = llm_request.contents[1].parts[0]
+  assert model_fc_part.function_call is not None
+  assert model_fc_part.function_call.id == function_call_id
+
+  user_fr_part = llm_request.contents[2].parts[0]
+  assert user_fr_part.function_response is not None
+  assert user_fr_part.function_response.id == function_call_id
+
+
 def test_is_other_agent_reply_live_session():
   """Test _is_other_agent_reply when live_session_id is present."""
   event = Event(author="another_agent", live_session_id="session_123")
@@ -1170,6 +1243,74 @@ def test_is_other_agent_reply_non_live_session():
 
   event = Event(author="another_agent")
   assert contents._is_other_agent_reply("", event) is False
+
+
+@pytest.mark.asyncio
+async def test_adk_function_call_ids_preserved_for_openai_responses_model():
+  """Responses API replay needs call_id values to match tool outputs."""
+  agent = Agent(
+      model=OpenAIResponsesLlm(model="gpt-5.5"),
+      name="test_agent",
+  )
+  llm_request = LlmRequest(model="gpt-5.5")
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent
+  )
+
+  function_call_id = "adk-test-call-id"
+  events = [
+      Event(
+          invocation_id="inv1",
+          author="user",
+          content=types.UserContent("Call the tool"),
+      ),
+      Event(
+          invocation_id="inv2",
+          author="test_agent",
+          content=types.Content(
+              role="model",
+              parts=[
+                  types.Part(
+                      function_call=types.FunctionCall(
+                          id=function_call_id,
+                          name="test_tool",
+                          args={"x": 1},
+                      )
+                  )
+              ],
+          ),
+      ),
+      Event(
+          invocation_id="inv3",
+          author="test_agent",
+          content=types.Content(
+              role="user",
+              parts=[
+                  types.Part(
+                      function_response=types.FunctionResponse(
+                          id=function_call_id,
+                          name="test_tool",
+                          response={"result": 2},
+                      )
+                  )
+              ],
+          ),
+      ),
+  ]
+  invocation_context.session.events = events
+
+  async for _ in contents.request_processor.run_async(
+      invocation_context, llm_request
+  ):
+    pass
+
+  model_fc_part = llm_request.contents[1].parts[0]
+  assert model_fc_part.function_call is not None
+  assert model_fc_part.function_call.id == function_call_id
+
+  user_fr_part = llm_request.contents[2].parts[0]
+  assert user_fr_part.function_response is not None
+  assert user_fr_part.function_response.id == function_call_id
 
 
 @pytest.mark.asyncio
@@ -1306,3 +1447,37 @@ def test_get_contents_live_history_rebuild():
 
   assert result[1].role == "user"
   assert "returned result" in result[1].parts[1].text
+
+
+def test_rearrange_async_function_responses_early_returns_when_no_responses():
+  """Rearrangement is a no-op when no event carries function_responses."""
+  events = [
+      Event(
+          invocation_id="inv1",
+          author="user",
+          content=types.UserContent("hi"),
+      ),
+      Event(
+          invocation_id="inv2",
+          author="test_agent",
+          content=types.ModelContent("hello"),
+      ),
+      Event(
+          invocation_id="inv3",
+          author="test_agent",
+          content=types.Content(
+              role="model",
+              parts=[
+                  types.Part(
+                      function_call=types.FunctionCall(
+                          id="adk-1", name="tool", args={}
+                      )
+                  )
+              ],
+          ),
+      ),
+  ]
+  result = contents._rearrange_events_for_async_function_responses_in_history(  # pylint: disable=protected-access
+      events
+  )
+  assert result is events

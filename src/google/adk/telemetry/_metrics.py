@@ -43,28 +43,104 @@ meter = metrics.get_meter(
 
 _agent_invocation_duration = meter.create_histogram(
     "gen_ai.agent.invocation.duration",
-    unit="ms",
+    unit="s",
     description="Duration of agent invocations.",
+    explicit_bucket_boundaries_advisory=[
+        0.1,
+        0.2,
+        0.4,
+        0.8,
+        1.6,
+        3.2,
+        6.4,
+        12.8,
+        25.6,
+        51.2,
+        102.4,
+        204.8,
+        409.6,
+    ],
 )
 _tool_execution_duration = meter.create_histogram(
     "gen_ai.tool.execution.duration",
-    unit="ms",
+    unit="s",
     description="Duration of tool executions.",
+    explicit_bucket_boundaries_advisory=[
+        0.01,
+        0.02,
+        0.04,
+        0.08,
+        0.16,
+        0.32,
+        0.64,
+        1.28,
+        2.56,
+        5.12,
+        10.24,
+        20.48,
+        40.96,
+        81.92,
+    ],
 )
 _agent_request_size = meter.create_histogram(
     "gen_ai.agent.request.size",
     unit="By",
     description="Size of agent requests.",
+    explicit_bucket_boundaries_advisory=[
+        1,
+        4,
+        16,
+        64,
+        256,
+        1024,
+        4096,
+        16384,
+        65536,
+        262144,
+        1048576,
+        4194304,
+        16777216,
+        67108864,
+    ],
 )
 _agent_response_size = meter.create_histogram(
     "gen_ai.agent.response.size",
     unit="By",
     description="Size of agent responses.",
+    explicit_bucket_boundaries_advisory=[
+        1,
+        4,
+        16,
+        64,
+        256,
+        1024,
+        4096,
+        16384,
+        65536,
+        262144,
+        1048576,
+        4194304,
+        16777216,
+        67108864,
+    ],
 )
 _agent_workflow_steps = meter.create_histogram(
     "gen_ai.agent.workflow.steps",
     unit="1",
     description="Length of agentic workflow (# of events).",
+    explicit_bucket_boundaries_advisory=[
+        1,
+        2,
+        4,
+        8,
+        16,
+        32,
+        64,
+        128,
+        256,
+        512,
+        1024,
+    ],
 )
 _client_operation_duration = (
     gen_ai_metrics.create_gen_ai_client_operation_duration(meter)
@@ -74,14 +150,14 @@ _client_token_usage = gen_ai_metrics.create_gen_ai_client_token_usage(meter)
 
 def record_agent_invocation_duration(
     agent_name: str,
-    elapsed_ms: float,
+    elapsed_s: float,
     error: Exception | None = None,
 ):
   """Records the duration of the agent invocation."""
   attrs = {gen_ai_attributes.GEN_AI_AGENT_NAME: agent_name}
   if error is not None:
     attrs[error_attributes.ERROR_TYPE] = type(error).__name__
-  _agent_invocation_duration.record(elapsed_ms, attributes=attrs)
+  _agent_invocation_duration.record(elapsed_s, attributes=attrs)
 
 
 def record_agent_request_size(
@@ -115,23 +191,25 @@ def record_agent_workflow_steps(agent_name: str, events: list[Event]):
 
 def record_tool_execution_duration(
     tool_name: str,
+    tool_type: str,
     agent_name: str,
-    elapsed_ms: float,
+    elapsed_s: float,
     error: Exception | None = None,
 ):
   """Records the duration of the tool execution."""
   attrs = {
       gen_ai_attributes.GEN_AI_AGENT_NAME: agent_name,
       gen_ai_attributes.GEN_AI_TOOL_NAME: tool_name,
+      gen_ai_attributes.GEN_AI_TOOL_TYPE: tool_type,
   }
   if error is not None:
     attrs[error_attributes.ERROR_TYPE] = type(error).__name__
-  _tool_execution_duration.record(elapsed_ms, attributes=attrs)
+  _tool_execution_duration.record(elapsed_s, attributes=attrs)
 
 
 def record_client_operation_duration(
     agent_name: str,
-    elapsed_ms: float,
+    elapsed_s: float,
     llm_request: LlmRequest,
     responses: list[LlmResponse],
     error: Exception | None = None,
@@ -154,7 +232,7 @@ def record_client_operation_duration(
   if error is not None:
     attrs[error_attributes.ERROR_TYPE] = type(error).__name__
 
-  _client_operation_duration.record(elapsed_ms / 1000.0, attributes=attrs)
+  _client_operation_duration.record(elapsed_s, attributes=attrs)
 
 
 def record_client_token_usage(

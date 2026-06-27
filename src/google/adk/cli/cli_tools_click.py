@@ -47,6 +47,41 @@ LOG_LEVELS = click.Choice(
 )
 
 
+def _logging_options():
+  """Decorator to add logging options to click commands."""
+
+  def decorator(func):
+    @click.option(
+        "-v",
+        "--verbose",
+        is_flag=True,
+        show_default=True,
+        default=False,
+        help="Enable verbose (DEBUG) logging. Shortcut for --log_level DEBUG.",
+    )
+    @click.option(
+        "--log_level",
+        type=LOG_LEVELS,
+        default="INFO",
+        help="Optional. Set the logging level",
+    )
+    @functools.wraps(func)
+    @click.pass_context
+    def wrapper(ctx, *args, **kwargs):
+      # If verbose flag is set and log level is not set, set log level to DEBUG.
+      log_level_source = ctx.get_parameter_source("log_level")
+      if (
+          kwargs.pop("verbose", False)
+          and log_level_source == ParameterSource.DEFAULT
+      ):
+        kwargs["log_level"] = "DEBUG"
+      return func(*args, **kwargs)
+
+    return wrapper
+
+  return decorator
+
+
 def _apply_feature_overrides(
     *,
     enable_features: tuple[str, ...] = (),
@@ -606,6 +641,7 @@ def adk_services_options(*, default_use_local_storage: bool = True):
 @main.command("run", cls=HelpfulCommand)
 @feature_options()
 @adk_services_options(default_use_local_storage=True)
+@_logging_options()
 @click.option(
     "--save_session",
     type=bool,
@@ -700,6 +736,7 @@ def cli_run(
     memory_service_uri: Optional[str] = None,
     use_local_storage: bool = True,
     default_llm_model: Optional[str] = None,
+    log_level: str = "INFO",
 ):
   """Runs an agent. If no query is provided, enters interactive mode.
 
@@ -711,7 +748,7 @@ def cli_run(
     adk run path/to/my_agent
     adk run path/to/my_agent "hello"
   """
-  logs.log_to_tmp_folder()
+  logs.log_to_tmp_folder(level=getattr(logging, log_level.upper()))
 
   agent_parent_folder = os.path.dirname(agent)
   agent_folder_name = os.path.basename(agent)
@@ -963,7 +1000,7 @@ def cli_eval(
   logs.setup_adk_logger(getattr(logging, log_level.upper()))
 
   try:
-    import importlib
+    import importlib  # noqa: F401
 
     from ..evaluation.base_eval_service import InferenceConfig
     from ..evaluation.base_eval_service import InferenceRequest
@@ -1215,14 +1252,14 @@ def cli_optimize(
   logs.setup_adk_logger(getattr(logging, log_level.upper()))
 
   try:
-    from ..evaluation.custom_metric_evaluator import _CustomMetricEvaluator
+    from ..evaluation.custom_metric_evaluator import _CustomMetricEvaluator  # noqa: F401
     from ..evaluation.local_eval_sets_manager import LocalEvalSetsManager
     from ..optimization.gepa_root_agent_prompt_optimizer import GEPARootAgentPromptOptimizer
     from ..optimization.gepa_root_agent_prompt_optimizer import GEPARootAgentPromptOptimizerConfig
     from ..optimization.local_eval_sampler import LocalEvalSampler
     from ..optimization.local_eval_sampler import LocalEvalSamplerConfig
-    from .cli_eval import _collect_eval_results
-    from .cli_eval import _collect_inferences
+    from .cli_eval import _collect_eval_results  # noqa: F401
+    from .cli_eval import _collect_inferences  # noqa: F401
     from .cli_eval import get_root_agent
 
   except ModuleNotFoundError as mnf:
@@ -1588,6 +1625,7 @@ def fast_api_common_options():
   """Decorator to add common fast api options to click commands."""
 
   def decorator(func):
+    func = _logging_options()(func)
 
     @click.option(
         "--host",
@@ -1610,20 +1648,6 @@ def fast_api_common_options():
             " 'regex:' (e.g., 'regex:https://.*\\.example\\.com')."
         ),
         multiple=True,
-    )
-    @click.option(
-        "-v",
-        "--verbose",
-        is_flag=True,
-        show_default=True,
-        default=False,
-        help="Enable verbose (DEBUG) logging. Shortcut for --log_level DEBUG.",
-    )
-    @click.option(
-        "--log_level",
-        type=LOG_LEVELS,
-        default="INFO",
-        help="Optional. Set the logging level",
     )
     @click.option(
         "--trace_to_cloud",
@@ -1707,14 +1731,6 @@ def fast_api_common_options():
     @functools.wraps(func)
     @click.pass_context
     def wrapper(ctx, *args, **kwargs):
-      # If verbose flag is set and log level is not set, set log level to DEBUG.
-      log_level_source = ctx.get_parameter_source("log_level")
-      if (
-          kwargs.pop("verbose", False)
-          and log_level_source == ParameterSource.DEFAULT
-      ):
-        kwargs["log_level"] = "DEBUG"
-
       # Parse comma-separated trigger_sources into a list.
       trigger_sources = kwargs.get("trigger_sources")
       if trigger_sources is not None:
@@ -1984,7 +2000,6 @@ def cli_api_server(
     "cloud_run",
     context_settings={
         "allow_extra_args": True,
-        "allow_interspersed_args": False,
     },
 )
 @click.option(
@@ -2161,34 +2176,7 @@ def cli_deploy_cloud_run(
 
   _warn_if_with_ui(with_ui)
 
-  # Parse arguments to separate gcloud args (after --) from regular args
-  gcloud_args = []
-  if "--" in ctx.args:
-    separator_index = ctx.args.index("--")
-    gcloud_args = ctx.args[separator_index + 1 :]
-    regular_args = ctx.args[:separator_index]
-
-    # If there are regular args before --, that's an error
-    if regular_args:
-      click.secho(
-          "Error: Unexpected arguments after agent path and before '--':"
-          f" {' '.join(regular_args)}. \nOnly arguments after '--' are passed"
-          " to gcloud.",
-          fg="red",
-          err=True,
-      )
-      ctx.exit(2)
-  else:
-    # No -- separator, treat all args as an error to enforce the new behavior
-    if ctx.args:
-      click.secho(
-          f"Error: Unexpected arguments: {' '.join(ctx.args)}. \nUse '--' to"
-          " separate gcloud arguments, e.g.: adk deploy cloud_run [options]"
-          " agent_path -- --min-instances=2",
-          fg="red",
-          err=True,
-      )
-      ctx.exit(2)
+  gcloud_args = ctx.args
 
   try:
     from . import cli_deploy

@@ -264,6 +264,52 @@ async def test_save_load_delete(service_type, artifact_service_factory):
 
 
 @pytest.mark.asyncio
+async def test_in_memory_loads_nested_artifact_reference(
+    artifact_service_factory,
+):
+  """Tests loading an artifact reference whose target name is nested."""
+  artifact_service = artifact_service_factory(ArtifactServiceType.IN_MEMORY)
+  app_name = "app0"
+  user_id = "user0"
+  session_id = "123"
+  target_filename = "folder/file456"
+  target_artifact = types.Part.from_text(text="target")
+
+  await artifact_service.save_artifact(
+      app_name=app_name,
+      user_id=user_id,
+      session_id=session_id,
+      filename=target_filename,
+      artifact=target_artifact,
+  )
+  await artifact_service.save_artifact(
+      app_name=app_name,
+      user_id=user_id,
+      session_id=session_id,
+      filename="reference",
+      artifact=types.Part(
+          file_data=types.FileData(
+              file_uri=(
+                  "artifact://apps/app0/users/user0/sessions/123/artifacts/"
+                  "folder/file456/versions/0"
+              ),
+              mime_type="text/plain",
+          )
+      ),
+  )
+
+  assert (
+      await artifact_service.load_artifact(
+          app_name=app_name,
+          user_id=user_id,
+          session_id=session_id,
+          filename="reference",
+      )
+      == target_artifact
+  )
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "service_type",
     [
@@ -599,6 +645,33 @@ async def test_get_artifact_version_out_of_index(
 
 
 @pytest.mark.asyncio
+async def test_gcs_save_and_load_empty_text_artifact(
+    artifact_service_factory,
+):
+  """GcsArtifactService should round-trip empty text as text."""
+  artifact_service = artifact_service_factory(ArtifactServiceType.GCS)
+  artifact = types.Part.from_text(text="")
+
+  version = await artifact_service.save_artifact(
+      app_name="app0",
+      user_id="user0",
+      session_id="123",
+      filename="empty.txt",
+      artifact=artifact,
+  )
+
+  assert version == 0
+  loaded_artifact = await artifact_service.load_artifact(
+      app_name="app0",
+      user_id="user0",
+      session_id="123",
+      filename="empty.txt",
+  )
+
+  assert loaded_artifact == types.Part(text="")
+
+
+@pytest.mark.asyncio
 async def test_file_metadata_camelcase(tmp_path, artifact_service_factory):
   """Ensures FileArtifactService writes camelCase metadata without newlines."""
   artifact_service = artifact_service_factory(ArtifactServiceType.FILE)
@@ -865,6 +938,201 @@ class TestEnsurePart:
     assert result.text == "hello world"
 
 
+# ---------------------------------------------------------------------------
+# GCS file_data (URI reference) tests
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio  # type: ignore[untyped-decorator]
+async def test_gcs_save_artifact_with_external_gcs_uri() -> None:
+  """GcsArtifactService saves and loads a gs:// file_data URI reference."""
+  service = mock_gcs_artifact_service()  # type: ignore[no-untyped-call]
+  artifact = types.Part(
+      file_data=types.FileData(
+          file_uri="gs://my-bucket/report.pdf",
+          mime_type="application/pdf",
+      )
+  )
+
+  version = await service.save_artifact(
+      app_name="app",
+      user_id="user1",
+      session_id="sess1",
+      filename="report.pdf",
+      artifact=artifact,
+  )
+  assert version == 0
+
+  loaded = await service.load_artifact(
+      app_name="app",
+      user_id="user1",
+      session_id="sess1",
+      filename="report.pdf",
+  )
+  assert loaded is not None
+  assert loaded.file_data is not None
+  assert loaded.file_data.file_uri == "gs://my-bucket/report.pdf"
+  assert loaded.file_data.mime_type == "application/pdf"
+
+
+@pytest.mark.asyncio  # type: ignore[untyped-decorator]
+async def test_gcs_save_artifact_with_artifact_ref_uri() -> None:
+  """GcsArtifactService saves and recursively loads an internal artifact:// URI reference."""
+  service = mock_gcs_artifact_service()  # type: ignore[no-untyped-call]
+
+  # Save the referenced (source) artifact first.
+  source_artifact = types.Part(text="source content")
+  await service.save_artifact(
+      app_name="app",
+      user_id="user1",
+      session_id="sess1",
+      filename="source.txt",
+      artifact=source_artifact,
+  )
+
+  artifact_ref_uri = "artifact://apps/app/users/user1/sessions/sess1/artifacts/source.txt/versions/0"
+  artifact = types.Part(
+      file_data=types.FileData(
+          file_uri=artifact_ref_uri,
+          mime_type="text/plain",
+      )
+  )
+
+  version = await service.save_artifact(
+      app_name="app",
+      user_id="user1",
+      session_id="sess1",
+      filename="ref.txt",
+      artifact=artifact,
+  )
+  assert version == 0
+
+  loaded = await service.load_artifact(
+      app_name="app",
+      user_id="user1",
+      session_id="sess1",
+      filename="ref.txt",
+  )
+  assert loaded is not None
+  assert loaded.text == "source content"
+
+
+@pytest.mark.asyncio  # type: ignore[untyped-decorator]
+async def test_gcs_save_artifact_file_data_without_mime_type() -> None:
+  """GcsArtifactService handles file_data with no mime_type."""
+  service = mock_gcs_artifact_service()  # type: ignore[no-untyped-call]
+  artifact = types.Part(
+      file_data=types.FileData(file_uri="gs://my-bucket/data.bin")
+  )
+
+  version = await service.save_artifact(
+      app_name="app",
+      user_id="user1",
+      session_id="sess1",
+      filename="data.bin",
+      artifact=artifact,
+  )
+  assert version == 0
+
+  loaded = await service.load_artifact(
+      app_name="app",
+      user_id="user1",
+      session_id="sess1",
+      filename="data.bin",
+  )
+  assert loaded is not None
+  assert loaded.file_data is not None
+  assert loaded.file_data.file_uri == "gs://my-bucket/data.bin"
+
+
+@pytest.mark.asyncio  # type: ignore[untyped-decorator]
+async def test_gcs_save_artifact_file_data_missing_uri_raises() -> None:
+  """GcsArtifactService raises InputValidationError when file_uri is empty."""
+  service = mock_gcs_artifact_service()  # type: ignore[no-untyped-call]
+  artifact = types.Part(file_data=types.FileData(file_uri=""))
+
+  with pytest.raises(InputValidationError):
+    await service.save_artifact(
+        app_name="app",
+        user_id="user1",
+        session_id="sess1",
+        filename="empty.bin",
+        artifact=artifact,
+    )
+
+
+@pytest.mark.asyncio  # type: ignore[untyped-decorator]
+async def test_gcs_save_artifact_file_data_invalid_uri_raises() -> None:
+  """GcsArtifactService raises InputValidationError when file_uri is an invalid artifact:// URI template."""
+  service = mock_gcs_artifact_service()  # type: ignore[no-untyped-call]
+  artifact = types.Part(
+      file_data=types.FileData(
+          file_uri="artifact://apps/app/invalid",
+          mime_type="text/plain",
+      )
+  )
+
+  with pytest.raises(InputValidationError):
+    await service.save_artifact(
+        app_name="app",
+        user_id="user1",
+        session_id="sess1",
+        filename="invalid_ref.txt",
+        artifact=artifact,
+    )
+
+
+@pytest.mark.asyncio  # type: ignore[untyped-decorator]
+async def test_gcs_save_artifact_metadata_namespacing_and_mime() -> None:
+  """GcsArtifactService saves file_data using namespaced metadata keys."""
+  service = mock_gcs_artifact_service()  # type: ignore[no-untyped-call]
+  artifact = types.Part(
+      file_data=types.FileData(
+          file_uri="gs://my-bucket/report.pdf",
+          mime_type="application/pdf",
+      )
+  )
+
+  await service.save_artifact(
+      app_name="app",
+      user_id="user1",
+      session_id="sess1",
+      filename="report.pdf",
+      artifact=artifact,
+  )
+
+  blob_name = service._get_blob_name("app", "user1", "report.pdf", 0, "sess1")
+  blob = service.bucket.get_blob(blob_name)
+  assert blob is not None
+  assert blob.metadata.get("adkFileUri") == "gs://my-bucket/report.pdf"
+  assert blob.metadata.get("adkFileMimeType") == "application/pdf"
+  assert "file_uri" not in blob.metadata
+
+
+@pytest.mark.asyncio  # type: ignore[untyped-decorator]
+async def test_gcs_load_artifact_file_data_fallback_compatibility() -> None:
+  """GcsArtifactService loads file_data with old file_uri metadata key for backward compatibility."""
+  service = mock_gcs_artifact_service()  # type: ignore[no-untyped-call]
+  blob_name = service._get_blob_name(
+      "app", "user1", "old_report.pdf", 0, "sess1"
+  )
+  blob = service.bucket.blob(blob_name)
+  # Manually setup metadata with old key
+  blob.metadata = {"file_uri": "gs://my-bucket/old_report.pdf"}
+  blob.upload_from_string(b"", content_type="application/pdf")
+
+  loaded = await service.load_artifact(
+      app_name="app",
+      user_id="user1",
+      session_id="sess1",
+      filename="old_report.pdf",
+  )
+  assert loaded is not None
+  assert loaded.file_data is not None
+  assert loaded.file_data.file_uri == "gs://my-bucket/old_report.pdf"
+  assert loaded.file_data.mime_type == "application/pdf"
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     "service_type",
@@ -877,10 +1145,7 @@ class TestEnsurePart:
 async def test_save_artifact_with_camel_case_dict(
     service_type, artifact_service_factory
 ):
-  """Artifact services accept camelCase dicts (Agentspace format).
-
-  Regression test for https://github.com/google/adk-python/issues/2886
-  """
+  """Artifact services accept camelCase dicts (Agentspace format)."""
   artifact_service = artifact_service_factory(service_type)
   app_name = "app0"
   user_id = "user0"
@@ -959,3 +1224,120 @@ async def test_save_artifact_with_snake_case_dict(
   assert loaded is not None
   assert loaded.inline_data is not None
   assert loaded.inline_data.mime_type == "text/plain"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "service_type",
+    [
+        ArtifactServiceType.IN_MEMORY,
+        ArtifactServiceType.GCS,
+        ArtifactServiceType.FILE,
+    ],
+)
+async def test_load_artifact_preserves_inline_data_display_name(
+    service_type, artifact_service_factory
+):
+  """Binary artifact load restores inline_data.display_name after save."""
+  artifact_service = artifact_service_factory(service_type)
+  app_name = "app0"
+  user_id = "user0"
+  session_id = "sess0"
+  filename = "artifact.bin"
+  display_name = "My Report (final).png"
+  artifact = types.Part(
+      inline_data=types.Blob(
+          mime_type="image/png",
+          data=b"\x89PNG\r\n\x1a\n",
+          display_name=display_name,
+      )
+  )
+
+  await artifact_service.save_artifact(
+      app_name=app_name,
+      user_id=user_id,
+      session_id=session_id,
+      filename=filename,
+      artifact=artifact,
+  )
+  loaded = await artifact_service.load_artifact(
+      app_name=app_name,
+      user_id=user_id,
+      session_id=session_id,
+      filename=filename,
+  )
+
+  assert loaded is not None
+  assert loaded.inline_data is not None
+  assert loaded.inline_data.display_name == display_name
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "service_type",
+    [
+        ArtifactServiceType.IN_MEMORY,
+        ArtifactServiceType.GCS,
+        ArtifactServiceType.FILE,
+    ],
+)
+@pytest.mark.parametrize(
+    "text_content",
+    ['{"key": "value"}', "some other text"],
+)
+async def test_save_load_text_artifact(
+    service_type, artifact_service_factory, text_content
+):
+  """Tests that text artifacts retain .text after round-trip save/load."""
+  artifact_service = artifact_service_factory(service_type)
+  artifact = types.Part.from_text(text=text_content)
+
+  await artifact_service.save_artifact(
+      app_name="app0",
+      user_id="user0",
+      session_id="123",
+      filename="data.json",
+      artifact=artifact,
+  )
+  loaded = await artifact_service.load_artifact(
+      app_name="app0",
+      user_id="user0",
+      session_id="123",
+      filename="data.json",
+  )
+  assert loaded is not None
+  assert loaded.text == text_content
+  assert loaded.inline_data is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "service_type",
+    [
+        ArtifactServiceType.GCS,
+        ArtifactServiceType.FILE,
+    ],
+)
+async def test_save_load_empty_text_artifact(
+    service_type, artifact_service_factory
+):
+  """Tests that empty text artifacts survive round-trip save/load."""
+  artifact_service = artifact_service_factory(service_type)
+  artifact = types.Part.from_text(text="")
+
+  await artifact_service.save_artifact(
+      app_name="app0",
+      user_id="user0",
+      session_id="123",
+      filename="empty.txt",
+      artifact=artifact,
+  )
+  loaded = await artifact_service.load_artifact(
+      app_name="app0",
+      user_id="user0",
+      session_id="123",
+      filename="empty.txt",
+  )
+  assert loaded is not None
+  assert loaded.text == ""
+  assert loaded.inline_data is None

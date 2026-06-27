@@ -30,20 +30,19 @@ from typing import TYPE_CHECKING
 
 from pydantic import Field
 
+from ..events._branch_path import _BranchPath
 from ._base_node import BaseNode
 from ._base_node import START
 from ._dynamic_node_scheduler import DynamicNodeScheduler
 from ._dynamic_node_scheduler import DynamicNodeState
 from ._graph import EdgeItem
 from ._graph import Graph
-from ._graph import RouteValue
 from ._node_runner import NodeRunner
 from ._node_state import NodeState
 from ._node_status import NodeStatus
 from ._trigger import Trigger
 from .utils._rehydration_utils import _ChildScanState
 from .utils._rehydration_utils import _reconstruct_node_states
-from .utils._rehydration_utils import _unwrap_response
 from .utils._rehydration_utils import is_terminal_event
 from .utils._replay_interceptor import check_interception
 from .utils._replay_interceptor import create_mock_context
@@ -60,15 +59,8 @@ def get_common_branch_prefix(branches: list[str]) -> str:
   """Find the common prefix of dot-separated branch strings."""
   if not branches:
     return ''
-  split_branches = [b.split('.') if b else [] for b in branches]
-
-  common = []
-  for segments in zip(*split_branches):
-    if len(set(segments)) == 1:
-      common.append(segments[0])
-    else:
-      break
-  return '.'.join(common)
+  paths = [_BranchPath.from_string(b) for b in branches]
+  return str(_BranchPath.common_prefix(paths))
 
 
 # ---------------------------------------------------------------------------
@@ -545,7 +537,6 @@ class Workflow(BaseNode):
       trigger: Trigger,
   ) -> None:
     """Create NodeRunner and start asyncio task for a node."""
-    from ..agents.context import Context
 
     assert self.graph is not None
 

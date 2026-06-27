@@ -207,12 +207,14 @@ def prepare_llm_agent_context(agent: Any, ctx: Context) -> Context:
 
   ic = ctx._invocation_context.model_copy()
   ic._event_queue = ctx._invocation_context._event_queue
+  ic.isolation_scope = ctx.isolation_scope
   agent_ctx = Context(
       invocation_context=ic,
       node_path=ctx.node_path,
       run_id=ctx.run_id,
       resume_inputs=ctx.resume_inputs,
   )
+  agent_ctx.isolation_scope = ctx.isolation_scope
 
   ic.session = ic.session.model_copy(deep=False)
   return agent_ctx
@@ -233,8 +235,8 @@ def prepare_llm_agent_input(agent: Any, ctx: Context, node_input: Any) -> None:
   overrides ``ic.user_content`` so the content-builder can fall back
   to that as the first user turn.
 
-  No branch is set — task and single_turn agents scope via
-  ``isolation_scope`` rather than branch.
+  For workflow nodes running in a sub-branch, stamp the input event with that
+  branch. A private node input should not look like the shared root user turn.
   """
   if node_input is None or agent.mode != 'single_turn':
     return
@@ -245,6 +247,9 @@ def prepare_llm_agent_input(agent: Any, ctx: Context, node_input: Any) -> None:
   iso = getattr(ctx, 'isolation_scope', None)
   if iso:
     user_event.isolation_scope = iso
+  branch = ctx._invocation_context.branch
+  if branch:
+    user_event.branch = branch
   ctx.session.events.append(user_event)
 
 
@@ -296,7 +301,8 @@ async def run_llm_agent_as_node(
         f" but agent '{agent.name}' has mode='{agent.mode}'."
     )
 
-  if agent.mode == 'single_turn':
+  include_contents_explicit = 'include_contents' in agent.model_fields_set
+  if agent.mode == 'single_turn' and not include_contents_explicit:
     agent.include_contents = 'none'
 
   agent_ctx = prepare_llm_agent_context(agent, ctx)

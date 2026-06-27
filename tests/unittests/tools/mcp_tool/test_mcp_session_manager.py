@@ -13,9 +13,7 @@
 # limitations under the License.
 
 import asyncio
-from datetime import timedelta
 import hashlib
-from io import StringIO
 import json
 import sys
 from unittest.mock import ANY
@@ -24,13 +22,27 @@ from unittest.mock import Mock
 from unittest.mock import patch
 
 from google.adk.platform import thread as platform_thread
+from google.adk.tools.mcp_tool.mcp_session_manager import _DebugHttpxClientFactory
+from google.adk.tools.mcp_tool.mcp_session_manager import _GoogleAuthAsyncByteStream
+from google.adk.tools.mcp_tool.mcp_session_manager import _http_debug_var
+from google.adk.tools.mcp_tool.mcp_session_manager import _RefreshableAsyncCredentials
+from google.adk.tools.mcp_tool.mcp_session_manager import _SharedAsyncTransport
+from google.adk.tools.mcp_tool.mcp_session_manager import create_mcp_http_client
 from google.adk.tools.mcp_tool.mcp_session_manager import MCPSessionManager
 from google.adk.tools.mcp_tool.mcp_session_manager import retry_on_errors
 from google.adk.tools.mcp_tool.mcp_session_manager import SseConnectionParams
 from google.adk.tools.mcp_tool.mcp_session_manager import StdioConnectionParams
 from google.adk.tools.mcp_tool.mcp_session_manager import StreamableHTTPConnectionParams
+import httpx
 from mcp import StdioServerParameters
 import pytest
+
+try:
+  from google.auth.aio.transport.sessions import AsyncAuthorizedSession
+
+  AIO_SUPPORTED = True
+except ImportError:
+  AIO_SUPPORTED = False
 
 
 class MockClientSession:
@@ -148,13 +160,15 @@ class TestMCPSessionManager:
 
     manager._create_client()
 
-    mock_sse_client.assert_called_once_with(
-        url="https://example.com/mcp",
-        headers=None,
-        timeout=10.0,
-        sse_read_timeout=300.0,
-        httpx_client_factory=custom_httpx_factory,
-    )
+    mock_sse_client.assert_called_once()
+    kwargs = mock_sse_client.call_args.kwargs
+    assert kwargs["url"] == "https://example.com/mcp"
+    assert kwargs["headers"] is None
+    assert kwargs["timeout"] == 10.0
+    assert kwargs["sse_read_timeout"] == 300.0
+    factory = kwargs["httpx_client_factory"]
+    assert isinstance(factory, _DebugHttpxClientFactory)
+    assert factory._base_factory == custom_httpx_factory
 
   @patch("google.adk.tools.mcp_tool.mcp_session_manager.sse_client")
   def test_init_with_sse_default_httpx_factory(self, mock_sse_client):
@@ -167,14 +181,19 @@ class TestMCPSessionManager:
 
     manager._create_client()
 
-    mock_sse_client.assert_called_once_with(
-        url="https://example.com/mcp",
-        headers=None,
-        timeout=10.0,
-        sse_read_timeout=300.0,
-        httpx_client_factory=SseConnectionParams.model_fields[
+    mock_sse_client.assert_called_once()
+    kwargs = mock_sse_client.call_args.kwargs
+    assert kwargs["url"] == "https://example.com/mcp"
+    assert kwargs["headers"] is None
+    assert kwargs["timeout"] == 10.0
+    assert kwargs["sse_read_timeout"] == 300.0
+    factory = kwargs["httpx_client_factory"]
+    assert isinstance(factory, _DebugHttpxClientFactory)
+    assert (
+        factory._base_factory
+        == SseConnectionParams.model_fields[
             "httpx_client_factory"
-        ].get_default(),
+        ].get_default()
     )
 
   def test_init_with_streamable_http_params(self):
@@ -186,11 +205,11 @@ class TestMCPSessionManager:
 
     assert manager._connection_params == http_params
 
-  @patch("google.adk.tools.mcp_tool.mcp_session_manager.streamablehttp_client")
+  @patch("google.adk.tools.mcp_tool.mcp_session_manager.streamable_http_client")
   def test_init_with_streamable_http_custom_httpx_factory(
-      self, mock_streamablehttp_client
+      self, mock_streamable_http_client
   ):
-    """Test that streamablehttp_client is called with custom httpx_client_factory."""
+    """Test that streamable_http_client is called with custom httpx_client_factory."""
     custom_httpx_factory = Mock()
 
     http_params = StreamableHTTPConnectionParams(
@@ -202,20 +221,18 @@ class TestMCPSessionManager:
 
     manager._create_client()
 
-    mock_streamablehttp_client.assert_called_once_with(
-        url="https://example.com/mcp",
-        headers=None,
-        timeout=timedelta(seconds=15.0),
-        sse_read_timeout=timedelta(seconds=300.0),
-        terminate_on_close=True,
-        httpx_client_factory=custom_httpx_factory,
-    )
+    mock_streamable_http_client.assert_called_once()
+    kwargs = mock_streamable_http_client.call_args.kwargs
+    assert kwargs["url"] == "https://example.com/mcp"
+    assert kwargs["terminate_on_close"] is True
+    assert kwargs["http_client"] is not None
+    custom_httpx_factory.assert_called_once()
 
-  @patch("google.adk.tools.mcp_tool.mcp_session_manager.streamablehttp_client")
+  @patch("google.adk.tools.mcp_tool.mcp_session_manager.streamable_http_client")
   def test_init_with_streamable_http_default_httpx_factory(
-      self, mock_streamablehttp_client
+      self, mock_streamable_http_client
   ):
-    """Test that streamablehttp_client is called with default httpx_client_factory."""
+    """Test that streamable_http_client is called with default httpx_client_factory."""
     http_params = StreamableHTTPConnectionParams(
         url="https://example.com/mcp", timeout=15.0
     )
@@ -223,16 +240,52 @@ class TestMCPSessionManager:
 
     manager._create_client()
 
-    mock_streamablehttp_client.assert_called_once_with(
-        url="https://example.com/mcp",
-        headers=None,
-        timeout=timedelta(seconds=15.0),
-        sse_read_timeout=timedelta(seconds=300.0),
-        terminate_on_close=True,
-        httpx_client_factory=StreamableHTTPConnectionParams.model_fields[
-            "httpx_client_factory"
-        ].get_default(),
-    )
+    mock_streamable_http_client.assert_called_once()
+    kwargs = mock_streamable_http_client.call_args.kwargs
+    assert kwargs["url"] == "https://example.com/mcp"
+    assert kwargs["terminate_on_close"] is True
+    assert isinstance(kwargs["http_client"], httpx.AsyncClient)
+
+  @patch(
+      "google.adk.tools.mcp_tool.mcp_session_manager.HTTPXClientInstrumentor",
+      create=True,
+  )
+  @patch(
+      "google.adk.tools.mcp_tool.mcp_session_manager._create_mcp_http_client"
+  )
+  @patch(
+      "google.adk.tools.mcp_tool.mcp_session_manager._HAS_HTTPX_INSTRUMENTOR",
+      True,
+  )
+  def test_default_httpx_factory_instruments_client_when_available(
+      self, mock_base_factory, mock_instrumentor
+  ):
+    """Test default MCP HTTP factory instruments HTTPX client when available."""
+    client = Mock()
+    mock_base_factory.return_value = client
+
+    result = create_mcp_http_client()
+
+    assert result is client
+    mock_instrumentor.instrument_client.assert_called_once_with(client)
+
+  @patch(
+      "google.adk.tools.mcp_tool.mcp_session_manager._create_mcp_http_client"
+  )
+  @patch(
+      "google.adk.tools.mcp_tool.mcp_session_manager._HAS_HTTPX_INSTRUMENTOR",
+      False,
+  )
+  def test_default_httpx_factory_handles_missing_opentelemetry(
+      self, mock_base_factory
+  ):
+    """Test default MCP HTTP factory works without OTel instrumentation."""
+    client = Mock()
+    mock_base_factory.return_value = client
+
+    result = create_mcp_http_client()
+
+    assert result is client
 
   def test_generate_session_key_stdio(self):
     """Test session key generation for stdio connections."""
@@ -689,6 +742,145 @@ class TestMCPSessionManager:
     assert isinstance(new_lock, asyncio.Lock)
     assert new_lock is not lock
 
+  @pytest.mark.asyncio
+  async def test_get_mtls_transport_flag_off(self):
+    """Test that _get_mtls_transport returns None when flag is off."""
+    sse_params = SseConnectionParams(url="https://example.com/mcp")
+    manager = MCPSessionManager(sse_params)
+    with patch.dict(
+        "os.environ", {"GOOGLE_API_USE_CLIENT_CERTIFICATE": "false"}
+    ):
+      transport = await manager._get_mtls_transport()
+      assert transport is None
+
+  @pytest.mark.asyncio
+  @pytest.mark.skipif(not AIO_SUPPORTED, reason="google.auth.aio not supported")
+  async def test_get_mtls_transport_success(self):
+    """Test successful _GoogleAuthAsyncTransport creation with mTLS."""
+    sse_params = SseConnectionParams(url="https://example.com/mcp")
+    manager = MCPSessionManager(sse_params)
+
+    mock_creds = Mock()
+    mock_session = AsyncMock()
+    mock_session.is_mtls = True
+    mock_session.configure_mtls_channel = AsyncMock()
+
+    with patch.dict(
+        "os.environ", {"GOOGLE_API_USE_CLIENT_CERTIFICATE": "true"}
+    ):
+      with patch("google.auth.default", return_value=(mock_creds, None)):
+        with patch(
+            "google.adk.tools.mcp_tool.mcp_session_manager.AsyncAuthorizedSession",
+            return_value=mock_session,
+        ):
+          with patch(
+              "google.adk.tools.mcp_tool.mcp_session_manager._GoogleAuthAsyncTransport"
+          ) as mock_transport_class:
+            mock_transport = Mock()
+            mock_transport_class.return_value = mock_transport
+
+            transport = await manager._get_mtls_transport()
+
+            assert transport == mock_transport
+            mock_session.configure_mtls_channel.assert_called_once()
+            mock_transport_class.assert_called_once_with(mock_session)
+
+            # Test caching
+            transport2 = await manager._get_mtls_transport()
+            assert transport2 == transport
+            mock_session.configure_mtls_channel.assert_called_once()
+
+  @pytest.mark.asyncio
+  @pytest.mark.skipif(not AIO_SUPPORTED, reason="google.auth.aio not supported")
+  async def test_get_mtls_transport_failure_not_mtls(self):
+    """Test that _get_mtls_transport returns None when channel is not mTLS."""
+    sse_params = SseConnectionParams(url="https://example.com/mcp")
+    manager = MCPSessionManager(sse_params)
+
+    mock_creds = Mock()
+    mock_session = AsyncMock()
+    mock_session.is_mtls = False
+    mock_session.configure_mtls_channel = AsyncMock()
+
+    with patch.dict(
+        "os.environ", {"GOOGLE_API_USE_CLIENT_CERTIFICATE": "true"}
+    ):
+      with patch("google.auth.default", return_value=(mock_creds, None)):
+        with patch(
+            "google.adk.tools.mcp_tool.mcp_session_manager.AsyncAuthorizedSession",
+            return_value=mock_session,
+        ):
+          transport = await manager._get_mtls_transport()
+          assert transport is None
+
+  @pytest.mark.asyncio
+  @pytest.mark.skipif(not AIO_SUPPORTED, reason="google.auth.aio not supported")
+  async def test_get_mtls_transport_failure_exception(self):
+    """Test that _get_mtls_transport returns None when exception occurs."""
+    sse_params = SseConnectionParams(url="https://example.com/mcp")
+    manager = MCPSessionManager(sse_params)
+
+    with patch.dict(
+        "os.environ", {"GOOGLE_API_USE_CLIENT_CERTIFICATE": "true"}
+    ):
+      with patch("google.auth.default", side_effect=Exception("auth error")):
+        transport = await manager._get_mtls_transport()
+        assert transport is None
+
+  @patch("google.adk.tools.mcp_tool.mcp_session_manager.sse_client")
+  def test_create_client_with_mtls_transport_sse(self, mock_sse_client):
+    """Test that _create_client uses mtls_transport to create factory for SSE."""
+    sse_params = SseConnectionParams(url="https://example.com/mcp")
+    manager = MCPSessionManager(sse_params)
+
+    mock_transport = Mock(spec=httpx.AsyncBaseTransport)
+
+    manager._create_client(mtls_transport=mock_transport)
+
+    mock_sse_client.assert_called_once()
+    called_kwargs = mock_sse_client.call_args[1]
+    factory = called_kwargs["httpx_client_factory"]
+
+    # Verify the factory creates client with transport
+    client = factory(headers={"a": "b"}, timeout=httpx.Timeout(10.0))
+    assert isinstance(client, httpx.AsyncClient)
+    assert isinstance(client._transport, _SharedAsyncTransport)
+    assert client._transport._transport == mock_transport
+    assert client.headers.get("a") == "b"
+    assert client.timeout.read == 10.0
+
+  @pytest.mark.asyncio
+  async def test_google_auth_async_transport_handle_request(self):
+    """Test that _GoogleAuthAsyncTransport correctly forwards request and returns response."""
+    from google.adk.tools.mcp_tool.mcp_session_manager import _GoogleAuthAsyncTransport
+
+    mock_session = AsyncMock()
+    mock_auth_response = AsyncMock()
+    mock_auth_response.status_code = 200
+    mock_auth_response.headers = {"content-type": "application/json"}
+    mock_auth_response.content = AsyncMock()
+
+    mock_session.request.return_value = mock_auth_response
+
+    transport = _GoogleAuthAsyncTransport(mock_session)
+
+    request = httpx.Request(
+        "GET", "https://example.com/api", headers={"x-test": "value"}
+    )
+
+    response = await transport.handle_async_request(request)
+
+    assert response.status_code == 200
+    assert response.headers["content-type"] == "application/json"
+
+    mock_session.request.assert_called_once_with(
+        method="GET",
+        url="https://example.com/api",
+        data=None,
+        headers={"x-test": "value", "host": "example.com"},
+        timeout=30.0,
+    )
+
 
 @pytest.mark.asyncio
 async def test_retry_on_errors_decorator():
@@ -1081,3 +1273,179 @@ class TestMCPGracefulErrorHandlingFlagContract:
             await manager.create_session()
 
     mock_wait_for.assert_not_called()
+
+
+class TestRefreshableAsyncCredentials:
+
+  @pytest.mark.skipif(not AIO_SUPPORTED, reason="google.auth.aio not supported")
+  @pytest.mark.asyncio
+  async def test_before_request_refreshes_and_injects_token(self):
+    mock_creds = Mock()
+    mock_creds.expired = True
+    mock_creds.token = "new_token"
+
+    # Mock creds.refresh to simulate refresh
+    def mock_refresh(req):
+      mock_creds.token = "refreshed_token"
+      mock_creds.expired = False
+
+    mock_creds.refresh = mock_refresh
+
+    credentials = _RefreshableAsyncCredentials(mock_creds)
+    headers = {}
+
+    await credentials.before_request(None, "GET", "http://example.com", headers)
+
+    assert headers["Authorization"] == "Bearer refreshed_token"
+
+
+class TestGoogleAuthAsyncByteStream:
+
+  @pytest.mark.asyncio
+  async def test_iteration_yields_chunks(self):
+    mock_auth_response = AsyncMock()
+
+    async def mock_content():
+      yield b"chunk1"
+      yield b"chunk2"
+
+    mock_auth_response.content = mock_content
+
+    stream = _GoogleAuthAsyncByteStream(mock_auth_response)
+    chunks = []
+    async for chunk in stream:
+      chunks.append(chunk)
+
+    assert chunks == [b"chunk1", b"chunk2"]
+
+  @pytest.mark.asyncio
+  async def test_aclose_closes_response(self):
+    mock_auth_response = AsyncMock()
+    stream = _GoogleAuthAsyncByteStream(mock_auth_response)
+    await stream.aclose()
+    mock_auth_response.close.assert_called_once()
+
+
+class TestDebugHttpxClientFactory:
+  """Tests for _DebugHttpxClientFactory."""
+
+  @pytest.mark.asyncio
+  async def test_debug_factory_registers_hook(self):
+    """Test that the debug factory registers the response hook on client creation."""
+    base_client = httpx.AsyncClient()
+    base_factory = Mock(return_value=base_client)
+    debug_factory = _DebugHttpxClientFactory(base_factory)
+
+    client = debug_factory()
+    assert debug_factory._response_hook in client.event_hooks["response"]
+    # Clean up client
+    await base_client.aclose()
+
+  @pytest.mark.asyncio
+  async def test_response_hook_records_when_var_set(self):
+    """Test that the response hook records HTTP info when _http_debug_var is set."""
+    base_client = httpx.AsyncClient()
+    base_factory = Mock(return_value=base_client)
+    debug_factory = _DebugHttpxClientFactory(base_factory)
+
+    # Mock httpx.Response
+    mock_request = Mock(spec=httpx.Request)
+    mock_request.method = "GET"
+    mock_request.content = b"request body"
+    mock_request.headers = httpx.Headers({"X-Req": "val"})
+
+    mock_response = Mock(spec=httpx.Response)
+    mock_response.url = httpx.URL("https://example.com/test")
+    mock_response.status_code = 200
+    mock_response.request = mock_request
+    mock_response.headers = httpx.Headers({
+        "content-type": "application/json",
+        "X-Resp": "val",
+    })
+    mock_response.text = "response body"
+    mock_response.aread = AsyncMock()
+
+    debug_list = []
+    token = _http_debug_var.set(debug_list)
+    try:
+      await debug_factory._response_hook(mock_response)
+    finally:
+      _http_debug_var.reset(token)
+
+    assert len(debug_list) == 1
+    record = debug_list[0]
+    assert record["url"] == "https://example.com/test"
+    assert record["status_code"] == 200
+    assert record["method"] == "GET"
+    assert record["request_body"] == "request body"
+    assert record["response_body"] == "response body"
+    assert record["request_headers"]["x-req"] == "val"
+    assert record["response_headers"]["x-resp"] == "val"
+    mock_response.aread.assert_called_once()
+    await base_client.aclose()
+
+  @pytest.mark.asyncio
+  async def test_response_hook_does_not_record_when_var_not_set(self):
+    """Test that the response hook does not record when _http_debug_var is not set."""
+    base_client = httpx.AsyncClient()
+    base_factory = Mock(return_value=base_client)
+    debug_factory = _DebugHttpxClientFactory(base_factory)
+
+    mock_response = Mock(spec=httpx.Response)
+    mock_response.aread = AsyncMock()
+
+    # _http_debug_var is not set (default None)
+    await debug_factory._response_hook(mock_response)
+    mock_response.aread.assert_not_called()
+    await base_client.aclose()
+
+  @pytest.mark.asyncio
+  async def test_response_hook_skips_sse_body(self):
+    """Test that the response hook avoids reading the body for SSE streams."""
+    base_client = httpx.AsyncClient()
+    base_factory = Mock(return_value=base_client)
+    debug_factory = _DebugHttpxClientFactory(base_factory)
+
+    mock_request = Mock(spec=httpx.Request)
+    mock_request.method = "GET"
+    mock_request.content = None
+    mock_request.headers = httpx.Headers()
+
+    mock_response = Mock(spec=httpx.Response)
+    mock_response.url = httpx.URL("https://example.com/sse")
+    mock_response.status_code = 200
+    mock_response.request = mock_request
+    mock_response.headers = httpx.Headers({"content-type": "text/event-stream"})
+    mock_response.aread = AsyncMock()
+
+    debug_list = []
+    token = _http_debug_var.set(debug_list)
+    try:
+      await debug_factory._response_hook(mock_response)
+    finally:
+      _http_debug_var.reset(token)
+
+    assert len(debug_list) == 1
+    record = debug_list[0]
+    assert record["response_body"] == "<SSE stream>"
+    mock_response.aread.assert_not_called()
+    await base_client.aclose()
+
+  @pytest.mark.asyncio
+  async def test_debug_factory_passes_keyword_arguments(self):
+    """Test that the debug factory passes keyword arguments to base_factory."""
+    base_client = httpx.AsyncClient()
+
+    # A factory function that only accepts keyword arguments
+    def keyword_only_factory(**kwargs) -> httpx.AsyncClient:
+      assert "headers" in kwargs
+      assert "timeout" in kwargs
+      assert "auth" in kwargs
+      return base_client
+
+    debug_factory = _DebugHttpxClientFactory(keyword_only_factory)
+
+    # Should work when called with positional arguments (which maps them to parameter names)
+    client = debug_factory({"X-Test": "Val"}, None, None)
+    assert client is base_client
+    await base_client.aclose()

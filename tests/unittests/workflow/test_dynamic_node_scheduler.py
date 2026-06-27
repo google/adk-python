@@ -566,6 +566,44 @@ async def test_calling_waiting_node_without_rerun_raises_value_error():
     )
 
 
+def test_get_dynamic_tasks_excludes_done_tasks():
+  """get_dynamic_tasks should not return completed tasks (regression for #6082)."""
+  import asyncio
+
+  loop = asyncio.new_event_loop()
+  try:
+
+    async def _done():
+      return None
+
+    done_task = loop.run_until_complete(
+        asyncio.ensure_future(_done(), loop=loop)
+    )
+    running_coro = asyncio.sleep(9999)
+    running_task = loop.create_task(running_coro)
+
+    state = DynamicNodeState()
+    state.runs['path/done@r-1'] = DynamicNodeRun(
+        state=NodeState(run_id='r-1'),
+        task=done_task,
+    )
+    state.runs['path/running@r-2'] = DynamicNodeRun(
+        state=NodeState(run_id='r-2'),
+        task=running_task,
+    )
+    state.runs['path/no-task@r-3'] = DynamicNodeRun(
+        state=NodeState(run_id='r-3'),
+        task=None,
+    )
+
+    tasks = state.get_dynamic_tasks()
+
+    assert tasks == [running_task]
+    running_task.cancel()
+  finally:
+    loop.close()
+
+
 class _ModelA(BaseModel):
   x: int
 

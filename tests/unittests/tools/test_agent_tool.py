@@ -13,6 +13,7 @@
 # limitations under the License.
 
 import asyncio
+import json
 from typing import Any
 from typing import Optional
 
@@ -1431,3 +1432,197 @@ class TestAgentToolWithCompositeAgents:
       }
     else:
       assert declaration.parameters.properties['request'].type == 'STRING'
+
+
+@mark.parametrize(
+    'args,expected_text',
+    [
+        (
+            {'brand': 'Nike', 'product': 'running shoes'},
+            '{"brand": "Nike", "product": "running shoes"}',
+        ),
+        (
+            {'request': 'find me Nike running shoes'},
+            'find me Nike running shoes',
+        ),
+        (
+            {'request': ''},
+            '',
+        ),
+    ],
+)
+@mark.asyncio
+async def test_no_schema_args_handling(monkeypatch, args, expected_text):
+  """AgentTool.run_async handles fallback schema cases properly.
+
+  - Non-'request' args are serialized as JSON.
+  - 'request' key is kept as plain text (backward compatibility).
+  - Empty string 'request' is correctly preserved instead of evaluating to
+  false.
+  """
+  captured = {}
+
+  async def _empty_async_generator():
+    if False:
+      yield None
+
+  class StubRunner:
+
+    def __init__(
+        self,
+        *,
+        app_name: str,
+        agent,
+        artifact_service,
+        session_service,
+        memory_service,
+        credential_service,
+        plugins,
+    ):
+      del artifact_service, memory_service, credential_service
+      self.agent = agent
+      self.session_service = session_service
+      self.plugin_manager = PluginManager(plugins=plugins)
+      self.app_name = app_name
+
+    def run_async(
+        self,
+        *,
+        user_id: str,
+        session_id: str,
+        invocation_id=None,
+        new_message=None,
+        state_delta=None,
+        run_config=None,
+    ):
+      captured['new_message'] = new_message
+      return _empty_async_generator()
+
+    async def close(self):
+      pass
+
+  monkeypatch.setattr('google.adk.runners.Runner', StubRunner)
+
+  tool_agent = Agent(name='tool_agent', model='test-model')
+  agent_tool = AgentTool(agent=tool_agent)
+  root_agent = Agent(name='root_agent', model='test-model', tools=[agent_tool])
+
+  session_service = InMemorySessionService()
+  session = await session_service.create_session(
+      app_name='test_app', user_id='user'
+  )
+  invocation_context = InvocationContext(
+      artifact_service=InMemoryArtifactService(),
+      session_service=session_service,
+      memory_service=InMemoryMemoryService(),
+      plugin_manager=PluginManager(),
+      invocation_id='test-invocation',
+      agent=root_agent,
+      session=session,
+      run_config=RunConfig(),
+  )
+  tool_context = ToolContext(invocation_context)
+
+  await agent_tool.run_async(
+      args=args,
+      tool_context=tool_context,
+  )
+
+  assert captured['new_message'] is not None
+  text = captured['new_message'].parts[0].text
+  assert text == expected_text
+
+
+@pytest.fixture
+def setup_skip_summarization_runner():
+  def _setup_runner(tool_agent_model_responses, tool_agent_output_schema=None):
+    tool_agent_model = testing_utils.MockModel.create(
+        responses=tool_agent_model_responses
+    )
+    tool_agent = Agent(
+        name='tool_agent',
+        model=tool_agent_model,
+        output_schema=tool_agent_output_schema,
+    )
+
+    agent_tool = AgentTool(agent=tool_agent, skip_summarization=True)
+
+    root_agent_model = testing_utils.MockModel.create(
+        responses=[
+            function_call_no_schema,
+            'final_summary_text_that_should_not_be_reached',
+        ]
+    )
+
+    root_agent = Agent(
+        name='root_agent',
+        model=root_agent_model,
+        tools=[agent_tool],
+    )
+    return testing_utils.InMemoryRunner(root_agent)
+
+  return _setup_runner
+
+
+def test_agent_tool_skip_summarization_has_text_output(
+    setup_skip_summarization_runner,
+):
+  """Tests that when skip_summarization is True, the final event contains text content."""
+  runner = setup_skip_summarization_runner(
+      tool_agent_model_responses=['tool_response_text']
+  )
+  events = runner.run('start')
+
+  final_events = [e for e in events if e.is_final_response()]
+  assert final_events
+  last_event = final_events[-1]
+  assert last_event.is_final_response()
+
+  assert any(p.function_response for p in last_event.content.parts)
+
+  assert [p.text for p in last_event.content.parts if p.text] == [
+      'tool_response_text'
+  ]
+
+
+def test_agent_tool_skip_summarization_preserves_json_string_output(
+    setup_skip_summarization_runner,
+):
+  """Tests that structured output string is preserved as text when skipping summarization."""
+  runner = setup_skip_summarization_runner(
+      tool_agent_model_responses=['{"field": "value"}']
+  )
+  events = runner.run('start')
+
+  final_events = [e for e in events if e.is_final_response()]
+  assert final_events
+  last_event = final_events[-1]
+  assert last_event.is_final_response()
+
+  text_parts = [p.text for p in last_event.content.parts if p.text]
+
+  # Check that the JSON string content is preserved exactly
+  assert text_parts == ['{"field": "value"}']
+
+
+def test_agent_tool_skip_summarization_handles_non_string_result(
+    setup_skip_summarization_runner,
+):
+  """Tests that non-string (dict) output is correctly serialized as JSON text."""
+
+  class CustomOutput(BaseModel):
+    value: int
+
+  runner = setup_skip_summarization_runner(
+      tool_agent_model_responses=['{"value": 123}'],
+      tool_agent_output_schema=CustomOutput,
+  )
+  events = runner.run('start')
+
+  final_events = [e for e in events if e.is_final_response()]
+  assert final_events
+  last_event = final_events[-1]
+
+  text_parts = [p.text for p in last_event.content.parts if p.text]
+
+  assert text_parts == ['{"value": 123}']

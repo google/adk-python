@@ -330,8 +330,28 @@ def _get_provider_from_model(model: str) -> str:
   return ""
 
 
-# Default MIME type when none can be inferred
-_DEFAULT_MIME_TYPE = "application/octet-stream"
+# Providers that can route to Anthropic. bedrock and vertex_ai are multi-model
+# platforms, so _is_anthropic_route also checks the model name for them.
+_ANTHROPIC_PROVIDERS = frozenset({"anthropic", "bedrock", "vertex_ai"})
+
+
+def _is_anthropic_provider(provider: str) -> bool:
+  """Returns True if the provider can route to an Anthropic model endpoint."""
+  return provider.lower() in _ANTHROPIC_PROVIDERS if provider else False
+
+
+def _is_anthropic_route(provider: str, model: str) -> bool:
+  """Returns True only when requests actually reach an Anthropic Claude model.
+
+  bedrock and vertex_ai also host non-Anthropic models (Llama, Gemini), so for
+  those platforms the model name must identify a Claude model too. Formatting
+  thinking blocks for a non-Claude model triggers API validation (400) errors.
+  """
+  if not _is_anthropic_provider(provider):
+    return False
+  if provider.lower() in ("bedrock", "vertex_ai"):
+    return _is_anthropic_model(model)
+  return True
 
 
 def _infer_mime_type_from_uri(uri: str) -> Optional[str]:
@@ -395,8 +415,11 @@ def _redact_file_uri_for_log(
   """Returns a privacy-preserving identifier for logs."""
   if display_name:
     return display_name
+  if file_uri.startswith("assistant-"):
+    return "assistant-<redacted>"
   if _looks_like_openai_file_id(file_uri):
-    return "file-<redacted>"
+    prefix = file_uri.split("-", 1)[0]
+    return f"{prefix}-<redacted>"
   try:
     parsed = urlparse(file_uri)
   except ValueError:
@@ -506,26 +529,34 @@ def _is_thinking_blocks_format(reasoning_value: Any) -> bool:
 def _convert_reasoning_value_to_parts(reasoning_value: Any) -> List[types.Part]:
   """Converts provider reasoning payloads into Gemini thought parts.
 
-  Handles Anthropic thinking_blocks (list of dicts with type/thinking/signature)
-  by preserving the signature on each part's thought_signature field. This is
-  required for Anthropic to maintain thinking across tool call boundaries.
+  Handles two formats:
+  - Anthropic thinking_blocks with 'thinking' and optional 'signature' fields.
+  - A plain string or nested structure (OpenAI/Azure/Ollama) via
+    _iter_reasoning_texts.
   """
-  if _is_thinking_blocks_format(reasoning_value):
+  if isinstance(reasoning_value, list):
     parts: List[types.Part] = []
     for block in reasoning_value:
-      if not isinstance(block, dict):
-        continue
-      block_type = block.get("type", "")
-      if block_type == "redacted":
-        continue
-      thinking_text = block.get("thinking", "")
-      signature = block.get("signature", "")
-      if not thinking_text:
-        continue
-      part = types.Part(text=thinking_text, thought=True)
-      if signature:
-        part.thought_signature = signature.encode("utf-8")
-      parts.append(part)
+      if isinstance(block, dict):
+        block_type = block.get("type", "")
+        if block_type == "redacted":
+          continue
+        if block_type == "thinking":
+          thinking_text = block.get("thinking", "")
+          if thinking_text:
+            part = types.Part(text=thinking_text, thought=True)
+            signature = block.get("signature")
+            if signature:
+              decoded_signature = _decode_thought_signature(signature)
+              part.thought_signature = decoded_signature or str(
+                  signature
+              ).encode("utf-8")
+            parts.append(part)
+          continue
+      # Fall back to text extraction for non-thinking-block items.
+      for text in _iter_reasoning_texts(block):
+        if text:
+          parts.append(types.Part(text=text, thought=True))
     return parts
   return [
       types.Part(text=text, thought=True)
@@ -537,16 +568,16 @@ def _convert_reasoning_value_to_parts(reasoning_value: Any) -> List[types.Part]:
 def _extract_reasoning_value(message: Message | Delta | None) -> Any:
   """Fetches the reasoning payload from a LiteLLM message.
 
-  Checks for 'thinking_blocks' (Anthropic structured format with signatures),
-  'reasoning_content' (LiteLLM standard, used by Azure/Foundry, Ollama via
-  LiteLLM) and 'reasoning' (used by LM Studio, vLLM).
-  Prioritizes 'thinking_blocks' when present (Anthropic models), then
-  'reasoning_content', then 'reasoning'.
+  Checks for 'thinking_blocks' (Anthropic thinking with signatures),
+  'reasoning_content' (LiteLLM standard, used by Azure/Foundry,
+  Ollama via LiteLLM), and 'reasoning' (used by LM Studio, vLLM).
+  Prioritizes 'thinking_blocks' when the key is present, as they contain
+  the signature required for Anthropic's extended thinking API.
   """
   if message is None:
     return None
-  # Anthropic models return thinking_blocks with type/thinking/signature fields.
-  # This must be preserved to maintain thinking across tool call boundaries.
+  # Prefer thinking_blocks (Anthropic) — they carry per-block signatures
+  # needed for multi-turn conversations with extended thinking.
   thinking_blocks = message.get("thinking_blocks")
   if thinking_blocks is not None:
     return thinking_blocks
@@ -650,7 +681,7 @@ def _safe_json_serialize(obj) -> str:
   try:
     # Try direct JSON serialization first
     return json.dumps(obj, ensure_ascii=False)
-  except (TypeError, ValueError, OverflowError):
+  except (TypeError, ValueError, OverflowError, RecursionError):
     return str(obj)
 
 
@@ -998,7 +1029,7 @@ async def _content_to_message_param(
         if part.text and part.thought_signature:
           sig = part.thought_signature
           if isinstance(sig, bytes):
-            sig = sig.decode("utf-8")
+            sig = base64.b64encode(sig).decode("utf-8")
           thinking_blocks.append({
               "type": "thinking",
               "thinking": part.text,
@@ -1025,7 +1056,37 @@ async def _content_to_message_param(
       ):
         reasoning_texts.append(_decode_inline_text_data(part.inline_data.data))
 
-    reasoning_content = _NEW_LINE.join(text for text in reasoning_texts if text)
+    # Anthropic routes require thinking blocks to be embedded directly in the
+    # message content list. LiteLLM's prompt template for Anthropic drops the
+    # top-level reasoning_content field, so thinking blocks disappear from
+    # multi-turn histories and the model stops producing them after the first
+    # turn. Signatures are required by the Anthropic API for thinking blocks in
+    # multi-turn conversations. On multi-model platforms (bedrock, vertex_ai)
+    # this must only apply to actual Claude models, not Gemini/Llama/etc.
+    if reasoning_parts and _is_anthropic_route(provider, model):
+      content_list = []
+      for part in reasoning_parts:
+        if part.text:
+          block = {"type": "thinking", "thinking": part.text}
+          if part.thought_signature:
+            sig = part.thought_signature
+            if isinstance(sig, bytes):
+              sig = base64.b64encode(sig).decode("utf-8")
+            block["signature"] = sig
+          content_list.append(block)
+      if isinstance(final_content, list):
+        content_list.extend(final_content)
+      elif final_content:
+        content_list.append({"type": "text", "text": final_content})
+      return ChatCompletionAssistantMessage(
+          role=role,
+          content=content_list or None,
+          tool_calls=tool_calls or None,
+      )
+
+    # Preserve reasoning deltas exactly as received. Injecting separators
+    # between fragments can corrupt provider-streamed thinking text.
+    reasoning_content = "".join(text for text in reasoning_texts if text)
     return ChatCompletionAssistantMessage(
         role=role,
         content=final_content,
@@ -1210,33 +1271,33 @@ async def _get_content(
         })
         continue
 
-      # Determine MIME type: use explicit value, infer from URI, or use default.
+      # Resolve MIME type early: needed before the media-URL shortcut below,
+      # which must run before the generic text-fallback check. The raise is
+      # deferred until after all early-continue paths so that providers which
+      # always fall back to text (anthropic, non-Gemini Vertex AI) are never
+      # asked for a MIME type they cannot supply.
       mime_type = part.file_data.mime_type
       if not mime_type:
         mime_type = _infer_mime_type_from_uri(part.file_data.file_uri)
       if not mime_type and part.file_data.display_name:
         guessed_mime_type, _ = mimetypes.guess_type(part.file_data.display_name)
         mime_type = guessed_mime_type
-      if not mime_type:
-        # LiteLLM's Vertex AI backend requires format for GCS URIs.
-        mime_type = _DEFAULT_MIME_TYPE
-        logger.debug(
-            "Could not determine MIME type for file_uri %s, using default: %s",
-            part.file_data.file_uri,
-            mime_type,
-        )
-      mime_type = _normalize_mime_type(mime_type)
+      if mime_type:
+        mime_type = _normalize_mime_type(mime_type)
 
+      # For OpenAI/Azure: HTTP media URLs (image, video, audio) are sent as
+      # typed URL blocks and must be handled before the generic text fallback.
       if provider in _FILE_ID_REQUIRED_PROVIDERS and _is_http_url(
           part.file_data.file_uri
       ):
-        url_content_type = _media_url_content_type(mime_type)
-        if url_content_type:
-          content_objects.append({
-              "type": url_content_type,
-              url_content_type: {"url": part.file_data.file_uri},
-          })
-          continue
+        if mime_type:
+          url_content_type = _media_url_content_type(mime_type)
+          if url_content_type:
+            content_objects.append({
+                "type": url_content_type,
+                url_content_type: {"url": part.file_data.file_uri},
+            })
+            continue
 
       if not _is_file_uri_supported(provider, model, part.file_data.file_uri):
         redacted_file_uri = _redact_file_uri_for_log(
@@ -1246,6 +1307,19 @@ async def _get_content(
         raise ValueError(
             f"File URI `{redacted_file_uri}` not supported for provider:"
             f" {provider}."
+        )
+
+      # All remaining providers (e.g. Vertex AI + Gemini) require a specific
+      # MIME type in the file object. Both a missing type and
+      # 'application/octet-stream' cause a downstream ValueError from LiteLLM
+      # regardless of whether the value was set explicitly by the caller or
+      # arrived via a default fallback; raise early with an actionable message.
+      if not mime_type or mime_type == "application/octet-stream":
+        type_label = mime_type or "(unknown)"
+        raise ValueError(
+            f"Cannot process file_uri {part.file_data.file_uri!r}: MIME type"
+            f" {type_label!r} is not supported. Please set a specific MIME"
+            " type on `file_data.mime_type`."
         )
 
       file_object: ChatCompletionFileUrlObject = {
@@ -1736,6 +1810,38 @@ def _model_response_to_chunk(
       ) from e
 
 
+def _extract_grounding_metadata(
+    response: ModelResponse | ModelResponseStream,
+) -> types.GroundingMetadata | None:
+  """Pulls Gemini grounding metadata off a LiteLLM response or stream chunk.
+
+  LiteLLM exposes Gemini's grounding metadata on the response/chunk object
+  rather than inside the message, so the native Gemini path
+  (`candidate.grounding_metadata`) misses it. Mirroring it here lets downstream
+  consumers (event.grounding_metadata, after_model_callback, citation
+  pipelines, ...) rely on it for both model paths.
+
+  Returns the parsed metadata, or None when it is absent or malformed.
+  """
+  raw_grounding = getattr(response, "vertex_ai_grounding_metadata", None)
+  if not raw_grounding:
+    return None
+  # LiteLLM may emit a list (one entry per candidate) or a single value.
+  if isinstance(raw_grounding, list):
+    raw_grounding = raw_grounding[0] if raw_grounding else None
+  if isinstance(raw_grounding, types.GroundingMetadata):
+    return raw_grounding
+  if isinstance(raw_grounding, dict):
+    try:
+      return types.GroundingMetadata.model_validate(raw_grounding)
+    except Exception:  # pragma: no cover
+      logger.warning(
+          "LiteLlm: vertex_ai_grounding_metadata did not match the"
+          " GroundingMetadata schema and was dropped."
+      )
+  return None
+
+
 def _model_response_to_generate_content_response(
     response: ModelResponse,
 ) -> LlmResponse:
@@ -1756,26 +1862,31 @@ def _model_response_to_generate_content_response(
     message = first_choice.get("message", None)
     finish_reason = first_choice.get("finish_reason", None)
 
-  if not message:
-    raise ValueError("No message in response")
+  # Handle case where message is None or empty (e.g., when the response contains
+  # no text content or tool calls). Create empty LlmResponse instead of raising error.
+  if message:
+    thought_parts = _convert_reasoning_value_to_parts(
+        _extract_reasoning_value(message)
+    )
+    llm_response = _message_to_generate_content_response(
+        message,
+        model_version=response.model,
+        thought_parts=thought_parts or None,
+    )
+  else:
+    # Create empty LlmResponse when message is None or empty
+    llm_response = LlmResponse(
+        content=types.Content(role="model", parts=[]),
+        model_version=response.model,
+    )
 
-  thought_parts = _convert_reasoning_value_to_parts(
-      _extract_reasoning_value(message)
-  )
-  llm_response = _message_to_generate_content_response(
-      message,
-      model_version=response.model,
-      thought_parts=thought_parts or None,
-  )
-  if finish_reason:
-    # If LiteLLM already provides a FinishReason enum (e.g., for Gemini), use
-    # it directly. Otherwise, map the finish_reason string to the enum.
-    if isinstance(finish_reason, types.FinishReason):
-      llm_response.finish_reason = finish_reason
-    else:
-      finish_reason_str = str(finish_reason).lower()
-      llm_response.finish_reason = _FINISH_REASON_MAPPING.get(
-          finish_reason_str, types.FinishReason.OTHER
+  mapped_finish_reason = _map_finish_reason(finish_reason)
+  if mapped_finish_reason:
+    llm_response.finish_reason = mapped_finish_reason
+    if mapped_finish_reason != types.FinishReason.STOP:
+      llm_response.error_code = mapped_finish_reason
+      llm_response.error_message = _finish_reason_to_error_message(
+          mapped_finish_reason
       )
   if response.get("usage", None):
     usage_dict = response["usage"]
@@ -1787,6 +1898,11 @@ def _model_response_to_generate_content_response(
         cached_content_token_count=_extract_cached_prompt_tokens(usage_dict),
         thoughts_token_count=reasoning_tokens if reasoning_tokens else None,
     )
+
+  grounding_metadata = _extract_grounding_metadata(response)
+  if grounding_metadata:
+    llm_response.grounding_metadata = grounding_metadata
+
   return llm_response
 
 
@@ -1846,7 +1962,7 @@ def _finish_reason_to_error_message(
   """Returns an error message for non-stop finish reasons."""
   if finish_reason == types.FinishReason.MAX_TOKENS:
     return "Maximum tokens reached"
-  return f"Finished with {finish_reason}"
+  return f"Finished with {finish_reason.name}"
 
 
 def _enforce_strict_openai_schema(schema: dict[str, Any]) -> None:
@@ -2369,6 +2485,7 @@ class LiteLlm(BaseLlm):
       aggregated_llm_response = None
       aggregated_llm_response_with_tool_call = None
       usage_metadata = None
+      grounding_metadata = None
       fallback_index = 0
 
       def _finalize_tool_call_response(
@@ -2454,6 +2571,11 @@ class LiteLlm(BaseLlm):
         function_calls.clear()
 
       async for part in await self.llm_client.acompletion(**completion_args):
+        # Grounding metadata can arrive on the first chunk (search queries) or
+        # the final chunk (supports); keep the latest non-empty one.
+        part_grounding = _extract_grounding_metadata(part)
+        if part_grounding:
+          grounding_metadata = part_grounding
         for chunk, finish_reason in _model_response_to_chunk(part):
           if isinstance(chunk, FunctionChunk):
             index = chunk.index or fallback_index
@@ -2555,11 +2677,17 @@ class LiteLlm(BaseLlm):
         if usage_metadata:
           aggregated_llm_response.usage_metadata = usage_metadata
           usage_metadata = None
+        if grounding_metadata:
+          aggregated_llm_response.grounding_metadata = grounding_metadata
         yield aggregated_llm_response
 
       if aggregated_llm_response_with_tool_call:
         if usage_metadata:
           aggregated_llm_response_with_tool_call.usage_metadata = usage_metadata
+        if grounding_metadata:
+          aggregated_llm_response_with_tool_call.grounding_metadata = (
+              grounding_metadata
+          )
         yield aggregated_llm_response_with_tool_call
 
     else:
