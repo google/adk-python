@@ -97,6 +97,11 @@ def _build_skill_system_instruction(prefix: str | None = None) -> str:
       f"6. If `{p}run_skill_script` returns an error (for example "
       f"`SCRIPT_NOT_FOUND`), do not retry the same script or guess a "
       "different script path. Report the error to the user and stop.\n"
+      f"7. Loading a skill only retrieves its instructions; it does NOT "
+      f"complete your turn. After a `{p}load_skill` call returns, continue "
+      "in the SAME turn: call whatever tools the skill's steps require "
+      "(search, data retrieval, render), then write your reply. Never end "
+      "your turn with an empty response right after loading a skill.\n"
   )
 
 
