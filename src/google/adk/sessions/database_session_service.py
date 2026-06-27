@@ -599,24 +599,28 @@ class DatabaseSessionService(BaseSessionService):
       if storage_session is None:
         return None
 
-      stmt = (
-          select(schema.StorageEvent)
-          .filter(schema.StorageEvent.app_name == app_name)
-          .filter(schema.StorageEvent.session_id == storage_session.id)
-          .filter(schema.StorageEvent.user_id == user_id)
-      )
+      if config and config.num_recent_events == 0:
+        # Existence/metadata-only read; skip the events query entirely.
+        storage_events = []
+      else:
+        stmt = (
+            select(schema.StorageEvent)
+            .filter(schema.StorageEvent.app_name == app_name)
+            .filter(schema.StorageEvent.session_id == storage_session.id)
+            .filter(schema.StorageEvent.user_id == user_id)
+        )
 
-      if config and config.after_timestamp:
-        after_dt = datetime.fromtimestamp(config.after_timestamp)
-        stmt = stmt.filter(schema.StorageEvent.timestamp >= after_dt)
+        if config and config.after_timestamp:
+          after_dt = datetime.fromtimestamp(config.after_timestamp)
+          stmt = stmt.filter(schema.StorageEvent.timestamp >= after_dt)
 
-      stmt = stmt.order_by(schema.StorageEvent.timestamp.desc())
+        stmt = stmt.order_by(schema.StorageEvent.timestamp.desc())
 
-      if config and config.num_recent_events is not None:
-        stmt = stmt.limit(config.num_recent_events)
+        if config and config.num_recent_events is not None:
+          stmt = stmt.limit(config.num_recent_events)
 
-      result = await sql_session.execute(stmt)
-      storage_events = result.scalars().all()
+        result = await sql_session.execute(stmt)
+        storage_events = result.scalars().all()
 
       # Fetch states from storage
       storage_app_state = await sql_session.get(

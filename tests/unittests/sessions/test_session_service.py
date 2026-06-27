@@ -1468,8 +1468,7 @@ async def test_service_recovers_after_multiple_failures():
 @pytest.mark.asyncio
 async def test_concurrent_prepare_tables_no_race_condition():
   """Verifies that concurrent calls to prepare_tables wait for table creation.
-  Reproduces the race condition from
-  https://github.com/google/adk-python/issues/4445: when concurrent requests
+  Reproduces the race condition where concurrent requests
   arrive at startup, prepare_tables must not return before tables exist.
   Previously, the early-return guard checked _db_schema_version (set during
   schema detection) instead of _tables_created, so a second request could
@@ -1602,7 +1601,7 @@ async def test_get_or_create_state_creates_new_row():
 async def test_get_or_create_state_handles_race_condition():
   """_get_or_create_state recovers when a concurrent INSERT wins the race.
 
-  Simulates the race from https://github.com/google/adk-python/issues/4954:
+  Simulates the race:
   the initial SELECT returns None (another caller hasn't committed yet), but
   by the time we INSERT, the other caller has committed — so the INSERT fails
   with IntegrityError and we fall back to re-fetching.

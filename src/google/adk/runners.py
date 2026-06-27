@@ -40,7 +40,6 @@ from .agents.live_request_queue import LiveRequestQueue
 from .agents.llm.task._finish_task_tool import FINISH_TASK_SUCCESS_RESULT
 from .agents.llm.task._finish_task_tool import FINISH_TASK_TOOL_NAME
 from .agents.run_config import RunConfig
-from .apps.app import App
 from .artifacts.base_artifact_service import BaseArtifactService
 from .auth.credential_service.base_credential_service import BaseCredentialService
 from .code_executors.built_in_code_executor import BuiltInCodeExecutor
@@ -62,6 +61,7 @@ from .tools.base_toolset import BaseToolset
 from .utils._debug_output import print_event
 
 if TYPE_CHECKING:
+  from .apps.app import App
   from .apps.app import ResumabilityConfig
 
 logger = logging.getLogger('google_adk.' + __name__)
@@ -276,6 +276,9 @@ class Runner:
           ' to provide plugins instead.',
           DeprecationWarning,
       )
+
+    # Lazy import keeps apps.app off the `import google.adk` cold-start path.
+    from .apps.app import App
 
     # Normalize to App — wrap bare agent or node. Uses model_construct to
     # bypass App._validate for the legacy (app_name, agent) API, which v1
@@ -737,6 +740,7 @@ class Runner:
       if iso is not None:
         event.isolation_scope = iso
     _apply_run_config_custom_metadata(event, ic.run_config)
+    ic.stamp_event_branch_context(event)
     return await self.session_service.append_event(
         session=ic.session, event=event
     )
@@ -1479,10 +1483,7 @@ class Runner:
           content=new_message,
       )
     _apply_run_config_custom_metadata(event, invocation_context.run_config)
-    # If new_message is a function response, find the matching function call
-    # and use its branch as the new event's branch.
-    if function_call := invocation_context._find_matching_function_call(event):
-      event.branch = function_call.branch
+    invocation_context.stamp_event_branch_context(event)
 
     await self.session_service.append_event(
         session=invocation_context.session, event=event

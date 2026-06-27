@@ -101,6 +101,22 @@ def _set_internal_custom_metadata(
   }
 
 
+def _drop_vertex_unsupported_part_fields(content_dict: dict[str, Any]) -> None:
+  """Drops Part fields the Vertex AI Agent Engine Sessions API rejects.
+
+  ``part_metadata`` is a Gemini Developer API-only field (the model path guards
+  it in ``genai`` ``_Part_to_vertex``); the Agent Engine Sessions API does not
+  accept it and fails ``appendEvent`` with ``400 INVALID_ARGUMENT`` ("Unknown
+  name \"part_metadata\" at 'event.content.parts[0]'"). Mutates the serialized
+  content dict in place; tolerant of either field-name or alias serialization.
+  """
+  # TODO: remove once the Agent Engine Sessions API accepts part_metadata.
+  for part in content_dict.get('parts') or []:
+    if isinstance(part, dict):
+      part.pop('part_metadata', None)
+      part.pop('partMetadata', None)
+
+
 class VertexAiSessionService(BaseSessionService):
   """Connects to the Vertex AI Agent Engine Session Service using Agent Engine SDK.
 
@@ -376,9 +392,9 @@ class VertexAiSessionService(BaseSessionService):
     # Build config (Monolithic approach)
     config = {}
     if event.content:
-      config['content'] = event.content.model_dump(
-          exclude_none=True, mode='json'
-      )
+      content_dict = event.content.model_dump(exclude_none=True, mode='json')
+      _drop_vertex_unsupported_part_fields(content_dict)
+      config['content'] = content_dict
     if event.actions:
       config['actions'] = {
           'skip_summarization': event.actions.skip_summarization,
@@ -443,6 +459,8 @@ class VertexAiSessionService(BaseSessionService):
         mode='json',
         by_alias=True,
     )
+    if isinstance(config['raw_event'].get('content'), dict):
+      _drop_vertex_unsupported_part_fields(config['raw_event']['content'])
 
     # Retry without raw_event if client side validation fails for older SDK
     # versions.
