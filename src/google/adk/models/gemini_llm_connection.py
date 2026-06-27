@@ -86,33 +86,10 @@ class GeminiLlmConnection(BaseLlmConnection):
     ]
 
     if contents:
-      # Gemini Enterprise Agent Platform does not support history_config in the
-      # SDK. To initialize a live session with prior history without hitting a
-      # 1007 protocol error (invalid role mid-session), we consolidate previous
-      # multi-turn interactions into a unified contextual preamble on a single
-      # user role turn.
-      if (
-          self._is_gemini_3_1_flash_live
-          and self._api_backend != GoogleLLMVariant.GEMINI_API
-      ):
-        collapsed_text = 'Previous conversation history:\n'
-        for c in contents:
-          text_parts = ''.join(p.text for p in c.parts if p.text)
-          collapsed_text += f'[{c.role}]: {text_parts}\n'
-        contents = [
-            types.Content(
-                role='user', parts=[types.Part.from_text(text=collapsed_text)]
-            )
-        ]
-
       logger.debug('Sending history to live connection: %s', contents)
       await self._gemini_session.send_client_content(
           turns=contents,
-          turn_complete=(
-              True
-              if self._is_gemini_3_1_flash_live
-              else contents[-1].role == 'user'
-          ),
+          turn_complete=contents[-1].role == 'user',
       )
     else:
       logger.info('no content is sent')
