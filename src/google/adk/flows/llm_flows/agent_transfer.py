@@ -16,6 +16,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import inspect
 import typing
 from typing import Any
 from typing import AsyncGenerator
@@ -48,6 +50,8 @@ class _AgentTransferLlmRequestProcessor(BaseLlmRequestProcessor):
     if not transfer_targets:
       return
 
+    await _resolve_transfer_target_descriptions(transfer_targets)
+
     transfer_to_agent_tool = TransferToAgentTool(
         agent_names=[agent.name for agent in transfer_targets]
     )
@@ -70,6 +74,23 @@ class _AgentTransferLlmRequestProcessor(BaseLlmRequestProcessor):
 
 
 request_processor = _AgentTransferLlmRequestProcessor()
+
+
+async def _resolve_transfer_target_descriptions(
+    target_agents: list[Any],
+) -> None:
+  """Resolve target-agent metadata before transfer instructions are built."""
+  resolve_tasks = []
+  for target_agent in target_agents:
+    ensure_resolved = getattr(target_agent, '_ensure_resolved', None)
+    if not callable(ensure_resolved):
+      continue
+    maybe_awaitable = ensure_resolved()
+    if inspect.isawaitable(maybe_awaitable):
+      resolve_tasks.append(maybe_awaitable)
+
+  if resolve_tasks:
+    await asyncio.gather(*resolve_tasks)
 
 
 def _build_target_agents_info(target_agent: Any) -> str:

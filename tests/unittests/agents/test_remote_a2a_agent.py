@@ -456,6 +456,54 @@ class TestRemoteA2aAgentResolution:
         assert agent._a2a_client == mock_a2a_client
 
   @pytest.mark.asyncio
+  async def test_ensure_resolved_enhances_description_from_agent_card(self):
+    """Test _ensure_resolved builds transfer context from the agent card."""
+    agent_card = AgentCard(
+        name="research-agent",
+        url="https://example.com/rpc",
+        description="Answers research questions.",
+        version="1.0",
+        capabilities=AgentCapabilities(),
+        default_input_modes=["text/plain"],
+        default_output_modes=["application/json"],
+        skills=[
+            AgentSkill(
+                id="sec-search",
+                name="SEC Search",
+                description="Searches SEC filings.",
+                tags=["finance", "filings"],
+                examples=["Find Apple's latest 10-K risk factors."],
+            )
+        ],
+    )
+    agent = RemoteA2aAgent(
+        name="test_agent",
+        agent_card=agent_card,
+        description="Local placeholder",
+    )
+
+    with patch("httpx.AsyncClient") as mock_client_class:
+      mock_client = AsyncMock()
+      mock_client_class.return_value = mock_client
+
+      with patch(
+          "google.adk.agents.remote_a2a_agent.A2AClientFactory"
+      ) as mock_factory_class:
+        mock_factory = Mock()
+        mock_a2a_client = Mock()
+        mock_factory.create.return_value = mock_a2a_client
+        mock_factory_class.return_value = mock_factory
+
+        await agent._ensure_resolved()
+
+    assert agent.description == (
+        "Answers research questions.\n\n"
+        "Capabilities:\n"
+        "- SEC Search: Searches SEC filings. [finance, filings]\n"
+        "  Example 1: Find Apple's latest 10-K risk factors."
+    )
+
+  @pytest.mark.asyncio
   async def test_ensure_resolved_with_direct_agent_card_with_factory(self):
     """Test _ensure_resolved with direct agent card."""
     agent_card = create_test_agent_card()
@@ -509,7 +557,9 @@ class TestRemoteA2aAgentResolution:
 
           assert agent._is_resolved is True
           assert agent._agent_card == agent_card
-          assert agent.description == agent_card.description
+          assert agent.description == (
+              "Test agent\n\nCapabilities:\n- Test Skill: A test skill [test]"
+          )
 
   @pytest.mark.asyncio
   async def test_ensure_resolved_already_resolved(self):

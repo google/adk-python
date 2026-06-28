@@ -47,6 +47,16 @@ class _NonLlmAgent(BaseAgent):
     yield Event(author=self.name, invocation_id=ctx.invocation_id)
 
 
+class _ResolvableAgent(_NonLlmAgent):
+  """A non-LLM agent whose description is populated asynchronously."""
+
+  resolved: bool = False
+
+  async def _ensure_resolved(self) -> None:
+    self.description = 'Description from resolved agent card'
+    self.resolved = True
+
+
 async def create_test_invocation_context(agent: Agent) -> InvocationContext:
   """Helper to create constructed InvocationContext."""
   session_service = InMemorySessionService()
@@ -342,3 +352,30 @@ async def test_agent_transfer_with_non_llm_peer_agent():
 
   instructions = llm_request.config.system_instruction
   assert 'non_llm_peer' in instructions
+
+
+@pytest.mark.asyncio
+async def test_agent_transfer_resolves_target_descriptions_before_prompt():
+  """Remote-style targets can populate their description before delegation."""
+  mockModel = testing_utils.MockModel.create(responses=[])
+
+  remote_sub_agent = _ResolvableAgent(name='remote_sub_agent')
+  main_agent = Agent(
+      name='main_agent',
+      model=mockModel,
+      sub_agents=[remote_sub_agent],
+      description='Main agent',
+  )
+
+  invocation_context = await create_test_invocation_context(main_agent)
+  llm_request = LlmRequest()
+
+  async for _ in agent_transfer.request_processor.run_async(
+      invocation_context, llm_request
+  ):
+    pass
+
+  instructions = llm_request.config.system_instruction
+  assert remote_sub_agent.resolved is True
+  assert 'Agent name: remote_sub_agent' in instructions
+  assert 'Description from resolved agent card' in instructions

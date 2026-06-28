@@ -103,6 +103,44 @@ class A2AClientError(Exception):
   pass
 
 
+def _build_agent_card_description(agent_card: AgentCard) -> str:
+  """Build transfer context from an A2A agent card."""
+  description_parts: list[str] = []
+  if agent_card.description:
+    description_parts.append(agent_card.description)
+
+  skill_lines: list[str] = []
+  for skill in getattr(agent_card, "skills", None) or []:
+    skill_name = getattr(skill, "name", "")
+    skill_description = getattr(skill, "description", "")
+    skill_tags = getattr(skill, "tags", None) or []
+    skill_examples = getattr(skill, "examples", None) or []
+
+    if skill_name and skill_description:
+      skill_line = f"- {skill_name}: {skill_description}"
+    elif skill_name:
+      skill_line = f"- {skill_name}"
+    elif skill_description:
+      skill_line = f"- {skill_description}"
+    else:
+      continue
+
+    if skill_tags:
+      skill_line += f" [{', '.join(str(tag) for tag in skill_tags)}]"
+    skill_lines.append(skill_line)
+
+    for index, example in enumerate(skill_examples, start=1):
+      skill_lines.append(f"  Example {index}: {example}")
+
+  if skill_lines:
+    if description_parts:
+      description_parts.append("")
+    description_parts.append("Capabilities:")
+    description_parts.extend(skill_lines)
+
+  return "\n".join(description_parts).strip()
+
+
 def _add_mock_function_call(event: Event, state: TaskState) -> None:
   """Generates a mock function call for input-required events if applicable."""
   if event.content is None:
@@ -328,18 +366,20 @@ class RemoteA2aAgent(BaseAgent):
       return
 
     try:
+      # Resolve agent card if needed
       if not self._agent_card:
+        self._agent_card = await self._resolve_agent_card()
 
-        # Resolve agent card if needed
-        if not self._agent_card:
-          self._agent_card = await self._resolve_agent_card()
+      assert self._agent_card is not None
 
-        # Validate agent card
-        await self._validate_agent_card(self._agent_card)
+      # Validate agent card
+      await self._validate_agent_card(self._agent_card)
 
-        # Update description if empty
-        if not self.description and self._agent_card.description:
-          self.description = self._agent_card.description
+      # Keep transfer descriptions aligned with the resolved agent card.
+      if agent_card_description := _build_agent_card_description(
+          self._agent_card
+      ):
+        self.description = agent_card_description
 
       # Initialize A2A client
       if not self._a2a_client:
