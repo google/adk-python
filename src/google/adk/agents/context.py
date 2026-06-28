@@ -246,6 +246,11 @@ class Context(ReadonlyContext):
     self._function_call_id = value
 
   @property
+  def branch(self) -> str | None:
+    """The branch path of the current invocation context."""
+    return self._invocation_context.branch
+
+  @property
   def isolation_scope(self) -> str | None:
     """Scope tag inherited from parent or set explicitly via override.
 

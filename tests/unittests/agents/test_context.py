@@ -40,10 +40,19 @@ def mock_invocation_context():
   mock_context.session.id = "test-session-id"
   mock_context.app_name = "test-app"
   mock_context.user_id = "test-user"
+  mock_context.branch = "test-branch"
   mock_context.artifact_service = None
   mock_context.credential_service = None
   mock_context.memory_service = None
   return mock_context
+
+
+def test_context_branch_returns_invocation_branch(mock_invocation_context):
+  """Context.branch returns the branch from the underlying invocation context."""
+  mock_invocation_context.branch = "test-branch"
+  context = Context(invocation_context=mock_invocation_context)
+
+  assert context.branch == "test-branch"
 
 
 @pytest.fixture
