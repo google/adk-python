@@ -1299,7 +1299,6 @@ class BaseLlmFlow(ABC):
       llm_request: LlmRequest,
       model_response_event: Event,
   ) -> AsyncGenerator[LlmResponse, None]:
-
     async def _call_llm_with_tracing() -> AsyncGenerator[LlmResponse, None]:
       with tracer.start_as_current_span('call_llm') as span:
         # Runs before_model_callback inside the call_llm span so
