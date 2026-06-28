@@ -1202,16 +1202,26 @@ def __build_response_event(
       function_response_parts,
   )
 
-  # When summarization is skipped, ensure a displayable text part is added so
-  # the tool's output is not lost in UIs that don't render function responses.
-  # Control-flow tools (e.g. exit_loop) set skip_summarization but return no
-  # meaningful output; their None result is normalized to {'result': None}, so
-  # skip those to avoid emitting a noisy "null" text part.
+  # When summarization is skipped for an AgentTool, ensure a displayable text
+  # part is added so the sub-agent's output is not lost in UIs that don't render
+  # function responses (see #3881). This is scoped to AgentTool deliberately:
+  # other tools (e.g. UI/widget-rendering tools) set skip_summarization
+  # precisely because their function response is an internal acknowledgement
+  # that must NOT be surfaced as visible text. Control-flow tools (e.g.
+  # exit_loop) set skip_summarization but return no meaningful output; their
+  # None result is normalized to {'result': None}, so skip those to avoid
+  # emitting a noisy "null" text part.
+  #
+  # Local import to avoid a circular import (agents -> flows -> tools -> agents);
+  # AgentTool pulls in the agents package, so it cannot be imported at module top.
+  from ...tools.agent_tool import AgentTool
+
   has_displayable_result = display_result is not None and display_result != {
       'result': None
   }
   if (
-      tool_context.actions.skip_summarization
+      isinstance(tool, AgentTool)
+      and tool_context.actions.skip_summarization
       and 'error' not in function_result
       and has_displayable_result
   ):
