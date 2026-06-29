@@ -121,9 +121,16 @@ def check_cli_import(content: str, filename: str) -> bool:
 def check_mtls(content: str, filename: str) -> bool:
   if filename in _EXCLUDED_FROM_MTLS:
     return True
-  # Pattern for googleapis: https?://[a-zA-Z0-9.-]+\.googleapis\.com
-  endpoint_pattern = re.compile(r'https?://[a-zA-Z0-9.-]+\.googleapis\.com')
-  if endpoint_pattern.search(content):
+  endpoint_pattern = re.compile(
+      r'https?://[a-zA-Z0-9.-]+\.googleapis\.com[^"\'\s]*'
+  )
+  oauth_scope_pattern = re.compile(r'https?://www\.googleapis\.com/auth(/|$)')
+  endpoints = [
+      match.group(0)
+      for match in endpoint_pattern.finditer(content)
+      if not oauth_scope_pattern.match(match.group(0))
+  ]
+  if endpoints:
     return '.mtls.googleapis.com' in content
   return True
 
