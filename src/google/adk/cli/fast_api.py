@@ -837,6 +837,11 @@ def get_fast_api_app(
           " tracing."
       )
 
+          " tracing."
+      )
+
+      )
+
     @app.middleware("http")
     async def context_propagation(
         request: Request, call_next: Callable[[Request], Awaitable[Any]]
@@ -923,14 +928,16 @@ def get_fast_api_app(
       output = await _invoke_callable_or_raise(method, parsed.input or {})
 
       if inspect.isgenerator(output):
+        _sentinel = object()
 
         async def _aiter_from_iter(iterator):
           while True:
-            try:
-              chunk = await run_in_threadpool(next, iterator)
-              yield chunk
-            except StopIteration:
+            # next(iterator, _sentinel) returns the sentinel object when exhausted,
+            # avoiding a StopIteration traceback and its PEP 479 RuntimeError conversion.
+            chunk = await run_in_threadpool(next, iterator, _sentinel)
+            if chunk is _sentinel:
               break
+            yield chunk
 
         content_iter = _aiter_from_iter(output)
       else:
