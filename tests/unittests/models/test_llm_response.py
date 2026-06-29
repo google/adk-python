@@ -345,11 +345,36 @@ def test_llm_response_create_error_case_with_citation_metadata():
 
 
 def test_llm_response_create_empty_content_with_stop_reason():
-  """Test LlmResponse.create() with empty content and stop finish reason."""
+  """Empty content + STOP stays a successful response at the model layer.
+
+  Surfacing the empty turn as an error is the flow's job (non-streaming only);
+  the model/streaming layer must not classify a terminal finish-only chunk as
+  an error or it breaks streaming consumers that batch parts across chunks.
+  """
   generate_content_response = types.GenerateContentResponse(
       candidates=[
           types.Candidate(
               content=types.Content(parts=[]),
+              finish_reason=types.FinishReason.STOP,
+          )
+      ]
+  )
+
+  response = LlmResponse.create(generate_content_response)
+
+  assert response.error_code is None
+  assert response.content is not None
+  assert response.finish_reason == types.FinishReason.STOP
+
+
+def test_llm_response_create_non_empty_parts_with_stop_is_success():
+  """Regression guard: real text + STOP must remain a successful response."""
+  generate_content_response = types.GenerateContentResponse(
+      candidates=[
+          types.Candidate(
+              content=types.Content(
+                  role='model', parts=[types.Part(text='ok')]
+              ),
               finish_reason=types.FinishReason.STOP,
           )
       ]

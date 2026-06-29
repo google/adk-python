@@ -71,6 +71,11 @@ logger = logging.getLogger('google_adk.' + __name__)
 
 _ADK_AGENT_NAME_LABEL_KEY = 'adk_agent_name'
 
+_NO_CONTENT_ERROR_CODE = 'MODEL_RETURNED_NO_CONTENT'
+_NO_CONTENT_ERROR_MESSAGE = (
+    'The model returned no content (finish_reason=STOP with empty parts).'
+)
+
 # Timing configuration
 DEFAULT_TRANSFER_AGENT_DELAY = 1.0
 DEFAULT_TASK_COMPLETION_DELAY = 1.0
@@ -1065,6 +1070,23 @@ class BaseLlmFlow(ABC):
     ) as agen:
       async for event in agen:
         yield event
+
+    # A non-streaming turn that finishes with STOP but has no content parts would
+    # otherwise be skipped below and become a silent empty final response;
+    # surface it as an actionable error instead. Streaming is excluded
+    # because a terminal finish-only chunk legitimately follows content already
+    # streamed in earlier chunks.
+    if (
+        not llm_response.partial
+        and llm_response.error_code is None
+        and llm_response.finish_reason == types.FinishReason.STOP
+        and (not llm_response.content or not llm_response.content.parts)
+        and invocation_context.run_config.streaming_mode != StreamingMode.SSE
+    ):
+      llm_response.error_code = _NO_CONTENT_ERROR_CODE
+      llm_response.error_message = (
+          llm_response.error_message or _NO_CONTENT_ERROR_MESSAGE
+      )
 
     # Skip the model response event if there is no content and no error code.
     # This is needed for the code executor to trigger another loop.
