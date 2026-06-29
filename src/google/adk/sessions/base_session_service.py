@@ -151,6 +151,67 @@ class BaseSessionService(abc.ABC):
         'call get_session on each result to access the merged state.'
     )
 
+  async def merge_state(
+      self,
+      *,
+      app_name: str,
+      user_id: str,
+      session_id: str,
+      delta: dict[str, Any],
+  ) -> None:
+    """Atomically merges a state delta without appending an event.
+
+    This is a state-only write path that bypasses the event log and the
+    whole-session optimistic-concurrency (OCC) check that ``append_event``
+    performs.  It is intended for *commutative* updates to independent state
+    keys (counters, flags, per-user balances, feature toggles), where coupling
+    the write to event-log append + session-level OCC would force unrelated
+    writers to serialize and retry on spurious "stale session" errors.
+
+    The ``delta`` uses the same prefix convention as ``create_session`` and
+    event ``state_delta``; keys are routed to the scope-appropriate storage
+    row:
+
+    * ``app:`` -> app-scoped state (keyed by ``app_name``).
+    * ``user:`` -> user-scoped state (keyed by ``(app_name, user_id)``).
+    * no prefix -> session-scoped state (keyed by
+      ``(app_name, user_id, session_id)``).
+
+    ``temp:`` keys are rejected with ``ValueError`` because temp state is never
+    persisted.
+
+    Guarantees (for backends that implement this method):
+
+    * No ``events`` row is written.
+    * The session's OCC revision marker is **not** advanced, so a concurrently
+      held in-memory ``Session`` does not become stale and its next
+      ``append_event`` still succeeds.
+    * App- and user-scoped merges do not require a pre-existing session and are
+      fully decoupled from any session's revision.  ``session_id`` is used only
+      to route session-scoped keys.
+
+    Merge semantics for non-scalar values are backend-dependent; see the
+    concrete implementations (notably ``DatabaseSessionService.merge_state``)
+    for the dialect-specific caveats around nested objects and ``None`` values.
+    For flat scalar values all backends behave identically.
+
+    Args:
+      app_name: The name of the app.
+      user_id: The ID of the user.
+      session_id: The ID of the session. Required for routing session-scoped
+        keys; need not exist when the delta has no session-scoped keys.
+      delta: The state delta to merge. An empty or ``None`` delta is a no-op.
+
+    Raises:
+      ValueError: If ``delta`` contains ``temp:``-prefixed keys, or if a
+        session-scoped key is supplied for a session that does not exist.
+      NotImplementedError: When the concrete ``BaseSessionService``
+        implementation does not support a server-side state merge.
+    """
+    raise NotImplementedError(
+        f'{type(self).__name__} does not support merge_state.'
+    )
+
   async def append_event(self, session: Session, event: Event) -> Event:
     """Appends an event to a session object."""
     if event.partial:

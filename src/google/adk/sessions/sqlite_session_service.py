@@ -368,6 +368,54 @@ class SqliteSessionService(BaseSessionService):
       return await self._get_user_state(db, app_name, user_id)
 
   @override
+  async def merge_state(
+      self,
+      *,
+      app_name: str,
+      user_id: str,
+      session_id: str,
+      delta: dict[str, Any],
+  ) -> None:
+    if not delta:
+      return
+    if any(key.startswith(State.TEMP_PREFIX) for key in delta):
+      raise ValueError(
+          "merge_state does not support temp: keys; temp state is never"
+          " persisted."
+      )
+
+    state_deltas = _session_util.extract_state_delta(delta)
+    app_state_delta = state_deltas["app"]
+    user_state_delta = state_deltas["user"]
+    session_state_delta = state_deltas["session"]
+    now = platform_time.get_time()
+
+    async with self._get_db_connection() as db:
+      if session_state_delta:
+        async with db.execute(
+            "SELECT 1 FROM sessions WHERE app_name=? AND user_id=? AND id=?",
+            (app_name, user_id, session_id),
+        ) as cursor:
+          if await cursor.fetchone() is None:
+            raise ValueError(f"Session {session_id} not found.")
+
+      # Each merge below uses an atomic json_patch on the storage row, so no
+      # read-modify-write and no whole-session OCC check is needed.
+      if app_state_delta:
+        await self._upsert_app_state(db, app_name, app_state_delta, now)
+      if user_state_delta:
+        await self._upsert_user_state(
+            db, app_name, user_id, user_state_delta, now
+        )
+      if session_state_delta:
+        # Merge the session state WITHOUT bumping sessions.update_time, so a
+        # concurrently held session does not go stale on its next append_event.
+        await self._merge_session_state_in_db(
+            db, app_name, user_id, session_id, session_state_delta
+        )
+      await db.commit()
+
+  @override
   async def append_event(self, session: Session, event: Event) -> Event:
     if event.partial:
       return event
@@ -561,6 +609,31 @@ class SqliteSessionService(BaseSessionService):
         (
             json.dumps(delta),
             now,
+            app_name,
+            user_id,
+            session_id,
+        ),
+    )
+
+  async def _merge_session_state_in_db(
+      self,
+      db: aiosqlite.Connection,
+      app_name: str,
+      user_id: str,
+      session_id: str,
+      delta: dict,
+  ) -> None:
+    """Atomically merges session state via json_patch without bumping update_time.
+
+    Unlike _update_session_state_in_db, this intentionally leaves
+    sessions.update_time untouched so that merge_state does not advance the
+    optimistic-concurrency marker derived from it.
+    """
+    await db.execute(
+        "UPDATE sessions SET state=json_patch(state, ?) WHERE"
+        " app_name=? AND user_id=? AND id=?",
+        (
+            json.dumps(delta),
             app_name,
             user_id,
             session_id,

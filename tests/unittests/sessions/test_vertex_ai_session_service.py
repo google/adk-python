@@ -657,6 +657,18 @@ async def test_initialize_with_project_location_and_api_key_error():
 
 
 @pytest.mark.asyncio
+async def test_merge_state_not_implemented():
+  session_service = mock_vertex_ai_session_service()
+  with pytest.raises(NotImplementedError, match='merge_state'):
+    await session_service.merge_state(
+        app_name='123',
+        user_id='user',
+        session_id='1',
+        delta={'k': 'v'},
+    )
+
+
+@pytest.mark.asyncio
 @pytest.mark.usefixtures('mock_get_api_client')
 async def test_get_session_returns_none_when_invalid_argument(
     mock_api_client_instance,

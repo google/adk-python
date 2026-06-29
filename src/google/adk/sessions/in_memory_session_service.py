@@ -319,6 +319,46 @@ class InMemorySessionService(BaseSessionService):
     return dict(self.user_state.get(app_name, {}).get(user_id, {}))
 
   @override
+  async def merge_state(
+      self,
+      *,
+      app_name: str,
+      user_id: str,
+      session_id: str,
+      delta: dict[str, Any],
+  ) -> None:
+    if not delta:
+      return
+    if any(key.startswith(State.TEMP_PREFIX) for key in delta):
+      raise ValueError(
+          'merge_state does not support temp: keys; temp state is never'
+          ' persisted.'
+      )
+
+    state_deltas = _session_util.extract_state_delta(delta)
+    app_state_delta = state_deltas['app']
+    user_state_delta = state_deltas['user']
+    session_state_delta = state_deltas['session']
+
+    if session_state_delta:
+      storage_session = (
+          self.sessions.get(app_name, {}).get(user_id, {}).get(session_id)
+      )
+      if storage_session is None:
+        raise ValueError(f'Session {session_id} not found.')
+
+    if app_state_delta:
+      self.app_state.setdefault(app_name, {}).update(app_state_delta)
+    if user_state_delta:
+      self.user_state.setdefault(app_name, {}).setdefault(user_id, {}).update(
+          user_state_delta
+      )
+    if session_state_delta:
+      # Merge into the stored session's state without bumping
+      # last_update_time, so a concurrently held session does not go stale.
+      storage_session.state.update(session_state_delta)
+
+  @override
   async def append_event(self, session: Session, event: Event) -> Event:
     if event.partial:
       return event

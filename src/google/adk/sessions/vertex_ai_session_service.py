@@ -382,6 +382,30 @@ class VertexAiSessionService(BaseSessionService):
     )
 
   @override
+  async def merge_state(
+      self,
+      *,
+      app_name: str,
+      user_id: str,
+      session_id: str,
+      delta: dict[str, Any],
+  ) -> None:
+    """Not supported by the Vertex AI Agent Engine backend.
+
+    The Vertex AI Agent Engine API does not expose a server-side state merge
+    independent of the event log. To persist state, append an event with a
+    ``state_delta`` via ``append_event``.
+
+    Raises:
+      NotImplementedError: Always.
+    """
+    raise NotImplementedError(
+        'VertexAiSessionService does not support merge_state. '
+        'To persist state, append an event with a state_delta via '
+        'append_event.'
+    )
+
+  @override
   async def append_event(self, session: Session, event: Event) -> Event:
     # Update the in-memory session.
     await super().append_event(session=session, event=event)
