@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING
 
 from google.adk.telemetry import tracing
 from opentelemetry.sdk._logs.export import InMemoryLogRecordExporter
+from opentelemetry.sdk.metrics.export import InMemoryMetricReader
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 import pytest
 
@@ -25,7 +26,7 @@ from .functional_node_test_cases import ALL_NODE_CASES
 from .functional_test_helpers import aclosing_wrapping_assertions
 from .functional_test_helpers import install_telemetry
 from .functional_test_helpers import run_node_scenario
-from .functional_test_helpers import SpanDigest
+from .functional_test_helpers import TelemetryDigest
 
 if TYPE_CHECKING:
   from google.adk.events.event import Event
@@ -51,13 +52,16 @@ async def test_telemetry_schema(
   case.apply_env(monkeypatch)
   span_exporter = InMemorySpanExporter()
   log_exporter = InMemoryLogRecordExporter()
-  install_telemetry(monkeypatch, span_exporter, log_exporter)
+  metric_reader = InMemoryMetricReader()
+  install_telemetry(monkeypatch, span_exporter, log_exporter, metric_reader)
 
   events = await run_node_scenario()
   spans = span_exporter.get_finished_spans()
-  digest = SpanDigest.build(spans, log_exporter.get_finished_logs())
+  digest = TelemetryDigest.build(
+      spans, log_exporter.get_finished_logs(), metric_reader.get_metrics_data()
+  )
 
-  assert digest == case.expected_root
+  assert digest == case.expected
   _verify_associated_events(spans, events)
 
 
@@ -75,7 +79,10 @@ async def test_async_generators_wrapped_in_aclosing(
   ``gc.get_referrers`` walk is expensive (~5 seconds per scenario).
   """
   install_telemetry(
-      monkeypatch, InMemorySpanExporter(), InMemoryLogRecordExporter()
+      monkeypatch,
+      InMemorySpanExporter(),
+      InMemoryLogRecordExporter(),
+      InMemoryMetricReader(),
   )
 
   with aclosing_wrapping_assertions():
@@ -120,7 +127,12 @@ async def test_exception_preserves_attributes(
   """Test when an exception occurs during tool execution, span attributes are still present on spans where they are expected."""
 
   span_exporter = InMemorySpanExporter()
-  install_telemetry(monkeypatch, span_exporter, InMemoryLogRecordExporter())
+  install_telemetry(
+      monkeypatch,
+      span_exporter,
+      InMemoryLogRecordExporter(),
+      InMemoryMetricReader(),
+  )
 
   captured_events: list[Event] = []
   with pytest.raises(ValueError, match='This tool always fails'):
@@ -159,7 +171,12 @@ async def test_no_generate_content_for_gemini_model_when_already_instrumented(
   """Tests that generate_content span is not created if already instrumented."""
 
   span_exporter = InMemorySpanExporter()
-  install_telemetry(monkeypatch, span_exporter, InMemoryLogRecordExporter())
+  install_telemetry(
+      monkeypatch,
+      span_exporter,
+      InMemoryLogRecordExporter(),
+      InMemoryMetricReader(),
+  )
 
   # Arrange
   monkeypatch.setattr(
