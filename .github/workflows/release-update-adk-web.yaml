@@ -28,6 +28,7 @@ on:
 
 jobs:
   update-frontend:
+    if: github.repository == 'google/adk-python'
     runs-on: ubuntu-latest
     permissions:
       contents: write

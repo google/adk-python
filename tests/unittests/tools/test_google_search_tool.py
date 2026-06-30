@@ -516,3 +516,23 @@ class TestGoogleSearchTool:
     assert llm_request.model == expected_model
     assert llm_request.config.tools is not None
     assert len(llm_request.config.tools) == 1
+
+  @pytest.mark.asyncio
+  async def test_process_llm_request_managed_agent_no_model(self):
+    """Managed-agent requests resolve google_search even with no model."""
+    tool = GoogleSearchTool()
+    tool_context = await _create_tool_context()
+
+    llm_request = LlmRequest(
+        model=None,
+        config=types.GenerateContentConfig(),
+    )
+    llm_request._is_managed_agent = True
+
+    await tool.process_llm_request(
+        tool_context=tool_context, llm_request=llm_request
+    )
+
+    assert llm_request.config.tools is not None
+    assert len(llm_request.config.tools) == 1
+    assert llm_request.config.tools[0].google_search is not None

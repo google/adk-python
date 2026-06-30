@@ -17,6 +17,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import sys
 from typing import AsyncGenerator
 from typing import ClassVar
@@ -31,6 +32,8 @@ from .base_agent import BaseAgentState
 from .base_agent_config import BaseAgentConfig
 from .invocation_context import InvocationContext
 from .parallel_agent_config import ParallelAgentConfig
+
+logger = logging.getLogger('google_adk.' + __name__)
 
 
 def _create_branch_ctx_for_sub_agent(
@@ -65,9 +68,15 @@ async def _merge_agent_run(
         await queue.put((event, resume_signal))
         # Wait for upstream to consume event before generating new events.
         await resume_signal.wait()
+    except asyncio.CancelledError:
+      logger.info('Agent run cancelled.')
+      raise
     finally:
       # Mark agent as finished.
-      await queue.put((sentinel, None))
+      try:
+        await queue.put((sentinel, None))
+      except Exception as e:
+        logger.warning('Failed to put sentinel on queue: %s', e)
 
   async with asyncio.TaskGroup() as tg:
     for events_for_one_agent in agent_runs:

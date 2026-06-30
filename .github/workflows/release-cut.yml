@@ -47,6 +47,7 @@ permissions:
 
 jobs:
   cut-or-regenerate:
+    if: github.repository == 'google/adk-python'
     runs-on: ubuntu-latest
     steps:
       - name: Determine Branch Configurations

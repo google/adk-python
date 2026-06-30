@@ -14,6 +14,8 @@
 
 """Tests for model name utility functions."""
 
+from google.adk.models.llm_request import LlmRequest
+from google.adk.utils.model_name_utils import _is_managed_agent
 from google.adk.utils.model_name_utils import extract_model_name
 from google.adk.utils.model_name_utils import is_gemini_1_model
 from google.adk.utils.model_name_utils import is_gemini_3_1_flash_live
@@ -429,3 +431,15 @@ class TestIsGemini35LiveTranslate:
     """Test edge cases."""
     assert is_gemini_3_5_live_translate(None) is False
     assert is_gemini_3_5_live_translate('') is False
+
+
+class TestIsManagedAgent:
+  """Tests for the _is_managed_agent predicate."""
+
+  def test_true_when_flag_set(self):
+    request = LlmRequest()
+    request._is_managed_agent = True
+    assert _is_managed_agent(request) is True
+
+  def test_false_by_default(self):
+    assert _is_managed_agent(LlmRequest()) is False

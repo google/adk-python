@@ -34,7 +34,9 @@ TBaseAgentConfig = TypeVar('TBaseAgentConfig', bound='BaseAgentConfig')
 
 
 @deprecated(
-    'BaseAgentConfig is deprecated and will be removed in future versions.'
+    'BaseAgentConfig is deprecated and will be removed in future versions. '
+    'Config is now loaded via reflection so the separate config class is no '
+    'longer needed.'
 )
 @experimental(FeatureName.AGENT_CONFIG)
 class BaseAgentConfig(BaseModel):
