@@ -19,6 +19,7 @@ from typing import TYPE_CHECKING
 from google.genai import types
 from typing_extensions import override
 
+from ..utils.model_name_utils import _is_managed_agent
 from ..utils.model_name_utils import is_gemini_1_model
 from ..utils.model_name_utils import is_gemini_model
 from ..utils.model_name_utils import is_gemini_model_id_check_disabled
@@ -79,7 +80,11 @@ class GoogleSearchTool(BaseTool):
       llm_request.config.tools.append(
           types.Tool(google_search_retrieval=types.GoogleSearchRetrieval())
       )
-    elif is_gemini_model(llm_request.model) or model_check_disabled:
+    elif (
+        is_gemini_model(llm_request.model)
+        or model_check_disabled
+        or _is_managed_agent(llm_request)
+    ):
       llm_request.config.tools.append(
           types.Tool(google_search=types.GoogleSearch())
       )

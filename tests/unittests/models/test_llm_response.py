@@ -447,3 +447,13 @@ def test_get_function_responses_empty_when_no_content():
 def test_get_function_responses_empty_when_no_parts():
   response = LlmResponse(content=types.Content(parts=None))
   assert response.get_function_responses() == []
+
+
+def test_environment_id_defaults_to_none_and_roundtrips():
+  resp = LlmResponse()
+  assert resp.environment_id is None
+
+  resp.environment_id = 'env_abc'
+  dumped = resp.model_dump(exclude_none=True)
+  assert dumped['environment_id'] == 'env_abc'
+  assert LlmResponse.model_validate(dumped).environment_id == 'env_abc'

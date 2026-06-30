@@ -26,6 +26,7 @@ permissions:
 
 jobs:
   publish:
+    if: github.repository == 'google/adk-python'
     runs-on: ubuntu-latest
     steps:
       - name: Validate branch

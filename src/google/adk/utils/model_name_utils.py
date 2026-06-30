@@ -18,11 +18,15 @@ from __future__ import annotations
 
 import re
 from typing import Optional
+from typing import TYPE_CHECKING
 
 from packaging.version import InvalidVersion
 from packaging.version import Version
 
 from .env_utils import is_env_enabled
+
+if TYPE_CHECKING:
+  from ..models.llm_request import LlmRequest
 
 _DISABLE_GEMINI_MODEL_ID_CHECK_ENV_VAR = 'ADK_DISABLE_GEMINI_MODEL_ID_CHECK'
 
@@ -34,6 +38,11 @@ def is_gemini_model_id_check_disabled() -> bool:
   ids may not follow the public ``gemini-*`` naming convention.
   """
   return is_env_enabled(_DISABLE_GEMINI_MODEL_ID_CHECK_ENV_VAR)
+
+
+def _is_managed_agent(llm_request: LlmRequest) -> bool:
+  """Whether the request was built by a ManagedAgent."""
+  return llm_request._is_managed_agent
 
 
 def extract_model_name(model_string: str) -> str:

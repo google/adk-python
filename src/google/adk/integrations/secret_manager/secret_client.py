@@ -19,10 +19,9 @@ from typing import cast
 from typing import Optional
 
 from google.api_core.gapic_v1 import client_info
-import google.auth
 from google.auth import default as default_service_credential
-import google.auth.transport.requests
 from google.cloud import secretmanager
+from google.oauth2 import credentials as user_credentials
 from google.oauth2 import service_account
 
 from ... import version
@@ -42,8 +41,9 @@ class SecretManagerClient:
   """A client for interacting with Google Cloud Secret Manager.
 
   This class provides a simplified interface for retrieving secrets from
-  Secret Manager, handling authentication using either a service account
-  JSON keyfile (passed as a string) or a preexisting authorization token.
+  Secret Manager, handling authentication using a service account JSON
+  keyfile (passed as a string) or a preexisting authorization token. If
+  neither is provided, it falls back to Application Default Credentials.
 
   Attributes:
       _credentials:  Google Cloud credentials object (ServiceAccountCredentials
@@ -59,6 +59,10 @@ class SecretManagerClient:
   ):
     """Initializes the SecretManagerClient.
 
+    Credentials are resolved in priority order: `service_account_json`, then
+    `auth_token`, then Application Default Credentials when neither is
+    provided.
+
     Args:
         service_account_json:  The content of a service account JSON keyfile (as
           a string), not the file path.  Must be valid JSON.
@@ -67,12 +71,18 @@ class SecretManagerClient:
           Manager service. If not provided, the global endpoint is used.
 
     Raises:
-        ValueError: If neither `service_account_json` nor `auth_token` is
-        provided,
-            or if both are provided.  Also raised if the service_account_json
-            is not valid JSON.
+        ValueError: If both `service_account_json` and `auth_token` are
+            provided, if `service_account_json` is not valid JSON, or if
+            neither is provided and Application Default Credentials cannot be
+            resolved.
         google.auth.exceptions.GoogleAuthError: If authentication fails.
     """
+    if service_account_json and auth_token:
+      raise ValueError(
+          "Must provide either 'service_account_json' or 'auth_token', not"
+          " both."
+      )
+
     if service_account_json:
       try:
         credentials = service_account.Credentials.from_service_account_info(
@@ -81,15 +91,7 @@ class SecretManagerClient:
       except json.JSONDecodeError as e:
         raise ValueError(f"Invalid service account JSON: {e}") from e
     elif auth_token:
-      credentials = google.auth.credentials.Credentials(
-          token=auth_token,
-          refresh_token=None,
-          token_uri=None,
-          client_id=None,
-          client_secret=None,
-      )
-      request = google.auth.transport.requests.Request()
-      credentials.refresh(request)
+      credentials = user_credentials.Credentials(token=auth_token)
     else:
       try:
         credentials, _ = default_service_credential(
