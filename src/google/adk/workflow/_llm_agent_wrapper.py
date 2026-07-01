@@ -394,19 +394,23 @@ async def run_llm_agent_as_node(
             break  # close this run_iter; outer loop re-enters
           if event.actions.transfer_to_agent:
             target_name = event.actions.transfer_to_agent
-            if target_name != agent.name:
-              from ..agents.llm_agent import LlmAgent
+            if target_name == agent.name:
+              raise ValueError(
+                  f"Agent '{target_name}' cannot transfer to itself."
+              )
 
-              if (
-                  isinstance(agent, LlmAgent)
-                  and ctx._invocation_context.is_resumable
-              ):
-                ctx._invocation_context.set_agent_state(
-                    agent.name, end_of_agent=True
-                )
-                yield agent._create_agent_state_event(ctx._invocation_context)
-              transferred = True
-              break
+            from ..agents.llm_agent import LlmAgent
+
+            if (
+                isinstance(agent, LlmAgent)
+                and ctx._invocation_context.is_resumable
+            ):
+              ctx._invocation_context.set_agent_state(
+                  agent.name, end_of_agent=True
+              )
+              yield agent._create_agent_state_event(ctx._invocation_context)
+            transferred = True
+            break
       if not had_task_fc or transferred:
         # LLM finished without delegating (or transferred away);
         # nothing more for this wrapper to do.

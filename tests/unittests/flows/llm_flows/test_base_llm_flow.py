@@ -1645,6 +1645,58 @@ def _make_agent_tree():
 
 
 @pytest.mark.asyncio
+async def test_empty_stop_after_tool_call_surfaces_error_event():
+  """Regression test for empty Gemini turn after a successful tool call (#5631).
+
+  Turn 1 returns a function_call which executes successfully, then turn 2
+  returns Content(role='model', parts=[]) with finish_reason=STOP and no error.
+  In non-streaming mode the flow must surface that empty turn as an error event
+  instead of a silent empty final response.
+  """
+  function_call_part = types.Part.from_function_call(
+      name='increase_by_one', args={'x': 1}
+  )
+
+  turn_1 = LlmResponse(
+      content=types.Content(role='model', parts=[function_call_part]),
+      finish_reason=types.FinishReason.STOP,
+  )
+  # An empty Gemini turn: STOP with no content parts and no error from the model.
+  turn_2 = LlmResponse(
+      content=types.Content(role='model', parts=[]),
+      finish_reason=types.FinishReason.STOP,
+  )
+
+  function_called = 0
+
+  def increase_by_one(x: int) -> int:
+    nonlocal function_called
+    function_called += 1
+    return x + 1
+
+  mock_model = testing_utils.MockModel.create(responses=[turn_1, turn_2])
+  agent = Agent(name='root_agent', model=mock_model, tools=[increase_by_one])
+  runner = testing_utils.InMemoryRunner(agent)
+  events = runner.run('test')
+
+  assert function_called == 1, 'Tool should still execute on turn 1'
+
+  function_call_events = [e for e in events if e.get_function_calls()]
+  function_response_events = [e for e in events if e.get_function_responses()]
+  assert len(function_call_events) == 1
+  assert len(function_response_events) == 1
+
+  # The empty turn 2 must surface as an error event, not an empty final.
+  error_events = [e for e in events if e.error_code]
+  assert len(error_events) == 1
+  err = error_events[0]
+  assert err.error_code == 'MODEL_RETURNED_NO_CONTENT'
+  assert err.error_message
+  # And it must be the run's final event (no silent empty event after it).
+  assert events[-1] is err
+
+
+@pytest.mark.asyncio
 async def test_transfer_to_sibling_disallowed_raises_value_error():
   """Transfer to sibling raises ValueError when disallow_transfer_to_peers is True."""
   # Arrange

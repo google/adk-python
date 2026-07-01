@@ -153,138 +153,77 @@ class DynamicNodeScheduler(ScheduleDynamicNode):
     Returns:
       Child Context with output, route, and interrupt_ids set.
     """
-    curr_node = node
-    curr_name = node_name or node.name
-    curr_run_id = run_id
-    curr_input = node_input
-    curr_parent_ctx: Context | None = ctx
+    curr_parent_path = ctx.node_path if ctx else None
+    base_path_builder = (
+        _NodePathBuilder.from_string(curr_parent_path)
+        if curr_parent_path
+        else _NodePathBuilder([])
+    )
+    node_path = str(base_path_builder.append(node_name or node.name, run_id))
 
-    while True:
-      curr_parent_path = curr_parent_ctx.node_path if curr_parent_ctx else None
-      base_path_builder = (
-          _NodePathBuilder.from_string(curr_parent_path)
-          if curr_parent_path
-          else _NodePathBuilder([])
-      )
-      node_path = str(base_path_builder.append(curr_name, curr_run_id))
+    # Rehydration chronological sequence barrier setup for the parent path
+    parent_path = ctx.node_path if ctx else ''
+    if parent_path and parent_path not in self._parent_sequence_barriers:
+      seq = self._scan_parent_child_sequence(ctx, parent_path)
+      self._parent_sequence_barriers[parent_path] = ReplaySequenceBarrier(seq)
 
-      # Rehydration chronological sequence barrier setup for the parent path
-      parent_path = curr_parent_ctx.node_path if curr_parent_ctx else ''
-      if parent_path and parent_path not in self._parent_sequence_barriers:
-        seq = self._scan_parent_child_sequence(curr_parent_ctx, parent_path)
-        self._parent_sequence_barriers[parent_path] = ReplaySequenceBarrier(seq)
+    # Runtime schema validation.
+    if node_input is not None:
+      try:
+        node_input = node._validate_input_data(node_input)
+      except ValidationError as e:
+        raise ValueError(
+            'Runtime schema validation failed for dynamic node'
+            f" '{node_name or node.name}'. Input does not match"
+            f' input_schema: {e}'
+        ) from e
 
-      # Runtime schema validation.
-      if curr_input is not None:
-        try:
-          curr_input = curr_node._validate_input_data(curr_input)
-        except ValidationError as e:
-          raise ValueError(
-              'Runtime schema validation failed for dynamic node'
-              f" '{curr_name}'. Input does not match input_schema: {e}"
-          ) from e
+    logger.debug('node %s schedule start.', node_path)
 
-      logger.debug('node %s schedule start.', node_path)
+    # Phase 1: Lazy rehydration from session events.
+    if node_path not in self._state.runs:
+      self._rehydrate_from_events(ctx, node_path)
 
-      # Phase 1: Lazy rehydration from session events.
-      if node_path not in self._state.runs:
-        self._rehydrate_from_events(curr_parent_ctx, node_path)
+    # Check existing run and determine if fresh execution is needed.
+    child_ctx, run_completed = await self._check_existing_run(
+        ctx,
+        node,
+        node_name or node.name,
+        node_path,
+        run_id,
+        node_input,
+        use_as_output,
+        use_sub_branch,
+        override_branch,
+        override_isolation_scope=override_isolation_scope,
+    )
 
-      # Check existing run and determine if fresh execution is needed.
-      child_ctx, run_completed = await self._check_existing_run(
-          curr_parent_ctx,
-          curr_node,
-          curr_name,
+    if not run_completed:
+      # Phase 3: Fresh execution.
+      logger.debug('node %s schedule: Fresh execution.', node_path)
+      child_ctx = await self._run_node_internal(
+          ctx,
+          node,
+          node_name or node.name,
           node_path,
-          curr_run_id,
-          curr_input,
+          run_id,
+          node_input,
           use_as_output,
-          use_sub_branch,
-          override_branch,
+          is_fresh=True,
+          use_sub_branch=use_sub_branch,
+          override_branch=override_branch,
           override_isolation_scope=override_isolation_scope,
       )
 
-      if not run_completed:
-        # Phase 3: Fresh execution.
-        logger.debug('node %s schedule: Fresh execution.', node_path)
-        child_ctx = await self._run_node_internal(
-            curr_parent_ctx,
-            curr_node,
-            curr_name,
-            node_path,
-            curr_run_id,
-            curr_input,
-            use_as_output,
-            is_fresh=True,
-            use_sub_branch=use_sub_branch,
-            override_branch=override_branch,
-            override_isolation_scope=override_isolation_scope,
-        )
+    logger.debug('node %s schedule end.', node_path)
 
-      logger.debug('node %s schedule end.', node_path)
+    # Advance chronological sequence for this parent path and key
+    parent_path = ctx.node_path if ctx else ''
+    key = f'{node_name or node.name}@{run_id}'
+    if parent_path in self._parent_sequence_barriers:
+      self._parent_sequence_barriers[parent_path].check_and_advance(key)
 
-      # Advance chronological sequence for this parent path and key
-      parent_path = curr_parent_ctx.node_path if curr_parent_ctx else ''
-      key = f'{curr_name}@{curr_run_id}'
-      if parent_path in self._parent_sequence_barriers:
-        self._parent_sequence_barriers[parent_path].check_and_advance(key)
-
-      # Check for transfer_to_agent signal.
-      transfer_to_agent = (
-          child_ctx.actions.transfer_to_agent if child_ctx else None
-      )
-      if isinstance(transfer_to_agent, str):
-        target_name = transfer_to_agent
-        root_agent = getattr(curr_node, 'root_agent', None)
-        if not root_agent:
-          raise ValueError(f'Cannot find root_agent on node {curr_node.name}')
-
-        # Local import to avoid runtime circular dependencies with Context
-        from .utils._transfer_utils import resolve_and_derive_transfer_context
-
-        target_agent, next_parent_ctx = resolve_and_derive_transfer_context(
-            target_name=target_name,
-            current_agent=curr_node,
-            root_agent=root_agent,
-            curr_ctx=child_ctx,
-            curr_parent_ctx=curr_parent_ctx,
-        )
-        if not target_agent:
-          raise ValueError(f"Transfer target agent '{target_name}' not found.")
-        if not next_parent_ctx:
-          available = []
-          if hasattr(curr_node, '_get_available_agent_names'):
-            available = curr_node._get_available_agent_names()
-          available_str = (
-              f"\nAvailable agents: {', '.join(available)}" if available else ''
-          )
-          raise ValueError(
-              f"Cannot transfer from '{curr_name}' to unrelated agent"
-              f" '{target_name}'.{available_str}"
-          )
-        curr_parent_ctx = next_parent_ctx
-
-        # Set up parameters for next iteration.
-        curr_node = target_agent
-        curr_name = target_agent.name
-
-        if not curr_parent_ctx:
-          raise AssertionError(
-              'curr_parent_ctx cannot be None during active workflow execution'
-          )
-
-        curr_parent_ctx._child_run_counters[target_agent.name] = (
-            curr_parent_ctx._child_run_counters.get(target_agent.name, 0) + 1
-        )
-        curr_run_id = str(
-            curr_parent_ctx._child_run_counters[target_agent.name]
-        )
-        curr_input = None  # Input for transfer target is usually empty.
-
-        # Loop continues to execute the next agent
-        continue
-
-      return child_ctx
+    return child_ctx
 
   async def _check_existing_run(
       self,

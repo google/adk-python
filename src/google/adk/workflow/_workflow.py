@@ -37,7 +37,6 @@ from ._dynamic_node_scheduler import DynamicNodeScheduler
 from ._dynamic_node_scheduler import DynamicNodeState
 from ._graph import EdgeItem
 from ._graph import Graph
-from ._node_runner import NodeRunner
 from ._node_state import NodeState
 from ._node_status import NodeStatus
 from ._trigger import Trigger
@@ -536,7 +535,7 @@ class Workflow(BaseNode):
       node_name: str,
       trigger: Trigger,
   ) -> None:
-    """Create NodeRunner and start asyncio task for a node."""
+    """Start asyncio task for scheduling and executing a node."""
 
     assert self.graph is not None
 
@@ -602,22 +601,24 @@ class Workflow(BaseNode):
           key
       ].isolation_scope
 
-    runner = NodeRunner(
-        node=node,
-        parent_ctx=ctx,
-        run_id=run_id,
-        use_as_output=is_terminal,
-        use_sub_branch=trigger.use_sub_branch,
-        override_branch=trigger.branch,
-        override_isolation_scope=self._compute_isolation_scope_for_node(
-            node, trigger, ctx, run_id
-        ),
-    )
     resume_inputs = (
         dict(node_state.resume_inputs) if node_state.resume_inputs else None
     )
     loop_state.pending_tasks[node_name] = asyncio.create_task(
-        runner.run(node_input=trigger.input, resume_inputs=resume_inputs)
+        ctx._run_node_internal(
+            node,
+            node_input=trigger.input,
+            use_sub_branch=trigger.use_sub_branch,
+            override_branch=trigger.branch,
+            override_isolation_scope=self._compute_isolation_scope_for_node(
+                node, trigger, ctx, run_id
+            ),
+            return_ctx=True,
+            resume_inputs=resume_inputs,
+            run_id=run_id,
+            use_as_output=is_terminal,
+            skip_run_id_validation=True,
+        )
     )
 
   def _make_schedule_dynamic_node(

@@ -95,6 +95,9 @@ optional-dependencies.antigravity = [
   "google-antigravity>=0.1,<0.2",
   "protobuf>=6",
 ]
+optional-dependencies.benchmark = [
+  "google-benchmark>=1.9",
+]
 optional-dependencies.community = [
   "google-adk-community",
 ]
@@ -276,8 +279,6 @@ extend-exclude = [
   "src/google/adk/integrations/bigquery/data_insights_tool.py",
   "src/google/adk/plugins/bigquery_agent_analytics_plugin.py",
   "src/google/adk/tools/data_agent/data_agent_tool.py",
-  "src/google/adk/v1/",
-  "v1_tests/",
 ]
 lint.select = [ "F401" ]
 # __init__.py files re-export symbols for the public API; unused imports
