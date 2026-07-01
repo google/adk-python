@@ -14,9 +14,11 @@
 
 """Tests for model name utility functions."""
 
+from google.adk.models.llm_request import LlmRequest
+from google.adk.utils.model_name_utils import _is_gemini_3_x_live
+from google.adk.utils.model_name_utils import _is_managed_agent
 from google.adk.utils.model_name_utils import extract_model_name
 from google.adk.utils.model_name_utils import is_gemini_1_model
-from google.adk.utils.model_name_utils import is_gemini_3_1_flash_live
 from google.adk.utils.model_name_utils import is_gemini_3_5_live_translate
 from google.adk.utils.model_name_utils import is_gemini_eap_or_2_or_above
 from google.adk.utils.model_name_utils import is_gemini_model
@@ -385,31 +387,33 @@ class TestGeminiModelIdCheckFlag:
     assert is_gemini_model_id_check_disabled() is True
 
 
-class TestIsGemini31FlashLive:
-  """Test the is_gemini_3_1_flash_live function."""
+class TestIsGemini3XLive:
+  """Test the _is_gemini_3_x_live function."""
 
-  def test_is_gemini_3_1_flash_live_simple_name(self):
+  def test_is_gemini_3_x_live_simple_name(self):
     """Test with simple model name format."""
-    assert is_gemini_3_1_flash_live('gemini-3.1-flash-live') is True
-    assert is_gemini_3_1_flash_live('gemini-3.1-flash-live-preview') is True
-    assert is_gemini_3_1_flash_live('gemini-3.1-pro-live') is False
-    assert is_gemini_3_1_flash_live('gemini-2.5-flash-live') is False
+    assert _is_gemini_3_x_live('gemini-3.1-flash-live') is True
+    assert _is_gemini_3_x_live('gemini-3.1-flash-live-preview') is True
+    assert _is_gemini_3_x_live('gemini-3.5-flash-lite-live-preview') is True
+    assert _is_gemini_3_x_live('gemini-3.5-live-translate') is False
+    assert _is_gemini_3_x_live('gemini-3.1-pro') is False
+    assert _is_gemini_3_x_live('gemini-2.5-flash-live') is False
 
-  def test_is_gemini_3_1_flash_live_path_based_name(self):
+  def test_is_gemini_3_x_live_path_based_name(self):
     """Test with path-based format (Vertex AI etc.)."""
     vertex_path = 'projects/123/locations/us-central1/publishers/google/models/gemini-3.1-flash-live'
-    assert is_gemini_3_1_flash_live(vertex_path) is True
+    assert _is_gemini_3_x_live(vertex_path) is True
 
-    vertex_path_preview = 'projects/123/locations/us-central1/publishers/google/models/gemini-3.1-flash-live-preview'
-    assert is_gemini_3_1_flash_live(vertex_path_preview) is True
+    vertex_path_preview = 'projects/123/locations/us-central1/publishers/google/models/gemini-3.5-flash-lite-live-preview'
+    assert _is_gemini_3_x_live(vertex_path_preview) is True
 
     non_live_path = 'projects/123/locations/us-central1/publishers/google/models/gemini-3.1-flash'
-    assert is_gemini_3_1_flash_live(non_live_path) is False
+    assert _is_gemini_3_x_live(non_live_path) is False
 
-  def test_is_gemini_3_1_flash_live_edge_cases(self):
+  def test_is_gemini_3_x_live_edge_cases(self):
     """Test edge cases."""
-    assert is_gemini_3_1_flash_live(None) is False
-    assert is_gemini_3_1_flash_live('') is False
+    assert _is_gemini_3_x_live(None) is False
+    assert _is_gemini_3_x_live('') is False
 
 
 class TestIsGemini35LiveTranslate:
@@ -429,3 +433,15 @@ class TestIsGemini35LiveTranslate:
     """Test edge cases."""
     assert is_gemini_3_5_live_translate(None) is False
     assert is_gemini_3_5_live_translate('') is False
+
+
+class TestIsManagedAgent:
+  """Tests for the _is_managed_agent predicate."""
+
+  def test_true_when_flag_set(self):
+    request = LlmRequest()
+    request._is_managed_agent = True
+    assert _is_managed_agent(request) is True
+
+  def test_false_by_default(self):
+    assert _is_managed_agent(LlmRequest()) is False

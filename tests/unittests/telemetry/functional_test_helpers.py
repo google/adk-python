@@ -42,11 +42,14 @@ import inspect
 import json
 import sys
 from types import CodeType
+from typing import Literal
+from typing import NamedTuple
 from typing import TYPE_CHECKING
 
 from google.adk.agents.llm_agent import Agent
 from google.adk.models.llm_response import LlmResponse
 from google.adk.runners import InMemoryRunner
+from google.adk.telemetry import _metrics
 from google.adk.telemetry import node_tracing
 from google.adk.telemetry import tracing
 from google.adk.tools.function_tool import FunctionTool
@@ -57,6 +60,10 @@ from google.genai.types import FinishReason
 from google.genai.types import Part
 from opentelemetry.sdk._logs import LoggerProvider
 from opentelemetry.sdk._logs.export import SimpleLogRecordProcessor
+from opentelemetry.sdk.metrics import MeterProvider
+from opentelemetry.sdk.metrics.export import HistogramDataPoint
+from opentelemetry.sdk.metrics.export import InMemoryMetricReader
+from opentelemetry.sdk.metrics.export import NumberDataPoint
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 import pytest
@@ -67,6 +74,7 @@ if TYPE_CHECKING:
   from opentelemetry.util.types import AttributeValue
   from opentelemetry.sdk._logs import ReadableLogRecord
   from opentelemetry.sdk._logs.export import InMemoryLogRecordExporter
+  from opentelemetry.sdk.metrics.export import MetricsData
   from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 
 from ..testing_utils import MockModel
@@ -79,6 +87,7 @@ from ..testing_utils import TestInMemoryRunner
 OTEL_OPT_IN = "OTEL_SEMCONV_STABILITY_OPT_IN"
 CAPTURE_CONTENT = "OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT"
 EXPERIMENTAL_OPT_IN = "gen_ai_latest_experimental"
+ADK_TELEMETRY_SCHEMA_VERSION_OPT_IN = "ADK_TELEMETRY_SCHEMA_VERSION_OPT_IN"
 
 # Stable semconv event names.
 GEN_AI_SYSTEM_MESSAGE_EVENT = "gen_ai.system.message"
@@ -253,6 +262,141 @@ def sorted_log_digests(logs: list[LogDigest]) -> list[LogDigest]:
   )
 
 
+class _NonDeterministic:
+  """Sentinel for a metric value that is non-deterministic (e.g. wall-clock)."""
+
+  __slots__ = ()
+
+  def __repr__(self) -> str:
+    return "NON_DETERMINISTIC"
+
+
+# Marks a recorded metric value that cannot be pinned (e.g. ``*.duration``
+# wall-clock timings); used in place of the actual value on both sides.
+NON_DETERMINISTIC = _NonDeterministic()
+
+
+@dataclass(frozen=True)
+class MetricPoint:
+  """A single recorded metric data point."""
+
+  attributes: dict[str, AttributeValue]
+  value: object
+
+  def __hash__(self) -> int:
+    return hash(
+        (json.dumps(self.attributes, sort_keys=True, default=str), self.value)
+    )
+
+
+class HistogramSpec(NamedTuple):
+  """Locates one ADK metric histogram so a test can redirect it.
+
+  ``module`` is the module holding the histogram, ``attr`` the global on it to
+  monkeypatch, and ``metric_name`` the instrument name it is recreated under.
+  """
+
+  module: object
+  attr: str
+  metric_name: str
+
+
+# Histograms recorded by ADK. Each test redirects these onto an in-memory
+# reader so the recorded points can be asserted.
+_PATCHED_HISTOGRAMS: tuple[HistogramSpec, ...] = (
+    HistogramSpec(
+        module=_metrics,
+        attr="_agent_invocation_duration",
+        metric_name="gen_ai.agent.invocation.duration",
+    ),
+    HistogramSpec(
+        module=_metrics,
+        attr="_tool_execution_duration",
+        metric_name="gen_ai.tool.execution.duration",
+    ),
+    HistogramSpec(
+        module=_metrics,
+        attr="_agent_request_size",
+        metric_name="gen_ai.agent.request.size",
+    ),
+    HistogramSpec(
+        module=_metrics,
+        attr="_agent_response_size",
+        metric_name="gen_ai.agent.response.size",
+    ),
+    HistogramSpec(
+        module=_metrics,
+        attr="_agent_workflow_steps",
+        metric_name="gen_ai.agent.workflow.steps",
+    ),
+    HistogramSpec(
+        module=_metrics,
+        attr="_client_operation_duration",
+        metric_name="gen_ai.client.operation.duration",
+    ),
+    HistogramSpec(
+        module=_metrics,
+        attr="_client_token_usage",
+        metric_name="gen_ai.client.token.usage",
+    ),
+)
+
+
+def _grouped_metric_points(
+    metrics_data: MetricsData,
+) -> dict[str, frozenset[MetricPoint]]:
+  """Groups every recorded point by metric name as an order-free frozenset."""
+  grouped: dict[str, set[MetricPoint]] = {}
+  for resource_metric in metrics_data.resource_metrics:
+    for scope_metric in resource_metric.scope_metrics:
+      for metric in scope_metric.metrics:
+        for dp in metric.data.data_points:
+          # Sum histograms expose ``.sum``; gauge / counter points expose
+          # ``.value``. isinstance (not hasattr) keeps the typing precise.
+          if isinstance(dp, HistogramDataPoint):
+            value = dp.sum
+          elif isinstance(dp, NumberDataPoint):
+            value = dp.value
+          else:
+            value = NON_DETERMINISTIC
+          # ``*.duration`` histograms record wall-clock timings, which are
+          # non-deterministic; replace them so expectations need not pin a
+          # timing.
+          if metric.name.endswith(".duration"):
+            value = NON_DETERMINISTIC
+          grouped.setdefault(metric.name, set()).add(
+              MetricPoint(attributes=dict(dp.attributes), value=value)
+          )
+  return {name: frozenset(points) for name, points in grouped.items()}
+
+
+@dataclass(frozen=True)
+class TelemetryDigest:
+  """The full telemetry surface produced by one scenario run.
+
+  Bundles the root span tree (with per-span logs attached) and every recorded
+  metric point grouped by metric name. Points are held in a frozenset per
+  group so equality is independent of recording / authoring order. Test cases
+  hand-write the expected instance; ``build`` produces the actual one.
+  """
+
+  root_span: SpanDigest
+  metric_points: dict[str, frozenset[MetricPoint]]
+
+  @classmethod
+  def build(
+      cls,
+      spans: tuple[ReadableSpan, ...],
+      logs: tuple[ReadableLogRecord, ...],
+      metrics_data: MetricsData,
+  ) -> TelemetryDigest:
+    """Builds the actual digest from in-memory spans, logs and metrics."""
+    return cls(
+        root_span=SpanDigest.build(spans, logs),
+        metric_points=_grouped_metric_points(metrics_data),
+    )
+
+
 def _normalize(value: object) -> object:
   """Normalizes a value for stable equality.
 
@@ -281,13 +425,14 @@ def install_telemetry(
     monkeypatch: pytest.MonkeyPatch,
     span_exporter: InMemorySpanExporter,
     log_exporter: InMemoryLogRecordExporter,
+    metric_reader: InMemoryMetricReader,
 ) -> None:
-  """Installs in-memory tracer + log exporter and patches ADK's globals.
+  """Installs an in-memory tracer + log exporter + metric reader.
 
-  Spans and logs emitted by ADK during the test are written into the
-  provided exporters. Both exporters MUST be passed in so each test makes
-  the choice of exporter explicit (e.g. ``InMemoryLogRecordExporter`` vs
-  ``WebUILogExporter``).
+  Spans, logs and metric points emitted by ADK during the test are written
+  into the provided exporters / reader. All three MUST be passed in so each
+  test makes the choice of sink explicit (e.g. ``InMemoryLogRecordExporter``
+  vs ``WebUILogExporter``).
   """
   tracer_provider = TracerProvider()
   tracer_provider.add_span_processor(SimpleSpanProcessor(span_exporter))
@@ -320,6 +465,13 @@ def install_telemetry(
   )
   real_logger = logger_provider.get_logger(__name__)
   monkeypatch.setattr(tracing.otel_logger, "emit", real_logger.emit)
+
+  meter_provider = MeterProvider(metric_readers=[metric_reader])
+  meter = meter_provider.get_meter("functional_test_meter")
+  for spec in _PATCHED_HISTOGRAMS:
+    monkeypatch.setattr(
+        spec.module, spec.attr, meter.create_histogram(spec.metric_name)
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -454,12 +606,13 @@ async def run_agent_scenario(runner: TestInMemoryRunner) -> None:
 
 @dataclass(frozen=True)
 class FunctionalTestCase:
-  """One row of the (semconv, capture-content) parametrization matrix."""
+  """One row of the (semconv, capture-content, schema-version) matrix."""
 
   test_id: str
   semconv_opt_in: str | None
   capture_content: str | None
-  expected_root: SpanDigest
+  schema_version: Literal[1, 2]
+  expected: TelemetryDigest
 
   def apply_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
     """Applies the per-case env vars for semconv + content capture.
@@ -475,6 +628,9 @@ class FunctionalTestCase:
       monkeypatch.delenv(CAPTURE_CONTENT, raising=False)
     else:
       monkeypatch.setenv(CAPTURE_CONTENT, self.capture_content)
+    monkeypatch.setenv(
+        ADK_TELEMETRY_SCHEMA_VERSION_OPT_IN, str(self.schema_version)
+    )
     monkeypatch.setenv("ADK_CAPTURE_MESSAGE_CONTENT_IN_SPANS", "false")
 
 

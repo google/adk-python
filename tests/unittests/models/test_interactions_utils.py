@@ -2028,3 +2028,122 @@ async def test_generate_content_via_interactions_non_streaming_yields_single_res
   assert len(responses) == 1
   assert responses[0].interaction_id == 'interaction_ns'
   assert responses[0].content.parts[0].text == 'Sunny in Tokyo.'
+
+
+def _build_stream_with_environment() -> list[object]:
+  """A streamed interaction whose completed event carries an environment id."""
+  now = datetime.now(timezone.utc).isoformat()
+  created = InteractionCreatedEvent(
+      event_type='interaction.created',
+      interaction=InteractionSseEventInteraction(
+          id='interaction_env',
+          created=now,
+          updated=now,
+          status='requires_action',
+          steps=[],
+      ),
+  )
+  step_start = StepStart(
+      event_type='step.start',
+      index=0,
+      step=ModelOutputStep(type='model_output'),
+  )
+  step_delta = StepDelta(
+      event_type='step.delta',
+      index=0,
+      delta={'type': 'text', 'text': 'hi'},
+  )
+  step_stop = StepStop(event_type='step.stop', index=0)
+  completed = InteractionCompletedEvent(
+      event_type='interaction.completed',
+      interaction=InteractionSseEventInteraction(
+          id='interaction_env',
+          created=now,
+          updated=now,
+          status='completed',
+          environment_id='env_xyz',
+          steps=[
+              ModelOutputStep(
+                  type='model_output',
+                  content=[TextContent(type='text', text='hi')],
+              )
+          ],
+      ),
+  )
+  return [created, step_start, step_delta, step_stop, completed]
+
+
+def test_create_interactions_surfaces_environment_id():
+  api_client = _FakeApiClient(_build_stream_with_environment())
+
+  async def _collect():
+    out = []
+    async for r in interactions_utils._create_interactions(
+        api_client,
+        create_kwargs={'agent': 'agents/a', 'input': []},
+        stream=True,
+    ):
+      out.append(r)
+    return out
+
+  responses = asyncio.run(_collect())
+  assert responses, 'expected streamed responses'
+  # The env id arrives only on the completed event, so earlier partial
+  # responses carry no environment id.
+  assert responses[0].environment_id is None
+  assert responses[-1].environment_id == 'env_xyz'
+
+
+class _FakeNonStreamInteractions:
+  """Fake interactions resource returning a full Interaction (non-streaming)."""
+
+  def __init__(self, interaction: Interaction):
+    self._interaction = interaction
+
+  async def create(self, **_kwargs):
+    return self._interaction
+
+
+class _FakeNonStreamAio:
+  """Namespace matching the expected api_client.aio shape (non-streaming)."""
+
+  def __init__(self, interaction: Interaction):
+    self.interactions = _FakeNonStreamInteractions(interaction)
+
+
+class _FakeNonStreamApiClient:
+  """Minimal fake API client whose create() returns a full Interaction."""
+
+  def __init__(self, interaction: Interaction):
+    self.aio = _FakeNonStreamAio(interaction)
+
+
+def test_create_interactions_surfaces_environment_id_non_stream():
+  interaction = Interaction(
+      id='interaction_ns',
+      status='completed',
+      created=datetime.now(timezone.utc).isoformat(),
+      updated=datetime.now(timezone.utc).isoformat(),
+      environment_id='env_ns',
+      steps=[
+          ModelOutputStep(
+              type='model_output',
+              content=[TextContent(type='text', text='hi')],
+          )
+      ],
+  )
+  api_client = _FakeNonStreamApiClient(interaction)
+
+  async def _collect():
+    out = []
+    async for r in interactions_utils._create_interactions(
+        api_client,
+        create_kwargs={'agent': 'agents/a', 'input': []},
+        stream=False,
+    ):
+      out.append(r)
+    return out
+
+  responses = asyncio.run(_collect())
+  assert len(responses) == 1
+  assert responses[-1].environment_id == 'env_ns'

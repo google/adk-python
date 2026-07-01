@@ -626,3 +626,32 @@ class TestFindMatchingFunctionCall:
     invocation_context.stamp_event_branch_context(fr_event)
     assert fr_event.branch == 'root@1'
     assert fr_event.isolation_scope == 'task_123'
+
+  def test_stamp_event_branch_context_does_not_overwrite_existing_scope(
+      self, test_invocation_context
+  ):
+    """Tests stamp_event_branch_context does not overwrite existing isolation_scope if set."""
+    fc = Part.from_function_call(name='some_tool', args={})
+    fc.function_call.id = 'test_function_call_id'
+    fc_event = Event(
+        invocation_id='inv_1',
+        author='agent',
+        branch='root@1',
+        isolation_scope='task_456',  # Function call has isolation scope
+        content=testing_utils.ModelContent([fc]),
+    )
+    fr = Part.from_function_response(
+        name='some_tool', response={'result': 'ok'}
+    )
+    fr.function_response.id = 'test_function_call_id'
+    fr_event = Event(
+        invocation_id='inv_1',
+        author='agent',
+        isolation_scope='task_123',  # Pre-populated active task scope
+        content=Content(role='user', parts=[fr]),
+    )
+    invocation_context = test_invocation_context([fc_event, fr_event])
+
+    invocation_context.stamp_event_branch_context(fr_event)
+    assert fr_event.branch == 'root@1'
+    assert fr_event.isolation_scope == 'task_123'

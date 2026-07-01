@@ -37,7 +37,6 @@ from ._dynamic_node_scheduler import DynamicNodeScheduler
 from ._dynamic_node_scheduler import DynamicNodeState
 from ._graph import EdgeItem
 from ._graph import Graph
-from ._node_runner import NodeRunner
 from ._node_state import NodeState
 from ._node_status import NodeStatus
 from ._trigger import Trigger
@@ -536,7 +535,7 @@ class Workflow(BaseNode):
       node_name: str,
       trigger: Trigger,
   ) -> None:
-    """Create NodeRunner and start asyncio task for a node."""
+    """Start asyncio task for scheduling and executing a node."""
 
     assert self.graph is not None
 
@@ -556,10 +555,8 @@ class Workflow(BaseNode):
       recovered = loop_state.recovered_executions[key]
 
       result = check_interception(
-          node_path=f'{ctx.node_path}/{node_name}@{run_id}',
           node=node,
           recovered=recovered,
-          curr_parent_ctx=ctx,
       )
 
       if not result.should_run:
@@ -602,22 +599,24 @@ class Workflow(BaseNode):
           key
       ].isolation_scope
 
-    runner = NodeRunner(
-        node=node,
-        parent_ctx=ctx,
-        run_id=run_id,
-        use_as_output=is_terminal,
-        use_sub_branch=trigger.use_sub_branch,
-        override_branch=trigger.branch,
-        override_isolation_scope=self._compute_isolation_scope_for_node(
-            node, trigger, ctx, run_id
-        ),
-    )
     resume_inputs = (
         dict(node_state.resume_inputs) if node_state.resume_inputs else None
     )
     loop_state.pending_tasks[node_name] = asyncio.create_task(
-        runner.run(node_input=trigger.input, resume_inputs=resume_inputs)
+        ctx._run_node_internal(
+            node,
+            node_input=trigger.input,
+            use_sub_branch=trigger.use_sub_branch,
+            override_branch=trigger.branch,
+            override_isolation_scope=self._compute_isolation_scope_for_node(
+                node, trigger, ctx, run_id
+            ),
+            return_ctx=True,
+            resume_inputs=resume_inputs,
+            run_id=run_id,
+            use_as_output=is_terminal,
+            skip_run_id_validation=True,
+        )
     )
 
   def _make_schedule_dynamic_node(
@@ -687,7 +686,6 @@ class Workflow(BaseNode):
     use_sub_branch = len(next_nodes) > 1
     for target_name in next_nodes:
       target_node = self._get_static_node_by_name(target_name)
-      target_state = loop_state.nodes.get(target_name)
 
       if target_node._requires_all_predecessors:
         # Wait for all predecessors

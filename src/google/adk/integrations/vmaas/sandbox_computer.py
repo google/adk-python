@@ -133,13 +133,26 @@ class AgentEngineSandboxComputer(BaseComputer):
     self._search_engine_url = search_engine_url
     self._screen_size = (1280, 720)
 
-    # Extract agent engine name from sandbox_name if provided
+    # Determine the agent engine to use. The backend requires that a sandbox
+    # is created under the same reasoning engine that owns the
+    # template/snapshot, so we derive the engine from whichever resource name
+    # is provided rather than creating a new (mismatched) engine. This lets
+    # users supply only a template or snapshot name without also pre-creating
+    # a sandbox (BYOS). All sandbox resource names embed the engine:
+    #   projects/.../reasoningEngines/{engine}/{sandboxEnvironments|
+    #   sandboxEnvironmentTemplates|sandboxEnvironmentSnapshots}/...
     self._agent_engine_name = None
-    if sandbox_name:
-      # Format: projects/.../reasoningEngines/.../sandboxEnvironments/...
-      parts = sandbox_name.split("/sandboxEnvironments/")
-      if len(parts) == 2:
-        self._agent_engine_name = parts[0]
+    for resource_name in (
+        sandbox_name,
+        sandbox_template_name,
+        sandbox_snapshot_name,
+    ):
+      if not resource_name:
+        continue
+      engine_name = resource_name.split("/sandboxEnvironment")[0]
+      if engine_name != resource_name and "/reasoningEngines/" in engine_name:
+        self._agent_engine_name = engine_name
+        break
 
     # Vertex client (lazy-initialized if not provided)
     self._client = vertexai_client
