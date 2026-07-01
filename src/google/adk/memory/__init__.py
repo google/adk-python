@@ -21,18 +21,21 @@ from ..utils._dependency import missing_extra
 from .base_memory_service import BaseMemoryService
 
 if TYPE_CHECKING:
+  from .dakera_memory_service import DakeraMemoryService
   from .in_memory_memory_service import InMemoryMemoryService
   from .vertex_ai_memory_bank_service import VertexAiMemoryBankService
   from .vertex_ai_rag_memory_service import VertexAiRagMemoryService
 
 __all__ = [
     'BaseMemoryService',
+    'DakeraMemoryService',
     'InMemoryMemoryService',
     'VertexAiMemoryBankService',
     'VertexAiRagMemoryService',
 ]
 
 _LAZY_MEMBERS: dict[str, str] = {
+    'DakeraMemoryService': 'dakera_memory_service',
     'InMemoryMemoryService': 'in_memory_memory_service',
     'VertexAiMemoryBankService': 'vertex_ai_memory_bank_service',
     'VertexAiRagMemoryService': 'vertex_ai_rag_memory_service',
