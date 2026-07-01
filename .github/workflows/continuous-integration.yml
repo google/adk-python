@@ -116,7 +116,7 @@ jobs:
             echo "Great job! No new mypy errors introduced."
           fi
 
-  # 3. Unit testing (Unit Tests with Matrix)
+  # 3a. Unit testing (Unit Tests with Matrix)
   unit-test:
     name: Unit Tests (Python ${{ matrix.python-version }})
     runs-on: ubuntu-latest
@@ -152,3 +152,43 @@ jobs:
             -n auto \
             --ignore=tests/unittests/artifacts/test_artifact_service.py \
             --ignore=tests/unittests/tools/google_api_tool/test_googleapi_to_openapi_converter.py
+
+  # 3b. Dual-version A2A coverage: This job pins a2a-sdk to 0.3.x and
+  # runs only the A2A-related tests, so the a2a/_compat.py shim stays
+  # verified against both SDK majors.
+  # TODO: Remove this 0.3.x re-run once a2a-sdk 0.3.x support is dropped.
+  unit-test-a2a-v0-3:
+    name: A2A v0.3 Tests (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.11", "3.12", "3.13", "3.14"]
+    timeout-minutes: 10
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v6
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install the latest version of uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+
+      - name: Install dependencies
+        run: |
+          uv venv .venv
+          source .venv/bin/activate
+          uv sync --extra test
+
+      - name: Run A2A tests against a2a-sdk v0.3
+        run: |
+          source .venv/bin/activate
+          uv pip install --reinstall-package a2a-sdk 'a2a-sdk>=0.3.4,<0.4'
+          pytest tests/unittests/a2a \
+            tests/unittests/agents/test_remote_a2a_agent.py \
+            tests/unittests/integrations/agent_registry/test_agent_registry.py
