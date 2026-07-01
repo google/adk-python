@@ -19,6 +19,7 @@ from unittest.mock import MagicMock
 from unittest.mock import patch
 
 from google.api_core.gapic_v1 import client_info
+from google.oauth2.credentials import Credentials
 import pytest
 
 pytest.importorskip("google.cloud.parametermanager_v1")
@@ -95,28 +96,19 @@ class TestParameterManagerClient:
   @patch("google.cloud.parametermanager_v1.ParameterManagerClient")
   def test_init_with_auth_token(self, mock_pm_client_class):
     """Test initialization with auth token."""
-    # Setup
     auth_token = "test-token"
-    mock_credentials = MagicMock()
 
-    with (
-        patch("google.auth.credentials.Credentials") as mock_credentials_class,
-        patch("google.auth.transport.requests.Request") as mock_request,
-    ):
-      mock_credentials_class.return_value = mock_credentials
+    client = ParameterManagerClient(auth_token=auth_token)
 
-      # Execute
-      client = ParameterManagerClient(auth_token=auth_token)
-
-      # Verify
-      mock_credentials.refresh.assert_called_once()
-      mock_pm_client_class.assert_called_once()
-      call_kwargs = mock_pm_client_class.call_args.kwargs
-      assert call_kwargs["credentials"] == mock_credentials
-      assert call_kwargs["client_options"] is None
-      assert call_kwargs["client_info"].user_agent == USER_AGENT
-      assert client._credentials == mock_credentials
-      assert client._client == mock_pm_client_class.return_value
+    mock_pm_client_class.assert_called_once()
+    call_kwargs = mock_pm_client_class.call_args.kwargs
+    assert isinstance(call_kwargs["credentials"], Credentials)
+    assert call_kwargs["credentials"].token == auth_token
+    assert call_kwargs["client_options"] is None
+    assert call_kwargs["client_info"].user_agent == USER_AGENT
+    assert isinstance(client._credentials, Credentials)
+    assert client._credentials.token == auth_token
+    assert client._client == mock_pm_client_class.return_value
 
   @patch("google.cloud.parametermanager_v1.ParameterManagerClient")
   @patch(
@@ -180,6 +172,20 @@ class TestParameterManagerClient:
     # Execute and verify
     with pytest.raises(ValueError, match="Invalid service account JSON"):
       ParameterManagerClient(service_account_json="invalid-json")
+
+  def test_init_with_both_service_account_json_and_auth_token(self):
+    """Test initialization rejects conflicting credential inputs."""
+    with pytest.raises(
+        ValueError,
+        match=(
+            "Must provide either 'service_account_json' or 'auth_token', not"
+            " both."
+        ),
+    ):
+      ParameterManagerClient(
+          service_account_json=json.dumps({"type": "service_account"}),
+          auth_token="test-token",
+      )
 
   @patch("google.cloud.parametermanager_v1.ParameterManagerClient")
   @patch(

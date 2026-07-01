@@ -20,6 +20,7 @@ import logging
 import sys
 import time
 from typing import AsyncIterator
+from typing import Iterator
 from typing import TYPE_CHECKING
 
 from opentelemetry import trace
@@ -35,6 +36,7 @@ if TYPE_CHECKING:
   from ..models.llm_request import LlmRequest
   from ..models.llm_response import LlmResponse
   from ..tools.base_tool import BaseTool
+  from ..workflow._base_node import BaseNode
 
 logger = logging.getLogger("google_adk." + __name__)
 
@@ -67,6 +69,25 @@ def _get_elapsed_s(
 
   # Fallback if span times are missing
   return time.monotonic() - fallback_start
+
+
+@contextlib.contextmanager
+def record_invocation(
+    entrypoint_node: BaseNode | None,
+    conversation_id: str,
+) -> Iterator[None]:
+  """Top-level ``invocation`` span for a runner invocation.
+
+  Args:
+    entrypoint_node: The runner's root agent/node.
+    conversation_id: Session/conversation id.
+
+  Yields:
+    Nothing; the span is active for the duration of the block.
+  """
+  del entrypoint_node, conversation_id  # Unused until schema v2 lands.
+  with tracing.tracer.start_as_current_span("invocation"):
+    yield
 
 
 @dataclasses.dataclass

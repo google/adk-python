@@ -322,3 +322,23 @@ class TestUrlContextTool:
         await tool.process_llm_request(
             tool_context=tool_context, llm_request=llm_request
         )
+
+  @pytest.mark.asyncio
+  async def test_process_llm_request_managed_agent_no_model(self):
+    """Managed-agent requests resolve url_context even with no model."""
+    tool = UrlContextTool()
+    tool_context = await _create_tool_context()
+
+    llm_request = LlmRequest(
+        model=None,
+        config=types.GenerateContentConfig(),
+    )
+    llm_request._is_managed_agent = True
+
+    await tool.process_llm_request(
+        tool_context=tool_context, llm_request=llm_request
+    )
+
+    assert llm_request.config.tools is not None
+    assert len(llm_request.config.tools) == 1
+    assert llm_request.config.tools[0].url_context is not None

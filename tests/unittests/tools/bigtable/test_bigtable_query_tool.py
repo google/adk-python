@@ -193,6 +193,7 @@ async def test_execute_sql(
           instance_id=instance_id,
           parameters=parameters,
           parameter_types=parameter_types,
+          view_parameters=None,
       )
       mock_iterator.close.assert_called_once()
 
@@ -228,3 +229,81 @@ async def test_execute_sql_row_value_circular_reference_fallback():
 
   assert result["status"] == "SUCCESS"
   assert result["rows"][0]["col1"] == str(circular_value)
+
+
+@pytest.mark.asyncio
+async def test_execute_sql_with_view_parameters():
+  """Test execute_sql with _view_parameters passed."""
+  project = "my_project"
+  instance_id = "my_instance"
+  query = "SELECT * FROM my_table"
+  credentials = mock.create_autospec(Credentials, instance=True)
+  tool_context = mock.create_autospec(ToolContext, instance=True)
+  view_parameters = {"user_id": "test-user-123"}
+
+  with mock.patch.object(client, "get_bigtable_data_client") as mock_get_client:
+    mock_client = mock.MagicMock()
+    mock_get_client.return_value = mock_client
+    mock_iterator = mock.create_autospec(ExecuteQueryIterator, instance=True)
+    mock_client.execute_query.return_value = mock_iterator
+    mock_iterator.__iter__.return_value = []
+
+    result = await execute_sql(
+        project_id=project,
+        instance_id=instance_id,
+        credentials=credentials,
+        query=query,
+        settings=BigtableToolSettings(),
+        tool_context=tool_context,
+        _view_parameters=view_parameters,
+    )
+
+  assert result["status"] == "SUCCESS"
+  mock_client.execute_query.assert_called_once_with(
+      query=query,
+      instance_id=instance_id,
+      parameters=None,
+      parameter_types=None,
+      view_parameters=view_parameters,
+  )
+
+
+@pytest.mark.asyncio
+async def test_execute_sql_with_multiple_view_parameters():
+  """Test execute_sql with multiple view_parameters of different names."""
+  project = "my_project"
+  instance_id = "my_instance"
+  query = "SELECT * FROM my_table"
+  credentials = mock.create_autospec(Credentials, instance=True)
+  tool_context = mock.create_autospec(ToolContext, instance=True)
+  view_parameters = {
+      "user_id": "test-user-123",
+      "tenant_id": "tenant-xyz",
+      "role": "admin",
+  }
+
+  with mock.patch.object(client, "get_bigtable_data_client") as mock_get_client:
+    mock_client = mock.MagicMock()
+    mock_get_client.return_value = mock_client
+    mock_iterator = mock.create_autospec(ExecuteQueryIterator, instance=True)
+    mock_client.execute_query.return_value = mock_iterator
+    mock_iterator.__iter__.return_value = []
+
+    result = await execute_sql(
+        project_id=project,
+        instance_id=instance_id,
+        credentials=credentials,
+        query=query,
+        settings=BigtableToolSettings(),
+        tool_context=tool_context,
+        _view_parameters=view_parameters,
+    )
+
+  assert result["status"] == "SUCCESS"
+  mock_client.execute_query.assert_called_once_with(
+      query=query,
+      instance_id=instance_id,
+      parameters=None,
+      parameter_types=None,
+      view_parameters=view_parameters,
+  )

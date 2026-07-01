@@ -671,3 +671,68 @@ async def test_init_with_connection_with_auth_override_disabled_and_custom_auth(
   assert (await toolset.get_tools())[0]._operation == "EXECUTE_ACTION"
   assert not (await toolset.get_tools())[0]._auth_scheme
   assert not (await toolset.get_tools())[0]._auth_credential
+
+
+@pytest.mark.asyncio
+async def test_get_tools_uses_exchanged_auth_credential_when_available(
+    project,
+    location,
+    mock_integration_client,
+    mock_connections_client,
+    mock_openapi_action_spec_parser,
+    connection_details_auth_override_enabled,
+):
+  connection_name = "test-connection"
+  actions_list = ["create"]
+  mock_connections_client.return_value.get_connection_details.return_value = (
+      connection_details_auth_override_enabled
+  )
+
+  oauth2_data_google_cloud = {
+      "type": "oauth2",
+      "flows": {
+          "authorizationCode": {
+              "authorizationUrl": "https://test-url/o/oauth2/auth",
+              "tokenUrl": "https://test-url/token",
+              "scopes": {
+                  "https://test-url/auth/test-scope": "test scope",
+              },
+          }
+      },
+  }
+
+  oauth2_scheme = dict_to_auth_scheme(oauth2_data_google_cloud)
+  raw_auth_credential = AuthCredential(
+      auth_type=AuthCredentialTypes.OAUTH2,
+      oauth2=OAuth2Auth(
+          client_id="test-client-id",
+          client_secret="test-client-secret",
+      ),
+  )
+
+  toolset = ApplicationIntegrationToolset(
+      project,
+      location,
+      connection=connection_name,
+      actions=actions_list,
+      auth_scheme=oauth2_scheme,
+      auth_credential=raw_auth_credential,
+  )
+
+  exchanged_auth_credential = AuthCredential(
+      auth_type=AuthCredentialTypes.OAUTH2,
+      oauth2=OAuth2Auth(
+          client_id="test-client-id",
+          client_secret="test-client-secret",
+          access_token="exchanged-access-token",
+      ),
+  )
+  toolset._auth_config.exchanged_auth_credential = exchanged_auth_credential
+
+  original_tool = toolset._tools[0]
+  tools = await toolset.get_tools()
+
+  assert len(tools) == 1
+  assert tools[0] is not original_tool
+  assert tools[0]._auth_credential == exchanged_auth_credential
+  assert original_tool._auth_credential == raw_auth_credential

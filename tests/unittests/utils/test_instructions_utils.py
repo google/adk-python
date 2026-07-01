@@ -73,6 +73,19 @@ async def test_inject_session_state():
 
 
 @pytest.mark.asyncio
+async def test_inject_session_state_without_placeholders_returns_template():
+  instruction_template = "A static instruction with no placeholders."
+  invocation_context = await _create_test_readonly_context(
+      state={"user_name": "Foo"}
+  )
+
+  populated_instruction = await instructions_utils.inject_session_state(
+      instruction_template, invocation_context
+  )
+  assert populated_instruction == instruction_template
+
+
+@pytest.mark.asyncio
 async def test_inject_session_state_with_artifact():
   instruction_template = "The artifact content is: {artifact.my_file}"
   mock_artifact_service = MockArtifactService(
