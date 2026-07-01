@@ -52,14 +52,14 @@ class DakeraMemoryService(BaseMemoryService):
       from google.adk.memory import DakeraMemoryService
 
       memory_service = DakeraMemoryService(
-          base_url="http://localhost:3000",  # or set DAKERA_API_URL
+          base_url="http://localhost:3300",  # or set DAKERA_API_URL
           api_key="sk-...",                  # or set DAKERA_API_KEY
           top_k=10,
       )
 
   The server can be started via Docker::
 
-      docker run -p 3000:3000 dakera/dakera:latest
+      docker run -p 3300:3300 ghcr.io/dakera-ai/dakera:latest
 
   Or self-hosted — see https://dakera.ai for full deployment instructions.
   """
@@ -76,13 +76,13 @@ class DakeraMemoryService(BaseMemoryService):
     Args:
         base_url: Base URL of the Dakera server.  Defaults to the
             ``DAKERA_API_URL`` environment variable, falling back to
-            ``http://localhost:3000``.
+            ``http://localhost:3300``.
         api_key: API key for authenticating with the Dakera server.  Defaults
             to the ``DAKERA_API_KEY`` environment variable.
         top_k: Maximum number of memories to return from a search.
     """
     self._base_url = (
-        base_url or os.environ.get("DAKERA_API_URL", "http://localhost:3000")
+        base_url or os.environ.get("DAKERA_API_URL", "http://localhost:3300")
     ).rstrip("/")
     self._api_key = api_key or os.environ.get("DAKERA_API_KEY", "")
     self._top_k = top_k
