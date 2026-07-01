@@ -1660,7 +1660,9 @@ async def test_skip_summarization_non_agent_tool_appends_no_text_part():
   assert result_event is not None
   assert result_event.actions.skip_summarization is True
   # The ack is carried only as a function_response part — never as text.
-  assert any(p.function_response is not None for p in result_event.content.parts)
+  assert any(
+      p.function_response is not None for p in result_event.content.parts
+  )
   assert all(p.text is None for p in result_event.content.parts)
 
 
