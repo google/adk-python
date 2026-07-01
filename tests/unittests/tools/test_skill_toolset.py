@@ -1758,6 +1758,24 @@ def test_system_instruction_references_run_skill_script():
   )
 
 
+def test_system_instruction_marks_load_skill_as_non_terminal():
+  """Rule 7 must tell the model load_skill does not complete the turn.
+
+  Without it, some models (notably Gemini) treat the load_skill tool call as
+  the entire turn and stop with no visible output, producing empty responses.
+  """
+  instruction = skill_toolset.DEFAULT_SKILL_SYSTEM_INSTRUCTION
+  assert "does NOT complete your turn" in instruction
+  assert "empty response" in instruction
+
+
+def test_prefixed_system_instruction_includes_continue_after_load_rule():
+  """The prefixed builder variant must also carry rule 7 (with the prefix)."""
+  instruction = skill_toolset._build_skill_system_instruction(prefix="my")
+  assert "does NOT complete your turn" in instruction
+  assert "my_load_skill" in instruction
+
+
 # ── Finding 2: empty files are mounted (not silently dropped) ──
 
 

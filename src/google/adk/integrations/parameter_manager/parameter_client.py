@@ -19,10 +19,9 @@ from typing import cast
 from typing import Optional
 
 from google.api_core.gapic_v1 import client_info
-import google.auth
 from google.auth import default as default_service_credential
-import google.auth.transport.requests
 from google.cloud import parametermanager_v1
+from google.oauth2 import credentials as user_credentials
 from google.oauth2 import service_account
 
 from ... import version
@@ -89,15 +88,7 @@ class ParameterManagerClient:
       except json.JSONDecodeError as e:
         raise ValueError(f"Invalid service account JSON: {e}") from e
     elif auth_token:
-      credentials = google.auth.credentials.Credentials(
-          token=auth_token,
-          refresh_token=None,
-          token_uri=None,
-          client_id=None,
-          client_secret=None,
-      )
-      request = google.auth.transport.requests.Request()
-      credentials.refresh(request)
+      credentials = user_credentials.Credentials(token=auth_token)
     else:
       try:
         credentials, _ = default_service_credential(

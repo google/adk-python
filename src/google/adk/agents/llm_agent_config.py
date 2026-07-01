@@ -30,7 +30,9 @@ from .common_configs import CodeConfig
 
 
 @deprecated(
-    'LlmAgentConfig is deprecated and will be removed in future versions.'
+    'LlmAgentConfig is deprecated and will be removed in future versions. '
+    'Config is now loaded via reflection so the separate config class is no '
+    'longer needed.'
 )
 class LlmAgentConfig(BaseAgentConfig):
   """The config for the YAML schema of a LlmAgent."""

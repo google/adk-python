@@ -517,7 +517,10 @@ class InvocationContext(BaseModel):
     """Stamps the event with the branch and isolation scope of its matching function call."""
     if function_call := self._find_matching_function_call(event):
       event.branch = function_call.branch
-      if function_call.isolation_scope is not None:
+      if (
+          event.isolation_scope is None
+          and function_call.isolation_scope is not None
+      ):
         event.isolation_scope = function_call.isolation_scope
 
 

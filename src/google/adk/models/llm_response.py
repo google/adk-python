@@ -155,6 +155,14 @@ class LlmResponse(BaseModel):
   It can be used to identify and chain interactions for stateful conversations.
   """
 
+  environment_id: Optional[str] = None
+  """The execution environment ID from the interactions API.
+
+  This field is populated when an interactions-API agent (e.g. ManagedAgent)
+  provisions or reuses a sandbox environment. It is persisted on the resulting
+  Event so subsequent turns can reuse the same environment for stateful work.
+  """
+
   def get_function_calls(self) -> list[types.FunctionCall]:
     """Returns the function calls in the response."""
     func_calls = []

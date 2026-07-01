@@ -67,6 +67,77 @@ class TestAgentEngineSandboxComputer(unittest.IsolatedAsyncioTestCase):
     self.assertEqual(computer._agent_engine_name, agent_engine_name)
     self.assertEqual(computer._sandbox_name, sandbox_name)
 
+  def test_init_with_template_derives_agent_engine(self):
+    """Test agent engine is derived from sandbox_template_name."""
+    agent_engine_name = (
+        "projects/test/locations/us-central1/reasoningEngines/123"
+    )
+    template_name = f"{agent_engine_name}/sandboxEnvironmentTemplates/789"
+
+    computer = AgentEngineSandboxComputer(
+        project_id=self.project_id,
+        sandbox_template_name=template_name,
+    )
+
+    # Agent engine name should be derived from the template name so the
+    # sandbox is created under the template's reasoning engine (no BYOS).
+    self.assertEqual(computer._agent_engine_name, agent_engine_name)
+    self.assertEqual(computer._sandbox_template_name, template_name)
+
+  def test_init_with_snapshot_derives_agent_engine(self):
+    """Test agent engine is derived from sandbox_snapshot_name."""
+    agent_engine_name = (
+        "projects/test/locations/us-central1/reasoningEngines/123"
+    )
+    snapshot_name = f"{agent_engine_name}/sandboxEnvironmentSnapshots/789"
+
+    computer = AgentEngineSandboxComputer(
+        project_id=self.project_id,
+        sandbox_snapshot_name=snapshot_name,
+    )
+
+    self.assertEqual(computer._agent_engine_name, agent_engine_name)
+    self.assertEqual(computer._sandbox_snapshot_name, snapshot_name)
+
+  def test_init_sandbox_name_takes_precedence_over_template(self):
+    """Test sandbox_name wins when both sandbox_name and template are set."""
+    sandbox_engine = (
+        "projects/test/locations/us-central1/reasoningEngines/sandbox"
+    )
+    sandbox_name = f"{sandbox_engine}/sandboxEnvironments/456"
+    template_name = (
+        "projects/test/locations/us-central1/reasoningEngines/template"
+        "/sandboxEnvironmentTemplates/789"
+    )
+
+    computer = AgentEngineSandboxComputer(
+        project_id=self.project_id,
+        sandbox_name=sandbox_name,
+        sandbox_template_name=template_name,
+    )
+
+    self.assertEqual(computer._agent_engine_name, sandbox_engine)
+
+  def test_init_without_sandbox_source_has_no_agent_engine(self):
+    """Test agent engine is None when no sandbox source is provided."""
+    computer = AgentEngineSandboxComputer(project_id=self.project_id)
+    self.assertIsNone(computer._agent_engine_name)
+
+  async def test_ensure_agent_engine_with_template_name(self):
+    """Test _ensure_agent_engine reuses the template's reasoning engine."""
+    agent_engine_name = (
+        "projects/test/locations/us-central1/reasoningEngines/123"
+    )
+    template_name = f"{agent_engine_name}/sandboxEnvironmentTemplates/789"
+    computer = AgentEngineSandboxComputer(sandbox_template_name=template_name)
+    computer._session_state = {}
+
+    result = await computer._ensure_agent_engine()
+
+    self.assertEqual(result, agent_engine_name)
+    # Should not have created or stored a new engine.
+    self.assertNotIn(_STATE_KEY_AGENT_ENGINE_NAME, computer._session_state)
+
   def test_init_with_vertexai_client(self):
     """Test initialization with provided vertexai client."""
     mock_client = MagicMock()
