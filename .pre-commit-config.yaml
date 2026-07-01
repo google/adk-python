@@ -56,6 +56,14 @@ repos:
         language: script
         files: ^src/google/adk/.*\.py$
         pass_filenames: false
+      - id: compliance-checks
+        name: ADK Compliance Checks
+        entry: scripts/compliance_checks.py
+        language: script
+        files: \.py$
+        # This script documents and matches the very patterns it forbids, so
+        # it must not scan itself or other dev-only tooling.
+        exclude: ^scripts/
   - repo: https://github.com/executablebooks/mdformat
     rev: 0.7.22
     hooks:

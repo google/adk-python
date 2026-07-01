@@ -25,6 +25,7 @@ from anthropic import NOT_GIVEN
 from anthropic import types as anthropic_types
 from google.adk import version as adk_version
 from google.adk.models import anthropic_llm
+from google.adk.models import AnthropicGenerateContentConfig
 from google.adk.models.anthropic_llm import AnthropicLlm
 from google.adk.models.anthropic_llm import Claude
 from google.adk.models.anthropic_llm import content_to_message_param
@@ -578,7 +579,7 @@ function_declaration_test_cases = [
     function_declaration_test_cases,
     ids=[case[0] for case in function_declaration_test_cases],
 )
-async def test_function_declaration_to_tool_param(
+def test_function_declaration_to_tool_param(
     _, function_declaration, expected_tool_param
 ):
   """Test function_declaration_to_tool_param."""
@@ -2283,3 +2284,284 @@ async def test_streaming_no_system_instruction_passes_not_given():
   mock_client.messages.create.assert_called_once()
   _, kwargs = mock_client.messages.create.call_args
   assert kwargs["system"] is NOT_GIVEN
+
+
+@pytest.mark.asyncio
+async def test_generate_content_async_with_generation_config(
+    generate_content_response, generate_llm_response
+):
+  claude_llm = Claude(model="claude-3-5-sonnet-v2@20241022")
+  llm_request = LlmRequest(
+      model="claude-3-5-sonnet-v2@20241022",
+      contents=[Content(role="user", parts=[Part.from_text(text="Hello")])],
+      config=types.GenerateContentConfig(
+          temperature=0.7,
+          top_p=0.9,
+          top_k=50,
+          stop_sequences=["##"],
+          max_output_tokens=1024,
+      ),
+  )
+  with mock.patch.object(claude_llm, "_anthropic_client") as mock_client:
+    with mock.patch.object(
+        anthropic_llm,
+        "message_to_generate_content_response",
+        return_value=generate_llm_response,
+    ):
+
+      async def mock_coro():
+        return generate_content_response
+
+      mock_client.messages.create.return_value = mock_coro()
+
+      _ = [
+          resp
+          async for resp in claude_llm.generate_content_async(
+              llm_request, stream=False
+          )
+      ]
+      mock_client.messages.create.assert_called_once()
+      _, kwargs = mock_client.messages.create.call_args
+      assert kwargs["temperature"] == 0.7
+      assert kwargs["top_p"] == 0.9
+      assert kwargs["top_k"] == 50
+      assert kwargs["stop_sequences"] == ["##"]
+      assert kwargs["max_tokens"] == 1024
+
+
+@pytest.mark.asyncio
+async def test_generate_content_streaming_with_generation_config(
+    generate_content_response,
+):
+  claude_llm = Claude(model="claude-3-5-sonnet-v2@20241022")
+  llm_request = LlmRequest(
+      model="claude-3-5-sonnet-v2@20241022",
+      contents=[Content(role="user", parts=[Part.from_text(text="Hello")])],
+      config=types.GenerateContentConfig(
+          temperature=0.7,
+          top_p=0.9,
+          top_k=50,
+          stop_sequences=["##"],
+          max_output_tokens=1024,
+      ),
+  )
+  with mock.patch.object(claude_llm, "_anthropic_client") as mock_client:
+
+    async def mock_coro(*args, **kwargs):
+      async def async_gen():
+        if False:
+          yield None
+
+      return async_gen()
+
+    mock_client.messages.create.side_effect = mock_coro
+
+    _ = [
+        resp
+        async for resp in claude_llm.generate_content_async(
+            llm_request, stream=True
+        )
+    ]
+    mock_client.messages.create.assert_called_once()
+    _, kwargs = mock_client.messages.create.call_args
+    assert kwargs["temperature"] == 0.7
+    assert kwargs["top_p"] == 0.9
+    assert kwargs["top_k"] == 50
+    assert kwargs["stop_sequences"] == ["##"]
+    assert kwargs["max_tokens"] == 1024
+    assert kwargs["stream"]
+
+
+@pytest.mark.asyncio
+async def test_generate_content_async_with_thinking_level_warns_and_ignores(
+    generate_content_response,
+    generate_llm_response,
+):
+  """Tests that generate_content_async with standard thinking_level warns and ignores it."""
+  claude_llm = AnthropicLlm(model="claude-sonnet-4-20250514")
+  llm_request = LlmRequest(
+      model="claude-sonnet-4-20250514",
+      contents=[Content(role="user", parts=[Part.from_text(text="Hello")])],
+      config=types.GenerateContentConfig(
+          thinking_config=types.ThinkingConfig(
+              thinking_budget=-1,
+              thinking_level=types.ThinkingLevel.MINIMAL,
+          )
+      ),
+  )
+  with mock.patch.object(claude_llm, "_anthropic_client") as mock_client:
+    with mock.patch.object(
+        anthropic_llm,
+        "message_to_generate_content_response",
+        return_value=generate_llm_response,
+    ):
+
+      async def mock_coro():
+        return generate_content_response
+
+      mock_client.messages.create.return_value = mock_coro()
+
+      with pytest.warns(
+          UserWarning,
+          match="Standard thinking_config.thinking_level is not supported",
+      ):
+        _ = [
+            resp
+            async for resp in claude_llm.generate_content_async(
+                llm_request, stream=False
+            )
+        ]
+      mock_client.messages.create.assert_called_once()
+      _, kwargs = mock_client.messages.create.call_args
+      # Verify that thinking_level was ignored (but budget -1 still enabled adaptive thinking).
+      assert kwargs["thinking"] == {"type": "adaptive"}
+      assert "output_config" not in kwargs
+
+
+@pytest.mark.asyncio
+async def test_generate_content_async_anthropic_config_with_thinking_level_raises_error():
+  """Tests that AnthropicGenerateContentConfig with standard thinking_level raises ValueError."""
+  with pytest.raises(
+      ValueError,
+      match="thinking_level is not supported in AnthropicGenerateContentConfig",
+  ):
+    _ = AnthropicGenerateContentConfig(
+        effort="xhigh",
+        thinking_config=types.ThinkingConfig(
+            thinking_budget=-1,
+            thinking_level=types.ThinkingLevel.MINIMAL,
+        ),
+    )
+
+
+@pytest.mark.asyncio
+async def test_generate_content_async_with_anthropic_config_effort(
+    generate_content_response,
+    generate_llm_response,
+):
+  """Tests generate_content_async with Anthropic-specific effort configuration."""
+  claude_llm = AnthropicLlm(model="claude-sonnet-4-20250514")
+  llm_request = LlmRequest(
+      model="claude-sonnet-4-20250514",
+      contents=[Content(role="user", parts=[Part.from_text(text="Hello")])],
+      config=AnthropicGenerateContentConfig(
+          effort="xhigh",
+      ),
+  )
+  with mock.patch.object(claude_llm, "_anthropic_client") as mock_client:
+    with mock.patch.object(
+        anthropic_llm,
+        "message_to_generate_content_response",
+        return_value=generate_llm_response,
+    ):
+
+      async def mock_coro():
+        return generate_content_response
+
+      mock_client.messages.create.return_value = mock_coro()
+
+      _ = [
+          resp
+          async for resp in claude_llm.generate_content_async(
+              llm_request, stream=False
+          )
+      ]
+      mock_client.messages.create.assert_called_once()
+      _, kwargs = mock_client.messages.create.call_args
+      assert kwargs["output_config"] == {"effort": "xhigh"}
+      assert kwargs["thinking"] is NOT_GIVEN
+
+
+@pytest.mark.asyncio
+async def test_generate_content_async_excludes_sampling_when_thinking(
+    generate_content_response,
+    generate_llm_response,
+):
+  """Tests that sampling parameters are excluded when thinking is enabled."""
+  claude_llm = AnthropicLlm(model="claude-sonnet-4-20250514")
+  llm_request = LlmRequest(
+      model="claude-sonnet-4-20250514",
+      contents=[Content(role="user", parts=[Part.from_text(text="Hello")])],
+      config=types.GenerateContentConfig(
+          temperature=0.7,
+          top_p=0.9,
+          top_k=50,
+          thinking_config=types.ThinkingConfig(
+              thinking_budget=1024,
+          ),
+      ),
+  )
+  with mock.patch.object(claude_llm, "_anthropic_client") as mock_client:
+    with mock.patch.object(
+        anthropic_llm,
+        "message_to_generate_content_response",
+        return_value=generate_llm_response,
+    ):
+
+      async def mock_coro():
+        return generate_content_response
+
+      mock_client.messages.create.return_value = mock_coro()
+
+      with pytest.warns(
+          UserWarning, match="Sampling parameters .* are ignored"
+      ):
+        _ = [
+            resp
+            async for resp in claude_llm.generate_content_async(
+                llm_request, stream=False
+            )
+        ]
+      mock_client.messages.create.assert_called_once()
+      _, kwargs = mock_client.messages.create.call_args
+      assert "temperature" not in kwargs
+      assert "top_p" not in kwargs
+      assert "top_k" not in kwargs
+      assert kwargs["max_tokens"] == 8192
+      assert kwargs["thinking"] == {"type": "enabled", "budget_tokens": 1024}
+
+
+@pytest.mark.asyncio
+async def test_generate_content_async_excludes_sampling_when_effort(
+    generate_content_response,
+    generate_llm_response,
+):
+  """Tests that sampling parameters are excluded when effort is enabled."""
+  claude_llm = AnthropicLlm(model="claude-sonnet-4-20250514")
+  llm_request = LlmRequest(
+      model="claude-sonnet-4-20250514",
+      contents=[Content(role="user", parts=[Part.from_text(text="Hello")])],
+      config=AnthropicGenerateContentConfig(
+          temperature=0.7,
+          top_p=0.9,
+          top_k=50,
+          effort="xhigh",
+      ),
+  )
+  with mock.patch.object(claude_llm, "_anthropic_client") as mock_client:
+    with mock.patch.object(
+        anthropic_llm,
+        "message_to_generate_content_response",
+        return_value=generate_llm_response,
+    ):
+
+      async def mock_coro():
+        return generate_content_response
+
+      mock_client.messages.create.return_value = mock_coro()
+
+      with pytest.warns(
+          UserWarning, match="Sampling parameters .* are ignored"
+      ):
+        _ = [
+            resp
+            async for resp in claude_llm.generate_content_async(
+                llm_request, stream=False
+            )
+        ]
+      mock_client.messages.create.assert_called_once()
+      _, kwargs = mock_client.messages.create.call_args
+      assert "temperature" not in kwargs
+      assert "top_p" not in kwargs
+      assert "top_k" not in kwargs
+      assert kwargs["output_config"] == {"effort": "xhigh"}

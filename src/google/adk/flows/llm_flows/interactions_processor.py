@@ -37,16 +37,17 @@ def _is_event_in_branch(current_branch: Optional[str], event: Event) -> bool:
   return event.branch == current_branch or not event.branch
 
 
-def _find_previous_interaction_id(
+def _find_previous_interaction_state(
     events: list[Event],
     *,
     agent_name: str,
     current_branch: Optional[str],
-) -> Optional[str]:
-  """Find the most recent interaction_id authored by ``agent_name``.
+) -> tuple[Optional[str], Optional[str]]:
+  """Find the most recent (interaction_id, environment_id) for ``agent_name``.
 
   Scans ``events`` in reverse, skipping events outside ``current_branch``, and
-  returns the first ``interaction_id`` from an event authored by this agent.
+  returns the ids from the first event authored by this agent that carries an
+  interaction_id.
   """
   logger.debug(
       'Finding previous_interaction_id: agent=%s, branch=%s, num_events=%d',
@@ -75,8 +76,8 @@ def _find_previous_interaction_id(
           agent_name,
           event.interaction_id,
       )
-      return event.interaction_id
-  return None
+      return event.interaction_id, event.environment_id
+  return None, None
 
 
 class InteractionsRequestProcessor(BaseLlmRequestProcessor):
@@ -126,11 +127,12 @@ class InteractionsRequestProcessor(BaseLlmRequestProcessor):
       self, invocation_context: 'InvocationContext'
   ) -> Optional[str]:
     """Find the previous interaction ID from session events."""
-    return _find_previous_interaction_id(
+    interaction_id, _ = _find_previous_interaction_state(
         invocation_context.session.events,
         agent_name=invocation_context.agent.name,
         current_branch=invocation_context.branch,
     )
+    return interaction_id
 
 
 # Module-level processor instance for use in flow configuration

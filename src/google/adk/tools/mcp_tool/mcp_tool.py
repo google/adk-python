@@ -16,16 +16,13 @@ from __future__ import annotations
 
 import asyncio
 import base64
+from collections.abc import Awaitable
 import inspect
 import logging
 from typing import Any
 from typing import Callable
-from typing import Dict
-from typing import List
-from typing import Optional
 from typing import Protocol
 from typing import runtime_checkable
-from typing import Union
 import warnings
 
 from fastapi.openapi.models import APIKeyIn
@@ -104,9 +101,9 @@ class ProgressCallbackFactory(Protocol):
       self,
       tool_name: str,
       *,
-      callback_context: Optional[CallbackContext] = None,
+      callback_context: CallbackContext | None = None,
       **kwargs: Any,
-  ) -> Optional[ProgressFnT]:
+  ) -> ProgressFnT | None:
     """Create a progress callback for a specific tool.
 
     Args:
@@ -139,15 +136,17 @@ class McpTool(BaseAuthenticatedTool):
       *,
       mcp_tool: McpBaseTool,
       mcp_session_manager: MCPSessionManager,
-      auth_scheme: Optional[AuthScheme] = None,
-      auth_credential: Optional[AuthCredential] = None,
-      require_confirmation: Union[bool, Callable[..., bool]] = False,
-      header_provider: Optional[
-          Callable[[ReadonlyContext], Dict[str, str]]
-      ] = None,
-      progress_callback: Optional[
-          Union[ProgressFnT, ProgressCallbackFactory]
-      ] = None,
+      auth_scheme: AuthScheme | None = None,
+      auth_credential: AuthCredential | None = None,
+      require_confirmation: bool | Callable[..., bool] = False,
+      header_provider: (
+          Callable[
+              [ReadonlyContext],
+              dict[str, str] | Awaitable[dict[str, str]],
+          ]
+          | None
+      ) = None,
+      progress_callback: ProgressFnT | ProgressCallbackFactory | None = None,
   ):
     """Initializes an McpTool.
 
@@ -225,7 +224,7 @@ class McpTool(BaseAuthenticatedTool):
     return self._mcp_tool
 
   @property
-  def visibility(self) -> List[str]:
+  def visibility(self) -> list[str]:
     """Returns the visibility if this MCP tool meta has one."""
     meta = getattr(self.raw_mcp_tool, "meta", None)
     if not meta or not isinstance(meta, dict):
@@ -238,7 +237,7 @@ class McpTool(BaseAuthenticatedTool):
     return []
 
   @property
-  def mcp_app_resource_uri(self) -> Optional[str]:
+  def mcp_app_resource_uri(self) -> str | None:
     """Returns the MCP App UI resource URI if this tool has one.
 
     MCP Apps declare a UI resource via `meta.ui.resourceUri` in the tool
@@ -379,7 +378,7 @@ class McpTool(BaseAuthenticatedTool):
   @override
   async def _run_async_impl(
       self, *, args, tool_context: ToolContext, credential: AuthCredential
-  ) -> Dict[str, Any]:
+  ) -> dict[str, Any]:
     """Runs the tool asynchronously.
 
     Args:
@@ -396,8 +395,10 @@ class McpTool(BaseAuthenticatedTool):
       dynamic_headers = self._header_provider(
           ReadonlyContext(tool_context._invocation_context)  # pylint: disable=protected-access
       )
+      if inspect.isawaitable(dynamic_headers):
+        dynamic_headers = await dynamic_headers
 
-    headers: Dict[str, str] = {}
+    headers: dict[str, str] = {}
     if auth_headers:
       headers.update(auth_headers)
     if dynamic_headers:
@@ -406,7 +407,7 @@ class McpTool(BaseAuthenticatedTool):
 
     # Propagate trace context in the _meta field as sprcified by MCP protocol.
     # See https://agentclientprotocol.com/protocol/extensibility#the-meta-field
-    trace_carrier: Dict[str, str] = {}
+    trace_carrier: dict[str, str] = {}
     propagate.get_global_textmap().inject(carrier=trace_carrier)
     meta_trace_context = trace_carrier if trace_carrier else None
 
@@ -468,7 +469,7 @@ class McpTool(BaseAuthenticatedTool):
       )
     return result
 
-  def _detect_error_in_response(self, response: Any) -> Optional[str]:
+  def _detect_error_in_response(self, response: Any) -> str | None:
     """Telemetry hook: returns an error type if the response indicates an error."""
     if isinstance(response, dict) and response.get("isError"):
       return "MCP_TOOL_ERROR"
@@ -476,7 +477,7 @@ class McpTool(BaseAuthenticatedTool):
 
   def _resolve_progress_callback(
       self, tool_context: ToolContext
-  ) -> Optional[ProgressFnT]:
+  ) -> ProgressFnT | None:
     """Resolve the progress callback for the current invocation.
 
     If progress_callback is a ProgressCallbackFactory, call it to create
@@ -510,7 +511,7 @@ class McpTool(BaseAuthenticatedTool):
 
   async def _get_headers(
       self, tool_context: ToolContext, credential: AuthCredential
-  ) -> Optional[dict[str, str]]:
+  ) -> dict[str, str] | None:
     """Extracts authentication headers from credentials.
 
     Args:
@@ -524,7 +525,7 @@ class McpTool(BaseAuthenticatedTool):
         ValueError: If API key authentication is configured for non-header
         location.
     """
-    headers: Optional[dict[str, str]] = None
+    headers: dict[str, str] | None = None
     if credential:
       if credential.oauth2:
         headers = {"Authorization": f"Bearer {credential.oauth2.access_token}"}

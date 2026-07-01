@@ -33,7 +33,7 @@ from mcp.server.fastmcp import FastMCP
 import uvicorn
 
 logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+logger = logging.getLogger('google_adk.' + __name__)
 
 # Expected OAuth token for testing
 VALID_TOKEN = 'test_access_token_12345'

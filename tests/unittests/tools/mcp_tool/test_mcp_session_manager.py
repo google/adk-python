@@ -1298,6 +1298,28 @@ class TestRefreshableAsyncCredentials:
 
     assert headers["Authorization"] == "Bearer refreshed_token"
 
+  @pytest.mark.skipif(not AIO_SUPPORTED, reason="google.auth.aio not supported")
+  @pytest.mark.parametrize(
+      "existing_header_key",
+      ["Authorization", "authorization", "AUTHORIZATION", "authORIZATION"],
+  )
+  @pytest.mark.asyncio
+  async def test_before_request_skips_refresh_if_authorization_header_exists_case_insensitive(
+      self, existing_header_key
+  ):
+    mock_creds = Mock()
+    mock_creds.expired = True
+    mock_creds.token = "new_token"
+    mock_creds.refresh = Mock()
+
+    credentials = _RefreshableAsyncCredentials(mock_creds)
+    headers = {existing_header_key: "Bearer existing_token"}
+
+    await credentials.before_request(None, "GET", "http://example.com", headers)
+
+    mock_creds.refresh.assert_not_called()
+    assert headers == {existing_header_key: "Bearer existing_token"}
+
 
 class TestGoogleAuthAsyncByteStream:
 

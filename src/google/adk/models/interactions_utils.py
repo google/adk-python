@@ -112,6 +112,29 @@ def _extract_stream_interaction_id(
   return None
 
 
+def _extract_stream_environment_id(
+    event: InteractionSSEEvent,
+) -> str | None:
+  """Extract the environment id from an Interactions SSE event, if present.
+
+  The non-streaming ``Interaction`` declares an ``environment_id`` field. On
+  streaming SSE events the id is read opportunistically from the carried
+  interaction (created/completed events allow extra fields), so it is returned
+  only when the API actually includes it and is ``None`` otherwise.
+  """
+  interaction = None
+  if isinstance(event, (InteractionCreatedEvent, InteractionCompletedEvent)):
+    interaction = event.interaction
+  elif isinstance(event, Interaction):
+    interaction = event
+
+  if interaction is None:
+    return None
+
+  env_id = getattr(interaction, 'environment_id', None)
+  return env_id if isinstance(env_id, str) else None
+
+
 def _encode_base64_string(data: bytes) -> str:
   """Encode bytes to a base64 string."""
   return base64.b64encode(data).decode('utf-8')
@@ -1445,6 +1468,7 @@ async def _create_interactions(
     LlmResponse objects converted from interaction responses.
   """
   current_interaction_id: str | None = None
+  current_environment_id: str | None = None
 
   if stream:
     responses = await api_client.aio.interactions.create(
@@ -1456,10 +1480,14 @@ async def _create_interactions(
       interaction_id = _extract_stream_interaction_id(event)
       if interaction_id:
         current_interaction_id = interaction_id
+      environment_id = _extract_stream_environment_id(event)
+      if environment_id:
+        current_environment_id = environment_id
       llm_response = convert_interaction_event_to_llm_response(
           event, state, current_interaction_id
       )
       if llm_response:
+        llm_response.environment_id = current_environment_id
         yield llm_response
   else:
     interaction = await api_client.aio.interactions.create(
@@ -1467,7 +1495,9 @@ async def _create_interactions(
     )
     logger.info('Interaction response received.')
     logger.debug(build_interactions_response_log(interaction))
-    yield convert_interaction_to_llm_response(interaction)
+    llm_response = convert_interaction_to_llm_response(interaction)
+    llm_response.environment_id = interaction.environment_id
+    yield llm_response
 
 
 async def generate_content_via_interactions(

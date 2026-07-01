@@ -31,6 +31,7 @@ from google.adk.models.lite_llm import _append_fallback_user_content_if_missing
 from google.adk.models.lite_llm import _content_to_message_param
 from google.adk.models.lite_llm import _convert_reasoning_value_to_parts
 from google.adk.models.lite_llm import _enforce_strict_openai_schema
+from google.adk.models.lite_llm import _extract_json_from_deepseek_args
 from google.adk.models.lite_llm import _extract_reasoning_value
 from google.adk.models.lite_llm import _extract_thought_signature_from_tool_call
 from google.adk.models.lite_llm import _FILE_ID_REQUIRED_PROVIDERS
@@ -47,6 +48,7 @@ from google.adk.models.lite_llm import _message_to_generate_content_response
 from google.adk.models.lite_llm import _MISSING_TOOL_RESULT_MESSAGE
 from google.adk.models.lite_llm import _model_response_to_chunk
 from google.adk.models.lite_llm import _model_response_to_generate_content_response
+from google.adk.models.lite_llm import _parse_deepseek_tool_calls_from_text
 from google.adk.models.lite_llm import _parse_tool_calls_from_text
 from google.adk.models.lite_llm import _redact_file_uri_for_log
 from google.adk.models.lite_llm import _redirect_litellm_loggers_to_stdout
@@ -2911,6 +2913,145 @@ def test_parse_tool_calls_from_text_invalid_json_returns_remainder():
   assert remainder == 'Leading {"unused": "payload"} trailing text'
 
 
+# ---------------------------------------------------------------------------
+# DeepSeek proprietary inline tool-call format tests
+# ---------------------------------------------------------------------------
+
+_DS_BEGIN_CALLS = "\u003c\uff5ctool\u2581calls\u2581begin\uff5c\u003e"
+_DS_END_CALLS = "\u003c\uff5ctool\u2581calls\u2581end\uff5c\u003e"
+_DS_BEGIN_CALL = "\u003c\uff5ctool\u2581call\u2581begin\uff5c\u003e"
+_DS_END_CALL = "\u003c\uff5ctool\u2581call\u2581end\uff5c\u003e"
+_DS_SEP = "\u003c\uff5ctool\u2581sep\uff5c\u003e"
+
+
+def _ds_tool_call(name: str, args_json: str) -> str:
+  """Build a single DeepSeek-style tool-call block."""
+  return (
+      f"{_DS_BEGIN_CALL}function{_DS_SEP}{name}\n"
+      f"```json\n{args_json}\n```"
+      f"{_DS_END_CALL}"
+  )
+
+
+def _ds_wrapped(inner: str) -> str:
+  """Wrap content in <｜tool▁calls▁begin｜>...<｜tool▁calls▁end｜>."""
+  return f"{_DS_BEGIN_CALLS}{inner}{_DS_END_CALLS}"
+
+
+def test_parse_deepseek_single_tool_call():
+  """Single DeepSeek tool call with code-fenced JSON args."""
+  text = _ds_wrapped(
+      _ds_tool_call("get_weather", '{"city": "Beijing", "unit": "celsius"}')
+  )
+  tool_calls, remainder = _parse_deepseek_tool_calls_from_text(text)
+  assert len(tool_calls) == 1
+  assert tool_calls[0].function.name == "get_weather"
+  assert json.loads(tool_calls[0].function.arguments) == {
+      "city": "Beijing",
+      "unit": "celsius",
+  }
+  assert remainder is None
+
+
+def test_parse_deepseek_multi_tool_call():
+  """Multiple DeepSeek tool calls in a single wrapped block."""
+  inner = _ds_tool_call("func_a", '{"x": 1}') + _ds_tool_call(
+      "func_b", '{"y": 2}'
+  )
+  text = _ds_wrapped(inner)
+  tool_calls, remainder = _parse_deepseek_tool_calls_from_text(text)
+  assert len(tool_calls) == 2
+  assert tool_calls[0].function.name == "func_a"
+  assert json.loads(tool_calls[0].function.arguments) == {"x": 1}
+  assert tool_calls[1].function.name == "func_b"
+  assert json.loads(tool_calls[1].function.arguments) == {"y": 2}
+  assert remainder is None
+
+
+def test_parse_deepseek_plain_json_args():
+  """DeepSeek tool call without Markdown code fences around args."""
+  inner = (
+      f"{_DS_BEGIN_CALL}function{_DS_SEP}search\n"
+      f'{{"query": "天气"}}'
+      f"{_DS_END_CALL}"
+  )
+  text = _ds_wrapped(inner)
+  tool_calls, remainder = _parse_deepseek_tool_calls_from_text(text)
+  assert len(tool_calls) == 1
+  assert tool_calls[0].function.name == "search"
+  assert json.loads(tool_calls[0].function.arguments) == {"query": "天气"}
+
+
+def test_parse_deepseek_with_surrounding_text():
+  """DeepSeek tool call embedded in surrounding non-tool text."""
+  prefix = "Let me think about this.\n"
+  suffix = "\nI'll proceed now."
+  inner = _ds_tool_call("calculate", '{"expr": "2+2"}')
+  text = prefix + _ds_wrapped(inner) + suffix
+  tool_calls, remainder = _parse_deepseek_tool_calls_from_text(text)
+  assert len(tool_calls) == 1
+  assert tool_calls[0].function.name == "calculate"
+  assert remainder == "Let me think about this.\n\nI'll proceed now."
+
+
+def test_parse_deepseek_no_tokens_returns_empty():
+  """Text without DeepSeek tokens returns no tool calls and None remainder."""
+  text = "Just a regular response, no special tokens here."
+  tool_calls, remainder = _parse_deepseek_tool_calls_from_text(text)
+  assert tool_calls == []
+  assert remainder is None
+
+
+def test_parse_tool_calls_from_text_handles_deepseek_format():
+  """Integration: the generic parser delegates to the DeepSeek parser."""
+  text = _ds_wrapped(
+      _ds_tool_call("fetch_page", '{"url": "https://example.com"}')
+  )
+  tool_calls, remainder = _parse_tool_calls_from_text(text)
+  assert len(tool_calls) == 1
+  assert tool_calls[0].function.name == "fetch_page"
+  assert json.loads(tool_calls[0].function.arguments) == {
+      "url": "https://example.com"
+  }
+  assert remainder is None
+
+
+def test_parse_tool_calls_from_text_mixed_formats():
+  """DeepSeek tokens + standard inline JSON in the same text."""
+  ds_part = _ds_wrapped(_ds_tool_call("ds_func", '{"a": 1}'))
+  standard_part = '{"name": "std_func", "arguments": {"b": 2}}'
+  text = ds_part + " some text " + standard_part
+  tool_calls, remainder = _parse_tool_calls_from_text(text)
+  assert len(tool_calls) == 2
+  assert tool_calls[0].function.name == "ds_func"
+  assert tool_calls[1].function.name == "std_func"
+  assert remainder == "some text"
+
+
+def test_parse_deepseek_empty_text():
+  """Empty or whitespace-only text returns no tool calls."""
+  for text in ("", "   ", "\n\n"):
+    tool_calls, remainder = _parse_deepseek_tool_calls_from_text(text)
+    assert tool_calls == []
+    assert remainder is None
+
+
+def test_parse_deepseek_unwrapped_call_before_wrapped_block():
+  """Unwrapped call preceding a wrapped block is not dropped."""
+  unwrapped = _ds_tool_call("first", '{"x": 1}')
+  wrapped = _ds_wrapped(_ds_tool_call("second", '{"y": 2}'))
+  tool_calls, remainder = _parse_deepseek_tool_calls_from_text(
+      unwrapped + wrapped
+  )
+  assert [tc.function.name for tc in tool_calls] == ["first", "second"]
+  assert remainder is None
+
+
+def test_extract_json_from_deepseek_args_invalid_fence_returns_none():
+  """Invalid JSON inside a code fence is rejected rather than returned."""
+  assert _extract_json_from_deepseek_args('```json\n{"a": 1,}\n```') is None
+
+
 def test_split_message_content_and_tool_calls_inline_text():
   message = {
       "role": "assistant",
@@ -5607,3 +5748,185 @@ def test_redact_file_uri_for_log_http_url_keeps_scheme_and_tail():
       _redact_file_uri_for_log("https://example.com/path/file.pdf")
       == "https://<redacted>/file.pdf"
   )
+
+
+@pytest.mark.asyncio
+async def test_generate_content_async_passes_http_options_headers_as_extra_headers(
+    mock_acompletion, lite_llm_instance
+):
+  """Test that http_options.headers from LlmRequest are forwarded to litellm."""
+  llm_request = LlmRequest(
+      contents=[
+          types.Content(
+              role="user", parts=[types.Part.from_text(text="Test prompt")]
+          )
+      ],
+      config=types.GenerateContentConfig(
+          http_options=types.HttpOptions(
+              headers={"X-User-Id": "user-123", "X-Trace-Id": "trace-abc"}
+          )
+      ),
+  )
+
+  async for _ in lite_llm_instance.generate_content_async(llm_request):
+    pass
+
+  mock_acompletion.assert_called_once()
+  _, kwargs = mock_acompletion.call_args
+  assert "extra_headers" in kwargs
+  assert kwargs["extra_headers"]["X-User-Id"] == "user-123"
+  assert kwargs["extra_headers"]["X-Trace-Id"] == "trace-abc"
+
+
+@pytest.mark.asyncio
+async def test_generate_content_async_merges_http_options_with_existing_extra_headers(
+    mock_response,
+):
+  """Test that http_options.headers merge with pre-existing extra_headers."""
+  mock_acompletion = AsyncMock(return_value=mock_response)
+  mock_client = MockLLMClient(mock_acompletion, Mock())
+  # Create instance with pre-existing extra_headers via kwargs
+  lite_llm_with_extra = LiteLlm(
+      model="test_model",
+      llm_client=mock_client,
+      extra_headers={"X-Api-Key": "secret-key"},
+  )
+
+  llm_request = LlmRequest(
+      contents=[
+          types.Content(
+              role="user", parts=[types.Part.from_text(text="Test prompt")]
+          )
+      ],
+      config=types.GenerateContentConfig(
+          http_options=types.HttpOptions(headers={"X-User-Id": "user-456"})
+      ),
+  )
+
+  async for _ in lite_llm_with_extra.generate_content_async(llm_request):
+    pass
+
+  mock_acompletion.assert_called_once()
+  _, kwargs = mock_acompletion.call_args
+  assert "extra_headers" in kwargs
+  # Both existing and new headers should be present
+  assert kwargs["extra_headers"]["X-Api-Key"] == "secret-key"
+  assert kwargs["extra_headers"]["X-User-Id"] == "user-456"
+
+
+@pytest.mark.asyncio
+async def test_generate_content_async_http_options_headers_override_existing(
+    mock_response,
+):
+  """Test that http_options.headers override same-key extra_headers from init."""
+  mock_acompletion = AsyncMock(return_value=mock_response)
+  mock_client = MockLLMClient(mock_acompletion, Mock())
+  lite_llm_with_extra = LiteLlm(
+      model="test_model",
+      llm_client=mock_client,
+      extra_headers={"X-Override-Me": "old-value"},
+  )
+
+  llm_request = LlmRequest(
+      contents=[
+          types.Content(
+              role="user", parts=[types.Part.from_text(text="Test prompt")]
+          )
+      ],
+      config=types.GenerateContentConfig(
+          http_options=types.HttpOptions(headers={"X-Override-Me": "new-value"})
+      ),
+  )
+
+  async for _ in lite_llm_with_extra.generate_content_async(llm_request):
+    pass
+
+  mock_acompletion.assert_called_once()
+  _, kwargs = mock_acompletion.call_args
+  # Request-level headers should override init-level headers
+  assert kwargs["extra_headers"]["X-Override-Me"] == "new-value"
+
+
+@pytest.mark.asyncio
+async def test_generate_content_async_passes_http_options_timeout(
+    mock_acompletion, lite_llm_instance
+):
+  """Test that http_options.timeout is forwarded to litellm."""
+
+  llm_request = LlmRequest(
+      contents=[
+          types.Content(
+              role="user", parts=[types.Part.from_text(text="Test prompt")]
+          )
+      ],
+      config=types.GenerateContentConfig(
+          http_options=types.HttpOptions(timeout=30000)
+      ),
+  )
+
+  async for _ in lite_llm_instance.generate_content_async(llm_request):
+    pass
+
+  mock_acompletion.assert_called_once()
+  _, kwargs = mock_acompletion.call_args
+  assert "timeout" in kwargs
+  assert kwargs["timeout"] == 30000
+
+
+@pytest.mark.asyncio
+async def test_generate_content_async_passes_http_options_retry_options(
+    mock_acompletion, lite_llm_instance
+):
+  """Test that http_options.retry_options is forwarded to litellm."""
+
+  llm_request = LlmRequest(
+      contents=[
+          types.Content(
+              role="user", parts=[types.Part.from_text(text="Test prompt")]
+          )
+      ],
+      config=types.GenerateContentConfig(
+          http_options=types.HttpOptions(
+              retry_options=types.HttpRetryOptions(
+                  attempts=3,
+              )
+          )
+      ),
+  )
+
+  async for _ in lite_llm_instance.generate_content_async(llm_request):
+    pass
+
+  mock_acompletion.assert_called_once()
+  _, kwargs = mock_acompletion.call_args
+  assert "num_retries" in kwargs
+  assert kwargs["num_retries"] == 3
+
+
+@pytest.mark.asyncio
+async def test_generate_content_async_passes_http_options_extra_body(
+    mock_acompletion, lite_llm_instance
+):
+  """Test that http_options.extra_body is forwarded to litellm."""
+
+  llm_request = LlmRequest(
+      contents=[
+          types.Content(
+              role="user", parts=[types.Part.from_text(text="Test prompt")]
+          )
+      ],
+      config=types.GenerateContentConfig(
+          http_options=types.HttpOptions(
+              extra_body={"custom_field": "custom_value", "priority": "high"}
+          )
+      ),
+  )
+
+  async for _ in lite_llm_instance.generate_content_async(llm_request):
+    pass
+
+  mock_acompletion.assert_called_once()
+  _, kwargs = mock_acompletion.call_args
+  assert "extra_body" in kwargs
+  assert kwargs["extra_body"]["custom_field"] == "custom_value"
+  assert kwargs["extra_body"]["priority"] == "high"

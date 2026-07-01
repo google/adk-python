@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import inspect
 import logging
 import sys
 from typing import Any
@@ -107,9 +108,13 @@ class McpToolset(BaseToolset):
       auth_scheme: Optional[AuthScheme] = None,
       auth_credential: Optional[AuthCredential] = None,
       require_confirmation: Union[bool, Callable[..., bool]] = False,
-      header_provider: Optional[
-          Callable[[ReadonlyContext], Dict[str, str]]
-      ] = None,
+      header_provider: (
+          Callable[
+              [ReadonlyContext],
+              dict[str, str] | Awaitable[dict[str, str]],
+          ]
+          | None
+      ) = None,
       progress_callback: Optional[
           Union[ProgressFnT, ProgressCallbackFactory]
       ] = None,
@@ -293,6 +298,8 @@ class McpToolset(BaseToolset):
     # Add headers from header_provider if available
     if self._header_provider and readonly_context:
       provider_headers = self._header_provider(readonly_context)
+      if inspect.isawaitable(provider_headers):
+        provider_headers = await provider_headers
       if provider_headers:
         headers.update(provider_headers)
 
