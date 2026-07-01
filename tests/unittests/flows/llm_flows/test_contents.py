@@ -15,10 +15,12 @@
 from google.adk.agents.llm_agent import Agent
 from google.adk.events.event import Event
 from google.adk.events.event_actions import EventActions
+from google.adk.flows.llm_flows import _nl_planning
 from google.adk.flows.llm_flows import contents
 from google.adk.flows.llm_flows.contents import request_processor
 from google.adk.flows.llm_flows.functions import REQUEST_CONFIRMATION_FUNCTION_CALL_NAME
 from google.adk.flows.llm_flows.functions import REQUEST_EUC_FUNCTION_CALL_NAME
+from google.adk.labs.openai import OpenAIResponsesLlm
 from google.adk.models.anthropic_llm import AnthropicLlm
 from google.adk.models.google_llm import Gemini
 from google.adk.models.llm_request import LlmRequest
@@ -1001,6 +1003,122 @@ async def test_adk_function_call_ids_are_stripped_for_non_interactions_model():
 
 
 @pytest.mark.asyncio
+async def test_stripping_function_call_ids_does_not_mutate_session_events():
+  """Stripping ``adk-`` ids must not mutate the session-owned events."""
+  agent = Agent(model="gemini-2.5-flash", name="test_agent")
+  llm_request = LlmRequest(model="gemini-2.5-flash")
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent
+  )
+
+  # Shared id so the history rearrange logic can pair call and response.
+  function_call_id = "adk-test-call-id"
+  fc_part = types.Part(
+      function_call=types.FunctionCall(
+          id=function_call_id,
+          name="test_tool",
+          args={"x": 1},
+      )
+  )
+  fr_part = types.Part(
+      function_response=types.FunctionResponse(
+          id=function_call_id,
+          name="test_tool",
+          response={"result": 2},
+      )
+  )
+  events = [
+      Event(
+          invocation_id="inv1",
+          author="user",
+          content=types.UserContent("Call the tool"),
+      ),
+      Event(
+          invocation_id="inv2",
+          author="test_agent",
+          content=types.Content(role="model", parts=[fc_part]),
+      ),
+      Event(
+          invocation_id="inv3",
+          author="test_agent",
+          content=types.Content(role="user", parts=[fr_part]),
+      ),
+  ]
+  invocation_context.session.events = events
+
+  async for _ in contents.request_processor.run_async(
+      invocation_context, llm_request
+  ):
+    pass
+
+  model_fc_part = llm_request.contents[1].parts[0]
+  assert model_fc_part.function_call.id is None
+  user_fr_part = llm_request.contents[2].parts[0]
+  assert user_fr_part.function_response.id is None
+
+  assert fc_part.function_call.id == function_call_id
+  assert fr_part.function_response.id == function_call_id
+  assert events[1].content.parts[0].function_call.id == function_call_id
+  assert events[2].content.parts[0].function_response.id == function_call_id
+  assert model_fc_part is not fc_part
+  assert user_fr_part is not fr_part
+
+
+@pytest.mark.asyncio
+async def test_downstream_part_mutation_does_not_corrupt_session_events():
+  """Request parts must survive in-place mutation by later processors."""
+  agent = Agent(model="gemini-2.5-flash", name="test_agent")
+  llm_request = LlmRequest(model="gemini-2.5-flash")
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent
+  )
+
+  # A thought=True function-call part survives context filtering.
+  fc_part = types.Part(
+      function_call=types.FunctionCall(id="fc1", name="t", args={"x": 1}),
+  )
+  fc_part.thought = True
+  events = [
+      Event(
+          invocation_id="inv1",
+          author="user",
+          content=types.UserContent("Call the tool"),
+      ),
+      Event(
+          invocation_id="inv2",
+          author="test_agent",
+          content=types.Content(role="model", parts=[fc_part]),
+      ),
+      Event(
+          invocation_id="inv3",
+          author="test_agent",
+          content=types.Content(
+              role="user",
+              parts=[
+                  types.Part(
+                      function_response=types.FunctionResponse(
+                          id="fc1", name="t", response={"r": 2}
+                      )
+                  )
+              ],
+          ),
+      ),
+  ]
+  invocation_context.session.events = events
+
+  async for _ in contents.request_processor.run_async(
+      invocation_context, llm_request
+  ):
+    pass
+
+  # nl_planning clears thoughts in place on the request parts.
+  _nl_planning._remove_thought_from_request(llm_request)
+
+  assert fc_part.thought is True
+  assert events[1].content.parts[0].thought is True
+
+
+@pytest.mark.asyncio
 async def test_adk_function_call_ids_preserved_for_interactions_model():
   """Test ADK generated ids are preserved for interactions requests."""
   agent = Agent(
@@ -1242,6 +1360,74 @@ def test_is_other_agent_reply_non_live_session():
 
   event = Event(author="another_agent")
   assert contents._is_other_agent_reply("", event) is False
+
+
+@pytest.mark.asyncio
+async def test_adk_function_call_ids_preserved_for_openai_responses_model():
+  """Responses API replay needs call_id values to match tool outputs."""
+  agent = Agent(
+      model=OpenAIResponsesLlm(model="gpt-5.5"),
+      name="test_agent",
+  )
+  llm_request = LlmRequest(model="gpt-5.5")
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent
+  )
+
+  function_call_id = "adk-test-call-id"
+  events = [
+      Event(
+          invocation_id="inv1",
+          author="user",
+          content=types.UserContent("Call the tool"),
+      ),
+      Event(
+          invocation_id="inv2",
+          author="test_agent",
+          content=types.Content(
+              role="model",
+              parts=[
+                  types.Part(
+                      function_call=types.FunctionCall(
+                          id=function_call_id,
+                          name="test_tool",
+                          args={"x": 1},
+                      )
+                  )
+              ],
+          ),
+      ),
+      Event(
+          invocation_id="inv3",
+          author="test_agent",
+          content=types.Content(
+              role="user",
+              parts=[
+                  types.Part(
+                      function_response=types.FunctionResponse(
+                          id=function_call_id,
+                          name="test_tool",
+                          response={"result": 2},
+                      )
+                  )
+              ],
+          ),
+      ),
+  ]
+  invocation_context.session.events = events
+
+  async for _ in contents.request_processor.run_async(
+      invocation_context, llm_request
+  ):
+    pass
+
+  model_fc_part = llm_request.contents[1].parts[0]
+  assert model_fc_part.function_call is not None
+  assert model_fc_part.function_call.id == function_call_id
+
+  user_fr_part = llm_request.contents[2].parts[0]
+  assert user_fr_part.function_response is not None
+  assert user_fr_part.function_response.id == function_call_id
 
 
 @pytest.mark.asyncio

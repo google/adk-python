@@ -230,6 +230,12 @@ class Context(ReadonlyContext):
     self._error_node_path: str = ''
 
   @property
+  def custom_metadata(self) -> dict[str, Any]:
+    """Returns the custom metadata dictionary."""
+    # pylint: disable=protected-access
+    return self._invocation_context._custom_metadata
+
+  @property
   def function_call_id(self) -> str | None:
     """The function call id of the current tool call."""
     return self._function_call_id
@@ -238,6 +244,11 @@ class Context(ReadonlyContext):
   def function_call_id(self, value: str | None) -> None:
     """Sets the function call id of the current tool call."""
     self._function_call_id = value
+
+  @property
+  def branch(self) -> str | None:
+    """The branch path of the current invocation context."""
+    return self._invocation_context.branch
 
   @property
   def isolation_scope(self) -> str | None:
@@ -446,9 +457,47 @@ class Context(ReadonlyContext):
       use_sub_branch: If True, the dynamic node will be executed in a sub-branch
         to isolate its state and events from the main branch.
       override_branch: An optional branch to use instead of parent's branch.
+      override_isolation_scope: An optional isolation scope to use instead of
+        the parent's scope.
+      raise_on_wait: If True, raises NodeInterruptedError when the child node
+        is WAITING instead of returning None.
 
     Returns:
       The output of the dynamically executed node, once it finishes executing.
+    """
+    return await self._run_node_internal(
+        node,
+        node_input,
+        use_as_output=use_as_output,
+        run_id=run_id,
+        use_sub_branch=use_sub_branch,
+        override_branch=override_branch,
+        override_isolation_scope=override_isolation_scope,
+        raise_on_wait=raise_on_wait,
+        resume_inputs=None,
+        return_ctx=False,
+    )
+
+  async def _run_node_internal(
+      self,
+      node: NodeLike,
+      node_input: Any = None,
+      *,
+      use_as_output: bool = False,
+      run_id: str | None = None,
+      use_sub_branch: bool = False,
+      override_branch: str | None = None,
+      override_isolation_scope: str | None = None,
+      raise_on_wait: bool = False,
+      return_ctx: bool = False,
+      resume_inputs: dict[str, Any] | None = None,
+      skip_run_id_validation: bool = False,
+  ) -> Any:
+    """Executes a node dynamically (Internal Orchestration API).
+
+    See public ``run_node`` for public argument details.
+    Additional internal args:
+      return_ctx: If True, returns the child's Context instead of its output.
     """
 
     if not self._node_rerun_on_resume:
@@ -468,101 +517,165 @@ class Context(ReadonlyContext):
     if isinstance(node, BaseAgent) and isinstance(built_node, BaseAgent):
       built_node.parent_agent = node.parent_agent
 
-    # Mode 1: Running within a Workflow graph.
-    # The workflow orchestrator provides a scheduler to handle resume, dedup,
-    # etc.
-    if self._workflow_scheduler:
-      from ..workflow._errors import NodeInterruptedError
+    # Output delegation: once set, the calling node's own output
+    # events are suppressed — the child's output (annotated with
+    # output_for) becomes the calling node's output.
+    # We validate and set this upfront before entering the loop.
+    if use_as_output:
+      from ..workflow._workflow import Workflow
 
-      # Output delegation: once set, the calling node's own output
-      # events are suppressed — the child's output (annotated with
-      # output_for) becomes the calling node's output.
-      if use_as_output:
+      if not isinstance(self.node, Workflow):
         if self._output_delegated:
           raise ValueError(
               f'Node {self.node_path} already has a use_as_output delegate.'
           )
         self._output_delegated = True
 
-      if run_id:
-        if run_id.isdigit():
-          raise ValueError(
-              f'Explicit run_id "{run_id}" for node "{built_node.name}" must'
-              ' contain non-numeric characters to prevent collision with'
-              ' auto-generated IDs.'
+    # Pointers to track the active execution state in the transfer loop.
+    # These will be updated dynamically if an agent transfers execution.
+    curr_parent_ctx = self
+    curr_node = built_node
+    curr_run_id = run_id
+    curr_input = node_input
+
+    # Active Execution Loop: Handles both standard execution and sequential Agent Transfers
+    # (e.g. Agent A transferring to Agent B). Instead of recursive execution, we use this
+    # loop to execute the target agent in-place, updating pointers and 'continuing' the loop.
+    while True:
+      curr_use_as_output = use_as_output if (curr_parent_ctx is self) else False
+      if self._workflow_scheduler:
+        # --- Mode 1: Workflow Execution ---
+        # The node is running as part of a Workflow graph. We must delegate execution
+        # to the workflow scheduler to handle graph dependencies and state.
+        from ..workflow._errors import NodeInterruptedError
+
+        # Validate or auto-generate run_id for this scheduler execution.
+        if curr_run_id:
+          if curr_run_id.isdigit() and not skip_run_id_validation:
+            raise ValueError(
+                f'Explicit run_id "{curr_run_id}" for node "{curr_node.name}"'
+                ' must contain non-numeric characters to prevent collision'
+                ' with auto-generated IDs.'
+            )
+        elif not curr_run_id:
+          curr_parent_ctx._child_run_counters[curr_node.name] = (
+              curr_parent_ctx._child_run_counters.get(curr_node.name, 0) + 1
           )
+          curr_run_id = str(curr_parent_ctx._child_run_counters[curr_node.name])
+
+        child_ctx = await curr_parent_ctx._workflow_scheduler(
+            curr_parent_ctx,
+            curr_node,
+            curr_input,
+            node_name=curr_node.name,
+            use_as_output=curr_use_as_output,
+            run_id=curr_run_id,
+            use_sub_branch=use_sub_branch,
+            override_branch=override_branch,
+            override_isolation_scope=override_isolation_scope,
+        )
       else:
-        self._child_run_counters[built_node.name] = (
-            self._child_run_counters.get(built_node.name, 0) + 1
+        # --- Mode 2: Standalone Execution ---
+        # The node is running independently (outside of a workflow).
+        # We run it directly using NodeRunner.
+        child_ctx = await curr_parent_ctx._run_node_standalone(
+            curr_node,
+            curr_input,
+            use_as_output=curr_use_as_output,
+            use_sub_branch=use_sub_branch,
+            override_branch=override_branch,
+            override_isolation_scope=override_isolation_scope,
+            run_id=curr_run_id,
+            resume_inputs=resume_inputs,
         )
-        run_id = str(self._child_run_counters[built_node.name])
 
-      child_ctx = await self._workflow_scheduler(
-          self,
-          built_node,
-          node_input,
-          node_name=built_node.name,
-          use_as_output=use_as_output,
-          run_id=run_id,
-          use_sub_branch=use_sub_branch,
-          override_branch=override_branch,
-          override_isolation_scope=override_isolation_scope,
+      # Extract the transfer target if the node requested an agent transfer.
+      transfer_to_agent = (
+          child_ctx.actions.transfer_to_agent if child_ctx else None
       )
-      if child_ctx.error:
-        from ..workflow._errors import DynamicNodeFailError
 
-        raise DynamicNodeFailError(
-            message=f'Dynamic node {built_node.name} failed',
-            error=child_ctx.error,
-            error_node_path=child_ctx.error_node_path,
+      # Post-Execution Validation: If the caller expects the raw output (not the Context),
+      # we check for errors or interrupts and raise them immediately.
+      if not return_ctx:
+        if child_ctx.error:
+          from ..workflow._errors import DynamicNodeFailError
+
+          raise DynamicNodeFailError(
+              message=f'Dynamic node {curr_node.name} failed',
+              error=child_ctx.error,
+              error_node_path=child_ctx.error_node_path,
+          )
+        if child_ctx.interrupt_ids:
+          from ..workflow._errors import NodeInterruptedError
+
+          # Propagate child's interrupt_ids to this node's ctx
+          # so NodeRunner sees them after catching the error.
+          curr_parent_ctx._interrupt_ids.update(child_ctx.interrupt_ids)
+          raise NodeInterruptedError()
+        # When the caller passes raise_on_wait=True, surface a child
+        # that's WAITING (wait_for_output, no output, not transferring)
+        # as NodeInterruptedError so the parent's NodeRunner records
+        # the parent as WAITING instead of falsely COMPLETED.
+        if (
+            raise_on_wait
+            and curr_node.wait_for_output
+            and child_ctx.output is None
+            and not transfer_to_agent
+        ):
+          from ..workflow._errors import NodeInterruptedError
+
+          raise NodeInterruptedError()
+
+      # Handle Agent Transfer: If a transfer was requested, we resolve the target agent
+      # and its parent context, update loop pointers, and continue to the next iteration.
+      if isinstance(transfer_to_agent, str):
+        target_name = transfer_to_agent
+        root_agent = getattr(curr_node, 'root_agent', None)
+        if not root_agent:
+          raise ValueError(f'Cannot find root_agent on node {curr_node.name}')
+
+        # Local import to avoid runtime circular dependencies with Context
+        from ..workflow.utils._transfer_utils import resolve_and_derive_transfer_context
+
+        target_agent, next_parent_ctx = resolve_and_derive_transfer_context(
+            target_name=target_name,
+            current_agent=curr_node,
+            root_agent=root_agent,
+            curr_ctx=child_ctx,
+            curr_parent_ctx=curr_parent_ctx,
         )
-      if child_ctx.interrupt_ids:
-        # Propagate child's interrupt_ids to this node's ctx
-        # so NodeRunner sees them after catching the error.
-        self._interrupt_ids.update(child_ctx.interrupt_ids)
-        raise NodeInterruptedError()
-      # When the caller passes raise_on_wait=True, surface a child
-      # that's WAITING (wait_for_output, no output, not transferring)
-      # as NodeInterruptedError so the parent's NodeRunner records
-      # the parent as WAITING instead of falsely COMPLETED.
-      if (
-          raise_on_wait
-          and built_node.wait_for_output
-          and child_ctx.output is None
-          and not child_ctx.actions.transfer_to_agent
-      ):
-        raise NodeInterruptedError()
+        if not target_agent:
+          raise ValueError(f"Transfer target agent '{target_name}' not found.")
+        if not next_parent_ctx:
+          available = []
+          if hasattr(curr_node, '_get_available_agent_names'):
+            available = curr_node._get_available_agent_names()
+          available_str = (
+              f"\nAvailable agents: {', '.join(available)}" if available else ''
+          )
+          raise ValueError(
+              f"Cannot transfer from '{curr_node.name}' to unrelated agent"
+              f" '{target_name}'.{available_str}"
+          )
+        curr_parent_ctx = next_parent_ctx
+
+        # Set up parameters for next iteration (the transfer target).
+        curr_node = target_agent
+        curr_run_id = None
+        curr_input = None  # Input for transfer target is usually empty.
+        resume_inputs = None
+
+        if not curr_parent_ctx:
+          raise AssertionError(
+              'curr_parent_ctx cannot be None during active workflow execution'
+          )
+
+        continue
+
+      # If no transfer occurred, execution of the branch is complete.
+      if return_ctx:
+        return child_ctx
       return child_ctx.output
-
-    # Mode 2: Standalone execution (outside of workflow).
-    # Run the node directly via NodeRunner.
-    result = await self._run_node_standalone(
-        built_node,
-        node_input,
-        use_as_output=use_as_output,
-        use_sub_branch=use_sub_branch,
-        override_branch=override_branch,
-        override_isolation_scope=override_isolation_scope,
-        run_id=run_id,
-    )
-    if result.error:
-      from ..workflow import _errors
-
-      raise _errors.DynamicNodeFailError(
-          message=f'Dynamic node {built_node.name} failed',
-          error=result.error,
-          error_node_path=result.error_node_path,
-      )
-    if (
-        raise_on_wait
-        and built_node.wait_for_output
-        and result.output is None
-        and not result.actions.transfer_to_agent
-    ):
-      from ..workflow._errors import NodeInterruptedError
-
-      raise NodeInterruptedError()
-    return result.output
 
   # ============================================================================
   # Artifact methods

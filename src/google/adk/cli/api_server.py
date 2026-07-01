@@ -26,6 +26,7 @@ import logging
 import os
 import re
 import sys
+import time
 import traceback
 import typing
 from typing import Any
@@ -87,7 +88,6 @@ from ..version import __version__
 from .cli_eval import EVAL_SESSION_ID_PREFIX
 from .utils import cleanup
 from .utils import common
-from .utils import envs
 from .utils.base_agent_loader import BaseAgentLoader
 from .utils.shared_value import SharedValue
 
@@ -569,6 +569,11 @@ def _setup_instrumentation_lib_if_installed():
       )
 
 
+def _get_app_basename(name: str) -> str:
+  """Returns the last segment of a dot-delimited app name."""
+  return name.split(".")[-1]
+
+
 class ApiServer:
   """Helper class for setting up and running the ADK web server on FastAPI.
 
@@ -657,7 +662,6 @@ class ApiServer:
       return self.runner_dict[app_name]
 
     # Create new runner
-    envs.load_dotenv_for_agent(os.path.basename(app_name), self.agents_dir)
     agent_or_app = self.agent_loader.load_agent(app_name)
 
     if self.default_llm_model:
@@ -712,7 +716,7 @@ class ApiServer:
             plugins=plugins,
         )
       return App(
-          name=app_name,
+          name=_get_app_basename(app_name),
           root_agent=agent_or_app,
           plugins=plugins,
       )
@@ -737,7 +741,7 @@ class ApiServer:
     if is_visual_builder_agent:
       object.__setattr__(agentic_app, "_is_visual_builder_app", True)
 
-    runner = self._create_runner(agentic_app)
+    runner = self._create_runner(agentic_app, app_name)
     self.runner_dict[app_name] = runner
     return runner
 
@@ -747,10 +751,11 @@ class ApiServer:
       return agent_or_app.root_agent
     return agent_or_app
 
-  def _create_runner(self, agentic_app: App) -> Runner:
+  def _create_runner(self, agentic_app: App, app_name: str) -> Runner:
     """Create a runner with common services."""
     return Runner(
         app=agentic_app,
+        app_name=app_name,
         artifact_service=self.artifact_service,
         session_service=self.session_service,
         memory_service=self.memory_service,
@@ -1599,7 +1604,18 @@ class ApiServer:
                 yield f"data: {sse_event}\n\n"
           except Exception as e:
             logger.exception("Error in event_generator: %s", e)
-            yield f"data: {json.dumps({'error': str(e)})}\n\n"
+            error_details = {
+                "error_type": type(e).__name__,
+                "error_message": str(e),
+                "timestamp": time.time(),
+            }
+            if logger.isEnabledFor(logging.DEBUG):
+              error_details["stacktrace"] = traceback.format_exc()
+
+            yield (
+                "data:"
+                f" {json.dumps({'error': f'{type(e).__name__}: {e}', 'error_details': error_details})}\n\n"
+            )
 
       # Returns a streaming response with the proper media type for SSE
       return StreamingResponse(

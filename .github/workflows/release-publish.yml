@@ -12,8 +12,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# Step 6: Builds and publishes the package to PyPI from a release/v{version} branch.
-# Creates a merge-back PR (step 7) to sync release changes to main.
+# Builds and publishes the package to PyPI from a release/v* branch.
+# Supports both main (v2+) stable releases and v1 pre-releases (with auto PEP 440 version mapping).
+# Creates a merge-back PR to sync changes back to the base branch (main or v1).
 name: "Release: Publish to PyPi"
 
 on:
@@ -25,34 +26,65 @@ permissions:
 
 jobs:
   publish:
+    if: github.repository == 'google/adk-python'
     runs-on: ubuntu-latest
     steps:
       - name: Validate branch
         run: |
-          if [[ ! "${GITHUB_REF_NAME}" =~ ^release/v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-            echo "Error: Must run from a release/v* branch (e.g., release/v0.3.0)"
+          if [[ ! "${GITHUB_REF_NAME}" =~ ^release/v[0-9]+\.[0-9]+\.[0-9]+ ]]; then
+            echo "Error: Must run from a release/v* branch (e.g., release/v0.3.0 or release/v1.35.0-alpha.1)"
             exit 1
           fi
 
-      - name: Extract version
+      - uses: actions/checkout@v6
+
+      - name: Determine Release Type and Extract Version
         id: version
         run: |
-          VERSION="${GITHUB_REF_NAME}"
-          VERSION="${VERSION#release/v}"
-          echo "version=$VERSION" >> $GITHUB_OUTPUT
-          echo "Publishing version: $VERSION"
+          BRANCH_NAME="${GITHUB_REF_NAME}"
+          VERSION="${BRANCH_NAME#release/v}"
 
-      - uses: actions/checkout@v6
+          # Check if this version matches the one in the v1 manifest to determine if it's a v1 release
+          if [ -f .github/.release-please-manifest-v1.json ] && jq -e --arg v "$VERSION" '.["."] == $v' .github/.release-please-manifest-v1.json &>/dev/null; then
+            echo "is_v1=true" >> $GITHUB_OUTPUT
+            echo "base_branch=v1" >> $GITHUB_OUTPUT
+
+            SEMVER="$VERSION"
+            echo "semver=$SEMVER" >> $GITHUB_OUTPUT
+            echo "Semver version (v1): $SEMVER"
+
+            # PEP 440 Conversion (e.g., 2.0.0-alpha.1 -> 2.0.0a1)
+            PEP440=$(echo "$SEMVER" | sed -E 's/-alpha\./a/; s/-beta\./b/; s/-rc\./rc/')
+            echo "pep440=$PEP440" >> $GITHUB_OUTPUT
+            echo "PEP 440 version (v1): $PEP440"
+          else
+            echo "is_v1=false" >> $GITHUB_OUTPUT
+            echo "base_branch=main" >> $GITHUB_OUTPUT
+
+            echo "semver=$VERSION" >> $GITHUB_OUTPUT
+            echo "pep440=$VERSION" >> $GITHUB_OUTPUT
+            echo "Semver version (main): $VERSION"
+          fi
 
       - name: Install uv
         uses: astral-sh/setup-uv@v7
         with:
           version: "latest"
+          enable-cache: true
 
       - name: Set up Python
         uses: actions/setup-python@v6
         with:
           python-version: "3.11"
+
+      - name: Update version.py with PEP 440 version (v1 only)
+        if: steps.version.outputs.is_v1 == 'true'
+        env:
+          PEP440_VERSION: ${{ steps.version.outputs.pep440 }}
+        run: |
+          sed -i "s/^__version__ = .*/__version__ = \"${PEP440_VERSION}\"/" src/google/adk/version.py
+          echo "Updated version.py to ${PEP440_VERSION}"
+          grep __version__ src/google/adk/version.py
 
       - name: Build package
         run: uv build
@@ -65,10 +97,12 @@ jobs:
       - name: Create merge-back PR
         env:
           GH_TOKEN: ${{ secrets.RELEASE_PAT }}
-          STEPS_VERSION_OUTPUTS_VERSION: ${{ steps.version.outputs.version }}
+          SEMVER_VERSION: ${{ steps.version.outputs.semver }}
+          PEP440_VERSION: ${{ steps.version.outputs.pep440 }}
+          BASE_BRANCH: ${{ steps.version.outputs.base_branch }}
         run: |
           gh pr create \
-            --base main \
+            --base "$BASE_BRANCH" \
             --head "${GITHUB_REF_NAME}" \
-            --title "chore: merge release v${STEPS_VERSION_OUTPUTS_VERSION} to main" \
-            --body "Syncs version bump and CHANGELOG from release v${STEPS_VERSION_OUTPUTS_VERSION} to main."
+            --title "chore: merge release v${PEP440_VERSION} to $BASE_BRANCH" \
+            --body "Syncs version bump and CHANGELOG from release v${SEMVER_VERSION} to $BASE_BRANCH."

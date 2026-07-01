@@ -18,7 +18,7 @@ import asyncio
 from collections import deque
 from contextlib import AbstractAsyncContextManager
 from contextlib import AsyncExitStack
-from datetime import timedelta
+import contextvars
 import functools
 import hashlib
 import json
@@ -28,6 +28,7 @@ import sys
 import threading
 from typing import Any
 from typing import AsyncIterator
+from typing import Callable
 from typing import Dict
 from typing import Optional
 from typing import Protocol
@@ -63,7 +64,7 @@ from mcp.client.sse import sse_client
 from mcp.client.stdio import stdio_client
 from mcp.client.streamable_http import create_mcp_http_client as _create_mcp_http_client
 from mcp.client.streamable_http import McpHttpClientFactory
-from mcp.client.streamable_http import streamablehttp_client
+from mcp.client.streamable_http import streamable_http_client
 from pydantic import BaseModel
 from pydantic import ConfigDict
 
@@ -95,6 +96,56 @@ def create_mcp_http_client(
   if _HAS_HTTPX_INSTRUMENTOR:
     HTTPXClientInstrumentor.instrument_client(client)
   return client
+
+
+_http_debug_var: contextvars.ContextVar[list[dict[str, Any]] | None] = (
+    contextvars.ContextVar('_http_debug_var', default=None)
+)
+
+
+def _redact_headers(headers: dict[str, str]) -> dict[str, str]:
+  sensitive_keys = {'authorization', 'cookie', 'set-cookie', 'x-goog-api-key'}
+  return {
+      k: '<redacted>' if k.lower() in sensitive_keys else v
+      for k, v in headers.items()
+  }
+
+
+class _StreamableHttpClientWrapper:
+  """Wrapper to manage the lifecycle of a pre-created HTTP client with streamable_http_client."""
+
+  def __init__(
+      self,
+      url: str,
+      http_client: httpx.AsyncClient,
+      terminate_on_close: bool = True,
+  ):
+    self.url = url
+    self.http_client = http_client
+    self.terminate_on_close = terminate_on_close
+    self.ctx_mgr = streamable_http_client(
+        url=url,
+        http_client=http_client,
+        terminate_on_close=terminate_on_close,
+    )
+
+  async def __aenter__(self) -> Any:
+    # If http_client is a Mock, it might not have __aenter__ but mock async methods can be used
+    if hasattr(self.http_client, '__aenter__'):
+      await self.http_client.__aenter__()
+    try:
+      return await self.ctx_mgr.__aenter__()
+    except Exception:
+      if hasattr(self.http_client, '__aexit__'):
+        await self.http_client.__aexit__(None, None, None)
+      raise
+
+  async def __aexit__(self, exc_type, exc_val, exc_tb) -> None:
+    try:
+      await self.ctx_mgr.__aexit__(exc_type, exc_val, exc_tb)
+    finally:
+      if hasattr(self.http_client, '__aexit__'):
+        await self.http_client.__aexit__(exc_type, exc_val, exc_tb)
 
 
 def _has_cancelled_error_context(exc: BaseException) -> bool:
@@ -163,6 +214,85 @@ class SseConnectionParams(BaseModel):
 @runtime_checkable
 class CheckableMcpHttpClientFactory(McpHttpClientFactory, Protocol):
   pass
+
+
+class _DebugHttpxClientFactory:
+  """A factory wrapper that hooks into the httpx.AsyncClient responses to capture debug info."""
+
+  def __init__(
+      self,
+      base_factory: CheckableMcpHttpClientFactory,
+      session_manager: MCPSessionManager | None = None,
+  ):
+    self._base_factory = base_factory
+    self._session_manager = session_manager
+
+  def __call__(
+      self,
+      headers: dict[str, str] | None = None,
+      timeout: httpx.Timeout | None = None,
+      auth: httpx.Auth | None = None,
+  ) -> httpx.AsyncClient:
+    client = self._base_factory(headers=headers, timeout=timeout, auth=auth)
+    if hasattr(client, 'event_hooks') and isinstance(client.event_hooks, dict):
+      client.event_hooks.setdefault('response', []).append(self._response_hook)
+    return client
+
+  def _extract_session_id(self, response: httpx.Response) -> str | None:
+    query_params = urllib.parse.parse_qs(
+        urllib.parse.urlparse(str(response.url)).query
+    )
+    return (
+        query_params.get('sessionId', [None])[0]
+        or query_params.get('session_id', [None])[0]
+    )
+
+  async def _response_hook(self, response: httpx.Response):
+    debug_list = None
+    if self._session_manager is not None:
+      session_id = self._extract_session_id(response)
+      if session_id:
+        debug_list = self._session_manager._get_active_debug_list_by_session_id(
+            session_id
+        )
+
+    if debug_list is None:
+      debug_list = _http_debug_var.get(None)
+
+    if debug_list is None:
+      return
+
+    content_type = response.headers.get('content-type', '')
+    is_sse = 'text/event-stream' in content_type
+
+    request_body = None
+    if response.request.content:
+      try:
+        request_body = response.request.content.decode(
+            'utf-8', errors='replace'
+        )
+      except Exception:  # pylint: disable=broad-exception-caught
+        request_body = '<binary>'
+
+    if not is_sse:
+      try:
+        await response.aread()
+        response_body = response.text
+      except Exception as e:  # pylint: disable=broad-exception-caught
+        response_body = f'<failed to read body: {e}>'
+    else:
+      response_body = '<SSE stream>'
+
+    debug_info = {
+        'url': str(response.url),
+        'status_code': response.status_code,
+        'method': response.request.method,
+        'request_headers': _redact_headers(dict(response.request.headers)),
+        'request_body': request_body,
+        'response_headers': _redact_headers(dict(response.headers)),
+        'response_body': response_body,
+    }
+    debug_list.append(debug_info)
 
 
 class StreamableHTTPConnectionParams(BaseModel):
@@ -261,7 +391,7 @@ class _RefreshableAsyncCredentials(AsyncCredentials):
         )
         return
 
-    if 'Authorization' in headers:
+    if any(k.lower() == 'authorization' for k in headers):
       logger.debug('Authorization header already present, not overwriting')
       return
 
@@ -364,8 +494,8 @@ def _create_mtls_client_factory(
 
   def factory(
       headers: dict[str, Any] | None = None,
-      auth: httpx.Auth | None = None,
       timeout: httpx.Timeout | None = None,
+      auth: httpx.Auth | None = None,
   ) -> httpx.AsyncClient:
     return httpx.AsyncClient(
         headers=headers,
@@ -446,11 +576,33 @@ class MCPSessionManager:
     # across different event loops in session creation.
     self._session_lock_map: dict[asyncio.AbstractEventLoop, asyncio.Lock] = {}
     self._lock_map_lock = threading.Lock()
+    self._session_id_to_key: dict[str, str] = {}
+    self._active_debug_lists: dict[str, list[dict[str, Any]]] = {}
 
     # Cache for mTLS transports per event loop to avoid re-creation.
     self._mtls_transports: dict[
         asyncio.AbstractEventLoop, _GoogleAuthAsyncTransport
     ] = {}
+
+  def _make_on_session_created(self, session_key: str) -> Callable[[str], None]:
+    def on_session_created(session_id: str):
+      logger.debug('Session created: %s -> %s', session_id, session_key)
+      self._session_id_to_key[session_id] = session_key
+
+    return on_session_created
+
+  def _set_active_debug_list(
+      self, session_key: str, debug_list: list[dict[str, Any]]
+  ):
+    self._active_debug_lists[session_key] = debug_list
+
+  def _get_active_debug_list_by_session_id(
+      self, session_id: str
+  ) -> list[dict[str, Any]] | None:
+    session_key = self._session_id_to_key.get(session_id)
+    if session_key:
+      return self._active_debug_lists.get(session_key)
+    return None
 
   @property
   def _session_lock(self) -> asyncio.Lock:
@@ -657,13 +809,34 @@ class MCPSessionManager:
       # SessionContext after its underlying session is gone.
       if session_key in self._session_contexts:
         del self._session_contexts[session_key]
+      # Also clean up session ID mapping
+      for sid, skey in list(self._session_id_to_key.items()):
+        if skey == session_key:
+          del self._session_id_to_key[sid]
+      if session_key in self._active_debug_lists:
+        del self._active_debug_lists[session_key]
 
   def _create_client(
       self,
       merged_headers: dict[str, str] | None = None,
       mtls_transport: httpx.AsyncBaseTransport | None = None,
+      *,
+      session_key: str | None = None,
   ) -> AbstractAsyncContextManager[Any]:
-    """Creates an MCP client based on the connection parameters."""
+    """Creates an MCP client based on the connection parameters.
+
+    Args:
+        session_key: Optional session key for this client.
+        merged_headers: Optional headers to include in the connection. Only
+          applicable for SSE and StreamableHTTP connections.
+        mtls_transport: Optional mTLS transport for the HTTP client.
+
+    Returns:
+        The appropriate MCP client instance.
+
+    Raises:
+        ValueError: If the connection parameters are not supported.
+    """
     if isinstance(self._connection_params, StdioConnectionParams):
       client = stdio_client(
           server=self._connection_params.server_params,
@@ -673,26 +846,40 @@ class MCPSessionManager:
       factory = self._connection_params.httpx_client_factory
       if mtls_transport:
         factory = _create_mtls_client_factory(mtls_transport)
+      debug_factory = _DebugHttpxClientFactory(
+          factory,
+          session_manager=self,
+      )
+      on_session_created = None
+      if session_key is not None:
+        on_session_created = self._make_on_session_created(session_key)
       client = sse_client(
           url=self._connection_params.url,
           headers=merged_headers,
           timeout=self._connection_params.timeout,
           sse_read_timeout=self._connection_params.sse_read_timeout,
-          httpx_client_factory=factory,
+          httpx_client_factory=debug_factory,
+          on_session_created=on_session_created,
       )
     elif isinstance(self._connection_params, StreamableHTTPConnectionParams):
       factory = self._connection_params.httpx_client_factory
       if mtls_transport:
         factory = _create_mtls_client_factory(mtls_transport)
-      client = streamablehttp_client(
-          url=self._connection_params.url,
+      debug_factory = _DebugHttpxClientFactory(
+          factory,
+          session_manager=self,
+      )
+      http_client = debug_factory(
           headers=merged_headers,
-          timeout=timedelta(seconds=self._connection_params.timeout),
-          sse_read_timeout=timedelta(
-              seconds=self._connection_params.sse_read_timeout
+          timeout=httpx.Timeout(
+              self._connection_params.timeout,
+              read=self._connection_params.sse_read_timeout,
           ),
+      )
+      client = _StreamableHttpClientWrapper(
+          url=self._connection_params.url,
+          http_client=http_client,
           terminate_on_close=self._connection_params.terminate_on_close,
-          httpx_client_factory=factory,
       )
     else:
       raise ValueError(
@@ -727,6 +914,11 @@ class MCPSessionManager:
 
     # Use async lock to prevent race conditions
     async with self._session_lock:
+      # Register the active debug list for this session key if available in context
+      debug_list = _http_debug_var.get(None)
+      if debug_list is not None:
+        self._set_active_debug_list(session_key, debug_list)
+
       # Check if we have an existing session
       if session_key in self._sessions:
         session, exit_stack, stored_loop = self._sessions[session_key]
@@ -777,7 +969,9 @@ class MCPSessionManager:
       try:
         mtls_transport = await self._get_mtls_transport()
         client = self._create_client(
-            merged_headers, mtls_transport=mtls_transport
+            merged_headers,
+            mtls_transport=mtls_transport,
+            session_key=session_key,
         )
         is_stdio = isinstance(self._connection_params, StdioConnectionParams)
 
@@ -832,6 +1026,8 @@ class MCPSessionManager:
     state['_session_contexts'] = {}
     state['_session_lock_map'] = {}
     state['_mtls_transports'] = {}
+    state['_session_id_to_key'] = {}
+    state['_active_debug_lists'] = {}
 
     # Locks and file-like objects cannot be pickled
     state.pop('_lock_map_lock', None)
@@ -847,6 +1043,8 @@ class MCPSessionManager:
     self._session_contexts = {}
     self._session_lock_map = {}
     self._mtls_transports = {}
+    self._session_id_to_key = {}
+    self._active_debug_lists = {}
     self._lock_map_lock = threading.Lock()
     # If _errlog was removed during pickling, default to sys.stderr
     if not hasattr(self, '_errlog') or self._errlog is None:

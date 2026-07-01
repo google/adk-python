@@ -22,10 +22,11 @@ from typing import AsyncGenerator
 from typing import Optional
 from unittest import mock
 
-from google.adk.agents.base_agent import BaseAgent
 from google.adk.apps.app import App
 from google.adk.artifacts.in_memory_artifact_service import InMemoryArtifactService
 from google.adk.cli.utils.agent_loader import AgentLoader
+from google.adk.events._branch_path import _BranchPath
+from google.adk.events._node_path_builder import _NodePathBuilder
 from google.adk.events.event import Event as AdkEvent
 from google.adk.memory.in_memory_memory_service import InMemoryMemoryService
 from google.adk.models.base_llm import BaseLlm
@@ -49,6 +50,17 @@ EXCLUDED_EVENT_FIELDS = {
     "logprobs_result",
     "citation_metadata",
 }
+
+# The Interactions API stamps these volatile, non-reproducible fields onto every
+# model response (interaction_id is a server-issued token; turn_complete is only
+# emitted by the live API), so they are excluded from fixture comparison too.
+# They are kept in a separate, private constant so the value of the public
+# EXCLUDED_EVENT_FIELDS stays stable for the API breaking-change detector.
+_EXTRA_EXCLUDED_EVENT_FIELDS = frozenset({"interaction_id", "turn_complete"})
+
+_ALL_EXCLUDED_EVENT_FIELDS = (
+    EXCLUDED_EVENT_FIELDS | _EXTRA_EXCLUDED_EVENT_FIELDS
+)
 
 
 # Read target folder from environment
@@ -174,7 +186,7 @@ def normalize_events(events, is_json=False):
   for e in events:
     if is_json:
       d = dict(e)
-      for k in EXCLUDED_EVENT_FIELDS:
+      for k in _ALL_EXCLUDED_EVENT_FIELDS:
         d.pop(k, None)
         d.pop(alias_generators.to_camel(k), None)
       d = {k: v for k, v in d.items() if v is not None}
@@ -182,16 +194,27 @@ def normalize_events(events, is_json=False):
       d = e.model_dump(
           mode="json",
           by_alias=True,
-          exclude=EXCLUDED_EVENT_FIELDS,
+          exclude=_ALL_EXCLUDED_EVENT_FIELDS,
           exclude_none=True,
       )
 
     if "content" in d and isinstance(d["content"], dict):
       content = d["content"]
       if "parts" in content and isinstance(content["parts"], list):
+        is_hitl = False
         for part in content["parts"]:
           if isinstance(part, dict) and "thoughtSignature" in part:
             del part["thoughtSignature"]
+          if isinstance(part, dict) and "functionCall" in part:
+            fc_name = part["functionCall"].get("name")
+            if fc_name in (
+                "adk_request_input",
+                "adk_request_confirmation",
+                "adk_request_credential",
+            ):
+              is_hitl = True
+        if is_hitl:
+          content.pop("role", None)
 
     if "longRunningToolIds" in d:
       if isinstance(d["longRunningToolIds"], list):
@@ -245,36 +268,9 @@ def _make_nodes_sequential(obj, visited=None):
       for node in obj.graph.nodes:
         _make_nodes_sequential(node, visited)
   elif isinstance(obj, _ParallelWorker):
-    obj.max_concurrency = 1
+    obj.max_parallel_workers = 1
     if hasattr(obj, "_node"):
       _make_nodes_sequential(obj._node, visited)
-
-
-def _get_all_agent_names(obj, visited=None):
-  if visited is None:
-    visited = set()
-
-  if id(obj) in visited:
-    return set()
-  visited.add(id(obj))
-
-  from google.adk.workflow._parallel_worker import _ParallelWorker
-  from google.adk.workflow._workflow import Workflow
-
-  names = set()
-  if isinstance(obj, BaseAgent) and hasattr(obj, "name"):
-    names.add(obj.name)
-    if hasattr(obj, "sub_agents") and obj.sub_agents:
-      for sub in obj.sub_agents:
-        names.update(_get_all_agent_names(sub, visited))
-  elif isinstance(obj, Workflow):
-    if obj.graph and obj.graph.nodes:
-      for node in obj.graph.nodes:
-        names.update(_get_all_agent_names(node, visited))
-  elif isinstance(obj, _ParallelWorker):
-    if hasattr(obj, "_node"):
-      names.update(_get_all_agent_names(obj._node, visited))
-  return names
 
 
 def _extract_user_content(event: dict) -> Optional[types.Content]:
@@ -386,6 +382,17 @@ def _normalize_ids(events: list[AdkEvent]) -> list[AdkEvent]:
         if fc_id in final_orig_to_new_id:
           e.branch = f"task:{final_orig_to_new_id[fc_id]}"
 
+    if getattr(e, "branch", None):
+      bp = _BranchPath.from_string(e.branch)
+      new_segments = []
+      for segment in bp.segments:
+        parts = segment.rsplit("@", 1)
+        if len(parts) > 1 and parts[1] in final_orig_to_new_id:
+          new_segments.append(f"{parts[0]}@{final_orig_to_new_id[parts[1]]}")
+        else:
+          new_segments.append(segment)
+      e.branch = str(_BranchPath(new_segments))
+
     # Task wrappers stamp isolation_scope with the dispatching FC's
     # id (random at run time) and ``node_info.path`` encodes
     # ``<name>@<fc.id>`` for the same id — remap both.
@@ -472,26 +479,6 @@ def test_agent_replay(agent_dir, test_file, monkeypatch):
         else agent_or_app
     )
     _make_nodes_sequential(root_agent)
-    agent_names = _get_all_agent_names(root_agent)
-
-    import inspect
-
-    # Dynamically locate the loaded agent module from sys.modules
-    mod = sys.modules.get(f"{agent_dir.name}.agent") or sys.modules.get(
-        agent_dir.name
-    )
-    if not mod:
-      # Fallback for namespace packages or nested imports
-      for k, v in sys.modules.items():
-        if k.endswith(f"{agent_dir.name}.agent") or k.endswith(agent_dir.name):
-          mod = v
-          break
-
-    # Reflectively find all Agent instances defined in the module (e.g. dynamic agents)
-    if mod:
-      for _, obj in inspect.getmembers(mod):
-        if isinstance(obj, BaseAgent) and hasattr(obj, "name"):
-          agent_names.add(obj.name)
 
     with open(test_file, "r") as f:
       session_data = json.load(f)
@@ -536,21 +523,25 @@ def test_agent_replay(agent_dir, test_file, monkeypatch):
             last_was_set_model_response = False
             continue
 
-          if ev.get("author", "") not in agent_names:
-            continue
-
-          parts = content_dict.get("parts", [])
-          is_sys_hitl = False
-          for part in parts:
-            if "functionCall" in part:
-              fc_name = part["functionCall"].get("name")
+          parts_list = content_dict.get("parts", [])
+          is_workflow_hitl = False
+          node_path = ev.get("nodeInfo", {}).get("path", "")
+          for p in parts_list:
+            if isinstance(p, dict) and "functionCall" in p:
+              fc_name = p["functionCall"].get("name")
               if fc_name in (
                   "adk_request_confirmation",
                   "adk_request_credential",
               ):
-                is_sys_hitl = True
+                is_workflow_hitl = True
                 break
-          if is_sys_hitl:
+              if (
+                  fc_name == "adk_request_input"
+                  and _NodePathBuilder.from_string(node_path).parent is not None
+              ):
+                is_workflow_hitl = True
+                break
+          if is_workflow_hitl:
             continue
 
           try:
@@ -726,6 +717,7 @@ def test_agent_replay(agent_dir, test_file, monkeypatch):
 
 def rebuild_tests(path: str):
   """Discovers test files and rebuilds them by running the agent live."""
+  import asyncio
   import json
   import sys
 
@@ -754,6 +746,7 @@ def rebuild_tests(path: str):
     # Add agent_dir.parent to sys.path so relative imports work
     sys_path_saved = list(sys.path)
     sys.path.insert(0, str(agent_dir.parent))
+    rebuild_loop = None
 
     try:
       import random
@@ -793,6 +786,29 @@ def rebuild_tests(path: str):
           if isinstance(agent_or_app, App)
           else InMemoryRunner(root_agent=agent_or_app)
       )
+
+      # Drive every turn of this fixture on a single, persistent event loop.
+      # The sync Runner.run() spins up a fresh loop per call via asyncio.run()
+      # and closes it afterwards. For multi-turn fixtures that closes the loop
+      # the model's cached async api_client was bound to, so subsequent turns
+      # raise "Event loop is closed" (e.g. with the Interactions API). Reusing
+      # one loop for all turns keeps the client valid across the conversation.
+      rebuild_loop = asyncio.new_event_loop()
+
+      def run_turn(content):
+        session = runner.session
+
+        async def _collect():
+          events = []
+          async for event in runner.runner.run_async(
+              user_id=session.user_id,
+              session_id=session.id,
+              new_message=content,
+          ):
+            events.append(event)
+          return events
+
+        return rebuild_loop.run_until_complete(_collect())
 
       new_events = []
       inv_counter = 1
@@ -877,7 +893,7 @@ def rebuild_tests(path: str):
               content=msg,
           )
 
-          run_events = runner.run(msg)
+          run_events = run_turn(msg)
 
           # Build mapping from old IDs to new agent IDs
           for e in run_events:
@@ -911,6 +927,10 @@ def rebuild_tests(path: str):
                   "cache_metadata",
                   "logprobs_result",
                   "citation_metadata",
+                  # Volatile/non-replayable Interactions API state; keeping
+                  # these out keeps rebuilt fixtures deterministic.
+                  "interaction_id",
+                  "turn_complete",
               },
           )
           for e in new_events
@@ -951,6 +971,10 @@ def rebuild_tests(path: str):
     except Exception as e:
       print(f"Error rebuilding {test_file}: {e}")
     finally:
+      # Always close the per-fixture event loop, even if a turn raised, so we
+      # don't leak unclosed loops and emit resource warnings.
+      if rebuild_loop is not None:
+        rebuild_loop.close()
       sys.path = sys_path_saved
 
 

@@ -40,10 +40,19 @@ def mock_invocation_context():
   mock_context.session.id = "test-session-id"
   mock_context.app_name = "test-app"
   mock_context.user_id = "test-user"
+  mock_context.branch = "test-branch"
   mock_context.artifact_service = None
   mock_context.credential_service = None
   mock_context.memory_service = None
   return mock_context
+
+
+def test_context_branch_returns_invocation_branch(mock_invocation_context):
+  """Context.branch returns the branch from the underlying invocation context."""
+  mock_invocation_context.branch = "test-branch"
+  context = Context(invocation_context=mock_invocation_context)
+
+  assert context.branch == "test-branch"
 
 
 @pytest.fixture
@@ -673,3 +682,507 @@ class TestContextGetInvocationContext:
         }
     )
     assert result is mock_copy
+
+
+class TestContextRunNodeInternal:
+  """Tests for the internal Context._run_node_internal orchestration method."""
+
+  @pytest.mark.asyncio
+  async def test_run_node_internal_returns_ctx_and_handles_resume_inputs(
+      self, mock_invocation_context, mocker
+  ):
+    """Test that _run_node_internal correctly handles return_ctx and resume_inputs."""
+    # Arrange
+    from google.adk.agents.llm_agent import LlmAgent
+    from google.adk.events.event_actions import EventActions
+
+    agent_a = LlmAgent(name="agent_a", rerun_on_resume=True)
+    root = LlmAgent(name="root", sub_agents=[agent_a], rerun_on_resume=True)
+    agent_a.parent_agent = root
+
+    root_ctx = Context(mock_invocation_context, node=root, run_id="1")
+
+    child_ctx_a = Context(
+        mock_invocation_context,
+        parent_ctx=root_ctx,
+        node=agent_a,
+        run_id="1",
+        event_actions=EventActions(),
+    )
+    child_ctx_a.output = "a_output"
+
+    # Mock the standalone execution boundary
+    mock_run_standalone = mocker.patch.object(
+        Context,
+        "_run_node_standalone",
+        return_value=child_ctx_a,
+    )
+
+    # Act 1: Call _run_node_internal with return_ctx=True
+    result_ctx = await root_ctx._run_node_internal(
+        agent_a,
+        node_input="a_input",
+        return_ctx=True,
+        resume_inputs={"some_key": "some_val"},
+    )
+
+    # Assert 1: It returns the child context object itself, not the output!
+    assert result_ctx is child_ctx_a
+    assert result_ctx.output == "a_output"
+
+    # Assert 2: resume_inputs was correctly passed to _run_node_standalone
+    mock_run_standalone.assert_called_once()
+    _, kwargs = mock_run_standalone.call_args
+    assert kwargs.get("resume_inputs") == {"some_key": "some_val"}
+
+
+class TestContextRunNodeTransferLoop:
+  """Tests for Context.run_node transfer loop orchestration."""
+
+  @pytest.mark.asyncio
+  async def test_sibling_transfer_executes_target_agent(
+      self, mock_invocation_context
+  ):
+    """Sibling transfer routes execution to the target agent under the same parent context."""
+    # Arrange
+    from google.adk.agents.llm_agent import LlmAgent
+    from google.adk.events.event_actions import EventActions
+
+    # Create sibling agents under a root agent
+    agent_b = LlmAgent(name="agent_b", rerun_on_resume=True)
+    agent_a = LlmAgent(name="agent_a", rerun_on_resume=True)
+    root = LlmAgent(
+        name="root", sub_agents=[agent_a, agent_b], rerun_on_resume=True
+    )
+    agent_a.parent_agent = root
+    agent_b.parent_agent = root
+
+    # Create root context
+    root_ctx = Context(mock_invocation_context, node=root, run_id="1")
+    root_ctx._child_run_counters = {}
+
+    # Mock child contexts returned by the scheduler
+    child_ctx_a = Context(
+        mock_invocation_context,
+        parent_ctx=root_ctx,
+        node=agent_a,
+        run_id="1",
+        event_actions=EventActions(transfer_to_agent="agent_b"),
+    )
+
+    child_ctx_b = Context(
+        mock_invocation_context,
+        parent_ctx=root_ctx,
+        node=agent_b,
+        run_id="1",
+        event_actions=EventActions(),
+    )
+    child_ctx_b.output = "b_output"
+
+    # Mock the scheduler boundary
+    root_ctx._workflow_scheduler = AsyncMock(
+        side_effect=[child_ctx_a, child_ctx_b]
+    )
+
+    # Act
+    result = await root_ctx.run_node(agent_a, node_input="a_input")
+
+    # Assert
+    assert result == "b_output"
+    assert root_ctx._workflow_scheduler.call_count == 2
+
+    # First call was agent_a
+    args1, kwargs1 = root_ctx._workflow_scheduler.call_args_list[0]
+    assert args1[0] is root_ctx  # parent_ctx
+    assert args1[1].name == agent_a.name  # node (cloned, so compare name)
+    assert args1[2] == "a_input"  # node_input
+    assert kwargs1.get("run_id") == "1"
+
+    # Second call was agent_b (transferred sibling)
+    args2, kwargs2 = root_ctx._workflow_scheduler.call_args_list[1]
+    assert args2[0] is root_ctx  # parent_ctx (same sibling parent!)
+    assert args2[1].name == agent_b.name  # node (cloned, so compare name)
+    assert args2[2] is None  # transfer input is empty
+    assert kwargs2.get("run_id") == "1"  # independent counter, so still 1
+
+  @pytest.mark.asyncio
+  async def test_parent_transfer_routes_execution_to_parent_agent(
+      self, mock_invocation_context
+  ):
+    """Parent transfer routes execution to the parent agent, climbing up the context tree."""
+    # Arrange
+    from google.adk.agents.llm_agent import LlmAgent
+    from google.adk.events.event_actions import EventActions
+
+    # Create hierarchical agent tree
+    child = LlmAgent(name="child", rerun_on_resume=True)
+    parent = LlmAgent(name="parent", sub_agents=[child], rerun_on_resume=True)
+    root = LlmAgent(name="root", sub_agents=[parent], rerun_on_resume=True)
+    child.parent_agent = parent
+    parent.parent_agent = root
+
+    # Create root and parent contexts
+    root_ctx = Context(mock_invocation_context, node=root, run_id="1")
+    root_ctx._child_run_counters = {"parent": 1}
+
+    parent_ctx = Context(
+        mock_invocation_context, parent_ctx=root_ctx, node=parent, run_id="1"
+    )
+    parent_ctx._child_run_counters = {"child": 1}
+
+    # Set up scheduler on both contexts
+    mock_scheduler = AsyncMock()
+    root_ctx._workflow_scheduler = mock_scheduler
+    parent_ctx._workflow_scheduler = mock_scheduler
+
+    # Mock child contexts returned by the scheduler
+    child_ctx = Context(
+        mock_invocation_context,
+        parent_ctx=parent_ctx,
+        node=child,
+        run_id="1",
+        event_actions=EventActions(transfer_to_agent="parent"),
+    )
+
+    parent_ctx2 = Context(
+        mock_invocation_context,
+        parent_ctx=root_ctx,
+        node=parent,
+        run_id="2",
+        event_actions=EventActions(),
+    )
+    parent_ctx2.output = "parent_output"
+
+    mock_scheduler.side_effect = [child_ctx, parent_ctx2]
+
+    # Act
+    # We run 'child' with use_as_output=True to test flag resetting
+    result = await parent_ctx.run_node(
+        child, node_input="child_input", use_as_output=True
+    )
+
+    # Assert
+    assert result == "parent_output"
+    assert mock_scheduler.call_count == 2
+
+    # First call: child under parent_ctx
+    args1, kwargs1 = mock_scheduler.call_args_list[0]
+    assert args1[0] is parent_ctx
+    assert args1[1].name == child.name  # node (cloned, so compare name)
+    assert kwargs1.get("use_as_output") is True
+
+    # Second call: parent under root_ctx (climbed up!)
+    args2, kwargs2 = mock_scheduler.call_args_list[1]
+    assert args2[0] is root_ctx  # Climbed up to root_ctx!
+    assert args2[1].name == parent.name  # node (cloned, so compare name)
+    # Sibling delegation flag must be reset because we crossed parent contexts!
+    assert kwargs2.get("use_as_output") is False
+
+  @pytest.mark.asyncio
+  async def test_standalone_sibling_transfer_executes_target_agent(
+      self, mock_invocation_context, mocker
+  ):
+    """Standalone mode sibling transfer routes execution to the target agent."""
+    # Arrange
+    from google.adk.agents.llm_agent import LlmAgent
+    from google.adk.events.event_actions import EventActions
+
+    # Create sibling agents under a root agent
+    agent_b = LlmAgent(name="agent_b", rerun_on_resume=True)
+    agent_a = LlmAgent(name="agent_a", rerun_on_resume=True)
+    root = LlmAgent(
+        name="root", sub_agents=[agent_a, agent_b], rerun_on_resume=True
+    )
+    agent_a.parent_agent = root
+    agent_b.parent_agent = root
+
+    # Create root context (Mode 2: _workflow_scheduler is None)
+    root_ctx = Context(mock_invocation_context, node=root, run_id="1")
+    root_ctx._child_run_counters = {}
+    root_ctx._workflow_scheduler = None
+
+    # Mock child contexts returned by the standalone runner
+    child_ctx_a = Context(
+        mock_invocation_context,
+        parent_ctx=root_ctx,
+        node=agent_a,
+        run_id="1",
+        event_actions=EventActions(transfer_to_agent="agent_b"),
+    )
+
+    child_ctx_b = Context(
+        mock_invocation_context,
+        parent_ctx=root_ctx,
+        node=agent_b,
+        run_id="1",
+        event_actions=EventActions(),
+    )
+    child_ctx_b.output = "standalone_b_output"
+
+    # Mock the standalone execution boundary on the class
+    mock_run_standalone = mocker.patch.object(
+        Context,
+        "_run_node_standalone",
+        side_effect=[child_ctx_a, child_ctx_b],
+    )
+
+    # Act
+    result = await root_ctx.run_node(agent_a, node_input="a_input")
+
+    # Assert
+    assert result == "standalone_b_output"
+    assert mock_run_standalone.call_count == 2
+
+    # First call was agent_a
+    args1, kwargs1 = mock_run_standalone.call_args_list[0]
+    assert args1[0].name == agent_a.name
+    assert args1[1] == "a_input"
+    assert kwargs1.get("run_id") is None
+
+    # Second call was agent_b
+    args2, kwargs2 = mock_run_standalone.call_args_list[1]
+    assert args2[0].name == agent_b.name
+    assert args2[1] is None
+    assert kwargs2.get("run_id") is None
+
+  @pytest.mark.asyncio
+  async def test_child_transfer_routes_execution_to_child_agent(
+      self, mock_invocation_context
+  ):
+    """Child transfer routes execution to a sub-agent (downward in hierarchy)."""
+    # Arrange
+    from google.adk.agents.llm_agent import LlmAgent
+    from google.adk.events.event_actions import EventActions
+
+    # Create parent-child agents
+    child = LlmAgent(name="child", rerun_on_resume=True)
+    parent = LlmAgent(name="parent", sub_agents=[child], rerun_on_resume=True)
+    child.parent_agent = parent
+
+    # Create parent context (the starting context of the run)
+    parent_ctx = Context(mock_invocation_context, node=None, parent_ctx=None)
+    mock_scheduler = AsyncMock()
+    parent_ctx._workflow_scheduler = mock_scheduler
+
+    # Mock child contexts returned by the scheduler
+    # 1. Parent runs, and decides to transfer to 'child'
+    parent_run_ctx = Context(
+        mock_invocation_context,
+        parent_ctx=parent_ctx,  # Parent is parent_ctx!
+        node=parent,
+        run_id="1",
+        event_actions=EventActions(transfer_to_agent="child"),
+    )
+
+    # 2. Child runs successfully
+    child_run_ctx = Context(
+        mock_invocation_context,
+        parent_ctx=parent_run_ctx,  # Parent is parent_run_ctx (inherits scheduler!)
+        node=child,
+        run_id="1",
+        event_actions=EventActions(),
+    )
+    child_run_ctx.output = "child_output"
+
+    mock_scheduler.side_effect = [parent_run_ctx, child_run_ctx]
+
+    # Act
+    result = await parent_ctx.run_node(parent, node_input="parent_input")
+
+    # Assert
+    assert result == "child_output"
+    assert mock_scheduler.call_count == 2
+
+    # First call: parent node
+    args1, kwargs1 = mock_scheduler.call_args_list[0]
+    assert args1[0] is parent_ctx
+    assert args1[1].name == parent.name
+
+    # Second call: child node (run under parent's execution context!)
+    args2, kwargs2 = mock_scheduler.call_args_list[1]
+    assert args2[0] is parent_run_ctx  # Run under parent_run_ctx!
+    assert args2[1].name == child.name
+    assert kwargs2.get("run_id") == "1"
+
+  @pytest.mark.asyncio
+  async def test_three_layer_transfer_round_trip(self, mock_invocation_context):
+    """Verify 3-layer round trip transfer (Root -> Child -> Grandchild -> Child -> Root)."""
+    # Arrange
+    from google.adk.agents.llm_agent import LlmAgent
+    from google.adk.events.event_actions import EventActions
+
+    # Create 3-layer agent tree
+    grandchild = LlmAgent(name="grandchild", rerun_on_resume=True)
+    child = LlmAgent(
+        name="child", sub_agents=[grandchild], rerun_on_resume=True
+    )
+    root = LlmAgent(name="root", sub_agents=[child], rerun_on_resume=True)
+    grandchild.parent_agent = child
+    child.parent_agent = root
+
+    # Create root context
+    root_ctx = Context(mock_invocation_context, node=None, parent_ctx=None)
+    mock_scheduler = AsyncMock()
+    root_ctx._workflow_scheduler = mock_scheduler
+
+    # Step 1: Root runs (child of root_ctx)
+    root_run_ctx = Context(
+        mock_invocation_context,
+        parent_ctx=root_ctx,  # Parent is root_ctx!
+        node=root,
+        run_id="1",
+        event_actions=EventActions(transfer_to_agent="child"),
+    )
+
+    # Step 2: Child runs (child of root_run_ctx)
+    child_run_ctx = Context(
+        mock_invocation_context,
+        parent_ctx=root_run_ctx,  # Parent is root_run_ctx!
+        node=child,
+        run_id="1",
+        event_actions=EventActions(transfer_to_agent="grandchild"),
+    )
+
+    # Step 3: Grandchild runs (child of child_run_ctx)
+    grandchild_run_ctx = Context(
+        mock_invocation_context,
+        parent_ctx=child_run_ctx,  # Parent is child_run_ctx!
+        node=grandchild,
+        run_id="1",
+        event_actions=EventActions(transfer_to_agent="child"),
+    )
+
+    # Step 4: Child runs again (sibling of child_run_ctx, parent is root_run_ctx!)
+    child_run_ctx2 = Context(
+        mock_invocation_context,
+        parent_ctx=root_run_ctx,  # Parent is root_run_ctx!
+        node=child,
+        run_id="2",
+        event_actions=EventActions(transfer_to_agent="root"),
+    )
+
+    # Step 5: Root runs again (sibling of root_run_ctx, parent is root_ctx!)
+    root_run_ctx2 = Context(
+        mock_invocation_context,
+        parent_ctx=root_ctx,  # Parent is root_ctx!
+        node=root,
+        run_id="2",
+        event_actions=EventActions(),
+    )
+    root_run_ctx2.output = "final_root_output"
+
+    mock_scheduler.side_effect = [
+        root_run_ctx,
+        child_run_ctx,
+        grandchild_run_ctx,
+        child_run_ctx2,
+        root_run_ctx2,
+    ]
+
+    # Act
+    result = await root_ctx.run_node(root, node_input="start")
+
+    # Assert
+    assert result == "final_root_output"
+    assert mock_scheduler.call_count == 5
+
+    # Verify call sequence
+    calls = mock_scheduler.call_args_list
+
+    # 1. root (run_id 1)
+    assert calls[0][0][0] is root_ctx
+    assert calls[0][0][1].name == root.name
+    assert calls[0][1].get("run_id") == "1"
+
+    # 2. child (run_id 1, under root_run_ctx)
+    assert calls[1][0][0] is root_run_ctx
+    assert calls[1][0][1].name == child.name
+    assert calls[1][1].get("run_id") == "1"
+
+    # 3. grandchild (run_id 1, under child_run_ctx)
+    assert calls[2][0][0] is child_run_ctx
+    assert calls[2][0][1].name == grandchild.name
+    assert calls[2][1].get("run_id") == "1"
+
+    # 4. child (run_id 2, under root_run_ctx - climbed up!)
+    assert calls[3][0][0] is root_run_ctx
+    assert calls[3][0][1].name == child.name
+    assert calls[3][1].get("run_id") == "2"
+
+    # 5. root (run_id 2, under root_ctx - climbed up!)
+    assert calls[4][0][0] is root_ctx
+    assert calls[4][0][1].name == root.name
+    assert calls[4][1].get("run_id") == "2"
+
+  @pytest.mark.asyncio
+  async def test_transfer_preserves_use_as_output_for_original_context(
+      self, mock_invocation_context
+  ):
+    """Verify that use_as_output is preserved when transferring back to self."""
+    # Arrange
+    from google.adk.agents.llm_agent import LlmAgent
+    from google.adk.events.event_actions import EventActions
+
+    # Create root and child agents
+    child = LlmAgent(name="child", rerun_on_resume=True)
+    root = LlmAgent(name="root", sub_agents=[child], rerun_on_resume=True)
+    child.parent_agent = root
+
+    # Create root context
+    root_ctx = Context(mock_invocation_context, node=None, parent_ctx=None)
+    mock_scheduler = AsyncMock()
+    root_ctx._workflow_scheduler = mock_scheduler
+
+    # Step 1: Root runs, transfers to child
+    root_run_ctx1 = Context(
+        mock_invocation_context,
+        parent_ctx=root_ctx,
+        node=root,
+        run_id="1",
+        event_actions=EventActions(transfer_to_agent="child"),
+    )
+
+    # Step 2: Child runs, transfers back to root
+    child_run_ctx = Context(
+        mock_invocation_context,
+        parent_ctx=root_run_ctx1,
+        node=child,
+        run_id="1",
+        event_actions=EventActions(transfer_to_agent="root"),
+    )
+
+    # Step 3: Root runs again, completes
+    root_run_ctx2 = Context(
+        mock_invocation_context,
+        parent_ctx=root_ctx,
+        node=root,
+        run_id="2",
+        event_actions=EventActions(),
+    )
+    root_run_ctx2.output = "final_output"
+
+    mock_scheduler.side_effect = [
+        root_run_ctx1,
+        child_run_ctx,
+        root_run_ctx2,
+    ]
+
+    # Act
+    result = await root_ctx.run_node(
+        root, node_input="start", use_as_output=True
+    )
+
+    # Assert
+    assert result == "final_output"
+    assert mock_scheduler.call_count == 3
+
+    calls = mock_scheduler.call_args_list
+
+    # 1. root (run_id 1) should have use_as_output=True
+    assert calls[0][1].get("use_as_output") is True
+
+    # 2. child (run_id 1, under root_run_ctx1) should have use_as_output=False
+    assert calls[1][1].get("use_as_output") is False
+
+    # 3. root (run_id 2, under root_ctx) should have use_as_output=True again!
+    assert calls[2][1].get("use_as_output") is True

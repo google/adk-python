@@ -56,6 +56,11 @@ from .functions import build_auth_request_event
 # Prefix used by toolset auth credential IDs
 TOOLSET_AUTH_CREDENTIAL_ID_PREFIX = '_adk_toolset_auth_'
 
+
+class _ReconnectSentinel(Event):
+  """Internal sentinel event to signal a silent reconnection request."""
+
+
 if TYPE_CHECKING:
   from ...agents.llm_agent import LlmAgent
   from ...models.base_llm import BaseLlm
@@ -65,6 +70,11 @@ if TYPE_CHECKING:
 logger = logging.getLogger('google_adk.' + __name__)
 
 _ADK_AGENT_NAME_LABEL_KEY = 'adk_agent_name'
+
+_NO_CONTENT_ERROR_CODE = 'MODEL_RETURNED_NO_CONTENT'
+_NO_CONTENT_ERROR_MESSAGE = (
+    'The model returned no content (finish_reason=STOP with empty parts).'
+)
 
 # Timing configuration
 DEFAULT_TRANSFER_AGENT_DELAY = 1.0
@@ -623,6 +633,7 @@ class BaseLlmFlow(ABC):
               self._send_to_model(llm_connection, invocation_context)
           )
 
+          should_reconnect = False
           try:
             async with Aclosing(
                 self._receive_from_model(
@@ -633,6 +644,9 @@ class BaseLlmFlow(ABC):
                 )
             ) as agen:
               async for event in agen:
+                if isinstance(event, _ReconnectSentinel):
+                  should_reconnect = True
+                  break
                 # Empty event means the queue is closed.
                 if not event:
                   break
@@ -713,6 +727,9 @@ class BaseLlmFlow(ABC):
               await send_task
             except asyncio.CancelledError:
               pass
+        if should_reconnect:
+          continue
+        break
       except (ConnectionClosed, ConnectionClosedOK) as e:
         # If we have a session resumption handle, we attempt to reconnect.
         # This handle is updated dynamically during the session.
@@ -852,9 +869,9 @@ class BaseLlmFlow(ABC):
           if llm_response.go_away:
             logger.info(f'Received go away signal: {llm_response.go_away}')
             # The server signals that it will close the connection soon.
-            # We proactively raise ConnectionClosed to trigger the reconnection
-            # logic in run_live, which will use the latest session handle.
-            raise ConnectionClosed(None, None)
+            # We yield a sentinel event to request reconnection internally.
+            yield _ReconnectSentinel()
+            return
 
           model_response_event = Event(
               id=Event.new_id(),
@@ -1006,6 +1023,15 @@ class BaseLlmFlow(ABC):
           f' but got {type(agent)}'
       )
 
+    # Request defaults; _BasicLlmRequestProcessor merges them onto agent config.
+    if (
+        invocation_context.run_config
+        and invocation_context.run_config.http_options
+    ):
+      llm_request.config.http_options = (
+          invocation_context.run_config.http_options.model_copy(deep=True)
+      )
+
     # Runs processors.
     for processor in self.request_processors:
       async with Aclosing(
@@ -1053,6 +1079,23 @@ class BaseLlmFlow(ABC):
     ) as agen:
       async for event in agen:
         yield event
+
+    # A non-streaming turn that finishes with STOP but has no content parts would
+    # otherwise be skipped below and become a silent empty final response;
+    # surface it as an actionable error instead. Streaming is excluded
+    # because a terminal finish-only chunk legitimately follows content already
+    # streamed in earlier chunks.
+    if (
+        not llm_response.partial
+        and llm_response.error_code is None
+        and llm_response.finish_reason == types.FinishReason.STOP
+        and (not llm_response.content or not llm_response.content.parts)
+        and invocation_context.run_config.streaming_mode != StreamingMode.SSE
+    ):
+      llm_response.error_code = _NO_CONTENT_ERROR_CODE
+      llm_response.error_message = (
+          llm_response.error_message or _NO_CONTENT_ERROR_MESSAGE
+      )
 
     # Skip the model response event if there is no content and no error code.
     # This is needed for the code executor to trigger another loop.
@@ -1178,23 +1221,28 @@ class BaseLlmFlow(ABC):
 
     # Handles function calls.
     if model_response_event.get_function_calls():
-      function_response_event = await functions.handle_function_calls_live(
+      # handle_function_calls_live returns None when every call is deferred
+      # (e.g. all long-running), so guard before yielding to avoid emitting a
+      # None event into the live stream.
+      if function_response_event := await functions.handle_function_calls_live(
           invocation_context, model_response_event, llm_request.tools_dict
-      )
-      # Always yield the function response event first
-      yield function_response_event
-
-      # Check if this is a set_model_response function response
-      if json_response := _output_schema_processor.get_structured_model_response(
-          function_response_event
       ):
-        # Create and yield a final model response event
-        final_event = (
-            _output_schema_processor.create_final_model_response_event(
-                invocation_context, json_response
+        # Always yield the function response event first
+        yield function_response_event
+
+        # Check if this is a set_model_response function response
+        if json_response := (
+            _output_schema_processor.get_structured_model_response(
+                function_response_event
             )
-        )
-        yield final_event
+        ):
+          # Create and yield a final model response event
+          final_event = (
+              _output_schema_processor.create_final_model_response_event(
+                  invocation_context, json_response
+              )
+          )
+          yield final_event
 
   async def _postprocess_run_processors_async(
       self, invocation_context: InvocationContext, llm_response: LlmResponse

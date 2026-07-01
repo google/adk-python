@@ -212,6 +212,28 @@ class TestValidation:
     assert wrapper.rerun_on_resume is True
 
 
+@pytest.mark.asyncio
+async def test_single_turn_input_event_inherits_branch_and_scope(
+    request: pytest.FixtureRequest,
+):
+  """Private single-turn node input is scoped to the node branch."""
+  from google.adk.workflow._llm_agent_wrapper import prepare_llm_agent_input
+
+  agent = _make_agent(mode='single_turn')
+  ic = await create_parent_invocation_context(request.function.__name__, agent)
+  ic.branch = 'parent.worker@1'
+  ctx = Context(invocation_context=ic)
+  ctx.isolation_scope = 'scope-1'
+
+  prepare_llm_agent_input(agent, ctx, 'hello')
+
+  event = ic.session.events[-1]
+  assert event.author == 'user'
+  assert event.content and event.content.role == 'user'
+  assert event.branch == 'parent.worker@1'
+  assert event.isolation_scope == 'scope-1'
+
+
 # --- build_node auto-wrapping ---
 
 

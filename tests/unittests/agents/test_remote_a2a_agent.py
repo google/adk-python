@@ -2011,6 +2011,203 @@ class TestRemoteA2aAgentMessageHandlingV2:
     assert result.branch == self.mock_context.branch
 
 
+class TestRemoteA2aAgentNoneConverterResults:
+  """Regression tests for None converter results in both legacy and v2 handlers.
+
+  Converters can legitimately return None for messages/tasks with no convertible
+  parts, metadata-only events, or empty status updates. The handlers must not
+  crash with AttributeError when this happens.
+  """
+
+  def setup_method(self):
+    """Setup test fixtures."""
+    from google.adk.a2a.agent.config import A2aRemoteAgentConfig
+
+    self.agent_card = create_test_agent_card()
+
+    # Legacy handler agent
+    self.mock_a2a_part_converter = Mock()
+    self.legacy_agent = RemoteA2aAgent(
+        name="test_agent",
+        agent_card=self.agent_card,
+        a2a_part_converter=self.mock_a2a_part_converter,
+    )
+
+    # V2 handler agent
+    self.mock_config = Mock(spec=A2aRemoteAgentConfig)
+    self.mock_config.a2a_part_converter = Mock()
+    self.mock_config.a2a_task_converter = Mock()
+    self.mock_config.a2a_status_update_converter = Mock()
+    self.mock_config.a2a_artifact_update_converter = Mock()
+    self.mock_config.a2a_message_converter = Mock()
+    self.mock_config.request_interceptors = None
+    self.v2_agent = RemoteA2aAgent(
+        name="test_agent",
+        agent_card=self.agent_card,
+        config=self.mock_config,
+    )
+
+    # Shared mock context
+    self.mock_session = Mock(spec=Session)
+    self.mock_session.id = "session-123"
+    self.mock_session.events = []
+
+    self.mock_context = Mock(spec=InvocationContext)
+    self.mock_context.session = self.mock_session
+    self.mock_context.invocation_id = "invocation-123"
+    self.mock_context.branch = "main"
+
+  # --- V2 handler regression tests ---
+
+  @pytest.mark.asyncio
+  async def test_v2_message_converter_returns_none(self):
+    """V2 handler must not crash when message converter returns None."""
+    mock_msg = Mock(spec=A2AMessage)
+    mock_msg.metadata = {}
+    mock_msg.context_id = None
+
+    self.mock_config.a2a_message_converter.return_value = None
+
+    result = await self.v2_agent._handle_a2a_response_v2(
+        mock_msg, self.mock_context
+    )
+
+    assert result is None
+    self.mock_config.a2a_message_converter.assert_called_once()
+
+  @pytest.mark.asyncio
+  async def test_v2_message_converter_returns_none_with_context_id(self):
+    """V2 handler returns None even when message has a context_id."""
+    mock_msg = Mock(spec=A2AMessage)
+    mock_msg.metadata = {}
+    mock_msg.context_id = "ctx-should-not-be-accessed"
+
+    self.mock_config.a2a_message_converter.return_value = None
+
+    result = await self.v2_agent._handle_a2a_response_v2(
+        mock_msg, self.mock_context
+    )
+
+    assert result is None
+
+  @pytest.mark.asyncio
+  async def test_v2_task_converter_returns_none(self):
+    """V2 handler must not crash when task converter returns None."""
+    mock_task = Mock(spec=A2ATask)
+    mock_task.id = "task-123"
+    mock_task.context_id = "ctx-123"
+
+    self.mock_config.a2a_task_converter.return_value = None
+
+    result = await self.v2_agent._handle_a2a_response_v2(
+        (mock_task, None), self.mock_context
+    )
+
+    assert result is None
+
+  @pytest.mark.asyncio
+  async def test_v2_status_update_converter_returns_none(self):
+    """V2 handler must not crash when status update converter returns None."""
+    mock_task = Mock(spec=A2ATask)
+    mock_task.id = "task-123"
+    mock_task.context_id = None
+
+    mock_update = Mock(spec=TaskStatusUpdateEvent)
+
+    self.mock_config.a2a_status_update_converter.return_value = None
+
+    result = await self.v2_agent._handle_a2a_response_v2(
+        (mock_task, mock_update), self.mock_context
+    )
+
+    assert result is None
+
+  # --- Legacy handler regression tests ---
+
+  @pytest.mark.asyncio
+  async def test_legacy_message_converter_returns_none(self):
+    """Legacy handler must not crash when message converter returns None."""
+    mock_msg = Mock(spec=A2AMessage)
+    mock_msg.context_id = "context-123"
+
+    with patch(
+        "google.adk.agents.remote_a2a_agent.convert_a2a_message_to_event"
+    ) as mock_convert:
+      mock_convert.return_value = None
+
+      result = await self.legacy_agent._handle_a2a_response(
+          mock_msg, self.mock_context
+      )
+
+      assert result is None
+      mock_convert.assert_called_once()
+
+  @pytest.mark.asyncio
+  async def test_legacy_task_converter_returns_none_no_update(self):
+    """Legacy handler must not crash when task converter returns None (no update)."""
+    mock_task = Mock(spec=A2ATask)
+    mock_task.id = "task-123"
+    mock_task.context_id = None
+    mock_task.status = Mock()
+    mock_task.status.state = TaskState.completed
+
+    with patch(
+        "google.adk.agents.remote_a2a_agent.convert_a2a_task_to_event"
+    ) as mock_convert:
+      mock_convert.return_value = None
+
+      result = await self.legacy_agent._handle_a2a_response(
+          (mock_task, None), self.mock_context
+      )
+
+      assert result is None
+
+  @pytest.mark.asyncio
+  async def test_legacy_message_converter_returns_none_status_update(self):
+    """Legacy handler must not crash when message converter returns None for status update."""
+    mock_task = Mock(spec=A2ATask)
+    mock_task.id = "task-123"
+    mock_task.context_id = "ctx-123"
+
+    mock_update = Mock(spec=TaskStatusUpdateEvent)
+    mock_update.status = Mock()
+    mock_update.status.message = Mock()
+    mock_update.status.state = TaskState.working
+
+    with patch(
+        "google.adk.agents.remote_a2a_agent.convert_a2a_message_to_event"
+    ) as mock_convert:
+      mock_convert.return_value = None
+
+      result = await self.legacy_agent._handle_a2a_response(
+          (mock_task, mock_update), self.mock_context
+      )
+
+      assert result is None
+
+  @pytest.mark.asyncio
+  async def test_legacy_task_converter_returns_none_artifact_update(self):
+    """Legacy handler must not crash when task converter returns None for artifact update."""
+    mock_task = Mock(spec=A2ATask)
+    mock_task.id = "task-123"
+    mock_task.context_id = None
+
+    mock_update = Mock(spec=TaskArtifactUpdateEvent)
+    mock_update.append = False
+    mock_update.last_chunk = True
+
+    with patch(
+        "google.adk.agents.remote_a2a_agent.convert_a2a_task_to_event"
+    ) as mock_convert:
+      mock_convert.return_value = None
+
+      result = await self.legacy_agent._handle_a2a_response(
+          (mock_task, mock_update), self.mock_context
+      )
+
+      assert result is None
+
+
 class TestRemoteA2aAgentExecution:
   """Test agent execution functionality."""
 

@@ -330,8 +330,28 @@ def _get_provider_from_model(model: str) -> str:
   return ""
 
 
-# Default MIME type when none can be inferred
-_DEFAULT_MIME_TYPE = "application/octet-stream"
+# Providers that can route to Anthropic. bedrock and vertex_ai are multi-model
+# platforms, so _is_anthropic_route also checks the model name for them.
+_ANTHROPIC_PROVIDERS = frozenset({"anthropic", "bedrock", "vertex_ai"})
+
+
+def _is_anthropic_provider(provider: str) -> bool:
+  """Returns True if the provider can route to an Anthropic model endpoint."""
+  return provider.lower() in _ANTHROPIC_PROVIDERS if provider else False
+
+
+def _is_anthropic_route(provider: str, model: str) -> bool:
+  """Returns True only when requests actually reach an Anthropic Claude model.
+
+  bedrock and vertex_ai also host non-Anthropic models (Llama, Gemini), so for
+  those platforms the model name must identify a Claude model too. Formatting
+  thinking blocks for a non-Claude model triggers API validation (400) errors.
+  """
+  if not _is_anthropic_provider(provider):
+    return False
+  if provider.lower() in ("bedrock", "vertex_ai"):
+    return _is_anthropic_model(model)
+  return True
 
 
 def _infer_mime_type_from_uri(uri: str) -> Optional[str]:
@@ -495,42 +515,48 @@ def _iter_reasoning_texts(reasoning_value: Any) -> Iterable[str]:
 
 
 def _is_thinking_blocks_format(reasoning_value: Any) -> bool:
-  """Returns True if reasoning_value is thinking_blocks format.
+  """Returns True if reasoning_value is Anthropic thinking_blocks format.
 
-  Anthropic blocks carry a 'signature'; Gemini blocks carry 'thinking'/'type'
-  without one. Match either so Gemini thought text is not dropped.
+  Anthropic thinking_blocks is a list of dicts, each with 'type', 'thinking',
+  and 'signature' keys.
   """
   if not isinstance(reasoning_value, list) or not reasoning_value:
     return False
   first = reasoning_value[0]
-  return isinstance(first, dict) and (
-      "thinking" in first or "signature" in first
-  )
+  return isinstance(first, dict) and "signature" in first
 
 
 def _convert_reasoning_value_to_parts(reasoning_value: Any) -> List[types.Part]:
   """Converts provider reasoning payloads into Gemini thought parts.
 
-  Handles Anthropic thinking_blocks (list of dicts with type/thinking/signature)
-  by preserving the signature on each part's thought_signature field. This is
-  required for Anthropic to maintain thinking across tool call boundaries.
+  Handles two formats:
+  - Anthropic thinking_blocks with 'thinking' and optional 'signature' fields.
+  - A plain string or nested structure (OpenAI/Azure/Ollama) via
+    _iter_reasoning_texts.
   """
-  if _is_thinking_blocks_format(reasoning_value):
+  if isinstance(reasoning_value, list):
     parts: List[types.Part] = []
     for block in reasoning_value:
-      if not isinstance(block, dict):
-        continue
-      block_type = block.get("type", "")
-      if block_type == "redacted":
-        continue
-      thinking_text = block.get("thinking", "")
-      signature = block.get("signature", "")
-      if not thinking_text and not signature:
-        continue
-      part = types.Part(text=thinking_text, thought=True)
-      if signature:
-        part.thought_signature = signature.encode("utf-8")
-      parts.append(part)
+      if isinstance(block, dict):
+        block_type = block.get("type", "")
+        if block_type == "redacted":
+          continue
+        if block_type == "thinking":
+          thinking_text = block.get("thinking", "")
+          if thinking_text:
+            part = types.Part(text=thinking_text, thought=True)
+            signature = block.get("signature")
+            if signature:
+              decoded_signature = _decode_thought_signature(signature)
+              part.thought_signature = decoded_signature or str(
+                  signature
+              ).encode("utf-8")
+            parts.append(part)
+          continue
+      # Fall back to text extraction for non-thinking-block items.
+      for text in _iter_reasoning_texts(block):
+        if text:
+          parts.append(types.Part(text=text, thought=True))
     return parts
   return [
       types.Part(text=text, thought=True)
@@ -542,16 +568,16 @@ def _convert_reasoning_value_to_parts(reasoning_value: Any) -> List[types.Part]:
 def _extract_reasoning_value(message: Message | Delta | None) -> Any:
   """Fetches the reasoning payload from a LiteLLM message.
 
-  Checks for 'thinking_blocks' (Anthropic structured format with signatures),
-  'reasoning_content' (LiteLLM standard, used by Azure/Foundry, Ollama via
-  LiteLLM) and 'reasoning' (used by LM Studio, vLLM).
-  Prioritizes 'thinking_blocks' when present (Anthropic models), then
-  'reasoning_content', then 'reasoning'.
+  Checks for 'thinking_blocks' (Anthropic thinking with signatures),
+  'reasoning_content' (LiteLLM standard, used by Azure/Foundry,
+  Ollama via LiteLLM), and 'reasoning' (used by LM Studio, vLLM).
+  Prioritizes 'thinking_blocks' when the key is present, as they contain
+  the signature required for Anthropic's extended thinking API.
   """
   if message is None:
     return None
-  # Anthropic models return thinking_blocks with type/thinking/signature fields.
-  # This must be preserved to maintain thinking across tool call boundaries.
+  # Prefer thinking_blocks (Anthropic) — they carry per-block signatures
+  # needed for multi-turn conversations with extended thinking.
   thinking_blocks = message.get("thinking_blocks")
   if thinking_blocks is not None:
     return thinking_blocks
@@ -1003,7 +1029,7 @@ async def _content_to_message_param(
         if part.text and part.thought_signature:
           sig = part.thought_signature
           if isinstance(sig, bytes):
-            sig = sig.decode("utf-8")
+            sig = base64.b64encode(sig).decode("utf-8")
           thinking_blocks.append({
               "type": "thinking",
               "thinking": part.text,
@@ -1030,7 +1056,37 @@ async def _content_to_message_param(
       ):
         reasoning_texts.append(_decode_inline_text_data(part.inline_data.data))
 
-    reasoning_content = _NEW_LINE.join(text for text in reasoning_texts if text)
+    # Anthropic routes require thinking blocks to be embedded directly in the
+    # message content list. LiteLLM's prompt template for Anthropic drops the
+    # top-level reasoning_content field, so thinking blocks disappear from
+    # multi-turn histories and the model stops producing them after the first
+    # turn. Signatures are required by the Anthropic API for thinking blocks in
+    # multi-turn conversations. On multi-model platforms (bedrock, vertex_ai)
+    # this must only apply to actual Claude models, not Gemini/Llama/etc.
+    if reasoning_parts and _is_anthropic_route(provider, model):
+      content_list = []
+      for part in reasoning_parts:
+        if part.text:
+          block = {"type": "thinking", "thinking": part.text}
+          if part.thought_signature:
+            sig = part.thought_signature
+            if isinstance(sig, bytes):
+              sig = base64.b64encode(sig).decode("utf-8")
+            block["signature"] = sig
+          content_list.append(block)
+      if isinstance(final_content, list):
+        content_list.extend(final_content)
+      elif final_content:
+        content_list.append({"type": "text", "text": final_content})
+      return ChatCompletionAssistantMessage(
+          role=role,
+          content=content_list or None,
+          tool_calls=tool_calls or None,
+      )
+
+    # Preserve reasoning deltas exactly as received. Injecting separators
+    # between fragments can corrupt provider-streamed thinking text.
+    reasoning_content = "".join(text for text in reasoning_texts if text)
     return ChatCompletionAssistantMessage(
         role=role,
         content=final_content,
@@ -1215,33 +1271,33 @@ async def _get_content(
         })
         continue
 
-      # Determine MIME type: use explicit value, infer from URI, or use default.
+      # Resolve MIME type early: needed before the media-URL shortcut below,
+      # which must run before the generic text-fallback check. The raise is
+      # deferred until after all early-continue paths so that providers which
+      # always fall back to text (anthropic, non-Gemini Vertex AI) are never
+      # asked for a MIME type they cannot supply.
       mime_type = part.file_data.mime_type
       if not mime_type:
         mime_type = _infer_mime_type_from_uri(part.file_data.file_uri)
       if not mime_type and part.file_data.display_name:
         guessed_mime_type, _ = mimetypes.guess_type(part.file_data.display_name)
         mime_type = guessed_mime_type
-      if not mime_type:
-        # LiteLLM's Vertex AI backend requires format for GCS URIs.
-        mime_type = _DEFAULT_MIME_TYPE
-        logger.debug(
-            "Could not determine MIME type for file_uri %s, using default: %s",
-            part.file_data.file_uri,
-            mime_type,
-        )
-      mime_type = _normalize_mime_type(mime_type)
+      if mime_type:
+        mime_type = _normalize_mime_type(mime_type)
 
+      # For OpenAI/Azure: HTTP media URLs (image, video, audio) are sent as
+      # typed URL blocks and must be handled before the generic text fallback.
       if provider in _FILE_ID_REQUIRED_PROVIDERS and _is_http_url(
           part.file_data.file_uri
       ):
-        url_content_type = _media_url_content_type(mime_type)
-        if url_content_type:
-          content_objects.append({
-              "type": url_content_type,
-              url_content_type: {"url": part.file_data.file_uri},
-          })
-          continue
+        if mime_type:
+          url_content_type = _media_url_content_type(mime_type)
+          if url_content_type:
+            content_objects.append({
+                "type": url_content_type,
+                url_content_type: {"url": part.file_data.file_uri},
+            })
+            continue
 
       if not _is_file_uri_supported(provider, model, part.file_data.file_uri):
         redacted_file_uri = _redact_file_uri_for_log(
@@ -1251,6 +1307,19 @@ async def _get_content(
         raise ValueError(
             f"File URI `{redacted_file_uri}` not supported for provider:"
             f" {provider}."
+        )
+
+      # All remaining providers (e.g. Vertex AI + Gemini) require a specific
+      # MIME type in the file object. Both a missing type and
+      # 'application/octet-stream' cause a downstream ValueError from LiteLLM
+      # regardless of whether the value was set explicitly by the caller or
+      # arrived via a default fallback; raise early with an actionable message.
+      if not mime_type or mime_type == "application/octet-stream":
+        type_label = mime_type or "(unknown)"
+        raise ValueError(
+            f"Cannot process file_uri {part.file_data.file_uri!r}: MIME type"
+            f" {type_label!r} is not supported. Please set a specific MIME"
+            " type on `file_data.mime_type`."
         )
 
       file_object: ChatCompletionFileUrlObject = {
@@ -1425,6 +1494,152 @@ def _build_tool_call_from_json_dict(
   return tool_call
 
 
+# DeepSeek models may emit tool calls as inline text using proprietary
+# special tokens. See https://api-docs.deepseek.com/guides/function_calling
+# for the full specification. LiteLLM usually translates these into
+# structured `tool_calls` but when it doesn't (intermittent), the raw
+# tokens land in the `content` field and must be parsed here.
+_DS_TCALLS_BEGIN = "\u003c\uff5ctool\u2581calls\u2581begin\uff5c\u003e"
+_DS_TCALLS_END = "\u003c\uff5ctool\u2581calls\u2581end\uff5c\u003e"
+_DS_TCALL_BEGIN = "\u003c\uff5ctool\u2581call\u2581begin\uff5c\u003e"
+_DS_TCALL_END = "\u003c\uff5ctool\u2581call\u2581end\uff5c\u003e"
+_DS_TSEP = "\u003c\uff5ctool\u2581sep\uff5c\u003e"
+
+# Pattern: <｜tool▁call▁begin｜>function<｜tool▁sep｜>NAME \n ARGS <｜tool▁call▁end｜>
+_DS_TOOL_CALL_RE = re.compile(
+    re.escape(_DS_TCALL_BEGIN)
+    + r"function"
+    + re.escape(_DS_TSEP)
+    + r"([^\n\r]+?)\s*?\n(.*?)"
+    + re.escape(_DS_TCALL_END),
+    re.DOTALL,
+)
+
+
+def _extract_json_from_deepseek_args(args_text: str) -> Optional[str]:
+  """Extracts a JSON string from DeepSeek arguments text.
+
+  Args:
+    args_text: Raw text containing the function arguments, possibly
+      wrapped in Markdown-style code fences.
+
+  Returns:
+    The JSON string, or None if no valid JSON object could be found.
+  """
+  if not args_text:
+    return None
+  # Strip optional Markdown code fences (```json ... ``` or ``` ... ```).
+  fence_match = re.search(r"```(?:json)?\s*(\{[\s\S]*?\})\s*```", args_text)
+  if fence_match:
+    candidate = fence_match.group(1).strip()
+    try:
+      json.loads(candidate)
+      return candidate
+    except json.JSONDecodeError:
+      pass
+  # Fall back to the first balanced { … } block.
+  open_brace = args_text.find("{")
+  if open_brace == -1:
+    return None
+  try:
+    candidate, _ = _JSON_DECODER.raw_decode(args_text, open_brace)
+    return json.dumps(candidate, ensure_ascii=False)
+  except json.JSONDecodeError:
+    return None
+
+
+def _parse_deepseek_tool_calls_from_text(
+    text_block: str,
+) -> tuple[list[ChatCompletionMessageToolCall], Optional[str]]:
+  """Parses DeepSeek proprietary inline tool-call tokens from text.
+
+  When LiteLLM does not translate DeepSeek's special tokens into
+  structured ``tool_calls``, the raw tokens appear inside the ``content``
+  field.  This function extracts them and returns standard
+  ``ChatCompletionMessageToolCall`` objects.
+
+  Token reference
+    ``<｜tool▁calls▁begin｜>`` … ``<｜tool▁calls▁end｜>``  → outer wrapper
+    ``<｜tool▁call▁begin｜>function<｜tool▁sep｜>NAME``  → single call start
+    ``<｜tool▁call▁end｜>``                             → single call end
+
+  Args:
+    text_block: The raw text that may contain DeepSeek tokens.
+
+  Returns:
+    A tuple of ``(tool_calls, remainder)`` where ``remainder`` is the
+    original text with all DeepSeek token regions removed.
+  """
+  _ensure_litellm_imported()
+
+  tool_calls: list[ChatCompletionMessageToolCall] = []
+  if not text_block:
+    return tool_calls, None
+
+  # Quick guard: only invoke the regex if the outer tokens are present.
+  if _DS_TCALLS_BEGIN not in text_block and _DS_TCALL_BEGIN not in text_block:
+    return tool_calls, None
+
+  remainder_parts: list[str] = []
+  cursor = 0
+
+  # Outer loop — wrapped <｜tool▁calls▁begin｜> blocks and unwrapped
+  # <｜tool▁call▁begin｜> tokens may interleave, so process whichever
+  # token appears first.
+  while True:
+    calls_idx = text_block.find(_DS_TCALLS_BEGIN, cursor)
+    call_idx = text_block.find(_DS_TCALL_BEGIN, cursor)
+    if calls_idx == -1 and call_idx == -1:
+      remainder_parts.append(text_block[cursor:])
+      break
+
+    if calls_idx != -1 and (call_idx == -1 or calls_idx < call_idx):
+      begin_idx = calls_idx
+      in_wrapped_block = True
+    else:
+      begin_idx = call_idx
+      in_wrapped_block = False
+
+    # Everything before the token becomes remainder.
+    if begin_idx > cursor:
+      remainder_parts.append(text_block[cursor:begin_idx])
+
+    if in_wrapped_block:
+      end_idx = text_block.find(
+          _DS_TCALLS_END, begin_idx + len(_DS_TCALLS_BEGIN)
+      )
+      if end_idx == -1:
+        remainder_parts.append(text_block[begin_idx:])
+        break
+      block = text_block[begin_idx + len(_DS_TCALLS_BEGIN) : end_idx]
+      cursor = end_idx + len(_DS_TCALLS_END)
+    else:
+      # Unwrapped call token — scan for a matching end token.
+      end_idx = text_block.find(_DS_TCALL_END, begin_idx + len(_DS_TCALL_BEGIN))
+      if end_idx == -1:
+        remainder_parts.append(text_block[begin_idx:])
+        break
+      block = text_block[begin_idx : end_idx + len(_DS_TCALL_END)]
+      cursor = end_idx + len(_DS_TCALL_END)
+
+    # Parse individual tool calls inside the block.
+    for match in _DS_TOOL_CALL_RE.finditer(block):
+      func_name = match.group(1).strip()
+      args_raw = match.group(2).strip()
+      args_json = _extract_json_from_deepseek_args(args_raw)
+      if not func_name or not args_json:
+        continue
+      tool_call = _build_tool_call_from_json_dict(
+          {"name": func_name, "arguments": args_json},
+          index=len(tool_calls),
+      )
+      if tool_call:
+        tool_calls.append(tool_call)
+
+  remainder = "".join(p for p in remainder_parts if p).strip()
+  return tool_calls, remainder or None
+
+
 def _parse_tool_calls_from_text(
     text_block: str,
 ) -> tuple[list[ChatCompletionMessageToolCall], Optional[str]]:
@@ -1434,6 +1649,17 @@ def _parse_tool_calls_from_text(
     return tool_calls, None
 
   _ensure_litellm_imported()
+
+  # Try DeepSeek proprietary format first, then fall back to generic JSON.
+  ds_tool_calls, ds_remainder = _parse_deepseek_tool_calls_from_text(text_block)
+  if ds_tool_calls:
+    # If the remainder still contains content, re-parse it for
+    # additional generic inline JSON tool calls (mixed formats).
+    if ds_remainder:
+      extra_calls, extra_remainder = _parse_tool_calls_from_text(ds_remainder)
+      tool_calls = ds_tool_calls + (extra_calls or [])
+      return tool_calls, extra_remainder
+    return ds_tool_calls, None
 
   remainder_segments = []
   cursor = 0
@@ -1793,26 +2019,31 @@ def _model_response_to_generate_content_response(
     message = first_choice.get("message", None)
     finish_reason = first_choice.get("finish_reason", None)
 
-  if not message:
-    raise ValueError("No message in response")
+  # Handle case where message is None or empty (e.g., when the response contains
+  # no text content or tool calls). Create empty LlmResponse instead of raising error.
+  if message:
+    thought_parts = _convert_reasoning_value_to_parts(
+        _extract_reasoning_value(message)
+    )
+    llm_response = _message_to_generate_content_response(
+        message,
+        model_version=response.model,
+        thought_parts=thought_parts or None,
+    )
+  else:
+    # Create empty LlmResponse when message is None or empty
+    llm_response = LlmResponse(
+        content=types.Content(role="model", parts=[]),
+        model_version=response.model,
+    )
 
-  thought_parts = _convert_reasoning_value_to_parts(
-      _extract_reasoning_value(message)
-  )
-  llm_response = _message_to_generate_content_response(
-      message,
-      model_version=response.model,
-      thought_parts=thought_parts or None,
-  )
-  if finish_reason:
-    # If LiteLLM already provides a FinishReason enum (e.g., for Gemini), use
-    # it directly. Otherwise, map the finish_reason string to the enum.
-    if isinstance(finish_reason, types.FinishReason):
-      llm_response.finish_reason = finish_reason
-    else:
-      finish_reason_str = str(finish_reason).lower()
-      llm_response.finish_reason = _FINISH_REASON_MAPPING.get(
-          finish_reason_str, types.FinishReason.OTHER
+  mapped_finish_reason = _map_finish_reason(finish_reason)
+  if mapped_finish_reason:
+    llm_response.finish_reason = mapped_finish_reason
+    if mapped_finish_reason != types.FinishReason.STOP:
+      llm_response.error_code = mapped_finish_reason
+      llm_response.error_message = _finish_reason_to_error_message(
+          mapped_finish_reason
       )
   if response.get("usage", None):
     usage_dict = response["usage"]
@@ -1888,7 +2119,7 @@ def _finish_reason_to_error_message(
   """Returns an error message for non-stop finish reasons."""
   if finish_reason == types.FinishReason.MAX_TOKENS:
     return "Maximum tokens reached"
-  return f"Finished with {finish_reason}"
+  return f"Finished with {finish_reason.name}"
 
 
 def _enforce_strict_openai_schema(schema: dict[str, Any]) -> None:
@@ -2400,6 +2631,30 @@ class LiteLlm(BaseLlm):
 
     if generation_params:
       completion_args.update(generation_params)
+
+    if llm_request.config.http_options:
+      http_opts = llm_request.config.http_options
+      if http_opts.headers:
+        extra_headers = completion_args.get("extra_headers", {})
+        if isinstance(extra_headers, dict):
+          extra_headers = extra_headers.copy()
+        else:
+          extra_headers = {}
+        extra_headers.update(http_opts.headers)
+        completion_args["extra_headers"] = extra_headers
+
+      if http_opts.timeout is not None:
+        completion_args["timeout"] = http_opts.timeout
+
+      if (
+          http_opts.retry_options is not None
+          and http_opts.retry_options.attempts is not None
+      ):
+        # LiteLLM accepts num_retries as a top-level parameter.
+        completion_args["num_retries"] = http_opts.retry_options.attempts
+
+      if http_opts.extra_body is not None:
+        completion_args["extra_body"] = http_opts.extra_body
 
     if stream:
       text = ""

@@ -24,6 +24,7 @@ from google.adk.agents.loop_agent import LoopAgent
 from google.adk.agents.run_config import RunConfig
 from google.adk.events.event import Event
 from google.adk.flows.llm_flows.base_llm_flow import _handle_after_model_callback
+from google.adk.flows.llm_flows.base_llm_flow import _ReconnectSentinel
 from google.adk.flows.llm_flows.base_llm_flow import BaseLlmFlow
 from google.adk.models.base_llm_connection import BaseLlmConnection
 from google.adk.models.google_llm import Gemini
@@ -939,14 +940,22 @@ async def test_live_session_resumption_go_away():
     ) as mock_connect:
       mock_connect.return_value.__aenter__ = mock_aenter
 
+      yielded_events = []
       try:
-        async for _ in flow.run_live(invocation_context):
-          pass
+        async for event in flow.run_live(invocation_context):
+          yielded_events.append(event)
       except StopError:
         pass
 
       # Verify that we attempted to connect twice (initial + reconnect after go_away).
       assert mock_connect.call_count == 2
+
+      # Verify that the internal _ReconnectSentinel is not leaked/yielded to the caller.
+      assert not any(isinstance(e, _ReconnectSentinel) for e in yielded_events)
+
+      # Verify we yielded the expected response after reconnection.
+      assert len(yielded_events) == 1
+      assert yielded_events[0].content.parts[0].text == 'hi'
 
 
 @pytest.mark.asyncio
@@ -1636,6 +1645,58 @@ def _make_agent_tree():
 
 
 @pytest.mark.asyncio
+async def test_empty_stop_after_tool_call_surfaces_error_event():
+  """Regression test for empty Gemini turn after a successful tool call (#5631).
+
+  Turn 1 returns a function_call which executes successfully, then turn 2
+  returns Content(role='model', parts=[]) with finish_reason=STOP and no error.
+  In non-streaming mode the flow must surface that empty turn as an error event
+  instead of a silent empty final response.
+  """
+  function_call_part = types.Part.from_function_call(
+      name='increase_by_one', args={'x': 1}
+  )
+
+  turn_1 = LlmResponse(
+      content=types.Content(role='model', parts=[function_call_part]),
+      finish_reason=types.FinishReason.STOP,
+  )
+  # An empty Gemini turn: STOP with no content parts and no error from the model.
+  turn_2 = LlmResponse(
+      content=types.Content(role='model', parts=[]),
+      finish_reason=types.FinishReason.STOP,
+  )
+
+  function_called = 0
+
+  def increase_by_one(x: int) -> int:
+    nonlocal function_called
+    function_called += 1
+    return x + 1
+
+  mock_model = testing_utils.MockModel.create(responses=[turn_1, turn_2])
+  agent = Agent(name='root_agent', model=mock_model, tools=[increase_by_one])
+  runner = testing_utils.InMemoryRunner(agent)
+  events = runner.run('test')
+
+  assert function_called == 1, 'Tool should still execute on turn 1'
+
+  function_call_events = [e for e in events if e.get_function_calls()]
+  function_response_events = [e for e in events if e.get_function_responses()]
+  assert len(function_call_events) == 1
+  assert len(function_response_events) == 1
+
+  # The empty turn 2 must surface as an error event, not an empty final.
+  error_events = [e for e in events if e.error_code]
+  assert len(error_events) == 1
+  err = error_events[0]
+  assert err.error_code == 'MODEL_RETURNED_NO_CONTENT'
+  assert err.error_message
+  # And it must be the run's final event (no silent empty event after it).
+  assert events[-1] is err
+
+
+@pytest.mark.asyncio
 async def test_transfer_to_sibling_disallowed_raises_value_error():
   """Transfer to sibling raises ValueError when disallow_transfer_to_peers is True."""
   # Arrange
@@ -1723,3 +1784,45 @@ async def test_transfer_to_sibling_from_non_llm_agent_allowed():
   # Assert
   assert agent is not None
   assert agent.name == 'child2'
+
+
+@pytest.mark.asyncio
+async def test_postprocess_live_skips_none_function_response_event():
+  """When every live function call defers, no None event must be yielded.
+
+  handle_function_calls_live returns None if all calls are long-running, and
+  yielding that None downstream crashes the live receive loop.
+  """
+  from google.adk.flows.llm_flows import base_llm_flow as blf
+
+  agent = Agent(name='test_agent', model='gemini-2.0-flash')
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent
+  )
+  flow = BaseLlmFlowForTesting()
+
+  fc_part = types.Part(
+      function_call=types.FunctionCall(name='lro', id='1', args={})
+  )
+  content = types.Content(role='model', parts=[fc_part])
+  model_response_event = Event(
+      invocation_id=invocation_context.invocation_id,
+      author=agent.name,
+      content=content,
+  )
+  llm_request = LlmRequest(model='gemini-2.0-flash')
+  llm_response = LlmResponse(content=content)
+
+  with mock.patch.object(
+      blf.functions,
+      'handle_function_calls_live',
+      new=AsyncMock(return_value=None),
+  ):
+    events = [
+        event
+        async for event in flow._postprocess_live(
+            invocation_context, llm_request, llm_response, model_response_event
+        )
+    ]
+
+  assert all(event is not None for event in events)

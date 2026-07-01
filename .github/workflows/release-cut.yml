@@ -12,49 +12,144 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# Step 1: Starts the release process by creating a release/candidate branch.
-# Generates a changelog PR for review (step 2).
+# Unified release manager. Supports:
+# 1. Cutting a new release candidate branch from main or v1.
+# 2. Regenerating/updating the changelog PR on an existing candidate branch.
 name: "Release: Cut"
 
 on:
   workflow_dispatch:
     inputs:
+      action:
+        description: 'Action to perform'
+        required: true
+        default: 'cut'
+        type: choice
+        options:
+          - cut
+          - regenerate
+      branch:
+        description: 'Branch to release from (main or v1)'
+        required: true
+        default: 'main'
+        type: choice
+        options:
+          - main
+          - v1
       commit_sha:
-        description: 'Commit SHA to cut from (leave empty for latest main)'
+        description: 'Optional Commit SHA (only used for "cut" action; overrides branch latest)'
         required: false
         type: string
 
 permissions:
   contents: write
-  actions: write
+  pull-requests: write
 
 jobs:
-  cut-release:
+  cut-or-regenerate:
+    if: github.repository == 'google/adk-python'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
-        with:
-          ref: ${{ inputs.commit_sha || 'main' }}
-
-      - name: Check for existing release/candidate branch
-        env:
-          GH_TOKEN: ${{ github.token }}
+      - name: Determine Branch Configurations
+        id: config
         run: |
-          if git ls-remote --exit-code --heads origin release/candidate &>/dev/null; then
-            echo "Error: release/candidate branch already exists"
-            echo "Please finalize or delete the existing release candidate before starting a new one"
+          BRANCH="${{ inputs.branch }}"
+          if [ "$BRANCH" = "v1" ]; then
+            echo "base_ref=v1" >> $GITHUB_OUTPUT
+            echo "candidate_branch=release/v1-candidate" >> $GITHUB_OUTPUT
+            echo "config_file=.github/release-please-config-v1.json" >> $GITHUB_OUTPUT
+            echo "manifest_file=.github/.release-please-manifest-v1.json" >> $GITHUB_OUTPUT
+          else
+            echo "base_ref=main" >> $GITHUB_OUTPUT
+            echo "candidate_branch=release/candidate" >> $GITHUB_OUTPUT
+            echo "config_file=.github/release-please-config.json" >> $GITHUB_OUTPUT
+            echo "manifest_file=.github/.release-please-manifest.json" >> $GITHUB_OUTPUT
+          fi
+
+      # Action: CUT NEW RELEASE
+      - name: Checkout base ref (Cut)
+        if: inputs.action == 'cut'
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.commit_sha || steps.config.outputs.base_ref }}
+          token: ${{ secrets.RELEASE_PAT }}
+
+      - name: Check for existing candidate branch (Cut)
+        if: inputs.action == 'cut'
+        run: |
+          CANDIDATE_BRANCH="${{ steps.config.outputs.candidate_branch }}"
+          if git ls-remote --exit-code --heads origin "$CANDIDATE_BRANCH" &>/dev/null; then
+            echo "Error: Branch $CANDIDATE_BRANCH already exists."
+            echo "Please finalize or delete the existing release candidate before starting a new one."
             exit 1
           fi
 
-      - name: Create and push release/candidate branch
+      - name: Create and push candidate branch (Cut)
+        if: inputs.action == 'cut'
         run: |
-          git checkout -b release/candidate
-          git push origin release/candidate
-          echo "Created branch: release/candidate"
+          CANDIDATE_BRANCH="${{ steps.config.outputs.candidate_branch }}"
+          git checkout -b "$CANDIDATE_BRANCH"
+          git push origin "$CANDIDATE_BRANCH"
+          echo "Created and pushed branch: $CANDIDATE_BRANCH"
 
-      - name: Trigger Release Please
+      # Action: REGENERATE EXISTING PR
+      - name: Checkout existing candidate branch (Regenerate)
+        if: inputs.action == 'regenerate'
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ steps.config.outputs.candidate_branch }}
+          token: ${{ secrets.RELEASE_PAT }}
+
+      # Run Release Please
+      - name: Run Release Please
+        id: release_please
+        uses: googleapis/release-please-action@v4
+        with:
+          token: ${{ secrets.RELEASE_PAT }}
+          config-file: ${{ steps.config.outputs.config_file }}
+          manifest-file: ${{ steps.config.outputs.manifest_file }}
+          target-branch: ${{ steps.config.outputs.candidate_branch }}
+
+      # Curate the changelog: draft a Highlights section on top of the
+      # release-please output and commit it back to the release PR branch. The
+      # script falls back to an empty Highlights template if drafting fails, so
+      # this step never blocks the release.
+      - name: Set up Python
+        if: steps.release_please.outputs.prs_created == 'true'
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+
+      - name: Install changelog curation dependencies
+        if: steps.release_please.outputs.prs_created == 'true'
+        run: pip install --upgrade google-genai
+
+      - name: Curate changelog Highlights
+        if: steps.release_please.outputs.prs_created == 'true'
+        # Curation is a nice-to-have layered on top of the release PR; never let
+        # it turn the release run red (e.g. a push race or a transient error).
+        continue-on-error: true
         env:
-          GH_TOKEN: ${{ github.token }}
+          RELEASE_PR: ${{ steps.release_please.outputs.pr }}
+          GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
+          GOOGLE_GENAI_USE_VERTEXAI: '0'
+          GH_TOKEN: ${{ secrets.RELEASE_PAT }}
         run: |
-          gh workflow run release-please.yml --repo ${{ github.repository }} --ref release/candidate
-          echo "Triggered Release Please workflow"
+          set -euo pipefail
+          PR_BRANCH=$(echo "$RELEASE_PR" | jq -r '.headBranchName')
+          echo "Curating changelog on release PR branch: $PR_BRANCH"
+          git fetch origin "$PR_BRANCH"
+          git checkout -B "$PR_BRANCH" FETCH_HEAD
+          python scripts/curate_changelog.py --changelog CHANGELOG.md
+          if git diff --quiet -- CHANGELOG.md; then
+            echo "No changelog changes to commit."
+            exit 0
+          fi
+          USER_JSON=$(gh api user)
+          git config user.name "$(echo "$USER_JSON" | jq -r '.login')"
+          git config user.email "$(echo "$USER_JSON" | jq -r '.id')+$(echo "$USER_JSON" | jq -r '.login')@users.noreply.github.com"
+          git add CHANGELOG.md
+          git commit -m "chore: add curated highlights to changelog"
+          # Rebase onto any concurrent PR-branch updates so the push doesn't fail on a stale ref.
+          git pull --rebase origin "$PR_BRANCH"
+          git push origin "$PR_BRANCH"

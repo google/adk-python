@@ -342,7 +342,6 @@ class TestCallToolInThreadPool:
   ):
     """FunctionTools returning None or other falsy values must execute exactly once.
 
-    Regression test for https://github.com/google/adk-python/issues/5284.
     Previously, a None return was mistaken for the internal sentinel used to
     signal 'non-FunctionTool, fall back to run_async', causing a second
     invocation. The fix uses an identity-based sentinel so that None and other

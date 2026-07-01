@@ -29,6 +29,30 @@ from ...utils.output_schema_utils import can_use_output_schema_with_tools
 from ._base_llm_processor import BaseLlmRequestProcessor
 
 
+def _merge_run_config_http_options(
+    config: types.GenerateContentConfig,
+    run_config_http_options: types.HttpOptions,
+) -> None:
+  """Merges RunConfig http_options into the request config, RunConfig wins.
+
+  base_url and api_version are configuration-time settings, not request-time,
+  so they are intentionally not merged here.
+  """
+  if config.http_options is None:
+    config.http_options = run_config_http_options
+    return
+
+  if run_config_http_options.headers:
+    if config.http_options.headers is None:
+      config.http_options.headers = {}
+    config.http_options.headers.update(run_config_http_options.headers)
+
+  for field in ('timeout', 'retry_options', 'extra_body'):
+    value = getattr(run_config_http_options, field, None)
+    if value is not None:
+      setattr(config.http_options, field, value)
+
+
 def _build_basic_request(
     invocation_context: InvocationContext,
     llm_request: LlmRequest,
@@ -45,11 +69,18 @@ def _build_basic_request(
   agent = invocation_context.agent
   model = agent.canonical_model
   llm_request.model = model if isinstance(model, str) else model.model
+
+  # Preserved across the agent-config overwrite below, then merged back.
+  run_config_http_options = llm_request.config.http_options
+
   llm_request.config = (
       agent.generate_content_config.model_copy(deep=True)
       if agent.generate_content_config
       else types.GenerateContentConfig()
   )
+
+  if run_config_http_options:
+    _merge_run_config_http_options(llm_request.config, run_config_http_options)
   # Only set output_schema if no tools are specified. as of now, model don't
   # support output_schema and tools together. we have a workaround to support
   # both output_schema and tools at the same time. see
@@ -89,14 +120,14 @@ def _build_basic_request(
       getattr(getattr(agent, 'canonical_live_model', None), 'model', None)
       or llm_request.model
   )
-  is_gemini_31 = model_name_utils.is_gemini_3_1_flash_live(active_model_name)
+  is_gemini_3_x = model_name_utils._is_gemini_3_x_live(active_model_name)
   llm_request.live_connect_config.enable_affective_dialog = (
       None
-      if is_gemini_31
+      if is_gemini_3_x
       else invocation_context.run_config.enable_affective_dialog
   )
   llm_request.live_connect_config.proactivity = (
-      None if is_gemini_31 else invocation_context.run_config.proactivity
+      None if is_gemini_3_x else invocation_context.run_config.proactivity
   )
   llm_request.live_connect_config.session_resumption = (
       invocation_context.run_config.session_resumption
