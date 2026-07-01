@@ -67,6 +67,8 @@ jobs:
 
       - name: Install uv
         uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
 
       - name: Generate Baseline
         env:
@@ -134,6 +136,8 @@ jobs:
 
       - name: Install the latest version of uv
         uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
 
       - name: Install dependencies
         run: |
@@ -148,5 +152,3 @@ jobs:
             -n auto \
             --ignore=tests/unittests/artifacts/test_artifact_service.py \
             --ignore=tests/unittests/tools/google_api_tool/test_googleapi_to_openapi_converter.py
-
-

@@ -1023,6 +1023,15 @@ class BaseLlmFlow(ABC):
           f' but got {type(agent)}'
       )
 
+    # Request defaults; _BasicLlmRequestProcessor merges them onto agent config.
+    if (
+        invocation_context.run_config
+        and invocation_context.run_config.http_options
+    ):
+      llm_request.config.http_options = (
+          invocation_context.run_config.http_options.model_copy(deep=True)
+      )
+
     # Runs processors.
     for processor in self.request_processors:
       async with Aclosing(

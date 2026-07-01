@@ -87,7 +87,7 @@ _EXCLUDED_FROM_MTLS = {
 
 
 def check_logger(content: str) -> bool:
-  # Forbidden: 'logger = logging.getLogger(__name__)'
+  # Forbidden: getLogger(__name__) without the 'google_adk.' prefix.
   pattern = re.compile(r'logger\s*=\s*logging\.getLogger\(__name__\)')
   return not pattern.search(content)
 
@@ -142,14 +142,15 @@ def main() -> None:
       with open(f, 'r', encoding='utf-8') as file:
         content = file.read()
     except Exception as e:  # pylint: disable=broad-except
-      print(f"Error reading {f}: {e}")
+      print(f'Error reading {f}: {e}')
       continue
 
     # Run checks
     if not check_logger(content):
       print(
-          f"❌ {f}: Found forbidden use of 'logger = logging.getLogger(__name__)'. "
-          "Please use 'logger = logging.getLogger(\"google_adk.\" + __name__)' instead."
+          f"❌ {f}: Found forbidden use of 'logger ="
+          " logging.getLogger(__name__)'. Please use 'logger ="
+          ' logging.getLogger("google_adk." + __name__)\' instead.'
       )
       failed = True
 
@@ -159,13 +160,15 @@ def main() -> None:
 
     if not check_cli_import(content, f):
       print(
-          f"❌ {f}: Do not import from the cli package outside of the cli package."
+          f'❌ {f}: Do not import from the cli package outside of the cli'
+          ' package.'
       )
       failed = True
 
     if not check_mtls(content, f):
       print(
-          f"❌ {f}: Found hardcoded googleapis.com endpoints without mTLS support."
+          f'❌ {f}: Found hardcoded googleapis.com endpoints without mTLS'
+          ' support.'
       )
       failed = True
 

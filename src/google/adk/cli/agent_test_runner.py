@@ -51,6 +51,17 @@ EXCLUDED_EVENT_FIELDS = {
     "citation_metadata",
 }
 
+# The Interactions API stamps these volatile, non-reproducible fields onto every
+# model response (interaction_id is a server-issued token; turn_complete is only
+# emitted by the live API), so they are excluded from fixture comparison too.
+# They are kept in a separate, private constant so the value of the public
+# EXCLUDED_EVENT_FIELDS stays stable for the API breaking-change detector.
+_EXTRA_EXCLUDED_EVENT_FIELDS = frozenset({"interaction_id", "turn_complete"})
+
+_ALL_EXCLUDED_EVENT_FIELDS = (
+    EXCLUDED_EVENT_FIELDS | _EXTRA_EXCLUDED_EVENT_FIELDS
+)
+
 
 # Read target folder from environment
 def get_test_files(
@@ -175,7 +186,7 @@ def normalize_events(events, is_json=False):
   for e in events:
     if is_json:
       d = dict(e)
-      for k in EXCLUDED_EVENT_FIELDS:
+      for k in _ALL_EXCLUDED_EVENT_FIELDS:
         d.pop(k, None)
         d.pop(alias_generators.to_camel(k), None)
       d = {k: v for k, v in d.items() if v is not None}
@@ -183,7 +194,7 @@ def normalize_events(events, is_json=False):
       d = e.model_dump(
           mode="json",
           by_alias=True,
-          exclude=EXCLUDED_EVENT_FIELDS,
+          exclude=_ALL_EXCLUDED_EVENT_FIELDS,
           exclude_none=True,
       )
 
@@ -257,7 +268,7 @@ def _make_nodes_sequential(obj, visited=None):
       for node in obj.graph.nodes:
         _make_nodes_sequential(node, visited)
   elif isinstance(obj, _ParallelWorker):
-    obj.max_concurrency = 1
+    obj.max_parallel_workers = 1
     if hasattr(obj, "_node"):
       _make_nodes_sequential(obj._node, visited)
 
@@ -706,6 +717,7 @@ def test_agent_replay(agent_dir, test_file, monkeypatch):
 
 def rebuild_tests(path: str):
   """Discovers test files and rebuilds them by running the agent live."""
+  import asyncio
   import json
   import sys
 
@@ -734,6 +746,7 @@ def rebuild_tests(path: str):
     # Add agent_dir.parent to sys.path so relative imports work
     sys_path_saved = list(sys.path)
     sys.path.insert(0, str(agent_dir.parent))
+    rebuild_loop = None
 
     try:
       import random
@@ -773,6 +786,29 @@ def rebuild_tests(path: str):
           if isinstance(agent_or_app, App)
           else InMemoryRunner(root_agent=agent_or_app)
       )
+
+      # Drive every turn of this fixture on a single, persistent event loop.
+      # The sync Runner.run() spins up a fresh loop per call via asyncio.run()
+      # and closes it afterwards. For multi-turn fixtures that closes the loop
+      # the model's cached async api_client was bound to, so subsequent turns
+      # raise "Event loop is closed" (e.g. with the Interactions API). Reusing
+      # one loop for all turns keeps the client valid across the conversation.
+      rebuild_loop = asyncio.new_event_loop()
+
+      def run_turn(content):
+        session = runner.session
+
+        async def _collect():
+          events = []
+          async for event in runner.runner.run_async(
+              user_id=session.user_id,
+              session_id=session.id,
+              new_message=content,
+          ):
+            events.append(event)
+          return events
+
+        return rebuild_loop.run_until_complete(_collect())
 
       new_events = []
       inv_counter = 1
@@ -857,7 +893,7 @@ def rebuild_tests(path: str):
               content=msg,
           )
 
-          run_events = runner.run(msg)
+          run_events = run_turn(msg)
 
           # Build mapping from old IDs to new agent IDs
           for e in run_events:
@@ -891,6 +927,10 @@ def rebuild_tests(path: str):
                   "cache_metadata",
                   "logprobs_result",
                   "citation_metadata",
+                  # Volatile/non-replayable Interactions API state; keeping
+                  # these out keeps rebuilt fixtures deterministic.
+                  "interaction_id",
+                  "turn_complete",
               },
           )
           for e in new_events
@@ -931,6 +971,10 @@ def rebuild_tests(path: str):
     except Exception as e:
       print(f"Error rebuilding {test_file}: {e}")
     finally:
+      # Always close the per-fixture event loop, even if a turn raised, so we
+      # don't leak unclosed loops and emit resource warnings.
+      if rebuild_loop is not None:
+        rebuild_loop.close()
       sys.path = sys_path_saved
 
 

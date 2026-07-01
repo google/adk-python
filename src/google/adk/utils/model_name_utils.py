@@ -184,19 +184,23 @@ def _is_gemini_eap_model(model_string: Optional[str]) -> bool:
   )
 
 
-def is_gemini_3_1_flash_live(model_string: Optional[str]) -> bool:
-  """Check if the model is a Gemini 3.1 Flash Live model.
+def _is_gemini_3_x_live(model_string: Optional[str]) -> bool:
+  """Check if the model is a Gemini 3.x Live model.
 
   Args:
     model_string: The model name
 
   Returns:
-    True if it's a Gemini 3.1 Flash Live model, False otherwise
+    True if it's a Gemini 3.x Live model, False otherwise
   """
   if not model_string:
     return False
   model_name = extract_model_name(model_string)
-  return model_name.startswith('gemini-3.1-flash-live')
+  return (
+      model_name.startswith('gemini-3.')
+      and '-live' in model_name
+      and not is_gemini_3_5_live_translate(model_string)
+  )
 
 
 def is_gemini_3_5_live_translate(model_string: Optional[str]) -> bool:

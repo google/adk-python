@@ -14,7 +14,6 @@
 
 from __future__ import annotations
 
-import copy
 import logging
 from typing import AsyncGenerator
 from typing import Optional
@@ -27,7 +26,7 @@ from ...events._branch_path import _BranchPath
 from ...events.event import Event
 from ...models.llm_request import LlmRequest
 from ._base_llm_processor import BaseLlmRequestProcessor
-from .functions import remove_client_function_call_id
+from .functions import AF_FUNCTION_CALL_ID_PREFIX
 from .functions import REQUEST_CONFIRMATION_FUNCTION_CALL_NAME
 from .functions import REQUEST_EUC_FUNCTION_CALL_NAME
 
@@ -512,6 +511,52 @@ def _process_compaction_events(events: list[Event]) -> list[Event]:
   return [event for _, _, event in processed_items]
 
 
+def _copy_content_for_request(
+    content: types.Content,
+    *,
+    strip_client_function_call_ids: bool,
+) -> types.Content:
+  """Returns a session-isolated copy of ``content`` for an LLM request.
+
+  ``Content`` and every ``Part`` are shallow-copied so downstream request
+  processors (nl_planning, code_execution) can mutate them without corrupting
+  session events; payloads are shared by reference to avoid the deep recursion
+  that the previous ``deepcopy`` paid on every request.
+
+  Because the copy is shallow, nested fields (e.g. ``function_call.args``,
+  ``inline_data.data``) are shared with the session events. Downstream
+  processors must therefore only replace ``Part`` objects or set top-level
+  ``Part`` fields; mutating a nested field in place would corrupt session
+  history.
+
+  Args:
+    content: The (session-owned) content to copy. Not mutated.
+    strip_client_function_call_ids: Whether to remove ``adk-`` prefixed function
+      call/response ids (mirrors ``remove_client_function_call_id``).
+
+  Returns:
+    An isolated ``Content`` safe to attach to an ``LlmRequest``.
+  """
+  new_content = content.model_copy()
+  parts = content.parts
+  if not parts:
+    return new_content
+
+  new_parts = []
+  for part in parts:
+    new_part = part.model_copy()
+    if strip_client_function_call_ids:
+      fc = new_part.function_call
+      if fc and fc.id and fc.id.startswith(AF_FUNCTION_CALL_ID_PREFIX):
+        new_part.function_call = fc.model_copy(update={'id': None})
+      fr = new_part.function_response
+      if fr and fr.id and fr.id.startswith(AF_FUNCTION_CALL_ID_PREFIX):
+        new_part.function_response = fr.model_copy(update={'id': None})
+    new_parts.append(new_part)
+  new_content.parts = new_parts
+  return new_content
+
+
 def _get_contents(
     current_branch: Optional[str],
     events: list[Event],
@@ -659,11 +704,13 @@ def _get_contents(
   # Convert events to contents
   contents = []
   for event in result_events:
-    content = copy.deepcopy(event.content)
-    if content:
-      if not preserve_function_call_ids:
-        remove_client_function_call_id(content)
-      contents.append(content)
+    if event.content:
+      contents.append(
+          _copy_content_for_request(
+              event.content,
+              strip_client_function_call_ids=not preserve_function_call_ids,
+          )
+      )
 
   # for scoped agents (task / single_turn), prepend a
   # synthetic user-role content built from the originating FC's args.
