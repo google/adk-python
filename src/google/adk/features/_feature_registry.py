@@ -37,6 +37,8 @@ class FeatureName(str, Enum):
   COMPUTER_USE = "COMPUTER_USE"
   DATA_AGENT_TOOL_CONFIG = "DATA_AGENT_TOOL_CONFIG"
   DATA_AGENT_TOOLSET = "DATA_AGENT_TOOLSET"
+  DAYTONA_ENVIRONMENT = "DAYTONA_ENVIRONMENT"
+  E2B_ENVIRONMENT = "E2B_ENVIRONMENT"
   ENVIRONMENT_SIMULATION = "ENVIRONMENT_SIMULATION"
   GCS_ADMIN_TOOLSET = "GCS_ADMIN_TOOLSET"
   GCS_TOOL_SETTINGS = "GCS_TOOL_SETTINGS"
@@ -126,6 +128,12 @@ _FEATURE_REGISTRY: dict[FeatureName, FeatureConfig] = {
         FeatureStage.EXPERIMENTAL, default_on=True
     ),
     FeatureName.DATA_AGENT_TOOLSET: FeatureConfig(
+        FeatureStage.EXPERIMENTAL, default_on=True
+    ),
+    FeatureName.DAYTONA_ENVIRONMENT: FeatureConfig(
+        FeatureStage.EXPERIMENTAL, default_on=True
+    ),
+    FeatureName.E2B_ENVIRONMENT: FeatureConfig(
         FeatureStage.EXPERIMENTAL, default_on=True
     ),
     FeatureName.ENVIRONMENT_SIMULATION: FeatureConfig(

@@ -56,6 +56,7 @@ from .plugins.plugin_manager import PluginManager
 from .sessions.base_session_service import BaseSessionService
 from .sessions.base_session_service import GetSessionConfig
 from .sessions.session import Session
+from .telemetry import _instrumentation
 from .telemetry.tracing import tracer
 from .tools.base_toolset import BaseToolset
 from .utils._debug_output import print_event
@@ -65,6 +66,10 @@ if TYPE_CHECKING:
   from .apps.app import ResumabilityConfig
 
 logger = logging.getLogger('google_adk.' + __name__)
+
+# Silence unused warning.
+# tracer is imported for backwards compatibility, to avoid breaking change in the API.
+_ = tracer
 
 
 def _find_active_task_isolation_scope(session) -> Optional[str]:
@@ -454,7 +459,9 @@ class Runner:
     Events flow through ic._event_queue via NodeRunner.
     """
 
-    with tracer.start_as_current_span('invocation'):
+    with _instrumentation.record_invocation(
+        entrypoint_node=node or self.agent, conversation_id=session_id
+    ):
       # 1. Setup
       session = await self._get_or_create_session(
           user_id=user_id, session_id=session_id
@@ -1040,7 +1047,9 @@ class Runner:
         new_message: Optional[types.Content] = None,
         invocation_id: Optional[str] = None,
     ) -> AsyncGenerator[Event, None]:
-      with tracer.start_as_current_span('invocation'):
+      with _instrumentation.record_invocation(
+          entrypoint_node=self.agent, conversation_id=session_id
+      ):
         session = await self._get_or_create_session(
             user_id=user_id,
             session_id=session_id,

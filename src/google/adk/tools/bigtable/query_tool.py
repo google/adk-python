@@ -42,6 +42,7 @@ async def execute_sql(
     tool_context: ToolContext,
     parameters: Dict[str, Any] | None = None,
     parameter_types: Dict[str, Any] | None = None,
+    _view_parameters: Dict[str, Any] | None = None,
 ) -> dict:
   """Execute a GoogleSQL query from a Bigtable table.
 
@@ -56,6 +57,7 @@ async def execute_sql(
       parameters (dict): properties for parameter replacement. Keys must match
         the names used in ``query``.
       parameter_types (dict): maps explicit types for one or more param values.
+      _view_parameters (dict): maps properties for parameterized views.
 
   Returns:
       dict: Dictionary containing the status and the rows read.
@@ -91,6 +93,7 @@ async def execute_sql(
           instance_id=instance_id,
           parameters=parameters,
           parameter_types=parameter_types,
+          view_parameters=_view_parameters,
       )
 
       rows: List[Dict[str, Any]] = []

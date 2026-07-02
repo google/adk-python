@@ -62,6 +62,18 @@ DEFAULT_APP_STATE_COLLECTION = "app_states"
 DEFAULT_USER_STATE_COLLECTION = "user_states"
 
 
+def _to_last_update_time(update_time: Any) -> float:
+  """Converts a Firestore updateTime value to epoch seconds, or 0.0."""
+  if not update_time:
+    return 0.0
+  if isinstance(update_time, datetime):
+    return update_time.timestamp()
+  try:
+    return float(update_time)
+  except (ValueError, TypeError):
+    return 0.0
+
+
 class FirestoreSessionService(BaseSessionService):  # type: ignore[misc]
   """Session service that uses Google Cloud Firestore as the backend.
 
@@ -322,18 +334,6 @@ class FirestoreSessionService(BaseSessionService):  # type: ignore[misc]
 
     merged_state = self._merge_state(app_state, user_state, session_state)
 
-    # Convert timestamp
-    update_time = data.get("updateTime")
-    last_update_time = 0.0
-    if update_time:
-      if isinstance(update_time, datetime):
-        last_update_time = update_time.timestamp()
-      else:
-        try:
-          last_update_time = float(update_time)
-        except (ValueError, TypeError):
-          pass
-
     current_revision = data.get("revision", 0)
     session = Session(
         id=session_id,
@@ -341,7 +341,7 @@ class FirestoreSessionService(BaseSessionService):  # type: ignore[misc]
         user_id=user_id,
         state=merged_state,
         events=events,
-        last_update_time=last_update_time,
+        last_update_time=_to_last_update_time(data.get("updateTime")),
     )
     session._storage_update_marker = str(current_revision)
     return session
@@ -418,7 +418,7 @@ class FirestoreSessionService(BaseSessionService):  # type: ignore[misc]
               user_id=data["userId"],
               state=merged,
               events=[],
-              last_update_time=0.0,
+              last_update_time=_to_last_update_time(data.get("updateTime")),
           )
       )
 

@@ -14,6 +14,8 @@
 
 from __future__ import annotations
 
+from datetime import datetime
+from datetime import timezone
 import json
 from unittest import mock
 
@@ -387,6 +389,7 @@ async def test_list_sessions_with_user_id(mock_firestore_client):
       "appName": app_name,
       "userId": user_id,
       "state": {"session_key": "session_val"},
+      "updateTime": 1234567890.0,
   }
 
   app_state_coll = mock.MagicMock()
@@ -442,6 +445,77 @@ async def test_list_sessions_with_user_id(mock_firestore_client):
   assert session.state["session_key"] == "session_val"
   assert session.state["app:app_key"] == "app_val"
   assert session.state["user:user_key"] == "user_val"
+  assert session.last_update_time == 1234567890.0
+
+
+@pytest.mark.asyncio
+async def test_list_sessions_preserves_datetime_update_time(
+    mock_firestore_client,
+):
+  """list_sessions converts datetime updateTime to last_update_time."""
+  service = FirestoreSessionService(client=mock_firestore_client)
+  app_name = "test_app"
+  user_id = "test_user"
+  update_time = datetime(2024, 6, 15, 10, 30, 0, tzinfo=timezone.utc)
+
+  session_doc = mock.MagicMock()
+  session_doc.to_dict.return_value = {
+      "id": "session1",
+      "appName": app_name,
+      "userId": user_id,
+      "state": {},
+      "updateTime": update_time,
+  }
+
+  app_state_coll = mock.MagicMock()
+  user_state_coll = mock.MagicMock()
+  sessions_coll = mock.MagicMock()
+
+  def collection_side_effect(name):
+    if name == service.app_state_collection:
+      return app_state_coll
+    elif name == service.user_state_collection:
+      return user_state_coll
+    elif name == service.root_collection:
+      return sessions_coll
+    return mock.MagicMock()
+
+  mock_firestore_client.collection.side_effect = collection_side_effect
+
+  app_doc = mock.MagicMock()
+  app_doc.exists = False
+  app_doc.to_dict.return_value = {}
+  app_doc_ref = mock.MagicMock()
+  app_state_coll.document.return_value = app_doc_ref
+  app_doc_ref.get = mock.AsyncMock(return_value=app_doc)
+
+  user_doc = mock.MagicMock()
+  user_doc.exists = False
+  user_doc.to_dict.return_value = {}
+  user_app_doc = mock.MagicMock()
+  user_state_coll.document.return_value = user_app_doc
+  users_coll = mock.MagicMock()
+  user_app_doc.collection.return_value = users_coll
+  user_doc_ref = mock.MagicMock()
+  users_coll.document.return_value = user_doc_ref
+  user_doc_ref.get = mock.AsyncMock(return_value=user_doc)
+
+  app_doc_in_root = mock.MagicMock()
+  sessions_coll.document.return_value = app_doc_in_root
+  users_coll = mock.MagicMock()
+  app_doc_in_root.collection.return_value = users_coll
+  user_doc_in_users = mock.MagicMock()
+  users_coll.document.return_value = user_doc_in_users
+  sessions_subcoll = mock.MagicMock()
+  user_doc_in_users.collection.return_value = sessions_subcoll
+  sessions_query = mock.MagicMock()
+  sessions_subcoll.where.return_value = sessions_query
+  sessions_query.get = mock.AsyncMock(return_value=[session_doc])
+
+  response = await service.list_sessions(app_name=app_name, user_id=user_id)
+
+  assert len(response.sessions) == 1
+  assert response.sessions[0].last_update_time == update_time.timestamp()
 
 
 @pytest.mark.asyncio
@@ -455,6 +529,7 @@ async def test_list_sessions_without_user_id(mock_firestore_client):
       "appName": app_name,
       "userId": "user1",
       "state": {"session_key": "session_val"},
+      "updateTime": 1234567890.0,
   }
 
   mock_firestore_client.collection_group.return_value.where.return_value.get = (
@@ -503,6 +578,7 @@ async def test_list_sessions_without_user_id(mock_firestore_client):
   assert session.id == "session1"
   assert session.state["app:app_key"] == "app_val"
   assert session.state["user:user_key"] == "user_val"
+  assert session.last_update_time == 1234567890.0
 
   mock_firestore_client.collection_group.assert_called_once_with("sessions")
   mock_firestore_client.collection_group.return_value.where.assert_called_once_with(

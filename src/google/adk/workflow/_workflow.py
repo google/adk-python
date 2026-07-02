@@ -555,10 +555,8 @@ class Workflow(BaseNode):
       recovered = loop_state.recovered_executions[key]
 
       result = check_interception(
-          node_path=f'{ctx.node_path}/{node_name}@{run_id}',
           node=node,
           recovered=recovered,
-          curr_parent_ctx=ctx,
       )
 
       if not result.should_run:
@@ -688,7 +686,6 @@ class Workflow(BaseNode):
     use_sub_branch = len(next_nodes) > 1
     for target_name in next_nodes:
       target_node = self._get_static_node_by_name(target_name)
-      target_state = loop_state.nodes.get(target_name)
 
       if target_node._requires_all_predecessors:
         # Wait for all predecessors

@@ -266,11 +266,9 @@ class DynamicNodeScheduler(ScheduleDynamicNode):
 
     # Delegate replay and same-turn interception check to ReplayInterceptor.
     result = check_interception(
-        node_path=node_path,
         node=curr_node,
         recovered=run.recovered_state,
         current_run=run,
-        curr_parent_ctx=curr_parent_ctx,
     )
 
     if not result.should_run:

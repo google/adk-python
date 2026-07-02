@@ -1221,23 +1221,28 @@ class BaseLlmFlow(ABC):
 
     # Handles function calls.
     if model_response_event.get_function_calls():
-      function_response_event = await functions.handle_function_calls_live(
+      # handle_function_calls_live returns None when every call is deferred
+      # (e.g. all long-running), so guard before yielding to avoid emitting a
+      # None event into the live stream.
+      if function_response_event := await functions.handle_function_calls_live(
           invocation_context, model_response_event, llm_request.tools_dict
-      )
-      # Always yield the function response event first
-      yield function_response_event
-
-      # Check if this is a set_model_response function response
-      if json_response := _output_schema_processor.get_structured_model_response(
-          function_response_event
       ):
-        # Create and yield a final model response event
-        final_event = (
-            _output_schema_processor.create_final_model_response_event(
-                invocation_context, json_response
+        # Always yield the function response event first
+        yield function_response_event
+
+        # Check if this is a set_model_response function response
+        if json_response := (
+            _output_schema_processor.get_structured_model_response(
+                function_response_event
             )
-        )
-        yield final_event
+        ):
+          # Create and yield a final model response event
+          final_event = (
+              _output_schema_processor.create_final_model_response_event(
+                  invocation_context, json_response
+              )
+          )
+          yield final_event
 
   async def _postprocess_run_processors_async(
       self, invocation_context: InvocationContext, llm_response: LlmResponse

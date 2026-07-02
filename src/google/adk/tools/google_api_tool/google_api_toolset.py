@@ -14,11 +14,13 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Dict
 from typing import List
 from typing import Optional
 from typing import Union
 
+import httpx
 from typing_extensions import override
 
 from ...agents.readonly_context import ReadonlyContext
@@ -26,9 +28,13 @@ from ...auth.auth_credential import ServiceAccount
 from ...auth.auth_schemes import OpenIdConnectWithConfig
 from ...tools.base_toolset import BaseToolset
 from ...tools.base_toolset import ToolPredicate
+from ...utils._mtls_utils import MtlsClientCerts
+from ...utils._mtls_utils import use_client_cert_effective
 from ..openapi_tool import OpenAPIToolset
 from .google_api_tool import GoogleApiTool
 from .googleapi_to_openapi_converter import GoogleApiToOpenApiConverter
+
+logger = logging.getLogger('google_adk.' + __name__)
 
 
 class GoogleApiToolset(BaseToolset):
@@ -75,6 +81,20 @@ class GoogleApiToolset(BaseToolset):
     self._additional_headers = additional_headers
     self._additional_scopes = additional_scopes
     self._discovery_url = discovery_url
+
+    self._httpx_client_factory = None
+    use_client_cert = use_client_cert_effective()
+
+    if use_client_cert:
+      self._mtls_certs = MtlsClientCerts()
+      cert_path, key_path, passphrase = self._mtls_certs.get_certs()
+      if cert_path and key_path and passphrase:
+
+        def client_factory():
+          return httpx.AsyncClient(cert=(cert_path, key_path, passphrase))
+
+        self._httpx_client_factory = client_factory
+
     self._openapi_toolset = self._load_toolset_with_oidc_auth()
 
   @override
@@ -134,6 +154,7 @@ class GoogleApiToolset(BaseToolset):
             grant_types_supported=['authorization_code'],
             scopes=scopes,
         ),
+        httpx_client_factory=self._httpx_client_factory,
     )
 
   def configure_auth(self, client_id: str, client_secret: str):
@@ -147,3 +168,5 @@ class GoogleApiToolset(BaseToolset):
   async def close(self):
     if self._openapi_toolset:
       await self._openapi_toolset.close()
+    if hasattr(self, '_mtls_certs') and self._mtls_certs:
+      self._mtls_certs.close()

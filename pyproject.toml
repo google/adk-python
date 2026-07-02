@@ -65,12 +65,13 @@ optional-dependencies.agent-identity = [
 ]
 optional-dependencies.all = [
   "anyio>=4.9,<5",
+  "daytona>=0.191",
   "e2b>=2,<3",
   "google-api-python-client>=2.157,<3",
   "google-cloud-aiplatform[agent-engines]>=1.148.1,<2",
   "google-cloud-bigquery>=2.2",
   "google-cloud-bigquery-storage>=2",
-  "google-cloud-bigtable>=2.32",
+  "google-cloud-bigtable>=2.39.1",
   "google-cloud-dataplex>=1.7,<3",
   "google-cloud-discoveryengine>=0.13.12,<0.14",
   "google-cloud-parametermanager>=0.4,<1",
@@ -100,6 +101,9 @@ optional-dependencies.benchmark = [
 ]
 optional-dependencies.community = [
   "google-adk-community",
+]
+optional-dependencies.daytona = [
+  "daytona>=0.191", # For DaytonaEnvironment remote sandbox.
 ]
 optional-dependencies.db = [
   "sqlalchemy>=2,<3",
@@ -165,7 +169,7 @@ optional-dependencies.gcp = [
   "google-cloud-aiplatform[agent-engines]>=1.148.1,<2",
   "google-cloud-bigquery>=2.2",
   "google-cloud-bigquery-storage>=2",
-  "google-cloud-bigtable>=2.32",
+  "google-cloud-bigtable>=2.39.1",
   "google-cloud-dataplex>=1.7,<3",
   "google-cloud-discoveryengine>=0.13.12,<0.14",
   "google-cloud-parametermanager>=0.4,<1",
@@ -199,6 +203,7 @@ optional-dependencies.test = [
   "anyio>=4.9,<5",
   "beautifulsoup4>=3.2.2",
   "crewai[tools]; python_version>='3.11' and python_version<'3.12'", # For CrewaiTool tests; chromadb/pypika fail on 3.12+
+  "daytona>=0.191",
   "docker>=7",                                                       # For ContainerCodeExecutor tests
   "e2b>=2,<3",
   "gepa>=0.1",
@@ -208,7 +213,7 @@ optional-dependencies.test = [
   "google-cloud-aiplatform[agent-engines,evaluation]>=1.148.1,<2",
   "google-cloud-bigquery>=2.2",
   "google-cloud-bigquery-storage>=2",
-  "google-cloud-bigtable>=2.32",
+  "google-cloud-bigtable>=2.39.1",
   "google-cloud-dataplex>=1.7,<3",
   "google-cloud-discoveryengine>=0.13.12,<0.14",
   "google-cloud-firestore>=2.11,<3",
@@ -292,8 +297,11 @@ single_line_exclusions = []
 known_third_party = [ "a2a", "google.adk" ]
 
 [tool.mypy]
+mypy_path = [ "src" ]
 exclude = [ "contributing/samples/", "tests/" ]
-follow_imports = "skip"
+namespace_packages = true
+explicit_package_bases = true
+follow_imports = "normal"
 python_version = "3.11"
 disable_error_code = [ "import-not-found", "import-untyped", "unused-ignore" ]
 strict = true
