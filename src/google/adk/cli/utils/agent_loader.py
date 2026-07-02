@@ -71,8 +71,12 @@ class AgentLoader(BaseAgentLoader):
 
   def __init__(self, agents_dir: str):
     agents_path = Path(agents_dir).resolve()
-    is_single_agent = is_single_agent_directory(agents_path)
-    if is_single_agent:
+    self._init_agent_mode(agents_path)
+    self._original_sys_path = None
+    self._agent_cache: dict[str, Union[BaseAgent, App]] = {}
+
+  def _init_agent_mode(self, agents_path: Path) -> None:
+    if is_single_agent_directory(agents_path):
       self._is_single_agent = True
       self._single_agent_name = agents_path.name
       self.agents_dir = str(agents_path.parent)
@@ -80,9 +84,6 @@ class AgentLoader(BaseAgentLoader):
       self._is_single_agent = False
       self._single_agent_name = None
       self.agents_dir = str(agents_path)
-
-    self._original_sys_path = None
-    self._agent_cache: dict[str, Union[BaseAgent, App]] = {}
 
   @property
   def is_single_agent(self) -> bool:
@@ -469,6 +470,8 @@ class AgentLoader(BaseAgentLoader):
     elif (base_path / "agent.py").exists():
       return "python"
     elif (base_path / "__init__.py").exists():
+      return "python"
+    elif (base_path.parent / f"{agent_name}.py").exists():
       return "python"
 
     raise ValueError(f"Could not determine agent type for '{agent_name}'.")

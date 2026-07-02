@@ -22,6 +22,7 @@ from authlib.integrations.requests_client import OAuth2Session
 from authlib.oauth2.rfc6749 import OAuth2Token
 from fastapi.openapi.models import OAuth2
 
+from ..utils import _mtls_utils
 from ..utils.feature_decorator import experimental
 from .auth_credential import AuthCredential
 from .auth_schemes import AuthScheme
@@ -83,17 +84,27 @@ def create_oauth2_session(
 
   # Scope is intentionally omitted: token exchange and refresh don't require
   # it per RFC 6749, and some providers reject it on these requests.
-  return (
-      OAuth2Session(
-          auth_credential.oauth2.client_id,
-          auth_credential.oauth2.client_secret,
-          redirect_uri=auth_credential.oauth2.redirect_uri,
-          state=auth_credential.oauth2.state,
-          token_endpoint_auth_method=auth_credential.oauth2.token_endpoint_auth_method,
-          code_challenge_method=auth_credential.oauth2.code_challenge_method,
-      ),
-      token_endpoint,
+  session = OAuth2Session(
+      auth_credential.oauth2.client_id,
+      auth_credential.oauth2.client_secret,
+      redirect_uri=auth_credential.oauth2.redirect_uri,
+      state=auth_credential.oauth2.state,
+      token_endpoint_auth_method=auth_credential.oauth2.token_endpoint_auth_method,
+      code_challenge_method=auth_credential.oauth2.code_challenge_method,
   )
+
+  # When a client certificate is configured, route Google token requests through
+  # the mTLS endpoint and present the cert so Context-Aware Access / token
+  # binding is honored. Non-Google providers and non-cert environments keep the
+  # existing behavior.
+  if (
+      _mtls_utils.is_non_mtls_googleapis_endpoint(token_endpoint)
+      and _mtls_utils.use_client_cert_effective()
+  ):
+    if _mtls_utils.configure_session_for_mtls(session):
+      token_endpoint = _mtls_utils.effective_googleapis_endpoint(token_endpoint)
+
+  return session, token_endpoint
 
 
 @experimental

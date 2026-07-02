@@ -36,6 +36,7 @@ from ..code_executors.code_execution_utils import CodeExecutionInput
 from ..skills import models
 from ..skills import prompt
 from ..skills import SkillRegistry
+from ..utils import instructions_utils
 from .base_tool import BaseTool
 from .base_toolset import BaseToolset
 from .base_toolset import ToolPredicate
@@ -96,6 +97,11 @@ def _build_skill_system_instruction(prefix: str | None = None) -> str:
       f"6. If `{p}run_skill_script` returns an error (for example "
       f"`SCRIPT_NOT_FOUND`), do not retry the same script or guess a "
       "different script path. Report the error to the user and stop.\n"
+      f"7. Loading a skill only retrieves its instructions; it does NOT "
+      f"complete your turn. After a `{p}load_skill` call returns, continue "
+      "in the SAME turn: call whatever tools the skill's steps require "
+      "(search, data retrieval, render), then write your reply. Never end "
+      "your turn with an empty response right after loading a skill.\n"
   )
 
 
@@ -251,9 +257,16 @@ class LoadSkillTool(BaseTool):
       activated_skills.append(skill_name)
       tool_context.state[state_key] = activated_skills
 
+    instructions = skill.instructions
+    if skill.frontmatter.metadata.get("adk_inject_state"):
+      instructions = await instructions_utils.inject_session_state(
+          instructions,
+          tool_context,
+      )
+
     return {
         "skill_name": skill_name,
-        "instructions": skill.instructions,
+        "instructions": instructions,
         "frontmatter": skill.frontmatter.model_dump(),
     }
 

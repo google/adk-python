@@ -235,8 +235,8 @@ def prepare_llm_agent_input(agent: Any, ctx: Context, node_input: Any) -> None:
   overrides ``ic.user_content`` so the content-builder can fall back
   to that as the first user turn.
 
-  No branch is set — task and single_turn agents scope via
-  ``isolation_scope`` rather than branch.
+  For workflow nodes running in a sub-branch, stamp the input event with that
+  branch. A private node input should not look like the shared root user turn.
   """
   if node_input is None or agent.mode != 'single_turn':
     return
@@ -247,6 +247,9 @@ def prepare_llm_agent_input(agent: Any, ctx: Context, node_input: Any) -> None:
   iso = getattr(ctx, 'isolation_scope', None)
   if iso:
     user_event.isolation_scope = iso
+  branch = ctx._invocation_context.branch
+  if branch:
+    user_event.branch = branch
   ctx.session.events.append(user_event)
 
 
@@ -391,19 +394,23 @@ async def run_llm_agent_as_node(
             break  # close this run_iter; outer loop re-enters
           if event.actions.transfer_to_agent:
             target_name = event.actions.transfer_to_agent
-            if target_name != agent.name:
-              from ..agents.llm_agent import LlmAgent
+            if target_name == agent.name:
+              raise ValueError(
+                  f"Agent '{target_name}' cannot transfer to itself."
+              )
 
-              if (
-                  isinstance(agent, LlmAgent)
-                  and ctx._invocation_context.is_resumable
-              ):
-                ctx._invocation_context.set_agent_state(
-                    agent.name, end_of_agent=True
-                )
-                yield agent._create_agent_state_event(ctx._invocation_context)
-              transferred = True
-              break
+            from ..agents.llm_agent import LlmAgent
+
+            if (
+                isinstance(agent, LlmAgent)
+                and ctx._invocation_context.is_resumable
+            ):
+              ctx._invocation_context.set_agent_state(
+                  agent.name, end_of_agent=True
+              )
+              yield agent._create_agent_state_event(ctx._invocation_context)
+            transferred = True
+            break
       if not had_task_fc or transferred:
         # LLM finished without delegating (or transferred away);
         # nothing more for this wrapper to do.

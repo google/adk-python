@@ -155,3 +155,15 @@ def test_defers_response_flag():
   t2 = SimpleTool(name='test2', description='desc')
   t2._defers_response = True
   assert t2._defers_response is True
+
+
+def test_response_scheduling_defaults_to_none():
+  """response_scheduling defaults to None, preserving existing behavior."""
+
+  class SimpleTool(BaseTool):
+
+    async def run_async(self, **kwargs):
+      pass
+
+  t = SimpleTool(name='test', description='desc')
+  assert t.response_scheduling is None

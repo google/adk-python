@@ -27,6 +27,7 @@ from .registry import LLMRegistry
 if TYPE_CHECKING:
   from google.adk.labs.openai import OpenAILlm
 
+  from .anthropic_llm import AnthropicGenerateContentConfig
   from .anthropic_llm import Claude
   from .apigee_llm import ApigeeLlm
   from .gemma_llm import Gemma
@@ -35,6 +36,7 @@ if TYPE_CHECKING:
   from .lite_llm import LiteLlm
 
 __all__ = [
+    'AnthropicGenerateContentConfig',
     'ApigeeLlm',
     'BaseLlm',
     'Claude',
@@ -97,18 +99,27 @@ for _name, (_patterns, _module) in _LAZY_PROVIDERS.items():
   LLMRegistry._register_lazy(_patterns, _target_module, _name)
 
 
+_OTHER_LAZY_IMPORTS: dict[str, str] = {
+    'AnthropicGenerateContentConfig': 'anthropic_llm',
+}
+
+
 def __getattr__(name: str):
   if name in _LAZY_PROVIDERS:
     module_name = _LAZY_PROVIDERS[name][1]
-    try:
-      if module_name.startswith('google.adk.'):
-        module = importlib.import_module(module_name)
-      else:
-        module = importlib.import_module(f'{__name__}.{module_name}')
-    except ImportError as e:
-      raise ImportError(
-          f'`{name}` requires an optional dependency that is not installed.'
-          ' Install with: pip install google-adk[extensions]'
-      ) from e
-    return getattr(module, name)
-  raise AttributeError(f'module {__name__!r} has no attribute {name!r}')
+  elif name in _OTHER_LAZY_IMPORTS:
+    module_name = _OTHER_LAZY_IMPORTS[name]
+  else:
+    raise AttributeError(f'module {__name__!r} has no attribute {name!r}')
+
+  try:
+    if module_name.startswith('google.adk.'):
+      module = importlib.import_module(module_name)
+    else:
+      module = importlib.import_module(f'{__name__}.{module_name}')
+  except ImportError as e:
+    raise ImportError(
+        f'`{name}` requires an optional dependency that is not installed.'
+        ' Install with: pip install google-adk[extensions]'
+    ) from e
+  return getattr(module, name)

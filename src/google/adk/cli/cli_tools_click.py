@@ -1806,8 +1806,8 @@ def cli_web(
   """Starts a FastAPI server with Web UI for agents.
 
   AGENTS_DIR: The directory of agents (where each subdirectory is a single
-  agent containing `agent.py` or `root_agent.yaml` files) or a path pointing
-  directly to a single agent folder.
+  agent containing `agent.py`, `__init__.py`, or `root_agent.yaml`) or a path
+  pointing directly to a single agent folder.
 
   Example:
 
@@ -1947,8 +1947,8 @@ def cli_api_server(
   """Starts a FastAPI server for agents.
 
   AGENTS_DIR: The directory of agents (where each subdirectory is a single
-  agent containing `agent.py` or `root_agent.yaml` files) or a path pointing
-  directly to a single agent folder.
+  agent containing `agent.py`, `__init__.py`, or `root_agent.yaml`) or a path
+  pointing directly to a single agent folder.
 
   Example:
 
@@ -2000,7 +2000,6 @@ def cli_api_server(
     "cloud_run",
     context_settings={
         "allow_extra_args": True,
-        "allow_interspersed_args": False,
     },
 )
 @click.option(
@@ -2177,34 +2176,7 @@ def cli_deploy_cloud_run(
 
   _warn_if_with_ui(with_ui)
 
-  # Parse arguments to separate gcloud args (after --) from regular args
-  gcloud_args = []
-  if "--" in ctx.args:
-    separator_index = ctx.args.index("--")
-    gcloud_args = ctx.args[separator_index + 1 :]
-    regular_args = ctx.args[:separator_index]
-
-    # If there are regular args before --, that's an error
-    if regular_args:
-      click.secho(
-          "Error: Unexpected arguments after agent path and before '--':"
-          f" {' '.join(regular_args)}. \nOnly arguments after '--' are passed"
-          " to gcloud.",
-          fg="red",
-          err=True,
-      )
-      ctx.exit(2)
-  else:
-    # No -- separator, treat all args as an error to enforce the new behavior
-    if ctx.args:
-      click.secho(
-          f"Error: Unexpected arguments: {' '.join(ctx.args)}. \nUse '--' to"
-          " separate gcloud arguments, e.g.: adk deploy cloud_run [options]"
-          " agent_path -- --min-instances=2",
-          fg="red",
-          err=True,
-      )
-      ctx.exit(2)
+  gcloud_args = ctx.args
 
   try:
     from . import cli_deploy

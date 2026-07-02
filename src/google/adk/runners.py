@@ -40,7 +40,6 @@ from .agents.live_request_queue import LiveRequestQueue
 from .agents.llm.task._finish_task_tool import FINISH_TASK_SUCCESS_RESULT
 from .agents.llm.task._finish_task_tool import FINISH_TASK_TOOL_NAME
 from .agents.run_config import RunConfig
-from .apps.app import App
 from .artifacts.base_artifact_service import BaseArtifactService
 from .auth.credential_service.base_credential_service import BaseCredentialService
 from .code_executors.built_in_code_executor import BuiltInCodeExecutor
@@ -57,14 +56,20 @@ from .plugins.plugin_manager import PluginManager
 from .sessions.base_session_service import BaseSessionService
 from .sessions.base_session_service import GetSessionConfig
 from .sessions.session import Session
+from .telemetry import _instrumentation
 from .telemetry.tracing import tracer
 from .tools.base_toolset import BaseToolset
 from .utils._debug_output import print_event
 
 if TYPE_CHECKING:
+  from .apps.app import App
   from .apps.app import ResumabilityConfig
 
 logger = logging.getLogger('google_adk.' + __name__)
+
+# Silence unused warning.
+# tracer is imported for backwards compatibility, to avoid breaking change in the API.
+_ = tracer
 
 
 def _find_active_task_isolation_scope(session) -> Optional[str]:
@@ -192,8 +197,8 @@ class Runner:
     Args:
         app: An `App` instance. Mutually exclusive with `agent` and `node`.
         app_name: The application name. Required when `agent` is provided.
-          Optional override for `app.name` when `app` is provided. Defaults
-          to `node.name` when only `node` is provided.
+          Optional override for `app.name` when `app` is provided. Defaults to
+          `node.name` when only `node` is provided.
         agent: The root agent to run. Mutually exclusive with `app` and `node`.
         node: The root node to run. Mutually exclusive with `app` and `agent`.
         plugins: Deprecated. A list of plugins for the runner. Please use the
@@ -203,8 +208,8 @@ class Runner:
         memory_service: The memory service for the runner.
         credential_service: The credential service for the runner.
         plugin_close_timeout: The timeout in seconds for plugin close methods.
-        auto_create_session: Whether to automatically create a session when
-          not found. Defaults to False. If False, a missing session raises
+        auto_create_session: Whether to automatically create a session when not
+          found. Defaults to False. If False, a missing session raises
           ValueError with a helpful message.
 
     Raises:
@@ -276,6 +281,9 @@ class Runner:
           ' to provide plugins instead.',
           DeprecationWarning,
       )
+
+    # Lazy import keeps apps.app off the `import google.adk` cold-start path.
+    from .apps.app import App
 
     # Normalize to App — wrap bare agent or node. Uses model_construct to
     # bypass App._validate for the legacy (app_name, agent) API, which v1
@@ -450,9 +458,10 @@ class Runner:
 
     Events flow through ic._event_queue via NodeRunner.
     """
-    from .workflow._node_runner import NodeRunner
 
-    with tracer.start_as_current_span('invocation'):
+    with _instrumentation.record_invocation(
+        entrypoint_node=node or self.agent, conversation_id=session_id
+    ):
       # 1. Setup
       session = await self._get_or_create_session(
           user_id=user_id, session_id=session_id
@@ -515,6 +524,8 @@ class Runner:
       from .agents.base_agent import BaseAgent
       from .agents.context import Context
       from .workflow._dynamic_node_scheduler import DynamicNodeScheduler
+      from .workflow._errors import DynamicNodeFailError
+      from .workflow._errors import NodeInterruptedError
       from .workflow._workflow import _LoopState
 
       root_ctx = Context(ic)
@@ -533,9 +544,6 @@ class Runner:
       # originating function-call id and so remain invisible to the
       # coordinator's view.
 
-      if not use_scheduler:
-        root_node_runner = NodeRunner(node=root_agent, parent_ctx=root_ctx)
-
       done_sentinel = object()
 
       async def _drive_root_node():
@@ -545,19 +553,18 @@ class Runner:
             # Stateful live EUC/LRO streams may rehydrate freshly if not yet persisted.
             scheduler = DynamicNodeScheduler(state=_LoopState())
             root_ctx._workflow_scheduler = scheduler
-            ctx = await scheduler(
-                root_ctx,
+
+          try:
+            await root_ctx._run_node_internal(
                 root_agent,
-                node_input,
-                run_id='1',
-            )
-          else:
-            ctx = await root_node_runner.run(
                 node_input=node_input,
                 resume_inputs=resume_inputs,
             )
-          if ctx.error:
-            raise ctx.error
+          except NodeInterruptedError:
+            # The node was interrupted (e.g. for HITL).
+            pass
+          except DynamicNodeFailError as e:
+            raise e.error
         finally:
           await ic._event_queue.put((done_sentinel, None))
 
@@ -594,7 +601,8 @@ class Runner:
     """Run a non-agent BaseNode in live mode."""
     from .agents.context import Context
     from .workflow._dynamic_node_scheduler import DynamicNodeScheduler
-    from .workflow._node_runner import NodeRunner
+    from .workflow._errors import DynamicNodeFailError
+    from .workflow._errors import NodeInterruptedError
     from .workflow._workflow import _LoopState
     from .workflow._workflow import Workflow
 
@@ -609,9 +617,6 @@ class Runner:
     root_agent = self.agent
     is_workflow = isinstance(root_agent, Workflow)
 
-    if not is_workflow:
-      root_node_runner = NodeRunner(node=root_agent, parent_ctx=root_ctx)
-
     done_sentinel = object()
 
     async def _drive_root_node():
@@ -619,18 +624,16 @@ class Runner:
         if is_workflow:
           scheduler = DynamicNodeScheduler(state=_LoopState())
           root_ctx._workflow_scheduler = scheduler
-          ctx = await scheduler(
-              root_ctx,
+
+        try:
+          await root_ctx.run_node(
               root_agent,
-              None,
-              run_id='1',
-          )
-        else:
-          ctx = await root_node_runner.run(
               node_input=None,
           )
-        if ctx.error:
-          raise ctx.error
+        except NodeInterruptedError:
+          pass
+        except DynamicNodeFailError as e:
+          raise e.error
       finally:
         await ic._event_queue.put((done_sentinel, None))
 
@@ -736,6 +739,8 @@ class Runner:
       iso = _find_active_task_isolation_scope(ic.session)
       if iso is not None:
         event.isolation_scope = iso
+    _apply_run_config_custom_metadata(event, ic.run_config)
+    ic.stamp_event_branch_context(event)
     return await self.session_service.append_event(
         session=ic.session, event=event
     )
@@ -994,9 +999,9 @@ class Runner:
           agent_to_run = self.agent
         else:
           agent_to_run = self._find_agent_to_run(session, self.agent)
-        from .workflow.utils._workflow_graph_utils import build_node  # pylint: disable=g-import-not-at-top
 
-        agent_to_run = build_node(agent_to_run)
+        # The agent_to_run will be built/cloned inside Context.run_node,
+        # so we don't call build_node here to avoid double cloning.
       else:
         raise ValueError(
             "LlmAgent as root agent must have mode='chat', but got"
@@ -1042,7 +1047,9 @@ class Runner:
         new_message: Optional[types.Content] = None,
         invocation_id: Optional[str] = None,
     ) -> AsyncGenerator[Event, None]:
-      with tracer.start_as_current_span('invocation'):
+      with _instrumentation.record_invocation(
+          entrypoint_node=self.agent, conversation_id=session_id
+      ):
         session = await self._get_or_create_session(
             user_id=user_id,
             session_id=session_id,
@@ -1071,6 +1078,7 @@ class Runner:
               new_message=new_message,
               run_config=run_config,
               state_delta=state_delta,
+              invocation_id=invocation_id,
           )
         else:
           invocation_id = self._resolve_invocation_id(
@@ -1477,10 +1485,7 @@ class Runner:
           content=new_message,
       )
     _apply_run_config_custom_metadata(event, invocation_context.run_config)
-    # If new_message is a function response, find the matching function call
-    # and use its branch as the new event's branch.
-    if function_call := invocation_context._find_matching_function_call(event):
-      event.branch = function_call.branch
+    invocation_context.stamp_event_branch_context(event)
 
     await self.session_service.append_event(
         session=invocation_context.session, event=event
@@ -1552,7 +1557,7 @@ class Runner:
     # Some native audio models requires the modality to be set. So we set it to
     # AUDIO by default.
     if run_config.response_modalities is None:
-      run_config.response_modalities = ['AUDIO']
+      run_config.response_modalities = [types.Modality.AUDIO]
     if session is None and (user_id is None or session_id is None):
       raise ValueError(
           'Either session or user_id and session_id must be provided.'
@@ -1833,6 +1838,7 @@ class Runner:
       new_message: types.Content,
       run_config: RunConfig,
       state_delta: Optional[dict[str, Any]],
+      invocation_id: Optional[str] = None,
   ) -> InvocationContext:
     """Sets up the context for a new invocation.
 
@@ -1841,6 +1847,7 @@ class Runner:
       new_message: The new message to process and append to the session.
       run_config: The run config of the agent.
       state_delta: Optional state changes to apply to the session.
+      invocation_id: Optional invocation identifier.
 
     Returns:
       The invocation context for the new invocation.
@@ -1850,6 +1857,7 @@ class Runner:
         session,
         new_message=new_message,
         run_config=run_config,
+        invocation_id=invocation_id,
     )
     # Step 2: Handle new message, by running callbacks and appending to
     # session.
@@ -2016,7 +2024,7 @@ class Runner:
     # For live multi-agents system, we need model's text transcription as
     # context for the transferred agent.
     if hasattr(self.agent, 'sub_agents') and self.agent.sub_agents:
-      if 'AUDIO' in run_config.response_modalities:
+      if types.Modality.AUDIO in run_config.response_modalities:
         if not run_config.output_audio_transcription:
           run_config.output_audio_transcription = (
               types.AudioTranscriptionConfig()

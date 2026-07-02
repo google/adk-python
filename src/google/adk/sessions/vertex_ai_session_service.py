@@ -101,6 +101,22 @@ def _set_internal_custom_metadata(
   }
 
 
+def _drop_vertex_unsupported_part_fields(content_dict: dict[str, Any]) -> None:
+  """Drops Part fields the Vertex AI Agent Engine Sessions API rejects.
+
+  ``part_metadata`` is a Gemini Developer API-only field (the model path guards
+  it in ``genai`` ``_Part_to_vertex``); the Agent Engine Sessions API does not
+  accept it and fails ``appendEvent`` with ``400 INVALID_ARGUMENT`` ("Unknown
+  name \"part_metadata\" at 'event.content.parts[0]'"). Mutates the serialized
+  content dict in place; tolerant of either field-name or alias serialization.
+  """
+  # TODO: remove once the Agent Engine Sessions API accepts part_metadata.
+  for part in content_dict.get('parts') or []:
+    if isinstance(part, dict):
+      part.pop('part_metadata', None)
+      part.pop('partMetadata', None)
+
+
 class VertexAiSessionService(BaseSessionService):
   """Connects to the Vertex AI Agent Engine Session Service using Agent Engine SDK.
 
@@ -159,12 +175,18 @@ class VertexAiSessionService(BaseSessionService):
       state: The initial state of the session.
       session_id: The ID of the session.
       **kwargs: Additional arguments to pass to the session creation. E.g. set
+        ttl='7200s' to set the session time-to-live or
         expire_time='2025-10-01T00:00:00Z' to set the session expiration time.
         See https://cloud.google.com/vertex-ai/generative-ai/docs/reference/rest/v1beta1/projects.locations.reasoningEngines.sessions
         for more details.
+
     Returns:
       The created session.
     """
+    if kwargs.get('ttl') is not None and kwargs.get('expire_time') is not None:
+      raise ValueError(
+          "Cannot specify both 'ttl' and 'expire_time' simultaneously."
+      )
     reasoning_engine_id = self._get_reasoning_engine_id(app_name)
 
     config = {'session_state': state} if state else {}
@@ -370,9 +392,9 @@ class VertexAiSessionService(BaseSessionService):
     # Build config (Monolithic approach)
     config = {}
     if event.content:
-      config['content'] = event.content.model_dump(
-          exclude_none=True, mode='json'
-      )
+      content_dict = event.content.model_dump(exclude_none=True, mode='json')
+      _drop_vertex_unsupported_part_fields(content_dict)
+      config['content'] = content_dict
     if event.actions:
       config['actions'] = {
           'skip_summarization': event.actions.skip_summarization,
@@ -437,6 +459,8 @@ class VertexAiSessionService(BaseSessionService):
         mode='json',
         by_alias=True,
     )
+    if isinstance(config['raw_event'].get('content'), dict):
+      _drop_vertex_unsupported_part_fields(config['raw_event']['content'])
 
     # Retry without raw_event if client side validation fails for older SDK
     # versions.

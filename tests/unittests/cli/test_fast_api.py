@@ -527,6 +527,12 @@ def _create_test_client(
       ),
       patch.object(
           fast_api_module,
+          "NestedAgentLoader",
+          autospec=True,
+          return_value=mock_agent_loader,
+      ),
+      patch.object(
+          fast_api_module,
           "LocalEvalSetsManager",
           autospec=True,
           return_value=mock_eval_sets_manager,
@@ -588,6 +594,12 @@ bigquery_agent_analytics:
       patch.object(
           fast_api_module,
           "AgentLoader",
+          autospec=True,
+          return_value=mock_agent_loader,
+      ),
+      patch.object(
+          fast_api_module,
+          "NestedAgentLoader",
           autospec=True,
           return_value=mock_agent_loader,
       ),
@@ -733,6 +745,12 @@ def builder_test_client(
       patch.object(
           fast_api_module,
           "AgentLoader",
+          autospec=True,
+          return_value=mock_agent_loader,
+      ),
+      patch.object(
+          fast_api_module,
+          "NestedAgentLoader",
           autospec=True,
           return_value=mock_agent_loader,
       ),
@@ -1627,7 +1645,7 @@ def test_agent_run_sse_does_not_split_artifact_delta_for_function_resume(
 def test_agent_run_sse_yields_error_object_on_exception(
     test_app, create_test_session, monkeypatch
 ):
-  """Test /run_sse streams an error object if streaming raises."""
+  """Test /run_sse streams structured error details on exception."""
   info = create_test_session
 
   async def run_async_raises(self, **kwargs):
@@ -1644,15 +1662,42 @@ def test_agent_run_sse_yields_error_object_on_exception(
       "streaming": True,
   }
 
-  response = test_app.post("/run_sse", json=payload)
-  assert response.status_code == 200
+  # 1. Test without DEBUG enabled
+  with patch(
+      "google.adk.cli.api_server.logger.isEnabledFor", return_value=False
+  ):
+    response = test_app.post("/run_sse", json=payload)
+    assert response.status_code == 200
+    sse_events = [
+        json.loads(line.removeprefix("data: "))
+        for line in response.text.splitlines()
+        if line.startswith("data: ")
+    ]
+    assert len(sse_events) == 1
+    error_event = sse_events[0]
+    assert error_event["error"] == "ValueError: boom"
+    assert "error_details" in error_event
+    assert error_event["error_details"]["error_type"] == "ValueError"
+    assert error_event["error_details"]["error_message"] == "boom"
+    assert "stacktrace" not in error_event["error_details"]
+    assert "timestamp" in error_event["error_details"]
 
-  sse_events = [
-      json.loads(line.removeprefix("data: "))
-      for line in response.text.splitlines()
-      if line.startswith("data: ")
-  ]
-  assert sse_events == [{"error": "boom"}]
+  # 2. Test with DEBUG enabled
+  with patch(
+      "google.adk.cli.api_server.logger.isEnabledFor", return_value=True
+  ):
+    response = test_app.post("/run_sse", json=payload)
+    assert response.status_code == 200
+    sse_events = [
+        json.loads(line.removeprefix("data: "))
+        for line in response.text.splitlines()
+        if line.startswith("data: ")
+    ]
+    assert len(sse_events) == 1
+    error_event = sse_events[0]
+    assert error_event["error"] == "ValueError: boom"
+    assert "stacktrace" in error_event["error_details"]
+    assert "ValueError: boom" in error_event["error_details"]["stacktrace"]
 
 
 def test_list_artifact_names(test_app, create_test_session):
@@ -2790,6 +2835,12 @@ async def test_independent_telemetry_context(
       patch.object(
           fast_api_module,
           "AgentLoader",
+          autospec=True,
+          return_value=mock_agent_loader,
+      ),
+      patch.object(
+          fast_api_module,
+          "NestedAgentLoader",
           autospec=True,
           return_value=mock_agent_loader,
       ),

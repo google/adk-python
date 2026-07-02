@@ -949,7 +949,7 @@ async def test_send_history_filters_various_audio_mime_types(
 
 @pytest.mark.asyncio
 async def test_send_history_gemini_31_turn_complete(mock_gemini_session):
-  """Verify Gemini 3.1 Live history seeding explicitly appends turn_complete=True."""
+  """Verify Gemini 3.1 Live history seeding sets turn_complete based on history[-1].role == 'user'."""
   conn = GeminiLlmConnection(
       mock_gemini_session,
       api_backend=GoogleLLMVariant.GEMINI_API,
@@ -957,21 +957,34 @@ async def test_send_history_gemini_31_turn_complete(mock_gemini_session):
   )
   mock_gemini_session.send_client_content = mock.AsyncMock()
 
-  mock_contents = [
+  # Last turn is model -> turn_complete=False
+  mock_contents_model = [
       types.Content(role='user', parts=[types.Part.from_text(text='hi')]),
       types.Content(role='model', parts=[types.Part.from_text(text='hello')]),
   ]
-  await conn.send_history(mock_contents)
+  await conn.send_history(mock_contents_model)
 
   mock_gemini_session.send_client_content.assert_called_once_with(
-      turns=mock_contents,
+      turns=mock_contents_model,
+      turn_complete=False,
+  )
+
+  # Last turn is user -> turn_complete=True
+  mock_gemini_session.send_client_content.reset_mock()
+  mock_contents_user = [
+      types.Content(role='user', parts=[types.Part.from_text(text='hi')]),
+  ]
+  await conn.send_history(mock_contents_user)
+
+  mock_gemini_session.send_client_content.assert_called_once_with(
+      turns=mock_contents_user,
       turn_complete=True,
   )
 
 
 @pytest.mark.asyncio
-async def test_send_history_collapse_vertex_ai(mock_gemini_session):
-  """Verify history prompt collapse when seeding Gemini 3.1 Live on Vertex AI backend."""
+async def test_send_history_vertex_ai_no_collapse(mock_gemini_session):
+  """Verify history is sent without collapsing on Vertex AI backend."""
   conn = GeminiLlmConnection(
       mock_gemini_session,
       api_backend=GoogleLLMVariant.VERTEX_AI,
@@ -979,24 +992,85 @@ async def test_send_history_collapse_vertex_ai(mock_gemini_session):
   )
   mock_gemini_session.send_client_content = mock.AsyncMock()
 
-  mock_contents = [
+  # Last turn is model -> turn_complete=False
+  mock_contents_model = [
       types.Content(role='user', parts=[types.Part.from_text(text='hi')]),
       types.Content(role='model', parts=[types.Part.from_text(text='hello')]),
   ]
-  await conn.send_history(mock_contents)
+  await conn.send_history(mock_contents_model)
 
-  assert mock_gemini_session.send_client_content.call_count == 1
-  called_turns = mock_gemini_session.send_client_content.call_args.kwargs[
-      'turns'
+  mock_gemini_session.send_client_content.assert_called_once_with(
+      turns=mock_contents_model,
+      turn_complete=False,
+  )
+
+  # Last turn is user -> turn_complete=True
+  mock_gemini_session.send_client_content.reset_mock()
+  mock_contents_user = [
+      types.Content(role='user', parts=[types.Part.from_text(text='hi')]),
+      types.Content(role='model', parts=[types.Part.from_text(text='hello')]),
+      types.Content(
+          role='user', parts=[types.Part.from_text(text='how are you?')]
+      ),
   ]
-  assert len(called_turns) == 1
-  assert called_turns[0].role == 'user'
-  assert 'Previous conversation history:' in called_turns[0].parts[0].text
-  assert '[user]: hi' in called_turns[0].parts[0].text
-  assert '[model]: hello' in called_turns[0].parts[0].text
-  assert (
-      mock_gemini_session.send_client_content.call_args.kwargs['turn_complete']
-      is True
+  await conn.send_history(mock_contents_user)
+
+  mock_gemini_session.send_client_content.assert_called_once_with(
+      turns=mock_contents_user,
+      turn_complete=True,
+  )
+
+
+@pytest.mark.asyncio
+async def test_send_history_turn_complete_determined_by_filtered_content(
+    mock_gemini_session,
+):
+  """Verify turn_complete is determined by the last element of filtered content instead of unfiltered history."""
+  conn = GeminiLlmConnection(
+      mock_gemini_session,
+      api_backend=GoogleLLMVariant.GEMINI_API,
+      model_version='gemini-3.1-flash-live-preview',
+  )
+  mock_gemini_session.send_client_content = mock.AsyncMock()
+
+  # Scenario: Last turn in history is a user audio turn (gets filtered out).
+  # The remaining last turn is model's turn -> turn_complete should be False.
+  audio_part = types.Part(
+      inline_data=types.Blob(data=b'\x00\xFF', mime_type='audio/pcm')
+  )
+  history_with_final_audio_user_turn = [
+      types.Content(role='user', parts=[types.Part.from_text(text='hi')]),
+      types.Content(role='model', parts=[types.Part.from_text(text='hello')]),
+      types.Content(role='user', parts=[audio_part]),
+  ]
+
+  await conn.send_history(history_with_final_audio_user_turn)
+
+  expected_contents = [
+      types.Content(role='user', parts=[types.Part.from_text(text='hi')]),
+      types.Content(role='model', parts=[types.Part.from_text(text='hello')]),
+  ]
+  mock_gemini_session.send_client_content.assert_called_once_with(
+      turns=expected_contents,
+      turn_complete=False,
+  )
+
+  # Scenario: Last turn in history is a model audio turn (gets filtered out).
+  # The remaining last turn is user's turn -> turn_complete should be True.
+  mock_gemini_session.send_client_content.reset_mock()
+  history_with_final_audio_model_turn = [
+      types.Content(role='user', parts=[types.Part.from_text(text='hi')]),
+      types.Content(role='model', parts=[audio_part]),
+  ]
+
+  await conn.send_history(history_with_final_audio_model_turn)
+
+  expected_contents = [
+      types.Content(role='user', parts=[types.Part.from_text(text='hi')]),
+  ]
+  mock_gemini_session.send_client_content.assert_called_once_with(
+      turns=expected_contents,
+      turn_complete=True,
   )
 
 

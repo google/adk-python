@@ -1,3 +1,17 @@
+# Copyright 2025 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 name: ADK Answering Agent for Discussions
 
 on:
@@ -12,8 +26,10 @@ permissions:
 jobs:
   agent-answer-questions:
     if: >-
+      github.repository == 'google/adk-python' && (
       (github.event_name == 'discussion' && github.event.discussion.category.name == 'Q&A') ||
       (github.event_name == 'discussion_comment' && contains(github.event.comment.body, '@adk-bot') && github.event.sender.login != 'adk-bot')
+      )
     runs-on: ubuntu-latest
 
     steps:
@@ -49,9 +65,7 @@ jobs:
           REPO: 'adk-python'
           INTERACTIVE: 0
           PYTHONPATH: contributing/samples/adk_team
+          DISCUSSION_JSON: ${{ toJson(github.event.discussion) }}
         run: |
-          # Write discussion data to temporary file to avoid secret masking issues
-          cat > /tmp/discussion.json << 'EOF'
-          ${{ toJson(github.event.discussion) }}
-          EOF
+          python -c "import os; open('/tmp/discussion.json', 'w').write(os.environ['DISCUSSION_JSON'])"
           python -m adk_answering_agent.main --discussion-file /tmp/discussion.json

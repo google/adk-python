@@ -157,7 +157,7 @@ class NodeRunner:
         )
         await self._enqueue_event(error_event, ctx)
 
-        if not await self._attempt_retry(e, ctx, attempt_count):
+        if not await self._attempt_retry(e, attempt_count):
           ctx._error = e
           ctx._error_node_path = ctx.node_path
           logger.debug("node %s end.", ctx.node_path)
@@ -169,9 +169,7 @@ class NodeRunner:
         )
         attempt_count += 1
 
-  async def _attempt_retry(
-      self, e: Exception, ctx: Context, attempt_count: int
-  ) -> bool:
+  async def _attempt_retry(self, e: Exception, attempt_count: int) -> bool:
     """Checks if node should retry and sleeps if so."""
     from ._node_state import NodeState
     from .utils._retry_utils import _get_retry_delay

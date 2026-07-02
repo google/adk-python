@@ -834,3 +834,16 @@ def test_append_instructions_with_only_text_parts():
 
   # Should return empty list since no non-text parts
   assert user_contents == []
+
+
+def test_is_managed_agent_defaults_false():
+  """_is_managed_agent defaults to False for ordinary requests."""
+  request = LlmRequest()
+  assert request._is_managed_agent is False
+
+
+def test_is_managed_agent_can_be_set_true():
+  """_is_managed_agent is an internal flag set after construction."""
+  request = LlmRequest()
+  request._is_managed_agent = True
+  assert request._is_managed_agent is True

@@ -16,16 +16,13 @@ from __future__ import annotations
 
 import asyncio
 import base64
+from collections.abc import Awaitable
 import inspect
 import logging
 from typing import Any
 from typing import Callable
-from typing import Dict
-from typing import List
-from typing import Optional
 from typing import Protocol
 from typing import runtime_checkable
-from typing import Union
 import warnings
 
 from fastapi.openapi.models import APIKeyIn
@@ -54,6 +51,7 @@ from ...utils.context_utils import find_context_parameter
 from .._gemini_schema_util import _to_gemini_schema
 from ..base_authenticated_tool import BaseAuthenticatedTool
 from ..tool_context import ToolContext
+from .mcp_session_manager import _http_debug_var
 from .mcp_session_manager import MCPSessionManager
 from .mcp_session_manager import retry_on_errors
 from .session_context import SessionContext
@@ -103,9 +101,9 @@ class ProgressCallbackFactory(Protocol):
       self,
       tool_name: str,
       *,
-      callback_context: Optional[CallbackContext] = None,
+      callback_context: CallbackContext | None = None,
       **kwargs: Any,
-  ) -> Optional[ProgressFnT]:
+  ) -> ProgressFnT | None:
     """Create a progress callback for a specific tool.
 
     Args:
@@ -138,15 +136,17 @@ class McpTool(BaseAuthenticatedTool):
       *,
       mcp_tool: McpBaseTool,
       mcp_session_manager: MCPSessionManager,
-      auth_scheme: Optional[AuthScheme] = None,
-      auth_credential: Optional[AuthCredential] = None,
-      require_confirmation: Union[bool, Callable[..., bool]] = False,
-      header_provider: Optional[
-          Callable[[ReadonlyContext], Dict[str, str]]
-      ] = None,
-      progress_callback: Optional[
-          Union[ProgressFnT, ProgressCallbackFactory]
-      ] = None,
+      auth_scheme: AuthScheme | None = None,
+      auth_credential: AuthCredential | None = None,
+      require_confirmation: bool | Callable[..., bool] = False,
+      header_provider: (
+          Callable[
+              [ReadonlyContext],
+              dict[str, str] | Awaitable[dict[str, str]],
+          ]
+          | None
+      ) = None,
+      progress_callback: ProgressFnT | ProgressCallbackFactory | None = None,
   ):
     """Initializes an McpTool.
 
@@ -224,7 +224,7 @@ class McpTool(BaseAuthenticatedTool):
     return self._mcp_tool
 
   @property
-  def visibility(self) -> List[str]:
+  def visibility(self) -> list[str]:
     """Returns the visibility if this MCP tool meta has one."""
     meta = getattr(self.raw_mcp_tool, "meta", None)
     if not meta or not isinstance(meta, dict):
@@ -237,7 +237,7 @@ class McpTool(BaseAuthenticatedTool):
     return []
 
   @property
-  def mcp_app_resource_uri(self) -> Optional[str]:
+  def mcp_app_resource_uri(self) -> str | None:
     """Returns the MCP App UI resource URI if this tool has one.
 
     MCP Apps declare a UI resource via `meta.ui.resourceUri` in the tool
@@ -286,83 +286,99 @@ class McpTool(BaseAuthenticatedTool):
   async def run_async(
       self, *, args: dict[str, Any], tool_context: ToolContext
   ) -> Any:
-    if isinstance(self._require_confirmation, Callable):
-      args_to_call = args.copy()
-      try:
-        signature = inspect.signature(self._require_confirmation)
-        valid_params = set(signature.parameters.keys())
-        has_kwargs = any(
-            param.kind == inspect.Parameter.VAR_KEYWORD
-            for param in signature.parameters.values()
-        )
-
-        # Detect context parameter by type or fallback to 'tool_context' name
-        context_param = (
-            find_context_parameter(self._require_confirmation) or "tool_context"
-        )
-        if context_param in valid_params or has_kwargs:
-          args_to_call[context_param] = tool_context
-
-        # Filter args_to_call only if there's no **kwargs
-        if not has_kwargs:
-          # Add context param to valid_params if it was added to args_to_call
-          if context_param in args_to_call:
-            valid_params.add(context_param)
-          args_to_call = {
-              k: v for k, v in args_to_call.items() if k in valid_params
-          }
-      except ValueError:
-        args_to_call = args
-
-      require_confirmation = await self._invoke_callable(
-          self._require_confirmation, args_to_call
-      )
-    else:
-      require_confirmation = bool(self._require_confirmation)
-
-    if require_confirmation:
-      if not tool_context.tool_confirmation:
-        tool_context.request_confirmation(
-            hint=(
-                f"Please approve or reject the tool call {self.name}() by"
-                " responding with a FunctionResponse with an expected"
-                " ToolConfirmation payload."
-            ),
-        )
-        return {
-            "error": (
-                "This tool call requires confirmation, please approve or"
-                " reject."
-            )
-        }
-      elif not tool_context.tool_confirmation.confirmed:
-        return {"error": "This tool call is rejected."}
-
-    if not is_feature_enabled(FeatureName._MCP_GRACEFUL_ERROR_HANDLING):  # pylint: disable=protected-access
-      # Pre-fix behavior: exceptions bubble up to the agent runner.
-      return await super().run_async(args=args, tool_context=tool_context)
-
-    # New behavior: convert MCP-level and unexpected errors into a
-    # structured `{"error": "..."}` dict so the agent loop can continue
-    # gracefully instead of being killed by an unhandled exception. This
-    # is the primary fix for the 5-minute hang seen when Model Armor (or
-    # any AGW policy) returns a 403 mid-tool-call.
+    current_debug: list[dict[str, Any]] = []
+    debug_token = (
+        _http_debug_var.set(current_debug)
+        if logger.isEnabledFor(logging.DEBUG)
+        else None
+    )
     try:
-      return await super().run_async(args=args, tool_context=tool_context)
-    except McpError as e:
-      logger.warning("MCP tool execution failed with McpError: %s", e)
-      return {"error": f"MCP tool execution failed: {e}"}
-    except Exception as e:  # pylint: disable=broad-exception-caught
-      logger.warning(
-          "Unexpected error during MCP tool execution: %s", e, exc_info=True
-      )
-      return {"error": f"Unexpected error during MCP tool execution: {e}"}
+      if isinstance(self._require_confirmation, Callable):
+        args_to_call = args.copy()
+        try:
+          signature = inspect.signature(self._require_confirmation)
+          valid_params = set(signature.parameters.keys())
+          has_kwargs = any(
+              param.kind == inspect.Parameter.VAR_KEYWORD
+              for param in signature.parameters.values()
+          )
+
+          # Detect context parameter by type or fallback to 'tool_context' name
+          context_param = (
+              find_context_parameter(self._require_confirmation)
+              or "tool_context"
+          )
+          if context_param in valid_params or has_kwargs:
+            args_to_call[context_param] = tool_context
+
+          # Filter args_to_call only if there's no **kwargs
+          if not has_kwargs:
+            # Add context param to valid_params if it was added to args_to_call
+            if context_param in args_to_call:
+              valid_params.add(context_param)
+            args_to_call = {
+                k: v for k, v in args_to_call.items() if k in valid_params
+            }
+        except ValueError:
+          args_to_call = args
+
+        require_confirmation = await self._invoke_callable(
+            self._require_confirmation, args_to_call
+        )
+      else:
+        require_confirmation = bool(self._require_confirmation)
+
+      if require_confirmation:
+        if not tool_context.tool_confirmation:
+          tool_context.request_confirmation(
+              hint=(
+                  f"Please approve or reject the tool call {self.name}() by"
+                  " responding with a FunctionResponse with an expected"
+                  " ToolConfirmation payload."
+              ),
+          )
+          return {
+              "error": (
+                  "This tool call requires confirmation, please approve or"
+                  " reject."
+              )
+          }
+        elif not tool_context.tool_confirmation.confirmed:
+          return {"error": "This tool call is rejected."}
+
+      if not is_feature_enabled(FeatureName._MCP_GRACEFUL_ERROR_HANDLING):  # pylint: disable=protected-access
+        # Pre-fix behavior: exceptions bubble up to the agent runner.
+        return await super().run_async(args=args, tool_context=tool_context)
+
+      # New behavior: convert MCP-level and unexpected errors into a
+      # structured `{"error": "..."}` dict so the agent loop can continue
+      # gracefully instead of being killed by an unhandled exception. This
+      # is the primary fix for the 5-minute hang seen when Model Armor (or
+      # any AGW policy) returns a 403 mid-tool-call.
+      try:
+        return await super().run_async(args=args, tool_context=tool_context)
+      except McpError as e:
+        logger.warning("MCP tool execution failed with McpError: %s", e)
+        return {"error": f"MCP tool execution failed: {e}"}
+      except Exception as e:  # pylint: disable=broad-exception-caught
+        logger.warning(
+            "Unexpected error during MCP tool execution: %s", e, exc_info=True
+        )
+        return {"error": f"Unexpected error during MCP tool execution: {e}"}
+    finally:
+      if debug_token is not None:
+        _http_debug_var.reset(debug_token)
+        if current_debug and hasattr(tool_context, "custom_metadata"):
+          debug_list = tool_context.custom_metadata.setdefault(
+              "http_debug_info", []
+          )
+          debug_list.extend(current_debug)
 
   @retry_on_errors
   @override
   async def _run_async_impl(
       self, *, args, tool_context: ToolContext, credential: AuthCredential
-  ) -> Dict[str, Any]:
+  ) -> dict[str, Any]:
     """Runs the tool asynchronously.
 
     Args:
@@ -377,10 +393,12 @@ class McpTool(BaseAuthenticatedTool):
     dynamic_headers = None
     if self._header_provider:
       dynamic_headers = self._header_provider(
-          ReadonlyContext(tool_context._invocation_context)
+          ReadonlyContext(tool_context._invocation_context)  # pylint: disable=protected-access
       )
+      if inspect.isawaitable(dynamic_headers):
+        dynamic_headers = await dynamic_headers
 
-    headers: Dict[str, str] = {}
+    headers: dict[str, str] = {}
     if auth_headers:
       headers.update(auth_headers)
     if dynamic_headers:
@@ -389,7 +407,7 @@ class McpTool(BaseAuthenticatedTool):
 
     # Propagate trace context in the _meta field as sprcified by MCP protocol.
     # See https://agentclientprotocol.com/protocol/extensibility#the-meta-field
-    trace_carrier: Dict[str, str] = {}
+    trace_carrier: dict[str, str] = {}
     propagate.get_global_textmap().inject(carrier=trace_carrier)
     meta_trace_context = trace_carrier if trace_carrier else None
 
@@ -451,7 +469,7 @@ class McpTool(BaseAuthenticatedTool):
       )
     return result
 
-  def _detect_error_in_response(self, response: Any) -> Optional[str]:
+  def _detect_error_in_response(self, response: Any) -> str | None:
     """Telemetry hook: returns an error type if the response indicates an error."""
     if isinstance(response, dict) and response.get("isError"):
       return "MCP_TOOL_ERROR"
@@ -459,7 +477,7 @@ class McpTool(BaseAuthenticatedTool):
 
   def _resolve_progress_callback(
       self, tool_context: ToolContext
-  ) -> Optional[ProgressFnT]:
+  ) -> ProgressFnT | None:
     """Resolve the progress callback for the current invocation.
 
     If progress_callback is a ProgressCallbackFactory, call it to create
@@ -493,7 +511,7 @@ class McpTool(BaseAuthenticatedTool):
 
   async def _get_headers(
       self, tool_context: ToolContext, credential: AuthCredential
-  ) -> Optional[dict[str, str]]:
+  ) -> dict[str, str] | None:
     """Extracts authentication headers from credentials.
 
     Args:
@@ -507,7 +525,7 @@ class McpTool(BaseAuthenticatedTool):
         ValueError: If API key authentication is configured for non-header
         location.
     """
-    headers: Optional[dict[str, str]] = None
+    headers: dict[str, str] | None = None
     if credential:
       if credential.oauth2:
         headers = {"Authorization": f"Bearer {credential.oauth2.access_token}"}

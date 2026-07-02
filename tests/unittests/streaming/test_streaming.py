@@ -13,6 +13,7 @@
 # limitations under the License.
 
 import asyncio
+from contextlib import aclosing
 from typing import Any
 from typing import AsyncGenerator
 from typing import Awaitable
@@ -24,6 +25,85 @@ from google.genai import types
 import pytest
 
 from .. import testing_utils
+
+
+async def _wait_for_queue_empty(queue: LiveRequestQueue):
+  """Wait until the queue is empty and the background consumer has finished."""
+  while not queue._queue.empty():
+    await asyncio.sleep(0)
+  # Give opportunity for _send_to_model to finish processing (e.g. append_event)
+  for _ in range(10):
+    await asyncio.sleep(0)
+
+
+class StreamingTestRunner(testing_utils.InMemoryRunner):
+  """A robust runner for streaming tests that avoids resource leaks."""
+
+  def __init__(self, *args, max_responses=3, **kwargs):
+    super().__init__(*args, **kwargs)
+    self.max_responses = max_responses
+
+  def _run_with_loop(self, coro):
+    try:
+      old_loop = asyncio.get_event_loop()
+    except RuntimeError:
+      old_loop = None
+
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    try:
+      loop.run_until_complete(coro)
+    except (asyncio.TimeoutError, asyncio.CancelledError):
+      pass
+    finally:
+      # Cancel all pending tasks to prevent leaks and warnings
+      pending = asyncio.all_tasks(loop)
+      for task in pending:
+        task.cancel()
+      if pending:
+        try:
+          loop.run_until_complete(
+              asyncio.gather(*pending, return_exceptions=True)
+          )
+        except Exception:  # pylint: disable=broad-except
+          pass
+      loop.close()
+      asyncio.set_event_loop(old_loop)
+
+  def run_live(
+      self,
+      live_request_queue: LiveRequestQueue,
+      run_config: testing_utils.RunConfig = None,
+  ) -> list[testing_utils.Event]:
+    collected_responses = []
+
+    async def consume_responses(session: testing_utils.Session):
+      run_res = self.runner.run_live(
+          session=session,
+          live_request_queue=live_request_queue,
+          run_config=run_config or testing_utils.RunConfig(),
+      )
+
+      async with aclosing(run_res) as agen:
+        async for response in agen:
+          collected_responses.append(response)
+          if len(collected_responses) >= self.max_responses:
+            await _wait_for_queue_empty(live_request_queue)
+            return
+
+    self._run_with_loop(
+        asyncio.wait_for(consume_responses(self.session), timeout=5.0)
+    )
+
+    return collected_responses
+
+  def run_live_and_get_session(
+      self,
+      live_request_queue: LiveRequestQueue,
+      run_config: testing_utils.RunConfig = None,
+  ) -> tuple[list[testing_utils.Event], testing_utils.Session]:
+    events = self.run_live(live_request_queue, run_config)
+    return events, self.session
 
 
 def test_streaming():
@@ -87,52 +167,8 @@ def test_live_streaming_function_call_single():
       tools=[get_weather],
   )
 
-  # Create a custom runner class that collects all events
-  class CustomTestRunner(testing_utils.InMemoryRunner):
+  runner = StreamingTestRunner(root_agent=root_agent, max_responses=3)
 
-    def _run_with_loop(self, coro):
-      try:
-        old_loop = asyncio.get_event_loop()
-      except RuntimeError:
-        old_loop = None
-
-      loop = asyncio.new_event_loop()
-      asyncio.set_event_loop(loop)
-      try:
-        loop.run_until_complete(coro)
-      except (asyncio.TimeoutError, asyncio.CancelledError):
-        pass
-      finally:
-        loop.close()
-        asyncio.set_event_loop(old_loop)
-
-    def run_live(
-        self,
-        live_request_queue: LiveRequestQueue,
-        run_config: testing_utils.RunConfig = None,
-    ) -> list[testing_utils.Event]:
-      collected_responses = []
-
-      async def consume_responses(session: testing_utils.Session):
-        run_res = self.runner.run_live(
-            session=session,
-            live_request_queue=live_request_queue,
-            run_config=run_config or testing_utils.RunConfig(),
-        )
-
-        async for response in run_res:
-          collected_responses.append(response)
-          # Collect a reasonable number of events, don't wait for too many
-          if len(collected_responses) >= 3:
-            return
-
-      self._run_with_loop(
-          asyncio.wait_for(consume_responses(self.session), timeout=5.0)
-      )
-
-      return collected_responses
-
-  runner = CustomTestRunner(root_agent=root_agent)
   live_request_queue = LiveRequestQueue()
   live_request_queue.send_realtime(
       blob=types.Blob(
@@ -208,50 +244,7 @@ def test_live_streaming_function_call_multiple():
   )
 
   # Use the custom runner
-  class CustomTestRunner(testing_utils.InMemoryRunner):
-
-    def _run_with_loop(self, coro):
-      try:
-        old_loop = asyncio.get_event_loop()
-      except RuntimeError:
-        old_loop = None
-
-      loop = asyncio.new_event_loop()
-      asyncio.set_event_loop(loop)
-      try:
-        loop.run_until_complete(coro)
-      except (asyncio.TimeoutError, asyncio.CancelledError):
-        pass
-      finally:
-        loop.close()
-        asyncio.set_event_loop(old_loop)
-
-    def run_live(
-        self,
-        live_request_queue: LiveRequestQueue,
-        run_config: testing_utils.RunConfig = None,
-    ) -> list[testing_utils.Event]:
-      collected_responses = []
-
-      async def consume_responses(session: testing_utils.Session):
-        run_res = self.runner.run_live(
-            session=session,
-            live_request_queue=live_request_queue,
-            run_config=run_config or testing_utils.RunConfig(),
-        )
-
-        async for response in run_res:
-          collected_responses.append(response)
-          if len(collected_responses) >= 3:
-            return
-
-      self._run_with_loop(
-          asyncio.wait_for(consume_responses(self.session), timeout=5.0)
-      )
-
-      return collected_responses
-
-  runner = CustomTestRunner(root_agent=root_agent)
+  runner = StreamingTestRunner(root_agent=root_agent, max_responses=3)
   live_request_queue = LiveRequestQueue()
   live_request_queue.send_realtime(
       blob=types.Blob(
@@ -320,50 +313,7 @@ def test_live_streaming_function_call_parallel():
   )
 
   # Use the custom runner
-  class CustomTestRunner(testing_utils.InMemoryRunner):
-
-    def _run_with_loop(self, coro):
-      try:
-        old_loop = asyncio.get_event_loop()
-      except RuntimeError:
-        old_loop = None
-
-      loop = asyncio.new_event_loop()
-      asyncio.set_event_loop(loop)
-      try:
-        loop.run_until_complete(coro)
-      except (asyncio.TimeoutError, asyncio.CancelledError):
-        pass
-      finally:
-        loop.close()
-        asyncio.set_event_loop(old_loop)
-
-    def run_live(
-        self,
-        live_request_queue: LiveRequestQueue,
-        run_config: testing_utils.RunConfig = None,
-    ) -> list[testing_utils.Event]:
-      collected_responses = []
-
-      async def consume_responses(session: testing_utils.Session):
-        run_res = self.runner.run_live(
-            session=session,
-            live_request_queue=live_request_queue,
-            run_config=run_config or testing_utils.RunConfig(),
-        )
-
-        async for response in run_res:
-          collected_responses.append(response)
-          if len(collected_responses) >= 3:
-            return
-
-      self._run_with_loop(
-          asyncio.wait_for(consume_responses(self.session), timeout=5.0)
-      )
-
-      return collected_responses
-
-  runner = CustomTestRunner(root_agent=root_agent)
+  runner = StreamingTestRunner(root_agent=root_agent, max_responses=3)
   live_request_queue = LiveRequestQueue()
   live_request_queue.send_realtime(
       blob=types.Blob(
@@ -426,50 +376,7 @@ def test_live_streaming_function_call_with_error():
   )
 
   # Use the custom runner
-  class CustomTestRunner(testing_utils.InMemoryRunner):
-
-    def _run_with_loop(self, coro):
-      try:
-        old_loop = asyncio.get_event_loop()
-      except RuntimeError:
-        old_loop = None
-
-      loop = asyncio.new_event_loop()
-      asyncio.set_event_loop(loop)
-      try:
-        loop.run_until_complete(coro)
-      except (asyncio.TimeoutError, asyncio.CancelledError):
-        pass
-      finally:
-        loop.close()
-        asyncio.set_event_loop(old_loop)
-
-    def run_live(
-        self,
-        live_request_queue: LiveRequestQueue,
-        run_config: testing_utils.RunConfig = None,
-    ) -> list[testing_utils.Event]:
-      collected_responses = []
-
-      async def consume_responses(session: testing_utils.Session):
-        run_res = self.runner.run_live(
-            session=session,
-            live_request_queue=live_request_queue,
-            run_config=run_config or testing_utils.RunConfig(),
-        )
-
-        async for response in run_res:
-          collected_responses.append(response)
-          if len(collected_responses) >= 3:
-            return
-
-      self._run_with_loop(
-          asyncio.wait_for(consume_responses(self.session), timeout=5.0)
-      )
-
-      return collected_responses
-
-  runner = CustomTestRunner(root_agent=root_agent)
+  runner = StreamingTestRunner(root_agent=root_agent, max_responses=3)
   live_request_queue = LiveRequestQueue()
   live_request_queue.send_realtime(
       blob=types.Blob(
@@ -523,50 +430,7 @@ def test_live_streaming_function_call_sync_tool():
   )
 
   # Use the custom runner
-  class CustomTestRunner(testing_utils.InMemoryRunner):
-
-    def _run_with_loop(self, coro):
-      try:
-        old_loop = asyncio.get_event_loop()
-      except RuntimeError:
-        old_loop = None
-
-      loop = asyncio.new_event_loop()
-      asyncio.set_event_loop(loop)
-      try:
-        loop.run_until_complete(coro)
-      except (asyncio.TimeoutError, asyncio.CancelledError):
-        pass
-      finally:
-        loop.close()
-        asyncio.set_event_loop(old_loop)
-
-    def run_live(
-        self,
-        live_request_queue: LiveRequestQueue,
-        run_config: testing_utils.RunConfig = None,
-    ) -> list[testing_utils.Event]:
-      collected_responses = []
-
-      async def consume_responses(session: testing_utils.Session):
-        run_res = self.runner.run_live(
-            session=session,
-            live_request_queue=live_request_queue,
-            run_config=run_config or testing_utils.RunConfig(),
-        )
-
-        async for response in run_res:
-          collected_responses.append(response)
-          if len(collected_responses) >= 3:
-            return
-
-      self._run_with_loop(
-          asyncio.wait_for(consume_responses(self.session), timeout=5.0)
-      )
-
-      return collected_responses
-
-  runner = CustomTestRunner(root_agent=root_agent)
+  runner = StreamingTestRunner(root_agent=root_agent, max_responses=3)
   live_request_queue = LiveRequestQueue()
   live_request_queue.send_realtime(
       blob=types.Blob(data=b"Calculate 5 plus 3", mime_type="audio/pcm")
@@ -629,50 +493,7 @@ def test_live_streaming_simple_streaming_tool():
   )
 
   # Use the custom runner
-  class CustomTestRunner(testing_utils.InMemoryRunner):
-
-    def _run_with_loop(self, coro):
-      try:
-        old_loop = asyncio.get_event_loop()
-      except RuntimeError:
-        old_loop = None
-
-      loop = asyncio.new_event_loop()
-      asyncio.set_event_loop(loop)
-      try:
-        loop.run_until_complete(coro)
-      except (asyncio.TimeoutError, asyncio.CancelledError):
-        pass
-      finally:
-        loop.close()
-        asyncio.set_event_loop(old_loop)
-
-    def run_live(
-        self,
-        live_request_queue: LiveRequestQueue,
-        run_config: testing_utils.RunConfig = None,
-    ) -> list[testing_utils.Event]:
-      collected_responses = []
-
-      async def consume_responses(session: testing_utils.Session):
-        run_res = self.runner.run_live(
-            session=session,
-            live_request_queue=live_request_queue,
-            run_config=run_config or testing_utils.RunConfig(),
-        )
-
-        async for response in run_res:
-          collected_responses.append(response)
-          if len(collected_responses) >= 3:
-            return
-
-      self._run_with_loop(
-          asyncio.wait_for(consume_responses(self.session), timeout=5.0)
-      )
-
-      return collected_responses
-
-  runner = CustomTestRunner(root_agent=root_agent)
+  runner = StreamingTestRunner(root_agent=root_agent, max_responses=3)
   live_request_queue = LiveRequestQueue()
   live_request_queue.send_realtime(
       blob=types.Blob(data=b"Monitor AAPL stock price", mime_type="audio/pcm")
@@ -747,50 +568,7 @@ def test_live_streaming_video_streaming_tool():
   )
 
   # Use the custom runner
-  class CustomTestRunner(testing_utils.InMemoryRunner):
-
-    def _run_with_loop(self, coro):
-      try:
-        old_loop = asyncio.get_event_loop()
-      except RuntimeError:
-        old_loop = None
-
-      loop = asyncio.new_event_loop()
-      asyncio.set_event_loop(loop)
-      try:
-        loop.run_until_complete(coro)
-      except (asyncio.TimeoutError, asyncio.CancelledError):
-        pass
-      finally:
-        loop.close()
-        asyncio.set_event_loop(old_loop)
-
-    def run_live(
-        self,
-        live_request_queue: LiveRequestQueue,
-        run_config: testing_utils.RunConfig = None,
-    ) -> list[testing_utils.Event]:
-      collected_responses = []
-
-      async def consume_responses(session: testing_utils.Session):
-        run_res = self.runner.run_live(
-            session=session,
-            live_request_queue=live_request_queue,
-            run_config=run_config or testing_utils.RunConfig(),
-        )
-
-        async for response in run_res:
-          collected_responses.append(response)
-          if len(collected_responses) >= 3:
-            return
-
-      self._run_with_loop(
-          asyncio.wait_for(consume_responses(self.session), timeout=5.0)
-      )
-
-      return collected_responses
-
-  runner = CustomTestRunner(root_agent=root_agent)
+  runner = StreamingTestRunner(root_agent=root_agent, max_responses=3)
   live_request_queue = LiveRequestQueue()
 
   # Send some mock video frames
@@ -869,50 +647,7 @@ def test_live_streaming_stop_streaming_tool():
   )
 
   # Use the custom runner
-  class CustomTestRunner(testing_utils.InMemoryRunner):
-
-    def _run_with_loop(self, coro):
-      try:
-        old_loop = asyncio.get_event_loop()
-      except RuntimeError:
-        old_loop = None
-
-      loop = asyncio.new_event_loop()
-      asyncio.set_event_loop(loop)
-      try:
-        loop.run_until_complete(coro)
-      except (asyncio.TimeoutError, asyncio.CancelledError):
-        pass
-      finally:
-        loop.close()
-        asyncio.set_event_loop(old_loop)
-
-    def run_live(
-        self,
-        live_request_queue: LiveRequestQueue,
-        run_config: testing_utils.RunConfig = None,
-    ) -> list[testing_utils.Event]:
-      collected_responses = []
-
-      async def consume_responses(session: testing_utils.Session):
-        run_res = self.runner.run_live(
-            session=session,
-            live_request_queue=live_request_queue,
-            run_config=run_config or testing_utils.RunConfig(),
-        )
-
-        async for response in run_res:
-          collected_responses.append(response)
-          if len(collected_responses) >= 3:
-            return
-
-      self._run_with_loop(
-          asyncio.wait_for(consume_responses(self.session), timeout=5.0)
-      )
-
-      return collected_responses
-
-  runner = CustomTestRunner(root_agent=root_agent)
+  runner = StreamingTestRunner(root_agent=root_agent, max_responses=3)
   live_request_queue = LiveRequestQueue()
   live_request_queue.send_realtime(
       blob=types.Blob(data=b"Monitor TSLA and then stop", mime_type="audio/pcm")
@@ -992,50 +727,7 @@ def test_live_streaming_multiple_streaming_tools():
   )
 
   # Use the custom runner
-  class CustomTestRunner(testing_utils.InMemoryRunner):
-
-    def _run_with_loop(self, coro):
-      try:
-        old_loop = asyncio.get_event_loop()
-      except RuntimeError:
-        old_loop = None
-
-      loop = asyncio.new_event_loop()
-      asyncio.set_event_loop(loop)
-      try:
-        loop.run_until_complete(coro)
-      except (asyncio.TimeoutError, asyncio.CancelledError):
-        pass
-      finally:
-        loop.close()
-        asyncio.set_event_loop(old_loop)
-
-    def run_live(
-        self,
-        live_request_queue: LiveRequestQueue,
-        run_config: testing_utils.RunConfig = None,
-    ) -> list[testing_utils.Event]:
-      collected_responses = []
-
-      async def consume_responses(session: testing_utils.Session):
-        run_res = self.runner.run_live(
-            session=session,
-            live_request_queue=live_request_queue,
-            run_config=run_config or testing_utils.RunConfig(),
-        )
-
-        async for response in run_res:
-          collected_responses.append(response)
-          if len(collected_responses) >= 3:
-            return
-
-      self._run_with_loop(
-          asyncio.wait_for(consume_responses(self.session), timeout=5.0)
-      )
-
-      return collected_responses
-
-  runner = CustomTestRunner(root_agent=root_agent)
+  runner = StreamingTestRunner(root_agent=root_agent, max_responses=3)
   live_request_queue = LiveRequestQueue()
   live_request_queue.send_realtime(
       blob=types.Blob(
@@ -1107,50 +799,7 @@ def test_live_streaming_function_call_yielded_before_finished_transcription():
       tools=[get_weather],
   )
 
-  class CustomTestRunner(testing_utils.InMemoryRunner):
-
-    def _run_with_loop(self, coro):
-      try:
-        old_loop = asyncio.get_event_loop()
-      except RuntimeError:
-        old_loop = None
-
-      loop = asyncio.new_event_loop()
-      asyncio.set_event_loop(loop)
-      try:
-        loop.run_until_complete(coro)
-      except (asyncio.TimeoutError, asyncio.CancelledError):
-        pass
-      finally:
-        loop.close()
-        asyncio.set_event_loop(old_loop)
-
-    def run_live(
-        self,
-        live_request_queue: LiveRequestQueue,
-        run_config: testing_utils.RunConfig = None,
-    ) -> list[testing_utils.Event]:
-      collected_responses = []
-
-      async def consume_responses(session: testing_utils.Session):
-        run_res = self.runner.run_live(
-            session=session,
-            live_request_queue=live_request_queue,
-            run_config=run_config or testing_utils.RunConfig(),
-        )
-
-        async for response in run_res:
-          collected_responses.append(response)
-          if len(collected_responses) >= 5:
-            return
-
-      self._run_with_loop(
-          asyncio.wait_for(consume_responses(self.session), timeout=5.0)
-      )
-
-      return collected_responses
-
-  runner = CustomTestRunner(root_agent=root_agent)
+  runner = StreamingTestRunner(root_agent=root_agent, max_responses=5)
   live_request_queue = LiveRequestQueue()
   live_request_queue.send_realtime(
       blob=types.Blob(data=b"Show me the weather", mime_type="audio/pcm")
@@ -1209,55 +858,7 @@ def test_live_streaming_text_content_persisted_in_session():
       tools=[],
   )
 
-  class CustomTestRunner(testing_utils.InMemoryRunner):
-
-    def _run_with_loop(self, coro):
-      try:
-        old_loop = asyncio.get_event_loop()
-      except RuntimeError:
-        old_loop = None
-
-      loop = asyncio.new_event_loop()
-      asyncio.set_event_loop(loop)
-      try:
-        loop.run_until_complete(coro)
-      except (asyncio.TimeoutError, asyncio.CancelledError):
-        pass
-      finally:
-        loop.close()
-        asyncio.set_event_loop(old_loop)
-
-    def run_live_and_get_session(
-        self,
-        live_request_queue: LiveRequestQueue,
-        run_config: testing_utils.RunConfig = None,
-    ) -> tuple[list[testing_utils.Event], testing_utils.Session]:
-      collected_responses = []
-
-      async def consume_responses(session: testing_utils.Session):
-        run_res = self.runner.run_live(
-            session=session,
-            live_request_queue=live_request_queue,
-            run_config=run_config or testing_utils.RunConfig(),
-        )
-        async for response in run_res:
-          collected_responses.append(response)
-          if len(collected_responses) >= 1:
-            return
-
-      self._run_with_loop(
-          asyncio.wait_for(consume_responses(self.session), timeout=5.0)
-      )
-
-      # Get the updated session
-      updated_session = self.runner.session_service.get_session_sync(
-          app_name=self.app_name,
-          user_id=self.session.user_id,
-          session_id=self.session.id,
-      )
-      return collected_responses, updated_session
-
-  runner = CustomTestRunner(root_agent=root_agent)
+  runner = StreamingTestRunner(root_agent=root_agent, max_responses=1)
   live_request_queue = LiveRequestQueue()
 
   # Send text content (not audio blob)
@@ -1306,6 +907,17 @@ class _LiveTestRunner(testing_utils.InMemoryRunner):
     except (asyncio.TimeoutError, asyncio.CancelledError):
       pass
     finally:
+      # Cancel all pending tasks to prevent leaks and warnings
+      pending = asyncio.all_tasks(loop)
+      for task in pending:
+        task.cancel()
+      if pending:
+        try:
+          loop.run_until_complete(
+              asyncio.gather(*pending, return_exceptions=True)
+          )
+        except Exception:  # pylint: disable=broad-except
+          pass
       loop.close()
       asyncio.set_event_loop(old_loop)
 
@@ -1318,13 +930,16 @@ class _LiveTestRunner(testing_utils.InMemoryRunner):
     collected = []
 
     async def consume(session: testing_utils.Session):
-      async for response in self.runner.run_live(
+      run_res = self.runner.run_live(
           session=session,
           live_request_queue=live_request_queue,
-      ):
-        collected.append(response)
-        if len(collected) >= max_responses:
-          return
+      )
+      async with aclosing(run_res) as agen:
+        async for response in agen:
+          collected.append(response)
+          if len(collected) >= max_responses:
+            await _wait_for_queue_empty(live_request_queue)
+            return
 
     self._run_with_loop(asyncio.wait_for(consume(self.session), timeout=5.0))
     return collected
@@ -1396,25 +1011,30 @@ def test_input_streaming_tool_registered_lazily_with_stream():
 
   async def consume(session: testing_utils.Session):
     nonlocal not_registered_before_call
-    async for response in runner.runner.run_live(
+    run_res = runner.runner.run_live(
         session=session,
         live_request_queue=live_request_queue,
-    ):
-      collected.append(response)
-      # On the first non-function-call event, verify the tool is not
-      # yet registered (lazy registration).
-      active = (
-          captured_context.active_streaming_tools if captured_context else None
-      )
-      if (
-          not_registered_before_call is None
-          and not response.get_function_calls()
-      ):
-        not_registered_before_call = (
-            active is None or "monitor_video_stream" not in active
+    )
+    async with aclosing(run_res) as agen:
+      async for response in agen:
+        collected.append(response)
+        # On the first non-function-call event, verify the tool is not
+        # yet registered (lazy registration).
+        active = (
+            captured_context.active_streaming_tools
+            if captured_context
+            else None
         )
-      if len(collected) >= 4:
-        return
+        if (
+            not_registered_before_call is None
+            and not response.get_function_calls()
+        ):
+          not_registered_before_call = (
+              active is None or "monitor_video_stream" not in active
+          )
+        if len(collected) >= 4:
+          await _wait_for_queue_empty(live_request_queue)
+          return
 
   runner._run_with_loop(asyncio.wait_for(consume(runner.session), timeout=5.0))
 
