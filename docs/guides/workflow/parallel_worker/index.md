@@ -7,7 +7,7 @@
 When processing a list of items (e.g., a list of documents to analyze, queries to run, or topics to explain), running them sequentially can be slow, especially if the processing node performs I/O-bound operations like calling an LLM or an external API. `ParallelWorker` solves this by executing the wrapped node concurrently for all items in the input list, significantly reducing total execution time.
 
 Key features:
-- **Concurrency**: Runs multiple instances of the wrapped node in parallel.
+- **Concurrency**: Runs multiple instances of the wrapped node in parallel (optionally throttled via `max_parallel_workers`).
 - **Aggregation**: Gathers all outputs and returns them as a single list, maintaining the original order of the inputs.
 - **Error Propagation**: If any parallel task fails, all other pending tasks are cancelled, and the error is raised immediately.
 
@@ -64,7 +64,6 @@ If the wrapped node triggers an interrupt (e.g., `RequestInput`), the parallel w
 
 - **List Input**: The worker always expects a list and returns a list. If your upstream node doesn't produce a list, it will be treated as a list of one item.
 - **Fail-Fast**: The failure of a single item fails the entire worker and cancels all other items. There is currently no "continue on error" option to collect partial results.
-- **No Concurrency Limit**: Setting `max_concurrency` to limit the number of parallel tasks is not supported yet. All items in the list will be processed concurrently.
 
 ## Related samples
 

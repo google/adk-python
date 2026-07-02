@@ -29,7 +29,7 @@ permissions:
 
 jobs:
   finalize:
-    if: github.event.pull_request.merged == true
+    if: github.event.pull_request.merged == true && github.repository == 'google/adk-python'
     runs-on: ubuntu-latest
     steps:
       - name: Check for release-please PR

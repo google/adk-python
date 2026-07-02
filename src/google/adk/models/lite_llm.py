@@ -1494,6 +1494,152 @@ def _build_tool_call_from_json_dict(
   return tool_call
 
 
+# DeepSeek models may emit tool calls as inline text using proprietary
+# special tokens. See https://api-docs.deepseek.com/guides/function_calling
+# for the full specification. LiteLLM usually translates these into
+# structured `tool_calls` but when it doesn't (intermittent), the raw
+# tokens land in the `content` field and must be parsed here.
+_DS_TCALLS_BEGIN = "\u003c\uff5ctool\u2581calls\u2581begin\uff5c\u003e"
+_DS_TCALLS_END = "\u003c\uff5ctool\u2581calls\u2581end\uff5c\u003e"
+_DS_TCALL_BEGIN = "\u003c\uff5ctool\u2581call\u2581begin\uff5c\u003e"
+_DS_TCALL_END = "\u003c\uff5ctool\u2581call\u2581end\uff5c\u003e"
+_DS_TSEP = "\u003c\uff5ctool\u2581sep\uff5c\u003e"
+
+# Pattern: <｜tool▁call▁begin｜>function<｜tool▁sep｜>NAME \n ARGS <｜tool▁call▁end｜>
+_DS_TOOL_CALL_RE = re.compile(
+    re.escape(_DS_TCALL_BEGIN)
+    + r"function"
+    + re.escape(_DS_TSEP)
+    + r"([^\n\r]+?)\s*?\n(.*?)"
+    + re.escape(_DS_TCALL_END),
+    re.DOTALL,
+)
+
+
+def _extract_json_from_deepseek_args(args_text: str) -> Optional[str]:
+  """Extracts a JSON string from DeepSeek arguments text.
+
+  Args:
+    args_text: Raw text containing the function arguments, possibly
+      wrapped in Markdown-style code fences.
+
+  Returns:
+    The JSON string, or None if no valid JSON object could be found.
+  """
+  if not args_text:
+    return None
+  # Strip optional Markdown code fences (```json ... ``` or ``` ... ```).
+  fence_match = re.search(r"```(?:json)?\s*(\{[\s\S]*?\})\s*```", args_text)
+  if fence_match:
+    candidate = fence_match.group(1).strip()
+    try:
+      json.loads(candidate)
+      return candidate
+    except json.JSONDecodeError:
+      pass
+  # Fall back to the first balanced { … } block.
+  open_brace = args_text.find("{")
+  if open_brace == -1:
+    return None
+  try:
+    candidate, _ = _JSON_DECODER.raw_decode(args_text, open_brace)
+    return json.dumps(candidate, ensure_ascii=False)
+  except json.JSONDecodeError:
+    return None
+
+
+def _parse_deepseek_tool_calls_from_text(
+    text_block: str,
+) -> tuple[list[ChatCompletionMessageToolCall], Optional[str]]:
+  """Parses DeepSeek proprietary inline tool-call tokens from text.
+
+  When LiteLLM does not translate DeepSeek's special tokens into
+  structured ``tool_calls``, the raw tokens appear inside the ``content``
+  field.  This function extracts them and returns standard
+  ``ChatCompletionMessageToolCall`` objects.
+
+  Token reference
+    ``<｜tool▁calls▁begin｜>`` … ``<｜tool▁calls▁end｜>``  → outer wrapper
+    ``<｜tool▁call▁begin｜>function<｜tool▁sep｜>NAME``  → single call start
+    ``<｜tool▁call▁end｜>``                             → single call end
+
+  Args:
+    text_block: The raw text that may contain DeepSeek tokens.
+
+  Returns:
+    A tuple of ``(tool_calls, remainder)`` where ``remainder`` is the
+    original text with all DeepSeek token regions removed.
+  """
+  _ensure_litellm_imported()
+
+  tool_calls: list[ChatCompletionMessageToolCall] = []
+  if not text_block:
+    return tool_calls, None
+
+  # Quick guard: only invoke the regex if the outer tokens are present.
+  if _DS_TCALLS_BEGIN not in text_block and _DS_TCALL_BEGIN not in text_block:
+    return tool_calls, None
+
+  remainder_parts: list[str] = []
+  cursor = 0
+
+  # Outer loop — wrapped <｜tool▁calls▁begin｜> blocks and unwrapped
+  # <｜tool▁call▁begin｜> tokens may interleave, so process whichever
+  # token appears first.
+  while True:
+    calls_idx = text_block.find(_DS_TCALLS_BEGIN, cursor)
+    call_idx = text_block.find(_DS_TCALL_BEGIN, cursor)
+    if calls_idx == -1 and call_idx == -1:
+      remainder_parts.append(text_block[cursor:])
+      break
+
+    if calls_idx != -1 and (call_idx == -1 or calls_idx < call_idx):
+      begin_idx = calls_idx
+      in_wrapped_block = True
+    else:
+      begin_idx = call_idx
+      in_wrapped_block = False
+
+    # Everything before the token becomes remainder.
+    if begin_idx > cursor:
+      remainder_parts.append(text_block[cursor:begin_idx])
+
+    if in_wrapped_block:
+      end_idx = text_block.find(
+          _DS_TCALLS_END, begin_idx + len(_DS_TCALLS_BEGIN)
+      )
+      if end_idx == -1:
+        remainder_parts.append(text_block[begin_idx:])
+        break
+      block = text_block[begin_idx + len(_DS_TCALLS_BEGIN) : end_idx]
+      cursor = end_idx + len(_DS_TCALLS_END)
+    else:
+      # Unwrapped call token — scan for a matching end token.
+      end_idx = text_block.find(_DS_TCALL_END, begin_idx + len(_DS_TCALL_BEGIN))
+      if end_idx == -1:
+        remainder_parts.append(text_block[begin_idx:])
+        break
+      block = text_block[begin_idx : end_idx + len(_DS_TCALL_END)]
+      cursor = end_idx + len(_DS_TCALL_END)
+
+    # Parse individual tool calls inside the block.
+    for match in _DS_TOOL_CALL_RE.finditer(block):
+      func_name = match.group(1).strip()
+      args_raw = match.group(2).strip()
+      args_json = _extract_json_from_deepseek_args(args_raw)
+      if not func_name or not args_json:
+        continue
+      tool_call = _build_tool_call_from_json_dict(
+          {"name": func_name, "arguments": args_json},
+          index=len(tool_calls),
+      )
+      if tool_call:
+        tool_calls.append(tool_call)
+
+  remainder = "".join(p for p in remainder_parts if p).strip()
+  return tool_calls, remainder or None
+
+
 def _parse_tool_calls_from_text(
     text_block: str,
 ) -> tuple[list[ChatCompletionMessageToolCall], Optional[str]]:
@@ -1503,6 +1649,17 @@ def _parse_tool_calls_from_text(
     return tool_calls, None
 
   _ensure_litellm_imported()
+
+  # Try DeepSeek proprietary format first, then fall back to generic JSON.
+  ds_tool_calls, ds_remainder = _parse_deepseek_tool_calls_from_text(text_block)
+  if ds_tool_calls:
+    # If the remainder still contains content, re-parse it for
+    # additional generic inline JSON tool calls (mixed formats).
+    if ds_remainder:
+      extra_calls, extra_remainder = _parse_tool_calls_from_text(ds_remainder)
+      tool_calls = ds_tool_calls + (extra_calls or [])
+      return tool_calls, extra_remainder
+    return ds_tool_calls, None
 
   remainder_segments = []
   cursor = 0
@@ -2474,6 +2631,30 @@ class LiteLlm(BaseLlm):
 
     if generation_params:
       completion_args.update(generation_params)
+
+    if llm_request.config.http_options:
+      http_opts = llm_request.config.http_options
+      if http_opts.headers:
+        extra_headers = completion_args.get("extra_headers", {})
+        if isinstance(extra_headers, dict):
+          extra_headers = extra_headers.copy()
+        else:
+          extra_headers = {}
+        extra_headers.update(http_opts.headers)
+        completion_args["extra_headers"] = extra_headers
+
+      if http_opts.timeout is not None:
+        completion_args["timeout"] = http_opts.timeout
+
+      if (
+          http_opts.retry_options is not None
+          and http_opts.retry_options.attempts is not None
+      ):
+        # LiteLLM accepts num_retries as a top-level parameter.
+        completion_args["num_retries"] = http_opts.retry_options.attempts
+
+      if http_opts.extra_body is not None:
+        completion_args["extra_body"] = http_opts.extra_body
 
     if stream:
       text = ""

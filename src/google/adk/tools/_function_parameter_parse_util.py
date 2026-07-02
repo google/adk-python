@@ -222,6 +222,8 @@ def _is_default_value_compatible(
     default_value: Any, annotation: inspect.Parameter.annotation
 ) -> bool:
   # None type is expected to be handled external to this function
+  if annotation is Any:
+    return True
   if _is_builtin_primitive_or_compound(annotation):
     return isinstance(default_value, annotation)
 
