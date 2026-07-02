@@ -280,6 +280,23 @@ class BaseAgent(BaseNode, abc.ABC):
     cloned_agent.parent_agent = None
     return cloned_agent
 
+  AGENT_LIFECYCLE_KEY: ClassVar[str] = 'agent_lifecycle'
+  """Key under ``Event.custom_metadata`` marking an agent lifecycle event as
+  ``'start'`` or ``'finish'`` (emitted only when
+  ``RunConfig.emit_agent_lifecycle_events`` is enabled).
+  See https://github.com/google/adk-python/issues/6267."""
+
+  def _create_agent_lifecycle_event(
+      self, ctx: InvocationContext, phase: str
+  ) -> Event:
+    """Build a lightweight lifecycle marker event authored by this agent."""
+    return Event(
+        author=self.name,
+        invocation_id=ctx.invocation_id,
+        branch=ctx.branch,
+        custom_metadata={self.AGENT_LIFECYCLE_KEY: phase},
+    )
+
   async def run_async(
       self,
       parent_context: InvocationContext,
@@ -295,21 +312,35 @@ class BaseAgent(BaseNode, abc.ABC):
     """
 
     ctx = self._create_invocation_context(parent_context)
+    emit_lifecycle = bool(
+        ctx.run_config and ctx.run_config.emit_agent_lifecycle_events
+    )
     async with _instrumentation.record_agent_invocation(ctx, self):
       if event := await self._handle_before_agent_callback(ctx):
         yield event
       if ctx.end_invocation:
         return
 
+      # Emit the lifecycle "start" only once the agent is actually going to run
+      # (i.e. not short-circuited by before_agent_callback), and pair it with a
+      # "finish" on every exit path below.
+      if emit_lifecycle:
+        yield self._create_agent_lifecycle_event(ctx, 'start')
+
       async with Aclosing(self._run_async_impl(ctx)) as agen:
         async for event in agen:
           yield event
 
       if ctx.end_invocation:
+        if emit_lifecycle:
+          yield self._create_agent_lifecycle_event(ctx, 'finish')
         return
 
       if event := await self._handle_after_agent_callback(ctx):
         yield event
+
+      if emit_lifecycle:
+        yield self._create_agent_lifecycle_event(ctx, 'finish')
 
   @override
   async def _run_impl(

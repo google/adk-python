@@ -322,6 +322,20 @@ class RunConfig(BaseModel):
       ),
   )
 
+  emit_agent_lifecycle_events: bool = False
+  """Whether each agent invocation emits lightweight lifecycle marker events.
+
+  When True, every agent that runs yields a ``start`` event before its logic and
+  a ``finish`` event after, authored by the agent and carrying
+  ``Event.custom_metadata['agent_lifecycle'] == 'start' | 'finish'`` (plus the
+  agent's ``branch``). This lets consumers bracket agent/node execution exactly —
+  including per ``LoopAgent`` iteration and parallel-branch boundaries — without
+  inferring boundaries from ``author``/``branch`` transitions.
+
+  Defaults to False; existing event streams are unchanged. See
+  https://github.com/google/adk-python/issues/6267.
+  """
+
   max_llm_calls: int = 500
   """
   A limit on the total number of llm calls for a given run.
