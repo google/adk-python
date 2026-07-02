@@ -79,6 +79,27 @@ class LoopAgent(BaseAgent):
   escalates.
   """
 
+  LOOP_ITERATION_KEY: ClassVar[str] = 'loop_iteration'
+  """Key under ``Event.custom_metadata`` recording the 0-based iteration of the
+  nearest enclosing ``LoopAgent`` during which the event was produced.
+
+  Without it, events produced in different iterations are indistinguishable
+  (same ``author``, ``branch`` and ``invocation_id``), so consumers cannot tell
+  loop iterations apart — e.g. a ``ParallelAgent`` nested in a ``LoopAgent``,
+  whose branch ids repeat every iteration. See
+  https://github.com/google/adk-python/issues/6266.
+  """
+
+  def _annotate_loop_iteration(self, event: Event, iteration: int) -> None:
+    """Record the current loop iteration on ``event.custom_metadata``.
+
+    Uses ``setdefault`` so that when ``LoopAgent``s are nested the nearest
+    enclosing loop (which annotates first, as the event bubbles up) wins.
+    """
+    metadata = dict(event.custom_metadata) if event.custom_metadata else {}
+    metadata.setdefault(self.LOOP_ITERATION_KEY, iteration)
+    event.custom_metadata = metadata
+
   @override
   async def _run_async_impl(
       self, ctx: InvocationContext
@@ -112,6 +133,7 @@ class LoopAgent(BaseAgent):
 
         async with Aclosing(sub_agent.run_async(ctx)) as agen:
           async for event in agen:
+            self._annotate_loop_iteration(event, times_looped)
             yield event
             if event.actions.escalate:
               should_exit = True
