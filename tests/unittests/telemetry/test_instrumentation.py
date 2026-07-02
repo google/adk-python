@@ -18,6 +18,7 @@ import time
 from unittest import mock
 
 from google.adk.telemetry import _instrumentation
+from google.adk.telemetry import _metrics
 from opentelemetry import trace
 import pytest
 
@@ -26,7 +27,7 @@ def test_get_elapsed_s_span_none():
   """Tests fallback when span is None."""
   start_time = 10.0
   with mock.patch("time.monotonic", return_value=12.0):
-    elapsed = _instrumentation._get_elapsed_s(None, start_time)
+    elapsed = _metrics.get_elapsed_s(None, start_time)
   assert elapsed == 2.0  # 12 - 10
 
 
@@ -35,7 +36,7 @@ def test_get_elapsed_s_span_valid():
   mock_span = mock.MagicMock(spec=trace.Span)
   mock_span.start_time = 1000000000  # 1s in ns
   mock_span.end_time = 2000000000  # 2s in ns
-  elapsed = _instrumentation._get_elapsed_s(mock_span, time.monotonic())
+  elapsed = _metrics.get_elapsed_s(mock_span, time.monotonic())
   assert elapsed == 1.0  # (2 - 1) s
 
 
@@ -46,7 +47,7 @@ def test_get_elapsed_s_span_missing_start():
   mock_span.end_time = 2000000000
   start_time = 10.0
   with mock.patch("time.monotonic", return_value=12.0):
-    elapsed = _instrumentation._get_elapsed_s(mock_span, start_time)
+    elapsed = _metrics.get_elapsed_s(mock_span, start_time)
   assert elapsed == 2.0
 
 
@@ -57,7 +58,7 @@ def test_get_elapsed_s_span_missing_end():
   del mock_span.end_time
   start_time = 10.0
   with mock.patch("time.monotonic", return_value=12.0):
-    elapsed = _instrumentation._get_elapsed_s(mock_span, start_time)
+    elapsed = _metrics.get_elapsed_s(mock_span, start_time)
   assert elapsed == 2.0
 
 
@@ -68,7 +69,7 @@ def test_get_elapsed_s_span_non_int_start():
   mock_span.end_time = 2000000000
   start_time = 10.0
   with mock.patch("time.monotonic", return_value=12.0):
-    elapsed = _instrumentation._get_elapsed_s(mock_span, start_time)
+    elapsed = _metrics.get_elapsed_s(mock_span, start_time)
   assert elapsed == 2.0
 
 
@@ -79,7 +80,7 @@ def test_get_elapsed_s_span_non_int_end():
   mock_span.end_time = 2000000000.0
   start_time = 10.0
   with mock.patch("time.monotonic", return_value=12.0):
-    elapsed = _instrumentation._get_elapsed_s(mock_span, start_time)
+    elapsed = _metrics.get_elapsed_s(mock_span, start_time)
   assert elapsed == 2.0
 
 

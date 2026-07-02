@@ -285,11 +285,7 @@ class TestAgentCardBuilder:
     assert any("writer" in sid for sid in skill_ids)  # child node skill
 
   async def test_build_succeeds_for_workflow_with_output_schema_node(self):
-    """AgentCardBuilder.build succeeds for a Workflow whose LlmAgent has output_schema.
-
-    Mirrors the exact repro from
-    https://github.com/google/adk-python/issues/5487.
-    """
+    """AgentCardBuilder.build succeeds for a Workflow whose LlmAgent has output_schema."""
 
     class _Out(BaseModel):
       text: str

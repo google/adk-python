@@ -152,14 +152,14 @@ class TestInvocationContextWithAppResumablity:
     )
 
   def _create_test_invocation_context(
-      self, resumability_config
+      self, resumability_config: ResumabilityConfig | None = None
   ) -> InvocationContext:
     """Create a mock invocation context for testing."""
     ctx = InvocationContext(
         session_service=Mock(spec=BaseSessionService),
         agent=Mock(spec=BaseAgent),
         invocation_id='inv_1',
-        session=Mock(spec=Session),
+        session=Mock(spec=Session, events=[]),
         resumability_config=resumability_config,
     )
     return ctx
@@ -207,6 +207,69 @@ class TestInvocationContextWithAppResumablity:
     assert not mock_invocation_context.should_pause_invocation(
         nonpausable_event
     )
+
+  def test_should_not_pause_when_user_resumes_in_sub_branch(
+      self, event_to_pause, long_running_function_call
+  ):
+    """We do not pause the invocation if a subsequent user event belongs to a sub-branch."""
+    # Arrange
+    mock_invocation_context = self._create_test_invocation_context()
+    user_event = Event(
+        invocation_id='inv_1',
+        author='user',
+        branch=f'agent@{long_running_function_call.id}.child',
+    )
+    mock_invocation_context.session.events = [event_to_pause, user_event]
+
+    # Act
+    should_pause = mock_invocation_context.should_pause_invocation(
+        event_to_pause
+    )
+
+    # Assert
+    assert not should_pause
+
+  def test_should_not_pause_when_user_resumes_in_deeply_nested_sub_branch(
+      self, event_to_pause, long_running_function_call
+  ):
+    """We do not pause if the user resumes in a deeply nested sub-branch containing the tool call."""
+    # Arrange
+    mock_invocation_context = self._create_test_invocation_context()
+    user_event = Event(
+        invocation_id='inv_1',
+        author='user',
+        branch=f'parent@other.child@{long_running_function_call.id}.grandchild',
+    )
+    mock_invocation_context.session.events = [event_to_pause, user_event]
+
+    # Act
+    should_pause = mock_invocation_context.should_pause_invocation(
+        event_to_pause
+    )
+
+    # Assert
+    assert not should_pause
+
+  def test_should_pause_when_user_resumes_in_different_branch(
+      self, event_to_pause
+  ):
+    """We still pause the invocation if the subsequent user event belongs to a different branch."""
+    # Arrange
+    mock_invocation_context = self._create_test_invocation_context()
+    user_event = Event(
+        invocation_id='inv_1',
+        author='user',
+        branch='parent@different_id.child',
+    )
+    mock_invocation_context.session.events = [event_to_pause, user_event]
+
+    # Act
+    should_pause = mock_invocation_context.should_pause_invocation(
+        event_to_pause
+    )
+
+    # Assert
+    assert should_pause
 
   def test_is_resumable_true(self):
     """Tests that is_resumable is True when resumability is enabled."""
@@ -534,3 +597,61 @@ class TestFindMatchingFunctionCall:
     invocation_context = test_invocation_context([fc_event, fr_event])
     match = invocation_context._find_matching_function_call(fr_event_no_fr)
     assert match is None
+
+  def test_stamp_event_branch_context_preserves_isolation_scope(
+      self, test_invocation_context
+  ):
+    """Tests stamp_event_branch_context does not overwrite existing isolation_scope with None."""
+    fc = Part.from_function_call(name='some_tool', args={})
+    fc.function_call.id = 'test_function_call_id'
+    fc_event = Event(
+        invocation_id='inv_1',
+        author='agent',
+        branch='root@1',
+        isolation_scope=None,  # Coordinator FC has None scope
+        content=testing_utils.ModelContent([fc]),
+    )
+    fr = Part.from_function_response(
+        name='some_tool', response={'result': 'ok'}
+    )
+    fr.function_response.id = 'test_function_call_id'
+    fr_event = Event(
+        invocation_id='inv_1',
+        author='agent',
+        isolation_scope='task_123',  # Pre-populated active task scope
+        content=Content(role='user', parts=[fr]),
+    )
+    invocation_context = test_invocation_context([fc_event, fr_event])
+
+    invocation_context.stamp_event_branch_context(fr_event)
+    assert fr_event.branch == 'root@1'
+    assert fr_event.isolation_scope == 'task_123'
+
+  def test_stamp_event_branch_context_does_not_overwrite_existing_scope(
+      self, test_invocation_context
+  ):
+    """Tests stamp_event_branch_context does not overwrite existing isolation_scope if set."""
+    fc = Part.from_function_call(name='some_tool', args={})
+    fc.function_call.id = 'test_function_call_id'
+    fc_event = Event(
+        invocation_id='inv_1',
+        author='agent',
+        branch='root@1',
+        isolation_scope='task_456',  # Function call has isolation scope
+        content=testing_utils.ModelContent([fc]),
+    )
+    fr = Part.from_function_response(
+        name='some_tool', response={'result': 'ok'}
+    )
+    fr.function_response.id = 'test_function_call_id'
+    fr_event = Event(
+        invocation_id='inv_1',
+        author='agent',
+        isolation_scope='task_123',  # Pre-populated active task scope
+        content=Content(role='user', parts=[fr]),
+    )
+    invocation_context = test_invocation_context([fc_event, fr_event])
+
+    invocation_context.stamp_event_branch_context(fr_event)
+    assert fr_event.branch == 'root@1'
+    assert fr_event.isolation_scope == 'task_123'
