@@ -103,6 +103,7 @@ class ApplicationIntegrationToolset(BaseToolset):  # type: ignore[misc]
       auth_scheme: Optional[AuthScheme] = None,
       auth_credential: Optional[AuthCredential] = None,
       tool_filter: Optional[Union[ToolPredicate, List[str]]] = None,
+      credential_key: Optional[str] = None,
   ):
     """Args:
 
@@ -146,12 +147,14 @@ class ApplicationIntegrationToolset(BaseToolset):  # type: ignore[misc]
     self._service_account_json = service_account_json
     self._auth_scheme = auth_scheme
     self._auth_credential = auth_credential
+    self._credential_key = credential_key
     # Store auth config as instance variable so ADK can populate
     # exchanged_auth_credential in-place before calling get_tools()
     self._auth_config: Optional[AuthConfig] = (
         AuthConfig(
             auth_scheme=auth_scheme,
             raw_auth_credential=auth_credential,
+            credential_key=credential_key,
         )
         if auth_scheme
         else None
@@ -221,6 +224,7 @@ class ApplicationIntegrationToolset(BaseToolset):  # type: ignore[misc]
           spec_dict=spec_dict,
           auth_credential=auth_credential,
           auth_scheme=auth_scheme,
+          credential_key=self._credential_key,
           tool_filter=self.tool_filter,
       )
       return
@@ -274,6 +278,7 @@ class ApplicationIntegrationToolset(BaseToolset):  # type: ignore[misc]
               rest_api_tool=rest_api_tool,
               auth_scheme=connector_auth_scheme,
               auth_credential=connector_auth_credential,
+              credential_key=self._credential_key,
           )
       )
 

@@ -27,6 +27,7 @@ def _mock_meter_setup(monkeypatch):
   """Sets up mock meter and histograms for testing."""
   mock_meter = mock.MagicMock()
   agent_duration_hist = mock.MagicMock(spec=metrics.Histogram)
+  workflow_duration_hist = mock.MagicMock(spec=metrics.Histogram)
   tool_duration_hist = mock.MagicMock(spec=metrics.Histogram)
   request_size_hist = mock.MagicMock(spec=metrics.Histogram)
   response_size_hist = mock.MagicMock(spec=metrics.Histogram)
@@ -35,6 +36,7 @@ def _mock_meter_setup(monkeypatch):
   client_token_usage_hist = mock.MagicMock(spec=metrics.Histogram)
 
   agent_duration_hist.name = "agent_invocation_duration"
+  workflow_duration_hist.name = "workflow_invocation_duration"
   tool_duration_hist.name = "tool_execution_duration"
   request_size_hist.name = "agent_request_size"
   response_size_hist.name = "agent_response_size"
@@ -43,9 +45,11 @@ def _mock_meter_setup(monkeypatch):
   client_token_usage_hist.name = "client_token_usage"
 
   def create_histogram_side_effect(name, **_kwargs):
-    if name == "gen_ai.agent.invocation.duration":
+    if name == "gen_ai.invoke_agent.duration":
       return agent_duration_hist
-    elif name == "gen_ai.tool.execution.duration":
+    elif name == "gen_ai.invoke_workflow.duration":
+      return workflow_duration_hist
+    elif name == "gen_ai.execute_tool.duration":
       return tool_duration_hist
     elif name == "gen_ai.agent.request.size":
       return request_size_hist
@@ -66,6 +70,9 @@ def _mock_meter_setup(monkeypatch):
   monkeypatch.setattr(
       _metrics, "_agent_invocation_duration", agent_duration_hist
   )
+  monkeypatch.setattr(
+      _metrics, "_workflow_invocation_duration", workflow_duration_hist
+  )
   monkeypatch.setattr(_metrics, "_tool_execution_duration", tool_duration_hist)
   monkeypatch.setattr(_metrics, "_agent_request_size", request_size_hist)
   monkeypatch.setattr(_metrics, "_agent_response_size", response_size_hist)
@@ -78,6 +85,7 @@ def _mock_meter_setup(monkeypatch):
   return {
       "meter": mock_meter,
       "agent_duration": agent_duration_hist,
+      "workflow_duration": workflow_duration_hist,
       "tool_duration": tool_duration_hist,
       "request_size": request_size_hist,
       "response_size": response_size_hist,
@@ -128,6 +136,40 @@ def test_record_agent_invocation_duration_with_error(mock_meter_setup):
   agent_duration_hist = mock_meter_setup["agent_duration"]
   agent_duration_hist.record.assert_called_once()
   _, kwargs = agent_duration_hist.record.call_args
+  assert kwargs["attributes"]["error.type"] == "ValueError"
+
+
+def test_record_workflow_invocation_duration_root(mock_meter_setup):
+  """Tests record_workflow_invocation_duration omits nested for the root."""
+  _metrics.record_workflow_invocation_duration(
+      workflow_name="my_workflow",
+      elapsed_s=1.0,
+      nested=False,
+  )
+  hist = mock_meter_setup["workflow_duration"]
+  hist.record.assert_called_once()
+  args, kwargs = hist.record.call_args
+  assert args[0] == 1.0
+  assert kwargs["attributes"] == {
+      "gen_ai.operation.name": "invoke_workflow",
+      "gen_ai.workflow.name": "my_workflow",
+  }
+
+
+def test_record_workflow_invocation_duration_nested_with_error(
+    mock_meter_setup,
+):
+  """Tests record_workflow_invocation_duration records nested + error."""
+  _metrics.record_workflow_invocation_duration(
+      workflow_name="nested_workflow",
+      elapsed_s=2.0,
+      nested=True,
+      error=ValueError("boom"),
+  )
+  hist = mock_meter_setup["workflow_duration"]
+  hist.record.assert_called_once()
+  _, kwargs = hist.record.call_args
+  assert kwargs["attributes"]["gen_ai.workflow.nested"] is True
   assert kwargs["attributes"]["error.type"] == "ValueError"
 
 

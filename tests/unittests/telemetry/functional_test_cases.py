@@ -1275,8 +1275,12 @@ EXPECTED_EXPERIMENTAL_SPAN_AND_EVENT_WITH_MCP = SpanDigest(
 
 
 EXPECTED_STABLE_NO_CAPTURE_V2 = SpanDigest(
-    name="invocation",
-    attributes={},
+    name="invoke_workflow some_root_agent",
+    attributes={
+        "gen_ai.operation.name": "invoke_workflow",
+        "gen_ai.workflow.name": AGENT_NAME,
+        "gen_ai.conversation.id": PRESENT,
+    },
     children=[
         SpanDigest(
             name="invoke_agent some_root_agent",
@@ -1421,8 +1425,12 @@ EXPECTED_STABLE_NO_CAPTURE_V2 = SpanDigest(
 
 
 EXPECTED_STABLE_CAPTURE_V2 = SpanDigest(
-    name="invocation",
-    attributes={},
+    name="invoke_workflow some_root_agent",
+    attributes={
+        "gen_ai.operation.name": "invoke_workflow",
+        "gen_ai.workflow.name": AGENT_NAME,
+        "gen_ai.conversation.id": PRESENT,
+    },
     children=[
         SpanDigest(
             name="invoke_agent some_root_agent",
@@ -1622,8 +1630,12 @@ EXPECTED_STABLE_CAPTURE_V2 = SpanDigest(
 
 
 EXPECTED_EXPERIMENTAL_NO_CONTENT_V2 = SpanDigest(
-    name="invocation",
-    attributes={},
+    name="invoke_workflow some_root_agent",
+    attributes={
+        "gen_ai.operation.name": "invoke_workflow",
+        "gen_ai.workflow.name": AGENT_NAME,
+        "gen_ai.conversation.id": PRESENT,
+    },
     children=[
         SpanDigest(
             name="invoke_agent some_root_agent",
@@ -1768,8 +1780,12 @@ EXPECTED_EXPERIMENTAL_NO_CONTENT_V2 = SpanDigest(
 
 
 EXPECTED_EXPERIMENTAL_SPAN_ONLY_V2 = SpanDigest(
-    name="invocation",
-    attributes={},
+    name="invoke_workflow some_root_agent",
+    attributes={
+        "gen_ai.operation.name": "invoke_workflow",
+        "gen_ai.workflow.name": AGENT_NAME,
+        "gen_ai.conversation.id": PRESENT,
+    },
     children=[
         SpanDigest(
             name="invoke_agent some_root_agent",
@@ -1920,8 +1936,12 @@ EXPECTED_EXPERIMENTAL_SPAN_ONLY_V2 = SpanDigest(
 
 
 EXPECTED_EXPERIMENTAL_EVENT_ONLY_V2 = SpanDigest(
-    name="invocation",
-    attributes={},
+    name="invoke_workflow some_root_agent",
+    attributes={
+        "gen_ai.operation.name": "invoke_workflow",
+        "gen_ai.workflow.name": AGENT_NAME,
+        "gen_ai.conversation.id": PRESENT,
+    },
     children=[
         SpanDigest(
             name="invoke_agent some_root_agent",
@@ -2078,8 +2098,12 @@ EXPECTED_EXPERIMENTAL_EVENT_ONLY_V2 = SpanDigest(
 
 
 EXPECTED_EXPERIMENTAL_SPAN_AND_EVENT_V2 = SpanDigest(
-    name="invocation",
-    attributes={},
+    name="invoke_workflow some_root_agent",
+    attributes={
+        "gen_ai.operation.name": "invoke_workflow",
+        "gen_ai.workflow.name": AGENT_NAME,
+        "gen_ai.conversation.id": PRESENT,
+    },
     children=[
         SpanDigest(
             name="invoke_agent some_root_agent",
@@ -2251,13 +2275,13 @@ EXPECTED_EXPERIMENTAL_SPAN_AND_EVENT_V2 = SpanDigest(
 
 # Expected metric points, grouped by metric name.
 EXPECTED_METRICS_V1: dict[str, frozenset[MetricPoint]] = {
-    "gen_ai.agent.invocation.duration": frozenset({
+    "gen_ai.invoke_agent.duration": frozenset({
         MetricPoint(
             attributes={"gen_ai.agent.name": AGENT_NAME},
             value=NON_DETERMINISTIC,
         ),
     }),
-    "gen_ai.tool.execution.duration": frozenset({
+    "gen_ai.execute_tool.duration": frozenset({
         MetricPoint(
             attributes={
                 "gen_ai.agent.name": AGENT_NAME,
@@ -2298,13 +2322,13 @@ EXPECTED_METRICS_V1: dict[str, frozenset[MetricPoint]] = {
 
 
 EXPECTED_METRICS_V2: dict[str, frozenset[MetricPoint]] = {
-    "gen_ai.agent.invocation.duration": frozenset({
+    "gen_ai.invoke_agent.duration": frozenset({
         MetricPoint(
             attributes={"gen_ai.agent.name": AGENT_NAME},
             value=NON_DETERMINISTIC,
         ),
     }),
-    "gen_ai.tool.execution.duration": frozenset({
+    "gen_ai.execute_tool.duration": frozenset({
         MetricPoint(
             attributes={
                 "gen_ai.agent.name": AGENT_NAME,
@@ -2337,6 +2361,15 @@ EXPECTED_METRICS_V2: dict[str, frozenset[MetricPoint]] = {
                 "gen_ai.provider.name": "gemini",
                 "gen_ai.request.model": "mock",
                 "gen_ai.response.model": "mock",
+            },
+            value=NON_DETERMINISTIC,
+        ),
+    }),
+    "gen_ai.invoke_workflow.duration": frozenset({
+        MetricPoint(
+            attributes={
+                "gen_ai.operation.name": "invoke_workflow",
+                "gen_ai.workflow.name": AGENT_NAME,
             },
             value=NON_DETERMINISTIC,
         ),

@@ -471,6 +471,8 @@ class AgentLoader(BaseAgentLoader):
       return "python"
     elif (base_path / "__init__.py").exists():
       return "python"
+    elif (base_path.parent / f"{agent_name}.py").exists():
+      return "python"
 
     raise ValueError(f"Could not determine agent type for '{agent_name}'.")
 

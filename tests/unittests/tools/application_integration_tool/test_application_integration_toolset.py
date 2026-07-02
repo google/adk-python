@@ -567,6 +567,7 @@ async def test_init_with_connection_and_custom_auth(
       tool_instructions=tool_instructions,
       auth_scheme=oauth2_scheme,
       auth_credential=auth_credential,
+      credential_key="test-key",
   )
   mock_integration_client.assert_called_once_with(
       project,
@@ -594,6 +595,7 @@ async def test_init_with_connection_and_custom_auth(
   assert (await toolset.get_tools())[0]._operation == "EXECUTE_ACTION"
   assert (await toolset.get_tools())[0]._auth_scheme == oauth2_scheme
   assert (await toolset.get_tools())[0]._auth_credential == auth_credential
+  assert (await toolset.get_tools())[0]._credential_key == "test-key"
 
 
 @pytest.mark.asyncio

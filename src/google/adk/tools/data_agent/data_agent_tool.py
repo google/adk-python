@@ -13,7 +13,6 @@
 # limitations under the License.
 from __future__ import annotations
 
-import json
 from typing import Any
 
 from google.auth.credentials import Credentials
@@ -23,28 +22,7 @@ from .. import _gda_stream_util
 from ..tool_context import ToolContext
 from .config import DataAgentToolConfig
 
-BASE_URL = "https://geminidataanalytics.googleapis.com/v1beta"
 _GDA_CLIENT_ID = "GOOGLE_ADK"
-
-
-def _get_http_headers(
-    credentials: Credentials,
-) -> dict[str, str]:
-  """Prepares headers for HTTP requests."""
-  if not credentials.token:
-    error_details = (
-        "The provided credentials object does not have a valid access"
-        " token.\n\nThis is often because the credentials need to be"
-        " refreshed or require specific API scopes. Please ensure the"
-        " credentials are prepared correctly before calling this"
-        " function.\n\nThere may be other underlying causes as well."
-    )
-    raise ValueError(error_details)
-  return {
-      "Authorization": f"Bearer {credentials.token}",
-      "Content-Type": "application/json",
-      "X-Goog-API-Client": _GDA_CLIENT_ID,
-  }
 
 
 def list_accessible_data_agents(
@@ -116,16 +94,61 @@ def list_accessible_data_agents(
       }
   """
   try:
-    headers = _get_http_headers(credentials)
-    list_url = f"{BASE_URL}/projects/{project_id}/locations/global/dataAgents:listAccessible"
-    resp = requests.get(
-        list_url,
-        headers=headers,
-    )
+    session, endpoint = _gda_stream_util.get_gda_session(credentials)
+    base_url = f"{endpoint}/v1beta"
+    headers = {
+        "Content-Type": "application/json",
+        "X-Goog-API-Client": _GDA_CLIENT_ID,
+    }
+    list_url = f"{base_url}/projects/{project_id}/locations/global/dataAgents:listAccessible"
+    with session:
+      resp = session.get(
+          list_url,
+          headers=headers,
+      )
     resp.raise_for_status()
     return {
         "status": "SUCCESS",
         "response": resp.json().get("dataAgents", []),
+    }
+  except Exception as ex:  # pylint: disable=broad-except
+    return {
+        "status": "ERROR",
+        "error_details": str(ex),
+    }
+
+
+def _get_data_agent_info(
+    data_agent_name: str,
+    credentials: Credentials,
+    session: requests.Session | None = None,
+) -> dict[str, Any]:
+  try:
+    endpoint = _gda_stream_util.get_gda_endpoint()
+    base_url = f"{endpoint}/v1beta"
+    headers = {
+        "Content-Type": "application/json",
+        "X-Goog-API-Client": _GDA_CLIENT_ID,
+    }
+    get_url = f"{base_url}/{data_agent_name}"
+
+    if session:
+      resp = session.get(
+          get_url,
+          headers=headers,
+      )
+    else:
+      local_session, _ = _gda_stream_util.get_gda_session(credentials)
+      with local_session:
+        resp = local_session.get(
+            get_url,
+            headers=headers,
+        )
+
+    resp.raise_for_status()
+    return {
+        "status": "SUCCESS",
+        "response": resp.json(),
     }
   except Exception as ex:  # pylint: disable=broad-except
     return {
@@ -182,23 +205,7 @@ def get_data_agent_info(
           }
       }
   """
-  try:
-    headers = _get_http_headers(credentials)
-    get_url = f"{BASE_URL}/{data_agent_name}"
-    resp = requests.get(
-        get_url,
-        headers=headers,
-    )
-    resp.raise_for_status()
-    return {
-        "status": "SUCCESS",
-        "response": resp.json(),
-    }
-  except Exception as ex:  # pylint: disable=broad-except
-    return {
-        "status": "ERROR",
-        "error_details": str(ex),
-    }
+  return _get_data_agent_info(data_agent_name, credentials)
 
 
 def ask_data_agent(
@@ -280,26 +287,35 @@ def ask_data_agent(
       }
   """
   try:
-    headers = _get_http_headers(credentials)
+    session, endpoint = _gda_stream_util.get_gda_session(credentials)
+    with session:
+      base_url = f"{endpoint}/v1beta"
+      headers = {
+          "Content-Type": "application/json",
+          "X-Goog-API-Client": _GDA_CLIENT_ID,
+      }
 
-    agent_info = get_data_agent_info(data_agent_name, credentials)
-    if agent_info.get("status") == "ERROR":
-      return agent_info
-    parent = data_agent_name.rsplit("/", 2)[0]
-    chat_url = f"{BASE_URL}/{parent}:chat"
-    chat_payload = {
-        "messages": [{"userMessage": {"text": query}}],
-        "dataAgentContext": {
-            "dataAgent": data_agent_name,
-        },
-        "clientIdEnum": _GDA_CLIENT_ID,
-    }
-    resp = _gda_stream_util.get_stream(
-        chat_url,
-        chat_payload,
-        headers,
-        settings.max_query_result_rows,
-    )
+      agent_info = _get_data_agent_info(
+          data_agent_name, credentials, session=session
+      )
+      if agent_info.get("status") == "ERROR":
+        return agent_info
+      parent = data_agent_name.rsplit("/", 2)[0]
+      chat_url = f"{base_url}/{parent}:chat"
+      chat_payload = {
+          "messages": [{"userMessage": {"text": query}}],
+          "dataAgentContext": {
+              "dataAgent": data_agent_name,
+          },
+          "clientIdEnum": _GDA_CLIENT_ID,
+      }
+      resp = _gda_stream_util.get_stream(
+          session,
+          chat_url,
+          chat_payload,
+          headers,
+          settings.max_query_result_rows,
+      )
 
     return {"status": "SUCCESS", "response": resp}
   except Exception as ex:  # pylint: disable=broad-except
