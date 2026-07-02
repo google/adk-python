@@ -2291,18 +2291,6 @@ EXPECTED_METRICS_V1: dict[str, frozenset[MetricPoint]] = {
             value=NON_DETERMINISTIC,
         ),
     }),
-    "gen_ai.agent.request.size": frozenset({
-        MetricPoint(
-            attributes={"gen_ai.agent.name": AGENT_NAME},
-            value=len(USER_PROMPT),
-        ),
-    }),
-    "gen_ai.agent.response.size": frozenset({
-        MetricPoint(
-            attributes={"gen_ai.agent.name": AGENT_NAME},
-            value=len(FINAL_TEXT),
-        ),
-    }),
     "gen_ai.agent.workflow.steps": frozenset({
         MetricPoint(attributes={"gen_ai.agent.name": AGENT_NAME}, value=3),
     }),
@@ -2336,18 +2324,6 @@ EXPECTED_METRICS_V2: dict[str, frozenset[MetricPoint]] = {
                 "gen_ai.tool.type": "FunctionTool",
             },
             value=NON_DETERMINISTIC,
-        ),
-    }),
-    "gen_ai.agent.request.size": frozenset({
-        MetricPoint(
-            attributes={"gen_ai.agent.name": AGENT_NAME},
-            value=len(USER_PROMPT),
-        ),
-    }),
-    "gen_ai.agent.response.size": frozenset({
-        MetricPoint(
-            attributes={"gen_ai.agent.name": AGENT_NAME},
-            value=len(FINAL_TEXT),
         ),
     }),
     "gen_ai.agent.workflow.steps": frozenset({

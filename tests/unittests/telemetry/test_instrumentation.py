@@ -86,16 +86,16 @@ def test_get_elapsed_s_span_non_int_end():
 
 @pytest.mark.asyncio
 async def test_record_agent_invocation_tolerates_minimal_context():
-  """Tolerates context-likes that lack user_content or session.
+  """Tolerates context-likes that lack session.
 
   Test doubles, partial migrations, and external embedders can pass an
-  InvocationContext-like object without `user_content` or with a `session`
-  that has no `events` attribute. The telemetry path must not raise
-  AttributeError on the metrics call in those cases.
+  InvocationContext-like object with a `session` that has no `events`
+  attribute. The telemetry path must not raise AttributeError on the
+  metrics call in those cases.
   """
   agent = mock.MagicMock()
   agent.name = "test_agent"
-  # Bare object without `user_content` and without `session`.
+  # Bare object without `session`.
   bare_ctx = object()
 
   with (
@@ -112,7 +112,6 @@ async def test_record_agent_invocation_tolerates_minimal_context():
 
   mock_record.assert_called_once()
   call_args = mock_record.call_args
-  # positional: (agent_name, elapsed_s, user_content, events, caught_error)
+  # positional: (agent_name, elapsed_s, events, caught_error)
   assert call_args.args[0] == "test_agent"
-  assert call_args.args[2] is None  # user_content default
-  assert call_args.args[3] == []  # events default
+  assert call_args.args[2] == []  # events default

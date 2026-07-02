@@ -29,8 +29,6 @@ def _mock_meter_setup(monkeypatch):
   agent_duration_hist = mock.MagicMock(spec=metrics.Histogram)
   workflow_duration_hist = mock.MagicMock(spec=metrics.Histogram)
   tool_duration_hist = mock.MagicMock(spec=metrics.Histogram)
-  request_size_hist = mock.MagicMock(spec=metrics.Histogram)
-  response_size_hist = mock.MagicMock(spec=metrics.Histogram)
   steps_hist = mock.MagicMock(spec=metrics.Histogram)
   client_duration_hist = mock.MagicMock(spec=metrics.Histogram)
   client_token_usage_hist = mock.MagicMock(spec=metrics.Histogram)
@@ -38,8 +36,6 @@ def _mock_meter_setup(monkeypatch):
   agent_duration_hist.name = "agent_invocation_duration"
   workflow_duration_hist.name = "workflow_invocation_duration"
   tool_duration_hist.name = "tool_execution_duration"
-  request_size_hist.name = "agent_request_size"
-  response_size_hist.name = "agent_response_size"
   steps_hist.name = "agent_workflow_steps"
   client_duration_hist.name = "client_operation_duration"
   client_token_usage_hist.name = "client_token_usage"
@@ -51,10 +47,6 @@ def _mock_meter_setup(monkeypatch):
       return workflow_duration_hist
     elif name == "gen_ai.execute_tool.duration":
       return tool_duration_hist
-    elif name == "gen_ai.agent.request.size":
-      return request_size_hist
-    elif name == "gen_ai.agent.response.size":
-      return response_size_hist
     elif name == "gen_ai.agent.workflow.steps":
       return steps_hist
     elif name == "gen_ai.client.operation.duration":
@@ -74,8 +66,6 @@ def _mock_meter_setup(monkeypatch):
       _metrics, "_workflow_invocation_duration", workflow_duration_hist
   )
   monkeypatch.setattr(_metrics, "_tool_execution_duration", tool_duration_hist)
-  monkeypatch.setattr(_metrics, "_agent_request_size", request_size_hist)
-  monkeypatch.setattr(_metrics, "_agent_response_size", response_size_hist)
   monkeypatch.setattr(_metrics, "_agent_workflow_steps", steps_hist)
   monkeypatch.setattr(
       _metrics, "_client_operation_duration", client_duration_hist
@@ -87,28 +77,10 @@ def _mock_meter_setup(monkeypatch):
       "agent_duration": agent_duration_hist,
       "workflow_duration": workflow_duration_hist,
       "tool_duration": tool_duration_hist,
-      "request_size": request_size_hist,
-      "response_size": response_size_hist,
       "steps": steps_hist,
       "client_duration": client_duration_hist,
       "client_token_usage": client_token_usage_hist,
   }
-
-
-def test_record_agent_request_size(mock_meter_setup):
-  """Tests record_agent_request_size records correctly."""
-  user_content = "hello"
-  _metrics.record_agent_request_size(
-      "test_agent", types.Content(parts=[types.Part(text=user_content)])
-  )
-  request_size_hist = mock_meter_setup["request_size"]
-  request_size_hist.record.assert_called_once()
-  args, kwargs = request_size_hist.record.call_args
-  assert args[0] == len(user_content)
-  want_attributes = {
-      "gen_ai.agent.name": "test_agent",
-  }
-  assert kwargs["attributes"] == want_attributes
 
 
 def test_record_agent_invocation_duration(mock_meter_setup):
@@ -173,22 +145,6 @@ def test_record_workflow_invocation_duration_nested_with_error(
   assert kwargs["attributes"]["error.type"] == "ValueError"
 
 
-def test_record_agent_response_size(mock_meter_setup):
-  """Tests record_agent_response_size records correctly."""
-  response_text = "response"
-  event = mock.MagicMock(
-      author="test_agent",
-      content=types.Content(parts=[types.Part(text=response_text)]),
-  )
-  _metrics.record_agent_response_size("test_agent", [event])
-  response_size_hist = mock_meter_setup["response_size"]
-  response_size_hist.record.assert_called_once()
-  args, kwargs = response_size_hist.record.call_args
-  assert args[0] == len(response_text)
-  want_attributes = {"gen_ai.agent.name": "test_agent"}
-  assert kwargs["attributes"] == want_attributes
-
-
 def test_record_agent_workflow_steps(mock_meter_setup):
   """Tests record_agent_workflow_steps records correctly."""
   _metrics.record_agent_workflow_steps(
@@ -241,58 +197,6 @@ def test_record_tool_execution_duration_with_error(mock_meter_setup):
   tool_duration_hist.record.assert_called_once()
   _, kwargs = tool_duration_hist.record.call_args
   assert kwargs["attributes"]["error.type"] == "ValueError"
-
-
-@pytest.mark.parametrize(
-    "content,expected_size",
-    [
-        (None, 0),
-        (types.Content(parts=[types.Part(text="hello")]), 5),
-        (
-            types.Content(
-                parts=[
-                    types.Part(text="hello"),
-                    types.Part(text=" world"),
-                ]
-            ),
-            11,
-        ),
-        (
-            types.Content(
-                parts=[
-                    types.Part(
-                        inline_data=types.Blob(
-                            mime_type="image/png", data=b"12345"
-                        )
-                    )
-                ]
-            ),
-            5,
-        ),
-        (
-            types.Content(
-                parts=[
-                    types.Part(text="hello"),
-                    types.Part(
-                        inline_data=types.Blob(
-                            mime_type="image/png", data=b"12345"
-                        )
-                    ),
-                ]
-            ),
-            10,
-        ),
-    ],
-    ids=[
-        "none_content",
-        "simple_text",
-        "multi_text",
-        "inline_data",
-        "mixed_content",
-    ],
-)
-def test_get_content_size(content, expected_size):
-  assert _metrics._get_content_size(content) == expected_size
 
 
 def test_record_client_operation_duration(mock_meter_setup):

@@ -21,7 +21,6 @@ from typing import TYPE_CHECKING
 from google.adk import version
 from google.adk.telemetry import tracing
 from google.adk.telemetry._token_usage import TokenUsage
-from google.genai import types
 from opentelemetry import metrics
 from opentelemetry.semconv._incubating.attributes import gen_ai_attributes
 from opentelemetry.semconv._incubating.metrics import gen_ai_metrics
@@ -92,48 +91,6 @@ _tool_execution_duration = meter.create_histogram(
         81.92,
     ],
 )
-_agent_request_size = meter.create_histogram(
-    "gen_ai.agent.request.size",
-    unit="By",
-    description="Size of agent requests.",
-    explicit_bucket_boundaries_advisory=[
-        1,
-        4,
-        16,
-        64,
-        256,
-        1024,
-        4096,
-        16384,
-        65536,
-        262144,
-        1048576,
-        4194304,
-        16777216,
-        67108864,
-    ],
-)
-_agent_response_size = meter.create_histogram(
-    "gen_ai.agent.response.size",
-    unit="By",
-    description="Size of agent responses.",
-    explicit_bucket_boundaries_advisory=[
-        1,
-        4,
-        16,
-        64,
-        256,
-        1024,
-        4096,
-        16384,
-        65536,
-        262144,
-        1048576,
-        4194304,
-        16777216,
-        67108864,
-    ],
-)
 _agent_workflow_steps = meter.create_histogram(
     "gen_ai.agent.workflow.steps",
     unit="1",
@@ -189,28 +146,6 @@ def record_workflow_invocation_duration(
   if workflow_name:
     attrs["gen_ai.workflow.name"] = workflow_name
   _workflow_invocation_duration.record(elapsed_s, attributes=attrs)
-
-
-def record_agent_request_size(
-    agent_name: str, user_content: types.Content | None
-):
-  """Records the size of the agent request."""
-  size = _get_content_size(user_content)
-  attrs = {gen_ai_attributes.GEN_AI_AGENT_NAME: agent_name}
-  _agent_request_size.record(size, attributes=attrs)
-
-
-def record_agent_response_size(agent_name: str, events: list[Event]):
-  """Records the size of the agent response by extracting content from events."""
-  response_content: types.Content | None = None
-  for event in reversed(events):
-    if event.author == agent_name and event.content:
-      response_content = event.content
-      break
-
-  size = _get_content_size(response_content)
-  attrs = {gen_ai_attributes.GEN_AI_AGENT_NAME: agent_name}
-  _agent_response_size.record(size, attributes=attrs)
 
 
 def record_agent_workflow_steps(agent_name: str, events: list[Event]):
@@ -316,20 +251,6 @@ def record_client_token_usage(
     output_attrs = base_attrs.copy()
     output_attrs[gen_ai_attributes.GEN_AI_TOKEN_TYPE] = "output"
     _client_token_usage.record(output_token_count, attributes=output_attrs)
-
-
-def _get_content_size(
-    content: types.Content | None,
-) -> int:
-  if not content or not content.parts:
-    return 0
-  size = 0
-  for part in content.parts:
-    if part.text is not None:
-      size += len(part.text.encode("utf-8"))
-    if part.inline_data and part.inline_data.data:
-      size += len(part.inline_data.data)
-  return size
 
 
 def _get_provider_name() -> str:
