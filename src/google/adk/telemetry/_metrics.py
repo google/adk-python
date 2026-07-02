@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import logging
+import time
 from typing import TYPE_CHECKING
 
 from google.adk import version
@@ -30,6 +31,10 @@ if TYPE_CHECKING:
   from google.adk.events.event import Event
   from google.adk.models.llm_request import LlmRequest
   from google.adk.models.llm_response import LlmResponse
+  from opentelemetry.trace import Span
+  from opentelemetry.util.types import AttributeValue
+
+  from .tracing import GenerateContentSpan
 
 logger = logging.getLogger("google_adk." + __name__)
 
@@ -42,7 +47,7 @@ meter = metrics.get_meter(
 )
 
 _agent_invocation_duration = meter.create_histogram(
-    "gen_ai.agent.invocation.duration",
+    "gen_ai.invoke_agent.duration",
     unit="s",
     description="Duration of agent invocations.",
     explicit_bucket_boundaries_advisory=[
@@ -61,8 +66,13 @@ _agent_invocation_duration = meter.create_histogram(
         409.6,
     ],
 )
+_workflow_invocation_duration = meter.create_histogram(
+    "gen_ai.invoke_workflow.duration",
+    unit="s",
+    description="Duration of workflow invocations.",
+)
 _tool_execution_duration = meter.create_histogram(
-    "gen_ai.tool.execution.duration",
+    "gen_ai.execute_tool.duration",
     unit="s",
     description="Duration of tool executions.",
     explicit_bucket_boundaries_advisory=[
@@ -158,6 +168,27 @@ def record_agent_invocation_duration(
   if error is not None:
     attrs[error_attributes.ERROR_TYPE] = type(error).__name__
   _agent_invocation_duration.record(elapsed_s, attributes=attrs)
+
+
+def record_workflow_invocation_duration(
+    *,
+    workflow_name: str,
+    elapsed_s: float,
+    nested: bool,
+    error: BaseException | None = None,
+) -> None:
+  """Records the duration of a workflow invocation."""
+  attrs: dict[str, AttributeValue] = {
+      gen_ai_attributes.GEN_AI_OPERATION_NAME: "invoke_workflow",
+  }
+  # Root workflow omits the attribute entirely; only nested ones emit it.
+  if nested:
+    attrs["gen_ai.workflow.nested"] = True
+  if error is not None:
+    attrs[error_attributes.ERROR_TYPE] = type(error).__name__
+  if workflow_name:
+    attrs["gen_ai.workflow.name"] = workflow_name
+  _workflow_invocation_duration.record(elapsed_s, attributes=attrs)
 
 
 def record_agent_request_size(
@@ -303,3 +334,33 @@ def _get_content_size(
 
 def _get_provider_name() -> str:
   return tracing._guess_gemini_system_name()
+
+
+def get_elapsed_s(
+    span: Span | GenerateContentSpan | None,
+    fallback_start: float,
+) -> float:
+  """Guarantees consistent time source for duration calculation.
+
+  Note: This must be called with an ended span.
+
+  Args:
+    span (trace.Span | tracing.GenerateContentSpan | None): The ended span to
+      extract duration from.
+    fallback_start (float): Fallback start time in seconds (monotonic).
+
+  Returns:
+    float: Elapsed duration in seconds.
+  """
+  if span is None:
+    return time.monotonic() - fallback_start
+
+  span = span.span if hasattr(span, "span") else span
+  start_ns = getattr(span, "start_time", None)
+  end_ns = getattr(span, "end_time", None)
+
+  if isinstance(start_ns, int) and isinstance(end_ns, int):
+    return (end_ns - start_ns) / 1e9  # Convert ns to s
+
+  # Fallback if span times are missing
+  return time.monotonic() - fallback_start

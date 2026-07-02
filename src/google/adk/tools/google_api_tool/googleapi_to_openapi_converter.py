@@ -17,6 +17,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import socket
 from typing import Any
 from typing import Dict
 from typing import List
@@ -24,6 +25,10 @@ from typing import List
 # Google API client
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
+import httplib2
+
+from ...utils._mtls_utils import MtlsClientCerts
+from ...utils._mtls_utils import use_client_cert_effective
 
 # Configure logging
 logger = logging.getLogger("google_adk." + __name__)
@@ -54,6 +59,8 @@ class GoogleApiToOpenApiConverter:
         "paths": {},
         "components": {"schemas": {}, "securitySchemes": {}},
     }
+    self._use_client_cert = use_client_cert_effective()
+    self._mtls_certs = MtlsClientCerts() if self._use_client_cert else None
 
   def fetch_google_api_spec(self) -> None:
     """Fetches the Google API specification using discovery service."""
@@ -63,15 +70,42 @@ class GoogleApiToOpenApiConverter:
           self._api_name,
           self._api_version,
       )
+
+      # Determine if we should use mTLS
+      # self._use_client_cert is already initialized in __init__
+
+      http_client = None
+      discovery_url = self._discovery_url
+
+      if self._use_client_cert and self._mtls_certs:
+        cert_path, key_path, passphrase = self._mtls_certs.get_certs()
+        if cert_path and key_path and passphrase:
+          # Set default HTTP timeout similar to googleapiclient.http.build_http()
+          http_timeout = socket.getdefaulttimeout() or 60
+          http_client = httplib2.Http(timeout=http_timeout)
+          try:
+            http_client.redirect_codes = http_client.redirect_codes - {308}
+          except AttributeError:
+            pass
+          http_client.add_certificate(key_path, cert_path, "", passphrase)
+
+          if not discovery_url:
+            discovery_url = "https://www.mtls.googleapis.com/discovery/v1/apis/{api}/{apiVersion}/rest"
+
       # Build a resource object for the specified API
-      if self._discovery_url:
+      if discovery_url:
         self._google_api_resource = build(
             self._api_name,
             self._api_version,
-            discoveryServiceUrl=self._discovery_url,
+            discoveryServiceUrl=discovery_url,
+            http=http_client,
         )
       else:
-        self._google_api_resource = build(self._api_name, self._api_version)
+        self._google_api_resource = build(
+            self._api_name,
+            self._api_version,
+            http=http_client,
+        )
 
       # Access the underlying API discovery document
       self._google_api_spec = self._google_api_resource._rootDesc
@@ -136,9 +170,13 @@ class GoogleApiToOpenApiConverter:
 
   def _convert_servers(self) -> None:
     """Convert server information."""
-    base_url = self._google_api_spec.get(
-        "rootUrl", ""
-    ) + self._google_api_spec.get("servicePath", "")
+    use_client_cert = getattr(self, "_use_client_cert", False)
+    if use_client_cert and "mtlsRootUrl" in self._google_api_spec:
+      root_url = self._google_api_spec["mtlsRootUrl"]
+    else:
+      root_url = self._google_api_spec.get("rootUrl", "")
+
+    base_url = root_url + self._google_api_spec.get("servicePath", "")
 
     # Remove trailing slash if present
     if base_url.endswith("/"):

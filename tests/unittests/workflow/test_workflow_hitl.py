@@ -1858,15 +1858,16 @@ async def test_resume_loop_receives_latest_input(
 async def test_multiple_invocations_isolation(request: pytest.FixtureRequest):
   """Verify that a new invocation ignores events from a previous invocation."""
 
+  run_counts = []
+
   class CounterNode(BaseNode):
     name: str = Field(default='counter_node')
-    run_count: int = Field(default=0)
 
     async def _run_impl(
         self, *, ctx: Context, node_input: Any
     ) -> AsyncGenerator[Any, None]:
-      self.run_count += 1
-      yield f'Run {self.run_count}'
+      run_counts.append(1)
+      yield f'Run {len(run_counts)}'
 
   node_a = CounterNode()
   wf = Workflow(name='wf', edges=[(START, node_a)])
@@ -1883,7 +1884,7 @@ async def test_multiple_invocations_isolation(request: pytest.FixtureRequest):
   ):
     events1.append(event)
 
-  assert node_a.run_count == 1
+  assert len(run_counts) == 1
 
   # Invocation 2 (New invocation in SAME session)
   msg2 = types.Content(parts=[types.Part(text='go 2')], role='user')
@@ -1894,7 +1895,7 @@ async def test_multiple_invocations_isolation(request: pytest.FixtureRequest):
     events2.append(event)
 
   # If isolation works, CounterNode should run AGAIN!
-  assert node_a.run_count == 2
+  assert len(run_counts) == 2
 
 
 @pytest.mark.asyncio

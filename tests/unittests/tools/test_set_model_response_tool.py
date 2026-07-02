@@ -25,6 +25,7 @@ from google.adk.features._feature_registry import temporary_feature_override
 from google.adk.sessions.in_memory_session_service import InMemorySessionService
 from google.adk.tools.set_model_response_tool import SetModelResponseTool
 from google.adk.tools.tool_context import ToolContext
+from google.genai import types
 from pydantic import BaseModel
 from pydantic import Field
 from pydantic import ValidationError
@@ -470,6 +471,105 @@ async def test_run_async_dict_schema():
   assert result is not None
   assert isinstance(result, dict)
   assert result == {'a': 1, 'b': 2, 'c': 3}
+
+
+def test_tool_initialization_raw_dict_schema():
+  """Raw dict output_schema must not crash and must be stored as-is."""
+  raw_schema = {
+      'type': 'object',
+      'properties': {'result': {'type': 'string'}},
+  }
+
+  tool = SetModelResponseTool(raw_schema)
+
+  assert tool.output_schema == raw_schema
+  assert not tool._is_basemodel
+  assert not tool._is_list_of_basemodel
+  assert tool.name == 'set_model_response'
+  assert tool.func is not None
+
+
+def test_function_signature_generation_raw_dict_schema():
+  """Raw dict schemas should produce a single `response: dict` parameter.
+
+  The annotation must be the `dict` type (hashable), not the dict instance,
+  so downstream `_is_builtin_primitive_or_compound` does not raise
+  `TypeError: unhashable type: 'dict'`.
+  """
+  raw_schema = {
+      'type': 'object',
+      'properties': {'result': {'type': 'string'}},
+  }
+
+  tool = SetModelResponseTool(raw_schema)
+
+  sig = inspect.signature(tool.func)
+
+  assert 'response' in sig.parameters
+  assert len(sig.parameters) == 1
+  assert sig.parameters['response'].kind == inspect.Parameter.KEYWORD_ONLY
+  # The annotation is the hashable `dict` type, not the dict instance.
+  assert sig.parameters['response'].annotation is dict
+
+
+def test_get_declaration_raw_dict_schema():
+  """`_get_declaration` must not raise when given a raw dict schema."""
+  raw_schema = {
+      'type': 'object',
+      'properties': {'result': {'type': 'string'}},
+  }
+
+  tool = SetModelResponseTool(raw_schema)
+
+  declaration = tool._get_declaration()
+
+  assert declaration is not None
+  assert declaration.name == 'set_model_response'
+  assert declaration.description is not None
+
+
+@pytest.mark.asyncio
+async def test_run_async_raw_dict_schema():
+  """Tool execution with a raw dict schema returns the response unchanged."""
+  raw_schema = {
+      'type': 'object',
+      'properties': {'result': {'type': 'string'}},
+  }
+  tool = SetModelResponseTool(raw_schema)
+
+  agent = LlmAgent(name='test_agent', model='gemini-1.5-flash')
+  invocation_context = await _create_invocation_context(agent)
+  tool_context = ToolContext(invocation_context)
+
+  result = await tool.run_async(
+      args={'response': {'result': 'hello'}},
+      tool_context=tool_context,
+  )
+
+  assert result == {'result': 'hello'}
+
+
+def test_tool_initialization_schema_instance():
+  """types.Schema instance output_schema must be converted to dict and not crash."""
+  schema_instance = types.Schema(
+      type=types.Type.OBJECT,
+      properties={'result': types.Schema(type=types.Type.STRING)},
+  )
+
+  tool = SetModelResponseTool(schema_instance)
+
+  # Check that it converted it to a dictionary
+  assert isinstance(tool.output_schema, dict)
+  assert 'result' in tool.output_schema['properties']
+
+  sig = inspect.signature(tool.func)
+  assert 'response' in sig.parameters
+  assert sig.parameters['response'].annotation is dict
+
+  # Check that get_declaration works and doesn't crash with TypeError
+  declaration = tool._get_declaration()
+  assert declaration is not None
+  assert declaration.name == 'set_model_response'
 
 
 class SubSchema(BaseModel):
