@@ -668,7 +668,7 @@ async def handle_function_calls_live(
     invocation_context: InvocationContext,
     function_call_event: Event,
     tools_dict: dict[str, BaseTool],
-) -> Event:
+) -> Event | None:
   """Calls the functions and returns the function response event."""
   from ...agents.llm_agent import LlmAgent
 
