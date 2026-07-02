@@ -56,11 +56,9 @@ class InterceptionResult:
 
 def check_interception(
     *,
-    node_path: str,
     node: BaseNode,
     recovered: _ChildScanState | None = None,
     current_run: DynamicNodeRun | None = None,
-    curr_parent_ctx: Context,
 ) -> InterceptionResult:
   """Determine if a node execution should be intercepted based on history."""
   from .._workflow import Workflow  # pylint: disable=g-import-not-at-top

@@ -22,6 +22,7 @@ from google.genai import types
 from pydantic import BaseModel
 from pydantic import ConfigDict
 from pydantic import Field
+from pydantic import PrivateAttr
 
 from ..agents.context_cache_config import ContextCacheConfig
 from ..tools.base_tool import BaseTool
@@ -98,6 +99,15 @@ class LlmRequest(BaseModel):
   When using the interactions API, this ID is used to chain interactions
   together, allowing the API to maintain conversation state without sending
   the full history.
+  """
+
+  _is_managed_agent: bool = PrivateAttr(default=False)
+  """Internal flag: whether this request was built by a ManagedAgent.
+
+  This is an internal implementation detail (not part of the serialized request
+  schema). It is set by ``ManagedAgent`` and read only through the
+  ``_is_managed_agent`` helper in ``model_name_utils`` so built-in tools resolve
+  server-side without a Gemini model.
   """
 
   def append_instructions(

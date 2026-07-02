@@ -361,9 +361,18 @@ class _SingleTurnAgentTool(AgentTool):
     else:
       node_input = args.get('request')
 
+    # Align subagent branch scoping with node execution (Node as Tool) using function_call_id.
+    fc_id = tool_context.function_call_id
+    base_branch = tool_context.get_invocation_context().branch
+    segment = f'{self.agent.name}@{fc_id}'
+    tool_branch = f'{base_branch}.{segment}' if base_branch else segment
+
     try:
       return await tool_context.run_node(
-          self.agent, node_input=node_input, use_sub_branch=True
+          self.agent,
+          node_input=node_input,
+          override_branch=tool_branch,
+          use_sub_branch=False,
       )
     except Exception as e:
       return f'Error running sub-agent: {e}'

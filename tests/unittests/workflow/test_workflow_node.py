@@ -354,3 +354,97 @@ async def test_node_subclassing_execution_with_parallel_worker():
       "subclass",
       ["subclass: workflow -> input1", "subclass: workflow -> input2"],
   ) in by_node
+
+
+def test_node_decorator_parallel_worker_max_parallel_workers():
+  """Tests that node() correctly sets max_parallel_workers on ParallelWorker."""
+
+  @node(parallel_worker=True, max_parallel_workers=3)
+  def my_func(node_input):
+    return node_input
+
+  assert isinstance(my_func, ParallelWorker)
+  assert my_func.max_parallel_workers == 3
+
+
+def test_node_decorator_invalid_max_parallel_workers():
+  """Tests that node() raises ValueError if max_parallel_workers is set without parallel_worker."""
+  with pytest.raises(
+      ValueError,
+      match="max_parallel_workers can only be set when parallel_worker is True",
+  ):
+
+    @node(parallel_worker=False, max_parallel_workers=3)
+    def my_func(node_input):
+      return node_input
+
+
+def test_node_subclass_invalid_max_parallel_workers():
+  """Tests that Node subclass raises ValidationError if max_parallel_workers is set without parallel_worker."""
+  from pydantic import ValidationError
+
+  with pytest.raises(ValidationError) as exc_info:
+    _CustomNode(name="subclass", parallel_worker=False, max_parallel_workers=3)
+
+  assert (
+      "max_parallel_workers can only be set when parallel_worker is True"
+      in str(exc_info.value)
+  )
+
+
+def test_node_subclassing_model_copy_preserves_max_parallel_workers():
+  """Tests that Node.model_copy preserves max_parallel_workers."""
+  node_inst = _CustomNode(
+      name="subclass",
+      parallel_worker=True,
+      max_parallel_workers=5,
+      custom_val="barrier",
+  )
+  assert node_inst.parallel_worker is True
+  assert node_inst.max_parallel_workers == 5
+  assert node_inst._inner_node.max_parallel_workers == 5
+
+  cloned = node_inst.model_copy()
+  assert isinstance(cloned, _CustomNode)
+  assert cloned.parallel_worker is True
+  assert cloned.max_parallel_workers == 5
+  assert isinstance(cloned._inner_node, ParallelWorker)
+  assert cloned._inner_node.max_parallel_workers == 5
+  assert cloned._inner_node._node.parallel_worker is False
+
+
+def test_node_decorator_invalid_max_parallel_workers_less_than_one():
+  """Tests that node() raises ValueError if max_parallel_workers is less than 1."""
+  with pytest.raises(
+      ValueError,
+      match="max_parallel_workers must be greater than or equal to 1",
+  ):
+
+    @node(parallel_worker=True, max_parallel_workers=0)
+    def my_func(node_input):
+      return node_input
+
+
+def test_node_subclass_invalid_max_parallel_workers_less_than_one():
+  """Tests that Node subclass raises ValidationError if max_parallel_workers is less than 1."""
+  from pydantic import ValidationError
+
+  with pytest.raises(ValidationError) as exc_info:
+    _CustomNode(name="subclass", parallel_worker=True, max_parallel_workers=0)
+
+  assert "max_parallel_workers must be greater than or equal to 1" in str(
+      exc_info.value
+  )
+
+
+def test_parallel_worker_invalid_max_parallel_workers_less_than_one():
+  """Tests that ParallelWorker constructor raises ValueError if max_parallel_workers is less than 1."""
+
+  def dummy_func(x):
+    return x
+
+  with pytest.raises(
+      ValueError,
+      match="max_parallel_workers must be greater than or equal to 1",
+  ):
+    ParallelWorker(node=dummy_func, max_parallel_workers=0)

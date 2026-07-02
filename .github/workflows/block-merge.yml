@@ -16,10 +16,12 @@ name: Do Not Merge on GitHub
 
 on:
   pull_request:
+    branches: [main]
     types: [opened, reopened, synchronize]
 
 jobs:
   block-merge:
+    if: github.repository == 'google/adk-python'
     name: maintainers will submit via Copybara
     runs-on: ubuntu-latest
     steps:

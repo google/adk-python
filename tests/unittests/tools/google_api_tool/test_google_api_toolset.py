@@ -523,3 +523,44 @@ class TestGoogleApiToolset:
     )
 
     assert tool_set.tool_name_prefix == tool_name_prefix
+
+  @mock.patch(
+      "google.adk.tools.google_api_tool.google_api_toolset.OpenAPIToolset"
+  )
+  @mock.patch(
+      "google.adk.tools.google_api_tool.google_api_toolset.GoogleApiToOpenApiConverter"
+  )
+  @mock.patch(
+      "google.adk.tools.google_api_tool.google_api_toolset.MtlsClientCerts"
+  )
+  @mock.patch(
+      "google.adk.tools.google_api_tool.google_api_toolset.use_client_cert_effective"
+  )
+  async def test_mtls_cleanup_on_close(
+      self,
+      mock_use_client_cert,
+      mock_mtls_certs_class,
+      mock_converter_class,
+      mock_openapi_toolset_class,
+  ):
+    """Test that mTLS temp files are cleaned up on close."""
+    mock_converter_class.return_value = mock.MagicMock()
+    mock_openapi_toolset_instance = mock.MagicMock()
+    mock_openapi_toolset_instance.close = mock.AsyncMock()
+    mock_openapi_toolset_class.return_value = mock_openapi_toolset_instance
+
+    mock_use_client_cert.return_value = True
+    mock_mtls_certs_instance = mock.MagicMock()
+    mock_mtls_certs_instance.get_certs.return_value = ("cert", "key", b"pass")
+    mock_mtls_certs_class.return_value = mock_mtls_certs_instance
+
+    tool_set = GoogleApiToolset(
+        api_name=TEST_API_NAME, api_version=TEST_API_VERSION
+    )
+
+    assert tool_set._httpx_client_factory is not None
+
+    await tool_set.close()
+
+    mock_openapi_toolset_instance.close.assert_called_once()
+    mock_mtls_certs_instance.close.assert_called_once()

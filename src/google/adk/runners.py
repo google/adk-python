@@ -56,6 +56,7 @@ from .plugins.plugin_manager import PluginManager
 from .sessions.base_session_service import BaseSessionService
 from .sessions.base_session_service import GetSessionConfig
 from .sessions.session import Session
+from .telemetry import _instrumentation
 from .telemetry.tracing import tracer
 from .tools.base_toolset import BaseToolset
 from .utils._debug_output import print_event
@@ -65,6 +66,10 @@ if TYPE_CHECKING:
   from .apps.app import ResumabilityConfig
 
 logger = logging.getLogger('google_adk.' + __name__)
+
+# Silence unused warning.
+# tracer is imported for backwards compatibility, to avoid breaking change in the API.
+_ = tracer
 
 
 def _find_active_task_isolation_scope(session) -> Optional[str]:
@@ -453,9 +458,10 @@ class Runner:
 
     Events flow through ic._event_queue via NodeRunner.
     """
-    from .workflow._node_runner import NodeRunner
 
-    with tracer.start_as_current_span('invocation'):
+    with _instrumentation.record_invocation(
+        entrypoint_node=node or self.agent, conversation_id=session_id
+    ):
       # 1. Setup
       session = await self._get_or_create_session(
           user_id=user_id, session_id=session_id
@@ -518,6 +524,8 @@ class Runner:
       from .agents.base_agent import BaseAgent
       from .agents.context import Context
       from .workflow._dynamic_node_scheduler import DynamicNodeScheduler
+      from .workflow._errors import DynamicNodeFailError
+      from .workflow._errors import NodeInterruptedError
       from .workflow._workflow import _LoopState
 
       root_ctx = Context(ic)
@@ -536,9 +544,6 @@ class Runner:
       # originating function-call id and so remain invisible to the
       # coordinator's view.
 
-      if not use_scheduler:
-        root_node_runner = NodeRunner(node=root_agent, parent_ctx=root_ctx)
-
       done_sentinel = object()
 
       async def _drive_root_node():
@@ -548,19 +553,18 @@ class Runner:
             # Stateful live EUC/LRO streams may rehydrate freshly if not yet persisted.
             scheduler = DynamicNodeScheduler(state=_LoopState())
             root_ctx._workflow_scheduler = scheduler
-            ctx = await scheduler(
-                root_ctx,
+
+          try:
+            await root_ctx._run_node_internal(
                 root_agent,
-                node_input,
-                run_id='1',
-            )
-          else:
-            ctx = await root_node_runner.run(
                 node_input=node_input,
                 resume_inputs=resume_inputs,
             )
-          if ctx.error:
-            raise ctx.error
+          except NodeInterruptedError:
+            # The node was interrupted (e.g. for HITL).
+            pass
+          except DynamicNodeFailError as e:
+            raise e.error
         finally:
           await ic._event_queue.put((done_sentinel, None))
 
@@ -597,7 +601,8 @@ class Runner:
     """Run a non-agent BaseNode in live mode."""
     from .agents.context import Context
     from .workflow._dynamic_node_scheduler import DynamicNodeScheduler
-    from .workflow._node_runner import NodeRunner
+    from .workflow._errors import DynamicNodeFailError
+    from .workflow._errors import NodeInterruptedError
     from .workflow._workflow import _LoopState
     from .workflow._workflow import Workflow
 
@@ -612,9 +617,6 @@ class Runner:
     root_agent = self.agent
     is_workflow = isinstance(root_agent, Workflow)
 
-    if not is_workflow:
-      root_node_runner = NodeRunner(node=root_agent, parent_ctx=root_ctx)
-
     done_sentinel = object()
 
     async def _drive_root_node():
@@ -622,18 +624,16 @@ class Runner:
         if is_workflow:
           scheduler = DynamicNodeScheduler(state=_LoopState())
           root_ctx._workflow_scheduler = scheduler
-          ctx = await scheduler(
-              root_ctx,
+
+        try:
+          await root_ctx.run_node(
               root_agent,
-              None,
-              run_id='1',
-          )
-        else:
-          ctx = await root_node_runner.run(
               node_input=None,
           )
-        if ctx.error:
-          raise ctx.error
+        except NodeInterruptedError:
+          pass
+        except DynamicNodeFailError as e:
+          raise e.error
       finally:
         await ic._event_queue.put((done_sentinel, None))
 
@@ -999,9 +999,9 @@ class Runner:
           agent_to_run = self.agent
         else:
           agent_to_run = self._find_agent_to_run(session, self.agent)
-        from .workflow.utils._workflow_graph_utils import build_node  # pylint: disable=g-import-not-at-top
 
-        agent_to_run = build_node(agent_to_run)
+        # The agent_to_run will be built/cloned inside Context.run_node,
+        # so we don't call build_node here to avoid double cloning.
       else:
         raise ValueError(
             "LlmAgent as root agent must have mode='chat', but got"
@@ -1047,7 +1047,9 @@ class Runner:
         new_message: Optional[types.Content] = None,
         invocation_id: Optional[str] = None,
     ) -> AsyncGenerator[Event, None]:
-      with tracer.start_as_current_span('invocation'):
+      with _instrumentation.record_invocation(
+          entrypoint_node=self.agent, conversation_id=session_id
+      ):
         session = await self._get_or_create_session(
             user_id=user_id,
             session_id=session_id,

@@ -26,6 +26,7 @@ import logging
 import os
 import re
 import sys
+import time
 import traceback
 import typing
 from typing import Any
@@ -1603,7 +1604,18 @@ class ApiServer:
                 yield f"data: {sse_event}\n\n"
           except Exception as e:
             logger.exception("Error in event_generator: %s", e)
-            yield f"data: {json.dumps({'error': str(e)})}\n\n"
+            error_details = {
+                "error_type": type(e).__name__,
+                "error_message": str(e),
+                "timestamp": time.time(),
+            }
+            if logger.isEnabledFor(logging.DEBUG):
+              error_details["stacktrace"] = traceback.format_exc()
+
+            yield (
+                "data:"
+                f" {json.dumps({'error': f'{type(e).__name__}: {e}', 'error_details': error_details})}\n\n"
+            )
 
       # Returns a streaming response with the proper media type for SSE
       return StreamingResponse(
