@@ -119,7 +119,6 @@ def get_gcp_exporters(
   if enable_cloud_logging:
     exporter = _get_gcp_logs_exporter(
         project_id=project_id,
-        credentials=credentials,
     )
     if exporter:
       log_record_processors.append(exporter)
@@ -187,11 +186,9 @@ def _get_gcp_metrics_exporter(project_id: str) -> MetricReader:
 
 def _get_gcp_logs_exporter(
     project_id: str,
-    credentials: Optional["Credentials"] = None,
 ) -> LogRecordProcessor:
   if os.getenv("GOOGLE_CLOUD_AGENT_ENGINE_ID"):
     return _get_agent_engine_logs_exporter(
-        credentials=credentials,
         project_id=project_id,
     )
 
@@ -338,18 +335,14 @@ def _use_client_cert_effective() -> bool:
 
 def _get_agent_engine_logs_exporter(
     *,
-    credentials: "Credentials",
     project_id: str,
 ):
   """Configures logging for Agent Engine.
 
   Args:
-    credentials: Credentials to use for export calls.
     project_id: Project to which to write logs.
   """
   try:
-    from google.cloud.logging_v2.services import logging_service_v2
-    from google.cloud.logging_v2.services.logging_service_v2.transports import grpc
     from opentelemetry.exporter import cloud_logging
   except (ImportError, AttributeError):
     logger.warning(
@@ -363,46 +356,21 @@ def _get_agent_engine_logs_exporter(
     )
     return
 
-  if "gen_ai_latest_experimental" in os.getenv(
-      "OTEL_SEMCONV_STABILITY_OPT_IN", ""
-  ).split(","):
-    # Specify credentials to avoid expensive call to `google.auth.default()`
-    channel = grpc.LoggingServiceV2GrpcTransport.create_channel(
-        credentials=credentials,
-        # pylint: disable-next=protected-access
-        options=cloud_logging._OPTIONS,
-    )
-    return BatchLogRecordProcessor(
-        cloud_logging.CloudLoggingExporter(
-            client=logging_service_v2.LoggingServiceV2Client(
-                transport=grpc.LoggingServiceV2GrpcTransport(
-                    credentials=credentials,
-                    channel=channel,
-                ),
-            ),
-            project_id=project_id,
-            default_log_name=os.getenv(
-                "GCP_DEFAULT_LOG_NAME", "adk-on-agent-engine"
-            ),
-        ),
-    )
-  else:
+  class _SimpleLogRecordProcessor(SimpleLogRecordProcessor):
 
-    class _SimpleLogRecordProcessor(SimpleLogRecordProcessor):
+    def force_flush(
+        self, timeout_millis: int = 30000
+    ) -> bool:  # pylint: disable=no-self-use
+      _ = sys.stdout.flush()
+      _ = sys.stderr.flush()
+      return super().force_flush()
 
-      def force_flush(
-          self, timeout_millis: int = 30000
-      ) -> bool:  # pylint: disable=no-self-use
-        _ = sys.stdout.flush()
-        _ = sys.stderr.flush()
-        return super().force_flush()
-
-    return _SimpleLogRecordProcessor(
-        cloud_logging.CloudLoggingExporter(
-            project_id=project_id,
-            default_log_name=os.getenv(
-                "GCP_DEFAULT_LOG_NAME", "adk-on-agent-engine"
-            ),
-            structured_json_file=sys.stdout,
-        ),
-    )
+  return _SimpleLogRecordProcessor(
+      cloud_logging.CloudLoggingExporter(
+          project_id=project_id,
+          default_log_name=os.getenv(
+              "GCP_DEFAULT_LOG_NAME", "adk-on-agent-engine"
+          ),
+          structured_json_file=sys.stdout,
+      ),
+  )
