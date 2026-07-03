@@ -19,6 +19,7 @@ from datetime import datetime
 from datetime import timezone
 import os
 import pickle
+import time
 
 from fastapi.openapi.models import HTTPBearer
 from google.adk.auth.auth_tool import AuthConfig
@@ -365,6 +366,38 @@ def test_migrate_from_sqlalchemy_pickle_ignores_non_object_json_fields():
   })
 
   assert event.content is None
+
+
+def test_migrate_from_sqlalchemy_pickle_reads_naive_timestamp_as_local(
+    monkeypatch,
+):
+  """Naive v0 event timestamps must migrate as local time, not UTC.
+
+  The v0 schema stored the event ``timestamp`` column as a naive datetime in
+  local time (``StorageEvent.from_event`` uses ``datetime.fromtimestamp`` and
+  ``to_event`` reads it back with naive ``.timestamp()``). Forcing UTC on that
+  naive value shifted every migrated timestamp by the host's UTC offset. Pin a
+  fixed non-UTC zone so the round trip is exact regardless of the host.
+  """
+  monkeypatch.setenv("TZ", "Asia/Kolkata")
+  time.tzset()
+  try:
+    original_epoch = 1000000.0
+    # Exactly what v0.StorageEvent.from_event persisted: naive local time.
+    naive_local_timestamp = datetime.fromtimestamp(original_epoch)
+    assert naive_local_timestamp.tzinfo is None
+
+    event = mfsp._row_to_event({
+        "id": "event-naive-timestamp",
+        "invocation_id": "invoke1",
+        "author": "user",
+        "actions": EventActions(),
+        "timestamp": naive_local_timestamp,
+    })
+
+    assert event.timestamp == original_epoch
+  finally:
+    time.tzset()
 
 
 def test_migrate_from_sqlalchemy_pickle_blocks_unsafe_actions_pickle(
