@@ -20,6 +20,7 @@ import base64
 import collections.abc
 import enum
 from functools import cached_property
+from functools import partial
 import json
 import logging
 import os
@@ -28,6 +29,7 @@ from typing import AsyncGenerator
 from typing import Generator
 from typing import Optional
 from typing import TYPE_CHECKING
+import weakref
 
 from google.adk import version as adk_version
 from google.genai import types
@@ -455,6 +457,11 @@ def _validate_model_string(model: str) -> bool:
   return False
 
 
+# Keeps a strong reference to fire-and-forget cleanup tasks so they are not
+# garbage collected before they finish (see CompletionsHTTPClient._cleanup_client).
+_CLEANUP_TASKS: set[asyncio.Task] = set()
+
+
 class CompletionsHTTPClient:
   """A generic HTTP client for completions, compatible with OpenAI API."""
 
@@ -480,17 +487,29 @@ class CompletionsHTTPClient:
         timeout=_httpx_timeout(),
         follow_redirects=False,
     )
-    atexit.register(self._cleanup_client, client)
+    # Register with a weakref.proxy so the atexit registry does not keep the
+    # client (and its connection pool) alive for the whole process. Keep the
+    # bound callback per instance so close()/aclose() can unregister just this
+    # client's handler without affecting other CompletionsHTTPClient instances.
+    self._atexit_callback = partial(self._cleanup_client, weakref.proxy(client))
+    atexit.register(self._atexit_callback)
     return client
 
   @staticmethod
   def _cleanup_client(client: httpx.AsyncClient) -> None:
     """Cleans up the httpx client."""
-    if client.is_closed:
+    try:
+      if client.is_closed:
+        return
+    except ReferenceError:
+      # The client was already garbage collected via its weakref.proxy.
       return
     try:
       loop = asyncio.get_running_loop()
-      loop.create_task(client.aclose())
+      task = loop.create_task(client.aclose())
+      # Retain a reference so the task is not garbage collected while pending.
+      _CLEANUP_TASKS.add(task)
+      task.add_done_callback(_CLEANUP_TASKS.discard)
     except RuntimeError:
       try:
         # This fails if asyncio.run is already called in main and is closing.
@@ -502,10 +521,12 @@ class CompletionsHTTPClient:
     if '_client' not in self.__dict__:
       return
     self._cleanup_client(self._client)
+    atexit.unregister(self._atexit_callback)
 
   async def aclose(self) -> None:
     if '_client' not in self.__dict__:
       return
+    atexit.unregister(self._atexit_callback)
     if self._client.is_closed:
       return
     await self._client.aclose()
