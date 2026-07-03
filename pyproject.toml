@@ -296,6 +296,17 @@ line_length = 200
 single_line_exclusions = []
 known_third_party = [ "a2a", "google.adk" ]
 
+[tool.codespell]
+# Real words/identifiers that codespell misreads as typos:
+#   hel/serie/strin -> substrings in test fixtures; te -> local variable;
+#   rouge -> the ROUGE metric; unparseable -> valid spelling variant;
+#   re-use/re-used -> intentional hyphenation.
+ignore-words-list = "hel,serie,strin,te,rouge,unparseable,re-use,re-used"
+# CHANGELOG.md is generated from commit messages; lockfiles, notebooks, JSON
+# fixtures, bundled JS/source maps, and the vendored CLI browser bundle are
+# generated or data files, not prose we own.
+skip = "*CHANGELOG.md,*.lock,*.ipynb,*.json,*.js,*.map,*/cli/browser/*"
+
 [tool.mypy]
 mypy_path = [ "src" ]
 exclude = [ "contributing/samples/", "tests/" ]
