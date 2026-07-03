@@ -196,6 +196,9 @@ class RunConfig(BaseModel):
   speech_config: Optional[types.SpeechConfig] = None
   """Speech configuration for the live agent."""
 
+  http_options: Optional[types.HttpOptions] = None
+  """HTTP options for the agent execution (e.g. custom headers)."""
+
   response_modalities: Optional[list[types.Modality]] = None
   """The output modalities. If not set, it's default to AUDIO."""
 

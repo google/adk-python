@@ -37,6 +37,7 @@ on:
 
 jobs:
   analyze-new-release-for-adk-docs-updates:
+    if: github.repository == 'google/adk-python'
     runs-on: ubuntu-latest
     permissions:
       contents: read

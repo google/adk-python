@@ -18,9 +18,6 @@ Verifies that ReplayInterceptor correctly checks and manages workflow resumption
 replay interception.
 """
 
-from unittest.mock import MagicMock
-
-from google.adk.agents.context import Context
 from google.adk.workflow._base_node import BaseNode
 from google.adk.workflow._dynamic_node_scheduler import DynamicNodeRun
 from google.adk.workflow._node_state import NodeState
@@ -28,13 +25,6 @@ from google.adk.workflow._node_status import NodeStatus
 from google.adk.workflow.utils._rehydration_utils import _ChildScanState
 from google.adk.workflow.utils._replay_interceptor import check_interception
 import pytest
-
-
-def _make_parent_ctx():
-  ctx = MagicMock(spec=Context)
-  ctx._invocation_context = MagicMock()
-  ctx.resume_inputs = {}
-  return ctx
 
 
 def test_same_turn_completed():
@@ -45,14 +35,11 @@ def test_same_turn_completed():
       output='cached-out',
       transfer_to_agent='target-agent',
   )
-  ctx = _make_parent_ctx()
 
   # When checked
   result = check_interception(
-      node_path='wf/node@1',
       node=BaseNode(name='node'),
       current_run=run,
-      curr_parent_ctx=ctx,
   )
 
   # Then it intercepts with cached results
@@ -67,14 +54,11 @@ def test_same_turn_waiting():
   run = DynamicNodeRun(
       state=NodeState(status=NodeStatus.WAITING, interrupts=['fc-1']),
   )
-  ctx = _make_parent_ctx()
 
   # When checked
   result = check_interception(
-      node_path='wf/node@1',
       node=BaseNode(name='node'),
       current_run=run,
-      curr_parent_ctx=ctx,
   )
 
   # Then it intercepts and keeps waiting
@@ -91,14 +75,11 @@ def test_cross_turn_unresolved_interrupts_no_rerun():
       resolved_ids={'fc-1'},
   )
   node = BaseNode(name='node', rerun_on_resume=False)
-  ctx = _make_parent_ctx()
 
   # When checked
   result = check_interception(
-      node_path='wf/node@1',
       node=node,
       recovered=recovered,
-      curr_parent_ctx=ctx,
   )
 
   # Then it stays waiting on unresolved interrupts
@@ -116,14 +97,11 @@ def test_cross_turn_unresolved_interrupts_rerun():
       resolved_responses={'fc-1': 'ans'},
   )
   node = BaseNode(name='node', rerun_on_resume=True)
-  ctx = _make_parent_ctx()
 
   # When checked
   result = check_interception(
-      node_path='wf/node@1',
       node=node,
       recovered=recovered,
-      curr_parent_ctx=ctx,
   )
 
   # Then it reruns with partial resolved inputs
@@ -140,14 +118,11 @@ def test_cross_turn_completed():
       route='route-a',
   )
   node = BaseNode(name='node')
-  ctx = _make_parent_ctx()
 
   # When checked
   result = check_interception(
-      node_path='wf/node@1',
       node=node,
       recovered=recovered,
-      curr_parent_ctx=ctx,
   )
 
   # Then it fast-forwards with cached output and route
@@ -166,17 +141,11 @@ def test_cross_turn_all_resolved_no_rerun():
       resolved_responses={'fc-1': 'ans'},
   )
   node = BaseNode(name='node', rerun_on_resume=False)
-  ctx = _make_parent_ctx()
-  ctx.resume_inputs = {
-      'fc-1': {'result': 'ans'}
-  }  # Simulate FunctionResponse dict
 
   # When checked
   result = check_interception(
-      node_path='wf/node@1',
       node=node,
       recovered=recovered,
-      curr_parent_ctx=ctx,
   )
 
   # Then it auto-completes
@@ -194,14 +163,11 @@ def test_cross_turn_all_resolved_rerun():
       resolved_responses={'fc-1': 'ans'},
   )
   node = BaseNode(name='node', rerun_on_resume=True)
-  ctx = _make_parent_ctx()
 
   # When checked
   result = check_interception(
-      node_path='wf/node@1',
       node=node,
       recovered=recovered,
-      curr_parent_ctx=ctx,
   )
 
   # Then it reruns

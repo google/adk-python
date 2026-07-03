@@ -26,8 +26,10 @@ import yaml
         pytest.param("test_data/ask_data_insights_penguins_highest_mass.yaml"),
     ],
 )
-@mock.patch.object(data_insights_tool.requests.Session, "post")
-def test_ask_data_insights_pipeline_from_file(mock_post, case_file_path):
+@mock.patch.object(
+    data_insights_tool._gda_stream_util, "get_gda_session", autospec=True
+)
+def test_ask_data_insights_pipeline_from_file(mock_get_session, case_file_path):
   """Runs a full integration test for the ask_data_insights pipeline using data from a specific file."""
   # 1. Construct the full, absolute path to the data file
   full_path = pathlib.Path(__file__).parent / case_file_path
@@ -45,15 +47,19 @@ def test_ask_data_insights_pipeline_from_file(mock_post, case_file_path):
   expected_final_list = case_data["expected_output"]
 
   # 4. Configure the mock for requests.post
+  mock_session = mock.MagicMock()
   mock_response = mock.Mock()
   mock_response.iter_lines.return_value = fake_stream_lines
   # Add raise_for_status mock which is called in the updated code
   mock_response.raise_for_status.return_value = None
-  mock_post.return_value.__enter__.return_value = mock_response
+  mock_session.post.return_value.__enter__.return_value = mock_response
+  mock_get_session.return_value = (
+      mock_session,
+      "https://geminidataanalytics.mtls.googleapis.com",
+  )
 
   # 5. Call the function under test
   mock_creds = mock.Mock()
-  mock_creds.token = "fake-token"
   mock_settings = mock.Mock()
   mock_settings.max_query_result_rows = 50
   result = data_insights_tool.ask_data_insights(
@@ -67,10 +73,32 @@ def test_ask_data_insights_pipeline_from_file(mock_post, case_file_path):
   # 6. Assert that the final list of dicts matches the expected output
   assert result["status"] == "SUCCESS"
   assert result["response"] == expected_final_list
+  mock_get_session.assert_called_once_with(mock_creds)
+  mock_session.post.assert_called_once_with(
+      "https://geminidataanalytics.mtls.googleapis.com/v1beta/projects/test-project/locations/global:chat",
+      json={
+          "project": "projects/test-project",
+          "messages": [{"userMessage": {"text": case_data["user_question"]}}],
+          "inlineContext": {
+              "datasourceReferences": {"bq": {"tableReferences": []}},
+              "systemInstruction": mock.ANY,
+              "options": {"chart": {"image": {"noImage": {}}}},
+          },
+          "clientIdEnum": "GOOGLE_ADK",
+      },
+      headers={
+          "Content-Type": "application/json",
+          "X-Goog-API-Client": "GOOGLE_ADK",
+      },
+      stream=True,
+  )
 
 
 @mock.patch.object(data_insights_tool._gda_stream_util, "get_stream")
-def test_ask_data_insights_success(mock_get_stream):
+@mock.patch.object(
+    data_insights_tool._gda_stream_util, "get_gda_session", autospec=True
+)
+def test_ask_data_insights_success(mock_get_session, mock_get_stream):
   """Tests the success path of ask_data_insights using decorators."""
   # 1. Configure the behavior of the mocked functions
   mock_stream = [
@@ -78,10 +106,14 @@ def test_ask_data_insights_success(mock_get_stream):
       {"text": {"parts": ["response2"], "textType": "FINAL_RESPONSE"}},
   ]
   mock_get_stream.return_value = mock_stream
+  mock_session = mock.MagicMock()
+  mock_get_session.return_value = (
+      mock_session,
+      "https://geminidataanalytics.mtls.googleapis.com",
+  )
 
   # 2. Create mock inputs for the function call
   mock_creds = mock.Mock()
-  mock_creds.token = "fake-token"
   mock_settings = mock.Mock()
   mock_settings.max_query_result_rows = 100
 
@@ -97,24 +129,44 @@ def test_ask_data_insights_success(mock_get_stream):
   # 4. Assert the results are as expected
   assert result["status"] == "SUCCESS"
   assert result["response"] == mock_stream
-  mock_get_stream.assert_called_once()
-
-  # Verify that the correct headers and client ID were passed to _get_stream
-  args, _ = mock_get_stream.call_args
-  headers = args[2]
-  assert headers["X-Goog-API-Client"] == "GOOGLE_ADK"
-  assert headers["Authorization"] == "Bearer fake-token"
+  mock_get_session.assert_called_once_with(mock_creds)
+  mock_get_stream.assert_called_once_with(
+      mock_session,
+      "https://geminidataanalytics.mtls.googleapis.com/v1beta/projects/test-project/locations/global:chat",
+      {
+          "project": "projects/test-project",
+          "messages": [{"userMessage": {"text": "test query"}}],
+          "inlineContext": {
+              "datasourceReferences": {"bq": {"tableReferences": []}},
+              "systemInstruction": mock.ANY,
+              "options": {"chart": {"image": {"noImage": {}}}},
+          },
+          "clientIdEnum": "GOOGLE_ADK",
+      },
+      {
+          "Content-Type": "application/json",
+          "X-Goog-API-Client": "GOOGLE_ADK",
+      },
+      100,
+  )
 
 
 @mock.patch.object(data_insights_tool._gda_stream_util, "get_stream")
-def test_ask_data_insights_handles_exception(mock_get_stream):
+@mock.patch.object(
+    data_insights_tool._gda_stream_util, "get_gda_session", autospec=True
+)
+def test_ask_data_insights_handles_exception(mock_get_session, mock_get_stream):
   """Tests the exception path of ask_data_insights using decorators."""
   # 1. Configure one of the mocks to raise an error
   mock_get_stream.side_effect = Exception("API call failed!")
+  mock_session = mock.MagicMock()
+  mock_get_session.return_value = (
+      mock_session,
+      "https://geminidataanalytics.mtls.googleapis.com",
+  )
 
   # 2. Create mock inputs
   mock_creds = mock.Mock()
-  mock_creds.token = "fake-token"
   mock_settings = mock.Mock()
 
   # 3. Call the function
@@ -129,4 +181,5 @@ def test_ask_data_insights_handles_exception(mock_get_stream):
   # 4. Assert that the error was caught and formatted correctly
   assert result["status"] == "ERROR"
   assert "API call failed!" in result["error_details"]
+  mock_get_session.assert_called_once_with(mock_creds)
   mock_get_stream.assert_called_once()
