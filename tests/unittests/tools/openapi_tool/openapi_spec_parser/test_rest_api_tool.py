@@ -1052,6 +1052,49 @@ class TestRestApiTool:
     assert "param_name" in request_params["params"]
     assert "empty_param" not in request_params["params"]
 
+  def test_prepare_request_params_preserves_falsy_query_parameter_values(
+      self,
+      sample_endpoint,
+      sample_auth_credential,
+      sample_auth_scheme,
+      sample_operation,
+  ):
+    tool = RestApiTool(
+        name="test_tool",
+        description="Test Tool",
+        endpoint=sample_endpoint,
+        operation=sample_operation,
+        auth_credential=sample_auth_credential,
+        auth_scheme=sample_auth_scheme,
+    )
+    params = [
+        ApiParameter(
+            original_name="include_inactive",
+            py_name="include_inactive",
+            param_location="query",
+            param_schema=OpenAPISchema(type="boolean"),
+        ),
+        ApiParameter(
+            original_name="page",
+            py_name="page",
+            param_location="query",
+            param_schema=OpenAPISchema(type="integer"),
+        ),
+        ApiParameter(
+            original_name="empty_param",
+            py_name="empty_param",
+            param_location="query",
+            param_schema=OpenAPISchema(type="string"),
+        ),
+    ]
+    kwargs = {"include_inactive": False, "page": 0, "empty_param": ""}
+
+    request_params = tool._prepare_request_params(params, kwargs)
+
+    assert request_params["params"]["include_inactive"] is False
+    assert request_params["params"]["page"] == 0
+    assert "empty_param" not in request_params["params"]
+
   @pytest.mark.parametrize(
       "verify_input, expected_verify_in_call",
       [
