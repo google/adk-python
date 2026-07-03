@@ -95,6 +95,45 @@ class TestLlmEventSummarizer(unittest.IsolatedAsyncioTestCase):
     self.assertEqual(llm_request.contents[0].parts[0].text, expected_prompt)
     self.assertFalse(kwargs['stream'])
 
+  async def test_default_prompt_preserves_conversation_language_anchor(self):
+    events = [
+        self._create_event(
+            1.0,
+            'Please answer in English while checking this retrieved material.',
+            'user',
+        ),
+        Event(
+            timestamp=2.0,
+            author='model',
+            content=Content(
+                parts=[
+                    Part(
+                        function_response=FunctionResponse(
+                            id='call_1',
+                            name='retrieve',
+                            response={'document': 'Я подготовил данные.'},
+                        )
+                    )
+                ]
+            ),
+        ),
+    ]
+    llm_response = LlmResponse(
+        content=Content(parts=[Part(text='Summary')]),
+        usage_metadata=None,
+    )
+
+    async def async_gen():
+      yield llm_response
+
+    self.mock_llm.generate_content_async.return_value = async_gen()
+
+    await self.compactor.maybe_summarize_events(events=events)
+
+    args, _ = self.mock_llm.generate_content_async.call_args
+    prompt = args[0].contents[0].parts[0].text
+    self.assertIn('preserve the conversation language', prompt)
+
   async def test_maybe_compact_events_empty_llm_response(self):
     events = [
         self._create_event(1.0, 'Hello', 'user'),

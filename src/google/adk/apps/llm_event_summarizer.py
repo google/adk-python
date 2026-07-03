@@ -51,7 +51,10 @@ class LlmEventSummarizer(BaseEventsSummarizer):
       ' reiterate the user request, summarize the context so far, focusing on'
       ' key decisions made and information obtained, as well as any unresolved'
       ' questions or tasks. The summary should be concise and capture the'
-      ' essence of the interaction.\n\n{conversation_history}'
+      ' essence of the interaction. When evident, preserve the conversation'
+      ' language and any response-language convention from the original'
+      ' interaction so future turns keep the same language even if retrieved'
+      ' tool content uses another language.\n\n{conversation_history}'
   )
 
   # Tool call args and responses can be large (e.g. search results). Cap how
