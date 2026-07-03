@@ -2095,10 +2095,12 @@ class Runner:
 
     # This maintains the same task context throughout cleanup
     for toolset in toolsets_to_close:
+      cleanup_task = asyncio.create_task(
+          asyncio.wait_for(toolset.close(), timeout=10.0)
+      )
       try:
         logger.info('Closing toolset: %s', type(toolset).__name__)
-        # Use asyncio.wait_for to add timeout protection
-        await asyncio.wait_for(toolset.close(), timeout=10.0)
+        await asyncio.shield(cleanup_task)
         logger.info('Successfully closed toolset: %s', type(toolset).__name__)
       except asyncio.TimeoutError:
         logger.warning('Toolset %s cleanup timed out', type(toolset).__name__)
@@ -2113,8 +2115,34 @@ class Runner:
         # improved context propagation across task boundaries, and better cancellation
         # handling prevent the cross-task cancel scope violation.
         logger.warning(
-            'Toolset %s cleanup cancelled: %s', type(toolset).__name__, e
+            'Toolset %s cleanup cancellation requested: %s',
+            type(toolset).__name__,
+            e,
         )
+        try:
+          await cleanup_task
+          logger.info(
+              'Successfully closed toolset after cancellation request: %s',
+              type(toolset).__name__,
+          )
+        except asyncio.TimeoutError:
+          cleanup_task.cancel()
+          logger.warning(
+              'Toolset %s cleanup timed out after cancellation request',
+              type(toolset).__name__,
+          )
+        except asyncio.CancelledError as close_cancelled:
+          logger.warning(
+              'Toolset %s cleanup cancelled: %s',
+              type(toolset).__name__,
+              close_cancelled,
+          )
+        except Exception as close_error:
+          logger.error(
+              'Error closing toolset %s after cancellation request: %s',
+              type(toolset).__name__,
+              close_error,
+          )
       except Exception as e:
         logger.error('Error closing toolset %s: %s', type(toolset).__name__, e)
 

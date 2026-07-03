@@ -36,6 +36,7 @@ from google.adk.plugins.base_plugin import BasePlugin
 from google.adk.runners import Runner
 from google.adk.sessions.in_memory_session_service import InMemorySessionService
 from google.adk.sessions.session import Session
+from google.adk.tools.base_toolset import BaseToolset
 from google.genai import types
 import pytest
 
@@ -1119,6 +1120,52 @@ class TestRunnerWithPlugins:
     await self.runner.close()
 
     self.runner.plugin_manager.close.assert_awaited_once()
+
+  @pytest.mark.asyncio
+  async def test_runner_close_does_not_cancel_toolset_cleanup(self):
+    """Caller cancellation should not cancel an in-flight toolset close."""
+    import asyncio
+
+    class SlowCloseToolset(BaseToolset):
+
+      def __init__(self):
+        super().__init__()
+        self.close_started = asyncio.Event()
+        self.close_finished = asyncio.Event()
+        self.close_cancelled = False
+
+      async def get_tools(self, readonly_context=None):
+        del readonly_context
+        return []
+
+      async def close(self) -> None:
+        self.close_started.set()
+        try:
+          await asyncio.sleep(0.05)
+          self.close_finished.set()
+        except asyncio.CancelledError:
+          self.close_cancelled = True
+          raise
+
+    toolset = SlowCloseToolset()
+    runner = Runner(
+        app_name="test_app",
+        agent=LlmAgent(
+            name="test_agent", model="gemini-1.5-pro", tools=[toolset]
+        ),
+        session_service=self.session_service,
+        artifact_service=self.artifact_service,
+    )
+
+    close_task = asyncio.create_task(runner.close())
+    await toolset.close_started.wait()
+    close_task.cancel()
+
+    await close_task
+
+    assert close_task.cancelled() is False
+    assert toolset.close_cancelled is False
+    assert toolset.close_finished.is_set()
 
   @pytest.mark.asyncio
   async def test_runner_passes_plugin_close_timeout(self):
