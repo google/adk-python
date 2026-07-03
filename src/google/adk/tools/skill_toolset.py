@@ -745,6 +745,7 @@ class _SkillScriptCodeExecutor:
           "        _r = subprocess.run(",
           f"          {arr!r},",
           "          capture_output=True, text=True,",
+          "          encoding='utf-8', errors='replace',",
           f"          timeout={timeout!r}, cwd=td,",
           "        )",
           "        print(_json.dumps({",

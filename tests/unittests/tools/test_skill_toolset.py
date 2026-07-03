@@ -996,6 +996,8 @@ async def test_execute_script_shell_success(mock_skill1):
   code_input = call_args[0][1]
   assert "subprocess.run" in code_input.code
   assert "bash" in code_input.code
+  assert "encoding='utf-8'" in code_input.code
+  assert "errors='replace'" in code_input.code
   assert "__shell_result__" in code_input.code
 
 
