@@ -35,6 +35,7 @@ from google.genai import types
 import pytest
 from sqlalchemy import delete
 from sqlalchemy import text
+from sqlalchemy import update
 from sqlalchemy.ext.asyncio import create_async_engine
 from sqlalchemy.pool import StaticPool
 
@@ -402,6 +403,51 @@ async def test_create_and_list_sessions(session_service):
   assert {s.id for s in sessions} == set(session_ids)
   for session in sessions:
     assert session.state == {'key': 'value' + session.id}
+
+
+@pytest.mark.asyncio
+async def test_database_session_service_list_sessions_orders_by_create_time_then_id():
+  """Database list_sessions returns oldest sessions first, with stable ties."""
+  service = DatabaseSessionService('sqlite+aiosqlite:///:memory:')
+  try:
+    app_name = 'my_app'
+    user_id = 'test_user'
+    session_ids = ['newest', 'oldest_b', 'middle', 'oldest_a']
+    for session_id in session_ids:
+      await service.create_session(
+          app_name=app_name,
+          user_id=user_id,
+          session_id=session_id,
+      )
+
+    schema = service._get_schema_classes()
+    create_times = {
+        'oldest_a': datetime(2026, 1, 1, tzinfo=timezone.utc),
+        'oldest_b': datetime(2026, 1, 1, tzinfo=timezone.utc),
+        'middle': datetime(2026, 1, 2, tzinfo=timezone.utc),
+        'newest': datetime(2026, 1, 3, tzinfo=timezone.utc),
+    }
+    async with service.database_session_factory() as sql_session:
+      for session_id, create_time in create_times.items():
+        await sql_session.execute(
+            update(schema.StorageSession)
+            .where(schema.StorageSession.app_name == app_name)
+            .where(schema.StorageSession.user_id == user_id)
+            .where(schema.StorageSession.id == session_id)
+            .values(create_time=create_time)
+        )
+      await sql_session.commit()
+
+    response = await service.list_sessions(app_name=app_name, user_id=user_id)
+
+    assert [session.id for session in response.sessions] == [
+        'oldest_a',
+        'oldest_b',
+        'middle',
+        'newest',
+    ]
+  finally:
+    await service.close()
 
 
 @pytest.mark.asyncio
