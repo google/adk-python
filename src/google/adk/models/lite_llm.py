@@ -983,9 +983,15 @@ async def _content_to_message_param(
   """
   _ensure_litellm_imported()
 
+  # A types.Content may have parts=None (e.g. types.Content(role="user")) or an
+  # empty list (e.g. from _append_fallback_user_content_if_missing). Normalize to
+  # an iterable so the loops below do not raise, matching the google_llm adapter
+  # which skips contents without parts.
+  parts = content.parts or []
+
   tool_messages: list[Message] = []
   non_tool_parts: list[types.Part] = []
-  for part in content.parts:
+  for part in parts:
     if part.function_response:
       response = part.function_response.response
       response_content = (
@@ -1026,7 +1032,7 @@ async def _content_to_message_param(
   role = _to_litellm_role(content.role)
 
   if role == "user":
-    user_parts = [part for part in content.parts if not part.thought]
+    user_parts = [part for part in parts if not part.thought]
     message_content = (
         await _get_content(user_parts, provider=provider, model=model) or None
     )
@@ -1035,7 +1041,7 @@ async def _content_to_message_param(
     tool_calls = []
     content_parts: list[types.Part] = []
     reasoning_parts: list[types.Part] = []
-    for part in content.parts:
+    for part in parts:
       if part.function_call:
         tool_call_id = part.function_call.id or ""
         tool_call_dict: ChatCompletionAssistantToolCall = {

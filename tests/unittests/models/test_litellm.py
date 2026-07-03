@@ -1931,6 +1931,26 @@ async def test_content_to_message_param_user_message():
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("parts", [None, []])
+async def test_content_to_message_param_user_message_without_parts(parts):
+  # types.Content(role="user") defaults parts to None, so a content with no
+  # parts must not raise (mirrors the google_llm adapter which skips it).
+  content = types.Content(role="user", parts=parts)
+  message = await _content_to_message_param(content)
+  assert message["role"] == "user"
+  assert message["content"] is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("parts", [None, []])
+async def test_content_to_message_param_assistant_message_without_parts(parts):
+  content = types.Content(role="assistant", parts=parts)
+  message = await _content_to_message_param(content)
+  assert message["role"] == "assistant"
+  assert message["content"] is None
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("file_uri,mime_type", FILE_URI_TEST_CASES)
 async def test_content_to_message_param_user_message_with_file_uri(
     file_uri, mime_type
