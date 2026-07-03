@@ -334,6 +334,16 @@ _PATCHED_HISTOGRAMS: tuple[HistogramSpec, ...] = (
         attr="_workflow_invocation_duration",
         metric_name="gen_ai.invoke_workflow.duration",
     ),
+    HistogramSpec(
+        module=_metrics,
+        attr="_invoke_agent_inference_calls",
+        metric_name="gen_ai.invoke_agent.inference_calls",
+    ),
+    HistogramSpec(
+        module=_metrics,
+        attr="_invoke_agent_tool_calls",
+        metric_name="gen_ai.invoke_agent.tool_calls",
+    ),
 )
 
 

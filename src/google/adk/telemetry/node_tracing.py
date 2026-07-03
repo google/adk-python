@@ -82,10 +82,12 @@ async def start_as_current_node_span(
   - `invoke_workflow {workflow.name}`
   - `invoke_node {node.name}`
 
-  invoke_agent spans align with OpenTelemetry Semantic Conventions (semconv) version 1.36 spans for backwards compatibility.
+  invoke_agent spans align with OpenTelemetry Semantic Conventions (semconv)
+  version 1.36 spans for backwards compatibility.
   https://github.com/open-telemetry/semantic-conventions/blob/v1.36.0/docs/gen-ai/README.md
 
-  invoke_workflow spans align with semconv version 1.41, because these were not included in any prior releases.
+  invoke_workflow spans align with semconv version 1.41, because these were not
+  included in any prior releases.
   https://github.com/open-telemetry/semantic-conventions/blob/main/docs/gen-ai/README.md
 
   invoke_node spans are not present in any semconv release.

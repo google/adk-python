@@ -2306,6 +2306,12 @@ EXPECTED_METRICS_V1: dict[str, frozenset[MetricPoint]] = {
             value=NON_DETERMINISTIC,
         ),
     }),
+    "gen_ai.invoke_agent.inference_calls": frozenset({
+        MetricPoint(attributes={"gen_ai.agent.name": AGENT_NAME}, value=2),
+    }),
+    "gen_ai.invoke_agent.tool_calls": frozenset({
+        MetricPoint(attributes={"gen_ai.agent.name": AGENT_NAME}, value=1),
+    }),
 }
 
 
@@ -2349,6 +2355,12 @@ EXPECTED_METRICS_V2: dict[str, frozenset[MetricPoint]] = {
             },
             value=NON_DETERMINISTIC,
         ),
+    }),
+    "gen_ai.invoke_agent.inference_calls": frozenset({
+        MetricPoint(attributes={"gen_ai.agent.name": AGENT_NAME}, value=2),
+    }),
+    "gen_ai.invoke_agent.tool_calls": frozenset({
+        MetricPoint(attributes={"gen_ai.agent.name": AGENT_NAME}, value=1),
     }),
 }
 
