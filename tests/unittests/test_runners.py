@@ -1777,6 +1777,22 @@ class TestRunnerResolveApp:
     assert runner.app_name == "test_app"
     assert runner.agent is self.root_agent
 
+  def test_resolve_app_with_base_node_via_agent_param(self):
+    """Test that a BaseNode root passed via `agent` is accepted."""
+    from google.adk.workflow._base_node import BaseNode
+
+    node = BaseNode(name="test_node")
+    runner = Runner(
+        app_name="test_app",
+        agent=node,
+        session_service=self.session_service,
+        artifact_service=self.artifact_service,
+    )
+    assert runner.app is not None
+    assert runner.app.root_agent is node
+    assert runner.app_name == "test_app"
+    assert runner.agent is node
+
   def test_resolve_app_with_node_wraps_in_app(self):
     """Test that a bare node is wrapped into an App."""
     from google.adk.workflow._base_node import BaseNode

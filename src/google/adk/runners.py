@@ -239,7 +239,7 @@ class Runner:
       *,
       app: Optional[App] = None,
       app_name: Optional[str] = None,
-      agent: Optional[BaseAgent] = None,
+      agent: Optional[BaseAgent | BaseNode] = None,
       node: BaseNode | None = None,
       plugins: Optional[List[BasePlugin]] = None,
       artifact_service: Optional[BaseArtifactService] = None,
@@ -320,7 +320,7 @@ class Runner:
   def _resolve_app(
       app: Optional[App],
       app_name: Optional[str],
-      agent: Optional[BaseAgent],
+      agent: Optional[BaseAgent | BaseNode],
       node: BaseNode | None,
       plugins: Optional[List[BasePlugin]],
   ) -> App:
