@@ -64,7 +64,7 @@ def to_user_content(value: Any) -> types.Content:
     deep-copied)
   - str -> single text part
   - BaseModel -> model_dump_json() text part
-  - dict/list -> json.dumps() text part
+  - dict/list -> json.dumps() text part (non-ASCII preserved, not escaped)
   - anything else -> str() text part
   """
   if isinstance(value, types.Content):
@@ -74,7 +74,7 @@ def to_user_content(value: Any) -> types.Content:
   elif isinstance(value, BaseModel):
     text = value.model_dump_json()
   elif isinstance(value, (dict, list)):
-    text = json.dumps(value)
+    text = json.dumps(value, ensure_ascii=False)
   else:
     text = str(value)
   return types.Content(role='user', parts=[types.Part(text=text)])
