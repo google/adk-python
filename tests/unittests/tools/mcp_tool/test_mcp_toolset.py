@@ -196,9 +196,8 @@ class TestMcpToolset:
         connection_params=self.mock_stdio_params, tool_filter=tool_filter
     )
 
-    # The tool filter is stored in the parent BaseToolset class
-    # We can verify it by checking the filtering behavior in get_tools
-    assert toolset._is_tool_selected is not None
+    # The tool filter is stored on the parent BaseToolset class.
+    assert toolset.tool_filter == tool_filter
 
   def test_init_with_auth(self):
     """Test initialization with authentication."""
