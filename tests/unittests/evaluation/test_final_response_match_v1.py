@@ -19,9 +19,11 @@ from google.adk.evaluation.eval_metrics import EvalMetric
 from google.adk.evaluation.eval_metrics import PrebuiltMetrics
 from google.adk.evaluation.evaluator import EvalStatus
 from google.adk.evaluation.final_response_match_v1 import _calculate_rouge_1_scores
+from google.adk.evaluation.final_response_match_v1 import _UnicodeAwareTokenizer
 from google.adk.evaluation.final_response_match_v1 import RougeEvaluator
 from google.genai import types as genai_types
 import pytest
+from rouge_score import tokenizers
 
 
 def _create_test_rouge_evaluator(threshold: float) -> RougeEvaluator:
@@ -88,6 +90,58 @@ def test_calculate_rouge_1_scores():
 
 
 @pytest.mark.parametrize(
+    "text",
+    [
+        "สวัสดี",  # Thai
+        "你好世界",  # Chinese
+        "مرحبا بالعالم",  # Arabic
+        "こんにちは",  # Japanese
+        "Здравствуйте",  # Russian
+    ],
+)
+def test_calculate_rouge_1_scores_identical_non_english_text(text: str):
+  rouge_1_score = _calculate_rouge_1_scores(text, text)
+  assert rouge_1_score.precision == pytest.approx(1)
+  assert rouge_1_score.recall == pytest.approx(1)
+  assert rouge_1_score.fmeasure == pytest.approx(1)
+
+
+def test_calculate_rouge_1_scores_different_non_english_text():
+  candidate = "мир привет"
+  reference = "привет только"
+  rouge_1_score = _calculate_rouge_1_scores(candidate, reference)
+  assert rouge_1_score.precision == pytest.approx(1 / 2)
+  assert rouge_1_score.recall == pytest.approx(1 / 2)
+  assert rouge_1_score.fmeasure == pytest.approx(1 / 2)
+
+
+def test_calculate_rouge_1_scores_mixed_language_text():
+  candidate = "hello สวัสดี"
+  reference = "hello world"
+  rouge_1_score = _calculate_rouge_1_scores(candidate, reference)
+  assert rouge_1_score.precision == pytest.approx(1 / 2)
+  assert rouge_1_score.recall == pytest.approx(1 / 2)
+  assert rouge_1_score.fmeasure == pytest.approx(1 / 2)
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "The quick brown fox jumps over the lazy dog.",
+        "Testing stemmed words like running and jumped, don't split!",
+        "Numbers 123 and mixed a1b2 tokens under_scored.",
+        "",
+    ],
+)
+def test_unicode_aware_tokenizer_matches_default_tokenizer_for_ascii(
+    text: str,
+):
+  default_tokens = tokenizers.DefaultTokenizer(use_stemmer=True).tokenize(text)
+  unicode_tokens = _UnicodeAwareTokenizer(use_stemmer=True).tokenize(text)
+  assert unicode_tokens == default_tokens
+
+
+@pytest.mark.parametrize(
     "candidates, references, expected_score, expected_status",
     [
         (
@@ -111,6 +165,12 @@ def test_calculate_rouge_1_scores():
         (
             ["Same words", "Same words"],
             ["Same words", "Same words"],
+            1.0,
+            EvalStatus.PASSED,
+        ),
+        (
+            ["สวัสดี", "你好"],
+            ["สวัสดี", "你好"],
             1.0,
             EvalStatus.PASSED,
         ),

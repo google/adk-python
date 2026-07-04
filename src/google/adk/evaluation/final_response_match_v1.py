@@ -15,11 +15,13 @@
 from __future__ import annotations
 
 from typing import Optional
+import unicodedata
 
 from google.genai import types as genai_types
 from typing_extensions import override
 
 from ..dependencies.rouge_scorer import rouge_scorer
+from ..dependencies.rouge_scorer import tokenizers
 from .eval_case import ConversationScenario
 from .eval_case import Invocation
 from .eval_metrics import EvalMetric
@@ -96,6 +98,39 @@ def _get_eval_status(score: float, threshold: float) -> EvalStatus:
   return EvalStatus.PASSED if score >= threshold else EvalStatus.FAILED
 
 
+def _is_word_char(char: str) -> bool:
+  # Combining marks (e.g. Thai vowel signs, Devanagari matras) are not
+  # alphanumeric on their own but must stay attached to their base character.
+  return char.isalnum() or unicodedata.category(char).startswith("M")
+
+
+class _UnicodeAwareTokenizer(tokenizers.Tokenizer):  # type: ignore[misc]
+  """Tokenizer that keeps non-ASCII word characters.
+
+  The default rouge_score tokenizer discards any character outside [a-z0-9],
+  so text in non-Latin scripts (e.g. Thai, Chinese, Arabic) tokenizes to
+  nothing and always scores 0. This tokenizer keeps Unicode word characters
+  and delegates ASCII tokens to the default tokenizer, preserving its
+  stemming and scoring behavior for English text.
+  """
+
+  def __init__(self, use_stemmer: bool = False):
+    self._default_tokenizer = tokenizers.DefaultTokenizer(use_stemmer)
+
+  def tokenize(self, text: str) -> list[str]:
+    text = text.lower()
+    words = "".join(
+        char if _is_word_char(char) else " " for char in text
+    ).split()
+    tokens = []
+    for word in words:
+      if word.isascii():
+        tokens.extend(self._default_tokenizer.tokenize(word))
+      else:
+        tokens.append(word)
+    return tokens
+
+
 def _calculate_rouge_1_scores(candidate: str, reference: str):
   """Calculates the ROUGE-1 score between a candidate and reference text.
 
@@ -114,7 +149,9 @@ def _calculate_rouge_1_scores(candidate: str, reference: str):
   Returns:
       A dictionary containing the ROUGE-1 precision, recall, and f-measure.
   """
-  scorer = rouge_scorer.RougeScorer(["rouge1"], use_stemmer=True)
+  scorer = rouge_scorer.RougeScorer(
+      ["rouge1"], tokenizer=_UnicodeAwareTokenizer(use_stemmer=True)
+  )
 
   # The score method returns a dictionary where keys are the ROUGE types
   # and values are Score objects (tuples) with precision, recall, and fmeasure.
