@@ -31,7 +31,7 @@ def _get_client_info() -> google.api_core.client_info.ClientInfo:
 
 def get_bigtable_data_client(
     *, project: str, credentials: Credentials
-) -> bigtable.BigtableDataClient:
+) -> data.BigtableDataClient:
   """Get a Bigtable client."""
 
   bigtable_data_client = data.BigtableDataClient(
