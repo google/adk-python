@@ -476,7 +476,7 @@ class FunctionNode(BaseNode):
     # If the wrapped function is a bound method of a Node, we need to clone
     # the Node and re-bind the function to the new instance.
     # This is needed if the function is referring to params like 'name' from the "self" reference.
-    # Like Workflow or LLM use that name for event node_paths or retreving session events.
+    # Like Workflow or LLM use that name for event node_paths or retrieving session events.
     func = self._func
     if inspect.ismethod(func) and isinstance(
         getattr(func, '__self__', None), BaseNode
