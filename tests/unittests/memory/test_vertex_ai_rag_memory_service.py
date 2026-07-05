@@ -13,6 +13,8 @@
 # limitations under the License.
 
 import json
+import os
+import tempfile
 from types import SimpleNamespace
 
 from google.adk.events.event import Event
@@ -29,6 +31,71 @@ def _rag_context(source_display_name: str, text: str) -> SimpleNamespace:
       source_display_name=source_display_name,
       text=json.dumps({"author": "user", "timestamp": 1, "text": text}),
   )
+
+
+def _sample_session() -> Session:
+  return Session(
+      app_name="demo",
+      user_id="alice",
+      id="session-1",
+      last_update_time=1,
+      events=[
+          Event(
+              id="event-1",
+              author="user",
+              timestamp=1,
+              content=types.Content(parts=[types.Part(text="hello")]),
+          )
+      ],
+  )
+
+
+def _track_temp_files(mocker) -> list[str]:
+  """Records the paths of every NamedTemporaryFile created."""
+  created_paths: list[str] = []
+  real_named_temp_file = tempfile.NamedTemporaryFile
+
+  def _spy(*args, **kwargs):
+    temp_file = real_named_temp_file(*args, **kwargs)
+    created_paths.append(temp_file.name)
+    return temp_file
+
+  mocker.patch(
+      "google.adk.memory.vertex_ai_rag_memory_service.tempfile.NamedTemporaryFile",
+      side_effect=_spy,
+  )
+  return created_paths
+
+
+@pytest.mark.asyncio
+async def test_add_session_removes_temp_file_when_upload_fails(mocker):
+  """The temp file must not leak when rag.upload_file raises."""
+  memory_service = VertexAiRagMemoryService(rag_corpus="unused")
+  created_paths = _track_temp_files(mocker)
+  fake_client = mocker.Mock()
+  fake_client.rag.upload_file.side_effect = RuntimeError("upload boom")
+  mocker.patch("agentplatform.Client", return_value=fake_client)
+
+  with pytest.raises(RuntimeError, match="upload boom"):
+    await memory_service.add_session_to_memory(_sample_session())
+
+  assert created_paths, "expected a temp file to have been created"
+  assert not os.path.exists(created_paths[0])
+
+
+@pytest.mark.asyncio
+async def test_add_session_does_not_create_temp_file_without_rag_resources(
+    mocker,
+):
+  """Validation happens before the temp file is created, so nothing leaks."""
+  memory_service = VertexAiRagMemoryService(rag_corpus="unused")
+  memory_service._vertex_rag_store.rag_resources = None
+  created_paths = _track_temp_files(mocker)
+
+  with pytest.raises(ValueError, match="Rag resources must be set."):
+    await memory_service.add_session_to_memory(_sample_session())
+
+  assert created_paths == []
 
 
 @pytest.mark.asyncio

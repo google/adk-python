@@ -145,6 +145,9 @@ class VertexAiRagMemoryService(BaseMemoryService):
 
   @override
   async def add_session_to_memory(self, session: Session) -> None:
+    if not self._vertex_rag_store.rag_resources:
+      raise ValueError("Rag resources must be set.")
+
     with tempfile.NamedTemporaryFile(
         mode="w", delete=False, suffix=".txt"
     ) as temp_file:
@@ -179,16 +182,17 @@ class VertexAiRagMemoryService(BaseMemoryService):
         project=self._project, location=self._location
     )
 
-    for rag_resource in self._vertex_rag_store.rag_resources:
-      client.rag.upload_file(
-          corpus_name=rag_resource.rag_corpus,
-          path=temp_file_path,
-          display_name=_build_source_display_name(
-              session.app_name, session.user_id, session.id
-          ),
-      )
-
-    os.remove(temp_file_path)
+    try:
+      for rag_resource in self._vertex_rag_store.rag_resources:
+        client.rag.upload_file(
+            corpus_name=rag_resource.rag_corpus,
+            path=temp_file_path,
+            display_name=_build_source_display_name(
+                session.app_name, session.user_id, session.id
+            ),
+        )
+    finally:
+      os.remove(temp_file_path)
 
   @override
   async def search_memory(
