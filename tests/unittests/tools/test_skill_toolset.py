@@ -226,6 +226,38 @@ async def test_get_tools(mock_skill1, mock_skill2):
 
 
 @pytest.mark.asyncio
+async def test_get_tools_excludes_run_skill_script_when_no_skill_has_scripts(
+    mock_skill2,
+):
+  toolset = skill_toolset.SkillToolset([mock_skill2])
+
+  tools = await toolset.get_tools()
+
+  assert [tool.name for tool in tools] == [
+      "list_skills",
+      "load_skill",
+      "load_skill_resource",
+  ]
+  assert not any(
+      isinstance(tool, skill_toolset.RunSkillScriptTool) for tool in tools
+  )
+
+
+@pytest.mark.asyncio
+async def test_get_tools_includes_run_skill_script_when_any_skill_has_scripts(
+    mock_skill1,
+    mock_skill2,
+):
+  toolset = skill_toolset.SkillToolset([mock_skill2, mock_skill1])
+
+  tools = await toolset.get_tools()
+
+  assert any(
+      isinstance(tool, skill_toolset.RunSkillScriptTool) for tool in tools
+  )
+
+
+@pytest.mark.asyncio
 async def test_resolve_additional_tools_from_state_none(mock_skill1):
   toolset = skill_toolset.SkillToolset([mock_skill1])
 

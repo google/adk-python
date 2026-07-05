@@ -105,6 +105,14 @@ def _build_skill_system_instruction(prefix: str | None = None) -> str:
   )
 
 
+def _skill_has_scripts(skill: models.Skill) -> bool:
+  """Returns whether a skill exposes at least one executable script."""
+  resources = getattr(skill, "resources", None)
+  if resources is None:
+    return False
+  return bool(resources.list_scripts())
+
+
 class ListSkillsTool(BaseTool):
   """Tool to list all available skills."""
 
@@ -1037,8 +1045,11 @@ class SkillToolset(BaseToolset):
         ListSkillsTool(self),
         LoadSkillTool(self),
         LoadSkillResourceTool(self),
-        RunSkillScriptTool(self),
     ]
+    if self._registry or any(
+        _skill_has_scripts(skill) for skill in self._skills.values()
+    ):
+      self._tools.append(RunSkillScriptTool(self))
     if self._registry:
       self._tools.append(SearchSkillsTool(self))
 
