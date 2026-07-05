@@ -35,6 +35,9 @@ _DEFAULT_MTLS_INTEGRATIONS_REGIONAL_ENDPOINT_TEMPLATE = (
     "{location}-integrations.mtls.googleapis.com"
 )
 
+# Default timeout in seconds for HTTP requests.
+_REQUEST_TIMEOUT_SECONDS = 30
+
 
 class IntegrationClient:
   """A client for interacting with Google Cloud Application Integration.
@@ -118,7 +121,9 @@ class IntegrationClient:
           ],
           "fileFormat": "JSON",
       }
-      response = requests.post(url, headers=headers, json=data)
+      response = requests.post(
+          url, headers=headers, json=data, timeout=_REQUEST_TIMEOUT_SECONDS
+      )
       response.raise_for_status()
       spec = response.json().get("openApiSpec", {})
       return json.loads(spec)

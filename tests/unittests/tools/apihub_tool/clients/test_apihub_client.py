@@ -14,6 +14,7 @@
 
 import base64
 import json
+from unittest.mock import ANY
 from unittest.mock import MagicMock
 from unittest.mock import patch
 
@@ -74,6 +75,7 @@ class TestAPIHubClient:
             "accept": "application/json, text/plain, */*",
             "Authorization": "Bearer mocked_token",
         },
+        timeout=ANY,
     )
 
   @patch("requests.get")
@@ -105,6 +107,7 @@ class TestAPIHubClient:
             "accept": "application/json, text/plain, */*",
             "Authorization": "Bearer mocked_token",
         },
+        timeout=ANY,
     )
 
   @patch("requests.get")
@@ -127,6 +130,7 @@ class TestAPIHubClient:
             "accept": "application/json, text/plain, */*",
             "Authorization": "Bearer mocked_token",
         },
+        timeout=ANY,
     )
 
   @patch("requests.get")
@@ -151,6 +155,7 @@ class TestAPIHubClient:
             "accept": "application/json, text/plain, */*",
             "Authorization": "Bearer mocked_token",
         },
+        timeout=ANY,
     )
 
   @patch("requests.get")

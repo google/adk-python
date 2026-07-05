@@ -37,6 +37,9 @@ _DEFAULT_MTLS_INTEGRATIONS_ENDPOINT_TEMPLATE = (
     "integrations.mtls.googleapis.com"
 )
 
+# Default timeout in seconds for HTTP requests.
+_REQUEST_TIMEOUT_SECONDS = 30
+
 
 class ConnectionsClient:
   """Utility class for interacting with Google Cloud Connectors API."""
@@ -886,7 +889,9 @@ class ConnectionsClient:
           "Authorization": f"Bearer {self._get_access_token()}",
       }
 
-      response = requests.get(url, headers=headers)
+      response = requests.get(
+          url, headers=headers, timeout=_REQUEST_TIMEOUT_SECONDS
+      )
       response.raise_for_status()
       return response
 

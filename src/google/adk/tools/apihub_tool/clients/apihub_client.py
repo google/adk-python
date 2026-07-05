@@ -32,6 +32,9 @@ from google.auth.transport.requests import Request
 from google.oauth2 import service_account
 import requests
 
+# Default timeout in seconds for HTTP requests.
+_REQUEST_TIMEOUT_SECONDS = 30
+
 
 class BaseAPIHubClient(ABC):
   """Base class for API Hub clients."""
@@ -133,7 +136,9 @@ class APIHubClient(BaseAPIHubClient):
         "accept": "application/json, text/plain, */*",
         "Authorization": f"Bearer {self._get_access_token()}",
     }
-    response = requests.get(url, headers=headers)
+    response = requests.get(
+        url, headers=headers, timeout=_REQUEST_TIMEOUT_SECONDS
+    )
     response.raise_for_status()
     apis = response.json().get("apis", [])
     return apis
@@ -153,7 +158,9 @@ class APIHubClient(BaseAPIHubClient):
         "accept": "application/json, text/plain, */*",
         "Authorization": f"Bearer {self._get_access_token()}",
     }
-    response = requests.get(url, headers=headers)
+    response = requests.get(
+        url, headers=headers, timeout=_REQUEST_TIMEOUT_SECONDS
+    )
     response.raise_for_status()
     apis = response.json()
     return apis
@@ -173,7 +180,9 @@ class APIHubClient(BaseAPIHubClient):
         "accept": "application/json, text/plain, */*",
         "Authorization": f"Bearer {self._get_access_token()}",
     }
-    response = requests.get(url, headers=headers)
+    response = requests.get(
+        url, headers=headers, timeout=_REQUEST_TIMEOUT_SECONDS
+    )
     response.raise_for_status()
     return response.json()
 
@@ -192,7 +201,9 @@ class APIHubClient(BaseAPIHubClient):
         "accept": "application/json, text/plain, */*",
         "Authorization": f"Bearer {self._get_access_token()}",
     }
-    response = requests.get(url, headers=headers)
+    response = requests.get(
+        url, headers=headers, timeout=_REQUEST_TIMEOUT_SECONDS
+    )
     response.raise_for_status()
     content_base64 = response.json().get("contents", "")
     if content_base64:
