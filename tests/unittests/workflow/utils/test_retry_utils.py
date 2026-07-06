@@ -75,7 +75,10 @@ class TestShouldRetryNode:
 
   def test_no_config_never_retries(self):
     """Without a retry config, a node is never retried."""
-    assert _should_retry_node(RuntimeError(), None, NodeState(attempt_count=1)) is False
+    assert (
+        _should_retry_node(RuntimeError(), None, NodeState(attempt_count=1))
+        is False
+    )
 
   @pytest.mark.parametrize("max_attempts", [0, 1])
   def test_max_attempts_zero_or_one_disables_retries(self, max_attempts):
@@ -86,19 +89,37 @@ class TestShouldRetryNode:
     """
     config = RetryConfig(max_attempts=max_attempts)
 
-    assert _should_retry_node(RuntimeError(), config, NodeState(attempt_count=1)) is False
+    assert (
+        _should_retry_node(RuntimeError(), config, NodeState(attempt_count=1))
+        is False
+    )
 
   def test_retries_until_max_attempts(self):
     """A node is retried while attempt_count is below max_attempts."""
     config = RetryConfig(max_attempts=3)
 
-    assert _should_retry_node(RuntimeError(), config, NodeState(attempt_count=1)) is True
-    assert _should_retry_node(RuntimeError(), config, NodeState(attempt_count=2)) is True
-    assert _should_retry_node(RuntimeError(), config, NodeState(attempt_count=3)) is False
+    assert (
+        _should_retry_node(RuntimeError(), config, NodeState(attempt_count=1))
+        is True
+    )
+    assert (
+        _should_retry_node(RuntimeError(), config, NodeState(attempt_count=2))
+        is True
+    )
+    assert (
+        _should_retry_node(RuntimeError(), config, NodeState(attempt_count=3))
+        is False
+    )
 
   def test_unset_max_attempts_defaults_to_five(self):
     """When max_attempts is unset (None), the default of 5 applies."""
     config = RetryConfig()
 
-    assert _should_retry_node(RuntimeError(), config, NodeState(attempt_count=4)) is True
-    assert _should_retry_node(RuntimeError(), config, NodeState(attempt_count=5)) is False
+    assert (
+        _should_retry_node(RuntimeError(), config, NodeState(attempt_count=4))
+        is True
+    )
+    assert (
+        _should_retry_node(RuntimeError(), config, NodeState(attempt_count=5))
+        is False
+    )
