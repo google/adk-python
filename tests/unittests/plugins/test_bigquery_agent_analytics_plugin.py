@@ -5978,6 +5978,26 @@ class TestAnalyticsViews:
       view_name = "v_" + event_type.lower()
       assert view_name in all_sql, f"View {view_name} not found in SQL"
 
+  def test_llm_response_view_exposes_token_usage_columns(self):
+    """LLM_RESPONSE view surfaces cached/thinking/tool-use token columns.
+
+    These are read from the full ``usage_metadata`` proto that is already
+    logged to ``attributes.usage_metadata``, so they are sourced from
+    ``attributes`` rather than the ``content.usage`` summary.
+    """
+    plugin = self._make_plugin(create_views=True)
+    plugin.client.get_table.side_effect = cloud_exceptions.NotFound("not found")
+    plugin.client.query.return_value = mock.MagicMock()
+
+    plugin._ensure_schema_exists()
+
+    all_sql = " ".join(c[0][0] for c in plugin.client.query.call_args_list)
+    assert "usage_cached_tokens" in all_sql
+    assert "usage_thinking_tokens" in all_sql
+    assert "usage_tool_use_tokens" in all_sql
+    assert "$.usage_metadata.thoughts_token_count" in all_sql
+    assert "$.usage_metadata.tool_use_prompt_token_count" in all_sql
+
   def test_config_create_views_default_true(self):
     """Config create_views defaults to True."""
     config = bigquery_agent_analytics_plugin.BigQueryLoggerConfig()

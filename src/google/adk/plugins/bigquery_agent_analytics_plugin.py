@@ -2061,6 +2061,16 @@ _EVENT_VIEW_DEFS: dict[str, list[str]] = {
             " usage_cached_tokens"
         ),
         (
+            "CAST(JSON_VALUE(attributes,"
+            " '$.usage_metadata.thoughts_token_count') AS INT64) AS"
+            " usage_thinking_tokens"
+        ),
+        (
+            "CAST(JSON_VALUE(attributes,"
+            " '$.usage_metadata.tool_use_prompt_token_count') AS INT64) AS"
+            " usage_tool_use_tokens"
+        ),
+        (
             "SAFE_DIVIDE(CAST(JSON_VALUE(attributes,"
             " '$.usage_metadata.cached_content_token_count') AS"
             " INT64),CAST(JSON_VALUE(content, '$.usage.prompt') AS INT64)) AS"
