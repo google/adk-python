@@ -36,10 +36,9 @@ from ._node_status import NodeStatus
 from ._schedule_dynamic_node import ScheduleDynamicNode
 from .utils._rehydration_utils import _ChildScanState
 from .utils._rehydration_utils import _reconstruct_node_states
-from .utils._rehydration_utils import is_terminal_event
 from .utils._replay_interceptor import check_interception
 from .utils._replay_interceptor import create_mock_context
-from .utils._replay_sequence_barrier import ReplaySequenceBarrier
+from .utils._replay_manager import ReplayManager
 
 if TYPE_CHECKING:
   from ..agents.context import Context
@@ -121,7 +120,7 @@ class DynamicNodeScheduler(ScheduleDynamicNode):
 
   def __init__(self, *, state: DynamicNodeState) -> None:
     self._state = state
-    self._parent_sequence_barriers: dict[str, ReplaySequenceBarrier] = {}
+    self._replay_manager = ReplayManager()
 
   async def __call__(
       self,
@@ -163,9 +162,8 @@ class DynamicNodeScheduler(ScheduleDynamicNode):
 
     # Rehydration chronological sequence barrier setup for the parent path
     parent_path = ctx.node_path if ctx else ''
-    if parent_path and parent_path not in self._parent_sequence_barriers:
-      seq = self._scan_parent_child_sequence(ctx, parent_path)
-      self._parent_sequence_barriers[parent_path] = ReplaySequenceBarrier(seq)
+    if parent_path:
+      self._replay_manager.prepare_parent_sequence_barrier(ctx, parent_path)
 
     # Runtime schema validation.
     if node_input is not None:
@@ -220,8 +218,7 @@ class DynamicNodeScheduler(ScheduleDynamicNode):
     # Advance chronological sequence for this parent path and key
     parent_path = ctx.node_path if ctx else ''
     key = f'{node_name or node.name}@{run_id}'
-    if parent_path in self._parent_sequence_barriers:
-      self._parent_sequence_barriers[parent_path].check_and_advance(key)
+    await self._replay_manager.advance_sequence(parent_path, key)
 
     return child_ctx
 
@@ -299,8 +296,7 @@ class DynamicNodeScheduler(ScheduleDynamicNode):
       # Chronological sequence barrier wait for replayed dynamic nodes
       parent_path = curr_parent_ctx.node_path if curr_parent_ctx else ''
       key = f'{curr_name}@{curr_run_id}'
-      if parent_path in self._parent_sequence_barriers:
-        await self._parent_sequence_barriers[parent_path].wait(key)
+      await self._replay_manager.wait_sequence(parent_path, key)
 
       return mock_ctx, True
 
@@ -348,36 +344,6 @@ class DynamicNodeScheduler(ScheduleDynamicNode):
       )
 
     logger.debug('node %s rehydrate end.', node_path)
-
-  def _scan_parent_child_sequence(
-      self, ctx: Context, parent_path: str
-  ) -> list[str]:
-    """Scan historical events and extract direct dynamic child completion sequence."""
-    ic = ctx._invocation_context
-    base_path_builder = _NodePathBuilder.from_string(parent_path)
-    sequence: list[str] = []
-
-    for event in ic.session.events:
-      if event.invocation_id != ic.invocation_id:
-        continue
-      event_node_path = event.node_info.path or ''
-      event_path_builder = _NodePathBuilder.from_string(event_node_path)
-
-      if not event_path_builder.is_descendant_of(base_path_builder):
-        continue
-
-      child_path = base_path_builder.get_direct_child(event_path_builder)
-      if event_path_builder != child_path:
-        continue
-
-      segment = child_path.leaf_segment
-
-      if is_terminal_event(event):
-        if segment in sequence:
-          sequence.remove(segment)
-        sequence.append(segment)
-
-    return sequence
 
   # --- Execution ---
 

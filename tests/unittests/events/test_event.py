@@ -16,6 +16,8 @@ from __future__ import annotations
 
 """Unit tests for the helper methods on the Event class."""
 
+import copy
+
 from google.adk.events.event import Event
 from google.adk.events.event import NodeInfo
 from google.adk.events.event_actions import EventActions
@@ -371,6 +373,24 @@ class TestMessageSerialization:
     assert restored.content.parts[0].text == 'Hello!'
     assert restored.message is not None
     assert restored.message.parts[0].text == 'Hello!'
+
+  def test_model_validate_does_not_mutate_input_dict(self):
+    data = {
+        'message': 'Hello!',
+        'state': {'key': 'value'},
+        'route': 'next',
+        'node_path': 'root.node',
+    }
+    original = copy.deepcopy(data)
+
+    event = Event.model_validate(data)
+
+    assert data == original
+    assert event.content is not None
+    assert event.content.parts[0].text == 'Hello!'
+    assert event.actions.state_delta == {'key': 'value'}
+    assert event.actions.route == 'next'
+    assert event.node_info.path == 'root.node'
 
 
 class TestMessageWithOtherKwargs:

@@ -72,6 +72,7 @@ from typing import Any
 from typing import Protocol
 from urllib.parse import unquote
 from urllib.parse import urlparse
+from urllib.request import url2pathname
 
 from ..artifacts.base_artifact_service import BaseArtifactService
 from ..memory.base_memory_service import BaseMemoryService
@@ -310,7 +311,12 @@ def _register_builtin_services(registry: ServiceRegistry) -> None:
       )
     if not parsed_uri.path:
       raise ValueError("file:// artifact URIs must include a path component.")
-    artifact_path = Path(unquote(parsed_uri.path))
+
+    artifact_path_str = unquote(parsed_uri.path)
+    if os.name == "nt":
+      artifact_path_str = url2pathname(artifact_path_str)
+
+    artifact_path = Path(artifact_path_str)
     return FileArtifactService(root_dir=artifact_path)
 
   registry.register_artifact_service("memory", memory_artifact_factory)
