@@ -82,10 +82,12 @@ async def start_as_current_node_span(
   - `invoke_workflow {workflow.name}`
   - `invoke_node {node.name}`
 
-  invoke_agent spans align with OpenTelemetry Semantic Conventions (semconv) version 1.36 spans for backwards compatibility.
+  invoke_agent spans align with OpenTelemetry Semantic Conventions (semconv)
+  version 1.36 spans for backwards compatibility.
   https://github.com/open-telemetry/semantic-conventions/blob/v1.36.0/docs/gen-ai/README.md
 
-  invoke_workflow spans align with semconv version 1.41, because these were not included in any prior releases.
+  invoke_workflow spans align with semconv version 1.41, because these were not
+  included in any prior releases.
   https://github.com/open-telemetry/semantic-conventions/blob/main/docs/gen-ai/README.md
 
   invoke_node spans are not present in any semconv release.
@@ -184,10 +186,6 @@ def _use_invoke_workflow_span(
   # The flag rides along the otel_context propagated to child nodes, so nested
   # workflows see it set.
   nested = bool(context_api.get_value(_ENTRYPOINT_WORKFLOW_KEY, otel_context))
-  if not nested:
-    otel_context = context_api.set_value(
-        _ENTRYPOINT_WORKFLOW_KEY, True, otel_context
-    )
   attributes: dict[str, AttributeValue] = {
       GEN_AI_OPERATION_NAME: "invoke_workflow",
       GEN_AI_CONVERSATION_ID: conversation_id,
@@ -205,11 +203,14 @@ def _use_invoke_workflow_span(
   start_s = time.monotonic()
   workflow_span: Span | None = None
   try:
-    with tracer.start_as_current_span(
-        name=span_name,
-        attributes=attributes,
-        context=otel_context,
-    ) as span:
+    with (
+        tracer.start_as_current_span(
+            name=span_name,
+            attributes=attributes,
+            context=otel_context,
+        ) as span,
+        _mark_nested_workflows(),
+    ):
       workflow_span = span
       yield span
   finally:
@@ -219,3 +220,14 @@ def _use_invoke_workflow_span(
         nested=nested,
         error=sys.exc_info()[1],
     )
+
+
+@contextmanager
+def _mark_nested_workflows() -> Iterator[None]:
+  token = context_api.attach(
+      context_api.set_value(_ENTRYPOINT_WORKFLOW_KEY, True)
+  )
+  try:
+    yield
+  finally:
+    context_api.detach(token)
