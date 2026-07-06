@@ -343,13 +343,36 @@ class LlmAgent(BaseAgent, abc.ABC):
   """Disallows LLM-controlled transferring to the peer agents."""
   # LLM-based agent transfer configs - End
 
-  include_contents: Literal['default', 'none'] = 'default'
+  include_contents: Literal['default', 'current', 'none'] = 'default'
   """Controls content inclusion in model requests.
 
   Options:
-    default: Model receives relevant conversation history
-    none: Model receives no prior history, operates solely on current
-    instruction and input
+    default: Model receives full conversation history.
+    current: Model receives all events since the last user message,
+      including outputs from agents that ran earlier in this pipeline.
+    none: Model receives only the most recent agent or user input, with no
+      prior conversation history.
+  """
+
+  include_sources: Optional[list[str]] = None
+  """Allowlist of content sources to include in model requests.
+
+  Orthogonal to include_contents (temporal window); this controls which
+  sources are kept from within that window.
+
+  Options:
+    None (default): all sources pass through — backward-compatible.
+    list[str]: only content from the listed sources is kept.
+
+  Reserved source names:
+    'user'  — plain human user messages (not tool outputs)
+    'self'  — this agent's own prior model outputs
+    <name>  — any other string is matched against event.author (agent name)
+
+  Example — keep full history but only user + this agent's turns:
+    include_contents='default', include_sources=['user', 'self']
+
+  Raises ValueError if set to [] (use None to disable filtering).
   """
 
   # Controlled input/output configurations - Start
@@ -1013,6 +1036,20 @@ class LlmAgent(BaseAgent, abc.ABC):
 
   @model_validator(mode='after')
   def __model_validator_after(self) -> LlmAgent:
+    if self.include_sources is not None and len(self.include_sources) == 0:
+      raise ValueError(
+          'include_sources=[] keeps nothing. Use None to disable filtering.'
+      )
+    if self.include_contents == 'none' and self.include_sources is not None:
+      warnings.warn(
+          "include_contents='none' with include_sources may produce empty"
+          ' context: the turn boundary is the last user OR other-agent event,'
+          ' and if that event is filtered by include_sources the context will'
+          " be empty. Use include_contents='current' to anchor at the last"
+          ' user message instead.',
+          UserWarning,
+          stacklevel=2,
+      )
     return self
 
   @field_validator('generate_content_config', mode='after')

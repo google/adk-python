@@ -123,7 +123,7 @@ class LlmAgentConfig(BaseAgentConfig):
       default=None, description='Optional. LlmAgent.output_key.'
   )
 
-  include_contents: Literal['default', 'none'] = Field(
+  include_contents: Literal['default', 'current', 'none'] = Field(
       default='default', description='Optional. LlmAgent.include_contents.'
   )
 
