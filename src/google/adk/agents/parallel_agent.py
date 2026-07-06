@@ -25,6 +25,7 @@ from typing import ClassVar
 from typing_extensions import deprecated
 from typing_extensions import override
 
+from ..events._branch_path import _BranchPath
 from ..events.event import Event
 from ..utils.context_utils import Aclosing
 from .base_agent import BaseAgent
@@ -44,10 +45,8 @@ def _create_branch_ctx_for_sub_agent(
   """Create isolated branch for every sub-agent."""
   invocation_context = invocation_context.model_copy()
   branch_suffix = f'{agent.name}.{sub_agent.name}'
-  invocation_context.branch = (
-      f'{invocation_context.branch}.{branch_suffix}'
-      if invocation_context.branch
-      else branch_suffix
+  invocation_context.branch = _BranchPath.create_sub_branch(
+      invocation_context.branch, name=branch_suffix
   )
   return invocation_context
 

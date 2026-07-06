@@ -995,7 +995,9 @@ async def _process_function_live_helper(
             updated_content = _build_function_response_content(
                 tool, result, tool_context.function_call_id
             )
-            invocation_context.live_request_queue.send_content(updated_content)
+            invocation_context.live_request_queue.send_content(
+                updated_content, partial=True
+            )
       except asyncio.CancelledError:
         raise  # Re-raise to properly propagate the cancellation
 
