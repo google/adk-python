@@ -125,7 +125,6 @@ class TelemetryContext:
 def _record_agent_metrics(
     agent_name: str,
     elapsed_s: float,
-    events: object,
     caught_error: Exception | None,
 ) -> None:
   try:
@@ -134,7 +133,6 @@ def _record_agent_metrics(
         elapsed_s,
         caught_error,
     )
-    _metrics.record_agent_workflow_steps(agent_name, events)
   except Exception:  # pylint: disable=broad-exception-caught
     logger.exception("Failed to record agent metrics for agent %s", agent_name)
 
@@ -196,7 +194,6 @@ async def record_agent_invocation(
     _record_agent_metrics(
         agent.name,
         _metrics.get_elapsed_s(span, start_time),
-        getattr(getattr(ctx, "session", None), "events", []),
         caught_error,
     )
     _flush_invoke_agent_metrics(tel_ctx, agent.name)
