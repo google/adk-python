@@ -316,11 +316,6 @@ _PATCHED_HISTOGRAMS: tuple[HistogramSpec, ...] = (
     ),
     HistogramSpec(
         module=_metrics,
-        attr="_agent_workflow_steps",
-        metric_name="gen_ai.agent.workflow.steps",
-    ),
-    HistogramSpec(
-        module=_metrics,
         attr="_client_operation_duration",
         metric_name="gen_ai.client.operation.duration",
     ),
@@ -504,6 +499,10 @@ TOOL_RESULT = f"{TOOL_RESULT_PREFIX}{TOOL_ARGS['arg1']}"
 # The node scenario uses a workflow node whose output drives the agent's
 # input. The workflow itself wraps the same agent.
 WORKFLOW_NAME = "my_workflow"
+# The root workflow invokes a nested workflow whose sole node produces the
+# input for the agent. The nested workflow exercises the `gen_ai.workflow.nested`
+# span attribute + metric dimension (only nested workflows carry it).
+NESTED_WORKFLOW_NAME = "my_nested_workflow"
 NODE_NAME = "some_node"
 NODE_RESULT = "some result"
 NODE_USER_ID = "some_user"
@@ -550,15 +549,21 @@ def build_test_runner(*, failing: bool = False) -> TestInMemoryRunner:
 
 
 def build_test_workflow(*, failing: bool = False) -> Workflow:
-  """Builds the canonical Workflow wrapping the agent + a trivial node."""
+  """Builds the canonical Workflow: a nested workflow feeding the agent."""
   test_agent = build_test_agent(failing=failing)
 
   async def some_node(ctx, node_input):
     return NODE_RESULT
 
+  # Trivial workflow to test o11y of nested workflows
+  nested_workflow = Workflow(
+      name=NESTED_WORKFLOW_NAME,
+      edges=[(START, some_node)],
+  )
+
   return Workflow(
       name=WORKFLOW_NAME,
-      edges=[(START, some_node, test_agent)],
+      edges=[(START, nested_workflow, test_agent)],
   )
 
 
