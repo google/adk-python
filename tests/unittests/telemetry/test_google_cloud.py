@@ -62,7 +62,7 @@ def test_get_gcp_exporters(
   )
   monkeypatch.setattr(
       "google.adk.telemetry.google_cloud._get_gcp_logs_exporter",
-      lambda project_id, credentials: mock.MagicMock(),
+      lambda project_id: mock.MagicMock(),
   )
 
   # Act.
