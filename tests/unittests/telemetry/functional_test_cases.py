@@ -2291,21 +2291,6 @@ EXPECTED_METRICS_V1: dict[str, frozenset[MetricPoint]] = {
             value=NON_DETERMINISTIC,
         ),
     }),
-    "gen_ai.agent.request.size": frozenset({
-        MetricPoint(
-            attributes={"gen_ai.agent.name": AGENT_NAME},
-            value=len(USER_PROMPT),
-        ),
-    }),
-    "gen_ai.agent.response.size": frozenset({
-        MetricPoint(
-            attributes={"gen_ai.agent.name": AGENT_NAME},
-            value=len(FINAL_TEXT),
-        ),
-    }),
-    "gen_ai.agent.workflow.steps": frozenset({
-        MetricPoint(attributes={"gen_ai.agent.name": AGENT_NAME}, value=3),
-    }),
     "gen_ai.client.operation.duration": frozenset({
         MetricPoint(
             attributes={
@@ -2317,6 +2302,12 @@ EXPECTED_METRICS_V1: dict[str, frozenset[MetricPoint]] = {
             },
             value=NON_DETERMINISTIC,
         ),
+    }),
+    "gen_ai.invoke_agent.inference_calls": frozenset({
+        MetricPoint(attributes={"gen_ai.agent.name": AGENT_NAME}, value=2),
+    }),
+    "gen_ai.invoke_agent.tool_calls": frozenset({
+        MetricPoint(attributes={"gen_ai.agent.name": AGENT_NAME}, value=1),
     }),
 }
 
@@ -2338,21 +2329,6 @@ EXPECTED_METRICS_V2: dict[str, frozenset[MetricPoint]] = {
             value=NON_DETERMINISTIC,
         ),
     }),
-    "gen_ai.agent.request.size": frozenset({
-        MetricPoint(
-            attributes={"gen_ai.agent.name": AGENT_NAME},
-            value=len(USER_PROMPT),
-        ),
-    }),
-    "gen_ai.agent.response.size": frozenset({
-        MetricPoint(
-            attributes={"gen_ai.agent.name": AGENT_NAME},
-            value=len(FINAL_TEXT),
-        ),
-    }),
-    "gen_ai.agent.workflow.steps": frozenset({
-        MetricPoint(attributes={"gen_ai.agent.name": AGENT_NAME}, value=3),
-    }),
     "gen_ai.client.operation.duration": frozenset({
         MetricPoint(
             attributes={
@@ -2373,6 +2349,12 @@ EXPECTED_METRICS_V2: dict[str, frozenset[MetricPoint]] = {
             },
             value=NON_DETERMINISTIC,
         ),
+    }),
+    "gen_ai.invoke_agent.inference_calls": frozenset({
+        MetricPoint(attributes={"gen_ai.agent.name": AGENT_NAME}, value=2),
+    }),
+    "gen_ai.invoke_agent.tool_calls": frozenset({
+        MetricPoint(attributes={"gen_ai.agent.name": AGENT_NAME}, value=1),
     }),
 }
 
