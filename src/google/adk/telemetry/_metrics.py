@@ -27,7 +27,6 @@ from opentelemetry.semconv._incubating.metrics import gen_ai_metrics
 from opentelemetry.semconv.attributes import error_attributes
 
 if TYPE_CHECKING:
-  from google.adk.events.event import Event
   from google.adk.models.llm_request import LlmRequest
   from google.adk.models.llm_response import LlmResponse
   from opentelemetry.trace import Span
@@ -89,24 +88,6 @@ _tool_execution_duration = meter.create_histogram(
         20.48,
         40.96,
         81.92,
-    ],
-)
-_agent_workflow_steps = meter.create_histogram(
-    "gen_ai.agent.workflow.steps",
-    unit="1",
-    description="Length of agentic workflow (# of events).",
-    explicit_bucket_boundaries_advisory=[
-        1,
-        2,
-        4,
-        8,
-        16,
-        32,
-        64,
-        128,
-        256,
-        512,
-        1024,
     ],
 )
 _client_operation_duration = (
@@ -196,13 +177,6 @@ def record_invoke_agent_tool_calls(agent_name: str, count: int) -> None:
   """Records the number of tool calls in an agent invocation."""
   attrs = {gen_ai_attributes.GEN_AI_AGENT_NAME: agent_name}
   _invoke_agent_tool_calls.record(count, attributes=attrs)
-
-
-def record_agent_workflow_steps(agent_name: str, events: list[Event]):
-  """Records the number of steps in the agent workflow by counting the number of events."""
-  attrs = {gen_ai_attributes.GEN_AI_AGENT_NAME: agent_name}
-  count = sum(1 for event in events if event.author == agent_name)
-  _agent_workflow_steps.record(count, attributes=attrs)
 
 
 def record_tool_execution_duration(

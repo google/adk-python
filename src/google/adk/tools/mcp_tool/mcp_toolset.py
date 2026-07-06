@@ -286,6 +286,41 @@ class McpToolset(BaseToolset):
 
     return headers
 
+  @property
+  def connection_params(self) -> Union[
+      StdioServerParameters,
+      StdioConnectionParams,
+      SseConnectionParams,
+      StreamableHTTPConnectionParams,
+  ]:
+    return self._connection_params
+
+  @property
+  def auth_scheme(self) -> Optional[AuthScheme]:
+    return self._auth_scheme
+
+  @property
+  def auth_credential(self) -> Optional[AuthCredential]:
+    return self._auth_credential
+
+  @property
+  def require_confirmation(self) -> Union[bool, Callable[..., bool]]:
+    return self._require_confirmation
+
+  @property
+  def header_provider(
+      self,
+  ) -> Optional[
+      Callable[
+          [ReadonlyContext], Union[Dict[str, str], Awaitable[Dict[str, str]]]
+      ]
+  ]:
+    return self._header_provider
+
+  @property
+  def errlog(self) -> TextIO:
+    return self._errlog
+
   async def _execute_with_session(
       self,
       coroutine_func: Callable[[Any], Awaitable[T]],
