@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.36.1](https://github.com/google/adk-python/compare/v1.36.0...v1.36.1) (2026-07-06)
+
+
+### Bug Fixes
+
+* exit connection cleanly on expected GoAway signal in bidi streaming (v1) ([#6264](https://github.com/google/adk-python/issues/6264)) ([de2abdf](https://github.com/google/adk-python/commit/de2abdf333b7d4150529a3ed1f22bcfa55df66e0))
+* Fix Vertex AI Live API session replay on reconnect / modality switch ([#6218](https://github.com/google/adk-python/issues/6218)) ([4caf782](https://github.com/google/adk-python/commit/4caf782af7e02e619c73c545d7f92b0c3445018c))
+
 ## [1.36.0](https://github.com/google/adk-python/compare/v1.35.2...v1.36.0) (2026-06-22)
 
 
