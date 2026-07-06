@@ -43,6 +43,7 @@ from .functional_test_helpers import GEN_AI_SYSTEM_MESSAGE_EVENT
 from .functional_test_helpers import GEN_AI_USER_MESSAGE_EVENT
 from .functional_test_helpers import LogDigest
 from .functional_test_helpers import MetricPoint
+from .functional_test_helpers import NESTED_WORKFLOW_NAME
 from .functional_test_helpers import NODE_NAME
 from .functional_test_helpers import NODE_RESULT
 from .functional_test_helpers import NON_DETERMINISTIC
@@ -262,12 +263,25 @@ EXPECTED_STABLE_NO_CAPTURE_V1 = SpanDigest(
                     ],
                 ),
                 SpanDigest(
-                    name=f"invoke_node {NODE_NAME}",
+                    name=f"invoke_workflow {NESTED_WORKFLOW_NAME}",
                     attributes={
-                        "gen_ai.operation.name": "invoke_node",
+                        "gen_ai.operation.name": "invoke_workflow",
+                        "gen_ai.workflow.name": NESTED_WORKFLOW_NAME,
+                        "gen_ai.workflow.nested": True,
                         "gen_ai.conversation.id": PRESENT,
-                        "gcp.vertex.agent.associated_event_ids": PRESENT,
                     },
+                    children=[
+                        SpanDigest(
+                            name=f"invoke_node {NODE_NAME}",
+                            attributes={
+                                "gen_ai.operation.name": "invoke_node",
+                                "gen_ai.conversation.id": PRESENT,
+                                "gcp.vertex.agent.associated_event_ids": (
+                                    PRESENT
+                                ),
+                            },
+                        ),
+                    ],
                 ),
             ],
         ),
@@ -539,12 +553,25 @@ EXPECTED_STABLE_CAPTURE_V1 = SpanDigest(
                     ],
                 ),
                 SpanDigest(
-                    name=f"invoke_node {NODE_NAME}",
+                    name=f"invoke_workflow {NESTED_WORKFLOW_NAME}",
                     attributes={
-                        "gen_ai.operation.name": "invoke_node",
+                        "gen_ai.operation.name": "invoke_workflow",
+                        "gen_ai.workflow.name": NESTED_WORKFLOW_NAME,
+                        "gen_ai.workflow.nested": True,
                         "gen_ai.conversation.id": PRESENT,
-                        "gcp.vertex.agent.associated_event_ids": PRESENT,
                     },
+                    children=[
+                        SpanDigest(
+                            name=f"invoke_node {NODE_NAME}",
+                            attributes={
+                                "gen_ai.operation.name": "invoke_node",
+                                "gen_ai.conversation.id": PRESENT,
+                                "gcp.vertex.agent.associated_event_ids": (
+                                    PRESENT
+                                ),
+                            },
+                        ),
+                    ],
                 ),
             ],
         ),
@@ -750,12 +777,25 @@ EXPECTED_EXPERIMENTAL_NO_CONTENT_V1 = SpanDigest(
                     ],
                 ),
                 SpanDigest(
-                    name=f"invoke_node {NODE_NAME}",
+                    name=f"invoke_workflow {NESTED_WORKFLOW_NAME}",
                     attributes={
-                        "gen_ai.operation.name": "invoke_node",
+                        "gen_ai.operation.name": "invoke_workflow",
+                        "gen_ai.workflow.name": NESTED_WORKFLOW_NAME,
+                        "gen_ai.workflow.nested": True,
                         "gen_ai.conversation.id": PRESENT,
-                        "gcp.vertex.agent.associated_event_ids": PRESENT,
                     },
+                    children=[
+                        SpanDigest(
+                            name=f"invoke_node {NODE_NAME}",
+                            attributes={
+                                "gen_ai.operation.name": "invoke_node",
+                                "gen_ai.conversation.id": PRESENT,
+                                "gcp.vertex.agent.associated_event_ids": (
+                                    PRESENT
+                                ),
+                            },
+                        ),
+                    ],
                 ),
             ],
         ),
@@ -1038,12 +1078,25 @@ EXPECTED_EXPERIMENTAL_SPAN_ONLY_V1 = SpanDigest(
                     ],
                 ),
                 SpanDigest(
-                    name=f"invoke_node {NODE_NAME}",
+                    name=f"invoke_workflow {NESTED_WORKFLOW_NAME}",
                     attributes={
-                        "gen_ai.operation.name": "invoke_node",
+                        "gen_ai.operation.name": "invoke_workflow",
+                        "gen_ai.workflow.name": NESTED_WORKFLOW_NAME,
+                        "gen_ai.workflow.nested": True,
                         "gen_ai.conversation.id": PRESENT,
-                        "gcp.vertex.agent.associated_event_ids": PRESENT,
                     },
+                    children=[
+                        SpanDigest(
+                            name=f"invoke_node {NODE_NAME}",
+                            attributes={
+                                "gen_ai.operation.name": "invoke_node",
+                                "gen_ai.conversation.id": PRESENT,
+                                "gcp.vertex.agent.associated_event_ids": (
+                                    PRESENT
+                                ),
+                            },
+                        ),
+                    ],
                 ),
             ],
         ),
@@ -1257,12 +1310,25 @@ EXPECTED_EXPERIMENTAL_EVENT_ONLY_V1 = SpanDigest(
                     ],
                 ),
                 SpanDigest(
-                    name=f"invoke_node {NODE_NAME}",
+                    name=f"invoke_workflow {NESTED_WORKFLOW_NAME}",
                     attributes={
-                        "gen_ai.operation.name": "invoke_node",
+                        "gen_ai.operation.name": "invoke_workflow",
+                        "gen_ai.workflow.name": NESTED_WORKFLOW_NAME,
+                        "gen_ai.workflow.nested": True,
                         "gen_ai.conversation.id": PRESENT,
-                        "gcp.vertex.agent.associated_event_ids": PRESENT,
                     },
+                    children=[
+                        SpanDigest(
+                            name=f"invoke_node {NODE_NAME}",
+                            attributes={
+                                "gen_ai.operation.name": "invoke_node",
+                                "gen_ai.conversation.id": PRESENT,
+                                "gcp.vertex.agent.associated_event_ids": (
+                                    PRESENT
+                                ),
+                            },
+                        ),
+                    ],
                 ),
             ],
         ),
@@ -1494,12 +1560,25 @@ EXPECTED_EXPERIMENTAL_SPAN_AND_EVENT_V1 = SpanDigest(
                     ],
                 ),
                 SpanDigest(
-                    name=f"invoke_node {NODE_NAME}",
+                    name=f"invoke_workflow {NESTED_WORKFLOW_NAME}",
                     attributes={
-                        "gen_ai.operation.name": "invoke_node",
+                        "gen_ai.operation.name": "invoke_workflow",
+                        "gen_ai.workflow.name": NESTED_WORKFLOW_NAME,
+                        "gen_ai.workflow.nested": True,
                         "gen_ai.conversation.id": PRESENT,
-                        "gcp.vertex.agent.associated_event_ids": PRESENT,
                     },
+                    children=[
+                        SpanDigest(
+                            name=f"invoke_node {NODE_NAME}",
+                            attributes={
+                                "gen_ai.operation.name": "invoke_node",
+                                "gen_ai.conversation.id": PRESENT,
+                                "gcp.vertex.agent.associated_event_ids": (
+                                    PRESENT
+                                ),
+                            },
+                        ),
+                    ],
                 ),
             ],
         ),
@@ -1659,12 +1738,23 @@ EXPECTED_STABLE_NO_CAPTURE_V2 = SpanDigest(
             ],
         ),
         SpanDigest(
-            name=f"invoke_node {NODE_NAME}",
+            name=f"invoke_workflow {NESTED_WORKFLOW_NAME}",
             attributes={
-                "gen_ai.operation.name": "invoke_node",
+                "gen_ai.operation.name": "invoke_workflow",
+                "gen_ai.workflow.name": NESTED_WORKFLOW_NAME,
+                "gen_ai.workflow.nested": True,
                 "gen_ai.conversation.id": PRESENT,
-                "gcp.vertex.agent.associated_event_ids": PRESENT,
             },
+            children=[
+                SpanDigest(
+                    name=f"invoke_node {NODE_NAME}",
+                    attributes={
+                        "gen_ai.operation.name": "invoke_node",
+                        "gen_ai.conversation.id": PRESENT,
+                        "gcp.vertex.agent.associated_event_ids": PRESENT,
+                    },
+                ),
+            ],
         ),
     ],
 )
@@ -1876,12 +1966,23 @@ EXPECTED_STABLE_CAPTURE_V2 = SpanDigest(
             ],
         ),
         SpanDigest(
-            name=f"invoke_node {NODE_NAME}",
+            name=f"invoke_workflow {NESTED_WORKFLOW_NAME}",
             attributes={
-                "gen_ai.operation.name": "invoke_node",
+                "gen_ai.operation.name": "invoke_workflow",
+                "gen_ai.workflow.name": NESTED_WORKFLOW_NAME,
+                "gen_ai.workflow.nested": True,
                 "gen_ai.conversation.id": PRESENT,
-                "gcp.vertex.agent.associated_event_ids": PRESENT,
             },
+            children=[
+                SpanDigest(
+                    name=f"invoke_node {NODE_NAME}",
+                    attributes={
+                        "gen_ai.operation.name": "invoke_node",
+                        "gen_ai.conversation.id": PRESENT,
+                        "gcp.vertex.agent.associated_event_ids": PRESENT,
+                    },
+                ),
+            ],
         ),
     ],
 )
@@ -2038,12 +2139,23 @@ EXPECTED_EXPERIMENTAL_NO_CONTENT_V2 = SpanDigest(
             ],
         ),
         SpanDigest(
-            name=f"invoke_node {NODE_NAME}",
+            name=f"invoke_workflow {NESTED_WORKFLOW_NAME}",
             attributes={
-                "gen_ai.operation.name": "invoke_node",
+                "gen_ai.operation.name": "invoke_workflow",
+                "gen_ai.workflow.name": NESTED_WORKFLOW_NAME,
+                "gen_ai.workflow.nested": True,
                 "gen_ai.conversation.id": PRESENT,
-                "gcp.vertex.agent.associated_event_ids": PRESENT,
             },
+            children=[
+                SpanDigest(
+                    name=f"invoke_node {NODE_NAME}",
+                    attributes={
+                        "gen_ai.operation.name": "invoke_node",
+                        "gen_ai.conversation.id": PRESENT,
+                        "gcp.vertex.agent.associated_event_ids": PRESENT,
+                    },
+                ),
+            ],
         ),
     ],
 )
@@ -2206,12 +2318,23 @@ EXPECTED_EXPERIMENTAL_SPAN_ONLY_V2 = SpanDigest(
             ],
         ),
         SpanDigest(
-            name=f"invoke_node {NODE_NAME}",
+            name=f"invoke_workflow {NESTED_WORKFLOW_NAME}",
             attributes={
-                "gen_ai.operation.name": "invoke_node",
+                "gen_ai.operation.name": "invoke_workflow",
+                "gen_ai.workflow.name": NESTED_WORKFLOW_NAME,
+                "gen_ai.workflow.nested": True,
                 "gen_ai.conversation.id": PRESENT,
-                "gcp.vertex.agent.associated_event_ids": PRESENT,
             },
+            children=[
+                SpanDigest(
+                    name=f"invoke_node {NODE_NAME}",
+                    attributes={
+                        "gen_ai.operation.name": "invoke_node",
+                        "gen_ai.conversation.id": PRESENT,
+                        "gcp.vertex.agent.associated_event_ids": PRESENT,
+                    },
+                ),
+            ],
         ),
     ],
 )
@@ -2380,12 +2503,23 @@ EXPECTED_EXPERIMENTAL_EVENT_ONLY_V2 = SpanDigest(
             ],
         ),
         SpanDigest(
-            name=f"invoke_node {NODE_NAME}",
+            name=f"invoke_workflow {NESTED_WORKFLOW_NAME}",
             attributes={
-                "gen_ai.operation.name": "invoke_node",
+                "gen_ai.operation.name": "invoke_workflow",
+                "gen_ai.workflow.name": NESTED_WORKFLOW_NAME,
+                "gen_ai.workflow.nested": True,
                 "gen_ai.conversation.id": PRESENT,
-                "gcp.vertex.agent.associated_event_ids": PRESENT,
             },
+            children=[
+                SpanDigest(
+                    name=f"invoke_node {NODE_NAME}",
+                    attributes={
+                        "gen_ai.operation.name": "invoke_node",
+                        "gen_ai.conversation.id": PRESENT,
+                        "gcp.vertex.agent.associated_event_ids": PRESENT,
+                    },
+                ),
+            ],
         ),
     ],
 )
@@ -2568,12 +2702,23 @@ EXPECTED_EXPERIMENTAL_SPAN_AND_EVENT_V2 = SpanDigest(
             ],
         ),
         SpanDigest(
-            name=f"invoke_node {NODE_NAME}",
+            name=f"invoke_workflow {NESTED_WORKFLOW_NAME}",
             attributes={
-                "gen_ai.operation.name": "invoke_node",
+                "gen_ai.operation.name": "invoke_workflow",
+                "gen_ai.workflow.name": NESTED_WORKFLOW_NAME,
+                "gen_ai.workflow.nested": True,
                 "gen_ai.conversation.id": PRESENT,
-                "gcp.vertex.agent.associated_event_ids": PRESENT,
             },
+            children=[
+                SpanDigest(
+                    name=f"invoke_node {NODE_NAME}",
+                    attributes={
+                        "gen_ai.operation.name": "invoke_node",
+                        "gen_ai.conversation.id": PRESENT,
+                        "gcp.vertex.agent.associated_event_ids": PRESENT,
+                    },
+                ),
+            ],
         ),
     ],
 )
@@ -2597,21 +2742,6 @@ EXPECTED_NODE_METRICS_V1: dict[str, frozenset[MetricPoint]] = {
             value=NON_DETERMINISTIC,
         ),
     }),
-    "gen_ai.agent.request.size": frozenset({
-        MetricPoint(
-            attributes={"gen_ai.agent.name": AGENT_NAME},
-            value=len(USER_PROMPT),
-        ),
-    }),
-    "gen_ai.agent.response.size": frozenset({
-        MetricPoint(
-            attributes={"gen_ai.agent.name": AGENT_NAME},
-            value=len(FINAL_TEXT),
-        ),
-    }),
-    "gen_ai.agent.workflow.steps": frozenset({
-        MetricPoint(attributes={"gen_ai.agent.name": AGENT_NAME}, value=3),
-    }),
     "gen_ai.client.operation.duration": frozenset({
         MetricPoint(
             attributes={
@@ -2632,6 +2762,22 @@ EXPECTED_NODE_METRICS_V1: dict[str, frozenset[MetricPoint]] = {
             },
             value=NON_DETERMINISTIC,
         ),
+        # Nested workflow carries the `gen_ai.workflow.nested` dimension; the
+        # root workflow above omits it.
+        MetricPoint(
+            attributes={
+                "gen_ai.operation.name": "invoke_workflow",
+                "gen_ai.workflow.name": NESTED_WORKFLOW_NAME,
+                "gen_ai.workflow.nested": True,
+            },
+            value=NON_DETERMINISTIC,
+        ),
+    }),
+    "gen_ai.invoke_agent.inference_calls": frozenset({
+        MetricPoint(attributes={"gen_ai.agent.name": AGENT_NAME}, value=2),
+    }),
+    "gen_ai.invoke_agent.tool_calls": frozenset({
+        MetricPoint(attributes={"gen_ai.agent.name": AGENT_NAME}, value=1),
     }),
 }
 
@@ -2653,21 +2799,6 @@ EXPECTED_NODE_METRICS_V2: dict[str, frozenset[MetricPoint]] = {
             value=NON_DETERMINISTIC,
         ),
     }),
-    "gen_ai.agent.request.size": frozenset({
-        MetricPoint(
-            attributes={"gen_ai.agent.name": AGENT_NAME},
-            value=len(USER_PROMPT),
-        ),
-    }),
-    "gen_ai.agent.response.size": frozenset({
-        MetricPoint(
-            attributes={"gen_ai.agent.name": AGENT_NAME},
-            value=len(FINAL_TEXT),
-        ),
-    }),
-    "gen_ai.agent.workflow.steps": frozenset({
-        MetricPoint(attributes={"gen_ai.agent.name": AGENT_NAME}, value=3),
-    }),
     "gen_ai.client.operation.duration": frozenset({
         MetricPoint(
             attributes={
@@ -2688,6 +2819,22 @@ EXPECTED_NODE_METRICS_V2: dict[str, frozenset[MetricPoint]] = {
             },
             value=NON_DETERMINISTIC,
         ),
+        # Nested workflow carries the `gen_ai.workflow.nested` dimension; the
+        # root workflow above omits it.
+        MetricPoint(
+            attributes={
+                "gen_ai.operation.name": "invoke_workflow",
+                "gen_ai.workflow.name": NESTED_WORKFLOW_NAME,
+                "gen_ai.workflow.nested": True,
+            },
+            value=NON_DETERMINISTIC,
+        ),
+    }),
+    "gen_ai.invoke_agent.inference_calls": frozenset({
+        MetricPoint(attributes={"gen_ai.agent.name": AGENT_NAME}, value=2),
+    }),
+    "gen_ai.invoke_agent.tool_calls": frozenset({
+        MetricPoint(attributes={"gen_ai.agent.name": AGENT_NAME}, value=1),
     }),
 }
 

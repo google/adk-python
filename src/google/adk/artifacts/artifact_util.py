@@ -20,6 +20,8 @@ from typing import NamedTuple
 
 from google.genai import types
 
+from ..errors import input_validation_error
+
 
 class ParsedArtifactUri(NamedTuple):
   """The result of parsing an artifact URI."""
@@ -113,3 +115,22 @@ def is_artifact_ref(artifact: types.Part) -> bool:
       and artifact.file_data.file_uri
       and artifact.file_data.file_uri.startswith("artifact://")
   )
+
+
+def validate_artifact_reference_scope(
+    *,
+    app_name: str,
+    user_id: str,
+    session_id: str | None,
+    parsed_uri: ParsedArtifactUri,
+) -> None:
+  """Ensures artifact references cannot escape the caller's scope."""
+  if parsed_uri.app_name != app_name or parsed_uri.user_id != user_id:
+    raise input_validation_error.InputValidationError(
+        "Artifact references must stay within the same app and user scope."
+    )
+  if parsed_uri.session_id is not None and parsed_uri.session_id != session_id:
+    raise input_validation_error.InputValidationError(
+        "Session-scoped artifact references must stay within the same"
+        " session scope."
+    )

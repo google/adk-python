@@ -1746,6 +1746,53 @@ def test_save_artifact(test_app, create_test_session, mock_artifact_service):
   assert stored["artifact"].text == "hello world"
 
 
+def test_save_artifact_reference(
+    test_app, create_test_session, mock_artifact_service
+):
+  """Test saving an artifact reference through the FastAPI endpoint."""
+  info = create_test_session
+  url = (
+      f"/apps/{info['app_name']}/users/{info['user_id']}/sessions/"
+      f"{info['session_id']}/artifacts"
+  )
+  payload = {
+      "filename": "reference.txt",
+      "artifact": {
+          "fileData": {
+              "fileUri": (
+                  f"artifact://apps/{info['app_name']}/users/{info['user_id']}/"
+                  f"sessions/{info['session_id']}/artifacts/target_file/versions/0"
+              ),
+              "mimeType": "text/plain",
+          }
+      },
+  }
+
+  response = test_app.post(url, json=payload)
+  assert response.status_code == 200
+  data = response.json()
+  assert data["version"] == 0
+  assert data["customMetadata"] == {}
+  assert data["mimeType"] in (None, "text/plain")
+  assert data["canonicalUri"].endswith(
+      f"/sessions/{info['session_id']}/artifacts/"
+      f"{payload['filename']}/versions/0"
+  )
+  assert isinstance(data["createTime"], float)
+
+  key = (
+      f"{info['app_name']}:{info['user_id']}:{info['session_id']}:"
+      f"{payload['filename']}"
+  )
+  stored = mock_artifact_service._artifacts[key][0]
+  assert stored["artifact"].file_data is not None
+  assert (
+      stored["artifact"].file_data.file_uri
+      == payload["artifact"]["fileData"]["fileUri"]
+  )
+  assert stored["artifact"].file_data.mime_type == "text/plain"
+
+
 def test_artifact_endpoints_support_nested_names(
     test_app, create_test_session, mock_artifact_service
 ):
@@ -2579,7 +2626,10 @@ tools:
 
 
 def test_builder_get_rejects_non_yaml_file_paths(builder_test_client, tmp_path):
-  """GET /dev/apps/{app_name}/builder?file_path=... rejects non-YAML extensions."""
+  """GET /dev/apps/{app_name}/builder?file_path=...
+
+  rejects non-YAML extensions.
+  """
   app_root = tmp_path / "app"
   app_root.mkdir(parents=True, exist_ok=True)
   (app_root / ".env").write_text("SECRET=supersecret\n")
