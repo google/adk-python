@@ -29,14 +29,12 @@ def _mock_meter_setup(monkeypatch):
   agent_duration_hist = mock.MagicMock(spec=metrics.Histogram)
   workflow_duration_hist = mock.MagicMock(spec=metrics.Histogram)
   tool_duration_hist = mock.MagicMock(spec=metrics.Histogram)
-  steps_hist = mock.MagicMock(spec=metrics.Histogram)
   client_duration_hist = mock.MagicMock(spec=metrics.Histogram)
   client_token_usage_hist = mock.MagicMock(spec=metrics.Histogram)
 
   agent_duration_hist.name = "agent_invocation_duration"
   workflow_duration_hist.name = "workflow_invocation_duration"
   tool_duration_hist.name = "tool_execution_duration"
-  steps_hist.name = "agent_workflow_steps"
   client_duration_hist.name = "client_operation_duration"
   client_token_usage_hist.name = "client_token_usage"
 
@@ -47,8 +45,6 @@ def _mock_meter_setup(monkeypatch):
       return workflow_duration_hist
     elif name == "gen_ai.execute_tool.duration":
       return tool_duration_hist
-    elif name == "gen_ai.agent.workflow.steps":
-      return steps_hist
     elif name == "gen_ai.client.operation.duration":
       return client_duration_hist
     elif name == "gen_ai.client.token.usage":
@@ -66,7 +62,6 @@ def _mock_meter_setup(monkeypatch):
       _metrics, "_workflow_invocation_duration", workflow_duration_hist
   )
   monkeypatch.setattr(_metrics, "_tool_execution_duration", tool_duration_hist)
-  monkeypatch.setattr(_metrics, "_agent_workflow_steps", steps_hist)
   monkeypatch.setattr(
       _metrics, "_client_operation_duration", client_duration_hist
   )
@@ -77,7 +72,6 @@ def _mock_meter_setup(monkeypatch):
       "agent_duration": agent_duration_hist,
       "workflow_duration": workflow_duration_hist,
       "tool_duration": tool_duration_hist,
-      "steps": steps_hist,
       "client_duration": client_duration_hist,
       "client_token_usage": client_token_usage_hist,
   }
@@ -143,24 +137,6 @@ def test_record_workflow_invocation_duration_nested_with_error(
   _, kwargs = hist.record.call_args
   assert kwargs["attributes"]["gen_ai.workflow.nested"] is True
   assert kwargs["attributes"]["error.type"] == "ValueError"
-
-
-def test_record_agent_workflow_steps(mock_meter_setup):
-  """Tests record_agent_workflow_steps records correctly."""
-  _metrics.record_agent_workflow_steps(
-      "test_agent",
-      [
-          mock.MagicMock(author="test_agent"),
-          mock.MagicMock(author="test_agent"),
-          mock.MagicMock(author="other_agent"),
-      ],
-  )
-  steps_hist = mock_meter_setup["steps"]
-  steps_hist.record.assert_called_once()
-  args, kwargs = steps_hist.record.call_args
-  assert args[0] == 2
-  want_attributes = {"gen_ai.agent.name": "test_agent"}
-  assert kwargs["attributes"] == want_attributes
 
 
 def test_record_tool_execution_duration(mock_meter_setup):
