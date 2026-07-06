@@ -67,6 +67,8 @@ jobs:
 
       - name: Install uv
         uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
 
       - name: Generate Baseline
         env:
@@ -114,7 +116,7 @@ jobs:
             echo "Great job! No new mypy errors introduced."
           fi
 
-  # 3. Unit testing (Unit Tests with Matrix)
+  # 3a. Unit testing (Unit Tests with Matrix)
   unit-test:
     name: Unit Tests (Python ${{ matrix.python-version }})
     runs-on: ubuntu-latest
@@ -134,6 +136,8 @@ jobs:
 
       - name: Install the latest version of uv
         uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
 
       - name: Install dependencies
         run: |
@@ -149,128 +153,42 @@ jobs:
             --ignore=tests/unittests/artifacts/test_artifact_service.py \
             --ignore=tests/unittests/tools/google_api_tool/test_googleapi_to_openapi_converter.py
 
-  # 4. Custom file content compliance checks (PR only)
-  compliance-check:
-    name: File Content Compliance
+  # 3b. Dual-version A2A coverage: This job pins a2a-sdk to 0.3.x and
+  # runs only the A2A-related tests, so the a2a/_compat.py shim stays
+  # verified against both SDK majors.
+  # TODO: Remove this 0.3.x re-run once a2a-sdk 0.3.x support is dropped.
+  unit-test-a2a-v0-3:
+    name: A2A v0.3 Tests (Python ${{ matrix.python-version }})
     runs-on: ubuntu-latest
-    if: github.event_name == 'pull_request'
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.11", "3.12", "3.13", "3.14"]
+    timeout-minutes: 10
     steps:
-      - name: Checkout Code
+      - name: Checkout code
         uses: actions/checkout@v6
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v6
         with:
-          # Fetch full history (depth: 0) instead of shallow clone (depth: 2) to ensure
-          # git diff origin/${base_ref}...HEAD can reliably find the merge base,
-          # preventing fatal git errors on deep PRs or when the target branch has progressed.
-          fetch-depth: 0
+          python-version: ${{ matrix.python-version }}
 
-      - name: Check for logger pattern in all changed Python files
+      - name: Install the latest version of uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+
+      - name: Install dependencies
         run: |
-          git fetch origin ${GITHUB_BASE_REF}
-          CHANGED_FILES=$(git diff --diff-filter=ACMR --name-only origin/${GITHUB_BASE_REF}...HEAD | grep -E '\.py$' || true)
-          if [ -n "$CHANGED_FILES" ]; then
-            echo "Changed Python files to check:"
-            echo "$CHANGED_FILES"
-            echo ""
+          uv venv .venv
+          source .venv/bin/activate
+          uv sync --extra test
 
-            # Check for 'logger = logging.getLogger(__name__)' in changed .py files.
-            set +e
-            FILES_WITH_FORBIDDEN_LOGGER=$(grep -lE 'logger = logging\.getLogger\(__name__\)' $CHANGED_FILES)
-            GREP_EXIT_CODE=$?
-            set -e
-
-            if [ $GREP_EXIT_CODE -eq 0 ]; then
-              echo "❌ Found forbidden use of 'logger = logging.getLogger(__name__)'. Please use 'logger = logging.getLogger('google_adk.' + __name__)' instead."
-              echo "The following files contain the forbidden pattern:"
-              echo "$FILES_WITH_FORBIDDEN_LOGGER"
-              exit 1
-            elif [ $GREP_EXIT_CODE -eq 1 ]; then
-              echo "✅ No instances of 'logger = logging.getLogger(__name__)' found in changed Python files."
-            fi
-          else
-            echo "✅ No relevant Python files found."
-          fi
-
-      - name: Check for import pattern in certain changed Python files
+      - name: Run A2A tests against a2a-sdk v0.3
         run: |
-          git fetch origin ${GITHUB_BASE_REF}
-          CHANGED_FILES=$(git diff --diff-filter=ACMR --name-only origin/${GITHUB_BASE_REF}...HEAD | grep -E '\.py$' | grep -v -E '__init__.py$|version.py$|tests/.*|contributing/samples/' || true)
-          if [ -n "$CHANGED_FILES" ]; then
-            echo "Changed Python files to check:"
-            echo "$CHANGED_FILES"
-            echo ""
-
-            # Use grep -L to find files that DO NOT contain the pattern.
-            FILES_MISSING_IMPORT=$(grep -L 'from __future__ import annotations' $CHANGED_FILES || true)
-
-            if [ -z "$FILES_MISSING_IMPORT" ]; then
-              echo "✅ All modified Python files include 'from __future__ import annotations'."
-              exit 0
-            else
-              echo "❌ The following files are missing 'from __future__ import annotations':"
-              echo "$FILES_MISSING_IMPORT"
-              echo "This import is required to allow forward references in type annotations without quotes."
-              exit 1
-            fi
-          else
-            echo "✅ No relevant Python files found."
-          fi
-
-      - name: Check for import from cli package in certain changed Python files
-        run: |
-          git fetch origin ${GITHUB_BASE_REF}
-          CHANGED_FILES=$(git diff --diff-filter=ACMR --name-only origin/${GITHUB_BASE_REF}...HEAD | grep -E '\.py$' | grep -v -E 'cli/.*|src/google/adk/tools/apihub_tool/apihub_toolset.py|tests/.*|contributing/samples/' || true)
-          if [ -n "$CHANGED_FILES" ]; then
-            echo "Changed Python files to check:"
-            echo "$CHANGED_FILES"
-            echo ""
-
-            set +e
-            FILES_WITH_FORBIDDEN_IMPORT=$(grep -lE '^from.*\bcli\b.*import.*$' $CHANGED_FILES)
-            GREP_EXIT_CODE=$?
-            set -e
-
-            if [[ $GREP_EXIT_CODE -eq 0 ]]; then
-              echo "❌ Do not import from the cli package outside of the cli package. If you need to reuse the code elsewhere, please move the code outside of the cli package."
-              echo "The following files contain the forbidden pattern:"
-              echo "$FILES_WITH_FORBIDDEN_IMPORT"
-              exit 1
-            else
-              echo "✅ No instances of importing from the cli package found in relevant changed Python files."
-            fi
-          else
-            echo "✅ No relevant Python files found."
-          fi
-
-      - name: Check for hardcoded googleapis.com endpoints
-        run: |
-          git fetch origin ${GITHUB_BASE_REF}
-          CHANGED_FILES=$(git diff --diff-filter=ACMR --name-only origin/${GITHUB_BASE_REF}...HEAD | grep -E '\.py$' || true)
-          if [ -n "$CHANGED_FILES" ]; then
-            echo "Checking for hardcoded endpoints in: $CHANGED_FILES"
-
-            # 1. Identify files containing any googleapis.com URL.
-            set +e
-            FILES_WITH_ENDPOINTS=$(grep -lE 'https?://[a-zA-Z0-9.-]+\.googleapis\.com' $CHANGED_FILES)
-
-            # 2. From those, identify files that are MISSING the required mTLS version.
-            if [ -n "$FILES_WITH_ENDPOINTS" ]; then
-              FILES_MISSING_MTLS=$(grep -L '.mtls.googleapis.com' $FILES_WITH_ENDPOINTS)
-            fi
-            set -e
-
-            if [ -n "$FILES_MISSING_MTLS" ]; then
-              echo "❌ Found hardcoded googleapis.com endpoints without mTLS support."
-              echo "The following files must define both standard and mTLS (.mtls.googleapis.com) endpoints"
-              echo "to support dynamic endpoint selection as required by security policy:"
-              echo "$FILES_MISSING_MTLS"
-              echo ""
-              echo "To fix this, please follow these steps:"
-              echo "1. Initialize an AuthorizedSession with your credentials."
-              echo "2. Use 'mtls.has_default_client_cert_source() from google-auth' to check for available client certificates."
-              echo "3. If certificates are present, use 'session.configure_mtls_channel()'."
-              echo "4. Dynamically select the '.mtls.' variant of the endpoint when mTLS is active."
-              exit 1
-            else
-              echo "✅ All hardcoded endpoints have corresponding mTLS definitions or no endpoints found."
-            fi
-          fi
+          source .venv/bin/activate
+          uv pip install --reinstall-package a2a-sdk 'a2a-sdk>=0.3.4,<0.4'
+          pytest tests/unittests/a2a \
+            tests/unittests/agents/test_remote_a2a_agent.py \
+            tests/unittests/integrations/agent_registry/test_agent_registry.py

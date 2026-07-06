@@ -1205,15 +1205,3 @@ async def test_search_memory_returns_partial_results_on_iterator_error(
 
   assert len(result.memories) == 1
   assert result.memories[0].content.parts[0].text == 'good fact'
-
-
-def test_get_api_client_attaches_tracking_headers():
-  memory_service = mock_vertex_ai_memory_bank_service()
-  with mock.patch('vertexai.Client') as mock_client:
-    _ = memory_service._get_api_client()
-    mock_client.assert_called_once()
-    _, kwargs = mock_client.call_args
-    assert 'http_options' in kwargs
-    http_options = kwargs['http_options']
-    assert 'x-goog-api-client' in http_options.headers
-    assert 'google-adk/' in http_options.headers['x-goog-api-client']

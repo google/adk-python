@@ -954,6 +954,41 @@ class TestMCPTool:
     )
 
   @pytest.mark.asyncio
+  async def test_run_async_impl_with_async_header_provider_no_auth(self):
+    """Test running tool with an async header_provider and no authentication."""
+    expected_headers = {"X-Tenant-ID": "test-tenant"}
+
+    async def header_provider(_context):
+      return expected_headers
+
+    tool = MCPTool(
+        mcp_tool=self.mock_mcp_tool,
+        mcp_session_manager=self.mock_session_manager,
+        header_provider=header_provider,
+    )
+
+    mcp_response = CallToolResult(
+        content=[TextContent(type="text", text="response text")]
+    )
+    self.mock_session.call_tool = AsyncMock(return_value=mcp_response)
+
+    tool_context = Mock(spec=ToolContext)
+    tool_context._invocation_context = Mock()
+    args = {"param1": "test_value"}
+
+    result = await tool._run_async_impl(
+        args=args, tool_context=tool_context, credential=None
+    )
+
+    assert result == mcp_response.model_dump(exclude_none=True, mode="json")
+    self.mock_session_manager.create_session.assert_called_once_with(
+        headers=expected_headers
+    )
+    self.mock_session.call_tool.assert_called_once_with(
+        "test_tool", arguments=args, progress_callback=None, meta=None
+    )
+
+  @pytest.mark.asyncio
   async def test_run_async_impl_with_header_provider_and_oauth2(self):
     """Test running tool with header_provider and OAuth2 auth."""
     dynamic_headers = {"X-Tenant-ID": "test-tenant"}

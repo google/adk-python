@@ -188,7 +188,12 @@ class TestStreamingResponseAggregator:
   async def test_empty_content_produces_empty_final_frame(
       self, use_progressive_sse
   ):
-    """A candidate with an empty parts list produces an empty final frame."""
+    """A candidate with empty parts + STOP passes through without an error.
+
+    A terminal empty STOP chunk must not be classified as an error at the
+    streaming layer; consumers that batch parts across chunks rely on it
+    passing through cleanly.
+    """
     with temporary_feature_override(
         FeatureName.PROGRESSIVE_SSE_STREAMING, use_progressive_sse
     ):
@@ -208,6 +213,7 @@ class TestStreamingResponseAggregator:
 
       assert len(results) == 1
       assert results[0].content is not None
+      assert results[0].error_code is None
       assert closed_response is not None
       assert closed_response.partial is False
       assert closed_response.content is None
@@ -485,10 +491,7 @@ class TestStreamingResponseAggregator:
 
 
 class TestFunctionCallIdGeneration:
-  """Tests for function call ID generation in streaming mode.
-
-  Regression tests for https://github.com/google/adk-python/issues/4609.
-  """
+  """Tests for function call ID generation in streaming mode."""
 
   @pytest.mark.asyncio
   async def test_non_streaming_fc_generates_id_when_empty(self):

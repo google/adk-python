@@ -236,11 +236,11 @@ def test_find_previous_interaction_id_returns_latest_for_agent():
       _evt("other_agent", "int_3", None),
   ]
 
-  result = interactions_processor._find_previous_interaction_id(
+  result = interactions_processor._find_previous_interaction_state(
       events, agent_name="my_agent", current_branch=None
   )
 
-  assert result == "int_2"
+  assert result[0] == "int_2"
 
 
 def test_find_previous_interaction_id_respects_branch():
@@ -249,18 +249,32 @@ def test_find_previous_interaction_id_respects_branch():
       _evt("my_agent", "int_other_branch", "branch_b"),
   ]
 
-  result = interactions_processor._find_previous_interaction_id(
+  result = interactions_processor._find_previous_interaction_state(
       events, agent_name="my_agent", current_branch="branch_a"
   )
 
-  assert result == "int_main"
+  assert result[0] == "int_main"
 
 
 def test_find_previous_interaction_id_none_when_absent():
   events = [_evt("user", None, None)]
 
-  result = interactions_processor._find_previous_interaction_id(
+  result = interactions_processor._find_previous_interaction_state(
       events, agent_name="my_agent", current_branch=None
   )
 
-  assert result is None
+  assert result[0] is None
+
+
+def test_find_previous_interaction_state_returns_both_ids():
+  events = [
+      Event(author="my_agent", interaction_id="int_1", environment_id="env_1"),
+      Event(author="user"),
+      Event(author="my_agent", interaction_id="int_2", environment_id="env_2"),
+  ]
+
+  state = interactions_processor._find_previous_interaction_state(
+      events, agent_name="my_agent", current_branch=None
+  )
+
+  assert state == ("int_2", "env_2")

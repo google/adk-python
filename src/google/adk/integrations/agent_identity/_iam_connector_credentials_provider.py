@@ -238,7 +238,7 @@ class _IamConnectorCredentialsProvider:
       logger.debug("Auth credential obtained immediately.")
       return _construct_auth_credential(response)
 
-    if metadata and metadata.consent_pending:
+    if metadata is not None and "consent_pending" in metadata:
       # Get 2-legged OAuth token. Allow enough time for token exchange.
       try:
         operation = await self._poll_credentials(
