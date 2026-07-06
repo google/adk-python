@@ -22,6 +22,8 @@ from unittest.mock import MagicMock
 from unittest.mock import Mock
 
 from fastapi.openapi.models import OAuth2
+from fastapi.openapi.models import OAuthFlowAuthorizationCode
+from fastapi.openapi.models import OAuthFlows
 from google.adk.agents.readonly_context import ReadonlyContext
 from google.adk.auth.auth_credential import AuthCredential
 from google.adk.auth.auth_credential import AuthCredentialTypes
@@ -95,6 +97,69 @@ class TestMcpToolset:
         connection_params=self.mock_stdio_params, use_mcp_resources=True
     )
     assert toolset._use_mcp_resources is True
+
+  def test_connection_params(self):
+    """Test getting connection params."""
+    toolset = McpToolset(connection_params=self.mock_stdio_params)
+    assert toolset.connection_params == self.mock_stdio_params
+
+  def test_auth_scheme(self):
+    """Test getting auth scheme."""
+    toolset = McpToolset(connection_params=self.mock_stdio_params)
+    assert toolset.auth_scheme is None
+
+  def test_auth_credential(self):
+    """Test getting auth credential."""
+    toolset = McpToolset(connection_params=self.mock_stdio_params)
+    assert toolset.auth_credential is None
+
+  def test_error_log(self):
+    """Test getting error log."""
+    toolset = McpToolset(connection_params=self.mock_stdio_params)
+    assert toolset.errlog == sys.stderr
+
+  def test_auth_scheme_with_value(self):
+    """Test getting auth scheme when provided at initialization."""
+    auth_scheme = OAuth2(
+        flows=OAuthFlows(
+            authorizationCode=OAuthFlowAuthorizationCode(
+                authorizationUrl="https://example.com/auth",
+                tokenUrl="https://example.com/token",
+                scopes={"read": "Read access"},
+            )
+        )
+    )
+    toolset = McpToolset(
+        connection_params=self.mock_stdio_params,
+        auth_scheme=auth_scheme,
+    )
+    assert toolset.auth_scheme == auth_scheme
+
+  def test_require_confirmation(self):
+    """Test getting require_confirmation flag."""
+    toolset = McpToolset(
+        connection_params=self.mock_stdio_params,
+        require_confirmation=True,
+    )
+    assert toolset.require_confirmation is True
+
+  def test_header_provider(self):
+    """Test getting header_provider."""
+    mock_header_provider = Mock()
+    toolset = McpToolset(
+        connection_params=self.mock_stdio_params,
+        header_provider=mock_header_provider,
+    )
+    assert toolset.header_provider == mock_header_provider
+
+  def test_auth_credential_with_value(self):
+    """Test getting auth credential when provided at initialization."""
+    mock_credential = Mock(spec=AuthCredential)
+    toolset = McpToolset(
+        connection_params=self.mock_stdio_params,
+        auth_credential=mock_credential,
+    )
+    assert toolset.auth_credential == mock_credential
 
   def test_init_with_stdio_connection_params(self):
     """Test initialization with StdioConnectionParams."""
