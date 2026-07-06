@@ -41,10 +41,9 @@ from ._node_state import NodeState
 from ._node_status import NodeStatus
 from ._trigger import Trigger
 from .utils._rehydration_utils import _ChildScanState
-from .utils._rehydration_utils import _reconstruct_node_states
-from .utils._rehydration_utils import is_terminal_event
 from .utils._replay_interceptor import check_interception
 from .utils._replay_interceptor import create_mock_context
+from .utils._replay_manager import ReplayManager
 from .utils._replay_sequence_barrier import ReplaySequenceBarrier
 
 if TYPE_CHECKING:
@@ -253,10 +252,9 @@ class Workflow(BaseNode):
     # --- SETUP: resume from events or start fresh ---
     # TODO: resume from checkpoint event.
     loop_state = _LoopState()
-    loop_state.recovered_executions, recovered_sequence = (
-        self._scan_child_events(ctx)
-    )
-    loop_state.sequence_barrier = ReplaySequenceBarrier(recovered_sequence)
+    replay_mgr = ReplayManager()
+    loop_state.recovered_executions, _ = replay_mgr.scan_workflow_events(ctx)
+    loop_state.sequence_barrier = replay_mgr.sequence_barrier
 
     if ctx.resume_inputs and not loop_state.recovered_executions:
       logger.warning(
@@ -728,57 +726,6 @@ class Workflow(BaseNode):
         loop_state.interrupt_ids.update(node_state.interrupts)
 
   # --- Resume ---
-
-  def _scan_child_events(
-      self, ctx: Context
-  ) -> tuple[dict[str, _ChildScanState], list[str]]:
-    """Scan session events and collect per-child state and completion sequence.
-
-    Forward pass through events for this invocation. For each direct
-    child, tracks the latest run_id and accumulates output,
-    interrupt IDs, and resolved interrupt IDs.
-
-    Returns:
-      Tuple of:
-        - dict of child_name → _ChildScanState.
-        - list of child_name@run_id in chronological order of completion.
-    """
-    ic = ctx._invocation_context
-    raw_results = _reconstruct_node_states(
-        events=ic.session.events,
-        base_path=ctx.node_path,
-        group_by_direct_child=True,
-        invocation_id=ic.invocation_id,
-    )
-
-    from ..events._node_path_builder import _NodePathBuilder
-
-    # Build chronological sequence of completions
-    sequence: list[str] = []
-    base_path_builder = _NodePathBuilder.from_string(ctx.node_path)
-
-    for event in ic.session.events:
-      if event.invocation_id != ic.invocation_id:
-        continue
-
-      event_node_path = event.node_info.path or ''
-      event_path_builder = _NodePathBuilder.from_string(event_node_path)
-
-      if not event_path_builder.is_descendant_of(base_path_builder):
-        continue
-
-      child_path = base_path_builder.get_direct_child(event_path_builder)
-      segment: str = child_path.leaf_segment
-
-      if is_terminal_event(event):
-        # Maintain unique segments ordered by their LAST terminal event.
-        # If a node interrupts in turn 1 and completes in turn 2, moving it
-        # to the end ensures we record the order of its final completion.
-        if segment in sequence:
-          sequence.remove(segment)
-        sequence.append(segment)
-
-    return raw_results, sequence
 
   # --- FINALIZE ---
 
