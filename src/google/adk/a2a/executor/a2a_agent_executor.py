@@ -18,6 +18,9 @@ from datetime import datetime
 from datetime import timezone
 import inspect
 import logging
+import os
+import time
+import httpx
 from typing import Awaitable
 from typing import Callable
 from typing import Optional
@@ -32,7 +35,7 @@ from a2a.types import TaskArtifactUpdateEvent
 from a2a.types import TaskState
 from a2a.types import TaskStatus
 from a2a.types import TaskStatusUpdateEvent
-from a2a.types import TextPart
+from a2a.types import Part
 from google.adk.platform import time as platform_time
 from google.adk.platform import uuid as platform_uuid
 from google.adk.runners import Runner
@@ -187,7 +190,7 @@ class A2aAgentExecutor(AgentExecutor):
                     message=Message(
                         message_id=platform_uuid.new_uuid(),
                         role=Role.agent,
-                        parts=[TextPart(text=str(e))],
+                        parts=[Part(text=str(e))],
                     ),
                 ),
                 context_id=context.context_id,
@@ -213,9 +216,9 @@ class A2aAgentExecutor(AgentExecutor):
         self._config.a2a_part_converter,
     )
 
-    # ensure the session exists
+    # ensure the session exists modify this code 
     session = await self._prepare_session(context, run_request, runner)
-
+    await self._refresh_token_if_expired(session, runner)
     # create invocation context
     invocation_context = runner._new_invocation_context(
         session=session,
@@ -342,7 +345,51 @@ class A2aAgentExecutor(AgentExecutor):
         self._config.execute_interceptors,
     )
     await event_queue.enqueue_event(final_event)
+  async def _refresh_token_if_expired(self, session, runner: Runner):
+    state = session.state
+    if not state:
+      return
 
+    refresh_token = state.get("refresh_token")
+    expires_at = state.get("expires_at", 0)
+
+    if not refresh_token:
+      return
+
+    now = int(time.time())
+    if now < expires_at:
+      return
+
+    logger.info("OAuth token expired, refreshing...")
+
+    async with httpx.AsyncClient() as client:
+      resp = await client.post(
+          "https://oauth2.googleapis.com/token",
+          data={
+              "client_id": os.environ["GOOGLE_CLIENT_ID"],
+              "client_secret": os.environ["GOOGLE_CLIENT_SECRET"],
+              "refresh_token": refresh_token,
+              "grant_type": "refresh_token",
+          },
+      )
+
+    if resp.status_code != 200:
+      logger.error("OAuth token refresh failed: %s", resp.text)
+      return
+
+    tokens = resp.json()
+    state["access_token"] = tokens["access_token"]
+    state["expires_at"] = now + tokens.get("expires_in", 3600)
+    state["refresh_token"] = tokens.get("refresh_token", state.get("refresh_token"))
+
+    await runner.session_service.update_session(
+        app_name=runner.app_name,
+        user_id=session.user_id,
+        session_id=session.id,
+        state=state,
+    )
+
+    logger.info("OAuth token refreshed successfully.")
   async def _prepare_session(
       self,
       context: RequestContext,
