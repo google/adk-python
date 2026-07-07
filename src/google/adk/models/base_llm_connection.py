@@ -51,6 +51,21 @@ class BaseLlmConnection:
     """
     pass
 
+  async def _send_content(
+      self, content: types.Content, *, partial: bool = False
+  ) -> None:
+    """Sends content, optionally as a partial (non-turn-completing) update.
+
+    The default implementation ignores ``partial`` and completes the turn.
+    Connections that support turn-based partial updates override this.
+
+    Args:
+      content: The content to send to the model.
+      partial: Whether this content is a partial turn update that does not
+        complete the model turn.
+    """
+    await self.send_content(content)
+
   @abstractmethod
   async def send_realtime(self, blob: types.Blob):
     """Sends a chunk of audio or a frame of video to the model in realtime.

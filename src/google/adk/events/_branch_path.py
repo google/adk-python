@@ -37,11 +37,11 @@ class _BranchPath:
     """Parses a _BranchPath from a dot-separated string representation."""
     if not path_str:
       return cls([])
-    return cls(path_str.split('.'))
+    return cls(path_str.split("."))
 
   def __str__(self) -> str:
     """Returns the dot-separated string representation of the path."""
-    return '.'.join(self._segments)
+    return ".".join(self._segments)
 
   def __eq__(self, other: object) -> bool:
     """Returns True if segments are equal."""
@@ -64,7 +64,7 @@ class _BranchPath:
     """
     ids = set()
     for segment in self._segments:
-      parts = segment.rsplit('@', 1)
+      parts = segment.rsplit("@", 1)
       if len(parts) > 1 and parts[1]:
         ids.add(parts[1])
     return ids
@@ -99,3 +99,53 @@ class _BranchPath:
       else:
         break
     return _BranchPath(common_segments)
+
+  def append(
+      self,
+      segment_or_path: str | _BranchPath,
+      run_id: str | None = None,
+  ) -> _BranchPath:
+    """Returns a new _BranchPath with segment(s) appended.
+
+    Args:
+      segment_or_path: A segment name (str), dot-separated path (str), or another
+        _BranchPath instance to append.
+      run_id: Optional run ID (or function_call_id) to format segment as
+        'name@run_id'.
+    """
+    if isinstance(segment_or_path, _BranchPath):
+      if run_id is not None:
+        raise ValueError(
+            "run_id cannot be provided when segment_or_path is a _BranchPath"
+            " instance."
+        )
+      return _BranchPath(self._segments + segment_or_path.segments)
+
+    if run_id is not None:
+      if "." in segment_or_path:
+        raise ValueError(
+            "run_id cannot be provided when segment_or_path is a dot-separated"
+            " path."
+        )
+      segment = f"{segment_or_path}@{run_id}"
+      return _BranchPath(self._segments + [segment])
+
+    new_segments = [s for s in segment_or_path.split(".") if s]
+    return _BranchPath(self._segments + new_segments)
+
+  @classmethod
+  def create_sub_branch(
+      cls,
+      base_branch: str | None,
+      *,
+      name: str,
+      run_id: str | None = None,
+  ) -> str:
+    """Creates a new dot-separated branch path string by appending a segment.
+
+    Example:
+      _BranchPath.create_sub_branch('parent', name='child', run_id='1') ->
+      'parent.child@1'
+      _BranchPath.create_sub_branch(None, name='agent') -> 'agent'
+    """
+    return str(cls.from_string(base_branch).append(name, run_id=run_id))

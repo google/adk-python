@@ -609,9 +609,14 @@ class TestSessionContext:
 
     mock_session = MockClientSession()
 
-    with patch(
-        'google.adk.tools.mcp_tool.session_context.ClientSession'
-    ) as mock_session_class:
+    with (
+        patch(
+            'google.adk.tools.mcp_tool.session_context.ClientSession'
+        ) as mock_session_class,
+        patch(
+            'google.adk.tools.mcp_tool.session_context.logger'
+        ) as mock_logger,
+    ):
       mock_session_class.return_value = mock_session
 
       await session_context.start()
@@ -625,6 +630,9 @@ class TestSessionContext:
 
       # Should not raise exception
       assert session_context._close_event.is_set()
+
+      # Verify no warning logs were generated
+      mock_logger.warning.assert_not_called()
 
   @pytest.mark.asyncio
   async def test_close_handles_exception_during_cleanup(self):

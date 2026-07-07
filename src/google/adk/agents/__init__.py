@@ -16,6 +16,7 @@ import importlib
 from typing import Any
 from typing import TYPE_CHECKING
 
+from ._managed_agent import ManagedAgent
 from .base_agent import BaseAgent
 from .base_agent_config import BaseAgentConfig
 from .context import Context
@@ -42,6 +43,7 @@ __all__ = [
     'Context',
     'LlmAgent',
     'LoopAgent',
+    'ManagedAgent',
     'McpInstructionProvider',
     'ParallelAgent',
     'SequentialAgent',
