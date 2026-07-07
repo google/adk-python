@@ -129,3 +129,11 @@ def test_avatar_config_with_name():
   assert run_config.avatar_config == avatar_config
   assert run_config.avatar_config.avatar_name == "test_avatar"
   assert run_config.avatar_config.customized_avatar is None
+
+
+def test_model_input_context_accepts_transient_contents():
+  context_content = types.UserContent("Relevant context for this turn")
+
+  run_config = RunConfig(model_input_context=[context_content])
+
+  assert run_config.model_input_context == [context_content]

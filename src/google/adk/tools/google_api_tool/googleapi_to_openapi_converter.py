@@ -130,6 +130,9 @@ class GoogleApiToOpenApiConverter:
     if not self._google_api_spec:
       self.fetch_google_api_spec()
 
+    if self._google_api_spec is None:
+      raise RuntimeError("Failed to initialize Google API specification.")
+
     # Convert basic API information
     self._convert_info()
 
@@ -170,6 +173,8 @@ class GoogleApiToOpenApiConverter:
 
   def _convert_servers(self) -> None:
     """Convert server information."""
+    if self._google_api_spec is None:
+      raise RuntimeError("API spec must be initialized before conversion.")
     use_client_cert = getattr(self, "_use_client_cert", False)
     if use_client_cert and "mtlsRootUrl" in self._google_api_spec:
       root_url = self._google_api_spec["mtlsRootUrl"]

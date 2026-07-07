@@ -31,7 +31,7 @@ if TYPE_CHECKING:
 
 
 class GoogleSearchTool(BaseTool):
-  """A built-in tool that is automatically invoked by Gemini 2 models to retrieve search results from Google Search.
+  """A built-in tool that is automatically invoked by Gemini models to retrieve search results from Google Search.
 
   This tool operates internally within the model and does not require or perform
   local code execution.
