@@ -394,10 +394,6 @@ async def run_llm_agent_as_node(
             break  # close this run_iter; outer loop re-enters
           if event.actions.transfer_to_agent:
             target_name = event.actions.transfer_to_agent
-            if target_name == agent.name:
-              raise ValueError(
-                  f"Agent '{target_name}' cannot transfer to itself."
-              )
 
             from ..agents.llm_agent import LlmAgent
 

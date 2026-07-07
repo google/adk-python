@@ -125,6 +125,22 @@ async def test_send_content_text(gemini_connection, mock_gemini_session):
 
 
 @pytest.mark.asyncio
+async def test_send_content_text_can_keep_turn_open(
+    gemini_connection, mock_gemini_session
+):
+  content = types.Content(
+      role='user', parts=[types.Part.from_text(text='progress')]
+  )
+
+  await gemini_connection._send_content(content, partial=True)
+
+  mock_gemini_session.send.assert_called_once()
+  call_args = mock_gemini_session.send.call_args[1]
+  assert call_args['input'].turns == [content]
+  assert call_args['input'].turn_complete is False
+
+
+@pytest.mark.asyncio
 async def test_send_content_function_response(
     gemini_connection, mock_gemini_session
 ):

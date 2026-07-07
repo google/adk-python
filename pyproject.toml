@@ -306,6 +306,9 @@ python_version = "3.11"
 disable_error_code = [ "import-not-found", "import-untyped", "unused-ignore" ]
 strict = true
 plugins = [ "pydantic.mypy" ]
+overrides = [ { module = [
+  "google.auth.*",
+], ignore_missing_imports = true, follow_imports = "skip" } ]
 
 [tool.pytest]
 ini_options.testpaths = [ "tests" ]

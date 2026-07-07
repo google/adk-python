@@ -1,0 +1,73 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+from __future__ import annotations
+
+from typing import Generator
+
+from google.adk import Agent
+from google.adk import Event
+from google.adk import Workflow
+from google.adk.workflow import node
+from pydantic import BaseModel
+from pydantic import Field
+
+
+# 1. Define schemas
+class CustomerLookupArgs(BaseModel):
+  user_id: str = Field(description="The customer's unique identifier.")
+
+
+# 2. Define a regular Node using the @node decorator.
+# This Node is wrapped as a NodeTool automatically by the Agent.
+# As a NodeTool, it has the ability to yield intermediate Events during execution.
+@node
+def calculate_discount(tier: str, ctx) -> Generator[Event | str, None, None]:
+  """Calculates the discount percentage based on customer tier.
+
+  Args:
+    tier: The customer's membership tier (e.g., VIP, Standard).
+  """
+  yield Event(message=f"Checking discount rules for tier '{tier}'...")
+  discount = "20% off" if "VIP" in tier else "5% off"
+  yield discount
+
+
+# 3. Define a Workflow.
+# This Workflow is wrapped as a NodeTool automatically by the Agent.
+def lookup_customer_data(node_input: CustomerLookupArgs, ctx) -> dict[str, str]:
+  return {"user_id": node_input.user_id, "tier": "Verified VIP Member"}
+
+
+customer_lookup_workflow = Workflow(
+    name="customer_lookup_workflow",
+    description="Looks up customer status and tier by user_id.",
+    input_schema=CustomerLookupArgs,
+    edges=[
+        ("START", lookup_customer_data),
+    ],
+)
+
+
+# 4. Define the Agent that uses both Node and Workflow as tools.
+root_agent = Agent(
+    name="customer_service_agent",
+    instruction="""
+    You are a customer service assistant.
+    1. First, call `customer_lookup_workflow` using the user_id to get their membership tier.
+    2. Then, call `calculate_discount` node with that tier to find out what discount they get.
+    Summarize these details for the customer.
+    """,
+    tools=[customer_lookup_workflow, calculate_discount],
+)

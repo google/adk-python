@@ -409,3 +409,8 @@ async def test_merge_agent_run_pre_3_11_no_aclose_error_on_failure():
   # would raise RuntimeError here.
   for agen in agent_runs:
     await agen.aclose()
+
+
+def test_deprecation_mentions_sub_agent_limitation():
+  with pytest.warns(DeprecationWarning, match='sub-agent'):
+    ParallelAgent(name='deprecated_parallel', sub_agents=[])
