@@ -306,6 +306,84 @@ def _get_tool_origin(
   return "UNKNOWN"
 
 
+def _extract_tool_declarations(
+    tools_dict: dict[str, "BaseTool"],
+) -> list[dict[str, Any]]:
+  """Extracts structured tool metadata for the ``LLM_REQUEST`` event.
+
+  Earlier versions logged only the tool names (``list(tools_dict.keys())``).
+  Downstream consumers such as online evaluation need the tool *description* and
+  *parameter schema* to judge whether the model selected and invoked the right
+  tool, so this returns one structured entry per tool instead of a bare name.
+
+  Each entry always carries ``name`` and, when available, ``description`` and
+  ``parameters`` (the OpenAPI parameter schema from the tool's
+  ``FunctionDeclaration``). Extraction is best-effort and per-tool: a tool whose
+  declaration cannot be resolved still contributes its name and description, so
+  one misbehaving tool never drops the whole ``tools`` attribute.
+
+  Args:
+      tools_dict: Mapping of tool name to ``BaseTool`` from ``LlmRequest``.
+
+  Returns:
+      A list of ``{"name", "description"?, "parameters"?}`` dicts.
+  """
+  tools: list[dict[str, Any]] = []
+  for name, tool in tools_dict.items():
+    # Fall back to the dict key when the tool has no (or a falsy) name.
+    entry: dict[str, Any] = {"name": getattr(tool, "name", None) or name}
+    description = getattr(tool, "description", None)
+    if description:
+      entry["description"] = description
+
+    # The parameter schema lives on the tool's FunctionDeclaration, which some
+    # tools (e.g. built-in tools) do not provide. Resolve defensively so a
+    # single failing tool does not discard the whole tools list.
+    #
+    # Note: FunctionTool._get_declaration() rebuilds the declaration from the
+    # function signature on each call (no caching), so this repeats work the
+    # framework already did when assembling the request. Acceptable for typical
+    # toolsets; revisit with a cache if it shows up on the hot path.
+    declaration = None
+    try:
+      get_declaration = getattr(tool, "_get_declaration", None)
+      if callable(get_declaration):
+        declaration = get_declaration()
+    except Exception:  # pylint: disable=broad-except
+      logger.debug("Failed to get declaration for tool %s", name, exc_info=True)
+
+    if declaration is not None:
+      if "description" not in entry:
+        decl_description = getattr(declaration, "description", None)
+        if decl_description:
+          entry["description"] = decl_description
+      # A declaration carries its parameter schema in one of two shapes: the
+      # structured `parameters` Schema, or a raw JSON-schema dict in
+      # `parameters_json_schema`. Several tools (MCP, OpenAPI, skill, node, and
+      # environment tools) populate only the latter, and model adapters prefer
+      # it, so prefer it here too and fall back to `parameters` otherwise.
+      json_schema = getattr(declaration, "parameters_json_schema", None)
+      if json_schema is not None:
+        entry["parameters"] = json_schema
+      else:
+        parameters = getattr(declaration, "parameters", None)
+        if parameters is not None:
+          try:
+            entry["parameters"] = parameters.model_dump(
+                exclude_none=True, mode="json"
+            )
+          except Exception:  # pylint: disable=broad-except
+            # Leave parameters off if the schema is not JSON-serializable.
+            logger.debug(
+                "Failed to serialize parameters for tool %s",
+                name,
+                exc_info=True,
+            )
+
+    tools.append(entry)
+  return tools
+
+
 _SENSITIVE_KEYS = frozenset({
     "client_secret",
     "access_token",
@@ -4028,7 +4106,8 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
     """
 
     # 5. Attributes (Config & Tools)
-    attributes = {}
+    attributes: dict[str, Any] = {}
+    tools_truncated = False
     if llm_request.config:
       config_dict = {}
       for field_name in [
@@ -4057,13 +4136,21 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
         attributes["labels"] = labels
 
     if hasattr(llm_request, "tools_dict") and llm_request.tools_dict:
-      attributes["tools"] = list(llm_request.tools_dict.keys())
+      # Route tool declarations through the shared safety pipeline so unbounded
+      # descriptions / parameter schemas are size-capped and sensitive keys are
+      # redacted, consistent with every other captured attribute.
+      tools, tools_truncated = _recursive_smart_truncate(
+          _extract_tool_declarations(llm_request.tools_dict),
+          self.config.max_content_length,
+      )
+      attributes["tools"] = tools
 
     TraceManager.push_span(callback_context, "llm_request")
     await self._log_event(
         "LLM_REQUEST",
         callback_context,
         raw_content=llm_request,
+        is_truncated=tools_truncated,
         event_data=EventData(
             model=llm_request.model,
             extra_attributes=attributes,
