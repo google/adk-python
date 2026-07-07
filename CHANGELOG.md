@@ -10,7 +10,7 @@
 * add OpenAI Responses API support in labs ([6b831d5](https://github.com/google/adk-python/commit/6b831d5aa0e39b75f69df87746f073bfd66a60a0)), closes [#3209](https://github.com/google/adk-python/issues/3209)
 * Add support for reusing an existing SQLAlchemy AsyncEngine in DatabaseSessionService ([f4c7e4c](https://github.com/google/adk-python/commit/f4c7e4cac30954ebe703be21d0219c38b729689a))
 * add support for session TTL and expiration in Vertex AI session service ([49d4441](https://github.com/google/adk-python/commit/49d4441ebd4b715919c52ea15319df0abdff9609))
-* **adk:** add Anthropic `effort` config handling, thinking parameter propagation, and conflict mitigation ([4c862b9](https://github.com/google/adk-python/commit/4c862b9660679caa1a24bb05f7f91500bcf8af58))
+* add Anthropic `effort` config handling, thinking parameter propagation, and conflict mitigation ([4c862b9](https://github.com/google/adk-python/commit/4c862b9660679caa1a24bb05f7f91500bcf8af58))
 * **agents:** add ManagedAgent backed by the Managed Agents API ([cf91b84](https://github.com/google/adk-python/commit/cf91b8443fffca4561668a424f80e9c3feee2a78))
 * **bigquery:** expose thinking and tool-use token columns in analytics views ([c14258d](https://github.com/google/adk-python/commit/c14258dffc77804f638f5abbeb434d979ec3149b))
 * **bigtable:** Support parameterized views with secure parameter inj… ([14a24f2](https://github.com/google/adk-python/commit/14a24f2beeb8583d98c5b1b1933e82652751e0aa))
