@@ -113,6 +113,25 @@ def test_get_gcp_resource(
   )
 
 
+def test_get_gcp_resource_sets_standard_cloud_resource_id(
+    monkeypatch: pytest.MonkeyPatch,
+):
+  # Arrange.
+  monkeypatch.setenv("GOOGLE_CLOUD_AGENT_ENGINE_ID", "1234567890")
+  monkeypatch.setenv("GOOGLE_CLOUD_LOCATION", "us-central1")
+
+  # Act.
+  otel_resource = get_gcp_resource("my-project")
+
+  # Assert.
+  # The Agent Engine dashboard filters on the OTel-standard key.
+  assert otel_resource.attributes.get("cloud.resource_id") == (
+      "//aiplatform.googleapis.com/projects/my-project"
+      "/locations/us-central1/reasoningEngines/1234567890"
+  )
+  assert "cloud.resource.id" not in otel_resource.attributes
+
+
 @mock.patch.object(mtls, "should_use_client_cert", autospec=True)
 def test_use_client_cert_effective_from_mtls(mock_should_use):
   mock_should_use.return_value = True

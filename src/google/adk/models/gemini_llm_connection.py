@@ -104,6 +104,18 @@ class GeminiLlmConnection(BaseLlmConnection):
     Args:
       content: The content to send to the model.
     """
+    await self._send_content(content)
+
+  async def _send_content(
+      self, content: types.Content, *, partial: bool = False
+  ) -> None:
+    """Sends content, optionally as a partial (non-turn-completing) update.
+
+    Args:
+      content: The content to send to the model.
+      partial: Whether this content is a partial turn update that does not
+        complete the model turn.
+    """
     assert content.parts
     if content.parts[0].function_response:
       # All parts have to be function responses.
@@ -115,7 +127,8 @@ class GeminiLlmConnection(BaseLlmConnection):
     else:
       logger.debug('Sending LLM new content %s', content)
       if (
-          self._is_gemini_3_x_live
+          not partial
+          and self._is_gemini_3_x_live
           and len(content.parts) == 1
           and content.parts[0].text
       ):
@@ -127,7 +140,7 @@ class GeminiLlmConnection(BaseLlmConnection):
         await self._gemini_session.send(
             input=types.LiveClientContent(
                 turns=[content],
-                turn_complete=True,
+                turn_complete=not partial,
             )
         )
 

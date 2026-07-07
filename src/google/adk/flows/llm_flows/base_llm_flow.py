@@ -811,9 +811,9 @@ class BaseLlmFlow(ABC):
         is_function_response = content.parts and any(
             part.function_response for part in content.parts
         )
-        if not is_function_response:
-          if not content.role:
-            content.role = 'user'
+        if not is_function_response and not content.role:
+          content.role = 'user'
+        if not is_function_response and not live_request.partial:
           user_content_event = Event(
               id=Event.new_id(),
               invocation_id=invocation_context.invocation_id,
@@ -824,7 +824,9 @@ class BaseLlmFlow(ABC):
               session=invocation_context.session,
               event=user_content_event,
           )
-        await llm_connection.send_content(live_request.content)
+        await llm_connection._send_content(
+            live_request.content, partial=live_request.partial
+        )
 
   async def _receive_from_model(
       self,
