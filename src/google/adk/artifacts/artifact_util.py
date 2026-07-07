@@ -16,6 +16,7 @@
 from __future__ import annotations
 
 import re
+from pathlib import PureWindowsPath
 from typing import NamedTuple
 
 from google.genai import types
@@ -162,6 +163,10 @@ def validate_path_segment(value: str, field_name: str) -> None:
         f"{field_name} {value!r} must not be an absolute path or start with a"
         " slash."
     )
+  if PureWindowsPath(value).drive:
+    raise input_validation_error.InputValidationError(
+        f"{field_name} {value!r} must not contain Windows drive prefixes."
+    )
   if (
       value in (".", "..")
       or ".." in value.split("/")
@@ -169,4 +174,8 @@ def validate_path_segment(value: str, field_name: str) -> None:
   ):
     raise input_validation_error.InputValidationError(
         f"{field_name} {value!r} must not contain traversal segments."
+    )
+  if "\\" in value:
+    raise input_validation_error.InputValidationError(
+        f"{field_name} {value!r} must not contain path separators."
     )

@@ -829,6 +829,10 @@ INVALID_PATH_SEGMENT_CASES = (
     ("", "must not be empty"),
     ("/etc/passwd", "must not be an absolute path or start with a slash"),
     ("/leading/slash", "must not be an absolute path or start with a slash"),
+    ("C:", "must not contain Windows drive prefixes"),
+    ("C:escape", "must not contain Windows drive prefixes"),
+    ("C:\\absolute", "must not contain Windows drive prefixes"),
+    ("nested\\segment", "must not contain path separators"),
     (
         "\\leading\\backslash",
         "must not be an absolute path or start with a slash",
@@ -1418,6 +1422,51 @@ async def test_artifact_reference_rejects_cross_session_on_load(
         user_id="user0",
         session_id="sess0",
         filename="ref.txt",
+    )
+
+
+@pytest.mark.asyncio
+async def test_file_load_artifact_rejects_drive_relative_user_scope_aliases(
+    tmp_path,
+):
+  """Drive-relative user IDs must not alias an existing user scope."""
+  artifact_service = FileArtifactService(root_dir=tmp_path / "artifacts")
+  await artifact_service.save_artifact(
+      app_name="myapp",
+      user_id="foo",
+      session_id=None,
+      filename="proof.txt",
+      artifact=types.Part(text="content"),
+  )
+
+  with pytest.raises(InputValidationError):
+    await artifact_service.load_artifact(
+        app_name="myapp",
+        user_id="C:foo",
+        session_id=None,
+        filename="proof.txt",
+    )
+
+
+@pytest.mark.asyncio
+async def test_file_list_artifact_keys_rejects_drive_relative_session_aliases(
+    tmp_path,
+):
+  """Drive-relative session IDs must not alias an existing session scope."""
+  artifact_service = FileArtifactService(root_dir=tmp_path / "artifacts")
+  await artifact_service.save_artifact(
+      app_name="myapp",
+      user_id="user123",
+      session_id="sess123",
+      filename="proof.txt",
+      artifact=types.Part(text="content"),
+  )
+
+  with pytest.raises(InputValidationError):
+    await artifact_service.list_artifact_keys(
+        app_name="myapp",
+        user_id="user123",
+        session_id="C:sess123",
     )
 
 
