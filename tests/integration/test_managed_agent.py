@@ -86,3 +86,38 @@ async def test_google_search_project_hail_mary():
   assert (
       'james ortiz' in answer.lower()
   ), f'expected the grounded answer to contain "James Ortiz"; got: {answer!r}'
+
+
+@pytest.mark.asyncio
+async def test_code_execution_prime_sum():
+  agent = ManagedAgent(
+      name='managed_code_execution_agent',
+      agent_id=_AGENT_ID,
+      environment={'type': 'remote'},
+      tools=[types.Tool(code_execution=types.ToolCodeExecution())],
+  )
+  session_service = InMemorySessionService()
+  runner = Runner(
+      app_name='managed_agent_it',
+      agent=agent,
+      session_service=session_service,
+  )
+  session = await session_service.create_session(
+      app_name='managed_agent_it', user_id='test_user'
+  )
+
+  events = await _run_turn(
+      runner,
+      session,
+      'What is the sum of the first 50 prime numbers? Use code to compute it.',
+  )
+
+  answer = _joined_text(events)
+  print('\n=== ManagedAgent code execution answer ===\n', answer)
+  # The model may stream the number with thousands separators and/or stray
+  # whitespace (e.g. "5,117" or "5, 117"), so remove all whitespace and commas
+  # before matching the code-executed sum.
+  normalized = ''.join(answer.split()).replace(',', '')
+  assert (
+      '5117' in normalized
+  ), f'expected the code-executed sum 5117; got: {answer!r}'

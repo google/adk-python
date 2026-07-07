@@ -90,8 +90,12 @@ class GoogleApiToolset(BaseToolset):
       cert_path, key_path, passphrase = self._mtls_certs.get_certs()
       if cert_path and key_path and passphrase:
 
-        def client_factory():
-          return httpx.AsyncClient(cert=(cert_path, key_path, passphrase))
+        def client_factory() -> httpx.AsyncClient:
+          if passphrase:
+            return httpx.AsyncClient(
+                cert=(cert_path, key_path, passphrase)  # type: ignore[arg-type]
+            )
+          return httpx.AsyncClient(cert=(cert_path, key_path))
 
         self._httpx_client_factory = client_factory
 

@@ -51,8 +51,8 @@ class LoopAgentState(BaseAgentState):
 
 
 @deprecated(
-    'LoopAgent is deprecated and will be removed in future versions.'
-    ' Please use Workflow instead.'
+    'LoopAgent is deprecated in favor of Workflow and will be removed in a'
+    ' future version. Workflow cannot yet be used as an LlmAgent sub-agent.'
 )
 class LoopAgent(BaseAgent):
   """A shell agent that run its sub-agents in a loop.
@@ -61,8 +61,8 @@ class LoopAgent(BaseAgent):
   reached, the loop agent will stop.
 
   .. deprecated::
-    LoopAgent is deprecated and will be removed in future versions.
-    Please use Workflow instead.
+    LoopAgent is deprecated in favor of Workflow and will be removed in a
+    future version. Workflow cannot yet be used as an LlmAgent sub-agent.
   """
 
   config_type: ClassVar[type[BaseAgentConfig]] = LoopAgentConfig

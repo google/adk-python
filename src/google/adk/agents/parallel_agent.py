@@ -158,8 +158,8 @@ async def _merge_agent_run_pre_3_11(
 
 
 @deprecated(
-    'ParallelAgent is deprecated and will be removed in future versions.'
-    ' Please use Workflow instead.'
+    'ParallelAgent is deprecated in favor of Workflow and will be removed in'
+    ' a future version. Workflow cannot yet be used as an LlmAgent sub-agent.'
 )
 class ParallelAgent(BaseAgent):
   """A shell agent that runs its sub-agents in parallel in an isolated manner.
@@ -171,8 +171,8 @@ class ParallelAgent(BaseAgent):
   - Generating multiple responses for review by a subsequent evaluation agent.
 
   .. deprecated::
-    ParallelAgent is deprecated and will be removed in future versions.
-    Please use Workflow instead.
+    ParallelAgent is deprecated in favor of Workflow and will be removed in a
+    future version. Workflow cannot yet be used as an LlmAgent sub-agent.
   """
 
   config_type: ClassVar[type[BaseAgentConfig]] = ParallelAgentConfig
