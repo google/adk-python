@@ -26,6 +26,7 @@ from google.adk.workflow import START
 from google.adk.workflow._workflow import Workflow
 from google.genai import types
 from pydantic import BaseModel
+from pydantic import ValidationError
 import pytest
 
 from .. import testing_utils
@@ -630,9 +631,10 @@ async def test_start_node_with_invalid_input_schema():
   msg = types.Content(parts=[types.Part(text='hello')], role='user')
 
   # We expect it to raise ValidationError
-  from pydantic import ValidationError
-
-  with pytest.raises(ValidationError):
+  with pytest.raises(
+      ValueError,
+      match=r"Runtime schema validation failed for dynamic node 'node'",
+  ):
     async for event in runner.run_async(
         user_id='u', session_id=session.id, new_message=msg
     ):

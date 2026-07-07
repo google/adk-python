@@ -55,6 +55,9 @@ class LiveRequest(BaseModel):
   close: bool = False
   """If set, close the queue. queue.shutdown() is only supported in Python 3.13+."""
 
+  partial: bool = False
+  """If set, the content is a partial turn update that does not complete the current model turn."""
+
 
 class LiveRequestQueue:
   """Queue used to send LiveRequest in a live(bidirectional streaming) way."""
@@ -65,8 +68,8 @@ class LiveRequestQueue:
   def close(self):
     self._queue.put_nowait(LiveRequest(close=True))
 
-  def send_content(self, content: types.Content):
-    self._queue.put_nowait(LiveRequest(content=content))
+  def send_content(self, content: types.Content, partial: bool = False):
+    self._queue.put_nowait(LiveRequest(content=content, partial=partial))
 
   def send_realtime(self, blob: types.Blob):
     self._queue.put_nowait(LiveRequest(blob=blob))

@@ -519,3 +519,19 @@ def test_tuple_types_work_in_json_schema_fallback() -> None:
   assert array_schema.items.items.any_of[0].type == types.Type.STRING
   assert array_schema.items.items.any_of[0].format is None
   assert array_schema.items.items.any_of[1].type == types.Type.STRING
+
+
+def test_from_function_with_options_any_type_with_default_value():
+  """Test that typing.Any with a default value works and doesn't crash."""
+
+  def my_tool(param: Any = 'default_string') -> str:
+    return f'ok {param}'
+
+  declaration = _automatic_function_calling_util.from_function_with_options(
+      my_tool, GoogleLLMVariant.GEMINI_API
+  )
+
+  assert declaration.parameters is not None
+  assert declaration.parameters.properties['param'].default == 'default_string'
+  # Any type maps to None (no type) in schema
+  assert declaration.parameters.properties['param'].type is None

@@ -1039,3 +1039,56 @@ class TestAgentLoader:
       # 'subprocess' is a valid identifier but shouldn't be importable as an agent
       with pytest.raises(ValueError, match="Agent not found"):
         loader.load_agent("subprocess")
+
+
+class TestDetermineAgentLanguage:
+  """Tests for AgentLoader._determine_agent_language covering all 4 load patterns."""
+
+  def test_flat_module_returns_python(self):
+    """Flat-module agent (agents_dir/agent_name.py) is detected as python."""
+    with tempfile.TemporaryDirectory() as temp_dir:
+      temp_path = Path(temp_dir)
+      (temp_path / "my_agent.py").write_text("root_agent = None\n")
+      loader = AgentLoader(temp_dir)
+      assert loader._determine_agent_language("my_agent") == "python"
+
+  def test_agent_py_subdirectory_returns_python(self):
+    """Subdirectory with agent.py is detected as python."""
+    with tempfile.TemporaryDirectory() as temp_dir:
+      temp_path = Path(temp_dir)
+      agent_dir = temp_path / "my_agent"
+      agent_dir.mkdir()
+      (agent_dir / "agent.py").write_text("root_agent = None\n")
+      loader = AgentLoader(temp_dir)
+      assert loader._determine_agent_language("my_agent") == "python"
+
+  def test_init_py_subdirectory_returns_python(self):
+    """Subdirectory with __init__.py is detected as python."""
+    with tempfile.TemporaryDirectory() as temp_dir:
+      temp_path = Path(temp_dir)
+      agent_dir = temp_path / "my_agent"
+      agent_dir.mkdir()
+      (agent_dir / "__init__.py").write_text("root_agent = None\n")
+      loader = AgentLoader(temp_dir)
+      assert loader._determine_agent_language("my_agent") == "python"
+
+  def test_root_agent_yaml_returns_yaml(self):
+    """Subdirectory with root_agent.yaml is detected as yaml."""
+    with tempfile.TemporaryDirectory() as temp_dir:
+      temp_path = Path(temp_dir)
+      agent_dir = temp_path / "my_agent"
+      agent_dir.mkdir()
+      (agent_dir / "root_agent.yaml").write_text("root_agent: {}\n")
+      loader = AgentLoader(temp_dir)
+      assert loader._determine_agent_language("my_agent") == "yaml"
+
+  def test_unrecognized_structure_raises_value_error(self):
+    """A directory with no recognized structure raises ValueError."""
+    with tempfile.TemporaryDirectory() as temp_dir:
+      temp_path = Path(temp_dir)
+      agent_dir = temp_path / "my_agent"
+      agent_dir.mkdir()
+      (agent_dir / "main.py").write_text("root_agent = None\n")
+      loader = AgentLoader(temp_dir)
+      with pytest.raises(ValueError, match="Could not determine agent type"):
+        loader._determine_agent_language("my_agent")

@@ -168,8 +168,8 @@ root_agent = Agent(
     name='root_agent',
     description='a verification agent.',
     instruction=(
-        'Log all users query with `log_query` tool. Must always remind user you'
-        ' cannot answer second query because your setup.'
+        'Reply to the user. Must always remind user you cannot answer a second'
+        ' query because your setup.'
     ),
     model='gemini-3.5-flash',
     before_agent_callback=before_agent_callback,

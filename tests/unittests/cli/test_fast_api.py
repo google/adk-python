@@ -1645,7 +1645,7 @@ def test_agent_run_sse_does_not_split_artifact_delta_for_function_resume(
 def test_agent_run_sse_yields_error_object_on_exception(
     test_app, create_test_session, monkeypatch
 ):
-  """Test /run_sse streams an error object if streaming raises."""
+  """Test /run_sse streams structured error details on exception."""
   info = create_test_session
 
   async def run_async_raises(self, **kwargs):
@@ -1662,15 +1662,42 @@ def test_agent_run_sse_yields_error_object_on_exception(
       "streaming": True,
   }
 
-  response = test_app.post("/run_sse", json=payload)
-  assert response.status_code == 200
+  # 1. Test without DEBUG enabled
+  with patch(
+      "google.adk.cli.api_server.logger.isEnabledFor", return_value=False
+  ):
+    response = test_app.post("/run_sse", json=payload)
+    assert response.status_code == 200
+    sse_events = [
+        json.loads(line.removeprefix("data: "))
+        for line in response.text.splitlines()
+        if line.startswith("data: ")
+    ]
+    assert len(sse_events) == 1
+    error_event = sse_events[0]
+    assert error_event["error"] == "ValueError: boom"
+    assert "error_details" in error_event
+    assert error_event["error_details"]["error_type"] == "ValueError"
+    assert error_event["error_details"]["error_message"] == "boom"
+    assert "stacktrace" not in error_event["error_details"]
+    assert "timestamp" in error_event["error_details"]
 
-  sse_events = [
-      json.loads(line.removeprefix("data: "))
-      for line in response.text.splitlines()
-      if line.startswith("data: ")
-  ]
-  assert sse_events == [{"error": "boom"}]
+  # 2. Test with DEBUG enabled
+  with patch(
+      "google.adk.cli.api_server.logger.isEnabledFor", return_value=True
+  ):
+    response = test_app.post("/run_sse", json=payload)
+    assert response.status_code == 200
+    sse_events = [
+        json.loads(line.removeprefix("data: "))
+        for line in response.text.splitlines()
+        if line.startswith("data: ")
+    ]
+    assert len(sse_events) == 1
+    error_event = sse_events[0]
+    assert error_event["error"] == "ValueError: boom"
+    assert "stacktrace" in error_event["error_details"]
+    assert "ValueError: boom" in error_event["error_details"]["stacktrace"]
 
 
 def test_list_artifact_names(test_app, create_test_session):
@@ -1717,6 +1744,53 @@ def test_save_artifact(test_app, create_test_session, mock_artifact_service):
   )
   stored = mock_artifact_service._artifacts[key][0]
   assert stored["artifact"].text == "hello world"
+
+
+def test_save_artifact_reference(
+    test_app, create_test_session, mock_artifact_service
+):
+  """Test saving an artifact reference through the FastAPI endpoint."""
+  info = create_test_session
+  url = (
+      f"/apps/{info['app_name']}/users/{info['user_id']}/sessions/"
+      f"{info['session_id']}/artifacts"
+  )
+  payload = {
+      "filename": "reference.txt",
+      "artifact": {
+          "fileData": {
+              "fileUri": (
+                  f"artifact://apps/{info['app_name']}/users/{info['user_id']}/"
+                  f"sessions/{info['session_id']}/artifacts/target_file/versions/0"
+              ),
+              "mimeType": "text/plain",
+          }
+      },
+  }
+
+  response = test_app.post(url, json=payload)
+  assert response.status_code == 200
+  data = response.json()
+  assert data["version"] == 0
+  assert data["customMetadata"] == {}
+  assert data["mimeType"] in (None, "text/plain")
+  assert data["canonicalUri"].endswith(
+      f"/sessions/{info['session_id']}/artifacts/"
+      f"{payload['filename']}/versions/0"
+  )
+  assert isinstance(data["createTime"], float)
+
+  key = (
+      f"{info['app_name']}:{info['user_id']}:{info['session_id']}:"
+      f"{payload['filename']}"
+  )
+  stored = mock_artifact_service._artifacts[key][0]
+  assert stored["artifact"].file_data is not None
+  assert (
+      stored["artifact"].file_data.file_uri
+      == payload["artifact"]["fileData"]["fileUri"]
+  )
+  assert stored["artifact"].file_data.mime_type == "text/plain"
 
 
 def test_artifact_endpoints_support_nested_names(
@@ -2552,7 +2626,10 @@ tools:
 
 
 def test_builder_get_rejects_non_yaml_file_paths(builder_test_client, tmp_path):
-  """GET /dev/apps/{app_name}/builder?file_path=... rejects non-YAML extensions."""
+  """GET /dev/apps/{app_name}/builder?file_path=...
+
+  rejects non-YAML extensions.
+  """
   app_root = tmp_path / "app"
   app_root.mkdir(parents=True, exist_ok=True)
   (app_root / ".env").write_text("SECRET=supersecret\n")

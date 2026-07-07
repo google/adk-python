@@ -781,10 +781,10 @@ async def test_workflow_auto_wraps_parallel_worker_when_flag_set(
 
 
 @pytest.mark.asyncio
-async def test_parallel_worker_limits_concurrency(
+async def test_parallel_worker_limits_parallel_workers(
     request: pytest.FixtureRequest,
 ):
-  """max_concurrency limits the number of concurrent workers at any time."""
+  """max_parallel_workers limits the number of concurrent workers at any time."""
   # Given items and events to control concurrency
   items = ['item1', 'item2', 'item3', 'item4']
   started_events = {item: asyncio.Event() for item in items}
@@ -798,10 +798,10 @@ async def test_parallel_worker_limits_concurrency(
     yield f'{node_input}_processed'
 
   node_a = _ProducerNode(items=items, name='NodeA')
-  worker = ParallelWorker(node=_concurrency_worker_func, max_concurrency=2)
+  worker = ParallelWorker(node=_concurrency_worker_func, max_parallel_workers=2)
 
   agent = Workflow(
-      name='max_concurrency_agent',
+      name='max_parallel_workers_agent',
       edges=[
           (START, node_a),
           (node_a, worker),
@@ -861,35 +861,35 @@ async def test_parallel_worker_limits_concurrency(
 
   assert simplified_events == [
       (
-          'max_concurrency_agent@1/NodeA@1',
+          'max_parallel_workers_agent@1/NodeA@1',
           {'output': items},
       ),
       (
-          'max_concurrency_agent@1/_concurrency_worker_func@1/_concurrency_worker_func@2',
+          'max_parallel_workers_agent@1/_concurrency_worker_func@1/_concurrency_worker_func@2',
           {
               'output': 'item2_processed',
           },
       ),
       (
-          'max_concurrency_agent@1/_concurrency_worker_func@1/_concurrency_worker_func@3',
+          'max_parallel_workers_agent@1/_concurrency_worker_func@1/_concurrency_worker_func@3',
           {
               'output': 'item3_processed',
           },
       ),
       (
-          'max_concurrency_agent@1/_concurrency_worker_func@1/_concurrency_worker_func@1',
+          'max_parallel_workers_agent@1/_concurrency_worker_func@1/_concurrency_worker_func@1',
           {
               'output': 'item1_processed',
           },
       ),
       (
-          'max_concurrency_agent@1/_concurrency_worker_func@1/_concurrency_worker_func@4',
+          'max_parallel_workers_agent@1/_concurrency_worker_func@1/_concurrency_worker_func@4',
           {
               'output': 'item4_processed',
           },
       ),
       (
-          'max_concurrency_agent@1/_concurrency_worker_func@1',
+          'max_parallel_workers_agent@1/_concurrency_worker_func@1',
           {
               'output': [
                   'item1_processed',
@@ -904,12 +904,12 @@ async def test_parallel_worker_limits_concurrency(
 
 @pytest.mark.asyncio
 @pytest.mark.skip(reason='Hangs: ctx.run_node needs barrier for parallel HITL')
-async def test_parallel_worker_hitl_respects_concurrency_limits(
+async def test_parallel_worker_hitl_respects_parallel_workers_limits(
     request: pytest.FixtureRequest,
 ):
-  """HITL resume under max_concurrency schedules next worker after resolution.
+  """HITL resume under max_parallel_workers schedules next worker after resolution.
 
-  Setup: 3 items, max_concurrency=2. item1 waits, item2 does HITL,
+  Setup: 3 items, max_parallel_workers=2. item1 waits, item2 does HITL,
     item3 does HITL.
   Act:
     - Run 1: item1 and item2 start. item2 interrupts. Signal item1 to finish.
@@ -951,10 +951,10 @@ async def test_parallel_worker_hitl_respects_concurrency_limits(
       yield Event(output=f'{val}_processed')
 
   node_a = _ProducerNode(items=items, name='NodeA')
-  worker = ParallelWorker(node=hitl_concurrency_worker, max_concurrency=2)
+  worker = ParallelWorker(node=hitl_concurrency_worker, max_parallel_workers=2)
 
   agent = Workflow(
-      name='max_concurrency_hitl_agent',
+      name='max_parallel_workers_hitl_agent',
       edges=[
           (START, node_a),
           (node_a, worker),
@@ -999,17 +999,17 @@ async def test_parallel_worker_hitl_respects_concurrency_limits(
   simplified_events1 = simplify_events_with_node(events1)
   assert simplified_events1 == [
       (
-          'max_concurrency_hitl_agent@1/NodeA@1',
+          'max_parallel_workers_hitl_agent@1/NodeA@1',
           {
               'output': items,
           },
       ),
       (
-          'max_concurrency_hitl_agent',
+          'max_parallel_workers_hitl_agent',
           testing_utils.simplify_content(req_events[0].content),
       ),
       (
-          'max_concurrency_hitl_agent@1/Worker__0@1',
+          'max_parallel_workers_hitl_agent@1/Worker__0@1',
           {'output': 'item1_processed'},
       ),
   ]
@@ -1047,11 +1047,11 @@ async def test_parallel_worker_hitl_respects_concurrency_limits(
   simplified_events2 = simplify_events_with_node(events2)
   assert simplified_events2 == [
       (
-          'max_concurrency_hitl_agent@1/Worker__1@1',
+          'max_parallel_workers_hitl_agent@1/Worker__1@1',
           {'output': 'item2_resumed'},
       ),
       (
-          'max_concurrency_hitl_agent',
+          'max_parallel_workers_hitl_agent',
           testing_utils.simplify_content(req_events_2[0].content),
       ),
   ]
@@ -1080,11 +1080,11 @@ async def test_parallel_worker_hitl_respects_concurrency_limits(
 
   assert simplified_events3 == [
       (
-          'max_concurrency_hitl_agent@1/Worker__2@1',
+          'max_parallel_workers_hitl_agent@1/Worker__2@1',
           {'output': 'item3_resumed'},
       ),
       (
-          'max_concurrency_hitl_agent@1/Worker@1',
+          'max_parallel_workers_hitl_agent@1/Worker@1',
           {
               'output': ['item1_processed', 'item2_resumed', 'item3_resumed'],
           },

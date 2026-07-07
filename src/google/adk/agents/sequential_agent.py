@@ -47,15 +47,16 @@ class SequentialAgentState(BaseAgentState):
 
 
 @deprecated(
-    'SequentialAgent is deprecated and will be removed in future versions.'
-    ' Please use Workflow instead.'
+    'SequentialAgent is deprecated in favor of Workflow and will be removed'
+    ' in a future version. Workflow cannot yet be used as an LlmAgent'
+    ' sub-agent.'
 )
 class SequentialAgent(BaseAgent):
   """A shell agent that runs its sub-agents in sequence.
 
   .. deprecated::
-    SequentialAgent is deprecated and will be removed in future versions.
-    Please use Workflow instead.
+    SequentialAgent is deprecated in favor of Workflow and will be removed in
+    a future version. Workflow cannot yet be used as an LlmAgent sub-agent.
   """
 
   config_type: ClassVar[Type[BaseAgentConfig]] = SequentialAgentConfig

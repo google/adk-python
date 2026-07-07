@@ -12,8 +12,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from pathlib import Path
+from types import SimpleNamespace
+from unittest import mock
 from unittest.mock import patch
 
+from google.adk.cli import service_registry
 import pytest
 
 
@@ -122,6 +126,33 @@ def test_create_artifact_service_gcs(registry, mock_services):
   mock_services["gcs_artifact"].assert_called_once_with(
       bucket_name="my-bucket", other_kwarg="bar"
   )
+
+
+def test_file_artifact_factory_normalizes_windows_file_uri(monkeypatch):
+  monkeypatch.setattr(service_registry, "os", SimpleNamespace(name="nt"))
+  mocked_url2pathname = mock.Mock(return_value=r"C:\tmp\adk artifacts")
+  monkeypatch.setattr(service_registry, "url2pathname", mocked_url2pathname)
+
+  registry = service_registry.ServiceRegistry()
+  service_registry._register_builtin_services(registry)
+
+  with mock.patch(
+      "google.adk.artifacts.file_artifact_service.FileArtifactService"
+  ) as mock_file_artifact_service:
+    registry.create_artifact_service("file:///C:/tmp/adk%20artifacts")
+
+  mocked_url2pathname.assert_called_once_with("/C:/tmp/adk artifacts")
+  mock_file_artifact_service.assert_called_once_with(
+      root_dir=Path(r"C:\tmp\adk artifacts")
+  )
+
+
+def test_file_artifact_factory_rejects_non_local_authority():
+  registry = service_registry.ServiceRegistry()
+  service_registry._register_builtin_services(registry)
+
+  with pytest.raises(ValueError, match="local filesystem"):
+    registry.create_artifact_service("file://example.com/tmp/adk_artifacts")
 
 
 # Memory Service Tests

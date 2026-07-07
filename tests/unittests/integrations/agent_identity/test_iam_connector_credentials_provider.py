@@ -469,3 +469,42 @@ async def test_get_auth_credential_raises_error_if_consent_canceled(
       RuntimeError, match="Failed to retrieve consent based credential."
   ):
     await provider.get_auth_credential(auth_scheme, context)
+
+
+async def test_get_auth_credential_handles_consent_pending_state_correctly(
+    mock_client,
+    auth_scheme,
+    context,
+    provider,
+):
+  """Test get_auth_credential enters the polling loop when consent is pending."""
+  # 1. Setup the first retrieve_credentials call to return a pending Operation
+  # containing consent_pending metadata.
+  meta_pb = RetrieveCredentialsMetadata.pb()()
+  meta_pb.consent_pending.SetInParent()
+
+  op_pending = Operation(done=False)
+  op_pending.metadata.value = meta_pb.SerializeToString()
+
+  # 2. Setup the second retrieve_credentials call (the poll) to return success.
+  op_success = Operation(done=True)
+  resp = RetrieveCredentialsResponse(
+      header="Authorization: Bearer", token="valid-token"
+  )
+  op_success.response.value = RetrieveCredentialsResponse.serialize(resp)
+
+  # Configure mock client to return pending first, then success
+  mock_client.retrieve_credentials.side_effect = [
+      Mock(operation=op_pending),
+      Mock(operation=op_success),
+  ]
+
+  # 3. Call the provider
+  credential = await provider.get_auth_credential(auth_scheme, context)
+
+  # 4. Verify that it polled and successfully returned the token
+  assert credential is not None
+  assert credential.http.credentials.token == "valid-token"
+
+  # Verify that retrieve_credentials was called twice (initial + 1 poll)
+  assert mock_client.retrieve_credentials.call_count == 2

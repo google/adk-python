@@ -1298,6 +1298,28 @@ class TestRefreshableAsyncCredentials:
 
     assert headers["Authorization"] == "Bearer refreshed_token"
 
+  @pytest.mark.skipif(not AIO_SUPPORTED, reason="google.auth.aio not supported")
+  @pytest.mark.parametrize(
+      "existing_header_key",
+      ["Authorization", "authorization", "AUTHORIZATION", "authORIZATION"],
+  )
+  @pytest.mark.asyncio
+  async def test_before_request_skips_refresh_if_authorization_header_exists_case_insensitive(
+      self, existing_header_key
+  ):
+    mock_creds = Mock()
+    mock_creds.expired = True
+    mock_creds.token = "new_token"
+    mock_creds.refresh = Mock()
+
+    credentials = _RefreshableAsyncCredentials(mock_creds)
+    headers = {existing_header_key: "Bearer existing_token"}
+
+    await credentials.before_request(None, "GET", "http://example.com", headers)
+
+    mock_creds.refresh.assert_not_called()
+    assert headers == {existing_header_key: "Bearer existing_token"}
+
 
 class TestGoogleAuthAsyncByteStream:
 
@@ -1429,4 +1451,66 @@ class TestDebugHttpxClientFactory:
     record = debug_list[0]
     assert record["response_body"] == "<SSE stream>"
     mock_response.aread.assert_not_called()
+    await base_client.aclose()
+
+  @pytest.mark.asyncio
+  async def test_debug_factory_passes_keyword_arguments(self):
+    """Test that the debug factory passes keyword arguments to base_factory."""
+    base_client = httpx.AsyncClient()
+
+    # A factory function that only accepts keyword arguments
+    def keyword_only_factory(**kwargs) -> httpx.AsyncClient:
+      assert "headers" in kwargs
+      assert "timeout" in kwargs
+      assert "auth" in kwargs
+      return base_client
+
+    debug_factory = _DebugHttpxClientFactory(keyword_only_factory)
+
+    # Should work when called with positional arguments (which maps them to parameter names)
+    client = debug_factory({"X-Test": "Val"}, None, None)
+    assert client is base_client
+    await base_client.aclose()
+
+  @pytest.mark.asyncio
+  async def test_response_hook_truncates_large_bodies(self):
+    """Test that response hook truncates request and response bodies exceeding limit."""
+    base_client = httpx.AsyncClient()
+    base_factory = Mock(return_value=base_client)
+    debug_factory = _DebugHttpxClientFactory(base_factory)
+
+    # Mock request and response with large content
+    large_req_body = b"a" * 1500
+    large_resp_body = "b" * 1500
+
+    mock_request = Mock(spec=httpx.Request)
+    mock_request.method = "POST"
+    mock_request.content = large_req_body
+    mock_request.headers = httpx.Headers()
+
+    mock_response = Mock(spec=httpx.Response)
+    mock_response.url = httpx.URL("https://example.com/large")
+    mock_response.status_code = 200
+    mock_response.request = mock_request
+    mock_response.headers = httpx.Headers({"content-type": "application/json"})
+    mock_response.text = large_resp_body
+    mock_response.aread = AsyncMock()
+
+    debug_list = []
+    token = _http_debug_var.set(debug_list)
+    try:
+      await debug_factory._response_hook(mock_response)
+    finally:
+      _http_debug_var.reset(token)
+
+    assert len(debug_list) == 1
+    record = debug_list[0]
+    assert len(record["request_body"]) == 1015  # 1000 + len("... [truncated]")
+    assert record["request_body"].endswith("... [truncated]")
+    assert record["request_body"].startswith("a" * 1000)
+
+    assert len(record["response_body"]) == 1015  # 1000 + len("... [truncated]")
+    assert record["response_body"].endswith("... [truncated]")
+    assert record["response_body"].startswith("b" * 1000)
+
     await base_client.aclose()

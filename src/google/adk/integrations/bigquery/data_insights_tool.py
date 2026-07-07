@@ -13,17 +13,13 @@
 # limitations under the License.
 from __future__ import annotations
 
-import json
 from typing import Any
 from typing import Dict
 from typing import List
 
 from google.adk.tools import _gda_stream_util
 from google.auth.credentials import Credentials
-from google.cloud import bigquery
-import requests
 
-from . import client
 from .config import BigQueryToolConfig
 
 _GDA_CLIENT_ID = "GOOGLE_ADK"
@@ -117,48 +113,39 @@ def ask_data_insights(
   """
   try:
     location = "global"
-    if not credentials.token:
-      error_message = (
-          "Error: The provided credentials object does not have a valid access"
-          " token.\n\nThis is often because the credentials need to be"
-          " refreshed or require specific API scopes. Please ensure the"
-          " credentials are prepared correctly before calling this"
-          " function.\n\nThere may be other underlying causes as well."
-      )
-      return {
-          "status": "ERROR",
-          "error_details": "ask_data_insights requires a valid access token.",
+    session, endpoint = _gda_stream_util.get_gda_session(credentials)
+    with session:
+      headers = {
+          "Content-Type": "application/json",
+          "X-Goog-API-Client": _GDA_CLIENT_ID,
       }
-    headers = {
-        "Authorization": f"Bearer {credentials.token}",
-        "Content-Type": "application/json",
-        "X-Goog-API-Client": _GDA_CLIENT_ID,
-    }
-    ca_url = f"https://geminidataanalytics.googleapis.com/v1beta/projects/{project_id}/locations/{location}:chat"
+      ca_url = (
+          f"{endpoint}/v1beta/projects/{project_id}/locations/{location}:chat"
+      )
 
-    instructions = """**INSTRUCTIONS - FOLLOW THESE RULES:**
+      instructions = """**INSTRUCTIONS - FOLLOW THESE RULES:**
     1.  **CONTENT:** Your answer should present the supporting data and then provide a conclusion based on that data, including relevant details and observations where possible.
     2.  **ANALYSIS DEPTH:** Your analysis must go beyond surface-level observations. Crucially, you must prioritize metrics that measure impact or outcomes over metrics that simply measure volume or raw counts. For open-ended questions, explore the topic from multiple perspectives to provide a holistic view.
     3.  **OUTPUT FORMAT:** Your entire response MUST be in plain text format ONLY.
     4.  **NO CHARTS:** You are STRICTLY FORBIDDEN from generating any charts, graphs, images, or any other form of visualization.
     """
 
-    ca_payload = {
-        "project": f"projects/{project_id}",
-        "messages": [{"userMessage": {"text": user_query_with_context}}],
-        "inlineContext": {
-            "datasourceReferences": {
-                "bq": {"tableReferences": table_references}
-            },
-            "systemInstruction": instructions,
-            "options": {"chart": {"image": {"noImage": {}}}},
-        },
-        "clientIdEnum": _GDA_CLIENT_ID,
-    }
+      ca_payload = {
+          "project": f"projects/{project_id}",
+          "messages": [{"userMessage": {"text": user_query_with_context}}],
+          "inlineContext": {
+              "datasourceReferences": {
+                  "bq": {"tableReferences": table_references}
+              },
+              "systemInstruction": instructions,
+              "options": {"chart": {"image": {"noImage": {}}}},
+          },
+          "clientIdEnum": _GDA_CLIENT_ID,
+      }
 
-    resp = _gda_stream_util.get_stream(
-        ca_url, ca_payload, headers, settings.max_query_result_rows
-    )
+      resp = _gda_stream_util.get_stream(
+          session, ca_url, ca_payload, headers, settings.max_query_result_rows
+      )
   except Exception as ex:  # pylint: disable=broad-except
     return {
         "status": "ERROR",

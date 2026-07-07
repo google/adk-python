@@ -16,6 +16,14 @@ from __future__ import annotations
 
 from google.genai import types
 
+SKIP_THOUGHT_SIGNATURE_VALIDATOR: bytes = b'skip_thought_signature_validator'
+"""Placeholder ``Part.thought_signature`` that bypasses backend validation.
+
+Set it on a part you synthesize yourself (a model turn or tool call/response
+the model never produced) so the Gemini backend accepts the fabricated part
+instead of rejecting it for a missing signature.
+"""
+
 
 def is_audio_part(part: types.Part) -> bool:
   return (
