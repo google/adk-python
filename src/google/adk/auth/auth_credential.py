@@ -87,6 +87,7 @@ class OAuth2Auth(BaseModelWithConfig):
   expires_at: int | None = None
   expires_in: int | None = None
   audience: str | None = None
+  prompt: str | None = None
   code_verifier: str | None = None
   code_challenge_method: str | None = None
   token_endpoint_auth_method: (

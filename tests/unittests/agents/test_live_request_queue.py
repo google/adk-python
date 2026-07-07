@@ -40,6 +40,17 @@ def test_send_content():
     mock_put_nowait.assert_called_once_with(LiveRequest(content=content))
 
 
+def test_send_content_sets_partial():
+  queue = LiveRequestQueue()
+  content = MagicMock(spec=types.Content)
+
+  with patch.object(queue._queue, "put_nowait") as mock_put_nowait:
+    queue.send_content(content, partial=True)
+    mock_put_nowait.assert_called_once_with(
+        LiveRequest(content=content, partial=True)
+    )
+
+
 def test_send_realtime():
   queue = LiveRequestQueue()
   blob = MagicMock(spec=types.Blob)
