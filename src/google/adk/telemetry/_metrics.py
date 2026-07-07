@@ -99,6 +99,7 @@ _invoke_agent_inference_calls = meter.create_histogram(
     unit="1",
     description="Number of inference (model) calls per agent invocation.",
     explicit_bucket_boundaries_advisory=[
+        0,
         1,
         2,
         3,
@@ -118,6 +119,7 @@ _invoke_agent_tool_calls = meter.create_histogram(
     unit="1",
     description="Number of tool calls per agent invocation.",
     explicit_bucket_boundaries_advisory=[
+        0,
         1,
         2,
         3,
