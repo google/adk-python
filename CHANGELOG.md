@@ -3,17 +3,6 @@
 ## [2.4.0](https://github.com/google/adk-python/compare/v2.3.0...v2.4.0) (2026-07-07)
 
 
-### Highlights
-
-<one sentence describing the theme of this release>
-
-* **<Feature>**: <what it unlocks for the user, in one line>. (<commit>)
-* **<Feature>**: <user benefit>. (<commit>)
-
-#### Breaking changes
-
-* **<what changed>**: <how to migrate, in one line>. (<commit>)
-
 ### Features
 
 * add error handling to VertexAiMemoryBankService.search_memory ([f3529e9](https://github.com/google/adk-python/commit/f3529e995a1e3eb6971b3f4e4eda391d9ca7c239))
