@@ -587,6 +587,20 @@ def _extract_reasoning_value(message: Message | Delta | None) -> Any:
   return message.get("reasoning")
 
 
+_GEMMA4_MODEL_PATTERN = re.compile(r"gemma-?4")
+
+
+def _is_gemma4_model(model: str) -> bool:
+  """Detects Gemma 4 models across naming conventions.
+
+  Ollama uses "gemma4" (e.g. "ollama/gemma4:e2b"), while Hugging Face,
+  vLLM, and llama.cpp use the hyphenated "gemma-4" (e.g.
+  "google/gemma-4-26B-A4B"). Both need role='tool_responses' for tool
+  results.
+  """
+  return bool(_GEMMA4_MODEL_PATTERN.search(model.lower()))
+
+
 class ChatCompletionFileUrlObject(TypedDict, total=False):
   file_data: str
   file_id: str
@@ -936,7 +950,8 @@ async def _content_to_message_param(
       # from the tool call, instead of OpenAI-compatible 'tool' role used by other models.
       # Earlier Gemma versions before version 4 do not support tool use,
       # so this check is intentionally scoped to only look for "gemma4" in the model name.
-      tool_role = "tool_responses" if "gemma4" in model.lower() else "tool"
+      tool_role = "tool_responses" if _is_gemma4_model(model) else "tool"
+
       tool_messages.append(
           ChatCompletionToolMessage(
               role=tool_role,
@@ -1113,7 +1128,7 @@ def _ensure_tool_results(messages: List[Message], model: str) -> List[Message]:
 
   healed_messages: List[Message] = []
   pending_tool_call_ids: List[str] = []
-  expected_tool_role = "tool_responses" if "gemma4" in model.lower() else "tool"
+  expected_tool_role = "tool_responses" if _is_gemma4_model(model) else "tool"
 
   for message in messages:
     role = message.get("role")
