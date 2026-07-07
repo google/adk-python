@@ -20,6 +20,7 @@ from datetime import datetime
 import enum
 import json
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 from typing import Optional
 from typing import Union
@@ -28,6 +29,7 @@ from unittest.mock import patch
 from urllib.parse import unquote
 from urllib.parse import urlparse
 
+from google.adk.artifacts import file_artifact_service
 from google.adk.artifacts.base_artifact_service import ArtifactVersion
 from google.adk.artifacts.base_artifact_service import ensure_part
 from google.adk.artifacts.file_artifact_service import FileArtifactService
@@ -1591,3 +1593,25 @@ async def test_save_load_empty_text_artifact(
   assert loaded is not None
   assert loaded.text == ""
   assert loaded.inline_data is None
+
+
+def test_file_uri_to_path_normalizes_windows_file_uri(monkeypatch):
+  monkeypatch.setattr(file_artifact_service, "os", SimpleNamespace(name="nt"))
+  mocked_url2pathname = mock.Mock(return_value=r"C:\tmp\adk artifacts")
+  monkeypatch.setattr(
+      file_artifact_service, "url2pathname", mocked_url2pathname
+  )
+
+  result = file_artifact_service._file_uri_to_path(
+      "file:///C:/tmp/adk%20artifacts"
+  )
+
+  mocked_url2pathname.assert_called_once_with("/C:/tmp/adk artifacts")
+  assert result == Path(r"C:\tmp\adk artifacts")
+
+
+def test_file_uri_to_path_returns_none_for_non_file_uri():
+  assert (
+      file_artifact_service._file_uri_to_path("gs://bucket/adk_artifacts")
+      is None
+  )
