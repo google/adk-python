@@ -34,7 +34,6 @@ from pydantic import Field
 from pydantic import ValidationError
 from typing_extensions import override
 
-from . import artifact_util
 from ..errors.input_validation_error import InputValidationError
 from .base_artifact_service import ArtifactVersion
 from .base_artifact_service import BaseArtifactService
@@ -143,6 +142,31 @@ def _is_user_scoped(session_id: Optional[str], filename: str) -> bool:
   return session_id is None or _file_has_user_namespace(filename)
 
 
+def _validate_path_segment(value: str, field_name: str) -> None:
+  """Rejects values that could alter the constructed filesystem path.
+
+  Args:
+    value: The caller-supplied identifier (e.g. user_id or session_id).
+    field_name: Human-readable name used in the error message.
+
+  Raises:
+    InputValidationError: If the value contains path separators, traversal
+      segments, or null bytes.
+  """
+  if not value:
+    raise InputValidationError(f"{field_name} must not be empty.")
+  if "\x00" in value:
+    raise InputValidationError(f"{field_name} must not contain null bytes.")
+  if "/" in value or "\\" in value:
+    raise InputValidationError(
+        f"{field_name} {value!r} must not contain path separators."
+    )
+  if value in (".", "..") or ".." in value.split("/"):
+    raise InputValidationError(
+        f"{field_name} {value!r} must not contain traversal segments."
+    )
+
+
 def _user_artifacts_dir(base_root: Path) -> Path:
   """Returns the path that stores user-scoped artifacts."""
   return base_root / "artifacts"
@@ -150,7 +174,7 @@ def _user_artifacts_dir(base_root: Path) -> Path:
 
 def _session_artifacts_dir(base_root: Path, session_id: str) -> Path:
   """Returns the path that stores session-scoped artifacts."""
-  artifact_util.validate_path_segment(session_id, "session_id")
+  _validate_path_segment(session_id, "session_id")
   return base_root / "sessions" / session_id / "artifacts"
 
 
@@ -232,7 +256,7 @@ class FileArtifactService(BaseArtifactService):
 
   def _base_root(self, user_id: str, /) -> Path:
     """Returns the artifacts root directory for a user."""
-    artifact_util.validate_path_segment(user_id, "user_id")
+    _validate_path_segment(user_id, "user_id")
     return self.root_dir / "users" / user_id
 
   def _scope_root(
@@ -245,7 +269,7 @@ class FileArtifactService(BaseArtifactService):
     base = self._base_root(user_id)
     if _is_user_scoped(session_id, filename):
       return _user_artifacts_dir(base)
-    if session_id is None:
+    if not session_id:
       raise InputValidationError(
           "Session ID must be provided for session-scoped artifacts."
       )
@@ -519,7 +543,7 @@ class FileArtifactService(BaseArtifactService):
 
     base_root = self._base_root(user_id)
 
-    if session_id is not None:
+    if session_id:
       session_root = _session_artifacts_dir(base_root, session_id)
       for artifact_dir in _iter_artifact_dirs(session_root):
         metadata = self._latest_metadata(artifact_dir)
