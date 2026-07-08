@@ -590,7 +590,7 @@ def get_fast_api_app(
     adk_web_server.default_app_name = single_agent_name
 
   # Callbacks & other optional args for when constructing the FastAPI instance
-  extra_fast_api_args = {}
+  extra_fast_api_args: dict[str, Any] = {}
 
   # TODO - Remove separate trace_to_cloud logic once otel_to_cloud stops being
   # EXPERIMENTAL.

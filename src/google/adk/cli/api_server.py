@@ -711,7 +711,7 @@ class ApiServer:
     # Internal properties we want to allow being modified from callbacks.
     self.runners_to_clean: set[str] = set()
     self.current_app_name_ref: SharedValue[str] = SharedValue(value="")
-    self.runner_dict = {}
+    self.runner_dict: dict[str, Runner] = {}
     self.url_prefix = url_prefix
     self.auto_create_session = auto_create_session
     self.trigger_sources = trigger_sources
@@ -724,7 +724,8 @@ class ApiServer:
     if app_name in self.runners_to_clean:
       self.runners_to_clean.remove(app_name)
       runner = self.runner_dict.pop(app_name, None)
-      await cleanup.close_runners(list([runner]))
+      if runner is not None:
+        await cleanup.close_runners([runner])
 
     # Return cached runner if exists
     if app_name in self.runner_dict:
@@ -982,8 +983,8 @@ class ApiServer:
     Returns:
       A FastAPI app instance.
     """
-    trace_dict = {}
-    session_trace_dict = {}
+    trace_dict: dict[str, Any] = {}
+    session_trace_dict: dict[str, Any] = {}
     self._trace_dict = trace_dict
     self._session_trace_dict = session_trace_dict
 
