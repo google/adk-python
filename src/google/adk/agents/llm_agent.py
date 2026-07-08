@@ -133,7 +133,6 @@ OnToolErrorCallback: TypeAlias = Union[
 InstructionProvider: TypeAlias = Callable[
     [ReadonlyContext], Union[str, Awaitable[str]]
 ]
-
 ToolUnion: TypeAlias = Union[Callable, BaseTool, BaseToolset]
 
 
@@ -175,6 +174,32 @@ async def _convert_tool_union_to_tools(
               max_results=vais_tool.max_results,
           )
       ]
+  from ..workflow._base_node import BaseNode
+
+  if isinstance(tool_union, BaseNode):
+    from ..tools._node_tool import NodeTool
+    from .base_agent import BaseAgent
+
+    if isinstance(tool_union, BaseAgent):
+      raise ValueError(
+          f"Agent '{tool_union.name}' cannot be wrapped as a NodeTool. Agents"
+          ' should be invoked as sub-agents.'
+      )
+
+    description = tool_union.description
+    if not description:
+      raise ValueError(
+          f"Workflow/Node '{tool_union.name}' must have a description to be"
+          ' wrapped as a tool.'
+      )
+
+    return [
+        NodeTool(
+            node=tool_union,
+            name=tool_union.name,
+            description=description,
+        )
+    ]
 
   if isinstance(tool_union, BaseTool):
     return [tool_union]
@@ -1010,6 +1035,34 @@ class LlmAgent(BaseAgent, abc.ABC):
     accumulator += text
     event.actions.state_delta[self.output_key] = accumulator
     return accumulator
+
+  @model_validator(mode='before')
+  @classmethod
+  def _pre_validate_tools(cls, data: Any) -> Any:
+    if isinstance(data, dict) and 'tools' in data and data['tools']:
+      from google.adk.agents.base_agent import BaseAgent
+      from google.adk.tools._node_tool import NodeTool
+      from google.adk.workflow._base_node import BaseNode
+
+      new_tools = []
+      for t in data['tools']:
+        if isinstance(t, BaseAgent):
+          raise ValueError(
+              f"Agent '{t.name}' cannot be wrapped as a NodeTool. Agents should"
+              ' be invoked as sub-agents.'
+          )
+        elif isinstance(t, BaseNode):
+          description = t.description
+          if not description:
+            raise ValueError(
+                f"Workflow/Node '{t.name}' must have a description to be"
+                ' wrapped as a tool.'
+            )
+          new_tools.append(NodeTool(node=t, description=description))
+        else:
+          new_tools.append(t)
+      data['tools'] = new_tools
+    return data
 
   @model_validator(mode='after')
   def __model_validator_after(self) -> LlmAgent:

@@ -1,0 +1,182 @@
+{
+  "appName": "node_as_tool",
+  "events": [
+    {
+      "author": "user",
+      "content": {
+        "parts": [
+          {
+            "text": "What discount does customer c123 get?"
+          }
+        ],
+        "role": "user"
+      },
+      "id": "e-1",
+      "invocationId": "i-1",
+      "nodeInfo": {
+        "path": ""
+      }
+    },
+    {
+      "author": "customer_service_agent",
+      "content": {
+        "parts": [
+          {
+            "functionCall": {
+              "args": {
+                "user_id": "c123"
+              },
+              "id": "fc-1",
+              "name": "customer_lookup_workflow"
+            }
+          }
+        ],
+        "role": "model"
+      },
+      "id": "e-2",
+      "invocationId": "i-1",
+      "longRunningToolIds": [
+        "fc-1"
+      ],
+      "nodeInfo": {
+        "path": "customer_service_agent@1"
+      }
+    },
+    {
+      "author": "customer_lookup_workflow",
+      "branch": "customer_lookup_workflow@fc-1",
+      "id": "e-3",
+      "invocationId": "i-1",
+      "nodeInfo": {
+        "outputFor": [
+          "customer_lookup_workflow@1/lookup_customer_data@1",
+          "customer_lookup_workflow@1"
+        ],
+        "path": "customer_lookup_workflow@1/lookup_customer_data@1"
+      },
+      "output": {
+        "tier": "Verified VIP Member",
+        "user_id": "c123"
+      }
+    },
+    {
+      "author": "customer_service_agent",
+      "content": {
+        "parts": [
+          {
+            "functionResponse": {
+              "id": "fc-1",
+              "name": "customer_lookup_workflow",
+              "response": {
+                "tier": "Verified VIP Member",
+                "user_id": "c123"
+              }
+            }
+          }
+        ],
+        "role": "user"
+      },
+      "id": "e-4",
+      "invocationId": "i-1",
+      "nodeInfo": {
+        "path": "customer_service_agent@1"
+      }
+    },
+    {
+      "author": "customer_service_agent",
+      "content": {
+        "parts": [
+          {
+            "functionCall": {
+              "args": {
+                "tier": "Verified VIP Member"
+              },
+              "id": "fc-2",
+              "name": "calculate_discount"
+            }
+          }
+        ],
+        "role": "model"
+      },
+      "id": "e-5",
+      "invocationId": "i-1",
+      "longRunningToolIds": [
+        "fc-2"
+      ],
+      "nodeInfo": {
+        "path": "customer_service_agent@1"
+      }
+    },
+
+    {
+      "author": "calculate_discount",
+      "branch": "calculate_discount@fc-2",
+      "content": {
+        "parts": [
+          {
+            "text": "Checking discount rules for tier 'Verified VIP Member'..."
+          }
+        ],
+        "role": "user"
+      },
+      "id": "e-6",
+      "invocationId": "i-1",
+      "nodeInfo": {
+        "path": "calculate_discount@1"
+      }
+    },
+    {
+      "author": "calculate_discount",
+      "branch": "calculate_discount@fc-2",
+      "id": "e-7",
+      "invocationId": "i-1",
+      "nodeInfo": {
+        "outputFor": [
+          "calculate_discount@1"
+        ],
+        "path": "calculate_discount@1"
+      },
+      "output": "20% off"
+    },
+    {
+      "author": "customer_service_agent",
+      "content": {
+        "parts": [
+          {
+            "functionResponse": {
+              "id": "fc-2",
+              "name": "calculate_discount",
+              "response": {
+                "result": "20% off"
+              }
+            }
+          }
+        ],
+        "role": "user"
+      },
+      "id": "e-8",
+      "invocationId": "i-1",
+      "nodeInfo": {
+        "path": "customer_service_agent@1"
+      }
+    },
+    {
+      "author": "customer_service_agent",
+      "content": {
+        "parts": [
+          {
+            "text": "Customer c123 is a Verified VIP Member and gets a 20% discount."
+          }
+        ],
+        "role": "model"
+      },
+      "id": "e-9",
+      "invocationId": "i-1",
+      "nodeInfo": {
+        "path": "customer_service_agent@1"
+      }
+    }
+  ],
+  "id": "12345678-1234-1234-1234-123456789abc",
+  "userId": "user"
+}

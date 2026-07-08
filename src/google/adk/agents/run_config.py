@@ -371,6 +371,14 @@ class RunConfig(BaseModel):
       )
   """
 
+  model_input_context: list[types.Content] | None = None
+  """Transient context to include in the model input for this invocation.
+
+  The Runner does not persist these contents to the session. They are only
+  added to the LLM request assembled for the current invocation, which lets
+  callers provide per-turn context without changing the conversation history.
+  """
+
   @model_validator(mode='before')
   @classmethod
   def check_for_deprecated_save_live_audio(cls, data: Any) -> Any:

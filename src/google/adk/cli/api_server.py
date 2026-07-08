@@ -165,6 +165,48 @@ def _get_scope_header(
   return None
 
 
+import ipaddress as _ipaddress
+
+_LOOPBACK_HOSTNAMES = frozenset({"localhost"})
+
+
+def _is_loopback_address(host: str) -> bool:
+  """Return True if *host* (with or without a port) refers to a loopback address.
+
+  Handles all four forms produced by browsers and uvicorn:
+    - Plain IPv4:          "127.0.0.1"
+    - IPv4 with port:      "127.0.0.1:8000"
+    - Bracketed IPv6:      "[::1]"
+    - Bracketed IPv6+port: "[::1]:8000"
+    - Plain IPv6 (scope):  "::1"  (ASGI server tuple value)
+    - Hostname:            "localhost"
+    - Hostname with port:  "localhost:8000"
+  """
+  bare = host
+  if bare.startswith("["):
+    # Bracketed IPv6: [addr] or [addr]:port
+    end = bare.find("]")
+    if end != -1:
+      bare = bare[1:end]
+  elif bare.count(":") == 1:
+    # IPv4:port or hostname:port (IPv6 without brackets has > 1 colon)
+    bare = bare.rsplit(":", 1)[0]
+  if bare in _LOOPBACK_HOSTNAMES:
+    return True
+  try:
+    return _ipaddress.ip_address(bare).is_loopback
+  except ValueError:
+    return False
+
+
+def _get_server_host(scope: dict[str, Any]) -> Optional[str]:
+  """Return the host the server is actually bound to (from ASGI server port)."""
+  server = scope.get("server")
+  if server and len(server) == 2:
+    return str(server[0])
+  return None
+
+
 def _get_request_origin(scope: dict[str, Any]) -> Optional[str]:
   """Compute the effective origin for the current HTTP/WebSocket request."""
   forwarded = _get_scope_header(scope, b"forwarded")
@@ -201,11 +243,38 @@ def _is_request_origin_allowed(
     allowed_origin_regex: Optional[re.Pattern[str]],
     has_configured_allowed_origins: bool,
 ) -> bool:
-  """Validate an Origin header against explicit config or same-origin."""
+  """Validate an Origin header against explicit config or same-origin.
+
+  DNS-rebinding protection: when the server is bound to a loopback address
+  (127.0.0.1 / ::1 / localhost) and no explicit allow-origins have been
+  configured, we additionally require that the request's Origin header also
+  resolves to a loopback host.  This prevents a DNS-rebinding attack where
+  an external page temporarily resolves to 127.0.0.1 and then POSTs to the
+  local development server by matching its own (evil.com) origin against the
+  Host header it controls.
+  """
   if has_configured_allowed_origins and _is_origin_allowed(
       origin, allowed_literal_origins, allowed_origin_regex
   ):
     return True
+
+  # DNS-rebinding guard: if the server is on loopback and no explicit
+  # allow-origins list is configured, only permit origins whose host is also
+  # loopback.  This mirrors the protection used by the MCP go-sdk SSEHandler.
+  server_host = _get_server_host(scope)
+  if (
+      not has_configured_allowed_origins
+      and server_host is not None
+      and _is_loopback_address(server_host)
+  ):
+    try:
+      from urllib.parse import urlparse  # noqa: PLC0415  (local import OK here)
+
+      origin_host = urlparse(origin).hostname or ""
+    except Exception:  # pylint: disable=broad-except
+      return False
+    if not _is_loopback_address(origin_host):
+      return False
 
   request_origin = _get_request_origin(scope)
   if request_origin is None:
