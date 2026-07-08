@@ -106,7 +106,7 @@ NOTE: Call when you need access to resources.""",
 
   async def _append_resources_to_llm_request(
       self, *, tool_context: ToolContext, llm_request: LlmRequest
-  ):
+  ) -> None:
     try:
       resource_names = await self._mcp_toolset.list_resources()
       if resource_names:
