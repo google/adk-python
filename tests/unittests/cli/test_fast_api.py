@@ -2137,6 +2137,88 @@ def test_openapi_json_schema_accessible(test_app):
         "0.3.x-only: mocks server.apps.A2AStarletteApplication (gone in 1.x)"
     ),
 )
+def test_a2a_setup_reaches_application_build(
+    mock_session_service,
+    mock_artifact_service,
+    mock_memory_service,
+    mock_agent_loader,
+    mock_eval_sets_manager,
+    mock_eval_set_results_manager,
+    temp_agents_dir_with_a2a,
+    monkeypatch,
+):
+  """Regression test for the A2A setup silently failing.
+
+  A function-local ``import json`` made ``json`` a local for the whole
+  ``get_fast_api_app`` function, so the earlier ``json.load(agent.json)`` in
+  the A2A loop raised ``UnboundLocalError``. The surrounding ``except`` swallowed
+  it, so no A2A routes were ever mounted. This asserts the loop gets past the
+  ``json.load`` call and actually builds the A2A application.
+  """
+  with (
+      patch("signal.signal", return_value=None),
+      patch(
+          "google.adk.cli.fast_api.create_session_service_from_options",
+          return_value=mock_session_service,
+      ),
+      patch(
+          "google.adk.cli.fast_api.create_artifact_service_from_options",
+          return_value=mock_artifact_service,
+      ),
+      patch(
+          "google.adk.cli.fast_api.create_memory_service_from_options",
+          return_value=mock_memory_service,
+      ),
+      patch(
+          "google.adk.cli.fast_api.AgentLoader",
+          return_value=mock_agent_loader,
+      ),
+      patch(
+          "google.adk.cli.fast_api.LocalEvalSetsManager",
+          return_value=mock_eval_sets_manager,
+      ),
+      patch(
+          "google.adk.cli.fast_api.LocalEvalSetResultsManager",
+          return_value=mock_eval_set_results_manager,
+      ),
+      patch(
+          "google.adk.cli.fast_api._create_task_store_from_options",
+          return_value=MagicMock(),
+      ),
+      patch("google.adk.a2a.executor.a2a_agent_executor.A2aAgentExecutor"),
+      patch("a2a.server.request_handlers.DefaultRequestHandler"),
+      patch("a2a.types.AgentCard", return_value=MagicMock()),
+      patch("a2a.server.apps.A2AStarletteApplication") as mock_a2a_app,
+  ):
+    mock_app_instance = MagicMock()
+    mock_app_instance.routes.return_value = []
+    mock_a2a_app.return_value = mock_app_instance
+
+    monkeypatch.chdir(temp_agents_dir_with_a2a)
+
+    get_fast_api_app(
+        agents_dir=".",
+        web=True,
+        session_service_uri="",
+        artifact_service_uri="",
+        memory_service_uri="",
+        allow_origins=["*"],
+        a2a=True,
+        host="127.0.0.1",
+        port=8000,
+    )
+
+    # If json.load raised UnboundLocalError, execution never reaches the
+    # A2AStarletteApplication construction and this mock is never called.
+    assert mock_a2a_app.called
+
+
+@pytest.mark.skipif(
+    _compat.IS_A2A_V1,
+    reason=(
+        "0.3.x-only: mocks server.apps.A2AStarletteApplication (gone in 1.x)"
+    ),
+)
 def test_a2a_agent_discovery(test_app_with_a2a):
   """Test that A2A agents are properly discovered and configured."""
   # This test mainly verifies that the A2A setup doesn't break the app
