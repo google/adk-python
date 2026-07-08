@@ -543,9 +543,11 @@ def _convert_reasoning_value_to_parts(reasoning_value: Any) -> List[types.Part]:
           continue
         if block_type == "thinking":
           thinking_text = block.get("thinking", "")
-          if thinking_text:
+          signature = block.get("signature")
+          # Anthropic streams a signature in a final chunk with empty text.
+          # Preserve signature-only blocks so the signature survives aggregation.
+          if thinking_text or signature:
             part = types.Part(text=thinking_text, thought=True)
-            signature = block.get("signature")
             if signature:
               decoded_signature = _decode_thought_signature(signature)
               part.thought_signature = decoded_signature or str(
@@ -563,6 +565,43 @@ def _convert_reasoning_value_to_parts(reasoning_value: Any) -> List[types.Part]:
       for text in _iter_reasoning_texts(reasoning_value)
       if text
   ]
+
+
+def _aggregate_streaming_thought_parts(
+    thought_parts: Iterable[types.Part],
+) -> List[types.Part]:
+  """Aggregates fragmented streaming thought parts into clean individual parts.
+
+  During streaming, Anthropic splits a thinking block across many deltas:
+  text-only chunks followed by a signature-only chunk at block_stop. This helper
+  joins the text chunks and attaches the signature, producing clean individual
+  thought parts for session history and outbound requests.
+  """
+  parts_list = list(thought_parts)
+  if not parts_list:
+    return []
+  aggregated: List[types.Part] = []
+  current_texts: List[str] = []
+  for part in parts_list:
+    if part.text:
+      current_texts.append(part.text)
+    if part.thought_signature:
+      aggregated.append(
+          types.Part(
+              text="".join(current_texts),
+              thought=True,
+              thought_signature=part.thought_signature,
+          )
+      )
+      current_texts = []
+  if current_texts:
+    aggregated.append(
+        types.Part(
+            text="".join(current_texts),
+            thought=True,
+        )
+    )
+  return aggregated
 
 
 def _extract_reasoning_value(message: Message | Delta | None) -> Any:
@@ -1023,9 +1062,14 @@ async def _content_to_message_param(
     # For Anthropic models, rebuild thinking_blocks with signatures so that
     # thinking is preserved across tool call boundaries. Without this,
     # Anthropic silently drops thinking after the first turn.
+    #
+    # Streaming splits one Anthropic thinking block across many deltas:
+    # text-only chunks followed by a signature-only chunk at block_stop.
+    # Aggregate them back into one thinking block for outbound.
     if model and _is_anthropic_model(model) and reasoning_parts:
+      aggregated_parts = _aggregate_streaming_thought_parts(reasoning_parts)
       thinking_blocks = []
-      for part in reasoning_parts:
+      for part in aggregated_parts:
         if part.text and part.thought_signature:
           sig = part.thought_signature
           if isinstance(sig, bytes):
@@ -1877,6 +1921,7 @@ def _model_response_to_chunk(
         or message.get("function_call")
         or message.get("reasoning_content")
         or message.get("reasoning")
+        or message.get("thinking_blocks")
     )
 
   if isinstance(response, ModelResponseStream):
