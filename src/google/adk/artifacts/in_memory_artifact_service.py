@@ -85,8 +85,6 @@ class InMemoryArtifactService(BaseArtifactService, BaseModel):
     Returns:
         The constructed artifact path.
     """
-    artifact_util.validate_path_segment(app_name, "app_name")
-    artifact_util.validate_path_segment(user_id, "user_id")
     if self._file_has_user_namespace(filename):
       return f"{app_name}/{user_id}/user/{filename}"
 
@@ -94,7 +92,6 @@ class InMemoryArtifactService(BaseArtifactService, BaseModel):
       raise InputValidationError(
           "Session ID must be provided for session-scoped artifacts."
       )
-    artifact_util.validate_path_segment(session_id, "session_id")
     return f"{app_name}/{user_id}/{session_id}/{filename}"
 
   @override
@@ -218,10 +215,6 @@ class InMemoryArtifactService(BaseArtifactService, BaseModel):
   async def list_artifact_keys(
       self, *, app_name: str, user_id: str, session_id: Optional[str] = None
   ) -> list[str]:
-    artifact_util.validate_path_segment(app_name, "app_name")
-    artifact_util.validate_path_segment(user_id, "user_id")
-    if session_id is not None:
-      artifact_util.validate_path_segment(session_id, "session_id")
     usernamespace_prefix = f"{app_name}/{user_id}/user/"
     session_prefix = (
         f"{app_name}/{user_id}/{session_id}/" if session_id else None
