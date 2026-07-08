@@ -13,4 +13,4 @@ Sample queries:
 
 > initial topic: badminton
 
-> initial topic: impact of AI on society
+> initial topic: the history of computers
