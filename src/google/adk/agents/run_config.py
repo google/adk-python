@@ -379,6 +379,14 @@ class RunConfig(BaseModel):
   callers provide per-turn context without changing the conversation history.
   """
 
+  include_thoughts_from_other_agents: bool = False
+  """Whether to include other agents' thought parts in LLM context.
+
+  By default, thoughts from other agents are excluded when their messages are
+  reformatted as user context for the current agent. Enable this only when
+  agents are expected to share internal reasoning with one another.
+  """
+
   @model_validator(mode='before')
   @classmethod
   def check_for_deprecated_save_live_audio(cls, data: Any) -> Any:

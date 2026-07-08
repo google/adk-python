@@ -2204,6 +2204,25 @@ async def test_content_to_message_param_assistant_thought_message():
 
 
 @pytest.mark.asyncio
+async def test_content_to_message_param_merges_reasoning_chunks_without_separator():
+  first_part = types.Part.from_text(text="Let")
+  first_part.thought = True
+  second_part = types.Part.from_text(text=" me think")
+  second_part.thought = True
+  third_part = types.Part.from_text(text=" this through.")
+  third_part.thought = True
+  content = types.Content(
+      role="assistant", parts=[first_part, second_part, third_part]
+  )
+
+  message = await _content_to_message_param(content)
+
+  assert message["role"] == "assistant"
+  assert message["content"] is None
+  assert message["reasoning_content"] == "Let me think this through."
+
+
+@pytest.mark.asyncio
 async def test_content_to_message_param_model_thought_message():
   part = types.Part.from_text(text="internal reasoning")
   part.thought = True
