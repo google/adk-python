@@ -13,4 +13,4 @@ Sample queries:
 
 > initial topic: badminton
 
-> initial topic: AI hurts human
+> initial topic: impact of AI on society
