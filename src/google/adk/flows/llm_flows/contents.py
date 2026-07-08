@@ -776,9 +776,13 @@ def _get_current_turn_contents(
   # Find the latest event that starts the current turn and process from there
   for i in range(len(events) - 1, -1, -1):
     event = events[i]
-    if _should_include_event_in_context(
-        current_branch, event, isolation_scope=isolation_scope
-    ) and (event.author == 'user' or _is_other_agent_reply(agent_name, event)):
+    if (
+        _should_include_event_in_context(
+            current_branch, event, isolation_scope=isolation_scope
+        )
+        and (event.author == 'user' or _is_other_agent_reply(agent_name, event))
+        and not _is_direct_transfer(event)
+    ):
       return _get_contents(
           current_branch,
           events[i:],
@@ -790,6 +794,30 @@ def _get_current_turn_contents(
       )
 
   return []
+
+
+def _is_direct_transfer(event: Event) -> bool:
+  """Whether the event is a direct ``transfer_to_agent`` event.
+
+  When ``include_contents='none'`` and control is handed to a sub-agent via
+  ``transfer_to_agent``, the trailing transfer events (the function call and
+  its response) must not be treated as the start of the current turn.
+  Otherwise the sub-agent's turn would anchor on the parent's transfer event
+  and drop the latest user input. Skipping these events lets the turn anchor
+  on the real user input (or a non-transfer model request) instead, while the
+  transfer events are still included as context.
+  """
+  return bool(
+      event.actions.transfer_to_agent
+      or (
+          event.content
+          and event.content.parts
+          and any(
+              p.function_call and p.function_call.name == 'transfer_to_agent'
+              for p in event.content.parts
+          )
+      )
+  )
 
 
 def _is_other_agent_reply(current_agent_name: str, event: Event) -> bool:
