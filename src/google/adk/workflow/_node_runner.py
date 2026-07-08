@@ -28,6 +28,7 @@ import logging
 from typing import Any
 from typing import TYPE_CHECKING
 
+from ..events._branch_path import _BranchPath
 from ..telemetry import node_tracing
 
 if TYPE_CHECKING:
@@ -206,8 +207,9 @@ class NodeRunner:
     )
 
     if self._use_sub_branch:
-      segment = f"{self._node.name}@{self._run_id}"
-      branch = f"{base_branch}.{segment}" if base_branch else segment
+      branch = _BranchPath.create_sub_branch(
+          base_branch, name=self._node.name, run_id=self._run_id
+      )
       ic = ic.model_copy(update={"branch": branch})
     elif self._override_branch is not None:
       ic = ic.model_copy(update={"branch": self._override_branch})
