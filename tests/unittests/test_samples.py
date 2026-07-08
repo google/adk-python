@@ -14,7 +14,6 @@
 
 from __future__ import annotations
 
-import json
 import os
 from pathlib import Path
 import sys
@@ -23,7 +22,6 @@ from google.adk.agents import config_agent_utils
 from google.adk.apps.app import App
 from google.adk.cli.agent_test_runner import test_agent_replay as _test_agent_replay
 from google.adk.cli.utils.agent_loader import AgentLoader
-from google.genai import types
 import pytest
 
 CONTRIBUTING_DIR = Path(__file__).parent.parent.parent / "contributing"
@@ -126,6 +124,20 @@ SKIP_LOAD = {
     "adk_team/adk_answering_agent/gemini_assistant": (
         "sub-agent of adk_answering_agent, not independently loadable"
     ),
+    "a2a/a2a_auth/remote_a2a/bigquery_agent": (
+        "requires Google Cloud ADC at import"
+    ),
+    "integrations/bigquery": "requires Google Cloud ADC at import",
+    "integrations/bigquery_mcp": "requires Google Cloud ADC at import",
+    "integrations/bigtable": "requires Google Cloud ADC at import",
+    "integrations/data_agent": "requires Google Cloud ADC at import",
+    "integrations/gcs": "requires Google Cloud ADC at import",
+    "integrations/gcs_admin": "requires Google Cloud ADC at import",
+    "integrations/google_api": "requires Google Cloud ADC at import",
+    "integrations/pubsub": "requires Google Cloud ADC at import",
+    "integrations/spanner": "requires Google Cloud ADC at import",
+    "integrations/spanner_admin": "requires Google Cloud ADC at import",
+    "integrations/spanner_rag_agent": "requires Google Cloud ADC at import",
     "integrations/oauth_calendar_agent": (
         "fetches the Calendar API (calendar v3) discovery doc at import"
     ),
