@@ -27,6 +27,7 @@ from unittest.mock import Mock
 from unittest.mock import patch
 import warnings
 
+from google.adk.models.lite_llm import _aggregate_streaming_thought_parts
 from google.adk.models.lite_llm import _append_fallback_user_content_if_missing
 from google.adk.models.lite_llm import _content_to_message_param
 from google.adk.models.lite_llm import _convert_reasoning_value_to_parts
@@ -5396,15 +5397,48 @@ def test_convert_reasoning_value_to_parts_skips_redacted_blocks():
   assert parts[0].text == "visible"
 
 
-def test_convert_reasoning_value_to_parts_skips_empty_thinking():
-  """Blocks with empty thinking text are excluded."""
+def test_convert_reasoning_value_to_parts_preserves_signature_only_blocks():
+  """Signature-only blocks (empty text) are preserved for streaming aggregation.
+
+  Anthropic emits the block_stop signature as a delta with empty thinking text.
+  Dropping it would lose the signature, breaking multi-turn thinking continuity.
+  Blocks with neither text nor signature are still skipped.
+  """
   thinking_blocks = [
       {"type": "thinking", "thinking": "", "signature": "c2lnMQ=="},
       {"type": "thinking", "thinking": "real thought", "signature": "c2lnMg=="},
+      {
+          "type": "thinking",
+          "thinking": "",
+          "signature": "",
+      },  # fully empty: drop
   ]
   parts = _convert_reasoning_value_to_parts(thinking_blocks)
-  assert len(parts) == 1
-  assert parts[0].text == "real thought"
+  assert len(parts) == 2
+  assert parts[0].text == ""
+  assert parts[0].thought is True
+  assert parts[0].thought_signature == b"sig1"
+  assert parts[1].text == "real thought"
+  assert parts[1].thought_signature == b"sig2"
+
+
+def test_aggregate_streaming_thought_parts():
+  """Tests aggregating fragmented streaming thought parts and multiple blocks."""
+  parts = [
+      types.Part(text="First block ", thought=True),
+      types.Part(text="text.", thought=True),
+      types.Part(text="", thought=True, thought_signature=b"sig1"),
+      types.Part(text="Second block", thought=True, thought_signature=b"sig2"),
+      types.Part(text="Trailing without sig", thought=True),
+  ]
+  aggregated = _aggregate_streaming_thought_parts(parts)
+  assert len(aggregated) == 3
+  assert aggregated[0].text == "First block text."
+  assert aggregated[0].thought_signature == b"sig1"
+  assert aggregated[1].text == "Second block"
+  assert aggregated[1].thought_signature == b"sig2"
+  assert aggregated[2].text == "Trailing without sig"
+  assert aggregated[2].thought_signature is None
 
 
 def test_convert_reasoning_value_to_parts_flat_string_unchanged():
@@ -5476,6 +5510,33 @@ async def test_content_to_message_param_anthropic_model_round_trip_preserves_sig
       "signature": "c2lnX2E=",
   }]
   assert result.get("reasoning_content") is None
+
+
+@pytest.mark.asyncio
+async def test_content_to_message_param_anthropic_split_thinking_and_signature():
+  """Combines separate thinking and signature parts into a single thinking_block."""
+  content = types.Content(
+      role="model",
+      parts=[
+          types.Part(text="deep thought", thought=True),
+          types.Part(
+              text="", thought=True, thought_signature=b"sig_round_trip"
+          ),
+          types.Part(text="Hello!"),
+      ],
+  )
+  result = await _content_to_message_param(
+      content, model="anthropic/claude-4-sonnet"
+  )
+  assert result["role"] == "assistant"
+  assert "thinking_blocks" in result
+  assert result.get("reasoning_content") is None
+  blocks = result["thinking_blocks"]
+  assert len(blocks) == 1
+  assert blocks[0]["type"] == "thinking"
+  assert blocks[0]["thinking"] == "deep thought"
+  assert blocks[0]["signature"] == "c2lnX3JvdW5kX3RyaXA="
+  assert result["content"] == "Hello!"
 
 
 @pytest.mark.asyncio
@@ -5577,7 +5638,7 @@ def test_convert_reasoning_value_to_parts_empty_thinking_does_not_fall_through()
           "type": "thinking",
           "thinking": "",
           "text": "leaked",
-          "signature": "c2ln",
+          "signature": "",
       },
   ]
   parts = _convert_reasoning_value_to_parts(thinking_blocks)
@@ -5676,6 +5737,76 @@ async def test_content_to_message_param_anthropic_provider_embeds_thinking_block
       "thinking": "thinking text",
   }
   assert result.get("reasoning_content") is None
+
+
+@pytest.mark.asyncio
+async def test_content_to_message_param_anthropic_aggregates_streaming_split_thinking():
+  """Streaming splits one Anthropic thinking block across many parts:
+  text-only chunks followed by a signature-only chunk at block_stop.
+  _content_to_message_param must re-join them into one thinking_block.
+  """
+  content = types.Content(
+      role="model",
+      parts=[
+          # Text-only chunks from streaming deltas (no signature)
+          types.Part(text="The user wants ", thought=True),
+          types.Part(text="GST research ", thought=True),
+          types.Part(text="on secondment.", thought=True),
+          # Final signature-only chunk (empty text, signature carries the whole block)
+          types.Part(
+              text="", thought=True, thought_signature=b"ErEDClsIDBACGAIfull"
+          ),
+          # Non-thought response content
+          types.Part.from_function_call(name="create_plan", args={"q": "test"}),
+      ],
+  )
+  result = await _content_to_message_param(
+      content, model="anthropic/claude-4-sonnet"
+  )
+  # One aggregated thinking block with combined text and the block's signature
+  blocks = result["thinking_blocks"]
+  assert len(blocks) == 1
+  assert blocks[0]["type"] == "thinking"
+  assert blocks[0]["thinking"] == "The user wants GST research on secondment."
+  assert blocks[0]["signature"] == "RXJFRENsc0lEQkFDR0FJZnVsbA=="
+  # Legacy reasoning_content is not set when the Anthropic branch takes
+  assert result.get("reasoning_content") is None
+
+
+def test_model_response_to_chunk_preserves_signature_only_delta():
+  """Anthropic streams a final thinking delta where content and
+  reasoning_content are empty but thinking_blocks carries the signature.
+  _has_meaningful_signal must recognize thinking_blocks as signal so the
+  signature survives into a ReasoningChunk.
+  """
+  stream = ModelResponseStream(
+      id="x",
+      created=0,
+      model="claude",
+      choices=[
+          StreamingChoices(
+              index=0,
+              delta=Delta(
+                  role=None,
+                  content="",
+                  reasoning_content="",
+                  thinking_blocks=[{
+                      "type": "thinking",
+                      "thinking": "",
+                      "signature": "SignatureOnlyChunk",
+                  }],
+              ),
+          )
+      ],
+  )
+  chunks = list(_model_response_to_chunk(stream))
+  reasoning_chunks = [c for c, _ in chunks if isinstance(c, ReasoningChunk)]
+  assert len(reasoning_chunks) == 1
+  parts = reasoning_chunks[0].parts
+  assert len(parts) == 1
+  assert parts[0].text == ""
+  assert parts[0].thought is True
+  assert parts[0].thought_signature == b"SignatureOnlyChunk"
 
 
 @pytest.mark.asyncio
