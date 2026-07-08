@@ -85,6 +85,43 @@ def test_load_web_page_blocks_shared_address_space_urls(monkeypatch):
   mock_send.assert_not_called()
 
 
+def test_load_web_page_blocks_nat64_embedded_metadata_ip(monkeypatch):
+  _clear_proxy_env(monkeypatch)
+  mock_get = mock.Mock()
+  monkeypatch.setattr(load_web_page_module.requests, 'get', mock_get)
+  mock_send = mock.Mock()
+  monkeypatch.setattr(load_web_page_module.HTTPAdapter, 'send', mock_send)
+
+  result = load_web_page(
+      'http://[64:ff9b::169.254.169.254]/computeMetadata/v1/'
+  )
+
+  assert (
+      result
+      == 'Failed to fetch url:'
+      ' http://[64:ff9b::169.254.169.254]/computeMetadata/v1/'
+  )
+  mock_get.assert_not_called()
+  mock_send.assert_not_called()
+
+
+def test_load_web_page_blocks_ipv4_compatible_embedded_private_ip(monkeypatch):
+  _clear_proxy_env(monkeypatch)
+  mock_get = mock.Mock()
+  monkeypatch.setattr(load_web_page_module.requests, 'get', mock_get)
+  mock_send = mock.Mock()
+  monkeypatch.setattr(load_web_page_module.HTTPAdapter, 'send', mock_send)
+
+  result = load_web_page('http://[::169.254.169.254]/latest/meta-data/')
+
+  assert (
+      result
+      == 'Failed to fetch url: http://[::169.254.169.254]/latest/meta-data/'
+  )
+  mock_get.assert_not_called()
+  mock_send.assert_not_called()
+
+
 def test_load_web_page_blocks_private_hostname_targets(monkeypatch):
   _clear_proxy_env(monkeypatch)
   monkeypatch.setattr(
