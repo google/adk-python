@@ -255,6 +255,99 @@ async def test_include_contents_none_multi_branch_current_turn():
 
 
 @pytest.mark.asyncio
+async def test_events_with_transfer_to_agent_are_included():
+  """Test that the user input is retained across a transfer_to_agent handoff.
+
+  When include_contents='none' and control is transferred to a sub-agent, the
+  current turn must anchor on the latest user input rather than the trailing
+  transfer_to_agent events, while still including those transfer events as
+  context.
+  """
+  agent = Agent(
+      model="gemini-2.5-flash", name="test_agent", include_contents="none"
+  )
+  llm_request = LlmRequest(model="gemini-2.5-flash")
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent
+  )
+
+  events = [
+      Event(
+          invocation_id="inv1",
+          author="user",
+          content=types.UserContent("First user message"),
+      ),
+      Event(
+          invocation_id="inv1",
+          author="parent",
+          content=types.Content(
+              parts=[
+                  types.Part(
+                      function_call=types.FunctionCall(
+                          args={"agent_name": "test_agent"},
+                          id="call_inv1",
+                          name="transfer_to_agent",
+                      )
+                  )
+              ],
+              role="model",
+          ),
+      ),
+      Event(
+          invocation_id="inv1",
+          author="parent",
+          content=types.Content(
+              parts=[
+                  types.Part(
+                      function_response=types.FunctionResponse(
+                          id="call_inv1",
+                          name="transfer_to_agent",
+                          response={"result": None},
+                      ),
+                  ),
+              ],
+              role="user",
+          ),
+          actions=EventActions(transfer_to_agent="test_agent"),
+      ),
+  ]
+
+  invocation_context.session.events = events
+  async for _ in contents.request_processor.run_async(
+      invocation_context, llm_request
+  ):
+    pass
+
+  assert llm_request.contents == [
+      types.UserContent("First user message"),
+      types.Content(
+          parts=[
+              types.Part(text="For context:"),
+              types.Part(
+                  text=(
+                      "[parent] called tool `transfer_to_agent` with"
+                      " parameters: {'agent_name': 'test_agent'}"
+                  )
+              ),
+          ],
+          role="user",
+      ),
+      types.Content(
+          parts=[
+              types.Part(text="For context:"),
+              types.Part(
+                  text=(
+                      "[parent] `transfer_to_agent` tool returned result:"
+                      " {'result': None}"
+                  )
+              ),
+          ],
+          role="user",
+      ),
+  ]
+
+
+@pytest.mark.asyncio
 async def test_authentication_events_are_filtered():
   """Test that authentication function calls and responses are filtered out."""
   agent = Agent(model="gemini-2.5-flash", name="test_agent")

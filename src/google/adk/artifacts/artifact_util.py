@@ -134,32 +134,3 @@ def validate_artifact_reference_scope(
         "Session-scoped artifact references must stay within the same"
         " session scope."
     )
-
-
-def validate_path_segment(value: str, field_name: str) -> None:
-  """Rejects values that could alter the constructed path.
-
-  Args:
-    value: The caller-supplied identifier (e.g. user_id or session_id).
-    field_name: Human-readable name used in the error message.
-
-  Raises:
-    InputValidationError: If the value contains path separators, traversal
-      segments, or null bytes.
-  """
-  if not value:
-    raise input_validation_error.InputValidationError(
-        f"{field_name} must not be empty."
-    )
-  if "\x00" in value:
-    raise input_validation_error.InputValidationError(
-        f"{field_name} must not contain null bytes."
-    )
-  if "/" in value or "\\" in value:
-    raise input_validation_error.InputValidationError(
-        f"{field_name} {value!r} must not contain path separators."
-    )
-  if value in (".", "..") or ".." in value.split("/"):
-    raise input_validation_error.InputValidationError(
-        f"{field_name} {value!r} must not contain traversal segments."
-    )
