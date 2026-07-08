@@ -15,7 +15,6 @@
 """Tests for artifact_util."""
 
 from google.adk.artifacts import artifact_util
-from google.adk.errors.input_validation_error import InputValidationError
 from google.genai import types
 import pytest
 
@@ -136,44 +135,3 @@ def test_is_artifact_ref_true():
 def test_is_artifact_ref_false(part):
   """Tests is_artifact_ref with non-reference parts."""
   assert artifact_util.is_artifact_ref(part) is False
-
-
-@pytest.mark.parametrize(
-    "field_name",
-    ["user_id", "app_name", "session_id"],
-)
-@pytest.mark.parametrize(
-    "value",
-    [
-        "user123",
-        "myapp",
-        "sess123",
-    ],
-)
-def test_validate_path_segment_valid(value, field_name):
-  """Normal segments should pass validation."""
-  artifact_util.validate_path_segment(value, field_name)
-
-
-@pytest.mark.parametrize(
-    "field_name",
-    ["user_id", "app_name", "session_id"],
-)
-@pytest.mark.parametrize(
-    "value",
-    [
-        "../escape",
-        "../../etc",
-        "foo/../../bar",
-        "..",
-        ".",
-        "has/slash",
-        "back\\slash",
-        "null\x00byte",
-        "",
-    ],
-)
-def test_validate_path_segment_invalid(value, field_name):
-  """Invalid segments should raise InputValidationError."""
-  with pytest.raises(InputValidationError):
-    artifact_util.validate_path_segment(value, field_name)

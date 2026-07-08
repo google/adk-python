@@ -23,6 +23,7 @@ from typing import List
 from typing import Optional
 from typing import Tuple
 
+from google.adk.utils import _mtls_utils
 import google.auth
 import google.auth.exceptions
 from google.auth.transport.requests import AuthorizedSession
@@ -30,6 +31,9 @@ from google.auth.transport.requests import Request
 import requests
 
 _VERTEX_AI_ENDPOINT = "https://{location}-aiplatform.googleapis.com/v1beta1"
+_VERTEX_AI_MTLS_ENDPOINT = (
+    "https://{location}-aiplatform.mtls.googleapis.com/v1beta1"
+)
 
 
 def check_adc() -> bool:
@@ -75,7 +79,18 @@ def _call_vertex_express_api(
   """Calls a Vertex AI Express API."""
   credentials, _ = google.auth.default()
   session = AuthorizedSession(credentials)
-  url = f"{_VERTEX_AI_ENDPOINT.format(location=location)}/vertexExpress{action}"
+
+  if _mtls_utils.use_client_cert_effective():
+    session.configure_mtls_channel()
+    endpoint = _mtls_utils.get_api_endpoint(
+        location=location,
+        default_template=_VERTEX_AI_ENDPOINT,
+        mtls_template=_VERTEX_AI_MTLS_ENDPOINT,
+    )
+  else:
+    endpoint = _VERTEX_AI_ENDPOINT.format(location=location)
+
+  url = f"{endpoint}/vertexExpress{action}"
   headers = {
       "Content-Type": "application/json",
   }
