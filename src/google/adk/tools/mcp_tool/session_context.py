@@ -347,8 +347,8 @@ class SessionContext:
 
         # Wait for close signal - the session remains valid while we wait
         await self._close_event.wait()
-    except BaseException as e:
-      logger.warning(f'Error on session runner task: {e}')
+    except Exception as e:
+      logger.warning('Error on session runner task: %s', e)
       raise
     finally:
       self._ready_event.set()
