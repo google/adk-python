@@ -81,6 +81,12 @@ class _ContentLlmRequestProcessor(BaseLlmRequestProcessor):
     # Preserve all contents that were added by instruction processor
     # (since llm_request.contents will be completely reassigned below)
     instruction_related_contents = llm_request.contents
+    run_config = invocation_context.run_config
+    include_thoughts_from_other_agents = (
+        run_config.include_thoughts_from_other_agents
+        if run_config is not None
+        else False
+    )
 
     is_single_turn = getattr(agent, 'mode', None) == 'single_turn'
     if agent.include_contents == 'default':
@@ -93,6 +99,7 @@ class _ContentLlmRequestProcessor(BaseLlmRequestProcessor):
           isolation_scope=invocation_context.isolation_scope,
           is_single_turn=is_single_turn,
           user_content=invocation_context.user_content,
+          include_thoughts_from_other_agents=include_thoughts_from_other_agents,
       )
     else:
       # Include current turn context only (no conversation history)
@@ -104,6 +111,7 @@ class _ContentLlmRequestProcessor(BaseLlmRequestProcessor):
           isolation_scope=invocation_context.isolation_scope,
           is_single_turn=is_single_turn,
           user_content=invocation_context.user_content,
+          include_thoughts_from_other_agents=False,
       )
 
     if (
@@ -274,7 +282,9 @@ def _rearrange_events_for_latest_function_response(
   return result_events
 
 
-def _is_part_invisible(p: types.Part) -> bool:
+def _is_part_invisible(
+    p: types.Part, *, include_thoughts: bool = False
+) -> bool:
   """Returns whether a part is invisible for LLM context.
 
   A part is invisible if:
@@ -294,7 +304,7 @@ def _is_part_invisible(p: types.Part) -> bool:
   if p.function_call or p.function_response:
     return False
 
-  return p.thought or not (
+  return (p.thought and not include_thoughts) or not (
       p.text
       or p.inline_data
       or p.file_data
@@ -303,7 +313,9 @@ def _is_part_invisible(p: types.Part) -> bool:
   )
 
 
-def _contains_empty_content(event: Event) -> bool:
+def _contains_empty_content(
+    event: Event, *, include_thoughts: bool = False
+) -> bool:
   """Check if an event should be skipped due to missing or empty content.
 
   This can happen to the events that only changed session state.
@@ -325,7 +337,10 @@ def _contains_empty_content(event: Event) -> bool:
       not event.content
       or not event.content.role
       or not event.content.parts
-      or all(_is_part_invisible(p) for p in event.content.parts)
+      or all(
+          _is_part_invisible(p, include_thoughts=include_thoughts)
+          for p in event.content.parts
+      )
   ) and (not event.output_transcription and not event.input_transcription)
 
 
@@ -393,6 +408,8 @@ def _should_include_event_in_context(
     current_branch: Optional[str],
     event: Event,
     isolation_scope: Optional[str] = None,
+    *,
+    include_thoughts: bool = False,
 ) -> bool:
   """Determines if an event should be included in the LLM context.
 
@@ -418,7 +435,7 @@ def _should_include_event_in_context(
   if ev_iso != isolation_scope:
     return False
   return not (
-      _contains_empty_content(event)
+      _contains_empty_content(event, include_thoughts=include_thoughts)
       or not _is_event_belongs_to_branch(current_branch, event)
       or _is_adk_framework_event(event)
       or _is_auth_event(event)
@@ -577,6 +594,7 @@ def _get_contents(
     isolation_scope: Optional[str] = None,
     is_single_turn: bool = False,
     user_content: Optional[types.Content] = None,
+    include_thoughts_from_other_agents: bool = False,
 ) -> list[types.Content]:
   """Get the contents for the LLM request.
 
@@ -592,6 +610,8 @@ def _get_contents(
     user_content: Fallback first user turn for task agents whose
       originating delegation FC is not in session (workflow-node
       task case).
+    include_thoughts_from_other_agents: Whether to include thought parts from
+      other agents when presenting their messages as user context.
 
   Returns:
     A list of processed contents.
@@ -624,7 +644,13 @@ def _get_contents(
       e
       for e in rewind_filtered_events
       if _should_include_event_in_context(
-          current_branch, e, isolation_scope=isolation_scope
+          current_branch,
+          e,
+          isolation_scope=isolation_scope,
+          include_thoughts=(
+              include_thoughts_from_other_agents
+              and _is_other_agent_reply(agent_name, e)
+          ),
       )
   ]
 
@@ -699,7 +725,9 @@ def _get_contents(
             break
 
     if is_other_reply:
-      if converted_event := _present_other_agent_message(event):
+      if converted_event := _present_other_agent_message(
+          event, include_thoughts=include_thoughts_from_other_agents
+      ):
         filtered_events.append(converted_event)
     else:
       filtered_events.append(event)
@@ -752,6 +780,7 @@ def _get_current_turn_contents(
     is_single_turn: bool = False,
     isolation_scope: Optional[str] = None,
     user_content: Optional[types.Content] = None,
+    include_thoughts_from_other_agents: bool = False,
 ) -> list[types.Content]:
   """Get contents for the current turn only (no conversation history).
 
@@ -768,6 +797,8 @@ def _get_current_turn_contents(
     events: A list of all session events.
     agent_name: The name of the agent.
     preserve_function_call_ids: Whether to preserve function call ids.
+    include_thoughts_from_other_agents: Whether to include thought parts from
+      other agents when presenting their messages as user context.
 
   Returns:
     A list of contents for the current turn only, preserving context needed
@@ -778,7 +809,13 @@ def _get_current_turn_contents(
     event = events[i]
     if (
         _should_include_event_in_context(
-            current_branch, event, isolation_scope=isolation_scope
+            current_branch,
+            event,
+            isolation_scope=isolation_scope,
+            include_thoughts=(
+                include_thoughts_from_other_agents
+                and _is_other_agent_reply(agent_name, event)
+            ),
         )
         and (event.author == 'user' or _is_other_agent_reply(agent_name, event))
         and not _is_direct_transfer(event)
@@ -791,6 +828,7 @@ def _get_current_turn_contents(
           isolation_scope=isolation_scope,
           is_single_turn=is_single_turn,
           user_content=user_content,
+          include_thoughts_from_other_agents=include_thoughts_from_other_agents,
       )
 
   return []
@@ -851,7 +889,9 @@ def _is_other_agent_reply(current_agent_name: str, event: Event) -> bool:
   )
 
 
-def _present_other_agent_message(event: Event) -> Optional[Event]:
+def _present_other_agent_message(
+    event: Event, *, include_thoughts: bool = False
+) -> Optional[Event]:
   """Presents another agent's message as user context for the current agent.
 
   Reformats the event with role='user' and adds '[agent_name] said:' prefix
@@ -859,6 +899,8 @@ def _present_other_agent_message(event: Event) -> Optional[Event]:
 
   Args:
     event: The event from another agent to present as context.
+    include_thoughts: Whether to include thought parts as explicit text
+      context.
 
   Returns:
     Event reformatted as user-role context with agent attribution, or None
@@ -872,7 +914,10 @@ def _present_other_agent_message(event: Event) -> Optional[Event]:
   content.parts = [types.Part(text='For context:')]
   for part in event.content.parts:
     if part.thought:
-      # Exclude thoughts from the context.
+      if include_thoughts and part.text is not None and part.text.strip():
+        content.parts.append(
+            types.Part(text=f'[{event.author}] thought: {part.text}')
+        )
       continue
     elif part.text is not None and part.text.strip():
       content.parts.append(
