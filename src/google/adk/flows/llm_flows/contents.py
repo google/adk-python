@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+import copy
 import logging
 from typing import AsyncGenerator
 from typing import Optional
@@ -103,6 +104,16 @@ class _ContentLlmRequestProcessor(BaseLlmRequestProcessor):
           isolation_scope=invocation_context.isolation_scope,
           is_single_turn=is_single_turn,
           user_content=invocation_context.user_content,
+      )
+
+    if (
+        invocation_context.run_config
+        and invocation_context.run_config.model_input_context
+    ):
+      _add_model_input_context_to_user_content(
+          invocation_context,
+          llm_request,
+          copy.deepcopy(invocation_context.run_config.model_input_context),
       )
 
     # Add instruction-related contents to proper position in conversation
@@ -765,9 +776,13 @@ def _get_current_turn_contents(
   # Find the latest event that starts the current turn and process from there
   for i in range(len(events) - 1, -1, -1):
     event = events[i]
-    if _should_include_event_in_context(
-        current_branch, event, isolation_scope=isolation_scope
-    ) and (event.author == 'user' or _is_other_agent_reply(agent_name, event)):
+    if (
+        _should_include_event_in_context(
+            current_branch, event, isolation_scope=isolation_scope
+        )
+        and (event.author == 'user' or _is_other_agent_reply(agent_name, event))
+        and not _is_direct_transfer(event)
+    ):
       return _get_contents(
           current_branch,
           events[i:],
@@ -779,6 +794,30 @@ def _get_current_turn_contents(
       )
 
   return []
+
+
+def _is_direct_transfer(event: Event) -> bool:
+  """Whether the event is a direct ``transfer_to_agent`` event.
+
+  When ``include_contents='none'`` and control is handed to a sub-agent via
+  ``transfer_to_agent``, the trailing transfer events (the function call and
+  its response) must not be treated as the start of the current turn.
+  Otherwise the sub-agent's turn would anchor on the parent's transfer event
+  and drop the latest user input. Skipping these events lets the turn anchor
+  on the real user input (or a non-transfer model request) instead, while the
+  transfer events are still included as context.
+  """
+  return bool(
+      event.actions.transfer_to_agent
+      or (
+          event.content
+          and event.content.parts
+          and any(
+              p.function_call and p.function_call.name == 'transfer_to_agent'
+              for p in event.content.parts
+          )
+      )
+  )
 
 
 def _is_other_agent_reply(current_agent_name: str, event: Event) -> bool:
@@ -1037,6 +1076,26 @@ def _content_contains_function_response(content: types.Content) -> bool:
     if part.function_response:
       return True
   return False
+
+
+def _add_model_input_context_to_user_content(
+    invocation_context: InvocationContext,
+    llm_request: LlmRequest,
+    model_input_context: list[types.Content],
+) -> None:
+  """Insert transient model input context before the invocation user content."""
+  if not model_input_context:
+    return
+
+  insert_index = 0
+  user_content = invocation_context.user_content
+  if user_content:
+    for i in range(len(llm_request.contents) - 1, -1, -1):
+      if llm_request.contents[i] == user_content:
+        insert_index = i
+        break
+
+  llm_request.contents[insert_index:insert_index] = model_input_context
 
 
 async def _add_instructions_to_user_content(

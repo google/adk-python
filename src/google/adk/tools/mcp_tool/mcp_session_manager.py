@@ -81,6 +81,8 @@ from .session_context import SessionContext
 
 logger = logging.getLogger('google_adk.' + __name__)
 
+_MAX_LOG_BODY_LENGTH = 1000
+
 
 def create_mcp_http_client(
     headers: dict[str, str] | None = None,
@@ -271,6 +273,8 @@ class _DebugHttpxClientFactory:
         request_body = response.request.content.decode(
             'utf-8', errors='replace'
         )
+        if len(request_body) > _MAX_LOG_BODY_LENGTH:
+          request_body = request_body[:_MAX_LOG_BODY_LENGTH] + '... [truncated]'
       except Exception:  # pylint: disable=broad-exception-caught
         request_body = '<binary>'
 
@@ -278,6 +282,10 @@ class _DebugHttpxClientFactory:
       try:
         await response.aread()
         response_body = response.text
+        if len(response_body) > _MAX_LOG_BODY_LENGTH:
+          response_body = (
+              response_body[:_MAX_LOG_BODY_LENGTH] + '... [truncated]'
+          )
       except Exception as e:  # pylint: disable=broad-exception-caught
         response_body = f'<failed to read body: {e}>'
     else:

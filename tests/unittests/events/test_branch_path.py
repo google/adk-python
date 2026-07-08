@@ -153,6 +153,64 @@ def test_constructor_copies_segments_list():
   assert path.segments == ["parent", "child"]
 
 
+def test_append_single_segment_returns_new_path():
+  """append adds a single segment to an existing path."""
+  path = _BranchPath.from_string("parent")
+  new_path = path.append("child")
+
+  assert new_path == _BranchPath.from_string("parent.child")
+  assert path == _BranchPath.from_string("parent")  # Immutability check
+
+
+def test_append_with_run_id_formats_segment():
+  """append formats the segment as 'name@run_id' when run_id is provided."""
+  path = _BranchPath.from_string("parent")
+  new_path = path.append("child", run_id="call_123")
+
+  assert new_path == _BranchPath.from_string("parent.child@call_123")
+
+
+def test_append_another_branch_path():
+  """append combines segments from another _BranchPath instance."""
+  path1 = _BranchPath.from_string("parent")
+  path2 = _BranchPath.from_string("child.grandchild")
+  new_path = path1.append(path2)
+
+  assert new_path == _BranchPath.from_string("parent.child.grandchild")
+
+
+def test_create_sub_branch_formats_string_correctly():
+  """create_sub_branch constructs sub-branch strings safely."""
+  # With base branch and run ID
+  res1 = _BranchPath.create_sub_branch(
+      "parent.sub", name="child", run_id="run_1"
+  )
+  assert res1 == "parent.sub.child@run_1"
+
+  # Without base branch (None or empty)
+  res2 = _BranchPath.create_sub_branch(None, name="agent", run_id="fc_456")
+  assert res2 == "agent@fc_456"
+
+  # Dot-separated sub-path without run ID
+  res3 = _BranchPath.create_sub_branch("parent", name="agent.sub_agent")
+  assert res3 == "parent.agent.sub_agent"
+
+
+def test_append_with_run_id_and_branch_path_raises_value_error():
+  """append raises ValueError when run_id is provided with a _BranchPath."""
+  path1 = _BranchPath.from_string("parent")
+  path2 = _BranchPath.from_string("child")
+  with pytest.raises(ValueError, match="run_id cannot be provided"):
+    path1.append(path2, run_id="123")
+
+
+def test_append_with_run_id_and_dot_separated_path_raises_value_error():
+  """append raises ValueError when run_id is provided with a dot-separated path."""
+  path = _BranchPath.from_string("parent")
+  with pytest.raises(ValueError, match="run_id cannot be provided"):
+    path.append("child.sub", run_id="123")
+
+
 def test_run_ids_filters_out_empty_run_ids():
   """run_ids filters out segments with empty run IDs (e.g. ending with '@')."""
   path = _BranchPath.from_string("parent@.child@2.node@")
