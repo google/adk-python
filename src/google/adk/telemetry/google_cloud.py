@@ -43,6 +43,13 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger("google_adk." + __name__)
 
+try:
+  from opentelemetry.semconv._incubating.attributes.cloud_attributes import CLOUD_RESOURCE_ID
+except ImportError:
+  # cloud.resource_id only lives in the private _incubating package; fall back
+  # to the literal key the Agent Engine dashboard filters on if that path moves.
+  CLOUD_RESOURCE_ID = "cloud.resource_id"
+
 _GCP_LOG_NAME_ENV_VARIABLE_NAME = "GOOGLE_CLOUD_DEFAULT_LOG_NAME"
 _DEFAULT_LOG_NAME = "adk-otel"
 
@@ -246,7 +253,7 @@ def get_gcp_resource(project_id: Optional[str] = None) -> Resource:
       ),
   }
   if cloud_resource_id is not None:
-    resource_attributes["cloud.resource.id"] = cloud_resource_id
+    resource_attributes[CLOUD_RESOURCE_ID] = cloud_resource_id
 
   if agent_engine_id:
     resource = Resource.create(attributes=resource_attributes).merge(
