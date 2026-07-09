@@ -17,7 +17,7 @@ from __future__ import annotations
 from .tool_context import ToolContext
 
 
-def exit_loop(tool_context: ToolContext):
+def exit_loop(tool_context: ToolContext) -> None:
   """Exits the loop.
 
   Call this function only when you are instructed to do so.

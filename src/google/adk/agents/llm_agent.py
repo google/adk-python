@@ -147,7 +147,7 @@ async def _convert_tool_union_to_tools(
 
   # Wrap google_search tool with AgentTool if there are multiple tools because
   # the built-in tools cannot be used together with other tools.
-  # TODO(b/448114567): Remove once the workaround is no longer needed.
+  # TODO: Remove once the workaround is no longer needed.
   if multiple_tools and isinstance(tool_union, GoogleSearchTool):
     from ..tools.google_search_agent_tool import create_google_search_agent
     from ..tools.google_search_agent_tool import GoogleSearchAgentTool
@@ -159,7 +159,7 @@ async def _convert_tool_union_to_tools(
   # Replace VertexAiSearchTool with DiscoveryEngineSearchTool if there are
   # multiple tools because the built-in tools cannot be used together with
   # other tools.
-  # TODO(b/448114567): Remove once the workaround is no longer needed.
+  # TODO: Remove once the workaround is no longer needed.
   if multiple_tools and isinstance(tool_union, VertexAiSearchTool):
     from ..tools.discovery_engine_search_tool import DiscoveryEngineSearchTool
 
@@ -742,7 +742,7 @@ class LlmAgent(BaseAgent, abc.ABC):
     """
     # We may need to wrap some built-in tools if there are other tools
     # because the built-in tools cannot be used together with other tools.
-    # TODO(b/448114567): Remove once the workaround is no longer needed.
+    # TODO: Remove once the workaround is no longer needed.
     multiple_tools = len(self.tools) > 1
     model = self.canonical_model
 

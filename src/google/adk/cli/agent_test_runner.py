@@ -370,7 +370,7 @@ def _normalize_ids(events: list[AdkEvent]) -> list[AdkEvent]:
             fc.args[k] = new_id
 
   # Pass 2: Update actions and user responses in all events
-  call_name_to_ids = {}
+  call_name_to_ids: dict[str | None, list[str | None]] = {}
   for e in events:
     for fc in e.get_function_calls():
       call_name_to_ids.setdefault(fc.name, []).append(fc.id)

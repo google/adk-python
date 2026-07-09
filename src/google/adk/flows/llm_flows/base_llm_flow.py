@@ -269,7 +269,7 @@ async def _handle_after_model_callback(
   agent = invocation_context.agent
 
   # Add grounding metadata to the response if needed.
-  # TODO(b/448114567): Remove this function once the workaround is no longer needed.
+  # TODO: Remove this function once the workaround is no longer needed.
   async def _maybe_add_grounding_metadata(
       response: Optional[LlmResponse] = None,
   ) -> Optional[LlmResponse]:
@@ -1171,6 +1171,7 @@ class BaseLlmFlow(ABC):
         and not llm_response.usage_metadata
         and not llm_response.live_session_resumption_update
         and not llm_response.grounding_metadata
+        and not llm_response.voice_activity
     ):
       return
 
@@ -1179,6 +1180,12 @@ class BaseLlmFlow(ABC):
       model_response_event.live_session_resumption_update = (
           llm_response.live_session_resumption_update
       )
+      yield model_response_event
+      return
+
+    # Handle voice activity events
+    if llm_response.voice_activity:
+      model_response_event.voice_activity = llm_response.voice_activity
       yield model_response_event
       return
 
