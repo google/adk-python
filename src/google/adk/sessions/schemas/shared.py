@@ -13,6 +13,7 @@
 # limitations under the License.
 from __future__ import annotations
 
+from datetime import datetime
 import json
 
 from sqlalchemy import Dialect
@@ -65,3 +66,10 @@ class PreciseTimestamp(TypeDecorator):
     if dialect.name == "mysql":
       return dialect.type_descriptor(mysql.DATETIME(fsp=6))
     return self.impl
+
+  def process_result_value(self, value, dialect: Dialect):
+    if value is None:
+      return None
+    if isinstance(value, (int, float)):
+      return datetime.fromtimestamp(value)
+    return value
