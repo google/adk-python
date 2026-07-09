@@ -634,7 +634,7 @@ class DevServer(ApiServer):
       import subprocess
       import sys
 
-      queue = asyncio.Queue()
+      queue: asyncio.Queue[str | None] = asyncio.Queue()
 
       async def run_pytest_subprocess():
         cmd_args = [

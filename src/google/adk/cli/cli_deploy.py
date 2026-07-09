@@ -21,6 +21,8 @@ import shutil
 import subprocess
 import sys
 import traceback
+from typing import Any
+from typing import Callable
 from typing import Final
 from typing import Literal
 from typing import Optional
@@ -610,7 +612,9 @@ def _get_service_option_by_adk_version(
   return ' '.join(options)
 
 
-def _get_ignore_patterns_func(agent_folder: str):
+def _get_ignore_patterns_func(
+    agent_folder: str,
+) -> Callable[[Any, list[str]], set[str]]:
   """Returns a shutil.ignore_patterns function with combined patterns from .gitignore, .gcloudignore and .ae_ignore."""
   patterns = set()
 
@@ -661,7 +665,7 @@ def to_cloud_run(
     a2a: bool = False,
     trigger_sources: Optional[str] = None,
     extra_gcloud_args: Optional[tuple[str, ...]] = None,
-):
+) -> None:
   """Deploys an agent to Google Cloud Run.
 
   `agent_folder` should contain the following files:
@@ -868,7 +872,7 @@ def to_agent_engine(
     session_service_uri: Optional[str] = None,
     artifact_service_uri: Optional[str] = None,
     adk_version: Optional[str] = None,
-):
+) -> None:
   """Deploys an agent to Gemini Enterprise Agent Platform.
 
   `agent_folder` should contain the following files:
@@ -1169,7 +1173,7 @@ def to_agent_engine(
           stacklevel=2,
       )
 
-    def create_dockerfile_for_agent_engine(resource_name: str):
+    def create_dockerfile_for_agent_engine(resource_name: str) -> None:
       requirements_txt_path = os.path.join(agent_src_path, 'requirements.txt')
       install_agent_deps = (
           f'RUN pip install -r "/app/agents/{app_name}/requirements.txt"'
@@ -1275,7 +1279,7 @@ def to_gke(
     service_type: Literal[
         'ClusterIP', 'NodePort', 'LoadBalancer'
     ] = 'ClusterIP',
-):
+) -> None:
   """Deploys an agent to Google Kubernetes Engine(GKE).
 
   Args:

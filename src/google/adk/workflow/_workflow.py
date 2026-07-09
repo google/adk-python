@@ -351,6 +351,7 @@ class Workflow(BaseNode):
 
       sorted_done = sorted(ordered_done, key=get_recovered_sequence_index)
 
+      error_to_raise = None
       for task in sorted_done:
         name = self._pop_completed_task(loop_state, task)
 
@@ -365,14 +366,17 @@ class Workflow(BaseNode):
           node_state = loop_state.nodes[name]
           node_state.status = NodeStatus.FAILED
 
-          ctx._error = child_ctx.error
-          ctx._error_node_path = child_ctx.error_node_path
+          if not error_to_raise:
+            ctx._error = child_ctx.error
+            ctx._error_node_path = child_ctx.error_node_path
+            error_to_raise = child_ctx.error
+        else:
+          self._handle_completion(loop_state, name, node, child_ctx)
 
-          loop_state.error_shut_down = True
-          logger.debug('node %s execute loop end.', ctx.node_path)
-          return
-
-        self._handle_completion(loop_state, name, node, child_ctx)
+      if error_to_raise:
+        loop_state.error_shut_down = True
+        logger.debug('node %s execute loop end.', ctx.node_path)
+        return
 
     # Await fire-and-forget dynamic tasks.
     # TODO: Handle dynamic task failures and interrupts here.
