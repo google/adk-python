@@ -1068,3 +1068,91 @@ async def test_workflow_returns_normally_on_node_failure():
       and e.node_info.path == 'test_error_workflow@1'
   ]
   assert len(workflow_error_events) == 0
+
+
+@pytest.mark.asyncio
+async def test_fail_fast_preserves_completed_siblings(
+    request: pytest.FixtureRequest,
+):
+  """Tests that when one node fails, other sibling nodes completed in the same tick still have their outputs preserved."""
+  node_success_started = False
+  node_success_completed = False
+
+  @node()
+  async def succeeding_node(ctx: Context):
+    nonlocal node_success_started, node_success_completed
+    node_success_started = True
+    await asyncio.sleep(0.1)
+    node_success_completed = True
+    return 'success_output'
+
+  @node()
+  async def failing_node(ctx: Context):
+    await asyncio.sleep(0.1)
+    raise ValueError('Fail')
+
+  wf = Workflow(
+      name='test_fail_fast_workflow',
+      edges=[
+          (START, failing_node),
+          (START, succeeding_node),
+      ],
+  )
+
+  original_handle_completion = Workflow._handle_completion
+  handle_completion_calls = []
+
+  def spy_handle_completion(self, loop_state, node_name, node_obj, child_ctx):
+    handle_completion_calls.append(node_name)
+    return original_handle_completion(
+        self, loop_state, node_name, node_obj, child_ctx
+    )
+
+  app = App(name=request.function.__name__, root_agent=wf)
+  runner = testing_utils.InMemoryRunner(app=app)
+
+  with mock.patch.object(
+      Workflow, '_handle_completion', new=spy_handle_completion
+  ):
+    with pytest.raises(ValueError, match='Fail'):
+      await runner.run_async(testing_utils.get_user_content('start'))
+
+  # The succeeding_node should have successfully completed.
+  assert node_success_started is True
+  assert node_success_completed is True
+
+  # Under the bug, succeeding_node's completion handler was skipped.
+  # With the fix, succeeding_node's completion is handled.
+  assert 'failing_node' not in handle_completion_calls
+  assert 'succeeding_node' in handle_completion_calls
+
+
+@pytest.mark.asyncio
+async def test_multiple_failures_first_error_wins(
+    request: pytest.FixtureRequest,
+):
+  """Tests that when multiple parallel nodes fail in the same tick, the first error is preserved."""
+
+  @node()
+  async def failing_node_1(ctx: Context):
+    await asyncio.sleep(0.1)
+    raise ValueError('Fail 1')
+
+  @node()
+  async def failing_node_2(ctx: Context):
+    await asyncio.sleep(0.1)
+    raise ValueError('Fail 2')
+
+  wf = Workflow(
+      name='test_multiple_failures_workflow',
+      edges=[
+          (START, failing_node_1),
+          (START, failing_node_2),
+      ],
+  )
+
+  app = App(name=request.function.__name__, root_agent=wf)
+  runner = testing_utils.InMemoryRunner(app=app)
+
+  with pytest.raises(ValueError, match='Fail 1'):
+    await runner.run_async(testing_utils.get_user_content('start'))

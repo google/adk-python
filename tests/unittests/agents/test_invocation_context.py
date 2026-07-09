@@ -655,3 +655,40 @@ class TestFindMatchingFunctionCall:
     invocation_context.stamp_event_branch_context(fr_event)
     assert fr_event.branch == 'root@1'
     assert fr_event.isolation_scope == 'task_123'
+
+  def test_find_matching_function_call_when_response_is_not_last_event(
+      self, test_invocation_context
+  ):
+    """Tests that matching function call is found even when response is not the last event in history."""
+    fc = Part.from_function_call(name='some_tool', args={})
+    fc.function_call.id = 'test_function_call_id'
+    fc_event = Event(
+        invocation_id='inv_1',
+        author='agent',
+        content=testing_utils.ModelContent([fc]),
+    )
+    fr = Part.from_function_response(
+        name='some_tool', response={'result': 'ok'}
+    )
+    fr.function_response.id = 'test_function_call_id'
+    fr_event = Event(
+        invocation_id='inv_1',
+        author='agent',
+        content=Content(role='user', parts=[fr]),
+    )
+    # Add a subsequent event to the history so that fr_event is NOT the last one
+    subsequent_event = Event(
+        invocation_id='inv_1',
+        author='user',
+        content=Content(role='user', parts=[Part(text='next user message')]),
+    )
+    invocation_context = test_invocation_context(
+        [fc_event, fr_event, subsequent_event]
+    )
+
+    matching_fc_event = invocation_context._find_matching_function_call(
+        fr_event
+    )
+    assert testing_utils.simplify_content(
+        matching_fc_event.content
+    ) == testing_utils.simplify_content(fc_event.content)

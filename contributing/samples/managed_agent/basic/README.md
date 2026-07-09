@@ -1,5 +1,8 @@
 # Managed Agent
 
+> For setup, authentication, backends, and background on `ManagedAgent`, see the
+> [ManagedAgent guide](../../../../docs/guides/agents/managed_agent/index.md).
+
 ## Overview
 
 This sample runs a `ManagedAgent` configured with the built-in `google_search`

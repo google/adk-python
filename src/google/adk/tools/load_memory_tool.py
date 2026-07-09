@@ -56,7 +56,7 @@ class LoadMemoryTool(FunctionTool):
   NOTE: Currently this tool only uses text part from the memory.
   """
 
-  def __init__(self):
+  def __init__(self) -> None:
     super().__init__(load_memory)
 
   @override
