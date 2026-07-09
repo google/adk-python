@@ -19,6 +19,7 @@ from contextlib import AbstractAsyncContextManager
 from contextlib import AsyncExitStack
 from datetime import timedelta
 import logging
+from types import TracebackType
 from typing import Any
 from typing import Coroutine
 from typing import Optional
@@ -115,7 +116,7 @@ class SessionContext:
     self._session: Optional[ClientSession] = None
     self._ready_event = asyncio.Event()
     self._close_event = asyncio.Event()
-    self._task: Optional[asyncio.Task] = None
+    self._task: Optional[asyncio.Task[None]] = None
     self._task_lock = asyncio.Lock()
     self._sampling_callback = sampling_callback
     self._sampling_capabilities = sampling_capabilities
@@ -158,7 +159,7 @@ class SessionContext:
       if not self._task:
         self._task = asyncio.create_task(self._run())
 
-        def _retrieve_exception(t: asyncio.Task):
+        def _retrieve_exception(t: asyncio.Task[None]) -> None:
           if not t.cancelled():
             t.exception()
 
@@ -245,7 +246,7 @@ class SessionContext:
         f'MCP session connection lost: {_format_exception(exc)}'
     ) from exc
 
-  async def close(self):
+  async def close(self) -> None:
     """Signal the context task to close and wait for cleanup."""
     # Set the close event to signal the task to close.
     # Even if start has not been called, we need to set the close event
@@ -273,10 +274,15 @@ class SessionContext:
   async def __aenter__(self) -> ClientSession:
     return await self.start()
 
-  async def __aexit__(self, exc_type, exc_val, exc_tb):
+  async def __aexit__(
+      self,
+      exc_type: type[BaseException] | None,
+      exc_val: BaseException | None,
+      exc_tb: TracebackType | None,
+  ) -> None:
     await self.close()
 
-  async def _run(self):
+  async def _run(self) -> None:
     """Run the complete session context within a single task."""
     try:
       async with AsyncExitStack() as exit_stack:

@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import json
+from typing import Any
 
 from google.auth.credentials import Credentials
 from google.cloud.spanner_admin_database_v1.types import DatabaseDialect
@@ -29,7 +30,7 @@ def list_table_names(
     database_id: str,
     credentials: Credentials,
     named_schema: str = "",
-) -> dict:
+) -> dict[str, Any]:
   """List tables within the database.
 
   Args:
@@ -80,7 +81,7 @@ def get_table_schema(
     table_name: str,
     credentials: Credentials,
     named_schema: str = "",
-) -> dict:
+) -> dict[str, Any]:
   """Get schema and metadata information about a Spanner table.
 
   Args:
@@ -195,7 +196,7 @@ def get_table_schema(
           AND TABLE_SCHEMA = @named_schema;
   """
 
-  results = {"schema": {}, "metadata": []}
+  results: dict[str, Any] = {"schema": {}, "metadata": []}
   try:
     spanner_client = client.get_spanner_client(
         project=project_id, credentials=credentials
@@ -278,7 +279,7 @@ def get_table_schema(
     try:
       json.dumps(results)
     except (TypeError, ValueError, OverflowError):
-      results = str(results)
+      return {"status": "SUCCESS", "results": str(results)}
 
     return {"status": "SUCCESS", "results": results}
   except Exception as ex:
@@ -294,7 +295,7 @@ def list_table_indexes(
     database_id: str,
     table_id: str,
     credentials: Credentials,
-) -> dict:
+) -> dict[str, Any]:
   """Get index information about a Spanner table.
 
   Args:
@@ -394,7 +395,7 @@ def list_table_index_columns(
     database_id: str,
     table_id: str,
     credentials: Credentials,
-) -> dict:
+) -> dict[str, Any]:
   """Get the columns in each index of a Spanner table.
 
   Args:
@@ -497,7 +498,7 @@ def list_named_schemas(
     instance_id: str,
     database_id: str,
     credentials: Credentials,
-) -> dict:
+) -> dict[str, Any]:
   """Get the named schemas in the Spanner database.
 
   Args:

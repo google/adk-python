@@ -602,6 +602,13 @@ class GeminiLlmConnection(BaseLlmConnection):
                   live_session_id=live_session_id,
               )
           )
+        if message.voice_activity:
+          logger.debug('Received voice activity: %s', message.voice_activity)
+          yield LlmResponse(
+              voice_activity=message.voice_activity,
+              model_version=self._model_version,
+              live_session_id=live_session_id,
+          )
         if message.go_away:
           logger.debug('Received GoAway message: %s', message.go_away)
           yield LlmResponse(

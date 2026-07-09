@@ -35,32 +35,29 @@ def _rag_context(source_display_name: str, text: str) -> SimpleNamespace:
 async def test_search_memory_rejects_ambiguous_legacy_display_names(mocker):
   """Ensures dotted user IDs cannot match another user's legacy memory."""
   memory_service = VertexAiRagMemoryService(rag_corpus="unused")
-  fake_rag = SimpleNamespace(
-      retrieval_query=mocker.Mock(
-          return_value=SimpleNamespace(
-              contexts=SimpleNamespace(
-                  contexts=[
-                      _rag_context(
-                          "demo.alice.smith.session_secret",
-                          "SECRET_FROM_ALICE_SMITH",
-                      ),
-                      _rag_context(
-                          _build_source_display_name(
-                              "demo", "alice", "session_ok"
-                          ),
-                          "NORMAL_ALICE_MEMORY",
-                      ),
-                      _rag_context(
-                          "demo.alice.legacy_session",
-                          "LEGACY_ALICE_MEMORY",
-                      ),
-                      _rag_context("demo.bob.session_other", "BOB_MEMORY"),
-                  ]
-              )
-          )
+
+  fake_client = mocker.Mock()
+  fake_client.rag.retrieve_contexts.return_value = SimpleNamespace(
+      contexts=SimpleNamespace(
+          contexts=[
+              _rag_context(
+                  "demo.alice.smith.session_secret",
+                  "SECRET_FROM_ALICE_SMITH",
+              ),
+              _rag_context(
+                  _build_source_display_name("demo", "alice", "session_ok"),
+                  "NORMAL_ALICE_MEMORY",
+              ),
+              _rag_context(
+                  "demo.alice.legacy_session",
+                  "LEGACY_ALICE_MEMORY",
+              ),
+              _rag_context("demo.bob.session_other", "BOB_MEMORY"),
+          ]
       )
   )
-  mocker.patch("google.adk.dependencies.vertexai.rag", fake_rag)
+
+  mocker.patch("agentplatform.Client", return_value=fake_client)
 
   response = await memory_service.search_memory(
       app_name="demo", user_id="alice", query="secret"
@@ -73,9 +70,9 @@ async def test_search_memory_rejects_ambiguous_legacy_display_names(mocker):
 @pytest.mark.asyncio
 async def test_add_and_search_memory_uses_unambiguous_display_names(mocker):
   memory_service = VertexAiRagMemoryService(rag_corpus="unused")
-  upload_file = mocker.Mock()
-  fake_rag = SimpleNamespace(upload_file=upload_file)
-  mocker.patch("google.adk.dependencies.vertexai.rag", fake_rag)
+
+  fake_client = mocker.Mock()
+  mocker.patch("agentplatform.Client", return_value=fake_client)
 
   await memory_service.add_session_to_memory(
       Session(
@@ -96,15 +93,13 @@ async def test_add_and_search_memory_uses_unambiguous_display_names(mocker):
       )
   )
 
-  display_name = upload_file.call_args.kwargs["display_name"]
+  display_name = fake_client.rag.upload_file.call_args.kwargs["display_name"]
   assert display_name.startswith(_SOURCE_DISPLAY_NAME_PREFIX)
   assert display_name != "demo.app.alice.smith.session.secret"
 
-  fake_rag.retrieval_query = mocker.Mock(
-      return_value=SimpleNamespace(
-          contexts=SimpleNamespace(
-              contexts=[_rag_context(display_name, "sensitive memory")]
-          )
+  fake_client.rag.retrieve_contexts.return_value = SimpleNamespace(
+      contexts=SimpleNamespace(
+          contexts=[_rag_context(display_name, "sensitive memory")]
       )
   )
 

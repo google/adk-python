@@ -1826,3 +1826,34 @@ async def test_postprocess_live_skips_none_function_response_event():
     ]
 
   assert all(event is not None for event in events)
+
+
+@pytest.mark.asyncio
+async def test_postprocess_live_voice_activity_events():
+  """Test that _postprocess_live yields voice activity events."""
+  agent = Agent(name='test_agent', model='gemini-2.0-flash')
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent
+  )
+  flow = BaseLlmFlowForTesting()
+
+  vad = types.VoiceActivity(
+      voice_activity_type=types.VoiceActivityType.ACTIVITY_START,
+      audio_offset='1.5s',
+  )
+  llm_response = LlmResponse(voice_activity=vad)
+  model_response_event = Event(
+      invocation_id=invocation_context.invocation_id,
+      author=agent.name,
+  )
+  llm_request = LlmRequest(model='gemini-2.0-flash')
+
+  events = [
+      event
+      async for event in flow._postprocess_live(
+          invocation_context, llm_request, llm_response, model_response_event
+      )
+  ]
+
+  assert len(events) == 1
+  assert events[0].voice_activity == vad
