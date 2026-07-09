@@ -15,8 +15,6 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from datetime import datetime
-from datetime import timezone
 import logging
 from typing import Any
 from typing import Dict
@@ -29,13 +27,10 @@ from a2a.server.events import Event as A2AEvent
 from a2a.types import Artifact
 from a2a.types import Message
 from a2a.types import Part as A2APart
-from a2a.types import Role
 from a2a.types import TaskArtifactUpdateEvent
-from a2a.types import TaskState
-from a2a.types import TaskStatus
 from a2a.types import TaskStatusUpdateEvent
-from a2a.types import TextPart
 
+from .. import _compat
 from ...events.event import Event
 from ..experimental import a2a_experimental
 from .part_converter import convert_genai_part_to_a2a_part
@@ -133,18 +128,15 @@ def create_error_status_event(
   """
   error_message = getattr(event, "error_message", None) or DEFAULT_ERROR_MESSAGE
 
-  error_event = TaskStatusUpdateEvent(
+  fa_err_msg = Message(
+      message_id=str(uuid.uuid4()),
+      role=_compat.ROLE_AGENT,
+      parts=[_compat.make_text_part(error_message)],
+  )
+  error_event = _compat.make_task_status_update_event(
       task_id=task_id,
       context_id=context_id,
-      status=TaskStatus(
-          state=TaskState.failed,
-          message=Message(
-              message_id=str(uuid.uuid4()),
-              role=Role.agent,
-              parts=[A2APart(root=TextPart(text=error_message))],
-          ),
-          timestamp=datetime.now(timezone.utc).isoformat(),
-      ),
+      status=_compat.make_task_status(_compat.TS_FAILED, message=fa_err_msg),
       final=True,
   )
   return _add_event_metadata(event, [error_event])[0]
@@ -213,18 +205,17 @@ def convert_event_to_a2a_events(
           )
       )
     elif _serialize_value(event.actions) is not None:
+      fa_wk_msg = Message(
+          message_id=str(uuid.uuid4()),
+          role=_compat.ROLE_AGENT,
+          parts=[],
+      )
       a2a_events.append(
-          TaskStatusUpdateEvent(
+          _compat.make_task_status_update_event(
               task_id=task_id,
               context_id=context_id,
-              status=TaskStatus(
-                  state=TaskState.working,
-                  message=Message(
-                      message_id=str(uuid.uuid4()),
-                      role=Role.agent,
-                      parts=[],
-                  ),
-                  timestamp=datetime.now(timezone.utc).isoformat(),
+              status=_compat.make_task_status(
+                  _compat.TS_WORKING, message=fa_wk_msg
               ),
               final=False,
           )
@@ -305,12 +296,14 @@ def _add_event_metadata(
       metadata[_get_adk_metadata_key(field_name)] = value
 
   for a2a_event in a2a_events:
-    if (
-        isinstance(a2a_event, TaskStatusUpdateEvent)
-        and a2a_event.status.message
-    ):
-      a2a_event.status.message.metadata = metadata.copy()
+    status_message = (
+        _compat.normalize_message(a2a_event.status.message)
+        if isinstance(a2a_event, TaskStatusUpdateEvent)
+        else None
+    )
+    if status_message is not None:
+      _compat.set_struct_metadata(status_message, metadata)
     elif isinstance(a2a_event, TaskArtifactUpdateEvent):
-      a2a_event.artifact.metadata = metadata.copy()
+      _compat.set_struct_metadata(a2a_event.artifact, metadata)
 
   return a2a_events

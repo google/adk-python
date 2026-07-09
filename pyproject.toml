@@ -57,7 +57,7 @@ dependencies = [
   "websockets>=15.0.1,<16",
 ]
 optional-dependencies.a2a = [
-  "a2a-sdk>=0.3.4,<0.4",
+  "a2a-sdk>=0.3.4,<2",
 ]
 optional-dependencies.agent-identity = [
   "google-cloud-agentidentitycredentials>=0.1,<0.2",
@@ -198,7 +198,7 @@ optional-dependencies.otel-gcp = [
 ]
 optional-dependencies.slack = [ "slack-bolt>=1.22" ]
 optional-dependencies.test = [
-  "a2a-sdk>=0.3,<0.4",
+  "a2a-sdk>=0.3.4,<2",
   "anthropic>=0.78",                                                 # For anthropic model tests; 0.78 introduced ThinkingConfigAdaptiveParam (required for Claude Opus 4.7).
   "anyio>=4.9,<5",
   "beautifulsoup4>=3.2.2",

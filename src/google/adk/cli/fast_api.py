@@ -679,12 +679,9 @@ def get_fast_api_app(
   _register_builder_endpoints(app, web, agents_dir)
 
   if a2a and a2a_task_store is not None:
-    from a2a.server.apps import A2AStarletteApplication
-    from a2a.server.request_handlers import DefaultRequestHandler
     from a2a.server.tasks import InMemoryPushNotificationConfigStore
-    from a2a.types import AgentCard
-    from a2a.utils.constants import AGENT_CARD_WELL_KNOWN_PATH
 
+    from ..a2a import _compat
     from ..a2a.executor.a2a_agent_executor import A2aAgentExecutor
 
     # locate all a2a agent apps in the agents directory
@@ -720,28 +717,18 @@ def get_fast_api_app(
 
           push_config_store = InMemoryPushNotificationConfigStore()
 
-          request_handler = DefaultRequestHandler(
+          with (p / "agent.json").open("r", encoding="utf-8") as f:
+            data = json.load(f)
+            agent_card = _compat.parse_agent_card(data)
+
+          _compat.attach_a2a_routes_to_app(
+              app,
+              agent_card=agent_card,
               agent_executor=agent_executor,
               task_store=a2a_task_store,
               push_config_store=push_config_store,
+              prefix=f"/a2a/{app_name}",
           )
-
-          with (p / "agent.json").open("r", encoding="utf-8") as f:
-            data = json.load(f)
-            agent_card = AgentCard(**data)
-
-          a2a_app = A2AStarletteApplication(
-              agent_card=agent_card,
-              http_handler=request_handler,
-          )
-
-          routes = a2a_app.routes(
-              rpc_url=f"/a2a/{app_name}",
-              agent_card_url=f"/a2a/{app_name}{AGENT_CARD_WELL_KNOWN_PATH}",
-          )
-
-          for new_route in routes:
-            app.router.routes.append(new_route)
 
           logger.info("Successfully configured A2A agent: %s", app_name)
 
@@ -756,7 +743,6 @@ def get_fast_api_app(
       )
 
     import inspect
-    import json
 
     from google.adk.agents import Agent
     import google.auth

@@ -1082,13 +1082,13 @@ async def test_fail_fast_preserves_completed_siblings(
   async def succeeding_node(ctx: Context):
     nonlocal node_success_started, node_success_completed
     node_success_started = True
-    await asyncio.sleep(0.1)
+    await asyncio.sleep(0)
     node_success_completed = True
     return 'success_output'
 
   @node()
   async def failing_node(ctx: Context):
-    await asyncio.sleep(0.1)
+    await asyncio.sleep(0)
     raise ValueError('Fail')
 
   wf = Workflow(

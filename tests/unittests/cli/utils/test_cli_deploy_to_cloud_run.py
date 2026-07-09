@@ -188,6 +188,7 @@ def test_to_cloud_run_happy_path(
       "8080",
       "--verbosity",
       "info",
+      "--sandbox-launcher",
       "--labels",
       "created-by=adk",
   ]

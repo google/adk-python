@@ -37,6 +37,11 @@ if TYPE_CHECKING:
 logger = logging.getLogger('google_adk.' + __name__)
 
 
+def _is_valid_line_number(value: Any) -> bool:
+  """Returns True when *value* is a non-bool integer."""
+  return isinstance(value, int) and not isinstance(value, bool)
+
+
 @experimental
 class ReadFileTool(BaseTool):
   """Read a file from the environment."""
@@ -101,6 +106,12 @@ class ReadFileTool(BaseTool):
       return {'status': 'error', 'error': '`path` is required.'}
     start_line = args.get('start_line')
     end_line = args.get('end_line')
+    for name, value in (('start_line', start_line), ('end_line', end_line)):
+      if value is not None and not _is_valid_line_number(value):
+        return {
+            'status': 'error',
+            'error': f'`{name}` must be an integer if provided.',
+        }
 
     try:
       # TODO: Avoid loading the entire file into memory to prevent OOM on large files.

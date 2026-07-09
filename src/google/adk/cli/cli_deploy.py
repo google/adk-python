@@ -798,6 +798,7 @@ def to_cloud_run(
         str(port),
         '--verbosity',
         log_level.lower() if log_level else verbosity,
+        '--sandbox-launcher',
     ]
 
     # Handle labels specially - merge user labels with ADK label

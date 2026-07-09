@@ -48,10 +48,8 @@ from typing_extensions import override
 
 # pylint: disable=g-import-not-at-top
 try:
-  from a2a.types import AgentCapabilities
-  from a2a.types import AgentCard
   from a2a.types import AgentSkill
-  from a2a.types import TransportProtocol as A2ATransport
+  from google.adk.a2a import _compat
   from google.adk.agents.remote_a2a_agent import RemoteA2aAgent
 except ImportError as e:
   raise ImportError(
@@ -66,9 +64,9 @@ AGENT_REGISTRY_BASE_URL = "https://agentregistry.googleapis.com/v1"
 AGENT_REGISTRY_MTLS_BASE_URL = "https://agentregistry.mtls.googleapis.com/v1"
 
 _TRANSPORT_MAPPING = {
-    "HTTP_JSON": A2ATransport.http_json,
-    "JSONRPC": A2ATransport.jsonrpc,
-    "GRPC": A2ATransport.grpc,
+    "HTTP_JSON": _compat.TP_HTTP_JSON,
+    "JSONRPC": _compat.TP_JSONRPC,
+    "GRPC": _compat.TP_GRPC,
 }
 
 
@@ -273,8 +271,8 @@ class AgentRegistry:
       self,
       resource_details: Mapping[str, Any],
       protocol_type: _ProtocolType | None = None,
-      protocol_binding: A2ATransport | None = None,
-  ) -> str | None:
+      protocol_binding: _compat.TransportProtocol | None = None,
+  ) -> tuple[Any, Any, Any]:
     """Extracts the first matching URI based on type and binding filters."""
     protocols = list(resource_details.get("protocols", []))
     if "interfaces" in resource_details:
@@ -354,11 +352,11 @@ class AgentRegistry:
       mcp_server_id = None
 
     endpoint_uri, _, _ = self._get_connection_uri(
-        server_details, protocol_binding=A2ATransport.jsonrpc
+        server_details, protocol_binding=_compat.TP_JSONRPC
     )
     if not endpoint_uri:
       endpoint_uri, _, _ = self._get_connection_uri(
-          server_details, protocol_binding=A2ATransport.http_json
+          server_details, protocol_binding=_compat.TP_HTTP_JSON
       )
     if not endpoint_uri:
       raise ValueError(
@@ -492,7 +490,7 @@ class AgentRegistry:
     card = agent_info.get("card", {})
     card_content = card.get("content")
     if card.get("type") == "A2A_AGENT_CARD" and card_content:
-      agent_card = AgentCard(**card_content)
+      agent_card = _compat.parse_agent_card(card_content)
       # Clean the name to be a valid identifier
       name = self._clean_name(agent_card.name)
 
@@ -525,17 +523,17 @@ class AgentRegistry:
           )
       )
 
-    agent_card = AgentCard(
+    binding = protocol_binding or _compat.TP_HTTP_JSON
+    agent_card = _compat.build_agent_card(
         name=name,
         description=description,
         version=version,
-        preferredTransport=protocol_binding or A2ATransport.http_json,
-        protocolVersion=protocol_version or "0.3.0",
         url=url,
+        protocol_binding=getattr(binding, "value", binding),
+        protocol_version=protocol_version,
         skills=skills,
-        capabilities=AgentCapabilities(streaming=False, polling=False),
-        defaultInputModes=["text"],
-        defaultOutputModes=["text"],
+        default_input_modes=["text"],
+        default_output_modes=["text"],
     )
 
     return RemoteA2aAgent(

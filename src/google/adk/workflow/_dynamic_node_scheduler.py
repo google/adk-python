@@ -170,10 +170,9 @@ class DynamicNodeScheduler(ScheduleDynamicNode):
       try:
         node_input = node._validate_input_data(node_input)
       except ValidationError as e:
-        raise ValueError(
-            'Runtime schema validation failed for dynamic node'
-            f" '{node_name or node.name}'. Input does not match"
-            f' input_schema: {e}'
+        raise ValidationError.from_exception_data(
+            title=f"dynamic node '{node_name or node.name}'",
+            line_errors=e.errors(),  # type: ignore[arg-type]
         ) from e
 
     logger.debug('node %s schedule start.', node_path)

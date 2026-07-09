@@ -26,6 +26,7 @@ from a2a.types import AgentProvider
 from a2a.types import AgentSkill
 from a2a.types import SecurityScheme
 
+from .. import _compat
 from ...agents.base_agent import BaseAgent
 from ...agents.llm_agent import LlmAgent
 from ...agents.loop_agent import LoopAgent
@@ -83,19 +84,22 @@ class AgentCardBuilder:
       sub_agent_skills = await _build_sub_agent_skills(self._agent)
       all_skills = primary_skills + sub_agent_skills
 
-      return AgentCard(
+      return _compat.build_agent_card(
           name=self._agent.name,
           description=self._agent.description or 'An ADK Agent',
-          doc_url=self._doc_url,
-          url=f"{self._rpc_url.rstrip('/')}",
           version=self._agent_version,
-          capabilities=self._capabilities,
+          url=self._rpc_url,
+          protocol_binding=getattr(
+              _compat.TP_JSONRPC, 'value', _compat.TP_JSONRPC
+          ),
           skills=all_skills,
+          capabilities=self._capabilities,
+          provider=self._provider,
+          security_schemes=self._security_schemes,
+          doc_url=self._doc_url,
           default_input_modes=['text/plain'],
           default_output_modes=['text/plain'],
           supports_authenticated_extended_card=False,
-          provider=self._provider,
-          security_schemes=self._security_schemes,
       )
     except Exception as e:
       raise RuntimeError(
@@ -172,7 +176,7 @@ async def _build_sub_agent_skills(agent: BaseNode) -> List[AgentSkill]:
             examples=skill.examples,
             input_modes=skill.input_modes,
             output_modes=skill.output_modes,
-            tags=[f'sub_agent:{sub_agent.name}'] + (skill.tags or []),
+            tags=[f'sub_agent:{sub_agent.name}'] + list(skill.tags or []),
         )
         sub_agent_skills.append(aggregated_skill)
     except Exception as e:
