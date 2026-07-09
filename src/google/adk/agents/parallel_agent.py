@@ -25,6 +25,7 @@ from typing import ClassVar
 from typing_extensions import deprecated
 from typing_extensions import override
 
+from ..events._branch_path import _BranchPath
 from ..events.event import Event
 from ..utils.context_utils import Aclosing
 from .base_agent import BaseAgent
@@ -44,10 +45,8 @@ def _create_branch_ctx_for_sub_agent(
   """Create isolated branch for every sub-agent."""
   invocation_context = invocation_context.model_copy()
   branch_suffix = f'{agent.name}.{sub_agent.name}'
-  invocation_context.branch = (
-      f'{invocation_context.branch}.{branch_suffix}'
-      if invocation_context.branch
-      else branch_suffix
+  invocation_context.branch = _BranchPath.create_sub_branch(
+      invocation_context.branch, name=branch_suffix
   )
   return invocation_context
 
@@ -61,7 +60,9 @@ async def _merge_agent_run(
 
   # Agents are processed in parallel.
   # Events for each agent are put on queue sequentially.
-  async def process_an_agent(events_for_one_agent):
+  async def process_an_agent(
+      events_for_one_agent: AsyncGenerator[Event, None],
+  ) -> None:
     try:
       async for event in events_for_one_agent:
         resume_signal = asyncio.Event()
@@ -113,7 +114,7 @@ async def _merge_agent_run_pre_3_11(
   sentinel = object()
   queue = asyncio.Queue()
 
-  def propagate_exceptions(tasks):
+  def propagate_exceptions(tasks: list[asyncio.Task[None]]) -> None:
     # Propagate exceptions and errors from tasks.
     for task in tasks:
       if task.done():
@@ -123,7 +124,9 @@ async def _merge_agent_run_pre_3_11(
 
   # Agents are processed in parallel.
   # Events for each agent are put on queue sequentially.
-  async def process_an_agent(events_for_one_agent):
+  async def process_an_agent(
+      events_for_one_agent: AsyncGenerator[Event, None],
+  ) -> None:
     try:
       async for event in events_for_one_agent:
         resume_signal = asyncio.Event()
@@ -159,8 +162,8 @@ async def _merge_agent_run_pre_3_11(
 
 
 @deprecated(
-    'ParallelAgent is deprecated and will be removed in future versions.'
-    ' Please use Workflow instead.'
+    'ParallelAgent is deprecated in favor of Workflow and will be removed in'
+    ' a future version. Workflow cannot yet be used as an LlmAgent sub-agent.'
 )
 class ParallelAgent(BaseAgent):
   """A shell agent that runs its sub-agents in parallel in an isolated manner.
@@ -172,8 +175,8 @@ class ParallelAgent(BaseAgent):
   - Generating multiple responses for review by a subsequent evaluation agent.
 
   .. deprecated::
-    ParallelAgent is deprecated and will be removed in future versions.
-    Please use Workflow instead.
+    ParallelAgent is deprecated in favor of Workflow and will be removed in a
+    future version. Workflow cannot yet be used as an LlmAgent sub-agent.
   """
 
   config_type: ClassVar[type[BaseAgentConfig]] = ParallelAgentConfig

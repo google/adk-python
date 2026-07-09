@@ -2147,3 +2147,44 @@ def test_create_interactions_surfaces_environment_id_non_stream():
   responses = asyncio.run(_collect())
   assert len(responses) == 1
   assert responses[-1].environment_id == 'env_ns'
+
+
+class TestBuildMcpServerParam:
+  """Tests for _build_mcp_server_param."""
+
+  def _server(self, **kwargs):
+    from google.adk.tools._remote_mcp_server import RemoteMcpServer
+
+    kwargs.setdefault('url', 'https://mcp.example.com/mcp')
+    return RemoteMcpServer(**kwargs)
+
+  def test_minimal_url_only(self):
+    param = interactions_utils._build_mcp_server_param(self._server(), {})
+    assert param == {
+        'type': 'mcp_server',
+        'url': 'https://mcp.example.com/mcp',
+    }
+
+  def test_with_name(self):
+    param = interactions_utils._build_mcp_server_param(
+        self._server(name='maps'), {}
+    )
+    assert param['name'] == 'maps'
+
+  def test_with_headers(self):
+    param = interactions_utils._build_mcp_server_param(
+        self._server(), {'X-Goog-Api-Key': 'k'}
+    )
+    assert param['headers'] == {'X-Goog-Api-Key': 'k'}
+
+  def test_with_allowed_tools(self):
+    param = interactions_utils._build_mcp_server_param(
+        self._server(allowed_tools=['search_places']), {}
+    )
+    assert param['allowed_tools'] == [{'tools': ['search_places']}]
+
+  def test_omits_unset_fields(self):
+    param = interactions_utils._build_mcp_server_param(self._server(), {})
+    assert 'name' not in param
+    assert 'headers' not in param
+    assert 'allowed_tools' not in param

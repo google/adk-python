@@ -543,9 +543,11 @@ def _convert_reasoning_value_to_parts(reasoning_value: Any) -> List[types.Part]:
           continue
         if block_type == "thinking":
           thinking_text = block.get("thinking", "")
-          if thinking_text:
+          signature = block.get("signature")
+          # Anthropic streams a signature in a final chunk with empty text.
+          # Preserve signature-only blocks so the signature survives aggregation.
+          if thinking_text or signature:
             part = types.Part(text=thinking_text, thought=True)
-            signature = block.get("signature")
             if signature:
               decoded_signature = _decode_thought_signature(signature)
               part.thought_signature = decoded_signature or str(
@@ -563,6 +565,43 @@ def _convert_reasoning_value_to_parts(reasoning_value: Any) -> List[types.Part]:
       for text in _iter_reasoning_texts(reasoning_value)
       if text
   ]
+
+
+def _aggregate_streaming_thought_parts(
+    thought_parts: Iterable[types.Part],
+) -> List[types.Part]:
+  """Aggregates fragmented streaming thought parts into clean individual parts.
+
+  During streaming, Anthropic splits a thinking block across many deltas:
+  text-only chunks followed by a signature-only chunk at block_stop. This helper
+  joins the text chunks and attaches the signature, producing clean individual
+  thought parts for session history and outbound requests.
+  """
+  parts_list = list(thought_parts)
+  if not parts_list:
+    return []
+  aggregated: List[types.Part] = []
+  current_texts: List[str] = []
+  for part in parts_list:
+    if part.text:
+      current_texts.append(part.text)
+    if part.thought_signature:
+      aggregated.append(
+          types.Part(
+              text="".join(current_texts),
+              thought=True,
+              thought_signature=part.thought_signature,
+          )
+      )
+      current_texts = []
+  if current_texts:
+    aggregated.append(
+        types.Part(
+            text="".join(current_texts),
+            thought=True,
+        )
+    )
+  return aggregated
 
 
 def _extract_reasoning_value(message: Message | Delta | None) -> Any:
@@ -843,6 +882,28 @@ def _extract_reasoning_tokens(usage: Any) -> int:
   return 0
 
 
+def _merge_reasoning_texts(reasoning_parts: Iterable[types.Part]) -> str:
+  """Merges reasoning text fragments into a single provider payload.
+
+  Streaming providers such as vLLM can emit reasoning as token-sized chunks.
+  ADK stores those chunks as consecutive thought parts, so inserting separators
+  here changes the model's original reasoning text.
+  """
+  reasoning_texts = []
+  for part in reasoning_parts:
+    if part.text:
+      reasoning_texts.append(part.text)
+    elif (
+        part.inline_data
+        and part.inline_data.data
+        and part.inline_data.mime_type
+        and part.inline_data.mime_type.startswith("text/")
+    ):
+      reasoning_texts.append(_decode_inline_text_data(part.inline_data.data))
+
+  return "".join(reasoning_texts)
+
+
 def _extract_thought_signature_from_tool_call(
     tool_call: ChatCompletionMessageToolCall,
 ) -> Optional[bytes]:
@@ -1023,9 +1084,14 @@ async def _content_to_message_param(
     # For Anthropic models, rebuild thinking_blocks with signatures so that
     # thinking is preserved across tool call boundaries. Without this,
     # Anthropic silently drops thinking after the first turn.
+    #
+    # Streaming splits one Anthropic thinking block across many deltas:
+    # text-only chunks followed by a signature-only chunk at block_stop.
+    # Aggregate them back into one thinking block for outbound.
     if model and _is_anthropic_model(model) and reasoning_parts:
+      aggregated_parts = _aggregate_streaming_thought_parts(reasoning_parts)
       thinking_blocks = []
-      for part in reasoning_parts:
+      for part in aggregated_parts:
         if part.text and part.thought_signature:
           sig = part.thought_signature
           if isinstance(sig, bytes):
@@ -1043,18 +1109,6 @@ async def _content_to_message_param(
         )
         msg["thinking_blocks"] = thinking_blocks  # type: ignore[typeddict-unknown-key]
         return msg
-
-    reasoning_texts = []
-    for part in reasoning_parts:
-      if part.text:
-        reasoning_texts.append(part.text)
-      elif (
-          part.inline_data
-          and part.inline_data.data
-          and part.inline_data.mime_type
-          and part.inline_data.mime_type.startswith("text/")
-      ):
-        reasoning_texts.append(_decode_inline_text_data(part.inline_data.data))
 
     # Anthropic routes require thinking blocks to be embedded directly in the
     # message content list. LiteLLM's prompt template for Anthropic drops the
@@ -1084,9 +1138,7 @@ async def _content_to_message_param(
           tool_calls=tool_calls or None,
       )
 
-    # Preserve reasoning deltas exactly as received. Injecting separators
-    # between fragments can corrupt provider-streamed thinking text.
-    reasoning_content = "".join(text for text in reasoning_texts if text)
+    reasoning_content = _merge_reasoning_texts(reasoning_parts)
     return ChatCompletionAssistantMessage(
         role=role,
         content=final_content,
@@ -1877,6 +1929,7 @@ def _model_response_to_chunk(
         or message.get("function_call")
         or message.get("reasoning_content")
         or message.get("reasoning")
+        or message.get("thinking_blocks")
     )
 
   if isinstance(response, ModelResponseStream):
@@ -2511,6 +2564,50 @@ def _warn_gemini_via_litellm(model_string: str) -> None:
   )
 
 
+class _BraceDepthTracker:
+  """Streams JSON characters and reports when a top-level object closes.
+
+  Only `{`/`}` are counted; `[`/`]` are ignored. Tool-call arguments per
+  the OpenAI/LiteLLM spec are always top-level JSON objects, never arrays,
+  so array depth is irrelevant for detecting when the top-level container
+  closes. Arrays nested as values (e.g. `{"a": [{"b": 1}]}`) still balance
+  correctly because chars inside the array don't change brace depth.
+  """
+
+  __slots__ = ("_depth", "_in_string", "_escaped", "_seen_open")
+
+  def __init__(self) -> None:
+    self._depth = 0
+    self._in_string = False
+    self._escaped = False
+    self._seen_open = False
+
+  def feed(self, fragment: str) -> bool:
+    """Feeds new chars; returns True iff a top-level object just closed."""
+    closed = False
+    for ch in fragment:
+      if self._in_string:
+        if self._escaped:
+          self._escaped = False
+        elif ch == "\\":
+          self._escaped = True
+        elif ch == '"':
+          self._in_string = False
+        continue
+      if ch == '"':
+        self._in_string = True
+      elif ch == "{":
+        self._depth += 1
+        self._seen_open = True
+      elif ch == "}":
+        if self._depth > 0:
+          self._depth -= 1
+          if self._depth == 0 and self._seen_open:
+            closed = True
+            self._seen_open = False
+    return closed
+
+
 def _redirect_litellm_loggers_to_stdout() -> None:
   """Redirects LiteLLM loggers from stderr to stdout.
 
@@ -2661,6 +2758,7 @@ class LiteLlm(BaseLlm):
       reasoning_parts: List[types.Part] = []
       # Track function calls by index
       function_calls = {}  # index -> {name, args, id}
+      tool_call_trackers: Dict[int, _BraceDepthTracker] = {}
       completion_args["stream"] = True
       completion_args["stream_options"] = {"include_usage": True}
       aggregated_llm_response = None
@@ -2750,6 +2848,7 @@ class LiteLlm(BaseLlm):
         text = ""
         reasoning_parts = []
         function_calls.clear()
+        tool_call_trackers.clear()
 
       async for part in await self.llm_client.acompletion(**completion_args):
         # Grounding metadata can arrive on the first chunk (search queries) or
@@ -2768,13 +2867,17 @@ class LiteLlm(BaseLlm):
             if chunk.args:
               function_calls[index]["args"] += chunk.args
 
-              # check if args is completed (workaround for improper chunk
-              # indexing)
-              try:
-                json.loads(function_calls[index]["args"])
-                fallback_index += 1
-              except json.JSONDecodeError:
-                pass
+              # Detect args completion to advance fallback_index (workaround
+              # for improper chunk indexing) without O(N^2) re-parsing.
+              tracker = tool_call_trackers.setdefault(
+                  index, _BraceDepthTracker()
+              )
+              if tracker.feed(chunk.args):
+                try:
+                  json.loads(function_calls[index]["args"])
+                  fallback_index += 1
+                except json.JSONDecodeError:
+                  pass
 
             function_calls[index]["id"] = (
                 chunk.id or function_calls[index]["id"] or str(index)

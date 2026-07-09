@@ -19,12 +19,12 @@ from __future__ import annotations
 from typing import Optional
 from typing import Union
 
-from a2a.client import ClientEvent as A2AClientEvent
-from a2a.client.middleware import ClientCallContext
 from a2a.types import Message as A2AMessage
 
+from .. import _compat
 from ...agents.invocation_context import InvocationContext
 from ...events.event import Event
+from .._compat import A2AClientEvent
 from .config import ParametersConfig
 from .config import RequestInterceptor
 
@@ -37,7 +37,7 @@ async def execute_before_request_interceptors(
   """Executes registered before_request interceptors."""
 
   params = ParametersConfig(
-      client_call_context=ClientCallContext(state=ctx.session.state)
+      client_call_context=_compat.ClientCallContext(state=ctx.session.state)
   )
   if request_interceptors:
     for interceptor in request_interceptors:

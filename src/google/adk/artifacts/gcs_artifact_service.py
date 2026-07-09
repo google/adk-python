@@ -252,10 +252,17 @@ class GcsArtifactService(BaseArtifactService):
       if not file_uri:
         raise InputValidationError("Artifact file_data must have a file_uri.")
       if artifact_util.is_artifact_ref(artifact):
-        if not artifact_util.parse_artifact_uri(file_uri):
+        parsed_uri = artifact_util.parse_artifact_uri(file_uri)
+        if not parsed_uri:
           raise InputValidationError(
               f"Invalid artifact reference URI: {file_uri}"
           )
+        artifact_util.validate_artifact_reference_scope(
+            app_name=app_name,
+            user_id=user_id,
+            session_id=session_id,
+            parsed_uri=parsed_uri,
+        )
       # Store the URI and mime_type (if any) as blob metadata; no content to upload.
       metadata = {
           **(blob.metadata or {}),
@@ -315,6 +322,12 @@ class GcsArtifactService(BaseArtifactService):
           raise InputValidationError(
               f"Invalid artifact reference URI: {file_uri}"
           )
+        artifact_util.validate_artifact_reference_scope(
+            app_name=app_name,
+            user_id=user_id,
+            session_id=session_id,
+            parsed_uri=parsed_uri,
+        )
         return self._load_artifact(
             app_name=parsed_uri.app_name,
             user_id=parsed_uri.user_id,

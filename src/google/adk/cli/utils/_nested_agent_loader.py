@@ -291,7 +291,7 @@ class NestedAgentLoader(AgentLoader):
     raise ValueError(f"Could not determine agent type for '{agent_name}'.")
 
   @override
-  def remove_agent_from_cache(self, agent_name: str):
+  def remove_agent_from_cache(self, agent_name: str) -> None:
     agent_dot_path = agent_name.replace("/", ".")
     keys_to_delete = [
         module_name

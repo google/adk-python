@@ -55,31 +55,34 @@ class LiveRequest(BaseModel):
   close: bool = False
   """If set, close the queue. queue.shutdown() is only supported in Python 3.13+."""
 
+  partial: bool = False
+  """If set, the content is a partial turn update that does not complete the current model turn."""
+
 
 class LiveRequestQueue:
   """Queue used to send LiveRequest in a live(bidirectional streaming) way."""
 
-  def __init__(self):
-    self._queue = asyncio.Queue()
+  def __init__(self) -> None:
+    self._queue: asyncio.Queue[LiveRequest] = asyncio.Queue()
 
-  def close(self):
+  def close(self) -> None:
     self._queue.put_nowait(LiveRequest(close=True))
 
-  def send_content(self, content: types.Content):
-    self._queue.put_nowait(LiveRequest(content=content))
+  def send_content(self, content: types.Content, partial: bool = False) -> None:
+    self._queue.put_nowait(LiveRequest(content=content, partial=partial))
 
-  def send_realtime(self, blob: types.Blob):
+  def send_realtime(self, blob: types.Blob) -> None:
     self._queue.put_nowait(LiveRequest(blob=blob))
 
-  def send_activity_start(self):
+  def send_activity_start(self) -> None:
     """Sends an activity start signal to mark the beginning of user input."""
     self._queue.put_nowait(LiveRequest(activity_start=types.ActivityStart()))
 
-  def send_activity_end(self):
+  def send_activity_end(self) -> None:
     """Sends an activity end signal to mark the end of user input."""
     self._queue.put_nowait(LiveRequest(activity_end=types.ActivityEnd()))
 
-  def send(self, req: LiveRequest):
+  def send(self, req: LiveRequest) -> None:
     self._queue.put_nowait(req)
 
   async def get(self) -> LiveRequest:

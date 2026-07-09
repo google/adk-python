@@ -584,12 +584,18 @@ class Runner:
           logger.debug('Running event compactor.')
           from google.adk.apps.compaction import _run_compaction_for_sliding_window
 
-          await _run_compaction_for_sliding_window(
-              self.app,
-              session,
-              self.session_service,
-              skip_token_compaction=ic.token_compaction_checked,
-          )
+          async with aclosing(
+              _run_compaction_for_sliding_window(
+                  self.app,
+                  session,
+                  self.session_service,
+                  skip_token_compaction=ic.token_compaction_checked,
+              )
+          ) as compaction_events:
+            async for compaction_event in compaction_events:
+              await self.session_service.append_event(
+                  session=session, event=compaction_event
+              )
 
   async def _run_node_live(
       self,
@@ -719,6 +725,8 @@ class Runner:
       state_delta: Optional[dict[str, Any]] = None,
   ) -> Event:
     """Append a user message event to the session and return it."""
+    if content.parts and any(p.function_call for p in content.parts):
+      raise ValueError('User message cannot contain function calls.')
     if state_delta:
       event = Event(
           invocation_id=ic.invocation_id,
@@ -1130,12 +1138,18 @@ class Runner:
           logger.debug('Running event compactor.')
           from google.adk.apps.compaction import _run_compaction_for_sliding_window
 
-          await _run_compaction_for_sliding_window(
-              self.app,
-              invocation_context.session,
-              self.session_service,
-              skip_token_compaction=invocation_context.token_compaction_checked,
-          )
+          async with aclosing(
+              _run_compaction_for_sliding_window(
+                  self.app,
+                  invocation_context.session,
+                  self.session_service,
+                  skip_token_compaction=invocation_context.token_compaction_checked,
+              )
+          ) as compaction_events:
+            async for compaction_event in compaction_events:
+              await self.session_service.append_event(
+                  session=invocation_context.session, event=compaction_event
+              )
 
     async with aclosing(_run_with_trace(new_message, invocation_id)) as agen:
       async for event in agen:
@@ -1442,6 +1456,9 @@ class Runner:
     """
     if not new_message.parts:
       raise ValueError('No parts in the new_message.')
+
+    if any(p.function_call for p in new_message.parts):
+      raise ValueError('User message cannot contain function calls.')
 
     if self.artifact_service and save_input_blobs_as_artifacts:
       # Issue deprecation warning

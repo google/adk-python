@@ -1361,3 +1361,67 @@ async def test_three_layer_llm_agent_transfer_round_trip(
       if p.text
   ]
   assert any('Welcome back to root!' in t for t in content_texts3)
+
+
+@pytest.mark.asyncio
+async def test_workflow_node_with_valid_input_schema_completes_successfully(
+    request: pytest.FixtureRequest,
+):
+  """A valid node_input payload successfully passes schema validation."""
+
+  # Arrange
+  class InputSchema(BaseModel):
+    required_field: str
+
+  agent = LlmAgent(
+      name='schema_agent',
+      model='test_model',
+      input_schema=InputSchema,
+      instruction='Just say hi',
+      mode='single_turn',
+  )
+  wrapper = build_node(agent)
+  wf = Workflow(
+      name='test_workflow',
+      edges=[('START', wrapper)],
+  )
+  runner = _new_workflow_runner(wf, request.function.__name__)
+  agent_clone = next(n for n in wf.graph.nodes if n.name == wrapper.name)
+
+  # Act
+  with _mock_agent_run(agent_clone, content_text='hi'):
+    events = await runner.run_async('{"required_field": "hello"}')
+
+  # Assert
+  assert len(events) > 0
+
+
+@pytest.mark.asyncio
+async def test_workflow_node_with_invalid_input_schema_raises_validation_error(
+    request: pytest.FixtureRequest,
+):
+  """An invalid node_input payload raises a pydantic ValidationError."""
+
+  # Arrange
+  class InputSchema(BaseModel):
+    required_field: str
+
+  agent = LlmAgent(
+      name='schema_agent',
+      model='test_model',
+      input_schema=InputSchema,
+      instruction='Just say hi',
+      mode='single_turn',
+  )
+  wrapper = build_node(agent)
+  wf = Workflow(
+      name='test_workflow',
+      edges=[('START', wrapper)],
+  )
+  runner = _new_workflow_runner(wf, request.function.__name__)
+  agent_clone = next(n for n in wf.graph.nodes if n.name == wrapper.name)
+
+  # Act / Assert
+  with _mock_agent_run(agent_clone, content_text='hi'):
+    with pytest.raises(ValidationError):
+      await runner.run_async('{"wrong_field": "hello"}')

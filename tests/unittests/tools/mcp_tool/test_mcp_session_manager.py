@@ -1471,3 +1471,46 @@ class TestDebugHttpxClientFactory:
     client = debug_factory({"X-Test": "Val"}, None, None)
     assert client is base_client
     await base_client.aclose()
+
+  @pytest.mark.asyncio
+  async def test_response_hook_truncates_large_bodies(self):
+    """Test that response hook truncates request and response bodies exceeding limit."""
+    base_client = httpx.AsyncClient()
+    base_factory = Mock(return_value=base_client)
+    debug_factory = _DebugHttpxClientFactory(base_factory)
+
+    # Mock request and response with large content
+    large_req_body = b"a" * 1500
+    large_resp_body = "b" * 1500
+
+    mock_request = Mock(spec=httpx.Request)
+    mock_request.method = "POST"
+    mock_request.content = large_req_body
+    mock_request.headers = httpx.Headers()
+
+    mock_response = Mock(spec=httpx.Response)
+    mock_response.url = httpx.URL("https://example.com/large")
+    mock_response.status_code = 200
+    mock_response.request = mock_request
+    mock_response.headers = httpx.Headers({"content-type": "application/json"})
+    mock_response.text = large_resp_body
+    mock_response.aread = AsyncMock()
+
+    debug_list = []
+    token = _http_debug_var.set(debug_list)
+    try:
+      await debug_factory._response_hook(mock_response)
+    finally:
+      _http_debug_var.reset(token)
+
+    assert len(debug_list) == 1
+    record = debug_list[0]
+    assert len(record["request_body"]) == 1015  # 1000 + len("... [truncated]")
+    assert record["request_body"].endswith("... [truncated]")
+    assert record["request_body"].startswith("a" * 1000)
+
+    assert len(record["response_body"]) == 1015  # 1000 + len("... [truncated]")
+    assert record["response_body"].endswith("... [truncated]")
+    assert record["response_body"].startswith("b" * 1000)
+
+    await base_client.aclose()

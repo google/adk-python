@@ -22,16 +22,15 @@ import tempfile
 from typing import Any
 from typing import Optional
 from unittest.mock import AsyncMock
-from unittest.mock import call
 from unittest.mock import MagicMock
 from unittest.mock import patch
 from urllib.parse import quote
 
 from fastapi.testclient import TestClient
+from google.adk.a2a import _compat
 from google.adk.agents.base_agent import BaseAgent
 from google.adk.agents.llm_agent import LlmAgent
 from google.adk.agents.run_config import RunConfig
-from google.adk.apps.app import App
 from google.adk.artifacts.base_artifact_service import ArtifactVersion
 from google.adk.cli import fast_api as fast_api_module
 from google.adk.cli.fast_api import get_fast_api_app
@@ -46,7 +45,6 @@ from google.adk.events.event_actions import EventActions
 from google.adk.plugins.bigquery_agent_analytics_plugin import BigQueryAgentAnalyticsPlugin
 from google.adk.runners import Runner
 from google.adk.sessions.in_memory_session_service import InMemorySessionService
-from google.adk.sessions.session import Session
 from google.genai import types
 from pydantic import BaseModel
 import pytest
@@ -841,8 +839,11 @@ def temp_agents_dir_with_a2a():
         "name": "test_a2a_agent",
         "description": "Test A2A agent",
         "version": "1.0.0",
-        "author": "test",
-        "capabilities": ["text"],
+        "url": "http://localhost:8000/a2a/test_a2a_agent",
+        "capabilities": {},
+        "defaultInputModes": ["text/plain"],
+        "defaultOutputModes": ["text/plain"],
+        "skills": [],
     }
 
     with open(agent_dir / "agent.json", "w") as f:
@@ -1746,6 +1747,53 @@ def test_save_artifact(test_app, create_test_session, mock_artifact_service):
   assert stored["artifact"].text == "hello world"
 
 
+def test_save_artifact_reference(
+    test_app, create_test_session, mock_artifact_service
+):
+  """Test saving an artifact reference through the FastAPI endpoint."""
+  info = create_test_session
+  url = (
+      f"/apps/{info['app_name']}/users/{info['user_id']}/sessions/"
+      f"{info['session_id']}/artifacts"
+  )
+  payload = {
+      "filename": "reference.txt",
+      "artifact": {
+          "fileData": {
+              "fileUri": (
+                  f"artifact://apps/{info['app_name']}/users/{info['user_id']}/"
+                  f"sessions/{info['session_id']}/artifacts/target_file/versions/0"
+              ),
+              "mimeType": "text/plain",
+          }
+      },
+  }
+
+  response = test_app.post(url, json=payload)
+  assert response.status_code == 200
+  data = response.json()
+  assert data["version"] == 0
+  assert data["customMetadata"] == {}
+  assert data["mimeType"] in (None, "text/plain")
+  assert data["canonicalUri"].endswith(
+      f"/sessions/{info['session_id']}/artifacts/"
+      f"{payload['filename']}/versions/0"
+  )
+  assert isinstance(data["createTime"], float)
+
+  key = (
+      f"{info['app_name']}:{info['user_id']}:{info['session_id']}:"
+      f"{payload['filename']}"
+  )
+  stored = mock_artifact_service._artifacts[key][0]
+  assert stored["artifact"].file_data is not None
+  assert (
+      stored["artifact"].file_data.file_uri
+      == payload["artifact"]["fileData"]["fileUri"]
+  )
+  assert stored["artifact"].file_data.mime_type == "text/plain"
+
+
 def test_artifact_endpoints_support_nested_names(
     test_app, create_test_session, mock_artifact_service
 ):
@@ -1994,6 +2042,12 @@ def test_openapi_json_schema_accessible(test_app):
   logger.info("OpenAPI /openapi.json endpoint is accessible")
 
 
+@pytest.mark.skipif(
+    _compat.IS_A2A_V1,
+    reason=(
+        "0.3.x-only: mocks server.apps.A2AStarletteApplication (gone in 1.x)"
+    ),
+)
 def test_a2a_agent_discovery(test_app_with_a2a):
   """Test that A2A agents are properly discovered and configured."""
   # This test mainly verifies that the A2A setup doesn't break the app
@@ -2002,6 +2056,12 @@ def test_a2a_agent_discovery(test_app_with_a2a):
   logger.info("A2A agent discovery test passed")
 
 
+@pytest.mark.skipif(
+    _compat.IS_A2A_V1,
+    reason=(
+        "0.3.x-only: mocks server.apps.A2AStarletteApplication (gone in 1.x)"
+    ),
+)
 def test_a2a_request_handler_uses_push_config_store(
     mock_session_service,
     mock_artifact_service,
@@ -2084,6 +2144,12 @@ def test_a2a_request_handler_uses_push_config_store(
     )
 
 
+@pytest.mark.skipif(
+    _compat.IS_A2A_V1,
+    reason=(
+        "0.3.x-only: mocks server.apps.A2AStarletteApplication (gone in 1.x)"
+    ),
+)
 def test_a2a_request_handler_uses_task_store_uri(
     mock_session_service,
     mock_artifact_service,
@@ -2164,6 +2230,12 @@ def test_a2a_request_handler_uses_task_store_uri(
     assert call_kwargs["task_store"] is custom_task_store
 
 
+@pytest.mark.skipif(
+    _compat.IS_A2A_V1,
+    reason=(
+        "0.3.x-only: mocks server.apps.A2AStarletteApplication (gone in 1.x)"
+    ),
+)
 def test_a2a_task_store_engine_disposed_on_shutdown(
     mock_session_service,
     mock_artifact_service,
@@ -2245,6 +2317,12 @@ def test_a2a_task_store_engine_disposed_on_shutdown(
     mock_engine.dispose.assert_awaited_once()
 
 
+@pytest.mark.skipif(
+    _compat.IS_A2A_V1,
+    reason=(
+        "0.3.x-only: mocks server.apps.A2AStarletteApplication (gone in 1.x)"
+    ),
+)
 def test_a2a_in_memory_task_store_no_engine_dispose(
     mock_session_service,
     mock_artifact_service,
@@ -2579,7 +2657,10 @@ tools:
 
 
 def test_builder_get_rejects_non_yaml_file_paths(builder_test_client, tmp_path):
-  """GET /dev/apps/{app_name}/builder?file_path=... rejects non-YAML extensions."""
+  """GET /dev/apps/{app_name}/builder?file_path=...
+
+  rejects non-YAML extensions.
+  """
   app_root = tmp_path / "app"
   app_root.mkdir(parents=True, exist_ok=True)
   (app_root / ".env").write_text("SECRET=supersecret\n")

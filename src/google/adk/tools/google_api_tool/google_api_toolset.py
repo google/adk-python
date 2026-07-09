@@ -90,8 +90,12 @@ class GoogleApiToolset(BaseToolset):
       cert_path, key_path, passphrase = self._mtls_certs.get_certs()
       if cert_path and key_path and passphrase:
 
-        def client_factory():
-          return httpx.AsyncClient(cert=(cert_path, key_path, passphrase))
+        def client_factory() -> httpx.AsyncClient:
+          if passphrase:
+            return httpx.AsyncClient(
+                cert=(cert_path, key_path, passphrase)  # type: ignore[arg-type]
+            )
+          return httpx.AsyncClient(cert=(cert_path, key_path))
 
         self._httpx_client_factory = client_factory
 
@@ -114,7 +118,9 @@ class GoogleApiToolset(BaseToolset):
         if self._is_tool_selected(tool, readonly_context)
     ]
 
-  def set_tool_filter(self, tool_filter: Union[ToolPredicate, List[str]]):
+  def set_tool_filter(
+      self, tool_filter: Union[ToolPredicate, List[str]]
+  ) -> None:
     self.tool_filter = tool_filter
 
   def _load_toolset_with_oidc_auth(self) -> OpenAPIToolset:
@@ -143,9 +149,6 @@ class GoogleApiToolset(BaseToolset):
                 'https://accounts.google.com/o/oauth2/v2/auth'
             ),
             token_endpoint='https://oauth2.googleapis.com/token',
-            userinfo_endpoint=(
-                'https://openidconnect.googleapis.com/v1/userinfo'
-            ),
             revocation_endpoint='https://oauth2.googleapis.com/revoke',
             token_endpoint_auth_methods_supported=[
                 'client_secret_post',
@@ -157,15 +160,15 @@ class GoogleApiToolset(BaseToolset):
         httpx_client_factory=self._httpx_client_factory,
     )
 
-  def configure_auth(self, client_id: str, client_secret: str):
+  def configure_auth(self, client_id: str, client_secret: str) -> None:
     self._client_id = client_id
     self._client_secret = client_secret
 
-  def configure_sa_auth(self, service_account: ServiceAccount):
+  def configure_sa_auth(self, service_account: ServiceAccount) -> None:
     self._service_account = service_account
 
   @override
-  async def close(self):
+  async def close(self) -> None:
     if self._openapi_toolset:
       await self._openapi_toolset.close()
     if hasattr(self, '_mtls_certs') and self._mtls_certs:

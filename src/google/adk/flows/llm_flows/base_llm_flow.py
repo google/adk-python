@@ -269,7 +269,7 @@ async def _handle_after_model_callback(
   agent = invocation_context.agent
 
   # Add grounding metadata to the response if needed.
-  # TODO(b/448114567): Remove this function once the workaround is no longer needed.
+  # TODO: Remove this function once the workaround is no longer needed.
   async def _maybe_add_grounding_metadata(
       response: Optional[LlmResponse] = None,
   ) -> Optional[LlmResponse]:
@@ -806,14 +806,16 @@ class BaseLlmFlow(ABC):
 
       if live_request.content:
         content = live_request.content
+        if content.parts and any(p.function_call for p in content.parts):
+          raise ValueError('User message cannot contain function calls.')
         # Persist user text content to session (similar to non-live mode)
         # Skip function responses - they are already handled separately
         is_function_response = content.parts and any(
             part.function_response for part in content.parts
         )
-        if not is_function_response:
-          if not content.role:
-            content.role = 'user'
+        if not is_function_response and not content.role:
+          content.role = 'user'
+        if not is_function_response and not live_request.partial:
           user_content_event = Event(
               id=Event.new_id(),
               invocation_id=invocation_context.invocation_id,
@@ -824,7 +826,9 @@ class BaseLlmFlow(ABC):
               session=invocation_context.session,
               event=user_content_event,
           )
-        await llm_connection.send_content(live_request.content)
+        await llm_connection._send_content(
+            live_request.content, partial=live_request.partial
+        )
 
   async def _receive_from_model(
       self,
@@ -1169,6 +1173,7 @@ class BaseLlmFlow(ABC):
         and not llm_response.usage_metadata
         and not llm_response.live_session_resumption_update
         and not llm_response.grounding_metadata
+        and not llm_response.voice_activity
     ):
       return
 
@@ -1177,6 +1182,12 @@ class BaseLlmFlow(ABC):
       model_response_event.live_session_resumption_update = (
           llm_response.live_session_resumption_update
       )
+      yield model_response_event
+      return
+
+    # Handle voice activity events
+    if llm_response.voice_activity:
+      model_response_event.voice_activity = llm_response.voice_activity
       yield model_response_event
       return
 

@@ -581,7 +581,7 @@ class BaseAgent(BaseNode, abc.ABC):
 
   @field_validator('name', mode='after')
   @classmethod
-  def validate_name(cls, value: str):
+  def validate_name(cls, value: str) -> str:
     if not value.isidentifier():
       raise ValueError(
           f'Found invalid agent name: `{value}`.'
