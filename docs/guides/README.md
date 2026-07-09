@@ -13,6 +13,9 @@ This directory contains specific developer guides for the ADK Python implementat
 * [Event and NodeInfo](events/event/index.md) - Understanding Event and NodeInfo in workflows.
 * [RequestInput](events/request_input/index.md) - How to use RequestInput for human-in-the-loop interactions.
 
+### Tools
+* [to_mcp_server](tools/mcp_tool/agent_to_mcp/index.md) - Expose an ADK agent as an MCP server so any MCP host can drive it as a single tool (the MCP counterpart of to_a2a).
+
 ### Workflows
 * [Workflow](workflow/workflow/index.md) - Graph-based orchestration of complex, multi-step agent interactions.
 * [Workflow Graphs](workflow/graph/index.md) - Understanding nodes, edges, and graph structures in workflows.

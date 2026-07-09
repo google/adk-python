@@ -17,7 +17,6 @@
 from __future__ import annotations
 
 import logging
-import shlex
 from typing import Any
 from typing import Optional
 from typing import TYPE_CHECKING
@@ -103,31 +102,12 @@ class ReadFileTool(BaseTool):
     start_line = args.get('start_line')
     end_line = args.get('end_line')
 
-    # Use `sed` to read the file if start_line or end_line are specified.
-    if (start_line and start_line > 1) or end_line:
-      start = start_line or 1
-      if end_line:
-        sed_range = f'{start},{end_line}'
-      else:
-        sed_range = f'{start},$'
-      path_arg = shlex.quote(path)
-      sed_arg = shlex.quote(f'{sed_range}p')
-      cmd = f'cat -n {path_arg} | sed -n {sed_arg}'
-      res = await self._environment.execute(cmd)
-      if res.exit_code == 0:
-        return {
-            'status': 'ok',
-            'content': _truncate(
-                res.stdout,
-                limit=self._max_output_chars,
-            ),
-        }
-
     try:
+      # TODO: Avoid loading the entire file into memory to prevent OOM on large files.
       data_bytes = await self._environment.read_file(path)
-      text = data_bytes.decode('utf-8', errors='replace')
-      lines = text.splitlines(True)
-      total = len(lines)
+      # Slice data_bytes by line boundaries before decoding.
+      lines_bytes = data_bytes.splitlines(keepends=True)
+      total = len(lines_bytes)
       start = max(1, start_line or 1)
       end = min(total, end_line or total)
       if start > total:
@@ -144,9 +124,13 @@ class ReadFileTool(BaseTool):
             'error': f'`start_line` ({start}) is after `end_line` ({end}).',
             'total_lines': total,
         }
-      selected = lines[start - 1 : end]
+      selected_bytes = lines_bytes[start - 1 : end]
+      lines = [
+          line_bytes.decode('utf-8', errors='replace')
+          for line_bytes in selected_bytes
+      ]
       numbered = ''.join(
-          f'{start + i:6d}\t{line}' for i, line in enumerate(selected)
+          f'{start + i:6d}\t{line}' for i, line in enumerate(lines)
       )
       result = {
           'status': 'ok',
