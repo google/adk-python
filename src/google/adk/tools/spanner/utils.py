@@ -18,6 +18,7 @@ import asyncio
 import itertools
 import json
 import logging
+from typing import Any
 from typing import Generator
 from typing import Iterable
 from typing import Optional
@@ -51,9 +52,9 @@ def execute_sql(
     credentials: Credentials,
     settings: SpannerToolSettings,
     tool_context: ToolContext,
-    params: Optional[dict] = None,
-    params_types: Optional[dict] = None,
-) -> dict:
+    params: Optional[dict[str, Any]] = None,
+    params_types: Optional[dict[str, Any]] = None,
+) -> dict[str, Any]:
   """Utility function to run a Spanner Read-Only query in the spanner database and return the result.
 
   Args:
@@ -441,7 +442,7 @@ class SpannerVectorStore:
 
     return statement.strip()
 
-  def create_vector_store(self):
+  def create_vector_store(self) -> None:
     """Creates a new vector store within the Google Cloud Spanner database.
 
     Raises:
@@ -470,7 +471,7 @@ class SpannerVectorStore:
       logger.error("Failed to create the vector store. Error: %s", e)
       raise
 
-  def create_vector_search_index(self):
+  def create_vector_search_index(self) -> None:
     """Creates a vector search index within the Google Cloud Spanner database.
 
     Raises:
@@ -506,7 +507,7 @@ class SpannerVectorStore:
       logger.error("Failed to create the vector search index. Error: %s", e)
       raise
 
-  async def create_vector_store_async(self):
+  async def create_vector_store_async(self) -> None:
     """Asynchronously creates a new vector store within the Google Cloud Spanner database.
 
     Raises:
@@ -514,7 +515,7 @@ class SpannerVectorStore:
     """
     await asyncio.to_thread(self.create_vector_store)
 
-  async def create_vector_search_index_async(self):
+  async def create_vector_search_index_async(self) -> None:
     """Asynchronously creates a vector search index within the Google Cloud Spanner database.
 
     Raises:
@@ -525,9 +526,9 @@ class SpannerVectorStore:
   def _prepare_and_validate_batches(
       self,
       contents: Iterable[str],
-      additional_columns_values: Iterable[dict] | None,
+      additional_columns_values: Iterable[dict[str, Any]] | None,
       batch_size: int,
-  ) -> Generator[tuple[list[str], list[dict], int], None, None]:
+  ) -> Generator[tuple[list[str], list[dict[str, Any]], int], None, None]:
     """Prepares and validates batches of contents and additional columns for insertion into the vector store."""
     content_iter = iter(contents)
 
@@ -562,9 +563,9 @@ class SpannerVectorStore:
       self,
       contents: Iterable[str],
       *,
-      additional_columns_values: Iterable[dict] | None = None,
+      additional_columns_values: Iterable[dict[str, Any]] | None = None,
       batch_size: int = 200,
-  ):
+  ) -> None:
     """Adds text contents to the vector store.
 
     Performs batch embedding generation and subsequent insertion of the contents
@@ -658,9 +659,9 @@ class SpannerVectorStore:
       self,
       contents: Iterable[str],
       *,
-      additional_columns_values: Iterable[dict] | None = None,
+      additional_columns_values: Iterable[dict[str, Any]] | None = None,
       batch_size: int = 200,
-  ):
+  ) -> None:
     """Asynchronously adds text contents to the vector store.
 
     Performs batch embedding generation and subsequent insertion of the contents
@@ -714,7 +715,9 @@ class SpannerVectorStore:
             for c, e, extra in zip(content_b, embeddings, extra_b)
         ]
 
-        def _commit_batch(columns, rows_to_commit):
+        def _commit_batch(
+            columns: list[str], rows_to_commit: list[list[Any]]
+        ) -> None:
           with self._database.batch() as batch:
             batch.insert_or_update(
                 table=self._vector_store_settings.table_name,

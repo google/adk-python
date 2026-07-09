@@ -224,6 +224,33 @@ def test_sample_loads(sample_dir: Path, monkeypatch):
   """Smoke test: every sample's agent imports and constructs a root agent."""
   for key, value in _DUMMY_ENV.items():
     monkeypatch.setenv(key, value)
+  import google.auth
+  import google.auth.credentials
+  import google.auth.transport
+  from google.auth.transport import mtls
+
+  class _DummyCredentials(google.auth.credentials.Credentials):
+
+    def __init__(self) -> None:
+      super().__init__()
+      self.token: str | None = "dummy-token"
+
+    def refresh(self, request: google.auth.transport.Request) -> None:
+      self.token = "dummy-token"
+
+  monkeypatch.setattr(
+      google.auth,
+      "default",
+      lambda *args, **kwargs: (
+          _DummyCredentials(),
+          "dummy-project",
+      ),
+  )
+  monkeypatch.setattr(
+      mtls,
+      "has_default_client_cert_source",
+      lambda: False,
+  )
   root_agent = _load_root_agent(sample_dir)
   assert root_agent is not None, f"{sample_dir} loaded no root agent"
   assert getattr(

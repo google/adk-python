@@ -39,7 +39,7 @@ class GoogleMapsGroundingTool(BaseTool):
   GOOGLE_GENAI_USE_ENTERPRISE=TRUE)
   """
 
-  def __init__(self):
+  def __init__(self) -> None:
     # Name and description are not used because this is a model built-in tool.
     super().__init__(name='google_maps', description='google_maps')
 

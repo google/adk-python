@@ -242,6 +242,9 @@ class RunConfig(BaseModel):
   realtime_input_config: Optional[types.RealtimeInputConfig] = None
   """Realtime input config for live agents with audio input from user."""
 
+  explicit_vad_signal: Optional[bool] = None
+  """Whether to enable explicit voice activity detection (VAD) signals from the model."""
+
   translation_config: Optional[types.TranslationConfig] = None
   """Configures real-time speech-to-speech translation.
 
@@ -377,6 +380,14 @@ class RunConfig(BaseModel):
   The Runner does not persist these contents to the session. They are only
   added to the LLM request assembled for the current invocation, which lets
   callers provide per-turn context without changing the conversation history.
+  """
+
+  include_thoughts_from_other_agents: bool = False
+  """Whether to include other agents' thought parts in LLM context.
+
+  By default, thoughts from other agents are excluded when their messages are
+  reformatted as user context for the current agent. Enable this only when
+  agents are expected to share internal reasoning with one another.
   """
 
   @model_validator(mode='before')

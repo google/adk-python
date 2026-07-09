@@ -37,7 +37,7 @@ class UrlContextTool(BaseTool):
   local code execution.
   """
 
-  def __init__(self):
+  def __init__(self) -> None:
     # Name and description are not used because this is a model built-in tool.
     super().__init__(name='url_context', description='url_context')
 
