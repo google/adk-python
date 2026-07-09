@@ -153,7 +153,10 @@ def test_description_empty():
 
 
 def test_description_too_long():
-  with pytest.raises(ValidationError, match="at most 1024 characters"):
+  with pytest.raises(
+      ValidationError,
+      match="at most 1024 characters. Description length: 1025",
+  ):
     models.Frontmatter(name="my-skill", description="x" * 1025)
 
 
@@ -228,4 +231,22 @@ def test_metadata_adk_additional_tools_invalid_type():
         "name": "my-skill",
         "description": "desc",
         "metadata": {"adk_additional_tools": 123},
+    })
+
+
+def test_metadata_adk_inject_state_bool():
+  fm = models.Frontmatter.model_validate({
+      "name": "my-skill",
+      "description": "desc",
+      "metadata": {"adk_inject_state": True},
+  })
+  assert fm.metadata["adk_inject_state"] is True
+
+
+def test_metadata_adk_inject_state_rejected_as_string():
+  with pytest.raises(ValidationError, match="adk_inject_state must be a bool"):
+    models.Frontmatter.model_validate({
+        "name": "my-skill",
+        "description": "desc",
+        "metadata": {"adk_inject_state": "true"},
     })

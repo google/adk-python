@@ -23,16 +23,15 @@ from .function_tool import FunctionTool
 from .tool_context import ToolContext
 
 
+# Note:
+#   For most use cases, you should use TransferToAgentTool instead of this
+#   function directly. TransferToAgentTool provides additional enum constraints
+#   that prevent LLMs from hallucinating invalid agent names.
 def transfer_to_agent(agent_name: str, tool_context: ToolContext) -> None:
   """Transfer the question to another agent.
 
-  This tool hands off control to another agent when it's more suitable to
+  Use this tool to hand off control to another agent that is more suitable to
   answer the user's question according to the agent's description.
-
-  Note:
-    For most use cases, you should use TransferToAgentTool instead of this
-    function directly. TransferToAgentTool provides additional enum constraints
-    that prevent LLMs from hallucinating invalid agent names.
 
   Args:
     agent_name: the agent name to transfer to.

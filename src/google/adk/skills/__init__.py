@@ -25,6 +25,7 @@ from .models import Frontmatter
 from .models import Resources
 from .models import Script
 from .models import Skill
+from .skill_registry import SkillRegistry
 
 __all__ = [
     "DEFAULT_SKILL_SYSTEM_INSTRUCTION",
@@ -32,6 +33,7 @@ __all__ = [
     "Resources",
     "Script",
     "Skill",
+    "SkillRegistry",
     "list_skills_in_dir",
     "list_skills_in_gcs_dir",
     "load_skill_from_dir",

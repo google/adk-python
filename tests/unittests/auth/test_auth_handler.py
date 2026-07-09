@@ -22,6 +22,7 @@ from fastapi.openapi.models import APIKey
 from fastapi.openapi.models import APIKeyIn
 from fastapi.openapi.models import OAuth2
 from fastapi.openapi.models import OAuthFlowAuthorizationCode
+from fastapi.openapi.models import OAuthFlowClientCredentials
 from fastapi.openapi.models import OAuthFlows
 from google.adk.auth.auth_credential import AuthCredential
 from google.adk.auth.auth_credential import AuthCredentialTypes
@@ -66,6 +67,8 @@ class MockOAuth2Session:
     params = f"client_id={self.client_id}&scope={self.scope}"
     if kwargs.get("audience"):
       params += f"&audience={kwargs.get('audience')}"
+    if kwargs.get("prompt"):
+      params += f"&prompt={kwargs.get('prompt')}"
     return f"{url}?{params}", "mock_state"
 
   def fetch_token(
@@ -250,6 +253,25 @@ class TestGenerateAuthUri:
     result = handler.generate_auth_uri()
 
     assert "audience=test_audience" in result.oauth2.auth_uri
+    assert "prompt=consent" in result.oauth2.auth_uri
+
+  @patch("google.adk.auth.auth_handler.OAuth2Session", MockOAuth2Session)
+  def test_generate_auth_uri_with_custom_prompt(
+      self, openid_auth_scheme, oauth2_credentials
+  ):
+    """Test generating an auth URI with a custom prompt override."""
+    oauth2_credentials.oauth2.prompt = "none"
+    exchanged = oauth2_credentials.model_copy(deep=True)
+
+    config = AuthConfig(
+        auth_scheme=openid_auth_scheme,
+        raw_auth_credential=oauth2_credentials,
+        exchanged_auth_credential=exchanged,
+    )
+    handler = AuthHandler(config)
+    result = handler.generate_auth_uri()
+
+    assert "prompt=none" in result.oauth2.auth_uri
 
   @patch("google.adk.auth.auth_handler.OAuth2Session", MockOAuth2Session)
   def test_generate_auth_uri_openid(
@@ -271,6 +293,35 @@ class TestGenerateAuthUri:
         "https://example.com/oauth2/authorize"
     )
     assert "client_id=mock_client_id" in result.oauth2.auth_uri
+    assert result.oauth2.state == "mock_state"
+
+  @patch("google.adk.auth.auth_handler.OAuth2Session", MockOAuth2Session)
+  def test_generate_auth_uri_client_credentials_with_missing_scopes(
+      self, oauth2_credentials
+  ):
+    """Test client credentials flow tolerates missing scopes."""
+    auth_scheme = OAuth2(
+        flows=OAuthFlows(
+            clientCredentials=OAuthFlowClientCredentials(
+                tokenUrl="https://example.com/oauth2/token"
+            )
+        )
+    )
+    auth_scheme.flows.clientCredentials.scopes = None
+
+    config = AuthConfig(
+        auth_scheme=auth_scheme,
+        raw_auth_credential=oauth2_credentials,
+        exchanged_auth_credential=oauth2_credentials.model_copy(deep=True),
+    )
+
+    handler = AuthHandler(config)
+    result = handler.generate_auth_uri()
+
+    assert (
+        result.oauth2.auth_uri
+        == "https://example.com/oauth2/token?client_id=mock_client_id&scope=&prompt=consent"
+    )
     assert result.oauth2.state == "mock_state"
 
   @patch("google.adk.auth.auth_handler.OAuth2Session")

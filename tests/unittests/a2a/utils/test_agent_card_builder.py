@@ -20,6 +20,7 @@ from a2a.types import AgentCard
 from a2a.types import AgentProvider
 from a2a.types import AgentSkill
 from a2a.types import SecurityScheme
+from google.adk.a2a import _compat
 from google.adk.a2a.utils.agent_card_builder import _build_agent_description
 from google.adk.a2a.utils.agent_card_builder import _build_llm_agent_description_with_instructions
 from google.adk.a2a.utils.agent_card_builder import _build_loop_description
@@ -42,8 +43,11 @@ from google.adk.agents.llm_agent import LlmAgent
 from google.adk.agents.loop_agent import LoopAgent
 from google.adk.agents.parallel_agent import ParallelAgent
 from google.adk.agents.sequential_agent import SequentialAgent
-from google.adk.examples import Example
 from google.adk.tools.example_tool import ExampleTool
+from google.adk.workflow import FunctionNode
+from google.adk.workflow import START
+from google.adk.workflow import Workflow
+from pydantic import BaseModel
 import pytest
 
 
@@ -112,6 +116,31 @@ class TestAgentCardBuilder:
     with pytest.raises(ValueError, match="Agent cannot be None or empty."):
       AgentCardBuilder(agent=mock_agent)
 
+  def test_init_rejects_function_node(self):
+    """__init__ raises TypeError for a bare FunctionNode.
+
+    FunctionNode is a BaseNode but is intended for use inside a
+    Workflow, not as a standalone A2A root. Without this guard the
+    builder would silently produce a degenerate "custom agent" card.
+    """
+
+    async def my_fn(node_input):
+      return f"echo: {node_input}"
+
+    fn_node = FunctionNode(func=my_fn, name="echo_fn")
+
+    with pytest.raises(
+        TypeError, match="requires a BaseAgent or Workflow, got FunctionNode"
+    ):
+      AgentCardBuilder(agent=fn_node)
+
+  def test_init_rejects_arbitrary_object(self):
+    """__init__ raises TypeError for non-BaseNode objects."""
+    with pytest.raises(
+        TypeError, match="requires a BaseAgent or Workflow, got str"
+    ):
+      AgentCardBuilder(agent="not an agent")
+
   @patch("google.adk.a2a.utils.agent_card_builder._build_primary_skills")
   @patch("google.adk.a2a.utils.agent_card_builder._build_sub_agent_skills")
   async def test_build_success(
@@ -123,10 +152,13 @@ class TestAgentCardBuilder:
     mock_agent.name = "test_agent"
     mock_agent.description = "Test agent description"
 
-    mock_primary_skill = Mock(spec=AgentSkill)
-    mock_sub_skill = Mock(spec=AgentSkill)
-    mock_build_primary_skills.return_value = [mock_primary_skill]
-    mock_build_sub_skills.return_value = [mock_sub_skill]
+    # Use real AgentSkill protos so the card builder works on both SDK versions.
+    primary_skill = AgentSkill(
+        id="primary", name="primary", description="d", tags=["t"]
+    )
+    sub_skill = AgentSkill(id="sub", name="sub", description="d", tags=["t"])
+    mock_build_primary_skills.return_value = [primary_skill]
+    mock_build_sub_skills.return_value = [sub_skill]
 
     builder = AgentCardBuilder(agent=mock_agent)
 
@@ -137,15 +169,23 @@ class TestAgentCardBuilder:
     assert isinstance(result, AgentCard)
     assert result.name == "test_agent"
     assert result.description == "Test agent description"
-    assert result.documentation_url is None
-    assert result.url == "http://localhost:80/a2a"
+    assert not result.documentation_url  # None on 0.3, "" on 1.x
+    assert _compat.agent_card_url(result) == "http://localhost:80/a2a"
     assert result.version == "0.0.1"
-    assert result.skills == [mock_primary_skill, mock_sub_skill]
+    assert list(result.skills) == [primary_skill, sub_skill]
     assert result.default_input_modes == ["text/plain"]
     assert result.default_output_modes == ["text/plain"]
-    assert result.supports_authenticated_extended_card is False
-    assert result.provider is None
-    assert result.security_schemes is None
+    # supports_authenticated_extended_card only exists in 0.3.x.
+    if not _compat.IS_A2A_V1:
+      assert result.supports_authenticated_extended_card is False
+    # Proto: unset embedded message returns empty message, not None
+    if _compat.IS_A2A_V1:
+      assert not result.provider.url and not result.provider.organization
+    else:
+      assert result.provider is None
+    # Proto: security_schemes field behavior differs on 1.x
+    if not _compat.IS_A2A_V1:
+      assert result.security_schemes is None
 
   @patch("google.adk.a2a.utils.agent_card_builder._build_primary_skills")
   @patch("google.adk.a2a.utils.agent_card_builder._build_sub_agent_skills")
@@ -158,21 +198,28 @@ class TestAgentCardBuilder:
     mock_agent.name = "test_agent"
     mock_agent.description = None  # Should use default description
 
-    mock_primary_skill = Mock(spec=AgentSkill)
-    mock_sub_skill = Mock(spec=AgentSkill)
-    mock_build_primary_skills.return_value = [mock_primary_skill]
-    mock_build_sub_skills.return_value = [mock_sub_skill]
+    primary_skill = AgentSkill(
+        id="primary", name="primary", description="d", tags=["t"]
+    )
+    sub_skill = AgentSkill(id="sub", name="sub", description="d", tags=["t"])
+    mock_build_primary_skills.return_value = [primary_skill]
+    mock_build_sub_skills.return_value = [sub_skill]
 
-    mock_provider = Mock(spec=AgentProvider)
-    mock_security_schemes = {"test": Mock(spec=SecurityScheme)}
+    # Use real (non-Mock) A2A objects so they serialize into the proto card on
+    # 1.x. The 1.x branch now propagates provider/security_schemes (previously
+    # dropped), so a Mock(spec=...) would fail MessageToDict serialization.
+    provider = AgentProvider(
+        organization="ACME", url="https://acme.example.com"
+    )
+    security_schemes = {"test": _compat.make_api_key_scheme(name="X-API-Key")}
 
     builder = AgentCardBuilder(
         agent=mock_agent,
         rpc_url="https://example.com/a2a/",
         doc_url="https://docs.example.com",
-        provider=mock_provider,
+        provider=provider,
         agent_version="2.0.0",
-        security_schemes=mock_security_schemes,
+        security_schemes=security_schemes,
     )
 
     # Act
@@ -181,15 +228,57 @@ class TestAgentCardBuilder:
     # Assert
     assert result.name == "test_agent"
     assert result.description == "An ADK Agent"  # Default description
-    # The source code uses doc_url parameter but AgentCard expects documentation_url
-    # Since the source code doesn't map doc_url to documentation_url, it will be None
-    assert result.documentation_url is None
+    # documentation_url is populated on both SDKs.
+    assert result.documentation_url == "https://docs.example.com"
     assert (
-        result.url == "https://example.com/a2a"
+        _compat.agent_card_url(result) == "https://example.com/a2a"
     )  # Should strip trailing slash
     assert result.version == "2.0.0"
-    assert result.provider == mock_provider
-    assert result.security_schemes == mock_security_schemes
+    # provider / security_schemes now propagate on BOTH versions.
+    assert result.provider.organization == "ACME"
+    assert "test" in result.security_schemes
+
+  @patch("google.adk.a2a.utils.agent_card_builder._build_primary_skills")
+  @patch("google.adk.a2a.utils.agent_card_builder._build_sub_agent_skills")
+  async def test_build_propagates_capabilities_provider_security_schemes(
+      self, mock_build_sub_skills, mock_build_primary_skills
+  ):
+    """capabilities/provider/security_schemes round-trip on both SDKs."""
+    # Regression: the 1.x branch of AgentCardBuilder.build previously
+    # dropped capabilities/provider/security_schemes (only the 0.3.x branch
+    # set them), silently losing caller config on 1.x. Uses real (non-Mock)
+    # A2A objects so they serialize into the proto card on 1.x.
+    mock_agent = Mock(spec=BaseAgent)
+    mock_agent.name = "test_agent"
+    mock_agent.description = None
+    mock_build_primary_skills.return_value = []
+    mock_build_sub_skills.return_value = []
+
+    capabilities = AgentCapabilities(streaming=True)
+    provider = AgentProvider(
+        organization="ACME", url="https://acme.example.com"
+    )
+    security_schemes = {
+        "api_key": _compat.make_api_key_scheme(name="X-API-Key")
+    }
+
+    builder = AgentCardBuilder(
+        agent=mock_agent,
+        rpc_url="https://example.com/a2a/",
+        capabilities=capabilities,
+        provider=provider,
+        security_schemes=security_schemes,
+    )
+
+    result = await builder.build()
+
+    # Capabilities propagated on both versions.
+    assert result.capabilities.streaming
+    # Provider propagated on both versions.
+    assert result.provider.organization == "ACME"
+    assert result.provider.url == "https://acme.example.com"
+    # Security schemes propagated on both versions.
+    assert "api_key" in result.security_schemes
 
   @patch("google.adk.a2a.utils.agent_card_builder._build_primary_skills")
   @patch("google.adk.a2a.utils.agent_card_builder._build_sub_agent_skills")
@@ -210,6 +299,85 @@ class TestAgentCardBuilder:
         match="Failed to build agent card for test_agent: Test error",
     ):
       await builder.build()
+
+  async def test_build_succeeds_for_llm_agent(self):
+    """AgentCardBuilder.build succeeds for a standalone LlmAgent.
+
+    Regression coverage for the type-narrowing to BaseAgent | Workflow:
+    LlmAgent (a BaseAgent subclass) must continue to work end-to-end.
+    """
+    agent = LlmAgent(
+        name="writer",
+        model="gemini-2.5-flash",
+        description="Writes a short reply.",
+        instruction="Write a short reply.",
+    )
+    builder = AgentCardBuilder(agent=agent, rpc_url="http://localhost:8000/")
+
+    card = await builder.build()
+
+    assert isinstance(card, AgentCard)
+    assert card.name == "writer"
+    assert card.description == "Writes a short reply."
+    skill_ids = [skill.id for skill in card.skills]
+    assert "writer" in skill_ids
+
+  async def test_build_succeeds_for_workflow_with_llm_agent_node(self):
+    """AgentCardBuilder.build succeeds for a Workflow (no sub_agents)."""
+    writer = LlmAgent(
+        name="writer",
+        model="gemini-2.5-flash",
+        description="Writes the reply.",
+        instruction="Write a short reply.",
+    )
+    workflow = Workflow(
+        name="pipe",
+        description="A simple pipeline.",
+        edges=[(START, writer)],
+    )
+    builder = AgentCardBuilder(agent=workflow, rpc_url="http://localhost:8000/")
+
+    card = await builder.build()
+
+    assert isinstance(card, AgentCard)
+    assert card.name == "pipe"
+    skill_ids = [skill.id for skill in card.skills]
+    assert "pipe" in skill_ids  # primary workflow skill
+    assert any("writer" in sid for sid in skill_ids)  # child node skill
+
+  async def test_build_succeeds_for_workflow_with_output_schema_node(self):
+    """AgentCardBuilder.build succeeds for a Workflow whose LlmAgent has output_schema."""
+
+    class _Out(BaseModel):
+      text: str
+
+    writer = LlmAgent(
+        name="writer",
+        model="gemini-2.5-flash",
+        instruction="Write a short reply.",
+        output_schema=_Out,
+    )
+    workflow = Workflow(name="pipe", edges=[(START, writer)])
+    builder = AgentCardBuilder(agent=workflow, rpc_url="http://localhost:8000/")
+
+    card = await builder.build()
+
+    assert card.name == "pipe"
+    primary_skill = next(s for s in card.skills if s.id == "pipe")
+    assert "graph_workflow" in primary_skill.tags
+
+  async def test_build_succeeds_for_empty_workflow(self):
+    """AgentCardBuilder.build succeeds for a Workflow with no edges."""
+    workflow = Workflow(name="empty_wf", description="An empty workflow.")
+    builder = AgentCardBuilder(agent=workflow, rpc_url="http://localhost:8000/")
+
+    card = await builder.build()
+
+    assert card.name == "empty_wf"
+    assert card.description == "An empty workflow."
+    # Only the primary skill, no orchestration skill since no child nodes.
+    assert len(card.skills) == 1
+    assert "graph_workflow" in card.skills[0].tags
 
 
 class TestHelperFunctions:
@@ -303,6 +471,22 @@ class TestHelperFunctions:
 
     # Assert
     assert result == "custom"
+
+  def test_get_agent_type_workflow(self):
+    """Test _get_agent_type for the v2 graph-based Workflow."""
+    workflow = Workflow(name="wf")
+
+    result = _get_agent_type(workflow)
+
+    assert result == "graph_workflow"
+
+  def test_get_agent_skill_name_workflow(self):
+    """Test _get_agent_skill_name for the v2 graph-based Workflow."""
+    workflow = Workflow(name="wf")
+
+    result = _get_agent_skill_name(workflow)
+
+    assert result == "workflow"
 
   def test_replace_pronouns_basic(self):
     """Test _replace_pronouns with basic pronoun replacement."""
@@ -696,6 +880,36 @@ class TestDescriptionBuildingFunctions:
     result = _get_workflow_description(mock_agent)
 
     # Assert
+    assert result is None
+
+  def test_get_workflow_description_workflow_with_nodes(self):
+    """_get_workflow_description lists graph nodes for a Workflow."""
+    writer = LlmAgent(
+        name="writer",
+        model="gemini-2.5-flash",
+        description="Writes the reply",
+    )
+    reviewer = LlmAgent(
+        name="reviewer",
+        model="gemini-2.5-flash",
+        description="Reviews the reply",
+    )
+    workflow = Workflow(
+        name="pipe", edges=[(START, writer), (writer, reviewer)]
+    )
+
+    result = _get_workflow_description(workflow)
+
+    assert result is not None
+    assert "writer: Writes the reply" in result
+    assert "reviewer: Reviews the reply" in result
+
+  def test_get_workflow_description_empty_workflow(self):
+    """_get_workflow_description returns None for a workflow with no nodes."""
+    workflow = Workflow(name="empty_wf")
+
+    result = _get_workflow_description(workflow)
+
     assert result is None
 
   def test_build_sequential_description_single_agent(self):

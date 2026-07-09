@@ -18,8 +18,10 @@ from typing import Any
 from typing import Dict
 
 from google.adk.tools import _automatic_function_calling_util
+from google.adk.tools.function_tool import FunctionTool
 from google.adk.utils.variant_utils import GoogleLLMVariant
 from google.genai import types
+import pydantic
 
 
 def test_string_annotation_none_return_vertex():
@@ -157,6 +159,26 @@ def test_string_annotation_mixed_parameters_vertex():
   assert declaration.response.type == types.Type.STRING
 
 
+def test_pipe_union_list_annotation_parameter_vertex():
+  """Test function with pipe union list parameter annotation."""
+
+  def test_function(file_patterns: list[str] | None = None) -> None:
+    """A test function that accepts optional file patterns."""
+    pass
+
+  declaration = _automatic_function_calling_util.from_function_with_options(
+      test_function, GoogleLLMVariant.VERTEX_AI
+  )
+
+  assert declaration.name == 'test_function'
+  assert declaration.parameters.type == 'OBJECT'
+  file_patterns_schema = declaration.parameters.properties['file_patterns']
+  assert file_patterns_schema.type == types.Type.ARRAY
+  assert file_patterns_schema.items.type == types.Type.STRING
+  assert file_patterns_schema.nullable
+  assert declaration.parameters.required == []
+
+
 def test_string_annotation_no_params_vertex():
   """Test function with no parameters but string annotation return."""
 
@@ -177,3 +199,33 @@ def test_string_annotation_no_params_vertex():
   # VERTEX_AI should have response schema for string return (stored as string)
   assert declaration.response is not None
   assert declaration.response.type == types.Type.STRING
+
+
+class ItemModel(pydantic.BaseModel):
+  name: str
+  quantity: int
+
+
+def test_preprocess_args_with_list_of_pydantic_models_and_annotations():
+  """Test _preprocess_args converts dict to Pydantic model with string annotations."""
+
+  def function_with_list(items: list[ItemModel]) -> int:
+    return sum(item.quantity for item in items)
+
+  tool = FunctionTool(function_with_list)
+
+  input_args = {
+      'items': [
+          {'name': 'Burger', 'quantity': 10},
+          {'name': 'Pizza', 'quantity': 5},
+      ]
+  }
+
+  processed_args = tool._preprocess_args(input_args)
+
+  assert isinstance(processed_args['items'], list)
+  assert len(processed_args['items']) == 2
+  assert all(isinstance(item, ItemModel) for item in processed_args['items'])
+  assert processed_args['items'][0].name == 'Burger'
+  assert processed_args['items'][0].quantity == 10
+  assert processed_args['items'][1].quantity == 5

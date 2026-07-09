@@ -25,6 +25,8 @@ from google.genai import types
 import pydantic
 from typing_extensions import override
 
+from ..utils._schema_utils import get_list_inner_type
+from ..utils._schema_utils import is_list_of_basemodel
 from ..utils.context_utils import Aclosing
 from ..utils.context_utils import find_context_parameter
 from ._automatic_function_calling_util import build_function_declaration
@@ -255,6 +257,12 @@ You could retry calling this tool, but it is IMPORTANT for you to provide all th
 
     return await self._invoke_callable(self.func, args_to_call)
 
+  def _detect_error_in_response(self, response: Any) -> Optional[str]:
+    """Telemetry hook: returns an error type if the response indicates an error."""
+    if isinstance(response, dict) and response.get('error'):
+      return 'TOOL_ERROR'
+    return None
+
   async def _invoke_callable(
       self, target: Callable[..., Any], args_to_call: dict[str, Any]
   ) -> Any:
@@ -272,7 +280,7 @@ You could retry calling this tool, but it is IMPORTANT for you to provide all th
     else:
       return target(**args_to_call)
 
-  # TODO(hangfei): fix call live for function stream.
+  # TODO: fix call live for function stream.
   async def _call_live(
       self,
       *,

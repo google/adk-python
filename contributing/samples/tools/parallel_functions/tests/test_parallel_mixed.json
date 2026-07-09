@@ -1,0 +1,128 @@
+{
+  "events": [
+    {
+      "author": "user",
+      "content": {
+        "parts": [
+          {
+            "text": "What is the weather in Tokyo and the exchange rate from USD to EUR?"
+          }
+        ],
+        "role": "user"
+      },
+      "id": "e-1",
+      "invocationId": "i-1",
+      "nodeInfo": {
+        "path": ""
+      }
+    },
+    {
+      "author": "parallel_function_test_agent",
+      "content": {
+        "parts": [
+          {
+            "functionCall": {
+              "args": {
+                "city": "Tokyo"
+              },
+              "id": "fc-1",
+              "name": "get_weather"
+            }
+          },
+          {
+            "functionCall": {
+              "args": {
+                "from_currency": "USD",
+                "to_currency": "EUR"
+              },
+              "id": "fc-2",
+              "name": "get_currency_rate"
+            }
+          }
+        ],
+        "role": "model"
+      },
+      "finishReason": "STOP",
+      "id": "e-2",
+      "invocationId": "i-1",
+      "longRunningToolIds": [],
+      "nodeInfo": {
+        "path": "parallel_function_test_agent@1"
+      }
+    },
+    {
+      "actions": {
+        "stateDelta": {
+          "currency_requests": [
+            {
+              "from": "USD",
+              "rate": 0.85,
+              "to": "EUR"
+            }
+          ],
+          "weather_requests": [
+            {
+              "city": "Tokyo",
+              "result": {
+                "condition": "rainy",
+                "humidity": 90,
+                "temp": 68
+              }
+            }
+          ]
+        }
+      },
+      "author": "parallel_function_test_agent",
+      "content": {
+        "parts": [
+          {
+            "functionResponse": {
+              "id": "fc-1",
+              "name": "get_weather",
+              "response": {
+                "city": "Tokyo",
+                "condition": "rainy",
+                "humidity": 90,
+                "temperature": 68
+              }
+            }
+          },
+          {
+            "functionResponse": {
+              "id": "fc-2",
+              "name": "get_currency_rate",
+              "response": {
+                "exchange_rate": 0.85,
+                "from_currency": "USD",
+                "to_currency": "EUR"
+              }
+            }
+          }
+        ],
+        "role": "user"
+      },
+      "id": "e-3",
+      "invocationId": "i-1",
+      "nodeInfo": {
+        "path": "parallel_function_test_agent@1"
+      }
+    },
+    {
+      "author": "parallel_function_test_agent",
+      "content": {
+        "parts": [
+          {
+            "text": "The weather in Tokyo is rainy with a temperature of 68 degrees Fahrenheit and 90% humidity. The exchange rate from USD to EUR is 0.85."
+          }
+        ],
+        "role": "model"
+      },
+      "finishReason": "STOP",
+      "id": "e-4",
+      "invocationId": "i-1",
+      "nodeInfo": {
+        "path": "parallel_function_test_agent@1"
+      }
+    }
+  ]
+}

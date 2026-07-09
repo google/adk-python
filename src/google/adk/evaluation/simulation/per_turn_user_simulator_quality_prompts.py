@@ -146,7 +146,7 @@ The Conversation Plan is not a script.
 
 # Definition of Conversation History
 The Conversation History is the actual dialogue between the User Simulator and the Agent.
-The Conversation History may not be complete, but the exsisting dialogue should adhere to the Conversation Plan.
+The Conversation History may not be complete, but the existing dialogue should adhere to the Conversation Plan.
 The Conversation History may contain instances where the User Simulator troubleshoots an incorrect/inappropriate response from the Agent in order to enforce the Conversation Plan.
 The Conversation History is finished only when the User Simulator outputs `{{ stop_signal }}` in its response. If this token is missing, the conversation between the User Simulator and the Agent has not finished, and more turns can be generated.
 
@@ -221,9 +221,8 @@ def get_per_turn_user_simulator_quality_prompt(
 ):
   """Formats the prompt for the per turn user simulator evaluator"""
   from jinja2 import DictLoader
-  from jinja2 import Environment
   from jinja2 import pass_context
-  from jinja2 import Template
+  from jinja2.sandbox import SandboxedEnvironment
 
   templates = {
       "verifier_instructions": (
@@ -232,13 +231,13 @@ def get_per_turn_user_simulator_quality_prompt(
           )
       ),
   }
-  template_env = Environment(loader=DictLoader(templates))
+  template_env = SandboxedEnvironment(loader=DictLoader(templates))
 
   @pass_context
   def _render_string_filter(context, template_string):
     if not template_string:
       return ""
-    return Template(template_string).render(context)
+    return template_env.from_string(template_string).render(context.get_all())
 
   template_env.filters["render_string_filter"] = _render_string_filter
 

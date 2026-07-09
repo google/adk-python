@@ -47,7 +47,34 @@ class LLMRegistry:
         The LLM instance.
     """
 
-    return LLMRegistry.resolve(model)(model=model)
+    prefix, actual_model = LLMRegistry._parse_model(model)
+    cls = LLMRegistry.resolve(model)
+
+    if prefix and LLMRegistry._match_prefix(prefix, cls.__name__):
+      return cls(model=actual_model)
+
+    return cls(model=model)
+
+  @staticmethod
+  def _parse_model(model: str) -> tuple[str | None, str]:
+    """Parses a model name into prefix and actual model.
+
+    Example: "openai:gpt-4" -> ("openai", "gpt-4")
+             "gpt-4" -> (None, "gpt-4")
+    """
+    if ':' in model:
+      prefix, actual_model = model.split(':', 1)
+      return prefix, actual_model
+    return None, model
+
+  @staticmethod
+  def _match_prefix(prefix: str, class_name: str) -> bool:
+    """Checks if a prefix matches a class name."""
+    prefix_lower = prefix.lower()
+    norm_class_name = class_name.lower()
+    if norm_class_name.endswith('llm'):
+      norm_class_name = norm_class_name[:-3]
+    return prefix_lower == norm_class_name or prefix_lower == class_name.lower()
 
   @staticmethod
   def _register(model_name_regex: str, llm_cls: type[BaseLlm]):
@@ -100,6 +127,20 @@ class LLMRegistry:
     Raises:
         ValueError: If the model is not found.
     """
+
+    # Support [model_class]:model_name format to override resolution
+    prefix, _ = LLMRegistry._parse_model(model)
+    if prefix:
+      for regex, entry in list(_llm_registry_dict.items()):
+        class_name = entry[1] if isinstance(entry, tuple) else entry.__name__
+        if LLMRegistry._match_prefix(prefix, class_name):
+          if isinstance(entry, tuple):
+            module_path, c_name = entry
+            # We let ImportError bubble up because the user explicitly
+            # requested this provider via prefix.
+            module = importlib.import_module(module_path)
+            return getattr(module, c_name)
+          return entry
 
     for regex, entry in list(_llm_registry_dict.items()):
       if not re.compile(regex).fullmatch(model):

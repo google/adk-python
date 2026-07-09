@@ -729,3 +729,109 @@ def test_streaming_with_avatar_config():
   assert video_part.inline_data is not None
   assert video_part.inline_data.data == b'video_data'
   assert video_part.inline_data.mime_type == 'video/mp4'
+
+
+def test_streaming_default_model_when_not_specified(mocker):
+  """Test streaming uses default model when not specified in live mode."""
+  from google.adk.agents import LlmAgent
+  from google.adk.models.registry import LLMRegistry
+
+  response1 = LlmResponse(turn_complete=True)
+  mock_model = testing_utils.MockModel.create([response1])
+
+  mock_new_llm = mocker.patch.object(
+      LLMRegistry, 'new_llm', return_value=mock_model
+  )
+
+  # Save original default
+  original_default = LlmAgent._default_live_model
+
+  try:
+    LlmAgent.set_default_live_model('my-custom-live-model')
+
+    root_agent = Agent(
+        name='root_agent',
+        tools=[],
+    )
+
+    import asyncio
+    from contextlib import aclosing
+
+    from google.adk.agents.run_config import RunConfig
+    from google.adk.artifacts.in_memory_artifact_service import InMemoryArtifactService
+    from google.adk.memory.in_memory_memory_service import InMemoryMemoryService
+    from google.adk.runners import Runner
+    from google.adk.sessions.in_memory_session_service import InMemorySessionService
+
+    runner = Runner(
+        app_name='test_app',
+        agent=root_agent,
+        artifact_service=InMemoryArtifactService(),
+        session_service=InMemorySessionService(),
+        memory_service=InMemoryMemoryService(),
+    )
+
+    live_request_queue = LiveRequestQueue()
+    live_request_queue.send_realtime(
+        blob=types.Blob(data=b'\x00\xFF', mime_type='audio/pcm')
+    )
+
+    async def run_test():
+      session = await runner.session_service.create_session(
+          app_name='test_app', user_id='test_user'
+      )
+      run_config = RunConfig(response_modalities=['AUDIO'])
+      async with aclosing(
+          runner.run_live(
+              user_id=session.user_id,
+              session_id=session.id,
+              live_request_queue=live_request_queue,
+              run_config=run_config,
+          )
+      ) as agen:
+        async for event in agen:
+          # We just need to trigger the resolution
+          break
+
+    asyncio.run(run_test())
+
+    mock_new_llm.assert_any_call('my-custom-live-model')
+
+  finally:
+    # Restore original default
+    LlmAgent.set_default_live_model(original_default)
+
+
+def test_streaming_with_explicit_vad_signal():
+  """Test streaming configuration with explicit_vad_signal enabled."""
+  response1 = LlmResponse(
+      turn_complete=True,
+  )
+
+  mock_model = testing_utils.MockModel.create([response1])
+
+  root_agent = Agent(
+      name='root_agent',
+      model=mock_model,
+      tools=[],
+  )
+
+  runner = testing_utils.InMemoryRunner(
+      root_agent=root_agent, response_modalities=['AUDIO']
+  )
+  live_request_queue = LiveRequestQueue()
+  live_request_queue.send_realtime(
+      blob=types.Blob(data=b'\x00\xFF', mime_type='audio/pcm')
+  )
+  res_events = runner.run_live(
+      live_request_queue, run_config=RunConfig(explicit_vad_signal=True)
+  )
+
+  assert res_events is not None
+  assert len(mock_model.requests) == 1
+  llm_request_sent_to_mock = mock_model.requests[0]
+
+  assert llm_request_sent_to_mock.live_connect_config is not None
+  assert (
+      llm_request_sent_to_mock.live_connect_config.explicit_vad_signal is True
+  )

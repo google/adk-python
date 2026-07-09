@@ -62,14 +62,16 @@ class ToolContextCredentialStore:
   ) -> str:
     if auth_credential and auth_credential.oauth2:
       auth_credential = auth_credential.model_copy(deep=True)
-      auth_credential.oauth2.auth_uri = None
-      auth_credential.oauth2.state = None
-      auth_credential.oauth2.auth_response_uri = None
-      auth_credential.oauth2.auth_code = None
-      auth_credential.oauth2.access_token = None
-      auth_credential.oauth2.refresh_token = None
-      auth_credential.oauth2.expires_at = None
-      auth_credential.oauth2.expires_in = None
+      if auth_credential.oauth2:
+        auth_credential.oauth2.auth_uri = None
+        auth_credential.oauth2.state = None
+        auth_credential.oauth2.auth_response_uri = None
+        auth_credential.oauth2.auth_code = None
+        auth_credential.oauth2.access_token = None
+        auth_credential.oauth2.refresh_token = None
+        auth_credential.oauth2.expires_at = None
+        auth_credential.oauth2.expires_in = None
+        auth_credential.oauth2.redirect_uri = None
     scheme_name = (
         f"{auth_scheme.type_.name}_{self._legacy_stable_digest(auth_scheme.model_dump_json())}"
         if auth_scheme
@@ -91,14 +93,16 @@ class ToolContextCredentialStore:
 
     if auth_credential and auth_credential.oauth2:
       auth_credential = auth_credential.model_copy(deep=True)
-      auth_credential.oauth2.auth_uri = None
-      auth_credential.oauth2.state = None
-      auth_credential.oauth2.auth_response_uri = None
-      auth_credential.oauth2.auth_code = None
-      auth_credential.oauth2.access_token = None
-      auth_credential.oauth2.refresh_token = None
-      auth_credential.oauth2.expires_at = None
-      auth_credential.oauth2.expires_in = None
+      if auth_credential.oauth2:
+        auth_credential.oauth2.auth_uri = None
+        auth_credential.oauth2.state = None
+        auth_credential.oauth2.auth_response_uri = None
+        auth_credential.oauth2.auth_code = None
+        auth_credential.oauth2.access_token = None
+        auth_credential.oauth2.refresh_token = None
+        auth_credential.oauth2.expires_at = None
+        auth_credential.oauth2.expires_in = None
+        auth_credential.oauth2.redirect_uri = None
     scheme_name = (
         f"{auth_scheme.type_.name}_{_stable_model_digest(auth_scheme)}"
         if auth_scheme
@@ -242,6 +246,12 @@ class ToolAuthHandler:
             existing_credential = await refresher.refresh(
                 existing_credential, self.auth_scheme
             )
+            # Persist the refreshed credential so the next invocation
+            # reads the new tokens instead of the stale pre-refresh ones.
+            # Without this, providers that rotate refresh_tokens on each
+            # refresh (e.g. Salesforce, many OIDC providers) will fail
+            # because the old refresh_token has already been invalidated.
+            self._store_credential(existing_credential)
         return existing_credential
     return None
 

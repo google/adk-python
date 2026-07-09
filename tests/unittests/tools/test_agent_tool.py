@@ -12,15 +12,19 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import asyncio
+import json
 from typing import Any
 from typing import Optional
 
+from google.adk.agents.base_agent import BaseAgent
 from google.adk.agents.callback_context import CallbackContext
 from google.adk.agents.invocation_context import InvocationContext
 from google.adk.agents.llm_agent import Agent
 from google.adk.agents.run_config import RunConfig
 from google.adk.agents.sequential_agent import SequentialAgent
 from google.adk.artifacts.in_memory_artifact_service import InMemoryArtifactService
+from google.adk.events.event import Event
 from google.adk.features import FeatureName
 from google.adk.features._feature_registry import temporary_feature_override
 from google.adk.memory.in_memory_memory_service import InMemoryMemoryService
@@ -28,6 +32,7 @@ from google.adk.models.llm_request import LlmRequest
 from google.adk.models.llm_response import LlmResponse
 from google.adk.plugins.base_plugin import BasePlugin
 from google.adk.plugins.plugin_manager import PluginManager
+from google.adk.runners import Runner
 from google.adk.sessions.in_memory_session_service import InMemorySessionService
 from google.adk.tools.agent_tool import AgentTool
 from google.adk.tools.tool_context import ToolContext
@@ -370,7 +375,7 @@ async def test_update_artifacts():
     'env_variables',
     [
         'GOOGLE_AI',
-        # TODO(wanyif): re-enable after fix.
+        # TODO: re-enable after fix.
         # 'VERTEX',
     ],
     indirect=True,
@@ -649,7 +654,7 @@ def test_include_plugins_default_true():
   runner = testing_utils.InMemoryRunner(root_agent, plugins=[tracking_plugin])
   runner.run('test1')
 
-  # Plugin should be called for both root_agent and tool_agent
+  # Plugin should be called for both root_agent and tool_agent.
   assert tracking_plugin.before_agent_calls == 2
 
 
@@ -685,7 +690,7 @@ def test_include_plugins_explicit_true():
   runner = testing_utils.InMemoryRunner(root_agent, plugins=[tracking_plugin])
   runner.run('test1')
 
-  # Plugin should be called for both root_agent and tool_agent
+  # Plugin should be called for both root_agent and tool_agent.
   assert tracking_plugin.before_agent_calls == 2
 
 
@@ -721,8 +726,63 @@ def test_include_plugins_false():
   runner = testing_utils.InMemoryRunner(root_agent, plugins=[tracking_plugin])
   runner.run('test1')
 
-  # Plugin should only be called for root_agent, not tool_agent
+  # Plugin should only be called for root_agent, not tool_agent.
   assert tracking_plugin.before_agent_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_include_plugins_true_sub_runner_does_not_close_parent_plugins():
+  """Sub-Runner must not close plugins owned by the parent runner."""
+
+  class SlowClosePlugin(BasePlugin):
+
+    def __init__(self, name: str):
+      super().__init__(name)
+      self.close_calls = 0
+
+    async def close(self):
+      self.close_calls += 1
+      # Would otherwise blow past the sub-Runner's plugin_close_timeout.
+      await asyncio.sleep(10)
+
+  parent_plugin = SlowClosePlugin(name='parent_plugin')
+
+  mock_model = testing_utils.MockModel.create(
+      responses=[function_call_no_schema, 'response1', 'response2']
+  )
+
+  tool_agent = Agent(name='tool_agent', model=mock_model)
+  root_agent = Agent(
+      name='root_agent',
+      model=mock_model,
+      tools=[AgentTool(agent=tool_agent, include_plugins=True)],
+  )
+
+  runner = Runner(
+      app_name='test_app',
+      agent=root_agent,
+      artifact_service=InMemoryArtifactService(),
+      session_service=InMemorySessionService(),
+      memory_service=InMemoryMemoryService(),
+      plugins=[parent_plugin],
+      # Tight timeout amplifies the bug if it regresses; with the fix, the
+      # sub-Runner's close skips the parent's plugins entirely.
+      plugin_close_timeout=0.01,
+  )
+  session = await runner.session_service.create_session(
+      app_name='test_app', user_id='test_user'
+  )
+  # Must not raise RuntimeError("Failed to close plugins: ...") from the
+  # sub-Runner closing the parent's slow-to-close plugin.
+  async for _ in runner.run_async(
+      user_id=session.user_id,
+      session_id=session.id,
+      new_message=testing_utils.get_user_content('test1'),
+  ):
+    pass
+
+  # The sub-Runner must not have closed the parent's plugin.
+  assert parent_plugin.close_calls == 0
 
 
 def test_agent_tool_description_with_input_schema():
@@ -983,6 +1043,109 @@ async def test_run_async_handles_none_parts_in_response():
   )
 
   assert tool_result == ''
+
+
+async def _run_agent_tool_with_parts(parts: list[types.Part]) -> Any:
+  """Drives AgentTool with an inner agent whose final event content is `parts`."""
+
+  class _StaticAgent(BaseAgent):
+
+    async def _run_async_impl(self, ctx):
+      yield Event(
+          invocation_id=ctx.invocation_id,
+          author=self.name,
+          content=types.Content(role='model', parts=parts),
+      )
+
+  inner = _StaticAgent(name='inner_agent', description='static')
+  agent_tool = AgentTool(agent=inner)
+
+  session_service = InMemorySessionService()
+  session = await session_service.create_session(
+      app_name='test_app', user_id='test_user'
+  )
+  invocation_context = InvocationContext(
+      invocation_id='invocation_id',
+      agent=inner,
+      session=session,
+      session_service=session_service,
+  )
+  tool_context = ToolContext(invocation_context=invocation_context)
+
+  return await agent_tool.run_async(
+      args={'request': 'test request'}, tool_context=tool_context
+  )
+
+
+@mark.asyncio
+async def test_run_async_extracts_text_only():
+  """Plain text parts pass through unchanged."""
+  result = await _run_agent_tool_with_parts([types.Part(text='hello world')])
+  assert result == 'hello world'
+
+
+@mark.asyncio
+async def test_run_async_extracts_code_execution_result_only():
+  """code_execution_result.output and executable_code.code are returned."""
+  result = await _run_agent_tool_with_parts([
+      types.Part(
+          executable_code=types.ExecutableCode(
+              language=types.Language.PYTHON, code='print(2 ** 10)'
+          )
+      ),
+      types.Part(
+          code_execution_result=types.CodeExecutionResult(
+              outcome=types.Outcome.OUTCOME_OK, output='1024\n'
+          )
+      ),
+  ])
+  assert result == 'print(2 ** 10)\n1024'
+
+
+@mark.asyncio
+async def test_run_async_extracts_text_and_code_execution_result():
+  """Mixed text + code parts are concatenated in order."""
+  result = await _run_agent_tool_with_parts([
+      types.Part(text='Here is the answer:'),
+      types.Part(
+          executable_code=types.ExecutableCode(
+              language=types.Language.PYTHON, code='print(2 ** 10)'
+          )
+      ),
+      types.Part(
+          code_execution_result=types.CodeExecutionResult(
+              outcome=types.Outcome.OUTCOME_OK, output='1024\n'
+          )
+      ),
+  ])
+  assert result == 'Here is the answer:\nprint(2 ** 10)\n1024'
+
+
+@mark.asyncio
+async def test_run_async_extracts_executable_code_only():
+  """executable_code.code alone is returned when no result part follows."""
+  result = await _run_agent_tool_with_parts([
+      types.Part(
+          executable_code=types.ExecutableCode(
+              language=types.Language.PYTHON, code='print("hi")'
+          )
+      ),
+  ])
+  assert result == 'print("hi")'
+
+
+@mark.asyncio
+async def test_run_async_skips_thought_parts():
+  """Parts marked thought=True are dropped regardless of kind."""
+  result = await _run_agent_tool_with_parts([
+      types.Part(text='thinking out loud', thought=True),
+      types.Part(
+          code_execution_result=types.CodeExecutionResult(
+              outcome=types.Outcome.OUTCOME_OK, output='42\n'
+          )
+      ),
+  ])
+  assert result == '42'
 
 
 class TestAgentToolWithCompositeAgents:
@@ -1269,3 +1432,197 @@ class TestAgentToolWithCompositeAgents:
       }
     else:
       assert declaration.parameters.properties['request'].type == 'STRING'
+
+
+@mark.parametrize(
+    'args,expected_text',
+    [
+        (
+            {'brand': 'Nike', 'product': 'running shoes'},
+            '{"brand": "Nike", "product": "running shoes"}',
+        ),
+        (
+            {'request': 'find me Nike running shoes'},
+            'find me Nike running shoes',
+        ),
+        (
+            {'request': ''},
+            '',
+        ),
+    ],
+)
+@mark.asyncio
+async def test_no_schema_args_handling(monkeypatch, args, expected_text):
+  """AgentTool.run_async handles fallback schema cases properly.
+
+  - Non-'request' args are serialized as JSON.
+  - 'request' key is kept as plain text (backward compatibility).
+  - Empty string 'request' is correctly preserved instead of evaluating to
+  false.
+  """
+  captured = {}
+
+  async def _empty_async_generator():
+    if False:
+      yield None
+
+  class StubRunner:
+
+    def __init__(
+        self,
+        *,
+        app_name: str,
+        agent,
+        artifact_service,
+        session_service,
+        memory_service,
+        credential_service,
+        plugins,
+    ):
+      del artifact_service, memory_service, credential_service
+      self.agent = agent
+      self.session_service = session_service
+      self.plugin_manager = PluginManager(plugins=plugins)
+      self.app_name = app_name
+
+    def run_async(
+        self,
+        *,
+        user_id: str,
+        session_id: str,
+        invocation_id=None,
+        new_message=None,
+        state_delta=None,
+        run_config=None,
+    ):
+      captured['new_message'] = new_message
+      return _empty_async_generator()
+
+    async def close(self):
+      pass
+
+  monkeypatch.setattr('google.adk.runners.Runner', StubRunner)
+
+  tool_agent = Agent(name='tool_agent', model='test-model')
+  agent_tool = AgentTool(agent=tool_agent)
+  root_agent = Agent(name='root_agent', model='test-model', tools=[agent_tool])
+
+  session_service = InMemorySessionService()
+  session = await session_service.create_session(
+      app_name='test_app', user_id='user'
+  )
+  invocation_context = InvocationContext(
+      artifact_service=InMemoryArtifactService(),
+      session_service=session_service,
+      memory_service=InMemoryMemoryService(),
+      plugin_manager=PluginManager(),
+      invocation_id='test-invocation',
+      agent=root_agent,
+      session=session,
+      run_config=RunConfig(),
+  )
+  tool_context = ToolContext(invocation_context)
+
+  await agent_tool.run_async(
+      args=args,
+      tool_context=tool_context,
+  )
+
+  assert captured['new_message'] is not None
+  text = captured['new_message'].parts[0].text
+  assert text == expected_text
+
+
+@pytest.fixture
+def setup_skip_summarization_runner():
+  def _setup_runner(tool_agent_model_responses, tool_agent_output_schema=None):
+    tool_agent_model = testing_utils.MockModel.create(
+        responses=tool_agent_model_responses
+    )
+    tool_agent = Agent(
+        name='tool_agent',
+        model=tool_agent_model,
+        output_schema=tool_agent_output_schema,
+    )
+
+    agent_tool = AgentTool(agent=tool_agent, skip_summarization=True)
+
+    root_agent_model = testing_utils.MockModel.create(
+        responses=[
+            function_call_no_schema,
+            'final_summary_text_that_should_not_be_reached',
+        ]
+    )
+
+    root_agent = Agent(
+        name='root_agent',
+        model=root_agent_model,
+        tools=[agent_tool],
+    )
+    return testing_utils.InMemoryRunner(root_agent)
+
+  return _setup_runner
+
+
+def test_agent_tool_skip_summarization_has_text_output(
+    setup_skip_summarization_runner,
+):
+  """Tests that when skip_summarization is True, the final event contains text content."""
+  runner = setup_skip_summarization_runner(
+      tool_agent_model_responses=['tool_response_text']
+  )
+  events = runner.run('start')
+
+  final_events = [e for e in events if e.is_final_response()]
+  assert final_events
+  last_event = final_events[-1]
+  assert last_event.is_final_response()
+
+  assert any(p.function_response for p in last_event.content.parts)
+
+  assert [p.text for p in last_event.content.parts if p.text] == [
+      'tool_response_text'
+  ]
+
+
+def test_agent_tool_skip_summarization_preserves_json_string_output(
+    setup_skip_summarization_runner,
+):
+  """Tests that structured output string is preserved as text when skipping summarization."""
+  runner = setup_skip_summarization_runner(
+      tool_agent_model_responses=['{"field": "value"}']
+  )
+  events = runner.run('start')
+
+  final_events = [e for e in events if e.is_final_response()]
+  assert final_events
+  last_event = final_events[-1]
+  assert last_event.is_final_response()
+
+  text_parts = [p.text for p in last_event.content.parts if p.text]
+
+  # Check that the JSON string content is preserved exactly
+  assert text_parts == ['{"field": "value"}']
+
+
+def test_agent_tool_skip_summarization_handles_non_string_result(
+    setup_skip_summarization_runner,
+):
+  """Tests that non-string (dict) output is correctly serialized as JSON text."""
+
+  class CustomOutput(BaseModel):
+    value: int
+
+  runner = setup_skip_summarization_runner(
+      tool_agent_model_responses=['{"value": 123}'],
+      tool_agent_output_schema=CustomOutput,
+  )
+  events = runner.run('start')
+
+  final_events = [e for e in events if e.is_final_response()]
+  assert final_events
+  last_event = final_events[-1]
+
+  text_parts = [p.text for p in last_event.content.parts if p.text]
+
+  assert text_parts == ['{"value": 123}']

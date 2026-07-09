@@ -17,12 +17,15 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import sys
 from typing import AsyncGenerator
 from typing import ClassVar
 
+from typing_extensions import deprecated
 from typing_extensions import override
 
+from ..events._branch_path import _BranchPath
 from ..events.event import Event
 from ..utils.context_utils import Aclosing
 from .base_agent import BaseAgent
@@ -30,6 +33,8 @@ from .base_agent import BaseAgentState
 from .base_agent_config import BaseAgentConfig
 from .invocation_context import InvocationContext
 from .parallel_agent_config import ParallelAgentConfig
+
+logger = logging.getLogger('google_adk.' + __name__)
 
 
 def _create_branch_ctx_for_sub_agent(
@@ -40,10 +45,8 @@ def _create_branch_ctx_for_sub_agent(
   """Create isolated branch for every sub-agent."""
   invocation_context = invocation_context.model_copy()
   branch_suffix = f'{agent.name}.{sub_agent.name}'
-  invocation_context.branch = (
-      f'{invocation_context.branch}.{branch_suffix}'
-      if invocation_context.branch
-      else branch_suffix
+  invocation_context.branch = _BranchPath.create_sub_branch(
+      invocation_context.branch, name=branch_suffix
   )
   return invocation_context
 
@@ -64,9 +67,15 @@ async def _merge_agent_run(
         await queue.put((event, resume_signal))
         # Wait for upstream to consume event before generating new events.
         await resume_signal.wait()
+    except asyncio.CancelledError:
+      logger.info('Agent run cancelled.')
+      raise
     finally:
       # Mark agent as finished.
-      await queue.put((sentinel, None))
+      try:
+        await queue.put((sentinel, None))
+      except Exception as e:
+        logger.warning('Failed to put sentinel on queue: %s', e)
 
   async with asyncio.TaskGroup() as tg:
     for events_for_one_agent in agent_runs:
@@ -145,8 +154,13 @@ async def _merge_agent_run_pre_3_11(
   finally:
     for task in tasks:
       task.cancel()
+    await asyncio.gather(*tasks, return_exceptions=True)
 
 
+@deprecated(
+    'ParallelAgent is deprecated in favor of Workflow and will be removed in'
+    ' a future version. Workflow cannot yet be used as an LlmAgent sub-agent.'
+)
 class ParallelAgent(BaseAgent):
   """A shell agent that runs its sub-agents in parallel in an isolated manner.
 
@@ -155,10 +169,18 @@ class ParallelAgent(BaseAgent):
 
   - Running different algorithms simultaneously.
   - Generating multiple responses for review by a subsequent evaluation agent.
+
+  .. deprecated::
+    ParallelAgent is deprecated in favor of Workflow and will be removed in a
+    future version. Workflow cannot yet be used as an LlmAgent sub-agent.
   """
 
   config_type: ClassVar[type[BaseAgentConfig]] = ParallelAgentConfig
-  """The config type for this agent."""
+  """The config type for this agent.
+
+  DEPRECATED: This attribute is deprecated and will be removed in a future
+  version, along with the AgentConfig YAML loader.
+  """
 
   @override
   async def _run_async_impl(

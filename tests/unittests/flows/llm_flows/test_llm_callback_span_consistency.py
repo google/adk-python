@@ -12,10 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Tests that before/after/error model callbacks all observe the same call_llm span.
-
-Regression tests for https://github.com/google/adk-python/issues/4851.
-"""
+"""Tests that before/after/error model callbacks all observe the same call_llm span."""
 
 from typing import AsyncGenerator
 from typing import Optional

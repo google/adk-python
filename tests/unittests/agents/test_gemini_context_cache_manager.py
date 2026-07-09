@@ -124,7 +124,7 @@ class TestGeminiContextCacheManager:
     assert result.invocations_used is None
     assert result.created_at is None
     assert result.fingerprint == "test_fp"
-    assert result.contents_count == 5  # Total contents count
+    assert result.contents_count == 0
 
     # No cache should be created
     self.manager.genai_client.aio.caches.create.assert_not_called()
@@ -202,6 +202,43 @@ class TestGeminiContextCacheManager:
     mock_cleanup.assert_called_once_with(existing_cache.cache_name)
     self.manager.genai_client.aio.caches.create.assert_called_once()
 
+  async def test_create_cache_gates_on_prefix_not_full_prompt(self):
+    """Cache creation is gated on the cacheable prefix, not the full prompt.
+
+    Regression test for https://github.com/google/adk-python/issues/5847.
+
+    On a long conversation the previous-prompt token count
+    (``cacheable_contents_token_count``) can be well above Gemini's 4096-token
+    minimum while the cached prefix ``contents[:cache_contents_count]`` is far
+    below it. Creating a cache in that case makes ``caches.create`` fail with a
+    400 INVALID_ARGUMENT. The manager must skip cache creation instead.
+    """
+    self.manager.genai_client.aio.caches.create = AsyncMock()
+
+    # A tiny cacheable prefix followed by a huge trailing user turn.
+    contents = [
+        types.Content(role="user", parts=[types.Part(text="Short prefix.")]),
+        types.Content(role="user", parts=[types.Part(text="word " * 100_000)]),
+    ]
+    llm_request = LlmRequest(
+        model="gemini-2.5-flash",
+        contents=contents,
+        config=types.GenerateContentConfig(
+            system_instruction="You are a helpful assistant.",
+        ),
+        cache_config=self.cache_config,
+    )
+    # Full previous prompt is large (clears the old, buggy gate)...
+    llm_request.cacheable_contents_token_count = 75000
+
+    # ...but only the tiny first content is cacheable.
+    result = await self.manager._create_new_cache_with_contents(
+        llm_request, cache_contents_count=1
+    )
+
+    assert result is None
+    self.manager.genai_client.aio.caches.create.assert_not_called()
+
   async def test_handle_context_caching_invalid_cache_fingerprint_mismatch(
       self,
   ):
@@ -233,7 +270,7 @@ class TestGeminiContextCacheManager:
     assert result.invocations_used is None
     assert result.created_at is None
     assert result.fingerprint == "new_fp"
-    assert result.contents_count == 5  # Total contents count
+    assert result.contents_count == 0
     mock_cleanup.assert_called_once_with(existing_cache.cache_name)
     self.manager.genai_client.aio.caches.create.assert_not_called()
 
@@ -584,7 +621,7 @@ class TestGeminiContextCacheManager:
     assert result is not None
     assert result.cache_name is None  # Fingerprint-only state
     assert result.fingerprint == "test_fp"
-    assert result.contents_count == 3
+    assert result.contents_count == 0
     self.manager.genai_client.aio.caches.create.assert_not_called()
 
   async def test_cache_creation_with_insufficient_token_count(self):
@@ -752,12 +789,10 @@ class TestGeminiContextCacheManager:
       contents_counts_seen.append(result.contents_count)
       metadata = result
 
-    # First turn has no metadata, so uses total (1).
-    # Subsequent turns preserve contents_count=1 from the prefix.
-    # Fingerprint stays stable because contents[:1] is always the
-    # same user message.
+    # All contents in this helper are user-role messages, so there is no
+    # cacheable content prefix before the final user batch.
     assert len(set(fingerprints_seen)) == 1
-    assert contents_counts_seen == [1, 1, 1]
+    assert contents_counts_seen == [0, 0, 0]
 
   async def test_contents_count_should_remain_stable_after_cache_creation_failure(
       self,
@@ -911,14 +946,17 @@ class TestGeminiContextCacheManager:
 
     assert result_1 is not None
     assert result_1.cache_name is None
-    assert result_1.contents_count == 3
+    assert result_1.contents_count == 0
 
     # --- Second LLM call: carry forward fingerprint-only metadata ---
     # Contents grew but we still have same prefix
     llm_request_2 = self.create_llm_request(
         cache_metadata=result_1, contents_count=5
     )
-    llm_request_2.cacheable_contents_token_count = 4096
+    # contents_count is 0 (all-user conversation), so the cached prefix is the
+    # system instruction + tools; use a large previous-prompt count so the
+    # estimated prefix clears Gemini's 4096-token minimum.
+    llm_request_2.cacheable_contents_token_count = 30000
 
     # Verify prefix fingerprint matches (real implementation).
     # The fingerprint-only metadata is "invalid" (no cache_name),
@@ -948,6 +986,136 @@ class TestGeminiContextCacheManager:
     assert result_2.cache_name == (
         "projects/test/locations/us-central1/cachedContents/new789"
     )
-    assert result_2.contents_count == 3  # Preserved from prefix
+    assert result_2.contents_count == 0  # Preserved from prefix
     assert result_2.invocations_used == 1
     self.manager.genai_client.aio.caches.create.assert_called_once()
+
+  async def test_dynamic_instruction_does_not_break_initial_cache_fingerprint(
+      self,
+  ):
+    """Request-scoped dynamic instructions stay out of the cache prefix."""
+    dynamic_instruction = types.Content(
+        role="user", parts=[types.Part(text="Turn context: locale=en-US")]
+    )
+    user_msg = types.Content(
+        role="user", parts=[types.Part(text="what time is it?")]
+    )
+    model_tool_call = types.Content(
+        role="model",
+        parts=[
+            types.Part(
+                function_call=types.FunctionCall(name="get_time", args={})
+            )
+        ],
+    )
+    tool_response = types.Content(
+        role="user",
+        parts=[
+            types.Part(
+                function_response=types.FunctionResponse(
+                    name="get_time", response={"time": "12:00"}
+                )
+            )
+        ],
+    )
+
+    request_1 = self.create_llm_request(contents_count=0)
+    request_1.contents = [dynamic_instruction, user_msg]
+
+    result_1 = await self.manager.handle_context_caching(request_1)
+
+    assert result_1 is not None
+    assert result_1.cache_name is None
+    assert result_1.contents_count == 0
+
+    request_2 = self.create_llm_request(
+        cache_metadata=result_1, contents_count=0
+    )
+    request_2.contents = [
+        user_msg,
+        model_tool_call,
+        dynamic_instruction,
+        tool_response,
+    ]
+    # contents_count is 0, so the cached prefix is the system instruction +
+    # tools; use a large previous-prompt count so the estimated prefix clears
+    # Gemini's 4096-token minimum.
+    request_2.cacheable_contents_token_count = 30000
+
+    mock_cached_content = AsyncMock()
+    mock_cached_content.name = (
+        "projects/test/locations/us-central1/cachedContents/new789"
+    )
+    self.manager.genai_client.aio.caches.create = AsyncMock(
+        return_value=mock_cached_content
+    )
+
+    result_2 = await self.manager.handle_context_caching(request_2)
+
+    assert result_2 is not None
+    assert result_2.cache_name == (
+        "projects/test/locations/us-central1/cachedContents/new789"
+    )
+    assert result_2.contents_count == 0
+    assert result_2.invocations_used == 1
+    self.manager.genai_client.aio.caches.create.assert_called_once()
+
+  async def test_create_http_options_passthrough(self):
+    """Test that create_http_options is passed through to cache creation config."""
+    mock_cached_content = AsyncMock()
+    mock_cached_content.name = (
+        "projects/test/locations/us-central1/cachedContents/test123"
+    )
+    self.manager.genai_client.aio.caches.create = AsyncMock(
+        return_value=mock_cached_content
+    )
+
+    # Create config with http_options (e.g. 10s timeout)
+    http_options = types.HttpOptions(timeout=10000)
+    cache_config_with_timeout = ContextCacheConfig(
+        cache_intervals=10,
+        ttl_seconds=1800,
+        min_tokens=0,
+        create_http_options=http_options,
+    )
+
+    llm_request = self.create_llm_request()
+    llm_request.cache_config = cache_config_with_timeout
+
+    cache_contents_count = max(0, len(llm_request.contents) - 1)
+
+    with patch.object(
+        self.manager, "_generate_cache_fingerprint", return_value="test_fp"
+    ):
+      await self.manager._create_gemini_cache(llm_request, cache_contents_count)
+
+    # Verify cache creation call includes http_options
+    create_call = self.manager.genai_client.aio.caches.create.call_args
+    assert create_call is not None
+    cache_config = create_call[1]["config"]
+    assert cache_config.http_options is not None
+    assert cache_config.http_options.timeout == 10000
+
+  async def test_create_without_http_options(self):
+    """Test that cache creation works without create_http_options."""
+    mock_cached_content = AsyncMock()
+    mock_cached_content.name = (
+        "projects/test/locations/us-central1/cachedContents/test123"
+    )
+    self.manager.genai_client.aio.caches.create = AsyncMock(
+        return_value=mock_cached_content
+    )
+
+    llm_request = self.create_llm_request()
+    cache_contents_count = max(0, len(llm_request.contents) - 1)
+
+    with patch.object(
+        self.manager, "_generate_cache_fingerprint", return_value="test_fp"
+    ):
+      await self.manager._create_gemini_cache(llm_request, cache_contents_count)
+
+    # Verify cache creation call does not include http_options
+    create_call = self.manager.genai_client.aio.caches.create.call_args
+    assert create_call is not None
+    cache_config = create_call[1]["config"]
+    assert cache_config.http_options is None

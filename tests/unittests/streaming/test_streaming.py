@@ -13,6 +13,7 @@
 # limitations under the License.
 
 import asyncio
+from contextlib import aclosing
 from typing import Any
 from typing import AsyncGenerator
 from typing import Awaitable
@@ -26,6 +27,85 @@ import pytest
 from .. import testing_utils
 
 
+async def _wait_for_queue_empty(queue: LiveRequestQueue):
+  """Wait until the queue is empty and the background consumer has finished."""
+  while not queue._queue.empty():
+    await asyncio.sleep(0)
+  # Give opportunity for _send_to_model to finish processing (e.g. append_event)
+  for _ in range(10):
+    await asyncio.sleep(0)
+
+
+class StreamingTestRunner(testing_utils.InMemoryRunner):
+  """A robust runner for streaming tests that avoids resource leaks."""
+
+  def __init__(self, *args, max_responses=3, **kwargs):
+    super().__init__(*args, **kwargs)
+    self.max_responses = max_responses
+
+  def _run_with_loop(self, coro):
+    try:
+      old_loop = asyncio.get_event_loop()
+    except RuntimeError:
+      old_loop = None
+
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    try:
+      loop.run_until_complete(coro)
+    except (asyncio.TimeoutError, asyncio.CancelledError):
+      pass
+    finally:
+      # Cancel all pending tasks to prevent leaks and warnings
+      pending = asyncio.all_tasks(loop)
+      for task in pending:
+        task.cancel()
+      if pending:
+        try:
+          loop.run_until_complete(
+              asyncio.gather(*pending, return_exceptions=True)
+          )
+        except Exception:  # pylint: disable=broad-except
+          pass
+      loop.close()
+      asyncio.set_event_loop(old_loop)
+
+  def run_live(
+      self,
+      live_request_queue: LiveRequestQueue,
+      run_config: testing_utils.RunConfig = None,
+  ) -> list[testing_utils.Event]:
+    collected_responses = []
+
+    async def consume_responses(session: testing_utils.Session):
+      run_res = self.runner.run_live(
+          session=session,
+          live_request_queue=live_request_queue,
+          run_config=run_config or testing_utils.RunConfig(),
+      )
+
+      async with aclosing(run_res) as agen:
+        async for response in agen:
+          collected_responses.append(response)
+          if len(collected_responses) >= self.max_responses:
+            await _wait_for_queue_empty(live_request_queue)
+            return
+
+    self._run_with_loop(
+        asyncio.wait_for(consume_responses(self.session), timeout=5.0)
+    )
+
+    return collected_responses
+
+  def run_live_and_get_session(
+      self,
+      live_request_queue: LiveRequestQueue,
+      run_config: testing_utils.RunConfig = None,
+  ) -> tuple[list[testing_utils.Event], testing_utils.Session]:
+    events = self.run_live(live_request_queue, run_config)
+    return events, self.session
+
+
 def test_streaming():
   response1 = LlmResponse(
       turn_complete=True,
@@ -34,36 +114,36 @@ def test_streaming():
   mock_model = testing_utils.MockModel.create([response1])
 
   root_agent = Agent(
-      name='root_agent',
+      name="root_agent",
       model=mock_model,
       tools=[],
   )
 
   runner = testing_utils.InMemoryRunner(
-      root_agent=root_agent, response_modalities=['AUDIO']
+      root_agent=root_agent, response_modalities=["AUDIO"]
   )
   live_request_queue = LiveRequestQueue()
   live_request_queue.send_realtime(
-      blob=types.Blob(data=b'\x00\xFF', mime_type='audio/pcm')
+      blob=types.Blob(data=b"\x00\xFF", mime_type="audio/pcm")
   )
   res_events = runner.run_live(live_request_queue)
 
-  assert res_events is not None, 'Expected a list of events, got None.'
+  assert res_events is not None, "Expected a list of events, got None."
   assert (
       len(res_events) > 0
-  ), 'Expected at least one response, but got an empty list.'
+  ), "Expected at least one response, but got an empty list."
 
 
 def test_live_streaming_function_call_single():
   """Test live streaming with a single function call response."""
   # Create a function call response
   function_call = types.Part.from_function_call(
-      name='get_weather', args={'location': 'San Francisco', 'unit': 'celsius'}
+      name="get_weather", args={"location": "San Francisco", "unit": "celsius"}
   )
 
   # Create LLM responses: function call followed by turn completion
   response1 = LlmResponse(
-      content=types.Content(role='model', parts=[function_call]),
+      content=types.Content(role="model", parts=[function_call]),
       turn_complete=False,
   )
   response2 = LlmResponse(
@@ -73,77 +153,33 @@ def test_live_streaming_function_call_single():
   mock_model = testing_utils.MockModel.create([response1, response2])
 
   # Mock function that would be called
-  def get_weather(location: str, unit: str = 'celsius') -> dict:
+  def get_weather(location: str, unit: str = "celsius") -> dict:
     return {
-        'temperature': 22,
-        'condition': 'sunny',
-        'location': location,
-        'unit': unit,
+        "temperature": 22,
+        "condition": "sunny",
+        "location": location,
+        "unit": unit,
     }
 
   root_agent = Agent(
-      name='root_agent',
+      name="root_agent",
       model=mock_model,
       tools=[get_weather],
   )
 
-  # Create a custom runner class that collects all events
-  class CustomTestRunner(testing_utils.InMemoryRunner):
+  runner = StreamingTestRunner(root_agent=root_agent, max_responses=3)
 
-    def _run_with_loop(self, coro):
-      try:
-        old_loop = asyncio.get_event_loop()
-      except RuntimeError:
-        old_loop = None
-
-      loop = asyncio.new_event_loop()
-      asyncio.set_event_loop(loop)
-      try:
-        loop.run_until_complete(coro)
-      except (asyncio.TimeoutError, asyncio.CancelledError):
-        pass
-      finally:
-        loop.close()
-        asyncio.set_event_loop(old_loop)
-
-    def run_live(
-        self,
-        live_request_queue: LiveRequestQueue,
-        run_config: testing_utils.RunConfig = None,
-    ) -> list[testing_utils.Event]:
-      collected_responses = []
-
-      async def consume_responses(session: testing_utils.Session):
-        run_res = self.runner.run_live(
-            session=session,
-            live_request_queue=live_request_queue,
-            run_config=run_config or testing_utils.RunConfig(),
-        )
-
-        async for response in run_res:
-          collected_responses.append(response)
-          # Collect a reasonable number of events, don't wait for too many
-          if len(collected_responses) >= 3:
-            return
-
-      self._run_with_loop(
-          asyncio.wait_for(consume_responses(self.session), timeout=5.0)
-      )
-
-      return collected_responses
-
-  runner = CustomTestRunner(root_agent=root_agent)
   live_request_queue = LiveRequestQueue()
   live_request_queue.send_realtime(
       blob=types.Blob(
-          data=b'What is the weather in San Francisco?', mime_type='audio/pcm'
+          data=b"What is the weather in San Francisco?", mime_type="audio/pcm"
       )
   )
 
   res_events = runner.run_live(live_request_queue)
 
-  assert res_events is not None, 'Expected a list of events, got None.'
-  assert len(res_events) >= 1, 'Expected at least one event.'
+  assert res_events is not None, "Expected a list of events, got None."
+  assert len(res_events) >= 1, "Expected at least one event."
 
   # Check that we got a function call event
   function_call_found = False
@@ -152,19 +188,19 @@ def test_live_streaming_function_call_single():
   for event in res_events:
     if event.content and event.content.parts:
       for part in event.content.parts:
-        if part.function_call and part.function_call.name == 'get_weather':
+        if part.function_call and part.function_call.name == "get_weather":
           function_call_found = True
-          assert part.function_call.args['location'] == 'San Francisco'
-          assert part.function_call.args['unit'] == 'celsius'
+          assert part.function_call.args["location"] == "San Francisco"
+          assert part.function_call.args["unit"] == "celsius"
         elif (
             part.function_response
-            and part.function_response.name == 'get_weather'
+            and part.function_response.name == "get_weather"
         ):
           function_response_found = True
-          assert part.function_response.response['temperature'] == 22
-          assert part.function_response.response['condition'] == 'sunny'
+          assert part.function_response.response["temperature"] == 22
+          assert part.function_response.response["condition"] == "sunny"
 
-  assert function_call_found, 'Expected a function call event.'
+  assert function_call_found, "Expected a function call event."
   # Note: In live streaming, function responses might be handled differently,
   # so we check for the function call which is the primary indicator of function calling working
 
@@ -173,19 +209,19 @@ def test_live_streaming_function_call_multiple():
   """Test live streaming with multiple function calls in sequence."""
   # Create multiple function call responses
   function_call1 = types.Part.from_function_call(
-      name='get_weather', args={'location': 'San Francisco'}
+      name="get_weather", args={"location": "San Francisco"}
   )
   function_call2 = types.Part.from_function_call(
-      name='get_time', args={'timezone': 'PST'}
+      name="get_time", args={"timezone": "PST"}
   )
 
   # Create LLM responses: two function calls followed by turn completion
   response1 = LlmResponse(
-      content=types.Content(role='model', parts=[function_call1]),
+      content=types.Content(role="model", parts=[function_call1]),
       turn_complete=False,
   )
   response2 = LlmResponse(
-      content=types.Content(role='model', parts=[function_call2]),
+      content=types.Content(role="model", parts=[function_call2]),
       turn_complete=False,
   )
   response3 = LlmResponse(
@@ -196,73 +232,30 @@ def test_live_streaming_function_call_multiple():
 
   # Mock functions
   def get_weather(location: str) -> dict:
-    return {'temperature': 22, 'condition': 'sunny', 'location': location}
+    return {"temperature": 22, "condition": "sunny", "location": location}
 
   def get_time(timezone: str) -> dict:
-    return {'time': '14:30', 'timezone': timezone}
+    return {"time": "14:30", "timezone": timezone}
 
   root_agent = Agent(
-      name='root_agent',
+      name="root_agent",
       model=mock_model,
       tools=[get_weather, get_time],
   )
 
   # Use the custom runner
-  class CustomTestRunner(testing_utils.InMemoryRunner):
-
-    def _run_with_loop(self, coro):
-      try:
-        old_loop = asyncio.get_event_loop()
-      except RuntimeError:
-        old_loop = None
-
-      loop = asyncio.new_event_loop()
-      asyncio.set_event_loop(loop)
-      try:
-        loop.run_until_complete(coro)
-      except (asyncio.TimeoutError, asyncio.CancelledError):
-        pass
-      finally:
-        loop.close()
-        asyncio.set_event_loop(old_loop)
-
-    def run_live(
-        self,
-        live_request_queue: LiveRequestQueue,
-        run_config: testing_utils.RunConfig = None,
-    ) -> list[testing_utils.Event]:
-      collected_responses = []
-
-      async def consume_responses(session: testing_utils.Session):
-        run_res = self.runner.run_live(
-            session=session,
-            live_request_queue=live_request_queue,
-            run_config=run_config or testing_utils.RunConfig(),
-        )
-
-        async for response in run_res:
-          collected_responses.append(response)
-          if len(collected_responses) >= 3:
-            return
-
-      self._run_with_loop(
-          asyncio.wait_for(consume_responses(self.session), timeout=5.0)
-      )
-
-      return collected_responses
-
-  runner = CustomTestRunner(root_agent=root_agent)
+  runner = StreamingTestRunner(root_agent=root_agent, max_responses=3)
   live_request_queue = LiveRequestQueue()
   live_request_queue.send_realtime(
       blob=types.Blob(
-          data=b'What is the weather and current time?', mime_type='audio/pcm'
+          data=b"What is the weather and current time?", mime_type="audio/pcm"
       )
   )
 
   res_events = runner.run_live(live_request_queue)
 
-  assert res_events is not None, 'Expected a list of events, got None.'
-  assert len(res_events) >= 1, 'Expected at least one event.'
+  assert res_events is not None, "Expected a list of events, got None."
+  assert len(res_events) >= 1, "Expected at least one event."
 
   # Check function calls
   weather_call_found = False
@@ -272,33 +265,33 @@ def test_live_streaming_function_call_multiple():
     if event.content and event.content.parts:
       for part in event.content.parts:
         if part.function_call:
-          if part.function_call.name == 'get_weather':
+          if part.function_call.name == "get_weather":
             weather_call_found = True
-            assert part.function_call.args['location'] == 'San Francisco'
-          elif part.function_call.name == 'get_time':
+            assert part.function_call.args["location"] == "San Francisco"
+          elif part.function_call.name == "get_time":
             time_call_found = True
-            assert part.function_call.args['timezone'] == 'PST'
+            assert part.function_call.args["timezone"] == "PST"
 
   # In live streaming, we primarily check that function calls are generated correctly
   assert (
       weather_call_found or time_call_found
-  ), 'Expected at least one function call.'
+  ), "Expected at least one function call."
 
 
 def test_live_streaming_function_call_parallel():
   """Test live streaming with parallel function calls."""
   # Create parallel function calls in the same response
   function_call1 = types.Part.from_function_call(
-      name='get_weather', args={'location': 'San Francisco'}
+      name="get_weather", args={"location": "San Francisco"}
   )
   function_call2 = types.Part.from_function_call(
-      name='get_weather', args={'location': 'New York'}
+      name="get_weather", args={"location": "New York"}
   )
 
   # Create LLM response with parallel function calls
   response1 = LlmResponse(
       content=types.Content(
-          role='model', parts=[function_call1, function_call2]
+          role="model", parts=[function_call1, function_call2]
       ),
       turn_complete=False,
   )
@@ -310,71 +303,28 @@ def test_live_streaming_function_call_parallel():
 
   # Mock function
   def get_weather(location: str) -> dict:
-    temperatures = {'San Francisco': 22, 'New York': 15}
-    return {'temperature': temperatures.get(location, 20), 'location': location}
+    temperatures = {"San Francisco": 22, "New York": 15}
+    return {"temperature": temperatures.get(location, 20), "location": location}
 
   root_agent = Agent(
-      name='root_agent',
+      name="root_agent",
       model=mock_model,
       tools=[get_weather],
   )
 
   # Use the custom runner
-  class CustomTestRunner(testing_utils.InMemoryRunner):
-
-    def _run_with_loop(self, coro):
-      try:
-        old_loop = asyncio.get_event_loop()
-      except RuntimeError:
-        old_loop = None
-
-      loop = asyncio.new_event_loop()
-      asyncio.set_event_loop(loop)
-      try:
-        loop.run_until_complete(coro)
-      except (asyncio.TimeoutError, asyncio.CancelledError):
-        pass
-      finally:
-        loop.close()
-        asyncio.set_event_loop(old_loop)
-
-    def run_live(
-        self,
-        live_request_queue: LiveRequestQueue,
-        run_config: testing_utils.RunConfig = None,
-    ) -> list[testing_utils.Event]:
-      collected_responses = []
-
-      async def consume_responses(session: testing_utils.Session):
-        run_res = self.runner.run_live(
-            session=session,
-            live_request_queue=live_request_queue,
-            run_config=run_config or testing_utils.RunConfig(),
-        )
-
-        async for response in run_res:
-          collected_responses.append(response)
-          if len(collected_responses) >= 3:
-            return
-
-      self._run_with_loop(
-          asyncio.wait_for(consume_responses(self.session), timeout=5.0)
-      )
-
-      return collected_responses
-
-  runner = CustomTestRunner(root_agent=root_agent)
+  runner = StreamingTestRunner(root_agent=root_agent, max_responses=3)
   live_request_queue = LiveRequestQueue()
   live_request_queue.send_realtime(
       blob=types.Blob(
-          data=b'Compare weather in SF and NYC', mime_type='audio/pcm'
+          data=b"Compare weather in SF and NYC", mime_type="audio/pcm"
       )
   )
 
   res_events = runner.run_live(live_request_queue)
 
-  assert res_events is not None, 'Expected a list of events, got None.'
-  assert len(res_events) >= 1, 'Expected at least one event.'
+  assert res_events is not None, "Expected a list of events, got None."
+  assert len(res_events) >= 1, "Expected at least one event."
 
   # Check parallel function calls
   sf_call_found = False
@@ -383,28 +333,28 @@ def test_live_streaming_function_call_parallel():
   for event in res_events:
     if event.content and event.content.parts:
       for part in event.content.parts:
-        if part.function_call and part.function_call.name == 'get_weather':
-          location = part.function_call.args['location']
-          if location == 'San Francisco':
+        if part.function_call and part.function_call.name == "get_weather":
+          location = part.function_call.args["location"]
+          if location == "San Francisco":
             sf_call_found = True
-          elif location == 'New York':
+          elif location == "New York":
             nyc_call_found = True
 
   assert (
       sf_call_found and nyc_call_found
-  ), 'Expected both location function calls.'
+  ), "Expected both location function calls."
 
 
 def test_live_streaming_function_call_with_error():
   """Test live streaming with function call that returns an error."""
   # Create a function call response
   function_call = types.Part.from_function_call(
-      name='get_weather', args={'location': 'Invalid Location'}
+      name="get_weather", args={"location": "Invalid Location"}
   )
 
   # Create LLM responses
   response1 = LlmResponse(
-      content=types.Content(role='model', parts=[function_call]),
+      content=types.Content(role="model", parts=[function_call]),
       turn_complete=False,
   )
   response2 = LlmResponse(
@@ -415,95 +365,52 @@ def test_live_streaming_function_call_with_error():
 
   # Mock function that returns an error for invalid locations
   def get_weather(location: str) -> dict:
-    if location == 'Invalid Location':
-      return {'error': 'Location not found'}
-    return {'temperature': 22, 'condition': 'sunny', 'location': location}
+    if location == "Invalid Location":
+      return {"error": "Location not found"}
+    return {"temperature": 22, "condition": "sunny", "location": location}
 
   root_agent = Agent(
-      name='root_agent',
+      name="root_agent",
       model=mock_model,
       tools=[get_weather],
   )
 
   # Use the custom runner
-  class CustomTestRunner(testing_utils.InMemoryRunner):
-
-    def _run_with_loop(self, coro):
-      try:
-        old_loop = asyncio.get_event_loop()
-      except RuntimeError:
-        old_loop = None
-
-      loop = asyncio.new_event_loop()
-      asyncio.set_event_loop(loop)
-      try:
-        loop.run_until_complete(coro)
-      except (asyncio.TimeoutError, asyncio.CancelledError):
-        pass
-      finally:
-        loop.close()
-        asyncio.set_event_loop(old_loop)
-
-    def run_live(
-        self,
-        live_request_queue: LiveRequestQueue,
-        run_config: testing_utils.RunConfig = None,
-    ) -> list[testing_utils.Event]:
-      collected_responses = []
-
-      async def consume_responses(session: testing_utils.Session):
-        run_res = self.runner.run_live(
-            session=session,
-            live_request_queue=live_request_queue,
-            run_config=run_config or testing_utils.RunConfig(),
-        )
-
-        async for response in run_res:
-          collected_responses.append(response)
-          if len(collected_responses) >= 3:
-            return
-
-      self._run_with_loop(
-          asyncio.wait_for(consume_responses(self.session), timeout=5.0)
-      )
-
-      return collected_responses
-
-  runner = CustomTestRunner(root_agent=root_agent)
+  runner = StreamingTestRunner(root_agent=root_agent, max_responses=3)
   live_request_queue = LiveRequestQueue()
   live_request_queue.send_realtime(
       blob=types.Blob(
-          data=b'What is weather in Invalid Location?', mime_type='audio/pcm'
+          data=b"What is weather in Invalid Location?", mime_type="audio/pcm"
       )
   )
 
   res_events = runner.run_live(live_request_queue)
 
-  assert res_events is not None, 'Expected a list of events, got None.'
-  assert len(res_events) >= 1, 'Expected at least one event.'
+  assert res_events is not None, "Expected a list of events, got None."
+  assert len(res_events) >= 1, "Expected at least one event."
 
   # Check that we got the function call (error handling happens at execution time)
   function_call_found = False
   for event in res_events:
     if event.content and event.content.parts:
       for part in event.content.parts:
-        if part.function_call and part.function_call.name == 'get_weather':
+        if part.function_call and part.function_call.name == "get_weather":
           function_call_found = True
-          assert part.function_call.args['location'] == 'Invalid Location'
+          assert part.function_call.args["location"] == "Invalid Location"
 
-  assert function_call_found, 'Expected function call event with error case.'
+  assert function_call_found, "Expected function call event with error case."
 
 
 def test_live_streaming_function_call_sync_tool():
   """Test live streaming with synchronous function call."""
   # Create a function call response
   function_call = types.Part.from_function_call(
-      name='calculate', args={'x': 5, 'y': 3}
+      name="calculate", args={"x": 5, "y": 3}
   )
 
   # Create LLM responses
   response1 = LlmResponse(
-      content=types.Content(role='model', parts=[function_call]),
+      content=types.Content(role="model", parts=[function_call]),
       turn_complete=False,
   )
   response2 = LlmResponse(
@@ -514,92 +421,49 @@ def test_live_streaming_function_call_sync_tool():
 
   # Mock sync function
   def calculate(x: int, y: int) -> dict:
-    return {'result': x + y, 'operation': 'addition'}
+    return {"result": x + y, "operation": "addition"}
 
   root_agent = Agent(
-      name='root_agent',
+      name="root_agent",
       model=mock_model,
       tools=[calculate],
   )
 
   # Use the custom runner
-  class CustomTestRunner(testing_utils.InMemoryRunner):
-
-    def _run_with_loop(self, coro):
-      try:
-        old_loop = asyncio.get_event_loop()
-      except RuntimeError:
-        old_loop = None
-
-      loop = asyncio.new_event_loop()
-      asyncio.set_event_loop(loop)
-      try:
-        loop.run_until_complete(coro)
-      except (asyncio.TimeoutError, asyncio.CancelledError):
-        pass
-      finally:
-        loop.close()
-        asyncio.set_event_loop(old_loop)
-
-    def run_live(
-        self,
-        live_request_queue: LiveRequestQueue,
-        run_config: testing_utils.RunConfig = None,
-    ) -> list[testing_utils.Event]:
-      collected_responses = []
-
-      async def consume_responses(session: testing_utils.Session):
-        run_res = self.runner.run_live(
-            session=session,
-            live_request_queue=live_request_queue,
-            run_config=run_config or testing_utils.RunConfig(),
-        )
-
-        async for response in run_res:
-          collected_responses.append(response)
-          if len(collected_responses) >= 3:
-            return
-
-      self._run_with_loop(
-          asyncio.wait_for(consume_responses(self.session), timeout=5.0)
-      )
-
-      return collected_responses
-
-  runner = CustomTestRunner(root_agent=root_agent)
+  runner = StreamingTestRunner(root_agent=root_agent, max_responses=3)
   live_request_queue = LiveRequestQueue()
   live_request_queue.send_realtime(
-      blob=types.Blob(data=b'Calculate 5 plus 3', mime_type='audio/pcm')
+      blob=types.Blob(data=b"Calculate 5 plus 3", mime_type="audio/pcm")
   )
 
   res_events = runner.run_live(live_request_queue)
 
-  assert res_events is not None, 'Expected a list of events, got None.'
-  assert len(res_events) >= 1, 'Expected at least one event.'
+  assert res_events is not None, "Expected a list of events, got None."
+  assert len(res_events) >= 1, "Expected at least one event."
 
   # Check function call
   function_call_found = False
   for event in res_events:
     if event.content and event.content.parts:
       for part in event.content.parts:
-        if part.function_call and part.function_call.name == 'calculate':
+        if part.function_call and part.function_call.name == "calculate":
           function_call_found = True
-          assert part.function_call.args['x'] == 5
-          assert part.function_call.args['y'] == 3
+          assert part.function_call.args["x"] == 5
+          assert part.function_call.args["y"] == 3
 
-  assert function_call_found, 'Expected calculate function call event.'
+  assert function_call_found, "Expected calculate function call event."
 
 
 def test_live_streaming_simple_streaming_tool():
   """Test live streaming with a simple streaming tool (non-video)."""
   # Create a function call response for the streaming tool
   function_call = types.Part.from_function_call(
-      name='monitor_stock_price', args={'stock_symbol': 'AAPL'}
+      name="monitor_stock_price", args={"stock_symbol": "AAPL"}
   )
 
   # Create LLM responses
   response1 = LlmResponse(
-      content=types.Content(role='model', parts=[function_call]),
+      content=types.Content(role="model", parts=[function_call]),
       turn_complete=False,
   )
   response2 = LlmResponse(
@@ -612,76 +476,33 @@ def test_live_streaming_simple_streaming_tool():
   async def monitor_stock_price(stock_symbol: str):
     """Mock streaming tool that monitors stock prices."""
     # Simulate some streaming updates
-    yield f'Stock {stock_symbol} price: $150'
+    yield f"Stock {stock_symbol} price: $150"
     await asyncio.sleep(0.1)
-    yield f'Stock {stock_symbol} price: $155'
+    yield f"Stock {stock_symbol} price: $155"
     await asyncio.sleep(0.1)
-    yield f'Stock {stock_symbol} price: $160'
+    yield f"Stock {stock_symbol} price: $160"
 
   def stop_streaming(function_name: str):
     """Stop the streaming tool."""
     pass
 
   root_agent = Agent(
-      name='root_agent',
+      name="root_agent",
       model=mock_model,
       tools=[monitor_stock_price, stop_streaming],
   )
 
   # Use the custom runner
-  class CustomTestRunner(testing_utils.InMemoryRunner):
-
-    def _run_with_loop(self, coro):
-      try:
-        old_loop = asyncio.get_event_loop()
-      except RuntimeError:
-        old_loop = None
-
-      loop = asyncio.new_event_loop()
-      asyncio.set_event_loop(loop)
-      try:
-        loop.run_until_complete(coro)
-      except (asyncio.TimeoutError, asyncio.CancelledError):
-        pass
-      finally:
-        loop.close()
-        asyncio.set_event_loop(old_loop)
-
-    def run_live(
-        self,
-        live_request_queue: LiveRequestQueue,
-        run_config: testing_utils.RunConfig = None,
-    ) -> list[testing_utils.Event]:
-      collected_responses = []
-
-      async def consume_responses(session: testing_utils.Session):
-        run_res = self.runner.run_live(
-            session=session,
-            live_request_queue=live_request_queue,
-            run_config=run_config or testing_utils.RunConfig(),
-        )
-
-        async for response in run_res:
-          collected_responses.append(response)
-          if len(collected_responses) >= 3:
-            return
-
-      self._run_with_loop(
-          asyncio.wait_for(consume_responses(self.session), timeout=5.0)
-      )
-
-      return collected_responses
-
-  runner = CustomTestRunner(root_agent=root_agent)
+  runner = StreamingTestRunner(root_agent=root_agent, max_responses=3)
   live_request_queue = LiveRequestQueue()
   live_request_queue.send_realtime(
-      blob=types.Blob(data=b'Monitor AAPL stock price', mime_type='audio/pcm')
+      blob=types.Blob(data=b"Monitor AAPL stock price", mime_type="audio/pcm")
   )
 
   res_events = runner.run_live(live_request_queue)
 
-  assert res_events is not None, 'Expected a list of events, got None.'
-  assert len(res_events) >= 1, 'Expected at least one event.'
+  assert res_events is not None, "Expected a list of events, got None."
+  assert len(res_events) >= 1, "Expected at least one event."
 
   # Check that we got the streaming tool function call
   function_call_found = False
@@ -690,26 +511,26 @@ def test_live_streaming_simple_streaming_tool():
       for part in event.content.parts:
         if (
             part.function_call
-            and part.function_call.name == 'monitor_stock_price'
+            and part.function_call.name == "monitor_stock_price"
         ):
           function_call_found = True
-          assert part.function_call.args['stock_symbol'] == 'AAPL'
+          assert part.function_call.args["stock_symbol"] == "AAPL"
 
   assert (
       function_call_found
-  ), 'Expected monitor_stock_price function call event.'
+  ), "Expected monitor_stock_price function call event."
 
 
 def test_live_streaming_video_streaming_tool():
   """Test live streaming with a video streaming tool."""
   # Create a function call response for the video streaming tool
   function_call = types.Part.from_function_call(
-      name='monitor_video_stream', args={}
+      name="monitor_video_stream", args={}
   )
 
   # Create LLM responses
   response1 = LlmResponse(
-      content=types.Content(role='model', parts=[function_call]),
+      content=types.Content(role="model", parts=[function_call]),
       turn_complete=False,
   )
   response2 = LlmResponse(
@@ -727,13 +548,13 @@ def test_live_streaming_video_streaming_tool():
       try:
         # Try to get a frame from the queue with timeout
         live_req = await asyncio.wait_for(input_stream.get(), timeout=0.1)
-        if live_req.blob and live_req.blob.mime_type == 'image/jpeg':
+        if live_req.blob and live_req.blob.mime_type == "image/jpeg":
           frame_count += 1
-          yield f'Processed frame {frame_count}: detected 2 people'
+          yield f"Processed frame {frame_count}: detected 2 people"
       except asyncio.TimeoutError:
         # No more frames, simulate detection anyway for testing
         frame_count += 1
-        yield f'Simulated frame {frame_count}: detected 1 person'
+        yield f"Simulated frame {frame_count}: detected 1 person"
       await asyncio.sleep(0.1)
 
   def stop_streaming(function_name: str):
@@ -741,73 +562,30 @@ def test_live_streaming_video_streaming_tool():
     pass
 
   root_agent = Agent(
-      name='root_agent',
+      name="root_agent",
       model=mock_model,
       tools=[monitor_video_stream, stop_streaming],
   )
 
   # Use the custom runner
-  class CustomTestRunner(testing_utils.InMemoryRunner):
-
-    def _run_with_loop(self, coro):
-      try:
-        old_loop = asyncio.get_event_loop()
-      except RuntimeError:
-        old_loop = None
-
-      loop = asyncio.new_event_loop()
-      asyncio.set_event_loop(loop)
-      try:
-        loop.run_until_complete(coro)
-      except (asyncio.TimeoutError, asyncio.CancelledError):
-        pass
-      finally:
-        loop.close()
-        asyncio.set_event_loop(old_loop)
-
-    def run_live(
-        self,
-        live_request_queue: LiveRequestQueue,
-        run_config: testing_utils.RunConfig = None,
-    ) -> list[testing_utils.Event]:
-      collected_responses = []
-
-      async def consume_responses(session: testing_utils.Session):
-        run_res = self.runner.run_live(
-            session=session,
-            live_request_queue=live_request_queue,
-            run_config=run_config or testing_utils.RunConfig(),
-        )
-
-        async for response in run_res:
-          collected_responses.append(response)
-          if len(collected_responses) >= 3:
-            return
-
-      self._run_with_loop(
-          asyncio.wait_for(consume_responses(self.session), timeout=5.0)
-      )
-
-      return collected_responses
-
-  runner = CustomTestRunner(root_agent=root_agent)
+  runner = StreamingTestRunner(root_agent=root_agent, max_responses=3)
   live_request_queue = LiveRequestQueue()
 
   # Send some mock video frames
   live_request_queue.send_realtime(
-      blob=types.Blob(data=b'fake_jpeg_data_1', mime_type='image/jpeg')
+      blob=types.Blob(data=b"fake_jpeg_data_1", mime_type="image/jpeg")
   )
   live_request_queue.send_realtime(
-      blob=types.Blob(data=b'fake_jpeg_data_2', mime_type='image/jpeg')
+      blob=types.Blob(data=b"fake_jpeg_data_2", mime_type="image/jpeg")
   )
   live_request_queue.send_realtime(
-      blob=types.Blob(data=b'Monitor video stream', mime_type='audio/pcm')
+      blob=types.Blob(data=b"Monitor video stream", mime_type="audio/pcm")
   )
 
   res_events = runner.run_live(live_request_queue)
 
-  assert res_events is not None, 'Expected a list of events, got None.'
-  assert len(res_events) >= 1, 'Expected at least one event.'
+  assert res_events is not None, "Expected a list of events, got None."
+  assert len(res_events) >= 1, "Expected at least one event."
 
   # Check that we got the video streaming tool function call
   function_call_found = False
@@ -816,32 +594,32 @@ def test_live_streaming_video_streaming_tool():
       for part in event.content.parts:
         if (
             part.function_call
-            and part.function_call.name == 'monitor_video_stream'
+            and part.function_call.name == "monitor_video_stream"
         ):
           function_call_found = True
 
   assert (
       function_call_found
-  ), 'Expected monitor_video_stream function call event.'
+  ), "Expected monitor_video_stream function call event."
 
 
 def test_live_streaming_stop_streaming_tool():
   """Test live streaming with stop_streaming functionality."""
   # Create function calls for starting and stopping a streaming tool
   start_function_call = types.Part.from_function_call(
-      name='monitor_stock_price', args={'stock_symbol': 'TSLA'}
+      name="monitor_stock_price", args={"stock_symbol": "TSLA"}
   )
   stop_function_call = types.Part.from_function_call(
-      name='stop_streaming', args={'function_name': 'monitor_stock_price'}
+      name="stop_streaming", args={"function_name": "monitor_stock_price"}
   )
 
   # Create LLM responses: start streaming, then stop streaming
   response1 = LlmResponse(
-      content=types.Content(role='model', parts=[start_function_call]),
+      content=types.Content(role="model", parts=[start_function_call]),
       turn_complete=False,
   )
   response2 = LlmResponse(
-      content=types.Content(role='model', parts=[stop_function_call]),
+      content=types.Content(role="model", parts=[stop_function_call]),
       turn_complete=False,
   )
   response3 = LlmResponse(
@@ -853,75 +631,32 @@ def test_live_streaming_stop_streaming_tool():
   # Mock streaming tool and stop function
   async def monitor_stock_price(stock_symbol: str):
     """Mock streaming tool that monitors stock prices."""
-    yield f'Started monitoring {stock_symbol}'
+    yield f"Started monitoring {stock_symbol}"
     while True:  # Infinite stream (would be stopped by stop_streaming)
-      yield f'Stock {stock_symbol} price update'
+      yield f"Stock {stock_symbol} price update"
       await asyncio.sleep(0.1)
 
   def stop_streaming(function_name: str):
     """Stop the streaming tool."""
-    return f'Stopped streaming for {function_name}'
+    return f"Stopped streaming for {function_name}"
 
   root_agent = Agent(
-      name='root_agent',
+      name="root_agent",
       model=mock_model,
       tools=[monitor_stock_price, stop_streaming],
   )
 
   # Use the custom runner
-  class CustomTestRunner(testing_utils.InMemoryRunner):
-
-    def _run_with_loop(self, coro):
-      try:
-        old_loop = asyncio.get_event_loop()
-      except RuntimeError:
-        old_loop = None
-
-      loop = asyncio.new_event_loop()
-      asyncio.set_event_loop(loop)
-      try:
-        loop.run_until_complete(coro)
-      except (asyncio.TimeoutError, asyncio.CancelledError):
-        pass
-      finally:
-        loop.close()
-        asyncio.set_event_loop(old_loop)
-
-    def run_live(
-        self,
-        live_request_queue: LiveRequestQueue,
-        run_config: testing_utils.RunConfig = None,
-    ) -> list[testing_utils.Event]:
-      collected_responses = []
-
-      async def consume_responses(session: testing_utils.Session):
-        run_res = self.runner.run_live(
-            session=session,
-            live_request_queue=live_request_queue,
-            run_config=run_config or testing_utils.RunConfig(),
-        )
-
-        async for response in run_res:
-          collected_responses.append(response)
-          if len(collected_responses) >= 3:
-            return
-
-      self._run_with_loop(
-          asyncio.wait_for(consume_responses(self.session), timeout=5.0)
-      )
-
-      return collected_responses
-
-  runner = CustomTestRunner(root_agent=root_agent)
+  runner = StreamingTestRunner(root_agent=root_agent, max_responses=3)
   live_request_queue = LiveRequestQueue()
   live_request_queue.send_realtime(
-      blob=types.Blob(data=b'Monitor TSLA and then stop', mime_type='audio/pcm')
+      blob=types.Blob(data=b"Monitor TSLA and then stop", mime_type="audio/pcm")
   )
 
   res_events = runner.run_live(live_request_queue)
 
-  assert res_events is not None, 'Expected a list of events, got None.'
-  assert len(res_events) >= 1, 'Expected at least one event.'
+  assert res_events is not None, "Expected a list of events, got None."
+  assert len(res_events) >= 1, "Expected at least one event."
 
   # Check that we got both function calls
   monitor_call_found = False
@@ -931,34 +666,34 @@ def test_live_streaming_stop_streaming_tool():
     if event.content and event.content.parts:
       for part in event.content.parts:
         if part.function_call:
-          if part.function_call.name == 'monitor_stock_price':
+          if part.function_call.name == "monitor_stock_price":
             monitor_call_found = True
-            assert part.function_call.args['stock_symbol'] == 'TSLA'
-          elif part.function_call.name == 'stop_streaming':
+            assert part.function_call.args["stock_symbol"] == "TSLA"
+          elif part.function_call.name == "stop_streaming":
             stop_call_found = True
             assert (
-                part.function_call.args['function_name']
-                == 'monitor_stock_price'
+                part.function_call.args["function_name"]
+                == "monitor_stock_price"
             )
 
-  assert monitor_call_found, 'Expected monitor_stock_price function call event.'
-  assert stop_call_found, 'Expected stop_streaming function call event.'
+  assert monitor_call_found, "Expected monitor_stock_price function call event."
+  assert stop_call_found, "Expected stop_streaming function call event."
 
 
 def test_live_streaming_multiple_streaming_tools():
   """Test live streaming with multiple streaming tools running simultaneously."""
   # Create function calls for multiple streaming tools
   stock_function_call = types.Part.from_function_call(
-      name='monitor_stock_price', args={'stock_symbol': 'NVDA'}
+      name="monitor_stock_price", args={"stock_symbol": "NVDA"}
   )
   video_function_call = types.Part.from_function_call(
-      name='monitor_video_stream', args={}
+      name="monitor_video_stream", args={}
   )
 
   # Create LLM responses: start both streaming tools
   response1 = LlmResponse(
       content=types.Content(
-          role='model', parts=[stock_function_call, video_function_call]
+          role="model", parts=[stock_function_call, video_function_call]
       ),
       turn_complete=False,
   )
@@ -971,82 +706,39 @@ def test_live_streaming_multiple_streaming_tools():
   # Mock streaming tools
   async def monitor_stock_price(stock_symbol: str):
     """Mock streaming tool that monitors stock prices."""
-    yield f'Stock {stock_symbol} price: $800'
+    yield f"Stock {stock_symbol} price: $800"
     await asyncio.sleep(0.1)
-    yield f'Stock {stock_symbol} price: $805'
+    yield f"Stock {stock_symbol} price: $805"
 
   async def monitor_video_stream(input_stream: LiveRequestQueue):
     """Mock video streaming tool."""
-    yield 'Video monitoring started'
+    yield "Video monitoring started"
     await asyncio.sleep(0.1)
-    yield 'Detected motion in video stream'
+    yield "Detected motion in video stream"
 
   def stop_streaming(function_name: str):
     """Stop the streaming tool."""
     pass
 
   root_agent = Agent(
-      name='root_agent',
+      name="root_agent",
       model=mock_model,
       tools=[monitor_stock_price, monitor_video_stream, stop_streaming],
   )
 
   # Use the custom runner
-  class CustomTestRunner(testing_utils.InMemoryRunner):
-
-    def _run_with_loop(self, coro):
-      try:
-        old_loop = asyncio.get_event_loop()
-      except RuntimeError:
-        old_loop = None
-
-      loop = asyncio.new_event_loop()
-      asyncio.set_event_loop(loop)
-      try:
-        loop.run_until_complete(coro)
-      except (asyncio.TimeoutError, asyncio.CancelledError):
-        pass
-      finally:
-        loop.close()
-        asyncio.set_event_loop(old_loop)
-
-    def run_live(
-        self,
-        live_request_queue: LiveRequestQueue,
-        run_config: testing_utils.RunConfig = None,
-    ) -> list[testing_utils.Event]:
-      collected_responses = []
-
-      async def consume_responses(session: testing_utils.Session):
-        run_res = self.runner.run_live(
-            session=session,
-            live_request_queue=live_request_queue,
-            run_config=run_config or testing_utils.RunConfig(),
-        )
-
-        async for response in run_res:
-          collected_responses.append(response)
-          if len(collected_responses) >= 3:
-            return
-
-      self._run_with_loop(
-          asyncio.wait_for(consume_responses(self.session), timeout=5.0)
-      )
-
-      return collected_responses
-
-  runner = CustomTestRunner(root_agent=root_agent)
+  runner = StreamingTestRunner(root_agent=root_agent, max_responses=3)
   live_request_queue = LiveRequestQueue()
   live_request_queue.send_realtime(
       blob=types.Blob(
-          data=b'Monitor both stock and video', mime_type='audio/pcm'
+          data=b"Monitor both stock and video", mime_type="audio/pcm"
       )
   )
 
   res_events = runner.run_live(live_request_queue)
 
-  assert res_events is not None, 'Expected a list of events, got None.'
-  assert len(res_events) >= 1, 'Expected at least one event.'
+  assert res_events is not None, "Expected a list of events, got None."
+  assert len(res_events) >= 1, "Expected at least one event."
 
   # Check that we got both streaming tool function calls
   stock_call_found = False
@@ -1056,39 +748,38 @@ def test_live_streaming_multiple_streaming_tools():
     if event.content and event.content.parts:
       for part in event.content.parts:
         if part.function_call:
-          if part.function_call.name == 'monitor_stock_price':
+          if part.function_call.name == "monitor_stock_price":
             stock_call_found = True
-            assert part.function_call.args['stock_symbol'] == 'NVDA'
-          elif part.function_call.name == 'monitor_video_stream':
+            assert part.function_call.args["stock_symbol"] == "NVDA"
+          elif part.function_call.name == "monitor_video_stream":
             video_call_found = True
 
-  assert stock_call_found, 'Expected monitor_stock_price function call event.'
-  assert video_call_found, 'Expected monitor_video_stream function call event.'
+  assert stock_call_found, "Expected monitor_stock_price function call event."
+  assert video_call_found, "Expected monitor_video_stream function call event."
 
 
-def test_live_streaming_buffered_function_call_yielded_during_transcription():
-  """Test that function calls buffered during transcription are yielded.
+def test_live_streaming_function_call_yielded_before_finished_transcription():
+  """Test that function calls arriving during live transcription are yielded immediately.
 
-  This tests the fix for the bug where function_call and function_response
-  events were buffered during active transcription but never yielded to the
-  caller. The fix ensures buffered events are yielded after transcription ends.
+  This verifies that tool call events are not buffered and are permitted to
+  arrive in the stream before the final completed transcription event.
   """
   function_call = types.Part.from_function_call(
-      name='get_weather', args={'location': 'San Francisco'}
+      name="get_weather", args={"location": "San Francisco"}
   )
 
   response1 = LlmResponse(
-      input_transcription=types.Transcription(text='Show'),
+      input_transcription=types.Transcription(text="Show"),
       partial=True,  # ← Triggers is_transcribing = True
   )
   response2 = LlmResponse(
       content=types.Content(
-          role='model', parts=[function_call]
+          role="model", parts=[function_call]
       ),  # ← Gets buffered
       turn_complete=False,
   )
   response3 = LlmResponse(
-      input_transcription=types.Transcription(text='Show me the weather'),
+      input_transcription=types.Transcription(text="Show me the weather"),
       partial=False,  # ← Transcription ends, buffered events yielded
   )
   response4 = LlmResponse(
@@ -1100,95 +791,61 @@ def test_live_streaming_buffered_function_call_yielded_during_transcription():
   )
 
   def get_weather(location: str) -> dict:
-    return {'temperature': 22, 'location': location}
+    return {"temperature": 22, "location": location}
 
   root_agent = Agent(
-      name='root_agent',
+      name="root_agent",
       model=mock_model,
       tools=[get_weather],
   )
 
-  class CustomTestRunner(testing_utils.InMemoryRunner):
-
-    def _run_with_loop(self, coro):
-      try:
-        old_loop = asyncio.get_event_loop()
-      except RuntimeError:
-        old_loop = None
-
-      loop = asyncio.new_event_loop()
-      asyncio.set_event_loop(loop)
-      try:
-        loop.run_until_complete(coro)
-      except (asyncio.TimeoutError, asyncio.CancelledError):
-        pass
-      finally:
-        loop.close()
-        asyncio.set_event_loop(old_loop)
-
-    def run_live(
-        self,
-        live_request_queue: LiveRequestQueue,
-        run_config: testing_utils.RunConfig = None,
-    ) -> list[testing_utils.Event]:
-      collected_responses = []
-
-      async def consume_responses(session: testing_utils.Session):
-        run_res = self.runner.run_live(
-            session=session,
-            live_request_queue=live_request_queue,
-            run_config=run_config or testing_utils.RunConfig(),
-        )
-
-        async for response in run_res:
-          collected_responses.append(response)
-          if len(collected_responses) >= 5:
-            return
-
-      self._run_with_loop(
-          asyncio.wait_for(consume_responses(self.session), timeout=5.0)
-      )
-
-      return collected_responses
-
-  runner = CustomTestRunner(root_agent=root_agent)
+  runner = StreamingTestRunner(root_agent=root_agent, max_responses=5)
   live_request_queue = LiveRequestQueue()
   live_request_queue.send_realtime(
-      blob=types.Blob(data=b'Show me the weather', mime_type='audio/pcm')
+      blob=types.Blob(data=b"Show me the weather", mime_type="audio/pcm")
   )
 
   res_events = runner.run_live(live_request_queue)
 
-  assert res_events is not None, 'Expected a list of events, got None.'
-  assert len(res_events) >= 1, 'Expected at least one event.'
+  assert res_events is not None, "Expected a list of events, got None."
+  assert len(res_events) >= 1, "Expected at least one event."
 
-  function_call_found = False
-  function_response_found = False
+  function_call_index = -1
+  finished_transcription_index = -1
 
-  for event in res_events:
+  for idx, event in enumerate(res_events):
     if event.content and event.content.parts:
       for part in event.content.parts:
-        if part.function_call and part.function_call.name == 'get_weather':
-          function_call_found = True
-          assert part.function_call.args['location'] == 'San Francisco'
+        if part.function_call and part.function_call.name == "get_weather":
+          function_call_index = idx
+          assert part.function_call.args["location"] == "San Francisco"
         if (
             part.function_response
-            and part.function_response.name == 'get_weather'
+            and part.function_response.name == "get_weather"
         ):
-          function_response_found = True
-          assert part.function_response.response['temperature'] == 22
+          assert part.function_response.response["temperature"] == 22
+    if (
+        event.input_transcription
+        and event.input_transcription.text == "Show me the weather"
+    ):
+      finished_transcription_index = idx
 
-  assert function_call_found, 'Buffered function_call event was not yielded.'
+  assert function_call_index != -1, "Function call event was not yielded."
   assert (
-      function_response_found
-  ), 'Buffered function_response event was not yielded.'
+      finished_transcription_index != -1
+  ), "Finished transcription event was not yielded."
+  assert function_call_index < finished_transcription_index, (
+      f"Expected function call (at index {function_call_index}) to arrive"
+      " before finished transcription (at index"
+      f" {finished_transcription_index})."
+  )
 
 
 def test_live_streaming_text_content_persisted_in_session():
   """Test that user text content sent via send_content is persisted in session."""
   response1 = LlmResponse(
       content=types.Content(
-          role='model', parts=[types.Part(text='Hello! How can I help you?')]
+          role="model", parts=[types.Part(text="Hello! How can I help you?")]
       ),
       turn_complete=True,
   )
@@ -1196,76 +853,28 @@ def test_live_streaming_text_content_persisted_in_session():
   mock_model = testing_utils.MockModel.create([response1])
 
   root_agent = Agent(
-      name='root_agent',
+      name="root_agent",
       model=mock_model,
       tools=[],
   )
 
-  class CustomTestRunner(testing_utils.InMemoryRunner):
-
-    def _run_with_loop(self, coro):
-      try:
-        old_loop = asyncio.get_event_loop()
-      except RuntimeError:
-        old_loop = None
-
-      loop = asyncio.new_event_loop()
-      asyncio.set_event_loop(loop)
-      try:
-        loop.run_until_complete(coro)
-      except (asyncio.TimeoutError, asyncio.CancelledError):
-        pass
-      finally:
-        loop.close()
-        asyncio.set_event_loop(old_loop)
-
-    def run_live_and_get_session(
-        self,
-        live_request_queue: LiveRequestQueue,
-        run_config: testing_utils.RunConfig = None,
-    ) -> tuple[list[testing_utils.Event], testing_utils.Session]:
-      collected_responses = []
-
-      async def consume_responses(session: testing_utils.Session):
-        run_res = self.runner.run_live(
-            session=session,
-            live_request_queue=live_request_queue,
-            run_config=run_config or testing_utils.RunConfig(),
-        )
-        async for response in run_res:
-          collected_responses.append(response)
-          if len(collected_responses) >= 1:
-            return
-
-      self._run_with_loop(
-          asyncio.wait_for(consume_responses(self.session), timeout=5.0)
-      )
-
-      # Get the updated session
-      updated_session = self.runner.session_service.get_session_sync(
-          app_name=self.app_name,
-          user_id=self.session.user_id,
-          session_id=self.session.id,
-      )
-      return collected_responses, updated_session
-
-  runner = CustomTestRunner(root_agent=root_agent)
+  runner = StreamingTestRunner(root_agent=root_agent, max_responses=1)
   live_request_queue = LiveRequestQueue()
 
   # Send text content (not audio blob)
-  user_text = 'Hello, this is a test message'
+  user_text = "Hello, this is a test message"
   live_request_queue.send_content(
-      types.Content(role='user', parts=[types.Part(text=user_text)])
+      types.Content(role="user", parts=[types.Part(text=user_text)])
   )
 
   res_events, session = runner.run_live_and_get_session(live_request_queue)
 
-  assert res_events is not None, 'Expected a list of events, got None.'
+  assert res_events is not None, "Expected a list of events, got None."
 
   # Check that user text content was persisted in the session
   user_content_found = False
   for event in session.events:
-    if event.author == 'user' and event.content:
+    if event.author == "user" and event.content:
       for part in event.content.parts:
         if part.text and user_text in part.text:
           user_content_found = True
@@ -1273,7 +882,7 @@ def test_live_streaming_text_content_persisted_in_session():
 
   assert user_content_found, (
       f'Expected user text content "{user_text}" to be persisted in session. '
-      f'Session events: {[e.content for e in session.events]}'
+      f"Session events: {[e.content for e in session.events]}"
   )
 
 
@@ -1298,6 +907,17 @@ class _LiveTestRunner(testing_utils.InMemoryRunner):
     except (asyncio.TimeoutError, asyncio.CancelledError):
       pass
     finally:
+      # Cancel all pending tasks to prevent leaks and warnings
+      pending = asyncio.all_tasks(loop)
+      for task in pending:
+        task.cancel()
+      if pending:
+        try:
+          loop.run_until_complete(
+              asyncio.gather(*pending, return_exceptions=True)
+          )
+        except Exception:  # pylint: disable=broad-except
+          pass
       loop.close()
       asyncio.set_event_loop(old_loop)
 
@@ -1310,13 +930,16 @@ class _LiveTestRunner(testing_utils.InMemoryRunner):
     collected = []
 
     async def consume(session: testing_utils.Session):
-      async for response in self.runner.run_live(
+      run_res = self.runner.run_live(
           session=session,
           live_request_queue=live_request_queue,
-      ):
-        collected.append(response)
-        if len(collected) >= max_responses:
-          return
+      )
+      async with aclosing(run_res) as agen:
+        async for response in agen:
+          collected.append(response)
+          if len(collected) >= max_responses:
+            await _wait_for_queue_empty(live_request_queue)
+            return
 
     self._run_with_loop(asyncio.wait_for(consume(self.session), timeout=5.0))
     return collected
@@ -1328,16 +951,16 @@ def test_input_streaming_tool_registered_lazily_with_stream():
   # tool is NOT registered before the model calls it.
   text_response = LlmResponse(
       content=types.Content(
-          role='model',
-          parts=[types.Part(text='Processing...')],
+          role="model",
+          parts=[types.Part(text="Processing...")],
       ),
       turn_complete=False,
   )
   function_call = types.Part.from_function_call(
-      name='monitor_video_stream', args={}
+      name="monitor_video_stream", args={}
   )
   call_response = LlmResponse(
-      content=types.Content(role='model', parts=[function_call]),
+      content=types.Content(role="model", parts=[function_call]),
       turn_complete=False,
   )
   done_response = LlmResponse(turn_complete=True)
@@ -1354,10 +977,10 @@ def test_input_streaming_tool_registered_lazily_with_stream():
     """Record whether input_stream was provided."""
     nonlocal stream_state_during_call
     stream_state_during_call = input_stream is not None
-    yield 'monitoring started'
+    yield "monitoring started"
 
   root_agent = Agent(
-      name='root_agent',
+      name="root_agent",
       model=mock_model,
       tools=[monitor_video_stream],
   )
@@ -1378,7 +1001,7 @@ def test_input_streaming_tool_registered_lazily_with_stream():
 
   live_request_queue = LiveRequestQueue()
   live_request_queue.send_realtime(
-      blob=types.Blob(data=b'test_data', mime_type='audio/pcm')
+      blob=types.Blob(data=b"test_data", mime_type="audio/pcm")
   )
 
   # Collect events and check that the tool is NOT registered before
@@ -1388,53 +1011,58 @@ def test_input_streaming_tool_registered_lazily_with_stream():
 
   async def consume(session: testing_utils.Session):
     nonlocal not_registered_before_call
-    async for response in runner.runner.run_live(
+    run_res = runner.runner.run_live(
         session=session,
         live_request_queue=live_request_queue,
-    ):
-      collected.append(response)
-      # On the first non-function-call event, verify the tool is not
-      # yet registered (lazy registration).
-      active = (
-          captured_context.active_streaming_tools if captured_context else None
-      )
-      if (
-          not_registered_before_call is None
-          and not response.get_function_calls()
-      ):
-        not_registered_before_call = (
-            active is None or 'monitor_video_stream' not in active
+    )
+    async with aclosing(run_res) as agen:
+      async for response in agen:
+        collected.append(response)
+        # On the first non-function-call event, verify the tool is not
+        # yet registered (lazy registration).
+        active = (
+            captured_context.active_streaming_tools
+            if captured_context
+            else None
         )
-      if len(collected) >= 4:
-        return
+        if (
+            not_registered_before_call is None
+            and not response.get_function_calls()
+        ):
+          not_registered_before_call = (
+              active is None or "monitor_video_stream" not in active
+          )
+        if len(collected) >= 4:
+          await _wait_for_queue_empty(live_request_queue)
+          return
 
   runner._run_with_loop(asyncio.wait_for(consume(runner.session), timeout=5.0))
 
   # Tool should not be registered before the model calls it.
   assert (
       not_registered_before_call is True
-  ), 'Expected tool to NOT be registered before the model calls it'
+  ), "Expected tool to NOT be registered before the model calls it"
   # When the model calls the tool, input_stream should be provided.
   assert (
       stream_state_during_call is True
-  ), 'Expected input_stream to be provided to the streaming tool when called'
+  ), "Expected input_stream to be provided to the streaming tool when called"
 
 
 def test_stop_streaming_resets_stream_to_none():
   """Test that stop_streaming sets stream back to None."""
   start_call = types.Part.from_function_call(
-      name='monitor_stock_price', args={'stock_symbol': 'GOOG'}
+      name="monitor_stock_price", args={"stock_symbol": "GOOG"}
   )
   stop_call = types.Part.from_function_call(
-      name='stop_streaming', args={'function_name': 'monitor_stock_price'}
+      name="stop_streaming", args={"function_name": "monitor_stock_price"}
   )
 
   response1 = LlmResponse(
-      content=types.Content(role='model', parts=[start_call]),
+      content=types.Content(role="model", parts=[start_call]),
       turn_complete=False,
   )
   response2 = LlmResponse(
-      content=types.Content(role='model', parts=[stop_call]),
+      content=types.Content(role="model", parts=[stop_call]),
       turn_complete=False,
   )
   response3 = LlmResponse(turn_complete=True)
@@ -1445,17 +1073,17 @@ def test_stop_streaming_resets_stream_to_none():
       stock_symbol: str,
   ) -> AsyncGenerator[str, None]:
     """Yield periodic price updates for the given stock symbol."""
-    yield f'Monitoring {stock_symbol}'
+    yield f"Monitoring {stock_symbol}"
     while True:
       await asyncio.sleep(0.1)
-      yield f'{stock_symbol} price update'
+      yield f"{stock_symbol} price update"
 
   def stop_streaming(function_name: str) -> None:
     """Stop a running streaming tool by name."""
     pass
 
   root_agent = Agent(
-      name='root_agent',
+      name="root_agent",
       model=mock_model,
       tools=[monitor_stock_price, stop_streaming],
   )
@@ -1479,7 +1107,7 @@ def test_stop_streaming_resets_stream_to_none():
 
   live_request_queue = LiveRequestQueue()
   live_request_queue.send_realtime(
-      blob=types.Blob(data=b'Monitor GOOG then stop', mime_type='audio/pcm')
+      blob=types.Blob(data=b"Monitor GOOG then stop", mime_type="audio/pcm")
   )
 
   res_events = runner.run_live(live_request_queue, max_responses=4)
@@ -1487,32 +1115,32 @@ def test_stop_streaming_resets_stream_to_none():
   # Verify both function calls were processed.
   call_names = _collect_function_call_names(res_events)
   assert (
-      'monitor_stock_price' in call_names
-  ), 'Expected monitor_stock_price function call.'
+      "monitor_stock_price" in call_names
+  ), "Expected monitor_stock_price function call."
   assert (
-      'stop_streaming' in call_names
-  ), 'Expected stop_streaming function call.'
+      "stop_streaming" in call_names
+  ), "Expected stop_streaming function call."
 
   # Verify that stop_streaming reset the stream to None.
   assert (
       captured_child_context is not None
-  ), 'Expected child invocation context to be captured'
+  ), "Expected child invocation context to be captured"
   active_tools = captured_child_context.active_streaming_tools or {}
   assert (
-      'monitor_stock_price' in active_tools
-  ), 'Expected monitor_stock_price in active_streaming_tools'
+      "monitor_stock_price" in active_tools
+  ), "Expected monitor_stock_price in active_streaming_tools"
   assert (
-      active_tools['monitor_stock_price'].stream is None
-  ), 'Expected stream to be reset to None after stop_streaming'
+      active_tools["monitor_stock_price"].stream is None
+  ), "Expected stream to be reset to None after stop_streaming"
 
 
 def test_output_streaming_tool_registered_lazily_without_stream():
   """Test that output-streaming tools are registered lazily when called, with stream=None."""
   function_call = types.Part.from_function_call(
-      name='monitor_stock_price', args={'stock_symbol': 'GOOG'}
+      name="monitor_stock_price", args={"stock_symbol": "GOOG"}
   )
   response1 = LlmResponse(
-      content=types.Content(role='model', parts=[function_call]),
+      content=types.Content(role="model", parts=[function_call]),
       turn_complete=False,
   )
   response2 = LlmResponse(turn_complete=True)
@@ -1523,10 +1151,10 @@ def test_output_streaming_tool_registered_lazily_without_stream():
       stock_symbol: str,
   ) -> AsyncGenerator[str, None]:
     """Yield periodic price updates."""
-    yield f'price for {stock_symbol}'
+    yield f"price for {stock_symbol}"
 
   root_agent = Agent(
-      name='root_agent',
+      name="root_agent",
       model=mock_model,
       tools=[monitor_stock_price],
   )
@@ -1548,7 +1176,7 @@ def test_output_streaming_tool_registered_lazily_without_stream():
 
   live_request_queue = LiveRequestQueue()
   live_request_queue.send_realtime(
-      blob=types.Blob(data=b'test', mime_type='audio/pcm')
+      blob=types.Blob(data=b"test", mime_type="audio/pcm")
   )
 
   runner.run_live(live_request_queue, max_responses=3)
@@ -1558,11 +1186,11 @@ def test_output_streaming_tool_registered_lazily_without_stream():
   assert captured_child_context is not None
   active_tools = captured_child_context.active_streaming_tools or {}
   assert (
-      'monitor_stock_price' in active_tools
-  ), 'Expected output-streaming tool to be registered when called'
+      "monitor_stock_price" in active_tools
+  ), "Expected output-streaming tool to be registered when called"
   assert (
-      active_tools['monitor_stock_price'].stream is None
-  ), 'Expected stream to be None for output-streaming tool'
+      active_tools["monitor_stock_price"].stream is None
+  ), "Expected stream to be None for output-streaming tool"
 
 
 def _run_single_tool_live(
@@ -1581,7 +1209,7 @@ def _run_single_tool_live(
       name=func_name, args=func_args or {}
   )
   response1 = LlmResponse(
-      content=types.Content(role='model', parts=[function_call]),
+      content=types.Content(role="model", parts=[function_call]),
       turn_complete=False,
   )
   response2 = LlmResponse(turn_complete=True)
@@ -1589,7 +1217,7 @@ def _run_single_tool_live(
   mock_model = testing_utils.MockModel.create([response1, response2])
 
   root_agent = Agent(
-      name='root_agent',
+      name="root_agent",
       model=mock_model,
       tools=[tool_func],
   )
@@ -1609,7 +1237,7 @@ def _run_single_tool_live(
 
   live_request_queue = LiveRequestQueue()
   live_request_queue.send_realtime(
-      blob=types.Blob(data=b'test', mime_type='audio/pcm')
+      blob=types.Blob(data=b"test", mime_type="audio/pcm")
   )
 
   runner.run_live(live_request_queue, max_responses=max_responses)
@@ -1625,42 +1253,42 @@ def test_input_streaming_tool_has_stream_set_at_registration():
       input_stream: LiveRequestQueue,
   ) -> AsyncGenerator[str, None]:
     """Simulate an input-streaming tool."""
-    yield 'started'
+    yield "started"
 
   active_tools = _run_single_tool_live(
-      monitor_video_stream, 'monitor_video_stream'
+      monitor_video_stream, "monitor_video_stream"
   )
 
   assert (
-      'monitor_video_stream' in active_tools
-  ), 'Expected input-streaming tool to be registered when called'
+      "monitor_video_stream" in active_tools
+  ), "Expected input-streaming tool to be registered when called"
   # Stream should be a LiveRequestQueue, not None.
   assert (
-      active_tools['monitor_video_stream'].stream is not None
-  ), 'Expected .stream to be set for input-streaming tool'
+      active_tools["monitor_video_stream"].stream is not None
+  ), "Expected .stream to be set for input-streaming tool"
   assert isinstance(
-      active_tools['monitor_video_stream'].stream, LiveRequestQueue
-  ), 'Expected .stream to be a LiveRequestQueue instance'
+      active_tools["monitor_video_stream"].stream, LiveRequestQueue
+  ), "Expected .stream to be a LiveRequestQueue instance"
 
 
 def test_input_streaming_tool_stream_recreated_after_stop():
   """Test that re-invoking an input-streaming tool after stop creates a new stream."""
-  start_call = types.Part.from_function_call(name='monitor_video', args={})
+  start_call = types.Part.from_function_call(name="monitor_video", args={})
   stop_call = types.Part.from_function_call(
-      name='stop_streaming', args={'function_name': 'monitor_video'}
+      name="stop_streaming", args={"function_name": "monitor_video"}
   )
-  restart_call = types.Part.from_function_call(name='monitor_video', args={})
+  restart_call = types.Part.from_function_call(name="monitor_video", args={})
 
   response1 = LlmResponse(
-      content=types.Content(role='model', parts=[start_call]),
+      content=types.Content(role="model", parts=[start_call]),
       turn_complete=False,
   )
   response2 = LlmResponse(
-      content=types.Content(role='model', parts=[stop_call]),
+      content=types.Content(role="model", parts=[stop_call]),
       turn_complete=False,
   )
   response3 = LlmResponse(
-      content=types.Content(role='model', parts=[restart_call]),
+      content=types.Content(role="model", parts=[restart_call]),
       turn_complete=False,
   )
   response4 = LlmResponse(turn_complete=True)
@@ -1677,17 +1305,17 @@ def test_input_streaming_tool_stream_recreated_after_stop():
     """Simulate an input-streaming tool that tracks invocation count."""
     nonlocal call_count
     call_count += 1
-    yield f'started (call {call_count})'
+    yield f"started (call {call_count})"
     while True:
       await asyncio.sleep(0.1)
-      yield 'frame'
+      yield "frame"
 
   def stop_streaming(function_name: str) -> None:
     """Stop a running streaming tool by name."""
     pass
 
   root_agent = Agent(
-      name='root_agent',
+      name="root_agent",
       model=mock_model,
       tools=[monitor_video, stop_streaming],
   )
@@ -1707,7 +1335,7 @@ def test_input_streaming_tool_stream_recreated_after_stop():
 
   live_request_queue = LiveRequestQueue()
   live_request_queue.send_realtime(
-      blob=types.Blob(data=b'test', mime_type='audio/pcm')
+      blob=types.Blob(data=b"test", mime_type="audio/pcm")
   )
 
   res_events = runner.run_live(live_request_queue, max_responses=8)
@@ -1719,16 +1347,16 @@ def test_input_streaming_tool_stream_recreated_after_stop():
       fc.name for event in res_events for fc in event.get_function_calls()
   ]
   assert (
-      call_names.count('monitor_video') >= 2
-  ), f'Expected monitor_video called at least twice, got: {call_names}'
+      call_names.count("monitor_video") >= 2
+  ), f"Expected monitor_video called at least twice, got: {call_names}"
 
   # After re-invocation, stream should be set again (not None).
   assert captured_child_context is not None
   active_tools = captured_child_context.active_streaming_tools or {}
-  assert 'monitor_video' in active_tools
+  assert "monitor_video" in active_tools
   assert (
-      active_tools['monitor_video'].stream is not None
-  ), 'Expected .stream to be recreated after stop + re-invocation'
+      active_tools["monitor_video"].stream is not None
+  ), "Expected .stream to be recreated after stop + re-invocation"
 
 
 def test_async_gen_with_input_stream_wrong_annotation_gets_no_stream():
@@ -1739,22 +1367,22 @@ def test_async_gen_with_input_stream_wrong_annotation_gets_no_stream():
     """Simulate an async generator whose input_stream is typed as str."""
     nonlocal received_input_stream
     received_input_stream = input_stream
-    yield f'got: {input_stream}'
+    yield f"got: {input_stream}"
 
   active_tools = _run_single_tool_live(
-      my_tool, 'my_tool', func_args={'input_stream': 'some_value'}
+      my_tool, "my_tool", func_args={"input_stream": "some_value"}
   )
 
   assert (
-      'my_tool' in active_tools
-  ), 'Expected async generator tool to be registered'
+      "my_tool" in active_tools
+  ), "Expected async generator tool to be registered"
   # Stream should be None because annotation is str, not LiveRequestQueue.
-  assert active_tools['my_tool'].stream is None, (
-      'Expected .stream to be None when input_stream annotation is not'
-      ' LiveRequestQueue'
+  assert active_tools["my_tool"].stream is None, (
+      "Expected .stream to be None when input_stream annotation is not"
+      " LiveRequestQueue"
   )
   # The tool should have received the model-provided arg value, not a
   # LiveRequestQueue.
   assert (
-      received_input_stream == 'some_value'
-  ), 'Expected input_stream to be the model-provided string value'
+      received_input_stream == "some_value"
+  ), "Expected input_stream to be the model-provided string value"

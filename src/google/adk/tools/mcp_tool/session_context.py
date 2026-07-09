@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -15,11 +15,12 @@
 from __future__ import annotations
 
 import asyncio
+from contextlib import AbstractAsyncContextManager
 from contextlib import AsyncExitStack
 from datetime import timedelta
 import logging
+from types import TracebackType
 from typing import Any
-from typing import AsyncContextManager
 from typing import Coroutine
 from typing import Optional
 from typing import TypeVar
@@ -34,6 +35,34 @@ from ...features import is_feature_enabled
 logger = logging.getLogger('google_adk.' + __name__)
 
 _T = TypeVar('_T')
+
+
+def _format_exception(exc: BaseException | None) -> str:
+  """Formats an exception into a readable string representation.
+
+  This handles `ExceptionGroup` (by flattening inner exceptions) and optionally
+  extracts HTTP response bodies for network-related errors, truncating them
+  to 1000 characters to prevent log/context overflow.
+
+  Args:
+    exc: The exception to format.
+
+  Returns:
+    A formatted string representing the exception and its pertinent details.
+  """
+  if exc is None:
+    return 'None'
+  if hasattr(exc, 'exceptions') and getattr(exc, 'exceptions'):
+    return ' | '.join(_format_exception(e) for e in exc.exceptions)
+  if hasattr(exc, 'response') and exc.response is not None:
+    try:
+      response_text = exc.response.text
+      if len(response_text) > 1000:
+        response_text = response_text[:1000] + '... [truncated]'
+      return f'{exc} (Response: {response_text})'
+    except Exception:
+      pass
+  return str(exc)
 
 
 class SessionContext:
@@ -60,7 +89,7 @@ class SessionContext:
 
   def __init__(
       self,
-      client: AsyncContextManager,
+      client: AbstractAsyncContextManager[Any],
       timeout: Optional[float],
       sse_read_timeout: Optional[float],
       is_stdio: bool = False,
@@ -87,7 +116,7 @@ class SessionContext:
     self._session: Optional[ClientSession] = None
     self._ready_event = asyncio.Event()
     self._close_event = asyncio.Event()
-    self._task: Optional[asyncio.Task] = None
+    self._task: Optional[asyncio.Task[None]] = None
     self._task_lock = asyncio.Lock()
     self._sampling_callback = sampling_callback
     self._sampling_capabilities = sampling_capabilities
@@ -130,6 +159,12 @@ class SessionContext:
       if not self._task:
         self._task = asyncio.create_task(self._run())
 
+        def _retrieve_exception(t: asyncio.Task[None]) -> None:
+          if not t.cancelled():
+            t.exception()
+
+        self._task.add_done_callback(_retrieve_exception)
+
     await self._ready_event.wait()
 
     if self._task.cancelled():
@@ -137,7 +172,8 @@ class SessionContext:
 
     if self._task.done() and self._task.exception():
       raise ConnectionError(
-          f'Failed to create MCP session: {self._task.exception()}'
+          'Failed to create MCP session:'
+          f' {_format_exception(self._task.exception())}'
       ) from self._task.exception()
 
     # Pre-fix code returned `self._session` here directly (typed as
@@ -180,7 +216,7 @@ class SessionContext:
       # Close the coroutine to avoid "was never awaited" warnings.
       coro.close()
       raise ConnectionError(
-          f'MCP session task has already terminated: {exc}'
+          f'MCP session task has already terminated: {_format_exception(exc)}'
       ) from exc
 
     coro_task = asyncio.ensure_future(coro)
@@ -206,9 +242,11 @@ class SessionContext:
       pass
 
     exc = self._task.exception() if not self._task.cancelled() else None
-    raise ConnectionError(f'MCP session connection lost: {exc}') from exc
+    raise ConnectionError(
+        f'MCP session connection lost: {_format_exception(exc)}'
+    ) from exc
 
-  async def close(self):
+  async def close(self) -> None:
     """Signal the context task to close and wait for cleanup."""
     # Set the close event to signal the task to close.
     # Even if start has not been called, we need to set the close event
@@ -236,10 +274,15 @@ class SessionContext:
   async def __aenter__(self) -> ClientSession:
     return await self.start()
 
-  async def __aexit__(self, exc_type, exc_val, exc_tb):
+  async def __aexit__(
+      self,
+      exc_type: type[BaseException] | None,
+      exc_val: BaseException | None,
+      exc_tb: TracebackType | None,
+  ) -> None:
     await self.close()
 
-  async def _run(self):
+  async def _run(self) -> None:
     """Run the complete session context within a single task."""
     try:
       async with AsyncExitStack() as exit_stack:
@@ -292,7 +335,17 @@ class SessionContext:
                   sampling_capabilities=self._sampling_capabilities,
               )
           )
-        await asyncio.wait_for(session.initialize(), timeout=self._timeout)
+        # pylint: disable-next=protected-access
+        if is_feature_enabled(FeatureName._MCP_GRACEFUL_ERROR_HANDLING):
+          # Use anyio.fail_after to keep session.initialize within the AnyIO
+          # cancel scope instead of asyncio.wait_for which runs in a nested
+          # task.
+          import anyio
+
+          with anyio.fail_after(self._timeout):
+            await session.initialize()
+        else:
+          await asyncio.wait_for(session.initialize(), timeout=self._timeout)
         logger.debug('Session has been successfully initialized')
 
         self._session = session
@@ -300,8 +353,8 @@ class SessionContext:
 
         # Wait for close signal - the session remains valid while we wait
         await self._close_event.wait()
-    except BaseException as e:
-      logger.warning(f'Error on session runner task: {e}')
+    except Exception as e:
+      logger.warning('Error on session runner task: %s', e)
       raise
     finally:
       self._ready_event.set()

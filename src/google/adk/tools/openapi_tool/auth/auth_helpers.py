@@ -364,7 +364,7 @@ def credential_to_param(
     kwargs = {param.py_name: auth_credential.api_key}
     return param, kwargs
 
-  # TODO(cheliu): Split handling for OpenIDConnect scheme and native HTTPBearer
+  # TODO: Split handling for OpenIDConnect scheme and native HTTPBearer
   # Scheme
   elif (
       auth_credential and auth_credential.auth_type == AuthCredentialTypes.HTTP

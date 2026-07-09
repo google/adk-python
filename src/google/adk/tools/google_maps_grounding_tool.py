@@ -36,10 +36,10 @@ class GoogleMapsGroundingTool(BaseTool):
   local code execution.
 
   Only available for use with the VertexAI Gemini API (e.g.
-  GOOGLE_GENAI_USE_VERTEXAI=TRUE)
+  GOOGLE_GENAI_USE_ENTERPRISE=TRUE)
   """
 
-  def __init__(self):
+  def __init__(self) -> None:
     # Name and description are not used because this is a model built-in tool.
     super().__init__(name='google_maps', description='google_maps')
 

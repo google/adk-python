@@ -20,12 +20,18 @@ from typing import Optional
 
 from pydantic import ConfigDict
 from pydantic import Field
+from typing_extensions import deprecated
 
 from ..features import experimental
 from ..features import FeatureName
 from .base_agent_config import BaseAgentConfig
 
 
+@deprecated(
+    'LoopAgentConfig is deprecated and will be removed in future versions. '
+    'Config is now loaded via reflection so the separate config class is no '
+    'longer needed.'
+)
 @experimental(FeatureName.AGENT_CONFIG)
 class LoopAgentConfig(BaseAgentConfig):
   """The config for the YAML schema of a LoopAgent."""

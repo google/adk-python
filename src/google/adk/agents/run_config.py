@@ -29,6 +29,7 @@ from pydantic import field_validator
 from pydantic import model_validator
 
 from ..sessions.base_session_service import GetSessionConfig
+from ..telemetry.context import TelemetryConfig
 
 logger = logging.getLogger('google_adk.' + __name__)
 
@@ -195,7 +196,10 @@ class RunConfig(BaseModel):
   speech_config: Optional[types.SpeechConfig] = None
   """Speech configuration for the live agent."""
 
-  response_modalities: Optional[list[str]] = None
+  http_options: Optional[types.HttpOptions] = None
+  """HTTP options for the agent execution (e.g. custom headers)."""
+
+  response_modalities: Optional[list[types.Modality]] = None
   """The output modalities. If not set, it's default to AUDIO."""
 
   avatar_config: Optional[types.AvatarConfig] = None
@@ -238,6 +242,16 @@ class RunConfig(BaseModel):
   realtime_input_config: Optional[types.RealtimeInputConfig] = None
   """Realtime input config for live agents with audio input from user."""
 
+  explicit_vad_signal: Optional[bool] = None
+  """Whether to enable explicit voice activity detection (VAD) signals from the model."""
+
+  translation_config: Optional[types.TranslationConfig] = None
+  """Configures real-time speech-to-speech translation.
+
+  Only supported by translation models such as
+  `gemini-3.5-live-translate-preview`.
+  """
+
   enable_affective_dialog: Optional[bool] = None
   """If enabled, the model will detect emotions and adapt its responses accordingly."""
 
@@ -246,6 +260,9 @@ class RunConfig(BaseModel):
 
   session_resumption: Optional[types.SessionResumptionConfig] = None
   """Configures session resumption mechanism. Only support transparent session resumption mode now."""
+
+  history_config: Optional[types.HistoryConfig] = None
+  """Configures the exchange of history between the client and the server."""
 
   context_window_compression: Optional[types.ContextWindowCompressionConfig] = (
       None
@@ -324,6 +341,19 @@ class RunConfig(BaseModel):
   custom_metadata: Optional[dict[str, Any]] = None
   """Custom metadata for the current invocation."""
 
+  telemetry: TelemetryConfig | None = None
+  """Per-request OpenTelemetry configuration.
+
+  Overrides the process-global telemetry env vars for the duration of this
+  invocation. Each ``None`` field on the
+  :class:`~google.adk.telemetry.TelemetryConfig` falls back to its
+  corresponding env var. Lets multi-tenant hosts toggle telemetry knobs per
+  request without leaking configuration across concurrent invocations.
+
+  .. warning::
+      Experimental; API may change.
+  """
+
   get_session_config: Optional[GetSessionConfig] = None
   """Configuration for controlling which events are fetched when loading
   a session.
@@ -342,6 +372,22 @@ class RunConfig(BaseModel):
       run_config = RunConfig(
           get_session_config=GetSessionConfig(num_recent_events=50),
       )
+  """
+
+  model_input_context: list[types.Content] | None = None
+  """Transient context to include in the model input for this invocation.
+
+  The Runner does not persist these contents to the session. They are only
+  added to the LLM request assembled for the current invocation, which lets
+  callers provide per-turn context without changing the conversation history.
+  """
+
+  include_thoughts_from_other_agents: bool = False
+  """Whether to include other agents' thought parts in LLM context.
+
+  By default, thoughts from other agents are excluded when their messages are
+  reformatted as user context for the current agent. Enable this only when
+  agents are expected to share internal reasoning with one another.
   """
 
   @model_validator(mode='before')

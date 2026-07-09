@@ -27,10 +27,42 @@ definition. The rationales to have customized tool are:
    execute_sql can't arbitrarily mutate existing data.
 """
 
-from .bigquery_credentials import BigQueryCredentialsConfig
-from .bigquery_toolset import BigQueryToolset
+from __future__ import annotations
 
-__all__ = [
+import importlib
+import typing
+import warnings
+
+warnings.warn(
+    "google.adk.tools.bigquery is deprecated, use"
+    " google.adk.integrations.bigquery instead",
+    DeprecationWarning,
+    stacklevel=2,
+)
+
+if typing.TYPE_CHECKING:
+  from google.adk.integrations.bigquery import BigQueryCredentialsConfig
+  from google.adk.integrations.bigquery import BigQueryToolset
+  from google.adk.integrations.bigquery import get_bigquery_skill
+
+# Forward public names to integrations/bigquery for backward compatibility.
+# Uses __getattr__ instead of sys.modules replacement so that submodules
+# (e.g. bigquery_skill) under this package remain importable.
+_TARGET = "google.adk.integrations.bigquery"
+
+_FORWARDED_NAMES = {
     "BigQueryToolset",
     "BigQueryCredentialsConfig",
-]
+    "get_bigquery_skill",
+}
+
+
+def __getattr__(name: str) -> typing.Any:
+  if name in _FORWARDED_NAMES:
+    mod = importlib.import_module(_TARGET)
+    return getattr(mod, name)
+  raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
+def __dir__() -> list[str]:
+  return list(_FORWARDED_NAMES)

@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -15,6 +15,14 @@
 from __future__ import annotations
 
 from google.genai import types
+
+SKIP_THOUGHT_SIGNATURE_VALIDATOR: bytes = b'skip_thought_signature_validator'
+"""Placeholder ``Part.thought_signature`` that bypasses backend validation.
+
+Set it on a part you synthesize yourself (a model turn or tool call/response
+the model never produced) so the Gemini backend accepts the fabricated part
+instead of rejecting it for a missing signature.
+"""
 
 
 def is_audio_part(part: types.Part) -> bool:
@@ -36,3 +44,10 @@ def filter_audio_parts(content: types.Content) -> types.Content | None:
   if not filtered_parts:
     return None
   return types.Content(role=content.role, parts=filtered_parts)
+
+
+def extract_text_from_content(content: types.Content | None) -> str:
+  """Extracts text from a Content object, filtering out thoughts."""
+  if not content or not content.parts:
+    return ''
+  return ''.join(p.text for p in content.parts if p.text and not p.thought)

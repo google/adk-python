@@ -25,6 +25,7 @@ from typing import Optional
 from typing import Union
 from urllib.parse import unquote
 from urllib.parse import urlparse
+from urllib.request import url2pathname
 
 from google.genai import types
 from pydantic import alias_generators
@@ -59,7 +60,10 @@ def _file_uri_to_path(uri: str) -> Optional[Path]:
   parsed = urlparse(uri)
   if parsed.scheme != "file":
     return None
-  return Path(unquote(parsed.path))
+  path_str = unquote(parsed.path)
+  if os.name == "nt":
+    path_str = url2pathname(path_str)
+  return Path(path_str)
 
 
 _USER_NAMESPACE_PREFIX = "user:"
@@ -209,6 +213,12 @@ class FileArtifactVersion(ArtifactVersion):
 
   file_name: str = Field(
       description="Original filename supplied by the caller."
+  )
+  display_name: Optional[str] = Field(
+      default=None,
+      description=(
+          "User-facing filename from inline_data.display_name when persisted."
+      ),
   )
 
 
@@ -391,6 +401,7 @@ class FileArtifactService(BaseArtifactService):
     stored_filename = artifact_dir.name
     content_path = version_dir / stored_filename
 
+    display_name: Optional[str] = None
     if artifact.inline_data:
       content_path.write_bytes(artifact.inline_data.data)
       mime_type = (
@@ -398,6 +409,7 @@ class FileArtifactService(BaseArtifactService):
           if artifact.inline_data.mime_type
           else "application/octet-stream"
       )
+      display_name = artifact.inline_data.display_name
     elif artifact.text is not None:
       content_path.write_text(artifact.text, encoding="utf-8")
       mime_type = None
@@ -419,6 +431,7 @@ class FileArtifactService(BaseArtifactService):
         version=next_version,
         canonical_uri=canonical_uri,
         custom_metadata=custom_metadata,
+        display_name=display_name,
     )
 
     logger.debug(
@@ -491,7 +504,13 @@ class FileArtifactService(BaseArtifactService):
         )
         return None
       data = content_path.read_bytes()
-      return types.Part(inline_data=types.Blob(mime_type=mime_type, data=data))
+      return types.Part(
+          inline_data=types.Blob(
+              mime_type=mime_type,
+              data=data,
+              display_name=metadata.display_name if metadata else None,
+          )
+      )
 
     if not content_path.exists():
       logger.warning("Text artifact %s missing at %s", filename, content_path)
@@ -719,6 +738,7 @@ def _write_metadata(
     version: int,
     canonical_uri: str,
     custom_metadata: Optional[dict[str, Any]],
+    display_name: Optional[str] = None,
 ) -> None:
   """Persists metadata describing an artifact version."""
   metadata = FileArtifactVersion(
@@ -726,6 +746,7 @@ def _write_metadata(
       mime_type=mime_type,
       canonical_uri=canonical_uri,
       version=version,
+      display_name=display_name,
       # Persist caller supplied metadata for feature parity with other
       # artifact services (e.g. GCS).
       custom_metadata=dict(custom_metadata or {}),

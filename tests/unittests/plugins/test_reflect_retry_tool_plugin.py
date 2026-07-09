@@ -640,6 +640,8 @@ class TestReflectAndRetryToolPlugin(IsolatedAsyncioTestCase):
     )
 
     events = await runner.run_async_with_new_session("test")
+    # Filter out agent_state events (no content).
+    events = [e for e in events if e.content is not None]
 
     # Assert that the first event is a function call with the wrong name
     assert events[0].content.parts[0].function_call.name == "increase_by_one"
