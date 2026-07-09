@@ -27,6 +27,7 @@ from google.adk.agents.base_agent import BaseAgent
 from google.adk.agents.base_agent import BaseAgentState
 from google.adk.agents.callback_context import CallbackContext
 from google.adk.agents.invocation_context import InvocationContext
+from google.adk.agents.run_config import RunConfig
 from google.adk.apps.app import ResumabilityConfig
 from google.adk.events.event import Event
 from google.adk.plugins.base_plugin import BasePlugin
@@ -195,6 +196,47 @@ async def test_run_async(request: pytest.FixtureRequest):
   assert len(events) == 1
   assert events[0].author == agent.name
   assert events[0].content.parts[0].text == 'Hello, world!'
+
+
+@pytest.mark.asyncio
+async def test_no_agent_lifecycle_events_by_default(
+    request: pytest.FixtureRequest,
+):
+  # Backward-compat: without opting in, the stream is unchanged.
+  agent = _TestingAgent(name=f'{request.function.__name__}_test_agent')
+  parent_ctx = await _create_parent_invocation_context(
+      request.function.__name__, agent
+  )
+
+  events = [e async for e in agent.run_async(parent_ctx)]
+
+  assert len(events) == 1
+  assert all(
+      (e.custom_metadata or {}).get(BaseAgent.AGENT_LIFECYCLE_KEY) is None
+      for e in events
+  )
+
+
+@pytest.mark.asyncio
+async def test_run_async_emits_agent_lifecycle_events(
+    request: pytest.FixtureRequest,
+):
+  agent = _TestingAgent(name=f'{request.function.__name__}_test_agent')
+  parent_ctx = await _create_parent_invocation_context(
+      request.function.__name__, agent
+  )
+  parent_ctx.run_config = RunConfig(emit_agent_lifecycle_events=True)
+
+  events = [e async for e in agent.run_async(parent_ctx)]
+
+  # start -> agent's own event -> finish, all authored by the agent.
+  phases = [
+      (e.custom_metadata or {}).get(BaseAgent.AGENT_LIFECYCLE_KEY)
+      for e in events
+  ]
+  assert phases == ['start', None, 'finish']
+  assert all(e.author == agent.name for e in events)
+  assert events[1].content.parts[0].text == 'Hello, world!'
 
 
 @pytest.mark.asyncio
