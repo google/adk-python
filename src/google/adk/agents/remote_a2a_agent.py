@@ -68,6 +68,7 @@ from ..events.event import Event
 from ..flows.llm_flows.contents import _is_other_agent_reply
 from ..flows.llm_flows.contents import _present_other_agent_message
 from ..flows.llm_flows.functions import find_matching_function_call
+from ..utils._async_mtls_transport import create_google_auth_mtls_transport
 from .base_agent import BaseAgent
 
 __all__ = [
@@ -148,6 +149,7 @@ class RemoteA2aAgent(BaseAgent):
       full_history_when_stateless: bool = False,
       config: Optional[A2aRemoteAgentConfig] = None,
       use_legacy: bool = True,
+      enable_google_auth_mtls: bool = False,
       **kwargs: Any,
   ) -> None:
     """Initialize RemoteA2aAgent.
@@ -171,6 +173,13 @@ class RemoteA2aAgent(BaseAgent):
       config: Optional configuration object.
       use_legacy: If false, send request to the server including the extension
         indicating that the server should use the new implementation.
+      enable_google_auth_mtls: If True and no ``httpx_client`` is supplied, the
+        agent builds its default HTTP client on a google-auth mutual-TLS
+        transport. This is required to reach Google-hosted A2A endpoints with
+        Agent Identity, whose access tokens are cryptographically bound to the
+        mTLS channel and are rejected (401) over a plain connection. Ignored
+        when a client is provided or when mTLS cannot be negotiated (falls back
+        to a plain client).
       **kwargs: Additional arguments passed to BaseAgent
 
     Raises:
@@ -199,6 +208,7 @@ class RemoteA2aAgent(BaseAgent):
     self._a2a_request_meta_provider = a2a_request_meta_provider
     self._full_history_when_stateless = full_history_when_stateless
     self._config = config or A2aRemoteAgentConfig()
+    self._enable_google_auth_mtls = enable_google_auth_mtls
 
     if not use_legacy:
       if self._config.request_interceptors is None:
@@ -220,12 +230,27 @@ class RemoteA2aAgent(BaseAgent):
           f"got {type(agent_card)}"
       )
 
+  async def _create_default_httpx_client(self) -> httpx.AsyncClient:
+    """Creates the default HTTP client owned by this agent.
+
+    When ``enable_google_auth_mtls`` is set and the resolved agent card points at
+    a Google endpoint, the client is built on a google-auth mutual-TLS transport
+    so channel-bound (Agent Identity) access tokens are accepted. Falls back to a
+    plain client when mTLS is not requested or cannot be negotiated.
+    """
+    timeout = httpx.Timeout(timeout=self._timeout)
+    if self._enable_google_auth_mtls and self._agent_card is not None:
+      target_url = _compat.agent_card_url(self._agent_card)
+      if target_url:
+        transport = await create_google_auth_mtls_transport(str(target_url))
+        if transport is not None:
+          return httpx.AsyncClient(transport=transport, timeout=timeout)
+    return httpx.AsyncClient(timeout=timeout)
+
   async def _ensure_httpx_client(self) -> httpx.AsyncClient:
     """Ensure HTTP client is available and properly configured."""
     if not self._httpx_client:
-      self._httpx_client = httpx.AsyncClient(
-          timeout=httpx.Timeout(timeout=self._timeout)
-      )
+      self._httpx_client = await self._create_default_httpx_client()
       self._httpx_client_needs_cleanup = True
       if self._a2a_client_factory:
         self._a2a_client_factory = _compat.rebind_client_factory_httpx(
