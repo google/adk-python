@@ -24,7 +24,7 @@ jira_tool = ApplicationIntegrationToolset(
     actions=[
         "get_issue_by_key",
     ],
-    tool_name="jira_conversation_tool",
+    tool_name_prefix="jira_conversation_tool",
     tool_instructions="""
 
     This tool is to call an integration to search for issues in Jira
