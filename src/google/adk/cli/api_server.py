@@ -678,6 +678,8 @@ class ApiServer:
       runner_dict: A dict of instantiated runners for each app.
   """
 
+  _allow_special_agents: bool = False
+
   def __init__(
       self,
       *,
@@ -720,6 +722,14 @@ class ApiServer:
 
   async def get_runner_async(self, app_name: str) -> Runner:
     """Returns the cached runner for the given app."""
+    if app_name.startswith("__") and not self._allow_special_agents:
+      raise HTTPException(
+          status_code=403,
+          detail=(
+              "Access to internal special agents is disabled in API server"
+              " mode."
+          ),
+      )
     # Handle cleanup
     if app_name in self.runners_to_clean:
       self.runners_to_clean.remove(app_name)
@@ -1144,6 +1154,14 @@ class ApiServer:
     @app.get("/apps/{app_name}/app-info", response_model_exclude_none=True)
     async def get_adk_app_info(app_name: str) -> AppInfo:
       """Returns the detailed info for a given ADK app."""
+      if app_name.startswith("__") and not self._allow_special_agents:
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                "Access to internal special agents is disabled in API server"
+                " mode."
+            ),
+        )
       agent_or_app = self.agent_loader.load_agent(app_name)
       root_agent = self._get_root_agent(agent_or_app)
       if isinstance(root_agent, LlmAgent):
