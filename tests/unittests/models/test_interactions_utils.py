@@ -1966,7 +1966,11 @@ async def test_create_interactions_streaming_forwards_kwargs_and_converts():
 
   # Assert: exactly one create() call forwarding kwargs plus the stream flag.
   assert len(api_client.create_calls) == 1
-  assert api_client.create_calls[0] == {**create_kwargs, 'stream': True}
+  assert api_client.create_calls[0] == {
+      **create_kwargs,
+      'stream': True,
+      'extra_headers': None,
+  }
 
   # Assert: the streamed events are converted into text responses.
   assert responses, 'expected at least one streamed LlmResponse'
@@ -2004,7 +2008,11 @@ async def test_create_interactions_non_streaming_forwards_kwargs_and_yields_sing
 
   # Assert: exactly one create() call forwarding kwargs plus the stream flag.
   assert len(api_client.create_calls) == 1
-  assert api_client.create_calls[0] == {**create_kwargs, 'stream': False}
+  assert api_client.create_calls[0] == {
+      **create_kwargs,
+      'stream': False,
+      'extra_headers': None,
+  }
 
   # Assert: a single converted LlmResponse carrying the interaction output.
   assert len(responses) == 1
@@ -2188,3 +2196,77 @@ class TestBuildMcpServerParam:
     assert 'name' not in param
     assert 'headers' not in param
     assert 'allowed_tools' not in param
+
+
+async def test_create_interactions_forwards_extra_headers_streaming():
+  """extra_headers is forwarded to interactions.create on the streaming path."""
+  api_client = _FakeApiClient(_build_simple_text_stream())
+  create_kwargs = {
+      'model': 'gemini-2.5-flash',
+      'input': [],
+      'previous_interaction_id': None,
+  }
+
+  await _drain(
+      interactions_utils._create_interactions(
+          api_client,
+          create_kwargs=create_kwargs,
+          stream=True,
+          extra_headers={'x-custom': 'v'},
+      )
+  )
+
+  assert api_client.create_calls[0]['extra_headers'] == {'x-custom': 'v'}
+
+
+async def test_create_interactions_forwards_extra_headers_non_streaming():
+  """extra_headers is forwarded to interactions.create on the non-stream path."""
+  api_client = _FakeApiClient(interaction=_build_non_streaming_interaction())
+  create_kwargs = {
+      'model': 'gemini-2.5-flash',
+      'input': [],
+      'previous_interaction_id': None,
+  }
+
+  await _drain(
+      interactions_utils._create_interactions(
+          api_client,
+          create_kwargs=create_kwargs,
+          stream=False,
+          extra_headers={'x-custom': 'v'},
+      )
+  )
+
+  assert api_client.create_calls[0]['extra_headers'] == {'x-custom': 'v'}
+
+
+async def test_generate_content_via_interactions_forwards_request_headers():
+  """User headers on the request reach interactions.create as extra_headers."""
+  api_client = _FakeApiClient(_build_simple_text_stream())
+  llm_request = _build_llm_request()
+  llm_request.config.http_options = types.HttpOptions(headers={'x-custom': 'v'})
+
+  await _drain(
+      interactions_utils.generate_content_via_interactions(
+          api_client, llm_request, stream=True
+      )
+  )
+
+  extra_headers = api_client.create_calls[0]['extra_headers']
+  assert extra_headers['x-custom'] == 'v'
+  assert 'google-adk/' in extra_headers['x-goog-api-client']
+
+
+async def test_generate_content_via_interactions_sends_tracking_headers_without_config_headers():
+  """With no request headers, tracking headers are still forwarded."""
+  from google.adk.utils._google_client_headers import get_tracking_headers
+
+  api_client = _FakeApiClient(_build_simple_text_stream())
+
+  await _drain(
+      interactions_utils.generate_content_via_interactions(
+          api_client, _build_llm_request(), stream=True
+      )
+  )
+
+  assert api_client.create_calls[0]['extra_headers'] == get_tracking_headers()

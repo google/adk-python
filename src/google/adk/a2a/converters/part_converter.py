@@ -232,6 +232,9 @@ def convert_genai_part_to_a2a_part(
               dict(part.part_metadata) if part.part_metadata else None
           ),
       )
+    # A blob with no payload cannot be converted.
+    if part.inline_data.data is None:
+      return None
     # Generic binary → bytes-backed file part.
     meta = {}
     if part.video_metadata:
@@ -241,7 +244,7 @@ def convert_genai_part_to_a2a_part(
     if part.part_metadata:
       meta.update(part.part_metadata)
     p = _compat.make_file_part_with_bytes(
-        data=part.inline_data.data or b'',
+        data=part.inline_data.data,
         mime_type=part.inline_data.mime_type or '',
         name=part.inline_data.display_name,
     )

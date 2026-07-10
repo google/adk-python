@@ -72,6 +72,28 @@ logger = logging.getLogger('google_adk.' + __name__)
 _ = tracer
 
 
+async def _notify_run_error(
+    plugin_manager: PluginManager,
+    invocation_context: InvocationContext,
+    error: Exception,
+) -> None:
+  """Best-effort on_run_error notification; never masks the original error.
+
+  on_run_error_callback is notification-only: the triggering exception is
+  always re-raised by the caller, so any exception from the callback itself
+  (or from a test double that does not implement it) is logged and suppressed.
+  """
+  try:
+    await plugin_manager.run_on_run_error_callback(
+        invocation_context=invocation_context, error=error
+    )
+  except Exception:  # pylint: disable=broad-except
+    logger.exception(
+        'on_run_error_callback raised; suppressing so the original run error'
+        ' propagates.'
+    )
+
+
 def _find_active_task_scope(session) -> Optional[tuple[str, str]]:
   """Walk session backwards; find the active paused task agent's scope.
 
@@ -457,6 +479,7 @@ class Runner:
       run_config: Optional[RunConfig] = None,
       yield_user_message: bool = False,
       node: Optional['BaseNode'] = None,
+      session: Optional[Session] = None,
   ) -> AsyncGenerator[Event, None]:
     """Run a BaseNode through NodeRunner.
 
@@ -467,9 +490,12 @@ class Runner:
         entrypoint_node=node or self.agent, conversation_id=session_id
     ):
       # 1. Setup
-      session = await self._get_or_create_session(
-          user_id=user_id, session_id=session_id
-      )
+      if session is None:
+        session = await self._get_or_create_session(
+            user_id=user_id,
+            session_id=session_id,
+            get_session_config=(run_config or RunConfig()).get_session_config,
+        )
 
       # Validate and resolve resume inputs
       resume_inputs = self._extract_resume_inputs(new_message)
@@ -535,9 +561,7 @@ class Runner:
         # Run before_run callbacks
         await ic.plugin_manager.run_before_run_callback(invocation_context=ic)
       except Exception as e:
-        await ic.plugin_manager.run_on_run_error_callback(
-            invocation_context=ic, error=e
-        )
+        await _notify_run_error(ic.plugin_manager, ic, e)
         raise
 
       # 3. Start root node in background
@@ -549,11 +573,6 @@ class Runner:
 
       root_ctx = Context(ic)
       root_agent = node or self.agent
-      is_agent = isinstance(self.agent, BaseAgent)
-      has_sub_agents = is_agent and bool(
-          getattr(self.agent, 'sub_agents', None)
-      )
-      use_scheduler = is_agent and has_sub_agents
 
       # The root chat coordinator's isolation_scope stays None: its own
       # events (FCs, text, synthesized FRs from completed task
@@ -567,11 +586,10 @@ class Runner:
 
       async def _drive_root_node():
         try:
-          if use_scheduler:
-            # Rehydration warning: DynamicNodeScheduler relies on session.events scanning.
-            # Stateful live EUC/LRO streams may rehydrate freshly if not yet persisted.
-            scheduler = DynamicNodeScheduler(state=_LoopState())
-            root_ctx._workflow_scheduler = scheduler
+          # Rehydration warning: DynamicNodeScheduler relies on session.events scanning.
+          # Stateful live EUC/LRO streams may rehydrate freshly if not yet persisted.
+          scheduler = DynamicNodeScheduler(state=_LoopState())
+          root_ctx._workflow_scheduler = scheduler
 
           try:
             await root_ctx._run_node_internal(
@@ -585,6 +603,7 @@ class Runner:
           except DynamicNodeFailError as e:
             raise e.error
         finally:
+          root_ctx._workflow_scheduler = None
           await ic._event_queue.put((done_sentinel, None))
 
       task = asyncio.create_task(_drive_root_node())
@@ -606,9 +625,7 @@ class Runner:
         # An unhandled exception escaped runner execution. Notify plugins
         # (notification-only) and re-raise. after_run stays success-only.
         run_error = e
-        await ic.plugin_manager.run_on_run_error_callback(
-            invocation_context=ic, error=e
-        )
+        await _notify_run_error(ic.plugin_manager, ic, e)
         raise
       finally:
         # Success path (also caller early-stop via GeneratorExit, which is not
@@ -641,9 +658,7 @@ class Runner:
                       session=session, event=compaction_event
                   )
           except Exception as e:
-            await ic.plugin_manager.run_on_run_error_callback(
-                invocation_context=ic, error=e
-            )
+            await _notify_run_error(ic.plugin_manager, ic, e)
             raise
 
   async def _run_node_live(
@@ -659,7 +674,6 @@ class Runner:
     from .workflow._errors import DynamicNodeFailError
     from .workflow._errors import NodeInterruptedError
     from .workflow._workflow import _LoopState
-    from .workflow._workflow import Workflow
 
     ic = self._new_invocation_context_for_live(
         session,
@@ -670,15 +684,12 @@ class Runner:
 
     root_ctx = Context(ic)
     root_agent = self.agent
-    is_workflow = isinstance(root_agent, Workflow)
-
     done_sentinel = object()
 
     async def _drive_root_node():
       try:
-        if is_workflow:
-          scheduler = DynamicNodeScheduler(state=_LoopState())
-          root_ctx._workflow_scheduler = scheduler
+        scheduler = DynamicNodeScheduler(state=_LoopState())
+        root_ctx._workflow_scheduler = scheduler
 
         try:
           await root_ctx.run_node(
@@ -690,6 +701,7 @@ class Runner:
         except DynamicNodeFailError as e:
           raise e.error
       finally:
+        root_ctx._workflow_scheduler = None
         await ic._event_queue.put((done_sentinel, None))
 
     task = asyncio.create_task(_drive_root_node())
@@ -707,9 +719,7 @@ class Runner:
     except Exception as e:
       # An unhandled exception escaped live runner execution. Notify plugins
       # (notification-only) and re-raise.
-      await ic.plugin_manager.run_on_run_error_callback(
-          invocation_context=ic, error=e
-      )
+      await _notify_run_error(ic.plugin_manager, ic, e)
       raise
 
   def _extract_resume_inputs(
@@ -1054,7 +1064,9 @@ class Runner:
 
       if self.agent.mode == 'chat':
         session = await self._get_or_create_session(
-            user_id=user_id, session_id=session_id
+            user_id=user_id,
+            session_id=session_id,
+            get_session_config=run_config.get_session_config,
         )
         # when the chat coordinator has task-mode sub-agents,
         # the wrapper handles delegation via ctx.run_node. Don't let
@@ -1085,6 +1097,7 @@ class Runner:
               run_config=run_config,
               yield_user_message=yield_user_message,
               node=agent_to_run,
+              session=session,
           )
       ) as agen:
         async for event in agen:
@@ -1493,10 +1506,7 @@ class Runner:
       # Notify plugins of the unhandled execution error. Covers failures in
       # before_run_callback, early-exit, and the main execution loop.
       # Notification-only; the original exception is always re-raised.
-      await plugin_manager.run_on_run_error_callback(
-          invocation_context=invocation_context,
-          error=e,
-      )
+      await _notify_run_error(plugin_manager, invocation_context, e)
       raise
 
     # Step 4: Run the after_run callbacks to perform global cleanup tasks or
@@ -1511,10 +1521,7 @@ class Runner:
           invocation_context=invocation_context
       )
     except Exception as e:
-      await plugin_manager.run_on_run_error_callback(
-          invocation_context=invocation_context,
-          error=e,
-      )
+      await _notify_run_error(plugin_manager, invocation_context, e)
       raise
 
   async def _append_new_message_to_session(
@@ -2193,10 +2200,12 @@ class Runner:
 
     # This maintains the same task context throughout cleanup
     for toolset in toolsets_to_close:
+      cleanup_task = asyncio.create_task(
+          asyncio.wait_for(toolset.close(), timeout=10.0)
+      )
       try:
         logger.info('Closing toolset: %s', type(toolset).__name__)
-        # Use asyncio.wait_for to add timeout protection
-        await asyncio.wait_for(toolset.close(), timeout=10.0)
+        await asyncio.shield(cleanup_task)
         logger.info('Successfully closed toolset: %s', type(toolset).__name__)
       except asyncio.TimeoutError:
         logger.warning('Toolset %s cleanup timed out', type(toolset).__name__)
@@ -2211,8 +2220,35 @@ class Runner:
         # improved context propagation across task boundaries, and better cancellation
         # handling prevent the cross-task cancel scope violation.
         logger.warning(
-            'Toolset %s cleanup cancelled: %s', type(toolset).__name__, e
+            'Toolset %s cleanup cancellation requested: %s',
+            type(toolset).__name__,
+            e,
         )
+        try:
+          await cleanup_task
+          logger.info(
+              'Successfully closed toolset after cancellation request: %s',
+              type(toolset).__name__,
+          )
+        except asyncio.TimeoutError:
+          cleanup_task.cancel()
+          logger.warning(
+              'Toolset %s cleanup timed out after cancellation request',
+              type(toolset).__name__,
+          )
+        except asyncio.CancelledError as close_cancelled:
+          logger.warning(
+              'Toolset %s cleanup cancelled: %s',
+              type(toolset).__name__,
+              close_cancelled,
+          )
+        except Exception as close_error:
+          logger.error(
+              'Error closing toolset %s after cancellation request: %s',
+              type(toolset).__name__,
+              close_error,
+          )
+        raise
       except Exception as e:
         logger.error('Error closing toolset %s: %s', type(toolset).__name__, e)
 

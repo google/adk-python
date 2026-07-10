@@ -20,6 +20,7 @@ from collections.abc import Mapping
 from collections.abc import Sequence
 from typing import Any
 from typing import TYPE_CHECKING
+import weakref
 
 from opentelemetry import context as context_api
 from typing_extensions import override
@@ -55,13 +56,7 @@ def _derive_scheduler(
 ) -> ScheduleDynamicNode | None:
   """Derives the dynamic node scheduler from the parent context."""
   if parent_ctx:
-    scheduler = parent_ctx._workflow_scheduler
-    if scheduler is None:
-      from ..workflow._dynamic_node_scheduler import DynamicNodeScheduler
-      from ..workflow._dynamic_node_scheduler import DynamicNodeState
-
-      scheduler = DynamicNodeScheduler(state=DynamicNodeState())
-    return scheduler
+    return parent_ctx._workflow_scheduler
   return None
 
 
@@ -121,6 +116,8 @@ class Context(ReadonlyContext):
   When used in a workflow, additional fields under the ``Workflow-specific
   fields`` section are available.
   """
+
+  _workflow_scheduler_ref: weakref.ref[ScheduleDynamicNode] | None = None
 
   def __init__(
       self,
@@ -203,7 +200,10 @@ class Context(ReadonlyContext):
         node=node,
     )
     self._resume_inputs = resume_inputs or {}
-    self._workflow_scheduler = _derive_scheduler(parent_ctx)
+    scheduler = _derive_scheduler(parent_ctx)
+    self._workflow_scheduler_ref = (
+        weakref.ref(scheduler) if scheduler is not None else None
+    )
     self._node_rerun_on_resume = node.rerun_on_resume if node else True
     self._child_run_counters: dict[str, int] = {}
     self._attempt_count = attempt_count
@@ -263,6 +263,19 @@ class Context(ReadonlyContext):
   @isolation_scope.setter
   def isolation_scope(self, value: str | None) -> None:
     self._isolation_scope = value
+
+  @property
+  def _workflow_scheduler(self) -> ScheduleDynamicNode | None:
+    """The workflow scheduler associated with this context."""
+    if self._workflow_scheduler_ref is not None:
+      return self._workflow_scheduler_ref()
+    return None
+
+  @_workflow_scheduler.setter
+  def _workflow_scheduler(self, value: ScheduleDynamicNode | None) -> None:
+    self._workflow_scheduler_ref = (
+        weakref.ref(value) if value is not None else None
+    )
 
   @property
   def tool_confirmation(self) -> ToolConfirmation | None:

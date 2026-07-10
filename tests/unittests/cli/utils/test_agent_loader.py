@@ -695,6 +695,7 @@ class TestAgentLoader:
 
         # Load the special agent
         loader = AgentLoader(str(regular_agents_dir))
+        loader._allow_special_agents = True
         agent = loader.load_agent("__helper")
 
         # Assert agent was loaded correctly
@@ -734,6 +735,7 @@ class TestAgentLoader:
 
         # Load the special agent twice
         loader = AgentLoader(str(regular_agents_dir))
+        loader._allow_special_agents = True
         agent1 = loader.load_agent("__cached_helper")
         agent2 = loader.load_agent("__cached_helper")
 
@@ -768,6 +770,7 @@ class TestAgentLoader:
         agent_loader.SPECIAL_AGENTS_DIR = str(special_agents_dir)
 
         loader = AgentLoader(str(regular_agents_dir))
+        loader._allow_special_agents = True
 
         # Try to load nonexistent special agent
         with pytest.raises(ValueError) as exc_info:
@@ -833,6 +836,7 @@ class TestAgentLoader:
 
         # Load the special agent
         loader = AgentLoader(str(regular_agents_dir))
+        loader._allow_special_agents = True
         agent = loader.load_agent("__yaml_helper")
 
         # Assert agent was loaded correctly
@@ -1039,6 +1043,23 @@ class TestAgentLoader:
       # 'subprocess' is a valid identifier but shouldn't be importable as an agent
       with pytest.raises(ValueError, match="Agent not found"):
         loader.load_agent("subprocess")
+
+  def test_validate_agent_name_rejects_special_agents_by_default(self):
+    """Special agents starting with __ are rejected by default (_allow_special_agents=False)."""
+    with tempfile.TemporaryDirectory() as temp_dir:
+      loader = AgentLoader(temp_dir)
+      with pytest.raises(
+          PermissionError, match="Loading special internal agent"
+      ):
+        loader._validate_agent_name("__adk_agent_builder_assistant")
+
+  def test_validate_agent_name_allows_special_agents_when_enabled(self):
+    """Special agents starting with __ are allowed when _allow_special_agents=True."""
+    with tempfile.TemporaryDirectory() as temp_dir:
+      loader = AgentLoader(temp_dir)
+      loader._allow_special_agents = True
+      # Should not raise any exception
+      loader._validate_agent_name("__adk_agent_builder_assistant")
 
 
 class TestDetermineAgentLanguage:

@@ -506,6 +506,33 @@ class TestConvertGenaiPartToA2aPart:
     # Filename is preserved on both SDKs.
     assert _compat.file_part_name(result) == "my_bytes.txt"
 
+  def test_convert_inline_data_part_empty_blob_is_skipped(self):
+    """A degenerate inline_data Blob with no payload is unconvertible (None)."""
+    # Arrange: an empty Blob has ``data is None``.
+    genai_part = genai_types.Part(inline_data=genai_types.Blob())
+
+    # Act
+    result = convert_genai_part_to_a2a_part(genai_part)
+
+    # Assert
+    assert result is None
+
+  def test_convert_inline_data_part_empty_bytes_is_kept(self):
+    """A Blob with present-but-empty bytes (b"") is still converted."""
+    # Arrange
+    genai_part = genai_types.Part(
+        inline_data=genai_types.Blob(data=b"", mime_type="text/plain")
+    )
+
+    # Act
+    result = convert_genai_part_to_a2a_part(genai_part)
+
+    # Assert
+    assert result is not None
+    assert _compat.is_file_part(result)
+    assert _compat.file_part_bytes(result) == b""
+    assert _compat.file_part_mime_type(result) == "text/plain"
+
   def test_convert_inline_data_part_with_video_metadata(self):
     """Test conversion of GenAI inline_data Part with video metadata to A2A Part."""
     # Arrange

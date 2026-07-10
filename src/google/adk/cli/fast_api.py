@@ -525,8 +525,11 @@ def get_fast_api_app(
       agent_loader = this_module.NestedAgentLoader(original_agents_dir)
     else:
       agent_loader = this_module.AgentLoader(original_agents_dir)
-  elif is_single_agent and isinstance(agent_loader, this_module.AgentLoader):
-    agent_loader._set_single_agent_mode(single_agent_name, agents_dir)
+  else:
+    if is_single_agent and isinstance(agent_loader, this_module.AgentLoader):
+      if single_agent_name is not None:
+        agent_loader._set_single_agent_mode(single_agent_name, agents_dir)
+  agent_loader._allow_special_agents = web
 
   # Load services.py from agents_dir for custom service registration.
   load_services_module(agents_dir)
