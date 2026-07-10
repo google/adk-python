@@ -67,9 +67,16 @@ class PreciseTimestamp(TypeDecorator):
       return dialect.type_descriptor(mysql.DATETIME(fsp=6))
     return self.impl
 
-  def process_result_value(self, value, dialect: Dialect):
-    if value is None:
-      return None
-    if isinstance(value, (int, float)):
-      return datetime.fromtimestamp(value)
-    return value
+  def result_processor(self, dialect, coltype):
+    impl_processor = self.impl.result_processor(dialect, coltype)
+
+    def process(value):
+      if value is None:
+        return None
+      if isinstance(value, (int, float)):
+        return datetime.fromtimestamp(value)
+      if impl_processor:
+        return impl_processor(value)
+      return value
+
+    return process

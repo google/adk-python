@@ -18,6 +18,7 @@ from datetime import datetime
 from datetime import timezone
 import enum
 import sqlite3
+import time
 from unittest import mock
 
 from google.adk.errors.already_exists_error import AlreadyExistsError
@@ -2052,3 +2053,63 @@ async def test_database_session_service_requires_one_argument():
     DatabaseSessionService(
         db_url='sqlite+aiosqlite:///:memory:', db_engine=engine
     )
+
+
+@pytest.mark.asyncio
+async def test_database_session_service_sqlite_file_timestamp_read_after_reopen(
+    tmp_path,
+):
+  """Regression test for #6352.
+
+  SQLite REAL-affinity columns can end up storing raw Unix epoch floats
+  instead of the text format SQLAlchemy's DateTime type normally writes
+  (for example, if the row was written by a different code path than the
+  SQLAlchemy ORM). Reading such a row back must not raise TypeError, since
+  TypeDecorator.process_result_value runs after the impl's own result
+  processor, which chokes on a float before process_result_value can run.
+  This test forces that condition directly via raw SQL.
+  """
+  db_path = tmp_path / 'timestamp_regression.db'
+  db_url = f'sqlite+aiosqlite:///{db_path}'
+  app_name = 'my_app'
+  user_id = 'user'
+
+  service = DatabaseSessionService(db_url)
+  try:
+    session = await service.create_session(
+        app_name=app_name, user_id=user_id
+    )
+    event = Event(author='user', timestamp=time.time())
+    await service.append_event(session, event)
+  finally:
+    await service.close()
+
+  # Directly overwrite the stored timestamp with a raw float via raw SQL,
+  # simulating a REAL-affinity column value that bypassed SQLAlchemy's
+  # normal text-based DateTime serialization.
+  raw_epoch_float = time.time()
+  conn = sqlite3.connect(str(db_path))
+  try:
+    conn.execute(
+        'UPDATE events SET timestamp = ? WHERE session_id = ?',
+        (raw_epoch_float, session.id),
+    )
+    conn.commit()
+  finally:
+    conn.close()
+
+  # Read it back with a fresh service instance; this must not raise
+  # TypeError: fromisoformat: argument must be str.
+  service2 = DatabaseSessionService(db_url)
+  try:
+    retrieved_session = await service2.get_session(
+        app_name=app_name, user_id=user_id, session_id=session.id
+    )
+  finally:
+    await service2.close()
+
+  assert retrieved_session is not None
+  assert len(retrieved_session.events) == 1
+  assert retrieved_session.events[0].timestamp == pytest.approx(
+      raw_epoch_float, abs=1.0
+  )
