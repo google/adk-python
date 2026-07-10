@@ -26,6 +26,7 @@ from datetime import timezone
 import functools
 import json
 import logging
+import math
 import mimetypes
 import os
 import traceback as traceback_module
@@ -415,32 +416,64 @@ _SENSITIVE_KEYS = frozenset({
 # never fall back to the unformatted payload (#6356 P1-1).
 _FORMATTER_FAILED_SENTINEL = "[FORMATTER_FAILED]"
 
+# Recursion bound for _recursive_smart_truncate: id()-based cycle detection
+# cannot catch graphs that create new objects per access (Mock-like duck
+# typing); the cap turns unbounded recursion into a redacted leaf.
+_MAX_SANITIZE_DEPTH = 50
 
-def _sanitize_json_blob(value: str, seen: set[int]) -> tuple[str, bool]:
+
+def _sanitize_json_blob(
+    value: str, seen: set[int], depth: int = 0
+) -> tuple[str, bool]:
   """Redacts sensitive keys inside a JSON-encoded string blob.
 
   Values such as cached credential JSON often reach attributes as opaque
-  strings, bypassing dict-key redaction (#6356 P1-2 / #5112). When a string
-  looks like a JSON object AND mentions a sensitive key name, parse it,
-  redact recursively, and re-serialize. Returns ``(value, changed)``;
-  strings that do not parse are returned unchanged.
+  strings, bypassing dict-key redaction (#6356 P1-2 / #5112). Decode
+  FIRST: raw-substring prefilters are bypassable through JSON string
+  escapes (e.g. ``"access\\u005ftoken"``), so any string that looks like a
+  JSON container is parsed and its *decoded* keys inspected recursively —
+  arrays of credential objects included. Returns ``(value, changed)``;
+  strings that do not parse, or that need no redaction, are returned
+  unchanged (no cosmetic re-serialization).
   """
   stripped = value.lstrip()
-  if not stripped.startswith("{"):
-    return value, False
-  lowered = value.lower()
-  if not any(key in lowered for key in _SENSITIVE_KEYS):
+  if not stripped.startswith(("{", "[")):
     return value, False
   try:
     parsed = json.loads(value)
   except (TypeError, ValueError):
     return value, False
-  if not isinstance(parsed, dict):
+  if not isinstance(parsed, (dict, list)):
     return value, False
   # Redact only (max_len=-1): length truncation is applied by the caller on
   # the re-serialized string, keeping single responsibility per pass.
-  sanitized, _ = _recursive_smart_truncate(parsed, -1, seen)
+  sanitized, _ = _recursive_smart_truncate(parsed, -1, seen, depth + 1)
+  if sanitized == parsed:
+    return value, False
   return json.dumps(sanitized), True
+
+
+def _require_count(name: str, value: Any, minimum: int) -> None:
+  """Requires an integral count >= minimum.
+
+  Bools and floats are rejected: ordered comparisons alone let NaN pass
+  every range check (#6360 review P2-7).
+  """
+  if isinstance(value, bool) or not isinstance(value, int):
+    raise ValueError(f"{name} must be an int, got {value!r}.")
+  if value < minimum:
+    raise ValueError(f"{name} must be >= {minimum}, got {value}.")
+
+
+def _require_finite(name: str, value: Any, minimum_exclusive: float) -> float:
+  """Requires a finite real number strictly greater than the minimum."""
+  if isinstance(value, bool) or not isinstance(value, (int, float)):
+    raise ValueError(f"{name} must be a number, got {value!r}.")
+  if not math.isfinite(value):
+    raise ValueError(f"{name} must be finite, got {value!r}.")
+  if value <= minimum_exclusive:
+    raise ValueError(f"{name} must be > {minimum_exclusive}, got {value}.")
+  return float(value)
 
 
 def _validate_runtime_config(config: "BigQueryLoggerConfig") -> None:
@@ -454,19 +487,15 @@ def _validate_runtime_config(config: "BigQueryLoggerConfig") -> None:
       ValueError: If any batch, queue, duration, or retry setting is
         invalid.
   """
-  if config.batch_size < 1:
-    raise ValueError(f"batch_size must be >= 1, got {config.batch_size}.")
-  if config.batch_flush_interval <= 0:
+  _require_count("batch_size", config.batch_size, 1)
+  _require_finite("batch_flush_interval", config.batch_flush_interval, 0)
+  _require_finite("shutdown_timeout", config.shutdown_timeout, 0)
+  _require_count("queue_max_size", config.queue_max_size, 1)
+  if isinstance(config.max_content_length, bool) or not isinstance(
+      config.max_content_length, int
+  ):
     raise ValueError(
-        f"batch_flush_interval must be > 0, got {config.batch_flush_interval}."
-    )
-  if config.shutdown_timeout <= 0:
-    raise ValueError(
-        f"shutdown_timeout must be > 0, got {config.shutdown_timeout}."
-    )
-  if config.queue_max_size < 1:
-    raise ValueError(
-        f"queue_max_size must be >= 1, got {config.queue_max_size}."
+        f"max_content_length must be an int, got {config.max_content_length!r}."
     )
   if config.max_content_length != -1 and config.max_content_length < 1:
     raise ValueError(
@@ -474,19 +503,17 @@ def _validate_runtime_config(config: "BigQueryLoggerConfig") -> None:
         f" {config.max_content_length}."
     )
   retry = config.retry_config
-  if retry.max_retries < 0:
-    raise ValueError(
-        f"retry_config.max_retries must be >= 0, got {retry.max_retries}."
-    )
-  if retry.initial_delay <= 0:
-    raise ValueError(
-        f"retry_config.initial_delay must be > 0, got {retry.initial_delay}."
-    )
-  if retry.multiplier < 1:
+  _require_count("retry_config.max_retries", retry.max_retries, 0)
+  initial_delay = _require_finite(
+      "retry_config.initial_delay", retry.initial_delay, 0
+  )
+  multiplier = _require_finite("retry_config.multiplier", retry.multiplier, 0)
+  if multiplier < 1:
     raise ValueError(
         f"retry_config.multiplier must be >= 1, got {retry.multiplier}."
     )
-  if retry.max_delay < retry.initial_delay:
+  max_delay = _require_finite("retry_config.max_delay", retry.max_delay, 0)
+  if max_delay < initial_delay:
     raise ValueError(
         "retry_config.max_delay must be >= initial_delay, got"
         f" max_delay={retry.max_delay} initial_delay={retry.initial_delay}."
@@ -503,7 +530,10 @@ _CLOUD_PLATFORM_SCOPE = (
 
 
 def _recursive_smart_truncate(
-    obj: Any, max_len: int, seen: Optional[set[int]] = None
+    obj: Any,
+    max_len: int,
+    seen: Optional[set[int]] = None,
+    depth: int = 0,
 ) -> tuple[Any, bool]:
   """Recursively truncates string values within a dict or list.
 
@@ -514,12 +544,23 @@ def _recursive_smart_truncate(
       obj: The object to truncate.
       max_len: Maximum length for string values.
       seen: Set of object IDs visited in the current recursion stack.
+      depth: Current recursion depth.
 
   Returns:
       A tuple of (truncated_object, is_truncated).
   """
   if seen is None:
     seen = set()
+
+  # Depth cap: id()-based cycle detection cannot catch object graphs that
+  # manufacture NEW objects on each duck-typed access (e.g. anything whose
+  # model_dump()/dict()/to_dict() returns a fresh wrapper — unittest Mocks
+  # being the canonical case). Without this cap such graphs recurse
+  # unboundedly. Like "[CIRCULAR_REFERENCE]", this is a structural
+  # sentinel rather than content truncation, so it does not flip
+  # is_truncated.
+  if depth >= _MAX_SANITIZE_DEPTH:
+    return "[MAX_DEPTH_EXCEEDED]", False
 
   obj_id = id(obj)
   if obj_id in seen:
@@ -539,7 +580,7 @@ def _recursive_smart_truncate(
 
   try:
     if isinstance(obj, str):
-      obj, _ = _sanitize_json_blob(obj, seen)
+      obj, _ = _sanitize_json_blob(obj, seen, depth)
       if max_len != -1 and len(obj) > max_len:
         return obj[:max_len] + "...[TRUNCATED]", True
       return obj, False
@@ -555,7 +596,7 @@ def _recursive_smart_truncate(
             new_dict[k] = "[REDACTED]"
             continue
 
-        val, trunc = _recursive_smart_truncate(v, max_len, seen)
+        val, trunc = _recursive_smart_truncate(v, max_len, seen, depth + 1)
         if trunc:
           truncated_any = True
         new_dict[k] = val
@@ -565,7 +606,7 @@ def _recursive_smart_truncate(
       new_list = []
       # Explicit loop to handle flag propagation
       for i in obj:
-        val, trunc = _recursive_smart_truncate(i, max_len, seen)
+        val, trunc = _recursive_smart_truncate(i, max_len, seen, depth + 1)
         if trunc:
           truncated_any = True
         new_list.append(val)
@@ -573,23 +614,27 @@ def _recursive_smart_truncate(
     elif dataclasses.is_dataclass(obj) and not isinstance(obj, type):
       # Manually iterate fields to preserve 'seen' context, avoiding dataclasses.asdict recursion
       as_dict = {f.name: getattr(obj, f.name) for f in dataclasses.fields(obj)}
-      return _recursive_smart_truncate(as_dict, max_len, seen)
+      return _recursive_smart_truncate(as_dict, max_len, seen, depth + 1)
     elif hasattr(obj, "model_dump") and callable(obj.model_dump):
       # Pydantic v2
       try:
-        return _recursive_smart_truncate(obj.model_dump(), max_len, seen)
+        return _recursive_smart_truncate(
+            obj.model_dump(), max_len, seen, depth + 1
+        )
       except Exception:
         pass
     elif hasattr(obj, "dict") and callable(obj.dict):
       # Pydantic v1
       try:
-        return _recursive_smart_truncate(obj.dict(), max_len, seen)
+        return _recursive_smart_truncate(obj.dict(), max_len, seen, depth + 1)
       except Exception:
         pass
     elif hasattr(obj, "to_dict") and callable(obj.to_dict):
       # Common pattern for custom objects
       try:
-        return _recursive_smart_truncate(obj.to_dict(), max_len, seen)
+        return _recursive_smart_truncate(
+            obj.to_dict(), max_len, seen, depth + 1
+        )
       except Exception:
         pass
     elif obj is None or isinstance(obj, (int, float, bool)):
@@ -1733,6 +1778,8 @@ class HybridContentParser:
       *,
       trace_id: Optional[str] = None,
       span_id: Optional[str] = None,
+      parse_uid: str = "",
+      content_ordinal: int = 0,
   ) -> tuple[str, list[dict[str, Any]], bool]:
     """Parses a Content or Part object into summary text and content parts.
 
@@ -1740,9 +1787,16 @@ class HybridContentParser:
     these arguments so concurrent parses on the shared parser instance can
     never use another event's identity (#6356 P1-3). They fall back to the
     constructor values for backward compatibility.
+
+    ``parse_uid`` (unique per parse() call) and ``content_ordinal`` (the
+    message index within a multi-content request) disambiguate GCS object
+    names: the part index alone restarts per Content, so two messages in
+    one request would otherwise collide at the same part ordinal (#6360
+    review P1-2).
     """
     trace_id = trace_id if trace_id is not None else self.trace_id
     span_id = span_id if span_id is not None else self.span_id
+    parse_uid = parse_uid or uuid.uuid4().hex[:8]
     content_parts = []
     is_truncated = False
     summary_text = []
@@ -1769,7 +1823,10 @@ class HybridContentParser:
       elif hasattr(part, "inline_data") and part.inline_data:
         if self.offloader:
           ext = mimetypes.guess_extension(part.inline_data.mime_type) or ".bin"
-          path = f"{datetime.now().date()}/{trace_id}/{span_id}_p{idx}{ext}"
+          path = (
+              f"{datetime.now().date()}/{trace_id}/{span_id}_{parse_uid}"
+              f"_c{content_ordinal}_p{idx}{ext}"
+          )
           try:
             uri = await self.offloader.upload_content(
                 part.inline_data.data, part.inline_data.mime_type, path
@@ -1808,7 +1865,10 @@ class HybridContentParser:
 
         if self.offloader and (exceeds_inline_byte_limit or exceeds_char_limit):
           # Text is too big, treat as file
-          path = f"{datetime.now().date()}/{trace_id}/{span_id}_p{idx}.txt"
+          path = (
+              f"{datetime.now().date()}/{trace_id}/{span_id}_{parse_uid}"
+              f"_c{content_ordinal}_p{idx}.txt"
+          )
           try:
             uri = await self.offloader.upload_content(
                 part.text, "text/plain", path
@@ -1873,6 +1933,10 @@ class HybridContentParser:
     """
     trace_id = trace_id if trace_id is not None else self.trace_id
     span_id = span_id if span_id is not None else self.span_id
+    # Unique per parse() call: disambiguates GCS object names across the
+    # multiple Content objects of one request and across concurrent events
+    # (#6360 review P1-2).
+    parse_uid = uuid.uuid4().hex[:8]
     json_payload = {}
     content_parts = []
     is_truncated = False
@@ -1888,10 +1952,14 @@ class HybridContentParser:
           if isinstance(content.contents, list)
           else [content.contents]
       )
-      for c in contents:
+      for content_idx, c in enumerate(contents):
         role = getattr(c, "role", "unknown")
         summary, parts, trunc = await self._parse_content_object(
-            c, trace_id=trace_id, span_id=span_id
+            c,
+            trace_id=trace_id,
+            span_id=span_id,
+            parse_uid=parse_uid,
+            content_ordinal=content_idx,
         )
         if trunc:
           is_truncated = True
@@ -1911,7 +1979,11 @@ class HybridContentParser:
           json_payload["system_prompt"] = truncated_si
         else:
           summary, parts, trunc = await self._parse_content_object(
-              si, trace_id=trace_id, span_id=span_id
+              si,
+              trace_id=trace_id,
+              span_id=span_id,
+              parse_uid=parse_uid,
+              content_ordinal=len(contents),
           )
           if trunc:
             is_truncated = True
@@ -1920,7 +1992,10 @@ class HybridContentParser:
 
     elif isinstance(content, (types.Content, types.Part)):
       summary, parts, trunc = await self._parse_content_object(
-          content, trace_id=trace_id, span_id=span_id
+          content,
+          trace_id=trace_id,
+          span_id=span_id,
+          parse_uid=parse_uid,
       )
       return {"text_summary": summary}, parts, trunc
 
@@ -2805,7 +2880,12 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
       # Project out denied payload columns schema-first, so the table
       # schema, Arrow schema, row dict, and views all stay consistent.
       self._schema = _project_schema(_get_events_schema(), self._denied_columns)
-      await loop.run_in_executor(self._executor, self._ensure_schema_exists)
+    # Run table readiness on EVERY setup attempt until one succeeds: the
+    # cached _schema must not gate it, or a failed first attempt would skip
+    # the table check on retry and mark the plugin started against a
+    # missing/unready table (#6360 review P1-1). Once _started is True,
+    # _lazy_setup returns early above, so the steady state pays no extra RPC.
+    await loop.run_in_executor(self._executor, self._ensure_schema_exists)
 
     if not self.parser:
       self.arrow_schema = to_arrow_schema(self._schema)
@@ -3182,6 +3262,14 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
           except Exception:
             pass
 
+      # Fold processor drop counters into the persistent plugin-level
+      # counters before discarding loop state, so get_drop_stats() keeps
+      # reporting losses after shutdown (#6360 review P2-5).
+      for state in self._loop_state_by_loop.values():
+        for reason, count in state.batch_processor.get_drop_stats().items():
+          self._local_drop_counts[reason] = (
+              self._local_drop_counts.get(reason, 0) + count
+          )
       self._loop_state_by_loop.clear()
 
       if self.client:
@@ -3207,6 +3295,8 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
     state["parser"] = None
     state["_started"] = False
     state["_startup_error"] = None
+    state["_setup_failures"] = 0
+    state["_setup_retry_at"] = 0.0
     state["_is_shutting_down"] = False
     state["_init_pid"] = 0
     return state
@@ -3216,6 +3306,9 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
     # Backfill keys that may be absent in pickled state from older
     # code versions so _ensure_started does not raise AttributeError.
     state.setdefault("_init_pid", 0)
+    state.setdefault("_local_drop_counts", {})
+    state.setdefault("_setup_failures", 0)
+    state.setdefault("_setup_retry_at", 0.0)
     self.__dict__.update(state)
 
   def _reset_runtime_state(self) -> None:
@@ -3739,16 +3832,16 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
     if self.config.content_formatter:
       try:
         raw_content = self.config.content_formatter(raw_content, event_type)
-      except Exception:
+      except Exception as e:
         # Fail CLOSED (#6356 P1-1): the formatter is a redaction/privacy
         # boundary, so its failure must never fall back to the unformatted
-        # payload. Keep the event's non-content metadata, replace content
-        # with a sentinel, and log without the original payload.
+        # payload. Log only the exception CLASS — the message or a
+        # traceback (exc_info) could embed the protected content itself.
         logger.warning(
-            "Content formatter failed for event %s; writing sentinel"
+            "Content formatter (%s) failed for event %s; writing sentinel"
             " instead of original content.",
+            type(e).__name__,
             event_type,
-            exc_info=True,
         )
         raw_content = _FORMATTER_FAILED_SENTINEL
         self._count_local_drop("formatter_failed")
