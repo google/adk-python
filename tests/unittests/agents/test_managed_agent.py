@@ -13,6 +13,8 @@
 # limitations under the License.
 
 import asyncio
+import subprocess
+import sys
 from typing import Any
 from unittest.mock import MagicMock
 
@@ -22,9 +24,11 @@ from google.adk.agents.run_config import StreamingMode
 from google.adk.events.event import Event
 from google.adk.models.llm_response import LlmResponse
 from google.adk.tools import google_search
+from google.adk.tools._remote_mcp_server import RemoteMcpServer
 from google.adk.tools.function_tool import FunctionTool
 from google.genai import types
 from google.genai import types as genai_types
+from pydantic import ValidationError
 import pytest
 
 
@@ -696,3 +700,219 @@ async def _drain_collect(agen):
   async for e in agen:
     out.append(e)
   return out
+
+
+def test_remote_mcp_server_constructs_and_is_exported():
+  import google.adk.tools as tools_pkg
+
+  server = RemoteMcpServer(
+      url='https://mcp.example.com/mcp',
+      name='example',
+      headers={'X-Static': 'v'},
+      allowed_tools=['a', 'b'],
+      header_provider=lambda ctx: {'Authorization': 'Bearer t'},
+  )
+
+  assert server.url == 'https://mcp.example.com/mcp'
+  assert server.name == 'example'
+  assert server.headers == {'X-Static': 'v'}
+  assert server.allowed_tools == ['a', 'b']
+  assert server.header_provider is not None
+  assert tools_pkg.RemoteMcpServer is RemoteMcpServer
+  assert 'RemoteMcpServer' in tools_pkg.__all__
+
+
+def test_tools_import_first_has_no_cycle():
+  """Importing google.adk.tools before google.adk.agents must not cycle.
+
+  Guards the leaf-module invariant for RemoteMcpServer: a future edit that adds
+  a runtime (non-TYPE_CHECKING) google.adk.agents import to
+  google.adk.tools._remote_mcp_server would reintroduce a circular import and
+  fail this test.
+  """
+  subprocess.run(
+      [
+          sys.executable,
+          '-c',
+          (
+              'import google.adk.tools as t; t.RemoteMcpServer; '
+              'from google.adk.agents._managed_agent import ManagedAgent'
+          ),
+      ],
+      check=True,
+  )
+
+
+def test_remote_mcp_server_defaults():
+  server = RemoteMcpServer(url='https://x/mcp')
+
+  assert server.name is None
+  assert server.headers is None
+  assert server.allowed_tools is None
+  assert server.header_provider is None
+
+
+def test_remote_mcp_server_forbids_extra_fields():
+  with pytest.raises(ValidationError):
+    RemoteMcpServer(url='https://x/mcp', bogus='nope')
+
+
+def _mcp_params(params):
+  return [p for p in params if p.get('type') == 'mcp_server']
+
+
+def test_resolve_mcp_basic_mapping():
+  server = RemoteMcpServer(
+      url='https://mcp.example.com/mcp', name='example', allowed_tools=['a']
+  )
+  agent = ManagedAgent(
+      name='mgr', agent_id='agents/a', tools=[server], api_client=_FakeClient()
+  )
+
+  params = asyncio.run(agent._resolve_backend_tools(_ctx()))
+
+  assert {
+      'type': 'mcp_server',
+      'url': 'https://mcp.example.com/mcp',
+      'name': 'example',
+      'allowed_tools': [{'tools': ['a']}],
+  } in params
+
+
+def test_resolve_mcp_sync_header_provider():
+  captured = {}
+
+  def provider(ctx):
+    captured['called'] = True
+    return {'Authorization': 'Bearer tok'}
+
+  server = RemoteMcpServer(url='https://x/mcp', header_provider=provider)
+  agent = ManagedAgent(
+      name='mgr', agent_id='agents/a', tools=[server], api_client=_FakeClient()
+  )
+
+  params = asyncio.run(agent._resolve_backend_tools(_ctx()))
+
+  assert captured['called'] is True
+  assert _mcp_params(params)[0]['headers'] == {'Authorization': 'Bearer tok'}
+
+
+def test_resolve_mcp_async_header_provider():
+  async def provider(ctx):
+    return {'Authorization': 'Bearer async'}
+
+  server = RemoteMcpServer(url='https://x/mcp', header_provider=provider)
+  agent = ManagedAgent(
+      name='mgr', agent_id='agents/a', tools=[server], api_client=_FakeClient()
+  )
+
+  params = asyncio.run(agent._resolve_backend_tools(_ctx()))
+
+  assert _mcp_params(params)[0]['headers'] == {'Authorization': 'Bearer async'}
+
+
+def test_resolve_mcp_merges_static_and_dynamic_dynamic_wins():
+  server = RemoteMcpServer(
+      url='https://x/mcp',
+      headers={'X-Static': 's', 'Shared': 'static'},
+      header_provider=lambda ctx: {'Shared': 'dynamic', 'X-Dyn': 'd'},
+  )
+  agent = ManagedAgent(
+      name='mgr', agent_id='agents/a', tools=[server], api_client=_FakeClient()
+  )
+
+  params = asyncio.run(agent._resolve_backend_tools(_ctx()))
+
+  assert _mcp_params(params)[0]['headers'] == {
+      'X-Static': 's',
+      'Shared': 'dynamic',
+      'X-Dyn': 'd',
+  }
+
+
+def test_resolve_mcp_no_header_provider_static_only():
+  server = RemoteMcpServer(url='https://x/mcp', headers={'X-Static': 's'})
+  agent = ManagedAgent(
+      name='mgr', agent_id='agents/a', tools=[server], api_client=_FakeClient()
+  )
+
+  params = asyncio.run(agent._resolve_backend_tools(_ctx()))
+
+  assert _mcp_params(params)[0]['headers'] == {'X-Static': 's'}
+
+
+def test_resolve_mcp_header_provider_error_propagates():
+  def boom(ctx):
+    raise RuntimeError('token mint failed')
+
+  server = RemoteMcpServer(url='https://x/mcp', header_provider=boom)
+  agent = ManagedAgent(
+      name='mgr', agent_id='agents/a', tools=[server], api_client=_FakeClient()
+  )
+
+  with pytest.raises(RuntimeError, match='token mint failed'):
+    asyncio.run(agent._resolve_backend_tools(_ctx()))
+
+
+def test_resolve_mcp_mixed_with_builtin():
+  server = RemoteMcpServer(url='https://x/mcp')
+  agent = ManagedAgent(
+      name='mgr',
+      agent_id='agents/a',
+      tools=[google_search, server],
+      api_client=_FakeClient(),
+  )
+
+  params = asyncio.run(agent._resolve_backend_tools(_ctx()))
+
+  assert {'type': 'google_search'} in params
+  assert _mcp_params(params)
+
+
+def test_resolve_mcp_empty_header_provider_omits_headers():
+  # A header_provider returning an empty dict (or None), with no static headers,
+  # must not add a 'headers' key to the mcp_server param.
+  server = RemoteMcpServer(url='https://x/mcp', header_provider=lambda ctx: {})
+  agent = ManagedAgent(
+      name='mgr', agent_id='agents/a', tools=[server], api_client=_FakeClient()
+  )
+
+  params = asyncio.run(agent._resolve_backend_tools(_ctx()))
+
+  assert 'headers' not in _mcp_params(params)[0]
+
+
+def test_resolve_mcp_does_not_mutate_spec_headers():
+  original_headers = {'X-Static': 's'}
+  server = RemoteMcpServer(
+      url='https://x/mcp',
+      headers=original_headers,
+      header_provider=lambda ctx: {'Authorization': 'Bearer tok'},
+  )
+  agent = ManagedAgent(
+      name='mgr', agent_id='agents/a', tools=[server], api_client=_FakeClient()
+  )
+
+  asyncio.run(agent._resolve_backend_tools(_ctx()))
+
+  # The spec's original headers dict must be untouched by resolution.
+  assert server.headers == {'X-Static': 's'}
+  assert original_headers == {'X-Static': 's'}
+
+
+def test_run_async_forwards_mcp_server_param():
+  client = _RecordingClient([[]])
+  server = RemoteMcpServer(
+      url='https://mcp.example.com/mcp',
+      header_provider=lambda ctx: {'X-Goog-Api-Key': 'k'},
+  )
+  agent = ManagedAgent(
+      name='mgr', agent_id='agents/a', tools=[server], api_client=client
+  )
+
+  asyncio.run(_drain(agent._run_async_impl(_user_ctx('hi'))))
+
+  create_kwargs = client.aio.interactions.calls[0]
+  mcp = [t for t in create_kwargs['tools'] if t['type'] == 'mcp_server'][0]
+  assert mcp['url'] == 'https://mcp.example.com/mcp'
+  assert mcp['headers'] == {'X-Goog-Api-Key': 'k'}

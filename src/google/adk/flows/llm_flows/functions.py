@@ -678,8 +678,8 @@ async def handle_function_calls_live(
   if not function_calls:
     return None
 
-  # Create async lock for active_streaming_tools modifications
-  streaming_lock = asyncio.Lock()
+  # Create async lock for active_streaming_tools and active_non_blocking_tool_tasks modifications
+  active_tools_lock = asyncio.Lock()
 
   # Create tasks for parallel execution
   tasks = [
@@ -689,7 +689,7 @@ async def handle_function_calls_live(
               function_call,
               tools_dict,
               agent,
-              streaming_lock,
+              active_tools_lock,
           )
       )
       for function_call in function_calls
@@ -737,7 +737,7 @@ async def _execute_single_function_call_live(
     function_call: types.FunctionCall,
     tools_dict: dict[str, BaseTool],
     agent: LlmAgent,
-    streaming_lock: asyncio.Lock,
+    active_tools_lock: asyncio.Lock,
 ) -> Optional[Event]:
   """Execute a single function call for live mode with thread safety."""
 
@@ -800,7 +800,16 @@ async def _execute_single_function_call_live(
       )
     raise tool_error
 
-  async def _run_with_trace():
+  async def _run_with_trace() -> Optional[Event]:
+    """Executes the tool with full lifecycle management and telemetry.
+
+    This function orchestrates the tool execution pipeline, including:
+    1. Running plugin and canonical before-tool callbacks.
+    2. Executing the actual tool logic.
+    3. Running plugin and canonical after-tool callbacks.
+    4. Detecting error types for telemetry.
+    5. Building the final FunctionResponse Event to be returned.
+    """
     nonlocal function_args, detected_error_type
 
     # Do not use "args" as the variable name, because it is a reserved keyword
@@ -837,7 +846,7 @@ async def _execute_single_function_call_live(
             function_call,
             function_args,
             invocation_context,
-            streaming_lock,
+            active_tools_lock,
         )
       except Exception as tool_error:
         error_response = await _run_on_tool_error_callbacks(
@@ -904,12 +913,59 @@ async def _execute_single_function_call_live(
     )
     return function_response_event
 
-  async with _instrumentation.record_tool_execution(
-      tool, agent, function_args, invocation_context=invocation_context
-  ) as tel_ctx:
-    tel_ctx.function_response_event = await _run_with_trace()
-    tel_ctx.error_type = detected_error_type
-    return tel_ctx.function_response_event
+  is_streaming = hasattr(tool, 'func') and inspect.isasyncgenfunction(tool.func)
+  is_non_blocking = not is_streaming and tool.response_scheduling is not None
+  if is_non_blocking:
+    task_key = f'{tool.name}_{function_call.id}'
+
+    async def _background_task() -> None:
+      try:
+        async with _instrumentation.record_tool_execution(
+            tool, agent, function_args, invocation_context=invocation_context
+        ) as tel_ctx:
+          function_response_event = await _run_with_trace()
+          tel_ctx.function_response_event = function_response_event
+          tel_ctx.error_type = detected_error_type
+
+          if function_response_event:
+            if (
+                invocation_context.session_service
+                and invocation_context.session
+            ):
+              await invocation_context.session_service.append_event(
+                  session=invocation_context.session,
+                  event=function_response_event,
+              )
+            if (
+                invocation_context.live_request_queue
+                and function_response_event.content
+            ):
+              invocation_context.live_request_queue.send_content(
+                  function_response_event.content
+              )
+      except Exception:
+        logger.exception('Error running non-blocking tool %s', tool.name)
+      finally:
+        async with active_tools_lock:
+          if (
+              invocation_context.active_non_blocking_tool_tasks
+              and task_key in invocation_context.active_non_blocking_tool_tasks
+          ):
+            del invocation_context.active_non_blocking_tool_tasks[task_key]
+
+    task = asyncio.create_task(_background_task())
+    async with active_tools_lock:
+      if invocation_context.active_non_blocking_tool_tasks is None:
+        invocation_context.active_non_blocking_tool_tasks = {}
+      invocation_context.active_non_blocking_tool_tasks[task_key] = task
+    return None
+  else:
+    async with _instrumentation.record_tool_execution(
+        tool, agent, function_args, invocation_context=invocation_context
+    ) as tel_ctx:
+      tel_ctx.function_response_event = await _run_with_trace()
+      tel_ctx.error_type = detected_error_type
+      return tel_ctx.function_response_event
 
 
 async def _process_function_live_helper(
@@ -918,7 +974,7 @@ async def _process_function_live_helper(
     function_call,
     function_args,
     invocation_context,
-    streaming_lock: asyncio.Lock,
+    active_tools_lock: asyncio.Lock,
 ):
   function_response = None
   # Check if this is a stop_streaming function call
@@ -928,7 +984,7 @@ async def _process_function_live_helper(
   ):
     function_name = function_args['function_name']
     # Thread-safe access to active_streaming_tools
-    async with streaming_lock:
+    async with active_tools_lock:
       active_tasks = invocation_context.active_streaming_tools
       if (
           active_tasks
@@ -961,7 +1017,7 @@ async def _process_function_live_helper(
           }
       if not function_response:
         # Clean up the reference under lock
-        async with streaming_lock:
+        async with active_tools_lock:
           if (
               invocation_context.active_streaming_tools
               and function_name in invocation_context.active_streaming_tools
@@ -1005,7 +1061,7 @@ async def _process_function_live_helper(
         run_tool_and_update_queue(tool, function_args, tool_context)
     )
 
-    async with streaming_lock:
+    async with active_tools_lock:
 
       if invocation_context.active_streaming_tools is None:
         invocation_context.active_streaming_tools = {}

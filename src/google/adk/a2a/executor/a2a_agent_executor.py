@@ -44,7 +44,6 @@ from .utils import execute_after_agent_interceptors
 from .utils import execute_after_event_interceptors
 from .utils import execute_before_agent_interceptors
 
-
 logger = logging.getLogger('google_adk.' + __name__)
 
 

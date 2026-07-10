@@ -60,6 +60,7 @@ from google.genai.interactions import InteractionCompletedEvent
 from google.genai.interactions import InteractionCreatedEvent
 from google.genai.interactions import InteractionSSEEvent
 from google.genai.interactions import InteractionStatusUpdate
+from google.genai.interactions import MCPServerParam
 from google.genai.interactions import ModelOutputStep
 from google.genai.interactions import ModelOutputStepParam
 from google.genai.interactions import Step
@@ -80,6 +81,8 @@ from typing_extensions import deprecated
 
 if TYPE_CHECKING:
   from google.genai import Client
+
+  from ..tools._remote_mcp_server import RemoteMcpServer
 
 from .llm_request import LlmRequest
 from .llm_response import LlmResponse
@@ -251,12 +254,12 @@ def convert_part_to_interaction_content(part: types.Part) -> dict | None:
   elif part.thought:
     # part.thought is a boolean indicating this is a thought part
     # ThoughtContentParam expects 'signature' (base64 encoded bytes)
-    result: dict[str, Any] = {'type': 'thought'}
+    thought_result: dict[str, Any] = {'type': 'thought'}
     if part.thought_signature is not None:
-      result['signature'] = base64.b64encode(part.thought_signature).decode(
-          'utf-8'
-      )
-    return result
+      thought_result['signature'] = base64.b64encode(
+          part.thought_signature
+      ).decode('utf-8')
+    return thought_result
   elif part.code_execution_result is not None:
     is_error = part.code_execution_result.outcome in (
         types.Outcome.OUTCOME_FAILED,
@@ -519,6 +522,27 @@ def convert_tools_config_to_interactions_format(
       interaction_tools.append({'type': 'computer_use'})
 
   return interaction_tools
+
+
+def _build_mcp_server_param(
+    server: RemoteMcpServer,
+    resolved_headers: dict[str, str],
+) -> MCPServerParam:
+  """Map a RemoteMcpServer + resolved headers to an interactions MCPServerParam.
+
+  Built directly (not via ``types.McpServer``) so ``allowed_tools`` can be
+  carried and the "not supported in Vertex AI" restriction on
+  ``types.Tool.mcp_servers`` is avoided. ``resolved_headers`` is the static
+  headers already merged with any ``header_provider`` output by the caller.
+  """
+  param: MCPServerParam = {'type': 'mcp_server', 'url': server.url}
+  if server.name is not None:
+    param['name'] = server.name
+  if resolved_headers:
+    param['headers'] = resolved_headers
+  if server.allowed_tools is not None:
+    param['allowed_tools'] = [{'tools': list(server.allowed_tools)}]
+  return param
 
 
 def _function_result_to_response(
